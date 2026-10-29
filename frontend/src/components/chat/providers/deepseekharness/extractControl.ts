@@ -9,19 +9,29 @@ export function deepseekHarnessExtractControl(input: ControlExtractionInput): Ex
   const { payload } = input
   if (payload.event === DEEPSEEK_HARNESS_CONTROL_EVENT.UserQuestions) {
     const questions = deepseekHarnessQuestionRecords(payload)
-    const plan = questions.length === 1 ? questions[0] : undefined
+    const plan = questions.length === 1
+      ? questions[0]
+      : undefined
     const intent = pickObject(plan, 'intent')
     if (!plan || intent?.kind !== 'plan-review')
       return null
     const text = pickString(plan, 'detail')
     const approve = pickString(intent, 'approve')
-    const options = Array.isArray(plan.options) ? plan.options.filter(isObject) : []
+    const options = Array.isArray(plan.options)
+      ? plan.options.filter(isObject)
+      : []
     return {
       kind: 'plan',
-      ...(text ? { text } : {}),
+      ...(text
+        ? { text }
+        : {}),
       choices: options.flatMap((option) => {
         const label = pickString(option, 'label')
-        return label ? [{ id: label, label, approves: label === approve }] : []
+        return label
+          ? [
+              { id: label, label, approves: label === approve },
+            ]
+          : []
       }),
     }
   }
@@ -37,7 +47,9 @@ export function deepseekHarnessExtractControl(input: ControlExtractionInput): Ex
     kind: 'permission',
     permission: {
       title,
-      ...(reason ? { reason } : {}),
+      ...(reason
+        ? { reason }
+        : {}),
       options: [
         { optionId: 'allow', name: 'Allow once', kind: ACP_PERMISSION_KIND.AllowOnce },
         { optionId: 'deny', name: 'Deny', kind: KIND_REJECT_ONCE },

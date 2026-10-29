@@ -66,7 +66,11 @@ describe('makeIdentitySession', () => {
     for (const cipher of [session.send, session.receive]) {
       expect(cipher.nonce()).toBe(0)
       expect(cipher.needsRekey()).toBe(false)
-      for (const pq of [null, new Uint8Array(), new Uint8Array([3, 4])]) {
+      for (const pq of [
+        null,
+        new Uint8Array(),
+        new Uint8Array([3, 4]),
+      ]) {
         for (const retainPrevious of [false, true]) {
           const dh = new Uint8Array([1, 2])
           const beforePq = pq?.slice() ?? null

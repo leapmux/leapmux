@@ -20,12 +20,21 @@ function docker(args, timeout = deadlineMs) {
   const result = spawnSync('docker', args, { encoding: 'utf8', timeout, maxBuffer: 8 * 1024 * 1024 })
   if (result.error || result.status !== 0)
     throw new Error(`docker ${args[0]} failed: ${result.error?.message ?? result.stderr}`)
-  return (args[0] === 'logs' ? result.stdout + result.stderr : result.stdout).trim()
+  return (args[0] === 'logs'
+    ? result.stdout + result.stderr
+    : result.stdout).trim()
 }
 
 function create(options = [], command = []) {
   const name = `leapmux-test-${randomUUID()}`
-  docker(['create', '--name', name, ...options, image, ...command])
+  docker([
+    'create',
+    '--name',
+    name,
+    ...options,
+    image,
+    ...command,
+  ])
   containers.push(name)
   return name
 }
@@ -44,8 +53,14 @@ async function ready(name) {
   const deadline = Date.now() + deadlineMs
   let lastError
   while (Date.now() < deadline) {
-    if (docker(['inspect', '--format', '{{.State.Running}}', name]) !== 'true')
+    if (docker([
+      'inspect',
+      '--format',
+      '{{.State.Running}}',
+      name,
+    ]) !== 'true') {
       throw new Error(`Hub exited before readiness:\n${docker(['logs', name])}`)
+    }
     try {
       const response = await fetch(url, {
         method: 'POST',
@@ -68,15 +83,30 @@ async function ready(name) {
 
 try {
   console.log(`Testing ${image}. Diagnostics: ${directory}`)
-  const hub = create(['-e', 'LEAPMUX_MODE=hub', '-p', '127.0.0.1::4327'])
+  const hub = create([
+    '-e',
+    'LEAPMUX_MODE=hub',
+    '-p',
+    '127.0.0.1::4327',
+  ])
   docker(['start', hub])
   await ready(hub)
-  const key = docker(['exec', hub, 'sha256sum', '/data/hub/encryption.key'])
+  const key = docker([
+    'exec',
+    hub,
+    'sha256sum',
+    '/data/hub/encryption.key',
+  ])
   docker(['stop', '--time', '10', hub])
   exited(hub, 0)
   docker(['start', hub])
   await ready(hub)
-  assert.equal(docker(['exec', hub, 'sha256sum', '/data/hub/encryption.key']), key)
+  assert.equal(docker([
+    'exec',
+    hub,
+    'sha256sum',
+    '/data/hub/encryption.key',
+  ]), key)
   docker(['stop', '--time', '10', hub])
   exited(hub, 0)
   console.log('PASS: Hub startup, graceful stop, restart, and persistent encryption key')
@@ -103,7 +133,12 @@ if test "$PROBE_EXIT" = signal; then kill -KILL $$; fi
 exit "$PROBE_EXIT"
 `, { mode: 0o755 })
 
-  for (const [mode, result, existing] of [['hub', '0', false], ['worker', '23', false], ['dev', '0', true], ['solo', 'signal', false]]) {
+  for (const [mode, result, existing] of [
+    ['hub', '0', false],
+    ['worker', '23', false],
+    ['dev', '0', true],
+    ['solo', 'signal', false],
+  ]) {
     const data = '/custom data'
     const name = create([
       '-e',
@@ -127,13 +162,17 @@ exit "$PROBE_EXIT"
       copy(name, join(directory, 'existing'), data)
     }
     docker(['start', name])
-    exited(name, result === 'signal' ? 137 : Number(result))
+    exited(name, result === 'signal'
+      ? 137
+      : Number(result))
     assert.match(docker(['logs', name]), /probe-ran/)
     console.log(`PASS: ${mode} arguments, environment, configuration, and exit ${result}`)
   }
 
   for (const mode of [null, '', 'invalid']) {
-    const name = create(mode === null ? [] : ['-e', `LEAPMUX_MODE=${mode}`])
+    const name = create(mode === null
+      ? []
+      : ['-e', `LEAPMUX_MODE=${mode}`])
     docker(['start', name])
     exited(name, 1)
     assert.match(docker(['logs', name]), /LEAPMUX_MODE must be one of/)
@@ -143,14 +182,26 @@ exit "$PROBE_EXIT"
   const unexpected = join(directory, 'unexpected')
   writeFileSync(unexpected, '#!/bin/sh\necho probe-ran\nexit 0\n', { mode: 0o755 })
   // /proc cannot hold an application directory, even when the container runs as root.
-  const badDirectory = create(['-e', 'LEAPMUX_MODE=hub', '-e', 'LEAPMUX_DATA_DIR=/proc/leapmux-test', '-e', 'LEAPMUX_BIN=/probe'])
+  const badDirectory = create([
+    '-e',
+    'LEAPMUX_MODE=hub',
+    '-e',
+    'LEAPMUX_DATA_DIR=/proc/leapmux-test',
+    '-e',
+    'LEAPMUX_BIN=/probe',
+  ])
   copy(badDirectory, unexpected, '/probe')
   docker(['start', badDirectory])
   assert.notEqual(Number(docker(['wait', badDirectory])), 0)
   assert.doesNotMatch(docker(['logs', badDirectory]), /probe-ran/)
   console.log('PASS: directory creation failure stops startup')
 
-  const configFailure = create(['-e', 'LEAPMUX_MODE=hub', '-e', 'LEAPMUX_BIN=/probe'])
+  const configFailure = create([
+    '-e',
+    'LEAPMUX_MODE=hub',
+    '-e',
+    'LEAPMUX_BIN=/probe',
+  ])
   const blocked = join(directory, 'blocked', 'hub', 'hub.yaml')
   mkdirSync(blocked, { recursive: true })
   copy(configFailure, join(directory, 'blocked', 'hub'), '/data/hub')
@@ -160,7 +211,14 @@ exit "$PROBE_EXIT"
   assert.doesNotMatch(docker(['logs', configFailure]), /probe-ran/)
   console.log('PASS: invalid configuration path stops startup')
 
-  const readOnly = create(['-e', 'LEAPMUX_MODE=hub', '-e', 'LEAPMUX_BIN=/probe', '--tmpfs', '/data/hub:ro'])
+  const readOnly = create([
+    '-e',
+    'LEAPMUX_MODE=hub',
+    '-e',
+    'LEAPMUX_BIN=/probe',
+    '--tmpfs',
+    '/data/hub:ro',
+  ])
   copy(readOnly, unexpected, '/probe')
   docker(['start', readOnly])
   assert.notEqual(Number(docker(['wait', readOnly])), 0)
@@ -168,7 +226,12 @@ exit "$PROBE_EXIT"
   assert.match(docker(['logs', readOnly]), /[Rr]ead-only file system/)
   console.log('PASS: configuration creation failure stops startup')
 
-  const missingBinary = create(['-e', 'LEAPMUX_MODE=hub', '-e', 'LEAPMUX_BIN=/missing-leapmux-binary'])
+  const missingBinary = create([
+    '-e',
+    'LEAPMUX_MODE=hub',
+    '-e',
+    'LEAPMUX_BIN=/missing-leapmux-binary',
+  ])
   docker(['start', missingBinary])
   exited(missingBinary, 127)
   console.log('PASS: missing executable returns exit 127')

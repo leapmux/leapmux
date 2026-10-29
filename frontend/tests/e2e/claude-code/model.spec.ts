@@ -8,7 +8,9 @@ import { chooseSettingsOption, expectAssistantAnswer, expectNoSettingsChip, expe
 /** The native model ID and beta header together prove the 1M selection. */
 function expectNativeOpus1M(request: MockModelRequestRecord): void {
   expect(request.protocol).toBe('anthropic-messages')
-  expect(request.body).toMatchObject({ model: expect.stringMatching(/^claude-opus-/) })
+  expect(request.body).toMatchObject({
+    model: expect.stringMatching(/^claude-opus-/),
+  })
   expect(request.requestHeaders?.['anthropic-beta']?.split(',')).toContain('context-1m-2025-08-07')
 }
 
@@ -27,7 +29,9 @@ test.describe('Agent Settings', () => {
     await exerciseNativeOption(native, {
       groupId: 'model',
       value: 'haiku',
-      nativeProof: request => expect(request.body).toMatchObject({ model: expect.stringMatching(/^claude-haiku-/) }),
+      nativeProof: request => expect(request.body).toMatchObject({
+        model: expect.stringMatching(/^claude-haiku-/),
+      }),
     })
     await expectSettingsChip(page, 'Haiku')
   })
@@ -72,7 +76,9 @@ test.describe('Agent Settings', () => {
     await expectSettingsChip(page, 'Haiku')
     const restored = await sendNativeAnswer(native, 'Reply once with the restored Haiku model.', 'The restored Haiku model answered.')
     expect(restored.protocol).toBe('anthropic-messages')
-    expect(restored.body).toMatchObject({ model: expect.stringMatching(/^claude-haiku-/) })
+    expect(restored.body).toMatchObject({
+      model: expect.stringMatching(/^claude-haiku-/),
+    })
   })
 
   test('model/effort items not disabled when idle', async ({ authenticatedWorkspace, page }) => {

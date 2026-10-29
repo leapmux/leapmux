@@ -136,7 +136,12 @@ export function indexBranches(branches: readonly GitBranchEntry[]): BranchIndex 
       localNames.add(b.name)
     }
   }
-  return { local, remote, existingNames, localNames }
+  return {
+    local,
+    remote,
+    existingNames,
+    localNames,
+  }
 }
 
 /**
@@ -174,7 +179,9 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   // Treat empty as missing and fall back to the default set.
   const enabledModeList = () => {
     const m = props.modes
-    return m && m.length > 0 ? m : DEFAULT_GIT_MODES
+    return m && m.length > 0
+      ? m
+      : DEFAULT_GIT_MODES
   }
   // Memoized Set so the per-mode `enabledModes().has(...)` checks in the
   // radio render loop are O(1) and recompute only when `props.modes`
@@ -208,7 +215,9 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   // set. Deriving makes the state unrepresentable rather than repairing it at
   // the two moments it can arise (the seed, and a set that narrows later).
   const clampMode = (mode: GitMode): GitMode =>
-    enabledModes().has(mode) ? mode : defaultMode()
+    enabledModes().has(mode)
+      ? mode
+      : defaultMode()
   const [rawMode, setRawMode] = createSignal<GitMode>(untrack(() => props.gitMode()))
   const activeMode = createMemo(() => clampMode(rawMode()))
 
@@ -263,7 +272,11 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
     if (!i.repoRoot || !branchName())
       return ''
     const flavor = detectFlavor(i.repoRoot)
-    return join([parentDirectory(i.repoRoot, flavor), `${i.repoDirName}-worktrees`, branchName()], flavor)
+    return join([
+      parentDirectory(i.repoRoot, flavor),
+      `${i.repoDirName}-worktrees`,
+      branchName(),
+    ], flavor)
   }
 
   const localBranchNames = createMemo(() => branchIndex().localNames)
@@ -401,7 +414,10 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
           worktreeBaseBranch: selectedBaseBranch(),
         }
       case GitMode.UseWorktree:
-        return { mode, useWorktreePath: selectedWorktreePath() }
+        return {
+          mode,
+          useWorktreePath: selectedWorktreePath(),
+        }
     }
   }
 
@@ -445,7 +461,10 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   // mode toggles a no-op once a list is cached. When the parent supplies
   // `preloadedBranches`, the branches list is parent-owned — skip the
   // auto-fetch (the parent's bundle RPC is the single source).
-  createEffect(on(() => [props.gitInfo.showGitOptions(), activeMode()] as const, ([ready, mode]) => {
+  createEffect(on(() => [
+    props.gitInfo.showGitOptions(),
+    activeMode(),
+  ] as const, ([ready, mode]) => {
     if (!ready)
       return
     if (modeNeedsBranches(mode) && !props.preloadedBranches && branches().length === 0)
@@ -489,7 +508,9 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
       remote={branchIndex().remote}
       loading={branchesLoading()}
       currentBranch={props.gitInfo.info().currentBranch}
-      {...(selectProps.showCurrent !== undefined ? { showCurrent: selectProps.showCurrent } : {})}
+      {...(selectProps.showCurrent !== undefined
+        ? { showCurrent: selectProps.showCurrent }
+        : {})}
     />
   )
 
@@ -509,15 +530,23 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
         <input
           type="text"
           aria-label="Branch Name"
-          aria-invalid={branchError() ? 'true' : undefined}
-          aria-describedby={branchError() ? BRANCH_NAME_ERROR_ID : undefined}
+          aria-invalid={branchError()
+            ? 'true'
+            : undefined}
+          aria-describedby={branchError()
+            ? BRANCH_NAME_ERROR_ID
+            : undefined}
           value={branchName()}
           onInput={e => setBranchName(e.currentTarget.value)}
           placeholder="feature-branch"
         />
       </LabeledField>
       <LabeledField label="Base Branch">
-        {renderBranchSelect({ value: selectedBaseBranch(), onChange: setSelectedBaseBranch, showCurrent: true })}
+        {renderBranchSelect({
+          value: selectedBaseBranch(),
+          onChange: setSelectedBaseBranch,
+          showCurrent: true,
+        })}
       </LabeledField>
     </>
   )
@@ -611,7 +640,9 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
               onChange={setSelectedWorktreePath}
               worktrees={worktrees()}
               loading={worktreesLoading()}
-              {...(props.homeDir !== undefined ? { homeDir: props.homeDir } : {})}
+              {...(props.homeDir !== undefined
+                ? { homeDir: props.homeDir }
+                : {})}
             />
           </div>
         </ModeRadio>

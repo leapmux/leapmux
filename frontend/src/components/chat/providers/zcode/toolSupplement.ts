@@ -20,7 +20,9 @@ export interface ZCodeToolSupplement {
 
 /** The stored payloads, or a pair of undefined for a row that carries none. */
 export function zcodeToolSupplement(supplemental: unknown): ZCodeToolSupplement {
-  const supplement = isObject(supplemental) ? supplemental : undefined
+  const supplement = isObject(supplemental)
+    ? supplemental
+    : undefined
   return {
     nativeTool: pickObject(supplement, ZCODE_SUPPLEMENT.NativeTool, undefined),
     outputFiles: pickObject(supplement, ZCODE_SUPPLEMENT.OutputFiles, undefined),

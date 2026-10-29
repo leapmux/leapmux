@@ -5,11 +5,17 @@ export function qoderNativeToolResult(frames: readonly unknown[], callId: string
   if (!callId)
     throw new Error('The native Qoder tool result requires its exact call ID.')
   const results = frames.filter(isObject).filter(frame => frame.type === 'user').flatMap((frame) => {
-    const message = isObject(frame.message) ? frame.message : undefined
-    const content = Array.isArray(message?.content) ? message.content : []
+    const message = isObject(frame.message)
+      ? frame.message
+      : undefined
+    const content = Array.isArray(message?.content)
+      ? message.content
+      : []
     return content.filter(isObject).filter(block => block.type === 'tool_result' && block.tool_use_id === callId)
   })
-  const original = results.length === 1 ? results[0] : undefined
+  const original = results.length === 1
+    ? results[0]
+    : undefined
   if (!original || original.is_error === true)
     throw new Error('The native Qoder tool result requires one exact successful tool result.')
   if (typeof original.content === 'string')
@@ -22,5 +28,8 @@ export function qoderNativeToolResult(frames: readonly unknown[], callId: string
       throw new Error('The native Qoder text result contains another content type.')
     texts.push(block.text)
   }
-  return { original, text: texts.join('') }
+  return {
+    original,
+    text: texts.join(''),
+  }
 }

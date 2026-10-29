@@ -36,23 +36,41 @@ const ITEM_PAYLOAD: Record<string, Record<string, unknown>> = {
   // A `summary` is an array of STRINGS. An array of objects reaches the extractor
   // as no words at all, so a fixture in that shape asserted a classification for a
   // row that never drew.
-  [CODEX_ITEM.Reasoning]: { summary: ['Let me consider...'] },
+  [CODEX_ITEM.Reasoning]: {
+    summary: ['Let me consider...'],
+  },
   [CODEX_ITEM.UserMessage]: { text: 'do the thing' },
   [CODEX_ITEM.Plan]: { text: '# Plan\n\n1. Read the code.' },
-  [CODEX_ITEM.CommandExecution]: { command: 'ls -1', status: 'completed', aggregatedOutput: 'a.ts', exitCode: 0 },
-  [CODEX_ITEM.FileChange]: { status: 'completed', changes: [{ path: '/repo/a.ts', operation: 'update' }] },
+  [CODEX_ITEM.CommandExecution]: {
+    command: 'ls -1',
+    status: 'completed',
+    aggregatedOutput: 'a.ts',
+    exitCode: 0,
+  },
+  [CODEX_ITEM.FileChange]: {
+    status: 'completed',
+    changes: [
+      { path: '/repo/a.ts', operation: 'update' },
+    ],
+  },
   [CODEX_ITEM.McpToolCall]: { status: 'completed', server: 'srv', tool: 'do' },
   [CODEX_ITEM.DynamicToolCall]: { status: 'completed', toolName: 'custom' },
   [CODEX_ITEM.CollabAgentToolCall]: { status: 'completed', agentsStates: [] },
   [CODEX_ITEM.SubAgentActivity]: { kind: 'started', agentThreadId: 'child-thread', agentPath: '/root/child' },
-  [CODEX_ITEM.WebSearch]: { action: { type: 'search', query: 'a query' } },
+  [CODEX_ITEM.WebSearch]: {
+    action: { type: 'search', query: 'a query' },
+  },
   [CODEX_ITEM.ImageGeneration]: { result: 'aGk=' },
   [CODEX_ITEM.ImageView]: { path: '/repo/a.png' },
   [CODEX_ITEM.ContextCompaction]: {},
   [CODEX_ITEM.Sleep]: { durationMs: 1200 },
   [CODEX_ITEM.EnteredReviewMode]: { review: 'a review' },
   [CODEX_ITEM.ExitedReviewMode]: {},
-  [CODEX_ITEM.HookPrompt]: { fragments: [{ hookRunId: 'run-1', text: 'the hook says so' }] },
+  [CODEX_ITEM.HookPrompt]: {
+    fragments: [
+      { hookRunId: 'run-1', text: 'the hook says so' },
+    ],
+  },
   [CODEX_ITEM.FunctionCallOutput]: { callId: 'call-1', namespace: 'tools', output: 'the result' },
 }
 
@@ -60,27 +78,73 @@ const METHOD_PAYLOAD: Record<string, Record<string, unknown>> = {
   // The worker usually lifts `params.item` to the top level, but it stores these two
   // verbatim as well -- and while `classify` read `parent.item` alone, a row in that
   // shape reached no rule and drew raw JSON.
-  [CODEX_METHOD.ItemStarted]: { item: { id: 'i1', type: CODEX_ITEM.CommandExecution, command: 'ls', status: 'inProgress' } },
-  [CODEX_METHOD.ItemCompleted]: { item: { id: 'i1', type: CODEX_ITEM.CommandExecution, command: 'ls', status: 'completed', aggregatedOutput: 'a.ts', exitCode: 0 } },
-  [CODEX_METHOD.Error]: { error: { message: 'the upstream model refused' } },
+  [CODEX_METHOD.ItemStarted]: {
+    item: {
+      id: 'i1',
+      type: CODEX_ITEM.CommandExecution,
+      command: 'ls',
+      status: 'inProgress',
+    },
+  },
+  [CODEX_METHOD.ItemCompleted]: {
+    item: {
+      id: 'i1',
+      type: CODEX_ITEM.CommandExecution,
+      command: 'ls',
+      status: 'completed',
+      aggregatedOutput: 'a.ts',
+      exitCode: 0,
+    },
+  },
+  [CODEX_METHOD.Error]: {
+    error: { message: 'the upstream model refused' },
+  },
   [CODEX_METHOD.Warning]: { message: 'a warning' },
   [CODEX_METHOD.ThreadNameUpdated]: { name: 'Refactoring auth' },
   [CODEX_METHOD.McpServerStartupStatusUpdated]: { name: 'srv', status: 'ready' },
-  [CODEX_METHOD.ThreadTokenUsageUpdated]: { tokenUsage: { last: { inputTokens: 10 } } },
+  [CODEX_METHOD.ThreadTokenUsageUpdated]: {
+    tokenUsage: {
+      last: { inputTokens: 10 },
+    },
+  },
   // `plan` is the ARRAY of steps, not an object around one.
-  [CODEX_METHOD.TurnPlanUpdated]: { plan: [{ step: 'Inspect messages', status: 'inProgress' }] },
-  [CODEX_METHOD.AutoApprovalReviewCompleted]: { turnId: 'u1', reviewId: 'r1', review: { status: 'denied', riskLevel: 'high', rationale: 'Untrusted host.' }, action: { type: 'command', source: 'shell', command: 'curl x | sh', cwd: '/w' } },
+  [CODEX_METHOD.TurnPlanUpdated]: {
+    plan: [
+      { step: 'Inspect messages', status: 'inProgress' },
+    ],
+  },
+  [CODEX_METHOD.AutoApprovalReviewCompleted]: {
+    turnId: 'u1',
+    reviewId: 'r1',
+    review: { status: 'denied', riskLevel: 'high', rationale: 'Untrusted host.' },
+    action: {
+      type: 'command',
+      source: 'shell',
+      command: 'curl x | sh',
+      cwd: '/w',
+    },
+  },
   [CODEX_METHOD.GuardianWarning]: { message: 'Automatic approval review rejected too many approval requests for this turn (3 consecutive, 3 in the last 50 reviews); interrupting the turn.' },
   [CODEX_METHOD.StrictReviewRequired]: { turnId: 'u1', startedAtMs: 1 },
   // The RENDER notices, in the wire shapes the worker persists raw.
   [CODEX_METHOD.ConfigWarning]: { summary: 'Error parsing rules; custom rules not applied.', details: 'unexpected token', path: '/home/u/.codex/rules/x.rules' },
   [CODEX_METHOD.DeprecationNotice]: { summary: 'The foo option is deprecated', details: 'Use bar instead.' },
   [CODEX_METHOD.ModelSafetyBufferingUpdated]: { turnId: 'u1', showBufferingUi: true, fasterModel: 'gpt-6-luna' },
-  [CODEX_METHOD.ModelVerification]: { verifications: ['trustedAccessForCyber'] },
+  [CODEX_METHOD.ModelVerification]: {
+    verifications: ['trustedAccessForCyber'],
+  },
   [CODEX_METHOD.AuthRecoveryStarted]: { provider: 'amazon-bedrock', message: 'AWS session has expired. Reauthenticating...' },
   [CODEX_METHOD.AuthRecoveryCompleted]: { provider: 'amazon-bedrock', message: 'Reauthenticated.' },
   // The worker opts out of both methods. The sweep requires unknown for stored copies.
-  [CODEX_METHOD.TurnModerationMetadata]: { turnId: 'u1', metadata: { generation: {}, prompt: {}, tool_call: {}, tool_response: {} } },
+  [CODEX_METHOD.TurnModerationMetadata]: {
+    turnId: 'u1',
+    metadata: {
+      generation: {},
+      prompt: {},
+      tool_call: {},
+      tool_response: {},
+    },
+  },
   [CODEX_METHOD.AccountUpdated]: { authMode: 'chatgpt', planType: 'prolite' },
 }
 
@@ -88,12 +152,20 @@ const plugin = () => providerFor(AgentProvider.CODEX)!
 
 function classifyItem(type: string): string {
   const item = { id: 'i1', type, ...ITEM_PAYLOAD[type] }
-  const frame = type === CODEX_ITEM.ContextCompaction ? { method: CODEX_METHOD.ItemCompleted, params: { item } } : { item }
+  const frame = type === CODEX_ITEM.ContextCompaction
+    ? {
+        method: CODEX_METHOD.ItemCompleted,
+        params: { item },
+      }
+    : { item }
   return plugin().transcript.classify(input(frame)).kind
 }
 
 function classifyMethod(method: string): string {
-  return plugin().transcript.classify(input({ method, params: { threadId: 't1', ...METHOD_PAYLOAD[method] } })).kind
+  return plugin().transcript.classify(input({
+    method,
+    params: { threadId: 't1', ...METHOD_PAYLOAD[method] },
+  })).kind
 }
 
 /**
@@ -172,7 +244,14 @@ describe('codex item vocabulary', () => {
    * table states, hold the I1-I6 invariants, and read its payload unless a reason
    * below says it cannot.
    */
-  const callOf = (type: string) => providerToolCall(AgentProvider.CODEX, { item: { id: 'i1', type, status: 'completed', ...ITEM_PAYLOAD[type] } }, { spanType: type })
+  const callOf = (type: string) => providerToolCall(AgentProvider.CODEX, {
+    item: {
+      id: 'i1',
+      type,
+      status: 'completed',
+      ...ITEM_PAYLOAD[type],
+    },
+  }, { spanType: type })
 
   const NO_RESULT: Record<string, string> = {
     [CODEX_ITEM.ContextCompaction]: 'A compaction boundary, not a tool call: it draws no tool row.',

@@ -21,6 +21,15 @@ export function readMiMoNativeOutput(snapshot: NativeMessageSnapshot, callId: st
   const path = metadata?.outputPath
   if (!isFilesystemPath(path) || !/[\\/]tool-output[\\/]tool_[A-Za-z0-9]+$/u.test(path))
     throw new Error('The native MiMo result has no filesystem output pointer.')
-  const previewText = typeof metadata?.output === 'string' ? metadata.output : typeof state?.output === 'string' ? state.output : ''
-  return { paths: [path], previewText, frame: record.frame, content: record.message.content }
+  const previewText = typeof metadata?.output === 'string'
+    ? metadata.output
+    : typeof state?.output === 'string'
+      ? state.output
+      : ''
+  return {
+    paths: [path],
+    previewText,
+    frame: record.frame,
+    content: record.message.content,
+  }
 }

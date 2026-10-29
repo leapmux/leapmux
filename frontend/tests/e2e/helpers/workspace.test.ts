@@ -10,13 +10,22 @@ import { createTranscriptGuard, runTranscriptGuard } from './transcriptGuard'
 import { loginViaToken, openWorkspace } from './ui'
 import { agentWorkspaceFixture, authenticatedAgentWorkspace, createWorkspaceWithAgentsViaAPI, openProviderAgent, showWorkspaceWithAgents, withAgentWorkspace, withTestWorkspace } from './workspace'
 
-vi.mock('./api', () => ({ createWorkspaceViaAPI: vi.fn(), deleteWorkspaceViaAPI: vi.fn(), openAgentViaAPI: vi.fn() }))
-vi.mock('./runDirectory', () => ({ createTestDirectory: vi.fn(() => '/private-directory') }))
+vi.mock('./api', () => ({
+  createWorkspaceViaAPI: vi.fn(),
+  deleteWorkspaceViaAPI: vi.fn(),
+  openAgentViaAPI: vi.fn(),
+}))
+vi.mock('./runDirectory', () => ({
+  createTestDirectory: vi.fn(() => '/private-directory'),
+}))
 vi.mock('./transcriptGuard', async importOriginal => ({
   ...await importOriginal<typeof import('./transcriptGuard')>(),
   runTranscriptGuard: vi.fn(async () => {}),
 }))
-vi.mock('./ui', () => ({ loginViaToken: vi.fn(), openWorkspace: vi.fn() }))
+vi.mock('./ui', () => ({
+  loginViaToken: vi.fn(),
+  openWorkspace: vi.fn(),
+}))
 
 const server = { hubUrl: 'http://hub.test', adminToken: 'session', workerId: 'worker' }
 const fastAgent = { provider: AgentProvider.FAST_AGENT, prefix: 'fastagent-e2e' }
@@ -143,7 +152,12 @@ describe('workspace fixture lifetime', () => {
  */
 describe('the merge rule of an agent open request', () => {
   it('opens a workspace agent with the pinned model and keeps the pinned effort under the option values of the test', async () => {
-    await withAgentWorkspace(server, { ...pi, openOptions: { optionValues: { permissionMode: 'plan' } } }, async () => {})
+    await withAgentWorkspace(server, {
+      ...pi,
+      openOptions: {
+        optionValues: { permissionMode: 'plan' },
+      },
+    }, async () => {})
     expect(openRequest()).toEqual({
       agentProvider: AgentProvider.PI,
       model: AGENT_E2E_SETTINGS[AgentProvider.PI].model,
@@ -152,13 +166,24 @@ describe('the merge rule of an agent open request', () => {
   })
 
   it('opens a workspace agent with the model of the test', async () => {
-    await withAgentWorkspace(server, { ...pi, openOptions: { model: 'another-model' } }, async () => {})
-    expect(openRequest()).toMatchObject({ model: 'another-model', optionValues: { effort: AGENT_E2E_SETTINGS[AgentProvider.PI].effort } })
+    await withAgentWorkspace(server, {
+      ...pi,
+      openOptions: { model: 'another-model' },
+    }, async () => {})
+    expect(openRequest()).toMatchObject({
+      model: 'another-model',
+      optionValues: { effort: AGENT_E2E_SETTINGS[AgentProvider.PI].effort },
+    })
   })
 
   it('refuses a model given as an option value before it creates a workspace', async () => {
     const use = vi.fn()
-    await expect(withAgentWorkspace(server, { ...fastAgent, openOptions: { optionValues: { model: 'another-model' } } }, use)).rejects.toThrow('give the model as `model`')
+    await expect(withAgentWorkspace(server, {
+      ...fastAgent,
+      openOptions: {
+        optionValues: { model: 'another-model' },
+      },
+    }, use)).rejects.toThrow('give the model as `model`')
     expect(createWorkspaceViaAPI).not.toHaveBeenCalled()
     expect(openAgentViaAPI).not.toHaveBeenCalled()
     expect(use).not.toHaveBeenCalled()
@@ -170,7 +195,9 @@ describe('the merge rule of an agent open request', () => {
   })
 
   it('opens one more agent with the pinned model when the test selects another option', async () => {
-    await openProviderAgent(server, 'workspace', fastAgent, { optionValues: { mode: 'plan' } })
+    await openProviderAgent(server, 'workspace', fastAgent, {
+      optionValues: { mode: 'plan' },
+    })
     expect(openRequest()).toEqual({
       agentProvider: AgentProvider.FAST_AGENT,
       model: AGENT_E2E_SETTINGS[AgentProvider.FAST_AGENT].model,
@@ -180,7 +207,10 @@ describe('the merge rule of an agent open request', () => {
 
   it('refuses a model given as an option value before it creates or prepares a directory', async () => {
     const prepare = vi.fn()
-    await expect(openProviderAgent(server, 'workspace', fastAgent, { optionValues: { model: 'another-model' }, prepare })).rejects.toThrow('give the model as `model`')
+    await expect(openProviderAgent(server, 'workspace', fastAgent, {
+      optionValues: { model: 'another-model' },
+      prepare,
+    })).rejects.toThrow('give the model as `model`')
     expect(createTestDirectory).not.toHaveBeenCalled()
     expect(prepare).not.toHaveBeenCalled()
     expect(openAgentViaAPI).not.toHaveBeenCalled()
@@ -214,7 +244,10 @@ describe('openProviderAgent', () => {
 
   it('refuses a directory of the test and a prefix together, before it makes a directory or opens the agent', async () => {
     const workingDir = vi.fn(() => unitWorkingDir('/unused'))
-    await expect(openProviderAgent(server, 'workspace', { ...pi, workingDir }, { workingDir: unitWorkingDir('/test/directory'), directoryPrefix: 'native-' })).rejects.toThrow('not in both')
+    await expect(openProviderAgent(server, 'workspace', { ...pi, workingDir }, {
+      workingDir: unitWorkingDir('/test/directory'),
+      directoryPrefix: 'native-',
+    })).rejects.toThrow('not in both')
     expect(workingDir).not.toHaveBeenCalled()
     expect(createTestDirectory).not.toHaveBeenCalled()
     expect(openAgentViaAPI).not.toHaveBeenCalled()
@@ -222,7 +255,9 @@ describe('openProviderAgent', () => {
 
   it('opens the agent in the directory of the test, and makes no other one', async () => {
     const maker = vi.fn(() => unitWorkingDir('/unused'))
-    expect((await openProviderAgent(server, 'workspace', { ...pi, workingDir: maker }, { workingDir: unitWorkingDir('/test/directory') })).workingDir).toBe('/test/directory')
+    expect((await openProviderAgent(server, 'workspace', { ...pi, workingDir: maker }, {
+      workingDir: unitWorkingDir('/test/directory'),
+    })).workingDir).toBe('/test/directory')
     expect(maker).not.toHaveBeenCalled()
     expect(createTestDirectory).not.toHaveBeenCalled()
   })
@@ -233,17 +268,21 @@ describe('openProviderAgent', () => {
       order.push('open')
       return 'agent'
     })
-    await openProviderAgent(server, 'workspace', pi, { prepare: (directory) => {
-      order.push(`prepare ${directory}`)
-    } })
+    await openProviderAgent(server, 'workspace', pi, {
+      prepare: (directory) => {
+        order.push(`prepare ${directory}`)
+      },
+    })
     expect(order).toEqual(['prepare /private-directory', 'open'])
   })
 
   it('does not open the agent when its preparation fails', async () => {
     const error = new Error('no configuration')
-    await expect(openProviderAgent(server, 'workspace', pi, { prepare: () => {
-      throw error
-    } })).rejects.toBe(error)
+    await expect(openProviderAgent(server, 'workspace', pi, {
+      prepare: () => {
+        throw error
+      },
+    })).rejects.toBe(error)
     expect(openAgentViaAPI).not.toHaveBeenCalled()
   })
 })
@@ -259,7 +298,10 @@ describe('createWorkspaceWithAgentsViaAPI', () => {
       order.push('open')
       return 'agent-1'
     })
-    await expect(createWorkspaceWithAgentsViaAPI(server, 'Docs')).resolves.toEqual({ workspaceId: 'workspace', agentIds: ['agent-1'] })
+    await expect(createWorkspaceWithAgentsViaAPI(server, 'Docs')).resolves.toEqual({
+      workspaceId: 'workspace',
+      agentIds: ['agent-1'],
+    })
     expect(order).toEqual(['create Docs', 'open'])
     // No open options: the agent takes the provider default, as a hand-built workspace did.
     expect(openAgentViaAPI).toHaveBeenCalledExactlyOnceWith(server, 'workspace', undefined, undefined)
@@ -268,12 +310,27 @@ describe('createWorkspaceWithAgentsViaAPI', () => {
   it('opens one agent with each title, in title order, in the working directory of the caller', async () => {
     let next = 0
     vi.mocked(openAgentViaAPI).mockImplementation(async () => `agent-${++next}`)
-    const created = await createWorkspaceWithAgentsViaAPI(server, 'Docs', { agentTitles: ['Source Agent', 'Source Agent', 'Other Agent'], workingDir: '/repo' })
-    expect(created).toEqual({ workspaceId: 'workspace', agentIds: ['agent-1', 'agent-2', 'agent-3'] })
+    const created = await createWorkspaceWithAgentsViaAPI(server, 'Docs', {
+      agentTitles: ['Source Agent', 'Source Agent', 'Other Agent'],
+      workingDir: '/repo',
+    })
+    expect(created).toEqual({
+      workspaceId: 'workspace',
+      agentIds: ['agent-1', 'agent-2', 'agent-3'],
+    })
     expect(vi.mocked(openAgentViaAPI).mock.calls.map(call => [call[2], call[3]])).toEqual([
-      ['/repo', { title: 'Source Agent' }],
-      ['/repo', { title: 'Source Agent' }],
-      ['/repo', { title: 'Other Agent' }],
+      [
+        '/repo',
+        { title: 'Source Agent' },
+      ],
+      [
+        '/repo',
+        { title: 'Source Agent' },
+      ],
+      [
+        '/repo',
+        { title: 'Other Agent' },
+      ],
     ])
   })
 
@@ -283,7 +340,9 @@ describe('createWorkspaceWithAgentsViaAPI', () => {
   })
 
   it.each(['', '  '])('refuses the agent title %j before it creates a workspace', async (agentTitle) => {
-    await expect(createWorkspaceWithAgentsViaAPI(server, 'Bad', { agentTitles: ['Good', agentTitle] })).rejects.toThrow('visible text')
+    await expect(createWorkspaceWithAgentsViaAPI(server, 'Bad', {
+      agentTitles: ['Good', agentTitle],
+    })).rejects.toThrow('visible text')
     expect(createWorkspaceViaAPI).not.toHaveBeenCalled()
     expect(openAgentViaAPI).not.toHaveBeenCalled()
   })
@@ -327,7 +386,10 @@ describe('showWorkspaceWithAgents', () => {
     vi.mocked(openWorkspace).mockImplementation(async (_page, workspaceId) => {
       order.push(`show ${workspaceId}`)
     })
-    await expect(showWorkspaceWithAgents(page, server, 'Docs', { workingDir: '/repo' })).resolves.toEqual({ workspaceId: 'workspace', agentIds: ['agent'] })
+    await expect(showWorkspaceWithAgents(page, server, 'Docs', { workingDir: '/repo' })).resolves.toEqual({
+      workspaceId: 'workspace',
+      agentIds: ['agent'],
+    })
     expect(order).toEqual(['open in /repo', 'login', 'show workspace'])
     expect(loginViaToken).toHaveBeenCalledWith(page, server.adminToken)
   })
@@ -354,13 +416,24 @@ describe('agentWorkspaceFixture', () => {
 
 describe('authenticatedAgentWorkspace', () => {
   const page = {} as Page
-  const leapmuxServer: typeof server & { agentEnv: Record<string, string> } = { ...server, agentEnv: { PROVIDER_HOME: '/provider-home' } }
+  const leapmuxServer: typeof server & { agentEnv: Record<string, string> } = {
+    ...server,
+    agentEnv: { PROVIDER_HOME: '/provider-home' },
+  }
 
   /** Run the fixture as Playwright runs it, with a test info that reports the outcome of the test. */
   async function run(options: Parameters<typeof authenticatedAgentWorkspace>[0], body: () => Promise<void>, failed: boolean) {
-    const testInfo = { status: 'passed', expectedStatus: 'passed', attach: vi.fn(async () => {}) }
+    const testInfo = {
+      status: 'passed',
+      expectedStatus: 'passed',
+      attach: vi.fn(async () => {}),
+    }
     const fixture = authenticatedAgentWorkspace(options)
-    const outcome = fixture({ page, leapmuxServer, transcriptGuard: createTranscriptGuard() }, async (workspace) => {
+    const outcome = fixture({
+      page,
+      leapmuxServer,
+      transcriptGuard: createTranscriptGuard(),
+    }, async (workspace) => {
       expect(workspace).toEqual({ workspaceId: 'workspace', workingDir: '/private-directory' })
       await body()
       if (failed)
@@ -392,9 +465,16 @@ describe('authenticatedAgentWorkspace', () => {
   })
 
   it('applies the open options of the fixture through the merge rule', async () => {
-    const { outcome } = await run({ ...pi, openOptions: { optionValues: { permissionMode: 'yolo' } } }, async () => {}, false)
+    const { outcome } = await run({
+      ...pi,
+      openOptions: {
+        optionValues: { permissionMode: 'yolo' },
+      },
+    }, async () => {}, false)
     await outcome
-    expect(openRequest()).toMatchObject({ optionValues: { effort: AGENT_E2E_SETTINGS[AgentProvider.PI].effort, permissionMode: 'yolo' } })
+    expect(openRequest()).toMatchObject({
+      optionValues: { effort: AGENT_E2E_SETTINGS[AgentProvider.PI].effort, permissionMode: 'yolo' },
+    })
   })
 
   it('checks the transcript after the test and before workspace deletion', async () => {
@@ -457,8 +537,16 @@ describe('authenticatedAgentWorkspace', () => {
   it('keeps the error of a failed test body and still runs the diagnostic', async () => {
     const error = new Error('the test failed')
     const onFailure = vi.fn(async () => {})
-    const testInfo = { status: 'failed', expectedStatus: 'passed', attach: vi.fn(async () => {}) }
-    const outcome = authenticatedAgentWorkspace({ ...pi, onFailure })({ page, leapmuxServer, transcriptGuard: createTranscriptGuard() }, async () => {
+    const testInfo = {
+      status: 'failed',
+      expectedStatus: 'passed',
+      attach: vi.fn(async () => {}),
+    }
+    const outcome = authenticatedAgentWorkspace({ ...pi, onFailure })({
+      page,
+      leapmuxServer,
+      transcriptGuard: createTranscriptGuard(),
+    }, async () => {
       throw error
     }, testInfo as unknown as TestInfo)
     await expect(outcome).rejects.toBe(error)

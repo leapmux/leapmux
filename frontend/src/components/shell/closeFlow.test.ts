@@ -10,7 +10,12 @@ interface TestCtx {
 }
 
 function tab(id: string): Tab {
-  return { type: TabType.AGENT, id, workspaceId: 'ws-1', tileId: 't1' }
+  return {
+    type: TabType.AGENT,
+    id,
+    workspaceId: 'ws-1',
+    tileId: 't1',
+  }
 }
 
 describe('createCloseFlow', () => {
@@ -18,7 +23,13 @@ describe('createCloseFlow', () => {
     const flow = createCloseFlow<TestCtx>({
       probeBusy: async () => [],
       handleTabClose: () => Promise.resolve(true),
-      plan: () => ({ tabs: [tab('a1')], preserve: () => {}, finalize: () => {} }),
+      plan: () => ({
+        tabs: [
+          tab('a1'),
+        ],
+        preserve: () => {},
+        finalize: () => {},
+      }),
     })
     expect(flow.signal()).toBeNull()
     await flow.request({ tileId: 't1' })
@@ -49,7 +60,13 @@ describe('createCloseFlow', () => {
     const flow = createCloseFlow<TestCtx>({
       probeBusy: async () => [],
       handleTabClose: () => Promise.resolve(true),
-      plan: () => ({ tabs: [tab('a1')], preserve, finalize: () => {} }),
+      plan: () => ({
+        tabs: [
+          tab('a1'),
+        ],
+        preserve,
+        finalize: () => {},
+      }),
     })
     await flow.request({ tileId: 't1' })
     flow.primary()
@@ -68,7 +85,13 @@ describe('createCloseFlow', () => {
         // Hold the loop so the test can observe busy=true.
         return new Promise<boolean>(() => {})
       },
-      plan: () => ({ tabs: [tab('a1')], preserve, finalize: () => {} }),
+      plan: () => ({
+        tabs: [
+          tab('a1'),
+        ],
+        preserve,
+        finalize: () => {},
+      }),
     })
     await flow.request({ tileId: 't1' })
     void flow.closeAll()
@@ -84,7 +107,11 @@ describe('createCloseFlow', () => {
     const flow = createCloseFlow<TestCtx>({
       probeBusy: async () => [],
       handleTabClose: () => Promise.resolve(true),
-      plan: () => ({ tabs: [], preserve, finalize: () => {} }),
+      plan: () => ({
+        tabs: [],
+        preserve,
+        finalize: () => {},
+      }),
     })
     flow.primary()
     expect(preserve).not.toHaveBeenCalled()
@@ -93,14 +120,26 @@ describe('createCloseFlow', () => {
 
   it('scans for busy tabs BEFORE opening, so the dialog is complete on first paint', async () => createRoot(async (dispose) => {
     const order: string[] = []
-    const busy = [{ tab: tab('a1'), title: 'a1', reason: { kind: 'agent-turn' as const, activeTasks: [] } }]
+    const busy = [
+      {
+        tab: tab('a1'),
+        title: 'a1',
+        reason: { kind: 'agent-turn' as const, activeTasks: [] },
+      },
+    ]
     const flow = createCloseFlow<TestCtx>({
       probeBusy: async () => {
         order.push('probe')
         return busy
       },
       handleTabClose: () => Promise.resolve(true),
-      plan: () => ({ tabs: [tab('a1')], preserve: () => {}, finalize: () => {} }),
+      plan: () => ({
+        tabs: [
+          tab('a1'),
+        ],
+        preserve: () => {},
+        finalize: () => {},
+      }),
     })
 
     await flow.request({ tileId: 't1' })
@@ -119,7 +158,11 @@ describe('createCloseFlow', () => {
     const flow = createCloseFlow<TestCtx>({
       probeBusy,
       handleTabClose: () => Promise.resolve(true),
-      plan: () => ({ tabs: [], preserve: () => {}, finalize }),
+      plan: () => ({
+        tabs: [],
+        preserve: () => {},
+        finalize,
+      }),
     })
 
     await flow.request({ tileId: 't1' })
@@ -134,7 +177,14 @@ describe('createCloseFlow', () => {
     const flow = createCloseFlow<TestCtx>({
       probeBusy: async () => [],
       handleTabClose,
-      plan: () => ({ tabs: [tab('a1'), tab('a2')], preserve: () => {}, finalize: () => {} }),
+      plan: () => ({
+        tabs: [
+          tab('a1'),
+          tab('a2'),
+        ],
+        preserve: () => {},
+        finalize: () => {},
+      }),
     })
     await flow.request({ tileId: 't1' })
 
@@ -151,9 +201,21 @@ describe('createCloseFlow', () => {
 
   it('clears the busy list when the flow is cancelled', async () => createRoot(async (dispose) => {
     const flow = createCloseFlow<TestCtx>({
-      probeBusy: async () => [{ tab: tab('a1'), title: 'a1', reason: { kind: 'agent-turn' as const, activeTasks: [] } }],
+      probeBusy: async () => [
+        {
+          tab: tab('a1'),
+          title: 'a1',
+          reason: { kind: 'agent-turn' as const, activeTasks: [] },
+        },
+      ],
       handleTabClose: () => Promise.resolve(true),
-      plan: () => ({ tabs: [tab('a1')], preserve: () => {}, finalize: () => {} }),
+      plan: () => ({
+        tabs: [
+          tab('a1'),
+        ],
+        preserve: () => {},
+        finalize: () => {},
+      }),
     })
     await flow.request({ tileId: 't1' })
     expect(flow.busyTabs()).toHaveLength(1)
@@ -170,11 +232,19 @@ describe('createCloseFlow', () => {
     await createRoot(async (dispose) => {
       const handleTabClose = vi.fn().mockResolvedValue(true)
       const finalize = vi.fn()
-      const tabs = [tab('a1'), tab('a2'), tab('a3')]
+      const tabs = [
+        tab('a1'),
+        tab('a2'),
+        tab('a3'),
+      ]
       const flow = createCloseFlow<TestCtx>({
         probeBusy: async () => [],
         handleTabClose,
-        plan: () => ({ tabs, preserve: () => {}, finalize }),
+        plan: () => ({
+          tabs,
+          preserve: () => {},
+          finalize,
+        }),
       })
       await flow.request({ tileId: 't1' })
       await flow.closeAll()
@@ -196,7 +266,11 @@ describe('createCloseFlow', () => {
         probeBusy: async () => [],
         handleTabClose,
         plan: () => ({
-          tabs: [tab('a1'), tab('a2'), tab('a3')],
+          tabs: [
+            tab('a1'),
+            tab('a2'),
+            tab('a3'),
+          ],
           preserve: () => {},
           finalize,
         }),
@@ -221,7 +295,10 @@ describe('createCloseFlow', () => {
           return true
         },
         plan: () => ({
-          tabs: [tab('a1'), tab('a2')],
+          tabs: [
+            tab('a1'),
+            tab('a2'),
+          ],
           preserve: () => {},
           finalize: () => {},
         }),
@@ -239,7 +316,13 @@ describe('createCloseFlow', () => {
       const flow = createCloseFlow<TestCtx>({
         probeBusy: () => new Promise<BusyTab[]>(resolve => pending.push(resolve)),
         handleTabClose: () => Promise.resolve(true),
-        plan: () => ({ tabs: [tab('a1')], preserve: () => {}, finalize: () => {} }),
+        plan: () => ({
+          tabs: [
+            tab('a1'),
+          ],
+          preserve: () => {},
+          finalize: () => {},
+        }),
       })
 
       // The close control carries no disabled state, and the scan made request()
@@ -264,7 +347,11 @@ describe('createCloseFlow', () => {
 
   it('closeAll bails when no ctx is open', async () => {
     await createRoot(async (dispose) => {
-      const plan = vi.fn().mockReturnValue({ tabs: [], preserve: () => {}, finalize: () => {} })
+      const plan = vi.fn().mockReturnValue({
+        tabs: [],
+        preserve: () => {},
+        finalize: () => {},
+      })
       const flow = createCloseFlow<TestCtx>({
         probeBusy: async () => [],
         handleTabClose: () => Promise.resolve(true),

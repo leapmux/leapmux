@@ -27,9 +27,17 @@ export function codewhaleMessageText(parsed: unknown): { kind: 'text' | 'thinkin
   const child = codewhaleChildBlock(parsed)
   if (!child || child.role !== CODEWHALE_TRANSCRIPT_ROLE.Assistant)
     return null
-  if (child.type === CODEWHALE_BLOCK_TYPE.Text)
-    return { kind: 'text', text: pickString(child.block, CODEWHALE_BLOCK_FIELD.Text) }
-  if (child.type === CODEWHALE_BLOCK_TYPE.Thinking)
-    return { kind: 'thinking', text: pickString(child.block, CODEWHALE_BLOCK_FIELD.Thinking) }
+  if (child.type === CODEWHALE_BLOCK_TYPE.Text) {
+    return {
+      kind: 'text',
+      text: pickString(child.block, CODEWHALE_BLOCK_FIELD.Text),
+    }
+  }
+  if (child.type === CODEWHALE_BLOCK_TYPE.Thinking) {
+    return {
+      kind: 'thinking',
+      text: pickString(child.block, CODEWHALE_BLOCK_FIELD.Thinking),
+    }
+  }
   return null
 }

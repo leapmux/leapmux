@@ -295,7 +295,9 @@ export function attachHorizontalSwipe(root: HTMLElement, opts: HorizontalSwipeOp
     swallowClick = false
     endGesture()
 
-    const target = e.target instanceof Element ? e.target : null
+    const target = e.target instanceof Element
+      ? e.target
+      : null
     if (!target || pressBelongsToAnotherOwner(target, root))
       return
     if (selectionInside(root)) {
@@ -337,7 +339,9 @@ export function attachHorizontalSwipe(root: HTMLElement, opts: HorizontalSwipeOp
         endGesture()
         return
       }
-      const direction: SwipeDirection = dx > 0 ? 'right' : 'left'
+      const direction: SwipeDirection = dx > 0
+        ? 'right'
+        : 'left'
       if (pressTarget && scrollerConsumesSwipe(pressTarget, root, direction)) {
         endGesture()
         return
@@ -347,7 +351,9 @@ export function attachHorizontalSwipe(root: HTMLElement, opts: HorizontalSwipeOp
 
     if (reported)
       return
-    const travel = lockedDirection === 'right' ? dx : -dx
+    const travel = lockedDirection === 'right'
+      ? dx
+      : -dx
     if (travel < SWIPE_MIN_PX)
       return
     // Report under the finger. The gesture keeps the pointer to the release so

@@ -45,11 +45,25 @@ describe('createJunieEnvironment', () => {
     const modelsDir = join(runDirectory, 'junie-models')
     expect(config).toEqual({
       'model-locations': [modelsDir],
-      'agent-locations': [join(runDirectory, 'junie-agents')],
+      'agent-locations': [
+        join(runDirectory, 'junie-agents'),
+      ],
       'provider': 'unit-proxy',
-      'proxies': [{ 'name': 'unit-proxy', 'kind': 'OpenAI', 'api-url': 'http://127.0.0.1:4567', 'headers': ['Authorization: Bearer unit-key'] }],
+      'proxies': [
+        {
+          'name': 'unit-proxy',
+          'kind': 'OpenAI',
+          'api-url': 'http://127.0.0.1:4567',
+          'headers': ['Authorization: Bearer unit-key'],
+        },
+      ],
     })
-    expect(JSON.parse(readFileSync(join(modelsDir, 'mock-model.json'), 'utf8'))).toMatchObject({ id: 'unit-model', baseUrl: 'http://127.0.0.1:4567/v1/chat/completions', apiType: 'OpenAICompletion', apiKey: 'unit-key' })
+    expect(JSON.parse(readFileSync(join(modelsDir, 'mock-model.json'), 'utf8'))).toMatchObject({
+      id: 'unit-model',
+      baseUrl: 'http://127.0.0.1:4567/v1/chat/completions',
+      apiType: 'OpenAICompletion',
+      apiKey: 'unit-key',
+    })
     expect(JSON.parse(readFileSync(join(modelsDir, 'mock-responses.json'), 'utf8'))).toMatchObject({ id: 'unit-model', baseUrl: 'http://127.0.0.1:4567/v1/responses', apiType: 'OpenAIResponses' })
   })
 
@@ -62,7 +76,11 @@ describe('createJunieEnvironment', () => {
 
   it('keeps the store in the isolated home, skips the update check, and reads no install root without a real home', () => {
     const env = createJunieEnvironment(options())
-    expect(env).toEqual({ JUNIE_HOME: join(runDirectory, 'home', '.junie'), JUNIE_CONFIG_LOCATION: join(runDirectory, 'junie-models', 'config.json'), JUNIE_SKIP_UPDATE_CHECK: '1' })
+    expect(env).toEqual({
+      JUNIE_HOME: join(runDirectory, 'home', '.junie'),
+      JUNIE_CONFIG_LOCATION: join(runDirectory, 'junie-models', 'config.json'),
+      JUNIE_SKIP_UPDATE_CHECK: '1',
+    })
   })
 
   it('reads the install root itself when the root has no layout to link', () => {

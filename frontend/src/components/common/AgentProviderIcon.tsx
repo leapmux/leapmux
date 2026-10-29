@@ -572,7 +572,9 @@ function NativeProviderIcon(props: { mark: NativeProviderMark, size: number, cla
   const gradientPrefix = createUniqueId()
   const paint = (attributes: Record<string, string>): Record<string, string> => {
     const local = attributes.fill && /^url\(#(.+)\)$/.exec(attributes.fill)
-    return local ? { ...attributes, fill: `url(#${gradientPrefix}-${local[1]})` } : attributes
+    return local
+      ? { ...attributes, fill: `url(#${gradientPrefix}-${local[1]})` }
+      : attributes
   }
   return (
     <svg
@@ -585,7 +587,9 @@ function NativeProviderIcon(props: { mark: NativeProviderMark, size: number, cla
       style={iconStyle(props.size)}
     >
       <For each={props.mark.elements}>
-        {element => element.type === 'path' ? <path {...paint(element.attributes)} /> : <image {...element.attributes} />}
+        {element => element.type === 'path'
+          ? <path {...paint(element.attributes)} />
+          : <image {...element.attributes} />}
       </For>
       <Show when={props.mark.linearGradients}>
         <defs>
@@ -606,7 +610,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
   // Conditional spread so an absent `class` stays absent: these prop types
   // treat a present-but-undefined class differently under
   // exactOptionalPropertyTypes, and lucide's own props are not ours to widen.
-  const classProps = () => (props.class !== undefined ? { class: props.class } : {})
+  const classProps = () => (props.class !== undefined
+    ? { class: props.class }
+    : {})
   return (
     <Switch fallback={<Bot size={props.size} {...classProps()} style={iconStyle(props.size)} />}>
       <Match when={props.provider === AgentProvider.CLAUDE_CODE}>

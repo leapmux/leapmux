@@ -80,7 +80,9 @@ function convert(rt: RenderTree, cache: LocalTreeCache): LayoutNodeLocal {
       // divider (`|`) between two side-by-side panes; HORIZONTAL = a
       // horizontal divider (`-`) between two stacked panes. The mapping
       // is direct.
-      const direction = rt.direction === SplitDirection.VERTICAL ? 'vertical' : 'horizontal'
+      const direction = rt.direction === SplitDirection.VERTICAL
+        ? 'vertical'
+        : 'horizontal'
       const children = rt.children
         .map(c => renderTreeToLocal(c, cache))
         .filter((c): c is LayoutNodeLocal => c !== null)

@@ -63,8 +63,12 @@ describe('AccountPassword', () => {
 
   it('changes the password once both fields agree', async () => {
     render(() => <AccountPassword />)
-    fireEvent.input(await screen.findByLabelText('New Password'), { target: { value: 'newpass123' } })
-    fireEvent.input(screen.getByLabelText('Confirm Password'), { target: { value: 'newpass123' } })
+    fireEvent.input(await screen.findByLabelText('New Password'), {
+      target: { value: 'newpass123' },
+    })
+    fireEvent.input(screen.getByLabelText('Confirm Password'), {
+      target: { value: 'newpass123' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Change Password' }))
 
     await vi.waitFor(() => {
@@ -75,8 +79,12 @@ describe('AccountPassword', () => {
 
   it('refuses to submit while the two fields disagree', async () => {
     render(() => <AccountPassword />)
-    fireEvent.input(await screen.findByLabelText('New Password'), { target: { value: 'newpass123' } })
-    fireEvent.input(screen.getByLabelText('Confirm Password'), { target: { value: 'newpass124' } })
+    fireEvent.input(await screen.findByLabelText('New Password'), {
+      target: { value: 'newpass123' },
+    })
+    fireEvent.input(screen.getByLabelText('Confirm Password'), {
+      target: { value: 'newpass124' },
+    })
 
     expect(screen.getByRole('button', { name: 'Change Password' })).toBeDisabled()
     expect(mockChangePassword).not.toHaveBeenCalled()
@@ -89,8 +97,12 @@ describe('AccountPassword', () => {
     render(() => <AccountPassword />)
     expect(await screen.findByRole('button', { name: 'Set Password' })).toBeInTheDocument()
 
-    fireEvent.input(screen.getByLabelText('New Password'), { target: { value: 'newpass123' } })
-    fireEvent.input(screen.getByLabelText('Confirm Password'), { target: { value: 'newpass123' } })
+    fireEvent.input(screen.getByLabelText('New Password'), {
+      target: { value: 'newpass123' },
+    })
+    fireEvent.input(screen.getByLabelText('Confirm Password'), {
+      target: { value: 'newpass123' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Set Password' }))
 
     expect(await screen.findByText('Password set.')).toBeInTheDocument()
@@ -103,8 +115,12 @@ describe('AccountPassword', () => {
     // strength readout inside the same <label>, so the label's accessible name
     // stops being exactly "New Password" as soon as the field is non-empty.
     const password = await screen.findByLabelText('New Password')
-    fireEvent.input(password, { target: { value: 'newpass123' } })
-    fireEvent.input(screen.getByLabelText('Confirm Password'), { target: { value: 'newpass123' } })
+    fireEvent.input(password, {
+      target: { value: 'newpass123' },
+    })
+    fireEvent.input(screen.getByLabelText('Confirm Password'), {
+      target: { value: 'newpass123' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Change Password' }))
 
     expect(await screen.findByText(/too common/)).toBeInTheDocument()
@@ -113,8 +129,12 @@ describe('AccountPassword', () => {
 
   it('clears both fields after a successful change', async () => {
     render(() => <AccountPassword />)
-    fireEvent.input(await screen.findByLabelText('New Password'), { target: { value: 'newpass123' } })
-    fireEvent.input(screen.getByLabelText('Confirm Password'), { target: { value: 'newpass123' } })
+    fireEvent.input(await screen.findByLabelText('New Password'), {
+      target: { value: 'newpass123' },
+    })
+    fireEvent.input(screen.getByLabelText('Confirm Password'), {
+      target: { value: 'newpass123' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Change Password' }))
 
     await screen.findByText('Password changed.')
@@ -124,8 +144,12 @@ describe('AccountPassword', () => {
 
   /** Types a matching pair and submits, whatever the button is called. */
   async function submit(name: 'Set Password' | 'Change Password') {
-    fireEvent.input(await screen.findByLabelText('New Password'), { target: { value: 'newpass123' } })
-    fireEvent.input(screen.getByLabelText('Confirm Password'), { target: { value: 'newpass123' } })
+    fireEvent.input(await screen.findByLabelText('New Password'), {
+      target: { value: 'newpass123' },
+    })
+    fireEvent.input(screen.getByLabelText('Confirm Password'), {
+      target: { value: 'newpass123' },
+    })
     fireEvent.click(screen.getByRole('button', { name }))
   }
 

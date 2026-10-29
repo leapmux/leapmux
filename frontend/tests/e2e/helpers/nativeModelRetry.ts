@@ -39,8 +39,13 @@ export async function exerciseModelRetry(context: NativeScenarioContext, options
         ? options.errors.filter(error => error.midStream).length
         : 0
       await expect(partials).toHaveCount(retainedCount)
-      for (const [completion, marker] of [['interrupted', INTERRUPTION_MARKER], ['error', ERROR_MARKER]] as const) {
-        const count = options.failedAttempt === completion ? retainedCount : 0
+      for (const [completion, marker] of [
+        ['interrupted', INTERRUPTION_MARKER],
+        ['error', ERROR_MARKER],
+      ] as const) {
+        const count = options.failedAttempt === completion
+          ? retainedCount
+          : 0
         await expect(partials.filter({ hasText: marker })).toHaveCount(count)
         await expect(messageContents(page).filter({ hasText: marker })).toHaveCount(count)
       }

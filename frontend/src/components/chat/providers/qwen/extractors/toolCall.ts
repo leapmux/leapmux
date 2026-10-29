@@ -40,15 +40,28 @@ function qwenShellCommand(tool: Record<string, unknown>): CommandResult | undefi
   const raw = qwenShellResult(tool)
   if (!raw)
     return undefined
-  const output = [pickString(raw, 'output'), pickString(raw, 'error')].filter(Boolean).join('\n')
-  return { output, ...qwenShellExit(raw), truncated: pickBoolean(raw, 'truncated') === true }
+  const output = [
+    pickString(raw, 'output'),
+    pickString(raw, 'error'),
+  ].filter(Boolean).join('\n')
+  return {
+    output,
+    ...qwenShellExit(raw),
+    truncated: pickBoolean(raw, 'truncated') === true,
+  }
 }
 
 /** How a command ended, as its shell record states it. */
 function qwenShellExit(raw: Record<string, unknown>): CommandExit {
-  const signal = typeof raw.signal === 'string' || typeof raw.signal === 'number' ? String(raw.signal) : ''
+  const signal = typeof raw.signal === 'string' || typeof raw.signal === 'number'
+    ? String(raw.signal)
+    : ''
   const code = pickNumber(raw, 'exitCode')
-  return code !== null && Number.isSafeInteger(code) ? { exitCode: code } : signal ? { signal } : {}
+  return code !== null && Number.isSafeInteger(code)
+    ? { exitCode: code }
+    : signal
+      ? { signal }
+      : {}
 }
 
 /** The answers one finished question dialog states, one for each question it asked. */
@@ -56,19 +69,37 @@ function qwenQuestionAnswers(tool: Record<string, unknown>): QuestionAnswer[] | 
   const raw = pickObject(tool, 'rawOutput')
   if (!raw || pickString(raw, 'type') !== QWEN_QUESTION_ANSWERS || !Array.isArray(raw.answers))
     return undefined
-  return raw.answers.filter(isObject).map(entry => ({ header: pickString(entry, 'question'), answer: pickString(entry, 'answer', undefined) ?? null }))
+  return raw.answers.filter(isObject).map(entry => ({
+    header: pickString(entry, 'question'),
+    answer: pickString(entry, 'answer', undefined) ?? null,
+  }))
 }
 
 /** The request of one cron call. The tool name states the action. */
 function qwenTriggerRequest(name: string, input: Record<string, unknown>): ToolRequestByKind['trigger'] {
   const action = name === QWEN_TOOL_NAME.CronCreate || name === QWEN_TOOL_NAME.LoopWakeup
     ? 'create'
-    : name === QWEN_TOOL_NAME.CronDelete ? 'delete' : 'list'
+    : name === QWEN_TOOL_NAME.CronDelete
+      ? 'delete'
+      : 'list'
   const triggerId = pickString(input, 'id')
   const delay = pickNumber(input, 'delaySeconds')
-  const schedule = pickString(input, 'cron') || (delay !== null ? `in ${delay}s` : '')
+  const schedule = pickString(input, 'cron') || (delay !== null
+    ? `in ${delay}s`
+    : '')
   const prompt = pickString(input, 'prompt')
-  return { action, ...(triggerId ? { triggerId } : {}), ...(prompt ? { name: prompt } : {}), ...(schedule ? { schedule } : {}) }
+  return {
+    action,
+    ...(triggerId
+      ? { triggerId }
+      : {}),
+    ...(prompt
+      ? { name: prompt }
+      : {}),
+    ...(schedule
+      ? { schedule }
+      : {}),
+  }
 }
 
 /**
@@ -81,7 +112,15 @@ function qwenMcpSpec(facts: ACPToolFacts, name: string, server: string, tool: st
   return {
     ...mcpToolCallRequest(server, tool, facts.args),
     name,
-    ...(facts.finished ? { result: facts.status === 'failed' ? failedResult(facts.text) : { content: facts.content.map(parseMcpContentItem) } } : {}),
+    ...(facts.finished
+      ? {
+          result: facts.status === 'failed'
+            ? failedResult(facts.text)
+            : {
+                content: facts.content.map(parseMcpContentItem),
+              },
+        }
+      : {}),
   }
 }
 
@@ -97,7 +136,15 @@ function qwenArgs(name: string, input: Record<string, unknown>): Record<string, 
     return input
   const path = pickString(input, 'notebook_path')
   const source = pickString(input, 'new_source')
-  return { ...input, ...(path ? { file_path: path } : {}), ...(source ? { new_string: source } : {}) }
+  return {
+    ...input,
+    ...(path
+      ? { file_path: path }
+      : {}),
+    ...(source
+      ? { new_string: source }
+      : {}),
+  }
 }
 
 /**
@@ -109,7 +156,9 @@ function qwenArgs(name: string, input: Record<string, unknown>): Record<string, 
  */
 export const qwenToolCallAdapter: ACPToolCallAdapter = (facts, base): ToolCallSpec => {
   const spec = qwenToolCall(facts, base)
-  return qwenRefused(facts) ? declinedToolCallSpec(spec, facts.text) : spec
+  return qwenRefused(facts)
+    ? declinedToolCallSpec(spec, facts.text)
+    : spec
 }
 
 /**
@@ -134,11 +183,37 @@ function qwenToolCall(facts: ACPToolFacts, base: () => ToolCallSpec): ToolCallSp
     const request = qwenAgentRequest(input, toolCallId, facts.agentSessionId)
     // `facts.finished`, never the frame's own status: a retained row of a turn that
     // ended keeps its report.
-    return { kind: 'agent', name, request, ...(facts.finished ? { result: { agents: [qwenAgentRun(facts, request)] } } : {}) }
+    return {
+      kind: 'agent',
+      name,
+      request,
+      ...(facts.finished
+        ? {
+            result: {
+              agents: [
+                qwenAgentRun(facts, request),
+              ],
+            },
+          }
+        : {}),
+    }
   }
   if (name === QWEN_TOOL.Workflow) {
     const request = qwenWorkflowRequest(input)
-    return { kind: 'agent', name, request, ...(facts.finished ? { result: { agents: [qwenWorkflowRun(facts, request)] } } : {}) }
+    return {
+      kind: 'agent',
+      name,
+      request,
+      ...(facts.finished
+        ? {
+            result: {
+              agents: [
+                qwenWorkflowRun(facts, request),
+              ],
+            },
+          }
+        : {}),
+    }
   }
   if (name === QWEN_TOOL.TodoWrite && Array.isArray(input.todos)) {
     const items = rawTodosToItems(input.todos)
@@ -149,40 +224,97 @@ function qwenToolCall(facts: ACPToolFacts, base: () => ToolCallSpec): ToolCallSp
       // undefined, because the ACP wrapper spreads this over the frame's own title.
       title: undefined,
       request: { items },
-      ...(facts.finished ? { result: facts.status === 'failed' ? failedResult(facts.text) : { items } } : {}),
+      ...(facts.finished
+        ? {
+            result: facts.status === 'failed'
+              ? failedResult(facts.text)
+              : { items },
+          }
+        : {}),
     }
   }
   if (name === QWEN_TOOL.AskUserQuestion) {
-    const questions = questionsFromWire(input.questions).map(({ question, options, header }) => ({ question, options, ...(header !== undefined ? { header } : {}) }))
-    const asked = { kind: 'question' as const, name, request: { questions }, title: questions[0]?.header || questions[0]?.question || 'Question' }
+    const questions = questionsFromWire(input.questions).map(({ question, options, header }) => ({
+      question,
+      options,
+      ...(header !== undefined
+        ? { header }
+        : {}),
+    }))
+    const asked = {
+      kind: 'question' as const,
+      name,
+      request: { questions },
+      title: questions[0]?.header || questions[0]?.question || 'Question',
+    }
     if (!facts.finished)
       return asked
-    if (facts.status === 'failed')
-      return { ...asked, result: failedResult(facts.text) }
+    if (facts.status === 'failed') {
+      return {
+        ...asked,
+        result: failedResult(facts.text),
+      }
+    }
     const answers = qwenQuestionAnswers(facts.tool)
-    if (answers)
-      return { ...asked, result: { answers } }
-    return { ...asked, ...(facts.text ? { result: { answers: [{ header: asked.title, answer: facts.text }] } } : {}) }
+    if (answers) {
+      return {
+        ...asked,
+        result: { answers },
+      }
+    }
+    return {
+      ...asked,
+      ...(facts.text
+        ? {
+            result: {
+              answers: [
+                { header: asked.title, answer: facts.text },
+              ],
+            },
+          }
+        : {}),
+    }
   }
   if (name === QWEN_TOOL.RunShellCommand || name === QWEN_TOOL_NAME.Monitor) {
-    const remapFacts = acpRemapFacts(facts, { tool: { ...facts.tool, [ACP_SUPPLEMENT_REQUEST.RawInput]: input }, kind: 'execute' })
+    const remapFacts = acpRemapFacts(facts, {
+      tool: { ...facts.tool, [ACP_SUPPLEMENT_REQUEST.RawInput]: input },
+      kind: 'execute',
+    })
     const spec = acpSpecFor(remapFacts, 'execute')
-    const shell = facts.finished && spec.result !== undefined && 'commands' in spec.result ? qwenShellCommand(facts.tool) : undefined
+    const shell = facts.finished && spec.result !== undefined && 'commands' in spec.result
+      ? qwenShellCommand(facts.tool)
+      : undefined
     return shell && spec.result !== undefined && 'commands' in spec.result
-      ? { ...spec, name, result: { ...spec.result, commands: [shell] } }
+      ? {
+          ...spec,
+          name,
+          result: {
+            ...spec.result,
+            commands: [shell],
+          },
+        }
       : { ...spec, name }
   }
   if (!isQwenTool(name)) {
     const mcp = parseMcpToolName(name)
     if (mcp)
       return qwenMcpSpec(facts, name, mcp.server, mcp.tool)
-    return { ...base(), name }
+    return {
+      ...base(),
+      name,
+    }
   }
 
   const kind = QWEN_TOOL_KINDS[name]
   // RE-DERIVED, not cloned: every fact the shared build reads from the kind or from
   // the arguments is computed again under the kind the table states.
-  const remapFacts = acpRemapFacts(facts, { tool: { ...facts.tool, [ACP_SUPPLEMENT_REQUEST.RawInput]: qwenArgs(name, input) }, kind })
+  const remapFacts = acpRemapFacts(facts, {
+    tool: {
+      ...facts.tool,
+      [ACP_SUPPLEMENT_REQUEST.RawInput]: qwenArgs(name, input),
+    },
+    kind,
+  })
   // The kinds whose declared result is the words the tool wrote. The shared ladder
   // already placed the unfinished and the failed call, so only its "could not read"
   // answer is replaced.
@@ -191,16 +323,33 @@ function qwenToolCall(facts: ACPToolFacts, base: () => ToolCallSpec): ToolCallSp
     const spec = acpSpecFor(remapFacts, QWEN_TOOL_KINDS[name])
     const request = qwenTriggerRequest(name, input)
     return spec.result !== undefined && isUnparsedToolResult(spec.result)
-      ? { ...spec, name, request, result: proseResult(facts.text) }
+      ? {
+          ...spec,
+          name,
+          request,
+          result: proseResult(facts.text),
+        }
       : { ...spec, name, request }
   }
   if (name === QWEN_TOOL_NAME.Skill) {
     const spec = acpSpecFor(remapFacts, QWEN_TOOL_KINDS[name])
-    return spec.result !== undefined && isUnparsedToolResult(spec.result) ? { ...spec, name, result: proseResult(facts.text, 'markdown') } : { ...spec, name }
+    return spec.result !== undefined && isUnparsedToolResult(spec.result)
+      ? {
+          ...spec,
+          name,
+          result: proseResult(facts.text, 'markdown'),
+        }
+      : { ...spec, name }
   }
   if (name === QWEN_TOOL_NAME.WebSearch) {
     const spec = acpSpecFor(remapFacts, QWEN_TOOL_KINDS[name])
-    return spec.result !== undefined && isUnparsedToolResult(spec.result) ? { ...spec, name, result: { links: [], summary: facts.text } } : { ...spec, name }
+    return spec.result !== undefined && isUnparsedToolResult(spec.result)
+      ? {
+          ...spec,
+          name,
+          result: { links: [], summary: facts.text },
+        }
+      : { ...spec, name }
   }
   if (name === QWEN_TOOL_NAME.ReadFile || name === QWEN_TOOL_NAME.ZoomImage) {
     const spec = acpSpecFor(remapFacts, QWEN_TOOL_KINDS[name])
@@ -209,35 +358,87 @@ function qwenToolCall(facts: ACPToolFacts, base: () => ToolCallSpec): ToolCallSp
     // A picture is the answer of a zoomed image and of an image file, and it rides the
     // call's images; the result states the words beside it, if any. An empty text is
     // an empty file, which reads as zero lines.
-    if (name === QWEN_TOOL_NAME.ZoomImage || facts.images.length > 0)
-      return { ...spec, name, result: { lines: null, fallbackContent: facts.text } }
-    return { ...spec, name, result: qwenReadResult(facts.text, pickNumber(input, 'offset')) }
+    if (name === QWEN_TOOL_NAME.ZoomImage || facts.images.length > 0) {
+      return {
+        ...spec,
+        name,
+        result: { lines: null, fallbackContent: facts.text },
+      }
+    }
+    return {
+      ...spec,
+      name,
+      result: qwenReadResult(facts.text, pickNumber(input, 'offset')),
+    }
   }
   if (name === QWEN_TOOL_NAME.GrepSearch || name === QWEN_TOOL_NAME.Glob) {
     const spec = acpSpecFor(remapFacts, QWEN_TOOL_KINDS[name])
-    const found = answered ? (name === QWEN_TOOL_NAME.Glob ? qwenGlobResult(facts.text) : qwenGrepResult(facts.text)) : null
-    return found ? { ...spec, name, result: found } : { ...spec, name }
+    const found = answered
+      ? (name === QWEN_TOOL_NAME.Glob
+          ? qwenGlobResult(facts.text)
+          : qwenGrepResult(facts.text))
+      : null
+    return found
+      ? { ...spec, name, result: found }
+      : { ...spec, name }
   }
   if (name === QWEN_TOOL_NAME.ListDirectory) {
     const spec = acpSpecFor(remapFacts, QWEN_TOOL_KINDS[name])
-    const listing = answered ? qwenListResult(facts.text) : null
-    return listing ? { ...spec, name, result: listing } : { ...spec, name }
+    const listing = answered
+      ? qwenListResult(facts.text)
+      : null
+    return listing
+      ? { ...spec, name, result: listing }
+      : { ...spec, name }
   }
   if (name === QWEN_TOOL_NAME.TaskStop) {
     const spec = acpSpecFor(remapFacts, QWEN_TOOL_KINDS[name])
     const request: ToolRequestByKind['task'] = { ...spec.request, action: 'stop' }
     if (!facts.finished)
       return { ...spec, name, request }
-    if (facts.status === 'failed')
-      return { ...spec, name, request, result: failedResult(facts.text) }
-    return { ...spec, name, request, result: { outcome: 'stopped', output: facts.text } }
+    if (facts.status === 'failed') {
+      return {
+        ...spec,
+        name,
+        request,
+        result: failedResult(facts.text),
+      }
+    }
+    return {
+      ...spec,
+      name,
+      request,
+      result: { outcome: 'stopped', output: facts.text },
+    }
   }
-  if (name === QWEN_TOOL_NAME.EnterPlanMode || name === QWEN_TOOL.ExitPlanMode)
-    return { ...acpSpecFor(remapFacts, QWEN_TOOL_KINDS[name]), name, title: name === QWEN_TOOL.ExitPlanMode ? 'Exit plan mode' : 'Enter plan mode' }
+  if (name === QWEN_TOOL_NAME.EnterPlanMode || name === QWEN_TOOL.ExitPlanMode) {
+    return {
+      ...acpSpecFor(remapFacts, QWEN_TOOL_KINDS[name]),
+      name,
+      title: name === QWEN_TOOL.ExitPlanMode
+        ? 'Exit plan mode'
+        : 'Enter plan mode',
+    }
+  }
   if (name === QWEN_TOOL_NAME.EnterWorktree || name === QWEN_TOOL_NAME.ExitWorktree) {
     const spec = acpSpecFor(remapFacts, QWEN_TOOL_KINDS[name])
     const target = pickString(input, 'name')
-    return { ...spec, name, request: { ...spec.request, mode: name === QWEN_TOOL_NAME.EnterWorktree ? 'worktree' : 'leave worktree', ...(target ? { target } : {}) } }
+    return {
+      ...spec,
+      name,
+      request: {
+        ...spec.request,
+        mode: name === QWEN_TOOL_NAME.EnterWorktree
+          ? 'worktree'
+          : 'leave worktree',
+        ...(target
+          ? { target }
+          : {}),
+      },
+    }
   }
-  return { ...acpSpecFor(remapFacts, kind), name }
+  return {
+    ...acpSpecFor(remapFacts, kind),
+    name,
+  }
 }

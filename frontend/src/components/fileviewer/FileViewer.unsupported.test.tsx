@@ -7,7 +7,10 @@ import { readResp, statResp } from '~/test-support/workerRpcMocks'
 
 const statFileImpl = vi.fn()
 const readFileImpl = vi.fn()
-const readGitFileImpl = vi.fn(async (..._args: unknown[]) => ({ exists: false, content: new Uint8Array() }))
+const readGitFileImpl = vi.fn(async (..._args: unknown[]) => ({
+  exists: false,
+  content: new Uint8Array(),
+}))
 const downloadImpl = vi.fn((..._args: unknown[]) => Promise.resolve())
 
 vi.mock('~/api/workerRpc', () => ({
@@ -161,7 +164,9 @@ describe('FileViewer dispatch with unsupported view', () => {
     expect(readFileImpl).toHaveBeenCalledWith('w1', expect.objectContaining({
       path: '/repo/huge.png',
       metaOnlyIfTruncated: true,
-    }), { signal: expect.any(AbortSignal) })
+    }), {
+      signal: expect.any(AbortSignal),
+    })
     expect(statFileImpl).not.toHaveBeenCalled()
   })
 

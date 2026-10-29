@@ -13,18 +13,28 @@ const frame = {
 
 describe('readDroidNativeOutput', () => {
   // Droid stores a tool result in a span of its own, whose ID holds the call ID.
-  runNativeOutputReaderCases({ read: readDroidNativeOutput, frame, path, spanId: `droid-tool-${READER_CALL_ID}`, pointerError: 'The native Droid result has no unique terminal output path.' })
+  runNativeOutputReaderCases({
+    read: readDroidNativeOutput,
+    frame,
+    path,
+    spanId: `droid-tool-${READER_CALL_ID}`,
+    pointerError: 'The native Droid result has no unique terminal output path.',
+  })
 
   it('keeps the original packet while the copied preview omits the exit trailer', () => {
     const captured = { ...frame, content: `${frame.content}\n\n[Process exited with code 0]` }
-    const receipt = readDroidNativeOutput(nativeOutputSnapshot([{ frame: captured, spanId: `droid-tool-${READER_CALL_ID}` }]), READER_CALL_ID)
+    const receipt = readDroidNativeOutput(nativeOutputSnapshot([
+      { frame: captured, spanId: `droid-tool-${READER_CALL_ID}` },
+    ]), READER_CALL_ID)
     expect(receipt.frame).toEqual(captured)
     expect(receipt.previewText).toBe(frame.content)
   })
 
   it('omits a matching native failure preamble without removing the output pointer', () => {
     const captured = { ...frame, isError: true, content: `Error: Command failed (exit code: 7)\n${frame.content}\n\n[Process exited with code 7]` }
-    const receipt = readDroidNativeOutput(nativeOutputSnapshot([{ frame: captured, spanId: `droid-tool-${READER_CALL_ID}` }]), READER_CALL_ID)
+    const receipt = readDroidNativeOutput(nativeOutputSnapshot([
+      { frame: captured, spanId: `droid-tool-${READER_CALL_ID}` },
+    ]), READER_CALL_ID)
     expect(receipt.previewText).toBe(frame.content)
     expect(receipt.paths).toEqual([path])
   })
@@ -33,7 +43,9 @@ describe('readDroidNativeOutput', () => {
 it('reads the current native middle-cut notice without changing its preview', () => {
   const content = `head\n\n[... 686415 bytes cut from the middle of 718960; whole output: ${path}]\n\ntail`
   const captured = { ...frame, content: `${content}\n\n[Process exited with code 0]` }
-  const receipt = readDroidNativeOutput(nativeOutputSnapshot([{ frame: captured, spanId: `droid-tool-${READER_CALL_ID}` }]), READER_CALL_ID)
+  const receipt = readDroidNativeOutput(nativeOutputSnapshot([
+    { frame: captured, spanId: `droid-tool-${READER_CALL_ID}` },
+  ]), READER_CALL_ID)
   expect(receipt.paths).toEqual([path])
   expect(receipt.previewText).toBe(content)
   expect(receipt.frame).toEqual(captured)

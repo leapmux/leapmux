@@ -10,7 +10,12 @@ import { FAST_AGENT_AGENT, nativeContext } from './scenarios'
 
 fastAgentTest.describe('Fast Agent images in tool results', () => {
   fastAgentTest('renders the image returned by a local MCP tool', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     const { workingDir } = await openProviderAgent(leapmuxServer, context.workspaceId, FAST_AGENT_AGENT)
     const imageName = writeToolImage(workingDir, 'fastagent-mcp')
     const server = writeMcpImageServer(workingDir, imageName)
@@ -22,7 +27,11 @@ fastAgentTest.describe('Fast Agent images in tool results', () => {
 
     const callID = 'show-fastagent-image'
     const start = await modelScript.queue(
-      { toolCalls: [mcpToolCall(context.provider, callID, { server: server.name, tool: 'show', input: {} })] },
+      {
+        toolCalls: [
+          mcpToolCall(context.provider, callID, { server: server.name, tool: 'show', input: {} }),
+        ],
+      },
       { text: 'The MCP tool returned an image.' },
     )
     await sendMessage(page, modelScript.prompt(`Call ${server.name} show.`))

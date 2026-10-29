@@ -58,7 +58,9 @@ describe('useChatScroll toggle row stability', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -104,7 +106,9 @@ describe('useChatScroll toggle row stability', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -149,7 +153,9 @@ describe('useChatScroll toggle row stability', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -209,7 +215,9 @@ describe('useChatScroll toggle row stability', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -259,7 +267,9 @@ describe('useChatScroll toggle row stability', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -278,7 +288,10 @@ describe('useChatScroll toggle row stability', () => {
           // All rows start measured; a toggle takes the row unmeasured (estimate phase) then
           // measured again. hasMeasuredHeight drives the completion-based release.
           const measured = new Set(Array.from({ length: 20 }, (_, i) => `g0_${i}`))
-          const virt = { ...base.virt, hasMeasuredHeight: (id: string) => measured.has(id) }
+          const virt = {
+            ...base.virt,
+            hasMeasuredHeight: (id: string) => measured.has(id),
+          }
           const { setRowHeight, total } = base
           div.setClientHeight(500)
           div.setScrollTop(800)
@@ -331,7 +344,9 @@ describe('useChatScroll toggle row stability', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -380,7 +395,9 @@ describe('useChatScroll toggle row stability', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -428,7 +445,9 @@ describe('useChatScroll toggle row stability', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -478,7 +497,9 @@ describe('useChatScroll toggle row stability', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -533,7 +554,9 @@ describe('useChatScroll toggle row stability', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -583,7 +606,9 @@ describe('useChatScroll toggle row stability', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -635,7 +660,9 @@ describe('useChatScroll edge-aware bottom anchoring', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -659,7 +686,11 @@ describe('useChatScroll explicit edge-intent tolerance', () => {
       onLoadNewerMessages: () => { newerLoads++ },
     })
     hook.attachListRef(div.el)
-    return { hook, getOlder: () => olderLoads, getNewer: () => newerLoads }
+    return {
+      hook,
+      getOlder: () => olderLoads,
+      getNewer: () => newerLoads,
+    }
   }
 
   it('loads older on a wheel-up at a sub-pixel scrollTop (fractional DPI/zoom)', () =>
@@ -710,10 +741,17 @@ describe('useChatScroll overscroll-at-top drag', () => {
       onLoadOlderMessages: () => { olderLoads++ },
     })
     hook.attachListRef(div.el)
-    return { hook, olderLoads: () => olderLoads }
+    return {
+      hook,
+      olderLoads: () => olderLoads,
+    }
   }
 
-  const touch = (clientY: number) => ({ touches: [{ clientY }] }) as unknown as TouchEvent
+  const touch = (clientY: number) => ({
+    touches: [
+      { clientY },
+    ],
+  }) as unknown as TouchEvent
   const pointer = (clientY: number, pointerType = 'touch') =>
     ({ clientY, pointerType }) as unknown as PointerEvent
 

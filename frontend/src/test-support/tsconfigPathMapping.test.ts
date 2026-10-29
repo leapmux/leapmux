@@ -10,11 +10,12 @@ import { describe, expect, it } from 'vitest'
 //   - tsc reads `paths` in tsconfig.json.
 //   - vitest reads the same `paths`, through Vite's `resolve.tsconfigPaths`
 //     option in vitest.config.ts (this replaced vite-tsconfig-paths, which Vite
-//     8 deprecates -- it warns once per router, so three lines per dev start).
-//   - the vinxi build gets `~` -> `<cwd>/src` from @solidjs/start, which
-//     HARDCODES that alias from its `appRoot` option and never reads tsconfig.
-//     An alias wins over `resolve.tsconfigPaths`, so under vinxi the option in
-//     app.config.ts is what a SECOND `paths` entry would resolve through, and
+//     8 deprecates and warns about).
+//   - the SolidStart build gets `~` -> `<cwd>/src` from @solidjs/start, whose
+//     `solid-start:app-root-alias` plugin HARDCODES that mapping from its
+//     `appRoot` option and never reads tsconfig. The plugin resolves `~` before
+//     Vite reads `resolve.tsconfigPaths`, so in the build the option in
+//     vite.config.ts is what a SECOND `paths` entry would resolve through, and
 //     `~` itself resolves through SolidStart.
 //
 // Nothing connects the three. A `paths` edit that moves `~` off `src` keeps tsc
@@ -55,42 +56,50 @@ describe('tsconfig path mapping', () => {
     expect(
       paths,
       'tsconfig.json `paths` must map `~/*` to `./src/*`. @solidjs/start hardcodes its own '
-      + '`~` -> `<cwd>/src` alias for the vinxi build and never reads this file, so any other '
+      + '`~` -> `<cwd>/src` mapping for the build and never reads this file, so any other '
       + 'target here type-checks and tests green while the build still resolves `~` to src.\n'
       + 'Adding a SECOND mapping is fine -- it resolves through `resolve.tsconfigPaths` in every '
       + 'consumer -- but extend this guard so the new entry is covered.',
-    ).toEqual({ '~/*': ['./src/*'] })
+    ).toEqual({
+      '~/*': ['./src/*'],
+    })
   })
 
   it('keeps resolve.tsconfigPaths and drops the deprecated plugin', () => {
-    const appConfig = readFileSync(join(frontendRoot, 'app.config.ts'), 'utf-8')
+    const viteConfig = readFileSync(join(frontendRoot, 'vite.config.ts'), 'utf-8')
     const vitestConfig = readFileSync(join(frontendRoot, 'vitest.config.ts'), 'utf-8')
     const pkg = JSON.parse(readFileSync(join(frontendRoot, 'package.json'), 'utf-8'))
 
-    // app.config.ts is the one that looks deletable: SolidStart's alias already
-    // covers `~`, so removing the option changes nothing until someone adds a
-    // second `paths` entry, which then resolves for tsc and vitest and fails
-    // the build only.
+    // vite.config.ts is the one that looks deletable: SolidStart's plugin
+    // already covers `~`, so removing the option changes nothing until someone
+    // adds a second `paths` entry, which then resolves for tsc and vitest and
+    // fails the build only.
     expect(
-      appConfig,
-      'app.config.ts must keep `resolve.tsconfigPaths: true`. It looks redundant because '
-      + 'SolidStart\'s alias already resolves `~`, but it is what any other `paths` entry resolves through.',
+      viteConfig,
+      'vite.config.ts must keep `resolve.tsconfigPaths: true`. It looks redundant because '
+      + 'SolidStart\'s plugin already resolves `~`, but it is what any other `paths` entry resolves through.',
     ).toContain('tsconfigPaths: true')
     expect(vitestConfig, 'vitest.config.ts must keep `resolve.tsconfigPaths: true`').toContain('tsconfigPaths: true')
 
     // The plugin and the native option do the same job, and Vite 8 warns once
     // per router when it finds the plugin. Re-adding it puts those lines back.
-    const declared = { ...pkg.dependencies, ...pkg.devDependencies }
+    const declared = {
+      ...pkg.dependencies,
+      ...pkg.devDependencies,
+    }
     // Without this, a package.json that lost both blocks (or a shape change)
     // would leave `declared` empty and the absence check below would pass while
     // testing nothing.
     expect(declared, 'package.json declares no dependencies at all').toHaveProperty(['vite'])
     expect(
       declared,
-      'vite-tsconfig-paths is redundant on Vite 8 and makes it print a deprecation warning '
-      + 'once per vinxi router. Use `resolve.tsconfigPaths: true` instead.',
+      'vite-tsconfig-paths is redundant on Vite 8 and makes it print a deprecation warning. '
+      + 'Use `resolve.tsconfigPaths: true` instead.',
     ).not.toHaveProperty(['vite-tsconfig-paths'])
-    for (const [name, source] of [['app.config.ts', appConfig], ['vitest.config.ts', vitestConfig]] as const)
+    for (const [name, source] of [
+      ['vite.config.ts', viteConfig],
+      ['vitest.config.ts', vitestConfig],
+    ] as const)
       expect(source, `${name} must not import vite-tsconfig-paths`).not.toContain('vite-tsconfig-paths')
   })
 })

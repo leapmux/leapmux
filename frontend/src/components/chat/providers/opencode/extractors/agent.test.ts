@@ -6,7 +6,10 @@ const wrap = (text: string, state = 'completed', tag = 'task_result') => `<task 
 describe('opencode task output', () => {
   it('preserves nested task tags, newlines, and Markdown inside the report', () => {
     const report = `**Report**\n\n${wrap('Nested task example')}\nTrailing text\n`
-    const source = openCodeTaskResult(wrap(report), { sessionId: 'child', model: { modelID: 'example-model' } }, { description: 'Inspect the code' })
+    const source = openCodeTaskResult(wrap(report), {
+      sessionId: 'child',
+      model: { modelID: 'example-model' },
+    }, { description: 'Inspect the code' })
     expect(source?.body).toBe(report)
     expect(source?.outcome).toBe('completed')
     expect(source?.metadata).toContainEqual({ label: 'Model', value: 'example-model' })

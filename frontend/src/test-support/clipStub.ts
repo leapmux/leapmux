@@ -29,13 +29,23 @@ export function stubRect(el: Element, rect: Partial<DOMRect>): void {
     toJSON: () => '',
   }
   Object.defineProperty(el, 'getBoundingClientRect', {
-    value: () => ({ ...base, ...rect }),
+    value: () => ({
+      ...base,
+      ...rect,
+    }),
     configurable: true,
   })
 }
 
 /** The rect both helpers below use: on screen, and well inside the viewport. */
-const ON_SCREEN: Partial<DOMRect> = { top: 10, left: 10, right: 70, bottom: 30, width: 60, height: 20 }
+const ON_SCREEN: Partial<DOMRect> = {
+  top: 10,
+  left: 10,
+  right: 70,
+  bottom: 30,
+  width: 60,
+  height: 20,
+}
 
 /** Makes the label report clipped text, so `showWhen: 'clipped'` lets it through. */
 export function stubClipped(el: HTMLElement): void {

@@ -34,7 +34,12 @@ export function codexAsyncQuestions(payload: Record<string, unknown>): ControlQu
   const options = Array.isArray(raw)
     ? raw.filter((entry): entry is string => typeof entry === 'string' && entry.trim() !== '')
     : []
-  return [{ question: title, options: options.map(option => ({ label: option })) }]
+  return [
+    {
+      question: title,
+      options: options.map(option => ({ label: option })),
+    },
+  ]
 }
 
 /**
@@ -51,7 +56,9 @@ export function sendCodexAsyncAnswer(
 ): Promise<void> {
   const selection = answerState.selections()[0]?.[0] ?? ''
   const note = answerState.customTexts()[0]?.trim() ?? ''
-  const answer = selection && note ? `${selection}\n\n${note}` : selection || note
+  const answer = selection && note
+    ? `${selection}\n\n${note}`
+    : selection || note
   return sendResponse(send, buildControlResponseEnvelope(request.requestId, { behavior: 'allow', answer }))
 }
 

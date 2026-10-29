@@ -354,7 +354,10 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
    */
   const seekTo = (seq: bigint): Promise<boolean> => {
     const failed = (err: unknown): boolean => {
-      console.warn('chat scroll rail: seek failed', { seq: seq.toString(), err })
+      console.warn('chat scroll rail: seek failed', {
+        seq: seq.toString(),
+        err,
+      })
       return false
     }
     try {
@@ -635,7 +638,11 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
       deltaMode: event.deltaMode,
     }))
     // deltaMode: 0=pixels (trackpads, most mice), 1=lines, 2=pages -- normalize to pixels.
-    const factor = event.deltaMode === 1 ? WHEEL_LINE_PX : event.deltaMode === 2 ? el.clientHeight : 1
+    const factor = event.deltaMode === 1
+      ? WHEEL_LINE_PX
+      : event.deltaMode === 2
+        ? el.clientHeight
+        : 1
     el.scrollTop = clampScrollTop(el, el.scrollTop + event.deltaY * factor)
     event.preventDefault()
   }
@@ -649,7 +656,9 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
     <Show when={!hidden()}>
       <div
         ref={setRailRef}
-        class={`${styles.rail}${idle() ? ` ${styles.railIdle}` : ''}`}
+        class={`${styles.rail}${idle()
+          ? ` ${styles.railIdle}`
+          : ''}`}
         data-testid="chat-scroll-rail"
         onPointerDown={onRailPointerDown}
         // A cursor on the strip HOLDS the rail lit for as long as it rests there (see idle()),
@@ -702,7 +711,9 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
         <Show when={thumbPx()}>
           {tp => (
             <div
-              class={`${styles.thumb} ${drag() !== null ? styles.thumbDragging : ''}`}
+              class={`${styles.thumb} ${drag() !== null
+                ? styles.thumbDragging
+                : ''}`}
               data-testid="chat-scroll-rail-thumb"
               style={{ top: `${tp().topPx}px`, height: `${tp().heightPx}px` }}
             />
@@ -712,7 +723,9 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
           {d => (
             <button
               type="button"
-              class={`${styles.dot} ${d.count > 1 ? styles.dotCluster : ''}`}
+              class={`${styles.dot} ${d.count > 1
+                ? styles.dotCluster
+                : ''}`}
               data-testid="chat-scroll-rail-dot"
               data-seq={d.seq.toString()}
               data-mark-type={d.type}
@@ -724,7 +737,9 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
               // Matched on the SEQ, because a re-anchor hands over a fresh cluster for the same
               // dot, and only for the dot the card actually describes: a scrub target outranks a
               // focused dot, so the focused one must not claim a card that moved elsewhere.
-              aria-describedby={activeDot()?.seq === d.seq ? DOT_PREVIEW_CARD_ID : undefined}
+              aria-describedby={activeDot()?.seq === d.seq
+                ? DOT_PREVIEW_CARD_ID
+                : undefined}
               style={{ top: `${d.topPx}px` }}
               // Open the shared card immediately on hover AND keyboard focus (the warm effect on
               // activeDot fills it in). A pointer LEAVING only starts the close delay, which is

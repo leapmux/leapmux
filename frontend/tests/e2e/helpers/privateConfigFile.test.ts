@@ -17,7 +17,10 @@ afterEach(() => rmSync(directory, { recursive: true, force: true }))
 describe('writePrivateJSON', () => {
   it('writes indented JSON with a final newline', () => {
     const path = join(directory, 'settings.json')
-    writePrivateJSON(path, { model: 'mock', nested: { enabled: false } })
+    writePrivateJSON(path, {
+      model: 'mock',
+      nested: { enabled: false },
+    })
     expect(readFileSync(path, 'utf8')).toBe('{\n  "model": "mock",\n  "nested": {\n    "enabled": false\n  }\n}\n')
   })
 

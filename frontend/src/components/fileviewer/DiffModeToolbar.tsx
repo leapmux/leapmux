@@ -23,7 +23,9 @@ export interface DiffModeToolbarProps {
 export const DiffModeToolbar: Component<DiffModeToolbarProps> = (props) => {
   const btn = (label: string, mode: FileViewMode, testId?: string) => (
     <button
-      class={`${styles.toolbarButton}${props.mode === mode ? ` ${styles.toolbarButtonActive}` : ''}`}
+      class={`${styles.toolbarButton}${props.mode === mode
+        ? ` ${styles.toolbarButtonActive}`
+        : ''}`}
       onClick={() => props.onModeChange(mode)}
       data-testid={testId}
     >
@@ -43,13 +45,17 @@ export const DiffModeToolbar: Component<DiffModeToolbarProps> = (props) => {
         <Show when={props.diffAvailable && props.hasStagedAndUnstaged}>
           <div class={styles.separator} />
           <button
-            class={`${styles.toolbarButton}${props.diffBase === 'head-vs-working' ? ` ${styles.toolbarButtonActive}` : ''}`}
+            class={`${styles.toolbarButton}${props.diffBase === 'head-vs-working'
+              ? ` ${styles.toolbarButtonActive}`
+              : ''}`}
             onClick={() => props.onDiffBaseChange?.('head-vs-working')}
           >
             vs Working
           </button>
           <button
-            class={`${styles.toolbarButton}${props.diffBase === 'head-vs-staged' ? ` ${styles.toolbarButtonActive}` : ''}`}
+            class={`${styles.toolbarButton}${props.diffBase === 'head-vs-staged'
+              ? ` ${styles.toolbarButtonActive}`
+              : ''}`}
             onClick={() => props.onDiffBaseChange?.('head-vs-staged')}
           >
             vs Staged

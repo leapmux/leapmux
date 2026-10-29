@@ -18,7 +18,12 @@ import { exercisePiFreshPlanSession } from './planScenario'
 import { nativeContext } from './scenarios'
 
 piTest('plan-approval-banner: tracks a fresh Pi implementation session after plan approval', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-  await exercisePiFreshPlanSession(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId }))
+  await exercisePiFreshPlanSession(await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  }))
 })
 
 // The pi-plan-mode extension answers in two steps. `plan_mode_complete` returns
@@ -28,7 +33,12 @@ piTest('plan-approval-banner: tracks a fresh Pi implementation session after pla
 // stays on, and the session stays the same. The next prompt therefore reaches the model
 // with the plan-mode contract and without the Normal-mode contract that an exit adds.
 piTest('rejects the native Pi plan review and keeps planning in the same session', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   const agentId = await openAgentViaAPI(leapmuxServer, context.workspaceId, newNativeWorkingDir(context, 'renderer-pi-plan-stay-'), agentOpenOptions(context.provider))
   await retryUntilPass(async () => {
     expect((await nativeAgentById(context, agentId))?.agentSessionId ?? '', 'the Worker starts the native session of the new agent').not.toBe('')
@@ -40,7 +50,9 @@ piTest('rejects the native Pi plan review and keeps planning in the same session
   await withCleanup(async () => {
     await sendMessage(page, '/plan start')
     const start = await modelScript.queue({
-      toolCalls: [exitPlanModeToolCall(context.provider, 'stay-plan', '# Stay probe\n\n- Keep this plan unapproved.')],
+      toolCalls: [
+        exitPlanModeToolCall(context.provider, 'stay-plan', '# Stay probe\n\n- Keep this plan unapproved.'),
+      ],
     })
     await sendMessage(page, modelScript.prompt('Finish the plan.'))
     await modelScript.waitForSteps(start + 1)

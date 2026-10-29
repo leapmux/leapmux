@@ -72,7 +72,9 @@ export const SetGoalDialog: Component<SetGoalDialogProps> = (props) => {
 
   /** Why the dialog refuses `text`, or `undefined` when it accepts it. */
   const refusalFor = (text: string): string | undefined =>
-    text === '' ? 'Write the condition the agent works toward.' : overLimitMessage(text)
+    text === ''
+      ? 'Write the condition the agent works toward.'
+      : overLimitMessage(text)
 
   /** Show the size warning during input. Show an empty-input warning only after submission. */
   const notice = () => refusal() ?? overLimitMessage(trimmed())
@@ -135,7 +137,9 @@ export const SetGoalDialog: Component<SetGoalDialogProps> = (props) => {
           ariaLabelledBy={hintId}
           // Supply the initial document during construction.
           // A saved draft could replace the current objective with abandoned text.
-          {...(props.initialObjective !== undefined ? { initialMarkdown: props.initialObjective } : {})}
+          {...(props.initialObjective !== undefined
+            ? { initialMarkdown: props.initialObjective }
+            : {})}
           onSend={submit}
           // Let submit explain why it rejects an empty document.
           allowEmptySend

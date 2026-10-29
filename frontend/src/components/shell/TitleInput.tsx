@@ -55,8 +55,12 @@ export const TitleInput: Component<TitleInputProps> = props => (
     <input
       type="text"
       aria-label="Title"
-      aria-invalid={props.state.error() ? 'true' : undefined}
-      aria-describedby={props.state.error() ? TITLE_ERROR_ID : undefined}
+      aria-invalid={props.state.error()
+        ? 'true'
+        : undefined}
+      aria-describedby={props.state.error()
+        ? TITLE_ERROR_ID
+        : undefined}
       data-testid="title-input"
       value={props.state.value()}
       onInput={e => props.state.setValue(e.currentTarget.value)}

@@ -5,8 +5,23 @@ import { extractZCodeSearch } from './search'
 import { zcodeRow } from './toolCommon'
 
 function source(name: string, content: string, args: Record<string, unknown> = {}, success = true) {
-  const request = input({ type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'call', toolName: name, input: args } })
-  return extractZCodeSearch(zcodeRow({ type: 'tool.updated', payload: { kind: 'result', toolCallId: 'call', result: { content, success } } }, name, request))
+  const request = input({
+    type: 'tool.updated',
+    payload: {
+      kind: 'scheduled',
+      toolCallId: 'call',
+      toolName: name,
+      input: args,
+    },
+  })
+  return extractZCodeSearch(zcodeRow({
+    type: 'tool.updated',
+    payload: {
+      kind: 'result',
+      toolCallId: 'call',
+      result: { content, success },
+    },
+  }, name, request))
 }
 
 describe('zcode search output', () => {
@@ -20,7 +35,12 @@ describe('zcode search output', () => {
   })
 
   it('keeps pagination separate from the file list', () => {
-    expect(source('Grep', 'Found 2 files limit: 2, offset: 4\nfirst.ts\nsecond.ts')).toMatchObject({ filenames: ['first.ts', 'second.ts'], numFiles: 2, notice: 'limit: 2, offset: 4', truncated: false })
+    expect(source('Grep', 'Found 2 files limit: 2, offset: 4\nfirst.ts\nsecond.ts')).toMatchObject({
+      filenames: ['first.ts', 'second.ts'],
+      numFiles: 2,
+      notice: 'limit: 2, offset: 4',
+      truncated: false,
+    })
   })
 
   it('preserves explicit zero matches and files in count mode', () => {
@@ -28,7 +48,12 @@ describe('zcode search output', () => {
   })
 
   it('keeps context lines without inventing match counts', () => {
-    expect(source('Grep', 'a.ts:1:context\na.ts:2:match\n\n[Showing results with pagination = limit: 250, offset: 0]', { output_mode: 'content', context: 1 })).toMatchObject({ content: 'a.ts:1:context\na.ts:2:match', numLines: 0, notice: 'limit: 250, offset: 0', truncated: false })
+    expect(source('Grep', 'a.ts:1:context\na.ts:2:match\n\n[Showing results with pagination = limit: 250, offset: 0]', { output_mode: 'content', context: 1 })).toMatchObject({
+      content: 'a.ts:1:context\na.ts:2:match',
+      numLines: 0,
+      notice: 'limit: 250, offset: 0',
+      truncated: false,
+    })
   })
 
   it('retains malformed counts as plain output', () => {

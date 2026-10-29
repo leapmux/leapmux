@@ -15,7 +15,11 @@ vi.mock('./nativeScenario', async importOriginal => ({
   currentNativeAgent: async () => activeAgent,
 }))
 
-const bash: MockModelToolCall = { id: 'bash', name: 'bash', arguments: { command: 'echo SOUND42' } }
+const bash: MockModelToolCall = {
+  id: 'bash',
+  name: 'bash',
+  arguments: { command: 'echo SOUND42' },
+}
 const answerTool: MockModelToolCall = { id: 'answer', name: 'answer', arguments: {} }
 const textAnswer = { text: 'A text-only answer.' }
 
@@ -25,20 +29,44 @@ describe('nativeSoundActivity', () => {
   })
 
   it('finds no activity in a call that only delivers the provider answer', () => {
-    expect(nativeSoundActivity([{ toolCalls: [answerTool] }], ['answer'])).toBe(false)
+    expect(nativeSoundActivity([
+      {
+        toolCalls: [answerTool],
+      },
+    ], ['answer'])).toBe(false)
   })
 
   it('counts an answer tool as activity when the provider does not state it as an answer tool', () => {
-    expect(nativeSoundActivity([{ toolCalls: [answerTool] }])).toBe(true)
+    expect(nativeSoundActivity([
+      {
+        toolCalls: [answerTool],
+      },
+    ])).toBe(true)
   })
 
   it('finds activity in a real tool, alone or before an answer tool', () => {
-    expect(nativeSoundActivity([{ toolCalls: [bash] }])).toBe(true)
-    expect(nativeSoundActivity([{ toolCalls: [bash] }, { toolCalls: [answerTool] }], ['answer'])).toBe(true)
+    expect(nativeSoundActivity([
+      {
+        toolCalls: [bash],
+      },
+    ])).toBe(true)
+    expect(nativeSoundActivity([
+      {
+        toolCalls: [bash],
+      },
+      {
+        toolCalls: [answerTool],
+      },
+    ], ['answer'])).toBe(true)
   })
 
   it('finds activity in a step that holds a tool and the answer text', () => {
-    expect(nativeSoundActivity([{ toolCalls: [bash], text: 'The tool and the answer in one step.' }])).toBe(true)
+    expect(nativeSoundActivity([
+      {
+        toolCalls: [bash],
+        text: 'The tool and the answer in one step.',
+      },
+    ])).toBe(true)
   })
 
   it('finds no activity in an empty script', () => {
@@ -48,27 +76,64 @@ describe('nativeSoundActivity', () => {
 
 describe('planNativeSoundCase', () => {
   it('answers alone when the case gives no tool', () => {
-    expect(planNativeSoundCase({}, textAnswer)).toEqual({ steps: [textAnswer], toolActivity: false })
+    expect(planNativeSoundCase({}, textAnswer)).toEqual({
+      steps: [textAnswer],
+      toolActivity: false,
+    })
   })
 
   it('runs the tool in its own step before the answer', () => {
-    expect(planNativeSoundCase({ tool: bash }, textAnswer)).toEqual({ steps: [{ toolCalls: [bash] }, textAnswer], toolActivity: true })
+    expect(planNativeSoundCase({ tool: bash }, textAnswer)).toEqual({
+      steps: [
+        {
+          toolCalls: [bash],
+        },
+        textAnswer,
+      ],
+      toolActivity: true,
+    })
   })
 
   it('keeps the answer tool of a provider out of the activity', () => {
-    const answer = { toolCalls: [answerTool] }
-    expect(planNativeSoundCase({}, answer, ['answer'])).toEqual({ steps: [answer], toolActivity: false })
-    expect(planNativeSoundCase({ tool: bash }, answer, ['answer'])).toEqual({ steps: [{ toolCalls: [bash] }, answer], toolActivity: true })
+    const answer = {
+      toolCalls: [answerTool],
+    }
+    expect(planNativeSoundCase({}, answer, ['answer'])).toEqual({
+      steps: [answer],
+      toolActivity: false,
+    })
+    expect(planNativeSoundCase({ tool: bash }, answer, ['answer'])).toEqual({
+      steps: [
+        {
+          toolCalls: [bash],
+        },
+        answer,
+      ],
+      toolActivity: true,
+    })
   })
 
   it('uses a custom script unchanged and derives its activity', () => {
-    const steps = [{ toolCalls: [bash], text: 'The tool and the answer in one step.' }]
+    const steps = [
+      {
+        toolCalls: [bash],
+        text: 'The tool and the answer in one step.',
+      },
+    ]
     expect(planNativeSoundCase({ steps }, textAnswer)).toEqual({ steps, toolActivity: true })
-    expect(planNativeSoundCase({ steps: [textAnswer] }, { text: 'unused' })).toEqual({ steps: [textAnswer], toolActivity: false })
+    expect(planNativeSoundCase({
+      steps: [textAnswer],
+    }, { text: 'unused' })).toEqual({
+      steps: [textAnswer],
+      toolActivity: false,
+    })
   })
 
   it('refuses a tool together with a custom script', () => {
-    expect(() => planNativeSoundCase({ tool: bash, steps: [textAnswer] }, textAnswer)).toThrow('its tool or its custom script, not both')
+    expect(() => planNativeSoundCase({
+      tool: bash,
+      steps: [textAnswer],
+    }, textAnswer)).toThrow('its tool or its custom script, not both')
   })
 
   it('refuses an empty custom script', () => {
@@ -77,7 +142,9 @@ describe('planNativeSoundCase', () => {
 
   it('refuses an approval when the script runs no tool apart from the answer tools', () => {
     expect(() => planNativeSoundCase({ approveTool: true }, textAnswer)).toThrow('approves a tool only when its script runs a tool')
-    expect(() => planNativeSoundCase({ approveTool: true }, { toolCalls: [answerTool] }, ['answer'])).toThrow('approves a tool only when its script runs a tool')
+    expect(() => planNativeSoundCase({ approveTool: true }, {
+      toolCalls: [answerTool],
+    }, ['answer'])).toThrow('approves a tool only when its script runs a tool')
     expect(planNativeSoundCase({ tool: bash, approveTool: true }, textAnswer).toolActivity).toBe(true)
   })
 })
@@ -85,7 +152,10 @@ describe('planNativeSoundCase', () => {
 describe('NativeTurnEndSoundCase', () => {
   it('refuses a tool together with a custom script at compile time', () => {
     // @ts-expect-error A sound case gives its tool or its custom script, not both.
-    const both: NativeTurnEndSoundCase = { tool: bash, steps: [textAnswer] }
+    const both: NativeTurnEndSoundCase = {
+      tool: bash,
+      steps: [textAnswer],
+    }
     expect(() => planNativeSoundCase(both, textAnswer)).toThrow('not both')
   })
 })

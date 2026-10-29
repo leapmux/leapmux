@@ -19,7 +19,12 @@ describe('codewhaleExecuteRequest', () => {
 
   it('reads the command from each spelling, in order', () => {
     expect(codewhaleExecuteRequest(CODEWHALE_TOOL.LegacyBash, { cmd: 'make' }).command).toBe('make')
-    expect(codewhaleExecuteRequest(CODEWHALE_TOOL.Bash, { command: 'ls', cmd: 'make', code: 'x', input: 'y' }).command).toBe('ls')
+    expect(codewhaleExecuteRequest(CODEWHALE_TOOL.Bash, {
+      command: 'ls',
+      cmd: 'make',
+      code: 'x',
+      input: 'y',
+    }).command).toBe('ls')
     expect(codewhaleExecuteRequest(CODEWHALE_TOOL.Bash, { command: '', cmd: 'make' }).command).toBe('make')
   })
 

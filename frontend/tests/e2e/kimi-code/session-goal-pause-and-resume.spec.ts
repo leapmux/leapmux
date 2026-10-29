@@ -42,7 +42,10 @@ kimiTest.describe('Kimi Code session goal', () => {
       await waitForAgentIdle(page)
     }
     finally {
-      await finishCleanup([modelScript.releaseGateIfHeld(first), modelScript.releaseGateIfHeld(second)])
+      await finishCleanup([
+        modelScript.releaseGateIfHeld(first),
+        modelScript.releaseGateIfHeld(second),
+      ])
     }
   })
 })

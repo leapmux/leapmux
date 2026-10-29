@@ -20,7 +20,9 @@ codexTest.describe('codex tool execution', () => {
       throw new Error('The native file proof requires its private working directory.')
     const path = join(workingDir, 'codex-test-file.txt')
     const { resultRequest } = await runNativeToolTurn(native, {
-      toolCalls: [writeToolCall(native.provider, 'write-call', { path, content: 'codex was here' })],
+      toolCalls: [
+        writeToolCall(native.provider, 'write-call', { path, content: 'codex was here' }),
+      ],
       prompt: `Create a file called ${path} with the content "codex was here"`,
       answer: `I created ${path} with the content "codex was here".`,
     })
@@ -65,8 +67,12 @@ async function badgePresentation(badge: Locator) {
       fontFamily: style.fontFamily,
       fontSize: style.fontSize,
       lineHeight: style.lineHeight,
-      titleGap: title ? globalThis.getComputedStyle(title).gap : null,
-      gap: previousBox ? Math.round((box.left - previousBox.right) * 100) / 100 : null,
+      titleGap: title
+        ? globalThis.getComputedStyle(title).gap
+        : null,
+      gap: previousBox
+        ? Math.round((box.left - previousBox.right) * 100) / 100
+        : null,
     }
   })
 }
@@ -77,14 +83,18 @@ codexTest('file-change statistics keep one presentation for one file and multipl
   // The files must exist before the patch, so the change is an UPDATE and the
   // diff has both sides to state.
   await runNativeToolTurn(native, {
-    toolCalls: [bashToolCall(native.provider, 'seed-files', 'printf "old\n" > single.ts; printf "old\n" > first.ts; printf "old\n" > second.ts; ls')],
+    toolCalls: [
+      bashToolCall(native.provider, 'seed-files', 'printf "old\n" > single.ts; printf "old\n" > first.ts; printf "old\n" > second.ts; ls'),
+    ],
     prompt: 'Create the files.',
     answer: 'The files exist now.',
   })
 
   // Codex reports one fileChange item for each changed file. Compare one row from each turn.
   await runNativeToolTurn(native, {
-    toolCalls: [editToolCall(native.provider, 'single-edit', { path: 'single.ts', before: 'old', after: 'new' })],
+    toolCalls: [
+      editToolCall(native.provider, 'single-edit', { path: 'single.ts', before: 'old', after: 'new' }),
+    ],
     prompt: 'Change single.ts.',
     answer: 'I changed single.ts.',
   })

@@ -4,7 +4,11 @@ import { fakeLocatorTree } from '~/test-support/fakeLocator'
 import { openPreferencesAs, overrideThemeOnThisDevice, pickThemeMode, setPreferenceScope, themeModeRadio } from './preferences'
 import { openAppAs, openSettingsAt, pickTheme } from './ui'
 
-vi.mock('./ui', () => ({ openAppAs: vi.fn(), openSettingsAt: vi.fn(), pickTheme: vi.fn() }))
+vi.mock('./ui', () => ({
+  openAppAs: vi.fn(),
+  openSettingsAt: vi.fn(),
+  pickTheme: vi.fn(),
+}))
 
 interface FakeTree {
   page: Page
@@ -22,9 +26,11 @@ function fakeTree(answer: (expression: string, path: string) => boolean = () => 
     log,
     answer,
     page: {
-      keyboard: { press: async (key: string) => {
-        log.push(`press ${key}`)
-      } },
+      keyboard: {
+        press: async (key: string) => {
+          log.push(`press ${key}`)
+        },
+      },
     },
   })
   return { page: tree.page, log, node: tree.node }

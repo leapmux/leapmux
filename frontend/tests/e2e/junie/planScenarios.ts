@@ -43,7 +43,13 @@ interface PlanPromptOptions {
 }
 
 function submitPlanStep(prefix: string): MockModelStep {
-  return { toolCalls: [junieSubmitPlanToolCall(`${prefix}-create-plan`, 'plan-the-change', [{ name: 'Requirements', content: PLAN }], DELIVERY_PLAN)] }
+  return {
+    toolCalls: [
+      junieSubmitPlanToolCall(`${prefix}-create-plan`, 'plan-the-change', [
+        { name: 'Requirements', content: PLAN },
+      ], DELIVERY_PLAN),
+    ],
+  }
 }
 
 /**
@@ -94,7 +100,11 @@ export async function exerciseNativePlanReview(
   const prefix = options.callPrefix ?? 'junie'
   const start = await sendPlanPrompt(context, options, [
     submitPlanStep(prefix),
-    { toolCalls: [junieAnswerToolCall(`${prefix}-after-plan`, 'The plan is ready to implement.')] },
+    {
+      toolCalls: [
+        junieAnswerToolCall(`${prefix}-after-plan`, 'The plan is ready to implement.'),
+      ],
+    },
   ])
   // Approve the plan and let Junie publish its delivery stages.
   await answerControl(page, 'allow')
@@ -129,7 +139,9 @@ export async function exerciseNativePlanRevision(
   const { page, modelScript } = context
 
   await modelScript.rule(JUNIE_PLAN_REPLY_RULE)
-  const start = await sendPlanPrompt(context, { ...options, selectMode: false }, [submitPlanStep(options.callPrefix ?? 'junie')])
+  const start = await sendPlanPrompt(context, { ...options, selectMode: false }, [
+    submitPlanStep(options.callPrefix ?? 'junie'),
+  ])
   await answerControl(page, 'deny')
   await expectNoControlBanner(page)
   // The browser draws the saved answer from the Worker row alone, so the Worker took the answer.

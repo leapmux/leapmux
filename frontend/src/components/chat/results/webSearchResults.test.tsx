@@ -14,7 +14,9 @@ function renderResults(title = LONG_TITLE) {
   return render(() => (
     <WebSearchResultsBody
       source={{
-        links: [{ title, url: 'https://example.com/a/deep/path' }],
+        links: [
+          { title, url: 'https://example.com/a/deep/path' },
+        ],
         summary: '',
       }}
     />
@@ -43,22 +45,38 @@ describe('WebSearchResultsBody', () => {
   // body lists the rest. It reads them from the REQUEST, which is the one place a
   // query lives now that the result carries none.
   describe('further queries', () => {
-    const EXPANDED: ToolResultRenderContext = { getMessageUiState: () => true }
+    const EXPANDED: ToolResultRenderContext = {
+      getMessageUiState: () => true,
+    }
 
     function renderQueries(request: { query: string, queries?: string[] } | undefined, context?: ToolResultRenderContext) {
       return render(() => (
-        <WebSearchResultsBody source={{ links: [], summary: '' }} {...(request !== undefined ? { request } : {})} {...(context !== undefined ? { context } : {})} />
+        <WebSearchResultsBody
+          source={{ links: [], summary: '' }}
+          {...(request !== undefined
+            ? { request }
+            : {})}
+          {...(context !== undefined
+            ? { context }
+            : {})}
+        />
       ))
     }
 
     it('lists every query after the first', () => {
-      const { container } = renderQueries({ query: 'first query', queries: ['first query', 'second query'] }, EXPANDED)
+      const { container } = renderQueries({
+        query: 'first query',
+        queries: ['first query', 'second query'],
+      }, EXPANDED)
       expect(container.textContent).toContain('second query')
       expect(container.textContent).not.toContain('first query')
     })
 
     it('lists none for a search that ran one query', () => {
-      const { container } = renderQueries({ query: 'only query', queries: ['only query'] }, EXPANDED)
+      const { container } = renderQueries({
+        query: 'only query',
+        queries: ['only query'],
+      }, EXPANDED)
       expect(container.textContent).toBe('')
     })
 
@@ -68,7 +86,10 @@ describe('WebSearchResultsBody', () => {
     })
 
     it('lists none while the row stays collapsed', () => {
-      const { container } = renderQueries({ query: 'first query', queries: ['first query', 'second query'] })
+      const { container } = renderQueries({
+        query: 'first query',
+        queries: ['first query', 'second query'],
+      })
       expect(container.textContent).not.toContain('second query')
     })
   })

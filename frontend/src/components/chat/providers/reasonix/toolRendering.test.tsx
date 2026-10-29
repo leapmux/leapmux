@@ -13,8 +13,18 @@ describe('reasonix capability tools', () => {
       title: 'task',
       kind: 'other',
       rawInput: { description: 'Inspect sample', prompt: 'Read sample.py' },
-    }, { status: 'failed', content: acpTextContent('context canceled') }, {
-      rawOutput: { reasonix: { role: 'tool', tool_call_id: 'call', name: 'task', content: 'error: context canceled\nSubagent outcome: status=cancelled retryable=false\n\nFinal answer:\n- **Partial finding**' } },
+    }, {
+      status: 'failed',
+      content: acpTextContent('context canceled'),
+    }, {
+      rawOutput: {
+        reasonix: {
+          role: 'tool',
+          tool_call_id: 'call',
+          name: 'task',
+          content: 'error: context canceled\nSubagent outcome: status=cancelled retryable=false\n\nFinal answer:\n- **Partial finding**',
+        },
+      },
     })
     expect(container.textContent).toContain('Agent "Inspect sample" stopped')
     expect(container.textContent).toContain('context canceled')
@@ -30,7 +40,9 @@ describe('reasonix capability tools', () => {
       kind: 'other',
       title: 'read_only_task',
       rawInput: { description: 'Inspect sample', prompt: 'Read a protocol example' },
-    }, { content: acpTextContent(output) })
+    }, {
+      content: acpTextContent(output),
+    })
     expect(container.textContent).toContain('Agent "Inspect sample" completed')
     expect(container.textContent).toContain(output.split('\n')[0])
   })
@@ -40,8 +52,12 @@ describe('reasonix capability tools', () => {
     const { container } = renderACPToolPair(AgentProvider.REASONIX, {
       kind: 'other',
       title: wrapped ? 'use_capability' : 'read_only_task',
-      rawInput: wrapped ? { action: 'call', capability_id: 'tool:read_only_task', arguments: args } : args,
-    }, { content: acpTextContent('- **Read-only finding**') })
+      rawInput: wrapped
+        ? { action: 'call', capability_id: 'tool:read_only_task', arguments: args }
+        : args,
+    }, {
+      content: acpTextContent('- **Read-only finding**'),
+    })
     expect(container.textContent).toContain('Agent "Inspect sample" completed')
     expect(container.querySelector('li strong')?.textContent).toBe('Read-only finding')
     expect(container.textContent).not.toContain('"arguments"')
@@ -52,7 +68,9 @@ describe('reasonix capability tools', () => {
       kind: 'other',
       title: 'task',
       rawInput: { description: 'Inspect the project', prompt: 'Read the entry points.', profile: 'explore' },
-    }, { content: acpTextContent('Subagent reference: sa_example\nSubagent outcome: status=completed retryable=false\n\nTo continue this same subagent transcript in a later call, pass this ref as `continue_from`. Start a fresh subagent when the next task is independent.\n\nFinal answer:\n**Findings**\n\nThe entry points exist.') })
+    }, {
+      content: acpTextContent('Subagent reference: sa_example\nSubagent outcome: status=completed retryable=false\n\nTo continue this same subagent transcript in a later call, pass this ref as `continue_from`. Start a fresh subagent when the next task is independent.\n\nFinal answer:\n**Findings**\n\nThe entry points exist.'),
+    })
     expect(container.textContent).toContain('Inspect the project (explore)')
     expect(container.textContent).toContain('Agent "Inspect the project" completed')
     expect(container.textContent).toContain('Agent ID:sa_example')
@@ -65,7 +83,9 @@ describe('reasonix capability tools', () => {
       title: 'ls',
       kind: 'read',
       rawInput: { path: '/project' },
-    }, { content: acpTextContent('a.ts\t42\nsrc/\n') })
+    }, {
+      content: acpTextContent('a.ts\t42\nsrc/\n'),
+    })
     expect(container.textContent).toContain('2 entries')
     expect(container.textContent).toContain('a.ts')
     expect(container.textContent).toContain('42 B')
@@ -77,7 +97,9 @@ describe('reasonix capability tools', () => {
       title: 'ls',
       kind: 'read',
       rawInput: { path: '/project' },
-    }, { content: acpTextContent('a.ts\t42\n…(100 more chars truncated)') })
+    }, {
+      content: acpTextContent('a.ts\t42\n…(100 more chars truncated)'),
+    })
     expect(container.textContent).toContain('1 entry')
     expect(container.textContent).not.toContain('2 entries')
     expect(container.textContent).toContain('100 more chars truncated')
@@ -87,8 +109,15 @@ describe('reasonix capability tools', () => {
     const { container } = renderACPToolPair(AgentProvider.REASONIX, {
       title: 'todo_write',
       kind: 'edit',
-      rawInput: { todos: [{ content: 'Inspect code', status: 'in_progress' }, { content: 'Run checks', status: 'pending' }] },
-    }, { content: acpTextContent('Todos updated') })
+      rawInput: {
+        todos: [
+          { content: 'Inspect code', status: 'in_progress' },
+          { content: 'Run checks', status: 'pending' },
+        ],
+      },
+    }, {
+      content: acpTextContent('Todos updated'),
+    })
     expect(container.querySelector(`.${todoList}`)?.textContent).toContain('Inspect code')
     expect(container.querySelector(`.${todoList}`)?.textContent).toContain('Run checks')
   })
@@ -97,8 +126,16 @@ describe('reasonix capability tools', () => {
     const { container } = renderACPToolPair(AgentProvider.REASONIX, {
       title: 'multi_edit',
       kind: 'edit',
-      rawInput: { path: '/project/file.ts', edits: [{ old_string: 'firstBefore', new_string: 'firstAfter' }, { old_string: 'secondBefore', new_string: 'secondAfter' }] },
-    }, { content: acpTextContent('Applied edits') })
+      rawInput: {
+        path: '/project/file.ts',
+        edits: [
+          { old_string: 'firstBefore', new_string: 'firstAfter' },
+          { old_string: 'secondBefore', new_string: 'secondAfter' },
+        ],
+      },
+    }, {
+      content: acpTextContent('Applied edits'),
+    })
     expect(container.querySelectorAll(`.${diffAdded}`)).toHaveLength(2)
     expect(container.textContent).toContain('firstAfter')
     expect(container.textContent).toContain('secondAfter')
@@ -110,7 +147,9 @@ describe('reasonix capability tools', () => {
       title: 'edit_file',
       kind: 'edit',
       rawInput: { path: '/project/file.ts', old_string: 'requestedBefore', new_string: 'requestedAfter' },
-    }, { content: acpTextContent('edited /project/file.ts\nActual replacement receipt after write:\n@@ replacement 1 of 1 (1 occurrence(s), fuzzy match) @@\n-actualBefore\n+actualAfter\n') })
+    }, {
+      content: acpTextContent('edited /project/file.ts\nActual replacement receipt after write:\n@@ replacement 1 of 1 (1 occurrence(s), fuzzy match) @@\n-actualBefore\n+actualAfter\n'),
+    })
     expect(container.querySelector(`.${diffRemoved}`)?.textContent).toContain('actualBefore')
     expect(container.querySelector(`.${diffAdded}`)?.textContent).toContain('actualAfter')
     expect(container.textContent).not.toContain('requestedBefore')
@@ -122,7 +161,9 @@ describe('reasonix capability tools', () => {
       title,
       kind: 'delete',
       rawInput: { path: '/project/file.ts', start_anchor: 'delete', end_anchor: 'end' },
-    }, { content: acpTextContent('--- a/project/file.ts\n+++ b/project/file.ts\n@@ -4,3 +4,1 @@\n-removedFirst\n-removedSecond\n remaining\n') })
+    }, {
+      content: acpTextContent('--- a/project/file.ts\n+++ b/project/file.ts\n@@ -4,3 +4,1 @@\n-removedFirst\n-removedSecond\n remaining\n'),
+    })
     expect(container.querySelectorAll(`.${diffRemoved}`)).toHaveLength(2)
     expect(container.textContent).toContain('removedFirst')
   })
@@ -132,7 +173,9 @@ describe('reasonix capability tools', () => {
       title: 'move_file',
       kind: 'edit',
       rawInput: { source_path: '/project/old.ts', destination_path: '/project/new.ts' },
-    }, { content: acpTextContent('moved') })
+    }, {
+      content: acpTextContent('moved'),
+    })
     expect(container.textContent).toContain('/project/old.ts')
     expect(container.textContent).toContain('/project/new.ts')
   })
@@ -142,7 +185,9 @@ describe('reasonix capability tools', () => {
       title: 'web_fetch',
       kind: 'other',
       rawInput: { url: 'https://example.com' },
-    }, { content: acpTextContent('## Page title\n\n**Page body**') })
+    }, {
+      content: acpTextContent('## Page title\n\n**Page body**'),
+    })
     expect(container.querySelector('h2')?.textContent).toBe('Page title')
     expect(container.querySelector('strong')?.textContent).toBe('Page body')
     expect(container.textContent).not.toContain('200')
@@ -155,13 +200,19 @@ describe('reasonix capability tools', () => {
     }, {
       content: acpTextContent('1→first line\n…(22 more chars truncated)'),
     }, {
-      rawOutput: { reasonix: {
-        role: 'tool',
-        tool_call_id: 'call',
-        name: 'read_file',
-        content: '1→first line\n2→FULL_SECOND_LINE',
-        read_result: { source: { canonical_path: '/project/sample.py' }, eof: true, source_end: 2 },
-      } },
+      rawOutput: {
+        reasonix: {
+          role: 'tool',
+          tool_call_id: 'call',
+          name: 'read_file',
+          content: '1→first line\n2→FULL_SECOND_LINE',
+          read_result: {
+            source: { canonical_path: '/project/sample.py' },
+            eof: true,
+            source_end: 2,
+          },
+        },
+      },
     })
     expect(container.textContent).toContain('FULL_SECOND_LINE')
     expect(container.textContent).not.toContain('chars truncated')
@@ -175,7 +226,14 @@ describe('reasonix capability tools', () => {
     }, {
       content: acpTextContent('1→original line'),
     }, {
-      rawOutput: { reasonix: { role: 'tool', tool_call_id: 'another-call', name: 'read_file', content: '1→foreign line' } },
+      rawOutput: {
+        reasonix: {
+          role: 'tool',
+          tool_call_id: 'another-call',
+          name: 'read_file',
+          content: '1→foreign line',
+        },
+      },
     })
     expect(container.textContent).toContain('original line')
     expect(container.textContent).not.toContain('foreign line')
@@ -185,8 +243,14 @@ describe('reasonix capability tools', () => {
     const { container } = renderACPToolPair(AgentProvider.REASONIX, {
       title: 'use_capability',
       kind: 'other',
-      rawInput: { action: 'call', capability_id: 'tool:glob', arguments: { pattern: '*.py' } },
-    }, { content: acpTextContent('/project/first.py\n/project/second.py') })
+      rawInput: {
+        action: 'call',
+        capability_id: 'tool:glob',
+        arguments: { pattern: '*.py' },
+      },
+    }, {
+      content: acpTextContent('/project/first.py\n/project/second.py'),
+    })
     expect(container.textContent).toContain('Found 2 files')
     expect(container.textContent).toContain('*.py')
     expect(container.textContent).not.toContain('use_capability')
@@ -196,8 +260,14 @@ describe('reasonix capability tools', () => {
     const { container } = renderACPToolPair(AgentProvider.REASONIX, {
       title: 'use_capability',
       kind: 'other',
-      rawInput: { action: 'call', capability_id: 'tool:grep', arguments: { pattern: 'answer', path: '/project' } },
-    }, { content: acpTextContent('/project/a.py:1:answer = 42') })
+      rawInput: {
+        action: 'call',
+        capability_id: 'tool:grep',
+        arguments: { pattern: 'answer', path: '/project' },
+      },
+    }, {
+      content: acpTextContent('/project/a.py:1:answer = 42'),
+    })
     expect(container.textContent).toContain('1 match')
     expect(container.textContent).toContain('/project/a.py:1:answer = 42')
     expect(container.textContent).not.toContain('use_capability')
@@ -207,8 +277,14 @@ describe('reasonix capability tools', () => {
     const { container } = renderACPToolPair(AgentProvider.REASONIX, {
       title: 'use_capability',
       kind: 'other',
-      rawInput: { action: 'call', capability_id: 'mcp-tool:docs/search', arguments: { query: 'sessions' } },
-    }, { content: acpTextContent('Session documentation') })
+      rawInput: {
+        action: 'call',
+        capability_id: 'mcp-tool:docs/search',
+        arguments: { query: 'sessions' },
+      },
+    }, {
+      content: acpTextContent('Session documentation'),
+    })
     expect(container.textContent).toContain('docs / search')
     expect(container.textContent).toContain('sessions')
     expect(container.textContent).toContain('Session documentation')

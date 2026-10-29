@@ -81,7 +81,9 @@ const execFileAsync = promisify(execFile)
 export function refusedHostsReport(refused: ReadonlyMap<string, number>): string[] {
   return [...refused]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([host, count]) => `The mock proxy refused ${count} ${count === 1 ? 'request' : 'requests'} to ${host}.`)
+    .map(([host, count]) => `The mock proxy refused ${count} ${count === 1
+      ? 'request'
+      : 'requests'} to ${host}.`)
 }
 
 /**
@@ -92,7 +94,9 @@ export function refusedHostsReport(refused: ReadonlyMap<string, number>): string
 export function ancestorInstructionsReport(count: number): string {
   if (count === 0)
     return ''
-  return `The mock refused ${count} ${count === 1 ? 'request' : 'requests'} that held an instruction file above the working directory of an agent. The failed tests state each request; a request with no scenario marker is in the model server log.`
+  return `The mock refused ${count} ${count === 1
+    ? 'request'
+    : 'requests'} that held an instruction file above the working directory of an agent. The failed tests state each request; a request with no scenario marker is in the model server log.`
 }
 
 /** Start the LeapMux process and the model server that one test run shares. */
@@ -116,7 +120,9 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
       process.stderr.write(`${line}\n`)
     const ancestorRequests = mockModel.ancestorInstructionRequests()
     await finishCleanup([
-      proc ? stopProcess(proc) : Promise.resolve(),
+      proc
+        ? stopProcess(proc)
+        : Promise.resolve(),
       mockModel.close(),
     ])
     rmSync(dataDir, { recursive: true, force: true })
@@ -138,7 +144,9 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
     const mockAgent = await createMockAgentEnvironment(
       options.tmpDir,
       mockModel.url,
-      process.env.HOME ? { realHomeDir: process.env.HOME } : {},
+      process.env.HOME
+        ? { realHomeDir: process.env.HOME }
+        : {},
     )
     const log = openSync(serverLogPath, 'a')
     try {

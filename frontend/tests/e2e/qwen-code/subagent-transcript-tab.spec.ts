@@ -57,16 +57,20 @@ qwenTest.describe('Qwen Code subagent registry', () => {
     leapmuxServer,
     modelScript,
   }) => {
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, {
+      optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' },
+    })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectNoRegistryRows(page, leapmuxServer)
     await answerTheChild(modelScript)
     const start = await modelScript.queue(
       {
-        toolCalls: [spawnSubagentToolCall(AgentProvider.QWEN_CODE, 'spawn-qwen', {
-          description: 'Ask for one word',
-          prompt: modelScript.prompt(`${CHILD_TASK}.`),
-        })],
+        toolCalls: [
+          spawnSubagentToolCall(AgentProvider.QWEN_CODE, 'spawn-qwen', {
+            description: 'Ask for one word',
+            prompt: modelScript.prompt(`${CHILD_TASK}.`),
+          }),
+        ],
       },
       { text: 'The subagent reported PONG.' },
     )
@@ -83,17 +87,21 @@ qwenTest.describe('Qwen Code subagent registry', () => {
     leapmuxServer,
     modelScript,
   }) => {
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, {
+      optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' },
+    })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectNoRegistryRows(page, leapmuxServer)
     await answerTheChild(modelScript)
     const start = await modelScript.queue(
       {
-        toolCalls: [spawnSubagentToolCall(AgentProvider.QWEN_CODE, 'spawn-qwen-background', {
-          description: 'Ask for one word',
-          prompt: modelScript.prompt(`${CHILD_TASK}.`),
-          background: true,
-        })],
+        toolCalls: [
+          spawnSubagentToolCall(AgentProvider.QWEN_CODE, 'spawn-qwen-background', {
+            description: 'Ask for one word',
+            prompt: modelScript.prompt(`${CHILD_TASK}.`),
+            background: true,
+          }),
+        ],
       },
       { text: 'The subagent runs in the background.' },
       // The turn Qwen starts by itself when the subagent ends, with its report.

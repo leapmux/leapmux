@@ -34,7 +34,9 @@ vi.mock('../process-control-fixtures', () => ({
   restartHub: async () => { steps.events.push('restart-hub') },
 }))
 
-vi.mock('./retryUntilPass', () => ({ retryUntilPass: async (operation: () => Promise<unknown>) => operation() }))
+vi.mock('./retryUntilPass', () => ({
+  retryUntilPass: async (operation: () => Promise<unknown>) => operation(),
+}))
 
 vi.mock('./nativeScenario', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./nativeScenario')>()
@@ -42,7 +44,12 @@ vi.mock('./nativeScenario', async (importOriginal) => {
   return {
     ...actual,
     currentNativeAgent: async () => ({ id: 'restart-agent', agentProvider: AgentProvider.CODEX, agentSessionId: 'native-session' }),
-    nativeAgentById: async () => ({ id: 'restart-agent', agentProvider: AgentProvider.CODEX, agentSessionId: steps.restoredSession, status: AgentStatus.ACTIVE }),
+    nativeAgentById: async () => ({
+      id: 'restart-agent',
+      agentProvider: AgentProvider.CODEX,
+      agentSessionId: steps.restoredSession,
+      status: AgentStatus.ACTIVE,
+    }),
   }
 })
 
@@ -52,7 +59,13 @@ vi.mock('./nativeConversation', () => ({
     if (!steps.retainContext)
       steps.turns = []
     steps.turns.push({ role: 'user', content: prompt })
-    const request = { protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { messages: [...steps.turns] } }
+    const request = {
+      protocol: 'openai-chat-completions',
+      path: '/v1/chat/completions',
+      body: {
+        messages: [...steps.turns],
+      },
+    }
     steps.turns.push({ role: 'assistant', content: answer })
     return request
   },
@@ -72,7 +85,10 @@ vi.mock('./workspace', () => ({
     steps.opened.push({ provider, options })
     const pinned = options?.optionValues?.permissionMode === 'default'
     steps.events.push(`${pinned ? 'open-pinned-agent' : 'open-agent'}:${workspaceId}`)
-    return { agentId: pinned ? 'pinned-agent' : 'restart-agent', workingDir: '/private/restart' }
+    return {
+      agentId: pinned ? 'pinned-agent' : 'restart-agent',
+      workingDir: '/private/restart',
+    }
   },
   withTestWorkspace: async (_server: unknown, prefix: string, use: (workspace: { workspaceId: string }) => Promise<void>) => {
     steps.events.push(`workspace:${prefix}`)
@@ -91,7 +107,11 @@ vi.mock('./ui', () => ({
   expectAssistantAnswer: async () => { steps.events.push('answer') },
   waitForAgentIdle: async () => { steps.events.push('idle') },
   reopenWorkspace: async () => { steps.events.push('reopen-workspace') },
-  assistantBubbles: () => ({ filter: () => ({ count: async () => 1 }) }),
+  assistantBubbles: () => ({
+    filter: () => ({
+      count: async () => 1,
+    }),
+  }),
 }))
 
 vi.mock('@playwright/test', async (importOriginal) => {
@@ -118,7 +138,12 @@ vi.mock('@playwright/test', async (importOriginal) => {
 
 const provider = { provider: AgentProvider.CODEX, prefix: 'restart-test' }
 
-const server = { hubUrl: 'http://unused.invalid', adminToken: 'restart-token', workerId: 'restart-worker', hubProc: { exitCode: null, signalCode: null } } as SeparateServerInfo
+const server = {
+  hubUrl: 'http://unused.invalid',
+  adminToken: 'restart-token',
+  workerId: 'restart-worker',
+  hubProc: { exitCode: null, signalCode: null },
+} as SeparateServerInfo
 
 const page = Object.assign({} as Page, {
   reload: async () => { steps.events.push('reload') },
@@ -141,7 +166,14 @@ beforeEach(() => {
 })
 
 describe('exerciseWorkerRestart', () => {
-  const context = { page, leapmuxServer: server, provider: AgentProvider.CODEX, providerAgent: provider, modelScript: {} as ModelScript, workspaceId: 'restart-workspace' } satisfies ManagedNativeScenarioContext
+  const context = {
+    page,
+    leapmuxServer: server,
+    provider: AgentProvider.CODEX,
+    providerAgent: provider,
+    modelScript: {} as ModelScript,
+    workspaceId: 'restart-workspace',
+  } satisfies ManagedNativeScenarioContext
 
   it('requires the native checkpoint before stopping the Worker', async () => {
     const checkpoint = vi.fn(async () => {
@@ -154,9 +186,12 @@ describe('exerciseWorkerRestart', () => {
 
   it('keeps the Worker running when the native checkpoint fails', async () => {
     const failure = new Error('The native checkpoint did not reach disk.')
-    await expect(exerciseWorkerRestart({ ...context, waitForNativeCheckpoint: async () => {
-      throw failure
-    } }, server, 'worker')).rejects.toBe(failure)
+    await expect(exerciseWorkerRestart({
+      ...context,
+      waitForNativeCheckpoint: async () => {
+        throw failure
+      },
+    }, server, 'worker')).rejects.toBe(failure)
     expect(steps.events).not.toContain('stop-worker')
     expect(steps.events).not.toContain('restart-worker')
   })
@@ -206,8 +241,12 @@ describe('withRestartWorkspace', () => {
       seen.push(workspace)
       steps.events.push('operation')
     })
-    expect(seen).toEqual([{ workspaceId: 'restart-workspace', agentId: 'restart-agent' }])
-    expect(steps.opened).toEqual([{ provider, options: undefined }])
+    expect(seen).toEqual([
+      { workspaceId: 'restart-workspace', agentId: 'restart-agent' },
+    ])
+    expect(steps.opened).toEqual([
+      { provider, options: undefined },
+    ])
     expect(steps.events).toEqual([
       'worker-online',
       'workspace:Restart Test',
@@ -221,11 +260,26 @@ describe('withRestartWorkspace', () => {
 
   it('opens the agent in the Default permission mode when the caller asks', async () => {
     const seen: unknown[] = []
-    await withRestartWorkspace(page, server, { provider, prefix: 'Pinned', openOptions: { optionValues: { permissionMode: 'default' } } }, async (workspace) => {
+    await withRestartWorkspace(page, server, {
+      provider,
+      prefix: 'Pinned',
+      openOptions: {
+        optionValues: { permissionMode: 'default' },
+      },
+    }, async (workspace) => {
       seen.push(workspace)
     })
-    expect(seen).toEqual([{ workspaceId: 'restart-workspace', agentId: 'pinned-agent' }])
-    expect(steps.opened).toEqual([{ provider, options: { optionValues: { permissionMode: 'default' } } }])
+    expect(seen).toEqual([
+      { workspaceId: 'restart-workspace', agentId: 'pinned-agent' },
+    ])
+    expect(steps.opened).toEqual([
+      {
+        provider,
+        options: {
+          optionValues: { permissionMode: 'default' },
+        },
+      },
+    ])
     expect(steps.events).toContain('open-pinned-agent:restart-workspace')
     expect(steps.events).not.toContain('open-agent:restart-workspace')
   })

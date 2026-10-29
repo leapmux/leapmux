@@ -69,7 +69,9 @@ zcodeTest('a typed refusal reason reaches the model with the denial', async ({ n
 // Build mode ran the command.
 zcodeTest('Build mode runs a read-only command with no approval', async ({ native }) => {
   await runNativeToolTurn(native, {
-    toolCalls: [bashToolCall(native.provider, 'printf-call', `printf 'zcode-%d' 42`)],
+    toolCalls: [
+      bashToolCall(native.provider, 'printf-call', `printf 'zcode-%d' 42`),
+    ],
     prompt: 'Run the printf command and show me the output.',
     answer: 'The command printed its number.',
     permissions: 'none',

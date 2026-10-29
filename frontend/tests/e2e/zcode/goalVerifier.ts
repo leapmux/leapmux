@@ -32,8 +32,12 @@ export function zcodeVerifierRule(name: string, verdict: string, options: { once
   return {
     name,
     priority: 'high',
-    when: { body: escapeRegExp(ZCODE_VERIFIER_PROMPT) },
+    when: {
+      body: escapeRegExp(ZCODE_VERIFIER_PROMPT),
+    },
     respond: { text: verdict },
-    ...(options.once === true ? { once: true } : {}),
+    ...(options.once === true
+      ? { once: true }
+      : {}),
   }
 }

@@ -32,7 +32,10 @@ export const WAITING_CONTROL_CALL_ID = 'waiting-control'
 export const WAITING_QUESTION: QuestionRequest = {
   question: 'Which color should the interrupted turn use?',
   header: 'Color',
-  options: [{ label: 'Blue', description: 'Use blue.' }, { label: 'Green', description: 'Use green.' }],
+  options: [
+    { label: 'Blue', description: 'Use blue.' },
+    { label: 'Green', description: 'Use green.' },
+  ],
 }
 
 /** The native call that raises a waiting control, and the evidence of that control. */
@@ -52,8 +55,12 @@ export interface RaisedControl {
 export function raiseWaitingControl(provider: AgentProvider, control: WaitingControl, workingDir: string, marker: string): RaisedControl {
   if (!/^\w+$/.test(marker))
     throw new Error(`A waiting control needs a marker of word characters, not ${JSON.stringify(marker)}.`)
-  if (control === 'question')
-    return { toolCall: askUserQuestionToolCall(provider, WAITING_CONTROL_CALL_ID, [WAITING_QUESTION]), bannerText: WAITING_QUESTION.question }
+  if (control === 'question') {
+    return {
+      toolCall: askUserQuestionToolCall(provider, WAITING_CONTROL_CALL_ID, [WAITING_QUESTION]),
+      bannerText: WAITING_QUESTION.question,
+    }
+  }
   if (!isAbsolute(workingDir))
     throw new Error(`A waiting permission needs the absolute working directory of the agent, not ${JSON.stringify(workingDir)}.`)
   const fileName = `waiting-control-${marker}.txt`
@@ -77,7 +84,11 @@ export interface ControlInterruptOptions {
  * first call, where an earlier runtime loaded the tool's schema first and needed a second one.
  */
 export function waitingControlSteps(control: RaisedControl): MockModelStep[] {
-  return [{ toolCalls: [control.toolCall] }]
+  return [
+    {
+      toolCalls: [control.toolCall],
+    },
+  ]
 }
 
 /**

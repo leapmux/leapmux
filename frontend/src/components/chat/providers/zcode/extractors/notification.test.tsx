@@ -9,7 +9,12 @@ import { describeZCodeNotification, zcodeNotificationEntry } from './notificatio
 await import('../plugin')
 
 function event(type: string, payload: Record<string, unknown> = {}): Record<string, unknown> {
-  return { type, payload, sessionId: 's-1', seq: 1 }
+  return {
+    type,
+    payload,
+    sessionId: 's-1',
+    seq: 1,
+  }
 }
 
 const renderZCodeText = (parsed: unknown): string => renderThreadText([parsed], AgentProvider.ZCODE)
@@ -115,7 +120,9 @@ describe('describeZCodeNotification', () => {
 describe('zcodeNotificationEntry', () => {
   it('maps a described row to a single text entry', () => {
     expect(zcodeNotificationEntry(event(ZCODE_EVENT.TurnSteerDrained)))
-      .toEqual([{ kind: 'text', text: 'Queued input delivered to the agent' }])
+      .toEqual([
+        { kind: 'text', text: 'Queued input delivered to the agent' },
+      ])
   })
 
   // A frame ZCode cannot read produces NO entry rather than a null that asks a
@@ -186,7 +193,13 @@ describe('the stop row LeapMux writes', () => {
  * message into the ErrorBoundary.
  */
 describe('a decision word that matches an Object.prototype member', () => {
-  it.each(['toString', 'constructor', 'valueOf', 'hasOwnProperty', '__proto__'])('reports %s as unreadable', (decision) => {
+  it.each([
+    'toString',
+    'constructor',
+    'valueOf',
+    'hasOwnProperty',
+    '__proto__',
+  ])('reports %s as unreadable', (decision) => {
     expect(describeZCodeNotification(event(ZCODE_EVENT.PermissionResolved, {
       decision,
       toolName: ZCODE_TOOL.Read,

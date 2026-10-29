@@ -15,7 +15,9 @@ export function codebuddyReplSchema(schema: unknown): Record<string, unknown> {
 export function parseCodebuddyReplDiscovery(text: string): Record<string, unknown> {
   if (!text.startsWith('Found 1 tool(s). Use DeferExecuteTool to invoke them.\n\n## REPL\n'))
     throw new Error('The native CodeBuddy discovery did not return exactly the REPL tool.')
-  const schemas = [...text.matchAll(/^Parameters:\n```json\n([\s\S]*?)\n```(?:\n|$)/gm)]
+  const schemas = [
+    ...text.matchAll(/^Parameters:\n```json\n([\s\S]*?)\n```(?:\n|$)/gm),
+  ]
   if (schemas.length !== 1 || !text.trimEnd().endsWith('```'))
     throw new Error('The native CodeBuddy REPL discovery contains no unique complete input schema.')
   return codebuddyReplSchema(JSON.parse(schemas[0]![1]!))

@@ -36,7 +36,9 @@ export function distributeSectionSizes(
   }
 
   const remaining = 1 - declaredTotal
-  const undeclaredShare = undeclaredCount > 0 ? remaining / undeclaredCount : 0
+  const undeclaredShare = undeclaredCount > 0
+    ? remaining / undeclaredCount
+    : 0
   // The declarations over-subscribe the sidebar, so they cannot also fund the
   // sections that declare nothing. Weigh every section alike and let the
   // normalize below share the space out.
@@ -44,7 +46,9 @@ export function distributeSectionSizes(
 
   let total = 0
   for (const id of ids) {
-    const weight = equalWeights ? 1 : (declared.get(id) ?? undeclaredShare)
+    const weight = equalWeights
+      ? 1
+      : (declared.get(id) ?? undeclaredShare)
     sizes.set(id, weight)
     total += weight
   }

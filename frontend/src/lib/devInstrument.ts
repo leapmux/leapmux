@@ -10,6 +10,9 @@
  * - leapmux:rpc-recv.
  */
 export function emitDevEvent(name: string, detail: () => Record<string, unknown>): void {
-  if (import.meta.env.LEAPMUX_DEV && typeof window !== 'undefined')
-    window.dispatchEvent(new CustomEvent(name, { detail: detail() }))
+  if (import.meta.env.LEAPMUX_DEV && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(name, {
+      detail: detail(),
+    }))
+  }
 }

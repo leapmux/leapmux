@@ -14,10 +14,16 @@ import { allowNativeOperation, createNativePermissionFileWrite, declinedToolCall
 import { createOutputGate } from './outputGate'
 import { PLATFORM_MOD } from './ui'
 
-const native = vi.hoisted(() => ({ directory: '', currentAgent: vi.fn() }))
+const native = vi.hoisted(() => ({
+  directory: '',
+  currentAgent: vi.fn(),
+}))
 vi.mock('./server', async (importOriginal) => {
   const original = await importOriginal<typeof import('./server')>()
-  return { ...original, getGlobalState: () => ({ tmpDir: native.directory }) }
+  return {
+    ...original,
+    getGlobalState: () => ({ tmpDir: native.directory }),
+  }
 })
 const declinedRow = vi.hoisted(() => ({ assertions: [] as string[] }))
 /** The browser steps of a decision flow, in order. */
@@ -48,10 +54,14 @@ vi.mock('./ui', async (importOriginal) => {
   const actions = {
     getByRole: (role: string, options: { name: string }) => {
       flow.events.push(`${role}:${options.name}`)
-      return { getByRole: (inner: string, innerOptions: { name: string, exact?: boolean }) => {
-        flow.events.push(`${inner}:${innerOptions.name}:${innerOptions.exact === true ? 'exact' : 'loose'}`)
-        return radio
-      } }
+      return {
+        getByRole: (inner: string, innerOptions: { name: string, exact?: boolean }) => {
+          flow.events.push(`${inner}:${innerOptions.name}:${innerOptions.exact === true
+            ? 'exact'
+            : 'loose'}`)
+          return radio
+        },
+      }
     },
   }
   return {
@@ -104,8 +114,17 @@ vi.mock('@playwright/test', async (importOriginal) => {
       : original.expect(value, message),
   }
 })
-vi.mock('./providerToolCalls', () => ({ bashToolCall: (_provider: AgentProvider, id: string, command: string) => ({ id, name: 'unit-native-shell', arguments: { command } }) }))
-const toolTurn = vi.hoisted(() => ({ run: vi.fn(), noControl: vi.fn() }))
+vi.mock('./providerToolCalls', () => ({
+  bashToolCall: (_provider: AgentProvider, id: string, command: string) => ({
+    id,
+    name: 'unit-native-shell',
+    arguments: { command },
+  }),
+}))
+const toolTurn = vi.hoisted(() => ({
+  run: vi.fn(),
+  noControl: vi.fn(),
+}))
 vi.mock('./nativeToolExecution', async importOriginal => ({
   ...await importOriginal<typeof import('./nativeToolExecution')>(),
   runNativeToolTurn: toolTurn.run,
@@ -143,12 +162,20 @@ afterEach(() => rmSync(native.directory, { recursive: true, force: true }))
 function commandFrom(plan: Awaited<ReturnType<typeof createNativePermissionFileWrite>>): string {
   const command = plan.toolCall.arguments?.command
   if (typeof command !== 'string')
-    throw new Error('The prepared native permission operation contains no shell command.')
+    throw new TypeError('The prepared native permission operation contains no shell command.')
   return command
 }
 
 function result(callId: string, output: string): MockModelRequestRecord {
-  return { protocol: 'openai-chat-completions', path: '/chat/completions', body: { messages: [{ role: 'tool', tool_call_id: callId, content: output }] } }
+  return {
+    protocol: 'openai-chat-completions',
+    path: '/chat/completions',
+    body: {
+      messages: [
+        { role: 'tool', tool_call_id: callId, content: output },
+      ],
+    },
+  }
 }
 
 describe('createNativePermissionFileWrite', () => {
@@ -158,7 +185,10 @@ describe('createNativePermissionFileWrite', () => {
     const path = join(native.directory, fileName)
     expect(existsSync(path)).toBe(false)
     await plan.beforeDecision()
-    const output = execFileSync('/bin/sh', ['-c', commandFrom(plan)], { cwd: native.directory, encoding: 'utf8' })
+    const output = execFileSync('/bin/sh', [
+      '-c',
+      commandFrom(plan),
+    ], { cwd: native.directory, encoding: 'utf8' })
     expect(output).toBe('NATIVECONTROL42\n')
     expect(readFileSync(path, 'utf8')).toBe('NATIVECONTROL42\n')
     expect(existsSync(join(native.directory, 'expanded-marker'))).toBe(false)
@@ -166,17 +196,30 @@ describe('createNativePermissionFileWrite', () => {
   })
 
   it.runIf(existsSync('/bin/sh'))('keeps the seeded replacement unchanged before execution', async () => {
-    const plan = await createNativePermissionFileWrite(context, { fileName: 'replace.txt', callId: 'replace-native', outputPrefix: 'REPLACED', initialContent: 'original bytes' })
+    const plan = await createNativePermissionFileWrite(context, {
+      fileName: 'replace.txt',
+      callId: 'replace-native',
+      outputPrefix: 'REPLACED',
+      initialContent: 'original bytes',
+    })
     const path = join(native.directory, 'replace.txt')
     expect(readFileSync(path, 'utf8')).toBe('original bytes')
     await plan.beforeDecision()
-    const output = execFileSync('/bin/sh', ['-c', commandFrom(plan)], { cwd: native.directory, encoding: 'utf8' })
+    const output = execFileSync('/bin/sh', [
+      '-c',
+      commandFrom(plan),
+    ], { cwd: native.directory, encoding: 'utf8' })
     expect(readFileSync(path, 'utf8')).toBe('REPLACED42\n')
     await plan.nativeProof(result('replace-native', output))
   })
 
   it('preserves an empty seeded value as a replacement', async () => {
-    const plan = await createNativePermissionFileWrite(context, { fileName: 'empty.txt', callId: 'empty-native', outputPrefix: 'EMPTY', initialContent: '' })
+    const plan = await createNativePermissionFileWrite(context, {
+      fileName: 'empty.txt',
+      callId: 'empty-native',
+      outputPrefix: 'EMPTY',
+      initialContent: '',
+    })
     expect(existsSync(join(native.directory, 'empty.txt'))).toBe(true)
     expect(readFileSync(join(native.directory, 'empty.txt'), 'utf8')).toBe('')
     await plan.beforeDecision()
@@ -186,13 +229,18 @@ describe('createNativePermissionFileWrite', () => {
     const path = join(native.directory, 'exists.txt')
     writeFileSync(path, 'unchanged')
     // Playwright's `expect` fails with the values that it compared: the target must not exist.
-    await expect(createNativePermissionFileWrite(context, { fileName: 'exists.txt', callId: 'existing-native', outputPrefix: 'EXISTS' })).rejects.toMatchObject({ matcherResult: { actual: true, expected: false } })
+    await expect(createNativePermissionFileWrite(context, { fileName: 'exists.txt', callId: 'existing-native', outputPrefix: 'EXISTS' })).rejects.toMatchObject({
+      matcherResult: { actual: true, expected: false },
+    })
     expect(readFileSync(path, 'utf8')).toBe('unchanged')
   })
 
   it.runIf(existsSync('/bin/sh'))('rejects the wrong native result ID after the real file write', async () => {
     const plan = await createNativePermissionFileWrite(context, { fileName: 'result.txt', callId: 'expected-native', outputPrefix: 'RESULT' })
-    const output = execFileSync('/bin/sh', ['-c', commandFrom(plan)], { cwd: native.directory, encoding: 'utf8' })
+    const output = execFileSync('/bin/sh', [
+      '-c',
+      commandFrom(plan),
+    ], { cwd: native.directory, encoding: 'utf8' })
     await expect(plan.nativeProof(result('wrong-native', output))).rejects.toThrow(/result|call/)
     expect(readFileSync(join(native.directory, 'result.txt'), 'utf8')).toBe('RESULT42\n')
   })
@@ -202,19 +250,37 @@ describe('createNativePermissionFileWrite', () => {
     const readToolResult = vi.fn(() => ({ text: output }))
     context.readToolResult = readToolResult
     const plan = await createNativePermissionFileWrite(context, { fileName: 'owned.txt', callId: 'owned-native', outputPrefix: 'OWNED' })
-    output = execFileSync('/bin/sh', ['-c', commandFrom(plan)], { cwd: native.directory, encoding: 'utf8' })
-    const request: MockModelRequestRecord = { protocol: 'aws-event-stream', path: '/', body: { opaque: true } }
+    output = execFileSync('/bin/sh', [
+      '-c',
+      commandFrom(plan),
+    ], { cwd: native.directory, encoding: 'utf8' })
+    const request: MockModelRequestRecord = {
+      protocol: 'aws-event-stream',
+      path: '/',
+      body: { opaque: true },
+    }
     await plan.nativeProof(request)
     expect(readToolResult).toHaveBeenCalledWith(request, 'owned-native')
   })
 
-  it.each(['', '.', '..', '../escape', 'nested/file', 'nested\\file', '\0'])('rejects an invalid filename before Worker access: %j', async (fileName) => {
+  it.each([
+    '',
+    '.',
+    '..',
+    '../escape',
+    'nested/file',
+    'nested\\file',
+    '\0',
+  ])('rejects an invalid filename before Worker access: %j', async (fileName) => {
     await expect(createNativePermissionFileWrite(context, { fileName, callId: 'invalid-native', outputPrefix: 'INVALID' })).rejects.toThrow('one filename component')
     expect(native.currentAgent).not.toHaveBeenCalled()
     expect(readdirSync(native.directory)).toEqual([])
   })
 
-  it.each([{ callId: '', outputPrefix: 'OUTPUT' }, { callId: 'call', outputPrefix: '' }])('rejects an absent operation identifier before Worker access: %j', async (options) => {
+  it.each([
+    { callId: '', outputPrefix: 'OUTPUT' },
+    { callId: 'call', outputPrefix: '' },
+  ])('rejects an absent operation identifier before Worker access: %j', async (options) => {
     await expect(createNativePermissionFileWrite(context, { fileName: 'file.txt', ...options })).rejects.toThrow('call ID and output prefix')
     expect(native.currentAgent).not.toHaveBeenCalled()
     expect(readdirSync(native.directory)).toEqual([])
@@ -251,14 +317,28 @@ function flowContext(): { context: ManagedNativeScenarioContext, request: MockMo
     },
   } as unknown as ModelScript
   // The shared context throws on a browser or model access, so a spread of it would throw. Copy its plain fields.
-  return { context: { provider: context.provider, providerAgent: context.providerAgent, workspaceId: context.workspaceId, leapmuxServer: context.leapmuxServer, page, modelScript }, request }
+  return {
+    context: {
+      provider: context.provider,
+      providerAgent: context.providerAgent,
+      workspaceId: context.workspaceId,
+      leapmuxServer: context.leapmuxServer,
+      page,
+      modelScript,
+    },
+    request,
+  }
 }
 
 describe('exerciseNativePermissionDecision', () => {
   it('answers the request, proves the native result and the view, and returns the request after the decision', async () => {
     const { context: decided, request } = flowContext()
     const returned = await exerciseNativePermissionDecision(decided, {
-      toolCall: { id: 'decided-native', name: 'unit-native-shell', arguments: { command: 'true' } },
+      toolCall: {
+        id: 'decided-native',
+        name: 'unit-native-shell',
+        arguments: { command: 'true' },
+      },
       decision: 'deny',
       beforeDecision: () => { flow.events.push('before') },
       nativeProof: (read) => {
@@ -289,7 +369,11 @@ describe('exerciseNativePermissionDecision', () => {
     const { context: decided } = flowContext()
     const viewProof = vi.fn(async () => {})
     await expect(exerciseNativePermissionDecision(decided, {
-      toolCall: { id: 'decided-native', name: 'unit-native-shell', arguments: { command: 'true' } },
+      toolCall: {
+        id: 'decided-native',
+        name: 'unit-native-shell',
+        arguments: { command: 'true' },
+      },
       decision: 'allow',
       nativeProof: () => {
         throw new Error('the native result is absent')
@@ -300,9 +384,16 @@ describe('exerciseNativePermissionDecision', () => {
   })
 
   it('refuses an output gate on a denial before it touches the model or the browser', async () => {
-    const outputGate = { gate: createOutputGate(native.directory), shown: vi.fn(async () => {}) }
+    const outputGate = {
+      gate: createOutputGate(native.directory),
+      shown: vi.fn(async () => {}),
+    }
     await expect(exerciseNativePermissionDecision(context, {
-      toolCall: { id: 'denied-native', name: 'unit-native-shell', arguments: { command: 'true' } },
+      toolCall: {
+        id: 'denied-native',
+        name: 'unit-native-shell',
+        arguments: { command: 'true' },
+      },
       decision: 'deny',
       outputGate,
       nativeProof: () => {},
@@ -315,8 +406,14 @@ describe('allowNativeOperation', () => {
   /** An operation that records its guard and its proof. */
   function operation(outputGate?: GatedOutput): NativePermissionOperationPlan {
     return {
-      toolCall: { id: 'decided-native', name: 'unit-native-shell', arguments: { command: 'true' } },
-      ...(outputGate ? { outputGate } : {}),
+      toolCall: {
+        id: 'decided-native',
+        name: 'unit-native-shell',
+        arguments: { command: 'true' },
+      },
+      ...(outputGate
+        ? { outputGate }
+        : {}),
       beforeDecision: () => { flow.events.push('guard') },
       nativeProof: () => { flow.events.push('operation proof') },
     }
@@ -354,7 +451,10 @@ describe('allowNativeOperation', () => {
     const shown = vi.fn(async () => {
       flow.events.push('output shown')
     })
-    const gate = { gate: { release } as unknown as OutputGate, shown }
+    const gate = {
+      gate: { release } as unknown as OutputGate,
+      shown,
+    }
     await allowNativeOperation(decided, operation(gate))(async () => {})
     expect(gate.shown).toHaveBeenCalledOnce()
     expect(release).toHaveBeenCalled()
@@ -365,9 +465,12 @@ describe('allowNativeOperation', () => {
     const { context: decided } = flowContext()
     const failure = new Error('The target changed before the decision.')
     const check = vi.fn(async () => {})
-    await expect(allowNativeOperation(decided, { ...operation(), beforeDecision: () => {
-      throw failure
-    } })(check)).rejects.toBe(failure)
+    await expect(allowNativeOperation(decided, {
+      ...operation(),
+      beforeDecision: () => {
+        throw failure
+      },
+    })(check)).rejects.toBe(failure)
     expect(check).not.toHaveBeenCalled()
     expect(flow.events).not.toContain('answer:allow')
   })
@@ -401,7 +504,14 @@ describe('exerciseAllowThenFeedbackRejection', () => {
         return { protocol: 'anthropic-messages', path: '/v1/messages', body }
       },
     } as unknown as ModelScript
-    return { provider: context.provider, providerAgent: context.providerAgent, workspaceId: context.workspaceId, leapmuxServer: context.leapmuxServer, page, modelScript }
+    return {
+      provider: context.provider,
+      providerAgent: context.providerAgent,
+      workspaceId: context.workspaceId,
+      leapmuxServer: context.leapmuxServer,
+      page,
+      modelScript,
+    }
   }
 
   afterEach(() => {
@@ -412,7 +522,11 @@ describe('exerciseAllowThenFeedbackRejection', () => {
     flow.events = []
     declinedRow.assertions = []
     const reason = 'Do not create the second file.'
-    await exerciseAllowThenFeedbackRejection(feedbackContext({ messages: [{ role: 'user', content: reason }] }), { workingDir: native.directory })
+    await exerciseAllowThenFeedbackRejection(feedbackContext({
+      messages: [
+        { role: 'user', content: reason },
+      ],
+    }), { workingDir: native.directory })
     expect(flow.events).toEqual([
       'queue:3',
       'send',
@@ -443,10 +557,20 @@ describe('exerciseAllowThenFeedbackRejection', () => {
   })
 
   it('fails when the request after the refusal lacks the reason', async () => {
-    await expect(exerciseAllowThenFeedbackRejection(feedbackContext({ messages: [] }), { workingDir: native.directory })).rejects.toMatchObject({ matcherResult: { name: 'toContain', message: expect.stringContaining('Do not create the second file.') } })
+    await expect(exerciseAllowThenFeedbackRejection(feedbackContext({ messages: [] }), { workingDir: native.directory })).rejects.toMatchObject({
+      matcherResult: {
+        name: 'toContain',
+        message: expect.stringContaining('Do not create the second file.'),
+      },
+    })
   })
 
-  it.each(['relative/dir', '/path with space', '/path/$(touch marker)', '/path/\'quote\''])('refuses the working directory %j before it touches the model', async (workingDir) => {
+  it.each([
+    'relative/dir',
+    '/path with space',
+    '/path/$(touch marker)',
+    '/path/\'quote\'',
+  ])('refuses the working directory %j before it touches the model', async (workingDir) => {
     await expect(exerciseAllowThenFeedbackRejection(context, { workingDir })).rejects.toThrow('needs no shell quoting')
   })
 })
@@ -468,7 +592,9 @@ describe('exerciseNativeToolWrite', () => {
       const call = turn.toolCalls[0]
       if (!call)
         throw new Error('The native write turn holds no tool call.')
-      const output = options.runsCommand ? execFileSync('/bin/sh', ['-c', call.arguments.command], { encoding: 'utf8' }) : ''
+      const output = options.runsCommand
+        ? execFileSync('/bin/sh', ['-c', call.arguments.command], { encoding: 'utf8' })
+        : ''
       const request = result(call.id, output)
       return { start: 0, toolRequest: request, resultRequest: request }
     })
@@ -496,7 +622,12 @@ describe('exerciseNativeToolWrite', () => {
 
   it('fails when the native tool did not write the file', async () => {
     runToolTurn({ runsCommand: false })
-    await expect(exerciseNativeToolWrite(writeContext(), { permission: 'native' })).rejects.toMatchObject({ matcherResult: { actual: expect.stringMatching(/^BEFORE/), expected: expect.stringMatching(/^AFTER/) } })
+    await expect(exerciseNativeToolWrite(writeContext(), { permission: 'native' })).rejects.toMatchObject({
+      matcherResult: {
+        actual: expect.stringMatching(/^BEFORE/),
+        expected: expect.stringMatching(/^AFTER/),
+      },
+    })
     expect(declinedRow.assertions).toEqual([])
   })
 })
@@ -537,7 +668,12 @@ describe('expectDeclinedToolRow', () => {
   it('also requires the native refusal text when the caller gives one', async () => {
     const { page } = rowPage()
     await expectDeclinedToolRow(page, 'call-1', 'The user rejected this tool call.')
-    expect(declinedRow.assertions).toEqual(['count:1', 'attribute:data-tool-status=declined', 'text:Declined', 'text:The user rejected this tool call.'])
+    expect(declinedRow.assertions).toEqual([
+      'count:1',
+      'attribute:data-tool-status=declined',
+      'text:Declined',
+      'text:The user rejected this tool call.',
+    ])
   })
 
   it('requires the refusal text even when it is the empty string', async () => {
@@ -554,8 +690,18 @@ describe('expectDeclinedToolRowAcrossReload', () => {
       reload: async () => { declinedRow.assertions.push('reload') },
     })
     await expectDeclinedToolRowAcrossReload({ page, workspaceId: 'reload-workspace' }, 'call-1', 'The user refused.')
-    const declined = ['count:1', 'attribute:data-tool-status=declined', 'text:Declined', 'text:The user refused.']
-    expect(declinedRow.assertions).toEqual([...declined, 'reload', 'open:reload-workspace', ...declined])
+    const declined = [
+      'count:1',
+      'attribute:data-tool-status=declined',
+      'text:Declined',
+      'text:The user refused.',
+    ]
+    expect(declinedRow.assertions).toEqual([
+      ...declined,
+      'reload',
+      'open:reload-workspace',
+      ...declined,
+    ])
   })
 
   it('stops before the reload when the row is not declined', async () => {
@@ -572,12 +718,16 @@ describe('expectDeclinedToolRowAcrossReload', () => {
 })
 
 describe('toolResultCallId', () => {
-  const page = Object.assign({} as Page, { locator: (selector: string) => ({ selector }) })
+  const page = Object.assign({} as Page, {
+    locator: (selector: string) => ({ selector }),
+  })
 
   it('reads the call ID of the one result row that holds the text', async () => {
     rowQuery.attribute = 'TU-generated-1'
     expect(await toolResultCallId(page, 'Use the clean target.')).toBe('TU-generated-1')
-    expect(rowQuery.filters).toEqual([{ hasText: 'Use the clean target.' }])
+    expect(rowQuery.filters).toEqual([
+      { hasText: 'Use the clean target.' },
+    ])
     expect(declinedRow.assertions).toEqual(['count:1'])
   })
 
@@ -595,10 +745,12 @@ describe('toolResultCallId', () => {
 describe('declinedToolCallId', () => {
   it('reads the call ID of the one declined result row, whatever text it holds', async () => {
     const selectors: string[] = []
-    const page = Object.assign({} as Page, { locator: (selector: string) => {
-      selectors.push(selector)
-      return { selector }
-    } })
+    const page = Object.assign({} as Page, {
+      locator: (selector: string) => {
+        selectors.push(selector)
+        return { selector }
+      },
+    })
     rowQuery.attribute = 'exec-generated-1'
     expect(await declinedToolCallId(page)).toBe('exec-generated-1')
     expect(selectors).toEqual(['[data-tool-row-role="result"]', '[data-tool-status="declined"]'])
@@ -607,7 +759,9 @@ describe('declinedToolCallId', () => {
   })
 
   it('fails when the declined row states no call ID', async () => {
-    const page = Object.assign({} as Page, { locator: () => ({}) })
+    const page = Object.assign({} as Page, {
+      locator: () => ({}),
+    })
     await expect(declinedToolCallId(page)).rejects.toThrow('states a declined call states no call ID')
   })
 })
@@ -615,7 +769,10 @@ describe('declinedToolCallId', () => {
 describe('expectSavedRefusalFeedback', () => {
   it('requires a visible bubble that holds the feedback lead and the reason', async () => {
     await expectSavedRefusalFeedback({} as Page, 'Keep the file.')
-    expect(rowQuery.filters).toEqual([{ hasText: 'Sent feedback:' }, { hasText: 'Keep the file.' }])
+    expect(rowQuery.filters).toEqual([
+      { hasText: 'Sent feedback:' },
+      { hasText: 'Keep the file.' },
+    ])
     expect(declinedRow.assertions).toEqual(['visible'])
   })
 })
@@ -640,24 +797,41 @@ function scriptedContext(bodies: (feedback: string) => Record<number, unknown>, 
       return { protocol: 'openai-chat-completions', path: '/chat/completions', body: bodies(flow.feedback)[index] ?? { messages: [] } }
     },
   } as unknown as ModelScript
-  const scripted: ManagedNativeScenarioContext = { provider: context.provider, providerAgent: context.providerAgent, workspaceId: context.workspaceId, leapmuxServer: context.leapmuxServer, page: {
-    reload: async () => {
-      flow.events.push('reload')
-    },
-  } as unknown as Page, modelScript }
+  const scripted: ManagedNativeScenarioContext = {
+    provider: context.provider,
+    providerAgent: context.providerAgent,
+    workspaceId: context.workspaceId,
+    leapmuxServer: context.leapmuxServer,
+    page: {
+      reload: async () => {
+        flow.events.push('reload')
+      },
+    } as unknown as Page,
+    modelScript,
+  }
   return { context: scripted, queued }
 }
 
 /** A request body whose user message holds `text`. */
 function holding(text: string): Record<string, unknown> {
-  return { messages: [{ role: 'user', content: text }] }
+  return {
+    messages: [
+      { role: 'user', content: text },
+    ],
+  }
 }
 
 describe('exerciseNativePermissionReason', () => {
-  const toolCall = { id: 'refused-native', name: 'unit-native-shell', arguments: { command: 'true' } }
+  const toolCall = {
+    id: 'refused-native',
+    name: 'unit-native-shell',
+    arguments: { command: 'true' },
+  }
 
   it('refuses with the typed reason and requires it in the request that continues the refused turn', async () => {
-    const { context: refused, queued } = scriptedContext(feedback => ({ 5: holding(feedback) }))
+    const { context: refused, queued } = scriptedContext(feedback => ({
+      5: holding(feedback),
+    }))
     const viewProof = vi.fn(async () => {})
     await exerciseNativePermissionReason(refused, {
       toolCall,
@@ -666,8 +840,31 @@ describe('exerciseNativePermissionReason', () => {
       expectNotRun: () => { flow.events.push('not-run') },
       viewProof,
     })
-    expect(queued).toEqual([[{ toolCalls: [toolCall] }, { text: expect.stringContaining('The refusal reached the model.') }]])
-    expect(flow.events).toEqual(['queue:2', 'send', 'steps:5', 'banner', 'before', 'feedback', 'button:deny', 'answer:deny', 'steps:6', 'idle', 'not-run', 'request:5', 'reload'])
+    expect(queued).toEqual([
+      [
+        {
+          toolCalls: [toolCall],
+        },
+        {
+          text: expect.stringContaining('The refusal reached the model.'),
+        },
+      ],
+    ])
+    expect(flow.events).toEqual([
+      'queue:2',
+      'send',
+      'steps:5',
+      'banner',
+      'before',
+      'feedback',
+      'button:deny',
+      'answer:deny',
+      'steps:6',
+      'idle',
+      'not-run',
+      'request:5',
+      'reload',
+    ])
     expect(flow.feedback).toMatch(/^Leave the target as it is\. REASON[0-9a-f]{32}$/)
     expect(declinedRow.assertions).toEqual(['exact:Send feedback', 'count:0', 'visible'])
     expect(viewProof).toHaveBeenCalledTimes(2)
@@ -675,7 +872,10 @@ describe('exerciseNativePermissionReason', () => {
   })
 
   it('requires the reason in the turn of the next message, and not in the turn that the refusal continues', async () => {
-    const { context: refused, queued } = scriptedContext(feedback => ({ 5: holding('The call was refused.'), 6: holding(feedback) }))
+    const { context: refused, queued } = scriptedContext(feedback => ({
+      5: holding('The call was refused.'),
+      6: holding(feedback),
+    }))
     await exerciseNativePermissionReason(refused, {
       toolCall,
       route: 'next-message',
@@ -683,49 +883,135 @@ describe('exerciseNativePermissionReason', () => {
         flow.events.push('not-run')
       },
     })
-    expect(queued).toEqual([[
-      { toolCalls: [toolCall] },
-      { text: expect.stringContaining('The refusal reached the model.') },
-      { text: expect.stringContaining('The reason reached the model.') },
-    ]])
-    expect(flow.events).toEqual(['queue:3', 'send', 'steps:5', 'banner', 'feedback', 'button:deny', 'answer:deny', 'steps:7', 'idle', 'not-run', 'request:5', 'request:6', 'reload'])
+    expect(queued).toEqual([
+      [
+        {
+          toolCalls: [toolCall],
+        },
+        {
+          text: expect.stringContaining('The refusal reached the model.'),
+        },
+        {
+          text: expect.stringContaining('The reason reached the model.'),
+        },
+      ],
+    ])
+    expect(flow.events).toEqual([
+      'queue:3',
+      'send',
+      'steps:5',
+      'banner',
+      'feedback',
+      'button:deny',
+      'answer:deny',
+      'steps:7',
+      'idle',
+      'not-run',
+      'request:5',
+      'request:6',
+      'reload',
+    ])
     // The refusal answer, the user row of the reason, and the answer to the reason.
-    expect(declinedRow.assertions).toEqual(['exact:Send feedback', 'count:0', 'visible', 'visible', 'visible'])
+    expect(declinedRow.assertions).toEqual([
+      'exact:Send feedback',
+      'count:0',
+      'visible',
+      'visible',
+      'visible',
+    ])
     expect(rowQuery.filters).toContainEqual({ hasText: flow.feedback })
   })
 
   it('requires the reason in the first request after a refusal that ends the turn', async () => {
-    const { context: refused, queued } = scriptedContext(feedback => ({ 5: holding(feedback) }))
-    await exerciseNativePermissionReason(refused, { toolCall, route: 'next-message', afterRefusal: 'ends', expectNotRun: () => {} })
-    expect(queued).toEqual([[{ toolCalls: [toolCall] }, { text: expect.stringContaining('The reason reached the model.') }]])
-    expect(flow.events).toEqual(['queue:2', 'send', 'steps:5', 'banner', 'feedback', 'button:deny', 'answer:deny', 'steps:6', 'idle', 'request:5', 'reload'])
-    expect(declinedRow.assertions).toEqual(['exact:Send feedback', 'count:0', 'visible', 'visible'])
+    const { context: refused, queued } = scriptedContext(feedback => ({
+      5: holding(feedback),
+    }))
+    await exerciseNativePermissionReason(refused, {
+      toolCall,
+      route: 'next-message',
+      afterRefusal: 'ends',
+      expectNotRun: () => {},
+    })
+    expect(queued).toEqual([
+      [
+        {
+          toolCalls: [toolCall],
+        },
+        {
+          text: expect.stringContaining('The reason reached the model.'),
+        },
+      ],
+    ])
+    expect(flow.events).toEqual([
+      'queue:2',
+      'send',
+      'steps:5',
+      'banner',
+      'feedback',
+      'button:deny',
+      'answer:deny',
+      'steps:6',
+      'idle',
+      'request:5',
+      'reload',
+    ])
+    expect(declinedRow.assertions).toEqual([
+      'exact:Send feedback',
+      'count:0',
+      'visible',
+      'visible',
+    ])
   })
 
   it('refuses a native reply in a turn that ends before it touches the model or the browser', async () => {
-    await expect(exerciseNativePermissionReason(context, { toolCall, route: 'native-reply', afterRefusal: 'ends', expectNotRun: () => {} }))
+    await expect(exerciseNativePermissionReason(context, {
+      toolCall,
+      route: 'native-reply',
+      afterRefusal: 'ends',
+      expectNotRun: () => {},
+    }))
       .rejects
       .toThrow('reaches the model only in a turn that continues')
   })
 
   it('fails when the request that continues the refused turn lacks the reason', async () => {
-    const { context: refused } = scriptedContext(() => ({ 5: holding('The call was refused.') }))
+    const { context: refused } = scriptedContext(() => ({
+      5: holding('The call was refused.'),
+    }))
     const viewProof = vi.fn(async () => {})
-    await expect(exerciseNativePermissionReason(refused, { toolCall, route: 'native-reply', expectNotRun: () => {}, viewProof }))
+    await expect(exerciseNativePermissionReason(refused, {
+      toolCall,
+      route: 'native-reply',
+      expectNotRun: () => {},
+      viewProof,
+    }))
       .rejects
-      .toMatchObject({ matcherResult: { name: 'toContain' } })
+      .toMatchObject({
+        matcherResult: { name: 'toContain' },
+      })
     expect(viewProof).not.toHaveBeenCalled()
   })
 
   it('fails when the refused turn already carries the reason that must wait for the next message', async () => {
-    const { context: refused } = scriptedContext(feedback => ({ 5: holding(feedback), 6: holding(feedback) }))
-    await expect(exerciseNativePermissionReason(refused, { toolCall, route: 'next-message', expectNotRun: () => {} }))
+    const { context: refused } = scriptedContext(feedback => ({
+      5: holding(feedback),
+      6: holding(feedback),
+    }))
+    await expect(exerciseNativePermissionReason(refused, {
+      toolCall,
+      route: 'next-message',
+      expectNotRun: () => {},
+    }))
       .rejects
-      .toMatchObject({ matcherResult: { name: 'toContain', pass: true } })
+      .toMatchObject({
+        matcherResult: { name: 'toContain', pass: true },
+      })
   })
 
   it('stops before the view proof when the refused call ran', async () => {
-    const { context: refused } = scriptedContext(feedback => ({ 5: holding(feedback) }))
+    const { context: refused } = scriptedContext(feedback => ({
+      5: holding(feedback),
+    }))
     const viewProof = vi.fn(async () => {})
     await expect(exerciseNativePermissionReason(refused, {
       toolCall,
@@ -740,8 +1026,16 @@ describe('exerciseNativePermissionReason', () => {
 })
 
 describe('exerciseRememberedAllow', () => {
-  const firstCall = { id: 'remembered-first', name: 'unit-native-shell', arguments: { command: 'true' } }
-  const secondCall = { id: 'remembered-second', name: 'unit-native-shell', arguments: { command: 'true' } }
+  const firstCall = {
+    id: 'remembered-first',
+    name: 'unit-native-shell',
+    arguments: { command: 'true' },
+  }
+  const secondCall = {
+    id: 'remembered-second',
+    name: 'unit-native-shell',
+    arguments: { command: 'true' },
+  }
 
   beforeEach(() => {
     toolTurn.noControl.mockImplementation(async (_context: unknown, options: { testId: string, relatedProof: () => Promise<unknown> }) => {
@@ -787,7 +1081,9 @@ describe('exerciseRememberedAllow', () => {
         secondCall,
         firstProof: () => {},
         secondProof: () => {},
-        ruleFiles: [join(link, 'operator.rules')],
+        ruleFiles: [
+          join(link, 'operator.rules'),
+        ],
       })).rejects.toThrow('outside the E2E run')
       expect(queued).toEqual([])
       expect(readFileSync(path, 'utf8')).toBe('outside rule\n')
@@ -798,7 +1094,10 @@ describe('exerciseRememberedAllow', () => {
   })
 
   it('allows under the scope, then runs the covered call in a turn that the observation watches', async () => {
-    const { context: remembered, queued } = scriptedContext(() => ({ 5: { turn: 'first' }, 7: { turn: 'second' } }), [4, 6])
+    const { context: remembered, queued } = scriptedContext(() => ({
+      5: { turn: 'first' },
+      7: { turn: 'second' },
+    }), [4, 6])
     await exerciseRememberedAllow(remembered, {
       scope: 'Session',
       firstCall,
@@ -815,8 +1114,22 @@ describe('exerciseRememberedAllow', () => {
       viewProof: async () => { flow.events.push('view') },
     })
     expect(queued).toEqual([
-      [{ toolCalls: [firstCall] }, { text: expect.stringContaining('The first call ran.') }],
-      [{ toolCalls: [secondCall] }, { text: expect.stringContaining('The covered call ran.') }],
+      [
+        {
+          toolCalls: [firstCall],
+        },
+        {
+          text: expect.stringContaining('The first call ran.'),
+        },
+      ],
+      [
+        {
+          toolCalls: [secondCall],
+        },
+        {
+          text: expect.stringContaining('The covered call ran.'),
+        },
+      ],
     ])
     expect(flow.events).toEqual([
       'queue:2',
@@ -843,7 +1156,12 @@ describe('exerciseRememberedAllow', () => {
       'observed',
       'view',
     ])
-    expect(declinedRow.assertions).toEqual(['checked', 'count:0', 'visible', 'visible'])
+    expect(declinedRow.assertions).toEqual([
+      'checked',
+      'count:0',
+      'visible',
+      'visible',
+    ])
   })
 
   it('answers each turn in the step that calls the tool, in the group that the provider draws', async () => {
@@ -858,8 +1176,18 @@ describe('exerciseRememberedAllow', () => {
       secondProof: () => { flow.events.push('second-proof') },
     })
     expect(queued).toEqual([
-      [{ text: expect.stringContaining('The first call ran.'), toolCalls: [firstCall] }],
-      [{ text: expect.stringContaining('The covered call ran.'), toolCalls: [secondCall] }],
+      [
+        {
+          text: expect.stringContaining('The first call ran.'),
+          toolCalls: [firstCall],
+        },
+      ],
+      [
+        {
+          text: expect.stringContaining('The covered call ran.'),
+          toolCalls: [secondCall],
+        },
+      ],
     ])
     expect(flow.events).toEqual([
       'queue:1',
@@ -974,8 +1302,17 @@ describe('exerciseNativePermissionWrite', () => {
       expect(written).toHaveLength(1)
       expect(readFileSync(join(native.directory, written[0]!), 'utf8')).toMatch(/^AFTER[0-9a-f]{32}42$/)
     })
-    const page = Object.assign({} as Page, { locator: () => ({ declinedRowProbe: true }) })
-    await exerciseNativePermissionWrite({ provider: context.provider, providerAgent: context.providerAgent, workspaceId: context.workspaceId, leapmuxServer: context.leapmuxServer, page, modelScript }, { viewProof })
+    const page = Object.assign({} as Page, {
+      locator: () => ({ declinedRowProbe: true }),
+    })
+    await exerciseNativePermissionWrite({
+      provider: context.provider,
+      providerAgent: context.providerAgent,
+      workspaceId: context.workspaceId,
+      leapmuxServer: context.leapmuxServer,
+      page,
+      modelScript,
+    }, { viewProof })
     expect(viewProof).toHaveBeenCalledOnce()
   })
 })

@@ -51,7 +51,12 @@ export const WorkerSelector: Component<WorkerSelectorProps> = (props) => {
     if (!info)
       return { value: b.id, label: b.id }
     const details = [info.version, info.os, info.arch].filter(Boolean).join(', ')
-    return { value: b.id, label: details ? `${info.name} (${details})` : info.name }
+    return {
+      value: b.id,
+      label: details
+        ? `${info.name} (${details})`
+        : info.name,
+    }
   }))
 
   return (

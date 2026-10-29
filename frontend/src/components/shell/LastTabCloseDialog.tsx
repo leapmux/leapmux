@@ -29,7 +29,9 @@ const log = createLogger('LastTabCloseDialog')
  * keeps the spread's getter reactivity.
  */
 function flavorProps(flavor: PathFlavor | undefined): { flavor?: PathFlavor } {
-  return flavor === undefined ? {} : { flavor }
+  return flavor === undefined
+    ? {}
+    : { flavor }
 }
 
 export type LastTabCloseChoice = 'cancel' | 'schedule-delete' | 'close-anyway'
@@ -81,14 +83,18 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
   // control, so a reason arriving on any other target rendered a warning with no
   // button beside it.
   const removalBlockedReason = createMemo(() =>
-    isWorktree() ? props.state.worktreeRemovalBlockedReason : '',
+    isWorktree()
+      ? props.state.worktreeRemovalBlockedReason
+      : '',
   )
 
   // The directory the prompt is about. `worktreePath` carries it on the
   // worktree target; on the branch target the checkout IS the main repo, so
   // `repoRoot` is the same directory. `workingDir` is NOT interchangeable --
   // the worker resolves it per tab and it can sit in a subdirectory.
-  const directory = () => (isWorktree() ? props.state.worktreePath : props.state.repoRoot)
+  const directory = () => (isWorktree()
+    ? props.state.worktreePath
+    : props.state.repoRoot)
   // The worker's home dir and path flavor, for the tilde path. The hook keys
   // its fetch to the ID rather than to the mount, which matters here: this
   // dialog renders under a non-keyed `<Show>`, so a second `open()` for another
@@ -96,7 +102,9 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
   const homeDir = useWorkerHomeDir(() => props.state.workerId)
   const flavor = () => {
     const os = workerInfoStore.getOs(props.state.workerId)
-    return os ? flavorFromOs(os) : undefined
+    return os
+      ? flavorFromOs(os)
+      : undefined
   }
 
   const handleCancel = () => {
@@ -162,13 +170,23 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
             directory: directory(),
             homeDir: homeDir(),
             ...(flavorProps(flavor())),
-            ...(props.state.gitState !== undefined ? { gitState: props.state.gitState } : {}),
+            ...(props.state.gitState !== undefined
+              ? { gitState: props.state.gitState }
+              : {}),
           }}
           affectedTabs={{
-            agents: props.state.tabType === TabType.AGENT ? 1 : 0,
-            terminals: props.state.tabType === TabType.TERMINAL ? 1 : 0,
-            files: props.state.tabType === TabType.FILE ? 1 : 0,
-            images: props.state.tabType === TabType.IMAGE ? 1 : 0,
+            agents: props.state.tabType === TabType.AGENT
+              ? 1
+              : 0,
+            terminals: props.state.tabType === TabType.TERMINAL
+              ? 1
+              : 0,
+            files: props.state.tabType === TabType.FILE
+              ? 1
+              : 0,
+            images: props.state.tabType === TabType.IMAGE
+              ? 1
+              : 0,
             // AGENT / TERMINAL closes stop a running process; a FILE or
             // IMAGE close only drops a viewer. The dialog uses willStop
             // to pick the verb ("will be stopped" vs. "will keep
@@ -239,7 +257,14 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
           <ConfirmButton
             data-variant="danger"
             disabled={Boolean(removalBlockedReason())}
-            {...(removalBlockedReason() !== '' ? { blocked: { reason: removalBlockedReason(), reasonId: blockedReasonId } } : {})}
+            {...(removalBlockedReason() !== ''
+              ? {
+                  blocked: {
+                    reason: removalBlockedReason(),
+                    reasonId: blockedReasonId,
+                  },
+                }
+              : {})}
             onClick={handleScheduleDelete}
           >
             Delete worktree

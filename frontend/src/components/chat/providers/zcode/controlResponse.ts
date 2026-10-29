@@ -48,15 +48,21 @@ function questionAnswerDisplay(payload: Record<string, unknown> | null | undefin
     // for every plain object. That answer is a function, which normalizes to
     // undefined -- and it short-circuits the positional fallback, so the reader's
     // real answer disappeared from the saved summary.
-    const mapped = answers && Object.hasOwn(answers, question) ? answers[question] : undefined
+    const mapped = answers && Object.hasOwn(answers, question)
+      ? answers[question]
+      : undefined
     const value = mapped ?? content[`${ZCODE_ANSWER_FIELD.IndexedPrefix}${index}`]
-      ?? (questions.length === 1 ? content[ZCODE_ANSWER_FIELD.Single] : undefined)
+      ?? (questions.length === 1
+        ? content[ZCODE_ANSWER_FIELD.Single]
+        : undefined)
     const answer = normalizedAnswer(value)
     if (answer !== undefined)
       resolved.set(question, answer)
   })
   const lines = [...resolved].map(([question, answer]) => `${question}: ${answer}`)
-  return lines.length ? label(lines.join('\n')) : null
+  return lines.length
+    ? label(lines.join('\n'))
+    : null
 }
 
 /** Read the actual native reply. LeapMux stores the complete matching request separately. */
@@ -74,7 +80,9 @@ export function zcodeControlResponseSummary(cr: PersistedControlResponse): Contr
       case ZCODE_DECISION.Deny: {
         const reason = pickString(result, 'reason')
         const deny = CONTROL_DECISION_WORDS.permission.deny
-        return label(reason.trim() ? `${deny}\n${reason}` : deny)
+        return label(reason.trim()
+          ? `${deny}\n${reason}`
+          : deny)
       }
       case ZCODE_DECISION.Escalate:
         return label('Escalated')
@@ -104,7 +112,9 @@ export function zcodeControlResponseSummary(cr: PersistedControlResponse): Contr
       ?? content?.[`${ZCODE_ANSWER_FIELD.IndexedPrefix}0`] ?? content?.[ZCODE_ANSWER_FIELD.Single])
     if (answer === ZCODE_PLAN_CONTROL.Approve)
       return label(CONTROL_DECISION_WORDS.plan.allow)
-    return answer ? feedback(answer) : label(CONTROL_DECISION_WORDS.plan.deny)
+    return answer
+      ? feedback(answer)
+      : label(CONTROL_DECISION_WORDS.plan.deny)
   }
   return questionAnswerDisplay(cr.request, content)
 }

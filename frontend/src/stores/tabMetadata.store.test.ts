@@ -69,35 +69,53 @@ describe('tabMetadata', () => {
      */
     it('reuses an option-group array whose groups are all the same objects', () => {
       const m = createTabMetadataStore()
-      const groups = [create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' })]
+      const groups = [
+        create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' }),
+      ]
       m.patch('a1', { optionGroups: groups })
       const stored = unwrap(m.get('a1')!).optionGroups
 
       // What `mergeStableOptionGroupRefs` produces: a new array, same elements.
-      m.patch('a1', { optionGroups: [...groups] })
+      m.patch('a1', {
+        optionGroups: [...groups],
+      })
 
       expect(unwrap(m.get('a1')!).optionGroups, 'element identity is what consumers key on').toBe(stored)
     })
 
     it('writes an option-group array whose groups changed', () => {
       const m = createTabMetadataStore()
-      m.patch('a1', { optionGroups: [create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' })] })
+      m.patch('a1', {
+        optionGroups: [
+          create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' }),
+        ],
+      })
       const stored = unwrap(m.get('a1')!).optionGroups
 
-      m.patch('a1', { optionGroups: [create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'sonnet' })] })
+      m.patch('a1', {
+        optionGroups: [
+          create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'sonnet' }),
+        ],
+      })
 
       expect(unwrap(m.get('a1')!).optionGroups).not.toBe(stored)
     })
 
     it('reuses an equal option-values record', () => {
       const m = createTabMetadataStore()
-      m.patch('a1', { optionValues: { model: 'opus', effort: 'high' } })
+      m.patch('a1', {
+        optionValues: { model: 'opus', effort: 'high' },
+      })
       const stored = unwrap(m.get('a1')!).optionValues
 
-      m.patch('a1', { optionValues: { model: 'opus', effort: 'high' } })
+      m.patch('a1', {
+        optionValues: { model: 'opus', effort: 'high' },
+      })
       expect(unwrap(m.get('a1')!).optionValues).toBe(stored)
 
-      m.patch('a1', { optionValues: { model: 'sonnet', effort: 'high' } })
+      m.patch('a1', {
+        optionValues: { model: 'sonnet', effort: 'high' },
+      })
       expect(unwrap(m.get('a1')!).optionValues, 'a changed value must land').not.toBe(stored)
     })
 
@@ -105,10 +123,14 @@ describe('tabMetadata', () => {
     // still matches -- `shallowEqual` compares key counts before values.
     it('writes an option-values record that dropped a key', () => {
       const m = createTabMetadataStore()
-      m.patch('a1', { optionValues: { model: 'opus', effort: 'high' } })
+      m.patch('a1', {
+        optionValues: { model: 'opus', effort: 'high' },
+      })
       const stored = unwrap(m.get('a1')!).optionValues
 
-      m.patch('a1', { optionValues: { model: 'opus' } })
+      m.patch('a1', {
+        optionValues: { model: 'opus' },
+      })
       expect(unwrap(m.get('a1')!).optionValues).not.toBe(stored)
       expect(m.get('a1')?.optionValues).toEqual({ model: 'opus' })
     })
@@ -356,19 +378,25 @@ describe('tabMetadata', () => {
    * refresh carries a catalog and no status.
    */
   describe('patchLive and liveCatalogEpoch', () => {
-    const groups = () => [create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' })]
+    const groups = () => [
+      create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' }),
+    ]
 
     it('is zero for a tab that applied no catalog', () => {
       const m = createTabMetadataStore()
       expect(m.liveCatalogEpoch('a1')).toBe(0)
-      m.patch('a1', { optionGroups: groups() })
+      m.patch('a1', {
+        optionGroups: groups(),
+      })
       m.patchLiveStatus('a1', { agentStatus: AgentStatus.ACTIVE })
       expect(m.liveCatalogEpoch('a1')).toBe(0)
     })
 
     it('writes the fields like patch does and advances only the count that it lists', () => {
       const m = createTabMetadataStore()
-      m.patchLive('a1', { optionGroups: groups() }, ['catalog'])
+      m.patchLive('a1', {
+        optionGroups: groups(),
+      }, ['catalog'])
       expect(m.get('a1')?.optionGroups?.[0]?.id).toBe('model')
       expect(m.liveCatalogEpoch('a1')).toBe(1)
       expect(m.liveStatusEpoch('a1')).toBe(0)
@@ -380,7 +408,10 @@ describe('tabMetadata', () => {
 
     it('advances both counts for an event that carries a status and a catalog', () => {
       const m = createTabMetadataStore()
-      m.patchLive('a1', { agentStatus: AgentStatus.ACTIVE, optionGroups: groups() }, ['status', 'catalog'])
+      m.patchLive('a1', {
+        agentStatus: AgentStatus.ACTIVE,
+        optionGroups: groups(),
+      }, ['status', 'catalog'])
       expect(m.liveStatusEpoch('a1')).toBe(1)
       expect(m.liveCatalogEpoch('a1')).toBe(1)
     })
@@ -405,31 +436,49 @@ describe('tabMetadata', () => {
     // older than that event, so the count counts events and not changes.
     it('counts an event that repeats the stored catalog', () => {
       const m = createTabMetadataStore()
-      m.patchLive('a1', { optionGroups: groups() }, ['catalog'])
-      m.patchLive('a1', { optionGroups: groups() }, ['catalog'])
+      m.patchLive('a1', {
+        optionGroups: groups(),
+      }, ['catalog'])
+      m.patchLive('a1', {
+        optionGroups: groups(),
+      }, ['catalog'])
       expect(m.liveCatalogEpoch('a1')).toBe(2)
     })
 
     it('does not advance on patch, patchExisting, or patchMatching', () => {
       const m = createTabMetadataStore()
-      m.patchLive('a1', { optionGroups: groups() }, ['catalog'])
-      m.patch('a1', { optionGroups: groups() })
-      m.patchExisting('a1', { optionGroups: groups() })
-      m.patchMatching(() => true, { optionGroups: groups() })
+      m.patchLive('a1', {
+        optionGroups: groups(),
+      }, ['catalog'])
+      m.patch('a1', {
+        optionGroups: groups(),
+      })
+      m.patchExisting('a1', {
+        optionGroups: groups(),
+      })
+      m.patchMatching(() => true, {
+        optionGroups: groups(),
+      })
       expect(m.liveCatalogEpoch('a1')).toBe(1)
     })
 
     it('counts each tab on its own', () => {
       const m = createTabMetadataStore()
-      m.patchLive('a1', { optionGroups: groups() }, ['catalog'])
+      m.patchLive('a1', {
+        optionGroups: groups(),
+      }, ['catalog'])
       expect(m.liveCatalogEpoch('a1')).toBe(1)
       expect(m.liveCatalogEpoch('a2')).toBe(0)
     })
 
     it('resets both counts when the row is removed or dropped', () => {
       const m = createTabMetadataStore()
-      for (const id of ['removed', 'dropped', 'kept'])
-        m.patchLive(id, { agentStatus: AgentStatus.ACTIVE, optionGroups: groups() }, ['status', 'catalog'])
+      for (const id of ['removed', 'dropped', 'kept']) {
+        m.patchLive(id, {
+          agentStatus: AgentStatus.ACTIVE,
+          optionGroups: groups(),
+        }, ['status', 'catalog'])
+      }
 
       m.remove('removed')
       m.dropTabs(new Set(['dropped']))
@@ -501,7 +550,9 @@ describe('tabMetadata', () => {
    */
   describe('liveTabIds', () => {
     it('counts every tab the CRDT has a record for', () => {
-      expect(liveTabIds({ tabs: { a1: {}, t1: {} } })).toEqual(new Set(['a1', 't1']))
+      expect(liveTabIds({
+        tabs: { a1: {}, t1: {} },
+      })).toEqual(new Set(['a1', 't1']))
     })
 
     it('is empty for a state with no tabs', () => {
@@ -511,7 +562,13 @@ describe('tabMetadata', () => {
     // The whole point: existence does not depend on the tile resolving. A tab
     // pointed at a tile that has not materialized yet is still the user's tab.
     it('counts a tab whose tile is unresolvable', () => {
-      const state = { tabs: { stranded: { tileId: { value: 'not-a-real-tile' } } } }
+      const state = {
+        tabs: {
+          stranded: {
+            tileId: { value: 'not-a-real-tile' },
+          },
+        },
+      }
       expect(liveTabIds(state as never).has('stranded')).toBe(true)
     })
 
@@ -524,8 +581,12 @@ describe('tabMetadata', () => {
     it('excludes a tombstoned tab even though its key is still in the map', () => {
       const state = {
         tabs: {
-          alive: { tombstoneAt: { physical: 0n, logical: 0n, clientId: '' } },
-          closed: { tombstoneAt: { physical: 7n, logical: 0n, clientId: 'a' } },
+          alive: {
+            tombstoneAt: { physical: 0n, logical: 0n, clientId: '' },
+          },
+          closed: {
+            tombstoneAt: { physical: 7n, logical: 0n, clientId: 'a' },
+          },
         },
       }
       expect(liveTabIds(state as never)).toEqual(new Set(['alive']))
@@ -558,17 +619,26 @@ describe('tabMetadata', () => {
         // An unrelated batch lands in that window. This is what used to delete
         // the row: `f1` was not live, so it was retired -- and the file then
         // opened with no view mode and no diff-mode toolbar.
-        setState({ tabs: { other: {} } })
+        setState({
+          tabs: { other: {} },
+        })
         await flush()
         expect(m.get('f1')?.fileViewMode, 'the row survives the window').toBe('unified-diff')
 
         // The tab's own op lands.
-        setState({ tabs: { other: {}, f1: {} } })
+        setState({
+          tabs: { other: {}, f1: {} },
+        })
         await flush()
         expect(m.get('f1')?.fileViewMode).toBe('unified-diff')
 
         // Closing it tombstones the record, which IS what retires the row.
-        setState({ tabs: { other: {}, f1: { tombstoneAt: tombstone } } })
+        setState({
+          tabs: {
+            other: {},
+            f1: { tombstoneAt: tombstone },
+          },
+        })
         await flush()
         expect(m.get('f1'), 'a tombstone reclaims the row').toBeUndefined()
         expect(m.get('other'), 'and only that row').toBeUndefined()
@@ -586,10 +656,15 @@ describe('tabMetadata', () => {
     it('retires a row whose record the CRDT deleted outright', async () => {
       await createRoot(async (dispose) => {
         const m = createTabMetadataStore()
-        const [state, setState] = createSignal<SweepState>({ tabs: { t1: {} } })
+        const [state, setState] = createSignal<SweepState>({
+          tabs: { t1: {} },
+        })
         const retired: string[] = []
         useMetadataSweep(() => state() as never, m, ids => retired.push(...ids))
-        m.patch('t1', { title: 'shell', screen: new Uint8Array(1024) })
+        m.patch('t1', {
+          title: 'shell',
+          screen: new Uint8Array(1024),
+        })
         await flush()
         expect(m.get('t1')?.title).toBe('shell')
 
@@ -616,19 +691,28 @@ describe('tabMetadata', () => {
     it('leaves a row that no CRDT record backs, across a live-set change', async () => {
       await createRoot(async (dispose) => {
         const m = createTabMetadataStore()
-        const [state, setState] = createSignal<SweepState>({ tabs: { a1: {} } })
+        const [state, setState] = createSignal<SweepState>({
+          tabs: { a1: {} },
+        })
         const retired: string[] = []
         useMetadataSweep(() => state() as never, m, ids => retired.push(...ids))
         await flush()
 
-        m.patch('quake-1', { title: 'zsh', screen: new Uint8Array(64) })
-        setState({ tabs: { a1: {}, a2: {} } })
+        m.patch('quake-1', {
+          title: 'zsh',
+          screen: new Uint8Array(64),
+        })
+        setState({
+          tabs: { a1: {}, a2: {} },
+        })
         await flush()
         expect(m.get('quake-1')?.title, 'a companion survives a tab arriving').toBe('zsh')
 
         // And the edge the companion's OWNER leaves on, which is the one that
         // does end it -- through `onRetire`, which gives the owner agent tab.
-        setState({ tabs: { a2: {} } })
+        setState({
+          tabs: { a2: {} },
+        })
         await flush()
         expect(retired).toEqual(['a1'])
         expect(m.get('quake-1')?.title, 'the sweep never touches the companion row itself').toBe('zsh')
@@ -642,20 +726,32 @@ describe('tabMetadata', () => {
     it('retires a revived tab a second time', async () => {
       await createRoot(async (dispose) => {
         const m = createTabMetadataStore()
-        const [state, setState] = createSignal<SweepState>({ tabs: { a1: {} } })
+        const [state, setState] = createSignal<SweepState>({
+          tabs: { a1: {} },
+        })
         useMetadataSweep(() => state() as never, m)
         await flush()
 
-        setState({ tabs: { a1: { tombstoneAt: tombstone } } })
+        setState({
+          tabs: {
+            a1: { tombstoneAt: tombstone },
+          },
+        })
         await flush()
 
         // Revived: the record is untombstoned again, and the tab is re-titled.
-        setState({ tabs: { a1: {} } })
+        setState({
+          tabs: { a1: {} },
+        })
         await flush()
         m.patch('a1', { title: 'Back' })
         expect(m.get('a1')?.title).toBe('Back')
 
-        setState({ tabs: { a1: { tombstoneAt: tombstone } } })
+        setState({
+          tabs: {
+            a1: { tombstoneAt: tombstone },
+          },
+        })
         await flush()
         expect(m.get('a1')).toBeUndefined()
 
@@ -677,25 +773,38 @@ describe('tabMetadata', () => {
     it('does not resurrect a swept row when a late writer patches it', async () => {
       await createRoot(async (dispose) => {
         const m = createTabMetadataStore()
-        const [state, setState] = createSignal<SweepState>({ tabs: { t1: {} } })
+        const [state, setState] = createSignal<SweepState>({
+          tabs: { t1: {} },
+        })
         useMetadataSweep(() => state() as never, m)
-        m.patch('t1', { title: 'shell', screen: new Uint8Array(1024) })
+        m.patch('t1', {
+          title: 'shell',
+          screen: new Uint8Array(1024),
+        })
         await flush()
 
         // Closed on another device: the tombstone arrives and the row goes.
-        setState({ tabs: { t1: { tombstoneAt: tombstone } } })
+        setState({
+          tabs: {
+            t1: { tombstoneAt: tombstone },
+          },
+        })
         await flush()
         expect(m.get('t1')).toBeUndefined()
 
         // The unmount's deferred capture lands AFTER that.
-        m.patchExisting('t1', { screen: new Uint8Array(4096) })
+        m.patchExisting('t1', {
+          screen: new Uint8Array(4096),
+        })
         expect(m.get('t1'), 'a late capture does not re-create the row').toBeUndefined()
 
         // And no later sweep can reach it, which is why the WRITE had to be the
         // thing that declined: the id left the live set for good, so a `patch`
         // here strands its row for the life of the page. That contrast is the
         // whole reason the sink uses `patchExisting`.
-        m.patch('t1', { screen: new Uint8Array(4096) })
+        m.patch('t1', {
+          screen: new Uint8Array(4096),
+        })
         expect(m.get('t1'), 'patch still creates -- open paths depend on it').toBeDefined()
         setState({ tabs: {} })
         await flush()
@@ -726,7 +835,9 @@ describe('tabMetadata', () => {
         // Retiring against that would drop the stamp of a tab about to arrive.
         expect(m.get('kept'), 'an empty first state retires nothing').toBeDefined()
 
-        setState({ tabs: { kept: {} } })
+        setState({
+          tabs: { kept: {} },
+        })
         await flush()
         expect(m.get('gone'), 'a seeded row with no live tab is reclaimed').toBeUndefined()
         expect(m.get('kept'), 'and one whose tab did arrive is kept').toBeDefined()
@@ -750,17 +861,26 @@ describe('tabMetadata', () => {
           },
         }
         useMetadataSweep(() => state() as never, counting as never)
-        setState({ tabs: { a: {}, b: {} } })
+        setState({
+          tabs: { a: {}, b: {} },
+        })
         await flush()
         const baseline = sweeps
 
         for (let i = 0; i < 5; i++) {
-          setState({ tabs: { a: {}, b: {} } })
+          setState({
+            tabs: { a: {}, b: {} },
+          })
           await flush()
         }
         expect(sweeps, 'an unchanged live set re-runs nothing').toBe(baseline)
 
-        setState({ tabs: { a: {}, b: { tombstoneAt: tombstone } } })
+        setState({
+          tabs: {
+            a: {},
+            b: { tombstoneAt: tombstone },
+          },
+        })
         await flush()
         expect(sweeps).toBe(baseline + 1)
 
@@ -871,7 +991,13 @@ describe('tabMetadata', () => {
     })
 
     it('ignores invalid stamps (non-number, non-positive, NaN) in the seed', () => {
-      sessionStorageSet(KEY_TAB_MRU, { good: 3, bad: 'x' as unknown as number, zero: 0, neg: -1, nan: Number.NaN })
+      sessionStorageSet(KEY_TAB_MRU, {
+        good: 3,
+        bad: 'x' as unknown as number,
+        zero: 0,
+        neg: -1,
+        nan: Number.NaN,
+      })
       const m = createTabMetadataStore()
       expect(m.get('good')?.mru).toBe(3)
       expect(m.get('bad')).toBeUndefined()

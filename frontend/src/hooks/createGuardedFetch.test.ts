@@ -30,7 +30,10 @@ describe('createGuardedFetch', () => {
   it('drops the result of an older run when a newer one starts mid-flight', async () => {
     const slow = deferred<string>()
     const fast = deferred<string>()
-    const fetches = [() => slow.promise, () => fast.promise]
+    const fetches = [
+      () => slow.promise,
+      () => fast.promise,
+    ]
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
         const apply = vi.fn()
@@ -86,7 +89,10 @@ describe('createGuardedFetch', () => {
   it('forwards rejection to onError only when the run is still latest', async () => {
     const first = deferred<string>()
     const second = deferred<string>()
-    const fetches = [() => first.promise, () => second.promise]
+    const fetches = [
+      () => first.promise,
+      () => second.promise,
+    ]
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
         const onError = vi.fn()
@@ -217,7 +223,9 @@ describe('createGuardedFetch', () => {
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
         const fetcher = createGuardedFetch<number, string>({
-          fetch: i => i === 0 ? Promise.reject(new Error('boom')) : Promise.resolve(`v${i}`),
+          fetch: i => i === 0
+            ? Promise.reject(new Error('boom'))
+            : Promise.resolve(`v${i}`),
           applySuccess: apply,
           onError,
         })
@@ -261,7 +269,10 @@ describe('createGuardedFetch', () => {
   it('aborts the prior run\'s signal when a newer run starts', async () => {
     const slow = deferred<string>()
     const fast = deferred<string>()
-    const fetches = [() => slow.promise, () => fast.promise]
+    const fetches = [
+      () => slow.promise,
+      () => fast.promise,
+    ]
     const signals: AbortSignal[] = []
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
@@ -298,7 +309,11 @@ describe('createGuardedFetch', () => {
     // instead of all in-flight ones. With three quick `run` calls the
     // first two must both be aborted, only the third stays live.
     const signals: AbortSignal[] = []
-    const deferreds = [deferred<string>(), deferred<string>(), deferred<string>()]
+    const deferreds = [
+      deferred<string>(),
+      deferred<string>(),
+      deferred<string>(),
+    ]
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
         const fetcher = createGuardedFetch<number, string>({
@@ -311,7 +326,11 @@ describe('createGuardedFetch', () => {
           },
           applySuccess: vi.fn(),
         })
-        const promises = [fetcher.run(0), fetcher.run(1), fetcher.run(2)]
+        const promises = [
+          fetcher.run(0),
+          fetcher.run(1),
+          fetcher.run(2),
+        ]
         await flush()
         expect(signals).toHaveLength(3)
         expect(signals[0]?.aborted).toBe(true)

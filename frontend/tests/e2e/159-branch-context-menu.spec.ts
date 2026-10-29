@@ -427,7 +427,13 @@ test.describe('Branch context menu', () => {
       'locked-branch',
     )
     await waitForAgentStartupViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    execFileSync('git', ['worktree', 'lock', '--reason', 'held by the e2e test', worktreeDir], { cwd: repoDir })
+    execFileSync('git', [
+      'worktree',
+      'lock',
+      '--reason',
+      'held by the e2e test',
+      worktreeDir,
+    ], { cwd: repoDir })
 
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
@@ -492,7 +498,13 @@ test.describe('Branch context menu', () => {
       'keep-locked-branch',
     )
     const agents = await waitForAgentStartupViaAPI(hubUrl, adminToken, workerId, workspaceId)
-    execFileSync('git', ['worktree', 'lock', '--reason', 'held by the e2e test', worktreeDir], { cwd: repoDir })
+    execFileSync('git', [
+      'worktree',
+      'lock',
+      '--reason',
+      'held by the e2e test',
+      worktreeDir,
+    ], { cwd: repoDir })
 
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)

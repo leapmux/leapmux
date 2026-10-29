@@ -12,7 +12,9 @@ import { renderNotificationBlocks } from './notificationRenderers'
 
 describe('renderNotificationBlocks loading state', () => {
   it.each([true, false])('marks a divider only while loading=%s', (loading) => {
-    const view = render(() => renderNotificationBlocks([{ kind: 'divider', text: 'Compaction', loading }]))
+    const view = render(() => renderNotificationBlocks([
+      { kind: 'divider', text: 'Compaction', loading },
+    ]))
     const divider = view.getByTestId('notification-divider')
     if (loading)
       expect(divider).toHaveAttribute('data-loading', 'true')
@@ -78,7 +80,9 @@ describe('the notification thread: compaction and context_cleared rendering', ()
     const boundary = render(() => renderThreadElement([compactBoundaryMsg], AgentProvider.CLAUDE_CODE))
     expect(boundary.container.querySelector('[data-testid="notification-divider"]')?.textContent).toContain('Context compacted')
 
-    const plain = render(() => renderNotificationBlocks([{ kind: 'text', text: 'Context compacted' }]))
+    const plain = render(() => renderNotificationBlocks([
+      { kind: 'text', text: 'Context compacted' },
+    ]))
     expect(plain.container.querySelector('[data-testid="notification-divider"]')).toBeNull()
   })
 
@@ -101,7 +105,9 @@ describe('the notification thread: compaction and context_cleared rendering', ()
   it('settings_changed with compaction renders both', () => {
     const settingsMsg = {
       type: 'settings_changed',
-      changes: { model: { old: 'A', new: 'B' } },
+      changes: {
+        model: { old: 'A', new: 'B' },
+      },
     }
     const messages = [settingsMsg, compactBoundaryMsg]
     const text = renderText(messages)
@@ -114,29 +120,41 @@ describe('the notification thread: compaction and context_cleared rendering', ()
   it('codex item/started+contextCompaction draws no spinner', () => {
     // B26 removed the item/started compaction start reader: the worker stores
     // no start (decision 21), so the item draws nothing.
-    const messages = [{
-      method: 'item/started',
-      params: { item: { type: 'contextCompaction', id: 'compact-1' }, threadId: 't1', turnId: 'turn1' },
-    }]
+    const messages = [
+      {
+        method: 'item/started',
+        params: {
+          item: { type: 'contextCompaction', id: 'compact-1' },
+          threadId: 't1',
+          turnId: 'turn1',
+        },
+      },
+    ]
     expect(renderText(messages, AgentProvider.CODEX)).toBe('')
   })
 
   it('a bare top-level contextCompaction item draws nothing', () => {
     // B26 removed the top-level item shape: the worker stores the raw
     // item/completed notification only.
-    const messages = [{
-      threadId: 't1',
-      turnId: 'turn1',
-      item: { type: 'contextCompaction', id: 'compact-1' },
-    }]
+    const messages = [
+      {
+        threadId: 't1',
+        turnId: 'turn1',
+        item: { type: 'contextCompaction', id: 'compact-1' },
+      },
+    ]
     expect(renderText(messages, AgentProvider.CODEX)).toBe('')
   })
 
   it('codex item/started for non-compaction items does NOT match the compaction spinner', () => {
-    const messages = [{
-      method: 'item/started',
-      params: { item: { type: 'commandExecution', id: 'cmd-1' } },
-    }]
+    const messages = [
+      {
+        method: 'item/started',
+        params: {
+          item: { type: 'commandExecution', id: 'cmd-1' },
+        },
+      },
+    ]
     // commandExecution is not a compaction notification.
     // The reader returns no entry, so the thread displays no compaction spinner.
     expect(renderText(messages, AgentProvider.CODEX)).not.toContain('Compacting context')
@@ -145,14 +163,23 @@ describe('the notification thread: compaction and context_cleared rendering', ()
   it('draws nothing for the bare {type:"compacting"} envelope of an older build', () => {
     // F1 removed the type: no worker writes it, and a stored row contributes
     // no entry (decision 22).
-    const messages = [{ type: 'compacting' }]
+    const messages = [
+      { type: 'compacting' },
+    ]
     expect(renderText(messages, AgentProvider.CODEX)).toBe('')
   })
 
   it('legacy synthesized {type:"system",subtype:"compact_boundary",threadId} from Codex still matches Claude\'s shape', () => {
     // This fixture uses the Claude system compact_boundary shape.
     // The Claude reader resolves its metadata.
-    const messages = [{ type: 'system', subtype: 'compact_boundary', threadId: 't1', turnId: 'turn1' }]
+    const messages = [
+      {
+        type: 'system',
+        subtype: 'compact_boundary',
+        threadId: 't1',
+        turnId: 'turn1',
+      },
+    ]
     expect(renderText(messages)).toContain('Context compacted')
   })
 })
@@ -176,73 +203,97 @@ describe('compaction token formatting: pre → post', () => {
 
   it('renders trigger, pre_tokens, and post_tokens as "(trigger, pre → post)"', () => {
     // Manual /compact carries post_tokens directly and no tokens_saved.
-    const messages = [compactMsg({ trigger: 'manual', pre_tokens: 105424, post_tokens: 8476 })]
+    const messages = [
+      compactMsg({ trigger: 'manual', pre_tokens: 105424, post_tokens: 8476 }),
+    ]
     expect(renderText(messages)).toBe('Context compacted (manual, 105.4k → 8.5k)')
   })
 
   it('derives post from pre_tokens minus tokens_saved when post_tokens is absent', () => {
-    const messages = [compactMsg({ trigger: 'auto', pre_tokens: 100000, tokens_saved: 40000 })]
+    const messages = [
+      compactMsg({ trigger: 'auto', pre_tokens: 100000, tokens_saved: 40000 }),
+    ]
     expect(renderText(messages)).toBe('Context compacted (auto, 100.0k → 60.0k)')
   })
 
   it('prefers explicit post_tokens over deriving from tokens_saved', () => {
-    const messages = [compactMsg({ pre_tokens: 100000, post_tokens: 8000, tokens_saved: 1 })]
+    const messages = [
+      compactMsg({ pre_tokens: 100000, post_tokens: 8000, tokens_saved: 1 }),
+    ]
     expect(renderText(messages)).toBe('Context compacted (100.0k → 8.0k)')
   })
 
   it('omits the trigger when it is absent', () => {
-    const messages = [compactMsg({ pre_tokens: 105424, post_tokens: 8476 })]
+    const messages = [
+      compactMsg({ pre_tokens: 105424, post_tokens: 8476 }),
+    ]
     expect(renderText(messages)).toBe('Context compacted (105.4k → 8.5k)')
   })
 
   it('shows trigger and the pre count alone when neither post_tokens nor tokens_saved is present', () => {
-    const messages = [compactMsg({ trigger: 'auto', pre_tokens: 100000 })]
+    const messages = [
+      compactMsg({ trigger: 'auto', pre_tokens: 100000 }),
+    ]
     expect(renderText(messages)).toBe('Context compacted (auto, 100.0k)')
   })
 
   it('shows the post count alone when pre_tokens is absent', () => {
-    const messages = [compactMsg({ post_tokens: 8000 })]
+    const messages = [
+      compactMsg({ post_tokens: 8000 }),
+    ]
     expect(renderText(messages)).toBe('Context compacted (→ 8.0k)')
   })
 
   it('shows the trigger alone when no token counts are present', () => {
-    const messages = [compactMsg({ trigger: 'manual' })]
+    const messages = [
+      compactMsg({ trigger: 'manual' }),
+    ]
     expect(renderText(messages)).toBe('Context compacted (manual)')
   })
 
   it('renders no parenthetical when neither trigger nor token counts are present', () => {
-    const messages = [compactMsg({})]
+    const messages = [
+      compactMsg({}),
+    ]
     expect(renderText(messages)).toBe('Context compacted')
   })
 
   it('microcompaction renders a plain "Context microcompacted" with no detail', () => {
     // Ignore metadata-like microcompaction fields.
     // Display no trigger or token count for them.
-    const messages = [microcompactMsg({ trigger: 'auto', preTokens: 200000, tokensSaved: 50000 })]
+    const messages = [
+      microcompactMsg({ trigger: 'auto', preTokens: 200000, tokensSaved: 50000 }),
+    ]
     expect(renderText(messages)).toBe('Context microcompacted')
   })
 
   it('reads camelCase keys (compactMetadata / preTokens / postTokens)', () => {
     // The consolidated fixture uses camelCase keys.
     // Resolve those keys and the native snake_case keys.
-    const messages = [{
-      type: 'system',
-      subtype: 'compact_boundary',
-      compactMetadata: { trigger: 'auto', preTokens: 100000, postTokens: 8000 },
-    }]
+    const messages = [
+      {
+        type: 'system',
+        subtype: 'compact_boundary',
+        compactMetadata: { trigger: 'auto', preTokens: 100000, postTokens: 8000 },
+      },
+    ]
     expect(renderText(messages)).toBe('Context compacted (auto, 100.0k → 8.0k)')
   })
 
   it('drops a lone tokens_saved that has no pre count to anchor a transition', () => {
     // Without a pre count, the saved count cannot supply a pre-to-post transition.
     // Do not display that saved count as a standalone token figure.
-    const messages = [compactMsg({ tokens_saved: 5000 })]
+    const messages = [
+      compactMsg({ tokens_saved: 5000 }),
+    ]
     expect(renderText(messages)).toBe('Context compacted')
   })
 
   it('formats counts across the 1k boundary: 1000 -> "1.0k", 500 -> "500"', () => {
     // 1000 is >= 1000 so it gets the "k" suffix; 500 stays a bare integer.
-    const messages = [compactMsg({ pre_tokens: 1000, post_tokens: 500 })]
+    const messages = [
+      compactMsg({ pre_tokens: 1000, post_tokens: 500 }),
+    ]
     expect(renderText(messages)).toBe('Context compacted (1.0k → 500)')
   })
 
@@ -260,52 +311,68 @@ describe('compaction token formatting: pre → post', () => {
   it('microcompaction ignores a metadata wrapper under any key (Claude emits none)', () => {
     // Ignore both microcompactMetadata and microcompact_metadata.
     // Each fixture must retain the plain label.
-    const messages = [{
-      type: 'system',
-      subtype: 'microcompact_boundary',
-      microcompact_metadata: { trigger: 'auto', preTokens: 200000, tokensSaved: 50000 },
-    }]
+    const messages = [
+      {
+        type: 'system',
+        subtype: 'microcompact_boundary',
+        microcompact_metadata: { trigger: 'auto', preTokens: 200000, tokensSaved: 50000 },
+      },
+    ]
     expect(renderText(messages)).toBe('Context microcompacted')
   })
 
   it('clamps a derived post to 0 when tokens_saved exceeds pre_tokens', () => {
     // A saved count above the pre count must not produce a negative post count.
-    const messages = [compactMsg({ trigger: 'auto', pre_tokens: 30000, tokens_saved: 50000 })]
+    const messages = [
+      compactMsg({ trigger: 'auto', pre_tokens: 30000, tokens_saved: 50000 }),
+    ]
     expect(renderText(messages)).toBe('Context compacted (auto, 30.0k → 0)')
   })
 
   it('renders a zero post when tokens_saved equals pre_tokens', () => {
-    const messages = [compactMsg({ pre_tokens: 100000, tokens_saved: 100000 })]
+    const messages = [
+      compactMsg({ pre_tokens: 100000, tokens_saved: 100000 }),
+    ]
     expect(renderText(messages)).toBe('Context compacted (100.0k → 0)')
   })
 
   it('renders a no-op transition when tokens_saved is zero', () => {
     // A reported saved count of zero is present.
     // The derived post count therefore equals the pre count.
-    const messages = [compactMsg({ pre_tokens: 100000, tokens_saved: 0 })]
+    const messages = [
+      compactMsg({ pre_tokens: 100000, tokens_saved: 0 }),
+    ]
     expect(renderText(messages)).toBe('Context compacted (100.0k → 100.0k)')
   })
 
   it('clamps an explicit negative post_tokens to 0 (not just the derived path)', () => {
     // Restrict both a derived and a directly reported post count to a minimum of zero.
-    const messages = [compactMsg({ pre_tokens: 100000, post_tokens: -5 })]
+    const messages = [
+      compactMsg({ pre_tokens: 100000, post_tokens: -5 }),
+    ]
     expect(renderText(messages)).toBe('Context compacted (100.0k → 0)')
   })
 
   it('clamps an explicit negative pre_tokens to 0', () => {
-    const messages = [compactMsg({ pre_tokens: -100, post_tokens: 8000 })]
+    const messages = [
+      compactMsg({ pre_tokens: -100, post_tokens: 8000 }),
+    ]
     expect(renderText(messages)).toBe('Context compacted (0 → 8.0k)')
   })
 
   it('drops a non-finite (NaN) count instead of rendering "NaN"', () => {
     // JSON cannot encode NaN, but a constructed payload can contain it.
     // Omit that count while retaining the other side of the transition.
-    const messages = [compactMsg({ pre_tokens: Number.NaN, post_tokens: 8000 })]
+    const messages = [
+      compactMsg({ pre_tokens: Number.NaN, post_tokens: 8000 }),
+    ]
     expect(renderText(messages)).toBe('Context compacted (→ 8.0k)')
   })
 
   it('drops a non-finite (Infinity) count instead of rendering "InfinityM"', () => {
-    const messages = [compactMsg({ pre_tokens: 100000, post_tokens: Number.POSITIVE_INFINITY })]
+    const messages = [
+      compactMsg({ pre_tokens: 100000, post_tokens: Number.POSITIVE_INFINITY }),
+    ]
     expect(renderText(messages)).toBe('Context compacted (100.0k)')
   })
 
@@ -318,8 +385,12 @@ describe('compaction token formatting: pre → post', () => {
   })
 
   it('renders a single microcompact boundary as a divider with the icon', () => {
-    expect(renderHasIcon([microcompactMsg({})])).toBe(true)
-    expect(renderText([microcompactMsg({})])).toBe('Context microcompacted')
+    expect(renderHasIcon([
+      microcompactMsg({}),
+    ])).toBe(true)
+    expect(renderText([
+      microcompactMsg({}),
+    ])).toBe('Context microcompacted')
   })
 
   it('draws no divider for an obsolete stored compacting status', () => {
@@ -333,7 +404,12 @@ describe('the notification thread: message ordering', () => {
   it('context_cleared before settings_changed preserves order', () => {
     const messages = [
       { type: 'context_cleared' },
-      { type: 'settings_changed', changes: { permissionMode: { old: 'default', new: 'plan' } } },
+      {
+        type: 'settings_changed',
+        changes: {
+          permissionMode: { old: 'default', new: 'plan' },
+        },
+      },
     ]
     const text = renderText(messages)
     const clearedIdx = text.indexOf('Context cleared')
@@ -344,7 +420,12 @@ describe('the notification thread: message ordering', () => {
 
   it('settings_changed before context_cleared preserves order', () => {
     const messages = [
-      { type: 'settings_changed', changes: { permissionMode: { old: 'default', new: 'plan' } } },
+      {
+        type: 'settings_changed',
+        changes: {
+          permissionMode: { old: 'default', new: 'plan' },
+        },
+      },
       { type: 'context_cleared' },
     ]
     const text = renderText(messages)
@@ -355,16 +436,23 @@ describe('the notification thread: message ordering', () => {
   })
 
   it('uses Workflow label for Codex collaboration mode changes', () => {
-    updateSettingsLabelCache(AgentProvider.CODEX, [{
-      id: 'collaboration_mode',
-      label: 'Workflow',
-      options: [
-        { id: 'default', name: 'Default' },
-        { id: 'plan', name: 'Plan Mode' },
-      ],
-    }] as any)
+    updateSettingsLabelCache(AgentProvider.CODEX, [
+      {
+        id: 'collaboration_mode',
+        label: 'Workflow',
+        options: [
+          { id: 'default', name: 'Default' },
+          { id: 'plan', name: 'Plan Mode' },
+        ],
+      },
+    ] as any)
     const messages = [
-      { type: 'settings_changed', changes: { collaboration_mode: { old: 'default', new: 'plan' } } },
+      {
+        type: 'settings_changed',
+        changes: {
+          collaboration_mode: { old: 'default', new: 'plan' },
+        },
+      },
     ]
     // Use the same provider for the notification and cached labels.
     const text = renderThreadText(messages, AgentProvider.CODEX)
@@ -372,16 +460,23 @@ describe('the notification thread: message ordering', () => {
   })
 
   it('uses cached option-group labels for arbitrary provider settings', () => {
-    updateSettingsLabelCache(AgentProvider.OPENCODE, [{
-      id: 'opencode_mode',
-      label: 'Execution Mode',
-      options: [
-        { id: 'safe', name: 'Safe' },
-        { id: 'fast', name: 'Fast' },
-      ],
-    }] as any)
+    updateSettingsLabelCache(AgentProvider.OPENCODE, [
+      {
+        id: 'opencode_mode',
+        label: 'Execution Mode',
+        options: [
+          { id: 'safe', name: 'Safe' },
+          { id: 'fast', name: 'Fast' },
+        ],
+      },
+    ] as any)
     const messages = [
-      { type: 'settings_changed', changes: { opencode_mode: { old: 'safe', new: 'fast' } } },
+      {
+        type: 'settings_changed',
+        changes: {
+          opencode_mode: { old: 'safe', new: 'fast' },
+        },
+      },
     ]
     const text = renderThreadText(messages, AgentProvider.OPENCODE)
     expect(text).toContain('Execution Mode')
@@ -393,16 +488,23 @@ describe('the notification thread: message ordering', () => {
     // A provider can replace a well-known group's display label.
     // Consult its cache before displaying the canonical label.
     // An absent inline label must still preserve that provider-specific display.
-    updateSettingsLabelCache(AgentProvider.PI, [{
-      id: 'effort',
-      label: 'Thinking Level',
-      options: [
-        { id: 'low', name: 'Low' },
-        { id: 'high', name: 'High' },
-      ],
-    }] as any)
+    updateSettingsLabelCache(AgentProvider.PI, [
+      {
+        id: 'effort',
+        label: 'Thinking Level',
+        options: [
+          { id: 'low', name: 'Low' },
+          { id: 'high', name: 'High' },
+        ],
+      },
+    ] as any)
     const messages = [
-      { type: 'settings_changed', changes: { effort: { old: 'low', new: 'high' } } },
+      {
+        type: 'settings_changed',
+        changes: {
+          effort: { old: 'low', new: 'high' },
+        },
+      },
     ]
     const text = renderThreadText(messages, AgentProvider.PI)
     expect(text).toContain('Thinking Level')
@@ -412,7 +514,12 @@ describe('the notification thread: message ordering', () => {
   it('falls back to the canonical well-known axis name when the cache is unprimed', () => {
     // An absent provider cache entry uses the canonical English label.
     const messages = [
-      { type: 'settings_changed', changes: { effort: { old: 'low', new: 'high' } } },
+      {
+        type: 'settings_changed',
+        changes: {
+          effort: { old: 'low', new: 'high' },
+        },
+      },
     ]
     const text = renderThreadText(messages, AgentProvider.CLAUDE_CODE)
     expect(text).toContain('Effort')
@@ -422,7 +529,12 @@ describe('the notification thread: message ordering', () => {
     const messages = [
       { type: 'context_cleared' },
       { type: 'interrupted' },
-      { type: 'settings_changed', changes: { model: { old: 'A', new: 'B' } } },
+      {
+        type: 'settings_changed',
+        changes: {
+          model: { old: 'A', new: 'B' },
+        },
+      },
     ]
     const text = renderText(messages)
     const clearedIdx = text.indexOf('Context cleared')
@@ -435,7 +547,12 @@ describe('the notification thread: message ordering', () => {
 
   it('api_retry before context_cleared preserves order in one text line', () => {
     const messages = [
-      { type: 'system', subtype: 'api_retry', attempt: 1, max_retries: 3 },
+      {
+        type: 'system',
+        subtype: 'api_retry',
+        attempt: 1,
+        max_retries: 3,
+      },
       { type: 'context_cleared' },
     ]
     const text = renderText(messages)
@@ -448,7 +565,12 @@ describe('the notification thread: message ordering', () => {
   it('context_cleared before api_retry preserves order after backend dedupe', () => {
     const messages = [
       { type: 'context_cleared' },
-      { type: 'system', subtype: 'api_retry', attempt: 2, max_retries: 3 },
+      {
+        type: 'system',
+        subtype: 'api_retry',
+        attempt: 2,
+        max_retries: 3,
+      },
     ]
     const text = renderText(messages)
     const clearedIdx = text.indexOf('Context cleared')
@@ -461,36 +583,52 @@ describe('the notification thread: message ordering', () => {
 describe('single-message notification labels', () => {
   // Read each worker notification through the shared extractor as a one-entry thread.
   it('renders interrupted', () => {
-    expect(renderText([{ type: 'interrupted' }])).toBe('Interrupted')
+    expect(renderText([
+      { type: 'interrupted' },
+    ])).toBe('Interrupted')
   })
 
   it('renders stop_ignored with the press-again instruction', () => {
-    expect(renderText([{ type: 'stop_ignored' }])).toBe('Interrupt ignored — press Interrupt again to force it')
+    expect(renderText([
+      { type: 'stop_ignored' },
+    ])).toBe('Interrupt ignored — press Interrupt again to force it')
   })
 
   it('renders input_requeued with the reason the message appears again', () => {
-    expect(renderText([{ type: 'input_requeued' }])).toBe('Message queued again — the agent dropped it before the model read it')
+    expect(renderText([
+      { type: 'input_requeued' },
+    ])).toBe('Message queued again — the agent dropped it before the model read it')
   })
 
   it('renders context_cleared', () => {
-    expect(renderText([{ type: 'context_cleared' }])).toBe('Context cleared')
+    expect(renderText([
+      { type: 'context_cleared' },
+    ])).toBe('Context cleared')
   })
 
   // The worker normalizes the provider's reported status text.
   it('renders an agent status in the provider\'s own words', () => {
-    expect(renderText([{ type: 'agent_status', text: 'Switched provider' }])).toBe('Switched provider')
+    expect(renderText([
+      { type: 'agent_status', text: 'Switched provider' },
+    ])).toBe('Switched provider')
   })
 
   it('draws nothing for an agent status that states no words', () => {
-    expect(renderText([{ type: 'agent_status', text: '   ' }])).toBe('')
+    expect(renderText([
+      { type: 'agent_status', text: '   ' },
+    ])).toBe('')
   })
 
   it('renders agent_error with its error text', () => {
-    expect(renderText([{ type: 'agent_error', error: 'boom' }])).toBe('boom')
+    expect(renderText([
+      { type: 'agent_error', error: 'boom' },
+    ])).toBe('boom')
   })
 
   it('renders agent_error with the "Unknown error" fallback', () => {
-    expect(renderText([{ type: 'agent_error' }])).toBe('Unknown error')
+    expect(renderText([
+      { type: 'agent_error' },
+    ])).toBe('Unknown error')
   })
 })
 
@@ -501,41 +639,55 @@ describe('single-message notification labels', () => {
  */
 describe('the notification thread: goal transitions', () => {
   it('announces a new goal with its objective', () => {
-    expect(renderText([{ type: 'goal_updated', objective: 'every test passes', goal_status: 'active' }]))
+    expect(renderText([
+      { type: 'goal_updated', objective: 'every test passes', goal_status: 'active' },
+    ]))
       .toBe('Goal set: every test passes')
   })
 
   // Display the reported transition so a status change does not report a fresh Set.
   it('names the transition for each finished status', () => {
-    expect(renderText([{ type: 'goal_updated', objective: 'x', goal_status: 'done' }]))
+    expect(renderText([
+      { type: 'goal_updated', objective: 'x', goal_status: 'done' },
+    ]))
       .toBe('Goal achieved: x')
-    expect(renderText([{ type: 'goal_updated', objective: 'x', goal_status: 'paused' }]))
+    expect(renderText([
+      { type: 'goal_updated', objective: 'x', goal_status: 'paused' },
+    ]))
       .toBe('Goal paused: x')
-    expect(renderText([{ type: 'goal_updated', objective: 'x', goal_status: 'blocked' }]))
+    expect(renderText([
+      { type: 'goal_updated', objective: 'x', goal_status: 'blocked' },
+    ]))
       .toBe('Goal blocked: x')
   })
 
   // Preserve the native detail when it differs from the neutral status token.
   it('appends the provider status detail when it differs', () => {
-    expect(renderText([{
-      type: 'goal_updated',
-      objective: 'x',
-      goal_status: 'blocked',
-      status_detail: 'usageLimited',
-    }])).toBe('Goal blocked: x (usageLimited)')
+    expect(renderText([
+      {
+        type: 'goal_updated',
+        objective: 'x',
+        goal_status: 'blocked',
+        status_detail: 'usageLimited',
+      },
+    ])).toBe('Goal blocked: x (usageLimited)')
   })
 
   it('omits a detail that only repeats the neutral status', () => {
-    expect(renderText([{
-      type: 'goal_updated',
-      objective: 'x',
-      goal_status: 'active',
-      status_detail: 'active',
-    }])).toBe('Goal set: x')
+    expect(renderText([
+      {
+        type: 'goal_updated',
+        objective: 'x',
+        goal_status: 'active',
+        status_detail: 'active',
+      },
+    ])).toBe('Goal set: x')
   })
 
   it('renders nothing for a transition with no readable objective', () => {
-    expect(renderText([{ type: 'goal_updated', goal_status: 'active' }])).toBe('')
+    expect(renderText([
+      { type: 'goal_updated', goal_status: 'active' },
+    ])).toBe('')
   })
 
   /**
@@ -544,74 +696,101 @@ describe('the notification thread: goal transitions', () => {
    * The worker compares the prior goal and reports the transition.
    */
   it('names what the change DID, not the status it left behind', () => {
-    expect(renderText([{
-      type: 'goal_updated',
-      objective: 'x',
-      goal_status: 'active',
-      goal_transition: 'resumed',
-    }])).toBe('Goal resumed: x')
-    expect(renderText([{
-      type: 'goal_updated',
-      objective: 'x',
-      goal_status: 'active',
-      goal_transition: 'replaced',
-    }])).toBe('Goal replaced: x')
-    expect(renderText([{
-      type: 'goal_updated',
-      objective: 'x',
-      goal_status: 'active',
-      goal_transition: 'set',
-    }])).toBe('Goal set: x')
+    expect(renderText([
+      {
+        type: 'goal_updated',
+        objective: 'x',
+        goal_status: 'active',
+        goal_transition: 'resumed',
+      },
+    ])).toBe('Goal resumed: x')
+    expect(renderText([
+      {
+        type: 'goal_updated',
+        objective: 'x',
+        goal_status: 'active',
+        goal_transition: 'replaced',
+      },
+    ])).toBe('Goal replaced: x')
+    expect(renderText([
+      {
+        type: 'goal_updated',
+        objective: 'x',
+        goal_status: 'active',
+        goal_transition: 'set',
+      },
+    ])).toBe('Goal set: x')
   })
 
   // An absent or unrecognized transition uses the status fallback.
   // A recognized status retains its existing label.
   it('falls back to the status when the transition is absent or unknown', () => {
-    expect(renderText([{ type: 'goal_updated', objective: 'x', goal_status: 'paused' }]))
+    expect(renderText([
+      { type: 'goal_updated', objective: 'x', goal_status: 'paused' },
+    ]))
       .toBe('Goal paused: x')
-    expect(renderText([{
-      type: 'goal_updated',
-      objective: 'x',
-      goal_status: 'done',
-      goal_transition: 'somethingNew',
-    }])).toBe('Goal achieved: x')
+    expect(renderText([
+      {
+        type: 'goal_updated',
+        objective: 'x',
+        goal_status: 'done',
+        goal_transition: 'somethingNew',
+      },
+    ])).toBe('Goal achieved: x')
   })
 
   it('announces a cleared goal, with and without its objective', () => {
-    expect(renderText([{ type: 'goal_cleared', objective: 'x' }])).toBe('Goal cleared: x')
-    expect(renderText([{ type: 'goal_cleared' }])).toBe('Goal cleared')
+    expect(renderText([
+      { type: 'goal_cleared', objective: 'x' },
+    ])).toBe('Goal cleared: x')
+    expect(renderText([
+      { type: 'goal_cleared' },
+    ])).toBe('Goal cleared')
   })
 })
 
 describe('the notification thread: plan_updated', () => {
   it('without update_agent_title shows "Plan updated: <title>"', () => {
-    const messages = [{ type: 'plan_updated', plan_title: 'My Plan', plan_file_path: '/p.md' }]
+    const messages = [
+      { type: 'plan_updated', plan_title: 'My Plan', plan_file_path: '/p.md' },
+    ]
     expect(renderText(messages)).toBe('Plan updated: My Plan')
   })
 
   it('with update_agent_title:true shows "Plan updated and renamed to <title>"', () => {
-    const messages = [{
-      type: 'plan_updated',
-      plan_title: 'Auth Refactor',
-      plan_file_path: '/p.md',
-      update_agent_title: true,
-    }]
+    const messages = [
+      {
+        type: 'plan_updated',
+        plan_title: 'Auth Refactor',
+        plan_file_path: '/p.md',
+        update_agent_title: true,
+      },
+    ]
     expect(renderText(messages)).toBe('Plan updated and renamed to Auth Refactor')
   })
 
   it('with empty plan_title renders nothing', () => {
-    const messages = [{ type: 'plan_updated', plan_title: '', plan_file_path: '/p.md' }]
+    const messages = [
+      { type: 'plan_updated', plan_title: '', plan_file_path: '/p.md' },
+    ]
     expect(renderText(messages)).toBe('')
   })
 
   it('with missing plan_title renders nothing', () => {
-    const messages = [{ type: 'plan_updated', plan_file_path: '/p.md' }]
+    const messages = [
+      { type: 'plan_updated', plan_file_path: '/p.md' },
+    ]
     expect(renderText(messages)).toBe('')
   })
 
   it('combined with settings_changed in a thread', () => {
     const messages = [
-      { type: 'settings_changed', changes: { model: { old: 'A', new: 'B' } } },
+      {
+        type: 'settings_changed',
+        changes: {
+          model: { old: 'A', new: 'B' },
+        },
+      },
       { type: 'plan_updated', plan_title: 'Debug Session', plan_file_path: '/p.md' },
     ]
     const text = renderText(messages)
@@ -641,12 +820,31 @@ describe('settings change formatting: inline label overrides', () => {
   it('thread path honors inline label / old_label / new_label overrides', () => {
     // The settings cache contains no foo entry.
     // The inline labels must therefore supply this fixture's display text.
-    const messages = [settingsMsg({ foo: { old: 'a', new: 'b', label: 'My Setting', old_label: 'Old!', new_label: 'New!' } })]
+    const messages = [
+      settingsMsg({
+        foo: {
+          old: 'a',
+          new: 'b',
+          label: 'My Setting',
+          old_label: 'Old!',
+          new_label: 'New!',
+        },
+      }),
+    ]
     expect(renderText(messages)).toBe('My Setting (Old! → New!)')
   })
 
   it('thread path uses the "(new)" fallback when there is no old value', () => {
-    const messages = [settingsMsg({ foo: { old: '', new: 'x', label: 'My Setting', new_label: 'X!' } })]
+    const messages = [
+      settingsMsg({
+        foo: {
+          old: '',
+          new: 'x',
+          label: 'My Setting',
+          new_label: 'X!',
+        },
+      }),
+    ]
     expect(renderText(messages)).toBe('My Setting (X!)')
   })
 
@@ -654,38 +852,73 @@ describe('settings change formatting: inline label overrides', () => {
     // A first Set can omit old instead of sending an empty value.
     // pickString returns an empty string for that absent field.
     // The formatter then uses the new-only label.
-    const messages = [settingsMsg({ foo: { new: 'x', label: 'My Setting', new_label: 'X!' } })]
+    const messages = [
+      settingsMsg({
+        foo: { new: 'x', label: 'My Setting', new_label: 'X!' },
+      }),
+    ]
     expect(renderText(messages)).toBe('My Setting (X!)')
   })
 
   it('keeps the arrow when the old value exists but its display resolves empty', () => {
     // An empty old_label overrides the old display text.
     // The old value still exists, so retain the transition form.
-    const messages = [settingsMsg({ foo: { old: 'a', new: 'b', old_label: '', new_label: 'New!' } })]
+    const messages = [
+      settingsMsg({
+        foo: {
+          old: 'a',
+          new: 'b',
+          old_label: '',
+          new_label: 'New!',
+        },
+      }),
+    ]
     expect(renderText(messages)).toBe('foo ( → New!)')
   })
 
   it('honors an explicit empty-string label override instead of falling back to the key', () => {
     // Preserve an explicit empty inline label.
     // A truthy fallback would incorrectly display the key.
-    const messages = [settingsMsg({ foo: { old: 'a', new: 'b', label: '', old_label: 'O', new_label: 'N' } })]
+    const messages = [
+      settingsMsg({
+        foo: {
+          old: 'a',
+          new: 'b',
+          label: '',
+          old_label: 'O',
+          new_label: 'N',
+        },
+      }),
+    ]
     expect(renderText(messages)).toBe('(O → N)')
   })
 
   it('thread path drops entries whose value is unchanged', () => {
-    const messages = [settingsMsg({ foo: { old: 'same', new: 'same', label: 'My Setting' } })]
+    const messages = [
+      settingsMsg({
+        foo: { old: 'same', new: 'same', label: 'My Setting' },
+      }),
+    ]
     expect(renderText(messages)).toBe('')
   })
 
   it('skips a null change entry without throwing', () => {
     // An untyped changes map can contain null.
     // Skip that entry rather than dereferencing its fields.
-    const messages = [settingsMsg({ foo: null })]
+    const messages = [
+      settingsMsg({ foo: null }),
+    ]
     expect(renderText(messages)).toBe('')
   })
 
   it('skips malformed entries but still renders the well-formed ones', () => {
-    const messages = [settingsMsg({ foo: null, bar: 'oops', model: { old: 'A', new: 'B' } })]
+    const messages = [
+      settingsMsg({
+        foo: null,
+        bar: 'oops',
+        model: { old: 'A', new: 'B' },
+      }),
+    ]
     expect(renderText(messages)).toBe('Model (A → B)')
   })
 })
@@ -782,7 +1015,11 @@ describe('native child completion', () => {
   })
 
   it('keeps the compaction divider independent from native completion', () => {
-    const boundary = { type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'auto' } }
+    const boundary = {
+      type: 'system',
+      subtype: 'compact_boundary',
+      compact_metadata: { trigger: 'auto' },
+    }
     expect(renderThreadGlyph([boundary], AgentProvider.CLAUDE_CODE)).not.toBeNull()
     expect(renderDivider(nativeResult(), AgentProvider.CLAUDE_CODE).text).toBe('Turn ended (12ms)')
     expect(renderText([boundary], AgentProvider.CLAUDE_CODE)).toContain('Context compacted')
@@ -801,19 +1038,41 @@ describe('the notification thread: subagent_report', () => {
   })
 
   it('shows Claude Code\'s flagged delivery status', () => {
-    expect(renderText([{ type: 'subagent_report', label: 'Reviewer', text: 'Check this', status: 'flagged' }]))
+    expect(renderText([
+      {
+        type: 'subagent_report',
+        label: 'Reviewer',
+        text: 'Check this',
+        status: 'flagged',
+      },
+    ]))
       .toContain('Reviewer reported — security warning')
   })
 
   it('states that Claude Code withheld a report from the parent', () => {
-    expect(renderText([{ type: 'subagent_report', label: 'Reviewer', text: 'Child-only report', status: 'withheld' }]))
+    expect(renderText([
+      {
+        type: 'subagent_report',
+        label: 'Reviewer',
+        text: 'Child-only report',
+        status: 'withheld',
+      },
+    ]))
       .toContain('Reviewer report withheld')
   })
 })
 
 describe('shared goal notification rendering', () => {
   it('renders an updated unknown goal without a false set or blocked label', () => {
-    const { container } = render(() => renderThreadElement([{ type: NOTIFICATION_TYPE.GoalUpdated, objective: 'Keep the objective', goal_status: GOAL_STATUS_TOKEN.Unknown, goal_transition: GOAL_TRANSITION.Updated, status_detail: 'native-future-state' }], AgentProvider.CLAUDE_CODE))
+    const { container } = render(() => renderThreadElement([
+      {
+        type: NOTIFICATION_TYPE.GoalUpdated,
+        objective: 'Keep the objective',
+        goal_status: GOAL_STATUS_TOKEN.Unknown,
+        goal_transition: GOAL_TRANSITION.Updated,
+        status_detail: 'native-future-state',
+      },
+    ], AgentProvider.CLAUDE_CODE))
     expect(container.textContent).toBe('Goal updated: Keep the objective (native-future-state)')
     expect(container.textContent).not.toContain('Goal set')
     expect(container.textContent).not.toContain('Goal blocked')
@@ -821,7 +1080,14 @@ describe('shared goal notification rendering', () => {
   })
 
   it('renders a neutral unknown goal when no recognized transition exists', () => {
-    const { container } = render(() => renderThreadElement([{ type: NOTIFICATION_TYPE.GoalUpdated, objective: 'Keep the objective', goal_status: GOAL_STATUS_TOKEN.Unknown, status_detail: 'native-future-state' }], AgentProvider.CLAUDE_CODE))
+    const { container } = render(() => renderThreadElement([
+      {
+        type: NOTIFICATION_TYPE.GoalUpdated,
+        objective: 'Keep the objective',
+        goal_status: GOAL_STATUS_TOKEN.Unknown,
+        status_detail: 'native-future-state',
+      },
+    ], AgentProvider.CLAUDE_CODE))
     expect(container.textContent).toBe('Goal status unknown: Keep the objective (native-future-state)')
     expect(container.textContent).not.toContain('Goal set')
     expect(container.textContent).not.toContain('Goal blocked')
@@ -830,7 +1096,15 @@ describe('shared goal notification rendering', () => {
 
 describe('renderNotificationBlocks auto-review', () => {
   type ReviewBlock = Extract<NotificationBlock, { kind: 'auto-review' }>
-  const deniedBlock: ReviewBlock = { kind: 'auto-review', reviewId: 'r1', outcome: 'denied', title: 'Auto-review denied (high risk): curl x | sh', rationale: 'The host is **not** trusted.', approvable: true, approved: false }
+  const deniedBlock: ReviewBlock = {
+    kind: 'auto-review',
+    reviewId: 'r1',
+    outcome: 'denied',
+    title: 'Auto-review denied (high risk): curl x | sh',
+    rationale: 'The host is **not** trusted.',
+    approvable: true,
+    approved: false,
+  }
 
   /** A capability whose call the test settles, so it can watch the pending state. */
   function deferredReviews() {
@@ -838,7 +1112,11 @@ describe('renderNotificationBlocks auto-review', () => {
     const approveDenied = vi.fn((_reviewId: string) => new Promise<void>((resolve, reject) => {
       settle = { resolve, reject }
     }))
-    return { reviews: { approveDenied }, approveDenied, settle: () => settle! }
+    return {
+      reviews: { approveDenied },
+      approveDenied,
+      settle: () => settle!,
+    }
   }
 
   function renderBlock(block: ReviewBlock, context?: RowRenderContext) {
@@ -853,7 +1131,13 @@ describe('renderNotificationBlocks auto-review', () => {
   })
 
   it('draws a different glyph for each outcome', () => {
-    const glyphs = (['approved', 'denied', 'timed-out', 'aborted', 'unknown'] as const).map((outcome) => {
+    const glyphs = ([
+      'approved',
+      'denied',
+      'timed-out',
+      'aborted',
+      'unknown',
+    ] as const).map((outcome) => {
       const { container, unmount } = renderBlock({ ...deniedBlock, outcome, approvable: false })
       const glyph = container.querySelector('svg')?.innerHTML
       unmount()
@@ -906,7 +1190,9 @@ describe('renderNotificationBlocks auto-review', () => {
     const { reviews } = deferredReviews()
     const context: RowRenderContext = {
       get reviews() {
-        return offered() ? reviews : undefined
+        return offered()
+          ? reviews
+          : undefined
       },
     }
     const { container } = renderBlock(deniedBlock, context)
@@ -922,7 +1208,9 @@ describe('renderNotificationBlocks auto-review', () => {
     const { reviews, settle } = deferredReviews()
     const context: RowRenderContext = {
       get reviews() {
-        return offered() ? reviews : undefined
+        return offered()
+          ? reviews
+          : undefined
       },
     }
     const { container } = renderBlock(deniedBlock, context)
@@ -959,9 +1247,13 @@ describe('renderNotificationBlocks auto-review', () => {
   })
 
   it('renders the two worker notices of the auto-review flow', () => {
-    expect(renderText([{ type: NOTIFICATION_TYPE.AutoReviewApproved, review_id: 'r1' }], AgentProvider.CODEX))
+    expect(renderText([
+      { type: NOTIFICATION_TYPE.AutoReviewApproved, review_id: 'r1' },
+    ], AgentProvider.CODEX))
       .toBe('You approved an action that auto-review denied.')
-    expect(renderText([{ type: NOTIFICATION_TYPE.PendingRequestsApproved, count: 1 }], AgentProvider.CODEX))
+    expect(renderText([
+      { type: NOTIFICATION_TYPE.PendingRequestsApproved, count: 1 },
+    ], AgentProvider.CODEX))
       .toBe('Bypass permissions approved 1 pending request.')
   })
 })

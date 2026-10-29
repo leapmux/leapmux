@@ -21,11 +21,21 @@ export async function withGeminiMcp(context: ManagedNativeScenarioContext, serve
   const settings: unknown = JSON.parse(readFileSync(path, 'utf8'))
   if (!isObject(settings))
     throw new Error('The native Gemini settings must be an object.')
-  const existing = isObject(settings.mcpServers) ? settings.mcpServers : {}
-  const content = JSON.stringify({ ...settings, mcpServers: { ...existing, [server.name]: { command: server.command, args: server.args } } })
+  const existing = isObject(settings.mcpServers)
+    ? settings.mcpServers
+    : {}
+  const content = JSON.stringify({
+    ...settings,
+    mcpServers: {
+      ...existing,
+      [server.name]: { command: server.command, args: server.args },
+    },
+  })
   const keeper = await currentNativeAgent(context)
   await withNativeConfigurationFile({ path, content, runDir: getGlobalState().tmpDir }, async () => {
-    const opened = await openProviderAgent(context.leapmuxServer, context.workspaceId, GEMINI_AGENT, { optionValues: { permissionMode: 'yolo' } })
+    const opened = await openProviderAgent(context.leapmuxServer, context.workspaceId, GEMINI_AGENT, {
+      optionValues: { permissionMode: 'yolo' },
+    })
     await withCleanup(async () => {
       await tabById(context.page, opened.agentId).click()
       await currentNativeAgent(context)

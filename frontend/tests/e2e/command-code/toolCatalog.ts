@@ -8,18 +8,23 @@ export function commandCodeToolCatalog(request: MockModelRequestRecord): string[
     throw new Error('The Command Code catalog requires a native Chat Completions request.')
   const system = request.body.messages.filter(isObject).filter(message => message.role === 'system').map((message) => {
     if (typeof message.content !== 'string')
-      throw new Error('The Command Code system message must contain native text.')
+      throw new TypeError('The Command Code system message must contain native text.')
     return message.content
   }).join('\n')
   const additional = system.slice(system.indexOf('# Additional tools'))
   const count = /You HAVE the (\d+) tools below/.exec(additional)?.[1]
-  const deferred = [...additional.matchAll(/^- (\w+)\{/gm)].map(match => match[1]!)
+  const deferred = [
+    ...additional.matchAll(/^- (\w+)\{/gm),
+  ].map(match => match[1]!)
   if (count === undefined || deferred.length !== Number(count) || new Set(deferred).size !== deferred.length)
     throw new Error('The Command Code deferred catalog is absent or incomplete.')
   const attached = nativeModelToolNames(request)
   if (attached.some(name => deferred.includes(name)))
     throw new Error('The native Command Code catalog repeats an attached tool.')
-  return [...attached, ...deferred]
+  return [
+    ...attached,
+    ...deferred,
+  ]
 }
 
 /**
@@ -34,7 +39,9 @@ export function commandCodeToolCatalog(request: MockModelRequestRecord): string[
  * an empty list. So this reader throws instead of returning a list that it cannot trust.
  */
 export function commandCodeLoadedToolNames(result: string): string[] {
-  const names = [...result.matchAll(/^### (\S+)$/gm)].map(match => match[1]!)
+  const names = [
+    ...result.matchAll(/^### (\S+)$/gm),
+  ].map(match => match[1]!)
   const stated = /^Loaded (\d+) tool schema\(s\)/u.exec(result)?.[1]
   if (names.length !== Number(stated ?? 0))
     throw new Error(`The Command Code load_tools result states ${stated ?? 'no'} loaded schemas, and ${names.length} headers name one.`)

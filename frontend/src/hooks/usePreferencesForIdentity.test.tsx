@@ -46,7 +46,9 @@ vi.mock('~/api/clients', () => ({
 }))
 
 vi.mock('~/api/workerRpc', () => ({
-  channelManager: { closeAll: vi.fn() },
+  channelManager: {
+    closeAll: vi.fn(),
+  },
 }))
 
 // `~/api/transport` reads these from the same module at load time, so the
@@ -55,7 +57,9 @@ vi.mock('~/api/platformBridge', () => ({
   desktopFetch: vi.fn(),
   getCapabilities: () => ({ hubTransport: 'direct' }),
   isTauriApp: () => false,
-  platformBridge: { resetTunnels: vi.fn().mockResolvedValue(undefined) },
+  platformBridge: {
+    resetTunnels: vi.fn().mockResolvedValue(undefined),
+  },
 }))
 
 vi.mock('~/lib/systemInfo', async () => {
@@ -74,12 +78,23 @@ function user(id: string): User {
 
 /** A SettingValue-shaped object, as `listUserSettings` returns it. */
 function settingValue(key: string, effectiveJson: string, customized = false) {
-  return { key, effectiveJson, customized, valueJson: effectiveJson, secretSet: {} }
+  return {
+    key,
+    effectiveJson,
+    customized,
+    valueJson: effectiveJson,
+    secretSet: {},
+  }
 }
 
 /** One `listUserSettings` reply carrying a single account theme. */
 function themeReply(mode: string) {
-  return { descriptors: [], values: [settingValue('theme', JSON.stringify({ name: 'default', mode }))] }
+  return {
+    descriptors: [],
+    values: [
+      settingValue('theme', JSON.stringify({ name: 'default', mode })),
+    ],
+  }
 }
 
 /** A promise plus its resolvers, for pinning completion order. */
@@ -123,7 +138,10 @@ function renderApp() {
       </PreferencesProvider>
     </AuthProvider>
   ))
-  return { auth: () => auth!, prefs: () => prefs! }
+  return {
+    auth: () => auth!,
+    prefs: () => prefs!,
+  }
 }
 
 /**
@@ -164,7 +182,9 @@ beforeEach(() => {
   // test identity would make the first resolved identity look unchanged.
   resetStorageAccountForTests()
   getCurrentUser.mockRejectedValue(unauthenticated())
-  login.mockResolvedValue({ user: user('u1') })
+  login.mockResolvedValue({
+    user: user('u1'),
+  })
   logout.mockResolvedValue({})
   listUserSettings.mockResolvedValue({ descriptors: [], values: [] })
   updateUserSetting.mockResolvedValue({})
@@ -205,7 +225,9 @@ describe('usePreferencesForIdentity', () => {
     await waitFor(() => expect(app.prefs().theme().mode).toBe('dark'))
 
     listUserSettings.mockResolvedValue(themeReply('light'))
-    login.mockResolvedValue({ user: user('u2') })
+    login.mockResolvedValue({
+      user: user('u2'),
+    })
     await app.auth().login('u2', 'pw')
 
     await waitFor(() => expect(app.prefs().theme().mode).toBe('light'))
@@ -237,7 +259,9 @@ describe('usePreferencesForIdentity', () => {
   // this identity's settings, so another request would duplicate each normal
   // page load.
   it('does not reload for the identity the mount load already covered', async () => {
-    getCurrentUser.mockResolvedValue({ user: user('u1') })
+    getCurrentUser.mockResolvedValue({
+      user: user('u1'),
+    })
     listUserSettings.mockResolvedValue(themeReply('dark'))
     const app = await renderBootstrapped()
 
@@ -250,7 +274,9 @@ describe('usePreferencesForIdentity', () => {
   // The identity controls reloads, not the User object. `refreshUser` replaces
   // the object with an equal value. A render changes neither value.
   it('does not reload while the identity stays the same', async () => {
-    getCurrentUser.mockResolvedValue({ user: user('u1') })
+    getCurrentUser.mockResolvedValue({
+      user: user('u1'),
+    })
     listUserSettings.mockResolvedValue(themeReply('dark'))
     const app = await renderBootstrapped()
     await waitFor(() => expect(listUserSettings).toHaveBeenCalledTimes(1))
@@ -343,7 +369,9 @@ describe('usePreferencesForIdentity', () => {
     listUserSettings.mockResolvedValue({ descriptors: [], values: [] })
     // Write the document for u1 before sign-in. A normal page starts without an
     // identity and receives the account later.
-    await seedDeviceTierFor('u1', { theme: { name: 'nord', mode: 'dark' } })
+    await seedDeviceTierFor('u1', {
+      theme: { name: 'nord', mode: 'dark' },
+    })
 
     const app = await renderBootstrapped()
     expect(app.prefs().theme()).toEqual({ name: 'default', mode: 'system' })
@@ -360,13 +388,17 @@ describe('usePreferencesForIdentity', () => {
   // device tier. Otherwise, each signal keeps the previous user's values.
   it('re-seeds the device tier when one user replaces another', async () => {
     listUserSettings.mockResolvedValue({ descriptors: [], values: [] })
-    await seedDeviceTierFor('u1', { theme: { name: 'nord', mode: 'dark' } })
+    await seedDeviceTierFor('u1', {
+      theme: { name: 'nord', mode: 'dark' },
+    })
     const app = await renderBootstrapped()
 
     await app.auth().login('u1', 'pw')
     expect(app.prefs().theme()).toEqual({ name: 'nord', mode: 'dark' })
 
-    login.mockResolvedValue({ user: user('u2') })
+    login.mockResolvedValue({
+      user: user('u2'),
+    })
     await app.auth().login('u2', 'pw')
 
     // u2 wrote nothing on this device, so the provider uses the defaults.
@@ -379,9 +411,18 @@ describe('usePreferencesForIdentity', () => {
   it('returns both tiers to their defaults on a sign-out', async () => {
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [{ key: 'diff_view', effectiveJson: JSON.stringify('split'), customized: true }],
+      values: [
+        {
+          key: 'diff_view',
+          effectiveJson: JSON.stringify('split'),
+          customized: true,
+        },
+      ],
     })
-    await seedDeviceTierFor('u1', { theme: { name: 'nord', mode: 'dark' }, enterKeyMode: 'enter-sends' })
+    await seedDeviceTierFor('u1', {
+      theme: { name: 'nord', mode: 'dark' },
+      enterKeyMode: 'enter-sends',
+    })
     const app = await renderBootstrapped()
 
     await app.auth().login('u1', 'pw')

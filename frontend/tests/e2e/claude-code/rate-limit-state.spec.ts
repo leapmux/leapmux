@@ -34,13 +34,20 @@ claudeTest.describe('Claude Code rate-limit state', () => {
         })
         await loginViaToken(page, server.adminToken)
         await openWorkspace(page, workspaceId)
-        const context = await nativeContext({ page, modelScript, leapmuxServer: server, workspaceId })
+        const context = await nativeContext({
+          page,
+          modelScript,
+          leapmuxServer: server,
+          workspaceId,
+        })
         await exerciseRateLimitWindow(context, nearLimitRateLimits(), { reload: true })
       })
     })
   })
 
   claudeTest('the API-key headers do not create subscriber rate-limit state', async ({ native }) => {
-    await expectNoRateLimitState(native, { relatedProof: () => exerciseNativeQuotaHeaders(native) })
+    await expectNoRateLimitState(native, {
+      relatedProof: () => exerciseNativeQuotaHeaders(native),
+    })
   })
 })

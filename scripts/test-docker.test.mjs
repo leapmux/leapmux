@@ -34,12 +34,24 @@ describe('docker image tests', () => {
 
   for (const [scenario, args] of [
     ['missing image', []],
-    ['empty image', ['']],
-    ['option instead of an image', ['--help']],
-    ['extra argument', ['image', 'extra']],
+    [
+      'empty image',
+      [''],
+    ],
+    [
+      'option instead of an image',
+      ['--help'],
+    ],
+    [
+      'extra argument',
+      ['image', 'extra'],
+    ],
   ]) {
     it(`rejects ${scenario} before calling Docker`, () => {
-      const result = spawnSync(process.execPath, [join(root, 'scripts/test-docker.mjs'), ...args], { encoding: 'utf8' })
+      const result = spawnSync(process.execPath, [
+        join(root, 'scripts/test-docker.mjs'),
+        ...args,
+      ], { encoding: 'utf8' })
       expect(result.status).not.toBe(0)
       expect(result.stderr).toContain('Usage: test-docker.mjs <image>')
       expect(result.stdout).not.toContain('Testing ')

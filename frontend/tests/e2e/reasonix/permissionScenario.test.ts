@@ -46,7 +46,12 @@ describe('prepareReasonixPermissionRules', () => {
   })
 
   it('refuses an environment that has no native model configuration directory', async () => {
-    vi.mocked(createMockAgentEnvironment).mockResolvedValue({ homeDir: directory, piAgentDir: '', ohMyPiAgentDir: '', env: {} })
+    vi.mocked(createMockAgentEnvironment).mockResolvedValue({
+      homeDir: directory,
+      piAgentDir: '',
+      ohMyPiAgentDir: '',
+      env: {},
+    })
     await expect(prepareReasonixPermissionRules(directory, 'http://127.0.0.1:4567')).rejects.toThrow('ENOENT')
   })
 })

@@ -15,5 +15,7 @@ export function qwenAgentTurnEnd(parent: Record<string, unknown>): string | unde
   if (parent.method !== QWEN_METHOD.EndTurn)
     return undefined
   const reason = pickObject(parent, 'params')?.reason
-  return typeof reason === 'string' ? reason : ''
+  return typeof reason === 'string'
+    ? reason
+    : ''
 }

@@ -20,7 +20,9 @@ vi.mock('./ui', async importOriginal => ({
 vi.mock('./nativeConversation', () => ({
   sendNativeAnswer: async (_context: unknown, _prompt: string, answer: string) => {
     fake.events.push(`answer ${answer}`)
-    return { instructions: fake.instructions.shift() }
+    return {
+      instructions: fake.instructions.shift(),
+    }
   },
 }))
 vi.mock('./nativeScenario', async importOriginal => ({
@@ -59,7 +61,12 @@ function planContext(): ManagedNativeScenarioContext {
       return null
     },
   })
-  return { page, provider: 0, workspaceId: 'workspace', leapmuxServer: { hubUrl: '', adminToken: '', workerId: '' } } as unknown as ManagedNativeScenarioContext
+  return {
+    page,
+    provider: 0,
+    workspaceId: 'workspace',
+    leapmuxServer: { hubUrl: '', adminToken: '', workerId: '' },
+  } as unknown as ManagedNativeScenarioContext
 }
 
 describe('exerciseNativePlanInstructions', () => {
@@ -103,6 +110,8 @@ describe('exerciseNativePlanInstructions', () => {
   it('does not count a plan word that the Default request already held', async () => {
     fake.instructions = ['You can plan.', 'You can plan.\nAnswer in English.']
     fake.agents = [before, after]
-    await expect(exerciseNativePlanInstructions(planContext(), { keptSettings: () => {} })).rejects.toThrow('planning instructions')
+    await expect(exerciseNativePlanInstructions(planContext(), {
+      keptSettings: () => {},
+    })).rejects.toThrow('planning instructions')
   })
 })

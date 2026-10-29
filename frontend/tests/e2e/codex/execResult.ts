@@ -6,7 +6,9 @@ import { nativeToolResult } from '../helpers/nativeToolResult'
 function objectText(text: string): Record<string, unknown> | null {
   try {
     const value: unknown = JSON.parse(text)
-    return isObject(value) ? value : null
+    return isObject(value)
+      ? value
+      : null
   }
   catch {
     return null
@@ -35,7 +37,7 @@ export function readCodexExecResult(request: MockModelRequestRecord, callId: str
   if (Object.hasOwn(result, 'exit_code')) {
     const exitCode = result.exit_code
     if (typeof exitCode !== 'number' || !Number.isSafeInteger(exitCode))
-      throw new Error('The native Codex execution exit code must be an integer.')
+      throw new TypeError('The native Codex execution exit code must be an integer.')
     return { text: result.output, exitCode, failed: exitCode !== 0 }
   }
   if (typeof result.session_id !== 'number' || !Number.isSafeInteger(result.session_id) || result.session_id < 0)

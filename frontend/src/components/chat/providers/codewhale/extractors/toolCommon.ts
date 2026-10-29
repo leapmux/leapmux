@@ -136,7 +136,9 @@ function itemToolInput(payload: Record<string, unknown>, metadata: Record<string
     return {}
   try {
     const value: unknown = JSON.parse(text)
-    return isObject(value) ? value : {}
+    return isObject(value)
+      ? value
+      : {}
   }
   catch {
     return {}
@@ -164,7 +166,9 @@ function itemToolFrame(envelope: CodewhaleEnvelope): CodewhaleToolFrame | null {
     input: itemToolInput(envelope.payload, metadata),
     outcome,
     // An open item states its arguments in `detail`, which is not an answer.
-    text: outcome === 'open' ? '' : pickString(item, CODEWHALE_ITEM_FIELD.Detail),
+    text: outcome === 'open'
+      ? ''
+      : pickString(item, CODEWHALE_ITEM_FIELD.Detail),
     metadata,
     deferredLoad: metadata[CODEWHALE_ITEM_METADATA.DeferredToolLoaded] === true,
   }
@@ -191,13 +195,19 @@ export function codewhaleChildBlock(parsed: unknown): CodewhaleChildBlock | null
     return null
   const message = pickObject(parsed, CODEWHALE_TRANSCRIPT_FIELD.Message)
   const content = message?.[CODEWHALE_TRANSCRIPT_FIELD.Content]
-  const block = Array.isArray(content) && content.length === 1 ? content[0] : undefined
+  const block = Array.isArray(content) && content.length === 1
+    ? content[0]
+    : undefined
   if (!isObject(block))
     return null
   const type = pickString(block, CODEWHALE_BLOCK_FIELD.Type)
   if (!type)
     return null
-  return { role: pickString(message, CODEWHALE_TRANSCRIPT_FIELD.Role), type, block }
+  return {
+    role: pickString(message, CODEWHALE_TRANSCRIPT_FIELD.Role),
+    type,
+    block,
+  }
 }
 
 /** The text a tool result block answers with. Codewhale states it as a string. */
@@ -223,7 +233,15 @@ function blockToolFrame(child: CodewhaleChildBlock): CodewhaleToolFrame | null {
     const toolName = pickString(block, CODEWHALE_BLOCK_FIELD.Name)
     if (!callId || !toolName)
       return null
-    return { callId, toolName, input: pickObject(block, CODEWHALE_BLOCK_FIELD.Input) ?? {}, outcome: 'open', text: '', metadata: {}, deferredLoad: false }
+    return {
+      callId,
+      toolName,
+      input: pickObject(block, CODEWHALE_BLOCK_FIELD.Input) ?? {},
+      outcome: 'open',
+      text: '',
+      metadata: {},
+      deferredLoad: false,
+    }
   }
   if (child.type === CODEWHALE_BLOCK_TYPE.ToolResult) {
     const callId = pickString(block, CODEWHALE_BLOCK_FIELD.ToolUseID)
@@ -234,7 +252,9 @@ function blockToolFrame(child: CodewhaleChildBlock): CodewhaleToolFrame | null {
       callId,
       toolName: '',
       input: {},
-      outcome: block[CODEWHALE_BLOCK_FIELD.IsError] === true ? 'failed' : 'completed',
+      outcome: block[CODEWHALE_BLOCK_FIELD.IsError] === true
+        ? 'failed'
+        : 'completed',
       text,
       metadata: {},
       deferredLoad: CODEWHALE_DEFERRED_LOAD_SENTENCE.test(text),
@@ -279,8 +299,14 @@ export function codewhaleToolFrame(parsed: unknown): CodewhaleToolFrame | null {
   if (cached !== undefined)
     return cached
   const envelope = codewhaleEnvelope(parsed)
-  const child = envelope ? null : codewhaleChildBlock(parsed)
-  const frame = envelope ? itemToolFrame(envelope) : child ? blockToolFrame(child) : null
+  const child = envelope
+    ? null
+    : codewhaleChildBlock(parsed)
+  const frame = envelope
+    ? itemToolFrame(envelope)
+    : child
+      ? blockToolFrame(child)
+      : null
   frameCache.set(parsed, frame)
   return frame
 }
@@ -309,7 +335,9 @@ export function codewhaleFrameFailed(frame: CodewhaleToolFrame): boolean {
 export function codewhaleToolSpanRole(frame: CodewhaleToolFrame, parsed: ParsedMessageContent | undefined): ToolSpanRole {
   if (retainedRowIsFinal(parsed?.completion) || parseToolOutcome(parsed?.messageMetadata) !== null)
     return 'result'
-  return frame.outcome === 'open' ? 'request' : 'result'
+  return frame.outcome === 'open'
+    ? 'request'
+    : 'result'
 }
 
 /**
@@ -321,5 +349,7 @@ export function codewhaleToolSpanRole(frame: CodewhaleToolFrame, parsed: ParsedM
  */
 export function codewhalePairedFrame(own: CodewhaleToolFrame, paired: ParsedMessageContent | undefined): CodewhaleToolFrame | null {
   const frame = codewhaleToolFrame(paired?.parentObject)
-  return frame && frame.callId === own.callId ? frame : null
+  return frame && frame.callId === own.callId
+    ? frame
+    : null
 }

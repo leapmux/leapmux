@@ -31,8 +31,13 @@ const EXIT_CODE_MARKER = /^(?:Exit code|exit code:) (\d+)(?:\n+|$)/
  */
 export function splitExitCodeMarker(text: string): { output: string, exitCode?: number } {
   const marker = EXIT_CODE_MARKER.exec(text)
-  const exitCode = marker ? Number(marker[1]) : Number.NaN
+  const exitCode = marker
+    ? Number(marker[1])
+    : Number.NaN
   if (!marker || !Number.isSafeInteger(exitCode))
     return { output: text }
-  return { output: text.slice(marker[0].length), exitCode }
+  return {
+    output: text.slice(marker[0].length),
+    exitCode,
+  }
 }

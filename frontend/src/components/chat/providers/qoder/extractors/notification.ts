@@ -18,21 +18,38 @@ export function qoderCompactionBoundary(parsed: ParsedMessageContent): Compactio
 export function qoderNotificationEntry(message: Record<string, unknown>): NotificationEntry[] {
   if (message.type !== QODER_FRAME_KIND.System)
     return []
-  if (message.subtype === QODER_SYSTEM_SUBTYPE.CompactBoundary)
-    return [{ kind: 'compaction', phase: 'end', detail: compactionMetaFromBoundary(message) }]
+  if (message.subtype === QODER_SYSTEM_SUBTYPE.CompactBoundary) {
+    return [
+      {
+        kind: 'compaction',
+        phase: 'end',
+        detail: compactionMetaFromBoundary(message),
+      },
+    ]
+  }
   if (message.subtype === QODER_SYSTEM_SUBTYPE.ApiRetry) {
     const status = integerCount(message, 'error_status')
     const facts: RetryFacts = {}
     assignDefined(facts, 'attempt', pickNumber(message, 'attempt', undefined))
     assignDefined(facts, 'maxAttempts', pickNumber(message, 'max_retries', undefined))
     assignDefined(facts, 'delayMs', pickNumber(message, 'retry_delay_ms', undefined))
-    assignDefined(facts, 'error', pickString(message, 'error').trim() || (status === undefined ? undefined : String(status)))
-    return [retryEntry('api', facts)]
+    assignDefined(facts, 'error', pickString(message, 'error').trim() || (status === undefined
+      ? undefined
+      : String(status)))
+    return [
+      retryEntry('api', facts),
+    ]
   }
   if (message.subtype === QODER_SYSTEM_SUBTYPE.ModelQueueStatus) {
     const count = integerCount(message, 'queue_count')
     const wait = pickCounter(message, 'wait_time_ms')
-    return [{ kind: 'status', text: `Model request queued${count ? ` (${count} ahead)` : ''}${wait ? `, waited ${formatDuration(wait)}` : ''}` }]
+    return [
+      { kind: 'status', text: `Model request queued${count
+        ? ` (${count} ahead)`
+        : ''}${wait
+        ? `, waited ${formatDuration(wait)}`
+        : ''}` },
+    ]
   }
   if (message.subtype === QODER_SYSTEM_SUBTYPE.HookResponse) {
     if (message.outcome === 'success')
@@ -41,23 +58,32 @@ export function qoderNotificationEntry(message: Record<string, unknown>): Notifi
     assignDefined(entry, 'event', pickString(message, 'hook_event').trim() || undefined)
     assignDefined(entry, 'name', pickString(message, 'hook_name').trim() || undefined)
     const exitCode = pickNumber(message, 'exit_code', undefined)
-    assignDefined(entry, 'exitCode', Number.isSafeInteger(exitCode) ? exitCode : undefined)
+    assignDefined(entry, 'exitCode', Number.isSafeInteger(exitCode)
+      ? exitCode
+      : undefined)
     assignDefined(entry, 'detail', pickString(message, 'stderr').trim() || pickString(message, 'output').trim() || undefined)
     return [entry]
   }
   if (message.subtype === QODER_SYSTEM_SUBTYPE.AgentsMdSizeWarning) {
     const total = integerCount(message, 'total_bytes')
     const threshold = integerCount(message, 'threshold_bytes')
-    return [{ kind: 'text', text: total !== undefined && threshold !== undefined
-      ? `Warning: AGENTS.md files total ${total} bytes, above the ${threshold}-byte threshold`
-      : 'Warning: AGENTS.md files exceed the configured size threshold' }]
+    return [
+      {
+        kind: 'text',
+        text: total !== undefined && threshold !== undefined
+          ? `Warning: AGENTS.md files total ${total} bytes, above the ${threshold}-byte threshold`
+          : 'Warning: AGENTS.md files exceed the configured size threshold',
+      },
+    ]
   }
   return []
 }
 
 function integerCount(message: Record<string, unknown>, key: string): number | undefined {
   const value = pickCounter(message, key)
-  return Number.isSafeInteger(value) ? value : undefined
+  return Number.isSafeInteger(value)
+    ? value
+    : undefined
 }
 
 /** Identify a stored start for the shared compaction safety net. */

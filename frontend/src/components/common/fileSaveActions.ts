@@ -100,7 +100,9 @@ export function createFileSaveActions(input: FileSaveActionsInput): FileSaveActi
       const percent = Math.min(100, Math.floor((received / total) * 100))
       // Guard against a late emit after `.finally` cleared the op (e.g.
       // a worker response that races the rejection from a failed save).
-      setOp(prev => prev === null ? null : { kind, progress: percent })
+      setOp(prev => prev === null
+        ? null
+        : { kind, progress: percent })
     }
     fn(input.workerId(), input.path(), input.flavor(), onProgress)
       .then((savedPath) => {

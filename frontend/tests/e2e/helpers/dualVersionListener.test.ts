@@ -57,7 +57,10 @@ describe('createDualVersionListener', () => {
 
   it('serves a request whose body arrives after its headers', async () => {
     const { url } = await listen()
-    const body = await (await fetch(`${url}/with-body`, { method: 'POST', body: 'x'.repeat(50_000) })).json() as { path: string }
+    const body = await (await fetch(`${url}/with-body`, {
+      method: 'POST',
+      body: 'x'.repeat(50_000),
+    })).json() as { path: string }
     expect(body.path).toBe('/with-body')
   })
 
@@ -108,7 +111,9 @@ function splittingConnection(port: number): Socket {
 
 /** One HTTP/2 request over this connection, answered as text. */
 async function requestOverHttp2(url: string, path: string, createConnection?: () => Socket): Promise<string> {
-  const client = connectHttp2(url, createConnection ? { createConnection } : {})
+  const client = connectHttp2(url, createConnection
+    ? { createConnection }
+    : {})
   try {
     return await new Promise<string>((resolve, reject) => {
       client.on('error', reject)

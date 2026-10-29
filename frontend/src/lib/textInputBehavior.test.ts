@@ -73,7 +73,11 @@ describe('editable-host selector (CONTENT_EDITABLE_SELECTOR)', () => {
       expect(el.matches(CONTENT_EDITABLE_SELECTOR), `contenteditable="${value}"`).toBe(true)
       expect(isContentEditableElement(el)).toBe(true)
     }
-    for (const el of [editable('false'), editable('inherit'), document.createElement('div')]) {
+    for (const el of [
+      editable('false'),
+      editable('inherit'),
+      document.createElement('div'),
+    ]) {
       document.body.append(el)
       expect(el.matches(CONTENT_EDITABLE_SELECTOR)).toBe(false)
       expect(isContentEditableElement(el)).toBe(false)
@@ -185,7 +189,15 @@ describe('isTextEntryElement', () => {
   })
 
   it('reports the input types that hold free text', () => {
-    for (const type of ['text', 'search', 'email', 'password', 'tel', 'url', 'number']) {
+    for (const type of [
+      'text',
+      'search',
+      'email',
+      'password',
+      'tel',
+      'url',
+      'number',
+    ]) {
       const el = document.createElement('input')
       el.type = type
       expect(isTextEntryElement(el), type).toBe(true)
@@ -263,7 +275,10 @@ describe('isTypingContext', () => {
   // does answer null -- one whose <body> was removed, and an <iframe>
   // document before it loads, both do.
   it('reports no typing while the document has no active element', () => {
-    Object.defineProperty(document, 'activeElement', { configurable: true, get: () => null })
+    Object.defineProperty(document, 'activeElement', {
+      configurable: true,
+      get: () => null,
+    })
     try {
       expect(isTypingContext()).toBe(false)
     }

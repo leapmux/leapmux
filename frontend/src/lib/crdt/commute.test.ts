@@ -52,7 +52,9 @@ function bytesToHex(bytes: Uint8Array): string {
   let out = ''
   for (let i = 0; i < bytes.length; i++) {
     const b = bytes[i]?.toString(16) ?? ''
-    out += b.length === 1 ? `0${b}` : b
+    out += b.length === 1
+      ? `0${b}`
+      : b
   }
   return out
 }
@@ -90,14 +92,26 @@ function mulberry32(a: number): () => number {
 function setKindOp(nodeId: string, kind: number, p: bigint, l: bigint, c: string): CrdtOp {
   return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
-    body: { case: 'setNodeRegister', value: create(SetNodeRegisterOpSchema, { nodeId, field: { case: 'kind', value: kind } }) },
+    body: {
+      case: 'setNodeRegister',
+      value: create(SetNodeRegisterOpSchema, {
+        nodeId,
+        field: { case: 'kind', value: kind },
+      }),
+    },
   })
 }
 
 function setPosOp(nodeId: string, position: string, p: bigint, l: bigint, c: string): CrdtOp {
   return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
-    body: { case: 'setNodeRegister', value: create(SetNodeRegisterOpSchema, { nodeId, field: { case: 'position', value: position } }) },
+    body: {
+      case: 'setNodeRegister',
+      value: create(SetNodeRegisterOpSchema, {
+        nodeId,
+        field: { case: 'position', value: position },
+      }),
+    },
   })
 }
 
@@ -106,7 +120,11 @@ function setTabTile(tabId: string, tileId: string, p: bigint, l: bigint, c: stri
     canonicalHlc: hlc(p, l, c),
     body: {
       case: 'setTabRegister',
-      value: create(SetTabRegisterOpSchema, { tabType: TabType.AGENT, tabId, field: { case: 'tileId', value: tileId } }),
+      value: create(SetTabRegisterOpSchema, {
+        tabType: TabType.AGENT,
+        tabId,
+        field: { case: 'tileId', value: tileId },
+      }),
     },
   })
 }
@@ -114,7 +132,10 @@ function setTabTile(tabId: string, tileId: string, p: bigint, l: bigint, c: stri
 function tombstoneNode(nodeId: string, p: bigint, l: bigint, c: string): CrdtOp {
   return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
-    body: { case: 'tombstoneNode', value: create(TombstoneNodeOpSchema, { nodeId }) },
+    body: {
+      case: 'tombstoneNode',
+      value: create(TombstoneNodeOpSchema, { nodeId }),
+    },
   })
 }
 

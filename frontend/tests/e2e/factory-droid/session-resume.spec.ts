@@ -16,7 +16,12 @@ droidTest('reopens a completed picker session and restores its saved Worker rows
   await exerciseSessionResume(native)
 })
 
-const restartTest = createProviderProcessTest({ agent: DROID_AGENT, nativeContext, skipReason: DROID_E2E_SKIP_REASON, modelRules: [DROID_TITLE_RULE] })
+const restartTest = createProviderProcessTest({
+  agent: DROID_AGENT,
+  nativeContext,
+  skipReason: DROID_E2E_SKIP_REASON,
+  modelRules: [DROID_TITLE_RULE],
+})
 restartTest.use({ debugLogging: true })
 
 for (const restart of ['worker', 'hub-and-worker'] as const) {
@@ -26,8 +31,16 @@ for (const restart of ['worker', 'hub-and-worker'] as const) {
     const consoleRecords: Promise<unknown>[] = []
     const recordConsole = (message: ConsoleMessage) => {
       consoleRecords.push(Promise.all(message.args().map(argument => argument.jsonValue())).then(
-        args => ({ type: message.type(), text: message.text(), args }),
-        error => ({ type: message.type(), text: message.text(), error: String(error) }),
+        args => ({
+          type: message.type(),
+          text: message.text(),
+          args,
+        }),
+        error => ({
+          type: message.type(),
+          text: message.text(),
+          error: String(error),
+        }),
       ))
     }
     native.page.on('console', recordConsole)
@@ -38,15 +51,24 @@ for (const restart of ['worker', 'hub-and-worker'] as const) {
       await finishCleanup([
         readNativeMessageSnapshot(native, agent.id).then(snapshot => testInfo.attach('restart-worker-messages', {
           contentType: 'application/json',
-          body: JSON.stringify(snapshot.messages.map(message => ({ message: toJson(AgentChatMessageSchema, message), frame: nativeMessageBody(message) }))),
+          body: JSON.stringify(snapshot.messages.map(message => ({
+            message: toJson(AgentChatMessageSchema, message),
+            frame: nativeMessageBody(message),
+          }))),
         })),
         readAttached(messageBubbles(native.page), 'the restart transcript', rows => rows.every(row => row.isConnected)
-          ? rows.map(row => ({ seq: row.getAttribute('data-message-seq'), text: row.textContent }))
+          ? rows.map(row => ({
+              seq: row.getAttribute('data-message-seq'),
+              text: row.textContent,
+            }))
           : null).then(rows => testInfo.attach('restart-browser-messages', {
           contentType: 'application/json',
           body: JSON.stringify(rows),
         })),
-        Promise.all(consoleRecords).then(records => testInfo.attach('restart-browser-console', { contentType: 'application/json', body: JSON.stringify(records) })),
+        Promise.all(consoleRecords).then(records => testInfo.attach('restart-browser-console', {
+          contentType: 'application/json',
+          body: JSON.stringify(records),
+        })),
       ])
     })
   })

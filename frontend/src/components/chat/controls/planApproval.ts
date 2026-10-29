@@ -20,7 +20,9 @@ export function presetPermissionMode(
   presets: ProviderPermissionPresets | undefined,
   choice: PermissionPresetChoice,
 ): PermissionMode | undefined {
-  return choice === 'unspecified' ? undefined : presets?.[choice]?.sets[OPTION_ID_PERMISSION_MODE]
+  return choice === 'unspecified'
+    ? undefined
+    : presets?.[choice]?.sets[OPTION_ID_PERMISSION_MODE]
 }
 
 /**
@@ -40,7 +42,9 @@ export function planApprovalPresets(
     if (preset?.sets[OPTION_ID_PERMISSION_MODE] !== undefined)
       available[kind] = preset
   }
-  return Object.keys(available).length > 0 ? available : undefined
+  return Object.keys(available).length > 0
+    ? available
+    : undefined
 }
 
 export interface PlanApprovalState {
@@ -63,14 +67,22 @@ export function createPlanApprovalState(props: Pick<ActionsProps, 'contextUsage'
   const { checked: clearContext, set: setClearContext } = clear
   const contextPct = createMemo(() => {
     const pct = computePercentage(props.contextUsage, props.modelContextWindow, props.agentProvider)
-    return pct !== null ? Math.round(pct) : null
+    return pct !== null
+      ? Math.round(pct)
+      : null
   })
   // The permission pill and selected mode use the same available presets.
   const presets = () => planApprovalPresets(props.presets)
   const permissionMode = () => presetPermissionMode(presets(), permissionChoice.choice())
   const permissionPill = () => buildPermissionPill(presets(), permissionChoice)
 
-  return { clearContext, setClearContext, permissionPill, contextPct, permissionMode }
+  return {
+    clearContext,
+    setClearContext,
+    permissionPill,
+    contextPct,
+    permissionMode,
+  }
 }
 
 /** Builds the shared option list for a plan approval. */
@@ -82,7 +94,9 @@ export function planApprovalSwitches(state: PlanApprovalState): ControlRequestSw
       checked: state.clearContext(),
       onChange: state.setClearContext,
       // The suffix rides along only when there is a percentage to state.
-      ...(state.contextPct() !== null ? { suffix: ` (${state.contextPct()}%)` } : {}),
+      ...(state.contextPct() !== null
+        ? { suffix: ` (${state.contextPct()}%)` }
+        : {}),
     },
   ]
 }

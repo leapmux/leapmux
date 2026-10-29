@@ -8,8 +8,13 @@ import { createNativePermissionRemoval } from './nativePermissionRemoval'
 import { currentNativeAgent, nativeToolOutcome } from './nativeScenario'
 import { getGlobalState } from './server'
 
-vi.mock('./nativeScenario', () => ({ currentNativeAgent: vi.fn(), nativeToolOutcome: vi.fn() }))
-vi.mock('./server', () => ({ getGlobalState: vi.fn() }))
+vi.mock('./nativeScenario', () => ({
+  currentNativeAgent: vi.fn(),
+  nativeToolOutcome: vi.fn(),
+}))
+vi.mock('./server', () => ({
+  getGlobalState: vi.fn(),
+}))
 
 let scratch: string
 let workingDir: string

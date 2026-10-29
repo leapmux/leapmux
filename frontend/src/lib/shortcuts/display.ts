@@ -103,11 +103,15 @@ export function formatShortcut(key: string, platform: Platform = getPlatform()):
  */
 export function getShortcutHintsText(commandId: string, separator = ' / '): string | undefined {
   const hints = getBindingsForCommand(commandId).map(key => formatShortcut(key))
-  return hints.length > 0 ? hints.join(separator) : undefined
+  return hints.length > 0
+    ? hints.join(separator)
+    : undefined
 }
 
 /** Append a keyboard shortcut hint to text, e.g. "New Agent (⌘N)". */
 export function shortcutHint(text: string, commandId: string): string {
   const hints = getShortcutHintsText(commandId)
-  return hints ? `${text} (${hints})` : text
+  return hints
+    ? `${text} (${hints})`
+    : text
 }

@@ -20,12 +20,18 @@ export const CODEWHALE_AGENT: ProviderAgent = { provider: AgentProvider.CODEWHAL
 
 /** Build the scenario context of Codewhale. Its tool rows key by the runtime's own call id, so the context resolves them. */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
-  return managedNativeContext(fixtures, CODEWHALE_AGENT, { resolveToolRowId: codewhaleToolRowIdResolver(fixtures) })
+  return managedNativeContext(fixtures, CODEWHALE_AGENT, {
+    resolveToolRowId: codewhaleToolRowIdResolver(fixtures),
+  })
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */
 export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStartupLaunch {
-  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: 'codewhale', holdWhen: ['app-server'], lazy: false })
+  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, {
+    binaryName: 'codewhale',
+    holdWhen: ['app-server'],
+    lazy: false,
+  })
 }
 
 /** The related proof of a missing-setting cell: a real native shell command runs, and its output returns. */

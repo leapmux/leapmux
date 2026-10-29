@@ -70,19 +70,29 @@ export function rehypeBlockRemoteImages() {
       // parent: `<img>` is phrasing content inside a `<p>`, the `<span>` placeholder keeps
       // that valid, and an in-place swap needs no parent/index and can't be skipped for a
       // root-level image node.
-      toPlaceholder(node, typeof src === 'string' ? src : '', typeof alt === 'string' ? alt : '')
+      toPlaceholder(node, typeof src === 'string'
+        ? src
+        : '', typeof alt === 'string'
+        ? alt
+        : '')
     })
   }
 }
 
 /** Turn `node` into `<span class="blocked-remote-image">[chip][alt-or-url link]</span>`. */
 function toPlaceholder(node: Element, src: string, alt: string): void {
-  const children: ElementContent[] = [{
-    type: 'element',
-    tagName: 'span',
-    properties: { className: [BLOCKED_IMAGE_CHIP_CLASS] },
-    children: [{ type: 'text', value: BLOCKED_IMAGE_CHIP_TEXT }],
-  }]
+  const children: ElementContent[] = [
+    {
+      type: 'element',
+      tagName: 'span',
+      properties: {
+        className: [BLOCKED_IMAGE_CHIP_CLASS],
+      },
+      children: [
+        { type: 'text', value: BLOCKED_IMAGE_CHIP_TEXT },
+      ],
+    },
+  ]
   // Prefer the author's own description; fall back to the URL so the placeholder is never
   // an unexplained chip on its own.
   const label = alt.trim() || src
@@ -90,11 +100,19 @@ function toPlaceholder(node: Element, src: string, alt: string): void {
     children.push({
       type: 'element',
       tagName: 'a',
-      properties: { className: [BLOCKED_IMAGE_LABEL_CLASS], href: src, title: src },
-      children: [{ type: 'text', value: label }],
+      properties: {
+        className: [BLOCKED_IMAGE_LABEL_CLASS],
+        href: src,
+        title: src,
+      },
+      children: [
+        { type: 'text', value: label },
+      ],
     })
   }
   node.tagName = 'span'
-  node.properties = { className: [BLOCKED_IMAGE_CLASS] }
+  node.properties = {
+    className: [BLOCKED_IMAGE_CLASS],
+  }
   node.children = children
 }

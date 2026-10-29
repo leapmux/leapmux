@@ -6,18 +6,41 @@ import { ampBlockText, ampMessageBlocks, ampSideCallId, ampToolResult, ampToolUs
 
 describe('ampToolUse', () => {
   it('reads the call of an assistant row', () => {
-    expect(ampToolUse(ampToolUseRow('shell_command', { command: 'ls' }, 'TU-a'))).toEqual({ id: 'TU-a', name: 'shell_command', input: { command: 'ls' } })
+    expect(ampToolUse(ampToolUseRow('shell_command', { command: 'ls' }, 'TU-a'))).toEqual({
+      id: 'TU-a',
+      name: 'shell_command',
+      input: { command: 'ls' },
+    })
   })
 
   it('answers null for a row that states no call', () => {
     expect(ampToolUse(ampToolResultRow('x'))).toBeNull()
-    expect(ampToolUse({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'x' }] } })).toBeNull()
+    expect(ampToolUse({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'tool_use', name: 'x' },
+        ],
+      },
+    })).toBeNull()
     expect(ampToolUse({ type: 'result' })).toBeNull()
     expect(ampToolUse(undefined)).toBeNull()
   })
 
   it('reads a call whose input is not an object as a call with no arguments', () => {
-    expect(ampToolUse({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'TU-a', name: 'x', input: 'text' }] } })?.input).toEqual({})
+    expect(ampToolUse({
+      type: 'assistant',
+      message: {
+        content: [
+          {
+            type: 'tool_use',
+            id: 'TU-a',
+            name: 'x',
+            input: 'text',
+          },
+        ],
+      },
+    })?.input).toEqual({})
   })
 })
 
@@ -28,23 +51,59 @@ describe('ampToolResult', () => {
   })
 
   it('joins a result stated as text blocks', () => {
-    const row = { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'TU-a', content: [{ type: 'text', text: 'a' }, { type: 'image' }, { type: 'text', text: 'b' }] }] } }
+    const row = {
+      type: 'user',
+      message: {
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'TU-a',
+            content: [
+              { type: 'text', text: 'a' },
+              { type: 'image' },
+              { type: 'text', text: 'b' },
+            ],
+          },
+        ],
+      },
+    }
     expect(ampToolResult(row)?.content).toBe('a\nb')
   })
 
   it('answers null for a row that states no result', () => {
     expect(ampToolResult(ampToolUseRow('x', {}))).toBeNull()
-    expect(ampToolResult({ type: 'user', message: { content: [{ type: 'tool_result', content: 'x' }] } })).toBeNull()
+    expect(ampToolResult({
+      type: 'user',
+      message: {
+        content: [
+          { type: 'tool_result', content: 'x' },
+        ],
+      },
+    })).toBeNull()
   })
 })
 
 describe('ampMessageBlocks and ampBlockText', () => {
   it('read the blocks of a row and join the text of one kind', () => {
-    const row = { type: 'assistant', message: { content: [{ type: 'text', text: 'a' }, 'junk', { type: 'thinking', thinking: 't' }, { type: 'text', text: ' ' }, { type: 'text', text: 'b' }] } }
+    const row = {
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'text', text: 'a' },
+          'junk',
+          { type: 'thinking', thinking: 't' },
+          { type: 'text', text: ' ' },
+          { type: 'text', text: 'b' },
+        ],
+      },
+    }
     expect(ampMessageBlocks(row)).toHaveLength(4)
     expect(ampBlockText(row, 'text', 'text')).toBe('a\n\nb')
     expect(ampBlockText(row, 'thinking', 'thinking')).toBe('t')
-    expect(ampMessageBlocks({ type: 'assistant', message: { content: 'text' } })).toEqual([])
+    expect(ampMessageBlocks({
+      type: 'assistant',
+      message: { content: 'text' },
+    })).toEqual([])
   })
 })
 

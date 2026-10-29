@@ -60,5 +60,7 @@ export function kiloToolKind(toolName: string): ToolKind | undefined {
   // `Object.hasOwn`, not a bare lookup: an agent chooses its own tool names, and a tool
   // called `constructor` or `toString` answers from `Object.prototype` instead of
   // reporting that the table holds no entry.
-  return Object.hasOwn(KILO_TOOL_KINDS, toolName) ? KILO_TOOL_KINDS[toolName] : undefined
+  return Object.hasOwn(KILO_TOOL_KINDS, toolName)
+    ? KILO_TOOL_KINDS[toolName]
+    : undefined
 }

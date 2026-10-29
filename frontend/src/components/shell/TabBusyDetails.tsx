@@ -21,7 +21,11 @@ const AgentBusyDetails: Component<{ reason: Extract<TabBusyReason, { kind: 'agen
           : 'This agent is still working. Closing the tab stops it.'}
       </p>
       <Show when={taskCount() > 0}>
-        <p>{`${pluralize(taskCount(), 'background task')} ${taskCount() === 1 ? 'is' : 'are'} active:`}</p>
+        <p>
+          {`${pluralize(taskCount(), 'background task')} ${taskCount() === 1
+            ? 'is'
+            : 'are'} active:`}
+        </p>
         <ul class={busyDetails} data-testid="busy-background-tasks">
           <For each={props.reason.activeTasks}>
             {task => <li>{task.title}</li>}
@@ -47,14 +51,24 @@ const AgentBusyDetails: Component<{ reason: Extract<TabBusyReason, { kind: 'agen
 export const TabBusyDetails: Component<{ reason: TabBusyReason }> = (props) => {
   return (
     <Switch>
-      <Match when={props.reason.kind === 'agent-turn' ? props.reason : null}>
+      <Match when={props.reason.kind === 'agent-turn'
+        ? props.reason
+        : null}
+      >
         {reason => <AgentBusyDetails reason={reason()} />}
       </Match>
-      <Match when={props.reason.kind === 'terminal-processes' ? props.reason : null}>
+      <Match when={props.reason.kind === 'terminal-processes'
+        ? props.reason
+        : null}
+      >
         {reason => (
           <>
             <p>
-              {`${pluralize(reason().processes.length, 'process', 'processes')} still ${reason().processes.length === 1 ? 'runs' : 'run'} in this terminal. Closing the tab stops ${reason().processes.length === 1 ? 'it' : 'them'}.`}
+              {`${pluralize(reason().processes.length, 'process', 'processes')} still ${reason().processes.length === 1
+                ? 'runs'
+                : 'run'} in this terminal. Closing the tab stops ${reason().processes.length === 1
+                ? 'it'
+                : 'them'}.`}
             </p>
             <ul class={busyDetails} data-testid="busy-processes">
               <For each={reason().processes}>

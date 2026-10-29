@@ -6,6 +6,8 @@ export function writeJunieMcpConfig(workingDir: string, server: string, command:
   const directory = join(workingDir, '.junie', 'mcp')
   mkdirSync(directory, { recursive: true })
   writeFileSync(join(directory, 'mcp.json'), JSON.stringify({
-    mcpServers: { [server]: { command, args } },
+    mcpServers: {
+      [server]: { command, args },
+    },
   }), { mode: 0o600 })
 }

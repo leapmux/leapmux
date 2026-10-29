@@ -66,8 +66,12 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
   const { submit: { submitting, error, formHandler }, worker, gitMode, pathInfo } = useWorkerDialog({
     submit: { fallback: 'Failed to create workspace' },
     worker: {
-      ...(setup.workerId !== undefined ? { preselectedWorkerId: setup.workerId } : {}),
-      ...(setup.workingDir !== undefined ? { defaultWorkingDir: setup.workingDir } : {}),
+      ...(setup.workerId !== undefined
+        ? { preselectedWorkerId: setup.workerId }
+        : {}),
+      ...(setup.workingDir !== undefined
+        ? { defaultWorkingDir: setup.workingDir }
+        : {}),
     },
     // The mode this repository was last started with, so the form opens on the
     // answer the user gave last time rather than on `Use current state`.
@@ -75,11 +79,21 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
     // enables all five, so any stored mode survives. The spread keeps
     // `gitMode` absent when no stored mode exists, rather than passing an
     // explicit undefined into an optional prop.
-    ...(seededMode !== undefined ? { gitMode: { initialIntent: initialIntentForMode(seededMode) } } : {}),
+    ...(seededMode !== undefined
+      ? {
+          gitMode: {
+            initialIntent: initialIntentForMode(seededMode),
+          },
+        }
+      : {}),
     // A seeded snapshot, so `GitOptionsLoader` mounts `GitOptions` on the first
     // paint instead of showing the "Loading branch info" spinner while the
     // probe confirms what the menu already knew.
-    ...(setup.pathInfoSeed !== undefined ? { pathInfo: { seed: setup.pathInfoSeed } } : {}),
+    ...(setup.pathInfoSeed !== undefined
+      ? {
+          pathInfo: { seed: setup.pathInfoSeed },
+        }
+      : {}),
   })
   const tree = createDirectoryTreeState()
   // A word slug, not the worker's tab-name pool: a workspace carries no
@@ -130,7 +144,11 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
         workingDir: worker.workingDir(),
         ...openAgentRequestOptions(provider),
         ...gitMode.toGitFields(),
-        ...(sessionId.trimmed() ? { agentSessionId: sessionId.trimmed() } : {}),
+        ...(sessionId.trimmed()
+          ? {
+              agentSessionId: sessionId.trimmed(),
+            }
+          : {}),
       })
 
       if (agentResp.agent) {
@@ -230,8 +248,12 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
           <AgentProviderSelector
             value={agentProvider}
             onChange={setAgentProvider}
-            {...(props.availableProviders !== undefined ? { availableProviders: props.availableProviders } : {})}
-            {...(props.onRefreshProviders !== undefined ? { onRefresh: props.onRefreshProviders } : {})}
+            {...(props.availableProviders !== undefined
+              ? { availableProviders: props.availableProviders }
+              : {})}
+            {...(props.onRefreshProviders !== undefined
+              ? { onRefresh: props.onRefreshProviders }
+              : {})}
           />
         </DialogTopRow>
         <TitleInput state={title} />

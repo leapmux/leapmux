@@ -103,7 +103,10 @@ timingTest.describe('agent open timing for Claude Code', () => {
         const logsBefore = srv.logLines.length
         const tabsBefore = await agentTabs(page).count()
 
-        const clockAnchor = await page.evaluate(() => ({ perf: performance.now(), wall: Date.now() }))
+        const clockAnchor = await page.evaluate(() => ({
+          perf: performance.now(),
+          wall: Date.now(),
+        }))
         const tClickMs = clockAnchor.perf
         const clockAnchorWallMs = clockAnchor.wall
         await page.getByTestId(`new-agent-button-${AgentProvider.CLAUDE_CODE}`).filter({ visible: true }).first().click()
@@ -259,5 +262,8 @@ claudeTest('opens another provider agent from the menu and button', async ({ nat
 })
 
 claudeTest('retains queued input after the actual native startup fails', async ({ native }) => {
-  await exerciseAgentStartup(native, { launch: nativeLaunch(native), failed: true })
+  await exerciseAgentStartup(native, {
+    launch: nativeLaunch(native),
+    failed: true,
+  })
 })

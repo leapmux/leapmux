@@ -16,7 +16,9 @@ export function nextRovingValue<T>(
     return undefined
 
   const found = values.findIndex(value => sameValueZero(value, current))
-  const index = found < 0 ? 0 : found
+  const index = found < 0
+    ? 0
+    : found
   let destination: number
   switch (event.key) {
     case 'ArrowRight':

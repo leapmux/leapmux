@@ -17,14 +17,15 @@ interface DialogProps {
   'children': JSX.Element
 }
 
-// The open animation (opacity + transform fade-in via
-// `@starting-style`) is supplied by @knadh/oat's `dialog.css`. We
+// The open animation's starting values (opacity + transform via
+// `@starting-style`) come from @knadh/oat's `dialog.css`, and the
+// transition that animates them is ours, in Dialog.css.ts. We
 // own the close animation here: Solid removes the dialog from the
 // DOM the instant the parent's `<Show>` flips, so an exit transition
 // keyed off `[open]` being removed never gets to play.
 // `beginClose` flips a `closing` marker class that:
 //   - reverts the dialog's opacity/transform to Oat's
-//     @starting-style values, which Oat's existing transition
+//     @starting-style values, which the transition in Dialog.css.ts
 //     animates (smooth dialog fade-out), and
 //   - triggers our `backdropExit` keyframe so the dim overlay fades
 //     out alongside the dialog.
@@ -48,8 +49,8 @@ export const Dialog: Component<DialogProps> = (props) => {
     return clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom
   }
 
-  // Set `.closing` so both the dialog's fade-out (Oat's transition
-  // animating opacity/transform back to @starting-style values) and
+  // Set `.closing` so both the dialog's fade-out (the transition in
+  // Dialog.css.ts animating opacity/transform back to @starting-style values) and
   // the backdrop's exit keyframe run against the still-mounted
   // dialog. Wait `motion.fast` ms before letting the parent unmount
   // us so the exit animations have time to play; the dialog stays in
@@ -106,7 +107,9 @@ export const Dialog: Component<DialogProps> = (props) => {
       // A scan rather than one `:not([popover] *)` selector: `:not()` with a
       // descendant argument needs Selectors 4 support, which the jsdom matcher
       // the unit tests run on does not have.
-      const submitBtn = [...dialogRef.querySelectorAll('button[type="submit"]')]
+      const submitBtn = [
+        ...dialogRef.querySelectorAll('button[type="submit"]'),
+      ]
         .find(el => !el.closest('[popover]')) as HTMLButtonElement | undefined
       if (submitBtn && !submitBtn.disabled) {
         e.preventDefault()
@@ -139,13 +142,25 @@ export const Dialog: Component<DialogProps> = (props) => {
   return (
     <dialog
       ref={dialogRef}
-      class={`${styles.standard}${props.tall ? ` ${styles.tall}` : ''}${props.wide ? ` ${styles.wide}` : ''}${props.huge ? ` ${styles.huge}` : ''}${props.class ? ` ${props.class}` : ''}`}
-      classList={{ [styles.closing]: closing() }}
+      class={`${styles.standard}${props.tall
+        ? ` ${styles.tall}`
+        : ''}${props.wide
+        ? ` ${styles.wide}`
+        : ''}${props.huge
+        ? ` ${styles.huge}`
+        : ''}${props.class
+        ? ` ${props.class}`
+        : ''}`}
+      classList={{
+        [styles.closing]: closing(),
+      }}
       data-testid={props['data-testid']}
       data-busy={props.busy ? '' : undefined}
       // The closing state under a stable name: the marker class above is a hashed name, and the opacity and the
       // animations change while the dialog opens as well as while it closes.
-      data-closing={closing() ? '' : undefined}
+      data-closing={closing()
+        ? ''
+        : undefined}
       aria-label={props.title}
       onPointerDown={(e) => {
         // Only treat this as a backdrop press if the pointer went down directly
@@ -175,7 +190,9 @@ export const Dialog: Component<DialogProps> = (props) => {
           icon={X}
           size="sm"
           class={styles.closeButton}
-          {...(props.busy ? { state: IconButtonState.Disabled } : {})}
+          {...(props.busy
+            ? { state: IconButtonState.Disabled }
+            : {})}
           onClick={() => beginClose()}
           aria-label="Close"
         />
@@ -204,7 +221,10 @@ export const DialogColumns: Component<{
   right?: JSX.Element
 }> = (props) => {
   return (
-    <div class={props.twoColumn !== false ? styles.twoColumn : styles.singleColumn}>
+    <div class={props.twoColumn !== false
+      ? styles.twoColumn
+      : styles.singleColumn}
+    >
       <div class={styles.leftPanel}>{props.left}</div>
       <Show when={props.twoColumn !== false && props.right}>
         <div class={styles.rightPanel}>{props.right}</div>

@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest'
 import { matchesRequest, systemText } from '../helpers/mockModelScript'
 import { CODEX_MANUAL_APPROVAL_PREFIX, CODEX_REVIEWER_POLICY, codexAutoReviewRule, codexManualApproval } from './autoReview'
 
-const verdict = { outcome: 'deny', risk_level: 'high', user_authorization: 'low', rationale: 'The fixture refuses the write.' } as const
+const verdict = {
+  outcome: 'deny',
+  risk_level: 'high',
+  user_authorization: 'low',
+  rationale: 'The fixture refuses the write.',
+} as const
 
 /** A Responses request with the given developer rows and one user prompt. */
 function responsesRequest(developerTexts: readonly string[], prompt = 'Run the command.') {
@@ -11,8 +16,18 @@ function responsesRequest(developerTexts: readonly string[], prompt = 'Run the c
     body: {
       instructions: 'You are Codex.',
       input: [
-        ...developerTexts.map(text => ({ role: 'developer', content: [{ type: 'input_text', text }] })),
-        { role: 'user', content: [{ type: 'input_text', text: prompt }] },
+        ...developerTexts.map(text => ({
+          role: 'developer',
+          content: [
+            { type: 'input_text', text },
+          ],
+        })),
+        {
+          role: 'user',
+          content: [
+            { type: 'input_text', text: prompt },
+          ],
+        },
       ],
     },
   }
@@ -20,7 +35,11 @@ function responsesRequest(developerTexts: readonly string[], prompt = 'Run the c
 
 function matches(request: ReturnType<typeof responsesRequest>): boolean {
   const rule = codexAutoReviewRule('review', verdict)
-  return matchesRequest(rule.when, { ...request, systemText: systemText(request.protocol, request.body), userText: '' })
+  return matchesRequest(rule.when, {
+    ...request,
+    systemText: systemText(request.protocol, request.body),
+    userText: '',
+  })
 }
 
 describe('codexAutoReviewRule', () => {

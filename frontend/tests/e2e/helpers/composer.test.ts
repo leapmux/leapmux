@@ -57,7 +57,9 @@ describe('pasteText', () => {
     const received: FakeClipboardEvent[] = []
     host.addEventListener('paste', event => received.push(event as FakeClipboardEvent))
 
-    await pasteText({ composer: elementLocator(editor) } as unknown as Page, '- foo\n- bar')
+    await pasteText({
+      composer: elementLocator(editor),
+    } as unknown as Page, '- foo\n- bar')
 
     expect(received).toHaveLength(1)
     const [event] = received
@@ -76,7 +78,10 @@ describe('codeBlockText', () => {
     widget.className = 'code-lang-label'
     widget.textContent = label
     element.append(widget, document.createTextNode(code))
-    return { editor: elementLocator(document.createElement('div'), { 'pre code': element }), element }
+    return {
+      editor: elementLocator(document.createElement('div'), { 'pre code': element }),
+      element,
+    }
   }
 
   it('reads the code without the language label', async () => {

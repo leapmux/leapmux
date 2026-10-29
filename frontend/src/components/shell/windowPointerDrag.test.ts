@@ -138,7 +138,11 @@ describe('useWindowPointerDrag', () => {
         const drag = useWindowPointerDrag()
         const onUp = vi.fn()
         const onFinish = vi.fn()
-        drag.start({ onMove: vi.fn(), onUp, onFinish })
+        drag.start({
+          onMove: vi.fn(),
+          onUp,
+          onFinish,
+        })
         document.dispatchEvent(pointerEvent('pointerup'))
         expect(onUp).not.toHaveBeenCalled()
         expect(onFinish).toHaveBeenCalledTimes(1)
@@ -166,7 +170,10 @@ describe('useWindowPointerDrag', () => {
       createRoot((dispose) => {
         const drag = useWindowPointerDrag()
         const onFinish = vi.fn()
-        drag.start({ onMove: vi.fn(), onFinish })
+        drag.start({
+          onMove: vi.fn(),
+          onFinish,
+        })
         document.dispatchEvent(pointerEvent('pointercancel'))
         expect(onFinish).toHaveBeenCalledTimes(1)
         dispose()
@@ -177,7 +184,10 @@ describe('useWindowPointerDrag', () => {
       createRoot((dispose) => {
         const drag = useWindowPointerDrag()
         const onFinish = vi.fn()
-        drag.start({ onMove: vi.fn(), onFinish })
+        drag.start({
+          onMove: vi.fn(),
+          onFinish,
+        })
         drag.cancel()
         expect(onFinish).not.toHaveBeenCalled()
         dispose()
@@ -189,7 +199,10 @@ describe('useWindowPointerDrag', () => {
       const onFinish = vi.fn()
       const dispose = createRoot((dispose) => {
         drag = useWindowPointerDrag()
-        drag.start({ onMove: vi.fn(), onFinish })
+        drag.start({
+          onMove: vi.fn(),
+          onFinish,
+        })
         return dispose
       })
       dispose()
@@ -200,8 +213,13 @@ describe('useWindowPointerDrag', () => {
       createRoot((dispose) => {
         const drag = useWindowPointerDrag()
         const firstFinish = vi.fn()
-        drag.start({ onMove: vi.fn(), onFinish: firstFinish })
-        drag.start({ onMove: vi.fn() })
+        drag.start({
+          onMove: vi.fn(),
+          onFinish: firstFinish,
+        })
+        drag.start({
+          onMove: vi.fn(),
+        })
         expect(firstFinish).not.toHaveBeenCalled()
         dispose()
       })

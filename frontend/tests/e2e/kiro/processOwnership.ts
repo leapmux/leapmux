@@ -16,13 +16,17 @@ function privateKasPrefix(dataDir: string): { prefix: string, windows: boolean }
   const directory = paths.normalize(dataDir)
   if (directory === paths.parse(directory).root)
     throw new Error('The Kiro private data directory must not be a filesystem root.')
-  const normalized = windows ? directory.replaceAll('\\', '/').toLowerCase() : directory
+  const normalized = windows
+    ? directory.replaceAll('\\', '/').toLowerCase()
+    : directory
   return { prefix: `${normalized.replace(/\/+$/, '')}/kas/`, windows }
 }
 
 function hasKasArgument(row: ProcessRow, native: ReturnType<typeof privateKasPrefix>): boolean {
   const raw = row.rawCommand ?? row.command
-  const command = native.windows ? raw.replaceAll('\\', '/').toLowerCase() : raw
+  const command = native.windows
+    ? raw.replaceAll('\\', '/').toLowerCase()
+    : raw
   let position = command.indexOf(native.prefix)
   while (position !== -1) {
     const previous = command[position - 1]

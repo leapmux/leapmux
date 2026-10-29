@@ -15,10 +15,23 @@ const renderPiText = (parsed: unknown): string => renderThreadText([parsed], Age
 const rendersWithIcon = (parsed: unknown): boolean => renderThreadHasIcon([parsed], AgentProvider.PI)
 
 describe('piNotificationEntry compaction and retries', () => {
-  it.each([0, 0.5, -1, Number.NaN, Number.POSITIVE_INFINITY])('validates the post count %s', (post) => {
-    const detail = Number.isFinite(post) && post >= 0 ? { pre: 0, post } : { pre: 0 }
-    expect(piNotificationEntry({ type: 'compaction_end', result: { tokensBefore: 0, estimatedTokensAfter: post } }))
-      .toEqual([{ kind: 'compaction', phase: 'end', detail }])
+  it.each([
+    0,
+    0.5,
+    -1,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+  ])('validates the post count %s', (post) => {
+    const detail = Number.isFinite(post) && post >= 0
+      ? { pre: 0, post }
+      : { pre: 0 }
+    expect(piNotificationEntry({
+      type: 'compaction_end',
+      result: { tokensBefore: 0, estimatedTokensAfter: post },
+    }))
+      .toEqual([
+        { kind: 'compaction', phase: 'end', detail },
+      ])
   })
 
   it.each([
@@ -27,11 +40,21 @@ describe('piNotificationEntry compaction and retries', () => {
     ['info', 'A note'],
     ['future', 'A note'],
   ])('reads the notify level %s', (notifyType, expected) => {
-    expect(describePiNotification({ type: 'extension_ui_request', method: 'notify', notifyType, message: 'A note' })).toBe(expected)
+    expect(describePiNotification({
+      type: 'extension_ui_request',
+      method: 'notify',
+      notifyType,
+      message: 'A note',
+    })).toBe(expected)
   })
 
   it('drops a blank notify before it adds the level prefix', () => {
-    expect(describePiNotification({ type: 'extension_ui_request', method: 'notify', notifyType: 'warning', message: '  ' })).toBeNull()
+    expect(describePiNotification({
+      type: 'extension_ui_request',
+      method: 'notify',
+      notifyType: 'warning',
+      message: '  ',
+    })).toBeNull()
   })
 
   it('does not print an unknown summary source', () => {
@@ -39,18 +62,41 @@ describe('piNotificationEntry compaction and retries', () => {
   })
 
   it('reads the post size from estimatedTokensAfter', () => {
-    expect(piNotificationEntry({ type: 'compaction_end', result: { tokensBefore: 12000, estimatedTokensAfter: 3000 } }))
-      .toEqual([{ kind: 'compaction', phase: 'end', detail: { pre: 12000, post: 3000 } }])
+    expect(piNotificationEntry({
+      type: 'compaction_end',
+      result: { tokensBefore: 12000, estimatedTokensAfter: 3000 },
+    }))
+      .toEqual([
+        {
+          kind: 'compaction',
+          phase: 'end',
+          detail: { pre: 12000, post: 3000 },
+        },
+      ])
   })
 
   it('reads a failed end without the doubled prefix', () => {
     expect(piNotificationEntry({ type: 'compaction_end', errorMessage: 'Compaction failed: Nothing to compact (session too small)' }))
-      .toEqual([{ kind: 'compaction', phase: 'end', outcome: 'failed', error: 'Nothing to compact (session too small)' }])
+      .toEqual([
+        {
+          kind: 'compaction',
+          phase: 'end',
+          outcome: 'failed',
+          error: 'Nothing to compact (session too small)',
+        },
+      ])
   })
 
   it('validates retry counters through the neutral entry', () => {
-    expect(piNotificationEntry({ type: 'auto_retry_start', attempt: -1, maxAttempts: 1.5, delayMs: 0.5 }))
-      .toEqual([{ kind: 'retry', scope: 'api', delayMs: 0.5 }])
+    expect(piNotificationEntry({
+      type: 'auto_retry_start',
+      attempt: -1,
+      maxAttempts: 1.5,
+      delayMs: 0.5,
+    }))
+      .toEqual([
+        { kind: 'retry', scope: 'api', delayMs: 0.5 },
+      ])
   })
 
   it('words the branch summary source', () => {
@@ -67,14 +113,26 @@ describe('piNotificationEntry compaction and retries', () => {
   })
 
   it('draws compaction_end as "Context compacted (reason, pre)" with the pre size', () => {
-    expect(line({ type: 'compaction_end', reason: 'threshold', result: { tokensBefore: 12345 } }))
+    expect(line({
+      type: 'compaction_end',
+      reason: 'threshold',
+      result: { tokensBefore: 12345 },
+    }))
       .toBe('Context compacted (threshold, 12.3k)')
   })
 
   it('carries the reason through as the trigger for every reason value', () => {
-    expect(line({ type: 'compaction_end', reason: 'manual', result: { tokensBefore: 200000 } }))
+    expect(line({
+      type: 'compaction_end',
+      reason: 'manual',
+      result: { tokensBefore: 200000 },
+    }))
       .toBe('Context compacted (manual, 200.0k)')
-    expect(line({ type: 'compaction_end', reason: 'overflow', result: { tokensBefore: 200000 } }))
+    expect(line({
+      type: 'compaction_end',
+      reason: 'overflow',
+      result: { tokensBefore: 200000 },
+    }))
       .toBe('Context compacted (overflow, 200.0k)')
   })
 
@@ -85,12 +143,19 @@ describe('piNotificationEntry compaction and retries', () => {
   // `result.tokensBefore` is an estimate that can be non-integer; the shared
   // formatter rounds it rather than leaking decimals.
   it('rounds a fractional pre size from result.tokensBefore', () => {
-    expect(line({ type: 'compaction_end', reason: 'manual', result: { tokensBefore: 512.7 } }))
+    expect(line({
+      type: 'compaction_end',
+      reason: 'manual',
+      result: { tokensBefore: 512.7 },
+    }))
       .toBe('Context compacted (manual, 513)')
   })
 
   it('draws the pre size alone when the reason is absent', () => {
-    expect(line({ type: 'compaction_end', result: { tokensBefore: 12345 } })).toBe('Context compacted (12.3k)')
+    expect(line({
+      type: 'compaction_end',
+      result: { tokensBefore: 12345 },
+    })).toBe('Context compacted (12.3k)')
   })
 
   it('draws a bare "Context compacted" when neither reason nor tokensBefore is present', () => {
@@ -98,7 +163,12 @@ describe('piNotificationEntry compaction and retries', () => {
   })
 
   it('draws a failed compaction as an error without a success boundary', () => {
-    const failed = { type: 'compaction_end', reason: 'manual', aborted: false, errorMessage: 'Nothing to compact (session too small)' }
+    const failed = {
+      type: 'compaction_end',
+      reason: 'manual',
+      aborted: false,
+      errorMessage: 'Nothing to compact (session too small)',
+    }
     expect(line(failed)).toBe('Compaction failed (Nothing to compact (session too small))')
     expect(piCompactionBoundary(input(failed))).toBeNull()
     expect(line({ type: 'compaction_end', result: null })).toBe('Compaction failed')
@@ -109,11 +179,22 @@ describe('piNotificationEntry compaction and retries', () => {
   })
 
   it('draws auto_retry_start with the attempt and the wait', () => {
-    expect(line({ type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 2000 })).toBe('API retry 1/3 in 2s')
+    expect(line({
+      type: 'auto_retry_start',
+      attempt: 1,
+      maxAttempts: 3,
+      delayMs: 2000,
+    })).toBe('API retry 1/3 in 2s')
   })
 
   it('draws auto_retry_start with the error beside the wait', () => {
-    expect(line({ type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: 'overloaded' }))
+    expect(line({
+      type: 'auto_retry_start',
+      attempt: 1,
+      maxAttempts: 3,
+      delayMs: 2000,
+      errorMessage: 'overloaded',
+    }))
       .toBe('API retry 1/3 in 2s (overloaded)')
   })
 
@@ -129,7 +210,13 @@ describe('piNotificationEntry compaction and retries', () => {
   // The three summarization events state a stall in the SUMMARY that compaction
   // writes, which is a different thing from an API stall and reads differently.
   it('draws the summarization retries under their own scope', () => {
-    expect(line({ type: 'summarization_retry_scheduled', attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: 'overloaded' }))
+    expect(line({
+      type: 'summarization_retry_scheduled',
+      attempt: 1,
+      maxAttempts: 3,
+      delayMs: 2000,
+      errorMessage: 'overloaded',
+    }))
       .toBe('Summary retry 1/3 in 2s (overloaded)')
     expect(line({ type: 'summarization_retry_attempt_start', source: 'compaction' }))
       .toBe('Retrying the compaction summary')
@@ -230,7 +317,11 @@ describe('pi single-notification rendering (markup)', () => {
   })
 
   it('renders a completed compaction_end as a divider with the icon', () => {
-    const msg = { type: 'compaction_end', reason: 'threshold', result: { tokensBefore: 12345 } }
+    const msg = {
+      type: 'compaction_end',
+      reason: 'threshold',
+      result: { tokensBefore: 12345 },
+    }
     expect(rendersWithIcon(msg)).toBe(true)
     expect(renderPiText(msg)).toBe('Context compacted (threshold, 12.3k)')
   })
@@ -262,23 +353,51 @@ describe('piNotificationEntry', () => {
   })
 
   it('maps a completed compaction_end to a compaction entry with its detail', () => {
-    expect(piNotificationEntry({ type: 'compaction_end', reason: 'threshold', result: { tokensBefore: 12345 } }))
-      .toEqual([{ kind: 'compaction', phase: 'end', detail: { trigger: 'threshold', pre: 12345 } }])
+    expect(piNotificationEntry({
+      type: 'compaction_end',
+      reason: 'threshold',
+      result: { tokensBefore: 12345 },
+    }))
+      .toEqual([
+        {
+          kind: 'compaction',
+          phase: 'end',
+          detail: { trigger: 'threshold', pre: 12345 },
+        },
+      ])
   })
 
   it('maps an aborted compaction_end to a compaction that produced no boundary', () => {
     expect(piNotificationEntry({ type: 'compaction_end', aborted: true, reason: 'threshold' }))
-      .toEqual([{ kind: 'compaction', phase: 'end', outcome: 'aborted' }])
+      .toEqual([
+        { kind: 'compaction', phase: 'end', outcome: 'aborted' },
+      ])
   })
 
   it('maps a failed compaction_end to an error without a boundary', () => {
     expect(piNotificationEntry({ type: 'compaction_end', aborted: false, errorMessage: 'Nothing to compact (session too small)' }))
-      .toEqual([{ kind: 'compaction', phase: 'end', outcome: 'failed', error: 'Nothing to compact (session too small)' }])
+      .toEqual([
+        {
+          kind: 'compaction',
+          phase: 'end',
+          outcome: 'failed',
+          error: 'Nothing to compact (session too small)',
+        },
+      ])
   })
 
   it('maps a retry to a retry entry under the API scope', () => {
     expect(piNotificationEntry({ type: 'auto_retry_end', success: true, attempt: 2 }))
-      .toEqual([{ kind: 'retry', scope: 'api', attempt: 2, willRetry: undefined, error: undefined, succeeded: true }])
+      .toEqual([
+        {
+          kind: 'retry',
+          scope: 'api',
+          attempt: 2,
+          willRetry: undefined,
+          error: undefined,
+          succeeded: true,
+        },
+      ])
   })
 
   // A LeapMux-authored type never reaches a plugin: the shared extractor answers for
@@ -295,8 +414,17 @@ describe('pi notification thread: no multi-event truncation', () => {
   // only messages[0], silently dropping the rest.
   it('renders both an auto_retry and a following compaction boundary', () => {
     const text = renderThreadText([
-      { type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 2000 },
-      { type: 'compaction_end', reason: 'threshold', result: { tokensBefore: 12345 } },
+      {
+        type: 'auto_retry_start',
+        attempt: 1,
+        maxAttempts: 3,
+        delayMs: 2000,
+      },
+      {
+        type: 'compaction_end',
+        reason: 'threshold',
+        result: { tokensBefore: 12345 },
+      },
     ], AgentProvider.PI)
     expect(text).toContain('API retry 1/3')
     expect(text).toContain('Context compacted (threshold, 12.3k)')
@@ -304,8 +432,16 @@ describe('pi notification thread: no multi-event truncation', () => {
 
   it('renders every boundary in a wrapper of two compaction_end events', () => {
     const el = renderThreadElement([
-      { type: 'compaction_end', reason: 'manual', result: { tokensBefore: 100000 } },
-      { type: 'compaction_end', reason: 'manual', result: { tokensBefore: 50000 } },
+      {
+        type: 'compaction_end',
+        reason: 'manual',
+        result: { tokensBefore: 100000 },
+      },
+      {
+        type: 'compaction_end',
+        reason: 'manual',
+        result: { tokensBefore: 50000 },
+      },
     ], AgentProvider.PI)
     const { container } = render(() => el)
     // Two boundary dividers, each with its own icon -- not collapsed to one.

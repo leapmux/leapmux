@@ -81,7 +81,10 @@ export function createAgentInputEnqueueRetry(mint: () => string = randomUUID) {
   return {
     inputIdFor(payload: AgentInputEnqueuePayload): string {
       const key = keyOf(payload)
-      const attempt = pendingByFingerprint.get(key) ?? { inputId: mint(), uncertain: false }
+      const attempt = pendingByFingerprint.get(key) ?? {
+        inputId: mint(),
+        uncertain: false,
+      }
       lruSet(pendingByFingerprint, key, attempt, MAX_PENDING_ATTEMPTS)
       return attempt.inputId
     },

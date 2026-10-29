@@ -18,17 +18,39 @@ cursorTest('retains complete inline output for the selected native shell route a
   const output = computedNativeToolOutput({ lineCount: 8000, padding: 30 })
   const callId = 'cursor-native-inline-output'
   const command = nativeOutputFileCommand(output)
-  await runCursorNativeOperations(native, [bashToolCall(native.provider, callId, command)], output.lastMarker)
+  await runCursorNativeOperations(native, [
+    bashToolCall(native.provider, callId, command),
+  ], output.lastMarker)
   const agent = await currentNativeAgent(native)
   const snapshot = await readNativeMessageSnapshot(native, agent.id)
   const exact = await cursorNativeToolOutput(native, callId)
-  await testInfo.attach('cursor-native-inline-output-records', { body: JSON.stringify({ callId, sessionId: agent.agentSessionId, previewText: output.text, exact, messages: snapshot.messages.map(nativeMessageBody), modelStatus: await native.modelScript.status() }, null, 2), contentType: 'application/json' })
+  await testInfo.attach('cursor-native-inline-output-records', {
+    body: JSON.stringify({
+      callId,
+      sessionId: agent.agentSessionId,
+      previewText: output.text,
+      exact,
+      messages: snapshot.messages.map(nativeMessageBody),
+      modelStatus: await native.modelScript.status(),
+    }, null, 2),
+    contentType: 'application/json',
+  })
   if (!isObject(exact) || exact.exitCode !== 0 || typeof exact.stdout !== 'string' || exact.stderr !== '')
     throw new Error('The selected native Cursor shell route did not return its complete successful output.')
   const text = exact.stdout
   const bytes = Buffer.from(text, 'utf8')
   await testInfo.attach('cursor-native-inline-output', { body: text, contentType: 'text/plain' })
-  await testInfo.attach('cursor-native-output-limit-proof', { body: JSON.stringify({ route: 'native-shell', callId, sessionId: agent.agentSessionId, byteSize: bytes.length, digest: createHash('sha256').update(bytes).digest('hex'), nativeReference: exact }, null, 2), contentType: 'application/json' })
+  await testInfo.attach('cursor-native-output-limit-proof', {
+    body: JSON.stringify({
+      route: 'native-shell',
+      callId,
+      sessionId: agent.agentSessionId,
+      byteSize: bytes.length,
+      digest: createHash('sha256').update(bytes).digest('hex'),
+      nativeReference: exact,
+    }, null, 2),
+    contentType: 'application/json',
+  })
   expect(text).toBe(output.text)
   expect(exact).not.toHaveProperty('fullOutputPath')
   const callFrames = (current: NativeMessageSnapshot) => current.messages.filter(message => message.spanId === callId).map(nativeMessageBody)

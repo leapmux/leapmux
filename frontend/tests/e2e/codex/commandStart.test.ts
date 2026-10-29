@@ -20,26 +20,70 @@ function storedMessage(spanType: string, body: unknown, overrides: { agentSessio
   })
 }
 
-const item = (status: string, type = 'commandExecution') => ({ threadId: sessionId, turnId: 'turn-1', item: { type, id: 'exec-1', status } })
+function item(status: string, type = 'commandExecution') {
+  return {
+    threadId: sessionId,
+    turnId: 'turn-1',
+    item: { type, id: 'exec-1', status },
+  }
+}
 
 describe('codexCommandStarted', () => {
   it('reads the start of a native command item', () => {
-    expect(codexCommandStarted([storedMessage('commandExecution', item('inProgress'))], sessionId)).toBe(true)
+    expect(codexCommandStarted([
+      storedMessage('commandExecution', item('inProgress')),
+    ], sessionId)).toBe(true)
   })
 
   it('stays true after the item completed, because its start stays stored', () => {
-    const messages = [storedMessage('commandExecution', item('inProgress')), storedMessage('commandExecution', item('completed'))]
+    const messages = [
+      storedMessage('commandExecution', item('inProgress')),
+      storedMessage('commandExecution', item('completed')),
+    ]
     expect(codexCommandStarted(messages, sessionId)).toBe(true)
   })
 
   it.each([
     { label: 'no message', messages: [] },
-    { label: 'only a completion', messages: [storedMessage('commandExecution', item('completed'))] },
-    { label: 'a file change item', messages: [storedMessage('fileChange', item('inProgress', 'fileChange'))] },
-    { label: 'a span of another type that holds a command body', messages: [storedMessage('exec', item('inProgress'))] },
-    { label: 'a command item of another session', messages: [storedMessage('commandExecution', item('inProgress'), { agentSessionId: 'other-thread' })] },
-    { label: 'a body with another thread', messages: [storedMessage('commandExecution', { ...item('inProgress'), threadId: 'other-thread' })] },
-    { label: 'a body without an item', messages: [storedMessage('commandExecution', { threadId: sessionId })] },
+    {
+      label: 'only a completion',
+      messages: [
+        storedMessage('commandExecution', item('completed')),
+      ],
+    },
+    {
+      label: 'a file change item',
+      messages: [
+        storedMessage('fileChange', item('inProgress', 'fileChange')),
+      ],
+    },
+    {
+      label: 'a span of another type that holds a command body',
+      messages: [
+        storedMessage('exec', item('inProgress')),
+      ],
+    },
+    {
+      label: 'a command item of another session',
+      messages: [
+        storedMessage('commandExecution', item('inProgress'), { agentSessionId: 'other-thread' }),
+      ],
+    },
+    {
+      label: 'a body with another thread',
+      messages: [
+        storedMessage('commandExecution', {
+          ...item('inProgress'),
+          threadId: 'other-thread',
+        }),
+      ],
+    },
+    {
+      label: 'a body without an item',
+      messages: [
+        storedMessage('commandExecution', { threadId: sessionId }),
+      ],
+    },
   ])('does not read a start from $label', ({ messages }) => {
     expect(codexCommandStarted(messages, sessionId)).toBe(false)
   })

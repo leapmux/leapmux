@@ -17,7 +17,10 @@ function request(toolName: string, args: Record<string, unknown> | string): Pars
 function done(toolName: string, args: Record<string, unknown> | string, result: Record<string, unknown>): ToolResultFixture {
   return {
     payload: copilotToolComplete(CALL, { success: true, result }),
-    options: { request: request(toolName, args), spanType: toolName },
+    options: {
+      request: request(toolName, args),
+      spanType: toolName,
+    },
   }
 }
 
@@ -40,7 +43,12 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
   [COPILOT_TOOL.Bash]: done(COPILOT_TOOL.Bash, { command: 'ls' }, { content: 'a.ts' }),
   [COPILOT_TOOL.View]: done(COPILOT_TOOL.View, { path: '/p/a.ts' }, { content: 'file body' }),
   [COPILOT_TOOL.Create]: done(COPILOT_TOOL.Create, { path: '/p/new.ts', file_text: 'new' }, { content: 'Created' }),
-  [COPILOT_TOOL.StrReplaceEditor]: done(COPILOT_TOOL.StrReplaceEditor, { command: 'str_replace', path: '/p/a.ts', old_str: 'x', new_str: 'y' }, { content: 'Edited' }),
+  [COPILOT_TOOL.StrReplaceEditor]: done(COPILOT_TOOL.StrReplaceEditor, {
+    command: 'str_replace',
+    path: '/p/a.ts',
+    old_str: 'x',
+    new_str: 'y',
+  }, { content: 'Edited' }),
   [COPILOT_TOOL.ApplyPatch]: done(COPILOT_TOOL.ApplyPatch, '*** Begin Patch\n*** Update File: a.ts\n@@\n-before\n+after\n*** End Patch', { content: 'Applied' }),
   [COPILOT_TOOL.Grep]: done(COPILOT_TOOL.Grep, { pattern: 'needle' }, { content: 'a.ts:needle' }),
   [COPILOT_TOOL.Glob]: done(COPILOT_TOOL.Glob, { pattern: '*.ts' }, { content: 'a.ts' }),
@@ -91,8 +99,13 @@ function failed(kind: ToolKind, name: string, status: ToolFailureFixture['status
   if (paired === undefined)
     throw new Error(`No successful fixture pairs with the failed frame for ${name}`)
   return {
-    payload: copilotToolComplete(CALL, { success: false, error: { message: ERROR_TEXT } }),
-    ...(paired.options !== undefined ? { options: paired.options } : {}),
+    payload: copilotToolComplete(CALL, {
+      success: false,
+      error: { message: ERROR_TEXT },
+    }),
+    ...(paired.options !== undefined
+      ? { options: paired.options }
+      : {}),
     kind,
     name,
     status,
@@ -125,8 +138,13 @@ function ended(kind: ToolKind, name: string, status: ToolFailureFixture['status'
   if (paired === undefined)
     throw new Error(`No successful fixture pairs with the failed frame for ${name}`)
   return {
-    payload: copilotToolComplete(CALL, { success: false, error: { ...error } }),
-    ...(paired.options !== undefined ? { options: paired.options } : {}),
+    payload: copilotToolComplete(CALL, {
+      success: false,
+      error: { ...error },
+    }),
+    ...(paired.options !== undefined
+      ? { options: paired.options }
+      : {}),
     kind,
     name,
     status,

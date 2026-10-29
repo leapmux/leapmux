@@ -20,8 +20,16 @@ describe('spanLinesParse', () => {
     })
 
     it('keeps real SpanLine columns and the null sentinel (a blank column)', () => {
-      const raw = JSON.stringify([{ type: 'rail', color: 'red' }, null, { type: 'gap' }])
-      expect(parseSpanLines(raw)).toEqual([{ type: 'rail', color: 'red' }, null, { type: 'gap' }])
+      const raw = JSON.stringify([
+        { type: 'rail', color: 'red' },
+        null,
+        { type: 'gap' },
+      ])
+      expect(parseSpanLines(raw)).toEqual([
+        { type: 'rail', color: 'red' },
+        null,
+        { type: 'gap' },
+      ])
     })
 
     it('drops primitive and typeless elements from a mixed array', () => {
@@ -30,8 +38,20 @@ describe('spanLinesParse', () => {
       // covers the column predicate's rejections directly: a primitive (5, 'x'), a
       // nested array, a typeless object ({}, {notType}), and a non-STRING `type`
       // ({type: 7}) are all dropped, while the null sentinel is kept.
-      const raw = JSON.stringify([5, 'x', [], {}, { notType: 1 }, { type: 7 }, null, { type: 'rail' }])
-      expect(parseSpanLines(raw)).toEqual([null, { type: 'rail' }])
+      const raw = JSON.stringify([
+        5,
+        'x',
+        [],
+        {},
+        { notType: 1 },
+        { type: 7 },
+        null,
+        { type: 'rail' },
+      ])
+      expect(parseSpanLines(raw)).toEqual([
+        null,
+        { type: 'rail' },
+      ])
     })
   })
 })

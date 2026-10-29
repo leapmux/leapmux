@@ -19,8 +19,15 @@ grokTest.describe('Grok Build subagent registry', () => {
     leapmuxServer,
     modelScript,
   }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    await openProviderAgent(leapmuxServer, context.workspaceId, GROK_AGENT, { optionValues: { approvalMode: 'always-approve' } })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
+    await openProviderAgent(leapmuxServer, context.workspaceId, GROK_AGENT, {
+      optionValues: { approvalMode: 'always-approve' },
+    })
     await openWorkspace(page, context.workspaceId)
     await exerciseChildInterrupt(context, {
       childTurn: grokChildTurn(HELD_CHILD_TASK),

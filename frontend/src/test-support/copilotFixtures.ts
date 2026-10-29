@@ -11,7 +11,11 @@ export function copilotFrame(type: string, data: Record<string, unknown>, agentI
   const event: Record<string, unknown> = { id: `${type}-1`, type, data }
   if (agentId)
     event.agentId = agentId
-  return { jsonrpc: '2.0', method: 'session.event', params: { sessionId: 'session-1', event } }
+  return {
+    jsonrpc: '2.0',
+    method: 'session.event',
+    params: { sessionId: 'session-1', event },
+  }
 }
 
 /** The `tool.execution_start` row that opens one tool call. */
@@ -24,7 +28,16 @@ export function copilotToolComplete(
   toolCallId: string,
   outcome: { success?: boolean, result?: Record<string, unknown>, error?: Record<string, unknown> },
 ): Record<string, unknown> {
-  return copilotFrame(COPILOT_EVENT.ToolCompleted, { toolCallId, success: outcome.success ?? true, ...outcome.result ? { result: outcome.result } : {}, ...outcome.error ? { error: outcome.error } : {} })
+  return copilotFrame(COPILOT_EVENT.ToolCompleted, {
+    toolCallId,
+    success: outcome.success ?? true,
+    ...outcome.result
+      ? { result: outcome.result }
+      : {},
+    ...outcome.error
+      ? { error: outcome.error }
+      : {},
+  })
 }
 
 /** One pending permission request, as the control surface receives it. */

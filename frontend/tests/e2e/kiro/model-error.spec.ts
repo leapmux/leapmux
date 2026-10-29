@@ -18,7 +18,9 @@ kiroTest.describe('Kiro basic chat', () => {
     const before = await currentNativeAgent(native)
     // Kiro sends a throttled call again by itself, and the number of tries is
     // Kiro's own, so the fallback throttles each one.
-    await modelScript.fallback({ error: { status: 429, code: 'ThrottlingException', message: 'Rate exceeded' } })
+    await modelScript.fallback({
+      error: { status: 429, code: 'ThrottlingException', message: 'Rate exceeded' },
+    })
     await sendMessage(page, modelScript.prompt('Say hello.'))
     await waitForAgentIdle(page)
     await expectRateLimitNotice(page, KIRO_THROTTLE_TEXT)

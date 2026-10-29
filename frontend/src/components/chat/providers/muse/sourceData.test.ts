@@ -10,11 +10,28 @@ describe('museNativeResult', () => {
   it('reads the exact native batch without changing the original or the records', () => {
     const source = sources()
     const before = structuredClone(source)
-    expect(museNativeResult(source.payload, source.supplement)).toEqual({ text: '{"exit_code":7}', structured: { exit_code: 7 } })
+    expect(museNativeResult(source.payload, source.supplement)).toEqual({
+      text: '{"exit_code":7}',
+      structured: { exit_code: 7 },
+    })
     expect(source).toEqual(before)
   })
 
-  it.each(['session', 'turn', 'origin', 'origin sequence', 'source stream', 'batch', 'call', 'arguments', 'malformed earlier call', 'duplicate call', 'duplicate batch', 'conflicting record', 'unavailable'])('refuses a mismatched %s', (change) => {
+  it.each([
+    'session',
+    'turn',
+    'origin',
+    'origin sequence',
+    'source stream',
+    'batch',
+    'call',
+    'arguments',
+    'malformed earlier call',
+    'duplicate call',
+    'duplicate batch',
+    'conflicting record',
+    'unavailable',
+  ])('refuses a mismatched %s', (change) => {
     const source = sources()
     switch (change) {
       case 'session': source.result.stream.id = 'foreign'
@@ -41,7 +58,9 @@ describe('museNativeResult', () => {
         break
       case 'conflicting record': source.supplement.nativeRecords.push({ ...source.result, sequence: 3 })
         break
-      case 'unavailable': Object.assign(source.supplement, { nativeResultUnavailable: { reason: 'Native data is absent' } })
+      case 'unavailable': Object.assign(source.supplement, {
+        nativeResultUnavailable: { reason: 'Native data is absent' },
+      })
         break
     }
     expect(museNativeResult(source.payload, source.supplement)).toBeUndefined()
@@ -55,29 +74,74 @@ describe('museNativeResult', () => {
 
   it.each([
     { label: 'null entry', other: null },
-    { label: 'absent index', other: { tool_call_id: 'other', text: '' } },
-    { label: 'negative index', other: { tool_call_index: -1, tool_call_id: 'other', text: '' } },
-    { label: 'fractional index', other: { tool_call_index: 0.5, tool_call_id: 'other', text: '' } },
-    { label: 'absent call ID', other: { tool_call_index: 1, text: '' } },
-    { label: 'empty call ID', other: { tool_call_index: 1, tool_call_id: '', text: '' } },
-    { label: 'numeric text', other: { tool_call_index: 1, tool_call_id: 'other', text: 0 } },
-    { label: 'null text', other: { tool_call_index: 1, tool_call_id: 'other', text: null } },
+    {
+      label: 'absent index',
+      other: { tool_call_id: 'other', text: '' },
+    },
+    {
+      label: 'negative index',
+      other: { tool_call_index: -1, tool_call_id: 'other', text: '' },
+    },
+    {
+      label: 'fractional index',
+      other: { tool_call_index: 0.5, tool_call_id: 'other', text: '' },
+    },
+    {
+      label: 'absent call ID',
+      other: { tool_call_index: 1, text: '' },
+    },
+    {
+      label: 'empty call ID',
+      other: { tool_call_index: 1, tool_call_id: '', text: '' },
+    },
+    {
+      label: 'numeric text',
+      other: { tool_call_index: 1, tool_call_id: 'other', text: 0 },
+    },
+    {
+      label: 'null text',
+      other: { tool_call_index: 1, tool_call_id: 'other', text: null },
+    },
   ])('rejects the complete batch for $label', ({ other }) => {
     const source = sources()
-    const supplement = { nativeRecords: [source.origin, {
-      ...source.result,
-      payload: { ...source.result.payload, event: { ...source.result.payload.event, results: [source.result.payload.event.results[0], other] } },
-    }] }
+    const supplement = {
+      nativeRecords: [
+        source.origin,
+        {
+          ...source.result,
+          payload: {
+            ...source.result.payload,
+            event: {
+              ...source.result.payload.event,
+              results: [source.result.payload.event.results[0], other],
+            },
+          },
+        },
+      ],
+    }
     const original = structuredClone(supplement)
     expect(museNativeResult(source.payload, supplement)).toBeUndefined()
     expect(supplement).toEqual(original)
   })
 
-  it.each([undefined, null, {}, { nativeRecords: [null] }])('refuses malformed supplemental data %j', (supplement) => {
+  it.each([
+    undefined,
+    null,
+    {},
+    {
+      nativeRecords: [null],
+    },
+  ])('refuses malformed supplemental data %j', (supplement) => {
     expect(museNativeResult(sources().payload, supplement)).toBeUndefined()
   })
 
-  it.each(['turn', 'call', 'tool', 'arguments', 'batch'])('requires a nonempty exact native %s identity', (field) => {
+  it.each([
+    'turn',
+    'call',
+    'tool',
+    'arguments',
+    'batch',
+  ])('requires a nonempty exact native %s identity', (field) => {
     const source = sources()
     switch (field) {
       case 'turn':

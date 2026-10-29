@@ -13,7 +13,9 @@ import { removeEmptyFloatingWindow } from './tileLifecycle'
  * (the proto convention), so omit the key rather than pass it through.
  */
 function tabPositionView(tab: Tab): { position?: string } {
-  return tab.position === undefined ? {} : { position: tab.position }
+  return tab.position === undefined
+    ? {}
+    : { position: tab.position }
 }
 
 export interface UseCrossWorkspaceMoveArgs {
@@ -96,7 +98,9 @@ export function useCrossWorkspaceMove(args: UseCrossWorkspaceMoveArgs): {
     // The tab knows its own workspace — resolved from tile_id by the
     // projection — so the caller's hint is only a fallback.
     const resolvedSourceWsId = tab.workspaceId || sourceWorkspaceId || activeWsId
-    const resolvedTargetWsId = targetWorkspaceId === '__active__' ? activeWsId : targetWorkspaceId
+    const resolvedTargetWsId = targetWorkspaceId === '__active__'
+      ? activeWsId
+      : targetWorkspaceId
     if (resolvedSourceWsId === resolvedTargetWsId)
       return
 

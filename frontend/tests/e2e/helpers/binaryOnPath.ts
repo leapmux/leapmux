@@ -21,7 +21,10 @@ import { fileURLToPath } from 'node:url'
  * `mimo.cmd` for `mimo`, so each extension is tried there beside the bare name.
  */
 export function findBinaryOnPath(binary: string, searchPath: string | undefined, pathExt?: string): string | null {
-  const extensions = ['', ...(pathExt ?? '').split(';').filter(extension => extension !== '')]
+  const extensions = [
+    '',
+    ...(pathExt ?? '').split(';').filter(extension => extension !== ''),
+  ]
   for (const directory of (searchPath ?? '').split(delimiter)) {
     if (directory === '')
       continue
@@ -53,7 +56,9 @@ export function findBinary(binary: string, env: NodeJS.ProcessEnv = process.env)
   // A private environment that states PATH still resolves executables the way this
   // process does: PATHEXT is a system variable on Windows, and without it no name
   // resolves to its .exe file.
-  const pathExt = process.platform === 'win32' ? env.PATHEXT ?? process.env.PATHEXT : undefined
+  const pathExt = process.platform === 'win32'
+    ? env.PATHEXT ?? process.env.PATHEXT
+    : undefined
   return findBinaryOnPath(binary, agentSearchPath(env.PATH), pathExt)
 }
 
@@ -102,7 +107,9 @@ export type ExecutableNames = string | readonly string[]
  * because the worker starts the shim.
  */
 export function lookupBinary(binary: ExecutableNames, reason: string, env: NodeJS.ProcessEnv = process.env): BinaryLookup {
-  const names = typeof binary === 'string' ? [binary] : binary
+  const names = typeof binary === 'string'
+    ? [binary]
+    : binary
   if (names.length === 0)
     throw new Error('A binary lookup needs at least one executable name.')
   for (const name of names) {
@@ -110,7 +117,9 @@ export function lookupBinary(binary: ExecutableNames, reason: string, env: NodeJ
     if (path === null)
       continue
     const unusable = unusableBinaryReason(name, path)
-    return unusable === null ? { path, skipReason: null } : { path: null, skipReason: `${asSentence(reason)} ${unusable}` }
+    return unusable === null
+      ? { path, skipReason: null }
+      : { path: null, skipReason: `${asSentence(reason)} ${unusable}` }
   }
   return { path: null, skipReason: reason }
 }
@@ -129,7 +138,9 @@ export function requireBinary(binary: ExecutableNames, reason: string, env: Node
 
 /** End `text` with a period unless it already ends with a sentence mark. */
 function asSentence(text: string): string {
-  return /[.!?]$/.test(text) ? text : `${text}.`
+  return /[.!?]$/.test(text)
+    ? text
+    : `${text}.`
 }
 
 /**
@@ -143,7 +154,10 @@ function asSentence(text: string): string {
  */
 export function versionOutput(path: string): string | null {
   try {
-    return execFileSync(path, ['--version'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] })
+    return execFileSync(path, ['--version'], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
   }
   catch {
     return null
@@ -189,21 +203,29 @@ const resolvedSearchPaths = new Map<string, string>()
 export function agentSearchPath(searchPath: string | undefined, binPaths: MiseBinPaths = miseBinPaths): string | undefined {
   if (!searchPath)
     return searchPath
-  const cached = binPaths === miseBinPaths ? resolvedSearchPaths.get(searchPath) : undefined
+  const cached = binPaths === miseBinPaths
+    ? resolvedSearchPaths.get(searchPath)
+    : undefined
   if (cached !== undefined)
     return cached
   const entries: string[] = []
   let changed = false
   for (const entry of searchPath.split(delimiter)) {
-    const mise = entry === '' ? null : miseBehindShimDirectory(entry)
-    const installs = mise === null ? null : binPaths(mise)
+    const mise = entry === ''
+      ? null
+      : miseBehindShimDirectory(entry)
+    const installs = mise === null
+      ? null
+      : binPaths(mise)
     if (installs !== null && installs.length > 0) {
       entries.push(...installs)
       changed = true
     }
     entries.push(entry)
   }
-  const resolved = changed ? entries.join(delimiter) : searchPath
+  const resolved = changed
+    ? entries.join(delimiter)
+    : searchPath
   if (binPaths === miseBinPaths)
     resolvedSearchPaths.set(searchPath, resolved)
   return resolved
@@ -216,7 +238,9 @@ export function agentSearchPath(searchPath: string | undefined, binPaths: MiseBi
  */
 export function agentSearchPathEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const resolved = agentSearchPath(env.PATH)
-  return resolved === undefined || resolved === env.PATH ? {} : { PATH: resolved }
+  return resolved === undefined || resolved === env.PATH
+    ? {}
+    : { PATH: resolved }
 }
 
 /**
@@ -282,7 +306,9 @@ function miseExecutableOf(path: string): string | null {
   const name = basename(target).toLowerCase()
   if (name !== 'mise' && name !== 'mise.exe')
     return null
-  return basename(path).toLowerCase() === name ? null : target
+  return basename(path).toLowerCase() === name
+    ? null
+    : target
 }
 
 function isExecutableFile(path: string): boolean {

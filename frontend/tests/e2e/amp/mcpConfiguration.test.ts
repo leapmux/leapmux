@@ -21,7 +21,11 @@ describe('ampSettingsPath', () => {
     expect(ampSettingsPath({ XDG_CONFIG_HOME: '/run/config' })).toBe('/run/config/amp/settings.json')
   })
 
-  it.each([undefined, {}, { XDG_CONFIG_HOME: '' }])('refuses an environment without a private config home: %j', (env) => {
+  it.each([
+    undefined,
+    {},
+    { XDG_CONFIG_HOME: '' },
+  ])('refuses an environment without a private config home: %j', (env) => {
     expect(() => ampSettingsPath(env)).toThrow('config home is unavailable')
   })
 })
@@ -29,16 +33,31 @@ describe('ampSettingsPath', () => {
 describe('ampMcpSettings', () => {
   it('keeps the other settings, and gives the test server as the only MCP server', () => {
     const path = join(directory, 'settings.json')
-    writeFileSync(path, JSON.stringify({ 'amp.theme': 'dark', 'amp.mcpServers': { other: { command: 'other', args: [] } } }))
+    writeFileSync(path, JSON.stringify({
+      'amp.theme': 'dark',
+      'amp.mcpServers': {
+        other: { command: 'other', args: [] },
+      },
+    }))
     expect(ampMcpSettings(path, server)).toEqual({
       'amp.theme': 'dark',
-      'amp.mcpServers': { echo_probe: { command: process.execPath, args: ['/run/echo.mjs'] } },
+      'amp.mcpServers': {
+        echo_probe: {
+          command: process.execPath,
+          args: ['/run/echo.mjs'],
+        },
+      },
     })
   })
 
   it('reads an absent file as no settings', () => {
     expect(ampMcpSettings(join(directory, 'absent.json'), server)).toEqual({
-      'amp.mcpServers': { echo_probe: { command: process.execPath, args: ['/run/echo.mjs'] } },
+      'amp.mcpServers': {
+        echo_probe: {
+          command: process.execPath,
+          args: ['/run/echo.mjs'],
+        },
+      },
     })
   })
 

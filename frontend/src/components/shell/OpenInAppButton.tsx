@@ -60,7 +60,9 @@ export const OpenInAppButton: Component<OpenInAppButtonProps> = (props) => {
 
   const mainTooltip = () => {
     const app = external.preferred()
-    const label = app ? `Open in ${app.displayName}` : 'Open in external application'
+    const label = app
+      ? `Open in ${app.displayName}`
+      : 'Open in external application'
     return shortcutHint(label, 'app.openInExternalApp')
   }
 
@@ -119,7 +121,12 @@ export const OpenInAppButton: Component<OpenInAppButtonProps> = (props) => {
           onToggle={setMenuOpen}
           anchorRef={() => containerRef}
           trigger={triggerProps => (
-            <Tooltip text={external.refreshing() ? 'Refreshing application list…' : 'Choose application'} ariaLabel>
+            <Tooltip
+              text={external.refreshing()
+                ? 'Refreshing application list…'
+                : 'Choose application'}
+              ariaLabel
+            >
               <button
                 type="button"
                 // Intentionally NOT calling triggerProps.ref — that would

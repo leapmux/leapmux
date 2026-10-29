@@ -114,8 +114,24 @@ describe('shikiWorkerClient', () => {
   it('coalesces concurrent identical requests onto one worker dispatch, then re-dispatches after it settles', async () => {
     // The wire carries the interned shape; the client expands it, minting the
     // shared style class per distinct style (see tokenCache / shikiStyleClass).
-    const wireTokens = { styles: [{ color: 'red' }], lines: [[[0, 'echo']]] }
-    const tokens = [[{ content: 'echo', className: shikiStyleClassName('color:red') }]]
+    const wireTokens = {
+      styles: [
+        { color: 'red' },
+      ],
+      lines: [
+        [
+          [0, 'echo'],
+        ],
+      ],
+    }
+    const tokens = [
+      [
+        {
+          content: 'echo',
+          className: shikiStyleClassName('color:red'),
+        },
+      ],
+    ]
     const workers: Array<{
       onmessage: ((event: MessageEvent) => void) | null
       onerror: (() => void) | null
@@ -149,7 +165,9 @@ describe('shikiWorkerClient', () => {
 
     // Resolving the single dispatch resolves BOTH callers with the same tokens.
     const { id } = captured(captured(workers, 0).messages, 0)
-    captured(workers, 0).onmessage?.({ data: { id, tokens: wireTokens } } as MessageEvent)
+    captured(workers, 0).onmessage?.({
+      data: { id, tokens: wireTokens },
+    } as MessageEvent)
     await expect(a).resolves.toEqual(tokens)
     await expect(b).resolves.toEqual(tokens)
 
@@ -160,18 +178,33 @@ describe('shikiWorkerClient', () => {
     // re-dispatching, so null is what actually exercises the cleanup.)
     const p1 = tokenizeAsync('bash', 'echo uncacheable')
     expect(captured(workers, 0).messages).toHaveLength(2)
-    captured(workers, 0).onmessage?.({ data: { id: captured(captured(workers, 0).messages, 1).id, tokens: null } } as MessageEvent)
+    captured(workers, 0).onmessage?.({
+      data: { id: captured(captured(workers, 0).messages, 1).id, tokens: null },
+    } as MessageEvent)
     await expect(p1).resolves.toBeNull()
 
     const p2 = tokenizeAsync('bash', 'echo uncacheable')
     expect(captured(workers, 0).messages).toHaveLength(3) // re-dispatched, not coalesced onto the settled null
-    captured(workers, 0).onmessage?.({ data: { id: captured(captured(workers, 0).messages, 2).id, tokens: null } } as MessageEvent)
+    captured(workers, 0).onmessage?.({
+      data: { id: captured(captured(workers, 0).messages, 2).id, tokens: null },
+    } as MessageEvent)
     await expect(p2).resolves.toBeNull()
   })
 
   it('ignores a stale error event from a replaced worker', async () => {
-    const wireTokens = { styles: [], lines: [[[-1, 'second']]] }
-    const tokens = [[{ content: 'second' }]]
+    const wireTokens = {
+      styles: [],
+      lines: [
+        [
+          [-1, 'second'],
+        ],
+      ],
+    }
+    const tokens = [
+      [
+        { content: 'second' },
+      ],
+    ]
     const workers: Array<{
       onmessage: ((event: MessageEvent) => void) | null
       onerror: (() => void) | null
@@ -212,7 +245,9 @@ describe('shikiWorkerClient', () => {
     expect(settled).toBe(false)
 
     const { id } = captured(captured(workers, 1).messages, 0)
-    captured(workers, 1).onmessage?.({ data: { id, tokens: wireTokens } } as MessageEvent)
+    captured(workers, 1).onmessage?.({
+      data: { id, tokens: wireTokens },
+    } as MessageEvent)
     await expect(second).resolves.toEqual(tokens)
   })
 
@@ -239,11 +274,27 @@ describe('shikiWorkerClient', () => {
       await store.putArtifact(
         tokenArtifactNs(),
         makeKey('bash', 'echo persisted'),
-        { styles: [{ color: 'red' }], lines: [[[0, 'echo persisted']]] },
+        {
+          styles: [
+            { color: 'red' },
+          ],
+          lines: [
+            [
+              [0, 'echo persisted'],
+            ],
+          ],
+        },
       )
 
       await expect(tokenizeAsync('bash', 'echo persisted')).resolves.toEqual(
-        [[{ content: 'echo persisted', className: shikiStyleClassName('color:red') }]],
+        [
+          [
+            {
+              content: 'echo persisted',
+              className: shikiStyleClassName('color:red'),
+            },
+          ],
+        ],
       )
       expect(workers).toHaveLength(0) // the reload warm-start never touched a worker
     }
@@ -283,15 +334,33 @@ describe('shikiWorkerClient', () => {
       await store.putArtifact(
         tokenArtifactNs(),
         makeKey('bash', 'echo fallback'),
-        { styles: [], lines: [[null]] },
+        {
+          styles: [],
+          lines: [
+            [null],
+          ],
+        },
       )
 
       const pending = tokenizeAsync('bash', 'echo fallback')
       await vi.waitFor(() => expect(workers[0]?.messages ?? []).toHaveLength(1))
-      const wire = { styles: [], lines: [[[-1, 'echo fallback']]] }
+      const wire = {
+        styles: [],
+        lines: [
+          [
+            [-1, 'echo fallback'],
+          ],
+        ],
+      }
       const worker = captured(workers, 0)
-      worker.onmessage?.({ data: { id: captured(worker.messages, 0).id, tokens: wire } } as MessageEvent)
-      await expect(pending).resolves.toEqual([[{ content: 'echo fallback' }]])
+      worker.onmessage?.({
+        data: { id: captured(worker.messages, 0).id, tokens: wire },
+      } as MessageEvent)
+      await expect(pending).resolves.toEqual([
+        [
+          { content: 'echo fallback' },
+        ],
+      ])
     }
     finally {
       vi.unstubAllGlobals()
@@ -330,10 +399,23 @@ describe('shikiWorkerClient', () => {
       const pending = tokenizeAsync('bash', 'echo save-me')
       // The dispatch sits behind the store miss, so wait for the message.
       await vi.waitFor(() => expect(workers[0]?.messages ?? []).toHaveLength(1))
-      const wire = { styles: [], lines: [[[-1, 'echo save-me']]] }
+      const wire = {
+        styles: [],
+        lines: [
+          [
+            [-1, 'echo save-me'],
+          ],
+        ],
+      }
       const worker = captured(workers, 0)
-      worker.onmessage?.({ data: { id: captured(worker.messages, 0).id, tokens: wire } } as MessageEvent)
-      await expect(pending).resolves.toEqual([[{ content: 'echo save-me' }]])
+      worker.onmessage?.({
+        data: { id: captured(worker.messages, 0).id, tokens: wire },
+      } as MessageEvent)
+      await expect(pending).resolves.toEqual([
+        [
+          { content: 'echo save-me' },
+        ],
+      ])
 
       // The result landed in the persistent store VERBATIM in the wire shape —
       // the interned form carries the declarations a later session needs to

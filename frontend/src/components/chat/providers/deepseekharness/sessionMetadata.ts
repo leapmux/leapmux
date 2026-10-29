@@ -5,7 +5,9 @@ import { isObject, pickObject } from '~/lib/jsonPick'
 import { deepseekHarnessEventData } from './protocol'
 
 function tokenCount(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined
 }
 
 /**
@@ -14,9 +16,13 @@ function tokenCount(value: unknown): number | undefined {
  * and adds it to the supplement of each assistant block.
  */
 function statedContextWindow(parsed: ParsedMessageContent): number | undefined {
-  const supplement = isObject(parsed.supplementalContent) ? parsed.supplementalContent : undefined
+  const supplement = isObject(parsed.supplementalContent)
+    ? parsed.supplementalContent
+    : undefined
   const tokens = tokenCount(supplement?.[DEEPSEEK_HARNESS_SUPPLEMENT.ContextWindow])
-  return tokens !== undefined && tokens > 0 ? tokens : undefined
+  return tokens !== undefined && tokens > 0
+    ? tokens
+    : undefined
 }
 
 export function deepseekHarnessContextUsage(parsed: ParsedMessageContent): ContextUsageInfo | null {
@@ -36,8 +42,14 @@ export function deepseekHarnessContextUsage(parsed: ParsedMessageContent): Conte
     inputTokens,
     cacheCreationInputTokens,
     cacheReadInputTokens,
-    ...(outputTokens !== undefined ? { outputTokens } : {}),
-    ...(total !== undefined ? { contextTokens: total } : {}),
-    ...(contextWindow !== undefined ? { contextWindow } : {}),
+    ...(outputTokens !== undefined
+      ? { outputTokens }
+      : {}),
+    ...(total !== undefined
+      ? { contextTokens: total }
+      : {}),
+    ...(contextWindow !== undefined
+      ? { contextWindow }
+      : {}),
   }
 }

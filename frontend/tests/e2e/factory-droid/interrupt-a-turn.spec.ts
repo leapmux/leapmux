@@ -21,11 +21,19 @@ droidTest('withdraws a waiting question and accepts the next queued turn', async
 })
 
 droidTest('retains interrupted native text after a verified buffer receipt and reload', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {
-  await withTimingWorker(leapmuxServer, { dataDirPrefix: 'droid-partial-text', env: { [GENERATION_TRACE_ENV]: '1' } }, async (worker) => {
+  await withTimingWorker(leapmuxServer, {
+    dataDirPrefix: 'droid-partial-text',
+    env: { [GENERATION_TRACE_ENV]: '1' },
+  }, async (worker) => {
     const workspaceId = authenticatedEmptyWorkspace.workspaceId
     await openProviderAgent(worker.server, workspaceId, DROID_AGENT)
     await openWorkspace(page, workspaceId)
-    const native = await nativeContext({ page, modelScript, leapmuxServer: worker.server, workspaceId })
+    const native = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer: worker.server,
+      workspaceId,
+    })
     await exerciseInterruptedPartialAnswer(native, {
       waitForPartialReceipt: text => waitForNativeGenerationReceipt(worker.logLines, text),
     })

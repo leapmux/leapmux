@@ -400,7 +400,12 @@ describe('the write queue', () => {
       await Promise.resolve()
     const second = localStorageSet(KEY_CHANNEL_RELAY_SEQ, 2)
     const third = localStorageSet(KEY_CHANNEL_RELAY_SEQ, 3)
-    await expect(Promise.all([removed.durable, first.durable, second.durable, third.durable])).resolves.toEqual([true, true, true, true])
+    await expect(Promise.all([
+      removed.durable,
+      first.durable,
+      second.durable,
+      third.durable,
+    ])).resolves.toEqual([true, true, true, true])
     await flushStorageWrites()
 
     expect(localStorageGet(KEY_CHANNEL_RELAY_SEQ)).toBe(3)
@@ -423,7 +428,11 @@ describe('the write queue', () => {
     const stored = accountStorageKey(ACCOUNT, ASYNC_KEY)
     // Written with an expiration well short of the registered TTL, so the read
     // below decides to refresh it.
-    enqueueKvPut({ k: stored, v: { content: 'on disk', cursor: 0 }, e: Date.now() + 60_000 }, { publish: false })
+    enqueueKvPut({
+      k: stored,
+      v: { content: 'on disk', cursor: 0 },
+      e: Date.now() + 60_000,
+    }, { publish: false })
     await flushStorageWrites()
 
     const read = localStorageLoad<{ content: string }>(ASYNC_KEY)
@@ -431,13 +440,19 @@ describe('the write queue', () => {
     await read
     await flushStorageWrites()
 
-    expect(await readKvRow(stored)).toMatchObject({ v: { content: 'written during the read', cursor: 1 } })
+    expect(await readKvRow(stored)).toMatchObject({
+      v: { content: 'written during the read', cursor: 1 },
+    })
     expect(await localStorageLoad(ASYNC_KEY)).toEqual({ content: 'written during the read', cursor: 1 })
   })
 
   it('does not let a read\'s expiry delete discard a write issued during it', async () => {
     const stored = accountStorageKey(ACCOUNT, ASYNC_KEY)
-    enqueueKvPut({ k: stored, v: { content: 'expired', cursor: 0 }, e: Date.now() - 1 }, { publish: false })
+    enqueueKvPut({
+      k: stored,
+      v: { content: 'expired', cursor: 0 },
+      e: Date.now() - 1,
+    }, { publish: false })
     await flushStorageWrites()
 
     const read = localStorageLoad(ASYNC_KEY)
@@ -450,7 +465,9 @@ describe('the write queue', () => {
 
     // And the expiry delete this read would otherwise have issued did not take
     // the caller's write with it.
-    expect(await readKvRow(stored)).toMatchObject({ v: { content: 'written during the read', cursor: 1 } })
+    expect(await readKvRow(stored)).toMatchObject({
+      v: { content: 'written during the read', cursor: 1 },
+    })
   })
 
   // `runFlush` swaps its batch out of `pending` before its first await, so an
@@ -500,7 +517,11 @@ describe('the write queue', () => {
   // sweep came round.
   it('refuses an expired unmirrored row and deletes it', async () => {
     const stored = storedKeyFor(ASYNC_KEY)!
-    enqueueKvPut({ k: stored, v: { content: 'stale' }, e: Date.now() - 1 }, { publish: false })
+    enqueueKvPut({
+      k: stored,
+      v: { content: 'stale' },
+      e: Date.now() - 1,
+    }, { publish: false })
     await flushStorageWrites()
     expect(await readKvRow(stored)).toBeDefined()
 
@@ -523,10 +544,16 @@ describe('the write queue', () => {
   // A value read out of a Solid store carries proxies, which structured clone
   // refuses. It is ordinary data, not a mistake, so it must still store.
   it('stores a value structured clone refuses', async () => {
-    const proxied = new Proxy({ nested: { count: 1 } }, {})
+    const proxied = new Proxy({
+      nested: { count: 1 },
+    }, {})
     localStorageSet(SYNC_KEY, proxied)
     await flushStorageWrites()
-    expect(await readKvRow(storedKeyFor(SYNC_KEY)!)).toMatchObject({ v: { nested: { count: 1 } } })
+    expect(await readKvRow(storedKeyFor(SYNC_KEY)!)).toMatchObject({
+      v: {
+        nested: { count: 1 },
+      },
+    })
   })
 })
 
@@ -630,7 +657,13 @@ describe('cross-tab changes', () => {
     channel.postMessage({ from, changes })
     channel.postMessage({
       from,
-      changes: [{ k: storedKeyFor(SENTINEL_KEY)!, v: value, e: Date.now() + 60_000 }],
+      changes: [
+        {
+          k: storedKeyFor(SENTINEL_KEY)!,
+          v: value,
+          e: Date.now() + 60_000,
+        },
+      ],
     })
     await until('the peer tab\'s announcement', () => localStorageGet(SENTINEL_KEY) === value)
     channel.close()
@@ -646,10 +679,18 @@ describe('cross-tab changes', () => {
 
     // The VALUE travels, unwrapped. A receiver installs it without re-reading,
     // which is why the publish happens after the transaction commits.
-    expect(seen).toEqual([{
-      from: expect.any(String),
-      changes: [{ k: storedKeyFor(SYNC_KEY), v: true, e: expect.any(Number) }],
-    }])
+    expect(seen).toEqual([
+      {
+        from: expect.any(String),
+        changes: [
+          {
+            k: storedKeyFor(SYNC_KEY),
+            v: true,
+            e: expect.any(Number),
+          },
+        ],
+      },
+    ])
   })
 
   it('does not publish an unmirrored write', async () => {
@@ -668,18 +709,24 @@ describe('cross-tab changes', () => {
   it('applies another tab\'s change to the mirror and notifies', async () => {
     const stored = storedKeyFor(SYNC_KEY)!
     const { heard, stop } = recordHeard(stored)
-    await announce([{ k: stored, v: 'from the other tab', e: Date.now() + 60_000 }])
+    await announce([
+      { k: stored, v: 'from the other tab', e: Date.now() + 60_000 },
+    ])
     stop()
 
     expect(localStorageGet(SYNC_KEY)).toBe('from the other tab')
-    expect(heard).toEqual([new Set([stored])])
+    expect(heard).toEqual([
+      new Set([stored]),
+    ])
   })
 
   it('applies another tab\'s removal', async () => {
     localStorageSet(SYNC_KEY, true)
     const stored = storedKeyFor(SYNC_KEY)!
 
-    await announce([{ k: stored, removed: true }])
+    await announce([
+      { k: stored, removed: true },
+    ])
 
     expect(localStorageGet(SYNC_KEY)).toBeUndefined()
   })
@@ -703,11 +750,13 @@ describe('cross-tab changes', () => {
   it('ignores a change naming another account\'s key', async () => {
     const { heard, stop } = recordHeard(accountStorageKey(OTHER, KEY_BROWSER_PREFS))
 
-    await announce([{
-      k: accountStorageKey(OTHER, KEY_BROWSER_PREFS),
-      v: { diffView: 'split' },
-      e: Date.now() + 60_000,
-    }])
+    await announce([
+      {
+        k: accountStorageKey(OTHER, KEY_BROWSER_PREFS),
+        v: { diffView: 'split' },
+        e: Date.now() + 60_000,
+      },
+    ])
     stop()
 
     expect(heard).toEqual([])
@@ -717,7 +766,11 @@ describe('cross-tab changes', () => {
     const { heard, stop } = recordHeard(accountStorageKey(ACCOUNT, ASYNC_KEY), 'leapmux:not-a-registered-key')
 
     await announce([
-      { k: accountStorageKey(ACCOUNT, ASYNC_KEY), v: 'draft', e: Date.now() + 60_000 },
+      {
+        k: accountStorageKey(ACCOUNT, ASYNC_KEY),
+        v: 'draft',
+        e: Date.now() + 60_000,
+      },
       { k: 'leapmux:not-a-registered-key', v: 1, e: Date.now() + 60_000 },
     ])
     stop()
@@ -773,11 +826,20 @@ describe('localStorageStoreMany', () => {
     const second = `${PREFIX_EDITOR_DRAFT}${WORKER}-batch-metadata` as const
     let instant = Date.now()
     const clock = vi.spyOn(Date, 'now').mockImplementation(() => instant++)
-    const write = localStorageStoreMany([{ name: first, value: { content: 'text' } }, { name: second, value: '' }])
+    const write = localStorageStoreMany([
+      {
+        name: first,
+        value: { content: 'text' },
+      },
+      { name: second, value: '' },
+    ])
     clock.mockRestore()
     await flushStorageWrites()
     expect(await write.durable).toBe(true)
-    const rows = await Promise.all([readKvRow(accountStorageKey(ACCOUNT, first)), readKvRow(accountStorageKey(ACCOUNT, second))])
+    const rows = await Promise.all([
+      readKvRow(accountStorageKey(ACCOUNT, first)),
+      readKvRow(accountStorageKey(ACCOUNT, second)),
+    ])
     expect(rows[0]?.e).toBe(rows[1]?.e)
     expect(rows[0]?.v).toEqual({ content: 'text' })
     expect(rows[1]?.v).toBe('')
@@ -786,7 +848,13 @@ describe('localStorageStoreMany', () => {
   it('enqueues nothing when any record cannot be cloned', async () => {
     const first = `${PREFIX_EDITOR_DRAFT}${WORKER}-rejected-first` as const
     const second = `${PREFIX_EDITOR_DRAFT}${WORKER}-rejected-second` as const
-    const write = localStorageStoreMany([{ name: first, value: 'must not persist' }, { name: second, value: () => {} }])
+    const write = localStorageStoreMany([
+      { name: first, value: 'must not persist' },
+      {
+        name: second,
+        value: () => {},
+      },
+    ])
     expect(await write.durable).toBe(false)
     expect(peekKvPending(accountStorageKey(ACCOUNT, first))).toBeUndefined()
     await flushStorageWrites()
@@ -797,7 +865,10 @@ describe('localStorageStoreMany', () => {
   it('keeps the complete collection in the account that issued it', async () => {
     const first = `${PREFIX_EDITOR_DRAFT}${WORKER}-account-first` as const
     const second = `${PREFIX_EDITOR_DRAFT}${WORKER}-account-second` as const
-    localStorageStoreMany([{ name: first, value: 'old text' }, { name: second, value: 'old metadata' }])
+    localStorageStoreMany([
+      { name: first, value: 'old text' },
+      { name: second, value: 'old metadata' },
+    ])
     setStorageAccountForTests(OTHER)
     localStorageStore(first, 'new text')
     await flushStorageWrites()
@@ -817,7 +888,10 @@ describe('localStorageStoreMany', () => {
         return true
       },
     }
-    expect(() => localStorageStoreMany([{ name: first, value: 'old' }, { name: second, value }])).toThrow('storage account changes')
+    expect(() => localStorageStoreMany([
+      { name: first, value: 'old' },
+      { name: second, value },
+    ])).toThrow('storage account changes')
     await flushStorageWrites()
     expect(await localStorageLoad(first)).toBeUndefined()
     setStorageAccountForTests(ACCOUNT)

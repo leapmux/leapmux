@@ -5,14 +5,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MODEL_KEY } from '../helpers/mockAgentEnvironment'
 import { withMockPiModel } from './scriptedModel'
 
-const state = vi.hoisted(() => ({ execFile: vi.fn(), runDir: '' }))
+const state = vi.hoisted(() => ({
+  execFile: vi.fn(),
+  runDir: '',
+}))
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
   return { ...actual, execFile: state.execFile }
 })
 vi.mock('../helpers/server', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../helpers/server')>()
-  return { ...actual, getGlobalState: () => ({ tmpDir: state.runDir }) }
+  return {
+    ...actual,
+    getGlobalState: () => ({ tmpDir: state.runDir }),
+  }
 })
 
 let directory: string
@@ -27,7 +33,11 @@ beforeEach(() => {
   mkdirSync(scratch, { recursive: true })
   state.runDir = mkdtempSync(join(scratch, 'pi-model-test-'))
   directory = join(state.runDir, 'project')
-  nativeEnvironment = { HOME: join(state.runDir, 'home'), PI_CODING_AGENT_DIR: join(state.runDir, 'pi-agent'), OPENAI_API_KEY: MODEL_KEY }
+  nativeEnvironment = {
+    HOME: join(state.runDir, 'home'),
+    PI_CODING_AGENT_DIR: join(state.runDir, 'pi-agent'),
+    OPENAI_API_KEY: MODEL_KEY,
+  }
   for (const path of [directory, nativeEnvironment.HOME, nativeEnvironment.PI_CODING_AGENT_DIR])
     mkdirSync(path, { recursive: true })
   executions.length = 0
@@ -73,7 +83,10 @@ describe('withMockPiModel', () => {
 
   it('passes the same isolated profile to both trust subprocesses and uses the canonical mock credential', async () => {
     await withMockPiModel(directory, server(), async (settings) => {
-      expect(settings).toEqual({ model: 'probe', optionValues: { pi_provider: 'leapmux-control-test', effort: 'off' } })
+      expect(settings).toEqual({
+        model: 'probe',
+        optionValues: { pi_provider: 'leapmux-control-test', effort: 'off' },
+      })
       const extension = readFileSync(join(directory, '.pi', 'extensions', 'protocol-model.ts'), 'utf8')
       expect(extension).toContain('http://127.0.0.1:1234/v1')
       expect(extension).toContain(MODEL_KEY)
@@ -113,7 +126,9 @@ describe('withMockPiModel', () => {
     failRestore = new Error('The native trust restore failed.')
     await expect(withMockPiModel(directory, server(), async () => {
       throw bodyFailure
-    })).rejects.toMatchObject({ errors: [bodyFailure, failRestore] })
+    })).rejects.toMatchObject({
+      errors: [bodyFailure, failRestore],
+    })
   })
 
   it('restores the prior entry when native trust enable fails after saving that entry', async () => {
@@ -128,7 +143,9 @@ describe('withMockPiModel', () => {
   it('retains native enable and restore failures after a partial enable', async () => {
     failEnable = new Error('The native trust enable failed after recording the prior entry.')
     failRestore = new Error('The native trust restore failed.')
-    await expect(withMockPiModel(directory, server(), async () => {})).rejects.toMatchObject({ errors: [failEnable, failRestore] })
+    await expect(withMockPiModel(directory, server(), async () => {})).rejects.toMatchObject({
+      errors: [failEnable, failRestore],
+    })
     expect(executions).toHaveLength(2)
   })
 
@@ -136,13 +153,23 @@ describe('withMockPiModel', () => {
     outsideDirectory = mkdtempSync(join(resolve(import.meta.dirname, '../../../../.tmp'), 'pi-outside-profile-'))
     const linked = join(state.runDir, 'linked-pi-agent')
     symlinkSync(outsideDirectory, linked, 'junction')
-    await expect(withMockPiModel(directory, { ...server(), agentEnv: { ...nativeEnvironment, PI_CODING_AGENT_DIR: linked } }, async () => {})).rejects.toThrow('outside the E2E run')
+    await expect(withMockPiModel(directory, {
+      ...server(),
+      agentEnv: { ...nativeEnvironment, PI_CODING_AGENT_DIR: linked },
+    }, async () => {})).rejects.toThrow('outside the E2E run')
     expect(executions).toEqual([])
     expect(existsSync(join(directory, '.pi'))).toBe(false)
   })
 
-  it.each([{ mockModelUrl: '' }, { mockModelUrl: 'http://127.0.0.1:1234', agentEnv: {} }])('refuses missing suite isolation before it changes trust: %j', async (context) => {
-    await expect(Reflect.apply(withMockPiModel, undefined, [directory, context, async () => {}])).rejects.toThrow(/suite server URL|isolated native environment/)
+  it.each([
+    { mockModelUrl: '' },
+    { mockModelUrl: 'http://127.0.0.1:1234', agentEnv: {} },
+  ])('refuses missing suite isolation before it changes trust: %j', async (context) => {
+    await expect(Reflect.apply(withMockPiModel, undefined, [
+      directory,
+      context,
+      async () => {},
+    ])).rejects.toThrow(/suite server URL|isolated native environment/)
     expect(executions).toEqual([])
     expect(existsSync(join(directory, '.pi'))).toBe(false)
   })

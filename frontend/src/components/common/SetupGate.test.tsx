@@ -77,7 +77,12 @@ function renderGate(path: string, child: () => JSX.Element = () => <div data-tes
       <Route path="/setup" component={() => <SetupGate><div data-testid="setup-page" /></SetupGate>} />
     </MemoryRouter>
   ))
-  return { ...result, history, navigations, currentPath: () => history.get() }
+  return {
+    ...result,
+    history,
+    navigations,
+    currentPath: () => history.get(),
+  }
 }
 
 describe('SetupGate', () => {
@@ -321,7 +326,12 @@ describe('SetupGate', () => {
     // every sign-in to answer a question that concerns one installation once.
     it('does not hold the credential pages behind the splash', () => {
       setAuthLoading(true)
-      for (const path of ['/login', '/signup', '/recover-account', '/recover-account/complete']) {
+      for (const path of [
+        '/login',
+        '/signup',
+        '/recover-account',
+        '/recover-account/complete',
+      ]) {
         const { unmount } = renderGate(path)
         expect(screen.getByTestId('route-content'), path).toBeInTheDocument()
         unmount()

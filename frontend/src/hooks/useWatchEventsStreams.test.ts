@@ -22,7 +22,9 @@ vi.mock('~/api/workerRpc', () => ({
   // Return no fatal relay refusal by default. A fatal-latch test supplies the refusal
   // explicitly.
 
-  channelManager: { fatalCloseInfo: vi.fn(() => null) },
+  channelManager: {
+    fatalCloseInfo: vi.fn(() => null),
+  },
 }))
 
 const { channelManager, watchEventsViaChannel } = await import('~/api/workerRpc')
@@ -74,13 +76,26 @@ function makeHandle(initialId = 0n, opening?: Parameters<typeof watchEventsViaCh
         // Model the Worker registry. A failed agent lookup keeps its prior state.
         if (applied && !ack.rejectedAgents.some(entry => entry.reason === WatchRejectionReason.LOOKUP_FAILED)) {
           const refused = new Set(ack.rejectedAgents.map(entry => entry.entityId))
-          registered = new Map(applied.agents.filter(entry => !refused.has(entry.agentId)).map(entry => [entry.agentId, {
-            agentId: entry.agentId,
-            mode: entry.mode,
-            replayId: entry.replayId,
-          }]))
+          registered = new Map(applied.agents.filter(entry => !refused.has(entry.agentId)).map(entry => [
+            entry.agentId,
+            {
+              agentId: entry.agentId,
+              mode: entry.mode,
+              replayId: entry.replayId,
+            },
+          ]))
         }
-        onEvent?.(create(WatchEventsResponseSchema, { event: { case: 'updateAck', value: { ...ack, agentStates: [...registered.values()].map(watchAgentState) } } }))
+        onEvent?.(create(WatchEventsResponseSchema, {
+          event: {
+            case: 'updateAck',
+            value: {
+              ...ack,
+              agentStates: [
+                ...registered.values(),
+              ].map(watchAgentState),
+            },
+          },
+        }))
         return
       }
       onEvent?.(resp)
@@ -138,34 +153,43 @@ describe('useWatchEventsStreams', () => {
         onEvent: opts.onEvent ?? (() => {}),
         onWorkerOnline: opts.onWorkerOnline ?? (() => {}),
         onPromoted: opts.onPromoted ?? (() => {}),
-        ...(opts.onReplayRequested ? { onReplayRequested: opts.onReplayRequested } : {}),
-        ...(opts.onReplayRetired ? { onReplayRetired: opts.onReplayRetired } : {}),
+        ...(opts.onReplayRequested
+          ? { onReplayRequested: opts.onReplayRequested }
+          : {}),
+        ...(opts.onReplayRetired
+          ? { onReplayRetired: opts.onReplayRetired }
+          : {}),
       })
       return { harness, stores, dispose }
     })
   }
 
   function identityPlans(identity: string, cursorSeq = 7n): Map<string, WatchPlan> {
-    return new Map([['w1', {
-      agents: [
-        create(WatchAgentEntrySchema, {
-          agentId: 'child-1',
-          mode: WatchMode.FULL,
-          cursorSeq,
-          windowTailSeq: cursorSeq - 1n,
-          replay: WatchReplayMode.AFTER_CURSOR_OR_NONE,
-        }),
-        create(WatchAgentEntrySchema, { agentId: 'sibling-1', mode: WatchMode.FULL }),
-        create(WatchAgentEntrySchema, { agentId: 'root-1', mode: WatchMode.NOTIFY }),
+    return new Map([
+      [
+        'w1',
+        {
+          agents: [
+            create(WatchAgentEntrySchema, {
+              agentId: 'child-1',
+              mode: WatchMode.FULL,
+              cursorSeq,
+              windowTailSeq: cursorSeq - 1n,
+              replay: WatchReplayMode.AFTER_CURSOR_OR_NONE,
+            }),
+            create(WatchAgentEntrySchema, { agentId: 'sibling-1', mode: WatchMode.FULL }),
+            create(WatchAgentEntrySchema, { agentId: 'root-1', mode: WatchMode.NOTIFY }),
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+          agentReplayIdentities: new Map([
+            ['child-1', identity],
+            ['sibling-1', 'sibling-root'],
+            ['root-1', 'unused-notify-context'],
+          ]),
+        },
       ],
-      terminals: [],
-      terminalResync: new Set<string>(),
-      agentReplayIdentities: new Map([
-        ['child-1', identity],
-        ['sibling-1', 'sibling-root'],
-        ['root-1', 'unused-notify-context'],
-      ]),
-    }]])
+    ])
   }
 
   /** Decode the exact recorded transport argument, including its generated defaults. */
@@ -179,13 +203,21 @@ describe('useWatchEventsStreams', () => {
   }
 
   function completeChildReplay(handle: FakeHandle, replayId: bigint): void {
-    handle._emit(create(WatchEventsResponseSchema, { event: { case: 'agentEvent', value: {
-      agentId: 'child-1',
-      replay: true,
-      replayAgentId: 'child-1',
-      replayId,
-      event: { case: 'catchUpComplete', value: { latestSeq: 0n } },
-    } } }))
+    handle._emit(create(WatchEventsResponseSchema, {
+      event: {
+        case: 'agentEvent',
+        value: {
+          agentId: 'child-1',
+          replay: true,
+          replayAgentId: 'child-1',
+          replayId,
+          event: {
+            case: 'catchUpComplete',
+            value: { latestSeq: 0n },
+          },
+        },
+      },
+    }))
   }
 
   it.each([false, true])('replaces changed FULL authority before transport with completed=%s', async (completed) => {
@@ -208,10 +240,15 @@ describe('useWatchEventsStreams', () => {
     await flush()
     const opening = recordedRequest()
     const handle = handles[0]!
-    handle._emit(create(WatchEventsResponseSchema, { event: { case: 'updateAck', value: {
-      updateId: opening.updateId,
-      agentStates: opening.agents.map(watchAgentState),
-    } } }))
+    handle._emit(create(WatchEventsResponseSchema, {
+      event: {
+        case: 'updateAck',
+        value: {
+          updateId: opening.updateId,
+          agentStates: opening.agents.map(watchAgentState),
+        },
+      },
+    }))
     if (completed)
       completeChildReplay(handle, opening.updateId)
     order.length = 0
@@ -232,7 +269,10 @@ describe('useWatchEventsStreams', () => {
     expect(replacement.agents.find(entry => entry.agentId === 'sibling-1')?.replayId).toBe(opening.updateId)
     expect(replacement.agents.find(entry => entry.agentId === 'root-1')).toMatchObject({ mode: WatchMode.NOTIFY, replayId: 0n })
     expect(replacement.updateId).toBeGreaterThan(opening.updateId)
-    expect(requested.mock.calls.at(-1)?.[3]).toEqual(new Map([['child-1', 'after'], ['sibling-1', 'sibling-root']]))
+    expect(requested.mock.calls.at(-1)?.[3]).toEqual(new Map([
+      ['child-1', 'after'],
+      ['sibling-1', 'sibling-root'],
+    ]))
     expect(vi.mocked(watchEventsViaChannel).mock.calls[0]?.[1]).not.toHaveProperty('agentReplayIdentities')
     setContext({ identity: 'after', cursor: 99n })
     await flush()
@@ -276,12 +316,23 @@ describe('useWatchEventsStreams', () => {
   })
 
   it('copies authority before its source map changes in the replay callback', async () => {
-    const identities = new Map([['child-1', 'before'], ['sibling-1', 'sibling-root']])
+    const identities = new Map([
+      ['child-1', 'before'],
+      ['sibling-1', 'sibling-root'],
+    ])
     const requested = vi.fn<NonNullable<UseWatchEventsStreamsOpts['onReplayRequested']>>((_workerId, _replayId, _entries, captured) => {
       identities.set('child-1', 'changed-after-capture')
       expect(captured.get('child-1')).toBe('before')
     })
-    mount(() => new Map([['w1', { ...identityPlans('before').get('w1')!, agentReplayIdentities: identities }]]), { onReplayRequested: requested })
+    mount(() => new Map([
+      [
+        'w1',
+        {
+          ...identityPlans('before').get('w1')!,
+          agentReplayIdentities: identities,
+        },
+      ],
+    ]), { onReplayRequested: requested })
     await flush()
     expect(requested).toHaveBeenCalledOnce()
     expect(requested.mock.calls[0]?.[3].get('child-1')).toBe('before')
@@ -298,28 +349,55 @@ describe('useWatchEventsStreams', () => {
     await flush()
     const handle = handles[0]!
     const opening = recordedRequest()
-    handle._emit(create(WatchEventsResponseSchema, { event: { case: 'updateAck', value: {
-      updateId: opening.updateId,
-      agentStates: opening.agents.map(watchAgentState),
-    } } }))
+    handle._emit(create(WatchEventsResponseSchema, {
+      event: {
+        case: 'updateAck',
+        value: {
+          updateId: opening.updateId,
+          agentStates: opening.agents.map(watchAgentState),
+        },
+      },
+    }))
     promoted.mockClear()
     setIdentity('after')
     await flush()
     const replacement = recordedRequest(handle)
-    handle._emit(create(WatchEventsResponseSchema, { event: { case: 'updateAck', value: {
-      updateId: opening.updateId,
-      agentStates: opening.agents.map(watchAgentState),
-    } } }))
+    handle._emit(create(WatchEventsResponseSchema, {
+      event: {
+        case: 'updateAck',
+        value: {
+          updateId: opening.updateId,
+          agentStates: opening.agents.map(watchAgentState),
+        },
+      },
+    }))
     expect(promoted).not.toHaveBeenCalled()
     completeChildReplay(handle, opening.updateId)
-    handle._emit(create(WatchEventsResponseSchema, { event: { case: 'updateAck', value: {
-      updateId: replacement.updateId,
-      rejectedAgents: [{ entityId: 'child-1', reason: WatchRejectionReason.NOT_FOUND }],
-      agentStates: replacement.agents.filter(entry => entry.agentId !== 'child-1').map(watchAgentState),
-    } } }))
+    handle._emit(create(WatchEventsResponseSchema, {
+      event: {
+        case: 'updateAck',
+        value: {
+          updateId: replacement.updateId,
+          rejectedAgents: [
+            { entityId: 'child-1', reason: WatchRejectionReason.NOT_FOUND },
+          ],
+          agentStates: replacement.agents.filter(entry => entry.agentId !== 'child-1').map(watchAgentState),
+        },
+      },
+    }))
     expect(retired.mock.calls).toEqual([
-      ['w1', opening.updateId, ['child-1'], 'replaced'],
-      ['w1', replacement.updateId, ['child-1'], 'rejected'],
+      [
+        'w1',
+        opening.updateId,
+        ['child-1'],
+        'replaced',
+      ],
+      [
+        'w1',
+        replacement.updateId,
+        ['child-1'],
+        'rejected',
+      ],
     ])
     expect(promoted).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(60_000)
@@ -347,20 +425,62 @@ describe('useWatchEventsStreams', () => {
     const acceptedId = requested.mock.calls[2]?.[1]
     expect(acceptedId).toBeGreaterThan(refusedId)
     expect(retired.mock.calls).toEqual([
-      ['w1', opening.updateId, ['child-1'], 'replaced'],
-      ['w1', refusedId, ['child-1'], 'rejected'],
+      [
+        'w1',
+        opening.updateId,
+        ['child-1'],
+        'replaced',
+      ],
+      [
+        'w1',
+        refusedId,
+        ['child-1'],
+        'rejected',
+      ],
     ])
     expect(recordedRequest(handle, 1).agents.find(entry => entry.agentId === 'sibling-1')?.replayId).toBe(opening.updateId)
-    expect(requested.mock.calls[2]?.[2]).toEqual([expect.objectContaining({ agentId: 'child-1', replayId: acceptedId })])
+    expect(requested.mock.calls[2]?.[2]).toEqual([
+      expect.objectContaining({ agentId: 'child-1', replayId: acceptedId }),
+    ])
   })
 
   it('opens one stream per worker', async () => {
     const { harness } = mount(() => new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
-      ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [
+            { agentId: 'a1', mode: WatchMode.FULL } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
+      [
+        'w2',
+        {
+          agents: [
+            { agentId: 'a2', mode: WatchMode.FULL } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]))
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
-    emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: '2', workerId: 'w2' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a2',
+      tileId: harness.rootTileId,
+      position: '2',
+      workerId: 'w2',
+    })
     await flush()
     expect(watchEventsViaChannel).toHaveBeenCalledTimes(2)
   })
@@ -375,7 +495,21 @@ describe('useWatchEventsStreams', () => {
       return handle as never
     })
     mount(() => new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL, cursorSeq: 17n, replay: WatchReplayMode.AFTER_CURSOR_OR_NONE } as never], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [
+            {
+              agentId: 'a1',
+              mode: WatchMode.FULL,
+              cursorSeq: 17n,
+              replay: WatchReplayMode.AFTER_CURSOR_OR_NONE,
+            } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]), { onReplayRequested: requested })
     await flush()
     expect(order).toEqual(['requested', 'transport'])
@@ -384,15 +518,31 @@ describe('useWatchEventsStreams', () => {
     if (!request || !entry)
       throw new Error('The opening request must contain its agent entry.')
     expect(entry.cursorSeq).toBe(17n)
-    expect(requested).toHaveBeenCalledWith('w1', request.updateId, [expect.objectContaining({ agentId: 'a1', cursorSeq: entry.cursorSeq, replay: WatchReplayMode.AFTER_CURSOR_OR_NONE })], new Map())
+    expect(requested).toHaveBeenCalledWith('w1', request.updateId, [
+      expect.objectContaining({ agentId: 'a1', cursorSeq: entry.cursorSeq, replay: WatchReplayMode.AFTER_CURSOR_OR_NONE }),
+    ], new Map())
   })
 
   it('requests promotion replay before the update reaches the transport', async () => {
     const order: string[] = []
     const [mode, setMode] = createSignal(WatchMode.NOTIFY)
     mount(() => new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: mode() } as never], terminals: [], terminalResync: new Set<string>() }],
-    ]), { onReplayRequested: () => order.push('requested') })
+      [
+        'w1',
+        {
+          agents: [
+            {
+              agentId: 'a1',
+              mode: mode(),
+            } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
+    ]), {
+      onReplayRequested: () => order.push('requested'),
+    })
     await flush()
     expect(order).toEqual([])
     handles[0]!.update.mockImplementation(() => order.push('transport'))
@@ -405,7 +555,21 @@ describe('useWatchEventsStreams', () => {
     const requested = vi.fn()
     const [includeOther, setIncludeOther] = createSignal(false)
     mount(() => new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never, ...(includeOther() ? [{ agentId: 'a2', mode: WatchMode.NOTIFY } as never] : [])], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [
+            { agentId: 'a1', mode: WatchMode.FULL } as never,
+            ...(includeOther()
+              ? [
+                  { agentId: 'a2', mode: WatchMode.NOTIFY } as never,
+                ]
+              : []),
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]), { onReplayRequested: requested })
     await flush()
     expect(requested).toHaveBeenCalledTimes(1)
@@ -421,14 +585,27 @@ describe('useWatchEventsStreams', () => {
     const [tail, setTail] = createSignal(6n)
     const [includeOther, setIncludeOther] = createSignal(false)
     mount(() => new Map([
-      ['w1', {
-        agents: [
-          { agentId: 'a1', mode: WatchMode.FULL, replay: WatchReplayMode.AFTER_CURSOR_OR_NONE, cursorSeq: cursor(), windowTailSeq: tail() } as never,
-          ...(includeOther() ? [{ agentId: 'a2', mode: WatchMode.NOTIFY } as never] : []),
-        ],
-        terminals: [],
-        terminalResync: new Set<string>(),
-      }],
+      [
+        'w1',
+        {
+          agents: [
+            {
+              agentId: 'a1',
+              mode: WatchMode.FULL,
+              replay: WatchReplayMode.AFTER_CURSOR_OR_NONE,
+              cursorSeq: cursor(),
+              windowTailSeq: tail(),
+            } as never,
+            ...(includeOther()
+              ? [
+                  { agentId: 'a2', mode: WatchMode.NOTIFY } as never,
+                ]
+              : []),
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]), { onReplayRequested: requested })
     await flush()
     const opening = vi.mocked(watchEventsViaChannel).mock.calls[0]?.[1]
@@ -460,7 +637,20 @@ describe('useWatchEventsStreams', () => {
   it('gives a later FULL lifetime its own transmitted identity when the demotion is skipped', async () => {
     const [mode, setMode] = createSignal(WatchMode.FULL)
     mount(() => new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: mode(), cursorSeq: 7n } as never], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [
+            {
+              agentId: 'a1',
+              mode: mode(),
+              cursorSeq: 7n,
+            } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]))
     await flush()
     const firstId = vi.mocked(watchEventsViaChannel).mock.calls[0]?.[1].updateId
@@ -480,20 +670,47 @@ describe('useWatchEventsStreams', () => {
     const retired = vi.fn()
     const [includeOther, setIncludeOther] = createSignal(false)
     const { harness } = mount(() => new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never, ...(includeOther() ? [{ agentId: 'a2', mode: WatchMode.NOTIFY } as never] : [])], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [
+            { agentId: 'a1', mode: WatchMode.FULL } as never,
+            ...(includeOther()
+              ? [
+                  { agentId: 'a2', mode: WatchMode.NOTIFY } as never,
+                ]
+              : []),
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]), { onReplayRetired: retired })
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
     await flush()
     const openingId = vi.mocked(watchEventsViaChannel).mock.calls[0]?.[1].updateId
     setIncludeOther(true)
     await flush()
     const latestId = handles[0]!._requestId()
     expect(latestId).not.toBe(openingId)
-    handles[0]!._emit(create(WatchEventsResponseSchema, { event: { case: 'updateAck', value: {
-      updateId: latestId,
-      rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED }],
-      agentStates: [],
-    } } }))
+    handles[0]!._emit(create(WatchEventsResponseSchema, {
+      event: {
+        case: 'updateAck',
+        value: {
+          updateId: latestId,
+          rejectedAgents: [
+            { entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED },
+          ],
+          agentStates: [],
+        },
+      },
+    }))
     expect(retired).toHaveBeenCalledWith('w1', openingId, ['a1'], 'rejected')
   })
 
@@ -501,7 +718,16 @@ describe('useWatchEventsStreams', () => {
     const requested = vi.fn()
     const retired = vi.fn()
     mount(() => new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [
+            { agentId: 'a1', mode: WatchMode.FULL } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]), { onReplayRequested: requested, onReplayRetired: retired })
     await flush()
     const previous = handles[0]!
@@ -524,7 +750,21 @@ describe('useWatchEventsStreams', () => {
     const [present, setPresent] = createSignal(true)
     const [mode, setMode] = createSignal(WatchMode.FULL)
     mount(() => new Map([
-      ['w1', { agents: present() ? [{ agentId: 'a1', mode: mode() } as never] : [], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: present()
+            ? [
+                {
+                  agentId: 'a1',
+                  mode: mode(),
+                } as never,
+              ]
+            : [],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]), { onReplayRetired: retired })
     await flush()
     const requestId = vi.mocked(watchEventsViaChannel).mock.calls[0]?.[1].updateId
@@ -539,15 +779,32 @@ describe('useWatchEventsStreams', () => {
   it('retires a rejected replay request without affecting another agent', async () => {
     const retired = vi.fn()
     mount(() => new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never, { agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [
+            { agentId: 'a1', mode: WatchMode.FULL } as never,
+            { agentId: 'a2', mode: WatchMode.FULL } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]), { onReplayRetired: retired })
     await flush()
     const requestId = vi.mocked(watchEventsViaChannel).mock.calls[0]?.[1].updateId
-    handles[0]!._emit({ event: { case: 'updateAck', value: {
-      updateId: requestId,
-      rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.NOT_FOUND }],
-      rejectedTerminals: [],
-    } } } as unknown as WatchEventsResponse)
+    handles[0]!._emit({
+      event: {
+        case: 'updateAck',
+        value: {
+          updateId: requestId,
+          rejectedAgents: [
+            { entityId: 'a1', reason: WatchRejectionReason.NOT_FOUND },
+          ],
+          rejectedTerminals: [],
+        },
+      },
+    } as unknown as WatchEventsResponse)
     expect(retired).toHaveBeenCalledWith('w1', requestId, ['a1'], 'rejected')
     expect(retired).toHaveBeenCalledTimes(1)
   })
@@ -556,7 +813,16 @@ describe('useWatchEventsStreams', () => {
     const [present, setPresent] = createSignal(true)
     mount(() => present()
       ? new Map([
-          ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+          [
+            'w1',
+            {
+              agents: [
+                { agentId: 'a1', mode: WatchMode.FULL } as never,
+              ],
+              terminals: [],
+              terminalResync: new Set<string>(),
+            },
+          ],
         ])
       : new Map())
     await flush()
@@ -572,10 +838,24 @@ describe('useWatchEventsStreams', () => {
   it.each([2n, 9007199254740993n])('ignores an acknowledgment for unsent request %s', async (updateId) => {
     const promoted = vi.fn()
     mount(() => new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [
+            { agentId: 'a1', mode: WatchMode.FULL } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]), { onPromoted: promoted })
     await flush()
-    handles[0]!._emit({ event: { case: 'updateAck', value: { updateId, rejectedAgents: [], rejectedTerminals: [] } } } as unknown as WatchEventsResponse)
+    handles[0]!._emit({
+      event: {
+        case: 'updateAck',
+        value: { updateId, rejectedAgents: [], rejectedTerminals: [] },
+      },
+    } as unknown as WatchEventsResponse)
     expect(promoted).not.toHaveBeenCalled()
   })
 
@@ -583,7 +863,14 @@ describe('useWatchEventsStreams', () => {
     const entry = { agentId: 'a1', mode: WatchMode.FULL, cursorSeq: 17n } as never
     const requested = vi.fn()
     mount(() => new Map([
-      ['w1', { agents: [entry], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [entry],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]), { onReplayRequested: requested })
     await flush()
     const transmitted = vi.mocked(watchEventsViaChannel).mock.calls[0]?.[1]
@@ -601,7 +888,16 @@ describe('useWatchEventsStreams', () => {
     const retired = vi.fn(() => order.push('retired'))
     vi.mocked(watchEventsViaChannel).mockRejectedValueOnce(new Error('open refused'))
     mount(() => new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [
+            { agentId: 'a1', mode: WatchMode.FULL } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]), { onReplayRequested: requested, onReplayRetired: retired })
     await flush()
     const firstId = vi.mocked(watchEventsViaChannel).mock.calls[0]?.[1].updateId
@@ -618,7 +914,20 @@ describe('useWatchEventsStreams', () => {
     const retired = vi.fn()
     const [mode, setMode] = createSignal(WatchMode.NOTIFY)
     mount(() => new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never, { agentId: 'a2', mode: mode() } as never], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [
+            { agentId: 'a1', mode: WatchMode.FULL } as never,
+            {
+              agentId: 'a2',
+              mode: mode(),
+            } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]), { onReplayRequested: requested, onReplayRetired: retired })
     await flush()
     const handle = handles[0]!
@@ -630,8 +939,12 @@ describe('useWatchEventsStreams', () => {
     expect(retired).toHaveBeenCalledTimes(1)
     const promotionId = requested.mock.calls[1]?.[1]
     expect(retired).toHaveBeenCalledWith('w1', promotionId, ['a2'], 'rejected')
-    expect(requested.mock.calls[0]?.[2]).toEqual([expect.objectContaining({ agentId: 'a1' })])
-    expect(requested.mock.calls[2]?.[2]).toEqual([expect.objectContaining({ agentId: 'a2' })])
+    expect(requested.mock.calls[0]?.[2]).toEqual([
+      expect.objectContaining({ agentId: 'a1' }),
+    ])
+    expect(requested.mock.calls[2]?.[2]).toEqual([
+      expect.objectContaining({ agentId: 'a2' }),
+    ])
     expect(requested.mock.calls[2]?.[1]).not.toBe(promotionId)
   })
 
@@ -641,63 +954,145 @@ describe('useWatchEventsStreams', () => {
     const onEvent = vi.fn()
     const [includeOther, setIncludeOther] = createSignal(false)
     mount(() => new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never, ...(includeOther() ? [{ agentId: 'a2', mode: WatchMode.NOTIFY } as never] : [])], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [
+            { agentId: 'a1', mode: WatchMode.FULL } as never,
+            ...(includeOther()
+              ? [
+                  { agentId: 'a2', mode: WatchMode.NOTIFY } as never,
+                ]
+              : []),
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]), { onReplayRequested: requested, onReplayRetired: retired, onEvent })
     await flush()
     const replayId = handles[0]!._requestId()
-    const completed = create(WatchEventsResponseSchema, { event: { case: 'agentEvent', value: create(AgentEventSchema, {
-      agentId: 'a1',
-      replay: true,
-      replayId,
-      event: { case: 'catchUpComplete', value: { latestSeq: 0n } },
-      replayAgentId: 'a1',
-    }) } })
+    const completed = create(WatchEventsResponseSchema, {
+      event: {
+        case: 'agentEvent',
+        value: create(AgentEventSchema, {
+          agentId: 'a1',
+          replay: true,
+          replayId,
+          event: {
+            case: 'catchUpComplete',
+            value: { latestSeq: 0n },
+          },
+          replayAgentId: 'a1',
+        }),
+      },
+    })
     handles[0]!._emit(completed)
     expect(onEvent).toHaveBeenCalledWith('w1', completed)
     setIncludeOther(true)
     await flush()
-    handles[0]!._emit({ event: { case: 'updateAck', value: {
-      updateId: handles[0]!._requestId(),
-      rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.NOT_FOUND }],
-      rejectedTerminals: [],
-    } } } as unknown as WatchEventsResponse)
+    handles[0]!._emit({
+      event: {
+        case: 'updateAck',
+        value: {
+          updateId: handles[0]!._requestId(),
+          rejectedAgents: [
+            { entityId: 'a1', reason: WatchRejectionReason.NOT_FOUND },
+          ],
+          rejectedTerminals: [],
+        },
+      },
+    } as unknown as WatchEventsResponse)
     expect(requested).toHaveBeenCalledTimes(1)
     expect(retired).not.toHaveBeenCalled()
     // NOT_FOUND removes the worker's registration. A later real revision promotes again.
     setIncludeOther(false)
     await flush()
     expect(requested).toHaveBeenCalledTimes(2)
-    expect(requested).toHaveBeenLastCalledWith('w1', handles[0]!._requestId(), [expect.objectContaining({ agentId: 'a1' })], new Map())
+    expect(requested).toHaveBeenLastCalledWith('w1', handles[0]!._requestId(), [
+      expect.objectContaining({ agentId: 'a1' }),
+    ], new Map())
   })
 
   it.each([
-    { label: 'the exact origin', origin: 'a1', wrongLifetime: false, completed: true },
-    { label: 'an empty origin', origin: '', wrongLifetime: false, completed: false },
-    { label: 'another origin', origin: 'a2', wrongLifetime: false, completed: false },
-    { label: 'another lifetime', origin: 'a1', wrongLifetime: true, completed: false },
+    {
+      label: 'the exact origin',
+      origin: 'a1',
+      wrongLifetime: false,
+      completed: true,
+    },
+    {
+      label: 'an empty origin',
+      origin: '',
+      wrongLifetime: false,
+      completed: false,
+    },
+    {
+      label: 'another origin',
+      origin: 'a2',
+      wrongLifetime: false,
+      completed: false,
+    },
+    {
+      label: 'another lifetime',
+      origin: 'a1',
+      wrongLifetime: true,
+      completed: false,
+    },
   ])('accepts completion only from its current FULL origin: $label', async ({ origin, wrongLifetime, completed }) => {
     const retired = vi.fn()
     const [includeOther, setIncludeOther] = createSignal(false)
     mount(() => new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never, ...(includeOther() ? [{ agentId: 'a2', mode: WatchMode.NOTIFY } as never] : [])], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [
+            { agentId: 'a1', mode: WatchMode.FULL } as never,
+            ...(includeOther()
+              ? [
+                  { agentId: 'a2', mode: WatchMode.NOTIFY } as never,
+                ]
+              : []),
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]), { onReplayRetired: retired })
     await flush()
     const handle = handles[0]!
     const replayId = handle._requestId()
-    handle._emit(create(WatchEventsResponseSchema, { event: { case: 'agentEvent', value: create(AgentEventSchema, {
-      agentId: 'a1',
-      replay: true,
-      replayId: wrongLifetime ? replayId + 1n : replayId,
-      event: { case: 'catchUpComplete', value: { latestSeq: 0n } },
-      replayAgentId: origin,
-    }) } }))
+    handle._emit(create(WatchEventsResponseSchema, {
+      event: {
+        case: 'agentEvent',
+        value: create(AgentEventSchema, {
+          agentId: 'a1',
+          replay: true,
+          replayId: wrongLifetime
+            ? replayId + 1n
+            : replayId,
+          event: {
+            case: 'catchUpComplete',
+            value: { latestSeq: 0n },
+          },
+          replayAgentId: origin,
+        }),
+      },
+    }))
     setIncludeOther(true)
     await flush()
-    handle._emit(create(WatchEventsResponseSchema, { event: { case: 'updateAck', value: {
-      updateId: handle._requestId(),
-      rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.NOT_FOUND }],
-      agentStates: [],
-    } } }))
+    handle._emit(create(WatchEventsResponseSchema, {
+      event: {
+        case: 'updateAck',
+        value: {
+          updateId: handle._requestId(),
+          rejectedAgents: [
+            { entityId: 'a1', reason: WatchRejectionReason.NOT_FOUND },
+          ],
+          agentStates: [],
+        },
+      },
+    }))
     if (completed)
       expect(retired).not.toHaveBeenCalled()
     else
@@ -709,7 +1104,20 @@ describe('useWatchEventsStreams', () => {
     const retired = vi.fn()
     const [mode, setMode] = createSignal(WatchMode.NOTIFY)
     mount(() => new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never, { agentId: 'a2', mode: mode() } as never], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [
+            { agentId: 'a1', mode: WatchMode.FULL } as never,
+            {
+              agentId: 'a2',
+              mode: mode(),
+            } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]), { onReplayRequested: requested, onReplayRetired: retired })
     await flush()
     setMode(WatchMode.FULL)
@@ -717,8 +1125,18 @@ describe('useWatchEventsStreams', () => {
     disposeRoot?.()
     disposeRoot = undefined
     expect(retired.mock.calls).toEqual([
-      ['w1', requested.mock.calls[0]?.[1], ['a1'], 'closed'],
-      ['w1', requested.mock.calls[1]?.[1], ['a2'], 'closed'],
+      [
+        'w1',
+        requested.mock.calls[0]?.[1],
+        ['a1'],
+        'closed',
+      ],
+      [
+        'w1',
+        requested.mock.calls[1]?.[1],
+        ['a2'],
+        'closed',
+      ],
     ])
     expect(handles[0]!.close).toHaveBeenCalledOnce()
 
@@ -727,7 +1145,16 @@ describe('useWatchEventsStreams', () => {
       resolveOpen = resolve
     }) as never)
     const second = mount(() => new Map([
-      ['w1', { agents: [{ agentId: 'a3', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [
+            { agentId: 'a3', mode: WatchMode.FULL } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]), { onReplayRequested: requested, onReplayRetired: retired })
     await flush()
     const lastRequestId = vi.mocked(watchEventsViaChannel).mock.calls.at(-1)?.[1].updateId
@@ -745,7 +1172,16 @@ describe('useWatchEventsStreams', () => {
     const [present, setPresent] = createSignal(true)
     mount(() => present()
       ? new Map([
-          ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+          [
+            'w1',
+            {
+              agents: [
+                { agentId: 'a1', mode: WatchMode.FULL } as never,
+              ],
+              terminals: [],
+              terminalResync: new Set<string>(),
+            },
+          ],
         ])
       : new Map(), { onReplayRetired: retired })
     await flush()
@@ -765,7 +1201,16 @@ describe('useWatchEventsStreams', () => {
     const [present, setPresent] = createSignal(true)
     mount(() => present()
       ? new Map([
-          ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+          [
+            'w1',
+            {
+              agents: [
+                { agentId: 'a1', mode: WatchMode.FULL } as never,
+              ],
+              terminals: [],
+              terminalResync: new Set<string>(),
+            },
+          ],
         ])
       : new Map(), { onWorkerOnline: online })
     await flush()
@@ -787,18 +1232,45 @@ describe('useWatchEventsStreams', () => {
 
   it.each([0n, 9007199254740993n])('keeps the rejection retry cap after invalid settled ACK %s', async (invalidId) => {
     const { harness } = mount(() => new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [
+            { agentId: 'a1', mode: WatchMode.FULL } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]))
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
     await flush()
     const handle = handles[0]!
     for (let i = 0; i < 10; i++) {
-      handle._emit({ event: { case: 'updateAck', value: {
-        updateId: handle._requestId(),
-        rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED }],
-        rejectedTerminals: [],
-      } } } as unknown as WatchEventsResponse)
-      handle._emit({ event: { case: 'updateAck', value: { updateId: invalidId, rejectedAgents: [], rejectedTerminals: [] } } } as unknown as WatchEventsResponse)
+      handle._emit({
+        event: {
+          case: 'updateAck',
+          value: {
+            updateId: handle._requestId(),
+            rejectedAgents: [
+              { entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED },
+            ],
+            rejectedTerminals: [],
+          },
+        },
+      } as unknown as WatchEventsResponse)
+      handle._emit({
+        event: {
+          case: 'updateAck',
+          value: { updateId: invalidId, rejectedAgents: [], rejectedTerminals: [] },
+        },
+      } as unknown as WatchEventsResponse)
       await vi.advanceTimersByTimeAsync(20_000)
       await flush()
     }
@@ -809,7 +1281,16 @@ describe('useWatchEventsStreams', () => {
     const onEvent = vi.fn()
     const onWorkerOnline = vi.fn()
     mount(() => new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [
+            { agentId: 'a1', mode: WatchMode.FULL } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]), { onEvent, onWorkerOnline })
     await flush()
     const previous = handles[0]
@@ -824,7 +1305,12 @@ describe('useWatchEventsStreams', () => {
       throw new Error('expected a live stream handle')
     onEvent.mockClear()
     onWorkerOnline.mockClear()
-    const response = { event: { case: 'agentEvent', value: { agentId: 'a1' } } } as WatchEventsResponse
+    const response = {
+      event: {
+        case: 'agentEvent',
+        value: { agentId: 'a1' },
+      },
+    } as WatchEventsResponse
     previous._emit(response)
     previous._end()
     previous._error(new ChannelError('transport', 'old stream closed'))
@@ -839,12 +1325,30 @@ describe('useWatchEventsStreams', () => {
   it('plan mode change sends update without re-opening', async () => {
     const harness = installTestBridge({ workspaceId: WS })
     const stores = createTestTabStores(WS)
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
     const [mode, setMode] = createSignal(WatchMode.NOTIFY)
     createRoot((dispose) => {
       disposeRoot = dispose
       const plans = createMemo(() => new Map([
-        ['w1', { agents: [{ agentId: 'a1', mode: mode() } as never], terminals: [], terminalResync: new Set<string>() }],
+        [
+          'w1',
+          {
+            agents: [
+              {
+                agentId: 'a1',
+                mode: mode(),
+              } as never,
+            ],
+            terminals: [],
+            terminalResync: new Set<string>(),
+          },
+        ],
       ]))
       useWatchEventsStreams({
         view: stores.view,
@@ -863,15 +1367,32 @@ describe('useWatchEventsStreams', () => {
   })
 
   it.each([WatchMode.FULL, WatchMode.NOTIFY])('keeps mode %s when an opposite change is cancelled before transmission', async (initial) => {
-    const opposite = initial === WatchMode.FULL ? WatchMode.NOTIFY : WatchMode.FULL
+    const opposite = initial === WatchMode.FULL
+      ? WatchMode.NOTIFY
+      : WatchMode.FULL
     const [mode, setMode] = createSignal(initial)
     mount(() => new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: mode() } as never], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [
+            {
+              agentId: 'a1',
+              mode: mode(),
+            } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]))
     await flush()
     const handle = handles[0]!
     handle._emit({
-      event: { case: 'updateAck', value: { updateId: 1n, rejectedAgents: [], rejectedTerminals: [] } },
+      event: {
+        case: 'updateAck',
+        value: { updateId: 1n, rejectedAgents: [], rejectedTerminals: [] },
+      },
     } as unknown as WatchEventsResponse)
     setMode(opposite)
     setMode(initial)
@@ -882,28 +1403,49 @@ describe('useWatchEventsStreams', () => {
   })
 
   it.each([WatchMode.FULL, WatchMode.NOTIFY])('restores mode %s while an opposite revision awaits acknowledgment', async (initial) => {
-    const opposite = initial === WatchMode.FULL ? WatchMode.NOTIFY : WatchMode.FULL
+    const opposite = initial === WatchMode.FULL
+      ? WatchMode.NOTIFY
+      : WatchMode.FULL
     const [mode, setMode] = createSignal(initial)
     mount(() => new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: mode() } as never], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [
+            {
+              agentId: 'a1',
+              mode: mode(),
+            } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]))
     await flush()
     const handle = handles[0]!
     const acknowledge = (updateId: bigint) => handle._emit({
-      event: { case: 'updateAck', value: { updateId, rejectedAgents: [], rejectedTerminals: [] } },
+      event: {
+        case: 'updateAck',
+        value: { updateId, rejectedAgents: [], rejectedTerminals: [] },
+      },
     } as unknown as WatchEventsResponse)
     acknowledge(1n)
     setMode(opposite)
     await flush()
     expect(handle.update).toHaveBeenLastCalledWith(expect.objectContaining({
       updateId: 2n,
-      agents: [expect.objectContaining({ mode: opposite })],
+      agents: [
+        expect.objectContaining({ mode: opposite }),
+      ],
     }))
     setMode(initial)
     await flush()
     expect(handle.update).toHaveBeenLastCalledWith(expect.objectContaining({
       updateId: 3n,
-      agents: [expect.objectContaining({ mode: initial })],
+      agents: [
+        expect.objectContaining({ mode: initial }),
+      ],
     }))
     acknowledge(2n)
     acknowledge(3n)
@@ -911,7 +1453,9 @@ describe('useWatchEventsStreams', () => {
     await flush()
     expect(handle.update).toHaveBeenLastCalledWith(expect.objectContaining({
       updateId: 4n,
-      agents: [expect.objectContaining({ mode: opposite })],
+      agents: [
+        expect.objectContaining({ mode: opposite }),
+      ],
     }))
     expect(watchEventsViaChannel).toHaveBeenCalledOnce()
   })
@@ -919,10 +1463,29 @@ describe('useWatchEventsStreams', () => {
   it('transport error marks worker offline and reconnects', async () => {
     const online: boolean[] = []
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
-      { onWorkerOnline: (_w, o) => online.push(o) },
+      () => new Map([
+        [
+          'w1',
+          {
+            agents: [
+              { agentId: 'a1', mode: WatchMode.FULL } as never,
+            ],
+            terminals: [],
+            terminalResync: new Set<string>(),
+          },
+        ],
+      ]),
+      {
+        onWorkerOnline: (_w, o) => online.push(o),
+      },
     )
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
     await flush()
     handles[0]!._error(new ChannelError('transport', 'lost'))
     await vi.advanceTimersByTimeAsync(1000)
@@ -937,10 +1500,29 @@ describe('useWatchEventsStreams', () => {
   it('a fatal relay close marks the worker offline without a reconnecting toast', async () => {
     const online: boolean[] = []
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
-      { onWorkerOnline: (_w, o) => online.push(o) },
+      () => new Map([
+        [
+          'w1',
+          {
+            agents: [
+              { agentId: 'a1', mode: WatchMode.FULL } as never,
+            ],
+            terminals: [],
+            terminalResync: new Set<string>(),
+          },
+        ],
+      ]),
+      {
+        onWorkerOnline: (_w, o) => online.push(o),
+      },
     )
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
     await flush()
     handles[0]!._error(new ChannelError('transport', 'too many places', { fatal: true }))
     await vi.advanceTimersByTimeAsync(1000)
@@ -954,9 +1536,26 @@ describe('useWatchEventsStreams', () => {
 
   it('says nothing about a drop the first redial repairs', async () => {
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
+      () => new Map([
+        [
+          'w1',
+          {
+            agents: [
+              { agentId: 'a1', mode: WatchMode.FULL } as never,
+            ],
+            terminals: [],
+            terminalResync: new Set<string>(),
+          },
+        ],
+      ]),
     )
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
     await flush()
     handles[0]!._error(new ChannelError('transport', 'channel disconnected'))
     await flush()
@@ -974,9 +1573,26 @@ describe('useWatchEventsStreams', () => {
   // Report the outage after the quiet reconnect attempts fail.
   it('announces an outage once the quiet redials are spent', async () => {
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
+      () => new Map([
+        [
+          'w1',
+          {
+            agents: [
+              { agentId: 'a1', mode: WatchMode.FULL } as never,
+            ],
+            terminals: [],
+            terminalResync: new Set<string>(),
+          },
+        ],
+      ]),
     )
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
     await flush()
     vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
       throw new ChannelError('transport', 'channel disconnected')
@@ -1011,9 +1627,26 @@ describe('useWatchEventsStreams', () => {
     window.addEventListener('leapmux:watch-events-redial', record)
     try {
       const { harness } = mount(
-        () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
+        () => new Map([
+          [
+            'w1',
+            {
+              agents: [
+                { agentId: 'a1', mode: WatchMode.FULL } as never,
+              ],
+              terminals: [],
+              terminalResync: new Set<string>(),
+            },
+          ],
+        ]),
       )
-      emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: harness.rootTileId,
+        position: '1',
+        workerId: 'w1',
+      })
       await flush()
       vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
         throw new ChannelError('transport', 'channel disconnected')
@@ -1045,9 +1678,26 @@ describe('useWatchEventsStreams', () => {
     window.addEventListener('leapmux:watch-events-redial', record)
     try {
       const { harness } = mount(
-        () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
+        () => new Map([
+          [
+            'w1',
+            {
+              agents: [
+                { agentId: 'a1', mode: WatchMode.FULL } as never,
+              ],
+              terminals: [],
+              terminalResync: new Set<string>(),
+            },
+          ],
+        ]),
       )
-      emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: harness.rootTileId,
+        position: '1',
+        workerId: 'w1',
+      })
       await flush()
       handles[0]!._error(new ChannelError('transport', 'channel disconnected'))
       await flush()
@@ -1062,9 +1712,26 @@ describe('useWatchEventsStreams', () => {
   // Later reconnect failures must not add more outage toasts.
   it('announces a continuing outage only once', async () => {
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
+      () => new Map([
+        [
+          'w1',
+          {
+            agents: [
+              { agentId: 'a1', mode: WatchMode.FULL } as never,
+            ],
+            terminals: [],
+            terminalResync: new Set<string>(),
+          },
+        ],
+      ]),
     )
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
     await flush()
     vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
       throw new ChannelError('transport', 'channel disconnected')
@@ -1080,11 +1747,41 @@ describe('useWatchEventsStreams', () => {
   // One Hub outage can disconnect several workers. Show one outage toast.
   it('announces one outage, not one per worker', async () => {
     const { harness } = mount(() => new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
-      ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [
+            { agentId: 'a1', mode: WatchMode.FULL } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
+      [
+        'w2',
+        {
+          agents: [
+            { agentId: 'a2', mode: WatchMode.FULL } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]))
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
-    emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: '2', workerId: 'w2' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a2',
+      tileId: harness.rootTileId,
+      position: '2',
+      workerId: 'w2',
+    })
     await flush()
     expect(handles).toHaveLength(2)
     vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
@@ -1100,11 +1797,41 @@ describe('useWatchEventsStreams', () => {
 
   it('keeps the outage latch while a sibling worker is still down', async () => {
     const { harness } = mount(() => new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
-      ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [
+            { agentId: 'a1', mode: WatchMode.FULL } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
+      [
+        'w2',
+        {
+          agents: [
+            { agentId: 'a2', mode: WatchMode.FULL } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]))
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
-    emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: '2', workerId: 'w2' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a2',
+      tileId: harness.rootTileId,
+      position: '2',
+      workerId: 'w2',
+    })
     await flush()
     vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
       throw new ChannelError('transport', 'channel disconnected')
@@ -1132,9 +1859,26 @@ describe('useWatchEventsStreams', () => {
   // Clear the toast state when the outage ends. A later outage must report its own toast.
   it('announces a second outage after the link came back', async () => {
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
+      () => new Map([
+        [
+          'w1',
+          {
+            agents: [
+              { agentId: 'a1', mode: WatchMode.FULL } as never,
+            ],
+            terminals: [],
+            terminalResync: new Set<string>(),
+          },
+        ],
+      ]),
     )
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
     await flush()
 
     const failOpen = async () => {
@@ -1158,7 +1902,9 @@ describe('useWatchEventsStreams', () => {
     await vi.advanceTimersByTimeAsync(60_000)
     await flush()
     const reopened = handles[handles.length - 1]!
-    reopened._emit({ event: { case: 'agentEvent', value: {} } } as never)
+    reopened._emit({
+      event: { case: 'agentEvent', value: {} },
+    } as never)
     await flush()
 
     vi.mocked(watchEventsViaChannel).mockImplementation(failOpen as never)
@@ -1178,9 +1924,26 @@ describe('useWatchEventsStreams', () => {
       throw new ChannelError('transport', 'channel disconnected')
     })
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
+      () => new Map([
+        [
+          'w1',
+          {
+            agents: [
+              { agentId: 'a1', mode: WatchMode.FULL } as never,
+            ],
+            terminals: [],
+            terminalResync: new Set<string>(),
+          },
+        ],
+      ]),
     )
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
     // No timer advance at all: the first open is the only one allowed.
     for (let i = 0; i < 50; i++)
       await Promise.resolve()
@@ -1203,9 +1966,26 @@ describe('useWatchEventsStreams', () => {
 
   it('a fatal stream error arms no reconnect timer', async () => {
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
+      () => new Map([
+        [
+          'w1',
+          {
+            agents: [
+              { agentId: 'a1', mode: WatchMode.FULL } as never,
+            ],
+            terminals: [],
+            terminalResync: new Set<string>(),
+          },
+        ],
+      ]),
     )
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
     await flush()
     expect(watchEventsViaChannel).toHaveBeenCalledTimes(1)
     handles[0]!._error(new ChannelError('transport', 'too many places', { fatal: true }))
@@ -1222,9 +2002,26 @@ describe('useWatchEventsStreams', () => {
       throw new ChannelError('transport', 'too many places', { fatal: true })
     })
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
+      () => new Map([
+        [
+          'w1',
+          {
+            agents: [
+              { agentId: 'a1', mode: WatchMode.FULL } as never,
+            ],
+            terminals: [],
+            terminalResync: new Set<string>(),
+          },
+        ],
+      ]),
     )
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
     await flush()
     expect(watchEventsViaChannel).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(120_000)
@@ -1239,12 +2036,30 @@ describe('useWatchEventsStreams', () => {
     }) as never)
     const harness = installTestBridge({ workspaceId: WS })
     const stores = createTestTabStores(WS)
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
     const [mode, setMode] = createSignal(WatchMode.NOTIFY)
     createRoot((dispose) => {
       disposeRoot = dispose
       const plans = createMemo(() => new Map([
-        ['w1', { agents: [{ agentId: 'a1', mode: mode() } as never], terminals: [], terminalResync: new Set<string>() }],
+        [
+          'w1',
+          {
+            agents: [
+              {
+                agentId: 'a1',
+                mode: mode(),
+              } as never,
+            ],
+            terminals: [],
+            terminalResync: new Set<string>(),
+          },
+        ],
       ]))
       useWatchEventsStreams({
         view: stores.view,
@@ -1269,12 +2084,30 @@ describe('useWatchEventsStreams', () => {
   it('coalesces rapid plan changes into one wire update', async () => {
     const harness = installTestBridge({ workspaceId: WS })
     const stores = createTestTabStores(WS)
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
     const [mode, setMode] = createSignal(WatchMode.NOTIFY)
     createRoot((dispose) => {
       disposeRoot = dispose
       const plans = createMemo(() => new Map([
-        ['w1', { agents: [{ agentId: 'a1', mode: mode() } as never], terminals: [], terminalResync: new Set<string>() }],
+        [
+          'w1',
+          {
+            agents: [
+              {
+                agentId: 'a1',
+                mode: mode(),
+              } as never,
+            ],
+            terminals: [],
+            terminalResync: new Set<string>(),
+          },
+        ],
       ]))
       useWatchEventsStreams({
         view: stores.view,
@@ -1299,11 +2132,41 @@ describe('useWatchEventsStreams', () => {
   it('cancels a worker stream when its last tab leaves the plan', async () => {
     const harness = installTestBridge({ workspaceId: WS })
     const stores = createTestTabStores(WS)
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
-    emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: '2', workerId: 'w2' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a2',
+      tileId: harness.rootTileId,
+      position: '2',
+      workerId: 'w2',
+    })
     const [plans, setPlans] = createSignal(new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
-      ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [
+            { agentId: 'a1', mode: WatchMode.FULL } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
+      [
+        'w2',
+        {
+          agents: [
+            { agentId: 'a2', mode: WatchMode.FULL } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]))
     createRoot((dispose) => {
       disposeRoot = dispose
@@ -1318,7 +2181,16 @@ describe('useWatchEventsStreams', () => {
     await flush()
     expect(handles).toHaveLength(2)
     setPlans(new Map([
-      ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w2',
+        {
+          agents: [
+            { agentId: 'a2', mode: WatchMode.FULL } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]))
     await flush()
     expect(handles[0]!.close).toHaveBeenCalled()
@@ -1327,9 +2199,26 @@ describe('useWatchEventsStreams', () => {
 
   it('retries LOOKUP_FAILED when the tab still exists', async () => {
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
+      () => new Map([
+        [
+          'w1',
+          {
+            agents: [
+              { agentId: 'a1', mode: WatchMode.FULL } as never,
+            ],
+            terminals: [],
+            terminalResync: new Set<string>(),
+          },
+        ],
+      ]),
     )
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
     await flush()
     handles[0]!.update.mockClear()
     handles[0]!._emit({
@@ -1337,7 +2226,9 @@ describe('useWatchEventsStreams', () => {
         case: 'updateAck',
         value: {
           updateId: handles[0]!._requestId(),
-          rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED }],
+          rejectedAgents: [
+            { entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED },
+          ],
           rejectedTerminals: [],
         },
       },
@@ -1349,9 +2240,26 @@ describe('useWatchEventsStreams', () => {
 
   it('does not retry NOT_FOUND even when the tab exists', async () => {
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
+      () => new Map([
+        [
+          'w1',
+          {
+            agents: [
+              { agentId: 'a1', mode: WatchMode.FULL } as never,
+            ],
+            terminals: [],
+            terminalResync: new Set<string>(),
+          },
+        ],
+      ]),
     )
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
     await flush()
     handles[0]!.update.mockClear()
     handles[0]!._emit({
@@ -1359,7 +2267,9 @@ describe('useWatchEventsStreams', () => {
         case: 'updateAck',
         value: {
           updateId: handles[0]!._requestId(),
-          rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.NOT_FOUND }],
+          rejectedAgents: [
+            { entityId: 'a1', reason: WatchRejectionReason.NOT_FOUND },
+          ],
           rejectedTerminals: [],
         },
       },
@@ -1371,7 +2281,18 @@ describe('useWatchEventsStreams', () => {
 
   it('does not retry LOOKUP_FAILED when the tab is gone', async () => {
     mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
+      () => new Map([
+        [
+          'w1',
+          {
+            agents: [
+              { agentId: 'a1', mode: WatchMode.FULL } as never,
+            ],
+            terminals: [],
+            terminalResync: new Set<string>(),
+          },
+        ],
+      ]),
     )
     await flush()
     // The plan includes a1, but no emitAddTab call places its local tab.
@@ -1381,7 +2302,9 @@ describe('useWatchEventsStreams', () => {
         case: 'updateAck',
         value: {
           updateId: handles[0]!._requestId(),
-          rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED }],
+          rejectedAgents: [
+            { entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED },
+          ],
           rejectedTerminals: [],
         },
       },
@@ -1393,9 +2316,26 @@ describe('useWatchEventsStreams', () => {
 
   it('stops retrying LOOKUP_FAILED after the retry budget is exhausted', async () => {
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
+      () => new Map([
+        [
+          'w1',
+          {
+            agents: [
+              { agentId: 'a1', mode: WatchMode.FULL } as never,
+            ],
+            terminals: [],
+            terminalResync: new Set<string>(),
+          },
+        ],
+      ]),
     )
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
     await flush()
     handles[0]!.update.mockClear()
     // Each acknowledgement schedules one retry. Wait for that retry before sending the next acknowledgement.
@@ -1406,7 +2346,9 @@ describe('useWatchEventsStreams', () => {
           case: 'updateAck',
           value: {
             updateId: handles[0]!._requestId(),
-            rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED }],
+            rejectedAgents: [
+              { entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED },
+            ],
             rejectedTerminals: [],
           },
         },
@@ -1422,12 +2364,30 @@ describe('useWatchEventsStreams', () => {
     const promoted: Array<{ workerId: string, agentIds: string[] }> = []
     const harness = installTestBridge({ workspaceId: WS })
     const stores = createTestTabStores(WS)
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
     const [mode, setMode] = createSignal(WatchMode.NOTIFY)
     createRoot((dispose) => {
       disposeRoot = dispose
       const plans = createMemo(() => new Map([
-        ['w1', { agents: [{ agentId: 'a1', mode: mode() } as never], terminals: [], terminalResync: new Set<string>() }],
+        [
+          'w1',
+          {
+            agents: [
+              {
+                agentId: 'a1',
+                mode: mode(),
+              } as never,
+            ],
+            terminals: [],
+            terminalResync: new Set<string>(),
+          },
+        ],
       ]))
       useWatchEventsStreams({
         view: stores.view,
@@ -1450,7 +2410,12 @@ describe('useWatchEventsStreams', () => {
       },
     } as unknown as WatchEventsResponse)
     await flush()
-    expect(promoted).toEqual([{ workerId: 'w1', agentIds: ['a1'] }])
+    expect(promoted).toEqual([
+      {
+        workerId: 'w1',
+        agentIds: ['a1'],
+      },
+    ])
     setMode(WatchMode.FULL)
     await flush()
     expect(promoted).toHaveLength(1)
@@ -1459,10 +2424,29 @@ describe('useWatchEventsStreams', () => {
   it('marks the worker offline on a clean stream end, then reconnects', async () => {
     const online: boolean[] = []
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
-      { onWorkerOnline: (_w, o) => online.push(o) },
+      () => new Map([
+        [
+          'w1',
+          {
+            agents: [
+              { agentId: 'a1', mode: WatchMode.FULL } as never,
+            ],
+            terminals: [],
+            terminalResync: new Set<string>(),
+          },
+        ],
+      ]),
+      {
+        onWorkerOnline: (_w, o) => online.push(o),
+      },
     )
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
     await flush()
     handles[0]!._end()
     await vi.advanceTimersByTimeAsync(1000)
@@ -1477,9 +2461,26 @@ describe('useWatchEventsStreams', () => {
 
   it('does not arm a reconnect when the relay has latched, even with no error to pass', async () => {
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
+      () => new Map([
+        [
+          'w1',
+          {
+            agents: [
+              { agentId: 'a1', mode: WatchMode.FULL } as never,
+            ],
+            terminals: [],
+            terminalResync: new Set<string>(),
+          },
+        ],
+      ]),
     )
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
     await flush()
     const opensBeforeLatch = vi.mocked(watchEventsViaChannel).mock.calls.length
 
@@ -1497,9 +2498,31 @@ describe('useWatchEventsStreams', () => {
   it('resets LOOKUP_FAILED retry budget after a settled updateAck', async () => {
     const [includeOther, setIncludeOther] = createSignal(false)
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never, ...(includeOther() ? [{ agentId: 'a2', mode: WatchMode.NOTIFY } as never] : [])], terminals: [], terminalResync: new Set<string>() }]]),
+      () => new Map([
+        [
+          'w1',
+          {
+            agents: [
+              { agentId: 'a1', mode: WatchMode.FULL } as never,
+              ...(includeOther()
+                ? [
+                    { agentId: 'a2', mode: WatchMode.NOTIFY } as never,
+                  ]
+                : []),
+            ],
+            terminals: [],
+            terminalResync: new Set<string>(),
+          },
+        ],
+      ]),
     )
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
     await flush()
     handles[0]!.update.mockClear()
 
@@ -1509,7 +2532,9 @@ describe('useWatchEventsStreams', () => {
           case: 'updateAck',
           value: {
             updateId: handles[0]!._requestId(),
-            rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED }],
+            rejectedAgents: [
+              { entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED },
+            ],
             rejectedTerminals: [],
           },
         },
@@ -1523,7 +2548,11 @@ describe('useWatchEventsStreams', () => {
     handles[0]!._emit({
       event: {
         case: 'updateAck',
-        value: { updateId: handles[0]!._requestId(), rejectedAgents: [], rejectedTerminals: [] },
+        value: {
+          updateId: handles[0]!._requestId(),
+          rejectedAgents: [],
+          rejectedTerminals: [],
+        },
       },
     } as unknown as WatchEventsResponse)
     await flush()
@@ -1538,7 +2567,9 @@ describe('useWatchEventsStreams', () => {
           case: 'updateAck',
           value: {
             updateId: handles[0]!._requestId(),
-            rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED }],
+            rejectedAgents: [
+              { entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED },
+            ],
             rejectedTerminals: [],
           },
         },
@@ -1552,11 +2583,41 @@ describe('useWatchEventsStreams', () => {
   it('keeps a sibling worker reconnect armed when another worker leaves the plan', async () => {
     const harness = installTestBridge({ workspaceId: WS })
     const stores = createTestTabStores(WS)
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
-    emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: '2', workerId: 'w2' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a2',
+      tileId: harness.rootTileId,
+      position: '2',
+      workerId: 'w2',
+    })
     const [plans, setPlans] = createSignal(new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
-      ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [
+            { agentId: 'a1', mode: WatchMode.FULL } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
+      [
+        'w2',
+        {
+          agents: [
+            { agentId: 'a2', mode: WatchMode.FULL } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]))
     createRoot((dispose) => {
       disposeRoot = dispose
@@ -1576,7 +2637,16 @@ describe('useWatchEventsStreams', () => {
     // Cancelling w2 must retain w1's pending reconnect timer.
     handles[0]!._end()
     setPlans(new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+      [
+        'w1',
+        {
+          agents: [
+            { agentId: 'a1', mode: WatchMode.FULL } as never,
+          ],
+          terminals: [],
+          terminalResync: new Set<string>(),
+        },
+      ],
     ]))
     await flush()
     expect(handles[1]!.close).toHaveBeenCalled()
@@ -1590,13 +2660,43 @@ describe('useWatchEventsStreams', () => {
     const online: Array<{ workerId: string, online: boolean }> = []
     const harness = installTestBridge({ workspaceId: WS })
     const stores = createTestTabStores(WS)
-    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
-    emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: '2', workerId: 'w2' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a1',
+      tileId: harness.rootTileId,
+      position: '1',
+      workerId: 'w1',
+    })
+    emitAddTab({
+      type: TabType.AGENT,
+      id: 'a2',
+      tileId: harness.rootTileId,
+      position: '2',
+      workerId: 'w2',
+    })
     createRoot((dispose) => {
       disposeRoot = dispose
       const plans = createMemo(() => new Map([
-        ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
-        ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+        [
+          'w1',
+          {
+            agents: [
+              { agentId: 'a1', mode: WatchMode.FULL } as never,
+            ],
+            terminals: [],
+            terminalResync: new Set<string>(),
+          },
+        ],
+        [
+          'w2',
+          {
+            agents: [
+              { agentId: 'a2', mode: WatchMode.FULL } as never,
+            ],
+            terminals: [],
+            terminalResync: new Set<string>(),
+          },
+        ],
       ]))
       useWatchEventsStreams({
         view: stores.view,
@@ -1610,7 +2710,9 @@ describe('useWatchEventsStreams', () => {
     expect(handles).toHaveLength(2)
     handles[0]!._error(new ChannelError('transport', 'gone'))
     await flush()
-    expect(online.filter(e => !e.online)).toEqual([{ workerId: 'w1', online: false }])
+    expect(online.filter(e => !e.online)).toEqual([
+      { workerId: 'w1', online: false },
+    ])
     expect(online.some(e => e.workerId === 'w2' && !e.online)).toBe(false)
   })
 })

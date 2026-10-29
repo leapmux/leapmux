@@ -19,7 +19,11 @@ describe('toolCallFixture', () => {
   })
 
   it('still applies an override that states a value', () => {
-    const call = toolCallFixture('read', { name: 'Read', request: { path: '/repo/a.ts' }, images: [] })
+    const call = toolCallFixture('read', {
+      name: 'Read',
+      request: { path: '/repo/a.ts' },
+      images: [],
+    })
     expect(call.name).toBe('Read')
     expect(call.request).toEqual({ path: '/repo/a.ts' })
   })
@@ -32,7 +36,15 @@ describe('toolCallFixture', () => {
   // Use the smallest valid result for each kind. A result-free test must use a status that allows no result.
   it('carries every field a call needs', () => {
     const call = toolCallFixture('execute')
-    expect(Object.keys(call).sort()).toEqual(['id', 'images', 'kind', 'name', 'request', 'result', 'status'])
+    expect(Object.keys(call).sort()).toEqual([
+      'id',
+      'images',
+      'kind',
+      'name',
+      'request',
+      'result',
+      'status',
+    ])
     expect(call.result).toStrictEqual({ commands: [], unresolvedTerminals: [] })
   })
 
@@ -45,9 +57,14 @@ describe('toolCallFixture', () => {
   // The production builder validates the helper's output.
   // Other tests can then trust each fixture that they give to a renderer.
   it('refuses to build a call that breaks an invariant', () => {
-    expect(() => toolCallFixture('read', { status: 'pending', result: { lines: null, fallbackContent: '' } }))
+    expect(() => toolCallFixture('read', {
+      status: 'pending',
+      result: { lines: null, fallbackContent: '' },
+    }))
       .toThrow('result-before-the-call-finished')
-    expect(() => toolCallFixture('edit', { request: { changes: [] } })).toThrow('a-file-change-states-no-file')
+    expect(() => toolCallFixture('edit', {
+      request: { changes: [] },
+    })).toThrow('a-file-change-states-no-file')
   })
 })
 
@@ -87,7 +104,9 @@ describe('providerRow', () => {
     const classify = vi.spyOn(plugin.transcript, 'classify').mockReturnValue({ kind: 'assistant_text' })
     const extract = vi.spyOn(plugin.transcript, 'extractRow').mockReturnValue({ kind: 'assistant-text', text: 'Neutral fixture text.' })
     try {
-      expect(providerRow(AgentProvider.CLAUDE_CODE, { fixture: 'neutral' }, completion === undefined ? {} : { completion }))
+      expect(providerRow(AgentProvider.CLAUDE_CODE, { fixture: 'neutral' }, completion === undefined
+        ? {}
+        : { completion }))
         .toEqual({ kind: 'assistant-text', text: 'Neutral fixture text.' })
       expect(classify).toHaveBeenCalledOnce()
       expect(extract).toHaveBeenCalledOnce()

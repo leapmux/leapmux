@@ -45,7 +45,10 @@ gooseTest('records the native client terminal output limit and retains its exact
       expect(limit.text).not.toContain(output.firstMarker)
       expect(limit.text).not.toContain(output.omittedMarker)
       expect(limit.text).toContain(output.lastMarker)
-      await testInfo.attach('goose-native-client-terminal-limit', { body: JSON.stringify({ sessionId: capture.agent.agentSessionId, previewText: limit.text, ...limit }), contentType: 'application/json' })
+      await testInfo.attach('goose-native-client-terminal-limit', {
+        body: JSON.stringify({ sessionId: capture.agent.agentSessionId, previewText: limit.text, ...limit }),
+        contentType: 'application/json',
+      })
       await proveNativeToolOutputFilePaths({
         context: native,
         callId: capture.call.id,
@@ -90,9 +93,13 @@ gooseTest('states its native output file paths when the agent runs commands itse
         if (!isObject(raw) || typeof raw.stdout !== 'string' || raw.stderr !== '' || raw.exit_code !== 0)
           throw new Error('The native Goose command result has another output or exit state.')
         const texts = Array.isArray(frame.content)
-          ? frame.content.filter(isObject).map(block => isObject(block.content) ? block.content.text : undefined).filter((text): text is string => typeof text === 'string')
+          ? frame.content.filter(isObject).map(block => isObject(block.content)
+              ? block.content.text
+              : undefined).filter((text): text is string => typeof text === 'string')
           : []
-        const paths = texts.flatMap(text => [...text.matchAll(/Full output saved to (.+?)\. Read it with /gu)].map(match => match[1]!))
+        const paths = texts.flatMap(text => [
+          ...text.matchAll(/Full output saved to (.+?)\. Read it with /gu),
+        ].map(match => match[1]!))
         expect(paths).toHaveLength(2)
         expect(paths.map(path => path.split('/').at(-1))).toEqual(['stdout-0', 'output-0'])
         const modelText = nativeToolResult(capture.request, capture.call.id)
@@ -103,10 +110,18 @@ gooseTest('states its native output file paths when the agent runs commands itse
         }
         expect(raw.stdout).toContain(output.lastMarker)
         expect(raw.stdout).not.toContain(output.omittedMarker)
-        return { frame, provider, paths, previewText: raw.stdout }
+        return {
+          frame,
+          provider,
+          paths,
+          previewText: raw.stdout,
+        }
       }
       const receipt = readReceipt(capture.snapshot)
-      await testInfo.attach('goose-native-output-files', { body: JSON.stringify(receipt), contentType: 'application/json' })
+      await testInfo.attach('goose-native-output-files', {
+        body: JSON.stringify(receipt),
+        contentType: 'application/json',
+      })
       await proveNativeToolOutputFilePaths({
         context: native,
         callId: capture.call.id,

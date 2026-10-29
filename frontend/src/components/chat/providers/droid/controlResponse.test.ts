@@ -53,7 +53,14 @@ function storedReply(rpcId: string, result: DroidPermissionResult | DroidAskUser
 
 /** The same envelope around a `result` that no worker writes, for the malformed cases. */
 function replyEnvelope(rpcId: string, result: unknown): Record<string, unknown> {
-  return { jsonrpc: '2.0', type: 'response', factoryApiVersion: '1.0.0', factoryProtocolVersion: '1.222.0', id: rpcId, result }
+  return {
+    jsonrpc: '2.0',
+    type: 'response',
+    factoryApiVersion: '1.0.0',
+    factoryProtocolVersion: '1.222.0',
+    id: rpcId,
+    result,
+  }
 }
 
 /** The permission request that the worker publishes for one tool call (`onRequestPermission`). */
@@ -71,12 +78,23 @@ function permissionRequest(toolUse: DroidToolUse, confirmationType: DroidConfirm
 
 /** The question request that the worker publishes (`onAskUser`). */
 function questionRequest(questions: DroidQuestion[]): Record<string, unknown> {
-  return { type: 'ask_user_request', requestId: 'droid-ask-call-1', rpcId: 'rpc-ask-1', toolCallId: 'call-1', questions }
+  return {
+    type: 'ask_user_request',
+    requestId: 'droid-ask-call-1',
+    rpcId: 'rpc-ask-1',
+    toolCallId: 'call-1',
+    questions,
+  }
 }
 
 /** One saved row, as `parsePersistedControlResponse` gives it to the renderer. */
 function saved(request: Record<string, unknown> | undefined, response: Record<string, unknown>): PersistedControlResponse {
-  return { requestId: 'droid-request', claimToken: 'claim-1', request, response }
+  return {
+    requestId: 'droid-request',
+    claimToken: 'claim-1',
+    request,
+    response,
+  }
 }
 
 /** What the transcript row and the scroll-rail dot both show for one saved row. */
@@ -89,18 +107,38 @@ const ALL_OPTIONS: readonly DroidPermissionOption[] = Object.values(DROID_PERMIS
 // One request carries every option. The saved words depend on the option, and on
 // whether the request is a plan review. They depend on nothing else in the request.
 const CREATE_REQUEST = permissionRequest(
-  { type: 'tool_use', id: 'create-1', name: DROID_TOOL.Create, input: { file_path: '/work/notes.txt', content: 'a' } },
+  {
+    type: 'tool_use',
+    id: 'create-1',
+    name: DROID_TOOL.Create,
+    input: { file_path: '/work/notes.txt', content: 'a' },
+  },
   DROID_CONFIRMATION_TYPE.Create,
   ALL_OPTIONS,
 )
 const SPEC_REQUEST = permissionRequest(
-  { type: 'tool_use', id: 'exit-1', name: DROID_TOOL.ExitSpecMode, input: { plan: '# Native plan' } },
+  {
+    type: 'tool_use',
+    id: 'exit-1',
+    name: DROID_TOOL.ExitSpecMode,
+    input: { plan: '# Native plan' },
+  },
   DROID_CONFIRMATION_TYPE.ExitSpecMode,
   ALL_OPTIONS,
 )
 const QUESTIONS = questionRequest([
-  { index: 1, question: 'Which color?', options: ['Blue', 'Red'], multiSelect: false },
-  { index: 2, question: 'Which size?', options: ['Small', 'Large'], multiSelect: false },
+  {
+    index: 1,
+    question: 'Which color?',
+    options: ['Blue', 'Red'],
+    multiSelect: false,
+  },
+  {
+    index: 2,
+    question: 'Which size?',
+    options: ['Small', 'Large'],
+    multiSelect: false,
+  },
 ])
 
 /** The words a permission answer shows, for each option that a tool permission offers. */
@@ -166,7 +204,10 @@ describe('droidControls controlResponseDisplay', () => {
   it('words every option that the contract lists', () => {
     // A new option in contracts/droid-protocol.json must get its words here, or the
     // saved row falls back to the generic label.
-    expect(new Set([...Object.keys(PERMISSION_LABELS), ...Object.keys(PLAN_LABELS)])).toEqual(new Set(ALL_OPTIONS))
+    expect(new Set([
+      ...Object.keys(PERMISSION_LABELS),
+      ...Object.keys(PLAN_LABELS),
+    ])).toEqual(new Set(ALL_OPTIONS))
   })
 
   // Droid discards a comment beside a cancel, so the worker sends the reason as the
@@ -207,7 +248,9 @@ describe('droidControls controlResponseDisplay', () => {
   it('shows every pick of a multiple-choice answer', () => {
     const reply = storedReply('rpc-ask-1', {
       cancelled: false,
-      answers: [{ index: 1, question: 'Which sizes?', answer: 'Small, Large' }],
+      answers: [
+        { index: 1, question: 'Which sizes?', answer: 'Small, Large' },
+      ],
     })
     expect(display(saved(undefined, reply))).toEqual({ kind: 'label', text: 'Which sizes?: Small, Large' })
   })
@@ -224,7 +267,12 @@ describe('droidControls controlResponseDisplay', () => {
   })
 
   it('reads a questionnaire with no non-empty answer as No answer', () => {
-    const reply = storedReply('rpc-ask-1', { cancelled: false, answers: [{ index: 1, question: 'Which color?', answer: '' }] })
+    const reply = storedReply('rpc-ask-1', {
+      cancelled: false,
+      answers: [
+        { index: 1, question: 'Which color?', answer: '' },
+      ],
+    })
     expect(display(saved(QUESTIONS, reply))).toEqual({ kind: 'label', text: 'No answer' })
     expect(display(saved(QUESTIONS, storedReply('rpc-ask-1', { cancelled: false, answers: [] })))).toEqual({ kind: 'label', text: 'No answer' })
   })
@@ -237,7 +285,14 @@ describe('droidControls controlResponseDisplay', () => {
   })
 
   it('skips an answer entry that is not an object', () => {
-    const reply = replyEnvelope('rpc-ask-1', { cancelled: false, answers: ['Blue', null, { index: 2, question: 'Which size?', answer: 'Large' }] })
+    const reply = replyEnvelope('rpc-ask-1', {
+      cancelled: false,
+      answers: [
+        'Blue',
+        null,
+        { index: 2, question: 'Which size?', answer: 'Large' },
+      ],
+    })
     expect(display(saved(QUESTIONS, reply))).toEqual({ kind: 'label', text: 'Which size?: Large' })
   })
 
@@ -257,7 +312,14 @@ describe('droidControls controlResponseDisplay', () => {
     })
 
     it('for a reply that carries no result', () => {
-      const reply = { jsonrpc: '2.0', type: 'response', factoryApiVersion: '1.0.0', factoryProtocolVersion: '1.222.0', id: 'rpc-create-1', error: { code: -32603, message: 'Internal error' } }
+      const reply = {
+        jsonrpc: '2.0',
+        type: 'response',
+        factoryApiVersion: '1.0.0',
+        factoryProtocolVersion: '1.222.0',
+        id: 'rpc-create-1',
+        error: { code: -32603, message: 'Internal error' },
+      }
       expect(display(saved(CREATE_REQUEST, reply))).toEqual({ kind: 'label', text: 'Responded' })
     })
 
@@ -267,7 +329,11 @@ describe('droidControls controlResponseDisplay', () => {
     })
 
     it('for the decision of another provider', () => {
-      expect(display(saved(CREATE_REQUEST, { jsonrpc: '2.0', id: 0, result: { decision: 'accept' } })))
+      expect(display(saved(CREATE_REQUEST, {
+        jsonrpc: '2.0',
+        id: 0,
+        result: { decision: 'accept' },
+      })))
         .toEqual({ kind: 'label', text: 'Responded' })
     })
   })
@@ -275,7 +341,12 @@ describe('droidControls controlResponseDisplay', () => {
   // An empty request payload makes the worker store the browser's own decision
   // unchanged (`droidResolveControlResponse`), and the shared fallback reads that.
   it('keeps the words of the neutral envelope when the worker stored it unchanged', () => {
-    const neutral = { response: { request_id: 'droid-perm-create-1', response: { behavior: 'allow' } } }
+    const neutral = {
+      response: {
+        request_id: 'droid-perm-create-1',
+        response: { behavior: 'allow' },
+      },
+    }
     expect(display(saved(undefined, neutral))).toEqual({ kind: 'label', text: 'Allow' })
   })
 })

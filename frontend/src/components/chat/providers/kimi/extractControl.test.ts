@@ -5,7 +5,12 @@ import { KIMI_OPTION, kimiApprovalDisplayKind, kimiExtractControl, kimiIsApprova
 
 describe('kimiExtractControl', () => {
   it('reads a command approval as a permission with the three answers', () => {
-    const payload = kimiApprovalRequest(KIMI_TOOL.Bash, { kind: 'command', command: 'rm -rf build', cwd: '/work', language: 'bash' })
+    const payload = kimiApprovalRequest(KIMI_TOOL.Bash, {
+      kind: 'command',
+      command: 'rm -rf build',
+      cwd: '/work',
+      language: 'bash',
+    })
     const control = kimiExtractControl({ payload })
     expect(control).toStrictEqual({
       kind: 'permission',
@@ -14,7 +19,12 @@ describe('kimiExtractControl', () => {
         reason: 'Running: Bash',
         command: 'rm -rf build',
         workingDirectory: '/work',
-        input: { kind: 'command', command: 'rm -rf build', cwd: '/work', language: 'bash' },
+        input: {
+          kind: 'command',
+          command: 'rm -rf build',
+          cwd: '/work',
+          language: 'bash',
+        },
         options: [
           { optionId: 'approve', kind: 'allow_once', name: 'Allow' },
           { optionId: 'approve_for_session', kind: 'allow_always', name: 'Allow for this session' },
@@ -28,13 +38,22 @@ describe('kimiExtractControl', () => {
     const payload = kimiApprovalRequest(KIMI_TOOL.ExitPlanMode, {
       kind: KIMI_DISPLAY.PlanReview,
       plan: '# Plan\n- A\n- B',
-      options: [{ label: 'Option A', description: 'Simple' }, { label: 'Option B' }, { description: 'no label' }],
+      options: [
+        { label: 'Option A', description: 'Simple' },
+        { label: 'Option B' },
+        { description: 'no label' },
+      ],
     })
     expect(kimiExtractControl({ payload })).toStrictEqual({
       kind: 'plan',
       text: '# Plan\n- A\n- B',
       choices: [
-        { id: 'Option A', label: 'Approve: Option A', description: 'Simple', approves: true },
+        {
+          id: 'Option A',
+          label: 'Approve: Option A',
+          description: 'Simple',
+          approves: true,
+        },
         { id: 'Option B', label: 'Approve: Option B', approves: true },
         { id: 'Revise', label: 'Request revisions', approves: false },
         { id: 'Reject and Exit', label: 'Reject and exit plan mode', approves: false },
@@ -44,7 +63,10 @@ describe('kimiExtractControl', () => {
 
   it('reads a plan review with no plan text and no options', () => {
     const payload = kimiApprovalRequest(KIMI_TOOL.ExitPlanMode, { kind: KIMI_DISPLAY.PlanReview, plan: ' ' })
-    expect(kimiExtractControl({ payload })).toStrictEqual({ kind: 'plan', choices: kimiPlanChoices(undefined) })
+    expect(kimiExtractControl({ payload })).toStrictEqual({
+      kind: 'plan',
+      choices: kimiPlanChoices(undefined),
+    })
   })
 
   // A subagent's plan review is the subagent's own. The plan approval would leave the
@@ -54,7 +76,10 @@ describe('kimiExtractControl', () => {
     const display = {
       kind: KIMI_DISPLAY.PlanReview,
       plan: '# A subagent plan',
-      options: [{ label: 'Option A', description: 'Simple' }, { label: 'Option B' }],
+      options: [
+        { label: 'Option A', description: 'Simple' },
+        { label: 'Option B' },
+      ],
     }
     const payload = kimiApprovalRequest(KIMI_TOOL.ExitPlanMode, display, { agent_id: 'agent-0', agentId: 'agent-0' })
     expect(kimiExtractControl({ payload })).toStrictEqual({
@@ -119,7 +144,13 @@ describe('kimiExtractControl', () => {
   })
 
   it('keeps the whole display of a subagent plan review that states no plan text', () => {
-    const display = { kind: KIMI_DISPLAY.PlanReview, plan: '  ', options: [{ label: 'Option A' }] }
+    const display = {
+      kind: KIMI_DISPLAY.PlanReview,
+      plan: '  ',
+      options: [
+        { label: 'Option A' },
+      ],
+    }
     const payload = kimiApprovalRequest(KIMI_TOOL.ExitPlanMode, display, { agent_id: 'agent-0' })
     const control = kimiExtractControl({ payload })
     expect(control?.kind).toBe('permission')
@@ -137,7 +168,9 @@ describe('kimiExtractControl', () => {
   })
 
   it('reads no control from a question or another row', () => {
-    expect(kimiExtractControl({ payload: kimiQuestionRequest([]) })).toBeNull()
+    expect(kimiExtractControl({
+      payload: kimiQuestionRequest([]),
+    })).toBeNull()
     expect(kimiExtractControl({ payload: {} })).toBeNull()
   })
 
@@ -174,15 +207,26 @@ describe('sendKimiPermissionOption', () => {
     const offered = [
       kimiApprovalRequest(KIMI_TOOL.Bash, { kind: 'command', command: 'ls' }),
       kimiApprovalRequest(KIMI_TOOL.CreateGoal, { kind: KIMI_DISPLAY.GoalStart, objective: 'Ship it' }),
-      kimiApprovalRequest(KIMI_TOOL.ExitPlanMode, { kind: KIMI_DISPLAY.PlanReview, plan: '# P', options: [{ label: 'Option A' }] }, { agent_id: 'agent-0' }),
+      kimiApprovalRequest(KIMI_TOOL.ExitPlanMode, {
+        kind: KIMI_DISPLAY.PlanReview,
+        plan: '# P',
+        options: [
+          { label: 'Option A' },
+        ],
+      }, { agent_id: 'agent-0' }),
     ].flatMap((payload) => {
       const control = kimiExtractControl({ payload })
-      return control?.kind === 'permission' ? control.permission.options : []
+      return control?.kind === 'permission'
+        ? control.permission.options
+        : []
     })
     // Three permission answers, five goal answers, and five subagent plan answers.
     expect(offered).toHaveLength(13)
-    for (const option of offered)
-      expect((await sent(option.optionId)).behavior, option.optionId).toBe(option.kind.startsWith('allow') ? 'allow' : 'deny')
+    for (const option of offered) {
+      expect((await sent(option.optionId)).behavior, option.optionId).toBe(option.kind.startsWith('allow')
+        ? 'allow'
+        : 'deny')
+    }
   })
 
   // The option ids are LeapMux's own, so an id no Kimi control offers is a defect in

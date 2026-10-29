@@ -7,7 +7,10 @@ const provider = {
   baseURL: 'http://127.0.0.1:4567/v1',
   modelKey: 'unit-key',
   providerID: 'unit-provider',
-  models: [{ id: 'first-model', name: 'First' }, { id: 'second-model', name: 'Second' }],
+  models: [
+    { id: 'first-model', name: 'First' },
+    { id: 'second-model', name: 'Second' },
+  ],
 }
 
 describe('openCodeFamilyConfig', () => {
@@ -21,13 +24,30 @@ describe('openCodeFamilyConfig', () => {
     expect(config.provider['unit-provider']!.options).toEqual({ apiKey: 'unit-key', baseURL: 'http://127.0.0.1:4567/v1' })
     expect(Object.keys(config.provider['unit-provider']!.models)).toEqual(['first-model', 'second-model'])
     expect(config.provider['unit-provider']!.models['second-model']!.name).toBe('Second')
-    expect(Object.keys(config.provider['unit-provider']!.models['first-model']!.variants)).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
-    expect(config.mcp).toEqual({ echo_probe: { type: 'local', command: [echoServer.command, '/srv/echo.mjs'] } })
+    expect(Object.keys(config.provider['unit-provider']!.models['first-model']!.variants)).toEqual([
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+    ])
+    expect(config.mcp).toEqual({
+      echo_probe: {
+        type: 'local',
+        command: [echoServer.command, '/srv/echo.mjs'],
+      },
+    })
   })
 
   // A spec switches to a model that does not reason to reach a model that offers no effort.
   it('gives a model that does not reason no variant, and a model that states no reasoning each variant', () => {
-    const config = openCodeFamilyConfig({ ...provider, models: [...provider.models, { id: 'plain-model', name: 'Plain', reasoning: false }] }, echoServer) as {
+    const config = openCodeFamilyConfig({
+      ...provider,
+      models: [
+        ...provider.models,
+        { id: 'plain-model', name: 'Plain', reasoning: false },
+      ],
+    }, echoServer) as {
       provider: Record<string, { models: Record<string, { reasoning: boolean, variants: Record<string, unknown> }> }>
     }
     const models = config.provider['unit-provider']!.models
@@ -57,7 +77,10 @@ describe('createOpenCodeEnvironment', () => {
   it('gives OpenCode and Kilo one configuration that keeps two recent turns', () => {
     const env = createOpenCodeEnvironment({ ...provider, mcpEchoServer: echoServer, kiloCloud })
     expect(env.KILO_CONFIG_CONTENT).toBe(env.OPENCODE_CONFIG_CONTENT)
-    expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT!)).toEqual({ ...openCodeFamilyConfig(provider, echoServer), compaction: { tail_turns: 2 } })
+    expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT!)).toEqual({
+      ...openCodeFamilyConfig(provider, echoServer),
+      compaction: { tail_turns: 2 },
+    })
   })
 
   it('signs Kilo in to the mocked cloud with a credential that never expires during a run and names no organization', () => {
@@ -65,7 +88,12 @@ describe('createOpenCodeEnvironment', () => {
     expect(env.KILO_API_URL).toBe('http://127.0.0.1:4567')
     const credential = JSON.parse(env.KILO_AUTH_CONTENT!)
     expect(Object.keys(credential)).toEqual(['kilo'])
-    expect(credential.kilo).toEqual({ type: 'oauth', access: 'unit-identity-token', refresh: 'unit-identity-token', expires: Date.UTC(9999, 11, 31) })
+    expect(credential.kilo).toEqual({
+      type: 'oauth',
+      access: 'unit-identity-token',
+      refresh: 'unit-identity-token',
+      expires: Date.UTC(9999, 11, 31),
+    })
     expect(credential.kilo).not.toHaveProperty('accountId')
     expect(env.OPENCODE_API_URL).toBeUndefined()
   })

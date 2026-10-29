@@ -14,7 +14,9 @@ cursorTest('draws the native GenerateImage result before and after reload', asyn
   const path = join(workingDir, fileName)
   const imageData = readFileSync(path).toString('base64')
   await modelScript.queue({
-    toolCalls: [cursorGenerateImageToolCall('cursor-image-1', 'A teal square', path, imageData)],
+    toolCalls: [
+      cursorGenerateImageToolCall('cursor-image-1', 'A teal square', path, imageData),
+    ],
     text: 'The image is ready.',
   })
   await sendMessage(page, modelScript.prompt('Generate the teal square image.'))

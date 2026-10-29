@@ -12,12 +12,18 @@ export const MIMO_AGENT: ProviderAgent = { provider: AgentProvider.MIMO_CODE, pr
 
 /** Build the MiMo context with its provider-owned mapping from model calls to stored native part rows. */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
-  return managedNativeContext(fixtures, MIMO_AGENT, { resolveToolRowId: mimoToolRowIdResolver(fixtures) })
+  return managedNativeContext(fixtures, MIMO_AGENT, {
+    resolveToolRowId: mimoToolRowIdResolver(fixtures),
+  })
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */
 export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStartupLaunch {
-  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: 'mimo', holdWhen: ['serve'], lazy: false })
+  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, {
+    binaryName: 'mimo',
+    holdWhen: ['serve'],
+    lazy: false,
+  })
 }
 
 /** The related proof of a missing-setting cell: a real native shell command runs, and its output returns. */

@@ -1,14 +1,17 @@
 import { style } from '@vanilla-extract/css'
 import { fieldTrigger } from '~/styles/shared.css'
 
-export const trigger = style([fieldTrigger, {
-  width: '100%',
-  marginTop: 'var(--space-1)',
-  padding: 'var(--space-2) var(--space-3)',
-  justifyContent: 'space-between',
-  gap: 'var(--space-3)',
-  textAlign: 'left',
-}])
+export const trigger = style([
+  fieldTrigger,
+  {
+    width: '100%',
+    marginTop: 'var(--space-1)',
+    padding: 'var(--space-2) var(--space-3)',
+    justifyContent: 'space-between',
+    gap: 'var(--space-3)',
+    textAlign: 'left',
+  },
+])
 
 export const triggerDisabled = style({
   opacity: 0.5,

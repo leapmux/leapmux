@@ -22,7 +22,9 @@ grokTest.describe('Grok Build subagent registry', () => {
     leapmuxServer,
     modelScript,
   }) => {
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { optionValues: { approvalMode: 'always-approve' } })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, {
+      optionValues: { approvalMode: 'always-approve' },
+    })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectNoRegistryRows(page, leapmuxServer)
 
@@ -36,10 +38,12 @@ grokTest.describe('Grok Build subagent registry', () => {
     })
     const start = await modelScript.queue(
       {
-        toolCalls: [spawnSubagentToolCall(AgentProvider.GROK_BUILD, 'spawn-grok', {
-          description: 'Ask for one word',
-          prompt: modelScript.prompt('Reply with the single word PONG.'),
-        })],
+        toolCalls: [
+          spawnSubagentToolCall(AgentProvider.GROK_BUILD, 'spawn-grok', {
+            description: 'Ask for one word',
+            prompt: modelScript.prompt('Reply with the single word PONG.'),
+          }),
+        ],
       },
       { text: 'The subagent reported PONG.' },
     )

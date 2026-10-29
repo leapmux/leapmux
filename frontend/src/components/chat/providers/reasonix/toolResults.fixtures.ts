@@ -9,42 +9,161 @@ const CALL = 'rx-1'
 /** A finished Reasonix update, with the request that states the tool. */
 function rxUpdate(frame: Record<string, unknown>, request: Record<string, unknown>): ToolResultFixture {
   return {
-    payload: { sessionUpdate: 'tool_call_update', toolCallId: CALL, status: 'completed', ...frame },
+    payload: {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: CALL,
+      status: 'completed',
+      ...frame,
+    },
     options: {
       spanType: 'tool_call_update',
-      request: input({ sessionUpdate: 'tool_call', toolCallId: CALL, status: 'pending', ...request }) as ParsedMessageContent,
+      request: input({
+        sessionUpdate: 'tool_call',
+        toolCallId: CALL,
+        status: 'pending',
+        ...request,
+      }) as ParsedMessageContent,
     },
   }
 }
 
 function text(value: string) {
-  return [{ type: 'content', content: { type: 'text', text: value } }]
+  return [
+    {
+      type: 'content',
+      content: { type: 'text', text: value },
+    },
+  ]
 }
 
 const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
-  read_file: rxUpdate({ content: text('one\ntwo\n') }, { title: 'read_file', kind: 'read', rawInput: { path: '/p/a.ts' } }),
+  read_file: rxUpdate({
+    content: text('one\ntwo\n'),
+  }, {
+    title: 'read_file',
+    kind: 'read',
+    rawInput: { path: '/p/a.ts' },
+  }),
   view_image: rxUpdate({
     content: [
-      { type: 'content', content: { type: 'text', text: 'The picture at /p/dot.png.' } },
-      { type: 'content', content: { type: 'image', data: 'aGk=', mimeType: 'image/png' } },
+      {
+        type: 'content',
+        content: { type: 'text', text: 'The picture at /p/dot.png.' },
+      },
+      {
+        type: 'content',
+        content: { type: 'image', data: 'aGk=', mimeType: 'image/png' },
+      },
     ],
-  }, { title: 'view_image', kind: 'read', rawInput: { path: '/p/dot.png' } }),
-  glob: rxUpdate({ content: text('a.py\nb.py\n') }, { title: 'glob', kind: 'search', rawInput: { pattern: '*.py' } }),
-  grep: rxUpdate({ content: text('/p/a.ts:3:needle\n/p/b.ts:9:needle\n') }, { title: 'grep', kind: 'search', rawInput: { pattern: 'needle' } }),
-  ls: rxUpdate({ content: text('a.ts\t42\nsrc/\n') }, { title: 'ls', kind: 'read', rawInput: { path: '/project' } }),
+  }, {
+    title: 'view_image',
+    kind: 'read',
+    rawInput: { path: '/p/dot.png' },
+  }),
+  glob: rxUpdate({
+    content: text('a.py\nb.py\n'),
+  }, {
+    title: 'glob',
+    kind: 'search',
+    rawInput: { pattern: '*.py' },
+  }),
+  grep: rxUpdate({
+    content: text('/p/a.ts:3:needle\n/p/b.ts:9:needle\n'),
+  }, {
+    title: 'grep',
+    kind: 'search',
+    rawInput: { pattern: 'needle' },
+  }),
+  ls: rxUpdate({
+    content: text('a.ts\t42\nsrc/\n'),
+  }, {
+    title: 'ls',
+    kind: 'read',
+    rawInput: { path: '/project' },
+  }),
   edit_file: rxUpdate(
-    { content: text('edited /p/file.ts\nActual replacement receipt after write:\n@@ replacement 1 of 1 (1 occurrence(s)) @@\n-actualBefore\n+actualAfter\n') },
-    { title: 'edit_file', kind: 'edit', rawInput: { path: '/p/file.ts', old_string: 'requestedBefore', new_string: 'requestedAfter' } },
+    {
+      content: text('edited /p/file.ts\nActual replacement receipt after write:\n@@ replacement 1 of 1 (1 occurrence(s)) @@\n-actualBefore\n+actualAfter\n'),
+    },
+    {
+      title: 'edit_file',
+      kind: 'edit',
+      rawInput: { path: '/p/file.ts', old_string: 'requestedBefore', new_string: 'requestedAfter' },
+    },
   ),
-  multi_edit: rxUpdate({ content: text('Applied edits') }, { title: 'multi_edit', kind: 'edit', rawInput: { path: '/p/file.ts', edits: [{ old_string: 'firstBefore', new_string: 'firstAfter' }, { old_string: 'secondBefore', new_string: 'secondAfter' }] } }),
-  write_file: rxUpdate({ content: text('Wrote /p/n.ts') }, { title: 'write_file', kind: 'write', rawInput: { path: '/p/n.ts', content: 'written()' } }),
-  move_file: rxUpdate({ content: text('moved') }, { title: 'move_file', kind: 'edit', rawInput: { source_path: '/p/old.ts', destination_path: '/p/new.ts' } }),
-  delete_range: rxUpdate({ content: text('--- a/p/file.ts\n+++ b/p/file.ts\n@@ -4,3 +4,1 @@\n-removedFirst\n-removedSecond\n remaining\n') }, { title: 'delete_range', kind: 'delete', rawInput: { path: '/p/file.ts', start_anchor: 'delete', end_anchor: 'end' } }),
-  bash: rxUpdate({ content: text('hello\n') }, { title: 'bash', kind: 'execute', rawInput: { command: 'printf hello', description: 'Say hello' } }),
-  web_fetch: rxUpdate({ content: text('# Example\n\n**Fetched body**') }, { title: 'web_fetch', kind: 'fetch', rawInput: { url: 'https://example.com' } }),
-  task: rxUpdate({ content: text('Subagent outcome: status=completed retryable=false\n\nFinal answer:\n**Findings**') }, { title: 'task', kind: 'other', rawInput: { description: 'Inspect sample', prompt: 'Read it' } }),
-  todo_write: rxUpdate({ content: text('Todos updated') }, { title: 'todo_write', kind: 'edit', rawInput: { todos: [{ content: 'Inspect code', status: 'in_progress' }] } }),
-  lookup: rxUpdate({ content: text('probe answered') }, { title: 'mcp__probe__lookup', kind: 'other', rawInput: { query: 'needle' } }),
+  multi_edit: rxUpdate({
+    content: text('Applied edits'),
+  }, {
+    title: 'multi_edit',
+    kind: 'edit',
+    rawInput: {
+      path: '/p/file.ts',
+      edits: [
+        { old_string: 'firstBefore', new_string: 'firstAfter' },
+        { old_string: 'secondBefore', new_string: 'secondAfter' },
+      ],
+    },
+  }),
+  write_file: rxUpdate({
+    content: text('Wrote /p/n.ts'),
+  }, {
+    title: 'write_file',
+    kind: 'write',
+    rawInput: { path: '/p/n.ts', content: 'written()' },
+  }),
+  move_file: rxUpdate({
+    content: text('moved'),
+  }, {
+    title: 'move_file',
+    kind: 'edit',
+    rawInput: { source_path: '/p/old.ts', destination_path: '/p/new.ts' },
+  }),
+  delete_range: rxUpdate({
+    content: text('--- a/p/file.ts\n+++ b/p/file.ts\n@@ -4,3 +4,1 @@\n-removedFirst\n-removedSecond\n remaining\n'),
+  }, {
+    title: 'delete_range',
+    kind: 'delete',
+    rawInput: { path: '/p/file.ts', start_anchor: 'delete', end_anchor: 'end' },
+  }),
+  bash: rxUpdate({
+    content: text('hello\n'),
+  }, {
+    title: 'bash',
+    kind: 'execute',
+    rawInput: { command: 'printf hello', description: 'Say hello' },
+  }),
+  web_fetch: rxUpdate({
+    content: text('# Example\n\n**Fetched body**'),
+  }, {
+    title: 'web_fetch',
+    kind: 'fetch',
+    rawInput: { url: 'https://example.com' },
+  }),
+  task: rxUpdate({
+    content: text('Subagent outcome: status=completed retryable=false\n\nFinal answer:\n**Findings**'),
+  }, {
+    title: 'task',
+    kind: 'other',
+    rawInput: { description: 'Inspect sample', prompt: 'Read it' },
+  }),
+  todo_write: rxUpdate({
+    content: text('Todos updated'),
+  }, {
+    title: 'todo_write',
+    kind: 'edit',
+    rawInput: {
+      todos: [
+        { content: 'Inspect code', status: 'in_progress' },
+      ],
+    },
+  }),
+  lookup: rxUpdate({
+    content: text('probe answered'),
+  }, {
+    title: 'mcp__probe__lookup',
+    kind: 'other',
+    rawInput: { query: 'needle' },
+  }),
 }
 
 /**
@@ -72,8 +191,15 @@ function failed(kind: ToolKind, name: string, status: ToolFailureFixture['status
   // Every failure pairs by name with a fixture above, so the read is guarded for the type alone.
   const fixture = FIXTURES[name]
   return {
-    payload: { sessionUpdate: 'tool_call_update', toolCallId: CALL, status: 'failed', content: text(ERROR_TEXT) },
-    ...(fixture?.options !== undefined ? { options: fixture.options } : {}),
+    payload: {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: CALL,
+      status: 'failed',
+      content: text(ERROR_TEXT),
+    },
+    ...(fixture?.options !== undefined
+      ? { options: fixture.options }
+      : {}),
     kind,
     name,
     status,

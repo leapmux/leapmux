@@ -12,8 +12,11 @@ export type DeepseekHarnessRenderedMcpBlock = { type: 'text', text: string } | {
 export function deepseekHarnessMcpTextDisplay(text: string): DeepseekHarnessRenderedMcpBlock[] {
   if (!text)
     return []
-  if (markdownNeedsPlainTextDisplay(text))
-    return [{ type: 'text', text: limitTextForDisplay(text).text }]
+  if (markdownNeedsPlainTextDisplay(text)) {
+    return [
+      { type: 'text', text: limitTextForDisplay(text).text },
+    ]
+  }
   return createMarkdownParser().parse(text).children.map((node) => {
     if (node.type !== 'paragraph')
       throw new Error(`The DeepSeek Harness fixture text contains an unsupported Markdown ${node.type} block.`)
@@ -31,7 +34,9 @@ export function deepseekHarnessMcpTextDisplay(text: string): DeepseekHarnessRend
 /** Read visible Model Context Protocol (MCP) result blocks in DOM order. */
 export function deepseekHarnessRenderedMcpContent(roots: Element | readonly Element[], displayNotices: readonly string[]): DeepseekHarnessRenderedMcpBlock[] | null {
   // Playwright serializes this function. Keep every runtime dependency inside it or in its arguments.
-  const root = roots instanceof Element ? roots : roots.find(element => element.isConnected)
+  const root = roots instanceof Element
+    ? roots
+    : roots.find(element => element.isConnected)
   if (!root?.isConnected)
     return null
   const content: DeepseekHarnessRenderedMcpBlock[] = []

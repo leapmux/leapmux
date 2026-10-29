@@ -28,7 +28,9 @@ export const AboutDialog: Component<AboutDialogProps> = (props) => {
   const backend = getBackendBuildInfo()
   const frontend = getFrontendBuildInfo()
   const same = formatVersionLine(backend) === formatVersionLine(frontend)
-  const buildYear = backend.commitTime ? new Date(backend.commitTime).getFullYear() : new Date().getFullYear()
+  const buildYear = backend.commitTime
+    ? new Date(backend.commitTime).getFullYear()
+    : new Date().getFullYear()
 
   return (
     <Dialog title="About" onClose={props.onClose}>
@@ -75,7 +77,14 @@ export const AboutDialog: Component<AboutDialogProps> = (props) => {
           </div>
           <div>
             <div class={labelRow}>Third-party licenses</div>
-            <a href="/NOTICE.html" target="_blank" rel="noopener noreferrer" onClick={isTauriApp() ? openNoticeInTauriWindow : undefined}>
+            <a
+              href="/NOTICE.html"
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={isTauriApp()
+                ? openNoticeInTauriWindow
+                : undefined}
+            >
               NOTICE.html
             </a>
           </div>

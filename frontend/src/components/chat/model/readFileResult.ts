@@ -75,7 +75,9 @@ export interface ReadFileResult {
  * scroll rail nothing, for the one read whose reason is the only thing worth copying.
  */
 export function readFileLines(source: ReadFileResult): NumberedFileLine[] | null {
-  return source.lines && source.lines.length > 0 ? source.lines : null
+  return source.lines && source.lines.length > 0
+    ? source.lines
+    : null
 }
 
 /**
@@ -88,7 +90,9 @@ export function readFileLines(source: ReadFileResult): NumberedFileLine[] | null
  */
 export function readFileBodyText(source: ReadFileResult): string {
   const lines = readFileLines(source)
-  return lines ? lines.map(line => line.text).join('\n') : source.fallbackContent
+  return lines
+    ? lines.map(line => line.text).join('\n')
+    : source.fallbackContent
 }
 
 /** Regex to match a single Read output line: optional whitespace, digits, →, content. */
@@ -142,22 +146,36 @@ function toReminder(tag: string, textLines: string[]): ReadReminder {
   const severity = tagSeverity(tag)
   // A tag that claims no severity omits the field, which the renderer draws in its
   // default style -- the same pixels an explicit undefined stated before.
-  return { label: tagLabel(tag), text: textLines.join('\n').trim(), ...(severity !== undefined ? { severity } : {}) }
+  return {
+    label: tagLabel(tag),
+    text: textLines.join('\n').trim(),
+    ...(severity !== undefined
+      ? { severity }
+      : {}),
+  }
 }
 
 /** Match a tag block at the HEAD of [lo, hi]; null when `lines[lo]` doesn't open one. */
 function matchLeadingTag(lines: string[], lo: number, hi: number): { reminder: ReadReminder, closeIndex: number } | null {
   const line = lines[lo] ?? ''
   const single = line.match(SINGLE_LINE_TAG_RE)
-  if (single && single[1] !== undefined && single[2] !== undefined)
-    return { reminder: toReminder(single[1], [single[2]]), closeIndex: lo }
+  if (single && single[1] !== undefined && single[2] !== undefined) {
+    return {
+      reminder: toReminder(single[1], [single[2]]),
+      closeIndex: lo,
+    }
+  }
   const open = line.match(OPEN_TAG_RE)
   if (!open || open[1] === undefined)
     return null
   const closeRe = new RegExp(`^</${open[1]}>\\s*$`, 'i')
   for (let i = lo + 1; i <= hi; i++) {
-    if (closeRe.test(lines[i] ?? ''))
-      return { reminder: toReminder(open[1], lines.slice(lo + 1, i)), closeIndex: i }
+    if (closeRe.test(lines[i] ?? '')) {
+      return {
+        reminder: toReminder(open[1], lines.slice(lo + 1, i)),
+        closeIndex: i,
+      }
+    }
   }
   return null // unterminated -> not a clean block
 }
@@ -166,15 +184,23 @@ function matchLeadingTag(lines: string[], lo: number, hi: number): { reminder: R
 function matchTrailingTag(lines: string[], lo: number, hi: number): { reminder: ReadReminder, openIndex: number } | null {
   const line = lines[hi] ?? ''
   const single = line.match(SINGLE_LINE_TAG_RE)
-  if (single && single[1] !== undefined && single[2] !== undefined)
-    return { reminder: toReminder(single[1], [single[2]]), openIndex: hi }
+  if (single && single[1] !== undefined && single[2] !== undefined) {
+    return {
+      reminder: toReminder(single[1], [single[2]]),
+      openIndex: hi,
+    }
+  }
   const close = line.match(CLOSE_TAG_RE)
   if (!close || close[1] === undefined)
     return null
   const openRe = new RegExp(`^<${close[1]}>\\s*$`, 'i')
   for (let i = hi - 1; i >= lo; i--) {
-    if (openRe.test(lines[i] ?? ''))
-      return { reminder: toReminder(close[1], lines.slice(i + 1, hi)), openIndex: i }
+    if (openRe.test(lines[i] ?? '')) {
+      return {
+        reminder: toReminder(close[1], lines.slice(i + 1, hi)),
+        openIndex: i,
+      }
+    }
   }
   return null
 }
@@ -188,7 +214,10 @@ function parseCatLines(lines: string[], lo: number, hi: number): NumberedFileLin
     const m = (lines[i] ?? '').match(CAT_N_LINE_RE)
     if (!m || m[1] === undefined || m[2] === undefined)
       return null
-    parsed.push({ num: Number.parseInt(m[1], 10), text: m[2] })
+    parsed.push({
+      num: Number.parseInt(m[1], 10),
+      text: m[2],
+    })
   }
   return parsed
 }
@@ -257,7 +286,9 @@ export function parseReadContent(content: string): ReadContentParts {
   // The post-condition the doc states: the blocks survive only when a cat-n body
   // survives with them.
   const body = parseCatLines(lines, lo, hi)
-  return body ? { leading, lines: body, trailing } : { leading: [], lines: null, trailing: [] }
+  return body
+    ? { leading, lines: body, trailing }
+    : { leading: [], lines: null, trailing: [] }
 }
 
 /**

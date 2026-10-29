@@ -49,7 +49,12 @@ describe('AccountLinkedProviders', () => {
   })
 
   it('detaches a linked provider', async () => {
-    mockUser.mockReturnValue({ ...base, oauthProviders: [{ id: 'github-1', name: 'GitHub', enabled: true }] })
+    mockUser.mockReturnValue({
+      ...base,
+      oauthProviders: [
+        { id: 'github-1', name: 'GitHub', enabled: true },
+      ],
+    })
     render(() => <AccountLinkedProviders />)
     expect(await screen.findByText('GitHub')).toBeInTheDocument()
 
@@ -70,7 +75,12 @@ describe('AccountLinkedProviders', () => {
   // leaving the owner holding a login method they could neither use nor
   // remove.
   it('lists a disabled provider so the owner can still detach it', async () => {
-    mockUser.mockReturnValue({ ...base, oauthProviders: [{ id: 'github-1', name: 'GitHub', enabled: false }] })
+    mockUser.mockReturnValue({
+      ...base,
+      oauthProviders: [
+        { id: 'github-1', name: 'GitHub', enabled: false },
+      ],
+    })
     render(() => <AccountLinkedProviders />)
     expect(await screen.findByText('GitHub')).toBeInTheDocument()
 
@@ -87,7 +97,12 @@ describe('AccountLinkedProviders', () => {
   })
 
   it('does not label an enabled provider as disabled', async () => {
-    mockUser.mockReturnValue({ ...base, oauthProviders: [{ id: 'github-1', name: 'GitHub', enabled: true }] })
+    mockUser.mockReturnValue({
+      ...base,
+      oauthProviders: [
+        { id: 'github-1', name: 'GitHub', enabled: true },
+      ],
+    })
     render(() => <AccountLinkedProviders />)
     expect(await screen.findByText('GitHub')).toBeInTheDocument()
     expect(screen.queryByTestId('linked-disabled-github-1')).not.toBeInTheDocument()
@@ -97,7 +112,12 @@ describe('AccountLinkedProviders', () => {
     // FailedPrecondition WITHOUT the elevation marker: the last login method,
     // which no verification can admit. Opening the prompt here would
     // ask the user for a factor and then refuse them anyway.
-    mockUser.mockReturnValue({ ...base, oauthProviders: [{ id: 'github-1', name: 'GitHub', enabled: true }] })
+    mockUser.mockReturnValue({
+      ...base,
+      oauthProviders: [
+        { id: 'github-1', name: 'GitHub', enabled: true },
+      ],
+    })
     mockUnlink.mockRejectedValue(
       new ConnectError('cannot detach your only login method; set a password first', Code.FailedPrecondition),
     )
@@ -117,7 +137,12 @@ describe('AccountLinkedProviders', () => {
   // request, the hub answers NotFound, and the panel reports a failure for an
   // operation that SUCCEEDED.
   it('keeps the control disabled until the cached account is current', async () => {
-    mockUser.mockReturnValue({ ...base, oauthProviders: [{ id: 'github-1', name: 'GitHub', enabled: true }] })
+    mockUser.mockReturnValue({
+      ...base,
+      oauthProviders: [
+        { id: 'github-1', name: 'GitHub', enabled: true },
+      ],
+    })
     const { promise, resolve } = deferred<void>()
     mockRefreshUser.mockReturnValue(promise)
 

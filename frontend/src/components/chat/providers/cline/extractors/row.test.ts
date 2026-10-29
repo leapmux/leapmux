@@ -9,15 +9,39 @@ import { clineExtractRow } from './row'
 import '~/components/chat/providers'
 
 const provider = AgentProvider.CLINE
-const noSpan: ToolSpanContext = { request: undefined, result: undefined, role: 'result', visibleRows: { request: false, result: true } }
+const noSpan: ToolSpanContext = {
+  request: undefined,
+  result: undefined,
+  role: 'result',
+  visibleRows: { request: false, result: true },
+}
 
 function extract(parent: Record<string, unknown>, kind: MessageCategory['kind'], span: ToolSpanContext = noSpan, completion?: MessageCompletion) {
-  const resolved = resolveMessageForRendering({ rawText: '', topLevel: parent, parentObject: parent, wrapper: null, ...(completion !== undefined ? { completion } : {}) }, provider)
-  const category: MessageCategory = kind === 'notification' ? { kind, entries: [] } : kind === 'control_response' ? { kind: 'unknown' } : { kind }
+  const resolved = resolveMessageForRendering({
+    rawText: '',
+    topLevel: parent,
+    parentObject: parent,
+    wrapper: null,
+    ...(completion !== undefined
+      ? { completion }
+      : {}),
+  }, provider)
+  const category: MessageCategory = kind === 'notification'
+    ? { kind, entries: [] }
+    : kind === 'control_response'
+      ? { kind: 'unknown' }
+      : { kind }
   return clineExtractRow({ category, resolved, span })
 }
 
-const event = (name: string, payload: Record<string, unknown> = {}) => ({ version: 'v1', event: name, sessionId: 's1', payload })
+function event(name: string, payload: Record<string, unknown> = {}) {
+  return {
+    version: 'v1',
+    event: name,
+    sessionId: 's1',
+    payload,
+  }
+}
 
 describe('clineExtractRow', () => {
   it('reads the text and the reasoning of a message', () => {
@@ -32,15 +56,21 @@ describe('clineExtractRow', () => {
   })
 
   it('states the media a message returned', () => {
-    expect(extract(event('assistant.media', { media: { type: 'image', mediaType: 'image/png', data: 'AAAA' } }), 'assistant_text'))
+    expect(extract(event('assistant.media', {
+      media: { type: 'image', mediaType: 'image/png', data: 'AAAA' },
+    }), 'assistant_text'))
       .toEqual({ kind: 'assistant-text', text: 'The model returned media (image/png).' })
     expect(extract(event('assistant.media', { media: {} }), 'assistant_text')).toEqual({ kind: 'assistant-text', text: 'The model returned media.' })
   })
 
   it('states the media type under each spelling, the most precise first', () => {
-    expect(extract(event('assistant.media', { media: { type: 'image', mimeType: 'image/jpeg' } }), 'assistant_text'))
+    expect(extract(event('assistant.media', {
+      media: { type: 'image', mimeType: 'image/jpeg' },
+    }), 'assistant_text'))
       .toEqual({ kind: 'assistant-text', text: 'The model returned media (image/jpeg).' })
-    expect(extract(event('assistant.media', { media: { type: 'audio' } }), 'assistant_text'))
+    expect(extract(event('assistant.media', {
+      media: { type: 'audio' },
+    }), 'assistant_text'))
       .toEqual({ kind: 'assistant-text', text: 'The model returned media (audio).' })
   })
 
@@ -60,31 +90,53 @@ describe('clineExtractRow', () => {
   })
 
   it('pairs a result with the call of the same id only', () => {
-    const result = clineToolFinishRow('run_commands', [{ query: 'printf a', result: 'a', success: true }], undefined, 'call_a')
-    const mine = input(clineToolStartRow('run_commands', { commands: ['printf a'] }, 'call_a'), undefined, provider)
-    const sibling = input(clineToolStartRow('run_commands', { commands: ['printf b'] }, 'call_b'), undefined, provider)
+    const result = clineToolFinishRow('run_commands', [
+      { query: 'printf a', result: 'a', success: true },
+    ], undefined, 'call_a')
+    const mine = input(clineToolStartRow('run_commands', {
+      commands: ['printf a'],
+    }, 'call_a'), undefined, provider)
+    const sibling = input(clineToolStartRow('run_commands', {
+      commands: ['printf b'],
+    }, 'call_b'), undefined, provider)
     const paired = extract(result, 'tool_result', { ...noSpan, request: mine })
-    expect(paired?.kind === 'tool' ? paired.call.request : null).toMatchObject({ command: 'printf a' })
+    expect(paired?.kind === 'tool'
+      ? paired.call.request
+      : null).toMatchObject({ command: 'printf a' })
     const unpaired = extract(result, 'tool_result', { ...noSpan, request: sibling })
     // A result whose start the store did not resolve still names its own tool.
-    expect(unpaired?.kind === 'tool' ? unpaired.call.kind : null).toBe('execute')
+    expect(unpaired?.kind === 'tool'
+      ? unpaired.call.kind
+      : null).toBe('execute')
   })
 
   it('draws a running call as the request side, and its landed result on it', () => {
-    const call = clineToolStartRow('run_commands', { commands: ['ls'] }, 'call_a')
+    const call = clineToolStartRow('run_commands', {
+      commands: ['ls'],
+    }, 'call_a')
     const running = extract(call, 'tool_use', { ...noSpan, role: 'request' })
     expect(running).toMatchObject({ kind: 'tool', role: 'request' })
-    expect(running?.kind === 'tool' ? running.call.status : null).toBe('unstated')
-    const landed = input(clineToolFinishRow('run_commands', [{ query: 'ls', result: 'x', success: true }], undefined, 'call_a'), undefined, provider)
+    expect(running?.kind === 'tool'
+      ? running.call.status
+      : null).toBe('unstated')
+    const landed = input(clineToolFinishRow('run_commands', [
+      { query: 'ls', result: 'x', success: true },
+    ], undefined, 'call_a'), undefined, provider)
     const answered = extract(call, 'tool_use', { ...noSpan, role: 'request', result: landed })
-    expect(answered?.kind === 'tool' ? answered.call.status : null).toBe('completed')
+    expect(answered?.kind === 'tool'
+      ? answered.call.status
+      : null).toBe('completed')
   })
 
   it('draws a start that the turn outlived as the call\'s end', () => {
-    const call = clineToolStartRow('run_commands', { commands: ['sleep 40'] }, 'call_a')
+    const call = clineToolStartRow('run_commands', {
+      commands: ['sleep 40'],
+    }, 'call_a')
     const stopped = extract(call, 'tool_result', noSpan, MessageCompletion.INTERRUPTED)
     expect(stopped).toMatchObject({ kind: 'tool', role: 'result' })
-    expect(stopped?.kind === 'tool' ? stopped.call.status : null).toBe('cancelled')
+    expect(stopped?.kind === 'tool'
+      ? stopped.call.status
+      : null).toBe('cancelled')
   })
 
   it('answers null for a tool category on a row that is not a tool row', () => {

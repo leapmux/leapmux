@@ -17,7 +17,9 @@ vi.mock('../helpers/ui', async importOriginal => ({
   expectSettingsOptionChosen: async (_page: unknown, testId: string) => { settings.events.push(`chosen ${testId}`) },
   openSettingsMenu: async (_page: unknown, groupId: string) => {
     settings.events.push(`menu ${groupId}`)
-    return { getByTestId: (testId: string) => modeRow(testId) }
+    return {
+      getByTestId: (testId: string) => modeRow(testId),
+    }
   },
   closeComposerMenus: async () => { settings.events.push('close menus') },
 }))
@@ -33,7 +35,7 @@ function modeRow(testId: string): Locator {
 describe('COPILOT_PERMISSION_JUDGE_RULE', () => {
   const system = COPILOT_PERMISSION_JUDGE_RULE.when.system
   if (typeof system !== 'string')
-    throw new Error('The judge rule states one pattern.')
+    throw new TypeError('The judge rule states one pattern.')
   const pattern = new RegExp(system, 'i')
 
   it('selects the request of the permission judge', () => {

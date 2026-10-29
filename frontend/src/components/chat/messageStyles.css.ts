@@ -102,9 +102,13 @@ const endBubble = {
   color: 'var(--foreground)',
 } as const
 
-export const userMessage = style([messageBubble, endBubble, {
-  border: '1px solid var(--border)',
-}])
+export const userMessage = style([
+  messageBubble,
+  endBubble,
+  {
+    border: '1px solid var(--border)',
+  },
+])
 
 /**
  * Fallback bubble for an AGENT-source row that is not a band -- in practice an
@@ -113,11 +117,14 @@ export const userMessage = style([messageBubble, endBubble, {
  * for the kinds messageBandKind lists; anything else the agent emits keeps this
  * bubble so an unclassified row stays visibly a bubble, not chrome-less text.
  */
-export const agentFallbackMessage = style([messageBubble, {
-  backgroundColor: 'var(--card)',
-  border: '1px solid var(--border)',
-  color: 'var(--foreground)',
-}])
+export const agentFallbackMessage = style([
+  messageBubble,
+  {
+    backgroundColor: 'var(--card)',
+    border: '1px solid var(--border)',
+    color: 'var(--foreground)',
+  },
+])
 
 /**
  * The band an assistant message or thought paints: a full-bleed gray surface with
@@ -214,9 +221,13 @@ export const bandMessage = style({
  * row mirrors it and widens for it exactly like a typed message, and the card
  * runs its right side to the same panel edge.
  */
-export const planExecutionMessage = style([messageBubble, endBubble, {
-  border: '1px dashed var(--border)',
-}])
+export const planExecutionMessage = style([
+  messageBubble,
+  endBubble,
+  {
+    border: '1px dashed var(--border)',
+  },
+])
 
 export const thinkingHeader = style({
   display: 'flex',
@@ -245,12 +256,15 @@ export const thinkingContent = style({
   marginTop: 'var(--space-2)',
 })
 
-export const systemMessage = style([messageBubble, {
-  backgroundColor: 'transparent',
-  border: '1px dashed var(--border)',
-  color: 'var(--muted-foreground)',
-  fontSize: 'var(--text-7)',
-}])
+export const systemMessage = style([
+  messageBubble,
+  {
+    backgroundColor: 'transparent',
+    border: '1px dashed var(--border)',
+    color: 'var(--muted-foreground)',
+    fontSize: 'var(--text-7)',
+  },
+])
 
 globalStyle(`${systemMessage} pre`, {
   whiteSpace: 'pre-wrap',
@@ -327,7 +341,9 @@ export const hiddenMessageJson = style({
 // JSON renders as token <span>s (data-shiki-token) directly inside this wrapper,
 // which already owns the mono font + pre-wrap + padding/border/scroll. The spans
 // pick up dual-theme colors via CSS vars.
-codeSurface(hiddenMessageJson, 'page', [{ suffix: ' span[data-shiki-token]', bg: true }])
+codeSurface(hiddenMessageJson, 'page', [
+  { suffix: ' span[data-shiki-token]', bg: true },
+])
 
 // Control response message (compact)
 export const controlResponseMessage = style({

@@ -11,7 +11,9 @@ import { ChangeBranchDialog } from './ChangeBranchDialog'
 vi.mock('~/api/clients', () => ({
   workerClient: {
     listWorkers: vi.fn().mockResolvedValue({
-      workers: [{ id: 'w1', online: true, name: 'worker-1' }],
+      workers: [
+        { id: 'w1', online: true, name: 'worker-1' },
+      ],
     }),
   },
 }))
@@ -178,7 +180,9 @@ describe('ChangeBranchDialog', () => {
     expect(workerRpc.inspectBranchChange).toHaveBeenCalledWith(
       'w1',
       expect.objectContaining({ path: '/repo', workerId: 'w1' }),
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+      }),
     )
   })
 
@@ -325,7 +329,9 @@ describe('ChangeBranchDialog', () => {
     await awaitFormReady()
     fireEvent.click(screen.getByText('Create new branch'))
     const input = screen.getByPlaceholderText('feature-branch') as HTMLInputElement
-    fireEvent.input(input, { target: { value: 'shiny-new' } })
+    fireEvent.input(input, {
+      target: { value: 'shiny-new' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
 
     await waitFor(() => expect(props.onBranchChanged).toHaveBeenCalledTimes(1))
@@ -338,7 +344,9 @@ describe('ChangeBranchDialog', () => {
 
     fireEvent.click(screen.getByText('Create new branch'))
     const input = screen.getByPlaceholderText('feature-branch') as HTMLInputElement
-    fireEvent.input(input, { target: { value: 'shiny-new' } })
+    fireEvent.input(input, {
+      target: { value: 'shiny-new' },
+    })
 
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
     await waitFor(() => expect(workerRpc.createBranch).toHaveBeenCalledTimes(1))
@@ -358,7 +366,9 @@ describe('ChangeBranchDialog', () => {
     await awaitFormReady()
 
     const input = screen.getByPlaceholderText('feature-branch') as HTMLInputElement
-    fireEvent.input(input, { target: { value: 'shiny-new' } })
+    fireEvent.input(input, {
+      target: { value: 'shiny-new' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
 
     await waitFor(() => expect(workerRpc.createBranch).toHaveBeenCalledTimes(1))
@@ -371,7 +381,9 @@ describe('ChangeBranchDialog', () => {
     await awaitFormReady()
     fireEvent.click(screen.getByText('Create new branch'))
     const input = screen.getByPlaceholderText('feature-branch') as HTMLInputElement
-    fireEvent.input(input, { target: { value: 'main' } })
+    fireEvent.input(input, {
+      target: { value: 'main' },
+    })
     const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement
     expect(apply.disabled).toBe(true)
     expect(screen.getByText('A branch with this name already exists')).toBeInTheDocument()
@@ -405,7 +417,9 @@ describe('ChangeBranchDialog', () => {
   // could orphan, so a blocked reason must disable it like the other
   // tab-creating dialogs — and the click must never reach the RPC.
   it('worktree mode: a blocked reason disables Apply, shows the notice, and fires no RPC', async () => {
-    const props = renderDialog({ blockedReason: () => 'The workspace view is not ready yet.' })
+    const props = renderDialog({
+      blockedReason: () => 'The workspace view is not ready yet.',
+    })
     await awaitFormReady()
     fireEvent.click(screen.getByText('Create new worktree'))
 
@@ -424,7 +438,9 @@ describe('ChangeBranchDialog', () => {
   // The companion: the reason is mode-conditioned, not global. A branch
   // checkout creates no tab, so the same accessor must not disable it.
   it('the blocked reason never applies outside worktree mode — a branch checkout opens no tab', async () => {
-    const props = renderDialog({ blockedReason: () => 'The workspace view is not ready yet.' })
+    const props = renderDialog({
+      blockedReason: () => 'The workspace view is not ready yet.',
+    })
     await awaitFormReady()
 
     expect(screen.queryByTestId('new-tab-blocked-reason')).toBeNull()
@@ -728,7 +744,9 @@ describe('ChangeBranchDialog title', () => {
     await awaitFormReady()
     fireEvent.click(screen.getByText('Create new worktree'))
 
-    fireEvent.input(titleInput(), { target: { value: 'Auth fix' } })
+    fireEvent.input(titleInput(), {
+      target: { value: 'Auth fix' },
+    })
     fireEvent.click(screen.getByRole('radio', { name: 'Terminal' }))
     expect(titleInput().value).toBe('Auth fix')
   })
@@ -742,7 +760,9 @@ describe('ChangeBranchDialog title', () => {
     renderDialog()
     await awaitFormReady()
     fireEvent.click(screen.getByText('Create new worktree'))
-    fireEvent.input(titleInput(), { target: { value: '  Auth   fix  ' } })
+    fireEvent.input(titleInput(), {
+      target: { value: '  Auth   fix  ' },
+    })
 
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
     await waitFor(() => expect(workerRpc.openAgent).toHaveBeenCalledTimes(1))
@@ -762,7 +782,9 @@ describe('ChangeBranchDialog title', () => {
     fireEvent.click(screen.getByRole('radio', { name: 'Terminal' }))
     await waitFor(() => expect(workerRpc.listAvailableShells).toHaveBeenCalled())
 
-    fireEvent.input(titleInput(), { target: { value: 'Build  logs' } })
+    fireEvent.input(titleInput(), {
+      target: { value: 'Build  logs' },
+    })
     const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement
     await waitFor(() => expect(apply.disabled).toBe(false))
 
@@ -776,7 +798,9 @@ describe('ChangeBranchDialog title', () => {
     await awaitFormReady()
     fireEvent.click(screen.getByText('Create new worktree'))
 
-    fireEvent.input(titleInput(), { target: { value: '   ' } })
+    fireEvent.input(titleInput(), {
+      target: { value: '   ' },
+    })
     const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement
     await waitFor(() => expect(apply.disabled).toBe(true))
     expect(screen.getByText('Name must not be empty')).toBeInTheDocument()
@@ -793,7 +817,9 @@ describe('ChangeBranchDialog title', () => {
     renderDialog()
     await awaitFormReady()
     fireEvent.click(screen.getByText('Create new worktree'))
-    fireEvent.input(titleInput(), { target: { value: '' } })
+    fireEvent.input(titleInput(), {
+      target: { value: '' },
+    })
 
     fireEvent.click(screen.getByText('Switch to branch'))
     pickMenuValue('branch-select-menu', 'main')

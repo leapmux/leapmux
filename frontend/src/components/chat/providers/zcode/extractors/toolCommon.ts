@@ -113,7 +113,9 @@ function zcodeToolResult(result: Record<string, unknown>): ZCodeToolResult {
 function joinOutputTails(stdout: string, stderr: string): string {
   if (!stdout || !stderr)
     return stdout || stderr
-  return stdout.endsWith('\n') ? stdout + stderr : `${stdout}\n${stderr}`
+  return stdout.endsWith('\n')
+    ? stdout + stderr
+    : `${stdout}\n${stderr}`
 }
 
 /**
@@ -168,7 +170,9 @@ function buildZCodeToolUpdate(parsed: Record<string, unknown>): ZCodeToolUpdate 
     return null
   const rawResult = pickObject(payload, 'result')
   const rawError = pickObject(payload, 'error')
-  const result = rawResult ? zcodeToolResult(rawResult) : zcodeProgressResult(payload)
+  const result = rawResult
+    ? zcodeToolResult(rawResult)
+    : zcodeProgressResult(payload)
   return {
     kind: pickString(payload, 'kind'),
     toolCallId,
@@ -218,7 +222,13 @@ export function zcodeRow(
   toolUseParsed: ParsedMessageContent | undefined,
   supplemental?: unknown,
 ): ZCodeRow {
-  return { parsed, supplemental, spanType, toolUseParsed, toolName: resolveZCodeToolName(parsed, spanType, toolUseParsed) }
+  return {
+    parsed,
+    supplemental,
+    spanType,
+    toolUseParsed,
+    toolName: resolveZCodeToolName(parsed, spanType, toolUseParsed),
+  }
 }
 
 /**
@@ -249,7 +259,9 @@ function resolveZCodeToolName(
 export function zcodePairedRequest(parsed: unknown, request: ParsedMessageContent | undefined): ZCodeToolUpdate | null {
   const current = zcodeExtractTool(parsed)
   const paired = zcodeExtractTool(request?.parentObject)
-  return current && paired?.kind === ZCODE_TOOL_KIND.Scheduled && paired.toolCallId === current.toolCallId ? paired : null
+  return current && paired?.kind === ZCODE_TOOL_KIND.Scheduled && paired.toolCallId === current.toolCallId
+    ? paired
+    : null
 }
 
 /**
@@ -314,7 +326,9 @@ export function zcodeErrorText(update: ZCodeToolUpdate): string {
  * across providers.
  */
 export function zcodeTodoItemsFromInput(input: Record<string, unknown> | null | undefined): TodoItem[] | null {
-  return input && Array.isArray(input.todos) ? rawTodosToItems(input.todos) : null
+  return input && Array.isArray(input.todos)
+    ? rawTodosToItems(input.todos)
+    : null
 }
 
 /** Validate the native record against this event before resolving any of its fields. */
@@ -356,7 +370,12 @@ export function zcodeNativeTool(row: ZCodeRow): {
     || state[ZCODE_STORED_PART.Status] !== (original.isError ? ZCODE_STORED_PART_STATUS.Error : ZCODE_STORED_PART_STATUS.Completed)) {
     return null
   }
-  return { sessionId, messageId, state, outputFiles: outputFiles ?? null }
+  return {
+    sessionId,
+    messageId,
+    state,
+    outputFiles: outputFiles ?? null,
+  }
 }
 
 /**

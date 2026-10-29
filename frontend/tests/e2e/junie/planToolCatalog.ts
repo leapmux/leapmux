@@ -17,7 +17,14 @@
  * the tool that starts a subagent, and the two scroll tools, in every situation of the probe. `submit`
  * and `answer` are in both catalogs.
  */
-export const PLAN_MODE_WITHHELD_TOOLS = ['search_replace', 'create', 'undo_edit', 'spawn_subagent', 'scroll_down', 'scroll_up'] as const
+export const PLAN_MODE_WITHHELD_TOOLS = [
+  'search_replace',
+  'create',
+  'undo_edit',
+  'spawn_subagent',
+  'scroll_down',
+  'scroll_up',
+] as const
 
 /** Return the tools of a catalog that Plan mode withholds. A Plan catalog returns an empty list. */
 export function planWithheldToolsOffered(tools: readonly string[]): string[] {

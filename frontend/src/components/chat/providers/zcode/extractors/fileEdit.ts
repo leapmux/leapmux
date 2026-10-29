@@ -50,7 +50,9 @@ export function extractZCodeFileDiff(row: ZCodeRow): FileEditDiff | null {
         oldStr: pickString(input, 'old_string'),
         newStr: pickString(input, 'new_string'),
       }
-  return fileEditHasDiff(source) ? source : null
+  return fileEditHasDiff(source)
+    ? source
+    : null
 }
 
 /**

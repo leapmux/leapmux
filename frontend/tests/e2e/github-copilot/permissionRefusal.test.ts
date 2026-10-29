@@ -12,12 +12,23 @@ function eventFrame(type: string, data: Record<string, unknown>, overrides: { se
     method: COPILOT_METHOD.SessionEvent,
     params: {
       sessionId: overrides.sessionId ?? 'native-session',
-      event: { id: 'event-1', type, ...(overrides.agentId === undefined ? {} : { agentId: overrides.agentId }), data },
+      event: {
+        id: 'event-1',
+        type,
+        ...(overrides.agentId === undefined
+          ? {}
+          : { agentId: overrides.agentId }),
+        data,
+      },
     },
   }
 }
 
-const rejected = { toolCallId: 'denied-1', success: false, error: { message: 'The user rejected this tool call', code: 'rejected' } }
+const rejected = {
+  toolCallId: 'denied-1',
+  success: false,
+  error: { message: 'The user rejected this tool call', code: 'rejected' },
+}
 
 /** One stored row of the native session. The row belongs to the span of the refused call. */
 function row(frame: unknown, overrides: { agentSessionId?: string } = {}): NativeOutputRow {
@@ -88,8 +99,14 @@ describe('copilotToolCompletion', () => {
 
   it.each([
     { label: 'a null error', error: null },
-    { label: 'an error without a message', error: { code: 'rejected' } },
-    { label: 'an error with a numeric code', error: { message: 'The user rejected this tool call', code: 7 } },
+    {
+      label: 'an error without a message',
+      error: { code: 'rejected' },
+    },
+    {
+      label: 'an error with a numeric code',
+      error: { message: 'The user rejected this tool call', code: 7 },
+    },
   ])('refuses $label', ({ error }) => {
     expect(() => copilotToolCompletion(snapshot(row(eventFrame(COPILOT_EVENT.ToolCompleted, { toolCallId: 'denied-1', success: false, error }))), 'denied-1')).toThrow('malformed error')
   })

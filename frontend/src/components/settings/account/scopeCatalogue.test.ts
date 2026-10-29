@@ -75,6 +75,11 @@ describe('scopeCatalogue', () => {
   // ListApps answers after a register is byte-for-byte what was submitted.
   it('returns the closure in enum order', () => {
     const closed = closeScopes([Scope.GIT_WRITE, Scope.WORKSPACE_READ])
-    expect(closed).toEqual([Scope.WORKSPACE_READ, Scope.WORKER_READ, Scope.GIT_READ, Scope.GIT_WRITE])
+    expect(closed).toEqual([
+      Scope.WORKSPACE_READ,
+      Scope.WORKER_READ,
+      Scope.GIT_READ,
+      Scope.GIT_WRITE,
+    ])
   })
 })

@@ -55,7 +55,9 @@ export function startPairRebalanceDrag(opts: PairDragOptions): (() => void) | nu
   const { axis, index, startEvent, containerRef, startRatios, setDragRatios, commit, onDone, coalesce } = opts
 
   const rect = containerRef.getBoundingClientRect()
-  const total = axis === 'col' ? rect.width : rect.height
+  const total = axis === 'col'
+    ? rect.width
+    : rect.height
   if (total <= 0)
     return null
 
@@ -74,7 +76,9 @@ export function startPairRebalanceDrag(opts: PairDragOptions): (() => void) | nu
   startEvent.stopPropagation()
 
   const handle = startEvent.currentTarget as HTMLElement
-  const startCoord = axis === 'col' ? startEvent.clientX : startEvent.clientY
+  const startCoord = axis === 'col'
+    ? startEvent.clientX
+    : startEvent.clientY
   const pointerId = startEvent.pointerId
   handle.dataset.dragging = ''
 
@@ -88,7 +92,9 @@ export function startPairRebalanceDrag(opts: PairDragOptions): (() => void) | nu
   let sawPointerEvent = false
 
   const dispatchMove = (ev: PointerEvent | MouseEvent) => {
-    const cur = axis === 'col' ? ev.clientX : ev.clientY
+    const cur = axis === 'col'
+      ? ev.clientX
+      : ev.clientY
     const deltaRatio = (cur - startCoord) / total
     const [newA, newB] = rebalancePair(a, sumPair, deltaRatio, MIN_SPLIT_RATIO)
     const next = [...startRatios]
@@ -101,7 +107,9 @@ export function startPairRebalanceDrag(opts: PairDragOptions): (() => void) | nu
   // rAF coalescing — when `coalesce` is on, hold the latest move event
   // for the next animation frame so a 120Hz trackpad doesn't trigger two
   // rebalance + setDragRatios writes per paint.
-  const coalescer = coalesce ? createRafCoalescer<PointerEvent | MouseEvent>(dispatchMove) : null
+  const coalescer = coalesce
+    ? createRafCoalescer<PointerEvent | MouseEvent>(dispatchMove)
+    : null
 
   const onMove = (ev: PointerEvent | MouseEvent) => {
     if (ev instanceof PointerEvent) {

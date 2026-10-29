@@ -155,8 +155,16 @@ export function heldChildOptions(
   return {
     spawn: identity.spawn,
     gate: identity.gate,
-    child: { matcher: { user: identity.task }, finalStep: context.textStep('NATIVECHILDCOMPLETE') },
-    parentSteps: [{ toolCalls: [identity.spawn] }, context.textStep('The native parent completed.')],
+    child: {
+      matcher: { user: identity.task },
+      finalStep: context.textStep('NATIVECHILDCOMPLETE'),
+    },
+    parentSteps: [
+      {
+        toolCalls: [identity.spawn],
+      },
+      context.textStep('The native parent completed.'),
+    ],
     allowExistingRows: false,
     rowText: identity.description,
     ...overrides,
@@ -194,7 +202,9 @@ function requireLeading(leading: string): string {
  * of each parent turn.
  */
 export function childTaskAnywhere(task: string): MockModelMatcher {
-  return { user: escapeRegExp(requireTask(task)) }
+  return {
+    user: escapeRegExp(requireTask(task)),
+  }
 }
 
 function requireTask(task: string): string {
@@ -253,13 +263,34 @@ export function profiledChildOptions(
   return {
     spawn: child.spawn,
     gate: child.gate,
-    child: options.childTool ? { matcher, tool: options.childTool, finalStep } : { matcher, finalStep },
-    parentSteps: [{ toolCalls: [child.spawn] }, script.textStep('The native parent received its child report.')],
+    child: options.childTool
+      ? { matcher, tool: options.childTool, finalStep }
+      : { matcher, finalStep },
+    parentSteps: [
+      {
+        toolCalls: [child.spawn],
+      },
+      script.textStep('The native parent received its child report.'),
+    ],
     allowExistingRows: options.allowExistingRows ?? false,
-    ...(profile.rowTitleHoldsDescription ? { rowText: child.description } : {}),
-    ...(prepare ? { prepare: () => prepare(context) } : {}),
-    ...(beforeRelease ? { beforeRelease: () => beforeRelease(context, child) } : {}),
-    ...(resolveTaskId ? { resolveTaskId: (parentId: string) => resolveTaskId(context, parentId, child) } : {}),
+    ...(profile.rowTitleHoldsDescription
+      ? { rowText: child.description }
+      : {}),
+    ...(prepare
+      ? {
+          prepare: () => prepare(context),
+        }
+      : {}),
+    ...(beforeRelease
+      ? {
+          beforeRelease: () => beforeRelease(context, child),
+        }
+      : {}),
+    ...(resolveTaskId
+      ? {
+          resolveTaskId: (parentId: string) => resolveTaskId(context, parentId, child),
+        }
+      : {}),
   }
 }
 
@@ -272,7 +303,10 @@ export async function openProfiledNativeChild(
   profile: NativeChildProfile,
   options: ProfiledChildOptions = {},
 ): Promise<HeldNativeChild> {
-  const child: ProfiledNativeChild = { ...heldChildIdentity(nativeChildScriptContext(context)), report: uniqueMarker('NATIVECHILDREPORT') }
+  const child: ProfiledNativeChild = {
+    ...heldChildIdentity(nativeChildScriptContext(context)),
+    report: uniqueMarker('NATIVECHILDREPORT'),
+  }
   return openRunningNativeChild(context, profiledChildOptions(context, profile, child, options))
 }
 
@@ -310,15 +344,29 @@ export function nativeChildRuleId(gate: string, ruleId: string): string {
 /** Build the native rules without changing their provider-owned matchers or answers. */
 export function runningNativeChildRules(options: Pick<RunningChildOptions, 'gate' | 'child' | 'rules'>): MockModelRule[] {
   const scopedId = (ruleId: string) => nativeChildRuleId(options.gate, ruleId)
-  const rules = (options.rules ?? []).map(rule => ({ ...rule, name: scopedId(rule.name) }))
+  const rules = (options.rules ?? []).map(rule => ({
+    ...rule,
+    name: scopedId(rule.name),
+  }))
   const child = options.child
   if (child) {
-    if (child.tool)
-      rules.push({ name: scopedId(NATIVE_CHILD_TOOL_RULE), when: child.matcher, respond: { toolCalls: [child.tool] }, once: true })
+    if (child.tool) {
+      rules.push({
+        name: scopedId(NATIVE_CHILD_TOOL_RULE),
+        when: child.matcher,
+        respond: {
+          toolCalls: [child.tool],
+        },
+        once: true,
+      })
+    }
     rules.push({
       name: scopedId(NATIVE_CHILD_FINAL_RULE),
       when: child.finalMatcher ?? child.matcher,
-      respond: { ...(child.finalStep ?? { text: NATIVE_CHILD_FINAL_REPLY }), gate: options.gate },
+      respond: {
+        ...(child.finalStep ?? { text: NATIVE_CHILD_FINAL_REPLY }),
+        gate: options.gate,
+      },
       once: true,
     })
   }
@@ -354,7 +402,12 @@ export async function openRunningNativeChild(
   const previousChildIds = new Set((await readNativeSidebarSnapshot(context, parent.id)).backgroundTasks.map(task => task.childAgentId))
   try {
     await context.modelScript.rule(...rules)
-    const parentSteps = options.parentSteps ?? [{ toolCalls: [options.spawn] }, { text: 'The native parent received its child report.' }]
+    const parentSteps = options.parentSteps ?? [
+      {
+        toolCalls: [options.spawn],
+      },
+      { text: 'The native parent received its child report.' },
+    ]
     const start = await context.modelScript.queue(...parentSteps)
     await sendMessage(context.page, context.modelScript.prompt('Create the scripted native child for its capability proof.'))
     await context.modelScript.waitForGate(options.gate)
@@ -366,8 +419,12 @@ export async function openRunningNativeChild(
         parentId: parent.id,
         rootAgentId: parent.rootAgentId,
         previousChildIds,
-        ...(options.rowText !== undefined ? { rowText: options.rowText } : {}),
-        ...(taskId !== undefined ? { taskId } : {}),
+        ...(options.rowText !== undefined
+          ? { rowText: options.rowText }
+          : {}),
+        ...(taskId !== undefined
+          ? { taskId }
+          : {}),
       })
       const selectedId = selected?.childAgentId ?? ''
       expect(selectedId, 'the Worker holds the running task of the scripted native child').not.toBe('')

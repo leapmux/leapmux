@@ -54,14 +54,18 @@ export interface CollapsibleContentProps {
  * This component selects its format and display classes.
  */
 export function CollapsibleContent(props: CollapsibleContentProps): JSX.Element {
-  const collapsedClass = () => props.isCollapsed ? ` ${toolResultCollapsed}` : ''
+  const collapsedClass = () => props.isCollapsed
+    ? ` ${toolResultCollapsed}`
+    : ''
   const outputPreviewAttribute = () => props.outputPreview ? '' : undefined
   const slice = () => props.display ?? props.text
   const safeDisplay = createMemo(() => limitTextForDisplay(slice()))
   const safeText = () => safeDisplay().text
   const rawDisplayLimited = () => props.kind !== 'markdown' && props.kind !== 'markdown-tool-result' && safeDisplay().limited
   const isAnsi = createMemo(() => props.kind === 'ansi-or-pre' && containsAnsi(props.text))
-  const ansiPlainText = createMemo(() => isAnsi() ? stripAnsi(safeText()) : safeText())
+  const ansiPlainText = createMemo(() => isAnsi()
+    ? stripAnsi(safeText())
+    : safeText())
   const pauseSyntax = () => shouldPauseSyntaxHighlighting(props.context)
   // Include the theme generation in the highlight cache key.
   // ANSI rendering stores theme colors in its token classes.
@@ -86,7 +90,9 @@ export function CollapsibleContent(props: CollapsibleContentProps): JSX.Element 
     setCachedRenderValueForString(props.context, ansiHighlightNs(), text, html)
     return setCachedRenderValueForString(props.context, 'ansi-displayed:collapsibleContent', text, html)
   }
-  const renderedAnsiHtml = createMemo(() => isAnsi() ? ansiHtml(safeText()) : undefined)
+  const renderedAnsiHtml = createMemo(() => isAnsi()
+    ? ansiHtml(safeText())
+    : undefined)
   // Keep both Markdown readers lazy.
   // A Solid memo would parse both forms before Switch selects the required format.
   const markdownSliceHtml = () => renderMarkdownForContext(slice(), props.context)
@@ -96,7 +102,9 @@ export function CollapsibleContent(props: CollapsibleContentProps): JSX.Element 
       class={`${toolResultContentAnsi}${collapsedClass()}`}
       code={safeText()}
       dataToolOutputPreview={props.outputPreview === true}
-      {...(props.context !== undefined ? { context: props.context } : {})}
+      {...(props.context !== undefined
+        ? { context: props.context }
+        : {})}
     />
   )
 

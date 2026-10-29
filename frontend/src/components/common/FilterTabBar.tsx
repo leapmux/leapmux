@@ -75,7 +75,9 @@ export function FilterTabBar<K extends string>(props: FilterTabBarProps<K>): JSX
             role="tab"
             aria-selected={props.active === tab.key}
             aria-controls={props.panelId}
-            tabIndex={props.active === tab.key ? 0 : -1}
+            tabIndex={props.active === tab.key
+              ? 0
+              : -1}
             ref={el => tabEls.register(tab.key, el)}
             // `selectTab`, not `props.onSelect` alone: the roving tabindex moves
             // to this tab, so focus has to move with it. WebKit does not focus a

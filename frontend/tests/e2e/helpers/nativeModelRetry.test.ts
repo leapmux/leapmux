@@ -9,7 +9,9 @@ const transcript = vi.hoisted(() => ({ rows: [] as { role: string, text: string 
 function locator(read: () => string[]): Locator {
   return {
     read,
-    filter: ({ hasText }: { hasText: string | RegExp }) => locator(() => read().filter(text => typeof hasText === 'string' ? text.includes(hasText) : hasText.test(text))),
+    filter: ({ hasText }: { hasText: string | RegExp }) => locator(() => read().filter(text => typeof hasText === 'string'
+      ? text.includes(hasText)
+      : hasText.test(text))),
   } as unknown as Locator
 }
 
@@ -35,19 +37,32 @@ function context() {
     reload: vi.fn(async () => { transcript.rows = [...transcript.stored] }),
   } as unknown as Page
   return {
-    context: { page, modelScript: { queue, waitForSteps, prompt: (text: string) => text } } as unknown as NativeScenarioContext,
+    context: {
+      page,
+      modelScript: {
+        queue,
+        waitForSteps,
+        prompt: (text: string) => text,
+      },
+    } as unknown as NativeScenarioContext,
     queue,
     waitForSteps,
   }
 }
 
 beforeEach(() => {
-  transcript.rows = [{ role: 'agent', text: 'clean answer' }, { role: 'notification', text: 'API retry succeeded' }, { role: 'divider', text: 'Turn ended' }]
+  transcript.rows = [
+    { role: 'agent', text: 'clean answer' },
+    { role: 'notification', text: 'API retry succeeded' },
+    { role: 'divider', text: 'Turn ended' },
+  ]
   transcript.stored = [...transcript.rows]
 })
 
 describe('exerciseModelRetry', () => {
-  const errors = [{ status: 500, message: 'The stream broke.', midStream: true }]
+  const errors = [
+    { status: 500, message: 'The stream broke.', midStream: true },
+  ]
 
   it('keeps an explicitly retained attempt interrupted in both transcripts', async () => {
     transcript.rows.unshift({ role: 'agent', text: `partial ${INTERRUPTION_MARKER}` })
@@ -59,7 +74,9 @@ describe('exerciseModelRetry', () => {
   it.each(['live', 'stored'])('rejects a retained attempt without its interruption marker in the %s transcript', async (phase) => {
     transcript.rows.unshift({ role: 'agent', text: `partial ${INTERRUPTION_MARKER}` })
     transcript.stored = [...transcript.rows]
-    const rows = phase === 'live' ? transcript.rows : transcript.stored
+    const rows = phase === 'live'
+      ? transcript.rows
+      : transcript.stored
     rows[0] = { role: 'agent', text: 'partial ' }
     const options = { errors, answer: 'clean answer', failedAttempt: 'interrupted' as const }
     await expect(exerciseModelRetry(context().context, options)).rejects.toMatchObject({ actual: 0, expected: 1 })
@@ -74,7 +91,9 @@ describe('exerciseModelRetry', () => {
   it.each(['live', 'stored'])('rejects a failed attempt without its error marker in the %s transcript', async (phase) => {
     transcript.rows.unshift({ role: 'agent', text: `partial ${ERROR_MARKER}` })
     transcript.stored = [...transcript.rows]
-    const rows = phase === 'live' ? transcript.rows : transcript.stored
+    const rows = phase === 'live'
+      ? transcript.rows
+      : transcript.stored
     rows[0] = { role: 'agent', text: 'partial ' }
     await expect(exerciseModelRetry(context().context, { errors, answer: 'clean answer', failedAttempt: 'error' })).rejects.toMatchObject({ actual: 0, expected: 1 })
   })
@@ -88,7 +107,9 @@ describe('exerciseModelRetry', () => {
   })
 
   it.each(['live', 'stored'])('rejects retained failed-attempt text in the %s transcript', async (phase) => {
-    const rows = phase === 'live' ? transcript.rows : transcript.stored
+    const rows = phase === 'live'
+      ? transcript.rows
+      : transcript.stored
     rows.push({ role: 'agent', text: 'partial ' })
     await expect(exerciseModelRetry(context().context, { errors, answer: 'clean answer' })).rejects.toMatchObject({ actual: 1, expected: 0 })
   })
@@ -101,7 +122,10 @@ describe('exerciseModelRetry', () => {
   it('rejects an unresolved retry and an intermediate failed divider', async () => {
     transcript.rows[1] = { role: 'notification', text: 'API retry 1' }
     await expect(exerciseModelRetry(context().context, { errors, answer: 'clean answer' })).rejects.toMatchObject({ actual: 0, expected: 1 })
-    transcript.rows = [...transcript.stored, { role: 'divider', text: 'Turn failed' }]
+    transcript.rows = [
+      ...transcript.stored,
+      { role: 'divider', text: 'Turn failed' },
+    ]
     await expect(exerciseModelRetry(context().context, { errors, answer: 'clean answer' })).rejects.toMatchObject({ actual: 1, expected: 0 })
   })
 

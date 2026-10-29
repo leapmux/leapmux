@@ -19,7 +19,13 @@ import { WorkspaceSectionMenu } from './WorkspaceSectionMenu'
  */
 
 function makeSection(name: string, sectionType: SectionType, sidebar = Sidebar.LEFT) {
-  return create(SectionSchema, { id: `sec-${sectionType}`, name, position: 'n', sectionType, sidebar })
+  return create(SectionSchema, {
+    id: `sec-${sectionType}`,
+    name,
+    position: 'n',
+    sectionType,
+    sidebar,
+  })
 }
 
 const IN_PROGRESS = makeSection('In progress', SectionType.WORKSPACES_IN_PROGRESS)
@@ -30,7 +36,13 @@ function tabsAndStore(toplevels: readonly string[], workerId = 'w1') {
   const store = createRepoGitStore()
   const tabs: Tab[] = toplevels.map((toplevel, i) => {
     store.upsert(repoKey(workerId, toplevel), { workerId, toplevel, branch: 'main' })
-    return { id: `t${i}`, workspaceId: 'ws-1', type: TabType.AGENT, workerId, gitToplevel: toplevel } as Tab
+    return {
+      id: `t${i}`,
+      workspaceId: 'ws-1',
+      type: TabType.AGENT,
+      workerId,
+      gitToplevel: toplevel,
+    } as Tab
   })
   return { store, tabs }
 }
@@ -69,7 +81,9 @@ function renderMenu(overrides: Partial<Parameters<typeof WorkspaceSectionMenu>[0
 function triggerId(section: typeof IN_PROGRESS): string {
   const slug = section === ARCHIVED
     ? 'workspaces_archived'
-    : section === CUSTOM ? 'workspaces_custom' : 'workspaces_in_progress'
+    : section === CUSTOM
+      ? 'workspaces_custom'
+      : 'workspaces_in_progress'
   return `sidebar-section-menu-${slug}`
 }
 
@@ -185,18 +199,24 @@ describe('WorkspaceSectionMenu', () => {
   })
 
   it('offers Reveal active workspace only while this section holds it', () => {
-    renderMenu({ hasActiveWorkspace: () => true })
+    renderMenu({
+      hasActiveWorkspace: () => true,
+    })
     openMenu()
     expect(inProgressItems()).toContain('Reveal active workspace')
   })
 
   it('disables Collapse all and Expand all for an empty section', () => {
-    renderMenu({ getWorkspaceIds: () => [] })
+    renderMenu({
+      getWorkspaceIds: () => [],
+    })
     openMenu()
 
     const popover = screen.getByTestId('sidebar-section-menu-workspaces_in_progress-popover')
     // `queryAllByRole` skips disabled items, so read the buttons directly.
-    const labels = [...popover.querySelectorAll('button')].map(b => `${b.textContent?.trim()}:${b.disabled}`)
+    const labels = [
+      ...popover.querySelectorAll('button'),
+    ].map(b => `${b.textContent?.trim()}:${b.disabled}`)
     expect(labels).toContain('Collapse all:true')
     expect(labels).toContain('Expand all:true')
   })
@@ -207,7 +227,10 @@ describe('WorkspaceSectionMenu', () => {
       // the subscriptions, so every section's menu would re-scan every tab on
       // every reactive tick while closed.
       const { store, tabs } = tabsAndStore(['/home/me/leapmux'])
-      renderMenu({ getTabs: () => tabs, repoGitStore: store })
+      renderMenu({
+        getTabs: () => tabs,
+        repoGitStore: store,
+      })
 
       expect(screen.queryByText('New workspace in')).not.toBeInTheDocument()
 
@@ -224,7 +247,11 @@ describe('WorkspaceSectionMenu', () => {
     it('offers one row per repository, and reports its start point', () => {
       const { store, tabs } = tabsAndStore(['/home/me/leapmux', '/home/me/api'])
       const onNewWorkspace = vi.fn()
-      renderMenu({ getTabs: () => tabs, repoGitStore: store, onNewWorkspace })
+      renderMenu({
+        getTabs: () => tabs,
+        repoGitStore: store,
+        onNewWorkspace,
+      })
       openMenu()
 
       expect(inProgressItems()).toEqual(expect.arrayContaining(['leapmux', 'api']))
@@ -250,7 +277,10 @@ describe('WorkspaceSectionMenu', () => {
     it('shows the remembered git mode as the row detail, in the dialog vocabulary', () => {
       const { store, tabs } = tabsAndStore(['/home/me/leapmux'])
       rememberStickyGitMode(gitModeStickyKey('w1', '/home/me/leapmux'), GitMode.CreateWorktree)
-      renderMenu({ getTabs: () => tabs, repoGitStore: store })
+      renderMenu({
+        getTabs: () => tabs,
+        repoGitStore: store,
+      })
       openMenu()
 
       expect(screen.getByRole('menuitem', { name: /leapmux/, hidden: true }).textContent)
@@ -261,7 +291,10 @@ describe('WorkspaceSectionMenu', () => {
       // A row that says "Use current state" for a repository nobody has started
       // a workspace in states a default as though it were a memory.
       const { store, tabs } = tabsAndStore(['/home/me/leapmux'])
-      renderMenu({ getTabs: () => tabs, repoGitStore: store })
+      renderMenu({
+        getTabs: () => tabs,
+        repoGitStore: store,
+      })
       openMenu()
 
       expect(screen.getByRole('menuitem', { name: /leapmux/, hidden: true }).textContent?.trim())
@@ -270,7 +303,11 @@ describe('WorkspaceSectionMenu', () => {
 
     it('omits a repository whose worker is offline', () => {
       const { store, tabs } = tabsAndStore(['/home/me/leapmux'])
-      renderMenu({ getTabs: () => tabs, repoGitStore: store, isWorkerOnline: () => false })
+      renderMenu({
+        getTabs: () => tabs,
+        repoGitStore: store,
+        isWorkerOnline: () => false,
+      })
       openMenu()
 
       expect(screen.queryByText('New workspace in')).not.toBeInTheDocument()
@@ -282,7 +319,12 @@ describe('WorkspaceSectionMenu', () => {
       // A workspace created into Archived is born read-only, which is why
       // `canAddToSection` refuses it.
       const { store, tabs } = tabsAndStore(['/home/me/leapmux'])
-      renderMenu({ section: ARCHIVED, canCreate: false, getTabs: () => tabs, repoGitStore: store })
+      renderMenu({
+        section: ARCHIVED,
+        canCreate: false,
+        getTabs: () => tabs,
+        repoGitStore: store,
+      })
       openMenu(ARCHIVED)
 
       const items = itemsOf('sidebar-section-menu-workspaces_archived-popover')
@@ -365,7 +407,12 @@ describe('WorkspaceSectionMenu', () => {
       const onNewSection = vi.fn()
       const onRenameSection = vi.fn()
       const onDeleteSection = vi.fn()
-      renderMenu({ section: CUSTOM, onNewSection, onRenameSection, onDeleteSection })
+      renderMenu({
+        section: CUSTOM,
+        onNewSection,
+        onRenameSection,
+        onDeleteSection,
+      })
       openMenu(CUSTOM)
 
       fireEvent.click(screen.getByText('New section...'))

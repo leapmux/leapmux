@@ -9,7 +9,17 @@ function requestWithToolResult(callId: string, content: string): MockModelReques
     stepIndex: 1,
     body: {
       messages: [
-        { role: 'assistant', content: null, tool_calls: [{ id: callId, type: 'function', function: { name: 'form_probe__ask', arguments: '{}' } }] },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            {
+              id: callId,
+              type: 'function',
+              function: { name: 'form_probe__ask', arguments: '{}' },
+            },
+          ],
+        },
         { role: 'tool', tool_call_id: callId, content },
       ],
     },
@@ -25,11 +35,30 @@ describe('clineToolError', () => {
 
   it.each([
     { label: 'plain text', content: 'The tool failed.' },
-    { label: 'a successful output', content: JSON.stringify({ result: 'done' }) },
-    { label: 'an empty error', content: JSON.stringify({ error: '' }) },
-    { label: 'a non-string error', content: JSON.stringify({ error: { message: 'nested' } }) },
-    { label: 'an error beside another field', content: JSON.stringify({ error: 'failed', result: 'partial' }) },
-    { label: 'a JSON array', content: JSON.stringify([{ error: 'failed' }]) },
+    {
+      label: 'a successful output',
+      content: JSON.stringify({ result: 'done' }),
+    },
+    {
+      label: 'an empty error',
+      content: JSON.stringify({ error: '' }),
+    },
+    {
+      label: 'a non-string error',
+      content: JSON.stringify({
+        error: { message: 'nested' },
+      }),
+    },
+    {
+      label: 'an error beside another field',
+      content: JSON.stringify({ error: 'failed', result: 'partial' }),
+    },
+    {
+      label: 'a JSON array',
+      content: JSON.stringify([
+        { error: 'failed' },
+      ]),
+    },
   ])('rejects $label', ({ content }) => {
     expect(() => clineToolError(requestWithToolResult('call-1', content), 'call-1')).toThrow('call-1')
   })

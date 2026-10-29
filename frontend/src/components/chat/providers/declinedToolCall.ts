@@ -18,5 +18,10 @@ import { failedResult } from '../model/toolCall'
  */
 export function declinedToolCallSpec(spec: ToolCallSpec, reason: string): ToolCallSpec {
   const { extraContent, truncated, ...payload } = spec
-  return { ...payload, images: [], statusOverride: 'declined', result: failedResult(reason) }
+  return {
+    ...payload,
+    images: [],
+    statusOverride: 'declined',
+    result: failedResult(reason),
+  }
 }

@@ -52,7 +52,9 @@ export const AccountPassword: Component = () => {
         // Read BEFORE the request: the refresh below moves this flag, and the
         // message states what the user just did.
         const wasSet = passwordSet()
-        await userClient.changePassword({ newPassword: newPassword() })
+        await userClient.changePassword({
+          newPassword: newPassword(),
+        })
         setNewPassword('')
         setConfirmPassword('')
         // BOTH re-reads, and neither may fail the action: the hub stored the
@@ -70,7 +72,11 @@ export const AccountPassword: Component = () => {
         // would move nothing.
         await Promise.allSettled([
           auth.refreshUser(),
-          ...(isSoloMode() ? [loadSystemInfo(true)] : []),
+          ...(isSoloMode()
+            ? [
+                loadSystemInfo(true),
+              ]
+            : []),
         ])
         return wasSet ? 'Password changed.' : 'Password set.'
       },
@@ -110,8 +116,12 @@ export const AccountPassword: Component = () => {
           disabled={action.running() || elevationPrompting() || !passwordCanSubmit(pwProps)}
         >
           {action.running()
-            ? (passwordSet() ? 'Changing...' : 'Setting...')
-            : (passwordSet() ? 'Change Password' : 'Set Password')}
+            ? (passwordSet()
+                ? 'Changing...'
+                : 'Setting...')
+            : (passwordSet()
+                ? 'Change Password'
+                : 'Set Password')}
         </button>
       </div>
     </div>

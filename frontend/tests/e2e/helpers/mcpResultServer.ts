@@ -26,13 +26,13 @@ export interface McpResultServerOptions {
 /** Refuse a content list that the server could not return as stated. */
 function validateInspectContent(content: readonly McpResultContent[]): void {
   if (!Array.isArray(content))
-    throw new Error('The MCP inspect fixture requires a native content array.')
+    throw new TypeError('The MCP inspect fixture requires a native content array.')
   for (const block of content) {
     if (!block || typeof block !== 'object')
       throw new Error('The MCP inspect fixture contains an invalid native block.')
     if (block.type === 'text') {
       if (typeof block.text !== 'string')
-        throw new Error('The MCP inspect text block requires its exact text value.')
+        throw new TypeError('The MCP inspect text block requires its exact text value.')
     }
     else if (block.type !== 'image' || typeof block.path !== 'string' || !existsSync(block.path) || !statSync(block.path).isFile()) {
       throw new Error('The MCP inspect fixture requires existing image paths.')

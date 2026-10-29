@@ -3,7 +3,12 @@ import { normalizeOutputFilePaths } from './outputFilePaths'
 
 describe('normalizeOutputFilePaths', () => {
   it('keeps exact path spelling and the first occurrence of each path', () => {
-    const paths = [' /native/with spaces/result.log ', 'C:\\native\\結果.log', '/native/one.log', ' /native/with spaces/result.log ']
+    const paths = [
+      ' /native/with spaces/result.log ',
+      'C:\\native\\結果.log',
+      '/native/one.log',
+      ' /native/with spaces/result.log ',
+    ]
     const result = normalizeOutputFilePaths(paths)
 
     expect(result).toEqual(paths.slice(0, 3))
@@ -23,11 +28,30 @@ describe('normalizeOutputFilePaths', () => {
     expect(normalizeOutputFilePaths([long, markup])).toEqual([long, markup])
   })
 
-  it.each([undefined, null, '', 0, -1, false, {}, new Set(['/native/result.log'])])('rejects a non-array value %s', (value) => {
+  it.each([
+    undefined,
+    null,
+    '',
+    0,
+    -1,
+    false,
+    {},
+    new Set(['/native/result.log']),
+  ])('rejects a non-array value %s', (value) => {
     expect(() => normalizeOutputFilePaths(value)).toThrow(TypeError)
   })
 
-  it.each([undefined, null, 0, -1, Number.NaN, false, {}, ['nested'], '/native/\0invalid'])('rejects an invalid path value %s', (value) => {
+  it.each([
+    undefined,
+    null,
+    0,
+    -1,
+    Number.NaN,
+    false,
+    {},
+    ['nested'],
+    '/native/\0invalid',
+  ])('rejects an invalid path value %s', (value) => {
     expect(() => normalizeOutputFilePaths(['/native/valid.log', value])).toThrow(TypeError)
   })
 })

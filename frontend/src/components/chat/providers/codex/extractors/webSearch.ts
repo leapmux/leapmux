@@ -27,7 +27,10 @@ export function codexWebSearchActionFromItem(
   const actionType = pickString(action, 'type')
 
   if (actionType === 'openPage') {
-    return { type: 'openPage', url: pickString(action, 'url', query) }
+    return {
+      type: 'openPage',
+      url: pickString(action, 'url', query),
+    }
   }
 
   if (actionType === 'findInPage') {
@@ -35,7 +38,9 @@ export function codexWebSearchActionFromItem(
     return {
       type: 'findInPage',
       pattern: pickString(action, 'pattern'),
-      ...(url ? { url } : {}),
+      ...(url
+        ? { url }
+        : {}),
     }
   }
 
@@ -44,7 +49,9 @@ export function codexWebSearchActionFromItem(
     const listed = Array.isArray(action?.queries)
       ? action.queries.filter(q => typeof q === 'string').map(q => q.trim()).filter(Boolean)
       : []
-    const merged = direct ? [direct, ...listed] : listed
+    const merged = direct
+      ? [direct, ...listed]
+      : listed
     const queries = merged.filter((q, i) => merged.indexOf(q) === i)
     const top = queries[0] ?? query
     return { type: 'search', query: top, queries }

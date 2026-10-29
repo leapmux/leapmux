@@ -26,11 +26,22 @@ codebuddyTest.describe('native MCP input form for CodeBuddy Code', () => {
       await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, CODEBUDDY_AGENT, { ...CODEBUDDY_BYPASS, workingDir })
       await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
 
-      const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+      const context = await nativeContext({
+        page,
+        modelScript,
+        leapmuxServer,
+        workspaceId: authenticatedEmptyWorkspace.workspaceId,
+      })
       const call = mcpToolCall(context.provider, 'codebuddy-mcp-form', { server: server.name, tool: 'ask', input: {} })
       const start = await modelScript.queue(
-        { toolCalls: [codebuddyWaitForMcpServersToolCall('wait-for-form', [server.name])] },
-        { toolCalls: [call] },
+        {
+          toolCalls: [
+            codebuddyWaitForMcpServersToolCall('wait-for-form', [server.name]),
+          ],
+        },
+        {
+          toolCalls: [call],
+        },
         nativeTextStep(context, 'The native client refused the form request.'),
       )
       await sendMessage(page, modelScript.prompt(`Wait for ${server.name}, then call its ask tool.`))
@@ -48,21 +59,37 @@ codebuddyTest.describe('native MCP input form for CodeBuddy Code', () => {
       expect(nativeToolResult(resultRequest, call.id)).toBe(refusal.toolResult.text)
       const agent = await currentNativeAgent(context)
       const snapshot = await readNativeMessageSnapshot(context, agent.id)
-      const frames = snapshot.messages.map(message => ({ id: message.id, spanId: message.spanId, spanType: message.spanType, completion: message.completion, frame: nativeMessageBody(message), supplement: nativeMessageSupplement(message) }))
+      const frames = snapshot.messages.map(message => ({
+        id: message.id,
+        spanId: message.spanId,
+        spanType: message.spanType,
+        completion: message.completion,
+        frame: nativeMessageBody(message),
+        supplement: nativeMessageSupplement(message),
+      }))
         .filter(({ frame }) => {
           if (!isObject(frame))
             return false
           if (frame.callId === call.id)
             return true
-          const message = isObject(frame.message) ? frame.message : undefined
+          const message = isObject(frame.message)
+            ? frame.message
+            : undefined
           return Array.isArray(message?.content) && message.content.some(block => isObject(block)
             && ((block.type === 'tool_use' && block.id === call.id) || (block.type === 'tool_result' && block.tool_use_id === call.id)))
         })
       expect(frames.length).toBeGreaterThan(0)
-      await testInfo.attach('codebuddy-mcp-refusal-worker-snapshot', { body: Buffer.from(JSON.stringify({ agentId: snapshot.agentId, agentSessionId: snapshot.agentSessionId, frames })), contentType: 'application/json' })
+      await testInfo.attach('codebuddy-mcp-refusal-worker-snapshot', {
+        body: Buffer.from(JSON.stringify({ agentId: snapshot.agentId, agentSessionId: snapshot.agentSessionId, frames })),
+        contentType: 'application/json',
+      })
       const nativeResults = frames.flatMap(({ frame }) => {
-        const message = isObject(frame) && isObject(frame.message) ? frame.message : undefined
-        return Array.isArray(message?.content) ? message.content.filter(isObject).filter(block => block.type === 'tool_result' && block.tool_use_id === call.id) : []
+        const message = isObject(frame) && isObject(frame.message)
+          ? frame.message
+          : undefined
+        return Array.isArray(message?.content)
+          ? message.content.filter(isObject).filter(block => block.type === 'tool_result' && block.tool_use_id === call.id)
+          : []
       })
       expect(nativeResults).toHaveLength(1)
       expect(nativeResults[0]?.is_error).toBe(false)

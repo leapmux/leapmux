@@ -348,7 +348,13 @@ export function createWebglTerminalPool(deps: WebglTerminalPoolDeps): WebglTermi
       const existing = slots.get(id)
       if (!existing) {
         // First time this id is on-screen: give it a slot on the DOM renderer.
-        slots.set(id, { instance, state: 'dom', epoch: 0, ineligible: false, contextLossCount: 0 })
+        slots.set(id, {
+          instance,
+          state: 'dom',
+          epoch: 0,
+          ineligible: false,
+          contextLossCount: 0,
+        })
       }
       else if (existing.instance !== instance) {
         // A fresh instance object for a reused id (e.g. the terminal was

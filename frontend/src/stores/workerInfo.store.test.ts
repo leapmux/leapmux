@@ -562,7 +562,10 @@ describe('workerInfo feeds a projection that can tell a change happened', () => 
       // The first reading arrives from disk, which is how a worker's info shows
       // up before any RPC. Stamped past the freshness window, so the fetch below
       // actually spends its round trip instead of answering from the row.
-      setWorkerInfo(id, { ...makeRespFor(id, { homeDir: '/home/before' }), updatedAt: Date.now() - 10 * 60_000 })
+      setWorkerInfo(id, {
+        ...makeRespFor(id, { homeDir: '/home/before' }),
+        updatedAt: Date.now() - 10 * 60_000,
+      })
       expect(store.workerInfo(id)).toBeNull()
       await flush()
       const before = store.workerInfo(id)
@@ -575,7 +578,11 @@ describe('workerInfo feeds a projection that can tell a change happened', () => 
       expect(after?.homeDir).toBe('/home/after')
 
       expect(
-        workerProjectionsEqual([{ id, info: before }], [{ id, info: after }]),
+        workerProjectionsEqual([
+          { id, info: before },
+        ], [
+          { id, info: after },
+        ]),
         'the projection must see the change, or the tab tree freezes on the stale record',
       ).toBe(false)
       dispose()

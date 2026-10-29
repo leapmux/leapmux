@@ -66,7 +66,12 @@ describe('createTerminalInstance', () => {
   it('keeps legacy key encoding until the application enables CSI-u input', () => {
     const terminal = openedKeyboardTerminal()
     try {
-      terminal.dispatchKey('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, shiftKey: true })
+      terminal.dispatchKey('keydown', {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        shiftKey: true,
+      })
       expect(terminal.sent).toEqual(['\r'])
     }
     finally {
@@ -80,13 +85,38 @@ describe('createTerminalInstance', () => {
       await terminal.write('\x1B[>1u')
 
       for (const [modifier, expected] of [
-        [{ shiftKey: true }, '\x1B[13;2u'],
-        [{ altKey: true }, '\x1B[13;3u'],
-        [{ ctrlKey: true }, '\x1B[13;5u'],
-        [{ metaKey: true }, '\x1B[13;9u'],
-        [{ shiftKey: true, altKey: true, ctrlKey: true, metaKey: true }, '\x1B[13;16u'],
+        [
+          { shiftKey: true },
+          '\x1B[13;2u',
+        ],
+        [
+          { altKey: true },
+          '\x1B[13;3u',
+        ],
+        [
+          { ctrlKey: true },
+          '\x1B[13;5u',
+        ],
+        [
+          { metaKey: true },
+          '\x1B[13;9u',
+        ],
+        [
+          {
+            shiftKey: true,
+            altKey: true,
+            ctrlKey: true,
+            metaKey: true,
+          },
+          '\x1B[13;16u',
+        ],
       ] as const) {
-        terminal.dispatchKey('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, ...modifier })
+        terminal.dispatchKey('keydown', {
+          key: 'Enter',
+          code: 'Enter',
+          keyCode: 13,
+          ...modifier,
+        })
         expect(terminal.sent.splice(0)).toEqual([expected])
       }
     }
@@ -100,9 +130,28 @@ describe('createTerminalInstance', () => {
     try {
       await terminal.write('\x1B[=31;1u')
 
-      terminal.dispatchKey('keydown', { key: 'A', code: 'KeyA', keyCode: 65, shiftKey: true, ctrlKey: true })
-      terminal.dispatchKey('keydown', { key: 'A', code: 'KeyA', keyCode: 65, shiftKey: true, ctrlKey: true, repeat: true })
-      terminal.dispatchKey('keyup', { key: 'A', code: 'KeyA', keyCode: 65, shiftKey: true, ctrlKey: true })
+      terminal.dispatchKey('keydown', {
+        key: 'A',
+        code: 'KeyA',
+        keyCode: 65,
+        shiftKey: true,
+        ctrlKey: true,
+      })
+      terminal.dispatchKey('keydown', {
+        key: 'A',
+        code: 'KeyA',
+        keyCode: 65,
+        shiftKey: true,
+        ctrlKey: true,
+        repeat: true,
+      })
+      terminal.dispatchKey('keyup', {
+        key: 'A',
+        code: 'KeyA',
+        keyCode: 65,
+        shiftKey: true,
+        ctrlKey: true,
+      })
       terminal.dispatchKey('keydown', { key: 'a', code: 'KeyA', keyCode: 65 })
 
       expect(terminal.sent).toEqual([
@@ -206,7 +255,9 @@ describe('applyTerminalData delta overlap', () => {
     const writes: Uint8Array[] = []
     const originalWrite = instance.terminal.write.bind(instance.terminal)
     instance.terminal.write = ((data: string | Uint8Array, cb?: () => void) => {
-      writes.push(typeof data === 'string' ? new TextEncoder().encode(data) : data)
+      writes.push(typeof data === 'string'
+        ? new TextEncoder().encode(data)
+        : data)
       return originalWrite(data, cb)
     }) as typeof instance.terminal.write
     return { instance, writes }
@@ -214,7 +265,12 @@ describe('applyTerminalData delta overlap', () => {
 
   it('writes a delta that starts at the current offset', () => {
     const { instance, writes } = recordingInstance()
-    const out = applyTerminalData(instance, { kind: 'delta', data: new TextEncoder().encode('abc'), endOffset: 13, currentOffset: 10 })
+    const out = applyTerminalData(instance, {
+      kind: 'delta',
+      data: new TextEncoder().encode('abc'),
+      endOffset: 13,
+      currentOffset: 10,
+    })
     expect(new TextDecoder().decode(writes[0])).toBe('abc')
     expect(out).toBe(13)
     instance.dispose()
@@ -227,7 +283,12 @@ describe('applyTerminalData delta overlap', () => {
     const { instance, writes } = recordingInstance()
     // Current offset 12; the delta covers [10, 15): bytes 10..11 already
     // rendered, so only "cde" (offsets 12..14) may write.
-    const out = applyTerminalData(instance, { kind: 'delta', data: new TextEncoder().encode('abcde'), endOffset: 15, currentOffset: 12 })
+    const out = applyTerminalData(instance, {
+      kind: 'delta',
+      data: new TextEncoder().encode('abcde'),
+      endOffset: 15,
+      currentOffset: 12,
+    })
     expect(new TextDecoder().decode(writes[0])).toBe('cde')
     expect(out).toBe(15)
     instance.dispose()
@@ -237,9 +298,15 @@ describe('applyTerminalData delta overlap', () => {
     const { instance, writes } = recordingInstance()
     let parsed = 0
     // Offset 20; the delta covers [10, 14) — fully applied already.
-    const out = applyTerminalData(instance, { kind: 'delta', data: new TextEncoder().encode('abcd'), endOffset: 14, currentOffset: 20, onParsed: () => {
-      parsed++
-    } })
+    const out = applyTerminalData(instance, {
+      kind: 'delta',
+      data: new TextEncoder().encode('abcd'),
+      endOffset: 14,
+      currentOffset: 20,
+      onParsed: () => {
+        parsed++
+      },
+    })
     expect(writes).toEqual([])
     // The parse callback still fires: callers gate content-ready on it.
     expect(parsed).toBe(1)
@@ -254,7 +321,12 @@ describe('applyTerminalData delta overlap', () => {
     // The write is queued, not parsed: the marker must stay unset so a
     // dispose right here skips the capture instead of storing a screen whose
     // coverage the tab's cursor overstates.
-    const out = applyTerminalData(instance, { kind: 'delta', data: new TextEncoder().encode('abc'), endOffset: 13, currentOffset: 10 })
+    const out = applyTerminalData(instance, {
+      kind: 'delta',
+      data: new TextEncoder().encode('abc'),
+      endOffset: 13,
+      currentOffset: 10,
+    })
     expect(out).toBe(13)
     expect(instance.lastParsedOffset).toBeUndefined()
 
@@ -264,7 +336,11 @@ describe('applyTerminalData delta overlap', () => {
 
     // A snapshot resets the buffer, so the marker is unsettled again until
     // the snapshot's own write parses.
-    applyTerminalData(instance, { kind: 'snapshot', data: new TextEncoder().encode('rebuilt'), endOffset: 7 })
+    applyTerminalData(instance, {
+      kind: 'snapshot',
+      data: new TextEncoder().encode('rebuilt'),
+      endOffset: 7,
+    })
     expect(instance.lastParsedOffset).toBeUndefined()
     await new Promise<void>(resolve => instance.terminal.write('', resolve))
     expect(instance.lastParsedOffset).toBe(7)
@@ -280,7 +356,11 @@ describe('applyTerminalData delta overlap', () => {
     const { instance } = recordingInstance()
     instance.terminal.write('live')
     await new Promise<void>(resolve => instance.terminal.write('', resolve))
-    const out = applyTerminalData(instance, { kind: 'snapshot', data: new TextEncoder().encode('rebuilt'), endOffset: 5 })
+    const out = applyTerminalData(instance, {
+      kind: 'snapshot',
+      data: new TextEncoder().encode('rebuilt'),
+      endOffset: 5,
+    })
     await new Promise<void>(resolve => instance.terminal.write('', resolve))
     expect(instance.terminal.buffer.active.getLine(0)?.translateToString(true)).toContain('rebuilt')
     expect(out).toBe(5)
@@ -505,7 +585,28 @@ describe('terminalThemeFor', () => {
 
   it('carries all sixteen ANSI slots plus the four chrome colours', () => {
     const theme = terminalThemeFor('catppuccin', 'dark')
-    for (const slot of ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white', 'brightBlack', 'brightRed', 'brightGreen', 'brightYellow', 'brightBlue', 'brightMagenta', 'brightCyan', 'brightWhite', 'background', 'foreground', 'cursor', 'selectionBackground'] as const) {
+    for (const slot of [
+      'black',
+      'red',
+      'green',
+      'yellow',
+      'blue',
+      'magenta',
+      'cyan',
+      'white',
+      'brightBlack',
+      'brightRed',
+      'brightGreen',
+      'brightYellow',
+      'brightBlue',
+      'brightMagenta',
+      'brightCyan',
+      'brightWhite',
+      'background',
+      'foreground',
+      'cursor',
+      'selectionBackground',
+    ] as const) {
       expect(theme[slot], slot).toBeTruthy()
     }
   })
@@ -517,7 +618,9 @@ describe('getTerminalThemePreference', () => {
   })
 
   it('reads a stored pair', () => {
-    localStorageSet(KEY_BROWSER_PREFS, { terminalTheme: { name: 'ayu', mode: 'dark' } })
+    localStorageSet(KEY_BROWSER_PREFS, {
+      terminalTheme: { name: 'ayu', mode: 'dark' },
+    })
     expect(getTerminalThemePreference()).toEqual({ name: 'ayu', mode: 'dark' })
   })
 
@@ -531,17 +634,23 @@ describe('getTerminalThemePreference', () => {
     // A hand-edited or older document still has to resolve to something, and
     // the NAME decides which way. A pinned palette keeps itself and takes
     // `system`; a sentinel name takes the whole app.
-    localStorageSet(KEY_BROWSER_PREFS, { terminalTheme: { name: 'ayu', mode: 'match-ui' } })
+    localStorageSet(KEY_BROWSER_PREFS, {
+      terminalTheme: { name: 'ayu', mode: 'match-ui' },
+    })
     expect(getTerminalThemePreference()).toEqual({ name: 'ayu', mode: 'system' })
 
-    localStorageSet(KEY_BROWSER_PREFS, { terminalTheme: { name: 'match-ui', mode: 'dark' } })
+    localStorageSet(KEY_BROWSER_PREFS, {
+      terminalTheme: { name: 'match-ui', mode: 'dark' },
+    })
     expect(getTerminalThemePreference()).toEqual({ name: 'match-ui', mode: 'match-ui' })
   })
 
   it('degrades a palette this build does not carry to following the app', () => {
     // "Follow the app" leaves the terminal agreeing with what the user can see.
     // Pinning it to Default would be a palette they never chose.
-    localStorageSet(KEY_BROWSER_PREFS, { terminalTheme: { name: 'from-the-future', mode: 'dark' } })
+    localStorageSet(KEY_BROWSER_PREFS, {
+      terminalTheme: { name: 'from-the-future', mode: 'dark' },
+    })
     expect(getTerminalThemePreference()).toEqual({ name: 'match-ui', mode: 'match-ui' })
   })
 })
@@ -644,7 +753,10 @@ describe('lazy WebGL renderer', () => {
     // its `fontsReady` is never awaited by the pool.
     const load = vi.fn(() => Promise.resolve([]))
     const originalFonts = Object.getOwnPropertyDescriptor(document, 'fonts')
-    Object.defineProperty(document, 'fonts', { configurable: true, value: { load } })
+    Object.defineProperty(document, 'fonts', {
+      configurable: true,
+      value: { load },
+    })
     try {
       localStorageSet(KEY_BROWSER_PREFS, { terminalRenderer: 'canvas' })
       const canvas = createTerminalInstance()
@@ -726,12 +838,18 @@ describe('loadTerminalFonts cold-start retry', () => {
 
   function installFonts(loadImpl: (spec: string) => Promise<unknown>) {
     load = vi.fn(loadImpl)
-    Object.defineProperty(document, 'fonts', { configurable: true, value: { load } })
+    Object.defineProperty(document, 'fonts', {
+      configurable: true,
+      value: { load },
+    })
   }
 
   function fakeTerminal(): { terminal: Terminal, clearTextureAtlas: ReturnType<typeof vi.fn> } {
     const clearTextureAtlas = vi.fn()
-    return { terminal: { clearTextureAtlas } as unknown as Terminal, clearTextureAtlas }
+    return {
+      terminal: { clearTextureAtlas } as unknown as Terminal,
+      clearTextureAtlas,
+    }
   }
 
   beforeEach(() => {
@@ -767,7 +885,9 @@ describe('loadTerminalFonts cold-start retry', () => {
     installFonts(() => {
       attempt++
       // The first batch (4 variants) fails; every later attempt succeeds.
-      return attempt <= 4 ? Promise.reject(new Error('server down')) : Promise.resolve([{}])
+      return attempt <= 4
+        ? Promise.reject(new Error('server down'))
+        : Promise.resolve([{}])
     })
     const { terminal, clearTextureAtlas } = fakeTerminal()
 

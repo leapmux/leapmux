@@ -16,7 +16,13 @@ afterEach(() => {
 function control(visible: boolean): HTMLElement {
   const element = document.createElement('div')
   element.dataset.testid = 'elicitation-form'
-  const rectangles = Object.assign(visible ? [new DOMRect(0, 0, 1, 1)] : [], { item: () => null })
+  const rectangles = Object.assign(visible
+    ? [
+        new DOMRect(0, 0, 1, 1),
+      ]
+    : [], {
+    item: () => null,
+  })
   vi.spyOn(element, 'getClientRects').mockReturnValue(rectangles)
   document.body.append(element)
   return element
@@ -78,7 +84,12 @@ describe('installNativeControlObservation', () => {
     expect(window.__nativeControlObservations).toBeUndefined()
   })
 
-  it.each(['', 'elicitation-form"]', '#form', 'form name'])('refuses the invalid test ID %s', (testId) => {
+  it.each([
+    '',
+    'elicitation-form"]',
+    '#form',
+    'form name',
+  ])('refuses the invalid test ID %s', (testId) => {
     expect(() => installNativeControlObservation({ id: 'test', testId })).toThrow('one test ID')
     expect(window.__nativeControlObservations).toBeUndefined()
   })

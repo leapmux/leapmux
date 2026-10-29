@@ -9,8 +9,15 @@ export interface DroidCompleteToolCatalog {
 }
 
 function requestText(body: Record<string, unknown>): string[] {
-  const messages = Array.isArray(body.messages) ? body.messages : Array.isArray(body.input) ? body.input : []
-  const values = [body.system, ...messages.filter(isObject).map(message => message.content)]
+  const messages = Array.isArray(body.messages)
+    ? body.messages
+    : Array.isArray(body.input)
+      ? body.input
+      : []
+  const values = [
+    body.system,
+    ...messages.filter(isObject).map(message => message.content),
+  ]
   return values.flatMap(value => typeof value === 'string'
     ? [value]
     : Array.isArray(value)
@@ -20,7 +27,9 @@ function requestText(body: Record<string, unknown>): string[] {
 
 /** Read the current descriptors and the complete native hidden-tool reminder. */
 export function droidCompleteToolCatalog(request: MockModelRequestRecord): DroidCompleteToolCatalog {
-  const body = isObject(request.body) ? request.body : undefined
+  const body = isObject(request.body)
+    ? request.body
+    : undefined
   const tools = requestToolDescriptors(request.protocol, body)
   if (!body || !tools || tools.length === 0)
     throw new Error('The native Droid request contains no current tool inventory.')
@@ -36,10 +45,14 @@ export function droidCompleteToolCatalog(request: MockModelRequestRecord): Droid
   })
   const deferred: string[] = []
   const text = requestText(body)
-  const reminders = text.flatMap(value => [...value.matchAll(/<system-reminder>\n([\s\S]*?)\n<\/system-reminder>/g)].map(match => match[1] ?? ''))
+  const reminders = text.flatMap(value => [
+    ...value.matchAll(/<system-reminder>\n([\s\S]*?)\n<\/system-reminder>/g),
+  ].map(match => match[1] ?? ''))
   for (const value of text) {
     const headings = value.match(/Deferred tools:/g)?.length ?? 0
-    const delimited = [...value.matchAll(/<system-reminder>\n([\s\S]*?)\n<\/system-reminder>/g)].filter(match => match[1]?.includes('Deferred tools:')).length
+    const delimited = [
+      ...value.matchAll(/<system-reminder>\n([\s\S]*?)\n<\/system-reminder>/g),
+    ].filter(match => match[1]?.includes('Deferred tools:')).length
     if (headings !== delimited)
       throw new Error('The native Droid deferred inventory is truncated or has invalid delimiters.')
   }
@@ -76,7 +89,9 @@ export const DROID_SCRIPT_ARGUMENTS = { script: 'string' } as const
 /** Detect execution capability from native descriptions and argument schemas. */
 export function droidScriptExecutors(catalog: readonly NativeToolDescriptor[]): NativeToolDescriptor[] {
   return catalog.filter(tool => /javascript|typescript|python|code|script|repl|interpreter/i.test(`${tool.name} ${tool.description}`)
-    && Object.keys(isObject(tool.inputSchema.properties) ? tool.inputSchema.properties : {}).some(name => /^(?:code|source|script|expression|javascript|python|input)$/i.test(name)))
+    && Object.keys(isObject(tool.inputSchema.properties)
+      ? tool.inputSchema.properties
+      : {}).some(name => /^(?:code|source|script|expression|javascript|python|input)$/i.test(name)))
 }
 
 /** Require the exact loaded schema for each announced deferred tool. */

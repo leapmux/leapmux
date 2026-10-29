@@ -47,7 +47,9 @@ export async function getTestChannel(hubUrl: string, cookie: string): Promise<Ch
 
 /** Close this hub's cached channels, including an initialization that still runs. */
 export async function closeTestChannels(hubUrl: string): Promise<void> {
-  const pending = [...channelManagers.entries()].filter(([key]) => JSON.parse(key)[0] === hubUrl)
+  const pending = [
+    ...channelManagers.entries(),
+  ].filter(([key]) => JSON.parse(key)[0] === hubUrl)
   for (const [key] of pending)
     channelManagers.delete(key)
   await finishCleanup(pending.map(([, channel]) => channel.then(manager => manager.closeAll(), () => {})))
@@ -122,10 +124,16 @@ export async function hubRequest(hubUrl: string, method: HubMethod, body: unknow
   try {
     return await fetchHub(`${hubUrl}/leapmux.v1.${method}`, {
       method: 'POST',
-      headers: options.cookie === undefined ? { 'Content-Type': 'application/json' } : authedHeaders(options.cookie),
+      headers: options.cookie === undefined
+        ? { 'Content-Type': 'application/json' }
+        : authedHeaders(options.cookie),
       body: JSON.stringify(body),
-      ...(options.redirect ? { redirect: options.redirect } : {}),
-      ...(options.signal ? { signal: options.signal } : {}),
+      ...(options.redirect
+        ? { redirect: options.redirect }
+        : {}),
+      ...(options.signal
+        ? { signal: options.signal }
+        : {}),
     })
   }
   catch (error) {
@@ -143,14 +151,20 @@ export async function hubRequest(hubUrl: string, method: HubMethod, body: unknow
 function describeTransportFailure(error: unknown): string {
   const parts: string[] = []
   const seen = new Set<unknown>()
-  for (let current: unknown = error; current !== undefined && !seen.has(current); current = isObject(current) ? current.cause : undefined) {
+  for (let current: unknown = error; current !== undefined && !seen.has(current); current = isObject(current)
+    ? current.cause
+    : undefined) {
     seen.add(current)
     if (!(current instanceof Error)) {
       parts.push(String(current))
       continue
     }
-    const code = isObject(current) && typeof current.code === 'string' ? ` ${current.code}` : ''
-    const data = isObject(current) && typeof current.data === 'string' ? `; the refused bytes: ${JSON.stringify(current.data.slice(0, 200))}` : ''
+    const code = isObject(current) && typeof current.code === 'string'
+      ? ` ${current.code}`
+      : ''
+    const data = isObject(current) && typeof current.data === 'string'
+      ? `; the refused bytes: ${JSON.stringify(current.data.slice(0, 200))}`
+      : ''
     parts.push(`${current.name}${code}: ${current.message}${data}`)
   }
   return parts.join('; ')
@@ -230,7 +244,9 @@ export async function pollHub<Answer, Value>(
       lastRefusal = error
     }
     if (Date.now() >= deadline) {
-      const refusal = lastRefusal ? `; the last refused read: ${lastRefusal.message}` : ''
+      const refusal = lastRefusal
+        ? `; the last refused read: ${lastRefusal.message}`
+        : ''
       throw new Error(`${options.failure} within ${options.timeoutMs}ms${refusal}`, { cause: lastRefusal })
     }
     await sleep(options.intervalMs ?? API_POLL_INTERVAL_MS, signal)
@@ -261,7 +277,12 @@ export async function hubRefusal(res: Response): Promise<HubRefusal> {
   }
   if (!isObject(body) || typeof body.code !== 'string')
     throw new Error(`The refused hub response (HTTP ${res.status}) holds no Connect error: ${text}`)
-  return { code: body.code, message: typeof body.message === 'string' ? body.message : '' }
+  return {
+    code: body.code,
+    message: typeof body.message === 'string'
+      ? body.message
+      : '',
+  }
 }
 
 // ---- Hub API helpers (Auth, Admin, Worker management) ----
@@ -468,7 +489,9 @@ export async function configureCaptureSmtpViaAPI(
 export async function waitForEmailEnabled(hubUrl: string, timeoutMs = 30_000): Promise<void> {
   await pollHub(
     () => callHub<{ emailEnabled?: boolean }>(hubUrl, 'AuthService/GetSystemInfo', {}, { operation: 'waitForEmailEnabled' }),
-    data => data.emailEnabled === true ? true : undefined,
+    data => data.emailEnabled === true
+      ? true
+      : undefined,
     { timeoutMs, failure: 'waitForEmailEnabled: the hub did not report emailEnabled=true' },
   )
 }
@@ -585,7 +608,9 @@ async function runHubSql(hubDataDir: string, sql: string): Promise<string> {
     }
     catch (error) {
       lastError = error
-      const message = error instanceof Error ? error.message : String(error)
+      const message = error instanceof Error
+        ? error.message
+        : String(error)
       if (!/database is locked|SQLITE_BUSY/i.test(message))
         throw error
       await sleep(50 * (attempt + 1))
@@ -752,7 +777,9 @@ export async function openAgentViaAPI(
   // A top-level model property would disappear during protobuf creation, and the agent would use the provider default.
   const initialOptions = {
     ...options.optionValues,
-    ...(options.model === undefined ? {} : { [OPTION_ID_MODEL]: options.model }),
+    ...(options.model === undefined
+      ? {}
+      : { [OPTION_ID_MODEL]: options.model }),
   }
 
   // Channels hold no workspace set. A workspace created after the handshake needs no announcement before a worker serves its tabs.
@@ -764,14 +791,30 @@ export async function openAgentViaAPI(
     {
       workerId,
       workingDir: workingDir ?? '',
-      ...(options.agentSessionId !== undefined ? { agentSessionId: options.agentSessionId } : {}),
-      ...(options.title ? { title: options.title } : {}),
-      ...(Object.keys(initialOptions).length > 0 ? { options: initialOptions } : {}),
-      ...(options.agentProvider === undefined ? {} : { agentProvider: options.agentProvider }),
-      ...(options.createWorktree ? { createWorktree: true, worktreeBranch: options.worktreeBranch ?? '' } : {}),
-      ...(options.worktreeBaseBranch ? { worktreeBaseBranch: options.worktreeBaseBranch } : {}),
-      ...(options.checkoutBranch ? { checkoutBranch: options.checkoutBranch } : {}),
-      ...(options.useWorktreePath ? { useWorktreePath: options.useWorktreePath } : {}),
+      ...(options.agentSessionId !== undefined
+        ? { agentSessionId: options.agentSessionId }
+        : {}),
+      ...(options.title
+        ? { title: options.title }
+        : {}),
+      ...(Object.keys(initialOptions).length > 0
+        ? { options: initialOptions }
+        : {}),
+      ...(options.agentProvider === undefined
+        ? {}
+        : { agentProvider: options.agentProvider }),
+      ...(options.createWorktree
+        ? { createWorktree: true, worktreeBranch: options.worktreeBranch ?? '' }
+        : {}),
+      ...(options.worktreeBaseBranch
+        ? { worktreeBaseBranch: options.worktreeBaseBranch }
+        : {}),
+      ...(options.checkoutBranch
+        ? { checkoutBranch: options.checkoutBranch }
+        : {}),
+      ...(options.useWorktreePath
+        ? { useWorktreePath: options.useWorktreePath }
+        : {}),
     },
   )
   if (!resp.agent) {
@@ -943,7 +986,9 @@ export async function listCustomizedHubSettingsViaAPI(hubUrl: string, cookie: st
       return []
     if (!value.key)
       throw new Error('listCustomizedHubSettingsViaAPI received a customized setting with no key.')
-    return [{ key: value.key, valueJson: value.valueJson ?? '' }]
+    return [
+      { key: value.key, valueJson: value.valueJson ?? '' },
+    ]
   })
 }
 

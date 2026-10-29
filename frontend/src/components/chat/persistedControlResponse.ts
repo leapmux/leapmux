@@ -44,7 +44,9 @@ export type ControlDecisionWords = typeof CONTROL_DECISION_WORDS[keyof typeof CO
  * discriminators disagreed for a request that carried only one of them.
  */
 export function controlDecisionWords(control: ControlPrompt | null | undefined): ControlDecisionWords {
-  return control?.kind === 'plan' ? CONTROL_DECISION_WORDS.plan : CONTROL_DECISION_WORDS.permission
+  return control?.kind === 'plan'
+    ? CONTROL_DECISION_WORDS.plan
+    : CONTROL_DECISION_WORDS.permission
 }
 /** Lead-in shown above the user's typed rejection reason (their feedback follows as markdown). */
 export const CONTROL_RESPONSE_FEEDBACK_LEAD = 'Sent feedback:'
@@ -99,7 +101,9 @@ export function label(text: string): ControlResponseSummary {
  * line via joinAnswerLines / a guarded optionId), so this only guards a future one.
  */
 export function labelOrNull(text: string | null): ControlResponseSummary | null {
-  return text ? label(text) : null
+  return text
+    ? label(text)
+    : null
 }
 
 /**
@@ -119,7 +123,9 @@ export function feedback(message: string): ControlResponseSummary {
  * outcomes all share, so the deny-with-feedback wording can't drift between them.
  */
 export function feedbackOrLabel(reason: string, fallbackLabel: string): ControlResponseSummary {
-  return reason ? feedback(reason) : label(fallbackLabel)
+  return reason
+    ? feedback(reason)
+    : label(fallbackLabel)
 }
 
 /** Resolve one control response without adding fields to either provider payload. */
@@ -134,7 +140,9 @@ export function parsePersistedControlResponse(
   return {
     requestId,
     claimToken: pickString(parsed.messageMetadata, MESSAGE_METADATA_FIELD.ControlRequestClaimToken),
-    request: isObject(parsed.supplementalContent) ? parsed.supplementalContent : undefined,
+    request: isObject(parsed.supplementalContent)
+      ? parsed.supplementalContent
+      : undefined,
     response: parsed.parentObject,
   }
 }
@@ -243,5 +251,7 @@ export function labeledAnswerLine(labelText: string, values: unknown): string | 
  * OpenCode, Cursor) ends with, so the join separator lives in one place instead of three.
  */
 export function joinAnswerLines(lines: string[]): string | null {
-  return lines.length > 0 ? lines.join('\n') : null
+  return lines.length > 0
+    ? lines.join('\n')
+    : null
 }

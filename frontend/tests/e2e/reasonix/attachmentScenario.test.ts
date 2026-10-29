@@ -10,7 +10,15 @@ let source: string
 let copy: string
 const reference = '.reasonix/attachments/clipboard-20261029-123456.123456-000001.bin'
 function request(content: unknown, role = 'user'): MockModelRequestRecord {
-  return { protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { messages: [{ role, content }] } }
+  return {
+    protocol: 'openai-chat-completions',
+    path: '/v1/chat/completions',
+    body: {
+      messages: [
+        { role, content },
+      ],
+    },
+  }
 }
 
 beforeEach(() => {
@@ -41,18 +49,42 @@ describe('expectReasonixAttachmentBytes', () => {
     expect(() => expectReasonixAttachmentBytes(request(`@${reference.replace('.bin', '.pdf')}`), source, directory)).toThrow('another file extension')
   })
 
-  it.each(['', 'filename.bin', `Quoted @${reference}`, `@${reference}\n@${reference}`, '@.reasonix/attachments/../private.bin'])('rejects an absent or ambiguous native descriptor: %j', (content) => {
+  it.each([
+    '',
+    'filename.bin',
+    `Quoted @${reference}`,
+    `@${reference}\n@${reference}`,
+    '@.reasonix/attachments/../private.bin',
+  ])('rejects an absent or ambiguous native descriptor: %j', (content) => {
     expect(() => expectReasonixAttachmentBytes(request(content), source, directory)).toThrow('one native attachment path')
   })
 
   it.each(['assistant', 'tool'])('rejects an attachment found only in historical input before a %s row', (role) => {
     const input = request('unrelated', role)
-    input.body = { messages: [{ role: 'user', content: `@${reference}` }, { role, content: 'unrelated' }] }
+    input.body = {
+      messages: [
+        { role: 'user', content: `@${reference}` },
+        { role, content: 'unrelated' },
+      ],
+    }
     expect(() => expectReasonixAttachmentBytes(input, source, directory)).toThrow('current user input')
   })
 
-  it.each([undefined, null, {}, { messages: [] }, { messages: [{ role: 'user', content: [] }] }])('rejects malformed native input: %j', (body) => {
-    expect(() => expectReasonixAttachmentBytes({ ...request(''), body }, source, directory)).toThrow('Reasonix')
+  it.each([
+    undefined,
+    null,
+    {},
+    { messages: [] },
+    {
+      messages: [
+        { role: 'user', content: [] },
+      ],
+    },
+  ])('rejects malformed native input: %j', (body) => {
+    expect(() => expectReasonixAttachmentBytes({
+      ...request(''),
+      body,
+    }, source, directory)).toThrow('Reasonix')
   })
 
   it('rejects a copy that is the uploaded file itself', () => {

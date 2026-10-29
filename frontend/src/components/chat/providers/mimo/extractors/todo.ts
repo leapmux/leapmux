@@ -28,11 +28,21 @@ export function mimoTaskStatus(status: string): TodoItem['status'] {
 
 /** The operation a `task` call carries, or an empty object for input of another shape. */
 function taskOperation(input: Record<string, unknown>): Record<string, unknown> {
-  return isObject(input.operation) ? input.operation : {}
+  return isObject(input.operation)
+    ? input.operation
+    : {}
 }
 
 function taskItem(id: string, content: string, status: TodoItem['status']): TodoItem {
-  return { ...(id ? { id } : {}), rowKey: todoRowKey(id || undefined, 0, content), content, status, activeForm: '' }
+  return {
+    ...(id
+      ? { id }
+      : {}),
+    rowKey: todoRowKey(id || undefined, 0, content),
+    content,
+    status,
+    activeForm: '',
+  }
 }
 
 /** `T1 in_progress — Write the parser`, one line of a list call's output. */
@@ -50,18 +60,37 @@ export function mimoTaskRequest(input: Record<string, unknown>): TodoRequest {
   const action = pickString(operation, 'action')
   const id = pickString(operation, 'id')
   const note = pickString(operation, 'event_summary')
-  const notes = note ? { note } : {}
+  const notes = note
+    ? { note }
+    : {}
   switch (action) {
     case MIMO_TASK_ACTION.Create:
-      return { items: [taskItem('', pickString(operation, 'summary'), 'pending')] }
+      return {
+        items: [
+          taskItem('', pickString(operation, 'summary'), 'pending'),
+        ],
+      }
     case MIMO_TASK_ACTION.Rename:
-      return { items: id ? [taskItem(id, pickString(operation, 'summary'), 'pending')] : [] }
+      return {
+        items: id
+          ? [
+              taskItem(id, pickString(operation, 'summary'), 'pending'),
+            ]
+          : [],
+      }
     case MIMO_TASK_ACTION.Start:
     case MIMO_TASK_ACTION.Block:
     case MIMO_TASK_ACTION.Unblock:
     case MIMO_TASK_ACTION.Done:
     case MIMO_TASK_ACTION.Abandon:
-      return { items: id ? [taskItem(id, id, 'pending')] : [], ...notes }
+      return {
+        items: id
+          ? [
+              taskItem(id, id, 'pending'),
+            ]
+          : [],
+        ...notes,
+      }
     default:
       return { items: [] }
   }
@@ -82,9 +111,15 @@ export function mimoTaskResult(part: MiMoToolPart, request: TodoRequest): TodoRe
       return { items: [], emptyText: 'No tasks.' }
     const items = part.output.split('\n').flatMap((line) => {
       const match = LIST_LINE.exec(line.trim())
-      return match ? [taskItem(match[1] ?? '', match[3] ?? '', mimoTaskStatus(match[2] ?? ''))] : []
+      return match
+        ? [
+            taskItem(match[1] ?? '', match[3] ?? '', mimoTaskStatus(match[2] ?? '')),
+          ]
+        : []
     })
-    return items.length > 0 ? { items } : null
+    return items.length > 0
+      ? { items }
+      : null
   }
   if (action === MIMO_TASK_ACTION.Get) {
     let record: unknown
@@ -96,7 +131,11 @@ export function mimoTaskResult(part: MiMoToolPart, request: TodoRequest): TodoRe
     }
     if (!isObject(record) || !pickString(record, 'id'))
       return null
-    return { items: [taskItem(pickString(record, 'id'), pickString(record, 'summary'), mimoTaskStatus(pickString(record, 'status')))] }
+    return {
+      items: [
+        taskItem(pickString(record, 'id'), pickString(record, 'summary'), mimoTaskStatus(pickString(record, 'status'))),
+      ],
+    }
   }
   const id = pickString(part.metadata, 'id')
   const status = pickString(part.metadata, 'status')
@@ -104,5 +143,12 @@ export function mimoTaskResult(part: MiMoToolPart, request: TodoRequest): TodoRe
   if (!id || !status || !requested)
     return null
   // The text the request stated. A status change states the item's id alone.
-  return { items: [taskItem(id, requested.content || id, mimoTaskStatus(status))], ...(request.note !== undefined ? { note: request.note } : {}) }
+  return {
+    items: [
+      taskItem(id, requested.content || id, mimoTaskStatus(status)),
+    ],
+    ...(request.note !== undefined
+      ? { note: request.note }
+      : {}),
+  }
 }

@@ -18,7 +18,11 @@ function options() {
     plain: { alias: 'unit-provider/plain', model: 'plain-model' },
     alternateThinking: { alias: 'unit-provider/wide', model: 'wide-model' },
     mcpEchoServer: echoServer,
-    account: { origin: 'http://127.0.0.1:4567', accessToken: 'unit-account-token', model: { alias: 'kimi-code/account-model', model: 'account-model' } },
+    account: {
+      origin: 'http://127.0.0.1:4567',
+      accessToken: 'unit-account-token',
+      model: { alias: 'kimi-code/account-model', model: 'account-model' },
+    },
   }
 }
 
@@ -28,7 +32,9 @@ function modelTable(config: string, alias: string): string {
   if (start < 0)
     throw new Error(`The configuration has no model ${alias}.`)
   const next = config.indexOf('\n[', start + 1)
-  return config.slice(start, next < 0 ? undefined : next)
+  return config.slice(start, next < 0
+    ? undefined
+    : next)
 }
 
 beforeEach(() => {
@@ -133,6 +139,13 @@ describe('createKimiEnvironment', () => {
       KIMI_CODE_BASE_URL: `http://127.0.0.1:4567${KIMI_CODE_SERVICE_PATH}`,
       KIMI_CODE_OAUTH_HOST: 'http://127.0.0.1:4567/kimi/oauth',
     })
-    expect(JSON.parse(readFileSync(join(env.KIMI_CODE_HOME!, 'mcp.json'), 'utf8'))).toEqual({ mcpServers: { echo_probe: { command: echoServer.command, args: ['/srv/echo.mjs'] } } })
+    expect(JSON.parse(readFileSync(join(env.KIMI_CODE_HOME!, 'mcp.json'), 'utf8'))).toEqual({
+      mcpServers: {
+        echo_probe: {
+          command: echoServer.command,
+          args: ['/srv/echo.mjs'],
+        },
+      },
+    })
   })
 })

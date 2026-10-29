@@ -39,7 +39,11 @@ vi.mock('~/context/AuthContext', () => ({
 
 vi.mock('~/lib/systemInfo', async () => {
   const actual = await vi.importActual<typeof import('~/lib/systemInfo')>('~/lib/systemInfo')
-  return { ...actual, passkeyBlocker: () => 'origin-not-allowed' as const, passkeysUsableHere: () => false }
+  return {
+    ...actual,
+    passkeyBlocker: () => 'origin-not-allowed' as const,
+    passkeysUsableHere: () => false,
+  }
 })
 
 /**
@@ -108,7 +112,9 @@ describe('ElevationPromptHost', () => {
     expect(await screen.findByRole('dialog', { name: 'Verify your identity' })).toBeInTheDocument()
     expect(elevationPrompting()).toBe(true)
 
-    fireEvent.input(screen.getByTestId('elevate-password'), { target: { value: 'secret' } })
+    fireEvent.input(screen.getByTestId('elevate-password'), {
+      target: { value: 'secret' },
+    })
     fireEvent.click(screen.getByTestId('elevate-password-submit'))
 
     await expect(answered).resolves.toBe(true)
@@ -126,7 +132,9 @@ describe('ElevationPromptHost', () => {
     username: 'alice',
     passwordSet: false,
     passkeyCount: 0,
-    oauthProviders: [{ id: 'github-1', name: 'GitHub', enabled: true }],
+    oauthProviders: [
+      { id: 'github-1', name: 'GitHub', enabled: true },
+    ],
     mayElevateThroughAProvider: true,
   }
 
@@ -192,7 +200,9 @@ describe('ElevationPromptHost', () => {
     await screen.findByRole('dialog', { name: 'Verify your identity' })
     expect(screen.getAllByRole('dialog', { name: 'Verify your identity' })).toHaveLength(1)
 
-    fireEvent.input(screen.getByTestId('elevate-password'), { target: { value: 'secret' } })
+    fireEvent.input(screen.getByTestId('elevate-password'), {
+      target: { value: 'secret' },
+    })
     fireEvent.click(screen.getByTestId('elevate-password-submit'))
 
     await expect(first).resolves.toBe(true)
@@ -261,7 +271,9 @@ describe('ElevationPromptHost', () => {
 
     const answered = promptForElevation()
     await screen.findByRole('dialog', { name: 'Verify your identity' })
-    fireEvent.input(screen.getByTestId('elevate-password'), { target: { value: 'secret' } })
+    fireEvent.input(screen.getByTestId('elevate-password'), {
+      target: { value: 'secret' },
+    })
     fireEvent.click(screen.getByTestId('elevate-password-submit'))
 
     await expect(answered).resolves.toBe(true)
@@ -327,7 +339,9 @@ describe('ElevationPromptHost', () => {
     })
     const answered = elevationInterceptor(next)(unaryReq())
 
-    fireEvent.input(await screen.findByTestId('elevate-password'), { target: { value: 'secret' } })
+    fireEvent.input(await screen.findByTestId('elevate-password'), {
+      target: { value: 'secret' },
+    })
     fireEvent.click(screen.getByTestId('elevate-password-submit'))
 
     await expect(answered).resolves.toBe('ok')
@@ -402,7 +416,9 @@ describe('ElevationPromptHost', () => {
 
     renderHost()
     const answered = promptForElevation()
-    fireEvent.input(await screen.findByTestId('elevate-password'), { target: { value: 'secret' } })
+    fireEvent.input(await screen.findByTestId('elevate-password'), {
+      target: { value: 'secret' },
+    })
     fireEvent.click(screen.getByTestId('elevate-password-submit'))
 
     await expect(answered).resolves.toBe(true)

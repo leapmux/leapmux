@@ -12,8 +12,12 @@ const mockChangePassword = vi.fn()
 const mockRefreshUser = vi.fn()
 
 vi.mock('~/api/clients', () => ({
-  adminNetworkClient: { getListenStatus: (...args: unknown[]) => mockGetListenStatus(...args) },
-  userClient: { changePassword: (...args: unknown[]) => mockChangePassword(...args) },
+  adminNetworkClient: {
+    getListenStatus: (...args: unknown[]) => mockGetListenStatus(...args),
+  },
+  userClient: {
+    changePassword: (...args: unknown[]) => mockChangePassword(...args),
+  },
 }))
 
 // The panel writes the ACCOUNT's password, so it re-reads the account after an
@@ -35,17 +39,23 @@ function listenStatus(overrides: Record<string, unknown> = {}) {
       {
         name: 'en0',
         up: true,
-        addresses: [{ ip: '192.168.1.24', ipv6: false, loopback: false }],
+        addresses: [
+          { ip: '192.168.1.24', ipv6: false, loopback: false },
+        ],
       },
       {
         name: 'lo0',
         up: true,
-        addresses: [{ ip: '127.0.0.1', ipv6: false, loopback: true }],
+        addresses: [
+          { ip: '127.0.0.1', ipv6: false, loopback: true },
+        ],
       },
     ],
     defaultAddress: '127.0.0.1:4327',
     configured: [] as string[],
-    bound: [{ address: '127.0.0.1:4327', source: 'listen', error: '' }],
+    bound: [
+      { address: '127.0.0.1:4327', source: 'listen', error: '' },
+    ],
     passwordSet: false,
     ...overrides,
   }
@@ -65,8 +75,12 @@ function fakeBinding(stored: { addresses: string[] } | undefined, set = vi.fn())
 async function fillPassword(pw = 'correct-horse-battery-staple') {
   const newPassword = await screen.findByLabelText('New Password')
   const confirm = screen.getByLabelText('Confirm Password')
-  fireEvent.input(newPassword, { target: { value: pw } })
-  fireEvent.input(confirm, { target: { value: pw } })
+  fireEvent.input(newPassword, {
+    target: { value: pw },
+  })
+  fireEvent.input(confirm, {
+    target: { value: pw },
+  })
 }
 
 describe('NetworkAccessControl', () => {
@@ -93,7 +107,9 @@ describe('NetworkAccessControl', () => {
   // identical in a list that only states what is serving.
   it('says when one socket serves the -listen address too', async () => {
     mockGetListenStatus.mockResolvedValue(listenStatus({
-      bound: [{ address: '*:4327', source: 'merged', error: '' }],
+      bound: [
+        { address: '*:4327', source: 'merged', error: '' },
+      ],
     }))
     render(() => <NetworkAccessControl binding={fakeBinding(undefined)} />)
 
@@ -126,7 +142,12 @@ describe('NetworkAccessControl', () => {
   })
 
   it('seeds its rows from the stored addresses', async () => {
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['*:4327', '192.168.1.24:8080'] })} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['*:4327', '192.168.1.24:8080'],
+      })}
+      />
+    ))
 
     const rows = await screen.findAllByTestId('network-address-row')
     expect(rows).toHaveLength(2)
@@ -154,22 +175,36 @@ describe('NetworkAccessControl', () => {
   // The port is what a client connects to, so a value no client could use must
   // not reach the hub.
   it('refuses to apply a port outside 1-65535', async () => {
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['192.168.1.24:8080'] })} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['192.168.1.24:8080'],
+      })}
+      />
+    ))
     await fillPassword()
     const port = screen.getByLabelText('Port')
 
     for (const bad of ['0', '70000', '', 'http']) {
-      fireEvent.input(port, { target: { value: bad } })
+      fireEvent.input(port, {
+        target: { value: bad },
+      })
       expect(screen.getByRole('button', { name: 'Apply' })).toBeDisabled()
     }
-    fireEvent.input(port, { target: { value: '8080' } })
+    fireEvent.input(port, {
+      target: { value: '8080' },
+    })
     expect(screen.getByRole('button', { name: 'Apply' })).toBeEnabled()
   })
 
   // Publishing an address without a password would put the whole app behind
   // nothing, so the panel refuses until one exists.
   it('refuses to publish an exposed address while the account has no password', async () => {
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['192.168.1.24:8080'] })} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['192.168.1.24:8080'],
+      })}
+      />
+    ))
 
     expect(await screen.findByRole('button', { name: 'Apply' })).toBeDisabled()
     await fillPassword()
@@ -187,14 +222,21 @@ describe('NetworkAccessControl', () => {
     const set = vi.fn(() => {
       order.push('set')
     })
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['192.168.1.24:8080'] }, set)} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['192.168.1.24:8080'],
+      }, set)}
+      />
+    ))
     await fillPassword()
 
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
 
     await vi.waitFor(() => expect(order).toEqual(['changePassword', 'set']))
     expect(mockChangePassword).toHaveBeenCalledWith({ newPassword: 'correct-horse-battery-staple' })
-    expect(set).toHaveBeenCalledWith({ addresses: ['192.168.1.24:8080'] })
+    expect(set).toHaveBeenCalledWith({
+      addresses: ['192.168.1.24:8080'],
+    })
     // And the account is re-read, because this apply moved it: Account →
     // Password renders "Set Password" or "Change Password" from that read, and
     // a stale one offers to set a password this apply already stored.
@@ -204,7 +246,12 @@ describe('NetworkAccessControl', () => {
   // The hub is read back rather than the request trusted: a stored address it
   // could not bind is reported only in the reply.
   it('re-reads the hub after applying', async () => {
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['192.168.1.24:8080'] })} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['192.168.1.24:8080'],
+      })}
+      />
+    ))
     await fillPassword()
     mockGetListenStatus.mockClear()
 
@@ -216,7 +263,12 @@ describe('NetworkAccessControl', () => {
 
   it('reports a refused apply rather than claiming success', async () => {
     const set = vi.fn(() => Promise.reject(new Error('at most 8 extra listen addresses')))
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['192.168.1.24:8080'] }, set)} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['192.168.1.24:8080'],
+      }, set)}
+      />
+    ))
     await fillPassword()
 
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
@@ -230,7 +282,12 @@ describe('NetworkAccessControl', () => {
   // reason is gone and Account → Password is where it changes.
   it('drops its password half once the account has one', async () => {
     setSystemInfoMock({ soloMode: true, soloPasswordSet: true })
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['192.168.1.24:8080'] })} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['192.168.1.24:8080'],
+      })}
+      />
+    ))
 
     expect(await screen.findByText(/Change it in Account → Password/)).toBeInTheDocument()
     expect(screen.queryByLabelText('New Password')).not.toBeInTheDocument()
@@ -245,7 +302,12 @@ describe('NetworkAccessControl', () => {
   // password first, beside an Apply that never asks for one, is a panel
   // arguing with itself -- and the reader cannot tell which half is wrong.
   it('lets a loopback address apply with no password, and does not demand one', async () => {
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['127.0.0.1:9000'] })} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['127.0.0.1:9000'],
+      })}
+      />
+    ))
 
     expect(await screen.findByRole('button', { name: 'Apply' })).toBeEnabled()
     expect(screen.queryByText(/Set the password below first/)).toBeNull()
@@ -256,7 +318,12 @@ describe('NetworkAccessControl', () => {
   // what arms it, so the warning and the button must both hold out for a
   // password.
   it('demands a password before publishing an address beyond loopback', async () => {
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['192.168.1.24:9000'] })} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['192.168.1.24:9000'],
+      })}
+      />
+    ))
 
     expect(await screen.findByText(/Set the password below first/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Apply' })).toBeDisabled()
@@ -267,7 +334,12 @@ describe('NetworkAccessControl', () => {
   // the part an operator does not expect.
   it('states the standing rule once the account holds a password', async () => {
     setSystemInfoMock({ soloMode: true, soloPasswordSet: true })
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['*:4327'] })} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['*:4327'],
+      })}
+      />
+    ))
 
     expect(await screen.findByText(/Every network address asks for a sign-in as “solo”, 127\.0\.0\.1 included/))
       .toBeInTheDocument()
@@ -277,7 +349,12 @@ describe('NetworkAccessControl', () => {
   // Without the note, "Serving now" shows 127.0.0.1:4327 before Apply and only
   // *:4327 after, which reads as an address that disappeared.
   it('states which address a wildcard will absorb', async () => {
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['*:4327'] })} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['*:4327'],
+      })}
+      />
+    ))
 
     expect(await screen.findByText('127.0.0.1:4327 merges into *:4327.')).toBeInTheDocument()
   })
@@ -289,9 +366,16 @@ describe('NetworkAccessControl', () => {
   it('states when the -listen address absorbs a row', async () => {
     mockGetListenStatus.mockResolvedValue(listenStatus({
       defaultAddress: '*:4327',
-      bound: [{ address: '*:4327', source: 'listen', error: '' }],
+      bound: [
+        { address: '*:4327', source: 'listen', error: '' },
+      ],
     }))
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['127.0.0.1:4327'] })} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['127.0.0.1:4327'],
+      })}
+      />
+    ))
 
     expect(await screen.findByText('127.0.0.1:4327 merges into *:4327.')).toBeInTheDocument()
   })
@@ -299,20 +383,35 @@ describe('NetworkAccessControl', () => {
   // `0.0.0.0` is a wildcard the interface menu itself can produce, and the
   // host-equals-`*` test called it an ordinary literal.
   it('states the fold into a wildcard that is not spelled with a star', async () => {
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['0.0.0.0:4327'] })} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['0.0.0.0:4327'],
+      })}
+      />
+    ))
 
     expect(await screen.findByText('127.0.0.1:4327 merges into 0.0.0.0:4327.')).toBeInTheDocument()
   })
 
   it('states every fold, not only the first', async () => {
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['*:4327', '192.168.1.24:4327'] })} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['*:4327', '192.168.1.24:4327'],
+      })}
+      />
+    ))
 
     expect(await screen.findByText('127.0.0.1:4327 merges into *:4327.')).toBeInTheDocument()
     expect(screen.getByText('192.168.1.24:4327 merges into *:4327.')).toBeInTheDocument()
   })
 
   it('says nothing about a fold when each address stands on its own', async () => {
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['192.168.1.24:8080'] })} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['192.168.1.24:8080'],
+      })}
+      />
+    ))
 
     expect(await screen.findByText(/After apply:/)).toBeInTheDocument()
     expect(screen.queryByText(/merges into/)).toBeNull()
@@ -328,7 +427,12 @@ describe('NetworkAccessControl', () => {
   // it. Whether the chosen address is loopback decides whether Apply demands a
   // password, so the reason has to reach a screen reader as well as an eye.
   it('offers every interface address and the wildcard, marking the loopback ones', async () => {
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['*:4327'] })} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['*:4327'],
+      })}
+      />
+    ))
     const row = (await screen.findAllByTestId('network-address-row'))[0]!
 
     const options = within(row)
@@ -345,7 +449,12 @@ describe('NetworkAccessControl', () => {
   // the remove button still has to state WHICH address it removes -- eight of
   // them stand in this list at the cap.
   it('draws the trigger chevron and the remove mark as icons', async () => {
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['*:4327'] })} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['*:4327'],
+      })}
+      />
+    ))
     const row = (await screen.findAllByTestId('network-address-row'))[0]!
 
     const trigger = within(row).getByTestId('network-interface-trigger')
@@ -361,7 +470,12 @@ describe('NetworkAccessControl', () => {
   // The picker groups by interface, so an address is read beside the interface
   // that holds it rather than as a bare literal.
   it('groups the addresses under their interface', async () => {
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['*:4327'] })} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['*:4327'],
+      })}
+      />
+    ))
     const row = (await screen.findAllByTestId('network-address-row'))[0]!
 
     expect(within(row).getByText('en0')).toBeInTheDocument()
@@ -373,14 +487,23 @@ describe('NetworkAccessControl', () => {
   // message about something else.
   it('sends a padded port without its padding', async () => {
     const set = vi.fn()
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['127.0.0.1:9000'] }, set)} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['127.0.0.1:9000'],
+      }, set)}
+      />
+    ))
 
     const port = await screen.findByLabelText('Port')
-    fireEvent.input(port, { target: { value: ' 9001 ' } })
+    fireEvent.input(port, {
+      target: { value: ' 9001 ' },
+    })
     expect(screen.getByRole('button', { name: 'Apply' })).toBeEnabled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
-    await vi.waitFor(() => expect(set).toHaveBeenCalledWith({ addresses: ['127.0.0.1:9001'] }))
+    await vi.waitFor(() => expect(set).toHaveBeenCalledWith({
+      addresses: ['127.0.0.1:9001'],
+    }))
   })
 
   // The panel demands a password for what EXPOSES the hub, and it must read
@@ -389,7 +512,12 @@ describe('NetworkAccessControl', () => {
   // verbatim exposed -- and, while the status read was in flight or had
   // failed, called EVERY row exposed.
   it('reads loopback from the address, not from the interface list', async () => {
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['127.0.0.5:9000'] })} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['127.0.0.5:9000'],
+      })}
+      />
+    ))
 
     // 127.0.0.5 is loopback and this machine does not hold it, so the old
     // lookup answered "exposed" and held Apply out for a password.
@@ -399,7 +527,12 @@ describe('NetworkAccessControl', () => {
 
   it('does not demand a password for a loopback list while the hub is unreachable', async () => {
     mockGetListenStatus.mockRejectedValue(new Error('boom'))
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['127.0.0.1:9000'] })} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['127.0.0.1:9000'],
+      })}
+      />
+    ))
 
     expect(await screen.findByText('The hub did not report its listeners.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Apply' })).toBeEnabled()
@@ -425,7 +558,12 @@ describe('NetworkAccessControl', () => {
     const set = vi.fn()
       .mockRejectedValueOnce(new Error('bind refused'))
       .mockResolvedValueOnce(undefined)
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['192.168.1.24:8080'] }, set)} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['192.168.1.24:8080'],
+      }, set)}
+      />
+    ))
     await fillPassword()
 
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
@@ -444,7 +582,12 @@ describe('NetworkAccessControl', () => {
   // most likely to fail is the one right after the rule changed.
   it('reports success when the write landed and only the read-back failed', async () => {
     mockLoadSystemInfo.mockRejectedValue(new Error('connection reset'))
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['192.168.1.24:8080'] })} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['192.168.1.24:8080'],
+      })}
+      />
+    ))
     await fillPassword()
 
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
@@ -465,7 +608,12 @@ describe('NetworkAccessControl', () => {
     // A LOOPBACK address, so nothing but the apply in flight can disable the
     // button: an exposed one re-shows the password half with empty fields, and
     // the assertion below would then pass for the wrong reason.
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['127.0.0.1:9000'] })} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['127.0.0.1:9000'],
+      })}
+      />
+    ))
 
     const applyButton = await screen.findByRole('button', { name: 'Apply' })
     fireEvent.click(applyButton)
@@ -482,10 +630,17 @@ describe('NetworkAccessControl', () => {
   // Seeding the rows once left the deleted addresses on screen, and the next
   // Apply wrote them straight back.
   it('follows the stored list when the row is reset', async () => {
-    const [stored, setStored] = createSignal<{ addresses: string[] } | undefined>({ addresses: ['192.168.1.24:8080'] })
+    const [stored, setStored] = createSignal<{ addresses: string[] } | undefined>({
+      addresses: ['192.168.1.24:8080'],
+    })
     render(() => (
       <NetworkAccessControl
-        binding={{ value: () => stored(), set: vi.fn(), customized: () => stored() !== undefined, reset: () => Promise.resolve() }}
+        binding={{
+          value: () => stored(),
+          set: vi.fn(),
+          customized: () => stored() !== undefined,
+          reset: () => Promise.resolve(),
+        }}
       />
     ))
     expect(await screen.findAllByTestId('network-address-row')).toHaveLength(1)
@@ -495,7 +650,12 @@ describe('NetworkAccessControl', () => {
   })
 
   it('returns the rows to the stored list on cancel', async () => {
-    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['192.168.1.24:8080'] })} />)
+    render(() => (
+      <NetworkAccessControl binding={fakeBinding({
+        addresses: ['192.168.1.24:8080'],
+      })}
+      />
+    ))
     await screen.findByText('+ Add address')
 
     fireEvent.click(screen.getByText('+ Add address'))

@@ -86,7 +86,15 @@ describe('storageCleanup', () => {
     // `setImmediate` stays REAL, because fake-indexeddb schedules its request
     // callbacks on it and the sweep this file tests reads a database. The fake
     // clock still owns everything the sweep schedules for itself.
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
+    vi.useFakeTimers({
+      toFake: [
+        'setTimeout',
+        'clearTimeout',
+        'setInterval',
+        'clearInterval',
+        'Date',
+      ],
+    })
   })
 
   afterEach(() => {
@@ -144,8 +152,14 @@ describe('storageCleanup', () => {
     it('returns true for valid wrapped values', async () => {
       expect(isWrappedValue({ v: 'hello', e: 123 })).toBe(true)
       expect(isWrappedValue({ v: null, e: 0 })).toBe(true)
-      expect(isWrappedValue({ v: { nested: true }, e: 999 })).toBe(true)
-      expect(isWrappedValue({ v: 42, e: Date.now() })).toBe(true)
+      expect(isWrappedValue({
+        v: { nested: true },
+        e: 999,
+      })).toBe(true)
+      expect(isWrappedValue({
+        v: 42,
+        e: Date.now(),
+      })).toBe(true)
     })
 
     it('returns false for invalid values', async () => {
@@ -376,14 +390,18 @@ describe('storageCleanup', () => {
       expect(mirrorEntryForTests(stored)).toBeUndefined()
       expect(localStorageGet(name)).toBeUndefined()
       expect(published).toHaveBeenCalledWith(expect.objectContaining({
-        changes: [{ k: stored, removed: true }],
+        changes: [
+          { k: stored, removed: true },
+        ],
       }))
       published.mockRestore()
     })
 
     it('preserves every registered sessionStorage key under runCleanup', async () => {
       const names = Object.entries(SESSION_KEY_SPECS)
-        .map(([name, spec]) => (spec.match === 'prefix' ? `${name}sample` : name))
+        .map(([name, spec]) => (spec.match === 'prefix'
+          ? `${name}sample`
+          : name))
       for (const name of names)
         sessionStorageSet(name, 'sample')
 
@@ -396,7 +414,9 @@ describe('storageCleanup', () => {
 
     it('preserves every registered localStorage key under runCleanup', async () => {
       const names = Object.entries(LOCAL_KEY_SPECS)
-        .map(([name, spec]) => (spec.match === 'prefix' ? `${name}sample` : name))
+        .map(([name, spec]) => (spec.match === 'prefix'
+          ? `${name}sample`
+          : name))
       for (const name of names)
         await seedRow(storedKeyFor(name)!, 'sample')
 

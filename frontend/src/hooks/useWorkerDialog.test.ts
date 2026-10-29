@@ -87,7 +87,9 @@ describe('useWorkerDialog', () => {
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
         const { submit } = useWorkerDialog({
-          submit: { formatError: () => 'submit failed' },
+          submit: {
+            formatError: () => 'submit failed',
+          },
         })
         // Fleet listing fails on mount; the worker context's onError is
         // wired to submit.setError, so the error surfaces in the submit

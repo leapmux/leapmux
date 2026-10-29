@@ -2,7 +2,12 @@ import type { Page } from '@playwright/test'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createTranscriptGuard, isRawFrameText, runTranscriptGuard } from './transcriptGuard'
 
-const state = vi.hoisted(() => ({ unrendered: 0, spinners: 0, texts: [] as string[], selectors: [] as string[] }))
+const state = vi.hoisted(() => ({
+  unrendered: 0,
+  spinners: 0,
+  texts: [] as string[],
+  selectors: [] as string[],
+}))
 
 vi.mock('@playwright/test', () => ({
   expect: Object.assign((locator: { count: number }) => ({
@@ -17,7 +22,11 @@ vi.mock('@playwright/test', () => ({
 vi.mock('./ui', () => ({
   visibleOnly: (locator: unknown) => locator,
   messageBubbles: () => ({
-    and: () => ({ getByTestId: () => ({ allTextContents: async () => state.texts }) }),
+    and: () => ({
+      getByTestId: () => ({
+        allTextContents: async () => state.texts,
+      }),
+    }),
   }),
   chatScrollContainer: () => ({
     locator: (selector: string) => {
@@ -43,11 +52,28 @@ beforeEach(() => {
 })
 
 describe('isRawFrameText', () => {
-  it.each(['type', 'method', 'event', 'subtype', 'sessionUpdate', 'jsonrpc'])('recognizes the %s discriminator in a whole frame', (key) => {
+  it.each([
+    'type',
+    'method',
+    'event',
+    'subtype',
+    'sessionUpdate',
+    'jsonrpc',
+  ])('recognizes the %s discriminator in a whole frame', (key) => {
     expect(isRawFrameText(` \n${JSON.stringify({ [key]: 'notice', value: null })}\t`)).toBe(true)
   })
 
-  it.each(['prose', '{"a":1}', '[]', 'null', '{invalid}', '{"a":1,"b":2}', '{"type":1,"b":2}', 'prefix {"type":"notice","b":2}', '{"type":"notice","b":2} suffix'])('refuses text that is not a native frame: %s', (text) => {
+  it.each([
+    'prose',
+    '{"a":1}',
+    '[]',
+    'null',
+    '{invalid}',
+    '{"a":1,"b":2}',
+    '{"type":1,"b":2}',
+    'prefix {"type":"notice","b":2}',
+    '{"type":"notice","b":2} suffix',
+  ])('refuses text that is not a native frame: %s', (text) => {
     expect(isRawFrameText(text)).toBe(false)
   })
 })
@@ -83,7 +109,9 @@ describe('runTranscriptGuard', () => {
       state[defect as 'unrendered' | 'spinners'] = 1
     await expect(runTranscriptGuard(page, createTranscriptGuard(), { status: 'passed', expectedStatus: 'passed' }))
       .rejects
-      .toThrow(defect === 'raw' ? /type.*notice/ : 'expected 1 to be +0')
+      .toThrow(defect === 'raw'
+        ? /type.*notice/
+        : 'expected 1 to be +0')
   })
 
   it('skips after an unexpected test failure', async () => {

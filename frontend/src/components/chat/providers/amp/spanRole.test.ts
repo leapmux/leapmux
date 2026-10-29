@@ -5,14 +5,26 @@ import { ampRelatedMessages, ampSpanRole } from './spanRole'
 import { ampToolResultRow, ampToolUseRow } from './toolResults.fixtures'
 
 function row(parent: Record<string, unknown>, completion?: MessageCompletion) {
-  return { ...input(parent, undefined, AgentProvider.AMP), ...(completion !== undefined ? { completion } : {}) }
+  return {
+    ...input(parent, undefined, AgentProvider.AMP),
+    ...(completion !== undefined
+      ? { completion }
+      : {}),
+  }
 }
 
 describe('ampSpanRole', () => {
   it('reads the side of a span from the block', () => {
     expect(ampSpanRole(row(ampToolUseRow('shell_command', { command: 'ls' })))).toBe('request')
     expect(ampSpanRole(row(ampToolResultRow('ok')))).toBe('result')
-    expect(ampSpanRole(row({ type: 'assistant', message: { content: [{ type: 'text', text: 'x' }] } }))).toBe('other')
+    expect(ampSpanRole(row({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'text', text: 'x' },
+        ],
+      },
+    }))).toBe('other')
     expect(ampSpanRole(row({ type: 'result', subtype: 'success' }))).toBe('other')
   })
 
@@ -21,8 +33,22 @@ describe('ampSpanRole', () => {
   })
 
   it('reads a block with no call id as no side', () => {
-    expect(ampSpanRole(row({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'shell_command', input: {} }] } }))).toBe('other')
-    expect(ampSpanRole(row({ type: 'user', message: { content: [{ type: 'tool_result', content: 'x' }] } }))).toBe('other')
+    expect(ampSpanRole(row({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'tool_use', name: 'shell_command', input: {} },
+        ],
+      },
+    }))).toBe('other')
+    expect(ampSpanRole(row({
+      type: 'user',
+      message: {
+        content: [
+          { type: 'tool_result', content: 'x' },
+        ],
+      },
+    }))).toBe('other')
   })
 })
 

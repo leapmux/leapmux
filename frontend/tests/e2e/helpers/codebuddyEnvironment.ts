@@ -54,7 +54,9 @@ export function createCodebuddyEnvironment(options: CodebuddyEnvironmentOptions)
   writePrivateJSON(join(configDir, 'models.json'), codebuddyModels(options))
   writePrivateJSON(join(configDir, 'settings.json'), {
     model: options.startModel,
-    ...(options.thinkingEnabled === undefined ? {} : { alwaysThinkingEnabled: options.thinkingEnabled }),
+    ...(options.thinkingEnabled === undefined
+      ? {}
+      : { alwaysThinkingEnabled: options.thinkingEnabled }),
   })
   return {
     CODEBUDDY_CONFIG_DIR: configDir,
@@ -89,8 +91,18 @@ function codebuddyModels(options: CodebuddyEnvironmentOptions): Record<string, u
   }
   return {
     models: [
-      { id: options.modelID, name: 'Mock Model', ...transport, ...codebuddyReasoningProperties(options.primaryReasoning) },
-      { id: options.alternateModelID, name: 'Alternate Mock Model', ...transport, ...codebuddyReasoningProperties(options.alternateReasoning) },
+      {
+        id: options.modelID,
+        name: 'Mock Model',
+        ...transport,
+        ...codebuddyReasoningProperties(options.primaryReasoning),
+      },
+      {
+        id: options.alternateModelID,
+        name: 'Alternate Mock Model',
+        ...transport,
+        ...codebuddyReasoningProperties(options.alternateReasoning),
+      },
     ],
     availableModels: [options.modelID, options.alternateModelID],
   }
@@ -100,6 +112,9 @@ function codebuddyReasoningProperties(reasoning: CodebuddyModelReasoning | undef
   if (reasoning === undefined)
     return {}
   return reasoning.supported
-    ? { supportsReasoning: true, reasoning: { defaultEffort: reasoning.defaultEffort } }
+    ? {
+        supportsReasoning: true,
+        reasoning: { defaultEffort: reasoning.defaultEffort },
+      }
     : { supportsReasoning: false }
 }

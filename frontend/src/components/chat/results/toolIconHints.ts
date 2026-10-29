@@ -28,5 +28,7 @@ const TOOL_HINT_ICON: Record<ToolIconHint, LucideIcon> = {
 
 /** The icon one call's hint asks for; undefined when the call states no hint. */
 export function toolHintIcon(hint: ToolIconHint | undefined): LucideIcon | undefined {
-  return hint === undefined ? undefined : TOOL_HINT_ICON[hint]
+  return hint === undefined
+    ? undefined
+    : TOOL_HINT_ICON[hint]
 }

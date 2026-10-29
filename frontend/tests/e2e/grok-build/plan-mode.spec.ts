@@ -22,7 +22,11 @@ grokTest('keeps the native Plan constraint after the setting changes and reloads
     expect(existsSync(path)).toBe(false)
     const callId = `denied-plan-write-${reload ? 'restored' : 'selected'}`
     const start = await modelScript.queue(
-      { toolCalls: [writeToolCall(native.provider, callId, { path, content: 'This Plan write must not run.\n' })] },
+      {
+        toolCalls: [
+          writeToolCall(native.provider, callId, { path, content: 'This Plan write must not run.\n' }),
+        ],
+      },
       { text: 'The native Plan write was refused.' },
     )
     await sendMessage(page, modelScript.prompt('Attempt the scripted file write under the current setting.'))

@@ -68,7 +68,9 @@ export function splitAddress(address: string): { host: string, port: string } {
   return {
     // An IPv6 literal arrives bracketed inside an address and unbracketed on
     // its own; the row edits the bare form and `toAddress` brackets it back.
-    host: host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host,
+    host: host.startsWith('[') && host.endsWith(']')
+      ? host.slice(1, -1)
+      : host,
     port: address.slice(lastColon + 1),
   }
 }
@@ -82,7 +84,10 @@ let nextRowID = 0
 
 /** Splits a canonical `host:port` back into the two fields the row edits. */
 export function rowFromAddress(address: string): AddressRow {
-  return { id: nextRowID++, ...splitAddress(address) }
+  return {
+    id: nextRowID++,
+    ...splitAddress(address),
+  }
 }
 
 /**
@@ -105,7 +110,9 @@ export function newRow(host: string, port: string): AddressRow {
  * something else.
  */
 export function toAddress(row: AddressRow): string {
-  const host = row.host.includes(':') ? `[${row.host}]` : row.host
+  const host = row.host.includes(':')
+    ? `[${row.host}]`
+    : row.host
   return `${host}:${row.port.trim()}`
 }
 
@@ -117,30 +124,71 @@ export function toAddress(row: AddressRow): string {
  */
 export function parseAddress(address: string): ParsedAddress {
   const { host, port } = splitAddress(address)
-  if (host === '' || host === ANY_HOST)
-    return { kind: 'any', host: '', port, bytes: null, zone: '' }
+  if (host === '' || host === ANY_HOST) {
+    return {
+      kind: 'any',
+      host: '',
+      port,
+      bytes: null,
+      zone: '',
+    }
+  }
 
   // A ZONE selects an interface rather than naming a different address, and no
   // IP parser accepts one. It is split off and compared separately, and it
   // keeps its CASE: net.InterfaceByName matches exactly, so `%Ethernet` and
   // `%ethernet` are different interfaces.
   const percent = host.indexOf('%')
-  const zone = percent < 0 ? '' : host.slice(percent + 1)
-  const literal = percent < 0 ? host : host.slice(0, percent)
+  const zone = percent < 0
+    ? ''
+    : host.slice(percent + 1)
+  const literal = percent < 0
+    ? host
+    : host.slice(0, percent)
 
   const v4 = parseIPv4(literal)
-  if (v4)
-    return { kind: isUnspecified(v4) ? 'any-ipv4' : 'ip', host: literal, port, bytes: v4, zone }
+  if (v4) {
+    return {
+      kind: isUnspecified(v4)
+        ? 'any-ipv4'
+        : 'ip',
+      host: literal,
+      port,
+      bytes: v4,
+      zone,
+    }
+  }
 
   const v6 = parseIPv6(literal)
   if (v6) {
-    if (isUnspecified(v6))
-      return { kind: mappedIPv4(v6) ? 'any-ipv4' : 'any-ipv6', host: literal, port, bytes: v6, zone }
-    return { kind: 'ip', host: literal, port, bytes: v6, zone }
+    if (isUnspecified(v6)) {
+      return {
+        kind: mappedIPv4(v6)
+          ? 'any-ipv4'
+          : 'any-ipv6',
+        host: literal,
+        port,
+        bytes: v6,
+        zone,
+      }
+    }
+    return {
+      kind: 'ip',
+      host: literal,
+      port,
+      bytes: v6,
+      zone,
+    }
   }
 
   // Only a NAME reaches here, and a name is case-insensitive.
-  return { kind: 'host', host: literal.toLowerCase(), port, bytes: null, zone }
+  return {
+    kind: 'host',
+    host: literal.toLowerCase(),
+    port,
+    bytes: null,
+    zone,
+  }
 }
 
 /** Whether every byte is zero: the unspecified address of its family. */
@@ -156,7 +204,9 @@ function isUnspecified(bytes: number[]): boolean {
 function mappedIPv4(bytes: number[]): boolean {
   if (bytes.length === 4)
     return true
-  return bytes.slice(0, 12).every((b, i) => (i < 10 ? b === 0 : b === 0xFF))
+  return bytes.slice(0, 12).every((b, i) => (i < 10
+    ? b === 0
+    : b === 0xFF))
 }
 
 /** Whether these bytes are IPv4 or an IPv4-mapped IPv6 address. */
@@ -264,13 +314,17 @@ export interface MergeNote {
  */
 export function mergeNotes(defaultAddress: string, rows: AddressRow[]): MergeNote[] {
   const addresses = [
-    ...(defaultAddress === '' ? [] : [defaultAddress]),
+    ...(defaultAddress === ''
+      ? []
+      : [defaultAddress]),
     ...rows.map(toAddress),
   ]
   // A half-typed row has no port to compare, and every one of them would then
   // "cover" every other. The panel shows this only for valid rows; the guard
   // keeps that from being a precondition a caller can forget.
-  const parsed = addresses.map(a => (isValidPort(portOf(a)) ? parseAddress(a) : null))
+  const parsed = addresses.map(a => (isValidPort(portOf(a))
+    ? parseAddress(a)
+    : null))
 
   /** For each entry, the entry that absorbs it directly, or -1. */
   const absorber = parsed.map((a, i) => {

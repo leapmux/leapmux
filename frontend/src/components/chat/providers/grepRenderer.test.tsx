@@ -12,12 +12,14 @@ function makeGrepToolUse(input: Record<string, unknown> = {}) {
   return {
     type: 'assistant',
     message: {
-      content: [{
-        type: 'tool_use',
-        id: 'test-grep',
-        name: 'Grep',
-        input: { pattern: 'ToolHeaderActions', ...input },
-      }],
+      content: [
+        {
+          type: 'tool_use',
+          id: 'test-grep',
+          name: 'Grep',
+          input: { pattern: 'ToolHeaderActions', ...input },
+        },
+      ],
     },
   }
 }
@@ -31,11 +33,13 @@ function makeGrepToolResult(
     type: 'user',
     message: {
       role: 'user',
-      content: [{
-        tool_use_id: 'test-grep',
-        type: 'tool_result',
-        content: resultContent,
-      }],
+      content: [
+        {
+          tool_use_id: 'test-grep',
+          type: 'tool_result',
+          content: resultContent,
+        },
+      ],
     },
     tool_use_result: toolUseResult,
   }

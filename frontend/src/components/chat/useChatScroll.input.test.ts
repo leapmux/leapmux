@@ -34,7 +34,12 @@ describe('useChatScroll non-wheel scroll direction', () => {
       onLoadNewerMessages: () => { newerLoads++ },
     })
     hook.attachListRef(div.el)
-    return { div, hook, getOlder: () => olderLoads, getNewer: () => newerLoads }
+    return {
+      div,
+      hook,
+      getOlder: () => olderLoads,
+      getNewer: () => newerLoads,
+    }
   }
 
   it('pages NEWER when a non-wheel scroll moves downward', () =>
@@ -84,10 +89,18 @@ describe('useChatScroll keyboard navigation', () => {
       hasNewerMessages: () => opts.hasNewer ?? false,
       hasOlderMessages: () => opts.hasOlder ?? false,
       // Each callback is omitted (not undefined) when the case states none.
-      ...(opts.onJumpToLatest !== undefined ? { onJumpToLatest: opts.onJumpToLatest } : {}),
-      ...(opts.onJumpToOldest !== undefined ? { onJumpToOldest: opts.onJumpToOldest } : {}),
-      ...(opts.onLoadOlderMessages !== undefined ? { onLoadOlderMessages: opts.onLoadOlderMessages } : {}),
-      ...(opts.onLoadNewerMessages !== undefined ? { onLoadNewerMessages: opts.onLoadNewerMessages } : {}),
+      ...(opts.onJumpToLatest !== undefined
+        ? { onJumpToLatest: opts.onJumpToLatest }
+        : {}),
+      ...(opts.onJumpToOldest !== undefined
+        ? { onJumpToOldest: opts.onJumpToOldest }
+        : {}),
+      ...(opts.onLoadOlderMessages !== undefined
+        ? { onLoadOlderMessages: opts.onLoadOlderMessages }
+        : {}),
+      ...(opts.onLoadNewerMessages !== undefined
+        ? { onLoadNewerMessages: opts.onLoadNewerMessages }
+        : {}),
     })
     hook.attachListRef(div.el)
     return { div, hook }
@@ -172,7 +185,9 @@ describe('useChatScroll keyboard navigation', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -215,7 +230,9 @@ describe('useChatScroll keyboard navigation', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -267,7 +284,9 @@ describe('useChatScroll keyboard navigation', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -279,7 +298,14 @@ describe('useChatScroll keyboard navigation', () => {
           const div = makeFakeScrollDiv()
           // Freshly-loaded page: the visible top rows are collapsed-until-measured
           // (height 0) and stack at offset 0; only the rows below carry an estimate.
-          const { virt, setRowHeight, total } = makeRowVirtualizer([0, 0, 0, 0, 0, ...Array.from<number>({ length: 15 }).fill(100)])
+          const { virt, setRowHeight, total } = makeRowVirtualizer([
+            0,
+            0,
+            0,
+            0,
+            0,
+            ...Array.from<number>({ length: 15 }).fill(100),
+          ])
           div.setClientHeight(500)
           div.setScrollTop(0)
           createRenderEffect(() => div.setScrollHeight(total()))
@@ -318,7 +344,9 @@ describe('useChatScroll keyboard navigation', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -480,7 +508,9 @@ describe('useChatScroll down-jump on a small scroll-down', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -550,7 +580,9 @@ describe('useChatScroll down-jump on a small scroll-down', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -578,7 +610,11 @@ describe('useChatScroll momentum reporting', () => {
       onMomentumScroll: () => { momentumReports++ },
     })
     hook.attachListRef(div.el)
-    return { div, hook, reports: () => momentumReports }
+    return {
+      div,
+      hook,
+      reports: () => momentumReports,
+    }
   }
 
   it('reports a scroll the reader coasted to', () =>
@@ -599,7 +635,11 @@ describe('useChatScroll momentum reporting', () => {
 
       // A drag under the finger has no inertia to protect, and the pointer
       // events it fires already light the rail on their own.
-      hook.handlers.onTouchStart({ touches: [{ clientY: 10 }] } as unknown as TouchEvent)
+      hook.handlers.onTouchStart({
+        touches: [
+          { clientY: 10 },
+        ],
+      } as unknown as TouchEvent)
       div.setScrollTop(300)
       hook.handlers.onScroll()
 

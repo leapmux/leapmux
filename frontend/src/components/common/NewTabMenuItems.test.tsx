@@ -33,22 +33,41 @@ function renderItems(overrides: {
   }
   // `in`, not `??`: the two "still unknown" cases pass an explicit `undefined`,
   // which a nullish default would silently replace with the populated list.
-  const providers = 'availableProviders' in overrides ? overrides.availableProviders : [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX]
-  const shells = 'availableShells' in overrides ? overrides.availableShells : ['/bin/zsh', '/bin/bash']
-  const defaultShell = 'defaultShell' in overrides ? overrides.defaultShell : '/bin/zsh'
+  const providers = 'availableProviders' in overrides
+    ? overrides.availableProviders
+    : [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX]
+  const shells = 'availableShells' in overrides
+    ? overrides.availableShells
+    : ['/bin/zsh', '/bin/bash']
+  const defaultShell = 'defaultShell' in overrides
+    ? overrides.defaultShell
+    : '/bin/zsh'
   const result = render(() => (
     <menu>
       <NewTabMenuItems
-        {...(providers !== undefined ? { availableProviders: providers } : {})}
-        {...(shells !== undefined ? { availableShells: shells } : {})}
-        {...(defaultShell !== undefined ? { defaultShell } : {})}
-        {...(overrides.shortcuts !== undefined ? { shortcuts: overrides.shortcuts } : {})}
-        {...(overrides.disabledReason !== undefined ? { disabledReason: overrides.disabledReason } : {})}
+        {...(providers !== undefined
+          ? { availableProviders: providers }
+          : {})}
+        {...(shells !== undefined
+          ? { availableShells: shells }
+          : {})}
+        {...(defaultShell !== undefined
+          ? { defaultShell }
+          : {})}
+        {...(overrides.shortcuts !== undefined
+          ? { shortcuts: overrides.shortcuts }
+          : {})}
+        {...(overrides.disabledReason !== undefined
+          ? { disabledReason: overrides.disabledReason }
+          : {})}
         {...handlers}
       />
     </menu>
   ))
-  return { ...handlers, ...result }
+  return {
+    ...handlers,
+    ...result,
+  }
 }
 
 /** The `<button>` of the item labelled `label` — the text node's own element is not it. */

@@ -21,11 +21,17 @@ export function piEditsFromArgs(args: Record<string, unknown>): Array<{ oldText:
       edits = undefined
     }
   }
-  const values = Array.isArray(edits) ? [...edits] : isObject(edits) ? [edits] : []
+  const values = Array.isArray(edits)
+    ? [...edits]
+    : isObject(edits)
+      ? [edits]
+      : []
   if (typeof args.oldText === 'string' && typeof args.newText === 'string')
     values.push({ oldText: args.oldText, newText: args.newText })
   return values.flatMap(value => isObject(value) && typeof value.oldText === 'string' && typeof value.newText === 'string'
-    ? [{ oldText: value.oldText, newText: value.newText }]
+    ? [
+        { oldText: value.oldText, newText: value.newText },
+      ]
     : [])
 }
 
@@ -96,7 +102,9 @@ export function resolvePiResultDiff(
   // The request can arrive after the result. Keep its path outside the parsed-diff cache.
   return {
     rawDiff: cached.rawDiff,
-    source: cached.hunks?.length ? fileEditDiffFromHunks(pickString(startArgs, 'path'), cached.hunks) : null,
+    source: cached.hunks?.length
+      ? fileEditDiffFromHunks(pickString(startArgs, 'path'), cached.hunks)
+      : null,
   }
 }
 
@@ -119,7 +127,9 @@ export function extractPiRead(
   // `tool_execution_end` carries the result but not the original args; callers
   // pass the matching start args via `fallbackArgs` so the shared Read body can
   // still show the correct path and line numbers.
-  const args = Object.keys(tool.args).length > 0 ? tool.args : (fallbackArgs ?? {})
+  const args = Object.keys(tool.args).length > 0
+    ? tool.args
+    : (fallbackArgs ?? {})
   const resultText = tool.result?.text ?? tool.partialResult?.text ?? ''
   return readFileResultFromContent({
     content: resultText,
@@ -147,7 +157,9 @@ export function piFallbackDiffSources(
     return extractPiEdit(startPayload)?.filter(fileEditHasDiff) ?? []
   if (toolName === PI_TOOL.Write) {
     const source = extractPiWrite(startPayload)
-    return fileEditHasDiff(source) ? [source] : []
+    return fileEditHasDiff(source)
+      ? [source]
+      : []
   }
   return []
 }

@@ -26,7 +26,9 @@ export function zoomLabel(mode: ZoomMode, fitScale?: number | null): string {
 export function zoomIn(current: ZoomMode, fitScale?: number | null): ZoomMode {
   const scale = current === 'fit'
     ? (fitScale ?? 1)
-    : current === 'actual' ? 1 : current
+    : current === 'actual'
+      ? 1
+      : current
   const next = Math.round((scale + ZOOM_STEP) * 100) / 100
   return Math.min(next, ZOOM_MAX)
 }
@@ -34,7 +36,9 @@ export function zoomIn(current: ZoomMode, fitScale?: number | null): ZoomMode {
 export function zoomOut(current: ZoomMode, fitScale?: number | null): ZoomMode {
   const scale = current === 'fit'
     ? (fitScale ?? 1)
-    : current === 'actual' ? 1 : current
+    : current === 'actual'
+      ? 1
+      : current
   const next = Math.round((scale - ZOOM_STEP) * 100) / 100
   return Math.max(next, ZOOM_MIN)
 }

@@ -6,7 +6,9 @@ import { bashToolCall } from '../helpers/providerToolCalls'
 import { toolCallRow } from '../helpers/ui'
 
 droidTest('runs successful and failed native commands with their actual output', async ({ native }) => {
-  await exerciseShellToolExecution(native, { absentRowText: ['[Process exited with code', 'Error: Command failed (exit code:'] })
+  await exerciseShellToolExecution(native, {
+    absentRowText: ['[Process exited with code', 'Error: Command failed (exit code:'],
+  })
 })
 
 droidTest('updates one tool card with the live output and stores one completed result', async ({ native }) => {
@@ -16,7 +18,9 @@ droidTest('updates one tool card with the live output and stores one completed r
     afterOutputBoundary: async (boundary) => {
       const live = toolCallRow(native.page, callID, 'request')
       await expect(live).toHaveCount(1)
-      await expect(live).toContainText(boundary.phase === 'first' ? boundary.firstLiveTail : boundary.secondLiveTail)
+      await expect(live).toContainText(boundary.phase === 'first'
+        ? boundary.firstLiveTail
+        : boundary.secondLiveTail)
       if (boundary.phase === 'second')
         await expect(live).not.toContainText(boundary.firstLiveTail)
       await expect(toolCallRow(native.page, callID)).toHaveCount(0)

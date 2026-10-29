@@ -8,6 +8,20 @@ import { useCollapsedLines } from '../useCollapsedLines'
  * The row owns this fallback because no typed kind can interpret that result.
  */
 export function PlainTextResult(props: { text: string, view: ToolRowView }): JSX.Element {
-  const collapsed = useCollapsedLines({ text: () => props.text, expanded: () => props.view.expanded() })
-  return <CollapsibleContent outputPreview kind="ansi-or-pre" text={props.text} display={collapsed.display()} isCollapsed={collapsed.isCollapsed()} {...(props.view.context !== undefined ? { context: props.view.context } : {})} />
+  const collapsed = useCollapsedLines({
+    text: () => props.text,
+    expanded: () => props.view.expanded(),
+  })
+  return (
+    <CollapsibleContent
+      outputPreview
+      kind="ansi-or-pre"
+      text={props.text}
+      display={collapsed.display()}
+      isCollapsed={collapsed.isCollapsed()}
+      {...(props.view.context !== undefined
+        ? { context: props.view.context }
+        : {})}
+    />
+  )
 }

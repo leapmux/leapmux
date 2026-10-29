@@ -14,7 +14,9 @@ export function readCodewhaleNativeOutput(snapshot: NativeMessageSnapshot, callI
   })
   const item = pickObject(pickObject(record.frame, 'payload'), 'item')
   const metadata = pickObject(item, 'metadata')
-  const previewText = typeof item?.detail === 'string' ? item.detail : ''
+  const previewText = typeof item?.detail === 'string'
+    ? item.detail
+    : ''
   const footer = /\[Showing lines \d+-\d+ of \d+ \([^\r\n]+ limit\)\. Full output: ([^\]\r\n]+)\]$/u.exec(previewText)?.[1]
   const path = metadata?.spillover_path ?? footer
   if (!isFilesystemPath(path))
@@ -26,5 +28,10 @@ export function readCodewhaleNativeOutput(snapshot: NativeMessageSnapshot, callI
       throw new Error('The native Codewhale path differs from its exact native owner.')
     }
   }
-  return { paths: [path], previewText, frame: record.frame, content: record.message.content }
+  return {
+    paths: [path],
+    previewText,
+    frame: record.frame,
+    content: record.message.content,
+  }
 }

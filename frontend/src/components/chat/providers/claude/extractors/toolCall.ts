@@ -50,7 +50,11 @@ export function claudeEnvelope(row: ClaudeToolRow, context: ClaudeRowContext): T
     name: row.toolName,
     lifecycle: {
       frameStatus: 'unstated',
-      providerOutcome: row.toolUseResult?.interrupted === true ? 'interrupted' : row.isError === true ? 'failed' : null,
+      providerOutcome: row.toolUseResult?.interrupted === true
+        ? 'interrupted'
+        : row.isError === true
+          ? 'failed'
+          : null,
       retainedOutcome: retainedOutcome(context.completion),
       rowFinal: row.role === 'result' || retainedRowIsFinal(context.completion),
       resultFrameLanded: row.role === 'result',
@@ -100,7 +104,9 @@ export function claudeSpec(args: ClaudeToolRow, result: ClaudeToolRow | undefine
  * one.
  */
 function claudeCallKind(toolName: string): ToolKind {
-  return parseMcpToolName(toolName) ? 'mcp' : claudeToolKind(toolName)
+  return parseMcpToolName(toolName)
+    ? 'mcp'
+    : claudeToolKind(toolName)
 }
 
 /**
@@ -143,8 +149,16 @@ export const CLAUDE_TOOL_READERS: ToolCallSpecReaderTable<ClaudeCallFacts> = {
   // Two entries for one reading, because each states its OWN kind. `CLAUDE_TOOL_KINDS`
   // maps the four file tools onto these two kinds, and it is now the only place that
   // does: the shared builder read the tool name a second time to choose between them.
-  edit: (facts): ToolCallSpecVariant<'edit'> => ({ kind: 'edit', request: claudeReaderRequest('edit', facts), ...claudeFileChangeResult(facts.args, facts.result) }),
-  write: (facts): ToolCallSpecVariant<'write'> => ({ kind: 'write', request: claudeReaderRequest('write', facts), ...claudeFileChangeResult(facts.args, facts.result) }),
+  edit: (facts): ToolCallSpecVariant<'edit'> => ({
+    kind: 'edit',
+    request: claudeReaderRequest('edit', facts),
+    ...claudeFileChangeResult(facts.args, facts.result),
+  }),
+  write: (facts): ToolCallSpecVariant<'write'> => ({
+    kind: 'write',
+    request: claudeReaderRequest('write', facts),
+    ...claudeFileChangeResult(facts.args, facts.result),
+  }),
   grep: (facts): ToolCallSpecVariant<'grep'> => claudeGrepSpec(claudeReaderRequest('grep', facts), facts.result),
   glob: (facts): ToolCallSpecVariant<'glob'> => claudeGlobSpec(claudeReaderRequest('glob', facts), facts.result),
   fetch: (facts): ToolCallSpecVariant<'fetch'> => claudeFetchSpec(claudeReaderRequest('fetch', facts), facts.result),
@@ -164,13 +178,21 @@ export const CLAUDE_TOOL_READERS: ToolCallSpecReaderTable<ClaudeCallFacts> = {
   mcp: (facts): ToolCallSpecVariant<'mcp'> => claudeMcpSpec(claudeReaderRequest('mcp', facts), facts.args, facts.result),
   // The generic card, for a tool no vocabulary lists. Claude's own table answers the
   // `unspecified` for such a name, which means that the provider states no kind.
-  unspecified: (facts): ToolCallSpecVariant<'unspecified'> => ({ kind: 'unspecified', request: claudeReaderRequest('unspecified', facts), ...claudeGenericToolResult(facts.result) }),
+  unspecified: (facts): ToolCallSpecVariant<'unspecified'> => ({
+    kind: 'unspecified',
+    request: claudeReaderRequest('unspecified', facts),
+    ...claudeGenericToolResult(facts.result),
+  }),
   // UNREACHABLE, and the one entry here a Claude row could otherwise reach: `other` is
   // the state "the provider called the tool uncategorized", and Claude never says it --
   // `claudeToolKind` answers `unspecified` for every name its table does not hold. The entry
   // states the same card at its OWN kind, so a build that starts producing `other`
   // draws the card rather than an empty row.
-  other: (facts): ToolCallSpecVariant<'other'> => ({ kind: 'other', request: claudeReaderRequest('other', facts), ...claudeGenericToolResult(facts.result) }),
+  other: (facts): ToolCallSpecVariant<'other'> => ({
+    kind: 'other',
+    request: claudeReaderRequest('other', facts),
+    ...claudeGenericToolResult(facts.result),
+  }),
   // `ToolSearch` asks which DEFERRED tools exist before the model calls one. The tool
   // registry is a corpus, so `search` is the kind it takes (`model/toolKind.ts`), and the
   // matches are TOOL NAMES. `filenames` and `lines` are the two fields of
@@ -263,11 +285,32 @@ function claudeGenericToolResult(result: ClaudeToolRow | undefined): { result?: 
   const images = result.images.map(source => ({ type: 'image' as const, source }))
   if (result.isError === true) {
     return images.length > 0
-      ? { result: { content: [{ type: 'text', text: result.resultContent }, ...images] }, statusOverride: 'failed' }
-      : { result: failedResult(result.resultContent) }
+      ? {
+          result: {
+            content: [
+              { type: 'text', text: result.resultContent },
+              ...images,
+            ],
+          },
+          statusOverride: 'failed',
+        }
+      : {
+          result: failedResult(result.resultContent),
+        }
   }
-  const text = result.resultContent ? [{ type: 'text' as const, text: result.resultContent }] : []
-  return { result: { content: [...text, ...images] } }
+  const text = result.resultContent
+    ? [
+        { type: 'text' as const, text: result.resultContent },
+      ]
+    : []
+  return {
+    result: {
+      content: [
+        ...text,
+        ...images,
+      ],
+    },
+  }
 }
 
 /**
@@ -282,14 +325,22 @@ export function claudeToolCall(args: ClaudeToolRow, result: ClaudeToolRow | unde
   // no reader specification carries a label or an icon of its own, so each key rides
   // only when this row has one.
   const mcp = parseMcpToolName(args.toolName)
-  const label = mcp ? undefined : (args.toolName || undefined)
+  const label = mcp
+    ? undefined
+    : (args.toolName || undefined)
   const icon = claudeToolIcon(args.toolName)
   return createToolCall(envelope, {
     ...spec,
-    ...(label !== undefined ? { label } : {}),
-    ...(icon !== undefined ? { icon } : {}),
+    ...(label !== undefined
+      ? { label }
+      : {}),
+    ...(icon !== undefined
+      ? { icon }
+      : {}),
     // The pictures the result carried, for a kind whose specification names none.
     // The generic trio keeps its pictures in the result's own content blocks.
-    images: isGenericKind(spec.kind) ? [] : spec.images ?? result?.images ?? [],
+    images: isGenericKind(spec.kind)
+      ? []
+      : spec.images ?? result?.images ?? [],
   })
 }

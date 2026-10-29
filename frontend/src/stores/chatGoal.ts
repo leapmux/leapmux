@@ -197,7 +197,9 @@ export function visibleGoalStatusDetail(goal: { status: GoalStatus, statusDetail
   if (!detail)
     return undefined
   const folded = detail.toLowerCase()
-  return folded === goal.status || folded === goalStatusLabel(goal.status).toLowerCase() ? undefined : detail
+  return folded === goal.status || folded === goalStatusLabel(goal.status).toLowerCase()
+    ? undefined
+    : detail
 }
 
 /** The label for a status, as the card and the chip show it. */

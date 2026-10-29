@@ -4,7 +4,12 @@ import { dirname, isAbsolute, join } from 'node:path'
 import { isObject } from '../src/lib/jsonPick.ts'
 
 export type StateFileOperations = Pick<typeof import('node:fs'), 'mkdirSync' | 'writeFileSync' | 'renameSync' | 'rmSync'>
-const fileOperations: StateFileOperations = { mkdirSync, writeFileSync, renameSync, rmSync }
+const fileOperations: StateFileOperations = {
+  mkdirSync,
+  writeFileSync,
+  renameSync,
+  rmSync,
+}
 
 /** Accept only an absolute destination, so a changed working directory cannot move the file. */
 export function absoluteDestination(value: unknown, description: string): string {

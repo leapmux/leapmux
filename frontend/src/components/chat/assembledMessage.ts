@@ -51,7 +51,11 @@ export function parseAssembledMessage(value: unknown): AssembledMessage | null {
   }
   if (!completion)
     return null
-  return { kind, text: pickString(value, ASSEMBLED_MESSAGE.FieldText), completion }
+  return {
+    kind,
+    text: pickString(value, ASSEMBLED_MESSAGE.FieldText),
+    completion,
+  }
 }
 
 export function completionMarker(completion: MessageCompletion | null): string | null {
@@ -68,7 +72,9 @@ export function appendCompletionMarker(text: string, completion: MessageCompleti
   const marker = completionMarker(completion)
   if (!marker)
     return text
-  return text ? `${text}\n\n${marker}` : marker
+  return text
+    ? `${text}\n\n${marker}`
+    : marker
 }
 
 export function assembledMessageDisplayText(message: AssembledMessage): string {

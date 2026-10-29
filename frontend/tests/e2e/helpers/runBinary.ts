@@ -24,7 +24,9 @@ import { join } from 'node:path'
 import process from 'node:process'
 
 /** The file name of the LeapMux executable, at the repository root and in a run directory. */
-export const LEAPMUX_BINARY_NAME = process.platform === 'win32' ? 'leapmux.exe' : 'leapmux'
+export const LEAPMUX_BINARY_NAME = process.platform === 'win32'
+  ? 'leapmux.exe'
+  : 'leapmux'
 
 /** Where the run that owns `runDir` keeps its copy of the LeapMux executable. */
 export function runBinaryPath(runDir: string): string {

@@ -18,7 +18,12 @@ import './plugin'
 import '../testMocks'
 
 const provider = () => providerFor(AgentProvider.ZCODE)!
-const event = (kind: string, fields: Record<string, unknown>) => ({ type: 'tool.updated', payload: { kind, toolCallId: 'call', ...fields } })
+function event(kind: string, fields: Record<string, unknown>) {
+  return {
+    type: 'tool.updated',
+    payload: { kind, toolCallId: 'call', ...fields },
+  }
+}
 
 function renderRequest(toolName: string, args: Record<string, unknown>) {
   const request = event('scheduled', { toolName, input: args })
@@ -33,7 +38,16 @@ it('renders the ZCode plan in the transcript through the shared plan layout', ()
 })
 
 it('renders a plan preserved from a native control request', () => {
-  const request = { id: 'server-1', method: 'interaction/requestUserInput', params: { requestId: 'plan', toolName: 'ExitPlanMode', schema: { interaction: 'plan_approval' }, input: { plan: '# Stored plan\n\n- Keep **original bytes**.' } } }
+  const request = {
+    id: 'server-1',
+    method: 'interaction/requestUserInput',
+    params: {
+      requestId: 'plan',
+      toolName: 'ExitPlanMode',
+      schema: { interaction: 'plan_approval' },
+      input: { plan: '# Stored plan\n\n- Keep **original bytes**.' },
+    },
+  }
   const { getByRole, container } = render(() => renderMessageContent(request, { premeasureMode: true }, provider().transcript.classify(input(request)), AgentProvider.ZCODE))
   expect(getByRole('heading', { name: 'Stored plan' })).toBeInTheDocument()
   expect(container.querySelector('li strong')?.textContent).toBe('original bytes')
@@ -50,20 +64,32 @@ function renderResult(toolName: string, args: Record<string, unknown>, result: R
     spanType: toolName,
     premeasureMode: true,
     getMessageUiState: () => expanded,
-    sources: testMessageSources({ current: () => parsed, request: () => request }),
+    sources: testMessageSources({
+      current: () => parsed,
+      request: () => request,
+    }),
   }, category, AgentProvider.ZCODE))
-  return { ...view, category, meta: providerToolMeta(AgentProvider.ZCODE, end, { category, spanType: toolName, request }) }
+  return {
+    ...view,
+    category,
+    meta: providerToolMeta(AgentProvider.ZCODE, end, { category, spanType: toolName, request }),
+  }
 }
 
 describe('zcode tool rendering', () => {
   // A `result` frame with no request beside it and no span type to borrow a name from.
   // It shows what the tool returned and invents no name.
   it('shows an unmatched completion by its content alone', () => {
-    const end = event('result', { result: { success: true, content: 'recovered output' } })
+    const end = event('result', {
+      result: { success: true, content: 'recovered output' },
+    })
     const category = provider().transcript.classify(input(end))
     const { container } = render(() => renderMessageContent(end, {
       premeasureMode: true,
-      sources: testMessageSources({ current: () => input(end), request: () => undefined }),
+      sources: testMessageSources({
+        current: () => input(end),
+        request: () => undefined,
+      }),
     }, category, AgentProvider.ZCODE))
     expect(container.textContent).toContain('recovered output')
     for (const invented of ['Run command', 'Read file', 'Search'])
@@ -89,7 +115,12 @@ describe('zcode tool rendering', () => {
   it('resolves streamed arguments from supplemental content without changing the provider request', () => {
     const request = event('scheduled', { toolName: 'Bash', inputOmitted: true, inputRef: 'model_stream' })
     const original = JSON.stringify(request)
-    const parsed = { ...input(request), supplementalContent: event('scheduled', { input: { command: 'printf recovered' } }) }
+    const parsed = {
+      ...input(request),
+      supplementalContent: event('scheduled', {
+        input: { command: 'printf recovered' },
+      }),
+    }
     const resolved = resolveMessageForRendering(parsed, AgentProvider.ZCODE)
     const { container } = render(() => renderMessageContent(resolved.parentObject, { premeasureMode: true }, provider().transcript.classify(resolved), AgentProvider.ZCODE))
     expect(container.textContent).toContain('printf recovered')
@@ -97,18 +128,36 @@ describe('zcode tool rendering', () => {
   })
 
   it.each([
-    event('scheduled', { toolCallId: 'another', input: { command: 'wrong' } }),
-    event('result', { input: { command: 'wrong' } }),
-    event('scheduled', { input: ['wrong'] }),
+    event('scheduled', {
+      toolCallId: 'another',
+      input: { command: 'wrong' },
+    }),
+    event('result', {
+      input: { command: 'wrong' },
+    }),
+    event('scheduled', {
+      input: ['wrong'],
+    }),
   ])('rejects a supplemental input with another identity or an invalid shape: %j', (supplementalContent) => {
     const request = event('scheduled', { toolName: 'Bash', inputOmitted: true })
-    const resolved = resolveMessageForRendering({ ...input(request), supplementalContent }, AgentProvider.ZCODE)
+    const resolved = resolveMessageForRendering({
+      ...input(request),
+      supplementalContent,
+    }, AgentProvider.ZCODE)
     expect(resolved.parentObject).toEqual(request)
   })
 
   it('keeps an explicit provider input when supplemental content also supplies one', () => {
-    const request = event('scheduled', { toolName: 'Bash', input: { command: 'original' } })
-    const resolved = resolveMessageForRendering({ ...input(request), supplementalContent: event('scheduled', { input: { command: 'stale' } }) }, AgentProvider.ZCODE)
+    const request = event('scheduled', {
+      toolName: 'Bash',
+      input: { command: 'original' },
+    })
+    const resolved = resolveMessageForRendering({
+      ...input(request),
+      supplementalContent: event('scheduled', {
+        input: { command: 'stale' },
+      }),
+    }, AgentProvider.ZCODE)
     expect(resolved.parentObject).toEqual(request)
   })
 
@@ -149,13 +198,35 @@ describe('zcode tool rendering', () => {
   })
 
   it('skips malformed todo entries without losing valid tasks', () => {
-    const { container } = renderRequest('TodoWrite', { todos: [null, false, { content: 'Valid task', status: 'pending' }] })
+    const { container } = renderRequest('TodoWrite', {
+      todos: [
+        null,
+        false,
+        { content: 'Valid task', status: 'pending' },
+      ],
+    })
     expect(container.textContent).toContain('Valid task')
     expect(container.textContent).toContain('1 task')
   })
 
   it.each(['', 'Bash'])('renders an explicit file diff display for tool %s', (name) => {
-    const { container, meta } = renderResult(name, {}, { success: true, display: { kind: 'file_diff', filePath: '/project/file.ts', truncated: true, structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-before', '+after'] }] } })
+    const { container, meta } = renderResult(name, {}, {
+      success: true,
+      display: {
+        kind: 'file_diff',
+        filePath: '/project/file.ts',
+        truncated: true,
+        structuredPatch: [
+          {
+            oldStart: 1,
+            oldLines: 1,
+            newStart: 1,
+            newLines: 1,
+            lines: ['-before', '+after'],
+          },
+        ],
+      },
+    })
     expect(container.querySelector(`.${diffAdded}`)?.textContent).toContain('after')
     expect(meta?.hasDiff).toBe(true)
     expect(meta?.copyableContent()).toContain('+after')
@@ -207,12 +278,16 @@ describe('zcode rows on the shared tool path', () => {
   // to draw a bare body, so a reader who scrolled past the request saw output with no
   // name on it.
   it('draws its own header when no request row sits beside the result', () => {
-    const end = event('result', { result: { success: true, content: 'a.ts' } })
+    const end = event('result', {
+      result: { success: true, content: 'a.ts' },
+    })
     const category = provider().transcript.classify(input(end))
     const { container } = render(() => renderMessageContent(end, {
       spanType: ZCODE_TOOL.Glob,
       premeasureMode: true,
-      sources: testMessageSources({ current: () => input(end) }),
+      sources: testMessageSources({
+        current: () => input(end),
+      }),
     }, category, AgentProvider.ZCODE))
     expect(container.textContent).toContain(ZCODE_TOOL.Glob)
     expect(container.querySelector('.lucide-folder-search')).not.toBeNull()
@@ -221,7 +296,12 @@ describe('zcode rows on the shared tool path', () => {
   it('draws a task-stop display through the shared status body', () => {
     const { container } = renderResult(ZCODE_TOOL.TaskOutput, {}, {
       success: true,
-      display: { kind: 'task_stop', taskId: 'task-42', command: 'npm run dev', message: 'Stopped the task' },
+      display: {
+        kind: 'task_stop',
+        taskId: 'task-42',
+        command: 'npm run dev',
+        message: 'Stopped the task',
+      },
     })
     expect(container.textContent).toContain('Stopped task task-42')
     expect(container.textContent).toContain('npm run dev')
@@ -233,12 +313,18 @@ describe('zcode rows the agent never finished', () => {
   // The worker stores the call's OWN last frame and states what it concluded in its
   // metadata column. Nothing in the row's bytes claims a result the agent never sent.
   function renderRetained(frame: Record<string, unknown>, extra: Partial<ParsedMessageContent>) {
-    const parsed = { ...input(frame), spanType: ZCODE_TOOL.Bash, ...extra }
+    const parsed = {
+      ...input(frame),
+      spanType: ZCODE_TOOL.Bash,
+      ...extra,
+    }
     const category = provider().transcript.classify(parsed)
     const view = render(() => renderMessageContent(frame, {
       spanType: ZCODE_TOOL.Bash,
       premeasureMode: true,
-      sources: testMessageSources({ current: () => parsed }),
+      sources: testMessageSources({
+        current: () => parsed,
+      }),
     }, category, AgentProvider.ZCODE, parsed.completion))
     return { ...view, category }
   }
@@ -255,7 +341,10 @@ describe('zcode rows the agent never finished', () => {
 
   it('states what the batch summary concluded about a call with no result', () => {
     const { container, category } = renderRetained(
-      event('scheduled', { toolName: ZCODE_TOOL.Bash, input: { command: 'ls' } }),
+      event('scheduled', {
+        toolName: ZCODE_TOOL.Bash,
+        input: { command: 'ls' },
+      }),
       {
         messageMetadata: {
           [MESSAGE_METADATA_FIELD.ToolOutcome]: {

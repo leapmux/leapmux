@@ -31,7 +31,10 @@ function withProvider() {
     return null
   }
   render(() => <PreferencesProvider><Probe /></PreferencesProvider>)
-  return { binding: () => binding, prefs: () => prefs }
+  return {
+    binding: () => binding,
+    prefs: () => prefs,
+  }
 }
 
 beforeEach(() => {

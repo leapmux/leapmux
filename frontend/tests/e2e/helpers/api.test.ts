@@ -33,7 +33,9 @@ import {
 } from './api'
 import { createTestChannelManager } from './e2e-channel'
 
-vi.mock('./e2e-channel', () => ({ createTestChannelManager: vi.fn() }))
+vi.mock('./e2e-channel', () => ({
+  createTestChannelManager: vi.fn(),
+}))
 vi.mock('./altcha', () => ({
   solveCaptchaViaAPI: vi.fn(async () => ({ captchaPayload: 'solved-captcha', honeypot: '' })),
 }))
@@ -74,8 +76,11 @@ function deletionResponses(workerTabs: unknown[], onlineWorkers = ['worker-a', '
     const url = String(input)
     if (url.endsWith('/DeleteWorkspace'))
       return Response.json({ workerTabs })
-    if (url.endsWith('/ListWorkers'))
-      return Response.json({ workers: onlineWorkers.map(id => ({ id, online: true })) })
+    if (url.endsWith('/ListWorkers')) {
+      return Response.json({
+        workers: onlineWorkers.map(id => ({ id, online: true })),
+      })
+    }
     throw new Error(`Unexpected request: ${url}`)
   })
   vi.stubGlobal('fetch', fetch)
@@ -157,11 +162,36 @@ describe('openAgentViaAPI', () => {
   })
 
   it.each([
-    { label: 'a model given as an option value', options: { optionValues: { model: 'another-model' } }, message: 'give the model as `model`' },
-    { label: 'a model given twice', options: { model: 'gpt-mock', optionValues: { model: 'another-model' } }, message: 'give the model as `model`' },
-    { label: 'an empty model', options: { model: '' }, message: 'a model needs a model ID' },
-    { label: 'a blank model', options: { model: '  ' }, message: 'a model needs a model ID' },
-    { label: 'an explicit unspecified provider', options: { agentProvider: AgentProvider.UNSPECIFIED }, message: 'must not be UNSPECIFIED' },
+    {
+      label: 'a model given as an option value',
+      options: {
+        optionValues: { model: 'another-model' },
+      },
+      message: 'give the model as `model`',
+    },
+    {
+      label: 'a model given twice',
+      options: {
+        model: 'gpt-mock',
+        optionValues: { model: 'another-model' },
+      },
+      message: 'give the model as `model`',
+    },
+    {
+      label: 'an empty model',
+      options: { model: '' },
+      message: 'a model needs a model ID',
+    },
+    {
+      label: 'a blank model',
+      options: { model: '  ' },
+      message: 'a model needs a model ID',
+    },
+    {
+      label: 'an explicit unspecified provider',
+      options: { agentProvider: AgentProvider.UNSPECIFIED },
+      message: 'must not be UNSPECIFIED',
+    },
   ])('refuses $label before it opens a channel', async ({ options, message }) => {
     await expect(openAgentViaAPI(server(), 'workspace', unitWorkingDir('/project'), options)).rejects.toThrow(message)
     expect(createTestChannelManager).not.toHaveBeenCalled()
@@ -172,20 +202,38 @@ describe('openAgentViaAPI', () => {
 describe('workspace deletion cleanup', () => {
   it('closes the tabs from the atomic delete response on every owning worker', async () => {
     const fetch = deletionResponses([
-      { workerId: 'worker-a', tabs: [{ tabType: 'TAB_TYPE_AGENT', tabId: 'agent-a' }] },
-      { workerId: 'worker-b', tabs: [{ tabType: 'TAB_TYPE_TERMINAL', tabId: 'terminal-b' }, { tabType: 'TAB_TYPE_IMAGE', tabId: 'image-b' }, { tabType: 'TAB_TYPE_FILE', tabId: 'file-b' }] },
+      {
+        workerId: 'worker-a',
+        tabs: [
+          { tabType: 'TAB_TYPE_AGENT', tabId: 'agent-a' },
+        ],
+      },
+      {
+        workerId: 'worker-b',
+        tabs: [
+          { tabType: 'TAB_TYPE_TERMINAL', tabId: 'terminal-b' },
+          { tabType: 'TAB_TYPE_IMAGE', tabId: 'image-b' },
+          { tabType: 'TAB_TYPE_FILE', tabId: 'file-b' },
+        ],
+      },
     ])
     await deleteWorkspaceViaAPI(hubUrl, 'session', 'workspace')
     expect(fetch.mock.calls.map(([url]) => String(url).split('/').at(-1)))
       .toEqual(['DeleteWorkspace', 'ListWorkers'])
     expect(callWorker).toHaveBeenCalledTimes(2)
     expect(callWorker.mock.calls.map(call => call[0])).toEqual(['worker-a', 'worker-b'])
-    expect(callWorker.mock.calls[0]?.[4]).toMatchObject({ tabs: [{ tabType: TabType.AGENT, tabId: 'agent-a' }] })
-    expect(callWorker.mock.calls[1]?.[4]).toMatchObject({ tabs: [
-      { tabType: TabType.TERMINAL, tabId: 'terminal-b' },
-      { tabType: TabType.IMAGE, tabId: 'image-b' },
-      { tabType: TabType.FILE, tabId: 'file-b' },
-    ] })
+    expect(callWorker.mock.calls[0]?.[4]).toMatchObject({
+      tabs: [
+        { tabType: TabType.AGENT, tabId: 'agent-a' },
+      ],
+    })
+    expect(callWorker.mock.calls[1]?.[4]).toMatchObject({
+      tabs: [
+        { tabType: TabType.TERMINAL, tabId: 'terminal-b' },
+        { tabType: TabType.IMAGE, tabId: 'image-b' },
+        { tabType: TabType.FILE, tabId: 'file-b' },
+      ],
+    })
   })
 
   it('does no channel or worker lookup for an empty workspace', async () => {
@@ -196,7 +244,14 @@ describe('workspace deletion cleanup', () => {
   })
 
   it('does not wait for an offline worker during cleanup', async () => {
-    deletionResponses([{ workerId: 'worker-a', tabs: [{ tabType: 'TAB_TYPE_AGENT', tabId: 'agent-a' }] }], [])
+    deletionResponses([
+      {
+        workerId: 'worker-a',
+        tabs: [
+          { tabType: 'TAB_TYPE_AGENT', tabId: 'agent-a' },
+        ],
+      },
+    ], [])
     await deleteWorkspaceViaAPI(hubUrl, 'session', 'workspace')
     expect(createTestChannelManager).not.toHaveBeenCalled()
   })
@@ -208,15 +263,32 @@ describe('workspace deletion cleanup', () => {
   })
 
   it('reports malformed tab data instead of skipping worker cleanup', async () => {
-    deletionResponses([{ workerId: 'worker-a', tabs: [{ tabType: 'TAB_TYPE_UNKNOWN', tabId: 'agent-a' }] }])
+    deletionResponses([
+      {
+        workerId: 'worker-a',
+        tabs: [
+          { tabType: 'TAB_TYPE_UNKNOWN', tabId: 'agent-a' },
+        ],
+      },
+    ])
     await expect(deleteWorkspaceViaAPI(hubUrl, 'session', 'workspace')).rejects.toThrow('cannot decode enum leapmux.v1.TabType from JSON: "TAB_TYPE_UNKNOWN"')
     expect(callWorker).not.toHaveBeenCalled()
   })
 
   it('attempts every worker cleanup before reporting a failure', async () => {
     deletionResponses([
-      { workerId: 'worker-a', tabs: [{ tabType: 'TAB_TYPE_AGENT', tabId: 'agent-a' }] },
-      { workerId: 'worker-b', tabs: [{ tabType: 'TAB_TYPE_AGENT', tabId: 'agent-b' }] },
+      {
+        workerId: 'worker-a',
+        tabs: [
+          { tabType: 'TAB_TYPE_AGENT', tabId: 'agent-a' },
+        ],
+      },
+      {
+        workerId: 'worker-b',
+        tabs: [
+          { tabType: 'TAB_TYPE_AGENT', tabId: 'agent-b' },
+        ],
+      },
     ])
     callWorker.mockRejectedValueOnce(new Error('worker-a failed'))
     await expect(deleteWorkspaceViaAPI(hubUrl, 'session', 'workspace')).rejects.toBeInstanceOf(AggregateError)
@@ -230,13 +302,18 @@ describe('deleteAllWorkspacesViaAPI', () => {
     const deleted: string[] = []
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input)
-      if (url.endsWith('/ListWorkspaces'))
-        return Response.json({ workspaces: ids.map(id => ({ id })) })
+      if (url.endsWith('/ListWorkspaces')) {
+        return Response.json({
+          workspaces: ids.map(id => ({ id })),
+        })
+      }
       if (url.endsWith('/DeleteWorkspace')) {
         const { workspaceId } = JSON.parse(String(init?.body)) as { workspaceId: string }
         deleted.push(workspaceId)
         const status = statuses[workspaceId] ?? 200
-        return status === 200 ? Response.json({ workerTabs: [] }) : new Response(`refused ${workspaceId}`, { status })
+        return status === 200
+          ? Response.json({ workerTabs: [] })
+          : new Response(`refused ${workspaceId}`, { status })
       }
       throw new Error(`Unexpected request: ${url}`)
     })
@@ -278,8 +355,15 @@ describe('hubSettingsDrift', () => {
   const altcha = { key: 'captcha.altcha', valueJson: '{"hmac_key":"<redacted>"}' }
 
   it('resets only the customized keys that the baseline does not hold', () => {
-    const current = [altcha, { key: 'smtp', valueJson: '{"host":"127.0.0.1"}' }, { key: 'open_app_registration', valueJson: 'true' }]
-    expect(hubSettingsDrift(current, [altcha])).toEqual({ reset: ['smtp', 'open_app_registration'], changedBaseline: [] })
+    const current = [
+      altcha,
+      { key: 'smtp', valueJson: '{"host":"127.0.0.1"}' },
+      { key: 'open_app_registration', valueJson: 'true' },
+    ]
+    expect(hubSettingsDrift(current, [altcha])).toEqual({
+      reset: ['smtp', 'open_app_registration'],
+      changedBaseline: [],
+    })
   })
 
   it('reports nothing for a hub at its baseline', () => {
@@ -289,11 +373,17 @@ describe('hubSettingsDrift', () => {
 
   it('reports a baseline key whose stored value changed', () => {
     const changed = { key: 'captcha.altcha', valueJson: '{"hmac_key":"<redacted>","max_number":10}' }
-    expect(hubSettingsDrift([changed], [altcha])).toEqual({ reset: [], changedBaseline: ['captcha.altcha'] })
+    expect(hubSettingsDrift([changed], [altcha])).toEqual({
+      reset: [],
+      changedBaseline: ['captcha.altcha'],
+    })
   })
 
   it('reports a baseline key that lost its stored value', () => {
-    expect(hubSettingsDrift([], [altcha])).toEqual({ reset: [], changedBaseline: ['captcha.altcha'] })
+    expect(hubSettingsDrift([], [altcha])).toEqual({
+      reset: [],
+      changedBaseline: ['captcha.altcha'],
+    })
   })
 })
 
@@ -305,7 +395,10 @@ describe('resetHubSettingsViaAPI', () => {
     const requests: Array<{ method: string, body: unknown }> = []
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const method = String(input).split('/').at(-1) ?? ''
-      requests.push({ method, body: JSON.parse(String(init?.body)) })
+      requests.push({
+        method,
+        body: JSON.parse(String(init?.body)),
+      })
       const status = failures[method]
       if (status !== undefined)
         return new Response(`refused ${method}`, { status })
@@ -326,17 +419,34 @@ describe('resetHubSettingsViaAPI', () => {
       { key: 'open_app_registration', valueJson: 'true', customized: true },
       { key: 'signup_enabled', customized: false },
     ])
-    await resetHubSettingsViaAPI(hubUrl, 'session', { baseline: [altcha], password: 'secret' })
+    await resetHubSettingsViaAPI(hubUrl, 'session', {
+      baseline: [altcha],
+      password: 'secret',
+    })
     expect(requests).toEqual([
       { method: 'ListSettings', body: {} },
-      { method: 'ElevateSession', body: { currentPassword: 'secret' } },
-      { method: 'ResetSettings', body: { keys: ['smtp', 'open_app_registration'] } },
+      {
+        method: 'ElevateSession',
+        body: { currentPassword: 'secret' },
+      },
+      {
+        method: 'ResetSettings',
+        body: {
+          keys: ['smtp', 'open_app_registration'],
+        },
+      },
     ])
   })
 
   it('sends no write for a hub at its baseline', async () => {
-    const requests = settingsResponses([{ ...altcha, customized: true }, { key: 'smtp', customized: false }])
-    await resetHubSettingsViaAPI(hubUrl, 'session', { baseline: [altcha], password: 'secret' })
+    const requests = settingsResponses([
+      { ...altcha, customized: true },
+      { key: 'smtp', customized: false },
+    ])
+    await resetHubSettingsViaAPI(hubUrl, 'session', {
+      baseline: [altcha],
+      password: 'secret',
+    })
     expect(requests.map(request => request.method)).toEqual(['ListSettings'])
   })
 
@@ -345,14 +455,19 @@ describe('resetHubSettingsViaAPI', () => {
       { key: 'captcha.altcha', valueJson: '{"hmac_key":"<redacted>","max_number":10}', customized: true },
       { key: 'smtp', valueJson: '{}', customized: true },
     ])
-    await expect(resetHubSettingsViaAPI(hubUrl, 'session', { baseline: [altcha], password: 'secret' }))
+    await expect(resetHubSettingsViaAPI(hubUrl, 'session', {
+      baseline: [altcha],
+      password: 'secret',
+    }))
       .rejects
       .toThrow('The hub settings captcha.altcha differ from their values at the start of the run.')
     expect(requests.map(request => request.method)).toEqual(['ListSettings'])
   })
 
   it('refuses a customized setting with no key', async () => {
-    settingsResponses([{ key: '', valueJson: '{}', customized: true }])
+    settingsResponses([
+      { key: '', valueJson: '{}', customized: true },
+    ])
     await expect(resetHubSettingsViaAPI(hubUrl, 'session', { baseline: [], password: 'secret' }))
       .rejects
       .toThrow('customized setting with no key')
@@ -363,7 +478,9 @@ describe('resetHubSettingsViaAPI', () => {
     { method: 'ElevateSession', message: 'elevateSessionViaAPI failed: UserService/ElevateSession returned HTTP 403: refused ElevateSession' },
     { method: 'ResetSettings', message: 'resetHubSettingsViaAPI(smtp) failed: AdminSettingsService/ResetSettings returned HTTP 403: refused ResetSettings' },
   ])('reports a refused $method with its status and body', async ({ method, message }) => {
-    settingsResponses([{ key: 'smtp', valueJson: '{}', customized: true }], { [method]: 403 })
+    settingsResponses([
+      { key: 'smtp', valueJson: '{}', customized: true },
+    ], { [method]: 403 })
     await expect(resetHubSettingsViaAPI(hubUrl, 'session', { baseline: [], password: 'secret' })).rejects.toThrow(message)
   })
 })
@@ -419,7 +536,10 @@ describe('test channel initialization', () => {
   })
 
   it('shares an in-flight connection attempt', async () => {
-    await Promise.all([getTestChannel(hubUrl, 'session'), getTestChannel(hubUrl, 'session')])
+    await Promise.all([
+      getTestChannel(hubUrl, 'session'),
+      getTestChannel(hubUrl, 'session'),
+    ])
     await getTestChannel(hubUrl, 'session')
     expect(createTestChannelManager).toHaveBeenCalledTimes(1)
   })
@@ -435,11 +555,13 @@ describe('test channel initialization', () => {
 
 describe('waitForNewOnlineWorkerViaAPI', () => {
   it('returns the actual new online identity and excludes old or offline Workers', async () => {
-    const fetch = vi.fn(async () => Response.json({ workers: [
-      { id: 'old-worker', online: true },
-      { id: 'offline-worker', online: false },
-      { id: 'new-worker', online: true },
-    ] }))
+    const fetch = vi.fn(async () => Response.json({
+      workers: [
+        { id: 'old-worker', online: true },
+        { id: 'offline-worker', online: false },
+        { id: 'new-worker', online: true },
+      ],
+    }))
     vi.stubGlobal('fetch', fetch)
     await expect(waitForNewOnlineWorkerViaAPI(hubUrl, 'private-token', new Set(['old-worker']))).resolves.toBe('new-worker')
     expect(fetch).toHaveBeenCalledOnce()
@@ -517,7 +639,11 @@ describe('waitForNewOnlineWorkerViaAPI', () => {
     await decoding
     const rejected = expect(waiting).rejects.toBe(reason)
     abort.abort(reason)
-    finishBody({ workers: [{ id: 'stopped-worker', online: true }] })
+    finishBody({
+      workers: [
+        { id: 'stopped-worker', online: true },
+      ],
+    })
     await rejected
   })
 
@@ -553,7 +679,11 @@ describe('waitForNewOnlineWorkerViaAPI', () => {
     vi.useFakeTimers()
     const fetch = vi.fn<() => Promise<Response>>()
       .mockResolvedValueOnce(new Response('restarting', { status: 503 }))
-      .mockImplementation(async () => Response.json({ workers: [{ id: 'late-worker', online: true }] }))
+      .mockImplementation(async () => Response.json({
+        workers: [
+          { id: 'late-worker', online: true },
+        ],
+      }))
     vi.stubGlobal('fetch', fetch)
     const waiting = waitForNewOnlineWorkerViaAPI(hubUrl, 'private-token', new Set())
     await vi.advanceTimersByTimeAsync(API_POLL_INTERVAL_MS)
@@ -617,7 +747,9 @@ function recordedRequests(answer: (method: string) => Response) {
       method,
       headers: init?.headers as Record<string, string>,
       body: JSON.parse(String(init?.body)),
-      ...(init?.redirect ? { redirect: init.redirect } : {}),
+      ...(init?.redirect
+        ? { redirect: init.redirect }
+        : {}),
     })
     return answer(method)
   }))
@@ -630,12 +762,14 @@ describe('callHub', () => {
     await expect(callHub(hubUrl, 'WorkspaceService/CreateWorkspace', { title: 'Docs' }, { cookie: 'leapmux-session=s1', operation: 'unit' }))
       .resolves
       .toEqual({ workspaceId: 'ws-9' })
-    expect(requests).toEqual([{
-      url: `${hubUrl}/leapmux.v1.WorkspaceService/CreateWorkspace`,
-      method: 'WorkspaceService/CreateWorkspace',
-      headers: { 'Content-Type': 'application/json', 'Cookie': 'leapmux-session=s1' },
-      body: { title: 'Docs' },
-    }])
+    expect(requests).toEqual([
+      {
+        url: `${hubUrl}/leapmux.v1.WorkspaceService/CreateWorkspace`,
+        method: 'WorkspaceService/CreateWorkspace',
+        headers: { 'Content-Type': 'application/json', 'Cookie': 'leapmux-session=s1' },
+        body: { title: 'Docs' },
+      },
+    ])
   })
 
   it('sends no cookie for an RPC that needs no session', async () => {
@@ -711,19 +845,28 @@ describe('attemptLoginViaAPI', () => {
     const requests = recordedRequests(() => new Response('{"code":"unauthenticated","message":"invalid credentials"}', { status: 401 }))
     const res = await attemptLoginViaAPI(hubUrl, 'alice', 'old-password')
     expect(res.status).toBe(401)
-    expect(requests).toEqual([{
-      url: `${hubUrl}/leapmux.v1.AuthService/Login`,
-      method: 'AuthService/Login',
-      headers: { 'Content-Type': 'application/json' },
-      body: { username: 'alice', password: 'old-password', captchaPayload: 'solved-captcha', honeypot: '' },
-      redirect: 'manual',
-    }])
+    expect(requests).toEqual([
+      {
+        url: `${hubUrl}/leapmux.v1.AuthService/Login`,
+        method: 'AuthService/Login',
+        headers: { 'Content-Type': 'application/json' },
+        body: {
+          username: 'alice',
+          password: 'old-password',
+          captchaPayload: 'solved-captcha',
+          honeypot: '',
+        },
+        redirect: 'manual',
+      },
+    ])
   })
 })
 
 describe('loginViaAPI', () => {
   it('returns the session cookie of an accepted sign-in', async () => {
-    recordedRequests(() => new Response('{}', { headers: { 'Set-Cookie': 'leapmux-session=abc; Path=/; HttpOnly' } }))
+    recordedRequests(() => new Response('{}', {
+      headers: { 'Set-Cookie': 'leapmux-session=abc; Path=/; HttpOnly' },
+    }))
     await expect(loginViaAPI(hubUrl, 'alice', 'secret')).resolves.toBe('leapmux-session=abc')
   })
 
@@ -735,10 +878,20 @@ describe('loginViaAPI', () => {
 
 describe('freshAdminSessionViaAPI', () => {
   it('signs in as the test administrator and elevates nothing', async () => {
-    const requests = recordedRequests(() => new Response('{}', { headers: { 'Set-Cookie': 'leapmux-session=fresh; Path=/' } }))
+    const requests = recordedRequests(() => new Response('{}', {
+      headers: { 'Set-Cookie': 'leapmux-session=fresh; Path=/' },
+    }))
     await expect(freshAdminSessionViaAPI(hubUrl)).resolves.toBe('leapmux-session=fresh')
     expect(requests.map(request => [request.method, request.body])).toEqual([
-      ['AuthService/Login', { username: TEST_ADMIN_USERNAME, password: TEST_ADMIN_PASSWORD, captchaPayload: 'solved-captcha', honeypot: '' }],
+      [
+        'AuthService/Login',
+        {
+          username: TEST_ADMIN_USERNAME,
+          password: TEST_ADMIN_PASSWORD,
+          captchaPayload: 'solved-captcha',
+          honeypot: '',
+        },
+      ],
     ])
   })
 })
@@ -746,18 +899,35 @@ describe('freshAdminSessionViaAPI', () => {
 describe('elevatedAdminSessionViaAPI', () => {
   it('signs in as the test administrator, then elevates that new session with the password', async () => {
     const requests = recordedRequests(method => method === 'AuthService/Login'
-      ? new Response('{}', { headers: { 'Set-Cookie': 'leapmux-session=own; Path=/' } })
+      ? new Response('{}', {
+          headers: { 'Set-Cookie': 'leapmux-session=own; Path=/' },
+        })
       : Response.json({}))
     await expect(elevatedAdminSessionViaAPI(hubUrl)).resolves.toBe('leapmux-session=own')
     expect(requests.map(request => [request.method, request.headers.Cookie, request.body])).toEqual([
-      ['AuthService/Login', undefined, { username: TEST_ADMIN_USERNAME, password: TEST_ADMIN_PASSWORD, captchaPayload: 'solved-captcha', honeypot: '' }],
-      ['UserService/ElevateSession', 'leapmux-session=own', { currentPassword: TEST_ADMIN_PASSWORD }],
+      [
+        'AuthService/Login',
+        undefined,
+        {
+          username: TEST_ADMIN_USERNAME,
+          password: TEST_ADMIN_PASSWORD,
+          captchaPayload: 'solved-captcha',
+          honeypot: '',
+        },
+      ],
+      [
+        'UserService/ElevateSession',
+        'leapmux-session=own',
+        { currentPassword: TEST_ADMIN_PASSWORD },
+      ],
     ])
   })
 
   it('returns no session when the elevation is refused', async () => {
     recordedRequests(method => method === 'AuthService/Login'
-      ? new Response('{}', { headers: { 'Set-Cookie': 'leapmux-session=own; Path=/' } })
+      ? new Response('{}', {
+          headers: { 'Set-Cookie': 'leapmux-session=own; Path=/' },
+        })
       : new Response('{"code":"permission_denied"}', { status: 403 }))
     await expect(elevatedAdminSessionViaAPI(hubUrl)).rejects.toThrow('elevateSessionViaAPI failed')
   })
@@ -767,7 +937,9 @@ describe('logoutViaAPI', () => {
   it('ends the session of the cookie', async () => {
     const requests = recordedRequests(() => Response.json({}))
     await logoutViaAPI(hubUrl, 'leapmux-session=s2')
-    expect(requests.map(request => [request.method, request.headers.Cookie])).toEqual([['AuthService/Logout', 'leapmux-session=s2']])
+    expect(requests.map(request => [request.method, request.headers.Cookie])).toEqual([
+      ['AuthService/Logout', 'leapmux-session=s2'],
+    ])
   })
 
   it('throws for a refused logout', async () => {
@@ -778,8 +950,16 @@ describe('logoutViaAPI', () => {
 
 describe('listWorkersViaAPI', () => {
   it('reads each worker with its online state, and an absent state as offline', async () => {
-    recordedRequests(() => Response.json({ workers: [{ id: 'w-1', online: true }, { id: 'w-2' }] }))
-    await expect(listWorkersViaAPI(hubUrl, 'c')).resolves.toEqual([{ id: 'w-1', online: true }, { id: 'w-2', online: false }])
+    recordedRequests(() => Response.json({
+      workers: [
+        { id: 'w-1', online: true },
+        { id: 'w-2' },
+      ],
+    }))
+    await expect(listWorkersViaAPI(hubUrl, 'c')).resolves.toEqual([
+      { id: 'w-1', online: true },
+      { id: 'w-2', online: false },
+    ])
   })
 
   it('reads an absent workers field as no worker', async () => {
@@ -788,14 +968,23 @@ describe('listWorkersViaAPI', () => {
   })
 
   it('refuses a worker with no ID', async () => {
-    recordedRequests(() => Response.json({ workers: [{ online: true }] }))
+    recordedRequests(() => Response.json({
+      workers: [
+        { online: true },
+      ],
+    }))
     await expect(listWorkersViaAPI(hubUrl, 'c')).rejects.toThrow('a worker with no ID')
   })
 })
 
 describe('listOnlineWorkerIDsViaAPI', () => {
   it('returns only the online workers', async () => {
-    recordedRequests(() => Response.json({ workers: [{ id: 'on', online: true }, { id: 'off', online: false }] }))
+    recordedRequests(() => Response.json({
+      workers: [
+        { id: 'on', online: true },
+        { id: 'off', online: false },
+      ],
+    }))
     await expect(listOnlineWorkerIDsViaAPI(hubUrl, 'c')).resolves.toEqual(['on'])
   })
 })
@@ -804,8 +993,16 @@ describe('getWorkerId', () => {
   it('waits until the first worker is online and returns its ID', async () => {
     vi.useFakeTimers()
     const fetch = vi.fn<() => Promise<Response>>()
-      .mockResolvedValueOnce(Response.json({ workers: [{ id: 'w-1', online: false }] }))
-      .mockImplementation(async () => Response.json({ workers: [{ id: 'w-1', online: true }] }))
+      .mockResolvedValueOnce(Response.json({
+        workers: [
+          { id: 'w-1', online: false },
+        ],
+      }))
+      .mockImplementation(async () => Response.json({
+        workers: [
+          { id: 'w-1', online: true },
+        ],
+      }))
     vi.stubGlobal('fetch', fetch)
     const waiting = getWorkerId(hubUrl, 'c')
     await vi.advanceTimersByTimeAsync(API_POLL_INTERVAL_MS)
@@ -827,7 +1024,12 @@ describe('configureBrokenSmtpViaAPI', () => {
     expect(requests[0]?.method).toBe('AdminSettingsService/UpdateSetting')
     const body = requests[0]?.body as { key: string, partialJson: string }
     expect(body.key).toBe('smtp')
-    expect(JSON.parse(body.partialJson)).toEqual({ host: '127.0.0.1', port: 1, from_address: 'hub@test.local', tls_mode: 'none' })
+    expect(JSON.parse(body.partialJson)).toEqual({
+      host: '127.0.0.1',
+      port: 1,
+      from_address: 'hub@test.local',
+      tls_mode: 'none',
+    })
   })
 })
 

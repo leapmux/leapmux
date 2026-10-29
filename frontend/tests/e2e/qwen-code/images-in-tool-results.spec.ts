@@ -9,8 +9,15 @@ import { nativeContext, QWEN_AGENT } from './scenarios'
 
 qwenTest.describe('Qwen Code tool execution', () => {
   qwenTest('shows the native image overview without an inline image', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    const { workingDir } = await openProviderAgent(leapmuxServer, context.workspaceId, QWEN_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
+    const { workingDir } = await openProviderAgent(leapmuxServer, context.workspaceId, QWEN_AGENT, {
+      optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' },
+    })
     await openWorkspace(page, context.workspaceId)
     const { fileName, resultRequest } = await runToolImageTurn(context, {
       workingDir,

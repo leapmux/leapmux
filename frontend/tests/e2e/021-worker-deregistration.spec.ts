@@ -39,7 +39,9 @@ async function openWorkersSidebar(page: Page, adminToken: string): Promise<Locat
 async function openWorkerContextMenu(page: Page, workersSection: Locator, workerName: string) {
   const workerItem = workersSection
     .getByTestId('worker-row')
-    .filter({ has: page.getByTestId('worker-name').filter({ hasText: workerName }) })
+    .filter({
+      has: page.getByTestId('worker-name').filter({ hasText: workerName }),
+    })
   await expect(workerItem).toBeVisible()
   await workerItem.hover()
   await workerItem.locator('button[aria-expanded]').click()
@@ -146,7 +148,9 @@ test.describe('Worker Deregistration', () => {
     // app home (no active workspace), so check for the worker name OR
     // the em-dash fallback that appears when the name is unavailable.
     await expectAnyVisible(
-      workersSection.getByTestId('worker-name').filter({ hasText: new RegExp(`^${escapeRegExp(SEPARATE_WORKER_NAME)}$`) }),
+      workersSection.getByTestId('worker-name').filter({
+        hasText: new RegExp(`^${escapeRegExp(SEPARATE_WORKER_NAME)}$`),
+      }),
       workersSection.getByTestId('worker-name').filter({ hasText: /^—$/ }),
     )
   })

@@ -54,7 +54,9 @@ describe('useChatScroll scroll coordinate normalization', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -137,7 +139,9 @@ describe('useChatScroll anchor re-pin', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -187,7 +191,9 @@ describe('useChatScroll anchor re-pin', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -244,7 +250,9 @@ describe('useChatScroll anchor re-pin', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -296,7 +304,9 @@ describe('useChatScroll anchor re-pin', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -347,7 +357,9 @@ describe('useChatScroll anchor re-pin', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -406,7 +418,9 @@ describe('useChatScroll anchor re-pin', () => {
         catch (e) {
           nowSpy.mockRestore()
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -450,7 +464,9 @@ describe('useChatScroll anchor re-pin', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -507,7 +523,9 @@ describe('useChatScroll anchor re-pin', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -560,7 +578,9 @@ describe('useChatScroll anchor re-pin', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -605,7 +625,9 @@ describe('useChatScroll anchor re-pin', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -663,7 +685,9 @@ describe('useChatScroll anchor re-pin', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -714,7 +738,9 @@ describe('useChatScroll anchor re-pin', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -757,7 +783,9 @@ describe('useChatScroll anchor re-pin', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -799,7 +827,9 @@ describe('useChatScroll anchor re-pin', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -852,7 +882,9 @@ describe('useChatScroll anchor re-pin', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -912,7 +944,9 @@ describe('useChatScroll anchor re-pin', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -964,7 +998,9 @@ describe('useChatScroll anchor re-pin', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -996,7 +1032,9 @@ describe('useChatScroll anchor re-pin', () => {
             updateViewport: () => {},
             anchorAt: scrollTop => ({ id: currentTopId, offsetWithinRow: scrollTop - rowOffset }),
             scrollTopNearAnchor: () => null,
-            scrollTopForAnchor: a => (a.id === resolvableId ? rowOffset + a.offsetWithinRow : null),
+            scrollTopForAnchor: a => (a.id === resolvableId
+              ? rowOffset + a.offsetWithinRow
+              : null),
           }
 
           const hook = useChatScroll({ virtualizer: virt, messages })
@@ -1033,7 +1071,9 @@ describe('useChatScroll anchor re-pin', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -1088,7 +1128,9 @@ describe('useChatScroll anchor re-pin', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -1136,7 +1178,9 @@ describe('useChatScroll anchor re-pin', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -1175,7 +1219,9 @@ describe('useChatScroll anchor re-pin', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -1184,7 +1230,9 @@ describe('useChatScroll anchor re-pin', () => {
     new Promise<void>((resolve, reject) => {
       // Fake performance.now too, so the velocity tracker sees a controllable,
       // genuinely-slow cadence instead of two same-tick (Infinity) samples.
-      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
@@ -1227,7 +1275,9 @@ describe('useChatScroll anchor re-pin', () => {
         catch (e) {
           vi.useRealTimers()
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -1236,7 +1286,9 @@ describe('useChatScroll anchor re-pin', () => {
     new Promise<void>((resolve, reject) => {
       // Fake only setTimeout/clearTimeout so the rAF microtask mock + queueMicrotask
       // still drive the synchronous scroll writes; advance to fire the settle.
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
@@ -1275,14 +1327,18 @@ describe('useChatScroll anchor re-pin', () => {
         catch (e) {
           dispose()
           vi.useRealTimers()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
 
   it('applies a keyboard-page re-pin correction immediately instead of deferring it as fling drift', () =>
     new Promise<void>((resolve, reject) => {
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
@@ -1325,14 +1381,18 @@ describe('useChatScroll anchor re-pin', () => {
         catch (e) {
           dispose()
           vi.useRealTimers()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
 
   it('applies a re-pin correction immediately during a pointer DRAG instead of deferring it as fling drift', () =>
     new Promise<void>((resolve, reject) => {
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
@@ -1353,7 +1413,12 @@ describe('useChatScroll anchor re-pin', () => {
           arm()
           div.setScrollTop(300) // re-seat after mount effects settle scrollTop
           // A scrollbar drag: the pointer is down while the scroll fires.
-          hook.handlers.onPointerDown({ pointerType: 'mouse', clientY: 0, pointerId: 1, isPrimary: true } as PointerEvent)
+          hook.handlers.onPointerDown({
+            pointerType: 'mouse',
+            clientY: 0,
+            pointerId: 1,
+            isPrimary: true,
+          } as PointerEvent)
           hook.handlers.onScroll()
           await Promise.resolve()
           await Promise.resolve()
@@ -1372,14 +1437,18 @@ describe('useChatScroll anchor re-pin', () => {
         catch (e) {
           dispose()
           vi.useRealTimers()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
 
   it('recovers drag tracking after a dropped pointerup, so a later release returns to fling semantics', () =>
     new Promise<void>((resolve, reject) => {
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
@@ -1401,9 +1470,19 @@ describe('useChatScroll anchor re-pin', () => {
           // latch isScrollInputActive() true forever. A fresh PRIMARY pointer begins a
           // new gesture and must clear the stale id, so its release leaves no pointer
           // tracked and momentum semantics resume.
-          hook.handlers.onPointerDown({ pointerType: 'mouse', clientY: 0, pointerId: 1, isPrimary: true } as PointerEvent)
+          hook.handlers.onPointerDown({
+            pointerType: 'mouse',
+            clientY: 0,
+            pointerId: 1,
+            isPrimary: true,
+          } as PointerEvent)
           // (no onPointerUp for pointerId 1 -- the up was dropped)
-          hook.handlers.onPointerDown({ pointerType: 'mouse', clientY: 0, pointerId: 2, isPrimary: true } as PointerEvent)
+          hook.handlers.onPointerDown({
+            pointerType: 'mouse',
+            clientY: 0,
+            pointerId: 2,
+            isPrimary: true,
+          } as PointerEvent)
           hook.handlers.onPointerUp({ pointerId: 2 } as PointerEvent)
 
           // No pointer is down now, so the shift-triggering scroll is treated as
@@ -1424,14 +1503,18 @@ describe('useChatScroll anchor re-pin', () => {
         catch (e) {
           dispose()
           vi.useRealTimers()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
 
   it('keeps drag tracking active while a second finger remains, releasing only on the last touchend', () =>
     new Promise<void>((resolve, reject) => {
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
@@ -1444,7 +1527,9 @@ describe('useChatScroll anchor re-pin', () => {
           // touchActive is derived from the live touch list, so lifting ONE finger of
           // a two-finger gesture must keep it active (a finger remains) -- the drag
           // correction stays immediate until the last finger lifts.
-          const touchEvent = (count: number) => ({ touches: Array.from({ length: count }, () => ({ clientY: 0 })) } as unknown as TouchEvent)
+          const touchEvent = (count: number) => ({
+            touches: Array.from({ length: count }, () => ({ clientY: 0 })),
+          } as unknown as TouchEvent)
           const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
@@ -1468,14 +1553,18 @@ describe('useChatScroll anchor re-pin', () => {
         catch (e) {
           dispose()
           vi.useRealTimers()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
 
   it('matches a discrete page by position, so an interleaving fling cannot steal it', () =>
     new Promise<void>((resolve, reject) => {
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
@@ -1512,14 +1601,18 @@ describe('useChatScroll anchor re-pin', () => {
         catch (e) {
           dispose()
           vi.useRealTimers()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
 
   it('does not write a deferred correction while momentum events continue', () =>
     new Promise<void>((resolve, reject) => {
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
@@ -1558,14 +1651,18 @@ describe('useChatScroll anchor re-pin', () => {
         catch (e) {
           dispose()
           vi.useRealTimers()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
 
   it('defers visible measurement commits during momentum and flushes them after the quiet settle', () =>
     new Promise<void>((resolve, reject) => {
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
@@ -1618,14 +1715,18 @@ describe('useChatScroll anchor re-pin', () => {
         catch (e) {
           dispose()
           vi.useRealTimers()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
 
   it('flags fast-scroll for the skeletons on a direct DRAG and clears it after the settle window', () =>
     new Promise<void>((resolve, reject) => {
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
@@ -1676,7 +1777,9 @@ describe('useChatScroll anchor re-pin', () => {
         catch (e) {
           dispose()
           vi.useRealTimers()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -1724,7 +1827,9 @@ describe('useChatScroll anchor re-pin', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -1770,14 +1875,18 @@ describe('useChatScroll anchor re-pin', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
 
   it('cancels the deferred fling-settle when the user grabs to stop (no coast-on write)', () =>
     new Promise<void>((resolve, reject) => {
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
@@ -1813,14 +1922,18 @@ describe('useChatScroll anchor re-pin', () => {
         catch (e) {
           dispose()
           vi.useRealTimers()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
 
   it('cancels the deferred fling-settle on a no-movement wheel event (deltaX and deltaY both 0)', () =>
     new Promise<void>((resolve, reject) => {
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
@@ -1858,14 +1971,18 @@ describe('useChatScroll anchor re-pin', () => {
         catch (e) {
           dispose()
           vi.useRealTimers()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
 
   it('drops a deferred fling correction once it sticks to the bottom (no stale carry-over)', () =>
     new Promise<void>((resolve, reject) => {
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
@@ -1909,14 +2026,18 @@ describe('useChatScroll anchor re-pin', () => {
         catch (e) {
           dispose()
           vi.useRealTimers()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
 
   it('drops a deferred fling correction when a trim removes the anchored row mid-fling', () =>
     new Promise<void>((resolve, reject) => {
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
@@ -1934,7 +2055,9 @@ describe('useChatScroll anchor re-pin', () => {
             ...virtualizerNoOps(),
             totalHeight: () => {
               version()
-              return shifted ? 8000 + SHIFT : 8000
+              return shifted
+                ? 8000 + SHIFT
+                : 8000
             },
             geometryVersion: version,
             updateViewport: () => {
@@ -1950,7 +2073,11 @@ describe('useChatScroll anchor re-pin', () => {
             // re-anchors to 'replacement-row' and drops the deferred drift.
             scrollTopNearAnchor: () => null,
             scrollTopForAnchor: a => (a.id === 'anchored-row'
-              ? (trimmed ? null : (shifted ? ANCHOR_OFFSET + SHIFT : ANCHOR_OFFSET) + a.offsetWithinRow)
+              ? (trimmed
+                  ? null
+                  : (shifted
+                      ? ANCHOR_OFFSET + SHIFT
+                      : ANCHOR_OFFSET) + a.offsetWithinRow)
               : a.offsetWithinRow),
           }
           const hook = useChatScroll({ virtualizer: virt, messages })
@@ -1985,7 +2112,9 @@ describe('useChatScroll anchor re-pin', () => {
         catch (e) {
           dispose()
           vi.useRealTimers()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -2058,14 +2187,18 @@ describe('useChatScroll anchor re-pin', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
 
   it('drops deferred fling drift at stick time so a re-anchor before settle does not inherit it', () =>
     new Promise<void>((resolve, reject) => {
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
@@ -2110,14 +2243,18 @@ describe('useChatScroll anchor re-pin', () => {
         catch (e) {
           dispose()
           vi.useRealTimers()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
 
   it('drops coalesced deferred measurements without a post-momentum write', () =>
     new Promise<void>((resolve, reject) => {
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
@@ -2180,14 +2317,18 @@ describe('useChatScroll anchor re-pin', () => {
         catch (e) {
           dispose()
           vi.useRealTimers()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
 
   it('drops distinct deferrals across captures without a post-momentum write', () =>
     new Promise<void>((resolve, reject) => {
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
@@ -2227,7 +2368,9 @@ describe('useChatScroll anchor re-pin', () => {
             scrollTopNearAnchor: () => null,
             scrollTopForAnchor: a => (a.id === 'row-a'
               ? 300 + (shiftA ? 50 : 0)
-              : a.id === 'row-b' ? 200 + (shiftB ? 30 : 0) : a.offsetWithinRow),
+              : a.id === 'row-b'
+                ? 200 + (shiftB ? 30 : 0)
+                : a.offsetWithinRow),
           }
           const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
@@ -2259,7 +2402,9 @@ describe('useChatScroll anchor re-pin', () => {
         catch (e) {
           dispose()
           vi.useRealTimers()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -2271,7 +2416,9 @@ describe('useChatScroll anchor re-pin', () => {
       // "stopped" there and the engine wrote scrollTop into it, killing the coast under the
       // reader's finger. The tracker latches the coast on the fling and clears it when the
       // motion stops, so the tail is covered too.
-      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
@@ -2317,7 +2464,9 @@ describe('useChatScroll anchor re-pin', () => {
         catch (e) {
           vi.useRealTimers()
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -2327,7 +2476,9 @@ describe('useChatScroll anchor re-pin', () => {
       // The other side of the latch: once the motion stops there is nothing left to cancel,
       // so the correction must apply immediately. A latch that never cleared would turn every
       // post-coast correction into permanent drift -- the bug this engine exists to avoid.
-      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
@@ -2370,7 +2521,9 @@ describe('useChatScroll anchor re-pin', () => {
         catch (e) {
           vi.useRealTimers()
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -2383,7 +2536,9 @@ describe('useChatScroll anchor re-pin', () => {
       // genuinely true and only the direct-manipulation term can keep the drag out of the
       // deferral. That matters: handleScroll schedules the fling-settle for momentum scrolls
       // only, so a correction deferred by a drag is stranded with nothing to apply it.
-      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
@@ -2427,7 +2582,9 @@ describe('useChatScroll anchor re-pin', () => {
         catch (e) {
           vi.useRealTimers()
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -2440,7 +2597,9 @@ describe('useChatScroll anchor re-pin', () => {
       // scroll events with no fresh wheel input, so the grace lapses while the viewport still
       // moves; the composed predicate then read false, the engine skipped its deferral, and it
       // wrote scrollTop into live momentum, which cancels the coast under the reader's finger.
-      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
@@ -2492,7 +2651,9 @@ describe('useChatScroll anchor re-pin', () => {
         catch (e) {
           vi.useRealTimers()
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))

@@ -176,7 +176,9 @@ export function getCachedRenderValueForString<T>(
   // Collision verification: the digest can agree for two inputs, so the entry
   // carries the input it was built from and the read compares it before answering.
   const cached = context?.renderCache?.get(stringCacheKey<T>(namespace, input))
-  return cached?.input === input ? cached.value : undefined
+  return cached?.input === input
+    ? cached.value
+    : undefined
 }
 
 export function setCachedRenderValueForString<T>(
@@ -200,6 +202,9 @@ export function cachedRenderValueForStrings<T>(
   if (cached?.inputs.length === inputs.length && cached.inputs.every((input, index) => input === inputs[index]))
     return cached.value
   const value = compute()
-  context?.renderCache?.set(stringTupleCacheKey<T>(namespace, inputs), { inputs: [...inputs], value })
+  context?.renderCache?.set(stringTupleCacheKey<T>(namespace, inputs), {
+    inputs: [...inputs],
+    value,
+  })
   return value
 }

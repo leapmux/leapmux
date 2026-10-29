@@ -10,9 +10,19 @@ function execute(method: string, params: unknown) {
   const directory = mkdtempSync(join(scratch, 'mcp-permission-unit-'))
   try {
     const server = writeMcpPermissionServer(directory)
-    const request = { jsonrpc: '2.0', id: 0, method, params }
+    const request = {
+      jsonrpc: '2.0',
+      id: 0,
+      method,
+      params,
+    }
     const reply = JSON.parse(execFileSync(server.command, [...server.args], { input: `${JSON.stringify(request)}\n`, encoding: 'utf8', timeout: 30000 }))
-    return { server, reply, called: existsSync(server.called), ready: existsSync(server.ready) }
+    return {
+      server,
+      reply,
+      called: existsSync(server.called),
+      ready: existsSync(server.ready),
+    }
   }
   finally {
     rmSync(directory, { recursive: true, force: true })
@@ -44,7 +54,14 @@ describe('writeMcpPermissionServer', () => {
     expect(reply.result.content[0].text).toBe('MCP_PERMISSION_TOOL_CALLED')
   })
 
-  it.each([{ name: 'wrong', args: {} }, { name: 'touch', args: null }, { name: 'touch', args: { extra: true } }])('rejects a wrong call before writing its marker: %j', ({ name, args }) => {
+  it.each([
+    { name: 'wrong', args: {} },
+    { name: 'touch', args: null },
+    {
+      name: 'touch',
+      args: { extra: true },
+    },
+  ])('rejects a wrong call before writing its marker: %j', ({ name, args }) => {
     const { reply, called } = callTool(name, args)
     expect(reply.error?.code).toBe(-32602)
     expect(called).toBe(false)

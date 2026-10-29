@@ -54,10 +54,14 @@ describe('classification and extraction agree on every row kind', () => {
         topLevel: payload,
         parentObject: payload,
         wrapper: null,
-        ...(messageMetadata !== undefined ? { messageMetadata } : {}),
+        ...(messageMetadata !== undefined
+          ? { messageMetadata }
+          : {}),
       }, provider),
       agentProvider: provider,
-      ...(spanType !== undefined ? { spanType } : {}),
+      ...(spanType !== undefined
+        ? { spanType }
+        : {}),
     }
 
     // Half one: the frame really is the shape the corpus claims. Without this the
@@ -72,7 +76,11 @@ describe('classification and extraction agree on every row kind', () => {
     expect(classified.kind).toBe(category)
 
     // Half two: the row the transcript draws is the kind the list measured.
-    const extraction = extractChatRow(provider, parsed, classified, { ...(spanType !== undefined ? { spanType } : {}) })
+    const extraction = extractChatRow(provider, parsed, classified, {
+      ...(spanType !== undefined
+        ? { spanType }
+        : {}),
+    })
     expect(drawnRowKind(category, extraction)).toBe(ROW_KIND_FOR_CATEGORY[category])
   })
 

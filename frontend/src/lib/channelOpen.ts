@@ -92,7 +92,9 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
         throw new ChannelError('client', err.message)
       throw err instanceof ChannelError
         ? err
-        : new ChannelError('client', err instanceof Error ? err.message : formatErrorMessage(err))
+        : new ChannelError('client', err instanceof Error
+            ? err.message
+            : formatErrorMessage(err))
     }
 
     // 3. Build handshake message 1 based on encryption mode. Completing the
@@ -199,7 +201,9 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
         // encapsulate a fresh PQ ciphertext without a second
         // getWorkerHandshakeParams round trip. Empty in classic mode; its length
         // is the single source of truth for PQ-ness in the rekey path.
-        workerMlkemPub: mode === EncryptionMode.CLASSIC ? new Uint8Array(0) : keyBundle.mlkemPublicKey,
+        workerMlkemPub: mode === EncryptionMode.CLASSIC
+          ? new Uint8Array(0)
+          : keyBundle.mlkemPublicKey,
         rekeyMaterial: null,
       } as T
 
@@ -219,7 +223,9 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
       // is a no-op when verifySession already removed the channel.
       this.deps.evictGhost(
         result.channelId,
-        err instanceof ChannelError ? err : new ChannelError('transport', `open channel: ${formatErrorMessage(err)}`),
+        err instanceof ChannelError
+          ? err
+          : new ChannelError('transport', `open channel: ${formatErrorMessage(err)}`),
       )
       await rollback()
       throw err
@@ -241,7 +247,10 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
           `open channel: max_message_size ${negotiated} out of bounds [${MAX_CHUNK_SIZE}, ${MAX_CONFIGURABLE_MESSAGE_SIZE}]`,
         )
       }
-      return { payload: negotiated, reassembled: maxReassembledMessageSize(negotiated) }
+      return {
+        payload: negotiated,
+        reassembled: maxReassembledMessageSize(negotiated),
+      }
     }
     if (this.deps.testPayloadBudget != null || this.deps.testReassembledCeiling != null) {
       const payload = this.deps.testPayloadBudget ?? this.deps.testReassembledCeiling!

@@ -12,7 +12,17 @@ vi.mock('~/api/workerRpc', () => ({
 
 /** Kiro's end of a turn it started by itself, as the worker stores it. */
 function turnEnd(stopReason: string) {
-  return { sessionUpdate: 'session_info_update', _meta: { kiro: { turnEnd: { stopReason }, kind: 'turn_end', stopReason, messageId: 'm' } } }
+  return {
+    sessionUpdate: 'session_info_update',
+    _meta: {
+      kiro: {
+        turnEnd: { stopReason },
+        kind: 'turn_end',
+        stopReason,
+        messageId: 'm',
+      },
+    },
+  }
 }
 
 describe('kiro provider', () => {
@@ -24,7 +34,12 @@ describe('kiro provider', () => {
     image: true,
     pdf: true,
     audio: false,
-    binary: ['application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+    binary: [
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ],
   })
 
   it('carries plan mode on the permission-mode axis', () => {
@@ -35,7 +50,9 @@ describe('kiro provider', () => {
   // Kiro's default mode is `vibe`, so an agent that reports no mode yet is not in plan mode.
   it('reads the current mode from the permission-mode option, and the default mode when it is absent', () => {
     const planMode = plugin.configuration?.planMode
-    expect(planMode?.currentMode({ optionValues: { permissionMode: 'plan' } })).toBe('plan')
+    expect(planMode?.currentMode({
+      optionValues: { permissionMode: 'plan' },
+    })).toBe('plan')
     expect(planMode?.currentMode({ optionValues: {} })).toBe('vibe')
     expect(planMode?.currentMode({})).toBe('vibe')
   })
@@ -48,12 +65,23 @@ describe('kiro provider', () => {
   // own. Kiro has no preset between its own rules and every call, so only Bypass maps.
   it('maps bypass to the allow-all policy preset, and offers no smart preset', () => {
     expect(plugin.controls?.permissionPresets).toEqual({
-      bypass: { sets: { policyPreset: 'allow-all' } },
+      bypass: {
+        sets: { policyPreset: 'allow-all' },
+      },
     })
   })
 
   it('reads its own MCP elicitation method', () => {
-    expect(plugin.controls?.elicitation?.({ method: '_kiro/mcp/elicitation', params: { elicitation: { mode: 'form', message: 'Pick one', requestedSchema: { type: 'object' } } } })).toMatchObject({
+    expect(plugin.controls?.elicitation?.({
+      method: '_kiro/mcp/elicitation',
+      params: {
+        elicitation: {
+          mode: 'form',
+          message: 'Pick one',
+          requestedSchema: { type: 'object' },
+        },
+      },
+    })).toMatchObject({
       mode: 'form',
       message: 'Pick one',
       schema: { type: 'object' },
@@ -61,8 +89,36 @@ describe('kiro provider', () => {
   })
 
   it('shows a saved MCP form answer through the shared form display', () => {
-    const request = { jsonrpc: '2.0', id: 1, method: '_kiro/mcp/elicitation', params: { elicitation: { mode: 'form', message: 'Choose', requestedSchema: { type: 'object', properties: { size: { type: 'string', title: 'Size' } } } } } }
-    const display = plugin.controls?.controlResponseDisplay?.({ requestId: 'jsonrpc:1', claimToken: 'c', request, response: { jsonrpc: '2.0', id: 1, result: { action: 'accept', content: { size: 'Large' } } } })
+    const request = {
+      jsonrpc: '2.0',
+      id: 1,
+      method: '_kiro/mcp/elicitation',
+      params: {
+        elicitation: {
+          mode: 'form',
+          message: 'Choose',
+          requestedSchema: {
+            type: 'object',
+            properties: {
+              size: { type: 'string', title: 'Size' },
+            },
+          },
+        },
+      },
+    }
+    const display = plugin.controls?.controlResponseDisplay?.({
+      requestId: 'jsonrpc:1',
+      claimToken: 'c',
+      request,
+      response: {
+        jsonrpc: '2.0',
+        id: 1,
+        result: {
+          action: 'accept',
+          content: { size: 'Large' },
+        },
+      },
+    })
     expect(display).toEqual({ kind: 'label', text: 'Approved\nSize: Large' })
   })
 
@@ -72,12 +128,26 @@ describe('kiro provider', () => {
   })
 
   it('carries a rejection reason in Kiro\'s own field rather than as a message', () => {
-    const permission = { method: 'session/request_permission', params: { toolCall: { toolCallId: 'c' }, options: [{ optionId: 'accept', kind: 'allow_once' }, { optionId: 'reject', kind: 'reject_once' }] } }
+    const permission = {
+      method: 'session/request_permission',
+      params: {
+        toolCall: { toolCallId: 'c' },
+        options: [
+          { optionId: 'accept', kind: 'allow_once' },
+          { optionId: 'reject', kind: 'reject_once' },
+        ],
+      },
+    }
     expect(plugin.controls?.controlFeedbackAsFollowUpMessage?.(permission)).toBe(false)
     expect(plugin.controls?.buildControlResponse?.(permission, 'Use rg', 'jsonrpc:1')).toEqual({
       jsonrpc: '2.0',
       id: 'jsonrpc:1',
-      result: { outcome: { outcome: 'selected', optionId: 'reject' }, _meta: { kiro: { rejectionReason: 'Use rg' } } },
+      result: {
+        outcome: { outcome: 'selected', optionId: 'reject' },
+        _meta: {
+          kiro: { rejectionReason: 'Use rg' },
+        },
+      },
     })
   })
 
@@ -100,7 +170,12 @@ describe('kiro provider', () => {
     })
 
     it('hides every other session_info_update', () => {
-      const parent = { sessionUpdate: 'session_info_update', _meta: { kiro: { kind: 'turn_start' } } }
+      const parent = {
+        sessionUpdate: 'session_info_update',
+        _meta: {
+          kiro: { kind: 'turn_start' },
+        },
+      }
       expect(plugin.transcript.classify(input(parent, null, AgentProvider.KIRO))).toEqual({ kind: 'hidden' })
     })
   })

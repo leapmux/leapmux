@@ -7,7 +7,12 @@ describe('piSessionEntry', () => {
     expect(piSessionEntry({ type: 'entry_appended', entry })).toBe(entry)
   })
 
-  it.each([{}, { type: 'message_end', entry: {} }, { type: 'entry_appended', entry: null }, { type: 'entry_appended', entry: [] }])('rejects an absent or malformed entry: %j', (message) => {
+  it.each([
+    {},
+    { type: 'message_end', entry: {} },
+    { type: 'entry_appended', entry: null },
+    { type: 'entry_appended', entry: [] },
+  ])('rejects an absent or malformed entry: %j', (message) => {
     expect(piSessionEntry(message)).toBeUndefined()
   })
 })

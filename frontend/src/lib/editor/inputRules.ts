@@ -374,7 +374,9 @@ export function createStrongInputRule() {
       ctx.get(schemaCtx).marks.strong,
       {
         getAttr: match => ({
-          marker: match[0].startsWith('*') ? '*' : '_',
+          marker: match[0].startsWith('*')
+            ? '*'
+            : '_',
         }),
       },
     )
@@ -391,7 +393,10 @@ export function createEmphasisStarInputRule() {
         getAttr: () => ({ marker: '*' }),
         updateCaptured: ({ fullMatch, start }) =>
           !fullMatch.startsWith('*')
-            ? { fullMatch: fullMatch.slice(1), start: start + 1 }
+            ? {
+                fullMatch: fullMatch.slice(1),
+                start: start + 1,
+              }
             : {},
       },
     )
@@ -408,7 +413,10 @@ export function createEmphasisUnderscoreInputRule() {
         getAttr: () => ({ marker: '_' }),
         updateCaptured: ({ fullMatch, start }) =>
           !fullMatch.startsWith('_')
-            ? { fullMatch: fullMatch.slice(1), start: start + 1 }
+            ? {
+                fullMatch: fullMatch.slice(1),
+                start: start + 1,
+              }
             : {},
       },
     )

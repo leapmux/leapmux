@@ -19,7 +19,9 @@ const GOAL_STEP_PROMPT = 'original_user_request'
 
 kiroTest.describe('Kiro session goal', () => {
   kiroTest('sets a goal that a step completes, with the workflow in the registry', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, { optionValues: { policyPreset: 'allow-all' } })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, {
+      optionValues: { policyPreset: 'allow-all' },
+    })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
     // The first step reports success. Its session then ends its turn with words.
@@ -28,7 +30,11 @@ kiroTest.describe('Kiro session goal', () => {
     await modelScript.rule({
       name: 'the first step reports success',
       when: { protocol: 'aws-event-stream', user: GOAL_STEP_PROMPT },
-      respond: { toolCalls: [completeGoalToolCall(KIRO, 'kiro-goal-done')] },
+      respond: {
+        toolCalls: [
+          completeGoalToolCall(KIRO, 'kiro-goal-done'),
+        ],
+      },
       once: true,
     })
     await modelScript.fallback({ text: 'Recorded.' })

@@ -14,10 +14,16 @@ import { isLettaToolProgress, lettaReturnedData, lettaToolPayload } from './tool
 export function lettaSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
   const source = lettaToolPayload(parsed.parentObject)
   const messageType = pickString(source, LETTA_DELTA_FIELD.MessageType)
-  if (messageType === LETTA_DELTA_KIND.ToolReturnMessage)
-    return isLettaToolProgress(source) ? 'none' : 'result'
-  if (messageType === LETTA_DELTA_KIND.ClientToolEnd)
-    return lettaReturnedData(source).kind === 'present' ? 'result' : 'none'
+  if (messageType === LETTA_DELTA_KIND.ToolReturnMessage) {
+    return isLettaToolProgress(source)
+      ? 'none'
+      : 'result'
+  }
+  if (messageType === LETTA_DELTA_KIND.ClientToolEnd) {
+    return lettaReturnedData(source).kind === 'present'
+      ? 'result'
+      : 'none'
+  }
   if (messageType === LETTA_DELTA_KIND.ClientToolStart || messageType === LETTA_DELTA_KIND.ToolCallMessage)
     return 'request'
   return 'other'
@@ -26,5 +32,9 @@ export function lettaSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
 /** The span side one row needs beside it. */
 export function lettaRelatedMessages(parsed: ResolvedMessageContent) {
   const role = lettaSpanRole(parsed)
-  return role === 'result' ? ['request'] as const : role === 'request' ? ['result'] as const : []
+  return role === 'result'
+    ? ['request'] as const
+    : role === 'request'
+      ? ['result'] as const
+      : []
 }

@@ -20,7 +20,12 @@ kiroTest.describe('Kiro settings', () => {
     await expectSettingsOptionChosen(page, `${KIRO_OPTION.PolicyPreset}-ask`)
     await expectPermissionShortcuts(page, { smart: 'absent', bypass: 'offered' })
 
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     await exerciseBypassPermissions(context, {
       settingsProof: agent => expect(nativeOptionValue(agent, KIRO_OPTION.PolicyPreset)).toBe(KIRO_POLICY_PRESET.AllowAll),
     })

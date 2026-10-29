@@ -9,7 +9,12 @@ const ARGS = { path: 'a.ts' }
 describe('codewhaleSpanRole', () => {
   it('opens a call on an item start and on a tool_use block', () => {
     expect(codewhaleSpanRole(requestSide(toolStarted(CODEWHALE_TOOL.Read, ARGS)))).toBe('request')
-    expect(codewhaleSpanRole(requestSide(childBlock(CODEWHALE_TRANSCRIPT_ROLE.Assistant, { type: CODEWHALE_BLOCK_TYPE.ToolUse, id: 'b1', name: CODEWHALE_TOOL.Read, input: ARGS })))).toBe('request')
+    expect(codewhaleSpanRole(requestSide(childBlock(CODEWHALE_TRANSCRIPT_ROLE.Assistant, {
+      type: CODEWHALE_BLOCK_TYPE.ToolUse,
+      id: 'b1',
+      name: CODEWHALE_TOOL.Read,
+      input: ARGS,
+    })))).toBe('request')
   })
 
   it('ends a call on a final item event and on a tool_result block', () => {
@@ -19,7 +24,10 @@ describe('codewhaleSpanRole', () => {
   })
 
   it('reads a retained start as final', () => {
-    const retained = { ...requestSide(toolStarted(CODEWHALE_TOOL.Read, ARGS)), completion: MessageCompletion.INTERRUPTED }
+    const retained = {
+      ...requestSide(toolStarted(CODEWHALE_TOOL.Read, ARGS)),
+      completion: MessageCompletion.INTERRUPTED,
+    }
     expect(codewhaleSpanRole(retained)).toBe('result')
   })
 
@@ -45,7 +53,10 @@ describe('codewhaleRelatedMessages', () => {
   // A retained opening frame is the END of its span, so it asks for the request
   // that opened the span, never for a result that the turn cut off.
   it('pairs a retained opening frame with its request', () => {
-    const retained = { ...requestSide(toolStarted(CODEWHALE_TOOL.Read, ARGS)), completion: MessageCompletion.INTERRUPTED }
+    const retained = {
+      ...requestSide(toolStarted(CODEWHALE_TOOL.Read, ARGS)),
+      completion: MessageCompletion.INTERRUPTED,
+    }
     expect(codewhaleRelatedMessages(retained)).toStrictEqual(['request'])
   })
 })

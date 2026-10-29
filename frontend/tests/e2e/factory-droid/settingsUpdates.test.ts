@@ -30,7 +30,9 @@ vi.mock('../helpers/nativeScenario', () => ({
     worker.onRead?.()
     if (worker.failure)
       throw worker.failure
-    const value = worker.reads.length ? worker.reads.shift() : worker.owner
+    const value = worker.reads.length
+      ? worker.reads.shift()
+      : worker.owner
     if (value instanceof Error)
       throw value
     return value ?? null
@@ -62,7 +64,13 @@ function nativeOwner(fields: MessageInitShape<typeof AgentInfoSchema> = {}): Age
 }
 
 function snapshot(fields: Partial<DroidNativeSettingsSnapshot>): DroidNativeSettingsSnapshot {
-  return { modelId: undefined, reasoningEffort: undefined, interactionMode: undefined, autonomyLevel: undefined, ...fields }
+  return {
+    modelId: undefined,
+    reasoningEffort: undefined,
+    interactionMode: undefined,
+    autonomyLevel: undefined,
+    ...fields,
+  }
 }
 
 function writeSettings(value: unknown, session = 'session-1', directoryKey = '-native-work'): string {
@@ -145,7 +153,10 @@ describe('readDroidNativeSettings', () => {
     { status: AgentStatus.INACTIVE },
   ])('refuses ownership that changes during the file read: %j', async (fields) => {
     writeSettings({ model: 'native-model' })
-    worker.reads = [nativeOwner(), nativeOwner(fields)]
+    worker.reads = [
+      nativeOwner(),
+      nativeOwner(fields),
+    ]
     await expect(readDroidNativeSettings(context, 'droid-agent')).rejects.toThrow('ownership changed')
   })
 
@@ -166,7 +177,9 @@ describe('readDroidNativeSettings', () => {
     const agentEnv: Record<string, string> = {}
     if (home !== undefined)
       agentEnv.FACTORY_HOME_OVERRIDE = home
-    await expect(readDroidNativeSettings({ leapmuxServer: { ...context.leapmuxServer, agentEnv } }, 'droid-agent')).rejects.toThrow('isolated absolute Factory home')
+    await expect(readDroidNativeSettings({
+      leapmuxServer: { ...context.leapmuxServer, agentEnv },
+    }, 'droid-agent')).rejects.toThrow('isolated absolute Factory home')
     expect(worker.agentIds).toEqual([])
   })
 
@@ -180,13 +193,21 @@ describe('readDroidNativeSettings', () => {
 
 describe('expectDroidNativeSettings', () => {
   it('waits through a failed read and startup, then reads the selected session file', async () => {
-    worker.reads = [new Error('The Worker read failed.'), nativeOwner({ status: AgentStatus.STARTING })]
+    worker.reads = [
+      new Error('The Worker read failed.'),
+      nativeOwner({ status: AgentStatus.STARTING }),
+    ]
     worker.onRead = () => {
       if (worker.agentIds.length === 3)
         writeSettings({ model: 'native-model' })
     }
     await expectDroidNativeSettings(context, { modelId: 'native-model' })
-    expect(worker.agentIds).toEqual(['droid-agent', 'droid-agent', 'droid-agent', 'droid-agent'])
+    expect(worker.agentIds).toEqual([
+      'droid-agent',
+      'droid-agent',
+      'droid-agent',
+      'droid-agent',
+    ])
   })
 
   it('reports the native settings when they differ from the expected values', async () => {

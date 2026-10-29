@@ -14,6 +14,8 @@ export interface ACPNativeNotifications {
 export function createACPCompactionBoundaryReader(reader: NonNullable<ACPNativeNotifications['compactionBoundary']>) {
   return (parsed: ParsedMessageContent): CompactionDetails | null => {
     const message = getInnerMessage(parsed)
-    return message ? reader(message) : null
+    return message
+      ? reader(message)
+      : null
   }
 }

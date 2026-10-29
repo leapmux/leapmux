@@ -23,7 +23,9 @@ export interface CopilotEnvironmentOptions {
 export function createCopilotEnvironment(options: CopilotEnvironmentOptions): Record<string, string> {
   const copilotHome = join(options.homeDir, '.copilot')
   mkdirSync(copilotHome, { recursive: true })
-  writeFileSync(join(copilotHome, 'config.json'), `${JSON.stringify({ trustedFolders: [options.runDirectory] }, null, 2)}\n`)
+  writeFileSync(join(copilotHome, 'config.json'), `${JSON.stringify({
+    trustedFolders: [options.runDirectory],
+  }, null, 2)}\n`)
   return {
     COPILOT_API_URL: options.origin,
     COPILOT_DEBUG_GITHUB_API_URL: options.origin,

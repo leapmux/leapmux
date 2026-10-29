@@ -26,5 +26,11 @@ export const kiroTest = createProviderTest({
 }).extend<{
   askingKiroWorkspace: AgentWorkspace
 }>({
-  askingKiroWorkspace: authenticatedAgentWorkspace({ ...KIRO_AGENT, prefix: 'kiro-e2e-ask', openOptions: { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'spec' } } }),
+  askingKiroWorkspace: authenticatedAgentWorkspace({
+    ...KIRO_AGENT,
+    prefix: 'kiro-e2e-ask',
+    openOptions: {
+      optionValues: { [OPTION_ID_PERMISSION_MODE]: 'spec' },
+    },
+  }),
 })

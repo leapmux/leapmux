@@ -25,11 +25,16 @@ export function codexRawExecRole(payload: Record<string, unknown> | undefined): 
   const namespace = item[CODEX_RAW_FIELD.Namespace]
   if (namespace !== undefined && namespace !== null && namespace !== '' && namespace !== CODEX_RAW_NAMESPACE.Functions)
     return null
-  if (type === CODEX_RAW_ITEM.CustomToolCall)
-    return item[CODEX_RAW_FIELD.Name] === CODEX_RAW_TOOL.Exec && typeof item[CODEX_RAW_FIELD.Input] === 'string' ? 'request' : null
+  if (type === CODEX_RAW_ITEM.CustomToolCall) {
+    return item[CODEX_RAW_FIELD.Name] === CODEX_RAW_TOOL.Exec && typeof item[CODEX_RAW_FIELD.Input] === 'string'
+      ? 'request'
+      : null
+  }
   if (type === CODEX_RAW_ITEM.CustomToolCallOutput) {
     const name = item[CODEX_RAW_FIELD.Name]
-    return name === undefined || name === null || name === '' || name === CODEX_RAW_TOOL.Exec ? 'result' : null
+    return name === undefined || name === null || name === '' || name === CODEX_RAW_TOOL.Exec
+      ? 'result'
+      : null
   }
   return null
 }
@@ -99,17 +104,38 @@ function codexExecStatus(firstLine: string): CodexExecStatus | null {
 /** Read the native header before script text. A status line that the script prints cannot change the outcome. */
 function codexExecSegment(output: unknown): CodexExecSegment | null {
   if (typeof output === 'string') {
-    if (output === CODEX_EXEC_DISPATCH_FAILURE)
-      return { status: 'failed', text: [output], body: [output], images: [] }
+    if (output === CODEX_EXEC_DISPATCH_FAILURE) {
+      return {
+        status: 'failed',
+        text: [output],
+        body: [output],
+        images: [],
+      }
+    }
     const cancellation = CODEX_EXEC_CANCELLATION.exec(output)
-    const seconds = cancellation && cancellation[0] === output ? Number(cancellation[1]) : Number.NaN
+    const seconds = cancellation && cancellation[0] === output
+      ? Number(cancellation[1])
+      : Number.NaN
     const durationMs = seconds * 1000
     // The native producer applies a 0.1-second minimum to elapsed time.
     // A script's text block cannot supply this provider outcome.
-    if (seconds >= 0.1 && Number.isFinite(durationMs))
-      return { status: 'terminated', text: [output], body: [output], images: [], durationMs }
+    if (seconds >= 0.1 && Number.isFinite(durationMs)) {
+      return {
+        status: 'terminated',
+        text: [output],
+        body: [output],
+        images: [],
+        durationMs,
+      }
+    }
   }
-  const blocks: unknown[] | null = typeof output === 'string' ? [{ type: CODEX_EXEC_OUTPUT.TextContent, text: output }] : Array.isArray(output) ? output : null
+  const blocks: unknown[] | null = typeof output === 'string'
+    ? [
+        { type: CODEX_EXEC_OUTPUT.TextContent, text: output },
+      ]
+    : Array.isArray(output)
+      ? output
+      : null
   if (!blocks)
     return null
   const text: string[] = []
@@ -122,27 +148,42 @@ function codexExecSegment(output: unknown): CodexExecSegment | null {
     }
     else if (block.type === CODEX_EXEC_CONTENT.Image) {
       const url = pickString(block, CODEX_EXEC_CONTENT.ImageURL)
-      const image = url ? parseImageBlock({ type: 'image', url }) : null
+      const image = url
+        ? parseImageBlock({ type: 'image', url })
+        : null
       if (image)
         images.push(image)
     }
   }
   const first = blocks[0]
-  const header = isObject(first) && first.type === CODEX_EXEC_OUTPUT.TextContent && typeof first.text === 'string' ? first.text : ''
+  const header = isObject(first) && first.type === CODEX_EXEC_OUTPUT.TextContent && typeof first.text === 'string'
+    ? first.text
+    : ''
   const timing = CODEX_EXEC_TIMING.exec(header.slice(header.indexOf('\n') + 1))
-  const status = timing === null ? null : codexExecStatus(header.split('\n', 1)[0] ?? '')
-  const seconds = timing?.[1] === undefined ? undefined : Number(timing[1])
+  const status = timing === null
+    ? null
+    : codexExecStatus(header.split('\n', 1)[0] ?? '')
+  const seconds = timing?.[1] === undefined
+    ? undefined
+    : Number(timing[1])
   let body = text
   if (status !== null && timing) {
     const remainder = header.slice(header.indexOf('\n') + 1 + timing[0].length)
-    body = remainder === '' ? text.slice(1) : [remainder, ...text.slice(1)]
+    body = remainder === ''
+      ? text.slice(1)
+      : [
+          remainder,
+          ...text.slice(1),
+        ]
   }
   return {
     status,
     text,
     body,
     images,
-    ...(seconds !== undefined && Number.isFinite(seconds) ? { durationMs: seconds * 1000 } : {}),
+    ...(seconds !== undefined && Number.isFinite(seconds)
+      ? { durationMs: seconds * 1000 }
+      : {}),
   }
 }
 
@@ -174,19 +215,30 @@ function codexRawExecOutput(item: Record<string, unknown>): CodexRawExecOutput |
   if (!first)
     return null
   const continuation = item[CODEX_SUPPLEMENT.ContinuationOutputs]
-  const later = Array.isArray(continuation) ? continuation.map(codexExecSegment).filter(segment => segment !== null) : []
+  const later = Array.isArray(continuation)
+    ? continuation.map(codexExecSegment).filter(segment => segment !== null)
+    : []
   const segments = [first, ...later]
   const last = segments[segments.length - 1]!
   const images = segments.flatMap(segment => segment.images)
-  if (segments.some(segment => segment.status === null))
-    return { text: segments.flatMap(segment => segment.text).join('\n'), images, status: null }
+  if (segments.some(segment => segment.status === null)) {
+    return {
+      text: segments.flatMap(segment => segment.text).join('\n'),
+      images,
+      status: null,
+    }
+  }
   // A yield that printed nothing adds no empty line between the bodies around it.
-  const body = segments.flatMap(segment => segment.status === 'running' ? segment.body.filter(text => text !== '') : segment.body)
+  const body = segments.flatMap(segment => segment.status === 'running'
+    ? segment.body.filter(text => text !== '')
+    : segment.body)
   return {
     text: body.join('\n'),
     images,
     status: last.status,
-    ...(segments.length === 1 && last.durationMs !== undefined ? { durationMs: last.durationMs } : {}),
+    ...(segments.length === 1 && last.durationMs !== undefined
+      ? { durationMs: last.durationMs }
+      : {}),
   }
 }
 
@@ -196,9 +248,15 @@ export function codexRawExecCall(payload: Record<string, unknown>, sides: ToolSp
   const own = codexRawExecItem(payload)
   if (!ownRole || !own)
     return null
-  const request = ownRole === 'request' ? own : matchingRawExecSide(payload, sides.request, 'request')
-  const result = ownRole === 'result' ? own : matchingRawExecSide(payload, sides.result, 'result')
-  const output = result ? codexRawExecOutput(result) : null
+  const request = ownRole === 'request'
+    ? own
+    : matchingRawExecSide(payload, sides.request, 'request')
+  const result = ownRole === 'result'
+    ? own
+    : matchingRawExecSide(payload, sides.result, 'result')
+  const output = result
+    ? codexRawExecOutput(result)
+    : null
   const retained = retainedRowIsFinal(completion)
   const ended = ownRole === 'result' || retained
   const call = createToolCall({
@@ -206,7 +264,11 @@ export function codexRawExecCall(payload: Record<string, unknown>, sides: ToolSp
     name: CODEX_RAW_TOOL.Exec,
     lifecycle: {
       frameStatus: result ? 'unstated' : 'in_progress',
-      providerOutcome: output?.status === 'failed' ? 'failed' : output?.status === 'terminated' ? 'interrupted' : null,
+      providerOutcome: output?.status === 'failed'
+        ? 'failed'
+        : output?.status === 'terminated'
+          ? 'interrupted'
+          : null,
       retainedOutcome: retainedOutcome(completion),
       rowFinal: ended,
       resultFrameLanded: result !== undefined,
@@ -214,17 +276,38 @@ export function codexRawExecCall(payload: Record<string, unknown>, sides: ToolSp
   }, {
     kind: 'execute',
     label: 'Code execution',
-    request: { command: pickString(request, CODEX_RAW_FIELD.Input), language: 'javascript' },
+    request: {
+      command: pickString(request, CODEX_RAW_FIELD.Input),
+      language: 'javascript',
+    },
     ...(output
       ? {
           result: output.status !== null
-            ? { commands: [{ output: output.text, ...(output.status === 'failed' ? { failed: true as const } : {}), ...(output.durationMs !== undefined ? { durationMs: output.durationMs } : {}) }], unresolvedTerminals: [] }
+            ? {
+                commands: [
+                  {
+                    output: output.text,
+                    ...(output.status === 'failed'
+                      ? { failed: true as const }
+                      : {}),
+                    ...(output.durationMs !== undefined
+                      ? { durationMs: output.durationMs }
+                      : {}),
+                  },
+                ],
+                unresolvedTerminals: [],
+              }
             : unparsedResult(output.text),
           images: output.images,
         }
       : {}),
   })
-  return call.kind === 'execute' ? { call, role: retained ? 'result' : ownRole } : null
+  return call.kind === 'execute'
+    ? {
+        call,
+        role: retained ? 'result' : ownRole,
+      }
+    : null
 }
 
 /** Regex to strip shell wrappers like `/bin/zsh -lc '...'` from commands. */
@@ -250,7 +333,9 @@ export function codexUnwrapCommand(rawCommand: string): string {
 
 /** Translate Codex's best-effort command breakdown into the shared execute model. */
 export function codexCommandActionsFromItem(item: Record<string, unknown>): CommandAction[] {
-  const rawActions: unknown[] = Array.isArray(item.commandActions) ? item.commandActions : []
+  const rawActions: unknown[] = Array.isArray(item.commandActions)
+    ? item.commandActions
+    : []
   const actions: CommandAction[] = []
 
   for (const value of rawActions) {
@@ -271,7 +356,13 @@ export function codexCommandActionsFromItem(item: Record<string, unknown>): Comm
       }
       case 'listFiles': {
         const path = pickString(value, 'path') || undefined
-        actions.push({ kind: 'list', command, ...(path !== undefined ? { path } : {}) })
+        actions.push({
+          kind: 'list',
+          command,
+          ...(path !== undefined
+            ? { path }
+            : {}),
+        })
         break
       }
       case 'search': {
@@ -280,8 +371,12 @@ export function codexCommandActionsFromItem(item: Record<string, unknown>): Comm
         actions.push({
           kind: 'search',
           command,
-          ...(query !== undefined ? { query } : {}),
-          ...(path !== undefined ? { path } : {}),
+          ...(query !== undefined
+            ? { query }
+            : {}),
+          ...(path !== undefined
+            ? { path }
+            : {}),
         })
         break
       }

@@ -77,8 +77,18 @@ export function piToolRow(
     return null
   // A retained start frame is the last row when the turn stops before native completion.
   const finished = pickString(parsed, 'type') === PI_EVENT.ToolExecutionEnd || retainedRowIsFinal(completion)
-  const todo = tool.toolName === PI_TOOL.Todo ? piTodoSource(parsed, request, result) : null
-  return { payload: parsed, tool, request, result, todo, finished, isError: tool.isError || !!todo?.error }
+  const todo = tool.toolName === PI_TOOL.Todo
+    ? piTodoSource(parsed, request, result)
+    : null
+  return {
+    payload: parsed,
+    tool,
+    request,
+    result,
+    todo,
+    finished,
+    isError: tool.isError || !!todo?.error,
+  }
 }
 
 /**
@@ -149,7 +159,9 @@ export function piToolFacts(row: PiToolRow, completion: MessageCompletion | unde
     result: row.result,
     toolName,
     label: PI_TOOL_LABELS.get(toolName) ?? (toolName || undefined),
-    args: Object.keys(row.tool.args).length > 0 ? row.tool.args : paired ?? {},
+    args: Object.keys(row.tool.args).length > 0
+      ? row.tool.args
+      : paired ?? {},
     text: row.tool.result?.text ?? row.tool.partialResult?.text ?? '',
     details: row.tool.result?.details,
     todo: row.todo,
@@ -220,26 +232,39 @@ export const PI_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<PiToolFacts> = {
     const description = pickString(args, 'description') || undefined
     return {
       command: pickString(args, 'command'),
-      ...(facts.toolName === PI_POWERSHELL_TOOL ? { language: 'powershell' as const } : {}),
-      ...(description !== undefined ? { description } : {}),
+      ...(facts.toolName === PI_POWERSHELL_TOOL
+        ? { language: 'powershell' as const }
+        : {}),
+      ...(description !== undefined
+        ? { description }
+        : {}),
     }
   },
   // Native result details supply the original server and tool. The arguments contain neither field.
   mcp: (args, facts): ToolRequestByKind['mcp'] => {
     const identity = piMcpIdentity(facts.payload, facts.result)
-    return identity ? { server: identity.server, tool: identity.tool, args } : { server: '', tool: facts.toolName, args }
+    return identity
+      ? { server: identity.server, tool: identity.tool, args }
+      : { server: '', tool: facts.toolName, args }
   },
   // All four Pi question tools use piQuestionsFromArgs.
   // The shared reader cannot interpret that native record.
   // Pi must retain each question and its options.
-  question: (args): ToolRequestByKind['question'] => ({ questions: piQuestionsFromArgs(args) }),
+  question: (args): ToolRequestByKind['question'] => ({
+    questions: piQuestionsFromArgs(args),
+  }),
   // Pi sends the checklist in its result.
   // Reuse the resolved checklist because the argument reader cannot supply it.
   todo: (_args, facts): ToolRequestByKind['todo'] => {
     const todo = facts.todo
     // Include the note only when a checklist resolves.
     // An absent note stays absent.
-    return { items: todo?.list.todos ?? [], ...(todo ? { note: todo.description } : {}) }
+    return {
+      items: todo?.list.todos ?? [],
+      ...(todo
+        ? { note: todo.description }
+        : {}),
+    }
   },
 }
 
@@ -256,7 +281,12 @@ function piRequestFor<K extends ToolKind>(kind: K, facts: PiToolFacts): ToolRequ
  */
 function piHeader(facts: PiToolFacts): { label?: string, title: string } {
   // Include a label only when the tool table or native tool name supplies one.
-  return { ...(facts.label !== undefined ? { label: facts.label } : {}), title: facts.label ?? 'Tool' }
+  return {
+    ...(facts.label !== undefined
+      ? { label: facts.label }
+      : {}),
+    title: facts.label ?? 'Tool',
+  }
 }
 
 /**
@@ -269,7 +299,11 @@ function piDeclaredOnly<K extends ToolKind>(kind: K): (facts: PiToolFacts) => To
   // Declare the inner arrow return type explicitly.
   // A contextual signature does not preserve object-literal freshness.
   // The explicit type keeps excess-property checks active for each returned request.
-  return (facts): ToolCallSpecVariant<K> => ({ kind, ...piHeader(facts), request: piRequestFor(kind, facts) })
+  return (facts): ToolCallSpecVariant<K> => ({
+    kind,
+    ...piHeader(facts),
+    request: piRequestFor(kind, facts),
+  })
 }
 
 /**
@@ -304,15 +338,25 @@ function piFileChangeParts(kind: 'edit' | 'write', facts: PiToolFacts): { reques
   // A retained failed turn can have no native error flag.
   // That row must preserve its requested substitutions.
   // Keep the request list for the file-specific title even when the failed result draws no diff.
-  if (facts.isError)
-    return { request, result: failedResult(facts.text) }
+  if (facts.isError) {
+    return {
+      request,
+      result: failedResult(facts.text),
+    }
+  }
   const sources = piResolveDiffSources(facts.payload, facts.request)
-  if (sources.length > 0)
-    return { request, result: { changes: sources } }
+  if (sources.length > 0) {
+    return {
+      request,
+      result: { changes: sources },
+    }
+  }
   // Preserve unreadable diff text for display and Copy.
   // Empty text supplies no result body.
   const unread = piUnreadResult(facts, resolvePiResultDiff(facts.payload, facts.args).rawDiff || facts.text)
-  return unread !== undefined ? { request, result: unread } : { request }
+  return unread !== undefined
+    ? { request, result: unread }
+    : { request }
 }
 
 /** The search card's two halves. `grep` and `glob` declare the same pair, as above. */
@@ -320,13 +364,19 @@ function piSearchParts(kind: 'grep' | 'glob', facts: PiToolFacts): { request: Se
   const request = piRequestFor(kind, facts)
   if (!facts.resultAvailable)
     return { request }
-  if (facts.isError)
-    return { request, result: failedResult(facts.text) }
+  if (facts.isError) {
+    return {
+      request,
+      result: failedResult(facts.text),
+    }
+  }
   const search = extractPiSearch(facts.payload)
   if (search)
     return { request, result: search }
   const unread = piUnreadResult(facts, facts.text)
-  return unread !== undefined ? { request, result: unread } : { request }
+  return unread !== undefined
+    ? { request, result: unread }
+    : { request }
 }
 
 /**
@@ -361,7 +411,15 @@ export const PI_TOOL_READERS: ToolCallSpecReaderTable<PiToolFacts> = {
       // The tool name alone identifies no particular task.
       title: request.description,
       request,
-      ...(facts.resultAvailable ? { result: { agents: [piAgentRun(facts)] } } : {}),
+      ...(facts.resultAvailable
+        ? {
+            result: {
+              agents: [
+                piAgentRun(facts),
+              ],
+            },
+          }
+        : {}),
     }
   },
   todo: (facts): ToolCallSpecVariant<'todo'> => {
@@ -372,22 +430,38 @@ export const PI_TOOL_READERS: ToolCallSpecReaderTable<PiToolFacts> = {
     const metadata = facts.todo?.metadata.length ? facts.todo.metadata : undefined
     // Pi can report a refused operation in details.error while its error flag stays false.
     // The resolved checklist supplies that failure reason.
-    if (facts.todo?.error)
-      return { kind: 'todo', ...header, title, ...(metadata !== undefined ? { metadata } : {}), request, result: failedResult(facts.todo.error) }
+    if (facts.todo?.error) {
+      return {
+        kind: 'todo',
+        ...header,
+        title,
+        ...(metadata !== undefined
+          ? { metadata }
+          : {}),
+        request,
+        result: failedResult(facts.todo.error),
+      }
+    }
     // Use the same resolved items and note on both sides of the card.
     const emptyText = facts.todo?.list.emptyText
     return {
       kind: 'todo',
       ...header,
       title,
-      ...(metadata !== undefined ? { metadata } : {}),
+      ...(metadata !== undefined
+        ? { metadata }
+        : {}),
       request,
       ...(facts.resultAvailable
         ? {
             result: {
               items: request.items,
-              ...(emptyText !== undefined ? { emptyText } : {}),
-              ...(request.note !== undefined ? { note: request.note } : {}),
+              ...(emptyText !== undefined
+                ? { emptyText }
+                : {}),
+              ...(request.note !== undefined
+                ? { note: request.note }
+                : {}),
             },
           }
         : {}),
@@ -396,21 +470,46 @@ export const PI_TOOL_READERS: ToolCallSpecReaderTable<PiToolFacts> = {
   execute: (facts): ToolCallSpecVariant<'execute'> => {
     const request = piRequestFor('execute', facts)
     const label = facts.label
-    if (!facts.resultAvailable)
-      return { kind: 'execute', ...(label !== undefined ? { label } : {}), request }
+    if (!facts.resultAvailable) {
+      return {
+        kind: 'execute',
+        ...(label !== undefined
+          ? { label }
+          : {}),
+        request,
+      }
+    }
     const resolved = extractPiCommand(facts.payload)
     if (!resolved) {
       const unread = piUnreadResult(facts, facts.text)
-      return { kind: 'execute', ...(label !== undefined ? { label } : {}), request, ...(unread !== undefined ? { result: unread } : {}) }
+      return {
+        kind: 'execute',
+        ...(label !== undefined
+          ? { label }
+          : {}),
+        request,
+        ...(unread !== undefined
+          ? { result: unread }
+          : {}),
+      }
     }
     // Pi flags both stopped and timed-out commands as errors.
     // The marker parser distinguishes their native outcomes and preserves the explaining marker.
     return {
       kind: 'execute',
-      ...(label !== undefined ? { label } : {}),
+      ...(label !== undefined
+        ? { label }
+        : {}),
       request,
-      result: { commands: [piCommandResult(resolved)], unresolvedTerminals: [] },
-      ...(resolved.cancelled ? { statusOverride: 'cancelled' as const } : {}),
+      result: {
+        commands: [
+          piCommandResult(resolved),
+        ],
+        unresolvedTerminals: [],
+      },
+      ...(resolved.cancelled
+        ? { statusOverride: 'cancelled' as const }
+        : {}),
     }
   },
   read: (facts): ToolCallSpecVariant<'read'> => {
@@ -418,33 +517,93 @@ export const PI_TOOL_READERS: ToolCallSpecReaderTable<PiToolFacts> = {
     const header = piHeader(facts)
     if (!facts.resultAvailable)
       return { kind: 'read', ...header, request }
-    if (facts.isError)
-      return { kind: 'read', ...header, request, result: failedResult(facts.text) }
+    if (facts.isError) {
+      return {
+        kind: 'read',
+        ...header,
+        request,
+        result: failedResult(facts.text),
+      }
+    }
     const read = extractPiRead(facts.payload, facts.args)
-    if (read)
-      return { kind: 'read', ...header, request, result: read, images: facts.images }
+    if (read) {
+      return {
+        kind: 'read',
+        ...header,
+        request,
+        result: read,
+        images: facts.images,
+      }
+    }
     const unread = piUnreadResult(facts, facts.text)
-    return { kind: 'read', ...header, request, ...(unread !== undefined ? { result: unread } : {}) }
+    return {
+      kind: 'read',
+      ...header,
+      request,
+      ...(unread !== undefined
+        ? { result: unread }
+        : {}),
+    }
   },
-  edit: (facts): ToolCallSpecVariant<'edit'> => ({ kind: 'edit', ...piHeader(facts), ...piFileChangeParts('edit', facts) }),
-  write: (facts): ToolCallSpecVariant<'write'> => ({ kind: 'write', ...piHeader(facts), ...piFileChangeParts('write', facts) }),
-  grep: (facts): ToolCallSpecVariant<'grep'> => ({ kind: 'grep', ...piHeader(facts), ...piSearchParts('grep', facts) }),
-  glob: (facts): ToolCallSpecVariant<'glob'> => ({ kind: 'glob', ...piHeader(facts), ...piSearchParts('glob', facts) }),
+  edit: (facts): ToolCallSpecVariant<'edit'> => ({
+    kind: 'edit',
+    ...piHeader(facts),
+    ...piFileChangeParts('edit', facts),
+  }),
+  write: (facts): ToolCallSpecVariant<'write'> => ({
+    kind: 'write',
+    ...piHeader(facts),
+    ...piFileChangeParts('write', facts),
+  }),
+  grep: (facts): ToolCallSpecVariant<'grep'> => ({
+    kind: 'grep',
+    ...piHeader(facts),
+    ...piSearchParts('grep', facts),
+  }),
+  glob: (facts): ToolCallSpecVariant<'glob'> => ({
+    kind: 'glob',
+    ...piHeader(facts),
+    ...piSearchParts('glob', facts),
+  }),
   list: (facts): ToolCallSpecVariant<'list'> => {
     const request = piRequestFor('list', facts)
     const header = piHeader(facts)
     if (!facts.resultAvailable)
       return { kind: 'list', ...header, request }
-    if (facts.isError)
-      return { kind: 'list', ...header, request, result: failedResult(facts.text) }
+    if (facts.isError) {
+      return {
+        kind: 'list',
+        ...header,
+        request,
+        result: failedResult(facts.text),
+      }
+    }
     // Pi's directory listing arrives as the search result's file paths.
     const search = extractPiSearch(facts.payload)
     if (search) {
       const notice = search.notice
-      return { kind: 'list', ...header, request, result: { entries: search.filenames.map(path => ({ path })), truncated: search.truncated, ...(notice !== undefined ? { notice } : {}) } }
+      return {
+        kind: 'list',
+        ...header,
+        request,
+        result: {
+          entries: search.filenames.map(path => ({ path })),
+          truncated: search.truncated,
+          ...(notice !== undefined
+            ? { notice }
+            : {}),
+        },
+      }
     }
     const unread = piUnreadResult(facts, facts.text)
-    return { kind: 'list', ...header, request, ...(unread !== undefined ? { result: unread } : {}) }
+    return {
+      kind: 'list',
+      ...header,
+      request,
+      ...(unread !== undefined
+        ? { result: unread }
+        : {}),
+    }
   },
   question: (facts): ToolCallSpecVariant<'question'> => {
     const request = piRequestFor('question', facts)
@@ -457,7 +616,15 @@ export const PI_TOOL_READERS: ToolCallSpecReaderTable<PiToolFacts> = {
       ...header,
       title,
       request,
-      ...(facts.resultAvailable && facts.text ? { result: { answers: [{ header: request.questions[0]?.header || title || 'Answer', answer: facts.text }] } } : {}),
+      ...(facts.resultAvailable && facts.text
+        ? {
+            result: {
+              answers: [
+                { header: request.questions[0]?.header || title || 'Answer', answer: facts.text },
+              ],
+            },
+          }
+        : {}),
     }
   },
   switch_mode: (facts): ToolCallSpecVariant<'switch_mode'> => {
@@ -467,13 +634,26 @@ export const PI_TOOL_READERS: ToolCallSpecReaderTable<PiToolFacts> = {
       kind: 'switch_mode',
       ...piHeader(facts),
       request: piRequestFor('switch_mode', facts),
-      ...(facts.resultAvailable ? { result: proseResult(plan || facts.text, 'markdown') } : {}),
-      ...(facts.isError ? { statusOverride: 'failed' as const, result: failedResult(facts.text) } : {}),
+      ...(facts.resultAvailable
+        ? {
+            result: proseResult(plan || facts.text, 'markdown'),
+          }
+        : {}),
+      ...(facts.isError
+        ? {
+            statusOverride: 'failed' as const,
+            result: failedResult(facts.text),
+          }
+        : {}),
     }
   },
   mcp: (facts): ToolCallSpecVariant<'mcp'> => {
     const request = piRequestFor('mcp', facts)
-    const header = request.server ? { title: mcpToolCallDisplayName(request) } : piHeader(facts)
+    const header = request.server
+      ? {
+          title: mcpToolCallDisplayName(request),
+        }
+      : piHeader(facts)
     // Attach a result only after the call finishes.
     // A running call needs an absent result so ToolMessage can display live output.
     // This rule covers Pi extensions and MCP bridges under the generic kind.
@@ -498,12 +678,22 @@ export const PI_TOOL_READERS: ToolCallSpecReaderTable<PiToolFacts> = {
       request,
       result: {
         content,
-        ...(structuredJson !== undefined ? { structuredJson } : {}),
-        ...(structuredJson !== undefined && structuredJsonRole !== undefined ? { structuredJsonRole } : {}),
-        ...(error !== undefined ? { error } : {}),
-        ...(durationMs !== undefined ? { durationMs } : {}),
+        ...(structuredJson !== undefined
+          ? { structuredJson }
+          : {}),
+        ...(structuredJson !== undefined && structuredJsonRole !== undefined
+          ? { structuredJsonRole }
+          : {}),
+        ...(error !== undefined
+          ? { error }
+          : {}),
+        ...(durationMs !== undefined
+          ? { durationMs }
+          : {}),
       },
-      ...(source?.failed && deriveToolCallStatus(facts.lifecycle, facts.resultAvailable) !== 'failed' ? { statusOverride: 'failed' as const } : {}),
+      ...(source?.failed && deriveToolCallStatus(facts.lifecycle, facts.resultAvailable) !== 'failed'
+        ? { statusOverride: 'failed' as const }
+        : {}),
     }
   },
   // Keep declared requests for kinds that Pi does not currently produce.
@@ -556,5 +746,7 @@ function piAgentRun(facts: PiToolFacts): AgentRun {
  * Use this frame only when no request resolved.
  */
 function piFileChangeRequest(facts: PiToolFacts): FileChangeRequest {
-  return { changes: piFallbackDiffSources(facts.toolName, facts.request ? facts.request.parentObject : facts.payload) }
+  return {
+    changes: piFallbackDiffSources(facts.toolName, facts.request ? facts.request.parentObject : facts.payload),
+  }
 }

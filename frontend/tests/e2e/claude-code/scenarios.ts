@@ -16,7 +16,10 @@ export async function nativeContext(fixtures: NativeContextFixtures): Promise<Ma
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */
 export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStartupLaunch {
-  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: 'claude', holdWhen: ['--input-format', 'stream-json'] })
+  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, {
+    binaryName: 'claude',
+    holdWhen: ['--input-format', 'stream-json'],
+  })
 }
 
 /** The related proof of a missing-setting cell: a later native request carries the earlier prompt and answer. */

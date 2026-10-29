@@ -50,7 +50,11 @@ function lettaLifecycle(
 ): ToolCallLifecycleFacts {
   return {
     frameStatus: 'unstated',
-    providerOutcome: nativeStatus === LETTA_TOOL_STATUS.Error ? 'failed' : nativeStatus === LETTA_TOOL_STATUS.Success ? 'succeeded' : null,
+    providerOutcome: nativeStatus === LETTA_TOOL_STATUS.Error
+      ? 'failed'
+      : nativeStatus === LETTA_TOOL_STATUS.Success
+        ? 'succeeded'
+        : null,
     retainedOutcome: retainedOutcome(completion),
     rowFinal: isResult,
     resultFrameLanded: hasResult,
@@ -83,7 +87,9 @@ function lettaToolRow(
   // A paired request supplies arguments only when its native call ID matches.
   const id = lettaCallId(source) ?? ''
   const candidateRequest = lettaToolPayload(span.request?.parentObject)
-  const requestSource = lettaMatchingCall(source, candidateRequest) ? candidateRequest : null
+  const requestSource = lettaMatchingCall(source, candidateRequest)
+    ? candidateRequest
+    : null
   const nativeCall = lettaNativeToolCall(source)
   const requestCall = lettaNativeToolCall(requestSource)
   const name = pickString(source, LETTA_DELTA_FIELD.ToolName)
@@ -92,13 +98,23 @@ function lettaToolRow(
     || pickString(requestCall, LETTA_DELTA_FIELD.Name)
     || 'Tool'
   const args = lettaArguments(source) ?? lettaArguments(requestSource) ?? {}
-  const candidateResult = isResult ? source : lettaToolPayload(span.result?.parentObject)
-  const resultSource = lettaMatchingCall(source, candidateResult) && !isLettaToolProgress(candidateResult) ? candidateResult : null
+  const candidateResult = isResult
+    ? source
+    : lettaToolPayload(span.result?.parentObject)
+  const resultSource = lettaMatchingCall(source, candidateResult) && !isLettaToolProgress(candidateResult)
+    ? candidateResult
+    : null
   const returned = lettaReturnedData(resultSource)
   const declared = lettaToolKind(name)
-  const kind = declared === 'unspecified' ? 'other' : declared
-  const resultText = returned.kind === 'present' ? lettaResultText(kind, returned.value) : undefined
-  const nativeStatus = pickString(resultSource, LETTA_DELTA_FIELD.Status, undefined) ?? (returned.kind === 'present' ? returned.status : undefined)
+  const kind = declared === 'unspecified'
+    ? 'other'
+    : declared
+  const resultText = returned.kind === 'present'
+    ? lettaResultText(kind, returned.value)
+    : undefined
+  const nativeStatus = pickString(resultSource, LETTA_DELTA_FIELD.Status, undefined) ?? (returned.kind === 'present'
+    ? returned.status
+    : undefined)
   const lifecycle = lettaLifecycle(completion, isResult, nativeStatus, resultText !== undefined)
   const envelope = { id, name, lifecycle }
   const hasInput = Object.keys(args).length > 0
@@ -113,31 +129,59 @@ function lettaToolRow(
   if ((kind === 'edit' || kind === 'write') && fileInputComplete) {
     const change = {
       filePath,
-      operation: kind === 'write' ? 'add' as const : 'edit' as const,
-      oldStr: kind === 'write' ? '' : oldStr ?? '',
+      operation: kind === 'write'
+        ? 'add' as const
+        : 'edit' as const,
+      oldStr: kind === 'write'
+        ? ''
+        : oldStr ?? '',
       newStr,
     }
     const call = createToolCall(envelope, {
       kind,
       name,
-      request: { changes: [change] },
+      request: {
+        changes: [change],
+      },
       ...(failed && resultText !== undefined
-        ? { result: failedResult(resultText) }
-        : !interrupted && nativeStatus === LETTA_TOOL_STATUS.Success && resultText !== undefined ? { result: { changes: [change] } } : {}),
+        ? {
+            result: failedResult(resultText),
+          }
+        : !interrupted && nativeStatus === LETTA_TOOL_STATUS.Success && resultText !== undefined
+            ? {
+                result: {
+                  changes: [change],
+                },
+              }
+            : {}),
     })
     return toolCallRow(call, isResult ? 'result' : 'request', span.visibleRows)
   }
-  const facts: LettaToolFacts = { envelope, name, args, resultText, failed }
+  const facts: LettaToolFacts = {
+    envelope,
+    name,
+    args,
+    resultText,
+    failed,
+  }
   // A task call draws its checklist on both rows. The native answer is the saved
   // task record, so the result row can read it without the paired request.
   if (kind === 'todo') {
-    const lists = lettaTodoLists(name, args, returned.kind === 'present' && !failed ? returned.value : undefined)
+    const lists = lettaTodoLists(name, args, returned.kind === 'present' && !failed
+      ? returned.value
+      : undefined)
     if (lists) {
       const call = createToolCall(envelope, {
         kind: 'todo',
         name,
         request: lists.request,
-        ...(resultText !== undefined ? { result: failed ? failedResult(resultText) : lists.result ?? unparsedResult(resultText) } : {}),
+        ...(resultText !== undefined
+          ? {
+              result: failed
+                ? failedResult(resultText)
+                : lists.result ?? unparsedResult(resultText),
+            }
+          : {}),
       })
       return toolCallRow(call, isResult ? 'result' : 'request', span.visibleRows)
     }
@@ -163,8 +207,12 @@ function lettaToolRow(
  * return stays as Letta Code wrote it.
  */
 function lettaResultText(kind: ToolKind, value: unknown): string {
-  const text = typeof value === 'string' ? value : JSON.stringify(value)
-  return (kind === 'question' ? lettaQuestionReceiptMessage(lettaJsonObject(value)) : undefined) ?? text
+  const text = typeof value === 'string'
+    ? value
+    : JSON.stringify(value)
+  return (kind === 'question'
+    ? lettaQuestionReceiptMessage(lettaJsonObject(value))
+    : undefined) ?? text
 }
 
 /** Everything one tool row states, collected once. */
@@ -184,7 +232,15 @@ function lettaGenericCall(facts: LettaToolFacts): ToolCall {
     name: facts.name,
     request: { args: facts.args },
     ...(facts.resultText !== undefined
-      ? { result: facts.failed ? failedResult(facts.resultText) : { content: [{ type: 'text' as const, text: facts.resultText }] } }
+      ? {
+          result: facts.failed
+            ? failedResult(facts.resultText)
+            : {
+                content: [
+                  { type: 'text' as const, text: facts.resultText },
+                ],
+              },
+        }
       : {}),
   })
 }
@@ -199,7 +255,9 @@ function lettaGenericCall(facts: LettaToolFacts): ToolCall {
  */
 export const LETTA_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<null> = {
   // The questions and their options, whose shape is Letta's own.
-  question: (args): ToolRequestByKind['question'] => ({ questions: lettaQuestionsFromToolInput(args) }),
+  question: (args): ToolRequestByKind['question'] => ({
+    questions: lettaQuestionsFromToolInput(args),
+  }),
 }
 
 /**
@@ -216,7 +274,13 @@ function lettaDeclaredCall<K extends ToolKind>(kind: K, facts: LettaToolFacts): 
     kind,
     name: facts.name,
     request: toolRequestFor(kind, facts.args, null, LETTA_TOOL_REQUEST_OVERRIDES),
-    ...(facts.resultText !== undefined ? { result: facts.failed ? failedResult(facts.resultText) : unparsedResult(facts.resultText) } : {}),
+    ...(facts.resultText !== undefined
+      ? {
+          result: facts.failed
+            ? failedResult(facts.resultText)
+            : unparsedResult(facts.resultText),
+        }
+      : {}),
   })
 }
 
@@ -236,8 +300,12 @@ const LETTA_EXIT_LINE = /^((?:Note: [^\n]*\n)?)Exit code: (-?\d+)(?:\n|$)/
  * states no code, such as a signal, stays in the output, where the reader sees why.
  */
 function lettaShellCall(facts: LettaToolFacts & { resultText: string }): ToolCall {
-  const exitLine = facts.failed ? LETTA_EXIT_LINE.exec(facts.resultText) : null
-  const exitCode = exitLine ? Number(exitLine[2]) : Number.NaN
+  const exitLine = facts.failed
+    ? LETTA_EXIT_LINE.exec(facts.resultText)
+    : null
+  const exitCode = exitLine
+    ? Number(exitLine[2])
+    : Number.NaN
   const command: CommandResult = exitLine && Number.isSafeInteger(exitCode)
     ? { output: `${exitLine[1] ?? ''}${facts.resultText.slice(exitLine[0].length)}`, exitCode }
     : { output: facts.resultText }
@@ -245,7 +313,10 @@ function lettaShellCall(facts: LettaToolFacts & { resultText: string }): ToolCal
     kind: 'execute',
     name: facts.name,
     request: toolRequestFor('execute', facts.args, null, LETTA_TOOL_REQUEST_OVERRIDES),
-    result: { commands: [command], unresolvedTerminals: [] },
+    result: {
+      commands: [command],
+      unresolvedTerminals: [],
+    },
   })
 }
 
@@ -261,7 +332,9 @@ function lettaNativeToolCall(source: Record<string, unknown> | null | undefined)
   if (singular)
     return singular
   const calls = source?.[LETTA_DELTA_FIELD.ToolCalls]
-  return Array.isArray(calls) ? (calls.find(isObject) ?? null) : null
+  return Array.isArray(calls)
+    ? (calls.find(isObject) ?? null)
+    : null
 }
 
 /** The object that `raw` is, or that the JSON text `raw` states. Anything else is null. */
@@ -272,7 +345,9 @@ function lettaJsonObject(raw: unknown): Record<string, unknown> | null {
     return null
   try {
     const parsed: unknown = JSON.parse(raw)
-    return isObject(parsed) ? parsed : null
+    return isObject(parsed)
+      ? parsed
+      : null
   }
   catch {
     return null

@@ -10,7 +10,9 @@ zcodeTest('the Interrupt control of a background subagent\'s tab stops that suba
   await exerciseChildInterrupt(native, {
     childTurn: ZCODE_CHILD.childTask(HELD_CHILD_TASK),
     background: true,
-    rootTurnsBeforeStop: [{ text: 'The subagent counts in the background.' }],
+    rootTurnsBeforeStop: [
+      { text: 'The subagent counts in the background.' },
+    ],
   })
 })
 

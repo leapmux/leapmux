@@ -46,7 +46,11 @@ describe('ampAgentRequest', () => {
   })
 
   it('titles each specialist by its name and its request', () => {
-    expect(ampAgentRequest('oracle', { task: 'Review the lock order', context: 'CI deadlocks.', files: ['a.go', 'b.go'] }, 'TU-2')).toEqual({
+    expect(ampAgentRequest('oracle', {
+      task: 'Review the lock order',
+      context: 'CI deadlocks.',
+      files: ['a.go', 'b.go'],
+    }, 'TU-2')).toEqual({
       description: 'Oracle: Review the lock order',
       agentType: 'oracle',
       prompt: 'Review the lock order\n\nCI deadlocks.\n\n- a.go\n- b.go',
@@ -75,7 +79,10 @@ describe('ampAgentRequest', () => {
   // list item.
   it('leaves blank parts and entries that are not paths out of a specialist\'s prompt', () => {
     expect(ampAgentRequest('oracle', { task: 'Review.', context: '  ', files: [] }, 'TU-8').prompt).toBe('Review.')
-    expect(ampAgentRequest('oracle', { task: 'Review.', files: ['a.go', 3, null] }, 'TU-9').prompt).toBe('Review.\n\n- a.go')
+    expect(ampAgentRequest('oracle', {
+      task: 'Review.',
+      files: ['a.go', 3, null],
+    }, 'TU-9').prompt).toBe('Review.\n\n- a.go')
     expect(ampAgentRequest('oracle', { context: 'Only context.' }, 'TU-10')).toMatchObject({ description: 'Oracle', prompt: 'Only context.' })
   })
 })
@@ -84,7 +91,16 @@ describe('ampAgentResult', () => {
   it('states one run with the report and the registry row', () => {
     const request = ampAgentRequest('Task', { description: 'Return pong', prompt: 'x' }, 'TU-1')
     expect(ampAgentResult(request, 'pong', false)).toEqual({
-      agents: [{ description: 'Return pong', registryKey: 'TU-1', agentId: '', outcome: 'completed', metadata: [], body: 'pong' }],
+      agents: [
+        {
+          description: 'Return pong',
+          registryKey: 'TU-1',
+          agentId: '',
+          outcome: 'completed',
+          metadata: [],
+          body: 'pong',
+        },
+      ],
     })
     expect(ampAgentResult(request, 'boom', true).agents[0]?.outcome).toBe('failed')
   })

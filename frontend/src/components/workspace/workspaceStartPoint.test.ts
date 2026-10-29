@@ -84,14 +84,34 @@ describe('startPointDialogSetup', () => {
   it('keys the worktree and its main repository separately', () => {
     // Both checkouts are real places to start, and they deserve different
     // remembered modes.
-    const main = startPointDialogSetup({ kind: 'repo', workerId: 'w1', gitToplevel: '/repo', isWorktree: false })
-    const wt = startPointDialogSetup({ kind: 'repo', workerId: 'w1', gitToplevel: '/repo-wt/x', isWorktree: true })
+    const main = startPointDialogSetup({
+      kind: 'repo',
+      workerId: 'w1',
+      gitToplevel: '/repo',
+      isWorktree: false,
+    })
+    const wt = startPointDialogSetup({
+      kind: 'repo',
+      workerId: 'w1',
+      gitToplevel: '/repo-wt/x',
+      isWorktree: true,
+    })
     expect(main.stickyKey).not.toBe(wt.stickyKey)
   })
 
   it('keys the same path on two workers separately', () => {
-    const a = startPointDialogSetup({ kind: 'repo', workerId: 'w1', gitToplevel: '/repo', isWorktree: false })
-    const b = startPointDialogSetup({ kind: 'repo', workerId: 'w2', gitToplevel: '/repo', isWorktree: false })
+    const a = startPointDialogSetup({
+      kind: 'repo',
+      workerId: 'w1',
+      gitToplevel: '/repo',
+      isWorktree: false,
+    })
+    const b = startPointDialogSetup({
+      kind: 'repo',
+      workerId: 'w2',
+      gitToplevel: '/repo',
+      isWorktree: false,
+    })
     expect(a.stickyKey).not.toBe(b.stickyKey)
   })
 })

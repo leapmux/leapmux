@@ -64,7 +64,11 @@ function collapseCarriageRunIfNeeded(group: string): string {
     return segments.join('\n')
   const head = segments.slice(0, PROGRESS_HEAD)
   const tail = segments.slice(-PROGRESS_TAIL)
-  return [...head, ELLIPSIS, ...tail].join('\n')
+  return [
+    ...head,
+    ELLIPSIS,
+    ...tail,
+  ].join('\n')
 }
 
 const LEADING_BLANK_LINES_RE = /^(?:\s*\n)+/
@@ -93,5 +97,8 @@ export function stripLeadingBlankLines(content: string): string {
  */
 export function normalizedCommandBody(output: string): NormalizedProgressOutput {
   const norm = normalizeProgressOutput(output)
-  return { text: stripLeadingBlankLines(norm.text), hadCarriageReturns: norm.hadCarriageReturns }
+  return {
+    text: stripLeadingBlankLines(norm.text),
+    hadCarriageReturns: norm.hadCarriageReturns,
+  }
 }

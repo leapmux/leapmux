@@ -22,7 +22,10 @@ async function openModelPicker(page: Page) {
 /** Require the request of the Responses route of the proxy model `model` at `effort`. */
 function expectProxyRequest(request: MockModelRequestRecord, model: string, effort: string): void {
   expect(request.path).toBe('/v1/responses')
-  expect(request.body).toMatchObject({ model, reasoning: { effort } })
+  expect(request.body).toMatchObject({
+    model,
+    reasoning: { effort },
+  })
 }
 
 /** Require the request of the Responses route of the proxy model at the low effort. */
@@ -36,9 +39,23 @@ function expectLowEffortRequest(request: MockModelRequestRecord): void {
  */
 async function answerJunieEffortHousekeeping(modelScript: ModelScript): Promise<void> {
   await modelScript.rule(
-    { name: 'junie-effort-capability-filter', when: { system: 'classify a user request and route it to the correct handler' }, respond: { text: 'CODE' } },
-    { name: 'junie-effort-language', when: { system: 'You are a language identification utility.' }, respond: { text: JSON.stringify({ iso: 'en', confidence: 1 }) } },
-    { name: 'junie-effort-next-prompt', when: { user: 'Return ONLY the predicted prompt \\(max 7 tokens\\)' }, respond: { text: 'NONE' } },
+    {
+      name: 'junie-effort-capability-filter',
+      when: { system: 'classify a user request and route it to the correct handler' },
+      respond: { text: 'CODE' },
+    },
+    {
+      name: 'junie-effort-language',
+      when: { system: 'You are a language identification utility.' },
+      respond: {
+        text: JSON.stringify({ iso: 'en', confidence: 1 }),
+      },
+    },
+    {
+      name: 'junie-effort-next-prompt',
+      when: { user: 'Return ONLY the predicted prompt \\(max 7 tokens\\)' },
+      respond: { text: 'NONE' },
+    },
   )
 }
 
@@ -75,7 +92,12 @@ async function proxyModelOption(context: ManagedNativeScenarioContext, model: st
 
 junieTest.describe('Junie settings', () => {
   junieTest('an effort switch reaches the next request and survives a reload', async ({ authenticatedNativeEffortJunieWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedNativeEffortJunieWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedNativeEffortJunieWorkspace.workspaceId,
+    })
     let proxyModelOptionID = ''
     await exerciseNativeOption(context, {
       groupId: 'effort',
@@ -106,7 +128,12 @@ junieTest.describe('Junie settings', () => {
 // model write keeps that launch effort when the new model offers it. The native-effort workspace opens at High, so
 // Low differs from the level at which the session started.
 junieTest('keeps the chosen effort after a model switch and a reload', async ({ authenticatedNativeEffortJunieWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeEffortContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedNativeEffortJunieWorkspace.workspaceId })
+  const context = await nativeEffortContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedNativeEffortJunieWorkspace.workspaceId,
+  })
   await exerciseModelSwitchKeepsOption(context, {
     kept: { groupId: 'effort', value: 'low' },
     model: await proxyModelOption(context, JUNIE_MODEL_WITHOUT_NONE),
@@ -119,13 +146,24 @@ junieTest('keeps the chosen effort after a model switch and a reload', async ({ 
 // round trip can pass through a model without the chosen level: gpt-6-astra lacks None. Junie runs that model at Low,
 // the lowest level that it offers, and keeps Low when the model returns.
 junieTest('settles a defined effort after a round trip through a model without the chosen level', async ({ authenticatedNativeEffortJunieWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeEffortContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedNativeEffortJunieWorkspace.workspaceId })
+  const context = await nativeEffortContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedNativeEffortJunieWorkspace.workspaceId,
+  })
   await exerciseEffortModelRoundTrip(context, {
     effortGroupId: 'effort',
     model: await proxyModelOption(context, MOCK_MODELS.openai),
     chosen: 'none',
     via: await proxyModelOption(context, JUNIE_MODEL_WITHOUT_NONE),
-    viaEfforts: ['max', 'xhigh', 'high', 'medium', 'low'],
+    viaEfforts: [
+      'max',
+      'xhigh',
+      'high',
+      'medium',
+      'low',
+    ],
     settled: 'low',
     nativeProof: request => expectProxyRequest(request, MOCK_MODELS.openai, 'low'),
   })

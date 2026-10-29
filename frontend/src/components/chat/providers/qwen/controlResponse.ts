@@ -21,7 +21,9 @@ function qwenPlanDisplay(request: Record<string, unknown>, optionId: string): Co
   const kind = acpPermissionOptions(request).find(option => option.optionId === optionId)?.kind ?? acpOptionIdKind(optionId)
   if (!kind)
     return null
-  return label(kind === ACP_PERMISSION_KIND.AllowOnce || kind === KIND_ALLOW_ALWAYS ? CONTROL_DECISION_WORDS.plan.allow : CONTROL_DECISION_WORDS.plan.deny)
+  return label(kind === ACP_PERMISSION_KIND.AllowOnce || kind === KIND_ALLOW_ALWAYS
+    ? CONTROL_DECISION_WORDS.plan.allow
+    : CONTROL_DECISION_WORDS.plan.deny)
 }
 
 /**

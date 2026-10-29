@@ -9,9 +9,13 @@ export interface DroidSurfaceOptions {
 export function handleDroidHttp(request: IncomingMessage, response: ServerResponse, url: URL, options: DroidSurfaceOptions): boolean {
   if (request.method !== 'GET' || url.pathname !== '/v1/api/cli/whoami')
     return false
-  if (request.headers.authorization !== `Bearer ${options.modelKey}`)
-    writeMockJSON(response, 401, { error: { message: 'The identity request requires the isolated Droid model key.' } })
-  else
+  if (request.headers.authorization !== `Bearer ${options.modelKey}`) {
+    writeMockJSON(response, 401, {
+      error: { message: 'The identity request requires the isolated Droid model key.' },
+    })
+  }
+  else {
     writeMockJSON(response, 200, { userId: 'leapmux-e2e-user', orgId: 'leapmux-e2e-org' })
+  }
   return true
 }

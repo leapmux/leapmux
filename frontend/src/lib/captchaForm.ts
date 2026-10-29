@@ -116,6 +116,9 @@ export function createCaptchaForm(): CaptchaFormState {
       }
     },
     blocksSubmit: () => pending() || unsolvable() || (required() && payload() === null),
-    fields: () => ({ captchaPayload: payload() ?? '', honeypot: honeypot() }),
+    fields: () => ({
+      captchaPayload: payload() ?? '',
+      honeypot: honeypot(),
+    }),
   }
 }

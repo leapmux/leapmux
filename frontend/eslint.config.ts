@@ -43,11 +43,13 @@ const BASE_RESTRICTED_SYNTAX = [...ANTFU_RESTRICTED_SYNTAX, DOM_TITLE_RESTRICTED
  * the same reason: the chat layer blocks below restate `ts/no-restricted-imports`
  * for their trees and must keep it.
  */
-const BASE_RESTRICTED_IMPORT_PATHS = [{
-  name: 'dexie',
-  message: 'Open IndexedDB through ~/lib/idb (createIdbConnection).',
-  allowTypeImports: true,
-}] as const
+const BASE_RESTRICTED_IMPORT_PATHS = [
+  {
+    name: 'dexie',
+    message: 'Open IndexedDB through ~/lib/idb (createIdbConnection).',
+    allowTypeImports: true,
+  },
+] as const
 
 export default antfu({
   stylistic: {
@@ -55,7 +57,7 @@ export default antfu({
     quotes: 'single',
   },
   solid: true,
-  ignores: ['src/gen/**', '.vinxi/**', '.output/**', 'app.config.timestamp_*'],
+  ignores: ['src/gen/**', '.output/**'],
 }, {
   // Treat `useDialogSubmit`'s returned helpers as reactive entry points.
   // `run` and `formHandler` invoke their callback synchronously inside an
@@ -69,13 +71,21 @@ export default antfu({
   // before.
   files: ['**/*.jsx', '**/*.tsx'],
   rules: {
-    'solid/reactivity': ['warn', {
-      customReactiveFunctions: ['run', 'formHandler'],
-    }],
+    'solid/reactivity': [
+      'warn',
+      {
+        customReactiveFunctions: ['run', 'formHandler'],
+      },
+    ],
   },
 }, {
   files: ['src/**/*.ts', 'src/**/*.tsx'],
-  ignores: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'src/test-support/**', 'src/generated/**'],
+  ignores: [
+    'src/**/*.test.ts',
+    'src/**/*.test.tsx',
+    'src/test-support/**',
+    'src/generated/**',
+  ],
   plugins: {
     'chat-pipeline': chatPipelinePlugin,
   },
@@ -131,8 +141,21 @@ export default antfu({
   files: ['src/**/*.ts', 'src/**/*.tsx'],
   ignores: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
   rules: {
-    'no-restricted-globals': ['error', { name: 'localStorage', message: 'Route browser storage through ~/lib/browserStorage.' }, { name: 'sessionStorage', message: 'Route browser storage through ~/lib/browserStorage.' }, { name: 'indexedDB', message: 'Open IndexedDB through ~/lib/idb (createIdbConnection).' }],
-    'no-restricted-properties': ['error', { object: 'window', property: 'localStorage', message: 'Route browser storage through ~/lib/browserStorage.' }, { object: 'window', property: 'sessionStorage', message: 'Route browser storage through ~/lib/browserStorage.' }, { object: 'window', property: 'indexedDB', message: 'Open IndexedDB through ~/lib/idb (createIdbConnection).' }, { object: 'globalThis', property: 'localStorage', message: 'Route browser storage through ~/lib/browserStorage.' }, { object: 'globalThis', property: 'sessionStorage', message: 'Route browser storage through ~/lib/browserStorage.' }, { object: 'globalThis', property: 'indexedDB', message: 'Open IndexedDB through ~/lib/idb (createIdbConnection).' }],
+    'no-restricted-globals': [
+      'error',
+      { name: 'localStorage', message: 'Route browser storage through ~/lib/browserStorage.' },
+      { name: 'sessionStorage', message: 'Route browser storage through ~/lib/browserStorage.' },
+      { name: 'indexedDB', message: 'Open IndexedDB through ~/lib/idb (createIdbConnection).' },
+    ],
+    'no-restricted-properties': [
+      'error',
+      { object: 'window', property: 'localStorage', message: 'Route browser storage through ~/lib/browserStorage.' },
+      { object: 'window', property: 'sessionStorage', message: 'Route browser storage through ~/lib/browserStorage.' },
+      { object: 'window', property: 'indexedDB', message: 'Open IndexedDB through ~/lib/idb (createIdbConnection).' },
+      { object: 'globalThis', property: 'localStorage', message: 'Route browser storage through ~/lib/browserStorage.' },
+      { object: 'globalThis', property: 'sessionStorage', message: 'Route browser storage through ~/lib/browserStorage.' },
+      { object: 'globalThis', property: 'indexedDB', message: 'Open IndexedDB through ~/lib/idb (createIdbConnection).' },
+    ],
     // Every store declares a schema and takes a connection from the scaffold;
     // nobody else constructs a Dexie. This is the import-level statement of the
     // rule `no-restricted-globals` makes for the raw API above.
@@ -140,9 +163,12 @@ export default antfu({
     // TYPE imports stay allowed, and that is the point of using the
     // TypeScript-aware rule: a store still has to name `Table<Row>` to type the
     // tables its connection hands back, and a type cannot open a database.
-    'ts/no-restricted-imports': ['error', {
-      paths: [...BASE_RESTRICTED_IMPORT_PATHS],
-    }],
+    'ts/no-restricted-imports': [
+      'error',
+      {
+        paths: [...BASE_RESTRICTED_IMPORT_PATHS],
+      },
+    ],
   },
 }, {
   // The gateway pair IS the browser-storage layer, so it spells the raw globals
@@ -187,7 +213,12 @@ export default antfu({
   // its props onto a DOM node closes that hole in the type system instead, by
   // omitting `title` from its prop type; `IconButton` and `ConfirmButton` both
   // do.
-  files: ['src/**/*.ts', 'src/**/*.tsx', 'tests/**/*.ts', 'tests/**/*.tsx'],
+  files: [
+    'src/**/*.ts',
+    'src/**/*.tsx',
+    'tests/**/*.ts',
+    'tests/**/*.tsx',
+  ],
   rules: {
     'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX],
   },
@@ -228,10 +259,14 @@ export default antfu({
     // Spread the base selectors: ESLint REPLACES a rule's options rather than
     // merging them, so omitting them would delete the `const enum`, `export =`
     // and DOM-`title` bans for exactly this tree.
-    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, {
-      selector: 'JSXElement',
-      message: 'Layer 1 draws nothing. A provider plugin returns the provider-neutral model from `../model/`, and `../results/` renders it. A control surface that must draw goes in its own `*Actions.tsx` and is listed in the allowlist in eslint.config.ts.',
-    }],
+    'no-restricted-syntax': [
+      'error',
+      ...BASE_RESTRICTED_SYNTAX,
+      {
+        selector: 'JSXElement',
+        message: 'Layer 1 draws nothing. A provider plugin returns the provider-neutral model from `../model/`, and `../results/` renders it. A control surface that must draw goes in its own `*Actions.tsx` and is listed in the allowlist in eslint.config.ts.',
+      },
+    ],
   },
 }, {
   // A NATIVE AGENT OPENS BY THE RULE OF ITS PROVIDER. Each open of an agent of a
@@ -252,13 +287,18 @@ export default antfu({
     // Spread the base selectors: ESLint REPLACES a rule's options rather than
     // merging them, so omitting them would delete the `const enum`, `export =`
     // and DOM-`title` bans for exactly this tree.
-    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, {
-      selector: ':matches(TSAsExpression, TSTypeAssertion) > .typeAnnotation Identifier[name="ProviderWorkingDir"]',
-      message: 'Do not cast to `ProviderWorkingDir`. Make the directory by the rule of the provider (`newProviderWorkingDir`, `newNativeWorkingDir`), or state a deliberate layout with `deliberateWorkingDir` and its reason (`tests/e2e/helpers/providerWorkingDir.ts`).',
-    }, {
-      selector: 'ImportDeclaration[source.value=/(?:^|\\/)test-support\\/unitWorkingDir$/]',
-      message: '`unitWorkingDir` is for a unit test, which opens no agent. A spec, a fixture, or a helper makes its directory by the rule of the provider, or states a deliberate layout with `deliberateWorkingDir`.',
-    }],
+    'no-restricted-syntax': [
+      'error',
+      ...BASE_RESTRICTED_SYNTAX,
+      {
+        selector: ':matches(TSAsExpression, TSTypeAssertion) > .typeAnnotation Identifier[name="ProviderWorkingDir"]',
+        message: 'Do not cast to `ProviderWorkingDir`. Make the directory by the rule of the provider (`newProviderWorkingDir`, `newNativeWorkingDir`), or state a deliberate layout with `deliberateWorkingDir` and its reason (`tests/e2e/helpers/providerWorkingDir.ts`).',
+      },
+      {
+        selector: 'ImportDeclaration[source.value=/(?:^|\\/)test-support\\/unitWorkingDir$/]',
+        message: '`unitWorkingDir` is for a unit test, which opens no agent. A spec, a fixture, or a helper makes its directory by the rule of the provider, or states a deliberate layout with `deliberateWorkingDir`.',
+      },
+    ],
   },
 }, {
   // A `describe` identifies the SYMBOL under test, so it must be free to spell that
@@ -276,17 +316,30 @@ export default antfu({
   //
   // `src/test-support/noMangledTestTitles.test.ts` carries the other half: a
   // title may not spell a name the file knows with its capitals removed.
-  files: ['**/*.test.ts', '**/*.test.tsx', '**/*.spec.ts', '**/*.spec.tsx'],
+  files: [
+    '**/*.test.ts',
+    '**/*.test.tsx',
+    '**/*.spec.ts',
+    '**/*.spec.tsx',
+  ],
   rules: {
-    'test/prefer-lowercase-title': ['error', { ignore: ['describe'] }],
+    'test/prefer-lowercase-title': [
+      'error',
+      {
+        ignore: ['describe'],
+      },
+    ],
   },
 }, {
   // Playwright fixture parameters (e.g. `authenticatedWorkspace`) must be destructured
   // to activate the fixture, even when the test body does not use them directly.
   files: ['tests/e2e/**/*.spec.ts'],
   rules: {
-    'unused-imports/no-unused-vars': ['error', {
-      argsIgnorePattern: '^(authenticatedWorkspace|workspace|leapmuxServer|separateHubWorker)$',
-    }],
+    'unused-imports/no-unused-vars': [
+      'error',
+      {
+        argsIgnorePattern: '^(authenticatedWorkspace|workspace|leapmuxServer|separateHubWorker)$',
+      },
+    ],
   },
 })

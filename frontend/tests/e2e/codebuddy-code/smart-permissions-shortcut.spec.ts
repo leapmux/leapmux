@@ -28,7 +28,9 @@ codebuddyTest('executes the native Smart command in Auto mode before and after r
   await modelScript.rule({
     name: CLASSIFIER_RULE,
     priority: 'high',
-    when: { system: escapeRegExp(CODEBUDDY_CLASSIFIER_SYSTEM_OPENING) },
+    when: {
+      system: escapeRegExp(CODEBUDDY_CLASSIFIER_SYSTEM_OPENING),
+    },
     respond: { text: '<block>no</block>' },
   })
   await exerciseSmartPermissions(native, {
@@ -52,7 +54,9 @@ codebuddyTest('runs no call that the Auto classifier blocks, and asks no questio
   await modelScript.rule({
     name: CLASSIFIER_BLOCK_RULE,
     priority: 'high',
-    when: { system: escapeRegExp(CODEBUDDY_CLASSIFIER_SYSTEM_OPENING) },
+    when: {
+      system: escapeRegExp(CODEBUDDY_CLASSIFIER_SYSTEM_OPENING),
+    },
     respond: { text: `<block>yes</block><reason>${BLOCK_REASON}</reason>` },
   })
   await applyPermissionPreset(page, 'smart')
@@ -63,18 +67,23 @@ codebuddyTest('runs no call that the Auto classifier blocks, and asks no questio
   writeFileSync(join(target, 'keep.txt'), 'Only a classifier that allows the removal removes this file.\n')
   const id = 'native-smart-blocked'
   const answer = 'The classifier blocked the removal.'
-  await expectNoNativeControl(native, { testId: 'control-banner', relatedProof: async () => {
-    const steps = toolTurnSteps([bashToolCall(native.provider, id, `rm -rf ${quotePosixShellArgument(target)}`)], nativeTextStep(native, answer))
-    const start = await modelScript.queue(...steps)
-    await sendMessage(page, modelScript.prompt('Run the scripted removal that the classifier blocks.'))
-    await modelScript.waitForSteps(start + steps.length)
-    await waitForAgentIdle(page)
-    expect(existsSync(join(target, 'keep.txt')), 'the blocked command never ran').toBe(true)
-    const outcome = await nativeToolOutcome(native, await modelScript.requestAt(start + steps.length - 1), id)
-    expect(outcome.text).toContain('denied by the CodeBuddy auto mode classifier')
-    expect(outcome.text).toContain(BLOCK_REASON)
-    await expect(assistantBubbles(page).filter({ hasText: answer }).first()).toBeVisible()
-  } })
+  await expectNoNativeControl(native, {
+    testId: 'control-banner',
+    relatedProof: async () => {
+      const steps = toolTurnSteps([
+        bashToolCall(native.provider, id, `rm -rf ${quotePosixShellArgument(target)}`),
+      ], nativeTextStep(native, answer))
+      const start = await modelScript.queue(...steps)
+      await sendMessage(page, modelScript.prompt('Run the scripted removal that the classifier blocks.'))
+      await modelScript.waitForSteps(start + steps.length)
+      await waitForAgentIdle(page)
+      expect(existsSync(join(target, 'keep.txt')), 'the blocked command never ran').toBe(true)
+      const outcome = await nativeToolOutcome(native, await modelScript.requestAt(start + steps.length - 1), id)
+      expect(outcome.text).toContain('denied by the CodeBuddy auto mode classifier')
+      expect(outcome.text).toContain(BLOCK_REASON)
+      await expect(assistantBubbles(page).filter({ hasText: answer }).first()).toBeVisible()
+    },
+  })
   const status = await modelScript.status()
   // Stage 1 blocks, so CodeBuddy asks stage 2, which blocks too.
   expect(status.ruleMatches[CLASSIFIER_BLOCK_RULE], 'both classifier stages decided the call').toBe(2)

@@ -92,7 +92,10 @@ function contentKeyInputsOf(entry: ClassifiedEntry): ContentKeyInputs {
  * Those changes affect the row's height, so the virtualizer must measure it again.
  */
 export function heightKeyForEntry(entry: ClassifiedEntry, uiVersion: number): string {
-  return buildHeightKey({ ...contentKeyInputsOf(entry), uiVersion })
+  return buildHeightKey({
+    ...contentKeyInputsOf(entry),
+    uiVersion,
+  })
 }
 
 /**
@@ -188,8 +191,12 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
     return {
       revisionKey: rowRevisionKey({
         own,
-        ...(request !== undefined ? { request } : {}),
-        ...(result !== undefined ? { result } : {}),
+        ...(request !== undefined
+          ? { request }
+          : {}),
+        ...(result !== undefined
+          ? { result }
+          : {}),
       }),
       isChildTranscript: deps.isChildTranscript?.() ?? false,
       settingsLabelRevision: settingsLabelDependencyRevision(labelDependencies),
@@ -206,7 +213,9 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
     // A test or isolated preview can omit the resolver. Preparation then resolves the payload itself.
     const selectedMessage = selected?.message ?? message
     const collected = collectSettingsLabelDependencies(() => prepareMessage(selectedMessage, {
-      ...(selected === undefined ? {} : { original: selected.original, resolved: selected.resolved }),
+      ...(selected === undefined
+        ? {}
+        : { original: selected.original, resolved: selected.resolved }),
       isChildTranscript: deps.isChildTranscript?.() ?? false,
     }))
     const prepared = collected.value
@@ -285,5 +294,9 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
   })
   const hasVisibleEntries = createMemo(() => visibleEntries().length > 0)
 
-  return { visibleEntries, hasVisibleEntries, getEntry: id => entryCache.get(id) }
+  return {
+    visibleEntries,
+    hasVisibleEntries,
+    getEntry: id => entryCache.get(id),
+  }
 }

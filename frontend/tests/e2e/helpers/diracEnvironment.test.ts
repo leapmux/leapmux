@@ -15,7 +15,12 @@ afterEach(() => rmSync(homeDir, { recursive: true, force: true }))
 
 describe('createDiracEnvironment', () => {
   it('points Dirac\'s OpenAI provider at the given endpoint and model, with its update off', () => {
-    expect(createDiracEnvironment({ homeDir, baseURL: 'http://127.0.0.1:4567/v1', modelKey: 'unit-key', modelID: 'unit-model' })).toEqual({
+    expect(createDiracEnvironment({
+      homeDir,
+      baseURL: 'http://127.0.0.1:4567/v1',
+      modelKey: 'unit-key',
+      modelID: 'unit-model',
+    })).toEqual({
       DIRAC_PROVIDER: 'openai',
       DIRAC_BASE_URL: 'http://127.0.0.1:4567/v1',
       DIRAC_API_KEY: 'unit-key',
@@ -26,7 +31,12 @@ describe('createDiracEnvironment', () => {
   })
 
   it('turns telemetry off and grants every approval in its global state', () => {
-    const env = createDiracEnvironment({ homeDir, baseURL: 'http://127.0.0.1:4567/v1', modelKey: 'unit-key', modelID: 'unit-model' })
+    const env = createDiracEnvironment({
+      homeDir,
+      baseURL: 'http://127.0.0.1:4567/v1',
+      modelKey: 'unit-key',
+      modelID: 'unit-model',
+    })
     expect(JSON.parse(readFileSync(join(env.DIRAC_DIR!, 'data', 'globalState.json'), 'utf8'))).toEqual({ telemetrySetting: 'disabled', autoApproveAllToggled: true, yoloModeToggled: true })
     expect(statSync(join(env.DIRAC_DIR!, 'data', 'state')).isDirectory()).toBe(true)
   })

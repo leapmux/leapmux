@@ -12,15 +12,57 @@ import './testMocks'
 
 describe.each([AgentProvider.CLAUDE_CODE, AgentProvider.ZCODE])('paired to-do layout (%s)', (provider) => {
   it.each([false, true])('puts the checklist in the result row (empty: %s)', (empty) => {
-    const todos = empty ? [] : [{ content: 'Inspect sample', status: 'pending' }]
+    const todos = empty
+      ? []
+      : [
+          { content: 'Inspect sample', status: 'pending' },
+        ]
     const request = provider === AgentProvider.CLAUDE_CODE
-      ? { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'call', name: 'TodoWrite', input: { todos } }] } }
-      : { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'call', toolName: 'TodoWrite', input: { todos } } }
+      ? {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: 'call',
+                name: 'TodoWrite',
+                input: { todos },
+              },
+            ],
+          },
+        }
+      : {
+          type: 'tool.updated',
+          payload: {
+            kind: 'scheduled',
+            toolCallId: 'call',
+            toolName: 'TodoWrite',
+            input: { todos },
+          },
+        }
     const result = provider === AgentProvider.CLAUDE_CODE
-      ? { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'call', content: 'Todos updated' }] }, tool_use_result: { newTodos: todos } }
-      : { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'call', result: { success: true, content: 'Todos updated' } } }
+      ? {
+          type: 'user',
+          message: {
+            content: [
+              { type: 'tool_result', tool_use_id: 'call', content: 'Todos updated' },
+            ],
+          },
+          tool_use_result: { newTodos: todos },
+        }
+      : {
+          type: 'tool.updated',
+          payload: {
+            kind: 'result',
+            toolCallId: 'call',
+            result: { success: true, content: 'Todos updated' },
+          },
+        }
     const plugin = providerFor(provider)!
-    const parsed = (message: Record<string, unknown>) => ({ ...input(message), spanType: 'TodoWrite' })
+    const parsed = (message: Record<string, unknown>) => ({
+      ...input(message),
+      spanType: 'TodoWrite',
+    })
     const sources = (role: 'request' | 'result') => testMessageSources({
       request: () => parsed(request),
       result: () => parsed(result),
@@ -29,8 +71,20 @@ describe.each([AgentProvider.CLAUDE_CODE, AgentProvider.ZCODE])('paired to-do la
     })
     const { container } = render(() => (
       <>
-        <div data-row="request">{renderMessageContent(request, { premeasureMode: true, spanType: 'TodoWrite', sources: sources('request') }, plugin?.transcript.classify(parsed(request)), provider)}</div>
-        <div data-row="result">{renderMessageContent(result, { premeasureMode: true, spanType: 'TodoWrite', sources: sources('result') }, plugin?.transcript.classify(parsed(result)), provider)}</div>
+        <div data-row="request">
+          {renderMessageContent(request, {
+            premeasureMode: true,
+            spanType: 'TodoWrite',
+            sources: sources('request'),
+          }, plugin?.transcript.classify(parsed(request)), provider)}
+        </div>
+        <div data-row="result">
+          {renderMessageContent(result, {
+            premeasureMode: true,
+            spanType: 'TodoWrite',
+            sources: sources('result'),
+          }, plugin?.transcript.classify(parsed(result)), provider)}
+        </div>
       </>
     ))
     expect(container.querySelectorAll(`.${toolUseHeader}`)).toHaveLength(1)

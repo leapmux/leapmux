@@ -56,7 +56,10 @@ describe('assertPrivateNativePath', () => {
     expect(() => assertPrivateNativePath(scratch, runDir)).toThrow('outside the E2E run')
   })
 
-  it.each([{ path: '', run: 'run' }, { path: 'path', run: '' }])('refuses an empty private path or run directory: %j', ({ path, run }) => {
+  it.each([
+    { path: '', run: 'run' },
+    { path: 'path', run: '' },
+  ])('refuses an empty private path or run directory: %j', ({ path, run }) => {
     expect(() => assertPrivateNativePath(path, run)).toThrow('must be nonempty')
   })
 

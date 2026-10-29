@@ -142,8 +142,12 @@ export const FileActionsMenu: Component<FileActionsMenuProps> = (props) => {
     if (!menuOpen())
       return []
     const rows: MenuInfoRow[] = []
-    if (showSize())
-      rows.push({ label: 'Size:', value: formatBytes(props.size!) })
+    if (showSize()) {
+      rows.push({
+        label: 'Size:',
+        value: formatBytes(props.size!),
+      })
+    }
     if (props.modTime)
       rows.push({ label: 'Modified:', value: <RelativeTimeAgo timestamp={props.modTime} /> })
     return rows
@@ -151,17 +155,25 @@ export const FileActionsMenu: Component<FileActionsMenuProps> = (props) => {
 
   const infoJson = () => prettifyJson({
     path: props.path,
-    size: showSize() ? props.size : undefined,
+    size: showSize()
+      ? props.size
+      : undefined,
     modified: props.modTime || undefined,
   })
 
   return (
     <DropdownMenu
-      {...(props.placement !== undefined ? { placement: props.placement } : {})}
+      {...(props.placement !== undefined
+        ? { placement: props.placement }
+        : {})}
       onToggle={setMenuOpen}
-      {...(props.contextMenuFor !== undefined ? { contextMenuFor: props.contextMenuFor } : {})}
+      {...(props.contextMenuFor !== undefined
+        ? { contextMenuFor: props.contextMenuFor }
+        : {})}
       trigger={moreHorizontalTrigger({
-        ...(props.triggerClass !== undefined ? { class: props.triggerClass } : {}),
+        ...(props.triggerClass !== undefined
+          ? { class: props.triggerClass }
+          : {}),
         'data-testid': props.triggerTestId ?? 'file-actions-trigger',
       })}
     >

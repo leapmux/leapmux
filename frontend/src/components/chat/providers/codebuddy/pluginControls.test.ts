@@ -6,7 +6,11 @@ import { codebuddyControls } from './pluginControls'
 
 /** A stored can_use_tool request in the shape the worker publishes it. */
 function approvalPayload(toolName: string, input: Record<string, unknown>): Record<string, unknown> {
-  return { type: 'control_request', request_id: 'approval:ap1', request: { tool_name: toolName, tool_use_id: 'call-1', input } }
+  return {
+    type: 'control_request',
+    request_id: 'approval:ap1',
+    request: { tool_name: toolName, tool_use_id: 'call-1', input },
+  }
 }
 
 describe('codebuddyControls', () => {
@@ -17,7 +21,10 @@ describe('codebuddyControls', () => {
         response: {
           subtype: 'success',
           request_id: 'approval:ap1',
-          response: { behavior: 'allow', updatedInput: { command: 'ls' } },
+          response: {
+            behavior: 'allow',
+            updatedInput: { command: 'ls' },
+          },
         },
       })
   })
@@ -38,18 +45,35 @@ describe('codebuddyControls', () => {
   // owns the allow path, so a typed message is feedback and never an approve.
   it('denies a plan the composer answers, even with no reason', () => {
     expect(codebuddyControls.buildControlResponse?.(approvalPayload('ExitPlanMode', { plan: 'Do the thing.' }), 'Revise step 2.', 'approval:ap1'))
-      .toMatchObject({ response: { response: { behavior: 'deny', message: 'Revise step 2.' } } })
+      .toMatchObject({
+        response: {
+          response: { behavior: 'deny', message: 'Revise step 2.' },
+        },
+      })
     expect(codebuddyControls.buildControlResponse?.(approvalPayload('ExitPlanMode', { plan: 'Do the thing.' }), '', 'approval:ap1'))
-      .toMatchObject({ response: { response: { behavior: 'deny', message: CONTROL_REJECTED_BY_USER_MESSAGE } } })
+      .toMatchObject({
+        response: {
+          response: { behavior: 'deny', message: CONTROL_REJECTED_BY_USER_MESSAGE },
+        },
+      })
   })
 
   it('reads a shell command and an empty option list for the shared pair', () => {
-    expect(codebuddyControls.extractControl?.({ payload: approvalPayload('Bash', { command: 'ls' }) }))
+    expect(codebuddyControls.extractControl?.({
+      payload: approvalPayload('Bash', { command: 'ls' }),
+    }))
       .toStrictEqual({
         kind: 'permission',
-        permission: { title: 'Bash', input: { command: 'ls' }, command: 'ls', options: [] },
+        permission: {
+          title: 'Bash',
+          input: { command: 'ls' },
+          command: 'ls',
+          options: [],
+        },
       })
-    expect(codebuddyControls.extractControl?.({ payload: approvalPayload('ExitPlanMode', {}) })?.kind).toBe('plan')
+    expect(codebuddyControls.extractControl?.({
+      payload: approvalPayload('ExitPlanMode', {}),
+    })?.kind).toBe('plan')
   })
 })
 
@@ -67,7 +91,16 @@ describe('codebuddyControls permissionPresets', () => {
 })
 
 describe('codebuddyControls askUserQuestion', () => {
-  const questions = [{ question: 'Color?', header: 'Color', options: [{ label: 'Red', description: 'Warm' }, { label: 'Blue', description: 'Cool' }] }]
+  const questions = [
+    {
+      question: 'Color?',
+      header: 'Color',
+      options: [
+        { label: 'Red', description: 'Warm' },
+        { label: 'Blue', description: 'Cool' },
+      ],
+    },
+  ]
 
   it('recognizes a question by its tool name', () => {
     expect(codebuddyControls.askUserQuestion?.isRequest(approvalPayload('AskUserQuestion', { questions }))).toBe(true)
@@ -82,13 +115,21 @@ describe('codebuddyControls askUserQuestion', () => {
   // The reply is the whole tool input with `answers` added: the worker folds
   // that object into CodeBuddy's `updatedInput`.
   it('answers with the neutral allow and the input that carries the answers', async () => {
-    const request = { requestId: 'approval:ap1', agentId: 'agent-1', payload: approvalPayload('AskUserQuestion', { questions }) }
+    const request = {
+      requestId: 'approval:ap1',
+      agentId: 'agent-1',
+      payload: approvalPayload('AskUserQuestion', { questions }),
+    }
     const sent: string[] = []
     const sendControlResponse = async (content: Uint8Array) => {
       sent.push(new TextDecoder().decode(content))
       return undefined
     }
-    const state = createControlAnswerState({ selections: { 0: ['Red'] } })
+    const state = createControlAnswerState({
+      selections: {
+        0: ['Red'],
+      },
+    })
 
     await codebuddyControls.askUserQuestion?.sendAnswer(request, sendControlResponse, questions, state)
 
@@ -100,14 +141,21 @@ describe('codebuddyControls askUserQuestion', () => {
         request_id: 'approval:ap1',
         response: {
           behavior: 'allow',
-          updatedInput: { questions, answers: { 'Color?': 'Red' } },
+          updatedInput: {
+            questions,
+            answers: { 'Color?': 'Red' },
+          },
         },
       },
     })
   })
 
   it('rejects with the neutral deny and the reader\'s words', async () => {
-    const request = { requestId: 'approval:ap1', agentId: 'agent-1', payload: approvalPayload('AskUserQuestion', { questions }) }
+    const request = {
+      requestId: 'approval:ap1',
+      agentId: 'agent-1',
+      payload: approvalPayload('AskUserQuestion', { questions }),
+    }
     const sent: string[] = []
     const sendControlResponse = async (content: Uint8Array) => {
       sent.push(new TextDecoder().decode(content))

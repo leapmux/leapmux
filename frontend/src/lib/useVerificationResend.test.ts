@@ -73,7 +73,9 @@ describe('useVerificationResend', () => {
     // one-time value read would miss it; the accessor must re-seed.
     let seed: Timestamp | undefined
     await createRoot(async (dispose) => {
-      const hook = useVerificationResend({ nextResendAvailableAt: () => seed })
+      const hook = useVerificationResend({
+        nextResendAvailableAt: () => seed,
+      })
       expect(hook.buttonLabel()).toBe('Resend code')
       expect(hook.disabled()).toBe(false)
 

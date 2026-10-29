@@ -17,7 +17,10 @@ export async function openGrokMcpWorkspace(context: ManagedNativeScenarioContext
   const mcpServer = writeMcpEchoServer(workingDir, { receiptLog })
   writeFileSync(join(workingDir, '.mcp.json'), JSON.stringify(mcpServersConfig(mcpServer)))
   const server = context.leapmuxServer
-  await openProviderAgent(server, context.workspaceId, GROK_AGENT, { workingDir, optionValues: { approvalMode: 'always-approve' } })
+  await openProviderAgent(server, context.workspaceId, GROK_AGENT, {
+    workingDir,
+    optionValues: { approvalMode: 'always-approve' },
+  })
   await openWorkspace(context.page, context.workspaceId)
   const banner = await waitForControlBanner(context.page)
   await expect(banner).toContainText('Trust the workspace')

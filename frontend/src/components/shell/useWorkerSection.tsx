@@ -64,7 +64,9 @@ export function useWorkerSection(opts: UseWorkerSectionOpts): WorkerSection {
   // listWorkers() returns freshly-deserialized objects on every call.
   // Stabilize identity by id so the sidebar's <For> doesn't unmount and
   // remount every worker row on each refresh / WORKERS_CHANGED push.
-  const workerIdentity = createIdentityCache<Worker>({ keyOf: w => w.id })
+  const workerIdentity = createIdentityCache<Worker>({
+    keyOf: w => w.id,
+  })
 
   async function fetchWorkers() {
     if (!opts.getUserId())
@@ -115,7 +117,12 @@ export function useWorkerSection(opts: UseWorkerSectionOpts): WorkerSection {
   // fail-closed default makes that window reject instead of hang.
   onCleanup(setConfirmKeyPin((workerId, expectedFingerprint, actualFingerprint) =>
     new Promise((resolve) => {
-      opts.keyPinConfirmDialog.open({ workerId, expectedFingerprint, actualFingerprint, resolve })
+      opts.keyPinConfirmDialog.open({
+        workerId,
+        expectedFingerprint,
+        actualFingerprint,
+        resolve,
+      })
     }),
   ))
 

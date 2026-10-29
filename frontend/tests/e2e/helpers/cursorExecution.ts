@@ -28,8 +28,12 @@ export class CursorExecution {
 
   constructor(private readonly call: CursorExecutionCall, private readonly nextId: () => number) {
     this.started = cursorExecutionToolStarted(call)
-    this.stage = call.kind === 'write' || call.kind === 'edit' ? 'before' : null
-    this.current = call.kind === 'write' || call.kind === 'edit' ? { kind: 'read', callID: call.callID, path: call.path } : call
+    this.stage = call.kind === 'write' || call.kind === 'edit'
+      ? 'before'
+      : null
+    this.current = call.kind === 'write' || call.kind === 'edit'
+      ? { kind: 'read', callID: call.callID, path: call.path }
+      : call
     this.expectedId = nextId()
   }
 
@@ -68,7 +72,12 @@ export class CursorExecution {
         const first = this.before.indexOf(this.call.before)
         const last = this.before.lastIndexOf(this.call.before)
         if (this.call.before === '' || first < 0 || first !== last) {
-          return this.finish({ ...reply, success: false, text: 'The native edit target is absent or not unique.', failureKind: 'invalid-edit' })
+          return this.finish({
+            ...reply,
+            success: false,
+            text: 'The native edit target is absent or not unique.',
+            failureKind: 'invalid-edit',
+          })
         }
         this.after = this.before.slice(0, first) + this.call.after + this.before.slice(first + this.call.before.length)
       }
@@ -79,9 +88,17 @@ export class CursorExecution {
         throw new Error('The native Cursor file stage has a non-file operation.')
       }
       this.stage = 'write'
-      this.current = { kind: 'write', callID: this.call.callID, path: this.filePath(), content: this.after }
+      this.current = {
+        kind: 'write',
+        callID: this.call.callID,
+        path: this.filePath(),
+        content: this.after,
+      }
       this.expectedId = this.nextId()
-      return { state: 'request', request: this.request() }
+      return {
+        state: 'request',
+        request: this.request(),
+      }
     }
 
     if (this.stage === 'write') {
@@ -93,9 +110,16 @@ export class CursorExecution {
         return this.finish(reply)
       }
       this.stage = 'after'
-      this.current = { kind: 'read', callID: this.call.callID, path: this.filePath() }
+      this.current = {
+        kind: 'read',
+        callID: this.call.callID,
+        path: this.filePath(),
+      }
       this.expectedId = this.nextId()
-      return { state: 'request', request: this.request() }
+      return {
+        state: 'request',
+        request: this.request(),
+      }
     }
 
     if (this.stage === 'after') {
@@ -121,7 +145,9 @@ export class CursorExecution {
       kind: this.call.kind,
       success: reply.success,
       text: reply.text,
-      ...(reply.exitCode !== undefined ? { exitCode: reply.exitCode } : {}),
+      ...(reply.exitCode !== undefined
+        ? { exitCode: reply.exitCode }
+        : {}),
     }
     return {
       state: 'completed',
@@ -139,8 +165,17 @@ export function cursorExecutionCallFrom(call: MockModelToolCall, kind: CursorExe
   if (kind === 'shell') {
     if (typeof args.command !== 'string' || args.command.length === 0)
       throw new Error('The native Cursor shell requires a command.')
-    const workingDirectory = typeof args.workingDirectory === 'string' ? args.workingDirectory : undefined
-    return { kind, callID: call.id, command: args.command, ...(workingDirectory !== undefined ? { workingDirectory } : {}) }
+    const workingDirectory = typeof args.workingDirectory === 'string'
+      ? args.workingDirectory
+      : undefined
+    return {
+      kind,
+      callID: call.id,
+      command: args.command,
+      ...(workingDirectory !== undefined
+        ? { workingDirectory }
+        : {}),
+    }
   }
   if (typeof args.path !== 'string' || args.path.length === 0)
     throw new Error('The native Cursor file operation requires a path.')
@@ -148,10 +183,21 @@ export function cursorExecutionCallFrom(call: MockModelToolCall, kind: CursorExe
     return { kind, callID: call.id, path: args.path }
   if (kind === 'write') {
     if (typeof args.content !== 'string')
-      throw new Error('The native Cursor write requires file contents.')
-    return { kind, callID: call.id, path: args.path, content: args.content }
+      throw new TypeError('The native Cursor write requires file contents.')
+    return {
+      kind,
+      callID: call.id,
+      path: args.path,
+      content: args.content,
+    }
   }
   if (typeof args.before !== 'string' || typeof args.after !== 'string')
-    throw new Error('The native Cursor edit requires before and after text.')
-  return { kind, callID: call.id, path: args.path, before: args.before, after: args.after }
+    throw new TypeError('The native Cursor edit requires before and after text.')
+  return {
+    kind,
+    callID: call.id,
+    path: args.path,
+    before: args.before,
+    after: args.after,
+  }
 }

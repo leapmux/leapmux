@@ -50,16 +50,26 @@ export function ampShellOutput(text: string): AmpShellOutput {
   catch {
     record = undefined
   }
-  if (!isObject(record) || typeof record.output !== 'string')
-    return { output: text, running: false, truncated: false, structured: false }
+  if (!isObject(record) || typeof record.output !== 'string') {
+    return {
+      output: text,
+      running: false,
+      truncated: false,
+      structured: false,
+    }
+  }
   const exitCode = pickNumber(record, AMP_SHELL_RESULT_FIELD.ExitCode, undefined)
   const pid = pickNumber(record, AMP_SHELL_RESULT_FIELD.PID, undefined)
   const omitted = pickNumber(pickObject(record, 'truncation'), 'prefixLinesOmitted', 0)
   return {
     output: pickString(record, 'output'),
-    ...(exitCode !== undefined ? { exitCode } : {}),
+    ...(exitCode !== undefined
+      ? { exitCode }
+      : {}),
     running: record[AMP_SHELL_RESULT_FIELD.Running] === true,
-    ...(pid !== undefined ? { pid } : {}),
+    ...(pid !== undefined
+      ? { pid }
+      : {}),
     truncated: omitted > 0,
     structured: true,
   }
@@ -74,8 +84,16 @@ export function ampShellOutput(text: string): AmpShellOutput {
  */
 export function ampCommandResult(text: string): CommandResult {
   const shell = ampShellOutput(text)
-  const exit = shell.exitCode !== undefined && !shell.running ? { exitCode: shell.exitCode } : {}
-  return { output: shell.output, ...exit, ...(shell.truncated ? { truncated: true } : {}) }
+  const exit = shell.exitCode !== undefined && !shell.running
+    ? { exitCode: shell.exitCode }
+    : {}
+  return {
+    output: shell.output,
+    ...exit,
+    ...(shell.truncated
+      ? { truncated: true }
+      : {}),
+  }
 }
 
 /**
@@ -87,8 +105,12 @@ export function ampCommandResult(text: string): CommandResult {
  */
 export function ampShellTaskResult(text: string, killed: boolean): TaskResult {
   const shell = ampShellOutput(text)
-  if (!shell.structured)
-    return { outcome: killed ? 'stopped' : 'completed', output: text }
+  if (!shell.structured) {
+    return {
+      outcome: killed ? 'stopped' : 'completed',
+      output: text,
+    }
+  }
   if (shell.running)
     return { outcome: 'running', output: shell.output }
   if (killed)

@@ -34,6 +34,6 @@ export function printfMarkerCommand(prefix: string, value: number): string {
   if (!/^\w[\w-]*$/.test(prefix))
     throw new Error('The printf marker prefix requires letters, digits, underscores, or hyphens only, and it must not start with a hyphen.')
   if (!Number.isSafeInteger(value))
-    throw new Error('The printf marker value requires a safe integer.')
+    throw new TypeError('The printf marker value requires a safe integer.')
   return `printf '${prefix}%s\\n' ${value}`
 }

@@ -13,8 +13,26 @@ beforeAll(() => {
 describe('edit renderer', () => {
   checkKindModule({
     kind: 'edit',
-    request: { changes: [{ filePath: '/p/a.ts', oldStr: 'x', newStr: 'y', structuredPatch: null }] },
+    request: {
+      changes: [
+        {
+          filePath: '/p/a.ts',
+          oldStr: 'x',
+          newStr: 'y',
+          structuredPatch: null,
+        },
+      ],
+    },
     titlePart: 'a.ts',
-    result: { changes: [{ filePath: '/p/a.ts', oldStr: 'x', newStr: 'y', structuredPatch: null }] },
+    result: {
+      changes: [
+        {
+          filePath: '/p/a.ts',
+          oldStr: 'x',
+          newStr: 'y',
+          structuredPatch: null,
+        },
+      ],
+    },
   })
 })

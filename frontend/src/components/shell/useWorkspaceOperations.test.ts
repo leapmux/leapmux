@@ -115,11 +115,19 @@ describe('useWorkspaceOperations deleteWorkspace', () => {
   it('hands each worker only the tabs it hosts, with their types intact', async () => {
     mockDeleteWorkspace.mockResolvedValue({
       workerTabs: [
-        { workerId: 'w1', tabs: [
-          { tabType: TabType.AGENT, tabId: 'a-1' },
-          { tabType: TabType.TERMINAL, tabId: 't-1' },
-        ] },
-        { workerId: 'w2', tabs: [{ tabType: TabType.FILE, tabId: 'f-2' }] },
+        {
+          workerId: 'w1',
+          tabs: [
+            { tabType: TabType.AGENT, tabId: 'a-1' },
+            { tabType: TabType.TERMINAL, tabId: 't-1' },
+          ],
+        },
+        {
+          workerId: 'w2',
+          tabs: [
+            { tabType: TabType.FILE, tabId: 'f-2' },
+          ],
+        },
       ],
     })
     const h = harness()
@@ -153,7 +161,14 @@ describe('useWorkspaceOperations deleteWorkspace', () => {
    */
   it('tears down exactly what the delete response named', async () => {
     mockDeleteWorkspace.mockResolvedValue({
-      workerTabs: [{ workerId: 'w1', tabs: [{ tabType: TabType.AGENT, tabId: 'a-hidden' }] }],
+      workerTabs: [
+        {
+          workerId: 'w1',
+          tabs: [
+            { tabType: TabType.AGENT, tabId: 'a-hidden' },
+          ],
+        },
+      ],
     })
     const h = harness()
     try {
@@ -171,7 +186,11 @@ describe('useWorkspaceOperations deleteWorkspace', () => {
    * reconciler covers, and skipping it would silently narrow the fan-out.
    */
   it('calls a worker whose tab group is empty', async () => {
-    mockDeleteWorkspace.mockResolvedValue({ workerTabs: [{ workerId: 'w-empty', tabs: [] }] })
+    mockDeleteWorkspace.mockResolvedValue({
+      workerTabs: [
+        { workerId: 'w-empty', tabs: [] },
+      ],
+    })
     const h = harness()
     try {
       await h.ops.deleteWorkspace('ws-1')
@@ -206,7 +225,14 @@ describe('useWorkspaceOperations deleteWorkspace', () => {
   it('completes the delete when a worker cleanup rejects', async () => {
     mockCleanupWorkspace.mockRejectedValue(new Error('worker offline'))
     mockDeleteWorkspace.mockResolvedValue({
-      workerTabs: [{ workerId: 'w1', tabs: [{ tabType: TabType.AGENT, tabId: 'a-1' }] }],
+      workerTabs: [
+        {
+          workerId: 'w1',
+          tabs: [
+            { tabType: TabType.AGENT, tabId: 'a-1' },
+          ],
+        },
+      ],
     })
     const onDeleteWorkspace = vi.fn()
     const h = harness({ onDeleteWorkspace })
@@ -258,7 +284,10 @@ function groupsFor(workspaces: Workspace[], sections: Section[], items: SectionI
     })
     const built = ops.buildSectionGroups(sections)
     dispose()
-    return new Map(built.map(g => [g.section.id, g.workspaces.map(w => w.id)]))
+    return new Map(built.map(g => [
+      g.section.id,
+      g.workspaces.map(w => w.id),
+    ]))
   })
 }
 
@@ -268,9 +297,15 @@ describe('useWorkspaceOperations buildSectionGroups', () => {
 
   it('lists each section\'s workspaces in position order', () => {
     const groups = groupsFor(
-      [ws('w1'), ws('w2')],
+      [
+        ws('w1'),
+        ws('w2'),
+      ],
       [inProgress, archived],
-      [item('w2', 's-progress', 'b'), item('w1', 's-progress', 'a')],
+      [
+        item('w2', 's-progress', 'b'),
+        item('w1', 's-progress', 'a'),
+      ],
     )
     expect(groups.get('s-progress')).toEqual(['w1', 'w2'])
     expect(groups.get('s-archived')).toEqual([])
@@ -284,9 +319,14 @@ describe('useWorkspaceOperations buildSectionGroups', () => {
     // for the user and a Playwright strict-mode violation for any spec that
     // addresses the row by id.
     const groups = groupsFor(
-      [ws('w1')],
+      [
+        ws('w1'),
+      ],
       [inProgress],
-      [item('w1', 's-progress', 'a'), item('w1', 's-progress', 'b')],
+      [
+        item('w1', 's-progress', 'a'),
+        item('w1', 's-progress', 'b'),
+      ],
     )
     expect(groups.get('s-progress')).toEqual(['w1'])
   })
@@ -295,19 +335,31 @@ describe('useWorkspaceOperations buildSectionGroups', () => {
     // Mid-move the same workspace can hold an item in both the old and the new
     // section. It must stay in ONE of them rather than appear in both.
     const groups = groupsFor(
-      [ws('w1')],
+      [
+        ws('w1'),
+      ],
       [inProgress, archived],
-      [item('w1', 's-progress', 'a'), item('w1', 's-archived', 'a')],
+      [
+        item('w1', 's-progress', 'a'),
+        item('w1', 's-archived', 'a'),
+      ],
     )
-    const all = [...groups.values()].flat()
+    const all = [
+      ...groups.values(),
+    ].flat()
     expect(all).toEqual(['w1'])
   })
 
   it('appends unassigned workspaces to the in-progress section exactly once', () => {
     const groups = groupsFor(
-      [ws('w1'), ws('w2')],
+      [
+        ws('w1'),
+        ws('w2'),
+      ],
       [inProgress, archived],
-      [item('w1', 's-progress', 'a')],
+      [
+        item('w1', 's-progress', 'a'),
+      ],
     )
     expect(groups.get('s-progress')).toEqual(['w1', 'w2'])
   })
@@ -317,9 +369,13 @@ describe('useWorkspaceOperations buildSectionGroups', () => {
     // only item lives in ARCHIVED is not unassigned -- but a workspace placed
     // by a section during this very build must not be re-appended either.
     const groups = groupsFor(
-      [ws('w1')],
+      [
+        ws('w1'),
+      ],
       [inProgress, archived],
-      [item('w1', 's-archived', 'a')],
+      [
+        item('w1', 's-archived', 'a'),
+      ],
     )
     expect(groups.get('s-archived')).toEqual(['w1'])
     expect(groups.get('s-progress')).toEqual([])
@@ -419,10 +475,18 @@ function bulkHarness(archivedIds: readonly string[], opts: {
       onRefreshWorkspaces: opts.onRefreshWorkspaces ?? (() => {}),
       onDeleteWorkspace: () => {},
       // The optional callbacks stay omitted when the harness passed none.
-      ...(opts.onConfirmDelete !== undefined ? { onConfirmDelete: opts.onConfirmDelete } : {}),
-      ...(opts.onConfirmArchive !== undefined ? { onConfirmArchive: opts.onConfirmArchive } : {}),
-      ...(opts.onConfirmEmptyArchive !== undefined ? { onConfirmEmptyArchive: opts.onConfirmEmptyArchive } : {}),
-      ...(opts.onPostArchiveWorkspace !== undefined ? { onPostArchiveWorkspace: opts.onPostArchiveWorkspace } : {}),
+      ...(opts.onConfirmDelete !== undefined
+        ? { onConfirmDelete: opts.onConfirmDelete }
+        : {}),
+      ...(opts.onConfirmArchive !== undefined
+        ? { onConfirmArchive: opts.onConfirmArchive }
+        : {}),
+      ...(opts.onConfirmEmptyArchive !== undefined
+        ? { onConfirmEmptyArchive: opts.onConfirmEmptyArchive }
+        : {}),
+      ...(opts.onPostArchiveWorkspace !== undefined
+        ? { onPostArchiveWorkspace: opts.onPostArchiveWorkspace }
+        : {}),
     })
     return { dispose, ops, sectionStore }
   })
@@ -475,7 +539,9 @@ describe('useWorkspaceOperations archive lifecycle', () => {
   it('reports the Hub call failing and applies no local state', async () => {
     mockSetWorkspaceArchiveState.mockRejectedValue(new Error('hub offline'))
     const cleanups: string[] = []
-    const h = bulkHarness([], { onPostArchiveWorkspace: () => cleanups.push('local-cleanup') })
+    const h = bulkHarness([], {
+      onPostArchiveWorkspace: () => cleanups.push('local-cleanup'),
+    })
 
     await h.ops.archiveWorkspace('workspace-1')
 
@@ -605,9 +671,24 @@ describe('useWorkspaceOperations unarchiveAll', () => {
     const h = bulkHarness(['w1', 'w2', 'w3'])
     await h.ops.unarchiveAll()
     expect(mockSetWorkspaceArchiveState.mock.calls.map(c => c[0])).toEqual([
-      { workspaceId: 'w1', archiveState: WorkspaceArchiveState.ACTIVE, destinationSectionId: '', position: '' },
-      { workspaceId: 'w2', archiveState: WorkspaceArchiveState.ACTIVE, destinationSectionId: '', position: '' },
-      { workspaceId: 'w3', archiveState: WorkspaceArchiveState.ACTIVE, destinationSectionId: '', position: '' },
+      {
+        workspaceId: 'w1',
+        archiveState: WorkspaceArchiveState.ACTIVE,
+        destinationSectionId: '',
+        position: '',
+      },
+      {
+        workspaceId: 'w2',
+        archiveState: WorkspaceArchiveState.ACTIVE,
+        destinationSectionId: '',
+        position: '',
+      },
+      {
+        workspaceId: 'w3',
+        archiveState: WorkspaceArchiveState.ACTIVE,
+        destinationSectionId: '',
+        position: '',
+      },
     ])
     h.dispose()
   })
@@ -730,7 +811,9 @@ describe('useWorkspaceOperations emptyArchive', () => {
   })
 
   it('deletes nothing when the confirm is declined', async () => {
-    const h = bulkHarness(['w1', 'w2'], { onConfirmEmptyArchive: async () => false })
+    const h = bulkHarness(['w1', 'w2'], {
+      onConfirmEmptyArchive: async () => false,
+    })
     await h.ops.emptyArchive()
     expect(mockDeleteWorkspace).not.toHaveBeenCalled()
     h.dispose()
@@ -754,7 +837,10 @@ describe('useWorkspaceOperations emptyArchive', () => {
     const h = bulkHarness(['w1', 'w2', 'w3'], {
       onConfirmEmptyArchive: async () => {
         // w2 was unarchived on another device while the prompt was up.
-        store!.setItems([item('w1', 's-archived', 'p0'), item('w3', 's-archived', 'p2')])
+        store!.setItems([
+          item('w1', 's-archived', 'p0'),
+          item('w3', 's-archived', 'p2'),
+        ])
         return true
       },
     })
@@ -772,7 +858,10 @@ describe('useWorkspaceOperations emptyArchive', () => {
     let store: ReturnType<typeof createSectionStore> | undefined
     const h = bulkHarness(['w1'], {
       onConfirmEmptyArchive: async () => {
-        store!.setItems([item('w1', 's-archived', 'p0'), item('late', 's-archived', 'p1')])
+        store!.setItems([
+          item('w1', 's-archived', 'p0'),
+          item('late', 's-archived', 'p1'),
+        ])
         return true
       },
     })
@@ -803,7 +892,10 @@ describe('useWorkspaceOperations emptyArchive', () => {
   // A single delete keeps its own refresh: only the bulk caller opts out.
   it('still refreshes once for a single delete', async () => {
     const onRefreshWorkspaces = vi.fn()
-    const h = bulkHarness(['w1'], { onConfirmDelete: async () => true, onRefreshWorkspaces })
+    const h = bulkHarness(['w1'], {
+      onConfirmDelete: async () => true,
+      onRefreshWorkspaces,
+    })
 
     await h.ops.deleteWorkspace('w1')
 
@@ -817,7 +909,9 @@ describe('useWorkspaceOperations emptyArchive', () => {
         throw new Error('nope')
       return { workerTabs: [] }
     })
-    const h = bulkHarness(['w1', 'w2', 'w3'], { onConfirmEmptyArchive: async () => true })
+    const h = bulkHarness(['w1', 'w2', 'w3'], {
+      onConfirmEmptyArchive: async () => true,
+    })
     await h.ops.emptyArchive()
     expect(mockDeleteWorkspace).toHaveBeenCalledTimes(3)
     expect(mockShowWarnToast).toHaveBeenCalledTimes(1)
@@ -852,7 +946,11 @@ function viewOrder(
       onDeleteWorkspace: () => {},
       getTabsForWorkspace: (wsId: string) => {
         const mru = opts.mru?.[wsId]
-        return mru === undefined ? [] : [{ mru } as Tab]
+        return mru === undefined
+          ? []
+          : [
+              { mru } as Tab,
+            ]
       },
     })
     return {
@@ -883,7 +981,9 @@ describe('useWorkspaceOperations getWorkspacesForGroup', () => {
   })
 
   it('ranks by the most recently activated TAB under the recent sort', () => {
-    const v = viewOrder(['a', 'b', 'c'], { mru: { w0: 1, w1: 9, w2: 5 } })
+    const v = viewOrder(['a', 'b', 'c'], {
+      mru: { w0: 1, w1: 9, w2: 5 },
+    })
     setWorkspaceSortOrder({ key: 'recent', direction: 'desc' })
     expect(v.ids()).toEqual(['w1', 'w2', 'w0'])
     v.dispose()
@@ -935,7 +1035,9 @@ describe('useWorkspaceOperations startRename', () => {
 
   it('opens the input for a workspace that is not archived', () => {
     const h = bulkHarness([])
-    h.sectionStore.setItems([item('ws-live', 's-progress', 'p0')])
+    h.sectionStore.setItems([
+      item('ws-live', 's-progress', 'p0'),
+    ])
     h.ops.startRename(ws('ws-live'))
     expect(h.ops.renamingWorkspaceId()).toBe('ws-live')
     h.dispose()
@@ -952,11 +1054,15 @@ describe('useWorkspaceOperations startRename', () => {
   // can be archived between opening the input and committing it.
   it('sends no rename when the workspace was archived while the input was open', async () => {
     const h = bulkHarness([])
-    h.sectionStore.setItems([item('ws-1', 's-progress', 'p0')])
+    h.sectionStore.setItems([
+      item('ws-1', 's-progress', 'p0'),
+    ])
     h.ops.startRename(ws('ws-1'))
     h.ops.onRenameInput('a new name')
 
-    h.sectionStore.setItems([item('ws-1', 's-archived', 'p0')])
+    h.sectionStore.setItems([
+      item('ws-1', 's-archived', 'p0'),
+    ])
     await h.ops.commitRename()
 
     expect(mockRenameWorkspace).not.toHaveBeenCalled()
@@ -1017,8 +1123,14 @@ describe('useWorkspaceOperations handleWorkspaceDragEnd', () => {
   /** One row dropped onto another, as solid-dnd reports it. */
   function drop(h: ReturnType<typeof dragHarness>, from: string, fromSection: string, onto: string, ontoSection: string) {
     h.ops.handleWorkspaceDragEnd({
-      draggable: { id: `ws-${from}`, data: { sectionId: fromSection } },
-      droppable: { id: `ws-${onto}`, data: { sectionId: ontoSection } },
+      draggable: {
+        id: `ws-${from}`,
+        data: { sectionId: fromSection },
+      },
+      droppable: {
+        id: `ws-${onto}`,
+        data: { sectionId: ontoSection },
+      },
     } as never)
   }
 

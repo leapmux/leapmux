@@ -16,7 +16,12 @@ kiroTest.describe('interrupt for Kiro', () => {
   // Kiro offers its question tool in a spec mode alone, as the agent-questions spec states, so the agent opens in Spec.
   kiroTest('withdraws a waiting question', async ({ page, askingKiroWorkspace, leapmuxServer, modelScript }) => {
     await expectSettingsChip(page, 'Spec')
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingKiroWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingKiroWorkspace.workspaceId,
+    })
     await exerciseControlInterrupt(context, { control: 'question' })
   })
 })

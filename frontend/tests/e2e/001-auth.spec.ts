@@ -52,7 +52,12 @@ test.describe('Authentication', () => {
     await loginViaUI(page)
     await expect(page).toHaveURL(APP_HOME_URL_RE)
 
-    for (const path of ['/login', '/signup', '/recover-account', '/setup']) {
+    for (const path of [
+      '/login',
+      '/signup',
+      '/recover-account',
+      '/setup',
+    ]) {
       await page.goto(path)
       await expect(page).toHaveURL(APP_HOME_URL_RE)
       await expect(page.getByRole('button', { name: 'Sign in' })).toBeHidden()

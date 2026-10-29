@@ -11,7 +11,19 @@ let homeDir: string
 let shimsDirectory: string
 let previousPath: string | undefined
 const echoServer = mcpProbeServer('echo_probe', '/srv/echo.mjs')
-const options = (realHomeDir?: string) => ({ homeDir, shimsDirectory, baseURL: 'http://127.0.0.1:4567/v1', modelKey: 'unit-key', modelID: 'unit-model', flashModelID: 'unit-flash', plainModelID: 'unit-plain', mcpEchoServer: echoServer, realHomeDir })
+function options(realHomeDir?: string) {
+  return {
+    homeDir,
+    shimsDirectory,
+    baseURL: 'http://127.0.0.1:4567/v1',
+    modelKey: 'unit-key',
+    modelID: 'unit-model',
+    flashModelID: 'unit-flash',
+    plainModelID: 'unit-plain',
+    mcpEchoServer: echoServer,
+    realHomeDir,
+  }
+}
 
 beforeEach(() => {
   const scratch = resolve(import.meta.dirname, '../../../../.tmp')
@@ -83,7 +95,13 @@ describe('createPiEnvironment', () => {
   it('exposes the echo server directly, and turns off every management request', () => {
     const env = createPiEnvironment(options())
     expect(JSON.parse(readFileSync(join(env.PI_CODING_AGENT_DIR!, 'mcp.json'), 'utf8'))).toEqual({
-      mcpServers: { echo_probe: { command: echoServer.command, args: ['/srv/echo.mjs'], exposure: 'direct' } },
+      mcpServers: {
+        echo_probe: {
+          command: echoServer.command,
+          args: ['/srv/echo.mjs'],
+          exposure: 'direct',
+        },
+      },
     })
     expect(env).toMatchObject({ PI_OFFLINE: '1', PI_SKIP_VERSION_CHECK: '1', PI_CODING_AGENT_SESSION_DIR: '' })
   })
@@ -98,7 +116,18 @@ describe('createPiEnvironment', () => {
   it.runIf(process.platform !== 'win32')('writes a launch wrapper that starts each session of the installed pi without context files', () => {
     const record = installRecordingPi()
     createPiEnvironment(options())
-    expect(launch(['--mode', 'rpc', '--session', 'unit-session'], record)).toEqual(['--no-context-files', '--mode', 'rpc', '--session', 'unit-session'])
+    expect(launch([
+      '--mode',
+      'rpc',
+      '--session',
+      'unit-session',
+    ], record)).toEqual([
+      '--no-context-files',
+      '--mode',
+      'rpc',
+      '--session',
+      'unit-session',
+    ])
     expect(launch([], record)).toEqual(['--no-context-files'])
   })
 

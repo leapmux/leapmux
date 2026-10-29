@@ -25,18 +25,49 @@ function itemEntries(parsed: Record<string, unknown>, payload: Record<string, un
     // the runtime's own loop before they reach the transcript (`statusItemIsPlumbing`).
     case CODEWHALE_ITEM_KIND.Status: {
       const text = itemText(item)
-      return text ? [{ kind: 'status', text }] : []
+      return text
+        ? [
+            { kind: 'status', text },
+          ]
+        : []
     }
     case CODEWHALE_ITEM_KIND.ContextCompaction: {
-      if (item.outcome !== 'completed')
-        return [{ kind: 'compaction', phase: 'end', outcome: item.outcome === 'interrupted' ? 'aborted' : 'failed', error: itemText(item) }]
+      if (item.outcome !== 'completed') {
+        return [
+          {
+            kind: 'compaction',
+            phase: 'end',
+            outcome: item.outcome === 'interrupted'
+              ? 'aborted'
+              : 'failed',
+            error: itemText(item),
+          },
+        ]
+      }
       // The event states beside the item whether the runtime started the compaction by
       // itself. Its counts are MESSAGE counts, which the token-shaped detail cannot carry.
-      return [{ kind: 'compaction', phase: 'end', detail: { trigger: pickBool(payload, 'auto') ? 'auto' : 'manual' } }]
+      return [
+        {
+          kind: 'compaction',
+          phase: 'end',
+          detail: {
+            trigger: pickBool(payload, 'auto')
+              ? 'auto'
+              : 'manual',
+          },
+        },
+      ]
     }
     case CODEWHALE_ITEM_KIND.Error: {
       const text = itemText(item)
-      return [{ kind: 'text', text: text ? `Error: ${text}` : 'Error' }]
+      return [
+        {
+          kind: 'text',
+          text: text
+            ? `Error: ${text}`
+            : 'Error',
+        },
+      ]
     }
     default:
       return null
@@ -56,24 +87,46 @@ export function codewhaleNotificationEntry(msg: Record<string, unknown>): Notifi
     // that of every drop, including the ones that LeapMux sends again, so it is not shown.
     case CODEWHALE_EVENT.TurnSteerDropped: {
       const input = pickString(payload, 'input').trim()
-      const steer = input ? `the steer "${input}"` : 'a steer'
-      return [{ kind: 'text', text: `Codewhale dropped ${steer} before the model read it. Send it again to deliver it.` }]
+      const steer = input
+        ? `the steer "${input}"`
+        : 'a steer'
+      return [
+        { kind: 'text', text: `Codewhale dropped ${steer} before the model read it. Send it again to deliver it.` },
+      ]
     }
     // The wait comes from Codewhale's own configuration, which LeapMux cannot change for
     // its sessions and which no event states in advance. The row identifies that setting.
     case CODEWHALE_EVENT.ApprovalTimeout: {
       const seconds = pickNumber(payload, 'timeout_secs')
-      const wait = seconds !== null && seconds > 0 && Number.isFinite(seconds * 1000) ? `within ${formatDuration(seconds * 1000)}` : 'in time'
-      return [{ kind: 'text', text: `Codewhale denied the call because nobody answered ${wait}. ${CODEWHALE_WAIT_SETTING_HINT}` }]
+      const wait = seconds !== null && seconds > 0 && Number.isFinite(seconds * 1000)
+        ? `within ${formatDuration(seconds * 1000)}`
+        : 'in time'
+      return [
+        { kind: 'text', text: `Codewhale denied the call because nobody answered ${wait}. ${CODEWHALE_WAIT_SETTING_HINT}` },
+      ]
     }
     case CODEWHALE_EVENT.SandboxDenied: {
       const tool = pickString(payload, 'tool_name') || 'a tool'
       const reason = pickString(payload, 'reason')
-      return [{ kind: 'text', text: reason ? `The sandbox denied ${tool}: ${reason}` : `The sandbox denied ${tool}` }]
+      return [
+        {
+          kind: 'text',
+          text: reason
+            ? `The sandbox denied ${tool}: ${reason}`
+            : `The sandbox denied ${tool}`,
+        },
+      ]
     }
     case CODEWHALE_EVENT.StoreFailure: {
       const message = pickString(payload, 'message') || pickString(payload, 'error') || pickString(payload, 'reason')
-      return [{ kind: 'text', text: message ? `The runtime could not save its state: ${message}` : 'The runtime could not save its state' }]
+      return [
+        {
+          kind: 'text',
+          text: message
+            ? `The runtime could not save its state: ${message}`
+            : 'The runtime could not save its state',
+        },
+      ]
     }
     default:
       return itemEntries(msg, payload) ?? []

@@ -68,7 +68,9 @@ function codeSurfaceTheme(selector: string, kind: CodeSurfaceKind): void {
       // A block's field is a translucent tint, so a child that fills the
       // background must show it through instead of tinting it twice. A
       // transparent command surface follows the same rule for its host.
-      '--background': block || transparent ? 'transparent' : 'var(--code-background)',
+      '--background': block || transparent
+        ? 'transparent'
+        : 'var(--code-background)',
       '--foreground': 'var(--code-foreground)',
       '--card': 'var(--code-card)',
       // Inside a BLOCK, a border steps from the field behind it rather than
@@ -80,7 +82,9 @@ function codeSurfaceTheme(selector: string, kind: CodeSurfaceKind): void {
       // palette and in both field forms, at the same weight every other border
       // in the app carries. A page surface keeps `--code-border`, which its own
       // opaque field can be measured against.
-      '--border': block ? blendedTint(CODE_BORDER_TINT_PERCENT) : 'var(--code-border)',
+      '--border': block
+        ? blendedTint(CODE_BORDER_TINT_PERCENT)
+        : 'var(--code-border)',
       '--muted-foreground': 'var(--code-muted-foreground)',
       '--faint-foreground': 'var(--code-faint-foreground)',
       '--accent': 'var(--code-accent)',
@@ -109,11 +113,15 @@ function codeSurfaceTheme(selector: string, kind: CodeSurfaceKind): void {
 function shikiDualThemeColors(selector: string, opts?: { bg?: boolean }): void {
   globalStyle(selector, {
     color: 'var(--shiki-light)',
-    ...(opts?.bg ? { backgroundColor: 'var(--shiki-light-bg, transparent)' } : {}),
+    ...(opts?.bg
+      ? { backgroundColor: 'var(--shiki-light-bg, transparent)' }
+      : {}),
   })
   globalStyle(`html[data-theme="dark"] ${selector}`, {
     color: 'var(--shiki-dark)',
-    ...(opts?.bg ? { backgroundColor: 'var(--shiki-dark-bg, transparent)' } : {}),
+    ...(opts?.bg
+      ? { backgroundColor: 'var(--shiki-dark-bg, transparent)' }
+      : {}),
   })
 }
 
@@ -145,6 +153,11 @@ function shikiDualThemeColors(selector: string, opts?: { bg?: boolean }): void {
  */
 export function codeSurface(surface: string, kind: CodeSurfaceKind, tokens: { suffix: string, bg?: boolean }[]): void {
   codeSurfaceTheme(surface, kind)
-  for (const token of tokens)
-    shikiDualThemeColors(`${surface}${token.suffix}`, ...(token.bg !== undefined ? [{ bg: token.bg }] : [{}]))
+  for (const token of tokens) {
+    shikiDualThemeColors(`${surface}${token.suffix}`, ...(token.bg !== undefined
+      ? [
+          { bg: token.bg },
+        ]
+      : [{}]))
+  }
 }

@@ -2,7 +2,10 @@ import type { Page } from '@playwright/test'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { expectNativeInputRefusal } from './nativeInputQueueRefusal'
 
-const { currentNativeAgent, readNativeInputQueue } = vi.hoisted(() => ({ currentNativeAgent: vi.fn(), readNativeInputQueue: vi.fn() }))
+const { currentNativeAgent, readNativeInputQueue } = vi.hoisted(() => ({
+  currentNativeAgent: vi.fn(),
+  readNativeInputQueue: vi.fn(),
+}))
 vi.mock('./nativeScenario', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./nativeScenario')>()
   return { ...actual, currentNativeAgent }
@@ -17,7 +20,10 @@ afterEach(() => {
   readNativeInputQueue.mockReset()
 })
 
-const native = { page: {} as Page, leapmuxServer: { hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker-1' } }
+const native = {
+  page: {} as Page,
+  leapmuxServer: { hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker-1' },
+}
 
 describe('expectNativeInputRefusal', () => {
   it.each(['', '   '])('refuses the blank reason %j before it reads the agent or its queue', async (reason) => {

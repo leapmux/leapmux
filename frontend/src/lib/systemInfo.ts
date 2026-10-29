@@ -49,7 +49,13 @@ const DEFAULTS: SystemInfoSnapshot = {
   captchaProvider: GenCaptchaProvider.ALTCHA,
   captchaSiteKey: '',
   altchaAlgorithm: '',
-  backendBuildInfo: { version: '', commitHash: '', commitTime: '', buildTime: '', branch: '' },
+  backendBuildInfo: {
+    version: '',
+    commitHash: '',
+    commitTime: '',
+    buildTime: '',
+    branch: '',
+  },
 }
 
 // The hub's degraded reporting path sends UNSPECIFIED, and an enum value
@@ -251,7 +257,9 @@ export function passkeyBlocker(): PasskeyBlocker | null {
       ? 'insecure-context'
       : 'no-webauthn'
   }
-  return current().passkeyEnabled ? null : 'origin-not-allowed'
+  return current().passkeyEnabled
+    ? null
+    : 'origin-not-allowed'
 }
 
 /** True when a passkey ceremony can run on this page. */
@@ -454,7 +462,9 @@ export function printConsoleBanner(): void {
     lines.push(`Backend:  ${formatVersionLine(backend)}`)
     lines.push(`Frontend: ${formatVersionLine(frontend)}`)
   }
-  const year = backend.commitTime ? new Date(backend.commitTime).getFullYear() : new Date().getFullYear()
+  const year = backend.commitTime
+    ? new Date(backend.commitTime).getFullYear()
+    : new Date().getFullYear()
   lines.push(`Copyright © ${year} Event Loop, Inc.`)
 
   // eslint-disable-next-line no-console

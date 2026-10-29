@@ -28,11 +28,20 @@ describe('qwenToolCallAdapter', () => {
       sessionUpdate: 'tool_call_update',
       sessionId: '654fbfe5-9769-4517-8dfe-fcfbf19d61ac',
       status: 'completed',
-      rawOutput: { type: 'task_execution', executionMode: 'foreground', status: 'completed', result: 'The stored task is done.' },
+      rawOutput: {
+        type: 'task_execution',
+        executionMode: 'foreground',
+        status: 'completed',
+        result: 'The stored task is done.',
+      },
     }, { role: 'result', agentSessionId: owner })
     expect(call?.request).toMatchObject({ registryKey })
     const result = call && typedResult(call)
-    expect(result).toMatchObject({ agents: [{ registryKey, body: 'The stored task is done.' }] })
+    expect(result).toMatchObject({
+      agents: [
+        { registryKey, body: 'The stored task is done.' },
+      ],
+    })
   })
 
   it('keeps the child card without guessing an absent stored owner', () => {
@@ -47,16 +56,36 @@ describe('qwenToolCallAdapter', () => {
  * that Qwen gives its model, and `rawOutput` states the output and the exit apart.
  */
 function shellUpdate(status: 'completed' | 'failed', exit: { exitCode: number | null, signal: string | null }): Record<string, unknown> {
-  const output = status === 'failed' ? 'SHELLERR77' : 'SHELL42'
+  const output = status === 'failed'
+    ? 'SHELLERR77'
+    : 'SHELL42'
   return {
     sessionUpdate: 'tool_call_update',
     toolCallId: 'native-shell',
     status,
     kind: 'execute',
     rawInput: { command: 'printf x' },
-    content: [{ type: 'content', content: { type: 'text', text: `Command: printf x\nDirectory: (root)\nOutput: ${output}\nError: (none)\nExit Code: ${exit.exitCode ?? '(none)'}\nSignal: ${exit.signal ?? '(none)'}\nProcess Group PGID: 14134` } }],
+    content: [
+      {
+        type: 'content',
+        content: { type: 'text', text: `Command: printf x\nDirectory: (root)\nOutput: ${output}\nError: (none)\nExit Code: ${exit.exitCode ?? '(none)'}\nSignal: ${exit.signal ?? '(none)'}\nProcess Group PGID: 14134` },
+      },
+    ],
     _meta: { toolName: 'run_shell_command', provenance: 'builtin' },
-    rawOutput: { type: 'shell_result', version: 1, text: output, output, directory: '/work', ...exit, pid: 14134, error: null, outcome: status, notices: [], truncated: false, outputFiles: [] },
+    rawOutput: {
+      type: 'shell_result',
+      version: 1,
+      text: output,
+      output,
+      directory: '/work',
+      ...exit,
+      pid: 14134,
+      error: null,
+      outcome: status,
+      notices: [],
+      truncated: false,
+      outputFiles: [],
+    },
   }
 }
 
@@ -85,7 +114,10 @@ describe('a Qwen Code shell result', () => {
   })
 
   it('states no code for a failed update that carries no shell record', () => {
-    const frame = { ...shellUpdate('failed', { exitCode: 7, signal: null }), rawOutput: undefined }
+    const frame = {
+      ...shellUpdate('failed', { exitCode: 7, signal: null }),
+      rawOutput: undefined,
+    }
     expect(command(frame).command).not.toHaveProperty('exitCode', 7)
   })
 

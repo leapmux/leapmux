@@ -25,18 +25,26 @@ junieTest.describe('Junie subagents and background tasks', () => {
       when: { system: 'You are the Junie documentation assistant', body: CHILD_TASK },
       respond: {
         gate: CHILD_GATE,
-        toolCalls: [junieSubagentSubmitToolCall('junie-child-submit', '### Summary\n- JUNIE_CHILD_DONE: Junie keeps its session history in its home.\n### Changes\n- No files changed.\n### Verification\n- Read the bundled documentation.')],
+        toolCalls: [
+          junieSubagentSubmitToolCall('junie-child-submit', '### Summary\n- JUNIE_CHILD_DONE: Junie keeps its session history in its home.\n### Changes\n- No files changed.\n### Verification\n- Read the bundled documentation.'),
+        ],
       },
       once: true,
     })
     const start = await modelScript.queue(
       {
-        toolCalls: [spawnSubagentToolCall(PROVIDER, 'spawn-junie', {
-          description: 'Find Junie session history',
-          prompt: childPrompt,
-        })],
+        toolCalls: [
+          spawnSubagentToolCall(PROVIDER, 'spawn-junie', {
+            description: 'Find Junie session history',
+            prompt: childPrompt,
+          }),
+        ],
       },
-      { toolCalls: [junieAnswerToolCall('junie-root-answer', 'JUNIE_ROOT_DONE')] },
+      {
+        toolCalls: [
+          junieAnswerToolCall('junie-root-answer', 'JUNIE_ROOT_DONE'),
+        ],
+      },
     )
     await sendMessage(page, modelScript.prompt('Delegate the Junie session history question, then report.'))
     await modelScript.waitForGate(CHILD_GATE)

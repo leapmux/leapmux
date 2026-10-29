@@ -133,7 +133,11 @@ function bucketFor(agentId: string): MarkPreviewBucket {
   if (existing)
     return existing
   const [readVersion, bump] = createSignal(0)
-  const bucket: MarkPreviewBucket = { entries: new Map(), readVersion, bump }
+  const bucket: MarkPreviewBucket = {
+    entries: new Map(),
+    readVersion,
+    bump,
+  }
   buckets.set(agentId, bucket)
   return bucket
 }
@@ -144,7 +148,9 @@ function peekBucketEntry(agentId: string, seq: bigint): { revisionKey: string, t
 }
 
 function previewRevisionKey(revision: MessageRevision | undefined): string {
-  return revision === undefined ? `missing:${String(revision)}` : rowRevisionKey({ own: revision })
+  return revision === undefined
+    ? `missing:${String(revision)}`
+    : rowRevisionKey({ own: revision })
 }
 
 function setCachedMarkPreview(agentId: string, seq: bigint, revision: MessageRevision | undefined, preview: string): void {
@@ -162,7 +168,10 @@ function setCachedMarkPreview(agentId: string, seq: bigint, revision: MessageRev
       excess--
     }
   }
-  bucket.entries.set(key, { revisionKey: previewRevisionKey(revision), text: preview })
+  bucket.entries.set(key, {
+    revisionKey: previewRevisionKey(revision),
+    text: preview,
+  })
   bucket.bump()
 }
 
@@ -179,7 +188,9 @@ export function getCachedMarkPreview(agentId: string, seq: bigint, revision?: Me
   const entry = bucket.entries.get(seq.toString())
   if (entry === undefined)
     return undefined
-  return revision === undefined || entry.revisionKey === previewRevisionKey(revision) ? entry.text : undefined
+  return revision === undefined || entry.revisionKey === previewRevisionKey(revision)
+    ? entry.text
+    : undefined
 }
 
 // Key -> a token identifying the CURRENT in-flight fetch, both to dedupe concurrent hovers
@@ -234,8 +245,11 @@ export async function warmMarkPreview(agentId: string, seq: bigint, messages: Pi
       // A resolved-undefined message is a DEFINITIVE absence (no row at this seq) --
       // cache '' so the rail shows a label without re-fetching. A REJECTION lands in
       // .catch below and is NOT cached, so a transient failure can be retried.
-      if (isCurrent())
-        setCachedMarkPreview(agentId, seq, msg?.revision, msg ? (messageMarkPreviewText(msg.message) ?? '') : '')
+      if (isCurrent()) {
+        setCachedMarkPreview(agentId, seq, msg?.revision, msg
+          ? (messageMarkPreviewText(msg.message) ?? '')
+          : '')
+      }
     })
     .catch(() => {
       // Transient fetch failure: leave the key UNRESOLVED (the finally drops the

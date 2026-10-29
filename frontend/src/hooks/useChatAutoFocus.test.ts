@@ -45,7 +45,12 @@ function mount(agentId: string | null = AGENT_ID, writable = true) {
 
 /** Dispatch a keydown on the document and report whether it was consumed. */
 function press(key: string, init: KeyboardEventInit = {}): boolean {
-  const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init })
+  const event = new KeyboardEvent('keydown', {
+    key,
+    bubbles: true,
+    cancelable: true,
+    ...init,
+  })
   document.dispatchEvent(event)
   return event.defaultPrevented
 }

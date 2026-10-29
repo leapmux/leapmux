@@ -24,7 +24,13 @@ describe('absoluteDestination', () => {
     expect(absoluteDestination(path, 'state')).toBe(path)
   })
 
-  it.each([undefined, 7, '', 'relative.json', `${resolve('state')}\0suffix`])('rejects an invalid destination with its description: %j', (value) => {
+  it.each([
+    undefined,
+    7,
+    '',
+    'relative.json',
+    `${resolve('state')}\0suffix`,
+  ])('rejects an invalid destination with its description: %j', (value) => {
     expect(() => absoluteDestination(value, 'example destination')).toThrow('The example destination must be an absolute path without NUL characters.')
   })
 })
@@ -48,7 +54,7 @@ describe('writeFileAtomically', () => {
       mkdirSync,
       writeFileSync: (draft, content, options) => {
         if (typeof draft !== 'string')
-          throw new Error('The state draft is not a file path.')
+          throw new TypeError('The state draft is not a file path.')
         observed.push(draft)
         expect(dirname(draft)).toBe(dirname(path))
         expect(basename(draft)).toMatch(/^\.leapmux-[0-9a-f-]+\.writing$/u)
@@ -153,7 +159,12 @@ describe('writeFileAtomically', () => {
   it('rejects a relative destination before accessing the filesystem', () => {
     const mkdir = vi.fn<typeof mkdirSync>()
 
-    expect(() => writeFileAtomically('relative.json', 'next', { mkdirSync: mkdir, writeFileSync, renameSync, rmSync }))
+    expect(() => writeFileAtomically('relative.json', 'next', {
+      mkdirSync: mkdir,
+      writeFileSync,
+      renameSync,
+      rmSync,
+    }))
       .toThrow('absolute path without NUL')
     expect(mkdir).not.toHaveBeenCalled()
   })

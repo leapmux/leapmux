@@ -15,7 +15,9 @@ vi.mock('~/api/platformBridge', async importOriginal => ({
   ...(await importOriginal<typeof import('~/api/platformBridge')>()),
   setDesktopBehavior,
 }))
-vi.mock('~/lib/systemInfo', () => ({ isDesktopApp: () => isDesktopApp() }))
+vi.mock('~/lib/systemInfo', () => ({
+  isDesktopApp: () => isDesktopApp(),
+}))
 
 // The two contexts are mocked rather than mounted: this hook's whole job is
 // the GATE and the coalescing, and driving those through real providers would
@@ -102,9 +104,18 @@ describe('useDesktopWindowBehavior', () => {
   // beside a user that has not been cleared yet -- and the push it triggers
   // would be the test's doing, not the hook's.
   it.each([
-    ['the account settings have not arrived', () => setDescriptors([])],
-    ['the session is still loading', () => setLoading(true)],
-    ['nobody is signed in', () => setUser(null)],
+    [
+      'the account settings have not arrived',
+      () => setDescriptors([]),
+    ],
+    [
+      'the session is still loading',
+      () => setLoading(true),
+    ],
+    [
+      'nobody is signed in',
+      () => setUser(null),
+    ],
   ])('pushes nothing while %s', async (_label, arrange) => {
     arrange()
     mount()
@@ -214,14 +225,18 @@ describe('useDesktopWindowBehavior', () => {
   // while no icon exists, and the login item is simply not registered. The
   // message has to reach the row the user just moved.
   it('reports a refusal to the row that owns it', async () => {
-    setDesktopBehavior.mockRejectedValue([{ setting: 'trayEnabled', message: 'no status-icon library' }])
+    setDesktopBehavior.mockRejectedValue([
+      { setting: 'trayEnabled', message: 'no status-icon library' },
+    ])
     mount()
     await settle()
 
-    expect(desktopShellRefusals()).toEqual([{
-      key: 'desktop.trayEnabled',
-      message: 'no status-icon library',
-    }])
+    expect(desktopShellRefusals()).toEqual([
+      {
+        key: 'desktop.trayEnabled',
+        message: 'no status-icon library',
+      },
+    ])
   })
 
   // The two choices fail independently, so a push can be refused twice and
@@ -241,7 +256,9 @@ describe('useDesktopWindowBehavior', () => {
   })
 
   it('clears the reported refusal once a push succeeds', async () => {
-    setDesktopBehavior.mockRejectedValue([{ setting: 'startOnLogin', message: 'the system declined' }])
+    setDesktopBehavior.mockRejectedValue([
+      { setting: 'startOnLogin', message: 'the system declined' },
+    ])
     mount()
     await settle()
     expect(desktopShellRefusals()).toHaveLength(1)
@@ -270,7 +287,9 @@ describe('useDesktopWindowBehavior', () => {
     await settle()
     expect(setDesktopBehavior).toHaveBeenCalledTimes(2)
 
-    rejectFirst?.([{ setting: 'trayEnabled', message: 'no status-icon library' }])
+    rejectFirst?.([
+      { setting: 'trayEnabled', message: 'no status-icon library' },
+    ])
     await settle()
     expect(desktopShellRefusals()).toEqual([])
   })
@@ -323,7 +342,9 @@ describe('useDesktopWindowBehavior', () => {
   // could and cached the set, so the shell holds this payload. Pushing it
   // again would re-register the login item and rebuild the tray for nothing.
   it('does not retry a payload the shell refused', async () => {
-    setDesktopBehavior.mockRejectedValue([{ setting: 'trayEnabled', message: 'no status-icon library' }])
+    setDesktopBehavior.mockRejectedValue([
+      { setting: 'trayEnabled', message: 'no status-icon library' },
+    ])
     mount()
     await settle()
     expect(setDesktopBehavior).toHaveBeenCalledTimes(1)

@@ -20,10 +20,18 @@ function renderRows(overrides: RowsOverrides = {}) {
       isWorktree={overrides.isWorktree ?? true}
       name={overrides.name ?? 'blushing-slow-wolf'}
       directory={overrides.directory ?? WORKTREE_DIR}
-      {...(overrides.homeDir !== undefined ? { homeDir: overrides.homeDir } : {})}
-      {...(overrides.flavor !== undefined ? { flavor: overrides.flavor } : {})}
-      {...(overrides.worker !== undefined ? { worker: overrides.worker } : {})}
-      {...(overrides.stats !== undefined ? { stats: overrides.stats } : {})}
+      {...(overrides.homeDir !== undefined
+        ? { homeDir: overrides.homeDir }
+        : {})}
+      {...(overrides.flavor !== undefined
+        ? { flavor: overrides.flavor }
+        : {})}
+      {...(overrides.worker !== undefined
+        ? { worker: overrides.worker }
+        : {})}
+      {...(overrides.stats !== undefined
+        ? { stats: overrides.stats }
+        : {})}
     />
   ))
 }
@@ -86,8 +94,12 @@ describe('WorkingTreeIcon (WorkingTreeIcon)', () => {
     const worktree = render(() => <WorkingTreeIcon isWorktree size="sm" />)
     const branch = render(() => <WorkingTreeIcon isWorktree={false} size="sm" />)
 
-    const filled = [...worktree.container.querySelectorAll('circle')]
-    const open = [...branch.container.querySelectorAll('circle')]
+    const filled = [
+      ...worktree.container.querySelectorAll('circle'),
+    ]
+    const open = [
+      ...branch.container.querySelectorAll('circle'),
+    ]
 
     expect(filled).toHaveLength(2)
     expect(filled.every(c => c.getAttribute('fill') === 'currentColor')).toBe(true)
@@ -103,7 +115,9 @@ describe('WorkingTreeIcon (WorkingTreeIcon)', () => {
     const branch = render(() => <WorkingTreeIcon isWorktree={false} size="sm" />)
 
     const arc = (r: ReturnType<typeof render>) => r.container.querySelector('path')!.getAttribute('d')
-    const nodes = (r: ReturnType<typeof render>) => [...r.container.querySelectorAll('circle')]
+    const nodes = (r: ReturnType<typeof render>) => [
+      ...r.container.querySelectorAll('circle'),
+    ]
       .map(c => `${c.getAttribute('cx')},${c.getAttribute('cy')},${c.getAttribute('r')}`)
       .toSorted()
 
@@ -202,7 +216,9 @@ describe('WorkingTreeRows (WorkingTreeRows)', () => {
   })
 
   it('renders no badge for an all-zero snapshot', () => {
-    renderRows({ stats: { added: 0, deleted: 0, untracked: 0 } })
+    renderRows({
+      stats: { added: 0, deleted: 0, untracked: 0 },
+    })
 
     expect(screen.queryByTestId('git-diff-stats')).toBeNull()
   })
@@ -227,7 +243,10 @@ describe('WorkingTreeRows (WorkingTreeRows)', () => {
   // Most callers pass this as a Tooltip's `content`, and a tooltip portal is
   // `pointer-events: none` — anything interactive inside it is unreachable.
   it('renders nothing interactive, so it can be a tooltip body', () => {
-    const { container } = renderRows({ homeDir: HOME, stats: { added: 1, deleted: 0, untracked: 0 } })
+    const { container } = renderRows({
+      homeDir: HOME,
+      stats: { added: 1, deleted: 0, untracked: 0 },
+    })
 
     expect(container.querySelector('button, a, input, [role="tooltip"]')).toBeNull()
   })
@@ -270,7 +289,12 @@ describe('WorkingTreeRows (WorkingTreeRows)', () => {
 // `text`, so a reason and the rows can never both show. Two call sites that
 // each spelled it out could start answering differently.
 describe('WorkingTreeTooltip (WorkingTreeTooltip)', () => {
-  const INFO = { isWorktree: true, name: 'feature', directory: WORKTREE_DIR, homeDir: HOME }
+  const INFO = {
+    isWorktree: true,
+    name: 'feature',
+    directory: WORKTREE_DIR,
+    homeDir: HOME,
+  }
 
   beforeAll(() => {
     HTMLElement.prototype.showPopover = vi.fn()

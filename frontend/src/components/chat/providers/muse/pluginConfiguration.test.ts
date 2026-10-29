@@ -23,7 +23,13 @@ describe('museConfiguration', () => {
   })
 
   it('reports the native attachment policy and child input capability', () => {
-    expect(museConfiguration.attachments).toEqual({ text: true, image: true, pdf: false, audio: false, binary: false })
+    expect(museConfiguration.attachments).toEqual({
+      text: true,
+      image: true,
+      pdf: false,
+      audio: false,
+      binary: false,
+    })
     expect(museConfiguration.supportsSubagentSend).toBe(true)
     expect(museConfiguration.triggerModeGroupKey).toBe('permissionMode')
   })

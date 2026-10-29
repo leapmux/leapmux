@@ -14,7 +14,9 @@ import { kimiEvent } from './protocol'
 export function kimiSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
   switch (kimiEvent(parsed.parentObject)?.type) {
     case KIMI_EVENT.ToolCallStarted:
-      return retainedRowIsFinal(parsed.completion) ? 'result' : 'request'
+      return retainedRowIsFinal(parsed.completion)
+        ? 'result'
+        : 'request'
     case KIMI_EVENT.ToolResult:
       return 'result'
     default:
@@ -38,5 +40,7 @@ export function kimiRelatedMessages(parsed: ResolvedMessageContent) {
   const start = kimiEvent(parsed.parentObject)?.data
   const name = pickString(start, 'name')
   const args = pickObject(start, 'args') ?? {}
-  return name === KIMI_TOOL.Agent || name === KIMI_TOOL.AgentSwarm || Object.keys(args).length === 0 ? ['result'] as const : []
+  return name === KIMI_TOOL.Agent || name === KIMI_TOOL.AgentSwarm || Object.keys(args).length === 0
+    ? ['result'] as const
+    : []
 }

@@ -26,10 +26,24 @@ piTest('runs a native two-stage workflow without workflow grouping or stage rows
   const callId = 'native-pi-workflow'
   await withCleanup(async () => {
     await modelScript.rule(
-      { name: 'the first actual workflow child replies', when: { user: `^NATIVE_WF_FIRST_${suffix}` }, respond: { text: firstAnswer, gate }, once: true },
-      { name: 'the second actual workflow child replies', when: { user: `^NATIVE_WF_SECOND_${suffix}` }, respond: { text: secondAnswer }, once: true },
+      {
+        name: 'the first actual workflow child replies',
+        when: { user: `^NATIVE_WF_FIRST_${suffix}` },
+        respond: { text: firstAnswer, gate },
+        once: true,
+      },
+      {
+        name: 'the second actual workflow child replies',
+        when: { user: `^NATIVE_WF_SECOND_${suffix}` },
+        respond: { text: secondAnswer },
+        once: true,
+      },
     )
-    const start = await modelScript.queue({ toolCalls: [piWorkflowToolCall(callId, script)] }, { text: 'The native workflow started.' })
+    const start = await modelScript.queue({
+      toolCalls: [
+        piWorkflowToolCall(callId, script),
+      ],
+    }, { text: 'The native workflow started.' })
     await sendMessage(page, modelScript.prompt('Run the supplied native workflow and report its completed result.'))
     await modelScript.waitForGate(gate)
     const launch = await modelScript.waitForSteps(start + 2)
@@ -40,7 +54,17 @@ piTest('runs a native two-stage workflow without workflow grouping or stage rows
     if (!taskId)
       throw new Error('The actual Pi workflow receipt contains no task ID.')
     const scriptPath = /^Script: ([^\r\n]+)$/m.exec(acknowledgement)?.[1]
-    await modelScript.rule(piWorkflowNoticeRule({ name: 'the parent receives the actual workflow completion', taskId, callId, workflowName: 'Native two-stage workflow', ...(scriptPath === undefined ? {} : { scriptPath }), reports: [firstAnswer, secondAnswer], reply: 'The actual native workflow result arrived.' }))
+    await modelScript.rule(piWorkflowNoticeRule({
+      name: 'the parent receives the actual workflow completion',
+      taskId,
+      callId,
+      workflowName: 'Native two-stage workflow',
+      ...(scriptPath === undefined
+        ? {}
+        : { scriptPath }),
+      reports: [firstAnswer, secondAnswer],
+      reply: 'The actual native workflow result arrived.',
+    }))
     const running = (await readNativeSidebarSnapshot(native)).backgroundTasks.find(task => task.id === taskId)
     expect(running?.status).toBe(BackgroundTaskStatus.RUNNING)
     expect(running?.kind).toBe(BackgroundTaskKind.SUBAGENT)
@@ -89,7 +113,11 @@ piTest('runs a native two-stage workflow without workflow grouping or stage rows
 piTest('rejects an invalid native workflow script without a phantom workflow row', async ({ native }) => {
   const { page, modelScript } = native
   const callId = 'invalid-native-pi-workflow'
-  const start = await modelScript.queue({ toolCalls: [piWorkflowToolCall(callId, 'return 0;')] }, { text: 'The native workflow script was refused.' })
+  const start = await modelScript.queue({
+    toolCalls: [
+      piWorkflowToolCall(callId, 'return 0;'),
+    ],
+  }, { text: 'The native workflow script was refused.' })
   await sendMessage(page, modelScript.prompt('Try the supplied invalid native workflow script once.'))
   const status = await modelScript.waitForSteps(start + 2)
   expect(nativeToolResult(stepRequest(status, start + 1), callId)).toContain('A workflow script must begin with')

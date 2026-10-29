@@ -3,7 +3,12 @@ import { claudeAskUserQuestions, claudeIsAskUserQuestion } from './askUserQuesti
 import { CLAUDE_TOOL_NAMES } from './toolNames'
 
 function payload(questions: unknown, toolName: string = CLAUDE_TOOL_NAMES.ASK_USER_QUESTION) {
-  return { request: { tool_name: toolName, input: { questions } } }
+  return {
+    request: {
+      tool_name: toolName,
+      input: { questions },
+    },
+  }
 }
 
 describe('claudeIsAskUserQuestion', () => {
@@ -21,9 +26,21 @@ describe('claudeIsAskUserQuestion', () => {
 describe('claudeAskUserQuestions', () => {
   it('reads each question and its options', () => {
     expect(claudeAskUserQuestions(payload([
-      { question: 'Which one?', header: 'Pick', options: [{ label: 'A', description: 'first' }] },
+      {
+        question: 'Which one?',
+        header: 'Pick',
+        options: [
+          { label: 'A', description: 'first' },
+        ],
+      },
     ]))).toEqual([
-      { question: 'Which one?', header: 'Pick', options: [{ label: 'A', description: 'first' }] },
+      {
+        question: 'Which one?',
+        header: 'Pick',
+        options: [
+          { label: 'A', description: 'first' },
+        ],
+      },
     ])
   })
 
@@ -31,8 +48,15 @@ describe('claudeAskUserQuestions', () => {
   // control surface dereferences `question` and hands `options` to a `<For>` -- so a
   // null or a bare string among them threw the whole banner away.
   it('drops an element the control surface cannot draw', () => {
-    expect(claudeAskUserQuestions(payload([null, 'plain text', 7, { question: 'Which one?', options: [] }])))
-      .toEqual([{ question: 'Which one?', options: [] }])
+    expect(claudeAskUserQuestions(payload([
+      null,
+      'plain text',
+      7,
+      { question: 'Which one?', options: [] },
+    ])))
+      .toEqual([
+        { question: 'Which one?', options: [] },
+      ])
   })
 
   it('answers an empty list for a payload that states no questions', () => {

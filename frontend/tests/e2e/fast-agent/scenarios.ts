@@ -23,7 +23,10 @@ export async function nativeContext(fixtures: NativeContextFixtures): Promise<Ma
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */
 export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStartupLaunch {
-  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: 'fast-agent', holdWhen: ['acp'] })
+  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, {
+    binaryName: 'fast-agent',
+    holdWhen: ['acp'],
+  })
 }
 
 /**
@@ -44,7 +47,12 @@ export function runningChildOptions(context: NativeChildScriptContext, options: 
   const report = uniqueMarker('NATIVECHILDCOMPLETE')
   const child = heldChildIdentity(context, { task: `${uniqueMarker('NATIVECHILDTASK')} report exactly ${report}.` })
   return heldChildOptions(context, child, {
-    child: { matcher: { lastMessage: { role: 'user', text: child.task } }, finalStep: context.textStep(report) },
+    child: {
+      matcher: {
+        lastMessage: { role: 'user', text: child.task },
+      },
+      finalStep: context.textStep(report),
+    },
     allowExistingRows: options.allowExistingRows ?? false,
   })
 }

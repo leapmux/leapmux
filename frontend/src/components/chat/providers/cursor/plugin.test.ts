@@ -14,15 +14,27 @@ describe('cursor provider', () => {
 
   // Cursor keeps the standard ACP text/image behavior and interrupts. It drops
   // embedded blob content, so PDF and binary attachments must be refused.
-  describeACPProviderBasics(AgentProvider.CURSOR, { text: true, image: true, pdf: false, audio: false, binary: false })
+  describeACPProviderBasics(AgentProvider.CURSOR, {
+    text: true,
+    image: true,
+    pdf: false,
+    audio: false,
+    binary: false,
+  })
 
   it('maps plan mode to agent/plan values', () => {
-    expect(plugin?.configuration?.planMode?.currentMode({ optionValues: { permissionMode: 'plan' } })).toBe('plan')
-    expect(plugin?.configuration?.planMode?.currentMode({ optionValues: { permissionMode: '' } })).toBe('agent')
+    expect(plugin?.configuration?.planMode?.currentMode({
+      optionValues: { permissionMode: 'plan' },
+    })).toBe('plan')
+    expect(plugin?.configuration?.planMode?.currentMode({
+      optionValues: { permissionMode: '' },
+    })).toBe('agent')
   })
 
   it('maps bypass to the native launch flag without changing model or mode', () => {
-    expect(plugin.controls?.permissionPresets?.bypass).toEqual({ sets: { bypassPermissions: 'true' } })
+    expect(plugin.controls?.permissionPresets?.bypass).toEqual({
+      sets: { bypassPermissions: 'true' },
+    })
     expect(plugin.controls?.permissionPresets?.smart).toBeUndefined()
   })
 
@@ -77,7 +89,11 @@ describe('cursor provider', () => {
       claimToken: 'claim-1',
       requestId: '7',
       request: { method: 'cursor/create_plan' },
-      response: { result: { outcome: { outcome: 'accepted' } } },
+      response: {
+        result: {
+          outcome: { outcome: 'accepted' },
+        },
+      },
     })).toEqual({ kind: 'label', text: 'Accept' })
   })
 })
@@ -107,7 +123,12 @@ describe('native output without a filesystem pointer', () => {
         exitCode: 0,
       },
     }
-    const call = providerToolCall(AgentProvider.CURSOR, frame, { spanId: 'native-call', spanType: 'Shell', agentSessionId: 'native-session', role: 'result' })
+    const call = providerToolCall(AgentProvider.CURSOR, frame, {
+      spanId: 'native-call',
+      spanType: 'Shell',
+      agentSessionId: 'native-session',
+      role: 'result',
+    })
     expect(call).not.toBeNull()
     expect(call?.id).toBe('native-call')
     expect(call?.outputFilePaths).toBeUndefined()

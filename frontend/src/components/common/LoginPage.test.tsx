@@ -137,7 +137,9 @@ describe('LoginPage', () => {
 
     // And the form can be submitted, which is what the empty field took away:
     // canSubmit refuses on `!username()`.
-    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'correct-horse-battery-staple' } })
+    fireEvent.input(screen.getByLabelText('Password'), {
+      target: { value: 'correct-horse-battery-staple' },
+    })
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled()
   })
 
@@ -214,8 +216,18 @@ describe('LoginPage', () => {
 
   it('renders oauth buttons when providers are configured', async () => {
     mockLoadOAuthProviders.mockResolvedValue([
-      { id: 'p1', name: 'Google', providerType: 'oidc', loginUrl: '/auth/idp/p1/login' },
-      { id: 'p2', name: 'GitHub', providerType: 'github', loginUrl: '/auth/idp/p2/login' },
+      {
+        id: 'p1',
+        name: 'Google',
+        providerType: 'oidc',
+        loginUrl: '/auth/idp/p1/login',
+      },
+      {
+        id: 'p2',
+        name: 'GitHub',
+        providerType: 'github',
+        loginUrl: '/auth/idp/p2/login',
+      },
     ])
 
     renderLoginPage()
@@ -230,7 +242,12 @@ describe('LoginPage', () => {
 
   it('oauth button links to correct login url', async () => {
     mockLoadOAuthProviders.mockResolvedValue([
-      { id: 'p1', name: 'TestProvider', providerType: 'oidc', loginUrl: '/auth/idp/p1/login' },
+      {
+        id: 'p1',
+        name: 'TestProvider',
+        providerType: 'oidc',
+        loginUrl: '/auth/idp/p1/login',
+      },
     ])
 
     renderLoginPage()
@@ -255,7 +272,12 @@ describe('LoginPage', () => {
 
   it('renders provider with long name correctly', async () => {
     mockLoadOAuthProviders.mockResolvedValue([
-      { id: 'p1', name: 'Corporate Azure Active Directory', providerType: 'oidc', loginUrl: '/auth/idp/p1/login' },
+      {
+        id: 'p1',
+        name: 'Corporate Azure Active Directory',
+        providerType: 'oidc',
+        loginUrl: '/auth/idp/p1/login',
+      },
     ])
 
     renderLoginPage()
@@ -271,7 +293,9 @@ describe('LoginPage', () => {
       expect(screen.getByLabelText('Username')).toBeInTheDocument()
     })
 
-    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+    fireEvent.input(screen.getByLabelText('Password'), {
+      target: { value: 'secret' },
+    })
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeDisabled()
   })
 
@@ -281,7 +305,9 @@ describe('LoginPage', () => {
       expect(screen.getByLabelText('Username')).toBeInTheDocument()
     })
 
-    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
+    fireEvent.input(screen.getByLabelText('Username'), {
+      target: { value: 'alice' },
+    })
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeDisabled()
   })
 
@@ -300,8 +326,12 @@ describe('LoginPage', () => {
       expect(screen.getByLabelText('Username')).toBeInTheDocument()
     })
 
-    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
-    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+    fireEvent.input(screen.getByLabelText('Username'), {
+      target: { value: 'alice' },
+    })
+    fireEvent.input(screen.getByLabelText('Password'), {
+      target: { value: 'secret' },
+    })
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled()
   })
 
@@ -312,8 +342,12 @@ describe('LoginPage', () => {
     await vi.waitFor(() => {
       expect(screen.getByLabelText('Username')).toBeInTheDocument()
     })
-    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
-    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+    fireEvent.input(screen.getByLabelText('Username'), {
+      target: { value: 'alice' },
+    })
+    fireEvent.input(screen.getByLabelText('Password'), {
+      target: { value: 'secret' },
+    })
 
     // Captcha enabled and unsolved: the button stays disabled with both
     // credentials filled — the disable half of the predicate the old test
@@ -343,8 +377,12 @@ describe('LoginPage', () => {
     await vi.waitFor(() => {
       expect(screen.getByLabelText('Username')).toBeInTheDocument()
     })
-    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
-    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+    fireEvent.input(screen.getByLabelText('Username'), {
+      target: { value: 'alice' },
+    })
+    fireEvent.input(screen.getByLabelText('Password'), {
+      target: { value: 'secret' },
+    })
     // Both credentials are filled; the only blocker is the unanswered
     // captcha question.
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeDisabled()
@@ -381,8 +419,12 @@ describe('LoginPage', () => {
     await vi.waitFor(() => {
       expect(screen.getByTestId('captcha-field')).toBeInTheDocument()
     })
-    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
-    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+    fireEvent.input(screen.getByLabelText('Username'), {
+      target: { value: 'alice' },
+    })
+    fireEvent.input(screen.getByLabelText('Password'), {
+      target: { value: 'secret' },
+    })
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeDisabled()
 
     fireCaptchaUnavailable()
@@ -397,11 +439,17 @@ describe('LoginPage', () => {
     await vi.waitFor(() => {
       expect(screen.getByLabelText('Username')).toBeInTheDocument()
     })
-    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
-    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+    fireEvent.input(screen.getByLabelText('Username'), {
+      target: { value: 'alice' },
+    })
+    fireEvent.input(screen.getByLabelText('Password'), {
+      target: { value: 'secret' },
+    })
     // A value that an autofill heuristic drops into the hidden input must
     // reach the request — the server checks it even with captcha off.
-    fireEvent.input(screen.getByTestId('website-field'), { target: { value: 'http://spam.example' } })
+    fireEvent.input(screen.getByTestId('website-field'), {
+      target: { value: 'http://spam.example' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
     await vi.waitFor(() => {
       expect(mockLogin).toHaveBeenCalledWith('alice', 'secret', { captchaPayload: '', honeypot: 'http://spam.example' })
@@ -420,8 +468,12 @@ describe('LoginPage', () => {
       expect(screen.getByLabelText('Username')).toBeInTheDocument()
     })
 
-    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
-    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+    fireEvent.input(screen.getByLabelText('Username'), {
+      target: { value: 'alice' },
+    })
+    fireEvent.input(screen.getByLabelText('Password'), {
+      target: { value: 'secret' },
+    })
 
     const button = screen.getByRole('button', { name: 'Sign in' })
     fireEvent.click(button)
@@ -453,8 +505,12 @@ describe('LoginPage', () => {
       expect(screen.getByLabelText('Username')).toBeInTheDocument()
     })
 
-    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
-    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+    fireEvent.input(screen.getByLabelText('Username'), {
+      target: { value: 'alice' },
+    })
+    fireEvent.input(screen.getByLabelText('Password'), {
+      target: { value: 'secret' },
+    })
 
     const button = screen.getByRole('button', { name: 'Sign in' })
     fireEvent.click(button)
@@ -481,8 +537,12 @@ describe('LoginPage', () => {
       expect(screen.getByLabelText('Username')).toBeInTheDocument()
     })
 
-    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
-    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+    fireEvent.input(screen.getByLabelText('Username'), {
+      target: { value: 'alice' },
+    })
+    fireEvent.input(screen.getByLabelText('Password'), {
+      target: { value: 'secret' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
 
     // Flat user-owned home is `/` (no org slug).
@@ -501,8 +561,12 @@ describe('LoginPage', () => {
       expect(screen.getByLabelText('Username')).toBeInTheDocument()
     })
 
-    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
-    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+    fireEvent.input(screen.getByLabelText('Username'), {
+      target: { value: 'alice' },
+    })
+    fireEvent.input(screen.getByLabelText('Password'), {
+      target: { value: 'secret' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
 
     expect(await screen.findByTestId('verify-email-page')).toBeInTheDocument()
@@ -594,8 +658,12 @@ describe('LoginPage', () => {
     await vi.waitFor(() => {
       expect(screen.getByLabelText('Username')).toBeInTheDocument()
     })
-    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
-    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+    fireEvent.input(screen.getByLabelText('Username'), {
+      target: { value: 'alice' },
+    })
+    fireEvent.input(screen.getByLabelText('Password'), {
+      target: { value: 'secret' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
     expect(await screen.findByRole('button', { name: 'Signing in...' })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Signing in...' }))
@@ -611,8 +679,12 @@ describe('LoginPage', () => {
     await vi.waitFor(() => {
       expect(screen.getByLabelText('Username')).toBeInTheDocument()
     })
-    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
-    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+    fireEvent.input(screen.getByLabelText('Username'), {
+      target: { value: 'alice' },
+    })
+    fireEvent.input(screen.getByLabelText('Password'), {
+      target: { value: 'secret' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
     await vi.waitFor(() => {
       expect(mockLogin).toHaveBeenCalledOnce()

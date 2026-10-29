@@ -6,21 +6,26 @@ function selectedVersion(upgrades, name, baseline) {
     const target = upgrade.newVersion ?? upgrade.newValue?.replace(/^[~^=]/, '')
     if (!/^\d+\.\d+\.\d+(?:-[0-9A-Z.-]+)?(?:\+[0-9A-Z.-]+)?$/i.test(target ?? ''))
       throw new Error(`Missing selected Tauri version for ${name}.`)
-    return Bun.semver.order(target, version) > 0 ? target : version
+    return Bun.semver.order(target, version) > 0
+      ? target
+      : version
   }, baseline)
 }
 
 async function readDependencies(name, version, request) {
   const url = `https://crates.io/api/v1/crates/${encodeURIComponent(name)}/${encodeURIComponent(version)}/dependencies`
-  const response = await request(url, { headers: { 'User-Agent': 'leapmux-dependency-maintenance' }, signal: AbortSignal.timeout(30000) })
+  const response = await request(url, {
+    headers: { 'User-Agent': 'leapmux-dependency-maintenance' },
+    signal: AbortSignal.timeout(30000),
+  })
   if (!response.ok)
     throw new Error(`Tauri dependency metadata read failed: ${response.status} ${url}`)
   const metadata = await response.json()
   if (!Array.isArray(metadata.dependencies))
-    throw new Error(`Invalid Tauri dependency metadata: ${name}@${version}`)
+    throw new TypeError(`Invalid Tauri dependency metadata: ${name}@${version}`)
   return metadata.dependencies.filter(dependency => dependency.kind === 'normal' && !dependency.optional).map((dependency) => {
     if (typeof dependency.crate_id !== 'string' || typeof dependency.req !== 'string')
-      throw new Error(`Invalid Tauri dependency requirement: ${name}@${version}`)
+      throw new TypeError(`Invalid Tauri dependency requirement: ${name}@${version}`)
     return { name: dependency.crate_id, requirement: dependency.req }
   })
 }
@@ -45,7 +50,9 @@ export async function planTauriTargets(pairs, { policy, alerts = [], upgrades = 
   const advisories = tauriAdvisories(alerts)
   if (preparedTargets && Object.keys(preparedTargets).length > 0 && !security)
     throw new Error('Prepared Tauri security targets require security processing.')
-  const maximum = (a, b) => Bun.semver.order(a, b) >= 0 ? a : b
+  const maximum = (a, b) => Bun.semver.order(a, b) >= 0
+    ? a
+    : b
   const nativeRemediation = (name, selected) => security && proposed
     && upgrades.some(upgrade => (upgrade.packageName ?? upgrade.depName) === name && upgrade.isVulnerabilityAlert)
     && advisories.isSafe(name, selected) && lockedTauriVersions(proposed, name).includes(selected)
@@ -60,10 +67,24 @@ export async function planTauriTargets(pairs, { policy, alerts = [], upgrades = 
     if (prepared && (Bun.semver.order(prepared.npm, npmSelected) < 0 || Bun.semver.order(prepared.cargo, cargoSelected) < 0))
       throw new Error(`The prepared Tauri pair is below the selected update: ${pair.npm}`)
     const useAdvisory = security && (!preparedTargets || nativeChanged || prepared)
-    const npmFixed = useAdvisory ? advisories.minimum(pair.npm, pair.npmVersion) : null
-    const cargoFixed = useAdvisory ? advisories.minimum(pair.cargo, pair.cargoVersion) : null
+    const npmFixed = useAdvisory
+      ? advisories.minimum(pair.npm, pair.npmVersion)
+      : null
+    const cargoFixed = useAdvisory
+      ? advisories.minimum(pair.cargo, pair.cargoVersion)
+      : null
     const securityRoot = !!(security && (npmFixed || cargoFixed || prepared || nativeRemediation(pair.npm, npmSelected) || nativeRemediation(pair.cargo, cargoSelected)))
-    return { pair, prepared, npmSelected, cargoSelected, npmFixed, cargoFixed, maximumMajor, securityRoot, changed: !!(nativeChanged || npmSelected !== pair.npmVersion || cargoSelected !== pair.cargoVersion || npmFixed || cargoFixed || prepared) }
+    return {
+      pair,
+      prepared,
+      npmSelected,
+      cargoSelected,
+      npmFixed,
+      cargoFixed,
+      maximumMajor,
+      securityRoot,
+      changed: !!(nativeChanged || npmSelected !== pair.npmVersion || cargoSelected !== pair.cargoVersion || npmFixed || cargoFixed || prepared),
+    }
   })
   if (!contexts.some(context => context.changed))
     return []
@@ -74,20 +95,39 @@ export async function planTauriTargets(pairs, { policy, alerts = [], upgrades = 
   const hasSecurityRoot = contexts.some(context => context.securityRoot)
   const loadDomain = async (context) => {
     const { pair, prepared, npmSelected, cargoSelected, npmFixed, cargoFixed, maximumMajor } = context
-    if (prepared)
-      return { ...context, candidates: [prepared], expanded: true }
-    const [npmReleases, cargoReleases] = await Promise.all([readTauriReleases(pair.npm, request), readTauriReleases(pair.cargo, request)])
+    if (prepared) {
+      return {
+        ...context,
+        candidates: [prepared],
+        expanded: true,
+      }
+    }
+    const [npmReleases, cargoReleases] = await Promise.all([
+      readTauriReleases(pair.npm, request),
+      readTauriReleases(pair.cargo, request),
+    ])
     const age = tauriReleaseAgeMs(policy, context.securityRoot)
-    const minimum = (selected, fixed) => fixed && Bun.semver.order(fixed, selected) > 0 ? fixed : selected
+    const minimum = (selected, fixed) => fixed && Bun.semver.order(fixed, selected) > 0
+      ? fixed
+      : selected
     const candidates = tauriPairCandidates(npmReleases, cargoReleases, {
       npmMinimum: minimum(npmSelected, npmFixed),
       cargoMinimum: minimum(cargoSelected, cargoFixed),
-      existing: { npm: !npmFixed && npmSelected === pair.npmVersion ? pair.npmVersion : undefined, cargo: !cargoFixed && cargoSelected === pair.cargoVersion ? pair.cargoVersion : undefined },
+      existing: {
+        npm: !npmFixed && npmSelected === pair.npmVersion
+          ? pair.npmVersion
+          : undefined,
+        cargo: !cargoFixed && cargoSelected === pair.cargoVersion
+          ? pair.cargoVersion
+          : undefined,
+      },
       npmName: pair.npm,
       cargoName: pair.cargo,
       security: hasSecurityRoot,
       preferLowest: context.securityRoot || !context.changed,
-      safe: (name, version) => advisories.isSafe(name, version) || (name === pair.npm ? !npmFixed && npmSelected === pair.npmVersion && version === pair.npmVersion : !cargoFixed && cargoSelected === pair.cargoVersion && version === pair.cargoVersion),
+      safe: (name, version) => advisories.isSafe(name, version) || (name === pair.npm
+        ? !npmFixed && npmSelected === pair.npmVersion && version === pair.npmVersion
+        : !cargoFixed && cargoSelected === pair.cargoVersion && version === pair.cargoVersion),
       now,
       minimumAgeMs: age,
       maximumMajor,
@@ -103,7 +143,9 @@ export async function planTauriTargets(pairs, { policy, alerts = [], upgrades = 
     ? loadDomain(context)
     : {
         ...context,
-        candidates: [{ npm: context.pair.npmVersion, cargo: context.pair.cargoVersion }],
+        candidates: [
+          { npm: context.pair.npmVersion, cargo: context.pair.cargoVersion },
+        ],
         expanded: false,
       }))
   if (domains.some(domain => domain.candidates.length === 0))
@@ -138,8 +180,11 @@ export async function planTauriTargets(pairs, { policy, alerts = [], upgrades = 
     return assigned.every(entry => Number(entry.target.cargo.split('.')[0]) <= entry.maximumMajor || authorized.has(entry.pair.cargo))
   }
   const search = async (index) => {
-    if (index === domains.length)
-      return authorizedMajors() ? assigned.map(entry => ({ pair: entry.pair, target: entry.target })) : null
+    if (index === domains.length) {
+      return authorizedMajors()
+        ? assigned.map(entry => ({ pair: entry.pair, target: entry.target }))
+        : null
+    }
     const { pair, candidates, maximumMajor, securityRoot } = domains[index]
     for (const target of candidates) {
       const requirements = await dependencies(pair.cargo, target.cargo)
@@ -147,7 +192,13 @@ export async function planTauriTargets(pairs, { policy, alerts = [], upgrades = 
         && entry.requirements.every(dependency => dependency.name !== pair.cargo || matchesCargoRequirement(target.cargo, dependency.requirement)))
       if (!compatible)
         continue
-      assigned.push({ pair, target, requirements, maximumMajor, securityRoot })
+      assigned.push({
+        pair,
+        target,
+        requirements,
+        maximumMajor,
+        securityRoot,
+      })
       const result = await search(index + 1)
       if (result)
         return result

@@ -21,7 +21,14 @@ describe('uniqueMarker', () => {
     expect(markers.size).toBe(100)
   })
 
-  it.each(['NATIVE-GOAL', 'NATIVE_GOAL', 'with space', 'a.b', '$(x)', 'é'])('refuses the prefix %j, which holds a character other than a letter or a digit', (prefix) => {
+  it.each([
+    'NATIVE-GOAL',
+    'NATIVE_GOAL',
+    'with space',
+    'a.b',
+    '$(x)',
+    'é',
+  ])('refuses the prefix %j, which holds a character other than a letter or a digit', (prefix) => {
     expect(() => uniqueMarker(prefix)).toThrow('holds only letters and digits')
   })
 

@@ -32,7 +32,9 @@ export interface TextDisplayLimits {
 }
 
 function positiveInteger(value: number | undefined, fallback: number): number {
-  return value !== undefined && Number.isSafeInteger(value) && value > 0 ? value : fallback
+  return value !== undefined && Number.isSafeInteger(value) && value > 0
+    ? value
+    : fallback
 }
 
 function limitTotalChars(text: string, maxChars: number): SafeTextDisplay {
@@ -54,7 +56,9 @@ export function hasLineLongerThan(text: string, maxLineChars: number): boolean {
   let start = 0
   while (start <= text.length) {
     const newline = text.indexOf('\n', start)
-    const end = newline === -1 ? text.length : newline
+    const end = newline === -1
+      ? text.length
+      : newline
     if (end - start > maxLineChars)
       return true
     if (newline === -1)
@@ -85,7 +89,11 @@ function limitLineCount(text: string, maxLines: number): SafeTextDisplay {
   const headLines = Math.floor(available * 0.75)
   const tailLines = available - headLines
   return {
-    text: [...lines.slice(0, headLines), LINES_OMISSION, ...lines.slice(-tailLines)].join('\n'),
+    text: [
+      ...lines.slice(0, headLines),
+      LINES_OMISSION,
+      ...lines.slice(-tailLines),
+    ].join('\n'),
     limited: true,
   }
 }
@@ -97,7 +105,9 @@ function limitLineChars(text: string, maxLineChars: number): SafeTextDisplay {
   const parts: string[] = []
   while (start <= text.length) {
     const newline = text.indexOf('\n', start)
-    const end = newline === -1 ? text.length : newline
+    const end = newline === -1
+      ? text.length
+      : newline
     const length = end - start
     if (length <= maxLineChars) {
       parts.push(text.slice(start, end))
@@ -115,7 +125,10 @@ function limitLineChars(text: string, maxLineChars: number): SafeTextDisplay {
     parts.push('\n')
     start = newline + 1
   }
-  return { text: parts.join(''), limited: true }
+  return {
+    text: parts.join(''),
+    limited: true,
+  }
 }
 
 function limitSingleLineChars(text: string, maxChars: number): SafeTextDisplay {
@@ -153,21 +166,29 @@ export function limitTextLinesForDisplay<T extends { text: string }>(
       limited = true
       break
     }
-    const separatorChars = lines.length === 0 ? 0 : 1
+    const separatorChars = lines.length === 0
+      ? 0
+      : 1
     const remainingChars = maxChars - usedChars - separatorChars
     if (remainingChars <= 0) {
       limited = true
       break
     }
     const display = limitSingleLineChars(line.text, Math.min(maxLineChars, remainingChars))
-    const displayedLine = display.limited ? { ...line, text: display.text } : line
+    const displayedLine = display.limited
+      ? { ...line, text: display.text }
+      : line
     lines.push(displayedLine)
     text.push(displayedLine.text)
     usedChars += separatorChars + displayedLine.text.length
     limited ||= display.limited
   }
   limited ||= lines.length < sourceLines.length
-  return { lines, text: text.join('\n'), limited }
+  return {
+    lines,
+    text: text.join('\n'),
+    limited,
+  }
 }
 
 /** Limit total characters, rows, and the layout cost of one unbroken line. */

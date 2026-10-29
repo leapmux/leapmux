@@ -10,17 +10,32 @@ describe('ampShellCommand', () => {
 
   it('answers empty for a call that states no command as text', () => {
     expect(ampShellCommand({})).toBe('')
-    expect(ampShellCommand({ command: 3, cmd: ['ls'] })).toBe('')
+    expect(ampShellCommand({
+      command: 3,
+      cmd: ['ls'],
+    })).toBe('')
   })
 })
 
 describe('ampShellOutput', () => {
   it('reads a command that ended', () => {
-    expect(ampShellOutput('{"output":"README.md\\n","exitCode":0}')).toEqual({ output: 'README.md\n', exitCode: 0, running: false, truncated: false, structured: true })
+    expect(ampShellOutput('{"output":"README.md\\n","exitCode":0}')).toEqual({
+      output: 'README.md\n',
+      exitCode: 0,
+      running: false,
+      truncated: false,
+      structured: true,
+    })
   })
 
   it('reads a command that Amp moved to the background', () => {
-    expect(ampShellOutput('{"output":"started","running":true,"pid":4242}')).toEqual({ output: 'started', running: true, pid: 4242, truncated: false, structured: true })
+    expect(ampShellOutput('{"output":"started","running":true,"pid":4242}')).toEqual({
+      output: 'started',
+      running: true,
+      pid: 4242,
+      truncated: false,
+      structured: true,
+    })
   })
 
   it('reads the lines Amp dropped from the start of a long output', () => {
@@ -29,14 +44,31 @@ describe('ampShellOutput', () => {
   })
 
   it('reads text that is not Amp\'s record as the output itself', () => {
-    for (const text of ['plain text', '', '[1,2]', '{"exitCode":0}', '{"output":3}'])
-      expect(ampShellOutput(text), text).toEqual({ output: text, running: false, truncated: false, structured: false })
+    for (const text of [
+      'plain text',
+      '',
+      '[1,2]',
+      '{"exitCode":0}',
+      '{"output":3}',
+    ]) {
+      expect(ampShellOutput(text), text).toEqual({
+        output: text,
+        running: false,
+        truncated: false,
+        structured: false,
+      })
+    }
   })
 
   // A field of the wrong type states nothing: a string "0" is not an exit code, and a
   // string "true" does not make the command run.
   it('ignores a field whose type is wrong', () => {
-    expect(ampShellOutput('{"output":"x","exitCode":"0","running":"true","pid":"42"}')).toEqual({ output: 'x', running: false, truncated: false, structured: true })
+    expect(ampShellOutput('{"output":"x","exitCode":"0","running":"true","pid":"42"}')).toEqual({
+      output: 'x',
+      running: false,
+      truncated: false,
+      structured: true,
+    })
     expect(ampShellOutput('{"output":"x","truncation":{"prefixLinesOmitted":-3}}').truncated).toBe(false)
     expect(ampShellOutput('{"output":"x","truncation":"all"}').truncated).toBe(false)
   })

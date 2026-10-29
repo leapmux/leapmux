@@ -3,7 +3,11 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { runningChildOptions } from './scenarios'
 
 describe('runningChildOptions', () => {
-  const context = { provider: AgentProvider.DROID, prompt: (text: string) => `${text}\nNATIVE_SCENARIO`, textStep: (text: string) => ({ text }) }
+  const context = {
+    provider: AgentProvider.DROID,
+    prompt: (text: string) => `${text}\nNATIVE_SCENARIO`,
+    textStep: (text: string) => ({ text }),
+  }
   it('gives two actual native Tasks distinct call IDs and task prompts', () => {
     const first = runningChildOptions(context)
     const second = runningChildOptions(context, { allowExistingRows: true })

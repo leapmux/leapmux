@@ -62,7 +62,9 @@ vi.mock('@playwright/test', async (importOriginal) => {
       throw new Error(`The fake check failed: ${event}`)
     recorded.events.push(event)
   }
-  const subjectOf = (value: unknown) => typeof value === 'string' ? value : (value as { description: string }).description
+  const subjectOf = (value: unknown) => typeof value === 'string'
+    ? value
+    : (value as { description: string }).description
   return {
     ...actual,
     expect: (value: unknown, message?: string) => ({
@@ -82,7 +84,9 @@ vi.mock('@playwright/test', async (importOriginal) => {
       toContain: (text: string) => {
         if (typeof value !== 'string' || !value.includes(text))
           throw new Error(`The fake ${message ?? 'request context'} does not contain ${JSON.stringify(text)}.`)
-        record(message === undefined ? `contains ${text}` : `${message}: contains ${text}`)
+        record(message === undefined
+          ? `contains ${text}`
+          : `${message}: contains ${text}`)
       },
     }),
   }
@@ -122,9 +126,19 @@ interface FakeContextOptions {
 function requestRows(sent: readonly string[], answers: readonly string[], userRowsAfterPrompt: readonly string[]): unknown[] {
   const rows = sent.flatMap((text, index) => {
     const answer = answers[index]
-    return answer === undefined ? [{ role: 'user', content: text }] : [{ role: 'user', content: text }, { role: 'assistant', content: answer }]
+    return answer === undefined
+      ? [
+          { role: 'user', content: text },
+        ]
+      : [
+          { role: 'user', content: text },
+          { role: 'assistant', content: answer },
+        ]
   })
-  return [...rows, ...userRowsAfterPrompt.map(content => ({ role: 'user', content }))]
+  return [
+    ...rows,
+    ...userRowsAfterPrompt.map(content => ({ role: 'user', content })),
+  ]
 }
 
 function fakeContext({
@@ -151,17 +165,40 @@ function fakeContext({
     requestAt: async (stepIndex: number): Promise<MockModelRequestRecord> => {
       recorded.events.push(`request ${stepIndex}`)
       const answers = queued.slice(0, stepIndex - start).map(step => step.text ?? '')
-      const sent = history ? recorded.sent : recorded.sent.slice(-1)
+      const sent = history
+        ? recorded.sent
+        : recorded.sent.slice(-1)
       const messages = noUserRow
         // The context check reads every string of the body, so the prompt stays in the request, outside each user row.
-        ? [{ role: 'system', content: sent.join('\n') }]
-        : requestRows(sent, history ? answers : [], userRowsAfterPrompt)
-      return { protocol: 'openai-chat-completions', path: '/v1/chat/completions', stepIndex, body: { messages } }
+        ? [
+            {
+              role: 'system',
+              content: sent.join('\n'),
+            },
+          ]
+        : requestRows(sent, history
+            ? answers
+            : [], userRowsAfterPrompt)
+      return {
+        protocol: 'openai-chat-completions',
+        path: '/v1/chat/completions',
+        stepIndex,
+        body: { messages },
+      }
     },
   } as unknown as ModelScript
   const answerTools = answerToolCalls.length === 0
     ? {}
-    : { textStep: (text: string) => ({ text, toolCalls: answerToolCalls.map((name, index) => ({ id: `answer-${index}`, name, arguments: { text } })) }) }
+    : {
+        textStep: (text: string) => ({
+          text,
+          toolCalls: answerToolCalls.map((name, index) => ({
+            id: `answer-${index}`,
+            name,
+            arguments: { text },
+          })),
+        }),
+      }
   const page = {
     locator: (selector: string) => fakes.locator(selector),
     getByText: (text: string) => fakes.locator(`text ${text}`),
@@ -178,8 +215,12 @@ function fakeContext({
     modelScript,
     provider: AgentProvider.OPENCODE,
     ...answerTools,
-    ...(answerToolNames ? { answerToolNames } : {}),
-    ...(readConversationTurns ? { readConversationTurns } : {}),
+    ...(answerToolNames
+      ? { answerToolNames }
+      : {}),
+    ...(readConversationTurns
+      ? { readConversationTurns }
+      : {}),
   }
 }
 
@@ -238,7 +279,9 @@ describe('exerciseBasicChat', () => {
   })
 
   it('fails when the native agent sends a user row after the prompt', async () => {
-    const context = fakeContext({ userRowsAfterPrompt: [DATE_REMINDER] })
+    const context = fakeContext({
+      userRowsAfterPrompt: [DATE_REMINDER],
+    })
     await expect(exerciseBasicChat(context)).rejects.toThrow(`The fake ${LAST_USER_TURN} does not contain "Reply once for BASICCHAT`)
     // The whole request holds the prompt, so only the last-user-turn check fails.
     expect(recorded.events).toContain(USER_TURN_DEFINED)
@@ -258,7 +301,10 @@ describe('exerciseBasicChat', () => {
       { role: 'user', text: recorded.sent.at(-1) ?? '' },
     ])
     // The generic reader would read a user row after the prompt and fail.
-    const { prompt, request } = await exerciseBasicChat(fakeContext({ userRowsAfterPrompt: [DATE_REMINDER], readConversationTurns: reader }))
+    const { prompt, request } = await exerciseBasicChat(fakeContext({
+      userRowsAfterPrompt: [DATE_REMINDER],
+      readConversationTurns: reader,
+    }))
     expect(reader).toHaveBeenCalledWith(request)
     expect(recorded.events).toContain(`${LAST_USER_TURN}: contains ${prompt}`)
   })
@@ -310,11 +356,36 @@ describe('exerciseBasicChat', () => {
   })
 
   it.each([
-    ['one drawn answer tool', ['respond'], [], 'Turn ended1 tool'],
-    ['one drawn answer tool in a priced turn', ['respond'], [], 'Turn ended1 tool \u00B7 $0.0012'],
-    ['two drawn answer tools', ['respond', 'report'], [], 'Turn ended2 tools'],
-    ['an answer tool that the transcript does not draw', ['answer'], ['answer'], 'Turn ended'],
-    ['a drawn tool beside an answer tool that the transcript does not draw', ['respond', 'answer'], ['answer'], 'Turn ended1 tool'],
+    [
+      'one drawn answer tool',
+      ['respond'],
+      [],
+      'Turn ended1 tool',
+    ],
+    [
+      'one drawn answer tool in a priced turn',
+      ['respond'],
+      [],
+      'Turn ended1 tool \u00B7 $0.0012',
+    ],
+    [
+      'two drawn answer tools',
+      ['respond', 'report'],
+      [],
+      'Turn ended2 tools',
+    ],
+    [
+      'an answer tool that the transcript does not draw',
+      ['answer'],
+      ['answer'],
+      'Turn ended',
+    ],
+    [
+      'a drawn tool beside an answer tool that the transcript does not draw',
+      ['respond', 'answer'],
+      ['answer'],
+      'Turn ended1 tool',
+    ],
   ])('requires the tool count of %s', async (_case, answerToolCalls, answerToolNames, text) => {
     recorded.texts = { [LAST_DIVIDER]: text }
     await exerciseBasicChat(fakeContext({ answerToolCalls, answerToolNames }))
@@ -322,9 +393,24 @@ describe('exerciseBasicChat', () => {
   })
 
   it.each([
-    ['no tool count for a drawn answer tool', ['respond'], [], 'Turn ended'],
-    ['a tool count for an answer tool that the transcript does not draw', ['answer'], ['answer'], 'Turn ended1 tool'],
-    ['another tool count', ['respond'], [], 'Turn ended2 tools'],
+    [
+      'no tool count for a drawn answer tool',
+      ['respond'],
+      [],
+      'Turn ended',
+    ],
+    [
+      'a tool count for an answer tool that the transcript does not draw',
+      ['answer'],
+      ['answer'],
+      'Turn ended1 tool',
+    ],
+    [
+      'another tool count',
+      ['respond'],
+      [],
+      'Turn ended2 tools',
+    ],
   ])('rejects %s', async (_case, answerToolCalls, answerToolNames, text) => {
     recorded.texts = { [LAST_DIVIDER]: text }
     await expect(exerciseBasicChat(fakeContext({ answerToolCalls, answerToolNames }))).rejects.toThrow(`The fake text ${JSON.stringify(text)} does not match`)

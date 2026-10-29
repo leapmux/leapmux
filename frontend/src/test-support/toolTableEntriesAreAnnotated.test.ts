@@ -112,12 +112,16 @@ function parse(path: string, text: string): ts.SourceFile {
 }
 
 function asFunction(node: ts.Node): FunctionNode | null {
-  return ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isFunctionDeclaration(node) ? node : null
+  return ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isFunctionDeclaration(node)
+    ? node
+    : null
 }
 
 /** `(expr)` down to `expr`, so a parenthesized object body reads as the literal it is. */
 function unwrapParens(node: ts.Expression): ts.Expression {
-  return ts.isParenthesizedExpression(node) ? unwrapParens(node.expression) : node
+  return ts.isParenthesizedExpression(node)
+    ? unwrapParens(node.expression)
+    : node
 }
 
 /**
@@ -147,7 +151,10 @@ function returnedExpressions(fn: FunctionNode): ts.Expression[] {
 function resultValues(expr: ts.Expression): ts.Expression[] {
   const value = unwrapParens(expr)
   return ts.isConditionalExpression(value)
-    ? [...resultValues(value.whenTrue), ...resultValues(value.whenFalse)]
+    ? [
+        ...resultValues(value.whenTrue),
+        ...resultValues(value.whenFalse),
+      ]
     : [value]
 }
 
@@ -401,7 +408,9 @@ function scanTables(relative: string, text: string): TableScan[] {
       for (const member of table.properties) {
         if (ts.isPropertyAssignment(member)) {
           entries++
-          const key = ts.isStringLiteral(member.name) || ts.isIdentifier(member.name) ? member.name.text : '?'
+          const key = ts.isStringLiteral(member.name) || ts.isIdentifier(member.name)
+            ? member.name.text
+            : '?'
           checkEntry(scan, key, member.initializer, name)
           continue
         }

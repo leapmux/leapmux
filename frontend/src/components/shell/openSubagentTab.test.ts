@@ -205,9 +205,14 @@ describe('openSubagentTab', () => {
       const { deps, agentTabs } = makeDeps({
         focusedTileId: () => 'tile-focused',
         activeKeyForTile: (tileId: string) =>
-          tileId === 'tile-focused' ? tabKey({ type: TabType.AGENT, id: 'root-owner' }) : null,
+          tileId === 'tile-focused'
+            ? tabKey({ type: TabType.AGENT, id: 'root-owner' })
+            : null,
       })
-      agentTabs.set('root-owner', { ...parentAgentTab(), id: 'root-owner' })
+      agentTabs.set('root-owner', {
+        ...parentAgentTab(),
+        id: 'root-owner',
+      })
 
       expect(openSubagentTab(deps, { childAgentId: 'child-1' })).toBe('opened')
 
@@ -252,7 +257,9 @@ describe('openSubagentTab', () => {
         // The focused tile's active selection IS the root owner that spawned
         // the child, so its workerId is the fallback.
         activeKeyForTile: (tileId: string) =>
-          tileId === 'tile-focused' ? tabKey({ type: TabType.AGENT, id: 'root-owner' }) : null,
+          tileId === 'tile-focused'
+            ? tabKey({ type: TabType.AGENT, id: 'root-owner' })
+            : null,
       })
       agentTabs.set('root-owner', activeRoot)
 
@@ -269,10 +276,17 @@ describe('openSubagentTab', () => {
       const { deps, agentTabs } = makeDeps({
         focusedTileId: () => 'tile-focused',
         activeKeyForTile: (tileId: string) =>
-          tileId === 'tile-focused' ? tabKey({ type: TabType.AGENT, id: 'root-owner' }) : null,
+          tileId === 'tile-focused'
+            ? tabKey({ type: TabType.AGENT, id: 'root-owner' })
+            : null,
       })
       agentTabs.set('parent-1', parentAgentTab({ tileId: undefined, workerId: 'worker-1' }))
-      agentTabs.set('root-owner', { type: TabType.AGENT, id: 'root-owner', workspaceId: 'ws-1', workerId: 'w-root' })
+      agentTabs.set('root-owner', {
+        type: TabType.AGENT,
+        id: 'root-owner',
+        workspaceId: 'ws-1',
+        workerId: 'w-root',
+      })
 
       const result = openSubagentTab(deps, { childAgentId: 'child-1', parentAgentId: 'parent-1' })
 
@@ -322,7 +336,11 @@ describe('openSubagentTab', () => {
   describe('5. revived (tombstoned speculative tab)', () => {
     it('returns "revived" and emits emitReviveTab on a placed tile with a parent workerId', () => {
       const { deps, agentTabs } = makeDeps({
-        speculativeTabs: () => ({ 'child-1': { tombstoneAt: { nano: 1n } } }),
+        speculativeTabs: () => ({
+          'child-1': {
+            tombstoneAt: { nano: 1n },
+          },
+        }),
       })
       agentTabs.set('parent-1', parentAgentTab())
 
@@ -345,7 +363,11 @@ describe('openSubagentTab', () => {
     it('refuses revive when the parent has no projected tile and the focused tile is also unprojected', () => {
       const { deps } = makeDeps({
         hasProjectedTile: () => false,
-        speculativeTabs: () => ({ 'child-1': { tombstoneAt: { nano: 1n } } }),
+        speculativeTabs: () => ({
+          'child-1': {
+            tombstoneAt: { nano: 1n },
+          },
+        }),
       })
       const result = openSubagentTab(deps, { childAgentId: 'child-1', parentAgentId: 'parent-1' })
       expect(result).toBe('no-tile')
@@ -367,8 +389,14 @@ describe('openSubagentTab', () => {
       const { deps, agentTabs } = makeDeps({
         focusedTileId: () => 'tile-focused',
         activeKeyForTile: (tileId: string) =>
-          tileId === 'tile-focused' ? tabKey({ type: TabType.AGENT, id: 'root-owner' }) : null,
-        speculativeTabs: () => ({ 'child-1': { tombstoneAt: { nano: 1n } } }),
+          tileId === 'tile-focused'
+            ? tabKey({ type: TabType.AGENT, id: 'root-owner' })
+            : null,
+        speculativeTabs: () => ({
+          'child-1': {
+            tombstoneAt: { nano: 1n },
+          },
+        }),
       })
       agentTabs.set('root-owner', activeRoot)
 

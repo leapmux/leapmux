@@ -5,8 +5,11 @@ import { fastAgentArchiveSource, hasFastAgentArchiveSource } from './archiveSour
 
 export function classifyFastAgentMessage(input: ClassificationInput, context?: ClassificationContext): MessageCategory {
   const source = fastAgentArchiveSource(input)
-  if (!source)
-    return hasFastAgentArchiveSource(input) ? { kind: 'unknown' } : fastAgentACPPlugin.transcript.classify(input, context)
+  if (!source) {
+    return hasFastAgentArchiveSource(input)
+      ? { kind: 'unknown' }
+      : fastAgentACPPlugin.transcript.classify(input, context)
+  }
   switch (source.kind) {
     case 'content': return { kind: 'assistant_text' }
     case 'reasoning': return { kind: 'assistant_thinking' }

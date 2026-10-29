@@ -101,7 +101,9 @@ function buildTimeline(
   workerMarks: PhaseMark[],
   extra: PhaseMark[] = [],
 ): PhaseMark[] {
-  const marks: PhaseMark[] = [{ name: 'ui:click', tMs: tClickMs }]
+  const marks: PhaseMark[] = [
+    { name: 'ui:click', tMs: tClickMs },
+  ]
   const inspectSend = raw.rpcMarks.find(m => m.type === 'rpc-send' && m.method === 'InspectLastTabClose')
   const inspectRecv = raw.rpcMarks.find(m => m.type === 'rpc-recv' && m.method === 'InspectLastTabClose')
   const closeSend = raw.rpcMarks.find(m => m.type === 'rpc-send' && (m.method === 'CloseAgent' || m.method === 'CloseTerminal'))
@@ -154,7 +156,10 @@ async function captureCloseTimeline(
   // An empty list means that the served frontend emits no RPC marks at all: it
   // was built without LEAPMUX_DEV=1.
   await expect.poll(async () => (await snapshotMarks(page)).rpcMarks)
-    .toContainEqual(expect.objectContaining({ type: 'rpc-recv', method: expect.stringMatching(CLOSE_RPC_METHOD) }))
+    .toContainEqual(expect.objectContaining({
+      type: 'rpc-recv',
+      method: expect.stringMatching(CLOSE_RPC_METHOD),
+    }))
   await expect.poll(() => findClosedTabID(srv.logLines, logsBefore) !== null).toBeTruthy()
   const closedTabID = findClosedTabID(srv.logLines, logsBefore)!
 
@@ -182,7 +187,10 @@ function getRepoCtx(dataDir: string, scenarioName: string): RepoCtx {
   if (override) {
     return { repoDir: override, synthetic: false }
   }
-  return { repoDir: createGitRepo(dataDir, scenarioName), synthetic: true }
+  return {
+    repoDir: createGitRepo(dataDir, scenarioName),
+    synthetic: true,
+  }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────
@@ -224,7 +232,10 @@ test.describe('Tab close timing', () => {
 
       await installObservers(page)
 
-      const anchor = await page.evaluate(() => ({ perf: performance.now(), wall: Date.now() }))
+      const anchor = await page.evaluate(() => ({
+        perf: performance.now(),
+        wall: Date.now(),
+      }))
       const logsBefore = srv.logLines.length
       await agentTabs(page).first().locator('[data-testid="tab-close"]').dispatchEvent('click')
 
@@ -266,7 +277,10 @@ test.describe('Tab close timing', () => {
 
       await installObservers(page)
 
-      const anchor = await page.evaluate(() => ({ perf: performance.now(), wall: Date.now() }))
+      const anchor = await page.evaluate(() => ({
+        perf: performance.now(),
+        wall: Date.now(),
+      }))
       const logsBefore = srv.logLines.length
       await agentTabs(page)
         .locator('[data-testid="tab-close"]')
@@ -286,7 +300,9 @@ test.describe('Tab close timing', () => {
         testInfo,
         'scenario 2: worktree close-anyway (KEEP)',
         'close-timing-scenario-2',
-        [{ name: 'ui:dialog-user-click', tMs: tDialogClickMs }],
+        [
+          { name: 'ui:dialog-user-click', tMs: tDialogClickMs },
+        ],
       )
 
       expect(raw.dialogVisibleAt).not.toBeNull()
@@ -317,7 +333,10 @@ test.describe('Tab close timing', () => {
 
       await installObservers(page)
 
-      const anchor = await page.evaluate(() => ({ perf: performance.now(), wall: Date.now() }))
+      const anchor = await page.evaluate(() => ({
+        perf: performance.now(),
+        wall: Date.now(),
+      }))
       const logsBefore = srv.logLines.length
       await agentTabs(page)
         .locator('[data-testid="tab-close"]')
@@ -337,7 +356,9 @@ test.describe('Tab close timing', () => {
         testInfo,
         'scenario 3: worktree delete (REMOVE)',
         'close-timing-scenario-3',
-        [{ name: 'ui:dialog-user-click', tMs: tDialogClickMs }],
+        [
+          { name: 'ui:dialog-user-click', tMs: tDialogClickMs },
+        ],
       )
 
       expect(raw.dialogVisibleAt).not.toBeNull()

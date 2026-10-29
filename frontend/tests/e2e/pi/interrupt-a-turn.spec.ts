@@ -101,7 +101,10 @@ export default function (pi) {
 `)
     await withStopRelayWorker(leapmuxServer, {
       originalMarker: marker,
-      replacement: { prompt: modelScript.prompt(`Run the editor probe in replacement turn ${marker}.`), title },
+      replacement: {
+        prompt: modelScript.prompt(`Run the editor probe in replacement turn ${marker}.`),
+        title,
+      },
       evidencePath,
     }, async (server) => {
       const agentId = await openAgentViaAPI(server, authenticatedEmptyWorkspace.workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
@@ -111,7 +114,11 @@ export default function (pi) {
       await channel.getOrOpenChannel(server.workerId)
       const start = await modelScript.queue(
         { gate, text: 'The original turn must stop.' },
-        { toolCalls: [piEditorProbeToolCall(`replacement-editor-${marker}`)] },
+        {
+          toolCalls: [
+            piEditorProbeToolCall(`replacement-editor-${marker}`),
+          ],
+        },
         { text: `Replacement complete ${marker}.` },
       )
       try {
@@ -186,7 +193,9 @@ piTest('settles a cancelled native retry and completes a later prompt in the sam
       await expectSettingsChip(page, 'Protocol test')
       const completion = `After cancelled retry ${marker}.`
       const start = await modelScript.queue(
-        { error: { status: 400, code: 'invalid_request_error', message: `500 native retry ${marker}` } },
+        {
+          error: { status: 400, code: 'invalid_request_error', message: `500 native retry ${marker}` },
+        },
         { text: completion },
       )
       try {

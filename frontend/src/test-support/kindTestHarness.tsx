@@ -115,8 +115,11 @@ function longVariant<K extends ToolKind>(result: ToolResultByKind[K]): ToolResul
     }
     if (value && typeof value === 'object') {
       const out: Record<string, unknown> = {}
-      for (const [key, entry] of Object.entries(value))
-        out[key] = key === 'text' || key === 'output' || key === 'result' || key === 'summary' || key === 'content' || key === 'fallbackContent' || key === 'body' ? (entry || long) : walk(entry)
+      for (const [key, entry] of Object.entries(value)) {
+        out[key] = key === 'text' || key === 'output' || key === 'result' || key === 'summary' || key === 'content' || key === 'fallbackContent' || key === 'body'
+          ? (entry || long)
+          : walk(entry)
+      }
       return out
     }
     return value

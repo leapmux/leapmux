@@ -8,7 +8,9 @@ import { readOpenCodeShellOutcome } from './nativeShellOutcome'
 opencodeTest('tool call renders with span', async ({ native }) => {
   // Script the native ls call so the case requires actual tool execution.
   await runNativeToolTurn(native, {
-    toolCalls: [bashToolCall(native.provider, 'ls-call', 'ls')],
+    toolCalls: [
+      bashToolCall(native.provider, 'ls-call', 'ls'),
+    ],
     prompt: 'Use your shell tool to run `ls` in the current directory and report the output.',
     answer: 'The directory listing is above.',
   })
@@ -21,7 +23,10 @@ opencodeTest('keeps actual native shell output and a failed command result', asy
   // OpenCode 1.18.34 ends the output reader's scope when the shell exits (ShellTool.run).
   // Hold the shell until the browser shows its output, so the reader keeps the bytes before its scope ends.
   await exerciseShellToolExecution(
-    { ...native, readToolResult: (request, callId) => readOpenCodeShellOutcome(native, request, callId) },
+    {
+      ...native,
+      readToolResult: (request, callId) => readOpenCodeShellOutcome(native, request, callId),
+    },
     { outputGate: true },
   )
 })

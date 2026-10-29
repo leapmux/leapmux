@@ -12,7 +12,14 @@ describe('TodoItem', () => {
     it('preserves blocked tasks as unfinished work', () => {
       expect(normalizeTodoStatus('blocked')).toBe('blocked')
       expect(isFinishedTodoStatus('blocked')).toBe(false)
-      expect(todoProgress([{ rowKey: 'blocked', content: 'Request access', status: 'blocked', activeForm: 'Requesting access' }])).toEqual({ done: 0, total: 1 })
+      expect(todoProgress([
+        {
+          rowKey: 'blocked',
+          content: 'Request access',
+          status: 'blocked',
+          activeForm: 'Requesting access',
+        },
+      ])).toEqual({ done: 0, total: 1 })
     })
 
     it('accepts the snake_case wire form (claude/acp)', () => {
@@ -103,12 +110,31 @@ describe('TodoItem', () => {
     })
 
     it('maps the proto enum to the canonical string union', () => {
-      const t = create(TodoItemSchema, { id: 't1', content: 'c', status: TodoStatus.IN_PROGRESS, activeForm: 'doing c', description: 'why c' })
-      expect(protoTodoToItem(t, 0)).toEqual({ id: 't1', rowKey: 't1', content: 'c', status: 'in_progress', activeForm: 'doing c', description: 'why c' })
+      const t = create(TodoItemSchema, {
+        id: 't1',
+        content: 'c',
+        status: TodoStatus.IN_PROGRESS,
+        activeForm: 'doing c',
+        description: 'why c',
+      })
+      expect(protoTodoToItem(t, 0)).toEqual({
+        id: 't1',
+        rowKey: 't1',
+        content: 'c',
+        status: 'in_progress',
+        activeForm: 'doing c',
+        description: 'why c',
+      })
     })
 
     it('coerces empty id/description to undefined', () => {
-      const t = create(TodoItemSchema, { id: '', content: 'c', status: TodoStatus.COMPLETED, activeForm: '', description: '' })
+      const t = create(TodoItemSchema, {
+        id: '',
+        content: 'c',
+        status: TodoStatus.COMPLETED,
+        activeForm: '',
+        description: '',
+      })
       const out = protoTodoToItem(t, 3)
       expect(out.id).toBeUndefined()
       // No id, so the key is the row's position paired with its content.
@@ -125,9 +151,25 @@ describe('TodoItem', () => {
 
   describe('rawTodosToItems', () => {
     it('skips malformed entries while retaining each valid entry position', () => {
-      expect(rawTodosToItems([null, 0, [], { content: 'Keep', status: 'pending' }, {}])).toEqual([
-        { rowKey: '3:Keep', content: 'Keep', status: 'pending', activeForm: '' },
-        { rowKey: '4:', content: '', status: 'pending', activeForm: '' },
+      expect(rawTodosToItems([
+        null,
+        0,
+        [],
+        { content: 'Keep', status: 'pending' },
+        {},
+      ])).toEqual([
+        {
+          rowKey: '3:Keep',
+          content: 'Keep',
+          status: 'pending',
+          activeForm: '',
+        },
+        {
+          rowKey: '4:',
+          content: '',
+          status: 'pending',
+          activeForm: '',
+        },
       ])
     })
 
@@ -137,12 +179,27 @@ describe('TodoItem', () => {
     // then drew verbatim. Only a shape that stringifies into a description of
     // itself becomes the empty string.
     it.each([
-      ['an object', { a: 1 }],
-      ['an array', ['a', 'b']],
+      [
+        'an object',
+        { a: 1 },
+      ],
+      [
+        'an array',
+        ['a', 'b'],
+      ],
       ['null', null],
     ])('reads %s text field as no text at all', (_name, value) => {
-      const items = rawTodosToItems([{ content: value, activeForm: value }])
-      expect(items).toEqual([{ rowKey: '0:', content: '', status: 'pending', activeForm: '' }])
+      const items = rawTodosToItems([
+        { content: value, activeForm: value },
+      ])
+      expect(items).toEqual([
+        {
+          rowKey: '0:',
+          content: '',
+          status: 'pending',
+          activeForm: '',
+        },
+      ])
     })
 
     // A PRIMITIVE keeps its text. A provider that states a numeric step means that
@@ -153,13 +210,27 @@ describe('TodoItem', () => {
       ['a numeric zero', 0, '0'],
       ['a boolean', true, 'true'],
     ])('keeps %s text field as its own text', (_name, value, expected) => {
-      expect(rawTodosToItems([{ content: value, activeForm: value }])).toEqual([
-        { rowKey: `0:${expected}`, content: expected, status: 'pending', activeForm: expected },
+      expect(rawTodosToItems([
+        { content: value, activeForm: value },
+      ])).toEqual([
+        {
+          rowKey: `0:${expected}`,
+          content: expected,
+          status: 'pending',
+          activeForm: expected,
+        },
       ])
     })
 
     it('separates two malformed rows by their position', () => {
-      expect(rawTodosToItems([{ content: { a: 1 } }, { content: { b: 2 } }]).map(t => t.rowKey))
+      expect(rawTodosToItems([
+        {
+          content: { a: 1 },
+        },
+        {
+          content: { b: 2 },
+        },
+      ]).map(t => t.rowKey))
         .toEqual(['0:', '1:'])
     })
 
@@ -169,23 +240,57 @@ describe('TodoItem', () => {
     })
 
     it('coerces fields and normalizes status', () => {
-      expect(rawTodosToItems([{ content: 'a', status: 'inProgress', activeForm: 'doing a' }])).toEqual([
-        { rowKey: '0:a', content: 'a', status: 'in_progress', activeForm: 'doing a' },
+      expect(rawTodosToItems([
+        { content: 'a', status: 'inProgress', activeForm: 'doing a' },
+      ])).toEqual([
+        {
+          rowKey: '0:a',
+          content: 'a',
+          status: 'in_progress',
+          activeForm: 'doing a',
+        },
       ])
     })
 
     it('tolerates missing fields with empty-string defaults', () => {
-      expect(rawTodosToItems([{}])).toEqual([{ rowKey: '0:', content: '', status: 'pending', activeForm: '' }])
+      expect(rawTodosToItems([{}])).toEqual([
+        {
+          rowKey: '0:',
+          content: '',
+          status: 'pending',
+          activeForm: '',
+        },
+      ])
     })
   })
 
   describe('todoProgress', () => {
     it('counts completed vs total excluding deleted', () => {
       const todos = [
-        { rowKey: '0:a', content: 'a', status: 'completed' as const, activeForm: '' },
-        { rowKey: 'b', content: 'b', status: 'in_progress' as const, activeForm: 'doing b' },
-        { rowKey: 'c', content: 'c', status: 'pending' as const, activeForm: '' },
-        { rowKey: 'd', content: 'd', status: 'deleted' as const, activeForm: '' },
+        {
+          rowKey: '0:a',
+          content: 'a',
+          status: 'completed' as const,
+          activeForm: '',
+        },
+        {
+          rowKey: 'b',
+          content: 'b',
+          status: 'in_progress' as const,
+          activeForm: 'doing b',
+        },
+        {
+          rowKey: 'c',
+          content: 'c',
+          status: 'pending' as const,
+          activeForm: '',
+        },
+        {
+          rowKey: 'd',
+          content: 'd',
+          status: 'deleted' as const,
+          activeForm: '',
+        },
       ]
       expect(todoProgress(todos)).toEqual({ done: 1, total: 3 })
     })
@@ -196,8 +301,18 @@ describe('TodoItem', () => {
 
     it('counts all-non-deleted as done when all completed', () => {
       const todos = [
-        { rowKey: '0:a', content: 'a', status: 'completed' as const, activeForm: '' },
-        { rowKey: 'b', content: 'b', status: 'completed' as const, activeForm: '' },
+        {
+          rowKey: '0:a',
+          content: 'a',
+          status: 'completed' as const,
+          activeForm: '',
+        },
+        {
+          rowKey: 'b',
+          content: 'b',
+          status: 'completed' as const,
+          activeForm: '',
+        },
       ]
       expect(todoProgress(todos)).toEqual({ done: 2, total: 2 })
     })
@@ -206,12 +321,35 @@ describe('TodoItem', () => {
 
 describe('sortTodos', () => {
   const todo = (content: string, status: TodoItem['status']): TodoItem =>
-    ({ rowKey: content, content, status, activeForm: '' })
+    ({
+      rowKey: content,
+      content,
+      status,
+      activeForm: '',
+    })
 
   it('keeps blocked work before pending and completed work without changing the input', () => {
-    const input = [todo('completed', 'completed'), todo('pending', 'pending'), todo('blocked', 'blocked'), todo('active', 'in_progress'), todo('deleted', 'deleted')]
-    expect(sortTodos(input).map(item => item.content)).toEqual(['active', 'blocked', 'pending', 'completed', 'deleted'])
-    expect(input.map(item => item.content)).toEqual(['completed', 'pending', 'blocked', 'active', 'deleted'])
+    const input = [
+      todo('completed', 'completed'),
+      todo('pending', 'pending'),
+      todo('blocked', 'blocked'),
+      todo('active', 'in_progress'),
+      todo('deleted', 'deleted'),
+    ]
+    expect(sortTodos(input).map(item => item.content)).toEqual([
+      'active',
+      'blocked',
+      'pending',
+      'completed',
+      'deleted',
+    ])
+    expect(input.map(item => item.content)).toEqual([
+      'completed',
+      'pending',
+      'blocked',
+      'active',
+      'deleted',
+    ])
   })
 
   it('puts in-progress first, then what is left, then what is done', () => {
@@ -247,7 +385,10 @@ describe('sortTodos', () => {
   })
 
   it('returns a new array and leaves the input alone', () => {
-    const input = [todo('c', 'completed'), todo('w', 'in_progress')]
+    const input = [
+      todo('c', 'completed'),
+      todo('w', 'in_progress'),
+    ]
     const sorted = sortTodos(input)
     expect(sorted).not.toBe(input)
     expect(input.map(t => t.content)).toEqual(['c', 'w'])

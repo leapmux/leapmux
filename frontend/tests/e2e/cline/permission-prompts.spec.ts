@@ -18,7 +18,12 @@ import { nativeContext } from './scenarios'
  */
 clineTest.describe('Cline control requests', () => {
   clineTest('runs a command after the reader allows it', async ({ askingClineWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingClineWorkspace.workspaceId,
+    })
     await expectSettingsChip(page, 'Act')
     await exerciseNativePermissionDecision(context, {
       toolCall: bashToolCall(context.provider, 'allow-call', 'echo "cline-$((40 + 2))"'),
@@ -39,7 +44,12 @@ clineTest.describe('Cline control requests', () => {
 
   // Cline hands the reason to the model as the call's error, and the refused call reads declined.
   clineTest('refuses a command with the reader\'s reason, which reaches the model', async ({ askingClineWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingClineWorkspace.workspaceId,
+    })
     const marker = join(askingClineWorkspace.workingDir, 'refused.txt')
     await exerciseNativePermissionReason(context, {
       toolCall: bashToolCall(context.provider, 'deny-call', `printf refused > ${marker}`),
@@ -59,7 +69,11 @@ clineTest.describe('Cline control requests', () => {
     writeFileSync(notes, 'cline-safe-read\n')
     // The turn waits for its steps with no click, so a banner would hold the turn and fail the step wait.
     const start = await modelScript.queue(
-      { toolCalls: [readToolCall(AgentProvider.CLINE, 'safe-read', notes)] },
+      {
+        toolCalls: [
+          readToolCall(AgentProvider.CLINE, 'safe-read', notes),
+        ],
+      },
       { text: 'I read the notes.' },
     )
     await sendMessage(page, modelScript.prompt('Read the notes.'))
@@ -71,7 +85,12 @@ clineTest.describe('Cline control requests', () => {
   })
 
   clineTest('warns that an approved subagent asks nothing, and a refusal reaches the model', async ({ askingClineWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingClineWorkspace.workspaceId,
+    })
     await exerciseNativePermissionDecision(context, {
       toolCall: spawnSubagentToolCall(context.provider, 'spawn-refused', {
         description: 'Refused helper',

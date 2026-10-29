@@ -21,12 +21,14 @@ function makeEditToolUse(input: Record<string, unknown>) {
   return {
     type: 'assistant',
     message: {
-      content: [{
-        type: 'tool_use',
-        id: 'toolu_edit_1',
-        name: 'Edit',
-        input,
-      }],
+      content: [
+        {
+          type: 'tool_use',
+          id: 'toolu_edit_1',
+          name: 'Edit',
+          input,
+        },
+      ],
     },
   }
 }

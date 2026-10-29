@@ -19,7 +19,9 @@ const CODEX_GENERATED_IMAGE_MIME = 'image/png'
  * because a reader gets more from it than from a blank path.
  */
 export function codexItemPath(path: string): string | undefined {
-  return path.startsWith('file:') ? fileUriToPath(path) : path
+  return path.startsWith('file:')
+    ? fileUriToPath(path)
+    : path
 }
 
 /** Codex supplies a file path for image views. The shared resolver supplies the pixels. */
@@ -27,7 +29,9 @@ export function codexViewedImage(item: Record<string, unknown> | null | undefine
   if (item?.type !== CODEX_ITEM.ImageView)
     return null
   const filePath = codexItemPath(pickString(item, 'path'))
-  return filePath ? { filePath } : null
+  return filePath
+    ? { filePath }
+    : null
 }
 
 /** The generated image an `imageGeneration` item carries, if it produced one. */

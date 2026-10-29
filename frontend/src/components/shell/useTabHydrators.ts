@@ -31,7 +31,10 @@ const EMPTY_PENDING_AXES: ReadonlySet<string> = new Set()
  * panel then disappeared until a page reload.
  */
 function hydratableTabsOf(view: TabView) {
-  return [...view.all(), ...view.detachedTerminalTabs()]
+  return [
+    ...view.all(),
+    ...view.detachedTerminalTabs(),
+  ]
 }
 
 /**
@@ -57,8 +60,14 @@ interface LiveWritesLanded {
  * `TabMetadataStore.liveCatalogEpoch`.
  */
 function watchLiveWrites(metadata: TabMetadataStore, tabIds: readonly string[]): LiveWritesLanded {
-  const statusBefore = new Map(tabIds.map(tabId => [tabId, metadata.liveStatusEpoch(tabId)]))
-  const catalogBefore = new Map(tabIds.map(tabId => [tabId, metadata.liveCatalogEpoch(tabId)]))
+  const statusBefore = new Map(tabIds.map(tabId => [
+    tabId,
+    metadata.liveStatusEpoch(tabId),
+  ]))
+  const catalogBefore = new Map(tabIds.map(tabId => [
+    tabId,
+    metadata.liveCatalogEpoch(tabId),
+  ]))
   return {
     status: tabId => metadata.liveStatusEpoch(tabId) !== statusBefore.get(tabId),
     catalog: tabId => metadata.liveCatalogEpoch(tabId) !== catalogBefore.get(tabId),
@@ -255,7 +264,12 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
         ids.add(tab.id)
       }
       return { ids, candidates }
-    }, { ids: new Set(), candidates: [] }, { equals: (a, b) => sameKeys(a.ids, b.ids) })
+    }, {
+      ids: new Set(),
+      candidates: [],
+    }, {
+      equals: (a, b) => sameKeys(a.ids, b.ids),
+    })
 
     function schedulePerTabRetry(tab: Tab): void {
       const tabId = tab.id
@@ -409,7 +423,9 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
         }
         // Forget workers that no longer have candidates, so the next tab opened
         // on one counts as a change rather than matching a stale entry.
-        for (const wid of [...lastGroupIds.keys()]) {
+        for (const wid of [
+          ...lastGroupIds.keys(),
+        ]) {
           if (!byWorker.has(wid))
             lastGroupIds.delete(wid)
         }
@@ -512,7 +528,10 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
           .map(t => t.id)
         if (ids.length === 0)
           return
-        setReaskAgentTabIds(prev => new Set([...prev, ...ids]))
+        setReaskAgentTabIds(prev => new Set([
+          ...prev,
+          ...ids,
+        ]))
       })
     })
   }
@@ -587,7 +606,9 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
       && (!isHydrated(tab.id) || reaskAgentTabIds().has(tab.id)),
     fetchBatch: async (workerId, tabs) => {
       const landed = watchLiveWrites(opts.metadata, tabs.map(t => t.id))
-      const resp = await listAgents(workerId, { tabIds: tabs.map(t => t.id) })
+      const resp = await listAgents(workerId, {
+        tabIds: tabs.map(t => t.id),
+      })
       const byId = new Map(resp.agents.map(a => [a.id, a]))
       const resolved = new Set<string>()
       // The ask happened, so drop the re-ask marks whatever the reply says. A
@@ -620,14 +641,18 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
         // takes no explicit undefined.
         const migrateFrom = migrateErrorHintFromForResolvedRepo(workerId, tab, agent.gitStatus)
         const fields = protoToAgentTabFields(opts.repoGitStore, workerId, agent, {
-          ...(migrateFrom === undefined ? {} : { migrateErrorHintFrom: migrateFrom }),
+          ...(migrateFrom === undefined
+            ? {}
+            : { migrateErrorHintFrom: migrateFrom }),
         })
         // The reply holds the lifecycle and the catalog as the worker read them
         // before the reply left. A status event or a catalog event that landed since
         // is newer, and nothing sends it again, so the reply keeps what the live
         // stream wrote and gives only the rest. The two kinds count apart: a STARTING
         // event carries no catalog, so the reply catalog still applies after it.
-        const lifecycleKept = landed.status(tab.id) ? withoutLiveStatusFields(fields) : fields
+        const lifecycleKept = landed.status(tab.id)
+          ? withoutLiveStatusFields(fields)
+          : fields
         opts.metadata.patch(tab.id, landed.catalog(tab.id)
           ? withoutLiveCatalogFields(lifecycleKept)
           : {
@@ -694,7 +719,9 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
       && (!isHydrated(tab.id) || tab.status === TerminalStatus.DISCONNECTED),
     fetchBatch: async (workerId, tabs) => {
       const landed = watchLiveWrites(opts.metadata, tabs.map(t => t.id))
-      const resp = await listTerminals(workerId, { tabIds: tabs.map(t => t.id) })
+      const resp = await listTerminals(workerId, {
+        tabIds: tabs.map(t => t.id),
+      })
       const byId = new Map(resp.terminals.map(t => [t.terminalId, t]))
       const resolved = new Set<string>()
       for (const tab of tabs) {
@@ -706,11 +733,15 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
           // the rest. A reply that says the shell exited still applies in full:
           // see `keepLiveTerminalStatus`.
           const fields = terminalMetadata(workerId, term)
-          opts.metadata.patch(tab.id, landed.status(tab.id) ? keepLiveTerminalStatus(fields) : fields)
+          opts.metadata.patch(tab.id, landed.status(tab.id)
+            ? keepLiveTerminalStatus(fields)
+            : fields)
           // Hoisted so the spread narrows: the option takes no explicit undefined.
           const migrateFrom = migrateErrorHintFromForResolvedRepo(workerId, tab, term.gitStatus)
           upsertRepoGitFromProtoStatus(opts.repoGitStore, workerId, term.gitStatus, {
-            ...(migrateFrom === undefined ? {} : { migrateErrorHintFrom: migrateFrom }),
+            ...(migrateFrom === undefined
+              ? {}
+              : { migrateErrorHintFrom: migrateFrom }),
           })
           resolved.add(tab.id)
         }

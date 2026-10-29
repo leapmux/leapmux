@@ -24,7 +24,9 @@ export const QODER_E2E_SKIP_REASON: string | null = missingBinaryReason('qodercl
  *
  * The control-request spec opens its own workspace in Default.
  */
-const ACCEPT_EDITS = { optionValues: { permissionMode: QODER_MODE.AcceptEdits } }
+const ACCEPT_EDITS = {
+  optionValues: { permissionMode: QODER_MODE.AcceptEdits },
+}
 
 /** Keep the native endpoint trace when a Qoder browser test fails. */
 async function attachQoderNativeLog(agentEnv: Record<string, string>, testInfo: TestInfo): Promise<void> {
@@ -43,7 +45,9 @@ async function attachQoderNativeLog(agentEnv: Record<string, string>, testInfo: 
     await testInfo.attach('qoder-native-log', { path, contentType: 'text/plain' })
 }
 
-const QODER_DIAGNOSTICS = { onFailure: (testInfo: TestInfo, server: { agentEnv: Record<string, string> }) => attachQoderNativeLog(server.agentEnv, testInfo) }
+const QODER_DIAGNOSTICS = {
+  onFailure: (testInfo: TestInfo, server: { agentEnv: Record<string, string> }) => attachQoderNativeLog(server.agentEnv, testInfo),
+}
 
 export const qoderTest = createProviderTest({
   agent: QODER_AGENT,
@@ -60,5 +64,9 @@ export const qoderTest = createProviderTest({
    */
   askingQoderWorkspace: AgentWorkspace
 }>({
-  askingQoderWorkspace: authenticatedAgentWorkspace({ ...QODER_AGENT, prefix: 'qoder-e2e-ask', ...QODER_DIAGNOSTICS }),
+  askingQoderWorkspace: authenticatedAgentWorkspace({
+    ...QODER_AGENT,
+    prefix: 'qoder-e2e-ask',
+    ...QODER_DIAGNOSTICS,
+  }),
 })

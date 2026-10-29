@@ -11,7 +11,12 @@ function setup() {
     isAnimating: () => animating,
     writeScrollTop: (top: number, source?: string) => {
       el.scrollTop = top
-      writes.push({ top, ...(source !== undefined ? { source } : {}) })
+      writes.push({
+        top,
+        ...(source !== undefined
+          ? { source }
+          : {}),
+      })
     },
     refreshViewport: vi.fn(),
   } as unknown as ScrollContext

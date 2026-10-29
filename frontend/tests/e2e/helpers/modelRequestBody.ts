@@ -36,7 +36,9 @@ export function requestRows(protocol: MockModelProtocol, body: unknown): unknown
 
 /** The content of one conversation row, unchanged: `parts` for Google, and `content` for each other protocol. */
 export function rowContent(protocol: GenericModelProtocol, row: Record<string, unknown>): unknown {
-  return protocol === 'google-generative-language' ? row.parts : row.content
+  return protocol === 'google-generative-language'
+    ? row.parts
+    : row.content
 }
 
 /**
@@ -75,11 +77,17 @@ export function requestSystemFields(protocol: MockModelProtocol, body: unknown):
     return []
   switch (protocol) {
     case 'openai-responses':
-      return body.instructions === undefined ? [] : [body.instructions]
+      return body.instructions === undefined
+        ? []
+        : [body.instructions]
     case 'anthropic-messages':
-      return body.system === undefined ? [] : [body.system]
+      return body.system === undefined
+        ? []
+        : [body.system]
     case 'google-generative-language':
-      return isObject(body.systemInstruction) && body.systemInstruction.parts !== undefined ? [body.systemInstruction.parts] : []
+      return isObject(body.systemInstruction) && body.systemInstruction.parts !== undefined
+        ? [body.systemInstruction.parts]
+        : []
     case 'openai-chat-completions':
     case 'aws-event-stream':
       return []

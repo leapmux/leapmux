@@ -63,15 +63,22 @@ export interface FixedWait {
 
 /** Return the node that spells the method name when `node` refers to the fixed-wait method as a member, or undefined. */
 function fixedWaitName(node: TypeScript.Node): TypeScript.Node | undefined {
-  if (isPropertyAccessExpression(node))
-    return node.name.text === FIXED_WAIT_METHOD ? node.name : undefined
+  if (isPropertyAccessExpression(node)) {
+    return node.name.text === FIXED_WAIT_METHOD
+      ? node.name
+      : undefined
+  }
   if (isElementAccessExpression(node)) {
     const key = node.argumentExpression
-    return isStringLiteralLike(key) && key.text === FIXED_WAIT_METHOD ? key : undefined
+    return isStringLiteralLike(key) && key.text === FIXED_WAIT_METHOD
+      ? key
+      : undefined
   }
   if (isBindingElement(node) && isObjectBindingPattern(node.parent)) {
     const property = node.propertyName ?? node.name
-    return (isIdentifier(property) || isStringLiteralLike(property)) && property.text === FIXED_WAIT_METHOD ? property : undefined
+    return (isIdentifier(property) || isStringLiteralLike(property)) && property.text === FIXED_WAIT_METHOD
+      ? property
+      : undefined
   }
   return undefined
 }
@@ -128,7 +135,9 @@ function fixedSleepName(node: TypeScript.Node): TypeScript.Node | undefined {
   if (isIdentifier(node.expression) && node.expression.text === SLEEP_FUNCTION)
     return node.expression
   const callback = node.arguments[0]
-  return isSetTimeoutCall(node) && callback !== undefined && resolvesPromise(callback) ? node.expression : undefined
+  return isSetTimeoutCall(node) && callback !== undefined && resolvesPromise(callback)
+    ? node.expression
+    : undefined
 }
 
 /**
@@ -147,8 +156,13 @@ function findInSources(inputs: readonly WaitSourceFile[], spelling: (node: TypeS
     const file = createSourceFile(input.path, input.source, ScriptTarget.Latest, /* setParentNodes */ true)
     const visit = (node: TypeScript.Node): void => {
       const name = spelling(node)
-      if (name)
-        findings.push({ path: input.path, line: lineOf(file, name), enclosingFunction: enclosingFunctionName(node) })
+      if (name) {
+        findings.push({
+          path: input.path,
+          line: lineOf(file, name),
+          enclosingFunction: enclosingFunctionName(node),
+        })
+      }
       forEachChild(node, visit)
     }
     visit(file)

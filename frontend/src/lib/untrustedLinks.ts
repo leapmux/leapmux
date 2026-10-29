@@ -129,7 +129,14 @@ export type UntrustedLinkConfirm = (request: UntrustedLinkConfirmRequest) => Pro
  */
 export function linkLabelFromText(text: string): UntrustedLinkLabel {
   const label = text.replace(/\s+/g, ' ').trim()
-  return { label, logicalLine: label, labelStart: 0, labelEnd: label.length, rowStart: 0, rowEnd: label.length }
+  return {
+    label,
+    logicalLine: label,
+    labelStart: 0,
+    labelEnd: label.length,
+    rowStart: 0,
+    rowEnd: label.length,
+  }
 }
 
 /**
@@ -150,7 +157,10 @@ export function linkLabelFromText(text: string): UntrustedLinkLabel {
  * link does not open. That is the case the prompt exists for.
  */
 function linkSpellings(uri: string): string[] {
-  const spellings = new Set([uri, uri.replace(/\/$/, '')])
+  const spellings = new Set([
+    uri,
+    uri.replace(/\/$/, ''),
+  ])
   for (const spelling of [...spellings]) {
     const bare = spelling.replace(/^https?:\/\//, '')
     if (bare)
@@ -230,10 +240,17 @@ export function classifyUntrustedLink(uri: string, placement: UntrustedLinkLabel
   // cannot be checked. An unchecked label is exactly what the prompt exists to
   // disclose, so it counts as a mismatch rather than as a pass.
   const labelMismatch = placement === null || !labelSpellsUri(placement, uri)
-  const misleadingLabel = labelMismatch && placement ? misleadingLabelAt(placement, uri) : null
+  const misleadingLabel = labelMismatch && placement
+    ? misleadingLabelAt(placement, uri)
+    : null
   if (!insecure && !labelMismatch)
     return { kind: 'open' }
-  return { kind: 'confirm', insecure, labelMismatch, misleadingLabel }
+  return {
+    kind: 'confirm',
+    insecure,
+    labelMismatch,
+    misleadingLabel,
+  }
 }
 
 /**

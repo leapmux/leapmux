@@ -69,7 +69,14 @@ describe('parseThemeValue', () => {
     // The distinction a TIER depends on. A device tier that turned an absent
     // field into a full default would read as an override pinning the theme,
     // and the account value could never win again.
-    for (const raw of [undefined, null, 'dark', 42, true, ['nord']])
+    for (const raw of [
+      undefined,
+      null,
+      'dark',
+      42,
+      true,
+      ['nord'],
+    ])
       expect(parseThemeValue(raw), JSON.stringify(raw)).toBeUndefined()
   })
 
@@ -98,7 +105,14 @@ describe('parseTerminalThemeValue', () => {
 
   it('reports a non-document as no stored value at all', () => {
     // The same TIER distinction parseThemeValue draws, and for the same reason.
-    for (const raw of [undefined, null, 'match-ui', 42, true, ['nord']])
+    for (const raw of [
+      undefined,
+      null,
+      'match-ui',
+      42,
+      true,
+      ['nord'],
+    ])
       expect(parseTerminalThemeValue(raw), JSON.stringify(raw)).toBeUndefined()
   })
 
@@ -115,7 +129,14 @@ describe('parseTerminalThemeValue', () => {
   it('degrades an unresolvable palette to following the app', () => {
     // "Follow the app" leaves the terminal agreeing with what the user can
     // see; pinning it to Default would be a palette they never chose.
-    for (const name of ['from-the-future', 'Nord', 'nord ', 'rose_pine', '', 7]) {
+    for (const name of [
+      'from-the-future',
+      'Nord',
+      'nord ',
+      'rose_pine',
+      '',
+      7,
+    ]) {
       expect(parseTerminalThemeValue({ name, mode: 'dark' }), String(name))
         .toEqual(DEFAULT_TERMINAL_THEME_VALUE)
     }
@@ -133,7 +154,14 @@ describe('isThemeMode', () => {
   it('accepts the three modes and nothing else', () => {
     for (const mode of ['system', 'light', 'dark'])
       expect(isThemeMode(mode)).toBe(true)
-    for (const mode of ['', 'System', 'sepia', null, undefined, 0])
+    for (const mode of [
+      '',
+      'System',
+      'sepia',
+      null,
+      undefined,
+      0,
+    ])
       expect(isThemeMode(mode)).toBe(false)
   })
 })
@@ -346,7 +374,9 @@ describe('themeStore seeding', () => {
     // A stored theme that the OLD module would have picked up. It is scoped to
     // the suite's account, so it is genuinely readable -- the point is that the
     // store does not look.
-    localStorageSet(KEY_BROWSER_PREFS, { theme: { name: 'nord', mode: 'dark' } })
+    localStorageSet(KEY_BROWSER_PREFS, {
+      theme: { name: 'nord', mode: 'dark' },
+    })
     const getItem = vi.spyOn(Storage.prototype, 'getItem')
 
     vi.resetModules()

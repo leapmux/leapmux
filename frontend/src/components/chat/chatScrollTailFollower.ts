@@ -73,7 +73,9 @@ export function createChatTailFollower(deps: ChatTailFollowerDeps) {
           )
         }
         else {
-          deps.setAnchor(deps.getEl() ? deps.anchorAtCurrentTop() : null)
+          deps.setAnchor(deps.getEl()
+            ? deps.anchorAtCurrentTop()
+            : null)
         }
         deps.checkAtBottom()
       })

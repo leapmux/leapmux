@@ -19,7 +19,9 @@ vi.mock('~/components/chat/providers/registry', async (importOriginal) => {
   return {
     ...actual,
     resolvedSpanRole: (parsed: ParsedMessageContent, provider: AgentProvider) =>
-      parsed.parentObject?.noSpanSideForTest === true ? 'none' : actual.resolvedSpanRole(parsed, provider),
+      parsed.parentObject?.noSpanSideForTest === true
+        ? 'none'
+        : actual.resolvedSpanRole(parsed, provider),
   }
 })
 
@@ -30,11 +32,17 @@ const waitForRenderPrune = () => new Promise<void>(resolve => setTimeout(resolve
 
 function toolMessage(id: string, seq: bigint, side: 'request' | 'result', extra: MessageInitShape<typeof AgentChatMessageSchema> = {}): AgentChatMessage {
   const content = {
-    sessionUpdate: side === 'request' ? 'tool_call' : 'tool_call_update',
+    sessionUpdate: side === 'request'
+      ? 'tool_call'
+      : 'tool_call_update',
     toolCallId: 'span',
-    status: side === 'request' ? 'pending' : 'completed',
+    status: side === 'request'
+      ? 'pending'
+      : 'completed',
     kind: 'read',
-    rawInput: side === 'request' ? { filePath: '/project/file.ts' } : undefined,
+    rawInput: side === 'request'
+      ? { filePath: '/project/file.ts' }
+      : undefined,
   }
   return create(AgentChatMessageSchema, {
     id,
@@ -49,7 +57,10 @@ function toolMessage(id: string, seq: bigint, side: 'request' | 'result', extra:
 }
 
 function noSideMessage(id: string, seq: bigint, extra: MessageInitShape<typeof AgentChatMessageSchema> = {}): AgentChatMessage {
-  return toolMessage(id, seq, 'request', { content: new TextEncoder().encode(JSON.stringify({ noSpanSideForTest: true })), ...extra })
+  return toolMessage(id, seq, 'request', {
+    content: new TextEncoder().encode(JSON.stringify({ noSpanSideForTest: true })),
+    ...extra,
+  })
 }
 
 function fixture(initial: AgentChatMessage[] = [], spanMessage?: MessageContextSources['spanMessage']) {
@@ -67,7 +78,9 @@ function fixture(initial: AgentChatMessage[] = [], spanMessage?: MessageContextS
       messages,
       messageVersion: version,
       contentVersion: () => 0,
-      spanMessage: spanMessage ?? ((spanId, side) => side === 'request' ? index.getRequestMessage('agent', spanId) : index.getResultMessage('agent', spanId)),
+      spanMessage: spanMessage ?? ((spanId, side) => side === 'request'
+        ? index.getRequestMessage('agent', spanId)
+        : index.getResultMessage('agent', spanId)),
       messageBySeq: seq => messages().find(message => message.seq === seq),
       fetchSpan,
       fetchMessage,
@@ -106,7 +119,9 @@ describe('message context resolver', () => {
 
   it('rejects a fetched tool from another provider session', async () => {
     const { resolver, fetchSpan } = fixture()
-    fetchSpan.mockResolvedValue([toolMessage('foreign', 1n, 'request', { agentSessionId: 'foreign-session' })])
+    fetchSpan.mockResolvedValue([
+      toolMessage('foreign', 1n, 'request', { agentSessionId: 'foreign-session' }),
+    ])
     await expect(resolver.loadSpan({ spanId: 'span', agentSessionId: 'expected-session' })).rejects.toThrow('different span')
     expect(resolver.request({ spanId: 'span', agentSessionId: 'expected-session' })).toBeUndefined()
     expect(resolver.request({ spanId: 'span', agentSessionId: 'foreign-session' })).toBeUndefined()
@@ -114,12 +129,19 @@ describe('message context resolver', () => {
 
   it('keeps concurrent recovery separate for repeated tool IDs across sessions', async () => {
     const { resolver, fetchSpan } = fixture()
-    fetchSpan.mockImplementation(async identity => [toolMessage(`${identity.agentSessionId}-request`, identity.agentSessionId === 'first' ? 1n : 2n, 'request', identity)])
+    fetchSpan.mockImplementation(async identity => [
+      toolMessage(`${identity.agentSessionId}-request`, identity.agentSessionId === 'first'
+        ? 1n
+        : 2n, 'request', identity),
+    ])
     const first = { spanId: 'span', agentSessionId: 'first' }
     const second = { spanId: 'span', agentSessionId: 'second' }
     const releaseFirst = resolver.retainSpan(first)
     const releaseSecond = resolver.retainSpan(second)
-    await Promise.all([resolver.loadSpan(first), resolver.loadSpan(second)])
+    await Promise.all([
+      resolver.loadSpan(first),
+      resolver.loadSpan(second),
+    ])
     expect(fetchSpan).toHaveBeenCalledTimes(2)
     expect(resolver.request(first)?.message.id).toBe('first-request')
     expect(resolver.request(second)?.message.id).toBe('second-request')
@@ -138,7 +160,11 @@ describe('message context resolver', () => {
     createRoot((dispose) => {
       cleanups.push(dispose)
       createEffect(() => {
-        calls.push(method === 'span' ? f.resolver.loadSpan({ spanId: 'span', agentSessionId: '' }) : method === 'related' ? f.resolver.loadRelated(result) : f.resolver.message(2n))
+        calls.push(method === 'span'
+          ? f.resolver.loadSpan({ spanId: 'span', agentSessionId: '' })
+          : method === 'related'
+            ? f.resolver.loadRelated(result)
+            : f.resolver.message(2n))
       })
     })
     await Promise.all(calls)
@@ -180,7 +206,9 @@ describe('message context resolver', () => {
   // for its life, so nothing else ends one. See `MessageContextSources.scopeKey`.
   it('drops its cache and refuses every lease after disposal', async () => {
     const { resolver, fetchSpan, dispose } = fixture()
-    fetchSpan.mockResolvedValue([toolMessage('request', 8n, 'request')])
+    fetchSpan.mockResolvedValue([
+      toolMessage('request', 8n, 'request'),
+    ])
     const releaseSpan = resolver.retainSpan({ spanId: 'span', agentSessionId: '' })
     const releaseRenderSpan = resolver.retainRenderSpan({ spanId: 'render-span', agentSessionId: '' })
     const releaseMessage = resolver.retainMessage(8n)
@@ -254,12 +282,14 @@ describe('message context resolver', () => {
       ...request,
       supplementalRevision: 2n,
       supplementalContentCompression: ContentCompression.NONE,
-      supplementalContent: new TextEncoder().encode(JSON.stringify({ provider: {
-        sessionUpdate: 'tool_call',
-        toolCallId: 'span',
-        status: 'pending',
-        rawInput: { filePath: '/project/recovered.ts' },
-      } })),
+      supplementalContent: new TextEncoder().encode(JSON.stringify({
+        provider: {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'span',
+          status: 'pending',
+          rawInput: { filePath: '/project/recovered.ts' },
+        },
+      })),
     }))
     finish([request, result])
     await loading
@@ -269,17 +299,25 @@ describe('message context resolver', () => {
   })
 
   it('does not cache a transient lookup failure as a missing request', async () => {
-    const { resolver, fetchSpan } = fixture([toolMessage('result', 2n, 'result')])
+    const { resolver, fetchSpan } = fixture([
+      toolMessage('result', 2n, 'result'),
+    ])
     fetchSpan.mockRejectedValueOnce(new Error('Connection lost'))
     await expect(resolver.loadSpan({ spanId: 'span', agentSessionId: '' })).rejects.toThrow('Connection lost')
-    fetchSpan.mockResolvedValueOnce([toolMessage('request', 1n, 'request')])
+    fetchSpan.mockResolvedValueOnce([
+      toolMessage('request', 1n, 'request'),
+    ])
     await resolver.loadSpan({ spanId: 'span', agentSessionId: '' })
     expect(resolver.request({ spanId: 'span', agentSessionId: '' })?.message.id).toBe('request')
   })
 
   it('rejects an unrelated span without adding its data', async () => {
-    const { resolver, fetchSpan } = fixture([toolMessage('result', 2n, 'result')])
-    fetchSpan.mockResolvedValueOnce([toolMessage('foreign', 1n, 'request', { spanId: 'other-span' })])
+    const { resolver, fetchSpan } = fixture([
+      toolMessage('result', 2n, 'result'),
+    ])
+    fetchSpan.mockResolvedValueOnce([
+      toolMessage('foreign', 1n, 'request', { spanId: 'other-span' }),
+    ])
     await expect(resolver.loadSpan({ spanId: 'span', agentSessionId: '' })).rejects.toThrow('different span')
     expect(resolver.request({ spanId: 'span', agentSessionId: '' })).toBeUndefined()
   })
@@ -288,7 +326,10 @@ describe('message context resolver', () => {
     const { resolver, fetchMessage } = fixture()
     const original = toolMessage('result', 8n, 'result')
     fetchMessage.mockResolvedValueOnce(original)
-    const [image, preview] = await Promise.all([resolver.message(8n), resolver.message(8n)])
+    const [image, preview] = await Promise.all([
+      resolver.message(8n),
+      resolver.message(8n),
+    ])
     expect(fetchMessage).toHaveBeenCalledTimes(1)
     expect(image?.message.id).toBe('result')
     expect(preview?.message.id).toBe('result')
@@ -324,7 +365,9 @@ describe('message context resolver', () => {
     fetchMessage.mockImplementationOnce(() => new Promise(resolve => finish = () => resolve(older)))
     fetchSpan.mockImplementationOnce(() => new Promise(resolve => finish = () => resolve([older])))
     const release = resolver.retainMessage(8n)
-    const pending = method === 'message' ? resolver.message(8n) : resolver.loadSpan({ spanId: 'span', agentSessionId: '' })
+    const pending = method === 'message'
+      ? resolver.message(8n)
+      : resolver.loadSpan({ spanId: 'span', agentSessionId: '' })
     emit(replacement)
     finish()
     const resolved = await pending
@@ -358,8 +401,12 @@ describe('message context resolver', () => {
   })
 
   it('releases fetched data when its window and leases no longer use the span', async () => {
-    const { resolver, fetchSpan, replaceMessages } = fixture([toolMessage('result', 2n, 'result')])
-    fetchSpan.mockResolvedValueOnce([toolMessage('request', 1n, 'request')])
+    const { resolver, fetchSpan, replaceMessages } = fixture([
+      toolMessage('result', 2n, 'result'),
+    ])
+    fetchSpan.mockResolvedValueOnce([
+      toolMessage('request', 1n, 'request'),
+    ])
     const release = resolver.retainSpan({ spanId: 'span', agentSessionId: '' })
     await resolver.loadSpan({ spanId: 'span', agentSessionId: '' })
     replaceMessages([])
@@ -370,8 +417,12 @@ describe('message context resolver', () => {
 
   it('keeps fetched data through a same-turn span lease transfer', async () => {
     const identity = { spanId: 'span', agentSessionId: '' }
-    const { resolver, fetchSpan, replaceMessages } = fixture([toolMessage('result', 2n, 'result')])
-    fetchSpan.mockResolvedValueOnce([toolMessage('request', 1n, 'request')])
+    const { resolver, fetchSpan, replaceMessages } = fixture([
+      toolMessage('result', 2n, 'result'),
+    ])
+    fetchSpan.mockResolvedValueOnce([
+      toolMessage('request', 1n, 'request'),
+    ])
     const releaseFirst = resolver.retainRenderSpan(identity)
     await resolver.loadSpan(identity)
     replaceMessages([])
@@ -394,7 +445,9 @@ describe('message context resolver', () => {
   it('walks the window for a membership change, and not for an in-place body replacement', () => {
     const store = createChatStore()
     const agentId = 'agent'
-    store.setMessages(agentId, [toolMessage('request', 1n, 'request')])
+    store.setMessages(agentId, [
+      toolMessage('request', 1n, 'request'),
+    ])
     let walks = 0
     createRoot((dispose) => {
       cleanups.push(dispose)
@@ -457,7 +510,9 @@ describe('explicit no-side message context', () => {
 
   it.each(['request', 'result'] as const)('refuses a stale %s slot that contains a no-side record', (side) => {
     const progress = noSideMessage('window', 2n)
-    const { resolver } = fixture([progress], (_identity, requestedSide) => requestedSide === side ? progress : undefined)
+    const { resolver } = fixture([progress], (_identity, requestedSide) => requestedSide === side
+      ? progress
+      : undefined)
     expect(resolver.role(progress)).toBe('none')
     expect(resolver.request(identity)).toBeUndefined()
     expect(resolver.result(identity)).toBeUndefined()
@@ -480,7 +535,9 @@ describe('explicit no-side message context', () => {
   it('keeps a genuine fetched result when a newer resident slot contains no-side progress', async () => {
     const result = toolMessage('result', 2n, 'result')
     const progress = noSideMessage('window', 3n)
-    const { resolver, fetchSpan } = fixture([progress], (_identity, side) => side === 'result' ? progress : undefined)
+    const { resolver, fetchSpan } = fixture([progress], (_identity, side) => side === 'result'
+      ? progress
+      : undefined)
     fetchSpan.mockResolvedValueOnce([result])
     const release = resolver.retainSpan(identity)
     await resolver.loadSpan(identity)
@@ -495,7 +552,9 @@ describe('explicit no-side message context', () => {
     const second = noSideMessage('second-window', 2n)
     const request = toolMessage('request', 3n, 'request')
     const result = toolMessage('result', 4n, 'result')
-    const { resolver, fetchSpan } = fixture([first, second], (_identity, side) => side === 'request' ? first : second)
+    const { resolver, fetchSpan } = fixture([first, second], (_identity, side) => side === 'request'
+      ? first
+      : second)
     fetchSpan.mockResolvedValueOnce([request, result])
     const release = resolver.retainSpan(identity)
     await resolver.loadSpan(identity)

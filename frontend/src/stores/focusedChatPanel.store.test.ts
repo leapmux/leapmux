@@ -77,7 +77,10 @@ describe('focusedChatPanel store', () => {
     it('replaces the handle when one panel registers again', () => {
       const { panel } = mountPanel()
       const replacement = vi.fn()
-      registerChatPanel(panel, { send: replacement, hasPendingInput: () => true })
+      registerChatPanel(panel, {
+        send: replacement,
+        hasPendingInput: () => true,
+      })
 
       expect(getActiveChatPanel()?.send).toBe(replacement)
       expect(getActiveChatPanel()?.hasPendingInput()).toBe(true)
@@ -96,7 +99,9 @@ describe('focusedChatPanel store', () => {
     // second after every keystroke -- exactly when the send chord is pressed.
     it('re-reads hasPendingInput on every call, so a freshly typed character counts', () => {
       let typed = false
-      mountPanel({ hasPendingInput: () => typed })
+      mountPanel({
+        hasPendingInput: () => typed,
+      })
 
       expect(getActiveChatPanel()?.hasPendingInput()).toBe(false)
       typed = true

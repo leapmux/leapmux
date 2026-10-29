@@ -158,8 +158,12 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
   /** Keep unchanged FULL receipts and open new receipts before transport. */
   function requestReplays(workerId: string, s: WorkerStream, plan: WatchPlan, requestId: bigint): WatchPlan {
     const modes = new Map(plan.agents.map(entry => [entry.agentId, entry.mode]))
-    retireReplays(workerId, s, [...s.replayRequests.keys()].filter(agentId => !modes.has(agentId)), 'removed')
-    retireReplays(workerId, s, [...s.replayRequests.keys()].filter(agentId => modes.get(agentId) !== WatchMode.FULL), 'demoted')
+    retireReplays(workerId, s, [
+      ...s.replayRequests.keys(),
+    ].filter(agentId => !modes.has(agentId)), 'removed')
+    retireReplays(workerId, s, [
+      ...s.replayRequests.keys(),
+    ].filter(agentId => modes.get(agentId) !== WatchMode.FULL), 'demoted')
     const previousFull = new Set(s.transmittedPlan?.agents.filter(entry => entry.mode === WatchMode.FULL).map(entry => entry.agentId))
     const requested: WatchAgentEntry[] = []
     const identities = new Map<string, string>()
@@ -197,7 +201,9 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
 
   /** Clear stream authority and retire its exact replay receipts. */
   function resetForReconnect(workerId: string, s: WorkerStream): void {
-    retireReplays(workerId, s, [...s.replayRequests.keys()], 'closed')
+    retireReplays(workerId, s, [
+      ...s.replayRequests.keys(),
+    ], 'closed')
     s.handle = null
     s.inflightPlan = null
     s.inflightUpdateId = 0n
@@ -281,7 +287,9 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
   }
 
   function handleUpdateAck(workerId: string, resp: WatchEventsResponse): boolean | null {
-    const ack = resp.event.case === 'updateAck' ? resp.event.value : undefined
+    const ack = resp.event.case === 'updateAck'
+      ? resp.event.value
+      : undefined
     if (!ack)
       return null
     const s = streams.get(workerId)
@@ -299,8 +307,12 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     // LOOKUP_FAILED preserves prior worker registrations. Durable refusals remove the refused entries.
     const durable = new Set(ack.rejectedAgents.filter(entry => entry.reason !== WatchRejectionReason.LOOKUP_FAILED).map(entry => entry.entityId))
     const unregistered = new Set(unaccepted.map(([agentId]) => agentId))
-    if (s.transmittedPlan && (durable.size > 0 || unregistered.size > 0))
-      s.transmittedPlan = { ...s.transmittedPlan, agents: s.transmittedPlan.agents.filter(entry => !durable.has(entry.agentId) && !unregistered.has(entry.agentId)) }
+    if (s.transmittedPlan && (durable.size > 0 || unregistered.size > 0)) {
+      s.transmittedPlan = {
+        ...s.transmittedPlan,
+        agents: s.transmittedPlan.agents.filter(entry => !durable.has(entry.agentId) && !unregistered.has(entry.agentId)),
+      }
+    }
     const needsRetry = anyRetryable(ack.rejectedAgents, ack.rejectedTerminals)
 
     if (inflight && !needsRetry) {
@@ -414,8 +426,11 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
 
       // Clear the shared toast state only after every remaining worker reconnects.
       // A sibling that still lacks a handle belongs to the same outage.
-      if (![...streams.values()].some(other => !other.closed && other.handle === null))
+      if (![
+        ...streams.values(),
+      ].some(other => !other.closed && other.handle === null)) {
         outageAnnounced = false
+      }
       opts.onWorkerOnline(workerId, true)
     }
     catch (err) {
@@ -547,7 +562,9 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
       return
     s.closed = true
     s.pendingPlan = null
-    retireReplays(workerId, s, [...s.replayRequests.keys()], reason)
+    retireReplays(workerId, s, [
+      ...s.replayRequests.keys(),
+    ], reason)
     // Reset this worker only. A sibling worker must retain its reconnect timer.
     reconnectBackoff.reset(workerId)
     rejectionBackoff.reset(workerId)
@@ -575,13 +592,17 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
 
   onCleanup(() => {
     reconnectBackoff.cancelAll()
-    for (const workerId of [...streams.keys()])
+    for (const workerId of [
+      ...streams.keys(),
+    ])
       cancelWorker(workerId)
   })
 
   // A page refresh can omit Solid cleanup. Cancel open streams on unload also.
   const onBeforeUnload = () => {
-    for (const workerId of [...streams.keys()])
+    for (const workerId of [
+      ...streams.keys(),
+    ])
       cancelWorker(workerId)
   }
   window.addEventListener('beforeunload', onBeforeUnload)

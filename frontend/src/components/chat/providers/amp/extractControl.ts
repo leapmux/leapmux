@@ -23,15 +23,23 @@ export function ampExtractControl(input: ControlExtractionInput): ExtractedContr
   const toolName = pickString(payload, AMP_PERMISSION_REQUEST_FIELD.ToolName)
   const toolInput = pickObject(payload, AMP_PERMISSION_REQUEST_FIELD.Input) ?? {}
   const shell = ampToolKind(toolName) === 'execute'
-  const command = shell ? ampShellCommand(toolInput) || undefined : undefined
-  const workingDirectory = shell ? pickString(toolInput, 'workdir', undefined) : undefined
+  const command = shell
+    ? ampShellCommand(toolInput) || undefined
+    : undefined
+  const workingDirectory = shell
+    ? pickString(toolInput, 'workdir', undefined)
+    : undefined
   return {
     kind: 'permission',
     permission: {
       title: toolName || 'Tool',
       input: toolInput,
-      ...(command !== undefined ? { command } : {}),
-      ...(workingDirectory !== undefined ? { workingDirectory } : {}),
+      ...(command !== undefined
+        ? { command }
+        : {}),
+      ...(workingDirectory !== undefined
+        ? { workingDirectory }
+        : {}),
       options: [],
     },
   }

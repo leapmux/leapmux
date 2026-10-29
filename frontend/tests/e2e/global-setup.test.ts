@@ -59,7 +59,9 @@ describe('end-to-end global setup', () => {
     expect(state.tmpDir).toBe(directory)
     // The run's own copy, which the launcher writes. The build output at the
     // repository root changes when another task pipeline rebuilds it.
-    expect(state.binaryPath).toBe(join(directory, process.platform === 'win32' ? 'leapmux.exe' : 'leapmux'))
+    expect(state.binaryPath).toBe(join(directory, process.platform === 'win32'
+      ? 'leapmux.exe'
+      : 'leapmux'))
     expect(state).toMatchObject({
       hubUrl: 'http://localhost:1234',
       workerId: 'worker',
@@ -72,9 +74,17 @@ describe('end-to-end global setup', () => {
     expect(suiteServer.stop).toHaveBeenCalledOnce()
   })
 
-  it.each(['missing path', 'missing nonce', 'missing file', 'wrong nonce'])('rejects %s without publishing state', async (failure) => {
-    if (failure !== 'missing file')
-      writeFileSync(join(directory, 'nonce'), failure === 'wrong nonce' ? 'other-run' : 'expected-nonce')
+  it.each([
+    'missing path',
+    'missing nonce',
+    'missing file',
+    'wrong nonce',
+  ])('rejects %s without publishing state', async (failure) => {
+    if (failure !== 'missing file') {
+      writeFileSync(join(directory, 'nonce'), failure === 'wrong nonce'
+        ? 'other-run'
+        : 'expected-nonce')
+    }
     if (failure === 'missing path')
       vi.stubEnv('LEAPMUX_E2E_NONCE_PATH', undefined)
     if (failure === 'missing nonce')
@@ -91,7 +101,9 @@ describe('end-to-end global setup', () => {
     ['a run root that does not hold the private directory', 'SIBLING'],
   ])('rejects %s without publishing state', async (_label, value) => {
     writeFileSync(join(directory, 'nonce'), 'expected-nonce\n')
-    vi.stubEnv(RUN_ROOT_ENV, value === 'SIBLING' ? join(runRoot, '2') : value)
+    vi.stubEnv(RUN_ROOT_ENV, value === 'SIBLING'
+      ? join(runRoot, '2')
+      : value)
     await expect(globalSetup()).rejects.toThrow('Run end-to-end tests with')
     expect(process.env.E2E_STATE_PATH).toBeUndefined()
     expect(existsSync(join(directory, 'e2e-state.json'))).toBe(false)

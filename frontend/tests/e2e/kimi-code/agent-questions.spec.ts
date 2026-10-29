@@ -6,14 +6,16 @@ import { kimiTest } from '../kimi-fixtures'
 kimiTest.describe('answers Kimi Code questions', () => {
   kimiTest('a selected answer reaches the model as the tool result', async ({ native }) => {
     const { result } = await exerciseQuestionAnswer(native, {
-      questions: [{
-        question: 'Which color do you prefer?',
-        header: 'Color',
-        options: [
-          { label: 'Red', description: 'A warm color.' },
-          { label: 'Blue', description: 'A cool color.' },
-        ],
-      }],
+      questions: [
+        {
+          question: 'Which color do you prefer?',
+          header: 'Color',
+          options: [
+            { label: 'Red', description: 'A warm color.' },
+            { label: 'Blue', description: 'A cool color.' },
+          ],
+        },
+      ],
       callId: 'color-question',
       prompt: 'Ask me which color I prefer.',
       answer: 'Recorded the color.',
@@ -22,7 +24,9 @@ kimiTest.describe('answers Kimi Code questions', () => {
         await chooseQuestionOption('Blue', native)(banner)
       },
     })
-    expect(JSON.parse(result)).toEqual({ answers: { 'Which color do you prefer?': 'Blue' } })
+    expect(JSON.parse(result)).toEqual({
+      answers: { 'Which color do you prefer?': 'Blue' },
+    })
   })
 })
 

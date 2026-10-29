@@ -105,7 +105,9 @@ export const TileActionsMenu: Component<TileActionsMenuProps> = (props) => {
             >
               <DropdownMenuItemContent
                 label={pop().label}
-                {...(hint !== undefined ? { detail: hint } : {})}
+                {...(hint !== undefined
+                  ? { detail: hint }
+                  : {})}
               />
             </button>
           )
@@ -124,7 +126,9 @@ export const TileActionsMenu: Component<TileActionsMenuProps> = (props) => {
                 <Show when={props.withIcons}><Icon icon={action.icon} size="sm" /></Show>
                 <DropdownMenuItemContent
                   label={action.label}
-                  {...(hint !== undefined ? { detail: hint } : {})}
+                  {...(hint !== undefined
+                    ? { detail: hint }
+                    : {})}
                 />
               </button>
             )

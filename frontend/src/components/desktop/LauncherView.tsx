@@ -192,7 +192,15 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
   onCleanup(() => stopFDAPoll())
 
   return (
-    <div ref={containerRef} class={styles.container} style={{ opacity: visible() ? 1 : 0 }}>
+    <div
+      ref={containerRef}
+      class={styles.container}
+      style={{
+        opacity: visible()
+          ? 1
+          : 0,
+      }}
+    >
       <div class={styles.header}>
         <h1 class={styles.title}>LeapMux</h1>
         <p class={styles.subtitle}>Choose how you'd like to connect</p>
@@ -200,7 +208,9 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
 
       <div class={styles.modeCards}>
         <button
-          class={`${styles.modeCard} ${mode() === 'solo' ? styles.modeCardSelected : ''}`}
+          class={`${styles.modeCard} ${mode() === 'solo'
+            ? styles.modeCardSelected
+            : ''}`}
           onClick={() => selectMode('solo')}
         >
           <div class={styles.modeHeader}>
@@ -215,7 +225,9 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
         </button>
 
         <button
-          class={`${styles.modeCard} ${mode() === 'distributed' ? styles.modeCardSelected : ''}`}
+          class={`${styles.modeCard} ${mode() === 'distributed'
+            ? styles.modeCardSelected
+            : ''}`}
           onClick={() => selectMode('distributed')}
         >
           <div class={styles.modeHeader}>
@@ -231,7 +243,10 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
       </div>
 
       {/* Collapsible hub URL input — animated height via grid 0fr → 1fr */}
-      <div class={`${styles.collapsible} ${mode() === 'distributed' ? styles.collapsibleVisible : ''}`}>
+      <div class={`${styles.collapsible} ${mode() === 'distributed'
+        ? styles.collapsibleVisible
+        : ''}`}
+      >
         <div class={styles.collapsibleInner}>
           <label class={styles.label} for="hubUrl">Hub URL</label>
           <input
@@ -253,7 +268,10 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
       </div>
 
       {/* Collapsible Full Disk Access notice */}
-      <div class={`${styles.collapsible} ${mode() === 'solo' && !fdaGranted() ? styles.collapsibleVisible : ''}`}>
+      <div class={`${styles.collapsible} ${mode() === 'solo' && !fdaGranted()
+        ? styles.collapsibleVisible
+        : ''}`}
+      >
         <div class={styles.collapsibleInner}>
           <div class={styles.fdaCard}>
             <div class={styles.fdaHeader}>
@@ -287,7 +305,12 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
           Connect
         </button>
         {/* Collapsible error message */}
-        <div class={`${styles.collapsible} ${error() ? styles.collapsibleVisible : ''}`} style={{ 'margin-top': 0 }}>
+        <div
+          class={`${styles.collapsible} ${error()
+            ? styles.collapsibleVisible
+            : ''}`}
+          style={{ 'margin-top': 0 }}
+        >
           <div class={styles.collapsibleInner}>
             <div class={styles.errorText}>{error()}</div>
           </div>

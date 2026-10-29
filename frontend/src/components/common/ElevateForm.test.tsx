@@ -49,7 +49,9 @@ describe('ElevateForm', () => {
 
   it('proves a password and reports it', async () => {
     const onElevated = renderForm()
-    fireEvent.input(screen.getByTestId('elevate-password'), { target: { value: 'secret' } })
+    fireEvent.input(screen.getByTestId('elevate-password'), {
+      target: { value: 'secret' },
+    })
     fireEvent.click(screen.getByTestId('elevate-password-submit'))
 
     await vi.waitFor(() => expect(mockElevateWithPassword).toHaveBeenCalledWith('secret'))
@@ -59,7 +61,9 @@ describe('ElevateForm', () => {
   it('reports the hub refusal verbatim', async () => {
     mockElevateWithPassword.mockRejectedValue(new Error('current password is incorrect'))
     const onElevated = renderForm()
-    fireEvent.input(screen.getByTestId('elevate-password'), { target: { value: 'wrong' } })
+    fireEvent.input(screen.getByTestId('elevate-password'), {
+      target: { value: 'wrong' },
+    })
     fireEvent.click(screen.getByTestId('elevate-password-submit'))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('current password is incorrect')
@@ -157,7 +161,9 @@ describe('ElevateForm oauth round-trip warning', () => {
     ...passwordUser,
     passwordSet: false,
     passkeyCount: 0,
-    oauthProviders: [{ id: 'github-1', name: 'GitHub', enabled: true }],
+    oauthProviders: [
+      { id: 'github-1', name: 'GitHub', enabled: true },
+    ],
     mayElevateThroughAProvider: true,
   }
 

@@ -39,17 +39,33 @@ export function zcodeResultDisplay(row: ZCodeRow): ZCodeResultDisplay | null {
         kind: 'mcp',
         truncated,
         source: {
-          server: computer ? 'Computer use' : pickString(display, 'serverName'),
-          tool: targetApp ? `${tool} (${targetApp})` : tool,
+          server: computer
+            ? 'Computer use'
+            : pickString(display, 'serverName'),
+          tool: targetApp
+            ? `${tool} (${targetApp})`
+            : tool,
           argsJson: prettifyArgsJson(pickString(display, 'input') || args),
           content: zcodeMcpContent(row) ?? [
-            ...(text ? [{ type: 'text' as const, text }] : []),
+            ...(text
+              ? [
+                  { type: 'text' as const, text },
+                ]
+              : []),
             ...zcodeDisplayImages(display).map(source => ({ type: 'image' as const, source })),
           ],
-          ...(structuredJson !== undefined ? { structuredJson } : {}),
-          ...(joinedError ? { error: joinedError } : {}),
-          ...(failed ? { failed: true } : {}),
-          ...(update.durationMs != null ? { durationMs: update.durationMs } : {}),
+          ...(structuredJson !== undefined
+            ? { structuredJson }
+            : {}),
+          ...(joinedError
+            ? { error: joinedError }
+            : {}),
+          ...(failed
+            ? { failed: true }
+            : {}),
+          ...(update.durationMs != null
+            ? { durationMs: update.durationMs }
+            : {}),
         },
       }
     }
@@ -58,9 +74,17 @@ export function zcodeResultDisplay(row: ZCodeRow): ZCodeResultDisplay | null {
       const taskStatus = pickString(display, 'taskStatus')
       return {
         kind: 'status',
-        title: formatTaskStatus(taskStatus || undefined) || (retrieval === 'timeout' ? 'Timed out' : retrieval === 'not_ready' ? 'Not ready' : 'Task output'),
+        title: formatTaskStatus(taskStatus || undefined) || (retrieval === 'timeout'
+          ? 'Timed out'
+          : retrieval === 'not_ready'
+            ? 'Not ready'
+            : 'Task output'),
         output: pickString(display, 'output') || content,
-        status: taskStatus === 'failed' || update.isError ? 'failed' : taskStatus === 'completed' ? 'success' : 'waiting',
+        status: taskStatus === 'failed' || update.isError
+          ? 'failed'
+          : taskStatus === 'completed'
+            ? 'success'
+            : 'waiting',
         truncated,
       }
     }
@@ -70,7 +94,9 @@ export function zcodeResultDisplay(row: ZCodeRow): ZCodeResultDisplay | null {
         kind: 'status',
         title: `Stopped task ${pickString(display, 'taskId')}`.trim(),
         output: pickString(display, 'message') || content,
-        ...(command !== undefined ? { command } : {}),
+        ...(command !== undefined
+          ? { command }
+          : {}),
         status: update.isError ? 'failed' : 'stopped',
         truncated,
       }

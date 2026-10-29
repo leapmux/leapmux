@@ -4,15 +4,49 @@ import { reasonixNativeOutput } from './nativeToolOutput'
 function fixture() {
   const path = '/native/session.outputs/native-call.txt'
   const text = `[bash output kept out of context: 6001 lines, 632 KB]\nFull output: ${path}\nRead a window of it with read_file (offset/limit), or search it with grep. It is not in this conversation.\n\nOpening lines:\nnative head\n`
-  const original = { sessionUpdate: 'tool_call_update', toolCallId: 'native-call', status: 'completed', content: [{ type: 'content', content: { type: 'text', text } }] }
-  const provider = { sessionUpdate: original.sessionUpdate, toolCallId: original.toolCallId, status: original.status, rawOutput: { reasonix: { role: 'tool', tool_call_id: 'native-call', name: 'bash', content: text } } }
-  return { original, provider, supplemental: { provider }, text, path }
+  const original = {
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'native-call',
+    status: 'completed',
+    content: [
+      {
+        type: 'content',
+        content: { type: 'text', text },
+      },
+    ],
+  }
+  const provider = {
+    sessionUpdate: original.sessionUpdate,
+    toolCallId: original.toolCallId,
+    status: original.status,
+    rawOutput: {
+      reasonix: {
+        role: 'tool',
+        tool_call_id: 'native-call',
+        name: 'bash',
+        content: text,
+      },
+    },
+  }
+  return {
+    original,
+    provider,
+    supplemental: { provider },
+    text,
+    path,
+  }
 }
 
 describe('reasonixNativeOutput', () => {
   it('keeps the actual native preview and exposes the matching output file', () => {
     const { original, supplemental, text, path } = fixture()
-    expect(reasonixNativeOutput(original, supplemental, 'native-call')).toEqual({ callId: 'native-call', excerpt: text, text, previewText: text, path })
+    expect(reasonixNativeOutput(original, supplemental, 'native-call')).toEqual({
+      callId: 'native-call',
+      excerpt: text,
+      text,
+      previewText: text,
+      path,
+    })
   })
 
   it.each(['exit status 7', 'command exited: exit status 7'])('keeps the failed native %s preview beside the actual saved receipt', (headline) => {
@@ -22,7 +56,13 @@ describe('reasonixNativeOutput', () => {
     original.content[0]!.content.text = headline
     const stored = text.replace('native head', `error: ${headline}\nnative head`)
     provider.rawOutput.reasonix.content = stored
-    expect(reasonixNativeOutput(original, supplemental, 'native-call')).toEqual({ callId: 'native-call', excerpt: headline, text: stored, previewText: headline, path })
+    expect(reasonixNativeOutput(original, supplemental, 'native-call')).toEqual({
+      callId: 'native-call',
+      excerpt: headline,
+      text: stored,
+      previewText: headline,
+      path,
+    })
     original.content[0]!.content.text = 'unrelated failure'
     expect(() => reasonixNativeOutput(original, supplemental, 'native-call')).toThrow('does not match its stored receipt')
   })

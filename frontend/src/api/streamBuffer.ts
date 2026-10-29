@@ -44,7 +44,9 @@ export function bufferStreamHandle<TMessage, TEvent>(
       event = decode(msg)
     }
     catch (err) {
-      const e = err instanceof Error ? err : new Error(String(err))
+      const e = err instanceof Error
+        ? err
+        : new Error(String(err))
       if (errorCb)
         errorCb(e)
       else

@@ -19,7 +19,9 @@ function resizeAndAppend(options: {
 }) {
   return createRoot(async (dispose) => {
     let now = 1000
-    const clock = options.gesture === 'coast' || options.growAfterClamp ? vi.spyOn(performance, 'now').mockImplementation(() => now) : undefined
+    const clock = options.gesture === 'coast' || options.growAfterClamp
+      ? vi.spyOn(performance, 'now').mockImplementation(() => now)
+      : undefined
     try {
       const div = makeFakeScrollDiv()
       div.setScrollHeight(1000)
@@ -51,7 +53,9 @@ function resizeAndAppend(options: {
         // Keep moving slowly after the explicit input grace ends.
         for (let tick = 0; tick < 60; tick++) {
           now += 16
-          div.setScrollTop(tick % 2 === 0 ? 799 : 800)
+          div.setScrollTop(tick % 2 === 0
+            ? 799
+            : 800)
           hook.handlers.onScroll()
         }
         expect(hook.atBottom()).toBe(true)
@@ -92,7 +96,13 @@ function resizeAndAppend(options: {
       onMomentumScroll.mockClear()
       if (options.probeEcho)
         hook.handlers.onScroll()
-      return { beforeEvent, layoutMomentumEvents, scrollTop: div.getScrollTop(), atBottom: hook.atBottom(), momentumEvents: onMomentumScroll.mock.calls.length }
+      return {
+        beforeEvent,
+        layoutMomentumEvents,
+        scrollTop: div.getScrollTop(),
+        atBottom: hook.atBottom(),
+        momentumEvents: onMomentumScroll.mock.calls.length,
+      }
     }
     finally {
       dispose()

@@ -218,20 +218,42 @@ describe('shikiStyleClassTransformer', () => {
   })
 
   it('appends to an existing class and leaves unstyled spans untouched', () => {
-    const styled = { type: 'element', tagName: 'span', properties: { class: 'line', style: '--shiki-light:#abc' }, children: [] }
+    const styled = {
+      type: 'element',
+      tagName: 'span',
+      properties: { class: 'line', style: '--shiki-light:#abc' },
+      children: [],
+    }
     transformer().call({}, styled)
     expect(styled.properties.class).toBe(`line ${shikiStyleClassName('--shiki-light:#abc')}`)
 
-    const plain = { type: 'element', tagName: 'span', properties: {}, children: [] }
+    const plain = {
+      type: 'element',
+      tagName: 'span',
+      properties: {},
+      children: [],
+    }
     transformer().call({}, plain)
     expect(plain.properties).toEqual({})
   })
 
   it('appends into an existing ARRAY class without stringifying it (hast allows string[])', () => {
-    const node = { type: 'element', tagName: 'span', properties: { class: ['a', 'b'], style: '--shiki-light:#abc' }, children: [] }
+    const node = {
+      type: 'element',
+      tagName: 'span',
+      properties: {
+        class: ['a', 'b'],
+        style: '--shiki-light:#abc',
+      },
+      children: [],
+    }
     transformer().call({}, node)
     // Array form is preserved and the shared class is appended -- NOT `String(['a','b'])`
     // which would produce the invalid comma-joined token "a,b sk-...".
-    expect(node.properties.class).toEqual(['a', 'b', shikiStyleClassName('--shiki-light:#abc')])
+    expect(node.properties.class).toEqual([
+      'a',
+      'b',
+      shikiStyleClassName('--shiki-light:#abc'),
+    ])
   })
 })

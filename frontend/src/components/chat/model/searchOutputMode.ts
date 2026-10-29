@@ -21,5 +21,7 @@ const KNOWN_MODES: ReadonlySet<string> = new Set(SEARCH_OUTPUT_MODES)
  * already.
  */
 export function searchOutputMode(value: unknown): SearchOutputMode | undefined {
-  return typeof value === 'string' && KNOWN_MODES.has(value) ? value as SearchOutputMode : undefined
+  return typeof value === 'string' && KNOWN_MODES.has(value)
+    ? value as SearchOutputMode
+    : undefined
 }

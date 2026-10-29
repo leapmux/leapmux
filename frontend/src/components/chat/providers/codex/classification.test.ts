@@ -27,60 +27,164 @@ describe('stored rows with no current writer', () => {
     CODEX_METHOD.AccountRateLimitsUpdated,
     CODEX_METHOD.ThreadCompacted,
   ])('leaves a stored %s row unknown', (method) => {
-    const frame = { method, params: { threadId: 'thread-1' } }
+    const frame = {
+      method,
+      params: { threadId: 'thread-1' },
+    }
     expect(classifyCodexMessage(input(frame))).toEqual({ kind: 'unknown' })
-    expect(classifyCodexMessage(input(frame, { old_seqs: [], messages: [frame] }))).toEqual({ kind: 'unknown' })
+    expect(classifyCodexMessage(input(frame, {
+      old_seqs: [],
+      messages: [frame],
+    }))).toEqual({ kind: 'unknown' })
   })
 
   it.each(['userMessage', 'subAgentActivity'])('leaves a stored %s item unknown', (type) => {
-    expect(classifyCodexMessage(input({ item: { type, id: 'item-1' } }))).toEqual({ kind: 'unknown' })
+    expect(classifyCodexMessage(input({
+      item: { type, id: 'item-1' },
+    }))).toEqual({ kind: 'unknown' })
   })
 
   it('leaves a stored compaction start unknown', () => {
-    const frame = { method: CODEX_METHOD.ItemStarted, params: { item: { type: 'contextCompaction', id: 'item-1' } } }
+    const frame = {
+      method: CODEX_METHOD.ItemStarted,
+      params: {
+        item: { type: 'contextCompaction', id: 'item-1' },
+      },
+    }
     expect(classifyCodexMessage(input(frame))).toEqual({ kind: 'unknown' })
   })
 })
 
 describe('classifyCodexMessage', () => {
   it.each(['parameters', 'notification'])('recognizes native exec requests in the %s wrapper', (wrapper) => {
-    const parameters = { threadId: 'native-thread', turnId: 'native-turn', item: { type: 'custom_tool_call', call_id: 'exec-call', name: 'exec', input: 'text(40 + 2);', status: 'completed' } }
-    const payload = wrapper === 'parameters' ? parameters : { method: 'rawResponseItem/completed', params: parameters }
-    expect(classifyCodexMessage({ ...input(payload, undefined, AgentProvider.CODEX), spanId: 'exec-call', spanType: 'exec' })).toEqual({ kind: 'tool_use' })
+    const parameters = {
+      threadId: 'native-thread',
+      turnId: 'native-turn',
+      item: {
+        type: 'custom_tool_call',
+        call_id: 'exec-call',
+        name: 'exec',
+        input: 'text(40 + 2);',
+        status: 'completed',
+      },
+    }
+    const payload = wrapper === 'parameters'
+      ? parameters
+      : { method: 'rawResponseItem/completed', params: parameters }
+    expect(classifyCodexMessage({
+      ...input(payload, undefined, AgentProvider.CODEX),
+      spanId: 'exec-call',
+      spanType: 'exec',
+    })).toEqual({ kind: 'tool_use' })
   })
 
   it.each(['parameters', 'notification'])('recognizes native exec outputs in the %s wrapper', (wrapper) => {
-    const parameters = { threadId: 'native-thread', turnId: 'native-turn', item: { type: 'custom_tool_call_output', call_id: 'exec-call', output: [{ type: 'input_text', text: 'Script completed\nWall time 0.0 seconds\nOutput:\n' }, { type: 'input_text', text: '42' }] } }
-    const payload = wrapper === 'parameters' ? parameters : { method: 'rawResponseItem/completed', params: parameters }
-    expect(classifyCodexMessage({ ...input(payload, undefined, AgentProvider.CODEX), spanId: 'exec-call', spanType: 'exec' })).toEqual({ kind: 'tool_use' })
+    const parameters = {
+      threadId: 'native-thread',
+      turnId: 'native-turn',
+      item: {
+        type: 'custom_tool_call_output',
+        call_id: 'exec-call',
+        output: [
+          { type: 'input_text', text: 'Script completed\nWall time 0.0 seconds\nOutput:\n' },
+          { type: 'input_text', text: '42' },
+        ],
+      },
+    }
+    const payload = wrapper === 'parameters'
+      ? parameters
+      : { method: 'rawResponseItem/completed', params: parameters }
+    expect(classifyCodexMessage({
+      ...input(payload, undefined, AgentProvider.CODEX),
+      spanId: 'exec-call',
+      spanType: 'exec',
+    })).toEqual({ kind: 'tool_use' })
   })
 
   it.each([
-    { type: 'custom_tool_call', call_id: 'other', name: 'exec', namespace: 'remote', input: 'text(42);' },
-    { type: 'custom_tool_call', call_id: 'other', name: 'apply_patch', input: 'patch' },
-    { type: 'function_call', call_id: 'other', name: 'exec_command', arguments: '{}' },
-    { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Mirror answer' }] },
+    {
+      type: 'custom_tool_call',
+      call_id: 'other',
+      name: 'exec',
+      namespace: 'remote',
+      input: 'text(42);',
+    },
+    {
+      type: 'custom_tool_call',
+      call_id: 'other',
+      name: 'apply_patch',
+      input: 'patch',
+    },
+    {
+      type: 'function_call',
+      call_id: 'other',
+      name: 'exec_command',
+      arguments: '{}',
+    },
+    {
+      type: 'message',
+      role: 'assistant',
+      content: [
+        { type: 'output_text', text: 'Mirror answer' },
+      ],
+    },
   ])('keeps a raw mirror or foreign call hidden: %j', (item) => {
-    expect(classifyCodexMessage(input({ method: 'rawResponseItem/completed', params: { threadId: 'native-thread', turnId: 'native-turn', item } }, undefined, AgentProvider.CODEX))).toEqual({ kind: 'hidden' })
+    expect(classifyCodexMessage(input({
+      method: 'rawResponseItem/completed',
+      params: { threadId: 'native-thread', turnId: 'native-turn', item },
+    }, undefined, AgentProvider.CODEX))).toEqual({ kind: 'hidden' })
   })
 
   it('does not classify an unnamed custom output in another tool span as native exec', () => {
-    const parameters = { threadId: 'native-thread', turnId: 'native-turn', item: { type: 'custom_tool_call_output', call_id: 'other-call', output: 'Other output' } }
-    expect(classifyCodexMessage({ ...input(parameters, undefined, AgentProvider.CODEX), spanId: 'other-call', spanType: 'apply_patch' }).kind).not.toBe('tool_use')
+    const parameters = {
+      threadId: 'native-thread',
+      turnId: 'native-turn',
+      item: { type: 'custom_tool_call_output', call_id: 'other-call', output: 'Other output' },
+    }
+    expect(classifyCodexMessage({
+      ...input(parameters, undefined, AgentProvider.CODEX),
+      spanId: 'other-call',
+      spanType: 'apply_patch',
+    }).kind).not.toBe('tool_use')
   })
 
   // The item type comes straight off the wire, and the classifier table is a plain
   // object. A type that identifies an `Object.prototype` member answered with a
   // FUNCTION, which the dispatch below then CALLED -- on the path every row takes.
-  it.each(['constructor', 'toString', 'valueOf', 'hasOwnProperty'])('classifies an item typed %s as unknown', (type) => {
-    expect(classifyCodexMessage(input({ method: 'item/completed', params: { item: { id: 'x', type } } })))
+  it.each([
+    'constructor',
+    'toString',
+    'valueOf',
+    'hasOwnProperty',
+  ])('classifies an item typed %s as unknown', (type) => {
+    expect(classifyCodexMessage(input({
+      method: 'item/completed',
+      params: {
+        item: { id: 'x', type },
+      },
+    })))
       .toEqual({ kind: 'unknown' })
   })
 
   // The worker opts out of both methods. Stored copies have no current reader.
   it.each([
-    ['turn/moderationMetadata', { threadId: 't1', turnId: 'u1', metadata: { generation: {}, prompt: {}, tool_call: {}, tool_response: {} } }],
-    ['account/updated', { authMode: 'chatgpt', planType: 'prolite' }],
+    [
+      'turn/moderationMetadata',
+      {
+        threadId: 't1',
+        turnId: 'u1',
+        metadata: {
+          generation: {},
+          prompt: {},
+          tool_call: {},
+          tool_response: {},
+        },
+      },
+    ],
+    [
+      'account/updated',
+      { authMode: 'chatgpt', planType: 'prolite' },
+    ],
   ])('leaves a stored %s row unknown', (method, params) => {
     expect(classifyCodexMessage(input({ method, params }))).toEqual({ kind: 'unknown' })
   })
@@ -88,13 +192,36 @@ describe('classifyCodexMessage', () => {
   // Each RENDER notice classifies as a notification with the hidden empty
   // policy, so the row the entry builder suppresses draws nothing.
   it.each([
-    ['warning', { message: 'careful' }],
-    ['configWarning', { summary: 'Error parsing rules', details: 'unexpected token', path: '/home/u/.codex/rules/x.rules' }],
-    ['deprecationNotice', { summary: 'The foo option is deprecated', details: 'Use bar instead.' }],
-    ['model/safetyBuffering/updated', { turnId: 'u1', showBufferingUi: true, fasterModel: 'gpt-6-luna' }],
-    ['model/verification', { verifications: ['trustedAccessForCyber'] }],
-    ['modelProvider/authRecoveryStarted', { provider: 'amazon-bedrock', message: 'AWS session has expired. Reauthenticating...' }],
-    ['modelProvider/authRecoveryCompleted', { provider: 'amazon-bedrock', message: 'Reauthenticated.' }],
+    [
+      'warning',
+      { message: 'careful' },
+    ],
+    [
+      'configWarning',
+      { summary: 'Error parsing rules', details: 'unexpected token', path: '/home/u/.codex/rules/x.rules' },
+    ],
+    [
+      'deprecationNotice',
+      { summary: 'The foo option is deprecated', details: 'Use bar instead.' },
+    ],
+    [
+      'model/safetyBuffering/updated',
+      { turnId: 'u1', showBufferingUi: true, fasterModel: 'gpt-6-luna' },
+    ],
+    [
+      'model/verification',
+      {
+        verifications: ['trustedAccessForCyber'],
+      },
+    ],
+    [
+      'modelProvider/authRecoveryStarted',
+      { provider: 'amazon-bedrock', message: 'AWS session has expired. Reauthenticating...' },
+    ],
+    [
+      'modelProvider/authRecoveryCompleted',
+      { provider: 'amazon-bedrock', message: 'Reauthenticated.' },
+    ],
   ])('classifies %s as a notification', (method, params) => {
     const result = classifyCodexMessage(input({ method, params }))
     expect(result.kind).toBe('notification')
@@ -103,9 +230,18 @@ describe('classifyCodexMessage', () => {
   // Two persisted notices fold into ONE notification thread, and the thread
   // states one entry for each member, in order.
   it('folds consecutive render notices into one notification thread', () => {
-    const configWarning = { method: 'configWarning', params: { summary: 'Error parsing rules' } }
-    const deprecationNotice = { method: 'deprecationNotice', params: { summary: 'The foo option is deprecated' } }
-    expect(classifyCodexMessage(input(configWarning, { old_seqs: [], messages: [configWarning, deprecationNotice] }))).toEqual({
+    const configWarning = {
+      method: 'configWarning',
+      params: { summary: 'Error parsing rules' },
+    }
+    const deprecationNotice = {
+      method: 'deprecationNotice',
+      params: { summary: 'The foo option is deprecated' },
+    }
+    expect(classifyCodexMessage(input(configWarning, {
+      old_seqs: [],
+      messages: [configWarning, deprecationNotice],
+    }))).toEqual({
       kind: 'notification',
       entries: [
         { kind: 'status', text: 'Warning: Error parsing rules' },
@@ -154,21 +290,42 @@ describe('classifyCodexMessage', () => {
     expect(result).toEqual({ kind: 'unknown' })
   })
 
-  it.each([null, { type: 'turn', turnId: 'turn-1' }])('leaves stored read-state metadata with first unread %j unknown', (firstUnread) => {
+  it.each([
+    null,
+    { type: 'turn', turnId: 'turn-1' },
+  ])('leaves stored read-state metadata with first unread %j unknown', (firstUnread) => {
     const frame = {
       method: 'thread/readState/changed',
-      params: { threadId: 'thread-1', readState: { firstUnread, revision: 'revision-1' } },
+      params: {
+        threadId: 'thread-1',
+        readState: { firstUnread, revision: 'revision-1' },
+      },
       emittedAtMs: 1792140694686,
     }
     expect(classifyCodexMessage(input(frame))).toEqual({ kind: 'unknown' })
-    expect(classifyCodexMessage(input(undefined, { old_seqs: [], messages: [frame] }))).toEqual({ kind: 'unknown' })
+    expect(classifyCodexMessage(input(undefined, {
+      old_seqs: [],
+      messages: [frame],
+    }))).toEqual({ kind: 'unknown' })
   })
 
   it('keeps unknown content beside native read-state metadata visible', () => {
-    const wrapper = { old_seqs: [], messages: [
-      { method: 'thread/readState/changed', params: { threadId: 'thread-1', readState: { firstUnread: null, revision: 'r1' } } },
-      { method: 'thread/futureContent', params: { text: 'Preserve this native content.' } },
-    ] }
+    const wrapper = {
+      old_seqs: [],
+      messages: [
+        {
+          method: 'thread/readState/changed',
+          params: {
+            threadId: 'thread-1',
+            readState: { firstUnread: null, revision: 'r1' },
+          },
+        },
+        {
+          method: 'thread/futureContent',
+          params: { text: 'Preserve this native content.' },
+        },
+      ],
+    }
     expect(classifyCodexMessage(input(undefined, wrapper))).toEqual({ kind: 'unknown' })
   })
 
@@ -208,18 +365,24 @@ describe('classifyCodexMessage', () => {
   it('renders a failed hook completion as a notification', () => {
     const parent = {
       method: 'hook/completed',
-      params: { run: { status: 'failed', statusMessage: 'permission denied' } },
+      params: {
+        run: { status: 'failed', statusMessage: 'permission denied' },
+      },
     }
     expect(classifyCodexMessage(input(parent))).toEqual({
       kind: 'notification',
-      entries: [{ kind: 'hook', outcome: 'failed', detail: 'permission denied' }],
+      entries: [
+        { kind: 'hook', outcome: 'failed', detail: 'permission denied' },
+      ],
     })
   })
 
   it('reads a stored completed hook as a notification', () => {
     const parent = {
       method: 'hook/completed',
-      params: { run: { status: 'completed' } },
+      params: {
+        run: { status: 'completed' },
+      },
     }
     expect(classifyCodexMessage(input(parent))).toMatchObject({ kind: 'notification' })
   })
@@ -229,19 +392,33 @@ describe('classifyCodexMessage', () => {
     const wrapper = {
       old_seqs: [],
       messages: [
-        { method: 'thread/started', params: { threadId: 'thread-1' } },
+        {
+          method: 'thread/started',
+          params: { threadId: 'thread-1' },
+        },
         contextCleared,
       ],
     }
     // The shared context-cleared entry keeps this wrapper readable. The obsolete method supplies no entry.
     const result = classifyCodexMessage(input(undefined, wrapper))
-    expect(result).toEqual({ kind: 'notification', entries: [{ kind: 'context-cleared' }] })
+    expect(result).toEqual({
+      kind: 'notification',
+      entries: [
+        { kind: 'context-cleared' },
+      ],
+    })
   })
 
   it('leaves a compaction item without its native completion method unknown', () => {
     const wrapper = {
       old_seqs: [],
-      messages: [{ threadId: 't1', turnId: 'turn1', item: { type: 'contextCompaction', id: 'compact-1' } }],
+      messages: [
+        {
+          threadId: 't1',
+          turnId: 'turn1',
+          item: { type: 'contextCompaction', id: 'compact-1' },
+        },
+      ],
     }
     const result = classifyCodexMessage(input(undefined, wrapper))
     expect(result.kind).toBe('unknown')
@@ -250,10 +427,16 @@ describe('classifyCodexMessage', () => {
   it('leaves a wrapped compaction start unknown', () => {
     const wrapper = {
       old_seqs: [],
-      messages: [{
-        method: 'item/started',
-        params: { item: { type: 'contextCompaction', id: 'compact-1' }, threadId: 't1', turnId: 'turn1' },
-      }],
+      messages: [
+        {
+          method: 'item/started',
+          params: {
+            item: { type: 'contextCompaction', id: 'compact-1' },
+            threadId: 't1',
+            turnId: 'turn1',
+          },
+        },
+      ],
     }
     const result = classifyCodexMessage(input(undefined, wrapper))
     expect(result.kind).toBe('unknown')
@@ -263,10 +446,16 @@ describe('classifyCodexMessage', () => {
     // The worker stores the native completion as a boundary. It publishes the start only as live state.
     const wrapper = {
       old_seqs: [],
-      messages: [{
-        method: 'item/completed',
-        params: { item: { type: 'contextCompaction', id: 'compact-1' }, threadId: 't1', turnId: 'turn1' },
-      }],
+      messages: [
+        {
+          method: 'item/completed',
+          params: {
+            item: { type: 'contextCompaction', id: 'compact-1' },
+            threadId: 't1',
+            turnId: 'turn1',
+          },
+        },
+      ],
     }
     const result = classifyCodexMessage(input(undefined, wrapper))
     expect(result.kind).toBe('notification')
@@ -275,10 +464,14 @@ describe('classifyCodexMessage', () => {
   it('does NOT classify wrapped item/completed for non-compaction items as a notification thread', () => {
     const wrapper = {
       old_seqs: [],
-      messages: [{
-        method: 'item/completed',
-        params: { item: { type: 'agentMessage', id: 'msg-1' } },
-      }],
+      messages: [
+        {
+          method: 'item/completed',
+          params: {
+            item: { type: 'agentMessage', id: 'msg-1' },
+          },
+        },
+      ],
     }
     const result = classifyCodexMessage(input(undefined, wrapper))
     expect(result.kind).not.toBe('notification')
@@ -287,10 +480,14 @@ describe('classifyCodexMessage', () => {
   it('does NOT classify wrapped item/started for non-compaction items as a notification thread', () => {
     const wrapper = {
       old_seqs: [],
-      messages: [{
-        method: 'item/started',
-        params: { item: { type: 'commandExecution', id: 'cmd-1' } },
-      }],
+      messages: [
+        {
+          method: 'item/started',
+          params: {
+            item: { type: 'commandExecution', id: 'cmd-1' },
+          },
+        },
+      ],
     }
     // commandExecution is rendered through the assistant span flow, not the
     // notification thread. Wrapping it must not turn it into a notification.
@@ -304,7 +501,10 @@ describe('classifyCodexMessage', () => {
       old_seqs: [],
       messages: [
         { method: 'skills/changed', params: {} },
-        { method: 'remoteControl/status/changed', params: { status: 'disabled', environmentId: null } },
+        {
+          method: 'remoteControl/status/changed',
+          params: { status: 'disabled', environmentId: null },
+        },
       ],
     }
     const result = classifyCodexMessage(input(undefined, wrapper))
@@ -312,20 +512,35 @@ describe('classifyCodexMessage', () => {
   })
 
   it('reads a settings change beside obsolete metadata', () => {
-    const settingsChanged = { type: 'settings_changed', changes: { model: { old: 'a', new: 'b' } } }
+    const settingsChanged = {
+      type: 'settings_changed',
+      changes: {
+        model: { old: 'a', new: 'b' },
+      },
+    }
     const wrapper = {
       old_seqs: [],
       messages: [
         { method: 'skills/changed', params: {} },
         settingsChanged,
-        { method: 'remoteControl/status/changed', params: { status: 'disabled', environmentId: null } },
+        {
+          method: 'remoteControl/status/changed',
+          params: { status: 'disabled', environmentId: null },
+        },
       ],
     }
     // Only the settings change supplies an entry. Copy Raw JSON still receives the complete wrapper.
     const result = classifyCodexMessage(input(undefined, wrapper))
     expect(result).toEqual({
       kind: 'notification',
-      entries: [{ kind: 'settings-changed', changes: [{ label: 'Model', old: 'a', new: 'b' }] }],
+      entries: [
+        {
+          kind: 'settings-changed',
+          changes: [
+            { label: 'Model', old: 'a', new: 'b' },
+          ],
+        },
+      ],
     })
   })
 
@@ -334,8 +549,14 @@ describe('classifyCodexMessage', () => {
     const wrapper = {
       old_seqs: [],
       messages: [
-        { method: 'thread/name/updated', params: { threadId: 't1', name: 'Refactor auth' } },
-        { method: 'thread/tokenUsage/updated', params: { threadId: 't1' } },
+        {
+          method: 'thread/name/updated',
+          params: { threadId: 't1', name: 'Refactor auth' },
+        },
+        {
+          method: 'thread/tokenUsage/updated',
+          params: { threadId: 't1' },
+        },
       ],
     }
     const result = classifyCodexMessage(input(undefined, wrapper))
@@ -405,29 +626,57 @@ describe('classifyCodexMessage', () => {
   it('leaves stored MCP tool-call progress notifications unknown', () => {
     expect(classifyCodexMessage(input({
       method: 'item/mcpToolCall/progress',
-      params: { threadId: 'thread-1', turnId: 'turn-1', itemId: 'mcp-1', message: 'Working' },
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        itemId: 'mcp-1',
+        message: 'Working',
+      },
     }))).toEqual({ kind: 'unknown' })
   })
 
   it('reads stored successful MCP OAuth completion and keeps failures visible', () => {
-    const success = { method: 'mcpServer/oauthLogin/completed', params: { name: 'docs', success: true } }
-    const failure = { method: 'mcpServer/oauthLogin/completed', params: { name: 'docs', success: false, error: 'authorization failed' } }
+    const success = {
+      method: 'mcpServer/oauthLogin/completed',
+      params: { name: 'docs', success: true },
+    }
+    const failure = {
+      method: 'mcpServer/oauthLogin/completed',
+      params: { name: 'docs', success: false, error: 'authorization failed' },
+    }
     expect(classifyCodexMessage(input(success))).toMatchObject({ kind: 'notification' })
     expect(classifyCodexMessage(input(failure))).toEqual({
       kind: 'notification',
-      entries: [{ kind: 'status', text: 'MCP OAuth login failed for docs: authorization failed' }],
+      entries: [
+        { kind: 'status', text: 'MCP OAuth login failed for docs: authorization failed' },
+      ],
     })
   })
 
   it('reads every stored MCP entry without a success filter', () => {
-    const startupFailure = { method: 'mcpServer/startupStatus/updated', params: { name: 'broken', status: 'failed', error: 'boom' } }
-    const oauthFailure = { method: 'mcpServer/oauthLogin/completed', params: { name: 'docs', success: false, error: 'denied' } }
+    const startupFailure = {
+      method: 'mcpServer/startupStatus/updated',
+      params: { name: 'broken', status: 'failed', error: 'boom' },
+    }
+    const oauthFailure = {
+      method: 'mcpServer/oauthLogin/completed',
+      params: { name: 'docs', success: false, error: 'denied' },
+    }
     const wrapper = {
       old_seqs: [],
       messages: [
-        { method: 'mcpServer/startupStatus/updated', params: { name: 'ready', status: 'ready' } },
-        { method: 'item/mcpToolCall/progress', params: { itemId: 'mcp-1', message: 'Working' } },
-        { method: 'mcpServer/oauthLogin/completed', params: { name: 'docs', success: true } },
+        {
+          method: 'mcpServer/startupStatus/updated',
+          params: { name: 'ready', status: 'ready' },
+        },
+        {
+          method: 'item/mcpToolCall/progress',
+          params: { itemId: 'mcp-1', message: 'Working' },
+        },
+        {
+          method: 'mcpServer/oauthLogin/completed',
+          params: { name: 'docs', success: true },
+        },
         startupFailure,
         oauthFailure,
       ],
@@ -476,7 +725,13 @@ describe('classifyCodexMessage', () => {
   it('does not fold consecutive turn/plan/updated rows into a notification thread', () => {
     const first = {
       method: 'turn/plan/updated',
-      params: { threadId: 'thread-1', turnId: 'turn-1', plan: [{ step: 'Inspect messages', status: 'inProgress' }] },
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        plan: [
+          { step: 'Inspect messages', status: 'inProgress' },
+        ],
+      },
     }
     const second = {
       method: 'turn/plan/updated',
@@ -489,8 +744,14 @@ describe('classifyCodexMessage', () => {
         ],
       },
     }
-    expect(classifyCodexMessage(input(first, { old_seqs: [], messages: [first, second] }))).toEqual({ kind: 'tool_use' })
-    expect(classifyCodexMessage(input(second, { old_seqs: [], messages: [first, second] }))).toEqual({ kind: 'tool_use' })
+    expect(classifyCodexMessage(input(first, {
+      old_seqs: [],
+      messages: [first, second],
+    }))).toEqual({ kind: 'tool_use' })
+    expect(classifyCodexMessage(input(second, {
+      old_seqs: [],
+      messages: [first, second],
+    }))).toEqual({ kind: 'tool_use' })
   })
 
   it('classifies webSearch items as Codex tool-use messages', () => {
@@ -530,8 +791,20 @@ describe('classifyCodexMessage', () => {
         threadId: 'thread-1',
         turnId: 'turn-1',
         tokenUsage: {
-          total: { totalTokens: 200, inputTokens: 100, cachedInputTokens: 25, outputTokens: 50, reasoningOutputTokens: 9 },
-          last: { totalTokens: 23, inputTokens: 10, cachedInputTokens: 5, outputTokens: 7, reasoningOutputTokens: 1 },
+          total: {
+            totalTokens: 200,
+            inputTokens: 100,
+            cachedInputTokens: 25,
+            outputTokens: 50,
+            reasoningOutputTokens: 9,
+          },
+          last: {
+            totalTokens: 23,
+            inputTokens: 10,
+            cachedInputTokens: 5,
+            outputTokens: 7,
+            reasoningOutputTokens: 1,
+          },
           modelContextWindow: 4096,
         },
       },
@@ -550,8 +823,20 @@ describe('classifyCodexMessage', () => {
             threadId: 'thread-1',
             turnId: 'turn-1',
             tokenUsage: {
-              total: { totalTokens: 200, inputTokens: 100, cachedInputTokens: 25, outputTokens: 50, reasoningOutputTokens: 9 },
-              last: { totalTokens: 23, inputTokens: 10, cachedInputTokens: 5, outputTokens: 7, reasoningOutputTokens: 1 },
+              total: {
+                totalTokens: 200,
+                inputTokens: 100,
+                cachedInputTokens: 25,
+                outputTokens: 50,
+                reasoningOutputTokens: 9,
+              },
+              last: {
+                totalTokens: 23,
+                inputTokens: 10,
+                cachedInputTokens: 5,
+                outputTokens: 7,
+                reasoningOutputTokens: 1,
+              },
               modelContextWindow: 4096,
             },
           },
@@ -572,13 +857,22 @@ describe('classifyCodexMessage', () => {
 
   it('leaves a stored standalone thread/compacted notification unknown', () => {
     // Codex 0.163 sends no thread/compacted frame. Stored copies have no special reader.
-    const parent = { method: 'thread/compacted', params: { threadId: 't1', turnId: 'turn1' } }
+    const parent = {
+      method: 'thread/compacted',
+      params: { threadId: 't1', turnId: 'turn1' },
+    }
     expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'unknown' })
   })
 
   it('leaves a stored thread/compacted consolidated into a notification thread unknown', () => {
-    const compacted = { method: 'thread/compacted', params: { threadId: 't1', turnId: 'turn1' } }
-    const wrapper = { old_seqs: [7], messages: [compacted] }
+    const compacted = {
+      method: 'thread/compacted',
+      params: { threadId: 't1', turnId: 'turn1' },
+    }
+    const wrapper = {
+      old_seqs: [7],
+      messages: [compacted],
+    }
     expect(classifyCodexMessage(input(compacted, wrapper))).toEqual({ kind: 'unknown' })
   })
 
@@ -586,7 +880,10 @@ describe('classifyCodexMessage', () => {
     // The worker applies this settings update and stores no transcript row.
     const parent = {
       method: 'thread/settings/updated',
-      params: { threadId: 't1', threadSettings: { model: 'gpt-5.5', effort: 'xhigh' } },
+      params: {
+        threadId: 't1',
+        threadSettings: { model: 'gpt-5.5', effort: 'xhigh' },
+      },
     }
     expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'unknown' })
   })
@@ -594,40 +891,73 @@ describe('classifyCodexMessage', () => {
   it('leaves a stored thread/settings/updated consolidated into a notification thread unknown', () => {
     const settingsUpdated = {
       method: 'thread/settings/updated',
-      params: { threadId: 't1', threadSettings: { model: 'gpt-5.5' } },
+      params: {
+        threadId: 't1',
+        threadSettings: { model: 'gpt-5.5' },
+      },
     }
-    const wrapper = { old_seqs: [6], messages: [settingsUpdated] }
+    const wrapper = {
+      old_seqs: [6],
+      messages: [settingsUpdated],
+    }
     expect(classifyCodexMessage(input(settingsUpdated, wrapper))).toEqual({ kind: 'unknown' })
   })
 
   it('leaves a stored synthesized compaction status unknown', () => {
-    const parent = { type: 'system', subtype: 'status', status: null, compact_result: 'success' }
+    const parent = {
+      type: 'system',
+      subtype: 'status',
+      status: null,
+      compact_result: 'success',
+    }
     expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'unknown' })
   })
 
   it('leaves a stored synthesized status wrapper unknown', () => {
     // The worker stores no synthesized system status. A wrapper adds no reader for it.
-    const statusMsg = { type: 'system', subtype: 'status', status: null, compact_result: 'success' }
-    const wrapper = { old_seqs: [305], messages: [statusMsg] }
+    const statusMsg = {
+      type: 'system',
+      subtype: 'status',
+      status: null,
+      compact_result: 'success',
+    }
+    const wrapper = {
+      old_seqs: [305],
+      messages: [statusMsg],
+    }
     expect(classifyCodexMessage(input(statusMsg, wrapper))).toEqual({ kind: 'unknown' })
   })
 
   it('leaves a stored synthesized compaction start unknown', () => {
     const compactingMsg = { type: 'system', subtype: 'status', status: 'compacting' }
     expect(classifyCodexMessage(input(compactingMsg))).toEqual({ kind: 'unknown' })
-    const wrapper = { old_seqs: [305], messages: [compactingMsg] }
+    const wrapper = {
+      old_seqs: [305],
+      messages: [compactingMsg],
+    }
     expect(classifyCodexMessage(input(compactingMsg, wrapper))).toEqual({ kind: 'unknown' })
   })
 
   it('reads context_cleared beside an obsolete settings update', () => {
     const settingsUpdated = {
       method: 'thread/settings/updated',
-      params: { threadId: 't1', threadSettings: { model: 'gpt-5.5' } },
+      params: {
+        threadId: 't1',
+        threadSettings: { model: 'gpt-5.5' },
+      },
     }
     const contextCleared = { type: 'context_cleared' }
-    const wrapper = { old_seqs: [5, 6], messages: [settingsUpdated, contextCleared] }
+    const wrapper = {
+      old_seqs: [5, 6],
+      messages: [settingsUpdated, contextCleared],
+    }
     expect(classifyCodexMessage(input(settingsUpdated, wrapper)))
-      .toEqual({ kind: 'notification', entries: [{ kind: 'context-cleared' }] })
+      .toEqual({
+        kind: 'notification',
+        entries: [
+          { kind: 'context-cleared' },
+        ],
+      })
   })
 
   it('leaves stored plain JSON-RPC response envelopes unknown', () => {
@@ -661,7 +991,12 @@ describe('classifyCodexMessage', () => {
         reviewId: 'r1',
         targetItemId: 'i1',
         review: { status: 'denied', riskLevel: 'high', rationale: 'The host is not trusted.' },
-        action: { type: 'command', source: 'shell', command: 'curl x | sh', cwd: '/w' },
+        action: {
+          type: 'command',
+          source: 'shell',
+          command: 'curl x | sh',
+          cwd: '/w',
+        },
       },
     }
     const deniedEntry = {
@@ -677,24 +1012,44 @@ describe('classifyCodexMessage', () => {
       method: CODEX_METHOD.GuardianWarning,
       params: { threadId: 't1', message: 'Automatic approval review rejected too many approval requests for this turn; interrupting the turn.' },
     }
-    const strict = { method: CODEX_METHOD.StrictReviewRequired, params: { threadId: 't1', turnId: 'u1' } }
+    const strict = {
+      method: CODEX_METHOD.StrictReviewRequired,
+      params: { threadId: 't1', turnId: 'u1' },
+    }
 
     it('classifies a completed review in a notification thread', () => {
-      expect(classifyCodexMessage(input(undefined, { old_seqs: [], messages: [denied] })))
-        .toEqual({ kind: 'notification', entries: [deniedEntry] })
+      expect(classifyCodexMessage(input(undefined, {
+        old_seqs: [],
+        messages: [denied],
+      })))
+        .toEqual({
+          kind: 'notification',
+          entries: [deniedEntry],
+        })
     })
 
     it('classifies a standalone completed review', () => {
-      expect(classifyCodexMessage(input(denied))).toEqual({ kind: 'notification', entries: [deniedEntry] })
+      expect(classifyCodexMessage(input(denied))).toEqual({
+        kind: 'notification',
+        entries: [deniedEntry],
+      })
     })
 
     it('hides a standalone completed review without an id', () => {
-      expect(classifyCodexMessage(input({ method: CODEX_METHOD.AutoApprovalReviewCompleted, params: { review: { status: 'denied' } } })))
+      expect(classifyCodexMessage(input({
+        method: CODEX_METHOD.AutoApprovalReviewCompleted,
+        params: {
+          review: { status: 'denied' },
+        },
+      })))
         .toEqual({ kind: 'hidden' })
     })
 
     it('keeps the reviews and the warnings of one thread in order', () => {
-      const result = classifyCodexMessage(input(undefined, { old_seqs: [], messages: [strict, denied, limitWarning] }))
+      const result = classifyCodexMessage(input(undefined, {
+        old_seqs: [],
+        messages: [strict, denied, limitWarning],
+      }))
       expect(result).toEqual({
         kind: 'notification',
         entries: [
@@ -713,7 +1068,14 @@ describe('classifyCodexMessage', () => {
     })
 
     it('leaves a stored review start unknown', () => {
-      expect(classifyCodexMessage(input({ method: CODEX_METHOD.AutoApprovalReviewStarted, params: { threadId: 't1', reviewId: 'r1', review: { status: 'inProgress' } } })))
+      expect(classifyCodexMessage(input({
+        method: CODEX_METHOD.AutoApprovalReviewStarted,
+        params: {
+          threadId: 't1',
+          reviewId: 'r1',
+          review: { status: 'inProgress' },
+        },
+      })))
         .toEqual({ kind: 'unknown' })
     })
 
@@ -723,7 +1085,11 @@ describe('classifyCodexMessage', () => {
       CODEX_METHOD.PermissionsRequestApproval,
       CODEX_METHOD.ToolRequestUserInput,
     ])('leaves a stored %s control request unknown', (method) => {
-      expect(classifyCodexMessage(input({ id: 7, method, params: { threadId: 't1', turnId: 'u1', itemId: 'i1' } }))).toEqual({ kind: 'unknown' })
+      expect(classifyCodexMessage(input({
+        id: 7,
+        method,
+        params: { threadId: 't1', turnId: 'u1', itemId: 'i1' },
+      }))).toEqual({ kind: 'unknown' })
     })
   })
 

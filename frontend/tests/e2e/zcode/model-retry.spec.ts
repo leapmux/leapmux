@@ -5,7 +5,9 @@ import { zcodeTest } from '../zcode-fixtures'
 zcodeTest('folds a retried request into one resolved retry row', async ({ native }) => {
   const { page, modelScript } = native
   const start = await modelScript.queue(
-    { error: { status: 500, message: 'probe' } },
+    {
+      error: { status: 500, message: 'probe' },
+    },
     { text: 'RETRY_OK' },
   )
   await sendMessage(page, modelScript.prompt('Return the scripted answer.'))

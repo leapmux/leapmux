@@ -71,8 +71,12 @@ export function cachedChatRow(
     return cached.extraction
   const extraction = extractChatRow(agentProvider, resolved, category, {
     span,
-    ...(completion !== undefined ? { completion } : {}),
-    ...(context?.spanType !== undefined ? { spanType: context.spanType } : {}),
+    ...(completion !== undefined
+      ? { completion }
+      : {}),
+    ...(context?.spanType !== undefined
+      ? { spanType: context.spanType }
+      : {}),
   })
   cache?.set(ROW_CACHE_KEY, { extraction, dependencies })
   return extraction

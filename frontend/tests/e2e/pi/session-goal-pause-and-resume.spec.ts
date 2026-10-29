@@ -7,5 +7,10 @@ piTest('session-goal-pause-and-resume: pauses and resumes a native goal after re
 })
 
 piTest('session-goal-pause-and-resume: controls a real Pi goal through the shared goal panel and confirmation', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-  await exercisePiGoalPanel(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId }))
+  await exercisePiGoalPanel(await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  }))
 })

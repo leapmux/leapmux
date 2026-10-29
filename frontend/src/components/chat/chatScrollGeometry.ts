@@ -67,7 +67,11 @@ const scrollPhaseLog = createLogger('chatScroll')
 export function warnSlowScrollPhase(phase: string, ms: number, extra?: Record<string, unknown>): void {
   if (ms < SCROLL_PHASE_STALL_WARN_MS)
     return
-  scrollPhaseLog.warn('slow scroll phase', { phase, ms: Math.round(ms), ...extra })
+  scrollPhaseLog.warn('slow scroll phase', {
+    phase,
+    ms: Math.round(ms),
+    ...extra,
+  })
 }
 
 /**
@@ -156,7 +160,9 @@ export const SCROLL_ROOM_TOLERANCE_PX = 1
  * stay in one place rather than being re-derived inside an event handler.
  */
 export function hasScrollRoom(el: HTMLElement, deltaY: number): boolean {
-  const room = deltaY < 0 ? el.scrollTop : el.scrollHeight - el.clientHeight - el.scrollTop
+  const room = deltaY < 0
+    ? el.scrollTop
+    : el.scrollHeight - el.clientHeight - el.scrollTop
   return room >= SCROLL_ROOM_TOLERANCE_PX
 }
 

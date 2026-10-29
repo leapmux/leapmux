@@ -12,11 +12,21 @@ import { createProviderProcessTest } from '../provider-fixture-factory'
 import { DIRAC_AGENT, nativeContext } from './scenarios'
 
 diracTest('runs native tools under Bypass after reload and restores approval when YOLO is off', async ({ askingDiracWorkspace, page, modelScript, leapmuxServer }) => {
-  const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDiracWorkspace.workspaceId })
+  const native = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: askingDiracWorkspace.workspaceId,
+  })
   await expectNativeOptionValue(native, DIRAC_CONFIG.Yolo, 'false')
   await expectNativeOptionValue(native, 'auto_approve', 'false')
   const before = await currentNativeAgent(native)
-  const unchanged = before.optionGroups.filter(group => ['model', 'permissionMode', 'reasoning_effort', 'auto_approve'].includes(group.id))
+  const unchanged = before.optionGroups.filter(group => [
+    'model',
+    'permissionMode',
+    'reasoning_effort',
+    'auto_approve',
+  ].includes(group.id))
   await exerciseBypassPermissions(native, {
     settingsProof: (agent) => {
       expect(agent.optionGroups.find(group => group.id === DIRAC_CONFIG.Yolo)?.currentValue).toBe('true')
@@ -36,7 +46,12 @@ diracTest('runs native tools under Bypass after reload and restores approval whe
 })
 
 diracTest('approves the pending native tool and the next tool when Bypass changes during a turn', async ({ askingDiracWorkspace, page, modelScript, leapmuxServer }) => {
-  const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDiracWorkspace.workspaceId })
+  const native = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: askingDiracWorkspace.workspaceId,
+  })
   await expectNativeOptionValue(native, DIRAC_CONFIG.Yolo, 'false')
   await expectNativeOptionValue(native, 'auto_approve', 'false')
   await exerciseMidTurnBypass(native)

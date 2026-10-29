@@ -37,7 +37,9 @@ export const SecretControl: Component<SecretControlProps> = (props) => {
       setDraft('')
     }
     catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(err instanceof Error
+        ? err.message
+        : String(err))
     }
     finally {
       setBusy(false)

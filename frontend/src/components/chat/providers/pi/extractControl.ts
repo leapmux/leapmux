@@ -26,8 +26,12 @@ function piDialogVariant(method: string): DialogPrompt['variant'] {
 /** `Provider.extractControl` for Pi. */
 export function piExtractControl(input: ControlExtractionInput): ExtractedControlRequest | null {
   const { payload } = input
-  if (isPiPlanApproval(payload))
-    return { kind: 'plan', details: piPlanApprovalDetails(payload) }
+  if (isPiPlanApproval(payload)) {
+    return {
+      kind: 'plan',
+      details: piPlanApprovalDetails(payload),
+    }
+  }
   const timeout = pickNumber(payload, 'timeout')
   const message = pickString(payload, 'message', undefined)
   const placeholder = pickString(payload, 'placeholder', undefined)
@@ -36,13 +40,21 @@ export function piExtractControl(input: ControlExtractionInput): ExtractedContro
     kind: 'dialog',
     dialog: {
       title: pickString(payload, 'title') || 'Approval Required',
-      ...(message !== undefined ? { message } : {}),
-      ...(placeholder !== undefined ? { placeholder } : {}),
-      ...(prefill !== undefined ? { prefill } : {}),
+      ...(message !== undefined
+        ? { message }
+        : {}),
+      ...(placeholder !== undefined
+        ? { placeholder }
+        : {}),
+      ...(prefill !== undefined
+        ? { prefill }
+        : {}),
       variant: piDialogVariant(pickString(payload, 'method')),
       // A dialog that answers ITSELF after a wait is one the reader must be able to
       // see a deadline on. Zero and below state no deadline at all.
-      ...(timeout != null && timeout > 0 ? { timeoutMs: timeout } : {}),
+      ...(timeout != null && timeout > 0
+        ? { timeoutMs: timeout }
+        : {}),
     },
   }
 }

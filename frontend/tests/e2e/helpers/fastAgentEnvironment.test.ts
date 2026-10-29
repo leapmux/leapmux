@@ -15,8 +15,16 @@ afterEach(() => rmSync(homeDir, { recursive: true, force: true }))
 
 describe('createFastAgentEnvironment', () => {
   it('routes the default model through the openai block and the reasoning models through the zai block', () => {
-    const env = createFastAgentEnvironment({ homeDir, baseURL: 'http://127.0.0.1:4567/v1', modelKey: 'unit-key', modelID: 'unit-model', zaiModelID: 'unit-zai' })
-    expect(env).toEqual({ FAST_AGENT_HOME: join(homeDir, '.fast-agent') })
+    const env = createFastAgentEnvironment({
+      homeDir,
+      baseURL: 'http://127.0.0.1:4567/v1',
+      modelKey: 'unit-key',
+      modelID: 'unit-model',
+      zaiModelID: 'unit-zai',
+    })
+    expect(env).toEqual({
+      FAST_AGENT_HOME: join(homeDir, '.fast-agent'),
+    })
     expect(readFileSync(join(env.FAST_AGENT_HOME!, 'fast-agent.yaml'), 'utf8')).toBe([
       'default_model: "unit-model"',
       'openai:',

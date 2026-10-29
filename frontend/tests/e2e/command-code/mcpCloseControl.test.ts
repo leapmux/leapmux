@@ -29,7 +29,10 @@ describe('createMcpCloseControl', () => {
     const receipt = join(path, 'receipt.json')
     const { script: server } = writeMcpFormServer(path, 'server.mjs', { receiptLog: receipt })
     const control = createMcpCloseControl(path, server)
-    const child = spawn(process.execPath, [control.script], { stdio: ['pipe', 'pipe', 'pipe'], signal: AbortSignal.timeout(30000) })
+    const child = spawn(process.execPath, [control.script], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      signal: AbortSignal.timeout(30000),
+    })
     const ended = once(child, 'close')
     let stderr = ''
     child.stderr.setEncoding('utf8').on('data', text => stderr += text)
@@ -52,8 +55,20 @@ describe('createMcpCloseControl', () => {
       })
     })
     try {
-      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { capabilities: { roots: {} } } })}\n`)
-      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'ask', arguments: {} } })}\n`)
+      child.stdin.write(`${JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          capabilities: { roots: {} },
+        },
+      })}\n`)
+      child.stdin.write(`${JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'ask', arguments: {} },
+      })}\n`)
       await request
       const pending = readMcpServerReceipt(receipt)
       expect(pending.elicitationRequests).toHaveLength(1)

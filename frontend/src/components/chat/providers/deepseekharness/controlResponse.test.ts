@@ -9,7 +9,11 @@ function savedApproval(response: Record<string, unknown>): PersistedControlRespo
   return {
     requestId: 'native-event',
     claimToken: 'native-claim',
-    request: { event: DEEPSEEK_HARNESS_CONTROL_EVENT.Approval, eventId: 'native-event', request: { toolName: 'bash', callId: 'native-call' } },
+    request: {
+      event: DEEPSEEK_HARNESS_CONTROL_EVENT.Approval,
+      eventId: 'native-event',
+      request: { toolName: 'bash', callId: 'native-call' },
+    },
     response,
   }
 }

@@ -13,7 +13,9 @@ export const deepseekHarnessControls: ProviderControlCapability = {
   extractControl: deepseekHarnessExtractControl,
   controlToolSpanId: payload => pickString(pickObject(payload, 'request'), 'callId')
     || pickString(pickObject(payload, 'request'), 'tool_use_id'),
-  sendPermissionOption: (sendControlResponse, requestId, optionId) => sendResponse(sendControlResponse, optionId === 'allow' ? buildControlResponseEnvelope(requestId, { behavior: 'allow' }) : buildDenyResponse(requestId)),
+  sendPermissionOption: (sendControlResponse, requestId, optionId) => sendResponse(sendControlResponse, optionId === 'allow'
+    ? buildControlResponseEnvelope(requestId, { behavior: 'allow' })
+    : buildDenyResponse(requestId)),
   buildControlResponse: (_payload, content, requestId) => buildDenyResponse(requestId, content),
   controlFeedbackAsFollowUpMessage: () => true,
   preservesSelectionNotes: true,

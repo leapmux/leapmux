@@ -8,7 +8,10 @@ import { input } from '../testUtils'
 const CALL = 'call-1'
 
 function event(kind: string, fields: Record<string, unknown>): Record<string, unknown> {
-  return { type: 'tool.updated', payload: { kind, toolCallId: CALL, ...fields } }
+  return {
+    type: 'tool.updated',
+    payload: { kind, toolCallId: CALL, ...fields },
+  }
 }
 
 /** A finished call: a scheduled frame beside its result. */
@@ -37,12 +40,20 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
   [ZCODE_TOOL.Grep]: done(ZCODE_TOOL.Grep, { pattern: 'x' }, { success: true, content: 'a.ts:1:x' }),
   [ZCODE_TOOL.Agent]: done(ZCODE_TOOL.Agent, { description: 'Probe', prompt: 'Run.' }, { success: true, content: 'done' }),
   [ZCODE_TOOL.Task]: done(ZCODE_TOOL.Task, { description: 'Probe', prompt: 'Run.' }, { success: true, content: 'done' }),
-  [ZCODE_TOOL.TodoWrite]: done(ZCODE_TOOL.TodoWrite, { todos: [{ content: 'One', status: 'pending' }] }, { success: true, content: 'Saved' }),
+  [ZCODE_TOOL.TodoWrite]: done(ZCODE_TOOL.TodoWrite, {
+    todos: [
+      { content: 'One', status: 'pending' },
+    ],
+  }, { success: true, content: 'Saved' }),
   [ZCODE_TOOL.TodoRead]: done(ZCODE_TOOL.TodoRead, { todos: [] }, { success: true, content: 'list' }),
   [ZCODE_TOOL.WebFetch]: done(ZCODE_TOOL.WebFetch, { url: 'https://example.com' }, { success: true, content: '# page' }),
   [ZCODE_TOOL.WebSearch]: done(ZCODE_TOOL.WebSearch, { query: 'q' }, { success: true, content: 'searched' }),
   [ZCODE_TOOL.ServerWebSearch]: done(ZCODE_TOOL.ServerWebSearch, { query: 'q' }, { success: true, content: 'searched' }),
-  [ZCODE_TOOL.AskUserQuestion]: done(ZCODE_TOOL.AskUserQuestion, { questions: [{ question: 'Which?' }] }, { success: true, content: 'answered' }),
+  [ZCODE_TOOL.AskUserQuestion]: done(ZCODE_TOOL.AskUserQuestion, {
+    questions: [
+      { question: 'Which?' },
+    ],
+  }, { success: true, content: 'answered' }),
   [ZCODE_TOOL.GoalRead]: done(ZCODE_TOOL.GoalRead, { goal_id: 'g1' }, { success: true, content: 'goal' }),
   [ZCODE_TOOL.ReadSessionContext]: done(ZCODE_TOOL.ReadSessionContext, {}, { success: true, content: 'context' }),
   [ZCODE_TOOL.Js]: done(ZCODE_TOOL.Js, { code: '1+1' }, { success: true, content: '2' }),
@@ -94,8 +105,13 @@ function failed(kind: ToolKind, name: string, status: ToolFailureFixture['status
   // Every failure pairs by name with a fixture above, so the read is guarded for the type alone.
   const fixture = FIXTURES[name]
   return {
-    payload: event('result', { toolName: name, result: { success: false, content: ERROR_TEXT } }),
-    ...(fixture?.options !== undefined ? { options: fixture.options } : {}),
+    payload: event('result', {
+      toolName: name,
+      result: { success: false, content: ERROR_TEXT },
+    }),
+    ...(fixture?.options !== undefined
+      ? { options: fixture.options }
+      : {}),
     kind,
     name,
     status,

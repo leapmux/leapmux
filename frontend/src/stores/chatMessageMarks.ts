@@ -79,9 +79,13 @@ export interface RailRangeInputs {
  *    shrinking as rows persist past the window before liveTail catches up.
  */
 export function resolveRailRange(inp: RailRangeInputs): { minSeq: bigint, maxSeq: bigint } {
-  const seededOrLiveMax = inp.liveMaxSeq > 0n ? inp.liveMaxSeq : inp.seedMaxSeq
+  const seededOrLiveMax = inp.liveMaxSeq > 0n
+    ? inp.liveMaxSeq
+    : inp.seedMaxSeq
   return {
-    minSeq: !inp.hasOlderMessages ? (inp.windowFirstSeq ?? inp.seededMinSeq) : inp.seededMinSeq,
+    minSeq: !inp.hasOlderMessages
+      ? (inp.windowFirstSeq ?? inp.seededMinSeq)
+      : inp.seededMinSeq,
     maxSeq: inp.windowLastSeq !== undefined && inp.windowLastSeq > seededOrLiveMax
       ? inp.windowLastSeq
       : seededOrLiveMax,
@@ -99,7 +103,12 @@ export interface MessageMarks {
   marks: readonly SeqMark[]
 }
 
-const EMPTY_MARKS: MessageMarks = { loaded: false, minSeq: 0n, seedMaxSeq: 0n, marks: [] }
+const EMPTY_MARKS: MessageMarks = {
+  loaded: false,
+  minSeq: 0n,
+  seedMaxSeq: 0n,
+  marks: [],
+}
 
 /**
  * Insert `{seq, type}` keeping `marks` ascending by seq. Returns the SAME array
@@ -141,7 +150,13 @@ function normalizeSeed(marks: readonly SeqMark[]): SeqMark[] {
       break
     }
   }
-  const sorted = alreadySorted ? marks : [...marks].sort((a, b) => (a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0))
+  const sorted = alreadySorted
+    ? marks
+    : [...marks].sort((a, b) => (a.seq < b.seq
+        ? -1
+        : a.seq > b.seq
+          ? 1
+          : 0))
   const out: SeqMark[] = []
   for (const m of sorted) {
     if (out.length > 0 && out[out.length - 1]?.seq === m.seq)
@@ -195,7 +210,9 @@ export function createMessageMarksStore() {
       // (unset) the horizon is unknown, so the preserve is skipped and the fresh snapshot is
       // trusted wholesale (a beyond-horizon race mark is dropped); loadMessageMarks schedules a
       // retry to heal it once a good horizon returns.
-      const freshBeyondSnapshot = maxSeq !== undefined ? cur.marks.filter(m => m.seq > maxSeq) : []
+      const freshBeyondSnapshot = maxSeq !== undefined
+        ? cur.marks.filter(m => m.seq > maxSeq)
+        : []
       base.set(agentId, {
         // `loaded` is what reveals the rail. Claim it only once we hold a usable range:
         // a FIRST seed whose min/max came back indeterminate (unset, a worker DB error) would
@@ -203,9 +220,16 @@ export function createMessageMarksStore() {
         // mis-position every dot. Stay hidden until a good reseed heals it; once loaded, a
         // later indeterminate reseed keeps the prior range and stays loaded.
         loaded: cur.loaded || (minSeq !== undefined && maxSeq !== undefined),
-        minSeq: minSeq !== undefined ? minSeq : cur.minSeq,
-        seedMaxSeq: maxSeq !== undefined ? maxSeq : cur.seedMaxSeq,
-        marks: normalizeSeed([...marks, ...freshBeyondSnapshot]),
+        minSeq: minSeq !== undefined
+          ? minSeq
+          : cur.minSeq,
+        seedMaxSeq: maxSeq !== undefined
+          ? maxSeq
+          : cur.seedMaxSeq,
+        marks: normalizeSeed([
+          ...marks,
+          ...freshBeyondSnapshot,
+        ]),
       })
     },
     /**
@@ -221,7 +245,9 @@ export function createMessageMarksStore() {
         return
       const cur = base.get(agentId)
       const nextMarks = insertMarkSorted(cur.marks, seq, type)
-      const nextMin = cur.minSeq === 0n || seq < cur.minSeq ? seq : cur.minSeq
+      const nextMin = cur.minSeq === 0n || seq < cur.minSeq
+        ? seq
+        : cur.minSeq
       if (nextMarks === cur.marks && nextMin === cur.minSeq)
         return
       base.set(agentId, { ...cur, minSeq: nextMin, marks: nextMarks })

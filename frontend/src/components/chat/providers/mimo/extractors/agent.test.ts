@@ -22,13 +22,24 @@ function actorPart(fields: Partial<MiMoToolPart>): MiMoToolPart {
   }
 }
 
-const spawn = { operation: { action: 'spawn', subagent_type: 'general', description: 'Helper', prompt: 'Work.' } }
-const run = { operation: { ...spawn.operation, action: 'run' } }
+const spawn = {
+  operation: {
+    action: 'spawn',
+    subagent_type: 'general',
+    description: 'Helper',
+    prompt: 'Work.',
+  },
+}
+const run = {
+  operation: { ...spawn.operation, action: 'run' },
+}
 const RUN_LINE = 'actor_id: explore-1 (to give this subagent more work, `send` it another message)'
 
 /** A blocking run's answer, with the status and the summary its wrapper states. */
 function runOutput(status: string, summary?: string, body = 'The answer is 42.'): string {
-  return `${RUN_LINE}\n\n<actor_result status="${status}"${summary === undefined ? '' : ` summary="${summary}"`}>\n${body}\n</actor_result>`
+  return `${RUN_LINE}\n\n<actor_result status="${status}"${summary === undefined
+    ? ''
+    : ` summary="${summary}"`}>\n${body}\n</actor_result>`
 }
 
 describe('mimoActorOperation', () => {
@@ -38,9 +49,15 @@ describe('mimoActorOperation', () => {
 
   // MiMo refuses an operation sent as a JSON string, so the call states none.
   it.each([
-    ['a JSON string', { operation: '{"action":"spawn"}' }],
+    [
+      'a JSON string',
+      { operation: '{"action":"spawn"}' },
+    ],
     ['no operation', {}],
-    ['a list', { operation: [] }],
+    [
+      'a list',
+      { operation: [] },
+    ],
   ])('reads no operation from %s', (_name, input) => {
     expect(mimoActorOperation(input)).toBeUndefined()
     expect(mimoActorAction(input)).toBe('')
@@ -58,7 +75,9 @@ describe('mimoActorSpawns', () => {
     ['cancel', false],
     ['models', false],
   ])('answers %s with %s', (action, spawns) => {
-    expect(mimoActorSpawns({ operation: { action } })).toBe(spawns)
+    expect(mimoActorSpawns({
+      operation: { action },
+    })).toBe(spawns)
   })
 })
 
@@ -68,7 +87,9 @@ describe('mimoActorRequest', () => {
   })
 
   it('states no agent type that the call gave none', () => {
-    expect(mimoActorRequest({ operation: { action: 'spawn', description: 'Helper', prompt: 'Work.' } })).toEqual({ description: 'Helper', prompt: 'Work.' })
+    expect(mimoActorRequest({
+      operation: { action: 'spawn', description: 'Helper', prompt: 'Work.' },
+    })).toEqual({ description: 'Helper', prompt: 'Work.' })
     expect(mimoActorRequest({})).toEqual({ description: '', prompt: '' })
   })
 })
@@ -81,7 +102,10 @@ describe('mimoActorRun', () => {
       agentId: 'general-1',
       statusLabel: 'launched in the background',
       outcome: 'running',
-      metadata: [{ label: 'Agent ID', value: 'general-1' }, { label: 'Agent', value: 'general' }],
+      metadata: [
+        { label: 'Agent ID', value: 'general-1' },
+        { label: 'Agent', value: 'general' },
+      ],
       body: 'Work.',
       bodyLabel: 'Prompt',
     })
@@ -91,7 +115,10 @@ describe('mimoActorRun', () => {
     const started = actorPart({
       input: spawn,
       output: 'Background sub-session started. actor_id: general-1',
-      metadata: { actorId: 'general-2', model: { modelID: 'alpha', providerID: 'mock' } },
+      metadata: {
+        actorId: 'general-2',
+        model: { modelID: 'alpha', providerID: 'mock' },
+      },
     })
     expect(mimoActorRun(started)?.metadata).toEqual([
       { label: 'Agent ID', value: 'general-2' },
@@ -101,12 +128,19 @@ describe('mimoActorRun', () => {
   })
 
   it('reads a blocking run\'s report and its summary', () => {
-    expect(mimoActorRun(actorPart({ input: run, output: runOutput('success', 'Found it') }))).toEqual({
+    expect(mimoActorRun(actorPart({
+      input: run,
+      output: runOutput('success', 'Found it'),
+    }))).toEqual({
       description: 'Helper',
       agentId: 'explore-1',
       statusLabel: 'success',
       outcome: 'completed',
-      metadata: [{ label: 'Agent ID', value: 'explore-1' }, { label: 'Agent', value: 'general' }, { label: 'Summary', value: 'Found it' }],
+      metadata: [
+        { label: 'Agent ID', value: 'explore-1' },
+        { label: 'Agent', value: 'general' },
+        { label: 'Summary', value: 'Found it' },
+      ],
       body: 'The answer is 42.',
     })
   })
@@ -123,11 +157,17 @@ describe('mimoActorRun', () => {
     ['cancelled', 'stopped'],
     ['timeout', 'running'],
   ])('reads a run that states %s as %s', (status, outcome) => {
-    expect(mimoActorRun(actorPart({ input: run, output: runOutput(status) }))).toMatchObject({ statusLabel: status, outcome })
+    expect(mimoActorRun(actorPart({
+      input: run,
+      output: runOutput(status),
+    }))).toMatchObject({ statusLabel: status, outcome })
   })
 
   it('keeps a report of several lines whole', () => {
-    expect(mimoActorRun(actorPart({ input: run, output: runOutput('success', undefined, '**Status**: success\n\nLine one.\nLine two.') }))?.body)
+    expect(mimoActorRun(actorPart({
+      input: run,
+      output: runOutput('success', undefined, '**Status**: success\n\nLine one.\nLine two.'),
+    }))?.body)
       .toBe('**Status**: success\n\nLine one.\nLine two.')
   })
 
@@ -137,7 +177,11 @@ describe('mimoActorRun', () => {
     const note = 'note: task_id "T9" does not exist in this session; ran ad-hoc. Create it with the `task` tool first, or omit task_id.'
     const parsed = mimoActorRun(actorPart({ input: run, output: `${note}\n\n${runOutput('success')}` }))
     expect(parsed).toMatchObject({ agentId: 'explore-1', outcome: 'completed', body: 'The answer is 42.' })
-    expect(parsed?.metadata).toEqual([{ label: 'Agent ID', value: 'explore-1' }, { label: 'Agent', value: 'general' }, { label: 'Note', value: note }])
+    expect(parsed?.metadata).toEqual([
+      { label: 'Agent ID', value: 'explore-1' },
+      { label: 'Agent', value: 'general' },
+      { label: 'Note', value: note },
+    ])
   })
 
   it('reads a background spawn after a task notice, and states the notice', () => {
@@ -160,26 +204,46 @@ describe('mimoActorRun', () => {
   // A report can hold any text. The call's own action says which answer it gave, so
   // a report that quotes a spawn's line stays a report.
   it('reads a run whose report quotes the line of a background spawn as a run', () => {
-    const parsed = mimoActorRun(actorPart({ input: run, output: runOutput('success', undefined, 'Background sub-session started. actor_id: general-9') }))
+    const parsed = mimoActorRun(actorPart({
+      input: run,
+      output: runOutput('success', undefined, 'Background sub-session started. actor_id: general-9'),
+    }))
     expect(parsed).toMatchObject({ agentId: 'explore-1', outcome: 'completed', body: 'Background sub-session started. actor_id: general-9' })
   })
 
   it('reads no run from a spawn that answered in the form of a run', () => {
-    expect(mimoActorRun(actorPart({ input: spawn, output: runOutput('success') }))).toBeNull()
+    expect(mimoActorRun(actorPart({
+      input: spawn,
+      output: runOutput('success'),
+    }))).toBeNull()
   })
 
   // Only a spawn and a run start a subagent. Another action that quotes a spawn's
   // line in its answer reports no run.
   it.each([
-    ['a send', { operation: { action: 'send', to_actor_id: 'general-1', content: 'hi' } }],
-    ['a status', { operation: { action: 'status', actor_id: 'general-1' } }],
+    [
+      'a send',
+      {
+        operation: { action: 'send', to_actor_id: 'general-1', content: 'hi' },
+      },
+    ],
+    [
+      'a status',
+      {
+        operation: { action: 'status', actor_id: 'general-1' },
+      },
+    ],
     ['no operation', {}],
   ])('reads no run from %s', (_name, input) => {
     expect(mimoActorRun(actorPart({ input, output: 'Background sub-session started. actor_id: general-1' }))).toBeNull()
   })
 
   it('prefers the id the metadata gives for a blocking run', () => {
-    const parsed = mimoActorRun(actorPart({ input: run, output: runOutput('success'), metadata: { actorId: 'explore-7' } }))
+    const parsed = mimoActorRun(actorPart({
+      input: run,
+      output: runOutput('success'),
+      metadata: { actorId: 'explore-7' },
+    }))
     expect(parsed?.agentId).toBe('explore-7')
     expect(parsed?.metadata[0]).toEqual({ label: 'Agent ID', value: 'explore-7' })
   })
@@ -187,14 +251,21 @@ describe('mimoActorRun', () => {
   // A report whose wrapper states an empty status has no word of MiMo's to state,
   // and it claims no failure that MiMo did not state.
   it('reads a run whose wrapper states an empty status as completed, with no status word', () => {
-    const parsed = mimoActorRun(actorPart({ input: run, output: runOutput('') }))
+    const parsed = mimoActorRun(actorPart({
+      input: run,
+      output: runOutput(''),
+    }))
     expect(parsed).toMatchObject({ agentId: 'explore-1', outcome: 'completed', body: 'The answer is 42.' })
     expect(parsed).not.toHaveProperty('statusLabel')
   })
 
   it('states no agent row for a launch that gave no subagent type', () => {
-    const bare = { operation: { action: 'spawn', description: 'Helper', prompt: 'Work.' } }
-    expect(mimoActorRun(actorPart({ input: bare, output: 'Background sub-session started. actor_id: general-1' }))?.metadata).toEqual([{ label: 'Agent ID', value: 'general-1' }])
+    const bare = {
+      operation: { action: 'spawn', description: 'Helper', prompt: 'Work.' },
+    }
+    expect(mimoActorRun(actorPart({ input: bare, output: 'Background sub-session started. actor_id: general-1' }))?.metadata).toEqual([
+      { label: 'Agent ID', value: 'general-1' },
+    ])
   })
 })
 

@@ -8,7 +8,7 @@ function nonemptyString(value: unknown): value is string {
 /** Validate startup metadata without changing the provider's descriptors. */
 export function validateStartupOptionGroups(groups: readonly StartupOptionGroup[]): void {
   if (!Array.isArray(groups))
-    throw new Error('The provider startup groups must be an array.')
+    throw new TypeError('The provider startup groups must be an array.')
   const ids = new Set<string>()
   for (const group of groups) {
     if (!isObject(group) || !nonemptyString(group.id) || !nonemptyString(group.label)
@@ -34,7 +34,9 @@ export function resolveStartupOptionValues(groups: readonly StartupOptionGroup[]
   validateStartupOptionGroups(groups)
   const entries: [string, string][] = []
   for (const group of groups) {
-    const value = Object.hasOwn(selected, group.id) ? selected[group.id] : group.defaultValue
+    const value = Object.hasOwn(selected, group.id)
+      ? selected[group.id]
+      : group.defaultValue
     if (!group.options.some(option => option.value === value))
       throw new Error('The selected startup value is outside the provider options.')
     entries.push([group.id, value!])

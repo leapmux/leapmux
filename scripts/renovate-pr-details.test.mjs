@@ -33,7 +33,16 @@ function setup(write) {
   cleanups.push(capture.dispose)
   return capture
 }
-const record = () => ({ version: 1, repository: 'leapmux/leapmux', branchName: 'renovate/go-security', warnings: 'Artifact generation failed.', notes: 'Security advisory details.', changelogs: 'Release notes.' })
+function record() {
+  return {
+    version: 1,
+    repository: 'leapmux/leapmux',
+    branchName: 'renovate/go-security',
+    warnings: 'Artifact generation failed.',
+    notes: 'Security advisory details.',
+    changelogs: 'Release notes.',
+  }
+}
 
 describe('PR detail capture', () => {
   it('runs through the pinned PR body renderer before platform truncation', () => {
@@ -46,8 +55,18 @@ describe('PR detail capture', () => {
       branchName: 'renovate/go-security',
       recreateClosed: false,
       prBodyColumns: ['Package', 'Change'],
-      warnings: [{ topic: 'fixture', message: 'A warning for the comment.' }],
-      upgrades: [{ depName: 'example.com/library', currentValue: '1.0.0', newValue: '1.1.0', prBodyDefinitions: { Package: '{{depName}}', Change: '{{currentValue}} → {{newValue}}' }, prBodyNotes: [notes] }],
+      warnings: [
+        { topic: 'fixture', message: 'A warning for the comment.' },
+      ],
+      upgrades: [
+        {
+          depName: 'example.com/library',
+          currentValue: '1.0.0',
+          newValue: '1.1.0',
+          prBodyDefinitions: { Package: '{{depName}}', Change: '{{currentValue}} → {{newValue}}' },
+          prBodyNotes: [notes],
+        },
+      ],
     }
     const body = getPrBody(branch, { debugData: {} }, branch)
     expect(body).toContain('example.com/library')
@@ -61,9 +80,18 @@ describe('PR detail capture', () => {
   it('captures complete native renderer fragments without including them in the body', () => {
     const captured = []
     const capture = setup(value => captured.push(value))
-    const data = { header: getPrHeader({ prHeader: capture.prHeader, branchName: 'renovate/go-security' }), table: '- Runtime: 1 → 2', warnings: 'Artifact generation failed.', notes: 'Security details.\n'.repeat(8000), changelogs: 'Release notes.', token: 'never-export-this-value' }
+    const data = {
+      header: getPrHeader({ prHeader: capture.prHeader, branchName: 'renovate/go-security' }),
+      table: '- Runtime: 1 → 2',
+      warnings: 'Artifact generation failed.',
+      notes: 'Security details.\n'.repeat(8000),
+      changelogs: 'Release notes.',
+      token: 'never-export-this-value',
+    }
     const body = compile(capture.prBodyTemplate, data, false)
-    expect([...body.matchAll(/^## (.+)$/gm)].map(match => match[1])).toEqual(['Motivation', 'Modifications', 'Result'])
+    expect([
+      ...body.matchAll(/^## (.+)$/gm),
+    ].map(match => match[1])).toEqual(['Motivation', 'Modifications', 'Result'])
     expect(body).toContain('Runtime: 1 → 2')
     expect(body).not.toContain(data.warnings)
     expect(body).not.toContain('Security details.')
@@ -86,13 +114,35 @@ describe('PR detail capture', () => {
     const capture = setup(() => {
       throw new Error('Storage unavailable')
     })
-    const data = { header: JSON.stringify({ repository: 'leapmux/leapmux', branchName: 'renovate/go-security' }), table: '', warnings: '', notes: '', changelogs: '' }
+    const data = {
+      header: JSON.stringify({ repository: 'leapmux/leapmux', branchName: 'renovate/go-security' }),
+      table: '',
+      warnings: '',
+      notes: '',
+      changelogs: '',
+    }
     expect(() => compile(capture.prBodyTemplate, data, false)).toThrow('Storage unavailable')
-    expect(() => compile(capture.prBodyTemplate, { ...data, header: JSON.stringify({ repository: 'other/repo', branchName: 'renovate/go-security' }) }, false)).toThrow('leapmux/leapmux')
-    for (const branchName of ['', 'main', 'renovate/../../main\n', 'renovate/a'.repeat(100)])
-      expect(() => validateDetailRecord({ ...record(), branchName })).toThrow()
-    for (const warnings of [undefined, null, 0, []])
-      expect(() => validateDetailRecord({ ...record(), warnings })).toThrow('string')
+    expect(() => compile(capture.prBodyTemplate, {
+      ...data,
+      header: JSON.stringify({ repository: 'other/repo', branchName: 'renovate/go-security' }),
+    }, false)).toThrow('leapmux/leapmux')
+    for (const branchName of [
+      '',
+      'main',
+      'renovate/../../main\n',
+      'renovate/a'.repeat(100),
+    ]) {
+      expect(() => validateDetailRecord({
+        ...record(),
+        branchName,
+      })).toThrow()
+    }
+    for (const warnings of [undefined, null, 0, []]) {
+      expect(() => validateDetailRecord({
+        ...record(),
+        warnings,
+      })).toThrow('string')
+    }
   })
 })
 
@@ -128,7 +178,12 @@ describe('PR detail comments', () => {
     expect(chunks.length).toBeGreaterThan(3)
     for (const chunk of chunks)
       expect(`${chunk.prefix}${chunk.raw}${chunk.suffix}`).toContain('<summary>More information</summary>')
-    const comments = renderDetailComments({ ...record(), warnings: '', notes: text, changelogs: '' })
+    const comments = renderDetailComments({
+      ...record(),
+      warnings: '',
+      notes: text,
+      changelogs: '',
+    })
     for (const comment of comments) {
       expect(Buffer.byteLength(comment)).toBeLessThan(50000)
       const document = parseHtml(markdown.render(comment))
@@ -165,7 +220,9 @@ describe('PR detail comments', () => {
   it('ignores details examples inside another HTML tag attribute', () => {
     const text = '<div title="<details>">Ordinary text.</div>'
     const chunks = splitDetailText(text)
-    expect(chunks).toEqual([{ raw: text, prefix: '', suffix: '' }])
+    expect(chunks).toEqual([
+      { raw: text, prefix: '', suffix: '' },
+    ])
   })
   it('closes truncated sections and supplies a continuation summary when none exists', () => {
     const text = `<details>\n\n${'secret\n'.repeat(150)}`
@@ -207,13 +264,21 @@ describe('PR detail comments', () => {
       expect(chunk.raw.isWellFormed()).toBe(true)
     }
     expect(chunks.some(chunk => chunk.prefix.includes('```go'))).toBe(true)
-    const comments = renderDetailComments({ ...record(), notes: text })
+    const comments = renderDetailComments({
+      ...record(),
+      notes: text,
+    })
     expect(comments.length).toBeGreaterThan(2)
     for (const comment of comments) expect(Buffer.byteLength(comment)).toBeLessThan(50000)
   })
   it('handles empty content and invalid limits', () => {
     expect(splitDetailText('')).toEqual([])
-    expect(renderDetailComments({ ...record(), warnings: '', notes: '', changelogs: '' })).toEqual([])
+    expect(renderDetailComments({
+      ...record(),
+      warnings: '',
+      notes: '',
+      changelogs: '',
+    })).toEqual([])
     for (const limit of [0, -1, 99, 46001, Infinity, 0.5])
       expect(() => splitDetailText('value', limit)).toThrow('limit')
   })

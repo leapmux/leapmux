@@ -25,7 +25,9 @@ async function expectNativeChildCompletion(context: Pick<ManagedNativeScenarioCo
   const snapshot = await readNativeMessageSnapshot(context, child.id)
   const answers = snapshot.messages.filter((message) => {
     const body = nativeMessageBody(message)
-    const content = isObject(body) && isObject(body.message) ? body.message.content : undefined
+    const content = isObject(body) && isObject(body.message)
+      ? body.message.content
+      : undefined
     return message.source === MessageSource.AGENT && isObject(body) && body.type === 'assistant'
       && Array.isArray(content) && content.some(block => isObject(block) && block.type === 'text' && block.text === 'CHILD_LIVE_DONE')
   })
@@ -45,7 +47,12 @@ async function expectNativeChildCompletion(context: Pick<ManagedNativeScenarioCo
 
 claudeTest.describe('Claude subagent background tasks', () => {
   claudeTest('shows a child prompt while that child still waits for its model', async ({ authenticatedWorkspace, page, modelScript, leapmuxServer }) => {
-    await exerciseLiveChildTranscript(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedWorkspace.workspaceId }), {
+    await exerciseLiveChildTranscript(await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedWorkspace.workspaceId,
+    }), {
       childWhen: { user: 'CHILD_LIVE_CLAUDE_MARKER' },
       childTask: 'Report CHILD_LIVE_CLAUDE_MARKER.',
       parentTask: 'Spawn one subagent to report its assigned marker.',
@@ -57,7 +64,12 @@ claudeTest.describe('Claude subagent background tasks', () => {
   })
 
   claudeTest('shows a child file result only in the running child tab', async ({ authenticatedWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedWorkspace.workspaceId,
+    })
     const agent = await currentNativeAgent(context)
     expect(agent.agentProvider).toBe(context.provider)
     const workingDir = agent.workingDir
@@ -67,7 +79,9 @@ claudeTest.describe('Claude subagent background tasks', () => {
       childWhen: { user: 'CHILD_LIVE_CLAUDE_READ' },
       childTask: 'Read the assigned file for CHILD_LIVE_CLAUDE_READ.',
       parentTask: 'Start one child to read the assigned file.',
-      toolProof: { read: { workingDir } },
+      toolProof: {
+        read: { workingDir },
+      },
       beforeRelease: async () => {
         await registerClaudeChildReportRules(modelScript, { spawnCallId: 'spawn-live-child', report: 'CHILD_LIVE_DONE', reply: 'The child file report arrived.' })
       },

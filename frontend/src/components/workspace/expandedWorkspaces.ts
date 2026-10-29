@@ -26,7 +26,9 @@ const EMPTY: ReadonlySet<string> = new Set()
 const expanded = createAccountScopedSignal<ReadonlySet<string>>(EMPTY, {
   read: () => {
     const stored = sessionStorageGet<string[]>(KEY_EXPANDED_WORKSPACES)
-    return stored ? new Set(stored) : EMPTY
+    return stored
+      ? new Set(stored)
+      : EMPTY
   },
   write: current => sessionStorageSet(KEY_EXPANDED_WORKSPACES, [...current]),
 })

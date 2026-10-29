@@ -18,7 +18,9 @@ async function settle(): Promise<void> {
 }
 
 /** A page whose `evaluate` runs the function in this DOM, as the browser does. */
-const page = { evaluate: async <T>(run: () => T) => run() } as unknown as Pick<Page, 'evaluate'>
+const page = {
+  evaluate: async <T>(run: () => T) => run(),
+} as unknown as Pick<Page, 'evaluate'>
 
 afterEach(() => {
   window.__thinkingIndicatorWatch?.stop()

@@ -28,7 +28,12 @@ const schema = new Schema({
     ordered_list: { group: 'block', content: 'paragraph+' },
     table: { group: 'block', content: 'paragraph+' },
     text: { group: 'inline', inline: true },
-    hardbreak: { group: 'inline', inline: true, selectable: false, leafText: () => '\n' },
+    hardbreak: {
+      group: 'inline',
+      inline: true,
+      selectable: false,
+      leafText: () => '\n',
+    },
     image: { group: 'inline', inline: true, atom: true },
   },
 })

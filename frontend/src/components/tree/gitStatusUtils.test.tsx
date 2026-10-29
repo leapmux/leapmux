@@ -33,9 +33,15 @@ function renderRow(props: {
   const { container } = render(() => (
     <RowLabelWithStats
       label={props.label ?? 'feature/auth'}
-      {...(props.tooltipLabel !== undefined ? { tooltipLabel: props.tooltipLabel } : {})}
-      {...(props.tooltipContent !== undefined ? { tooltipContent: props.tooltipContent } : {})}
-      {...(props.showWhen !== undefined ? { showWhen: props.showWhen } : {})}
+      {...(props.tooltipLabel !== undefined
+        ? { tooltipLabel: props.tooltipLabel }
+        : {})}
+      {...(props.tooltipContent !== undefined
+        ? { tooltipContent: props.tooltipContent }
+        : {})}
+      {...(props.showWhen !== undefined
+        ? { showWhen: props.showWhen }
+        : {})}
       stats={props.stats ?? null}
     />
   ))

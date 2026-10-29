@@ -28,13 +28,17 @@ function makeSelectRequest(): ControlRequest {
 
 describe('pi select control requests', () => {
   it('keeps an extension select as a question without an MCP permission hook', async () => {
-    const request = { requestId: 'extension-select', agentId: 'agent-1', payload: {
-      type: 'extension_ui_request',
-      id: 'extension-select',
-      method: 'select',
-      title: 'MCP: probe wants to run write\n\nArguments:\n{}',
-      options: ['Allow once', 'Allow for session', 'Deny'],
-    } }
+    const request = {
+      requestId: 'extension-select',
+      agentId: 'agent-1',
+      payload: {
+        type: 'extension_ui_request',
+        id: 'extension-select',
+        method: 'select',
+        title: 'MCP: probe wants to run write\n\nArguments:\n{}',
+        options: ['Allow once', 'Allow for session', 'Deny'],
+      },
+    }
     const original = JSON.stringify(request.payload)
     expect(piControls.elicitation).toBeUndefined()
     const { findByText, getByTestId } = render(() => <ControlRequestContent agentProvider={AgentProvider.PI} request={request} answerState={makeAskState()} />)
@@ -54,7 +58,15 @@ describe('pi select control requests', () => {
         id: 'plan-dialog',
         method: 'select',
         title: 'Proposed plan ready. What next?\nPlan details belong in the transcript.',
-        options: ['Implement here', 'Start fresh and implement', 'Implementation options…', 'Export plan…', 'Save for later', 'Stay in Plan mode', 'Discard plan and exit'],
+        options: [
+          'Implement here',
+          'Start fresh and implement',
+          'Implementation options…',
+          'Export plan…',
+          'Save for later',
+          'Stay in Plan mode',
+          'Discard plan and exit',
+        ],
       },
     }
     const answerState = makeAskState()
@@ -72,11 +84,25 @@ describe('pi select control requests', () => {
     fireEvent.click(getByTestId('plan-approve-btn'))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
     expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0]?.[0])))
-      .toEqual({ type: 'extension_ui_response', id: 'plan-dialog', value: clearContext ? 'Start fresh and implement' : 'Implement here' })
+      .toEqual({
+        type: 'extension_ui_response',
+        id: 'plan-dialog',
+        value: clearContext ? 'Start fresh and implement' : 'Implement here',
+      })
   })
 
   it('allows an explicit empty answer to a native input dialog', async () => {
-    const request = { requestId: 'empty', agentId: 'agent-1', payload: { type: 'extension_ui_request', id: 'empty', method: 'input', title: 'Choose any options', placeholder: '1,3' } }
+    const request = {
+      requestId: 'empty',
+      agentId: 'agent-1',
+      payload: {
+        type: 'extension_ui_request',
+        id: 'empty',
+        method: 'input',
+        title: 'Choose any options',
+        placeholder: '1,3',
+      },
+    }
     const onRespond = vi.fn(async (_content: Uint8Array) => {})
     const { getByTestId } = render(() => <ControlRequestActions request={request} answerState={makeAskState()} agentProvider={AgentProvider.PI} onRespond={onRespond} hasEditorContent={false} onTriggerSend={() => {}} />)
     const submit = getByTestId('control-submit-btn')
@@ -88,15 +114,40 @@ describe('pi select control requests', () => {
 
   it('loads complete previews from the stored source outside the visible transcript', async () => {
     const preview = `\`\`\`txt\n${'preview line\n'.repeat(80)}complete-preview-end\n\`\`\``
-    const questions = [{ question: 'Choose a layout', header: 'Layout', options: [{ label: 'Compact', description: 'Small', preview }, { label: 'Wide', description: 'Large' }] }]
-    const source = makeMessage({ seq: 7n, agentProvider: AgentProvider.PI, spanId: 'question-tool', content: rawContent({ type: 'tool_execution_start', toolCallId: 'question-tool', toolName: 'ask_user_question', args: { questions } }) })
+    const questions = [
+      {
+        question: 'Choose a layout',
+        header: 'Layout',
+        options: [
+          { label: 'Compact', description: 'Small', preview },
+          { label: 'Wide', description: 'Large' },
+        ],
+      },
+    ]
+    const source = makeMessage({
+      seq: 7n,
+      agentProvider: AgentProvider.PI,
+      spanId: 'question-tool',
+      content: rawContent({
+        type: 'tool_execution_start',
+        toolCallId: 'question-tool',
+        toolName: 'ask_user_question',
+        args: { questions },
+      }),
+    })
     const fetchMessage = vi.fn(async () => source)
     const messageContext = testMessageContext({ fetchMessage })
     const request = {
       requestId: 'dialog',
       agentId: 'agent-1',
       sourceSeq: 7n,
-      payload: { type: 'extension_ui_request', id: 'dialog', method: 'select', title: `[Layout] Choose a layout\n\n--- 1. Compact preview ---\n${preview.slice(0, 600)}`, options: ['1. Compact — Small', '2. Wide — Large', '3. Type something.'] },
+      payload: {
+        type: 'extension_ui_request',
+        id: 'dialog',
+        method: 'select',
+        title: `[Layout] Choose a layout\n\n--- 1. Compact preview ---\n${preview.slice(0, 600)}`,
+        options: ['1. Compact — Small', '2. Wide — Large', '3. Type something.'],
+      },
     }
     const original = JSON.stringify(request.payload)
     const { findByRole } = render(() => <ControlRequestContent agentProvider={AgentProvider.PI} request={request} messageContext={messageContext} answerState={makeAskState()} />)
@@ -107,14 +158,41 @@ describe('pi select control requests', () => {
   })
 
   it('sends source-backed multi-select choices as the native comma-separated numbers', async () => {
-    const questions = [{ question: 'Choose', multiSelect: true, options: [{ label: 'A', description: 'first', preview: 'A preview' }, { label: 'B', description: 'second', preview: 'B preview' }] }]
-    const source = makeMessage({ seq: 7n, agentProvider: AgentProvider.PI, spanId: 'question-tool', content: rawContent({ type: 'tool_execution_start', toolCallId: 'question-tool', toolName: 'ask_user_question', args: { questions } }) })
-    const messageContext = testMessageContext({ messages: () => [source] })
+    const questions = [
+      {
+        question: 'Choose',
+        multiSelect: true,
+        options: [
+          { label: 'A', description: 'first', preview: 'A preview' },
+          { label: 'B', description: 'second', preview: 'B preview' },
+        ],
+      },
+    ]
+    const source = makeMessage({
+      seq: 7n,
+      agentProvider: AgentProvider.PI,
+      spanId: 'question-tool',
+      content: rawContent({
+        type: 'tool_execution_start',
+        toolCallId: 'question-tool',
+        toolName: 'ask_user_question',
+        args: { questions },
+      }),
+    })
+    const messageContext = testMessageContext({
+      messages: () => [source],
+    })
     const request = {
       requestId: 'dialog',
       agentId: 'agent-1',
       sourceSeq: 7n,
-      payload: { type: 'extension_ui_request', id: 'dialog', method: 'input', title: 'Choose\n\n1. A — first\n2. B — second\n\nChoose all that apply', placeholder: '1,3' },
+      payload: {
+        type: 'extension_ui_request',
+        id: 'dialog',
+        method: 'input',
+        title: 'Choose\n\n1. A — first\n2. B — second\n\nChoose all that apply',
+        placeholder: '1,3',
+      },
     }
     const answerState = makeAskState()
     const onRespond = vi.fn(async (_content: Uint8Array) => {})
@@ -186,7 +264,11 @@ describe('pi select control requests', () => {
     const { getByTestId } = render(() => (
       <ControlRequestActions
         request={makeSelectRequest()}
-        answerState={makeAskState({ selections: { 0: ['Block'] } })}
+        answerState={makeAskState({
+          selections: {
+            0: ['Block'],
+          },
+        })}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
@@ -363,7 +445,9 @@ describe('pi editor control requests', () => {
       <ControlRequestContent agentProvider={AgentProvider.PI} request={makeEditorRequest('initial')} answerState={answerState} />
     ))
     const first = renderEditor()
-    fireEvent.input(first.getByTestId('dialog-editor'), { target: { value } })
+    fireEvent.input(first.getByTestId('dialog-editor'), {
+      target: { value },
+    })
     first.unmount()
     const second = renderEditor()
     expect((second.getByTestId('dialog-editor') as HTMLTextAreaElement).value).toBe(value)
@@ -394,7 +478,9 @@ describe('pi editor control requests', () => {
       </>
     ))
     const textarea = getByTestId('dialog-editor') as HTMLTextAreaElement
-    fireEvent.input(textarea, { target: { value: 'multi\nline' } })
+    fireEvent.input(textarea, {
+      target: { value: 'multi\nline' },
+    })
     fireEvent.click(getByTestId('control-allow-btn'))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
     // Called once above; `?? []` is the type-level guard alone.
@@ -415,7 +501,12 @@ describe('pi dialog of an unknown method', () => {
     return {
       requestId: 'req-u',
       agentId: 'agent-1',
-      payload: { type: 'extension_ui_request', id: 'req-u', method: 'something_pi_added_later', title: 'Heads up' },
+      payload: {
+        type: 'extension_ui_request',
+        id: 'req-u',
+        method: 'something_pi_added_later',
+        title: 'Heads up',
+      },
     }
   }
 
@@ -448,7 +539,13 @@ describe('pi dialog content', () => {
     const request: ControlRequest = {
       requestId: 'req-t',
       agentId: 'agent-1',
-      payload: { type: 'extension_ui_request', id: 'req-t', method: 'confirm', title: 'Continue?', timeout: 30000 },
+      payload: {
+        type: 'extension_ui_request',
+        id: 'req-t',
+        method: 'confirm',
+        title: 'Continue?',
+        timeout: 30000,
+      },
     }
     const { getByText } = render(() => (
       <ControlRequestContent agentProvider={AgentProvider.PI} request={request} answerState={makeAskState()} />

@@ -26,14 +26,28 @@ const POINTER_ERROR = 'The sample result has no filesystem pointer.'
 
 /** A reader that keeps the contract: one record through the shared reader, and its own pointer refusal. */
 function sampleReader(snapshot: NativeMessageSnapshot, callId: string): NativeOutputReceipt {
-  const record = readNativeToolOutputRecord(snapshot, { callId, spanId: callId, accepts: value => value.toolCallId === callId })
+  const record = readNativeToolOutputRecord(snapshot, {
+    callId,
+    spanId: callId,
+    accepts: value => value.toolCallId === callId,
+  })
   const path = record.frame.outputPath
   if (!isFilesystemPath(path))
     throw new Error(POINTER_ERROR)
-  return { paths: [path], previewText: String(record.frame.output), frame: record.frame, content: record.message.content }
+  return {
+    paths: [path],
+    previewText: String(record.frame.output),
+    frame: record.frame,
+    content: record.message.content,
+  }
 }
 
-const contract: NativeOutputReaderContract = { read: sampleReader, frame, path: frame.outputPath, pointerError: POINTER_ERROR }
+const contract: NativeOutputReaderContract = {
+  read: sampleReader,
+  frame,
+  path: frame.outputPath,
+  pointerError: POINTER_ERROR,
+}
 
 /** A reader that takes the first row of the span: it checks no call, no session, and no duplicate. */
 function firstRowReader(snapshot: NativeMessageSnapshot, callId: string): NativeOutputReceipt {
@@ -41,30 +55,79 @@ function firstRowReader(snapshot: NativeMessageSnapshot, callId: string): Native
   if (!message)
     throw new Error('The careless reader found no row.')
   const value = nativeMessageBody(message) as typeof frame
-  return { paths: [value.outputPath], previewText: value.output, frame: value, content: message.content }
+  return {
+    paths: [value.outputPath],
+    previewText: value.output,
+    frame: value,
+    content: message.content,
+  }
 }
 
 describe('nativeOutputSnapshot', () => {
   it('stores each frame as JSON in its own row of the reader session and call span', () => {
-    const snapshot = nativeOutputSnapshot([{ frame }, { frame: { second: true } }])
-    expect(snapshot.agentSessionId).toBe(READER_SESSION_ID)
-    expect(snapshot.messages.map(row => [row.id, row.seq, row.agentSessionId, row.spanId])).toEqual([
-      ['native-row-0', 1n, READER_SESSION_ID, READER_CALL_ID],
-      ['native-row-1', 2n, READER_SESSION_ID, READER_CALL_ID],
+    const snapshot = nativeOutputSnapshot([
+      { frame },
+      {
+        frame: { second: true },
+      },
     ])
-    expect(snapshot.messages.map(nativeMessageBody)).toEqual([frame, { second: true }])
+    expect(snapshot.agentSessionId).toBe(READER_SESSION_ID)
+    expect(snapshot.messages.map(row => [
+      row.id,
+      row.seq,
+      row.agentSessionId,
+      row.spanId,
+    ])).toEqual([
+      [
+        'native-row-0',
+        1n,
+        READER_SESSION_ID,
+        READER_CALL_ID,
+      ],
+      [
+        'native-row-1',
+        2n,
+        READER_SESSION_ID,
+        READER_CALL_ID,
+      ],
+    ])
+    expect(snapshot.messages.map(nativeMessageBody)).toEqual([
+      frame,
+      { second: true },
+    ])
     expect(snapshot.messages.map(nativeMessageSupplement)).toEqual([undefined, undefined])
   })
 
   it('keeps the span, span type, session, completion, and supplement of a row', () => {
-    const supplement = { provider: { toolCallId: READER_CALL_ID } }
+    const supplement = {
+      provider: { toolCallId: READER_CALL_ID },
+    }
     const snapshot = nativeOutputSnapshot(
-      [{ frame, spanId: 'span', spanType: 'execute', agentSessionId: 'row-session', completion: MessageCompletion.COMPLETE, supplement }],
+      [
+        {
+          frame,
+          spanId: 'span',
+          spanType: 'execute',
+          agentSessionId: 'row-session',
+          completion: MessageCompletion.COMPLETE,
+          supplement,
+        },
+      ],
       { agentId: 'owner', agentSessionId: 'owner-session' },
     )
     const row = snapshot.messages[0]
     expect([snapshot.agentId, snapshot.agentSessionId]).toEqual(['owner', 'owner-session'])
-    expect([row?.spanId, row?.spanType, row?.agentSessionId, row?.completion]).toEqual(['span', 'execute', 'row-session', MessageCompletion.COMPLETE])
+    expect([
+      row?.spanId,
+      row?.spanType,
+      row?.agentSessionId,
+      row?.completion,
+    ]).toEqual([
+      'span',
+      'execute',
+      'row-session',
+      MessageCompletion.COMPLETE,
+    ])
     expect(row && nativeMessageSupplement(row)).toEqual(supplement)
   })
 
@@ -105,13 +168,19 @@ describe('runNativeOutputReaderCases', () => {
     const supplementReader = (snapshot: NativeMessageSnapshot, callId: string): NativeOutputReceipt => {
       const receipt = sampleReader(snapshot, callId)
       const message = snapshot.messages[0]
-      return { ...receipt, previewText: JSON.stringify(message && nativeMessageSupplement(message)) }
+      return {
+        ...receipt,
+        previewText: JSON.stringify(message && nativeMessageSupplement(message)),
+      }
     }
     expect(() => expectIgnoresForgedSupplement({ ...contract, read: supplementReader })).toThrow('FORGED_FILE_BODY')
   })
 
   it('fails a reader that returns other bytes than the stored row', () => {
-    const copyReader = (snapshot: NativeMessageSnapshot, callId: string): NativeOutputReceipt => ({ ...sampleReader(snapshot, callId), content: new Uint8Array([1]) })
+    const copyReader = (snapshot: NativeMessageSnapshot, callId: string): NativeOutputReceipt => ({
+      ...sampleReader(snapshot, callId),
+      content: new Uint8Array([1]),
+    })
     expect(() => expectReadsOriginalRecord({ ...contract, read: copyReader })).toThrow('to deeply equal')
   })
 })

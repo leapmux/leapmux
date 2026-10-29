@@ -32,31 +32,59 @@ describe('resolveNativeProcessOwnership', () => {
   })
 
   it('refuses a parent cycle', () => {
-    const rows = [{ pid: 20, ppid: 30, command: 'provider' }, { pid: 30, ppid: 20, command: 'tool' }]
+    const rows = [
+      { pid: 20, ppid: 30, command: 'provider' },
+      { pid: 30, ppid: 20, command: 'tool' },
+    ]
     expect(() => resolveNativeProcessOwnership(rows, 30, WORKER)).toThrow(/cycle|boundary|Worker/)
   })
 
   it('matches the exact Worker executable when its path contains spaces', () => {
     const executable = '/project with spaces/.tmp/bin/leapmux'
-    const rows = [{ pid: 10, ppid: 1, command: `${executable} worker` }, { pid: 20, ppid: 10, command: 'native-provider' }]
-    expect(resolveNativeProcessOwnership(rows, 20, executable)).toEqual({ workerPid: 10, rootPid: 20, ownedPids: [20] })
+    const rows = [
+      { pid: 10, ppid: 1, command: `${executable} worker` },
+      { pid: 20, ppid: 10, command: 'native-provider' },
+    ]
+    expect(resolveNativeProcessOwnership(rows, 20, executable)).toEqual({
+      workerPid: 10,
+      rootPid: 20,
+      ownedPids: [20],
+    })
   })
 
   it('does not treat an unrelated executable with the same basename as the Worker', () => {
-    const rows = [{ pid: 10, ppid: 1, command: '/unrelated/leapmux' }, { pid: 20, ppid: 10, command: 'native-provider' }]
+    const rows = [
+      { pid: 10, ppid: 1, command: '/unrelated/leapmux' },
+      { pid: 20, ppid: 10, command: 'native-provider' },
+    ]
     expect(() => resolveNativeProcessOwnership(rows, 20, WORKER)).toThrow(/Worker|boundary/)
   })
 
   it('uses the exact Windows executable metadata', () => {
     const executable = 'C:\\project with spaces\\leapmux.exe'
     const rows = [
-      { pid: 10, ppid: 1, command: 'unrelated argv text', executable },
+      {
+        pid: 10,
+        ppid: 1,
+        command: 'unrelated argv text',
+        executable,
+      },
       { pid: 20, ppid: 10, command: 'native-provider' },
     ]
-    expect(resolveNativeProcessOwnership(rows, 20, executable)).toEqual({ workerPid: 10, rootPid: 20, ownedPids: [20] })
+    expect(resolveNativeProcessOwnership(rows, 20, executable)).toEqual({
+      workerPid: 10,
+      rootPid: 20,
+      ownedPids: [20],
+    })
   })
 
-  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1.5])('refuses an invalid held tool PID: %s', (pid) => {
+  it.each([
+    0,
+    -1,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    1.5,
+  ])('refuses an invalid held tool PID: %s', (pid) => {
     expect(() => resolveNativeProcessOwnership(PROCESS_TREE, pid, WORKER)).toThrow(/PID|process/)
   })
 })
@@ -76,9 +104,17 @@ describe('native process ownership across E2E shards', () => {
       { pid: 60, ppid: 50, command: '/installed/kiro-cli/engine' },
       { pid: 70, ppid: 60, command: '/installed/node other-held-tool' },
     ]
-    expect(resolveNativeProcessOwnership(rows, 30, worker)).toEqual({ workerPid: 10, rootPid: 20, ownedPids: [20, 21, 22, 30] })
+    expect(resolveNativeProcessOwnership(rows, 30, worker)).toEqual({
+      workerPid: 10,
+      rootPid: 20,
+      ownedPids: [20, 21, 22, 30],
+    })
     expect(() => resolveNativeProcessOwnership(rows, 70, worker)).toThrow('Worker boundary')
-    expect(resolveNativeProcessOwnership(rows, 70, otherWorker)).toEqual({ workerPid: 40, rootPid: 50, ownedPids: [50, 60, 70] })
+    expect(resolveNativeProcessOwnership(rows, 70, otherWorker)).toEqual({
+      workerPid: 40,
+      rootPid: 50,
+      ownedPids: [50, 60, 70],
+    })
   })
 })
 

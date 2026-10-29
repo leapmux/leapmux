@@ -59,7 +59,14 @@ export function createOpenCodeEnvironment(options: OpenCodeEnvironmentOptions): 
     // usage of every Kilo agent reads the mocked account, whose coding plan exists only while a test configures its
     // usage. Kilo reads no personal plan for a credential that names an organization (`accountId`), so this one names none.
     KILO_API_URL: options.kiloCloud.origin,
-    KILO_AUTH_CONTENT: JSON.stringify({ kilo: { type: 'oauth', access: options.kiloCloud.identityToken, refresh: options.kiloCloud.identityToken, expires: KILO_CREDENTIAL_EXPIRY } }),
+    KILO_AUTH_CONTENT: JSON.stringify({
+      kilo: {
+        type: 'oauth',
+        access: options.kiloCloud.identityToken,
+        refresh: options.kiloCloud.identityToken,
+        expires: KILO_CREDENTIAL_EXPIRY,
+      },
+    }),
     // OpenCode and Kilo upgrade their own install from the check that their TUI
     // starts, never from `acp`. The `autoupdate` key of the inline configuration
     // above cannot carry the switch: the check reads only the global config files,
@@ -90,7 +97,12 @@ export function openCodeFamilyConfig(provider: OpenCodeFamilyProviderOptions, mc
   return {
     formatter: false,
     lsp: false,
-    mcp: { [mcpEchoServer.name]: { type: 'local', command: [mcpEchoServer.command, ...mcpEchoServer.args] } },
+    mcp: {
+      [mcpEchoServer.name]: {
+        type: 'local',
+        command: [mcpEchoServer.command, ...mcpEchoServer.args],
+      },
+    },
     model: `${provider.providerID}/${defaultModel.id}`,
     enabled_providers: [provider.providerID],
     provider: {
@@ -106,13 +118,22 @@ function openCodeFamilyProvider(provider: OpenCodeFamilyProviderOptions): Record
     id: provider.providerID,
     env: [],
     npm: '@ai-sdk/openai-compatible',
-    models: Object.fromEntries(provider.models.map(model => [model.id, openCodeFamilyModel(model)])),
+    models: Object.fromEntries(provider.models.map(model => [
+      model.id,
+      openCodeFamilyModel(model),
+    ])),
     options: { apiKey: provider.modelKey, baseURL: provider.baseURL },
   }
 }
 
 /** The reasoning variants of each mock model. */
-const REASONING_VARIANTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+const REASONING_VARIANTS = [
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const
 
 /**
  * One model of the mock provider block, with each reasoning variant when the model reasons.
@@ -132,11 +153,19 @@ function openCodeFamilyModel(model: OpenCodeFamilyModel): Record<string, unknown
     // MiMo's read tool returns an image or a PDF only when the model declares
     // the input modality. An absent entry reads as false and the tool answers
     // with a text refusal instead of the file.
-    modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
+    modalities: {
+      input: ['text', 'image', 'pdf'],
+      output: ['text'],
+    },
     release_date: '2026-01-01',
     limit: { context: 128_000, output: 16_000 },
     cost: { input: 0, output: 0 },
     options: {},
-    variants: reasoning ? Object.fromEntries(REASONING_VARIANTS.map(variant => [variant, { reasoningEffort: variant }])) : {},
+    variants: reasoning
+      ? Object.fromEntries(REASONING_VARIANTS.map(variant => [
+          variant,
+          { reasoningEffort: variant },
+        ]))
+      : {},
   }
 }

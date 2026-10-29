@@ -71,7 +71,9 @@ const CLINE_TOOL_LABELS: ReadonlyMap<string, string> = new Map<string, string>([
 export function clineResultOutcome(result: ClineToolFinish | undefined): ProviderToolOutcome | null {
   if (!result || !result.error)
     return null
-  return result.error.trimEnd().endsWith(CLINE_REJECTION_SUFFIX) ? 'declined' : 'failed'
+  return result.error.trimEnd().endsWith(CLINE_REJECTION_SUFFIX)
+    ? 'declined'
+    : 'failed'
 }
 
 /**
@@ -112,7 +114,9 @@ export function clineToolRow(
     const paired = clineToolFinish(result?.parentObject)
     return {
       call: ownCall,
-      result: paired?.id === ownCall.id ? paired : undefined,
+      result: paired?.id === ownCall.id
+        ? paired
+        : undefined,
       // A retained start is the call's END: the turn stopped before its result.
       finished: retainedRowIsFinal(completion),
     }
@@ -122,7 +126,9 @@ export function clineToolRow(
     return null
   const paired = clineToolStart(request?.parentObject)
   return {
-    call: paired?.id === ownResult.id ? paired : { id: ownResult.id, name: ownResult.name, input: {} },
+    call: paired?.id === ownResult.id
+      ? paired
+      : { id: ownResult.id, name: ownResult.name, input: {} },
     result: ownResult,
     finished: true,
   }
@@ -181,7 +187,9 @@ export function clineToolFacts(row: ClineToolRow, completion: MessageCompletion 
  */
 export function clineToolCallKind(facts: ClineToolFacts): ToolKind {
   const declared = clineToolKind(facts.toolName)
-  return declared === 'unspecified' ? 'mcp' : declared
+  return declared === 'unspecified'
+    ? 'mcp'
+    : declared
 }
 
 /**
@@ -201,8 +209,12 @@ export const CLINE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ClineToolFacts> 
   edit: (args, facts): ToolRequestByKind['edit'] => clineEditRequest(facts.toolName, args),
   // `fetch_web_content` states a list of requests, each a URL with a prompt.
   fetch: (args): ToolRequestByKind['fetch'] => {
-    const requests = Array.isArray(args.requests) ? args.requests.filter(isObject) : []
-    return { url: requests.map(request => pickString(request, 'url')).filter(Boolean).join(', ') }
+    const requests = Array.isArray(args.requests)
+      ? args.requests.filter(isObject)
+      : []
+    return {
+      url: requests.map(request => pickString(request, 'url')).filter(Boolean).join(', '),
+    }
   },
   // `ask_question` states one question and its options.
   question: (args): ToolRequestByKind['question'] => clineQuestionRequest(args),
@@ -214,12 +226,22 @@ export const CLINE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ClineToolFacts> 
   message: (args): ToolRequestByKind['message'] => {
     const to = pickString(args, 'agentId') || pickString(args, 'to')
     const summary = pickString(args, 'subject')
-    return { ...(to ? { to } : {}), text: pickString(args, 'body') || pickString(args, 'message') || pickString(args, 'text'), ...(summary ? { summary } : {}) }
+    return {
+      ...(to
+        ? { to }
+        : {}),
+      text: pickString(args, 'body') || pickString(args, 'message') || pickString(args, 'text'),
+      ...(summary
+        ? { summary }
+        : {}),
+    }
   },
   // A team tool identifies its teammate with `agentId`.
   agents: (args): ToolRequestByKind['agents'] => {
     const query = pickString(args, 'agentId') || pickString(args, 'name')
-    return query ? { query } : {}
+    return query
+      ? { query }
+      : {}
   },
   // A team run states its run id, or the task it runs.
   task: (args, facts): ToolRequestByKind['task'] => {
@@ -228,8 +250,15 @@ export const CLINE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ClineToolFacts> 
       ? 'stop'
       : facts.toolName === CLINE_TOOL_NAME.TeamAwaitRuns
         ? 'output'
-        : facts.toolName === CLINE_TOOL_NAME.TeamListRuns ? 'list' : 'other'
-    return { action, ...(taskId ? { taskId } : {}) }
+        : facts.toolName === CLINE_TOOL_NAME.TeamListRuns
+          ? 'list'
+          : 'other'
+    return {
+      action,
+      ...(taskId
+        ? { taskId }
+        : {}),
+    }
   },
   // A tool of a Model Context Protocol server spells its server and tool in its name.
   mcp: (args, facts): ToolRequestByKind['mcp'] => {
@@ -251,7 +280,12 @@ interface ClineRowHeader {
 
 /** The tool's display name and the words above it. */
 function header(facts: ClineToolFacts): ClineRowHeader {
-  return { ...(facts.label !== undefined ? { label: facts.label } : {}), title: facts.label ?? 'Tool' }
+  return {
+    ...(facts.label !== undefined
+      ? { label: facts.label }
+      : {}),
+    title: facts.label ?? 'Tool',
+  }
 }
 
 /**
@@ -266,15 +300,23 @@ function unfinished<K extends ToolKind>(
 ): ToolCallSpecVariant<K> | null {
   if (!facts.resultAvailable)
     return { kind, ...head, request }
-  if (facts.failed)
-    return { kind, ...head, request, result: failedResult(facts.error) }
+  if (facts.failed) {
+    return {
+      kind,
+      ...head,
+      request,
+      result: failedResult(facts.error),
+    }
+  }
   return null
 }
 
 /** The words of a finished call that no reader of its kind reads, or none for an empty result. */
 function unreadResult(facts: ClineToolFacts): UnparsedToolResult | undefined {
   const text = outputText(facts.output)
-  return text ? unparsedResult(text) : undefined
+  return text
+    ? unparsedResult(text)
+    : undefined
 }
 
 /** The result of a kind that answers in prose: the operations' words, or the result's own text. */
@@ -288,7 +330,11 @@ function proseOf(facts: ClineToolFacts, format: 'plain' | 'markdown' = 'plain') 
 
 /** The declared payload of a kind Cline never produces: its request, and no result. */
 function declaredOnly<K extends ToolKind>(kind: K): (facts: ClineToolFacts) => ToolCallSpecVariant<K> {
-  return (facts): ToolCallSpecVariant<K> => ({ kind, ...header(facts), request: requestFor(kind, facts) })
+  return (facts): ToolCallSpecVariant<K> => ({
+    kind,
+    ...header(facts),
+    request: requestFor(kind, facts),
+  })
 }
 
 /**
@@ -302,16 +348,34 @@ export const CLINE_TOOL_READERS: ToolCallSpecReaderTable<ClineToolFacts> = {
     const request = requestFor('agent', facts)
     // The subagent's task heads the row, because the tool name says only that a
     // subagent ran.
-    const head: ClineRowHeader = { ...header(facts), title: request.description }
+    const head: ClineRowHeader = {
+      ...header(facts),
+      title: request.description,
+    }
     return unfinished('agent', facts, request, head)
-      ?? { kind: 'agent', ...head, request, result: clineAgentResult(request, facts.output) }
+      ?? {
+        kind: 'agent',
+        ...head,
+        request,
+        result: clineAgentResult(request, facts.output),
+      }
   },
   execute: (facts): ToolCallSpecVariant<'execute'> => {
     const request = requestFor('execute', facts)
     // No title: the command is the header on every surface.
-    const head: ClineRowHeader = facts.label !== undefined ? { label: facts.label } : {}
+    const head: ClineRowHeader = facts.label !== undefined
+      ? { label: facts.label }
+      : {}
     return unfinished('execute', facts, request, head)
-      ?? { kind: 'execute', ...head, request, result: { commands: clineCommandResults(facts.output), unresolvedTerminals: [] } }
+      ?? {
+        kind: 'execute',
+        ...head,
+        request,
+        result: {
+          commands: clineCommandResults(facts.output),
+          unresolvedTerminals: [],
+        },
+      }
   },
   read: (facts): ToolCallSpecVariant<'read'> => {
     const request = requestFor('read', facts)
@@ -320,20 +384,44 @@ export const CLINE_TOOL_READERS: ToolCallSpecReaderTable<ClineToolFacts> = {
     if (early)
       return early
     const result = clineReadResult(facts.output)
-    if (result)
-      return { kind: 'read', ...head, request, result, images: clineReadImages(facts.output, request.path) }
+    if (result) {
+      return {
+        kind: 'read',
+        ...head,
+        request,
+        result,
+        images: clineReadImages(facts.output, request.path),
+      }
+    }
     const unread = unreadResult(facts)
-    return { kind: 'read', ...head, request, ...(unread !== undefined ? { result: unread } : {}) }
+    return {
+      kind: 'read',
+      ...head,
+      request,
+      ...(unread !== undefined
+        ? { result: unread }
+        : {}),
+    }
   },
   grep: (facts): ToolCallSpecVariant<'grep'> => {
     const request = requestFor('grep', facts)
     const head = header(facts)
-    return unfinished('grep', facts, request, head) ?? { kind: 'grep', ...head, request, result: clineSearchResult(facts.output) }
+    return unfinished('grep', facts, request, head) ?? {
+      kind: 'grep',
+      ...head,
+      request,
+      result: clineSearchResult(facts.output),
+    }
   },
   fetch: (facts): ToolCallSpecVariant<'fetch'> => {
     const request = requestFor('fetch', facts)
     const head = header(facts)
-    return unfinished('fetch', facts, request, head) ?? { kind: 'fetch', ...head, request, result: { result: proseOf(facts).text } }
+    return unfinished('fetch', facts, request, head) ?? {
+      kind: 'fetch',
+      ...head,
+      request,
+      result: { result: proseOf(facts).text },
+    }
   },
   edit: (facts): ToolCallSpecVariant<'edit'> => {
     const request = requestFor('edit', facts)
@@ -342,66 +430,125 @@ export const CLINE_TOOL_READERS: ToolCallSpecReaderTable<ClineToolFacts> = {
     if (early)
       return early
     const landed = clineEditResult(request, facts.output)
-    if (landed)
-      return { kind: 'edit', ...head, request, result: landed }
+    if (landed) {
+      return {
+        kind: 'edit',
+        ...head,
+        request,
+        result: landed,
+      }
+    }
     const unread = unreadResult(facts)
-    return { kind: 'edit', ...head, request, ...(unread !== undefined ? { result: unread } : {}) }
+    return {
+      kind: 'edit',
+      ...head,
+      request,
+      ...(unread !== undefined
+        ? { result: unread }
+        : {}),
+    }
   },
   question: (facts): ToolCallSpecVariant<'question'> => {
     const request = requestFor('question', facts)
     const head = header(facts)
     return unfinished('question', facts, request, head)
-      ?? { kind: 'question', ...head, request, result: clineQuestionResult(request, facts.output) }
+      ?? {
+        kind: 'question',
+        ...head,
+        request,
+        result: clineQuestionResult(request, facts.output),
+      }
   },
   switch_mode: (facts): ToolCallSpecVariant<'switch_mode'> => {
     const request = requestFor('switch_mode', facts)
     const head = header(facts)
-    return unfinished('switch_mode', facts, request, head) ?? { kind: 'switch_mode', ...head, request, result: proseOf(facts) }
+    return unfinished('switch_mode', facts, request, head) ?? {
+      kind: 'switch_mode',
+      ...head,
+      request,
+      result: proseOf(facts),
+    }
   },
   skill: (facts): ToolCallSpecVariant<'skill'> => {
     const request = requestFor('skill', facts)
     const head = header(facts)
-    return unfinished('skill', facts, request, head) ?? { kind: 'skill', ...head, request, result: proseOf(facts, 'markdown') }
+    return unfinished('skill', facts, request, head) ?? {
+      kind: 'skill',
+      ...head,
+      request,
+      result: proseOf(facts, 'markdown'),
+    }
   },
   report: (facts): ToolCallSpecVariant<'report'> => {
     const request = requestFor('report', facts)
     const head = header(facts)
-    return unfinished('report', facts, request, head) ?? { kind: 'report', ...head, request, result: proseOf(facts, 'markdown') }
+    return unfinished('report', facts, request, head) ?? {
+      kind: 'report',
+      ...head,
+      request,
+      result: proseOf(facts, 'markdown'),
+    }
   },
   trigger: (facts): ToolCallSpecVariant<'trigger'> => {
     const request = requestFor('trigger', facts)
     const head = header(facts)
-    return unfinished('trigger', facts, request, head) ?? { kind: 'trigger', ...head, request, result: proseOf(facts) }
+    return unfinished('trigger', facts, request, head) ?? {
+      kind: 'trigger',
+      ...head,
+      request,
+      result: proseOf(facts),
+    }
   },
   agents: (facts): ToolCallSpecVariant<'agents'> => {
     const request = requestFor('agents', facts)
     const head = header(facts)
-    return unfinished('agents', facts, request, head) ?? { kind: 'agents', ...head, request, result: proseOf(facts) }
+    return unfinished('agents', facts, request, head) ?? {
+      kind: 'agents',
+      ...head,
+      request,
+      result: proseOf(facts),
+    }
   },
   message: (facts): ToolCallSpecVariant<'message'> => {
     const request = requestFor('message', facts)
     const head = header(facts)
-    return unfinished('message', facts, request, head) ?? { kind: 'message', ...head, request, result: proseOf(facts) }
+    return unfinished('message', facts, request, head) ?? {
+      kind: 'message',
+      ...head,
+      request,
+      result: proseOf(facts),
+    }
   },
   task: (facts): ToolCallSpecVariant<'task'> => {
     const request = requestFor('task', facts)
     const head = header(facts)
     return unfinished('task', facts, request, head)
-      ?? { kind: 'task', ...head, request, result: { outcome: 'completed', output: proseOf(facts).text } }
+      ?? {
+        kind: 'task',
+        ...head,
+        request,
+        result: { outcome: 'completed', output: proseOf(facts).text },
+      }
   },
   mcp: (facts): ToolCallSpecVariant<'mcp'> => {
     const request = requestFor('mcp', facts)
     const head = header(facts)
     if (!facts.resultAvailable)
       return { kind: 'mcp', ...head, request }
-    const text = facts.failed ? facts.error : outputText(facts.output)
+    const text = facts.failed
+      ? facts.error
+      : outputText(facts.output)
     return {
       kind: 'mcp',
       ...head,
       request,
       result: {
-        content: [parseMcpContentItem({ type: 'text', text })],
-        ...(facts.failed ? { error: facts.error } : {}),
+        content: [
+          parseMcpContentItem({ type: 'text', text }),
+        ],
+        ...(facts.failed
+          ? { error: facts.error }
+          : {}),
       },
     }
   },

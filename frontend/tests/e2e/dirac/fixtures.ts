@@ -53,7 +53,10 @@ export const anthropicDiracTest = diracTest.extend<{
   anthropicModel: string
   anthropicDiracWorkspace: AnthropicDiracWorkspace
 }>({
-  anthropicModel: ['claude-haiku-4-5-20251001', { option: true }],
+  anthropicModel: [
+    'claude-haiku-4-5-20251001',
+    { option: true },
+  ],
   anthropicDiracWorkspace: async ({ page, leapmuxServer, anthropicModel }, use) => {
     await withPrivateNativeWorkspace(page, leapmuxServer, {
       prefix: 'dirac-anthropic',
@@ -66,7 +69,12 @@ export const anthropicDiracTest = diracTest.extend<{
         optionValues: { permissionMode: 'act', reasoning_effort: 'medium' },
       }),
     }, async ({ workspaceId, server, agentId, workingDir }) => {
-      await use({ workspaceId, server, agentId, workingDir })
+      await use({
+        workspaceId,
+        server,
+        agentId,
+        workingDir,
+      })
     })
   },
 })
@@ -97,8 +105,20 @@ export async function prepareMcpDirac(runDirectory: string, mockModelUrl: string
   const nodeExecutable = requireBinary('node', 'The private Dirac MCP fixture requires the Node executable', environment.env)
   const formReceipt = join(runDirectory, 'configured-form-receipt.json')
   const formServer = writeMcpFormServer(runDirectory, 'configured-form.mjs', { receiptLog: formReceipt })
-  const configuredServers = [{ name: formServer.name, command: nodeExecutable, args: [...formServer.args], env: [] }]
-  const wrapper = writeDiracMcpWrapper({ directory: join(runDirectory, 'wrapper'), executable, nodeExecutable, servers: configuredServers })
+  const configuredServers = [
+    {
+      name: formServer.name,
+      command: nodeExecutable,
+      args: [...formServer.args],
+      env: [],
+    },
+  ]
+  const wrapper = writeDiracMcpWrapper({
+    directory: join(runDirectory, 'wrapper'),
+    executable,
+    nodeExecutable,
+    servers: configuredServers,
+  })
   return {
     agentEnv: environment.env,
     env: { PATH: `${wrapper.directory}${delimiter}${environment.env.PATH}` },
@@ -120,7 +140,13 @@ export const mcpDiracTest = diracTest.extend<{ configuredMcpDiracWorkspace: Conf
       expect(observed.request.id).toBe(observed.reply.id)
       expect(observed.request.params).toEqual(expect.objectContaining({ cwd: workingDir, mcpServers: setup.configuredServers }))
       expect(observed.sessionId).toBe(agent.agentSessionId)
-      await use({ workspaceId, server, workingDir, agentId, ...setup })
+      await use({
+        workspaceId,
+        server,
+        workingDir,
+        agentId,
+        ...setup,
+      })
     })
   },
 })

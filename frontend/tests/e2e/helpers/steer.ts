@@ -69,5 +69,7 @@ export async function steerQueuedInput(page: Page, input: SteerInput): Promise<v
  */
 export async function expectSteeredReply(page: Page, reply: string, at: 'first' | 'last'): Promise<void> {
   const replies = assistantBubbles(page).filter({ hasText: reply })
-  await expect(at === 'first' ? replies.first() : replies.last()).toBeVisible()
+  await expect(at === 'first'
+    ? replies.first()
+    : replies.last()).toBeVisible()
 }

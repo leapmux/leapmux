@@ -140,7 +140,9 @@ export function useVisualViewportInset(): Accessor<boolean> {
         if (height > 0)
           baselineHeight = height
       }
-      const inset = baselineHeight > 0 ? baselineHeight - height : 0
+      const inset = baselineHeight > 0
+        ? baselineHeight - height
+        : 0
       const shrunken = height > 0 && inset >= KEYBOARD_MIN_INSET_PX
       const keyboardUp = !zoomed && shrunken && (editableFocused || keyboardWasUp)
       keyboardWasUp = keyboardUp
@@ -152,7 +154,9 @@ export function useVisualViewportInset(): Accessor<boolean> {
       // is genuinely in the way. See `~/lib/softKeyboard`.
       setSoftKeyboardVisible(keyboardUp)
 
-      const nextVvh = keyboardUp && vv ? `${Math.round(height)}px` : ''
+      const nextVvh = keyboardUp && vv
+        ? `${Math.round(height)}px`
+        : ''
       lastVvh = writeRootVar(root, '--vvh', nextVvh, lastVvh)
 
       // Sub-pixel jitter (e.g. 0.333 after a scroll) is ignored.
@@ -161,7 +165,11 @@ export function useVisualViewportInset(): Accessor<boolean> {
       // opposite signs, and why the keyboard-up sign is only correct
       // beside the `--vvh` height above.
       const nextShift = offsetTop > 0.5 && !zoomed
-        ? (keyboardUp ? `${offsetTop}px` : (editableFocused ? '' : `-${offsetTop}px`))
+        ? (keyboardUp
+            ? `${offsetTop}px`
+            : (editableFocused
+                ? ''
+                : `-${offsetTop}px`))
         : ''
       lastShift = writeRootVar(root, '--vv-shift', nextShift, lastShift)
     }

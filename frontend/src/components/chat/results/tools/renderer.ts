@@ -19,7 +19,9 @@ export function parsedCall<K extends ToolKind>(call: ToolCallVariant<K>): Parsed
   const parsed = typedResult({ kind: call.kind, result })
   // A stripped or empty slot re-applies as ABSENT rather than an explicitly
   // undefined key, which is the spelling the hooks' optional reads expect.
-  return parsed === undefined ? rest : { ...rest, result: parsed }
+  return parsed === undefined
+    ? rest
+    : { ...rest, result: parsed }
 }
 
 /**
@@ -33,7 +35,9 @@ export function parsedCall<K extends ToolKind>(call: ToolCallVariant<K>): Parsed
  */
 export function resolvedCall<K extends ToolKind>(call: ToolCallVariant<K>): ResolvedCall<K> | undefined {
   const result = typedResult(call)
-  return result === undefined ? undefined : { ...call, result }
+  return result === undefined
+    ? undefined
+    : { ...call, result }
 }
 
 /**

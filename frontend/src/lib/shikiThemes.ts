@@ -147,5 +147,8 @@ export function dualThemeTokenOptions(pair: SyntaxThemePair = currentPair): {
   themes: { light: string, dark: string }
   defaultColor: false
 } {
-  return { themes: { light: pair.light, dark: pair.dark }, defaultColor: false }
+  return {
+    themes: { light: pair.light, dark: pair.dark },
+    defaultColor: false,
+  }
 }

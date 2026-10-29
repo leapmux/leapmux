@@ -9,7 +9,19 @@ const heldPrompt = mockScenarioPrompt('kiro-held-child', `${HELD_CHILD_TASK}.`)
 
 /** A Kiro request in `agentMode` whose newest user turn is `userText`. */
 function request(agentMode: string, userText: string) {
-  return { protocol: 'aws-event-stream' as const, systemText: '', userText, body: { conversationState: { agentMode, currentMessage: { userInputMessage: { content: userText } } } } }
+  return {
+    protocol: 'aws-event-stream' as const,
+    systemText: '',
+    userText,
+    body: {
+      conversationState: {
+        agentMode,
+        currentMessage: {
+          userInputMessage: { content: userText },
+        },
+      },
+    },
+  }
 }
 
 describe('kiroChildTurn', () => {

@@ -12,18 +12,59 @@ export function gooseAgentRequest(input: Record<string, unknown>): AgentRequest 
   const turns = pickNumber(input, 'max_turns', undefined)
   const parameters = pickObject(input, 'parameters')
   const extensions = stringArray(input.extensions).filter(Boolean)
-  const agentType = instructions ? pickString(input, 'source') : undefined
+  const agentType = instructions
+    ? pickString(input, 'source')
+    : undefined
   return {
     description: clipFirstLine(instructions, 80) || pickString(input, 'source') || 'Delegate task',
-    ...(agentType ? { agentType } : {}),
-    prompt: reference ? `# Reference Context\n\n${reference}${instructions ? `\n\n# Task Instructions\n\n${instructions}` : ''}` : instructions,
+    ...(agentType
+      ? { agentType }
+      : {}),
+    prompt: reference
+      ? `# Reference Context\n\n${reference}${instructions
+        ? `\n\n# Task Instructions\n\n${instructions}`
+        : ''}`
+      : instructions,
     metadata: [
-      ...(model ? [{ label: 'Model', value: model }] : []),
-      ...(provider ? [{ label: 'Provider', value: provider }] : []),
-      ...(directory ? [{ label: 'Working directory', value: directory }] : []),
-      ...(turns !== undefined ? [{ label: 'Maximum turns', value: String(turns) }] : []),
-      ...(parameters ? [{ label: 'Parameters', value: prettifyJson(parameters) }] : []),
-      ...(extensions.length ? [{ label: 'Extensions', value: extensions.join(', ') }] : []),
+      ...(model
+        ? [
+            { label: 'Model', value: model },
+          ]
+        : []),
+      ...(provider
+        ? [
+            { label: 'Provider', value: provider },
+          ]
+        : []),
+      ...(directory
+        ? [
+            { label: 'Working directory', value: directory },
+          ]
+        : []),
+      ...(turns !== undefined
+        ? [
+            {
+              label: 'Maximum turns',
+              value: String(turns),
+            },
+          ]
+        : []),
+      ...(parameters
+        ? [
+            {
+              label: 'Parameters',
+              value: prettifyJson(parameters),
+            },
+          ]
+        : []),
+      ...(extensions.length
+        ? [
+            {
+              label: 'Extensions',
+              value: extensions.join(', '),
+            },
+          ]
+        : []),
     ],
   }
 }
@@ -35,17 +76,40 @@ export function gooseAgentResult(input: Record<string, unknown>, output: string,
   const request = gooseAgentRequest(input)
   const stopped = status === 'cancelled'
   const failed = status === 'failed'
-  const acknowledgement = input.async === true && !failed && !stopped ? BACKGROUND_ACK.exec(output) : null
-  const outcome = stopped ? 'stopped' : failed ? 'failed' : acknowledgement ? 'running' : input.async === true ? 'unknown' : 'completed'
+  const acknowledgement = input.async === true && !failed && !stopped
+    ? BACKGROUND_ACK.exec(output)
+    : null
+  const outcome = stopped
+    ? 'stopped'
+    : failed
+      ? 'failed'
+      : acknowledgement
+        ? 'running'
+        : input.async === true
+          ? 'unknown'
+          : 'completed'
   const agentId = acknowledgement?.[1] ?? ''
   const bodyLabel = acknowledgement ? 'Prompt' : undefined
   return {
     description: request.description,
     agentId,
-    ...(acknowledgement ? { statusLabel: 'launched asynchronously' } : outcome === 'unknown' ? { statusLabel: 'returned a result' } : {}),
+    ...(acknowledgement
+      ? { statusLabel: 'launched asynchronously' }
+      : outcome === 'unknown'
+        ? { statusLabel: 'returned a result' }
+        : {}),
     outcome,
-    metadata: [...(agentId ? [{ label: 'Agent ID', value: agentId }] : []), ...(request.metadata ?? [])],
+    metadata: [
+      ...(agentId
+        ? [
+            { label: 'Agent ID', value: agentId },
+          ]
+        : []),
+      ...(request.metadata ?? []),
+    ],
     body: acknowledgement ? request.prompt : output,
-    ...(bodyLabel !== undefined ? { bodyLabel } : {}),
+    ...(bodyLabel !== undefined
+      ? { bodyLabel }
+      : {}),
   }
 }

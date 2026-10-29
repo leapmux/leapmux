@@ -86,8 +86,12 @@ describe('the code palette is published where it is read', () => {
     // `diffStyles` does exactly that for the two tint strengths.
     const read = new Set(collectStyleFiles(srcRoot)
       .filter(f => f !== PUBLISHER)
-      .flatMap(f => [...readFileSync(f, 'utf8').matchAll(/var\((--code-[a-z-]+)\)/g)].map(m => m[1]!)))
-    const published = new Set([...readFileSync(PUBLISHER, 'utf8').matchAll(/'(--code-[a-z-]+)':/g)].map(m => m[1]!))
+      .flatMap(f => [
+        ...readFileSync(f, 'utf8').matchAll(/var\((--code-[a-z-]+)\)/g),
+      ].map(m => m[1]!)))
+    const published = new Set([
+      ...readFileSync(PUBLISHER, 'utf8').matchAll(/'(--code-[a-z-]+)':/g),
+    ].map(m => m[1]!))
 
     expect(read.size, 'no --code-* token is read -- has codeSurface been renamed?').toBeGreaterThanOrEqual(9)
     const missing = [...read].filter(t => !published.has(t)).sort()
@@ -119,7 +123,9 @@ describe('the code palette is published where it is read', () => {
     // resolves against whichever palette rule won on <html> -- so one
     // declaration correctly answers for all thirty variants and for the
     // fallback, and guarding it would be wrong.
-    const codeFallbacks = [...source.matchAll(/globalStyle\(\s*'([^']*)'\s*,\s*\{([\s\S]*?)\n\}\)/g)]
+    const codeFallbacks = [
+      ...source.matchAll(/globalStyle\(\s*'([^']*)'\s*,\s*\{([\s\S]*?)\n\}\)/g),
+    ]
       .filter(m => m[2]!.includes('codeVars('))
       .map(m => m[1]!)
       .filter(sel => !sel.includes('[data-code-variant="'))

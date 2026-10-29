@@ -12,12 +12,14 @@ function makeGlobToolUse(input: Record<string, unknown> = {}) {
   return {
     type: 'assistant',
     message: {
-      content: [{
-        type: 'tool_use',
-        id: 'test-glob',
-        name: 'Glob',
-        input: { pattern: 'frontend/src/**/*.test.*', ...input },
-      }],
+      content: [
+        {
+          type: 'tool_use',
+          id: 'test-glob',
+          name: 'Glob',
+          input: { pattern: 'frontend/src/**/*.test.*', ...input },
+        },
+      ],
     },
   }
 }
@@ -31,11 +33,13 @@ function makeGlobToolResult(
     type: 'user',
     message: {
       role: 'user',
-      content: [{
-        tool_use_id: 'test-glob',
-        type: 'tool_result',
-        content: resultContent,
-      }],
+      content: [
+        {
+          tool_use_id: 'test-glob',
+          type: 'tool_result',
+          content: resultContent,
+        },
+      ],
     },
     tool_use_result: toolUseResult,
   }

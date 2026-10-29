@@ -13,7 +13,9 @@ function classify(parent: Record<string, unknown> | undefined, wrapper?: { old_s
 
 describe('classifyCodewhaleMessage', () => {
   it('leaves a stored compaction start unknown', () => {
-    expect(classify(codewhaleEvent(CODEWHALE_EVENT.ItemStarted, { item: { kind: CODEWHALE_ITEM_KIND.ContextCompaction } }))).toEqual({ kind: 'unknown' })
+    expect(classify(codewhaleEvent(CODEWHALE_EVENT.ItemStarted, {
+      item: { kind: CODEWHALE_ITEM_KIND.ContextCompaction },
+    }))).toEqual({ kind: 'unknown' })
   })
 
   it('reads a reply and a reasoning step, and hides one with no text', () => {
@@ -28,7 +30,10 @@ describe('classifyCodewhaleMessage', () => {
   })
 
   it('reads a retained opening frame as the result of its span', () => {
-    const retained = { ...input(toolStarted(CODEWHALE_TOOL.Bash, {}), undefined, AgentProvider.CODEWHALE), completion: MessageCompletion.INTERRUPTED }
+    const retained = {
+      ...input(toolStarted(CODEWHALE_TOOL.Bash, {}), undefined, AgentProvider.CODEWHALE),
+      completion: MessageCompletion.INTERRUPTED,
+    }
     expect(classifyCodewhaleMessage(retained)).toStrictEqual({ kind: 'tool_result' })
   })
 
@@ -47,18 +52,41 @@ describe('classifyCodewhaleMessage', () => {
   })
 
   it('hides the redacted result row of an answered question, and keeps a failed one', () => {
-    const answered = codewhaleEvent(CODEWHALE_EVENT.ItemCompleted, { item: { kind: CODEWHALE_ITEM_KIND.ToolCall, detail: 'User input submitted', metadata: { tool_call_id: 'q1', tool_name: CODEWHALE_TOOL.RequestUserInput, response_redacted: true } } })
+    const answered = codewhaleEvent(CODEWHALE_EVENT.ItemCompleted, {
+      item: {
+        kind: CODEWHALE_ITEM_KIND.ToolCall,
+        detail: 'User input submitted',
+        metadata: { tool_call_id: 'q1', tool_name: CODEWHALE_TOOL.RequestUserInput, response_redacted: true },
+      },
+    })
     expect(classify(answered)).toStrictEqual({ kind: 'hidden' })
-    const failed = codewhaleEvent(CODEWHALE_EVENT.ItemFailed, { item: { kind: CODEWHALE_ITEM_KIND.ToolCall, detail: 'Request cancelled while awaiting user input', metadata: { tool_call_id: 'q1', tool_name: CODEWHALE_TOOL.RequestUserInput, response_redacted: true } } })
+    const failed = codewhaleEvent(CODEWHALE_EVENT.ItemFailed, {
+      item: {
+        kind: CODEWHALE_ITEM_KIND.ToolCall,
+        detail: 'Request cancelled while awaiting user input',
+        metadata: { tool_call_id: 'q1', tool_name: CODEWHALE_TOOL.RequestUserInput, response_redacted: true },
+      },
+    })
     expect(classify(failed)).toStrictEqual({ kind: 'tool_result' })
-    const stopped = codewhaleEvent(CODEWHALE_EVENT.ItemInterrupted, { item: { kind: CODEWHALE_ITEM_KIND.ToolCall, detail: 'Turn interrupted', metadata: { tool_call_id: 'q1', tool_name: CODEWHALE_TOOL.RequestUserInput, response_redacted: true } } })
+    const stopped = codewhaleEvent(CODEWHALE_EVENT.ItemInterrupted, {
+      item: {
+        kind: CODEWHALE_ITEM_KIND.ToolCall,
+        detail: 'Turn interrupted',
+        metadata: { tool_call_id: 'q1', tool_name: CODEWHALE_TOOL.RequestUserInput, response_redacted: true },
+      },
+    })
     expect(classify(stopped)).toStrictEqual({ kind: 'tool_result' })
   })
 
   // The worker persists these four events as rows of their own. Each states
   // something the reader must know, so none may fall through to `unknown`.
   it('reads each runtime notice event as a notification', () => {
-    for (const event of [CODEWHALE_EVENT.TurnSteerDropped, CODEWHALE_EVENT.ApprovalTimeout, CODEWHALE_EVENT.SandboxDenied, CODEWHALE_EVENT.StoreFailure])
+    for (const event of [
+      CODEWHALE_EVENT.TurnSteerDropped,
+      CODEWHALE_EVENT.ApprovalTimeout,
+      CODEWHALE_EVENT.SandboxDenied,
+      CODEWHALE_EVENT.StoreFailure,
+    ])
       expect(classify(codewhaleEvent(event, {})).kind, event).toBe('notification')
   })
 
@@ -72,10 +100,34 @@ describe('classifyCodewhaleMessage', () => {
   })
 
   it('reads the runtime\'s notices and notice items', () => {
-    expect(classify(itemFinished(CODEWHALE_ITEM_KIND.Status, 'Checkpoint saved'))).toStrictEqual({ kind: 'notification', entries: [{ kind: 'status', text: 'Checkpoint saved' }] })
-    expect(classify(itemFinished(CODEWHALE_ITEM_KIND.ContextCompaction, 'done', { auto: true }))).toStrictEqual({ kind: 'notification', entries: [{ kind: 'compaction', phase: 'end', detail: { trigger: 'auto' } }] })
-    expect(classify(itemFinished(CODEWHALE_ITEM_KIND.Error, 'boom', {}, CODEWHALE_EVENT.ItemFailed))).toStrictEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Error: boom' }] })
-    expect(classify(codewhaleEvent(CODEWHALE_EVENT.SandboxDenied, { tool_name: 'bash' }))).toStrictEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'The sandbox denied bash' }] })
+    expect(classify(itemFinished(CODEWHALE_ITEM_KIND.Status, 'Checkpoint saved'))).toStrictEqual({
+      kind: 'notification',
+      entries: [
+        { kind: 'status', text: 'Checkpoint saved' },
+      ],
+    })
+    expect(classify(itemFinished(CODEWHALE_ITEM_KIND.ContextCompaction, 'done', { auto: true }))).toStrictEqual({
+      kind: 'notification',
+      entries: [
+        {
+          kind: 'compaction',
+          phase: 'end',
+          detail: { trigger: 'auto' },
+        },
+      ],
+    })
+    expect(classify(itemFinished(CODEWHALE_ITEM_KIND.Error, 'boom', {}, CODEWHALE_EVENT.ItemFailed))).toStrictEqual({
+      kind: 'notification',
+      entries: [
+        { kind: 'text', text: 'Error: boom' },
+      ],
+    })
+    expect(classify(codewhaleEvent(CODEWHALE_EVENT.SandboxDenied, { tool_name: 'bash' }))).toStrictEqual({
+      kind: 'notification',
+      entries: [
+        { kind: 'text', text: 'The sandbox denied bash' },
+      ],
+    })
     expect(classify(itemFinished(CODEWHALE_ITEM_KIND.Status, ''))).toStrictEqual({ kind: 'hidden' })
   })
 
@@ -86,7 +138,12 @@ describe('classifyCodewhaleMessage', () => {
   it('reads the rows of a subagent\'s transcript', () => {
     expect(classify(childBlock(CODEWHALE_TRANSCRIPT_ROLE.Assistant, { type: CODEWHALE_BLOCK_TYPE.Text, text: 'Done.' }))).toStrictEqual({ kind: 'assistant_text' })
     expect(classify(childBlock(CODEWHALE_TRANSCRIPT_ROLE.Assistant, { type: CODEWHALE_BLOCK_TYPE.Thinking, thinking: 'Hmm.' }))).toStrictEqual({ kind: 'assistant_thinking' })
-    expect(classify(childBlock(CODEWHALE_TRANSCRIPT_ROLE.Assistant, { type: CODEWHALE_BLOCK_TYPE.ToolUse, id: 'b1', name: 'read', input: {} }))).toStrictEqual({ kind: 'tool_use' })
+    expect(classify(childBlock(CODEWHALE_TRANSCRIPT_ROLE.Assistant, {
+      type: CODEWHALE_BLOCK_TYPE.ToolUse,
+      id: 'b1',
+      name: 'read',
+      input: {},
+    }))).toStrictEqual({ kind: 'tool_use' })
     expect(classify(childBlock(CODEWHALE_TRANSCRIPT_ROLE.User, { type: CODEWHALE_BLOCK_TYPE.ToolResult, tool_use_id: 'b1', content: 'x' }))).toStrictEqual({ kind: 'tool_result' })
     expect(classify(childBlock(CODEWHALE_TRANSCRIPT_ROLE.Assistant, { type: 'image' }))).toStrictEqual({ kind: 'unknown' })
   })
@@ -107,16 +164,35 @@ describe('classifyCodewhaleMessage', () => {
   })
 
   it('reads a notification thread by its entries, whatever each member states', () => {
-    const thread = { old_seqs: [], messages: [itemFinished(CODEWHALE_ITEM_KIND.Status, 'one'), codewhaleEvent(CODEWHALE_EVENT.SandboxDenied, {})] }
-    expect(classify(thread.messages[0] as Record<string, unknown>, thread)).toStrictEqual({ kind: 'notification', entries: [{ kind: 'status', text: 'one' }, { kind: 'text', text: 'The sandbox denied a tool' }] })
+    const thread = {
+      old_seqs: [],
+      messages: [
+        itemFinished(CODEWHALE_ITEM_KIND.Status, 'one'),
+        codewhaleEvent(CODEWHALE_EVENT.SandboxDenied, {}),
+      ],
+    }
+    expect(classify(thread.messages[0] as Record<string, unknown>, thread)).toStrictEqual({
+      kind: 'notification',
+      entries: [
+        { kind: 'status', text: 'one' },
+        { kind: 'text', text: 'The sandbox denied a tool' },
+      ],
+    })
     expect(classify(undefined, { old_seqs: [], messages: [] })).toStrictEqual({ kind: 'hidden' })
-    expect(classify({ event: 'a.later.event' }, { old_seqs: [], messages: [{ event: 'a.later.event' }] })).toStrictEqual({ kind: 'hidden' })
+    expect(classify({ event: 'a.later.event' }, {
+      old_seqs: [],
+      messages: [
+        { event: 'a.later.event' },
+      ],
+    })).toStrictEqual({ kind: 'hidden' })
   })
 
   it('reads an unknown frame as unknown', () => {
     expect(classify(undefined)).toStrictEqual({ kind: 'unknown' })
     expect(classify(codewhaleEvent('a.later.event', {}))).toStrictEqual({ kind: 'unknown' })
-    expect(classify(codewhaleEvent(CODEWHALE_EVENT.ItemCompleted, { item: { kind: 'a_later_kind', detail: 'x' } }))).toStrictEqual({ kind: 'unknown' })
+    expect(classify(codewhaleEvent(CODEWHALE_EVENT.ItemCompleted, {
+      item: { kind: 'a_later_kind', detail: 'x' },
+    }))).toStrictEqual({ kind: 'unknown' })
     expect(classify({ type: 'a_later_type' })).toStrictEqual({ kind: 'unknown' })
   })
 })

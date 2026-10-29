@@ -95,12 +95,21 @@ function makeState() {
  */
 function renderSelector(workingDir?: string | (() => string)) {
   const { state, tree, refreshTree, expandTreePath } = makeState()
-  if (workingDir !== undefined)
-    state.workingDir = typeof workingDir === 'function' ? workingDir : () => workingDir
+  if (workingDir !== undefined) {
+    state.workingDir = typeof workingDir === 'function'
+      ? workingDir
+      : () => workingDir
+  }
   const view = render(withPreferences(() => (
     <DirectorySelector state={state as any} tree={tree as any} repoGitStore={createRepoGitStore()} />
   )))
-  return { ...view, state, tree, refreshTree, expandTreePath }
+  return {
+    ...view,
+    state,
+    tree,
+    refreshTree,
+    expandTreePath,
+  }
 }
 
 describe('DirectorySelector', () => {
@@ -192,7 +201,9 @@ describe('DirectorySelector root derivation', () => {
   it('falls back to the first reported root when the home directory is unknown', async () => {
     workerOs.mockReturnValue('windows')
     workerHome.mockReturnValue('')
-    listFilesystemRoots.mockResolvedValue({ roots: ['E:\\', 'F:\\'] })
+    listFilesystemRoots.mockResolvedValue({
+      roots: ['E:\\', 'F:\\'],
+    })
 
     renderSelector('')
 
@@ -263,7 +274,9 @@ describe('DirectorySelector drive menu', () => {
   it('shows the drive selector for a windows worker with more than one root', async () => {
     workerOs.mockReturnValue('windows')
     workerHome.mockReturnValue('C:\\Users\\alice')
-    listFilesystemRoots.mockResolvedValue({ roots: ['C:\\', 'D:\\'] })
+    listFilesystemRoots.mockResolvedValue({
+      roots: ['C:\\', 'D:\\'],
+    })
 
     renderSelector('')
 
@@ -273,7 +286,9 @@ describe('DirectorySelector drive menu', () => {
   it('hides the drive selector when the worker reports a single root', async () => {
     workerOs.mockReturnValue('windows')
     workerHome.mockReturnValue('C:\\Users\\alice')
-    listFilesystemRoots.mockResolvedValue({ roots: ['C:\\'] })
+    listFilesystemRoots.mockResolvedValue({
+      roots: ['C:\\'],
+    })
 
     renderSelector('')
 
@@ -300,7 +315,9 @@ describe('DirectorySelector drive menu', () => {
   it('makes the chosen drive the working directory', async () => {
     workerOs.mockReturnValue('windows')
     workerHome.mockReturnValue('C:\\Users\\alice')
-    listFilesystemRoots.mockResolvedValue({ roots: ['C:\\', 'D:\\'] })
+    listFilesystemRoots.mockResolvedValue({
+      roots: ['C:\\', 'D:\\'],
+    })
 
     const { state } = renderSelector('')
     await waitFor(() => expect(screen.getByTestId('drive-option-d')).toBeInTheDocument())
@@ -313,7 +330,9 @@ describe('DirectorySelector drive menu', () => {
   it('refreshes the drive list along with the tree', async () => {
     workerOs.mockReturnValue('windows')
     workerHome.mockReturnValue('C:\\Users\\alice')
-    listFilesystemRoots.mockResolvedValue({ roots: ['C:\\', 'D:\\'] })
+    listFilesystemRoots.mockResolvedValue({
+      roots: ['C:\\', 'D:\\'],
+    })
     const { refreshTree } = renderSelector('')
     await waitFor(() => expect(listFilesystemRoots).toHaveBeenCalledTimes(1))
 
@@ -328,7 +347,9 @@ describe('DirectorySelector drive menu', () => {
   it('refreshes the drive list from the refresh button', async () => {
     workerOs.mockReturnValue('windows')
     workerHome.mockReturnValue('C:\\Users\\alice')
-    listFilesystemRoots.mockResolvedValue({ roots: ['C:\\', 'D:\\'] })
+    listFilesystemRoots.mockResolvedValue({
+      roots: ['C:\\', 'D:\\'],
+    })
     const { refreshTree } = renderSelector('')
     await waitFor(() => expect(listFilesystemRoots).toHaveBeenCalledTimes(1))
 
@@ -388,7 +409,9 @@ describe('DirectorySelector home button', () => {
   it('re-roots onto the home drive when the home directory is on another one', async () => {
     workerOs.mockReturnValue('windows')
     workerHome.mockReturnValue('C:\\Users\\alice')
-    listFilesystemRoots.mockResolvedValue({ roots: ['C:\\', 'D:\\'] })
+    listFilesystemRoots.mockResolvedValue({
+      roots: ['C:\\', 'D:\\'],
+    })
 
     const [workingDir, setWorkingDir] = createSignal('D:\\work')
     const { state, tree } = makeState()

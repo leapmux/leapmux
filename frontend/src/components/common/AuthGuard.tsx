@@ -119,7 +119,9 @@ export const AuthGuard: ParentComponent = (props) => {
   // re-deriving the discriminant inside the JSX.
   const failure = () => {
     const current = state()
-    return current.kind === 'failed' ? current : undefined
+    return current.kind === 'failed'
+      ? current
+      : undefined
   }
 
   // Which branch renders, as a plain string rather than JSX.

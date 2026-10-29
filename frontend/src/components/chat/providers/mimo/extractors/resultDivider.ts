@@ -21,15 +21,29 @@ export function mimoResultDivider(parsed: unknown, completion?: MessageCompletio
   if (event.type === MIMO_EVENT.SessionStatus) {
     if (pickString(pickObject(event.properties, 'status'), 'type') !== MIMO_STATUS_TYPE.Idle)
       return null
-    if (completion === MessageCompletion.INTERRUPTED)
-      return { label: turnEndLabel('interrupted') }
-    return { label: turnEndLabel('ended') }
+    if (completion === MessageCompletion.INTERRUPTED) {
+      return {
+        label: turnEndLabel('interrupted'),
+      }
+    }
+    return {
+      label: turnEndLabel('ended'),
+    }
   }
   if (event.type === MIMO_EVENT.SessionError) {
     const { name, message } = mimoErrorText(event.properties)
-    if (name === MIMO_ERROR_NAME.Aborted || completion === MessageCompletion.INTERRUPTED)
-      return { label: turnEndLabel('interrupted') }
-    return { label: turnEndLabel('failed', { qualifiers: [name], reason: message }), isError: true }
+    if (name === MIMO_ERROR_NAME.Aborted || completion === MessageCompletion.INTERRUPTED) {
+      return {
+        label: turnEndLabel('interrupted'),
+      }
+    }
+    return {
+      label: turnEndLabel('failed', {
+        qualifiers: [name],
+        reason: message,
+      }),
+      isError: true,
+    }
   }
   return null
 }

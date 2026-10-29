@@ -10,24 +10,38 @@ import { hubSpawnEnv, hubUrlFromStateJson, mockAgentEnv, resolvedHubTCPFromState
 
 describe('hubUrlFromStateJson', () => {
   it('takes the assigned port from the one TCP entry', () => {
-    const state = JSON.stringify({ pid: 7, listen: ['127.0.0.1:44321', 'unix:/tmp/hub.sock'] })
+    const state = JSON.stringify({
+      pid: 7,
+      listen: ['127.0.0.1:44321', 'unix:/tmp/hub.sock'],
+    })
     expect(resolvedHubTCPFromStateJson(state)).toBe('127.0.0.1:44321')
     expect(hubUrlFromStateJson(state)).toBe('http://localhost:44321')
     expect(hubUrlFromStateJson(state, '127.0.0.1')).toBe('http://127.0.0.1:44321')
   })
 
   it('rejects a bind set with no TCP entry', () => {
-    expect(() => hubUrlFromStateJson(JSON.stringify({ listen: ['unix:/tmp/hub.sock'] })))
+    expect(() => hubUrlFromStateJson(JSON.stringify({
+      listen: ['unix:/tmp/hub.sock'],
+    })))
       .toThrow(/expected one TCP address/)
   })
 
   it('rejects a bind set with more than one TCP entry', () => {
-    expect(() => hubUrlFromStateJson(JSON.stringify({ listen: ['127.0.0.1:1', '127.0.0.1:2'] })))
+    expect(() => hubUrlFromStateJson(JSON.stringify({
+      listen: ['127.0.0.1:1', '127.0.0.1:2'],
+    })))
       .toThrow(/expected one TCP address/)
   })
 
-  it.each(['127.0.0.1:', '127.0.0.1:0', '127.0.0.1:65536', '127.0.0.1:1e3'])('rejects a TCP address without a usable port: %s', (address) => {
-    expect(() => hubUrlFromStateJson(JSON.stringify({ listen: [address] })))
+  it.each([
+    '127.0.0.1:',
+    '127.0.0.1:0',
+    '127.0.0.1:65536',
+    '127.0.0.1:1e3',
+  ])('rejects a TCP address without a usable port: %s', (address) => {
+    expect(() => hubUrlFromStateJson(JSON.stringify({
+      listen: [address],
+    })))
       .toThrow(/names no usable port/)
   })
 
@@ -40,7 +54,12 @@ describe('hubUrlFromStateJson', () => {
 
 describe('hubSpawnEnv', () => {
   it('removes inherited plain HTTP proxies after applying the mock environment', () => {
-    const proxyNames = ['HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy'] as const
+    const proxyNames = [
+      'HTTP_PROXY',
+      'http_proxy',
+      'ALL_PROXY',
+      'all_proxy',
+    ] as const
     const before = proxyNames.map(name => process.env[name])
     for (const name of proxyNames)
       process.env[name] = 'http://parent-proxy.invalid:8080'
@@ -159,18 +178,27 @@ describe('agent host launch environment', () => {
 
   it.each(['spawn', 'spawnTestProcess'])('detects an unsafe environment through %s', (method) => {
     expect(scanHubSpawns(`${method}(binary, ['hub'], { env: process.env })`))
-      .toEqual({ count: 1, violations: [1] })
+      .toEqual({
+        count: 1,
+        violations: [1],
+      })
     expect(scanHubSpawns(`${method}(binary, ['hub'], { env: hubSpawnEnv() })`))
       .toEqual({ count: 1, violations: [] })
   })
 
   it.each(AGENT_HOST_SUBCOMMANDS)('guards the %s subcommand', (subcommand) => {
     expect(scanHubSpawns(`spawn(binary, ['${subcommand}'], { env: process.env })`))
-      .toEqual({ count: 1, violations: [1] })
+      .toEqual({
+        count: 1,
+        violations: [1],
+      })
   })
 
   it('rejects a missing environment and ignores comments and quoted calls', () => {
-    expect(scanHubSpawns('spawnTestProcess(binary, ["solo"])')).toEqual({ count: 1, violations: [1] })
+    expect(scanHubSpawns('spawnTestProcess(binary, ["solo"])')).toEqual({
+      count: 1,
+      violations: [1],
+    })
     expect(scanHubSpawns('// spawn(binary, ["hub"], { env: process.env })')).toEqual({ count: 0, violations: [] })
     expect(scanHubSpawns('const text = "spawn(binary, [\'hub\'])"')).toEqual({ count: 0, violations: [] })
   })
@@ -200,7 +228,13 @@ describe('server readiness deadline', () => {
     vi.unstubAllGlobals()
   })
 
-  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])('refuses an invalid timeout before a request: %s', async (timeout) => {
+  it.each([
+    0,
+    -1,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    2_147_483_648,
+  ])('refuses an invalid timeout before a request: %s', async (timeout) => {
     const request = vi.fn()
     vi.stubGlobal('fetch', request)
     await expect(waitForServer('http://server.test', timeout)).rejects.toThrow(RangeError)
@@ -263,7 +297,9 @@ describe('waitForHubStart', () => {
   })
 
   it('reads the bind address and probes its IPv4 transport while returning the browser URL', async () => {
-    writeFileSync(statePath, JSON.stringify({ listen: ['unix:/run/hub.sock', '127.0.0.1:43210'] }))
+    writeFileSync(statePath, JSON.stringify({
+      listen: ['unix:/run/hub.sock', '127.0.0.1:43210'],
+    }))
     const request = vi.fn(async () => new Response('ready'))
     vi.stubGlobal('fetch', request)
     const { proc } = createProcessStub()
@@ -283,7 +319,9 @@ describe('waitForHubStart', () => {
   })
 
   it('refuses a state file with no TCP address before a request', async () => {
-    writeFileSync(statePath, JSON.stringify({ listen: ['unix:/run/hub.sock'] }))
+    writeFileSync(statePath, JSON.stringify({
+      listen: ['unix:/run/hub.sock'],
+    }))
     const request = vi.fn()
     vi.stubGlobal('fetch', request)
     await expect(waitForHubStart(statePath, createProcessStub().proc)).rejects.toThrow('expected one TCP address')
@@ -291,7 +329,9 @@ describe('waitForHubStart', () => {
   })
 
   it('fails when the hub exits after it wrote the state file and before it answers', async () => {
-    writeFileSync(statePath, JSON.stringify({ listen: ['127.0.0.1:43210'] }))
+    writeFileSync(statePath, JSON.stringify({
+      listen: ['127.0.0.1:43210'],
+    }))
     const request = vi.fn<typeof fetch>(() => new Promise(() => {}))
     vi.stubGlobal('fetch', request)
     const stub = createProcessStub()

@@ -52,8 +52,11 @@ vi.mock('@playwright/test', async (importOriginal) => {
       return {
         toHaveCount: async (count: number) => {
           resultRow.events.push(`${name} count:${count}`)
-          if (name === 'row' && resultRow.availableCallIds !== undefined)
-            actual.expect('callId' in value && resultRow.availableCallIds.includes(String(value.callId)) ? 1 : 0, 'the selected native result row exists').toBe(count)
+          if (name === 'row' && resultRow.availableCallIds !== undefined) {
+            actual.expect('callId' in value && resultRow.availableCallIds.includes(String(value.callId))
+              ? 1
+              : 0, 'the selected native result row exists').toBe(count)
+          }
         },
         toHaveAttribute: async (attribute: string, expected: string) => {
           resultRow.events.push(`${name} ${attribute}:${expected}`)
@@ -70,22 +73,36 @@ vi.mock('@playwright/test', async (importOriginal) => {
     }
     return actual.expect(value, message)
   }
-  return { ...actual, expect: Object.assign(check, actual.expect) }
+  return {
+    ...actual,
+    expect: Object.assign(check, actual.expect),
+  }
 })
 
 vi.mock('./ui', () => ({
-  toolCallRow: (_page: unknown, callId: string) => ({ ...resultRow.fake('row'), callId }),
+  toolCallRow: (_page: unknown, callId: string) => ({
+    ...resultRow.fake('row'),
+    callId,
+  }),
   openWorkspace: vi.fn(async () => {}),
   readAttachedWithArgument: vi.fn(async () => true),
 }))
 
-vi.mock('./nativeToolOutput', () => ({ copyNativeToolOutputPreview: vi.fn(async () => {}) }))
+vi.mock('./nativeToolOutput', () => ({
+  copyNativeToolOutputPreview: vi.fn(async () => {}),
+}))
 
-vi.mock('./nativeResultView', () => ({ expandNativeResultView: vi.fn(async () => {}) }))
+vi.mock('./nativeResultView', () => ({
+  expandNativeResultView: vi.fn(async () => {}),
+}))
 
-vi.mock('./nativePrivatePath', () => ({ assertPrivateNativePath: vi.fn() }))
+vi.mock('./nativePrivatePath', () => ({
+  assertPrivateNativePath: vi.fn(),
+}))
 
-vi.mock('./server', () => ({ getGlobalState: () => ({ tmpDir: '/run' }) }))
+vi.mock('./server', () => ({
+  getGlobalState: () => ({ tmpDir: '/run' }),
+}))
 
 vi.mock('./nativeScenario', async importOriginal => ({
   ...await importOriginal<typeof import('./nativeScenario')>(),
@@ -122,7 +139,9 @@ describe('nativeOutputPathsPrecedePreview', () => {
   afterEach(() => document.body.replaceChildren())
 
   function order(markup: string, markers: readonly string[]): boolean | null {
-    return nativeOutputPathsPrecedePreview([element(markup)], markers)
+    return nativeOutputPathsPrecedePreview([
+      element(markup),
+    ], markers)
   }
 
   it('requires paths before every original preview marker', () => {
@@ -283,19 +302,58 @@ describe('runNativeToolOutputFilePathsProof', () => {
     { ...options, previewText: '' },
     { ...options, status: '' },
     { ...options, previewMarkers: [] },
-    { ...options, previewMarkers: ['absent marker'] },
-    { ...options, previewMarkers: ['', options.previewText] },
-    { ...options, previewMarkers: [' '] },
-    { ...options, previewMarkers: ['native first line', 'native first line'] },
-    { ...options, paths: [''] },
-    { ...options, paths: [' '] },
-    { ...options, paths: ['/native/one.log\0'] },
-    { ...options, paths: ['/native/one.log', '/native/one.log'] },
-    { ...options, absentMarkers: [''] },
-    { ...options, absentMarkers: [' '] },
-    { ...options, absentMarkers: ['native first line'] },
-    { ...options, absentMarkers: ['omission notice'] },
-    { ...options, absentMarkers: ['native middle line', 'native middle line'] },
+    {
+      ...options,
+      previewMarkers: ['absent marker'],
+    },
+    {
+      ...options,
+      previewMarkers: ['', options.previewText],
+    },
+    {
+      ...options,
+      previewMarkers: [' '],
+    },
+    {
+      ...options,
+      previewMarkers: ['native first line', 'native first line'],
+    },
+    {
+      ...options,
+      paths: [''],
+    },
+    {
+      ...options,
+      paths: [' '],
+    },
+    {
+      ...options,
+      paths: ['/native/one.log\0'],
+    },
+    {
+      ...options,
+      paths: ['/native/one.log', '/native/one.log'],
+    },
+    {
+      ...options,
+      absentMarkers: [''],
+    },
+    {
+      ...options,
+      absentMarkers: [' '],
+    },
+    {
+      ...options,
+      absentMarkers: ['native first line'],
+    },
+    {
+      ...options,
+      absentMarkers: ['omission notice'],
+    },
+    {
+      ...options,
+      absentMarkers: ['native middle line', 'native middle line'],
+    },
   ])('rejects an invalid proof before browser or Worker operations %j', async (invalid) => {
     const f = fixture()
     await expect(runNativeToolOutputFilePathsProof(invalid, f.operations)).rejects.toThrow('native output path proof')
@@ -304,19 +362,30 @@ describe('runNativeToolOutputFilePathsProof', () => {
 
   it('accepts absent markers that the original preview does not hold', async () => {
     const f = fixture()
-    await runNativeToolOutputFilePathsProof({ ...options, absentMarkers: ['native middle line', 'native last line'] }, f.operations)
+    await runNativeToolOutputFilePathsProof({
+      ...options,
+      absentMarkers: ['native middle line', 'native last line'],
+    }, f.operations)
     expect(f.events).toHaveLength(7)
   })
 
   it('refuses an absent marker that equals a preview marker, with the absent marker message', async () => {
     const f = fixture()
-    await expect(runNativeToolOutputFilePathsProof({ ...options, absentMarkers: [options.previewMarkers[1]!] }, f.operations))
+    await expect(runNativeToolOutputFilePathsProof({
+      ...options,
+      absentMarkers: [options.previewMarkers[1]!],
+    }, f.operations))
       .rejects
       .toThrow('absent markers that the original preview does not hold')
     expect(f.events).toEqual([])
   })
 
-  it.each(['workerProof', 'viewProof', 'copyProof', 'reload'] as const)('propagates a %s failure and stops later operations', async (step) => {
+  it.each([
+    'workerProof',
+    'viewProof',
+    'copyProof',
+    'reload',
+  ] as const)('propagates a %s failure and stops later operations', async (step) => {
     const f = fixture()
     const failure = new Error(`The ${step} operation failed.`)
     const failing = vi.fn(async () => {
@@ -333,16 +402,31 @@ const output = { firstMarker: 'OUT-line-0:', omittedMarker: 'OUT-line-1:-middle-
 describe('presentPreviewMarkers', () => {
   it.each([
     ['no marker', 'native head', []],
-    ['the first marker', 'OUT-line-0:\n[truncated]', ['OUT-line-0:']],
-    ['the last marker', '[truncated]\nOUT-complete-42', ['OUT-complete-42']],
-    ['both markers', 'OUT-line-0:\n[truncated]\nOUT-complete-42', ['OUT-line-0:', 'OUT-complete-42']],
+    [
+      'the first marker',
+      'OUT-line-0:\n[truncated]',
+      ['OUT-line-0:'],
+    ],
+    [
+      'the last marker',
+      '[truncated]\nOUT-complete-42',
+      ['OUT-complete-42'],
+    ],
+    [
+      'both markers',
+      'OUT-line-0:\n[truncated]\nOUT-complete-42',
+      ['OUT-line-0:', 'OUT-complete-42'],
+    ],
   ])('returns %s that the preview holds, first before last', (_case, previewText, expected) => {
     expect(presentPreviewMarkers(previewText, output)).toEqual(expected)
   })
 })
 
 describe('checkNativeOutputReceipt', () => {
-  const receipt = { paths: ['/native/output.txt'], previewText: 'OUT-line-0:\n[truncated]\nOUT-complete-42' }
+  const receipt = {
+    paths: ['/native/output.txt'],
+    previewText: 'OUT-line-0:\n[truncated]\nOUT-complete-42',
+  }
 
   it('returns the sole declared path, the computed markers that the preview holds, and the omitted line as absent', () => {
     expect(checkNativeOutputReceipt(receipt, output)).toEqual({
@@ -354,7 +438,9 @@ describe('checkNativeOutputReceipt', () => {
   })
 
   it.each([undefined, false])('requires the row to omit the absent line when the arguments do not hold the output: %j', (argumentsHoldOutput) => {
-    const markers = argumentsHoldOutput === undefined ? {} : { argumentsHoldOutput }
+    const markers = argumentsHoldOutput === undefined
+      ? {}
+      : { argumentsHoldOutput }
     expect(checkNativeOutputReceipt(receipt, output, markers).rowAbsentMarkers).toEqual(['OUT-line-1:-middle-77'])
   })
 
@@ -367,7 +453,9 @@ describe('checkNativeOutputReceipt', () => {
   })
 
   it('returns the markers that the caller states, unchanged', () => {
-    expect(checkNativeOutputReceipt(receipt, output, { previewMarkers: ['[truncated]'] }).previewMarkers).toEqual(['[truncated]'])
+    expect(checkNativeOutputReceipt(receipt, output, {
+      previewMarkers: ['[truncated]'],
+    }).previewMarkers).toEqual(['[truncated]'])
   })
 
   it('selects the markers through a function of the receipt', () => {
@@ -377,11 +465,22 @@ describe('checkNativeOutputReceipt', () => {
   })
 
   // A tail window of the output, as OpenCode keeps one, can hold the middle line and never holds the first line.
-  const tailWindow = { paths: ['/native/output.txt'], previewText: '...output truncated...\nOUT-line-1:-middle-77\nOUT-complete-42' }
+  const tailWindow = {
+    paths: ['/native/output.txt'],
+    previewText: '...output truncated...\nOUT-line-1:-middle-77\nOUT-complete-42',
+  }
 
   it('accepts a preview that holds the omitted line when the caller states another absent line', () => {
-    expect(checkNativeOutputReceipt(tailWindow, output, { previewMarkers: ['OUT-line-'], absentMarker: 'OUT-line-0:' }))
-      .toEqual({ path: '/native/output.txt', previewMarkers: ['OUT-line-'], absentMarker: 'OUT-line-0:', rowAbsentMarkers: ['OUT-line-0:'] })
+    expect(checkNativeOutputReceipt(tailWindow, output, {
+      previewMarkers: ['OUT-line-'],
+      absentMarker: 'OUT-line-0:',
+    }))
+      .toEqual({
+        path: '/native/output.txt',
+        previewMarkers: ['OUT-line-'],
+        absentMarker: 'OUT-line-0:',
+        rowAbsentMarkers: ['OUT-line-0:'],
+      })
   })
 
   it('refuses a preview that holds the absent line that the caller states', () => {
@@ -392,7 +491,12 @@ describe('checkNativeOutputReceipt', () => {
     expect(() => checkNativeOutputReceipt(receipt, output, { absentMarker })).toThrow('nonempty absent line')
   })
 
-  it.each([[[]], [['/native/one.txt', '/native/two.txt']]])('refuses a receipt that does not declare exactly one path: %j', (paths) => {
+  it.each([
+    [[]],
+    [
+      ['/native/one.txt', '/native/two.txt'],
+    ],
+  ])('refuses a receipt that does not declare exactly one path: %j', (paths) => {
     expect(() => checkNativeOutputReceipt({ ...receipt, paths }, output)).toThrow(`exactly one declared path, not ${paths.length}`)
   })
 
@@ -406,14 +510,19 @@ describe('checkNativeOutputReceipt', () => {
 
   it('refuses an empty list of stated markers', () => {
     expect(() => checkNativeOutputReceipt(receipt, output, { previewMarkers: [] })).toThrow('at least one preview marker')
-    expect(() => checkNativeOutputReceipt(receipt, output, { previewMarkers: () => [] })).toThrow('at least one preview marker')
+    expect(() => checkNativeOutputReceipt(receipt, output, {
+      previewMarkers: () => [],
+    })).toThrow('at least one preview marker')
   })
 })
 
 describe('expectUnchangedNativeRecord', () => {
   const context = {} as Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>
   const agent = { id: 'native-agent', agentSessionId: 'native-session' }
-  const record = { frame: { status: 'completed' }, paths: ['/native/output.txt'] }
+  const record = {
+    frame: { status: 'completed' },
+    paths: ['/native/output.txt'],
+  }
 
   beforeEach(() => {
     worker.agent = { ...agent }
@@ -431,8 +540,20 @@ describe('expectUnchangedNativeRecord', () => {
   })
 
   it.each([
-    ['a changed frame', { ...record, frame: { status: 'failed' } }],
-    ['a changed path', { ...record, paths: ['/native/other.txt'] }],
+    [
+      'a changed frame',
+      {
+        ...record,
+        frame: { status: 'failed' },
+      },
+    ],
+    [
+      'a changed path',
+      {
+        ...record,
+        paths: ['/native/other.txt'],
+      },
+    ],
   ])('refuses %s', async (_case, current) => {
     await expect(expectUnchangedNativeRecord(context, agent, () => current, record)).rejects.toThrow('the Worker record of the native result stays the same')
   })
@@ -456,7 +577,9 @@ describe('expectUnchangedNativeRecord', () => {
 })
 
 describe('proveNativeToolOutputFilePaths', () => {
-  const page = { reload: async () => null }
+  const page = {
+    reload: async () => null,
+  }
   const base = {
     context: { page, workspaceId: 'native-workspace' } as unknown as ManagedNativeScenarioContext,
     callId: 'native-call',
@@ -497,7 +620,14 @@ describe('proveNativeToolOutputFilePaths', () => {
       },
     })
     const steps = resultRow.events.filter(event => event === 'reveal' || event === 'row count:1' || event === 'prepare')
-    expect(steps).toEqual(['reveal', 'row count:1', 'prepare', 'reveal', 'row count:1', 'prepare'])
+    expect(steps).toEqual([
+      'reveal',
+      'row count:1',
+      'prepare',
+      'reveal',
+      'row count:1',
+      'prepare',
+    ])
   })
 
   it('counts the result row first when no step reveals it', async () => {
@@ -515,8 +645,12 @@ describe('proveNativeToolOutputFilePaths', () => {
       },
     })
     expect(rows).toEqual(['row', 'row'])
-    const proofs = resultRow.events.flatMap((event, index) => event === 'row proof' ? [index] : [])
-    const pathChecks = resultRow.events.flatMap((event, index) => event === 'row tool-output-file-paths count:0' ? [index] : [])
+    const proofs = resultRow.events.flatMap((event, index) => event === 'row proof'
+      ? [index]
+      : [])
+    const pathChecks = resultRow.events.flatMap((event, index) => event === 'row tool-output-file-paths count:0'
+      ? [index]
+      : [])
     expect(proofs).toHaveLength(2)
     expect(pathChecks).toHaveLength(2)
     expect(proofs[0]).toBeGreaterThan(pathChecks[0]!)
@@ -526,17 +660,33 @@ describe('proveNativeToolOutputFilePaths', () => {
 
 describe('proveNativeOutputReceipt', () => {
   const computed = { ...output, source: 'process.stdout.write(computed)', text: 'OUT-line-0:\nOUT-line-1:-middle-77\nOUT-complete-42' }
-  const receipt = { paths: ['/run/native/output.txt'], previewText: 'OUT-line-0:\n[truncated]\nOUT-complete-42', frame: { status: 'completed' }, content: new Uint8Array([1, 2, 3]) }
+  const receipt = {
+    paths: ['/run/native/output.txt'],
+    previewText: 'OUT-line-0:\n[truncated]\nOUT-complete-42',
+    frame: { status: 'completed' },
+    content: new Uint8Array([1, 2, 3]),
+  }
   const capture = {
-    context: { page: { reload: async () => null }, workspaceId: 'native-workspace' },
+    context: {
+      page: {
+        reload: async () => null,
+      },
+      workspaceId: 'native-workspace',
+    },
     agent: { id: 'native-agent', agentSessionId: 'native-session' },
     snapshot: { agentId: 'native-agent', agentSessionId: 'native-session', messages: [] },
     nativeCallId: 'native-call',
     output: computed,
   } as unknown as Parameters<typeof proveNativeOutputReceipt>[0]
-  const testInfo = { attach: vi.fn<TestInfo['attach']>(async () => {}) }
+  const testInfo = {
+    attach: vi.fn<TestInfo['attach']>(async () => {}),
+  }
   /** A reader that returns a fresh copy of the receipt for each snapshot, as a provider reader does. */
-  const read = vi.fn(() => ({ ...receipt, paths: [...receipt.paths], content: receipt.content.slice() }))
+  const read = vi.fn(() => ({
+    ...receipt,
+    paths: [...receipt.paths],
+    content: receipt.content.slice(),
+  }))
 
   /** The lines that the view proof required out of the result row, one event for each pass. */
   const omittedFromRow = () => resultRow.events.filter(event => event.startsWith('row omits:'))
@@ -558,9 +708,16 @@ describe('proveNativeOutputReceipt', () => {
     const readReceipt = vi.fn((_snapshot: NativeMessageSnapshot, callId: string) => {
       if (callId !== 'native-call')
         throw new Error('The receipt query changed the original model call ID.')
-      return { ...receipt, paths: [...receipt.paths], content: receipt.content.slice() }
+      return {
+        ...receipt,
+        paths: [...receipt.paths],
+        content: receipt.content.slice(),
+      }
     })
-    await proveNativeOutputReceipt({ ...capture, context: { ...capture.context, resolveToolRowId } }, testInfo, readReceipt)
+    await proveNativeOutputReceipt({
+      ...capture,
+      context: { ...capture.context, resolveToolRowId },
+    }, testInfo, readReceipt)
     expect(readReceipt.mock.calls.map(call => call[1])).toEqual(['native-call', 'native-call', 'native-call'])
     expect(resolveToolRowId).toHaveBeenCalledExactlyOnceWith({ callId: 'native-call', agentId: 'native-agent' })
     const attachment = JSON.parse(String(testInfo.attach.mock.calls[0]?.[1]?.body))
@@ -598,7 +755,12 @@ describe('proveNativeOutputReceipt', () => {
 
   it('fails when the Worker record changes after the reload', async () => {
     let reads = 0
-    const changing = vi.fn(() => ++reads < 3 ? { ...receipt } : { ...receipt, frame: { status: 'failed' } })
+    const changing = vi.fn(() => ++reads < 3
+      ? { ...receipt }
+      : {
+          ...receipt,
+          frame: { status: 'failed' },
+        })
     await expect(proveNativeOutputReceipt(capture, testInfo, changing)).rejects.toThrow('the Worker record of the native result stays the same')
   })
 })

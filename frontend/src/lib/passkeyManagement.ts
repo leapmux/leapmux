@@ -4,7 +4,9 @@ import { userClient } from '~/api/clients'
 export function credentialIdFromRegistrationJson(credentialJson: string): string | undefined {
   try {
     const parsed = JSON.parse(credentialJson) as { id?: string }
-    return typeof parsed.id === 'string' ? parsed.id : undefined
+    return typeof parsed.id === 'string'
+      ? parsed.id
+      : undefined
   }
   catch {
     return undefined

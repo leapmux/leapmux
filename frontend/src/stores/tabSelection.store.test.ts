@@ -23,7 +23,11 @@ function withStores<T>(
   return createRoot((dispose) => {
     const harness = installTestBridge({ workspaceId: WS })
     try {
-      return body({ ...createTestTabStores(WS), rootTileId: harness.rootTileId, harness })
+      return body({
+        ...createTestTabStores(WS),
+        rootTileId: harness.rootTileId,
+        harness,
+      })
     }
     finally {
       dispose()
@@ -34,7 +38,13 @@ function withStores<T>(
 let seq = 0
 function add(id: string, tileId: string) {
   seq += 1
-  emitAddTab({ type: TabType.AGENT, id, tileId, position: `p${seq}`, workerId: 'w-1' })
+  emitAddTab({
+    type: TabType.AGENT,
+    id,
+    tileId,
+    position: `p${seq}`,
+    workerId: 'w-1',
+  })
 }
 
 const key = (id: string) => tabKey({ type: TabType.AGENT, id })
@@ -195,7 +205,13 @@ describe('tabSelection', () => {
       withStores(({ selection, harness }) => {
         seedWorkspace(harness, 'ws-other', 'other-root')
         seq += 1
-        emitAddTab({ type: TabType.AGENT, id: 'moved', tileId: 'other-root', position: `p${seq}`, workerId: 'w-1' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'moved',
+          tileId: 'other-root',
+          position: `p${seq}`,
+          workerId: 'w-1',
+        })
 
         selection.restore(WS, key('moved'), {})
 
@@ -276,7 +292,12 @@ describe('tabSelection', () => {
           getAllTileIdsFor: wsId => stores.floatingWindowStore.getAllTileIdsFor(wsId),
         })
 
-        emitAddTab({ type: TabType.AGENT, id: 'r1', tileId: 'remote-tile', position: 'a' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'r1',
+          tileId: 'remote-tile',
+          position: 'a',
+        })
         stores.selection.setActiveById(TabType.AGENT, 'r1')
         await flush()
         expect(stores.selection.state.activeByWorkspace['ws-remote']).toBeDefined()
@@ -286,7 +307,12 @@ describe('tabSelection', () => {
         delete harness.pending.state.confirmedState.workspaces['ws-remote']
         harness.pending.recomputeSpeculative()
         // Any op re-derives the projection, as a live client would see.
-        emitAddTab({ type: TabType.AGENT, id: 'local', tileId: harness.rootTileId, position: 'a' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'local',
+          tileId: harness.rootTileId,
+          position: 'a',
+        })
         await flush()
 
         expect(stores.selection.state.activeByWorkspace['ws-remote'], 'workspace pointer reclaimed')
@@ -313,13 +339,28 @@ describe('tabSelection', () => {
           getAllTileIdsFor: wsId => stores.floatingWindowStore.getAllTileIdsFor(wsId),
         })
 
-        const created = stores.floatingWindowStore.addWindow({ x: 0.1, y: 0.1, width: 0.3, height: 0.3 })!
-        emitAddTab({ type: TabType.AGENT, id: 'fw', tileId: created.tileId, position: 'a' })
+        const created = stores.floatingWindowStore.addWindow({
+          x: 0.1,
+          y: 0.1,
+          width: 0.3,
+          height: 0.3,
+        })!
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'fw',
+          tileId: created.tileId,
+          position: 'a',
+        })
         stores.selection.setActiveById(TabType.AGENT, 'fw')
         await flush()
 
         // Churn the projection so the sweep actually runs.
-        emitAddTab({ type: TabType.AGENT, id: 'main', tileId: harness.rootTileId, position: 'b' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'main',
+          tileId: harness.rootTileId,
+          position: 'b',
+        })
         await flush()
 
         expect(
@@ -339,7 +380,9 @@ describe('tabSelection', () => {
           getAllTileIdsFor: wsId => stores.floatingWindowStore.getAllTileIdsFor(wsId),
         })
         // A restore ran from sessionStorage before any projection existed.
-        stores.selection.restore(WS, key('a'), { 'some-tile': key('a') })
+        stores.selection.restore(WS, key('a'), {
+          'some-tile': key('a'),
+        })
         await flush()
 
         // Projection is null, so the sweep must stay its hand -- wiping here
@@ -356,7 +399,9 @@ describe('tabSelection', () => {
       withStores(({ selection, rootTileId }) => {
         add('a', rootTileId)
         selection.setActiveById(TabType.AGENT, 'a')
-        selection.restore(WS, null, { 'dead-tile': key('a') })
+        selection.restore(WS, null, {
+          'dead-tile': key('a'),
+        })
 
         selection.retainOnly(new Set([WS]), new Set([rootTileId]))
 

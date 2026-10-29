@@ -14,15 +14,28 @@ describe('subagentsFrom', () => {
   })
 
   it('keeps open OPTIONAL when only the row lookup is supplied', () => {
-    const navigation = subagentsFrom({ backgroundTask: () => undefined })
+    const navigation = subagentsFrom({
+      backgroundTask: () => undefined,
+    })
     expect(navigation?.open).toBeUndefined()
     expect(navigation?.row('k')).toBeUndefined()
   })
 
   it('carries both members through when both are supplied', () => {
-    const item: BackgroundTaskItem = { rowKey: 'k', kind: 'subagent', title: 'Inspect it', activity: 'Inspecting', status: 'running' }
+    const item: BackgroundTaskItem = {
+      rowKey: 'k',
+      kind: 'subagent',
+      title: 'Inspect it',
+      activity: 'Inspecting',
+      status: 'running',
+    }
     const open = vi.fn()
-    const navigation = subagentsFrom({ backgroundTask: key => key === 'k' ? item : undefined, openSubagent: open })
+    const navigation = subagentsFrom({
+      backgroundTask: key => key === 'k'
+        ? item
+        : undefined,
+      openSubagent: open,
+    })
     expect(navigation?.row('k')).toBe(item)
     navigation?.open?.(item)
     expect(open).toHaveBeenCalledWith(item)
@@ -49,9 +62,14 @@ describe('imageActionsFrom', () => {
   it('reads the load gates through the host, lazily', () => {
     // The gates alone are not a capability: a host with no channel and no opener
     // has nothing to defer, and the adapter answers undefined for it.
-    expect(imageActionsFrom({ deferLoad: () => true })).toBeUndefined()
+    expect(imageActionsFrom({
+      deferLoad: () => true,
+    })).toBeUndefined()
     let deferred = true
-    const actions = imageActionsFrom({ openImage: () => {}, deferLoad: () => deferred })!
+    const actions = imageActionsFrom({
+      openImage: () => {},
+      deferLoad: () => deferred,
+    })!
     expect(actions.deferLoad()).toBe(true)
     deferred = false
     expect(actions.deferLoad()).toBe(false)
@@ -60,7 +78,9 @@ describe('imageActionsFrom', () => {
   // The premeasure-only case: a hidden measurement mount supplies no file channel
   // and no opener, and still needs the decode hint the pass requires.
   it('builds from a premeasure hint alone', () => {
-    const actions = imageActionsFrom({ premeasurePass: () => true })
+    const actions = imageActionsFrom({
+      premeasurePass: () => true,
+    })
     expect(actions?.premeasurePass()).toBe(true)
   })
 })
@@ -68,7 +88,10 @@ describe('imageActionsFrom', () => {
 describe('reviewActionsFrom', () => {
   it('approves through the handler with the row\'s message id', async () => {
     const approve = vi.fn(async (_messageId: string, _reviewId: string) => {})
-    const actions = reviewActionsFrom({ messageId: () => 'm1', approveAutoReviewDenial: () => approve })
+    const actions = reviewActionsFrom({
+      messageId: () => 'm1',
+      approveAutoReviewDenial: () => approve,
+    })
     await actions.approveDenied('r1')
     expect(approve).toHaveBeenCalledWith('m1', 'r1')
   })
@@ -76,7 +99,10 @@ describe('reviewActionsFrom', () => {
   it('reads the message id and the handler at call time', async () => {
     let messageId = 'm1'
     let handler: ((messageId: string, reviewId: string) => Promise<void>) | undefined
-    const actions = reviewActionsFrom({ messageId: () => messageId, approveAutoReviewDenial: () => handler })
+    const actions = reviewActionsFrom({
+      messageId: () => messageId,
+      approveAutoReviewDenial: () => handler,
+    })
     const approve = vi.fn(async () => {})
     handler = approve
     messageId = 'm2'
@@ -85,7 +111,10 @@ describe('reviewActionsFrom', () => {
   })
 
   it('fails a call after the host lost its handler, so the button shows the failure', async () => {
-    const actions = reviewActionsFrom({ messageId: () => 'm1', approveAutoReviewDenial: () => undefined })
+    const actions = reviewActionsFrom({
+      messageId: () => 'm1',
+      approveAutoReviewDenial: () => undefined,
+    })
     await expect(actions.approveDenied('r1')).rejects.toThrow('This agent cannot record the approval now.')
   })
 
@@ -93,7 +122,10 @@ describe('reviewActionsFrom', () => {
     const refuse = async () => {
       throw new Error('refused')
     }
-    const actions = reviewActionsFrom({ messageId: () => 'm1', approveAutoReviewDenial: () => refuse })
+    const actions = reviewActionsFrom({
+      messageId: () => 'm1',
+      approveAutoReviewDenial: () => refuse,
+    })
     await expect(actions.approveDenied('r1')).rejects.toThrow('refused')
   })
 })

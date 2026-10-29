@@ -10,19 +10,33 @@ const CELL_DETAIL = 'Maintainer evidence that the website must never show.'
 const PROVIDER_DETAIL = 'Provider evidence that stays with the maintainers.'
 
 const features = {
-  groups: [{ id: 'tools', label: 'Tools' }],
-  features: [{ id: 'mcp-input-request', label: 'MCP input request', description: 'Collects requested fields.', showInMatrix: true, group: 'tools' }],
+  groups: [
+    { id: 'tools', label: 'Tools' },
+  ],
+  features: [
+    {
+      id: 'mcp-input-request',
+      label: 'MCP input request',
+      description: 'Collects requested fields.',
+      showInMatrix: true,
+      group: 'tools',
+    },
+  ],
 }
 const checklist = {
   supportStates: SUPPORT_STATES,
-  providerGroups: [[{
-    id: 'pi',
-    label: 'Pi',
-    url: 'https://pi.dev/',
-    icon: '/icons/agents/pi.svg',
-    userNote: 'Provider note.',
-    detailNote: PROVIDER_DETAIL,
-  }]],
+  providerGroups: [
+    [
+      {
+        id: 'pi',
+        label: 'Pi',
+        url: 'https://pi.dev/',
+        icon: '/icons/agents/pi.svg',
+        userNote: 'Provider note.',
+        detailNote: PROVIDER_DETAIL,
+      },
+    ],
+  ],
   cells: {
     'mcp-input-request': {
       pi: { support: 'agent-limit', userNote: 'Cell-specific **value**. See [the issue](https://pi.dev/issues/1).', detailNote: CELL_DETAIL },
@@ -60,9 +74,17 @@ const SECOND_GROUP_BODY = `<tbody><tr class="feature-group-header"><th scope="ro
 function withSecondGroup() {
   const extendedFeatures = structuredClone(features)
   extendedFeatures.groups.push({ id: 'conversation', label: 'Conversation' })
-  extendedFeatures.features.push({ id: 'agent-questions', label: 'Agent questions', description: 'Asks the user.', showInMatrix: true, group: 'conversation' })
+  extendedFeatures.features.push({
+    id: 'agent-questions',
+    label: 'Agent questions',
+    description: 'Asks the user.',
+    showInMatrix: true,
+    group: 'conversation',
+  })
   const extendedChecklist = structuredClone(checklist)
-  extendedChecklist.cells['agent-questions'] = { pi: { support: 'supported', userNote: '', detailNote: '' } }
+  extendedChecklist.cells['agent-questions'] = {
+    pi: { support: 'supported', userNote: '', detailNote: '' },
+  }
   const extendedHtml = html
     .replace('</tbody>', `</tbody>${SECOND_GROUP_BODY}`)
     .replace('</dl>', '<dt id="feature-agent-questions">Agent questions</dt><dd>Asks the user.</dd></dl>')
@@ -71,9 +93,16 @@ function withSecondGroup() {
 
 function withHiddenFeature() {
   const extendedFeatures = structuredClone(features)
-  extendedFeatures.features.push({ id: 'basic-chat', label: 'Basic chat', description: 'Receives a prompt and returns an answer.', showInMatrix: false })
+  extendedFeatures.features.push({
+    id: 'basic-chat',
+    label: 'Basic chat',
+    description: 'Receives a prompt and returns an answer.',
+    showInMatrix: false,
+  })
   const extendedChecklist = structuredClone(checklist)
-  extendedChecklist.cells['basic-chat'] = { pi: { support: 'agent-limit', userNote: '', detailNote: 'A test-only detail note that must stay off the website.' } }
+  extendedChecklist.cells['basic-chat'] = {
+    pi: { support: 'agent-limit', userNote: '', detailNote: 'A test-only detail note that must stay off the website.' },
+  }
   return { features: extendedFeatures, checklist: extendedChecklist }
 }
 
@@ -492,7 +521,17 @@ describe('verifyCodingAgentProviderCount', () => {
   })
 
   it('counts providers from every source group', () => {
-    const extended = { providerGroups: [[{ id: 'a' }], [{ id: 'b' }, { id: 'c' }]] }
+    const extended = {
+      providerGroups: [
+        [
+          { id: 'a' },
+        ],
+        [
+          { id: 'b' },
+          { id: 'c' },
+        ],
+      ],
+    }
     expect(verifyCodingAgentProviderCount('<span data-agent-provider-count>3</span>', extended)).toEqual([])
     expect(verifyCodingAgentProviderCount('<span data-agent-provider-count>1</span>', extended))
       .toContain('provider count 1 is "1", expected 3')

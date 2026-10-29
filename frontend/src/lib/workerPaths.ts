@@ -12,7 +12,9 @@ import { flavorFromOs, tildify } from '~/lib/paths'
  * `tildify` sniff the flavor from the path instead.
  */
 export function workerPathFlavor(info: WorkerInfo | null | undefined): PathFlavor | undefined {
-  return info?.os ? flavorFromOs(info.os) : undefined
+  return info?.os
+    ? flavorFromOs(info.os)
+    : undefined
 }
 
 /**

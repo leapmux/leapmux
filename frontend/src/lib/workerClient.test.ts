@@ -13,7 +13,9 @@ class FakeWorker {
   }
 
   reply(id: number, value: string): void {
-    this.onmessage?.({ data: { id, value } } as MessageEvent)
+    this.onmessage?.({
+      data: { id, value },
+    } as MessageEvent)
   }
 }
 

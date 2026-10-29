@@ -73,8 +73,20 @@ const FIELD_OUTPUT_TOKENS = 2
  * beyond these numbers: a field number and a wire type are enough to descend
  * through a message that declares 37 fields this module never names.
  */
-const PROMPT_PATH = [FIELD_RUN_REQUEST, FIELD_ACTION, FIELD_USER_MESSAGE_ACTION, FIELD_USER_MESSAGE, FIELD_TEXT]
-const SELECTED_CONTEXT_PATH = [FIELD_RUN_REQUEST, FIELD_ACTION, FIELD_USER_MESSAGE_ACTION, FIELD_USER_MESSAGE, 3]
+const PROMPT_PATH = [
+  FIELD_RUN_REQUEST,
+  FIELD_ACTION,
+  FIELD_USER_MESSAGE_ACTION,
+  FIELD_USER_MESSAGE,
+  FIELD_TEXT,
+]
+const SELECTED_CONTEXT_PATH = [
+  FIELD_RUN_REQUEST,
+  FIELD_ACTION,
+  FIELD_USER_MESSAGE_ACTION,
+  FIELD_USER_MESSAGE,
+  3,
+]
 
 export interface CursorAttachmentPayload {
   kind: 'image' | 'document' | 'file'
@@ -110,7 +122,9 @@ export function cursorPromptOf(clientMessage: Uint8Array): string | undefined {
 /** Read the native conversation ID that Cursor sends with a Run request. */
 export function cursorConversationIdOf(clientMessage: Uint8Array): string | undefined {
   const id = descend(clientMessage, [FIELD_RUN_REQUEST, FIELD_CONVERSATION_ID])
-  return id === undefined ? undefined : new TextDecoder().decode(id)
+  return id === undefined
+    ? undefined
+    : new TextDecoder().decode(id)
 }
 
 /** Read the inline attachment bytes that Cursor puts in a Run request. */
@@ -128,7 +142,9 @@ export function cursorAttachmentPayloads(clientMessage: Uint8Array): CursorAttac
       payloads.push({
         kind: 'image',
         data: Buffer.from(data).toString('base64'),
-        ...(mimeType === undefined ? {} : { mimeType }),
+        ...(mimeType === undefined
+          ? {}
+          : { mimeType }),
       })
     }
   }
@@ -141,8 +157,12 @@ export function cursorAttachmentPayloads(clientMessage: Uint8Array): CursorAttac
       payloads.push({
         kind: 'document',
         data: Buffer.from(data).toString('base64'),
-        ...(mimeType === undefined ? {} : { mimeType }),
-        ...(filename === undefined ? {} : { filename }),
+        ...(mimeType === undefined
+          ? {}
+          : { mimeType }),
+        ...(filename === undefined
+          ? {}
+          : { filename }),
       })
     }
   }
@@ -150,8 +170,15 @@ export function cursorAttachmentPayloads(clientMessage: Uint8Array): CursorAttac
     const parts = lenientFields(file)
     const data = cursorProtobufString(parts, 1)
     const filename = cursorProtobufString(parts, 2)
-    if (data !== undefined)
-      payloads.push({ kind: 'file', data, ...(filename === undefined ? {} : { filename }) })
+    if (data !== undefined) {
+      payloads.push({
+        kind: 'file',
+        data,
+        ...(filename === undefined
+          ? {}
+          : { filename }),
+      })
+    }
   }
   return payloads
 }
@@ -254,7 +281,9 @@ function encodeCursorParameter(parameter: CursorModelParameter): Uint8Array {
   return concatBytes([
     encodeStringField(1, parameter.id),
     encodeStringField(2, parameter.name),
-    encodeLengthDelimited(4, encodeLengthDelimited(parameter.kind === 'boolean' ? 1 : 2, values)),
+    encodeLengthDelimited(4, encodeLengthDelimited(parameter.kind === 'boolean'
+      ? 1
+      : 2, values)),
   ])
 }
 
@@ -518,7 +547,9 @@ function encodeCursorTask(call: CursorTaskCall, report: string | undefined): Uin
       encodeLengthDelimited(FIELD_SUBAGENT_TYPE_EXPLORE, new Uint8Array(0)),
     ),
   ])
-  const task = [encodeLengthDelimited(FIELD_TASK_ARGS, args)]
+  const task = [
+    encodeLengthDelimited(FIELD_TASK_ARGS, args),
+  ]
   if (report !== undefined) {
     task.push(encodeLengthDelimited(
       FIELD_TASK_RESULT,
@@ -553,10 +584,12 @@ function encodeToolCallUpdate(field: number, callID: string, toolCall: Uint8Arra
  * `WebFetchResult` uses success at 1 and rejected at 3. `WebFetchRejected` uses reason at 1.
  */
 function encodeCursorWebFetch(call: CursorWebFetchCall, reply?: CursorWebFetchReply): Uint8Array {
-  const fetch = [encodeLengthDelimited(1, concatBytes([
-    encodeStringField(1, call.url),
-    encodeStringField(2, call.callID),
-  ]))]
+  const fetch = [
+    encodeLengthDelimited(1, concatBytes([
+      encodeStringField(1, call.url),
+      encodeStringField(2, call.callID),
+    ])),
+  ]
   if (reply) {
     const result = reply.approved
       ? encodeLengthDelimited(1, encodeStringField(1, call.url))
@@ -631,7 +664,10 @@ function encodeCursorTodoItem(item: CursorTodoItem): Uint8Array {
 
 function encodeCursorTodo(call: CursorTodoCall, completed: boolean): Uint8Array {
   const todos = call.todos.map(item => encodeLengthDelimited(1, encodeCursorTodoItem(item)))
-  const args = encodeLengthDelimited(1, concatBytes([...todos, encodeVarintField(2, Number(call.merge))]))
+  const args = encodeLengthDelimited(1, concatBytes([
+    ...todos,
+    encodeVarintField(2, Number(call.merge)),
+  ]))
   const result = completed
     ? encodeLengthDelimited(2, encodeLengthDelimited(1, concatBytes([
         ...todos,
@@ -660,7 +696,9 @@ function encodeCursorGenerateImage(call: CursorGenerateImageCall, completed: boo
     encodeStringField(1, call.description),
     encodeStringField(2, call.filePath),
   ])
-  const tool = [encodeLengthDelimited(1, args)]
+  const tool = [
+    encodeLengthDelimited(1, args),
+  ]
   if (completed) {
     const success = concatBytes([
       encodeStringField(1, call.filePath),
@@ -739,7 +777,9 @@ export function cursorInteractionQuery(id: number, call: CursorInteractionCall):
 /** The text at field 1 of the failure message at `field` of an interaction result, if it states one. */
 function failureText(result: Uint8Array, field: number): string | undefined {
   const failure = descend(result, [field])
-  return failure === undefined ? undefined : cursorProtobufString(lenientFields(failure), 1)
+  return failure === undefined
+    ? undefined
+    : cursorProtobufString(lenientFields(failure), 1)
 }
 
 /** Read the native response that answers an interaction query. */
@@ -763,12 +803,19 @@ export function cursorInteractionResponseOf(clientMessage: Uint8Array): CursorIn
         return {
           questionID: cursorProtobufString(parts, 1) ?? '',
           selectedOptionIDs: cursorProtobufRepeated(parts, 2).map(bytes => new TextDecoder().decode(bytes)),
-          ...(freeformText === undefined ? {} : { freeformText }),
+          ...(freeformText === undefined
+            ? {}
+            : { freeformText }),
         }
       })
       return { kind: 'question', id, answers }
     }
-    return { kind: 'question', id, answers: [], rejectedReason: failureText(result, 3) ?? 'rejected' }
+    return {
+      kind: 'question',
+      id,
+      answers: [],
+      rejectedReason: failureText(result, 3) ?? 'rejected',
+    }
   }
   if (fields.strings.has(7)) {
     const result = descend(response, [7, 1])
@@ -776,17 +823,38 @@ export function cursorInteractionResponseOf(clientMessage: Uint8Array): CursorIn
       throw new Error('Cursor plan response has no result')
     if (descend(result, [1])) {
       const planURI = cursorProtobufString(lenientFields(result), 3)
-      return { kind: 'plan', id, accepted: true, ...(planURI === undefined ? {} : { planURI }) }
+      return {
+        kind: 'plan',
+        id,
+        accepted: true,
+        ...(planURI === undefined
+          ? {}
+          : { planURI }),
+      }
     }
     const error = failureText(result, 2)
-    return { kind: 'plan', id, accepted: false, ...(error === undefined ? {} : { error }) }
+    return {
+      kind: 'plan',
+      id,
+      accepted: false,
+      ...(error === undefined
+        ? {}
+        : { error }),
+    }
   }
   if (fields.strings.has(9)) {
     const result = descend(response, [9])!
     if (descend(result, [1]))
       return { kind: 'webFetch', id, approved: true }
     const reason = failureText(result, 2)
-    return { kind: 'webFetch', id, approved: false, ...(reason === undefined ? {} : { reason }) }
+    return {
+      kind: 'webFetch',
+      id,
+      approved: false,
+      ...(reason === undefined
+        ? {}
+        : { reason }),
+    }
   }
   throw new Error('Cursor sent an unsupported interaction response')
 }
@@ -798,11 +866,11 @@ function cursorJsonValue(value: unknown, depth = 0, seen = new Set<object>()): J
     return value
   if (typeof value === 'number') {
     if (!Number.isFinite(value))
-      throw new Error('Cursor MCP input contains a non-finite number')
+      throw new TypeError('Cursor MCP input contains a non-finite number')
     return value
   }
   if (typeof value !== 'object')
-    throw new Error('Cursor MCP input contains a non-JSON value')
+    throw new TypeError('Cursor MCP input contains a non-JSON value')
   if (seen.has(value))
     throw new Error('Cursor MCP input contains a cycle')
   seen.add(value)
@@ -812,7 +880,10 @@ function cursorJsonValue(value: unknown, depth = 0, seen = new Set<object>()): J
     const prototype = Object.getPrototypeOf(value)
     if (prototype !== Object.prototype && prototype !== null)
       throw new Error('Cursor MCP input contains a non-JSON object')
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cursorJsonValue(item, depth + 1, seen)]))
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+      key,
+      cursorJsonValue(item, depth + 1, seen),
+    ]))
   }
   finally {
     seen.delete(value)
@@ -868,7 +939,9 @@ export function cursorMcpResponseOf(clientMessage: Uint8Array): CursorMcpReply |
       const parts = lenientFields(failure)
       const name = cursorProtobufString(parts, 1) ?? ''
       const available = cursorProtobufRepeated(parts, 2).map(bytes => new TextDecoder().decode(bytes))
-      const details = available.length > 0 ? `; available: ${available.join(', ')}` : ''
+      const details = available.length > 0
+        ? `; available: ${available.join(', ')}`
+        : ''
       switch (field) {
         case 5: return { id, success: false, text: `tool ${name} not found${details}` }
         case 6: return { id, success: false, text: `server ${name} not found${details}` }
@@ -970,7 +1043,11 @@ export function cursorExecutionRequest(id: number, call: CursorExecutionCall): U
     field = 2
     args = concatBytes([
       encodeStringField(1, call.command),
-      ...(call.workingDirectory !== undefined ? [encodeStringField(2, call.workingDirectory)] : []),
+      ...(call.workingDirectory !== undefined
+        ? [
+            encodeStringField(2, call.workingDirectory),
+          ]
+        : []),
       encodeVarintField(3, 120_000),
       encodeStringField(4, call.callID),
       // The service reports parse failure instead of inventing an allowlist result.
@@ -980,7 +1057,10 @@ export function cursorExecutionRequest(id: number, call: CursorExecutionCall): U
   }
   else if (call.kind === 'read') {
     field = 7
-    args = concatBytes([encodeStringField(1, call.path), encodeStringField(2, call.callID)])
+    args = concatBytes([
+      encodeStringField(1, call.path),
+      encodeStringField(2, call.callID),
+    ])
   }
   else if (call.kind === 'write') {
     field = 3
@@ -1016,10 +1096,23 @@ export function cursorExecutionResponseOf(clientMessage: Uint8Array): CursorExec
     return undefined
   const rawResult = cursorProtobufBytes(exec, entry)!
   const result = readCursorProtobufFields(rawResult)
-  const kind = entry === 2 ? 'shell' : entry === 7 ? 'read' : 'write'
+  const kind = entry === 2
+    ? 'shell'
+    : entry === 7
+      ? 'read'
+      : 'write'
   const execID = cursorProtobufString(exec, 15)
-  const base = { id, ...(execID !== undefined ? { execID } : {}), kind, rawResult } satisfies Pick<CursorExecutionReply, 'id' | 'execID' | 'kind' | 'rawResult'>
-  const outcome = [...result.strings.keys()].find(field => field >= 1 && field <= 7)
+  const base = {
+    id,
+    ...(execID !== undefined
+      ? { execID }
+      : {}),
+    kind,
+    rawResult,
+  } satisfies Pick<CursorExecutionReply, 'id' | 'execID' | 'kind' | 'rawResult'>
+  const outcome = [
+    ...result.strings.keys(),
+  ].find(field => field >= 1 && field <= 7)
   if (outcome === undefined)
     throw new Error('The native Cursor execution reply has no outcome.')
   const fields = readCursorProtobufFields(cursorProtobufBytes(result, outcome)!)
@@ -1027,7 +1120,14 @@ export function cursorExecutionResponseOf(clientMessage: Uint8Array): CursorExec
     const exitCode = cursorProtobufNumber(fields, 3, true) ?? 0
     const stdout = cursorProtobufString(fields, 5) ?? ''
     const stderr = cursorProtobufString(fields, 6) ?? ''
-    return { ...base, success: outcome === 1 && exitCode === 0, exitCode, text: `Exit code: ${exitCode}\n${stdout}${stderr ? `\n${stderr}` : ''}` }
+    return {
+      ...base,
+      success: outcome === 1 && exitCode === 0,
+      exitCode,
+      text: `Exit code: ${exitCode}\n${stdout}${stderr
+        ? `\n${stderr}`
+        : ''}`,
+    }
   }
   if (kind === 'read' && outcome === 1) {
     const content = cursorProtobufString(fields, 2)
@@ -1039,17 +1139,39 @@ export function cursorExecutionResponseOf(clientMessage: Uint8Array): CursorExec
       ...base,
       success: true,
       text: content ?? `Read ${data?.length ?? 0} binary bytes.`,
-      ...(content !== undefined ? { content } : {}),
-      ...(data !== undefined ? { data } : {}),
-      ...(path !== undefined ? { path } : {}),
-      ...(lines !== undefined ? { lines } : {}),
-      ...(size !== undefined ? { size } : {}),
+      ...(content !== undefined
+        ? { content }
+        : {}),
+      ...(data !== undefined
+        ? { data }
+        : {}),
+      ...(path !== undefined
+        ? { path }
+        : {}),
+      ...(lines !== undefined
+        ? { lines }
+        : {}),
+      ...(size !== undefined
+        ? { size }
+        : {}),
     }
   }
   if (kind === 'write' && outcome === 1) {
     const content = cursorProtobufString(fields, 4)
     const path = cursorProtobufString(fields, 1)
-    return { ...base, success: true, text: `Wrote ${path ?? 'the native file'}${content !== undefined ? `\n${content}` : ''}`, ...(content !== undefined ? { content } : {}), ...(path !== undefined ? { path } : {}) }
+    return {
+      ...base,
+      success: true,
+      text: `Wrote ${path ?? 'the native file'}${content !== undefined
+        ? `\n${content}`
+        : ''}`,
+      ...(content !== undefined
+        ? { content }
+        : {}),
+      ...(path !== undefined
+        ? { path }
+        : {}),
+    }
   }
   const failureKind: CursorExecutionReply['failureKind'] = kind === 'read' && outcome === 4
     ? 'file-not-found'
@@ -1059,10 +1181,21 @@ export function cursorExecutionResponseOf(clientMessage: Uint8Array): CursorExec
         ? 'spawn-error'
         : (kind === 'read' && outcome === 5) || (kind === 'write' && outcome === 3) || (kind === 'shell' && outcome === 7)
             ? 'permission-denied'
-            : (kind === 'read' && outcome === 3) || (kind === 'write' && outcome === 6) || (kind === 'shell' && outcome === 4) ? 'rejected' : 'error'
-  const detail = cursorProtobufString(fields, kind === 'shell' ? 3 : 2)
-    ?? [...fields.strings.values()].flat().map(value => new TextDecoder().decode(value)).join('\n')
-  return { ...base, success: false, failureKind, text: detail || `Native ${kind} ${failureKind}.` }
+            : (kind === 'read' && outcome === 3) || (kind === 'write' && outcome === 6) || (kind === 'shell' && outcome === 4)
+                ? 'rejected'
+                : 'error'
+  const detail = cursorProtobufString(fields, kind === 'shell'
+    ? 3
+    : 2)
+  ?? [
+    ...fields.strings.values(),
+  ].flat().map(value => new TextDecoder().decode(value)).join('\n')
+  return {
+    ...base,
+    success: false,
+    failureKind,
+    text: detail || `Native ${kind} ${failureKind}.`,
+  }
 }
 
 function executionTool(call: CursorExecutionCall, result?: Uint8Array): Uint8Array {
@@ -1070,7 +1203,15 @@ function executionTool(call: CursorExecutionCall, result?: Uint8Array): Uint8Arr
   let args: Uint8Array
   if (call.kind === 'shell') {
     field = 1
-    args = concatBytes([encodeStringField(1, call.command), ...(call.workingDirectory !== undefined ? [encodeStringField(2, call.workingDirectory)] : []), encodeStringField(4, call.callID)])
+    args = concatBytes([
+      encodeStringField(1, call.command),
+      ...(call.workingDirectory !== undefined
+        ? [
+            encodeStringField(2, call.workingDirectory),
+          ]
+        : []),
+      encodeStringField(4, call.callID),
+    ])
   }
   else if (call.kind === 'read') {
     field = 8
@@ -1078,10 +1219,24 @@ function executionTool(call: CursorExecutionCall, result?: Uint8Array): Uint8Arr
   }
   else {
     field = 12
-    args = concatBytes([encodeStringField(1, call.path), ...(call.kind === 'write' ? [encodeStringField(6, call.content)] : [])])
+    args = concatBytes([
+      encodeStringField(1, call.path),
+      ...(call.kind === 'write'
+        ? [
+            encodeStringField(6, call.content),
+          ]
+        : []),
+    ])
   }
   return concatBytes([
-    encodeLengthDelimited(field, concatBytes([encodeLengthDelimited(1, args), ...(result ? [encodeLengthDelimited(2, result)] : [])])),
+    encodeLengthDelimited(field, concatBytes([
+      encodeLengthDelimited(1, args),
+      ...(result
+        ? [
+            encodeLengthDelimited(2, result),
+          ]
+        : []),
+    ])),
     encodeStringField(57, call.callID),
   ])
 }
@@ -1100,18 +1255,43 @@ export function cursorExecutionToolCompleted(call: CursorExecutionCall, reply: C
   else if (call.kind === 'read') {
     result = reply.success
       ? encodeLengthDelimited(1, concatBytes([
-          ...(reply.content !== undefined ? [encodeStringField(1, reply.content)] : []),
-          ...(reply.data !== undefined ? [encodeLengthDelimited(6, reply.data)] : []),
+          ...(reply.content !== undefined
+            ? [
+                encodeStringField(1, reply.content),
+              ]
+            : []),
+          ...(reply.data !== undefined
+            ? [
+                encodeLengthDelimited(6, reply.data),
+              ]
+            : []),
           encodeStringField(7, reply.path ?? call.path),
-          ...(reply.lines !== undefined ? [encodeVarintField(4, reply.lines)] : []),
-          ...(reply.size !== undefined ? [encodeVarintField(5, reply.size)] : []),
+          ...(reply.lines !== undefined
+            ? [
+                encodeVarintField(4, reply.lines),
+              ]
+            : []),
+          ...(reply.size !== undefined
+            ? [
+                encodeVarintField(5, reply.size),
+              ]
+            : []),
         ]))
       : encodeLengthDelimited(2, encodeStringField(1, reply.text))
   }
   else {
     result = reply.success
-      ? encodeLengthDelimited(1, concatBytes([encodeStringField(1, reply.path ?? call.path), encodeStringField(6, contents.before), encodeStringField(7, contents.after), encodeStringField(8, reply.text)]))
-      : encodeLengthDelimited(7, concatBytes([encodeStringField(1, call.path), encodeStringField(2, reply.text), encodeStringField(5, reply.text)]))
+      ? encodeLengthDelimited(1, concatBytes([
+          encodeStringField(1, reply.path ?? call.path),
+          encodeStringField(6, contents.before),
+          encodeStringField(7, contents.after),
+          encodeStringField(8, reply.text),
+        ]))
+      : encodeLengthDelimited(7, concatBytes([
+          encodeStringField(1, call.path),
+          encodeStringField(2, reply.text),
+          encodeStringField(5, reply.text),
+        ]))
   }
   return encodeToolCallUpdate(FIELD_TOOL_CALL_COMPLETED, call.callID, executionTool(call, result))
 }
@@ -1189,8 +1369,14 @@ export function takeConnectFrames(buffer: Uint8Array): { frames: CursorConnectFr
     const length = view.getUint32(at + 1, false)
     if (buffer.byteLength - at - 5 < length)
       break
-    frames.push({ flags: buffer[at]!, payload: buffer.subarray(at + 5, at + 5 + length) })
+    frames.push({
+      flags: buffer[at]!,
+      payload: buffer.subarray(at + 5, at + 5 + length),
+    })
     at += 5 + length
   }
-  return { frames, rest: buffer.subarray(at) }
+  return {
+    frames,
+    rest: buffer.subarray(at),
+  }
 }

@@ -13,7 +13,12 @@ export function qwenRegistryRowKey(source: QwenRegistrySource, sessionID: string
   const digest = sha256.create()
   const length = new Uint8Array(8)
   const view = new DataView(length.buffer)
-  for (const component of [source, sessionID, nativeToolCallID, nativeDispatchID]) {
+  for (const component of [
+    source,
+    sessionID,
+    nativeToolCallID,
+    nativeDispatchID,
+  ]) {
     const bytes = utf8.encode(component)
     view.setBigUint64(0, BigInt(bytes.length), false)
     digest.update(length)

@@ -30,15 +30,21 @@ diracTest.describe('Dirac settings', () => {
 diracTest.describe('Dirac settings apply', () => {
   function nativeCurrentMode(request: MockModelRequestRecord): string {
     expect(request.protocol).toBe('openai-chat-completions')
-    const body = isObject(request.body) ? request.body : null
-    const messages = Array.isArray(body?.messages) ? body.messages : []
+    const body = isObject(request.body)
+      ? request.body
+      : null
+    const messages = Array.isArray(body?.messages)
+      ? body.messages
+      : []
     // Dirac adds no environment details when feedback revises a pending Plan. Its latest explicit mode still controls that turn.
     const texts = messages.filter(isObject).filter(message => message.role === 'user').flatMap((message) => {
       if (typeof message.content === 'string')
         return [message.content]
       if (!Array.isArray(message.content))
         return []
-      return message.content.filter(isObject).flatMap(part => typeof part.text === 'string' ? [part.text] : [])
+      return message.content.filter(isObject).flatMap(part => typeof part.text === 'string'
+        ? [part.text]
+        : [])
     })
     return texts.findLast(text => text.startsWith('<environment_details>\n# Current Mode\n')) ?? ''
   }
@@ -53,10 +59,18 @@ diracTest.describe('Dirac settings apply', () => {
     await modelScript.rule({
       name: 'dirac-mode-change-resume',
       when: { user: '^<environment_details>\\n# Current Mode\\nACT MODE' },
-      respond: { toolCalls: [diracRespondToolCall('dirac-act-answer', 'complete', 'The Act check ended.')] },
+      respond: {
+        toolCalls: [
+          diracRespondToolCall('dirac-act-answer', 'complete', 'The Act check ended.'),
+        ],
+      },
       once: true,
     })
-    const planStep = await modelScript.queue({ toolCalls: [diracRespondToolCall('dirac-plan-answer', 'plan', 'The Plan check ended.')] })
+    const planStep = await modelScript.queue({
+      toolCalls: [
+        diracRespondToolCall('dirac-plan-answer', 'plan', 'The Plan check ended.'),
+      ],
+    })
     await sendMessage(page, modelScript.prompt('Reply once in the selected mode.'))
     const planned = await modelScript.requestAt(planStep)
     expect(planned.body).toMatchObject({ reasoning_effort: 'high' })
@@ -84,7 +98,12 @@ diracTest.describe('Dirac settings apply', () => {
       const { agentId } = await openProviderAgent(leapmuxServer, workspaceId, DIRAC_AGENT)
       await withCleanup(async () => {
         await openWorkspace(page, workspaceId)
-        const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId })
+        const context = await nativeContext({
+          page,
+          modelScript,
+          leapmuxServer,
+          workspaceId,
+        })
         await waitForSettingsHydrated(page)
         await expectSettingsOptionsOffered(page, 'permissionMode', Object.values(DIRAC_MODE))
         const planNotice = await chooseNativeModeWithNotice(context, {
@@ -103,7 +122,11 @@ diracTest.describe('Dirac settings apply', () => {
             await expectSettingsOptionChosen(page, `permissionMode-${DIRAC_MODE.Plan}`)
           }
           const callId = restored ? 'dirac-restored-plan-mode' : 'dirac-selected-plan-mode'
-          const planStep = await modelScript.queue({ toolCalls: [diracRespondToolCall(callId, 'plan', 'Inspect the files before the change.')] })
+          const planStep = await modelScript.queue({
+            toolCalls: [
+              diracRespondToolCall(callId, 'plan', 'Inspect the files before the change.'),
+            ],
+          })
           await sendMessage(page, modelScript.prompt(restored ? 'Revise the plan after reload.' : 'Plan the change in the selected mode.'))
           await modelScript.waitForSteps(planStep + 1)
           await waitForAgentIdle(page)

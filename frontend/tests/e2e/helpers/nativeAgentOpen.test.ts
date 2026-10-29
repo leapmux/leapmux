@@ -16,7 +16,11 @@ const buttons = vi.hoisted(() => ({
   visible: true,
 }))
 
-const opened = vi.hoisted(() => ({ events: [] as string[], open: vi.fn(), selected: 'agent-1' }))
+const opened = vi.hoisted(() => ({
+  events: [] as string[],
+  open: vi.fn(),
+  selected: 'agent-1',
+}))
 vi.mock('./api', () => ({ openAgentViaAPI: opened.open }))
 vi.mock('./runDirectory', async importOriginal => ({
   ...await importOriginal<typeof import('./runDirectory')>(),
@@ -27,7 +31,9 @@ vi.mock('./runDirectory', async importOriginal => ({
 }))
 vi.mock('./ui', async importOriginal => ({
   ...await importOriginal<typeof import('./ui')>(),
-  agentTabs: () => ({ count: async () => 1 + buttons.stage }),
+  agentTabs: () => ({
+    count: async () => 1 + buttons.stage,
+  }),
   expectAgentTabCount: async (_page: Page, count: number) => {
     buttons.counts.push(count)
     expect(count).toBe(1 + buttons.stage)
@@ -47,9 +53,11 @@ vi.mock('@playwright/test', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@playwright/test')>()
   const check = Object.assign((value: unknown, message?: string) => {
     if (buttons.button !== undefined && value === buttons.button) {
-      return { toBeVisible: async () => {
-        expect(buttons.visible, 'the provider creation button is visible').toBe(true)
-      } }
+      return {
+        toBeVisible: async () => {
+          expect(buttons.visible, 'the provider creation button is visible').toBe(true)
+        },
+      }
     }
     return actual.expect(value, message)
   }, { poll: actual.expect.poll })
@@ -94,21 +102,34 @@ function repositoryAgent() {
     opened.events.push(`repository ${prefix}`)
     return unitWorkingDir(`/run/${prefix}repository/repo`)
   })
-  return { agent: { provider: AgentProvider.CURSOR, prefix: 'cursor-e2e', workingDir } satisfies ProviderAgent, workingDir }
+  return {
+    agent: { provider: AgentProvider.CURSOR, prefix: 'cursor-e2e', workingDir } satisfies ProviderAgent,
+    workingDir,
+  }
 }
 
 describe('openNativeAgent', () => {
   it('opens the agent in a fresh directory, shows the workspace, and returns the agent and the directory', async () => {
     expect(await openNativeAgent(context, { directoryPrefix: 'native-code-execution-' })).toEqual({ agentId: 'agent-1', workingDir: '/run/native-code-execution-directory' })
     expect(opened.open).toHaveBeenCalledWith(expect.objectContaining({ hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker-1' }), 'workspace-1', '/run/native-code-execution-directory', agentOpenOptions(AgentProvider.CURSOR))
-    expect(opened.events).toEqual(['directory native-code-execution-', 'open /run/native-code-execution-directory', 'workspace workspace-1', 'selected tab'])
+    expect(opened.events).toEqual([
+      'directory native-code-execution-',
+      'open /run/native-code-execution-directory',
+      'workspace workspace-1',
+      'selected tab',
+    ])
   })
 
   it('creates the new directory by the working directory rule of the provider, with the stated prefix', async () => {
     const { agent, workingDir } = repositoryAgent()
     expect(await openNativeAgent(contextOf(agent), { directoryPrefix: 'native-code-execution-' })).toEqual({ agentId: 'agent-1', workingDir: '/run/native-code-execution-repository/repo' })
     expect(workingDir).toHaveBeenCalledExactlyOnceWith('native-code-execution-')
-    expect(opened.events).toEqual(['repository native-code-execution-', 'open /run/native-code-execution-repository/repo', 'workspace workspace-1', 'selected tab'])
+    expect(opened.events).toEqual([
+      'repository native-code-execution-',
+      'open /run/native-code-execution-repository/repo',
+      'workspace workspace-1',
+      'selected tab',
+    ])
   })
 
   it('gives the rule of the provider the default prefix when the caller states none', async () => {
@@ -127,7 +148,9 @@ describe('openNativeAgent', () => {
 
   it('creates no directory and opens no agent when the merge rule refuses an override', async () => {
     const { agent, workingDir } = repositoryAgent()
-    await expect(openNativeAgent(contextOf(agent), { overrides: { model: ' ' } })).rejects.toThrow('a model override needs a model ID')
+    await expect(openNativeAgent(contextOf(agent), {
+      overrides: { model: ' ' },
+    })).rejects.toThrow('a model override needs a model ID')
     expect(workingDir).not.toHaveBeenCalled()
     expect(opened.events).toEqual([])
     expect(opened.open).not.toHaveBeenCalled()
@@ -141,13 +164,18 @@ describe('openNativeAgent', () => {
 
   it('opens the agent in an existing directory, and neither the rule of the provider nor the run creates one', async () => {
     const { agent, workingDir } = repositoryAgent()
-    expect(await openNativeAgent(contextOf(agent), { workingDir: unitWorkingDir('/run/existing') })).toEqual({ agentId: 'agent-1', workingDir: '/run/existing' })
+    expect(await openNativeAgent(contextOf(agent), {
+      workingDir: unitWorkingDir('/run/existing'),
+    })).toEqual({ agentId: 'agent-1', workingDir: '/run/existing' })
     expect(workingDir).not.toHaveBeenCalled()
     expect(opened.events).toEqual(['open /run/existing', 'workspace workspace-1', 'selected tab'])
   })
 
   it('refuses an existing directory and a prefix together, before it opens an agent', async () => {
-    await expect(openNativeAgent(context, { workingDir: unitWorkingDir('/run/existing'), directoryPrefix: 'native-' })).rejects.toThrow('not in both')
+    await expect(openNativeAgent(context, {
+      workingDir: unitWorkingDir('/run/existing'),
+      directoryPrefix: 'native-',
+    })).rejects.toThrow('not in both')
     expect(opened.events).toEqual([])
     expect(opened.open).not.toHaveBeenCalled()
   })
@@ -203,8 +231,14 @@ describe('exerciseProviderAgentButtons', () => {
     }
     buttons.button = button
     const page = {
-      getByTestId: (id: string) => id === 'tab-more-menu' ? { click: async () => {} } : button,
-      locator: () => ({ click: async () => { buttons.stage = 1 } }),
+      getByTestId: (id: string) => id === 'tab-more-menu'
+        ? {
+            click: async () => {},
+          }
+        : button,
+      locator: () => ({
+        click: async () => { buttons.stage = 1 },
+      }),
     } as unknown as Page
     return { ...context, page }
   }

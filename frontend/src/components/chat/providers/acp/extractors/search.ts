@@ -21,7 +21,9 @@ export function acpSearchFromToolCall(toolUse: Record<string, unknown> | null | 
     content: '',
     numFiles: 0,
     numLines: 0,
-    ...(matches !== undefined ? { matchCount: matches } : {}),
+    ...(matches !== undefined
+      ? { matchCount: matches }
+      : {}),
     truncated: false,
     fallbackContent: text,
     // The protocol states a `matches` total rather than a sentence, and the shared

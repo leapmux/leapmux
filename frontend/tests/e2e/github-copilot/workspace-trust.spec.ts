@@ -23,7 +23,9 @@ function trustedFolders(copilotHome: string): unknown[] {
     return []
   const json = readFileSync(path, 'utf8').split('\n').filter(line => !line.trimStart().startsWith('//')).join('\n')
   const folders: unknown = JSON.parse(json).trustedFolders
-  return Array.isArray(folders) ? folders : []
+  return Array.isArray(folders)
+    ? folders
+    : []
 }
 
 // Copilot loads a project's MCP servers only from a folder in its trusted list, and in server mode it asks nothing.
@@ -45,7 +47,14 @@ for (const decision of ['allow', 'deny'] as const) {
         const receiptLog = join(workingDir, 'trust-mcp-receipt.json')
         const echo = writeMcpEchoServer(workingDir, { receiptLog })
         writeFileSync(join(workingDir, '.mcp.json'), JSON.stringify({
-          mcpServers: { [echo.name]: { type: 'local', command: echo.command, args: echo.args, tools: ['*'] } },
+          mcpServers: {
+            [echo.name]: {
+              type: 'local',
+              command: echo.command,
+              args: echo.args,
+              tools: ['*'],
+            },
+          },
         }))
         await openProviderAgent(server, workspaceId, COPILOT_AGENT, { workingDir })
         await openWorkspace(page, workspaceId)
@@ -58,7 +67,12 @@ for (const decision of ['allow', 'deny'] as const) {
         await expectNoControlBanner(page)
         if (decision === 'allow')
           await waitForMcpToolListed(receiptLog, 'echo')
-        const context = await nativeContext({ page, modelScript, leapmuxServer: server, workspaceId })
+        const context = await nativeContext({
+          page,
+          modelScript,
+          leapmuxServer: server,
+          workspaceId,
+        })
         const request = await sendNativeAnswer(context, 'Reply once after the folder trust decision.', TRUST_TURN_ANSWER)
         const projectTools = nativeModelToolNames(request).filter(name => name.includes(echo.name))
         if (decision === 'allow') {

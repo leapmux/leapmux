@@ -20,7 +20,11 @@ export function codexAgentCounterpart(item: Record<string, unknown>, parsed: Par
     return null
   const finished = messageCompletionFromProto(parsed?.completion) !== null || Number.isFinite(parsed?.parentObject?.completedAtMs)
     || ['completed', 'failed', 'interrupted'].includes(pickString(candidate, 'status'))
-  return (role === 'result' ? finished : !finished && candidate.status === CODEX_STATUS.IN_PROGRESS) ? candidate : null
+  return (role === 'result'
+    ? finished
+    : !finished && candidate.status === CODEX_STATUS.IN_PROGRESS)
+    ? candidate
+    : null
 }
 
 /** The current item owns status and reports. Its counterpart can supply omitted request fields. */
@@ -32,7 +36,12 @@ export function resolveCodexAgentItem(item: Record<string, unknown>, counterpart
   // unset String as `""`, so a nullish test alone kept the empty field and the row lost
   // the prompt, the model or the tool name that its counterpart carried. The
   // `receiverThreadIds` test below already reads emptiness this way.
-  for (const field of ['tool', 'prompt', 'model', 'reasoningEffort']) {
+  for (const field of [
+    'tool',
+    'prompt',
+    'model',
+    'reasoningEffort',
+  ]) {
     if (resolved[field] == null || resolved[field] === '')
       resolved[field] = counterpart[field]
   }
@@ -57,8 +66,16 @@ function agentMetadata(item: Record<string, unknown>): AgentRun['metadata'] {
   const model = pickString(item, 'model')
   const effort = pickString(item, 'reasoningEffort')
   return [
-    ...(model ? [{ label: 'Model', value: getCachedSettingsLabel(AgentProvider.CODEX, 'model', model) || model }] : []),
-    ...(effort ? [{ label: 'Reasoning effort', value: getCachedSettingsLabel(AgentProvider.CODEX, 'effort', effort) || effort }] : []),
+    ...(model
+      ? [
+          { label: 'Model', value: getCachedSettingsLabel(AgentProvider.CODEX, 'model', model) || model },
+        ]
+      : []),
+    ...(effort
+      ? [
+          { label: 'Reasoning effort', value: getCachedSettingsLabel(AgentProvider.CODEX, 'effort', effort) || effort },
+        ]
+      : []),
   ]
 }
 
@@ -69,12 +86,19 @@ export function codexAgentRequest(item: Record<string, unknown>): AgentRequest {
   // what the subagent does. Without it every spawn row reads "Subagent", because the
   // description above is the tool's own label. The other tools act ON agents that
   // already exist, so none of them created the row a title could come from.
-  const registryKey = tool === 'spawnAgent' && targets.length === 1 ? targets[0] : undefined
+  const registryKey = tool === 'spawnAgent' && targets.length === 1
+    ? targets[0]
+    : undefined
   return {
     description: pickString(TOOL_LABELS, tool) || tool || 'Agent tool',
     prompt: pickString(item, 'prompt'),
-    metadata: [...targets.map(value => ({ label: 'Agent ID', value })), ...agentMetadata(item)],
-    ...(registryKey !== undefined ? { registryKey } : {}),
+    metadata: [
+      ...targets.map(value => ({ label: 'Agent ID', value })),
+      ...agentMetadata(item),
+    ],
+    ...(registryKey !== undefined
+      ? { registryKey }
+      : {}),
   }
 }
 
@@ -92,12 +116,19 @@ const AGENT_STATES: Record<string, { statusLabel: string, outcome: AgentRunStatu
 /** The call's completion does not establish that any child agent completed. */
 export function codexAgentResults(item: Record<string, unknown>): AgentRun[] {
   const states = pickObject(item, CODEX_COLLAB_ITEM.AgentsStates) ?? {}
-  const ids = [...new Set([...stringArray(item[CODEX_COLLAB_ITEM.ReceiverThreadIDs]), ...Object.keys(states)])].filter(id => id.trim() !== '')
+  const ids = [
+    ...new Set([
+      ...stringArray(item[CODEX_COLLAB_ITEM.ReceiverThreadIDs]),
+      ...Object.keys(states),
+    ]),
+  ].filter(id => id.trim() !== '')
   return ids.map((id) => {
     const state = pickObject(states, id)
     const nativeStatus = pickString(state, 'status')
     const launch = item.tool === 'spawnAgent' && item.status === 'completed'
-    const knownState = Object.hasOwn(AGENT_STATES, nativeStatus) ? AGENT_STATES[nativeStatus] : undefined
+    const knownState = Object.hasOwn(AGENT_STATES, nativeStatus)
+      ? AGENT_STATES[nativeStatus]
+      : undefined
     const resolved = knownState ?? (launch && !nativeStatus
       ? { statusLabel: 'launched asynchronously', outcome: 'running' as const }
       : { statusLabel: nativeStatus || 'status unavailable', outcome: 'unknown' as const })
@@ -108,9 +139,16 @@ export function codexAgentResults(item: Record<string, unknown>): AgentRun[] {
       description: '',
       agentId: id,
       registryKey: id,
-      metadata: [{ label: 'Agent ID', value: id }, ...agentMetadata(item)],
-      body: report || (showPrompt ? pickString(item, 'prompt') : ''),
-      ...(showPrompt ? { bodyLabel: 'Prompt' } : {}),
+      metadata: [
+        { label: 'Agent ID', value: id },
+        ...agentMetadata(item),
+      ],
+      body: report || (showPrompt
+        ? pickString(item, 'prompt')
+        : ''),
+      ...(showPrompt
+        ? { bodyLabel: 'Prompt' }
+        : {}),
     }
   })
 }

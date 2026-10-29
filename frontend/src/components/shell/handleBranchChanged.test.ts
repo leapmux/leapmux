@@ -52,7 +52,9 @@ describe('handleBranchChanged', () => {
     )
     await flush()
 
-    expect(refresh).toHaveBeenCalledWith('w1', '/repo', { repoKey: repoKey('w1', '/repo') })
+    expect(refresh).toHaveBeenCalledWith('w1', '/repo', {
+      repoKey: repoKey('w1', '/repo'),
+    })
   })
 
   it('refreshes git status for a non-active repo through the store', async () => {
@@ -66,7 +68,9 @@ describe('handleBranchChanged', () => {
     )
     await flush()
 
-    expect(refresh).toHaveBeenCalledWith('w1', '/other', { repoKey: repoKey('w1', '/other') })
+    expect(refresh).toHaveBeenCalledWith('w1', '/other', {
+      repoKey: repoKey('w1', '/other'),
+    })
   })
 
   it('does not stamp when the repo path never resolved', async () => {
@@ -119,7 +123,9 @@ describe('handleBranchChanged', () => {
 
   it('keeps file state when refresh returns a transient non-repo response', async () => {
     const repoGitStore = createRepoGitStore()
-    const files = [{ path: 'a.txt' } as never]
+    const files = [
+      { path: 'a.txt' } as never,
+    ]
     repoGitStore.upsert(repoKey('w1', '/other'), {
       workerId: 'w1',
       toplevel: '/other',
@@ -202,8 +208,18 @@ describe('handleBranchChanged', () => {
   it('does not change focused key when refreshing a non-active repo', async () => {
     const repoGitStore = createRepoGitStore()
     repoGitStore.setFocusedKey(repoKey('w1', '/active'))
-    repoGitStore.upsert(repoKey('w1', '/active'), { workerId: 'w1', toplevel: '/active', branch: 'main', gitStatusSeen: true })
-    repoGitStore.upsert(repoKey('w1', '/other'), { workerId: 'w1', toplevel: '/other', branch: 'dev', gitStatusSeen: true })
+    repoGitStore.upsert(repoKey('w1', '/active'), {
+      workerId: 'w1',
+      toplevel: '/active',
+      branch: 'main',
+      gitStatusSeen: true,
+    })
+    repoGitStore.upsert(repoKey('w1', '/other'), {
+      workerId: 'w1',
+      toplevel: '/other',
+      branch: 'dev',
+      gitStatusSeen: true,
+    })
     mockGetGitFileStatus.mockResolvedValueOnce({
       repoRoot: '/other',
       status: { toplevel: '/other', branch: 'feature', originUrl: 'o' },

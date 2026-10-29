@@ -12,7 +12,9 @@ export function expectReasonixAttachmentBytes(request: MockModelRequestRecord, s
   const last = request.body.messages.findLast((row: unknown) => isObject(row) && row.role !== 'system' && row.role !== 'developer')
   if (!isObject(last) || last.role !== 'user' || typeof last.content !== 'string')
     throw new Error('The Reasonix attachment must belong to the current user input.')
-  const copies = [...last.content.matchAll(/^@(\.reasonix\/attachments\/clipboard-[a-z0-9.-]+)$/gim)]
+  const copies = [
+    ...last.content.matchAll(/^@(\.reasonix\/attachments\/clipboard-[a-z0-9.-]+)$/gim),
+  ]
   if (copies.length !== 1 || !copies[0]?.[1])
     throw new Error('The current Reasonix input requires one native attachment path.')
   const path = resolve(workingDir, copies[0][1])

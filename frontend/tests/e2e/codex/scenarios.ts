@@ -23,7 +23,10 @@ export async function nativeContext(fixtures: NativeContextFixtures): Promise<Ma
 export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStartupLaunch {
   return resolveNativeStartupLaunch(
     context.leapmuxServer.agentEnv,
-    { binaryName: CODEX_EXECUTABLE.Preferred, holdWhen: ['app-server'] },
+    {
+      binaryName: CODEX_EXECUTABLE.Preferred,
+      holdWhen: ['app-server'],
+    },
     Object.values(CODEX_EXECUTABLE),
   )
 }

@@ -13,9 +13,17 @@ claudeTest('executes the native MCP echo tool and keeps empty string results', a
   const directory = newProviderWorkingDir(CLAUDE_AGENT, 'claude-mcp-execution-')
   const receiptLog = join(directory, 'native-receipt.json')
   writeFileSync(join(directory, '.mcp.json'), JSON.stringify(mcpServersConfig(writeMcpEchoServer(directory, { receiptLog }))))
-  await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, CLAUDE_AGENT, { workingDir: directory, optionValues: { permissionMode: 'bypassPermissions' } })
+  await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, CLAUDE_AGENT, {
+    workingDir: directory,
+    optionValues: { permissionMode: 'bypassPermissions' },
+  })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   await exerciseMcpEcho(context, 'CLAUDE_NATIVE_ECHO', { receiptLog })
   await exerciseMcpEcho(context, '', { receiptLog })
 })

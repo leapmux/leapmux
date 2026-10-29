@@ -34,7 +34,9 @@ export const LETTA_E2E_SKIP_REASON: string | null = missingBinaryReason('letta',
  * tool that requires approval. A spec that tests tool rendering would otherwise answer a banner before each call.
  * The control-request spec opens its own workspace in Standard.
  */
-const UNRESTRICTED = { optionValues: { permissionMode: LETTA_MODE.Unrestricted } }
+const UNRESTRICTED = {
+  optionValues: { permissionMode: LETTA_MODE.Unrestricted },
+}
 const VISION_UNRESTRICTED = { model: LETTA_VISION_MODEL_ID, optionValues: UNRESTRICTED.optionValues }
 const REASONING_UNRESTRICTED = { model: LETTA_REASONING_MODEL_ID, optionValues: UNRESTRICTED.optionValues }
 

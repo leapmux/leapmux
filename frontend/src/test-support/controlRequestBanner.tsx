@@ -29,7 +29,9 @@ export const ControlRequestContent: Component<HarnessContentProps> = (props) => 
   return (
     <BannerContent
       {...props}
-      {...(provider === undefined ? {} : { agentProvider: provider })}
+      {...(provider === undefined
+        ? {}
+        : { agentProvider: provider })}
       controlSurface={live.surface()}
     />
   )
@@ -41,7 +43,9 @@ export const ControlRequestActions: Component<HarnessActionsProps> = (props) => 
   return (
     <BannerActions
       {...props}
-      {...(provider === undefined ? {} : { agentProvider: provider })}
+      {...(provider === undefined
+        ? {}
+        : { agentProvider: provider })}
       controlSurface={live.surface()}
     />
   )

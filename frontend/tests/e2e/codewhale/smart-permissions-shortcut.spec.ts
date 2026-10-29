@@ -43,7 +43,9 @@ async function exerciseSmartReview(native: ManagedNativeScenarioContext, decisio
     // One agent session runs both passes, so each pass gives its tool call its own ID.
     const id = `native-smart-review-${Number(reload)}`
     const { resultRequest } = await runReviewedNativeToolTurn(native, SMART_REVIEW_RULE, {
-      toolCalls: [writeToolCall(native.provider, id, { path: file, content })],
+      toolCalls: [
+        writeToolCall(native.provider, id, { path: file, content }),
+      ],
       prompt: 'Run the scripted protected fixture write under Smart permissions.',
       answer: `The native reviewer returned ${decision} for write ${Number(reload)}.`,
     })

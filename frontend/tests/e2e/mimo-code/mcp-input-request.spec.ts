@@ -20,10 +20,17 @@ mimoTest.describe('MiMo Code MCP confirmation', () => {
       testId: 'elicitation-form',
       additionalTestIds: ['control-banner'],
       relatedProof: async () => {
-        const request = await invokeNativeMcpTool(native, { server: MCP_FORM_SERVER_NAME, tool: 'ask', callId, input: {} })
+        const request = await invokeNativeMcpTool(native, {
+          server: MCP_FORM_SERVER_NAME,
+          tool: 'ask',
+          callId,
+          input: {},
+        })
         expect(nativeToolResult(request, callId)).toContain('FORM_ROUND_TRIP_REFUSED: -32601 Method not found')
       },
     })
-    await expect(messageBubbles(native.page).filter({ hasText: nativeMcpAnswer(callId) }).first()).toBeVisible()
+    await expect(messageBubbles(native.page).filter({
+      hasText: nativeMcpAnswer(callId),
+    }).first()).toBeVisible()
   })
 })

@@ -31,7 +31,11 @@ function fakeObserver() {
       disconnect: () => observed.clear(),
     }
   }
-  return { createObserver, observed, fire: (targets: Element[]) => onResize!(targets) }
+  return {
+    createObserver,
+    observed,
+    fire: (targets: Element[]) => onResize!(targets),
+  }
 }
 
 /** A manual microtask scheduler: the test runs the queued flush when it chooses. */
@@ -59,13 +63,20 @@ describe('createRowMeasurer', () => {
     const element = document.createElement('div')
     const image = document.createElement('img')
     let complete = false
-    Object.defineProperty(image, 'complete', { get: () => complete })
+    Object.defineProperty(image, 'complete', {
+      get: () => complete,
+    })
     element.append(image)
     element.getBoundingClientRect = () => new DOMRect(0, 0, 400, 0)
     document.body.append(element)
     const measure = vi.fn(() => true)
     const scheduler = manualScheduler()
-    const measurer = createRowMeasurer({ measure, mountedIds: new Set(), scheduleMicrotask: scheduler.scheduleMicrotask, createObserver: () => undefined })
+    const measurer = createRowMeasurer({
+      measure,
+      mountedIds: new Set(),
+      scheduleMicrotask: scheduler.scheduleMicrotask,
+      createObserver: () => undefined,
+    })
     try {
       measurer.attachRow('empty', element)
       expect(measure).not.toHaveBeenCalled()
@@ -82,17 +93,27 @@ describe('createRowMeasurer', () => {
 
   it('waits for the last image and ignores a non-image load event', () => {
     const element = document.createElement('div')
-    const images = [document.createElement('img'), document.createElement('img')]
+    const images = [
+      document.createElement('img'),
+      document.createElement('img'),
+    ]
     const complete = [false, false]
     images.forEach((image, index) => {
-      Object.defineProperty(image, 'complete', { get: () => complete[index] })
+      Object.defineProperty(image, 'complete', {
+        get: () => complete[index],
+      })
       element.append(image)
     })
     element.getBoundingClientRect = () => new DOMRect(0, 0, 400, 0)
     document.body.append(element)
     const measure = vi.fn(() => true)
     const scheduler = manualScheduler()
-    const measurer = createRowMeasurer({ measure, mountedIds: new Set(), scheduleMicrotask: scheduler.scheduleMicrotask, createObserver: () => undefined })
+    const measurer = createRowMeasurer({
+      measure,
+      mountedIds: new Set(),
+      scheduleMicrotask: scheduler.scheduleMicrotask,
+      createObserver: () => undefined,
+    })
     try {
       measurer.attachRow('row', element)
       element.dispatchEvent(new Event('load'))
@@ -119,7 +140,12 @@ describe('createRowMeasurer', () => {
     document.body.append(element)
     const measure = vi.fn(() => true)
     const scheduler = manualScheduler()
-    const measurer = createRowMeasurer({ measure, mountedIds: new Set(), scheduleMicrotask: scheduler.scheduleMicrotask, createObserver: () => undefined })
+    const measurer = createRowMeasurer({
+      measure,
+      mountedIds: new Set(),
+      scheduleMicrotask: scheduler.scheduleMicrotask,
+      createObserver: () => undefined,
+    })
     try {
       measurer.attachRow('row', element)
       const image = document.createElement('img')
@@ -140,7 +166,11 @@ describe('createRowMeasurer', () => {
 
   it('remeasures the same element on attach even when its previous height was unchanged', () => {
     const measure = vi.fn(() => true)
-    const measurer = createRowMeasurer({ measure, mountedIds: new Set(), createObserver: () => undefined })
+    const measurer = createRowMeasurer({
+      measure,
+      mountedIds: new Set(),
+      createObserver: () => undefined,
+    })
     const element = fakeEl(40)
     try {
       measurer.attachRow('row', element)
@@ -159,7 +189,9 @@ describe('createRowMeasurer', () => {
     const image = document.createElement('img')
     let complete = false
     let height = 0
-    Object.defineProperty(image, 'complete', { get: () => complete })
+    Object.defineProperty(image, 'complete', {
+      get: () => complete,
+    })
     element.append(image)
     element.getBoundingClientRect = () => new DOMRect(0, 0, 400, height)
     document.body.append(element)
@@ -172,7 +204,12 @@ describe('createRowMeasurer', () => {
     const measure = vi.fn(() => true)
     const scheduler = manualScheduler()
     const mountedIds = new Set<string>()
-    const measurer = createRowMeasurer({ measure, mountedIds, scheduleMicrotask: scheduler.scheduleMicrotask, createObserver: () => undefined })
+    const measurer = createRowMeasurer({
+      measure,
+      mountedIds,
+      scheduleMicrotask: scheduler.scheduleMicrotask,
+      createObserver: () => undefined,
+    })
     try {
       measurer.attachRow('row', element)
       complete = true
@@ -273,7 +310,11 @@ describe('createRowMeasurer', () => {
   it('does not measure a detached row on attach', () => {
     const measure = vi.fn(() => true)
     const obs = fakeObserver()
-    const measurer = createRowMeasurer({ measure, mountedIds: new Set(), createObserver: obs.createObserver })
+    const measurer = createRowMeasurer({
+      measure,
+      mountedIds: new Set(),
+      createObserver: obs.createObserver,
+    })
     const element = fakeEl(40, false)
     measurer.attachRow('detached', element)
     expect(measure).not.toHaveBeenCalled()
@@ -616,7 +657,11 @@ describe('createRowMeasurer', () => {
 
   it('dispose disconnects the observer', () => {
     const obs = fakeObserver()
-    const m = createRowMeasurer({ measure: () => true, mountedIds: new Set(), createObserver: obs.createObserver })
+    const m = createRowMeasurer({
+      measure: () => true,
+      mountedIds: new Set(),
+      createObserver: obs.createObserver,
+    })
     m.attachRow('a', fakeEl(100))
     expect(obs.observed.size).toBe(1)
     m.dispose()
@@ -643,7 +688,11 @@ describe('createRowMeasurer', () => {
 
   it('still measures immediately when no observer is available (non-DOM env)', () => {
     const measure = vi.fn(() => true)
-    const m = createRowMeasurer({ measure, mountedIds: new Set(), createObserver: () => undefined })
+    const m = createRowMeasurer({
+      measure,
+      mountedIds: new Set(),
+      createObserver: () => undefined,
+    })
     m.attachRow('a', fakeEl(140))
     expect(measure).toHaveBeenCalledWith('a', 140)
   })

@@ -24,7 +24,24 @@ describe('mimo plugin metadata', () => {
 
   // The worker validates these native audio formats before its live model check.
   it('advertises native audio formats alongside text, image and PDF attachments', () => {
-    expect(plugin.configuration?.attachments).toEqual({ text: true, image: true, pdf: true, audio: ['audio/wav', 'audio/x-wav', 'audio/mp3', 'audio/mpeg', 'audio/flac', 'audio/x-flac', 'audio/mp4', 'audio/m4a', 'audio/x-m4a', 'audio/ogg'], binary: false })
+    expect(plugin.configuration?.attachments).toEqual({
+      text: true,
+      image: true,
+      pdf: true,
+      audio: [
+        'audio/wav',
+        'audio/x-wav',
+        'audio/mp3',
+        'audio/mpeg',
+        'audio/flac',
+        'audio/x-flac',
+        'audio/mp4',
+        'audio/m4a',
+        'audio/x-m4a',
+        'audio/ogg',
+      ],
+      binary: false,
+    })
   })
 
   it('carries its primary agents on the permission-mode channel', () => {
@@ -38,7 +55,9 @@ describe('mimo plugin metadata', () => {
 
   it('reads the current primary agent, and falls back to the default before the first report', () => {
     const currentMode = plugin.configuration!.planMode!.currentMode
-    expect(currentMode({ optionValues: { permissionMode: MIMO_MODE.Plan } })).toBe(MIMO_MODE.Plan)
+    expect(currentMode({
+      optionValues: { permissionMode: MIMO_MODE.Plan },
+    })).toBe(MIMO_MODE.Plan)
     expect(currentMode({ optionValues: {} })).toBe(MIMO_DEFAULT_MODE)
     expect(currentMode({})).toBe(MIMO_DEFAULT_MODE)
   })
@@ -47,7 +66,9 @@ describe('mimo plugin metadata', () => {
   // approves every call, deletes included.
   it('maps the bypass preset onto the permission policy', () => {
     expect(plugin.controls?.permissionPresets).toEqual({
-      bypass: { sets: { [MIMO_OPTION.PermissionPolicy]: MIMO_PERMISSION_POLICY.Bypass } },
+      bypass: {
+        sets: { [MIMO_OPTION.PermissionPolicy]: MIMO_PERMISSION_POLICY.Bypass },
+      },
     })
   })
 
@@ -73,15 +94,36 @@ describe('mimo plugin controls', () => {
     expect(JSON.parse(new TextDecoder().decode(send.mock.calls[0]?.[0]))).toEqual({
       jsonrpc: '2.0',
       id: 'mimo-permission:per_1',
-      result: { outcome: { outcome: 'selected', optionId: 'always' } },
+      result: {
+        outcome: { outcome: 'selected', optionId: 'always' },
+      },
     })
   })
 
   it('routes a question to the question card and a plan approval to the plan card', () => {
-    const question = { type: OPENCODE_EVENT.QuestionAsked, properties: { id: 'que_1', questions: [{ question: 'Which?' }] }, request: { tool_name: MIMO_TOOL.Question } }
+    const question = {
+      type: OPENCODE_EVENT.QuestionAsked,
+      properties: {
+        id: 'que_1',
+        questions: [
+          { question: 'Which?' },
+        ],
+      },
+      request: { tool_name: MIMO_TOOL.Question },
+    }
     // The browser reads the tool name the worker recorded, not the question key,
     // so the key here is only the one MiMo sends.
-    const plan = { type: OPENCODE_EVENT.QuestionAsked, properties: { id: 'que_2', questions: [{ key: 'plan_exit' }] }, request: { tool_name: MIMO_TOOL.PlanExit }, plan: 'Do it' }
+    const plan = {
+      type: OPENCODE_EVENT.QuestionAsked,
+      properties: {
+        id: 'que_2',
+        questions: [
+          { key: 'plan_exit' },
+        ],
+      },
+      request: { tool_name: MIMO_TOOL.PlanExit },
+      plan: 'Do it',
+    }
     expect(plugin.controls?.askUserQuestion?.isRequest(question)).toBe(true)
     expect(plugin.controls?.askUserQuestion?.isRequest(plan)).toBe(false)
     expect(plugin.controls?.extractControl!({ payload: plan })).toEqual({ kind: 'plan', text: 'Do it' })
@@ -92,14 +134,20 @@ describe('mimo plugin controls', () => {
       type: OPENCODE_EVENT.QuestionAsked,
       properties: {
         id: 'que_3',
-        questions: [{
-          key: 'mcp_elicitation',
-          header: 'docs',
-          question: 'docs\n\nProceed?',
-          options: [{ label: 'Accept', description: '' }, { label: 'Decline', description: '' }, { label: 'Cancel', description: '' }],
-          multiple: false,
-          custom: false,
-        }],
+        questions: [
+          {
+            key: 'mcp_elicitation',
+            header: 'docs',
+            question: 'docs\n\nProceed?',
+            options: [
+              { label: 'Accept', description: '' },
+              { label: 'Decline', description: '' },
+              { label: 'Cancel', description: '' },
+            ],
+            multiple: false,
+            custom: false,
+          },
+        ],
       },
       request: { tool_name: MIMO_TOOL.Question },
     }
@@ -112,21 +160,51 @@ describe('mimo plugin controls', () => {
       expect(plugin.controls?.askUserQuestion?.isRequest(elicitation)).toBe(false)
       expect(controlSurface({ requestId: 'r', agentId: 'a', payload: elicitation }, AgentProvider.MIMO_CODE, undefined)).toEqual({
         kind: 'elicitation',
-        elicitation: { mode: 'form', server: 'docs', message: 'Proceed?', schema: { type: 'object', properties: {} } },
+        elicitation: {
+          mode: 'form',
+          server: 'docs',
+          message: 'Proceed?',
+          schema: { type: 'object', properties: {} },
+        },
       })
     })
 
     it('states the saved answer in the elicitation words', () => {
       const display = plugin.controls!.controlResponseDisplay!
-      const saved = (response: Record<string, unknown>) => ({ requestId: 'r', claimToken: 't', request: elicitation, response })
+      const saved = (response: Record<string, unknown>) => ({
+        requestId: 'r',
+        claimToken: 't',
+        request: elicitation,
+        response,
+      })
       expect(display(saved(buildElicitationResponse('r', MCP_ELICITATION_ACTION.Accept, {})))).toEqual({ kind: 'label', text: 'Approved' })
       expect(display(saved(buildElicitationResponse('r', MCP_ELICITATION_ACTION.Decline)))).toEqual({ kind: 'label', text: 'Rejected' })
       expect(display(saved(buildElicitationResponse('r', MCP_ELICITATION_ACTION.Cancel)))).toEqual({ kind: 'label', text: 'Cancelled' })
     })
 
     it('leaves the saved answer to a question in the question words', () => {
-      const question = { type: OPENCODE_EVENT.QuestionAsked, properties: { id: 'que_1', questions: [{ question: 'Which?', header: 'Pick' }] }, request: { tool_name: MIMO_TOOL.Question } }
-      expect(plugin.controls!.controlResponseDisplay!({ requestId: 'r', claimToken: 't', request: question, response: { result: { answers: [['A']] } } }))
+      const question = {
+        type: OPENCODE_EVENT.QuestionAsked,
+        properties: {
+          id: 'que_1',
+          questions: [
+            { question: 'Which?', header: 'Pick' },
+          ],
+        },
+        request: { tool_name: MIMO_TOOL.Question },
+      }
+      expect(plugin.controls!.controlResponseDisplay!({
+        requestId: 'r',
+        claimToken: 't',
+        request: question,
+        response: {
+          result: {
+            answers: [
+              ['A'],
+            ],
+          },
+        },
+      }))
         .toEqual({ kind: 'label', text: 'Pick: A' })
     })
   })
@@ -139,7 +217,15 @@ describe('mimo plugin controls', () => {
       properties: {
         id: 'que_1',
         questions: [
-          { question: 'Which database?', header: 'Database', options: [{ label: 'SQLite' }, { label: 'Postgres' }], multiple: true },
+          {
+            question: 'Which database?',
+            header: 'Database',
+            options: [
+              { label: 'SQLite' },
+              { label: 'Postgres' },
+            ],
+            multiple: true,
+          },
           { question: 'Anything else?', options: [] },
         ],
       },
@@ -158,16 +244,34 @@ describe('mimo plugin controls', () => {
     it('answers each question with its choices or the typed words', async () => {
       const send = vi.fn().mockResolvedValue(undefined)
       const questions = plugin.controls!.askUserQuestion!.extractQuestions(question)
-      const state = createControlAnswerState({ selections: { 0: ['SQLite', 'Postgres'] }, customTexts: { 1: '  more tests  ' } })
+      const state = createControlAnswerState({
+        selections: {
+          0: ['SQLite', 'Postgres'],
+        },
+        customTexts: { 1: '  more tests  ' },
+      })
       await plugin.controls!.askUserQuestion!.sendAnswer(request, send, questions, state)
-      expect(sentBody(send)).toEqual({ jsonrpc: '2.0', id: 'mimo-question:que_1', result: { answers: [['SQLite', 'Postgres'], ['more tests']] } })
+      expect(sentBody(send)).toEqual({
+        jsonrpc: '2.0',
+        id: 'mimo-question:que_1',
+        result: {
+          answers: [
+            ['SQLite', 'Postgres'],
+            ['more tests'],
+          ],
+        },
+      })
     })
 
     // MiMo's reject route takes no body, so the reader's words cannot reach it.
     it('dismisses the question, without the reader\'s words', async () => {
       const send = vi.fn().mockResolvedValue(undefined)
       await plugin.controls!.askUserQuestion!.sendReject(request, send, 'not now')
-      expect(sentBody(send)).toEqual({ jsonrpc: '2.0', id: 'mimo-question:que_1', result: { rejected: true } })
+      expect(sentBody(send)).toEqual({
+        jsonrpc: '2.0',
+        id: 'mimo-question:que_1',
+        result: { rejected: true },
+      })
     })
   })
 })
@@ -177,12 +281,16 @@ describe('mimo plugin controls', () => {
 describe('mimo plugin transcript', () => {
   it('reads the turn end and the retry of a MiMo frame', () => {
     expect(plugin.transcript.extractDivider(statusFrame(MIMO_STATUS_TYPE.Idle))).toEqual({ label: 'Turn ended' })
-    expect(plugin.transcript.notificationEntry?.(statusFrame(MIMO_STATUS_TYPE.Retry, { attempt: 1 }))).toEqual([{ kind: 'retry', scope: 'api', attempt: 1 }])
+    expect(plugin.transcript.notificationEntry?.(statusFrame(MIMO_STATUS_TYPE.Retry, { attempt: 1 }))).toEqual([
+      { kind: 'retry', scope: 'api', attempt: 1 },
+    ])
   })
 
   it('pairs the two halves of a MiMo tool call', () => {
     const opening = parsedFrame(openingFrame(MIMO_TOOL.Bash, { command: 'ls' }))
-    const final = parsedFrame(toolFrame(MIMO_TOOL.Bash, { input: { command: 'ls' } }))
+    const final = parsedFrame(toolFrame(MIMO_TOOL.Bash, {
+      input: { command: 'ls' },
+    }))
     expect(plugin.transcript.spanRole(opening)).toBe('request')
     expect(plugin.transcript.spanRole(final)).toBe('result')
     expect(plugin.transcript.relatedMessages?.(opening)).toEqual(['result'])
@@ -192,9 +300,15 @@ describe('mimo plugin transcript', () => {
 
 describe('mimo quotable text', () => {
   it('reads the user\'s words and the assembled assistant text', () => {
-    expect(providerQuotableText(AgentProvider.MIMO_CODE, { content: 'hi' }, { category: { kind: 'user_content' } })).toBe('hi')
-    expect(providerQuotableText(AgentProvider.MIMO_CODE, assembledMessageRow('text', 'Hello'), { category: { kind: 'assistant_text' } })).toBe('Hello')
-    expect(providerQuotableText(AgentProvider.MIMO_CODE, assembledMessageRow('reasoning', 'thinking'), { category: { kind: 'assistant_thinking' } })).toBe('thinking')
+    expect(providerQuotableText(AgentProvider.MIMO_CODE, { content: 'hi' }, {
+      category: { kind: 'user_content' },
+    })).toBe('hi')
+    expect(providerQuotableText(AgentProvider.MIMO_CODE, assembledMessageRow('text', 'Hello'), {
+      category: { kind: 'assistant_text' },
+    })).toBe('Hello')
+    expect(providerQuotableText(AgentProvider.MIMO_CODE, assembledMessageRow('reasoning', 'thinking'), {
+      category: { kind: 'assistant_thinking' },
+    })).toBe('thinking')
   })
 
   it('reads nothing from an unknown stored status frame', () => {

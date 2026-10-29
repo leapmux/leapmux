@@ -198,33 +198,61 @@ export function createACPProvider(opts: Omit<ACPProviderOptions, 'provider'>): P
     // the protocol's own selected-option outcome.
     sendPermissionOption: opts.sendPermissionOption ?? sendSelectedOptionResponse,
 
-    ...(opts.controlActionsFor !== undefined ? { controlActionsFor: opts.controlActionsFor } : {}),
-    ...(opts.permissionPresets !== undefined ? { permissionPresets: opts.permissionPresets } : {}),
-    ...(opts.questionHandling ? { askUserQuestion: opts.questionHandling } : {}),
-    ...(opts.preservesSelectionNotes ? { preservesSelectionNotes: true } : {}),
+    ...(opts.controlActionsFor !== undefined
+      ? { controlActionsFor: opts.controlActionsFor }
+      : {}),
+    ...(opts.permissionPresets !== undefined
+      ? { permissionPresets: opts.permissionPresets }
+      : {}),
+    ...(opts.questionHandling
+      ? { askUserQuestion: opts.questionHandling }
+      : {}),
+    ...(opts.preservesSelectionNotes
+      ? { preservesSelectionNotes: true }
+      : {}),
   }
   const configuration: ProviderConfigurationCapability = {
     attachments: opts.attachments,
-    ...(opts.planValue !== undefined ? { planMode: planModeFromConfig(sc, opts.planValue) } : {}),
+    ...(opts.planValue !== undefined
+      ? {
+          planMode: planModeFromConfig(sc, opts.planValue),
+        }
+      : {}),
     triggerModeGroupKey: triggerModeGroupKeyForConfig(sc),
-    ...(opts.effortGroupKey !== undefined ? { effortGroupKey: opts.effortGroupKey } : {}),
+    ...(opts.effortGroupKey !== undefined
+      ? { effortGroupKey: opts.effortGroupKey }
+      : {}),
   }
   const plugin: ProviderPlugin = {
     transcript: {
-      ...(opts.outputFilePaths ? { outputFilePaths: opts.outputFilePaths } : {}),
+      ...(opts.outputFilePaths
+        ? { outputFilePaths: opts.outputFilePaths }
+        : {}),
       resolveMessage: resolveACPMessage,
       classify: classifyACPMessage({
-        ...(opts.nativeNotifications ? { nativeNotifications: opts.nativeNotifications } : {}),
-        ...(opts.classifyToolCallUpdate ? { classifyToolCallUpdate: opts.classifyToolCallUpdate } : {}),
-        ...(opts.agentTurnEnd ? { agentTurnEnd: opts.agentTurnEnd } : {}),
+        ...(opts.nativeNotifications
+          ? { nativeNotifications: opts.nativeNotifications }
+          : {}),
+        ...(opts.classifyToolCallUpdate
+          ? { classifyToolCallUpdate: opts.classifyToolCallUpdate }
+          : {}),
+        ...(opts.agentTurnEnd
+          ? { agentTurnEnd: opts.agentTurnEnd }
+          : {}),
       }),
       spanRole: acpSpanRole,
       relatedMessages: createACPRelatedMessagesReader(opts.toolCallAdapter),
       extractRow: createACPRowExtractor(opts.toolCallAdapter),
       extractDivider: acpDividerReader(opts.agentTurnEnd),
-      ...(opts.nativeNotifications ? { notificationEntry: opts.nativeNotifications.entries } : {}),
-      ...(opts.assistantTextSegments ? { assistantTextSegments: opts.assistantTextSegments } : {}),
-      ...(opts.nativeNotifications?.compactionStart ? { compactionStart: opts.nativeNotifications.compactionStart } : {}),
+      ...(opts.nativeNotifications
+        ? { notificationEntry: opts.nativeNotifications.entries }
+        : {}),
+      ...(opts.assistantTextSegments
+        ? { assistantTextSegments: opts.assistantTextSegments }
+        : {}),
+      ...(opts.nativeNotifications?.compactionStart
+        ? { compactionStart: opts.nativeNotifications.compactionStart }
+        : {}),
     },
     ...(opts.nativeNotifications?.compactionBoundary
       ? {

@@ -20,9 +20,21 @@ export function ampResultDivider(parsed: unknown, completion?: MessageCompletion
   if (!isObject(parsed) || pickString(parsed, 'type') !== AMP_LINE_TYPE.Result)
     return null
   const durationMs = pickNumber(parsed, 'duration_ms')
-  if (completion === MessageCompletion.INTERRUPTED)
-    return { label: turnEndLabel('interrupted', { durationMs }) }
-  if (parsed.is_error === true || pickString(parsed, 'subtype') === AMP_RESULT_SUBTYPE.ErrorDuringExecution)
-    return { label: turnEndLabel('failed', { durationMs, reason: pickString(parsed, 'error') }), isError: true }
-  return { label: turnEndLabel('ended', { durationMs }) }
+  if (completion === MessageCompletion.INTERRUPTED) {
+    return {
+      label: turnEndLabel('interrupted', { durationMs }),
+    }
+  }
+  if (parsed.is_error === true || pickString(parsed, 'subtype') === AMP_RESULT_SUBTYPE.ErrorDuringExecution) {
+    return {
+      label: turnEndLabel('failed', {
+        durationMs,
+        reason: pickString(parsed, 'error'),
+      }),
+      isError: true,
+    }
+  }
+  return {
+    label: turnEndLabel('ended', { durationMs }),
+  }
 }

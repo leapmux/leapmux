@@ -10,13 +10,19 @@ kiroTest.describe('Kiro settings', () => {
   // The native tool result acknowledges the switch. Kiro then sends the plan to Default mode in the same turn.
   // No mode update separates those answers. The mode chip follows, and each answer appears in a separate message.
   kiroTest('leaves plan mode through the plan switch', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, { optionValues: { permissionMode: 'plan' } })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, {
+      optionValues: { permissionMode: 'plan' },
+    })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Plan')
 
     const start = await modelScript.queue(
-      { toolCalls: [kiroSwitchToExecutionToolCall('kiro-plan', '1. Write the parser.\n2. Test it.')] },
+      {
+        toolCalls: [
+          kiroSwitchToExecutionToolCall('kiro-plan', '1. Write the parser.\n2. Test it.'),
+        ],
+      },
       { text: 'PLAN_HANDED_OFF' },
       { text: 'EXECUTING_THE_PLAN' },
     )

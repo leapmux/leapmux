@@ -13,9 +13,22 @@ describe('requireNativeSidebarSnapshot', () => {
     const response = create(ListAgentMessagesResponseSchema, {
       todosLoaded: true,
       backgroundTasksLoaded: true,
-      backgroundTasks: [{ id: 'task-1', kind: BackgroundTaskKind.SUBAGENT, childAgentId: 'child-1', groupKey: 'workflow-1', groupLabel: 'Native workflow' }],
+      backgroundTasks: [
+        {
+          id: 'task-1',
+          kind: BackgroundTaskKind.SUBAGENT,
+          childAgentId: 'child-1',
+          groupKey: 'workflow-1',
+          groupLabel: 'Native workflow',
+        },
+      ],
     })
-    expect(requireNativeSidebarSnapshot(response).backgroundTasks[0]).toMatchObject({ id: 'task-1', childAgentId: 'child-1', groupKey: 'workflow-1', groupLabel: 'Native workflow' })
+    expect(requireNativeSidebarSnapshot(response).backgroundTasks[0]).toMatchObject({
+      id: 'task-1',
+      childAgentId: 'child-1',
+      groupKey: 'workflow-1',
+      groupLabel: 'Native workflow',
+    })
   })
 
   it.each([

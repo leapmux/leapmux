@@ -12,8 +12,15 @@ describe('chart series shapes', () => {
       data: {
         labels: ['Q1', 'Q2'],
         datasets: [
-          { label: 'Budget', data: [10, 20], fill: true },
-          { label: 'Actual', data: [8, 18] },
+          {
+            label: 'Budget',
+            data: [10, 20],
+            fill: true,
+          },
+          {
+            label: 'Actual',
+            data: [8, 18],
+          },
         ],
       },
     }))
@@ -24,7 +31,16 @@ describe('chart series shapes', () => {
   it('promotes a chart whose every series fills', () => {
     const source = chartResultFromSpec(JSON.stringify({
       type: 'line',
-      data: { labels: ['Q1'], datasets: [{ label: 'Budget', data: [10], fill: true }] },
+      data: {
+        labels: ['Q1'],
+        datasets: [
+          {
+            label: 'Budget',
+            data: [10],
+            fill: true,
+          },
+        ],
+      },
     }))
     expect(source?.shape).toBe('area')
   })
@@ -40,7 +56,15 @@ describe('chartCopyableText', () => {
       type: 'bubble',
       data: {
         labels: ['Q1', 'Q2'],
-        datasets: [{ label: 'Deals', data: [{ x: 1, y: 2, r: 5 }, { x: 3, y: 4, r: 7 }] }],
+        datasets: [
+          {
+            label: 'Deals',
+            data: [
+              { x: 1, y: 2, r: 5 },
+              { x: 3, y: 4, r: 7 },
+            ],
+          },
+        ],
       },
     }))
     const text = chartCopyableText(source!)
@@ -54,7 +78,15 @@ describe('chartCopyableText', () => {
   it('still copies a categorical chart as a grid', () => {
     const source = chartResultFromSpec(JSON.stringify({
       type: 'bar',
-      data: { labels: ['Q1'], datasets: [{ label: 'Revenue', data: [42] }] },
+      data: {
+        labels: ['Q1'],
+        datasets: [
+          {
+            label: 'Revenue',
+            data: [42],
+          },
+        ],
+      },
     }))
     expect(chartCopyableText(source!)).toContain('42')
   })

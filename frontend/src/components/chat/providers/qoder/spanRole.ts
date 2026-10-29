@@ -13,8 +13,12 @@ export function qoderSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
   if (!parent || !isObject(parent))
     return 'other'
   const type = pickString(parent, 'type')
-  const message = isObject(parent.message) ? parent.message : undefined
-  const content = message && Array.isArray(message.content) ? message.content : []
+  const message = isObject(parent.message)
+    ? parent.message
+    : undefined
+  const content = message && Array.isArray(message.content)
+    ? message.content
+    : []
   const blockType = (name: string) =>
     content.some(block => isObject(block) && pickString(block, 'type') === name)
 
@@ -28,5 +32,9 @@ export function qoderSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
 /** A result needs its exact request. A request can read its completed result. */
 export function qoderRelatedMessages(parsed: ResolvedMessageContent): readonly ToolSpanSide[] {
   const role = qoderSpanRole(parsed)
-  return role === 'result' ? ['request'] : role === 'request' ? ['result'] : []
+  return role === 'result'
+    ? ['request']
+    : role === 'request'
+      ? ['result']
+      : []
 }

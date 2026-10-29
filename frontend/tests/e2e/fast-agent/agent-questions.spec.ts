@@ -10,18 +10,25 @@ import { expectNoControlBanner, sendMessage, waitForAgentIdle } from '../helpers
 // no control appears at all.
 fastAgentTest('returns the native human-input callback refusal without a question form', async ({ native }) => {
   const { page, modelScript } = native
-  await expectNoNativeControl(native, { testId: 'elicitation-form', relatedProof: async () => {
-    const callId = 'fast-native-human-input'
-    const start = await modelScript.queue(
-      { toolCalls: [fastAgentHumanInputToolCall(callId, 'Choose the required color.', ['Blue', 'Red'])] },
-      nativeTextStep(native, 'The native question refusal reached this answer.'),
-    )
-    await sendMessage(page, modelScript.prompt('Run the native human-input tool once.'))
-    await modelScript.waitForSteps(start + 2)
-    // Fast Agent registers its terminal form as the elicitation callback of each agent.
-    // Under ACP, stdin carries the protocol and is not a terminal. The form ends with its default cancel action.
-    expect(nativeToolResult(await modelScript.requestAt(start + 1), callId)).toContain('The Human cancelled the input request')
-    await waitForAgentIdle(page)
-    await expectNoControlBanner(page)
-  } })
+  await expectNoNativeControl(native, {
+    testId: 'elicitation-form',
+    relatedProof: async () => {
+      const callId = 'fast-native-human-input'
+      const start = await modelScript.queue(
+        {
+          toolCalls: [
+            fastAgentHumanInputToolCall(callId, 'Choose the required color.', ['Blue', 'Red']),
+          ],
+        },
+        nativeTextStep(native, 'The native question refusal reached this answer.'),
+      )
+      await sendMessage(page, modelScript.prompt('Run the native human-input tool once.'))
+      await modelScript.waitForSteps(start + 2)
+      // Fast Agent registers its terminal form as the elicitation callback of each agent.
+      // Under ACP, stdin carries the protocol and is not a terminal. The form ends with its default cancel action.
+      expect(nativeToolResult(await modelScript.requestAt(start + 1), callId)).toContain('The Human cancelled the input request')
+      await waitForAgentIdle(page)
+      await expectNoControlBanner(page)
+    },
+  })
 })

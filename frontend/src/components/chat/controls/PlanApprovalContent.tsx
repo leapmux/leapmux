@@ -23,7 +23,11 @@ export const PlanApprovalContent: Component<{ request: ControlRequest, permissio
 
   return (
     <>
-      <div class={styles.controlBannerTitle}>{canAnswerControlRequest(props.request) ? 'Plan Ready for Review' : 'Plan approval'}</div>
+      <div class={styles.controlBannerTitle}>
+        {canAnswerControlRequest(props.request)
+          ? 'Plan Ready for Review'
+          : 'Plan approval'}
+      </div>
       <Show when={groups().length}>
         <div>
           <strong>Requested permissions:</strong>

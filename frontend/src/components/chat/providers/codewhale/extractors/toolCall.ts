@@ -139,9 +139,17 @@ function firstStated(...records: Array<Record<string, unknown> | undefined>): Re
  * states neither, and the span's `span_type` column names the tool for it.
  */
 export function codewhaleToolFacts(own: CodewhaleToolFrame, sides: CodewhaleToolSides, spanType: string | undefined, parsed?: ParsedMessageContent): CodewhaleToolFacts {
-  const requestFrame = own.outcome === 'open' ? own : codewhalePairedFrame(own, sides.request)
-  const pairedResult = own.outcome === 'open' ? codewhalePairedFrame(own, sides.result) : null
-  const resultFrame = own.outcome !== 'open' ? own : pairedResult?.outcome !== 'open' ? pairedResult : null
+  const requestFrame = own.outcome === 'open'
+    ? own
+    : codewhalePairedFrame(own, sides.request)
+  const pairedResult = own.outcome === 'open'
+    ? codewhalePairedFrame(own, sides.result)
+    : null
+  const resultFrame = own.outcome !== 'open'
+    ? own
+    : pairedResult?.outcome !== 'open'
+      ? pairedResult
+      : null
   const toolName = own.toolName || requestFrame?.toolName || resultFrame?.toolName || spanType || ''
   const input = firstStated(own.input, requestFrame?.input, resultFrame?.input)
   const metadata = resultFrame?.metadata ?? {}
@@ -155,11 +163,16 @@ export function codewhaleToolFacts(own: CodewhaleToolFrame, sides: CodewhaleTool
     interrupted: resultFrame?.outcome === 'interrupted',
     text: resultFrame?.text ?? '',
     metadata,
-    images: codewhaleToolMediaImages(resultFrame, own.outcome === 'open' ? sides.result?.supplementalContent : parsed?.supplementalContent),
+    images: codewhaleToolMediaImages(resultFrame, own.outcome === 'open'
+      ? sides.result?.supplementalContent
+      : parsed?.supplementalContent),
     requestedChanges: codewhaleRequestedChanges(toolName, input),
     landedChanges: codewhaleMutationChanges(metadata),
   }
-  return { ...facts, kind: codewhaleReclassify(facts) }
+  return {
+    ...facts,
+    kind: codewhaleReclassify(facts),
+  }
 }
 
 /**
@@ -193,7 +206,9 @@ export function codewhaleReclassify(facts: CodewhaleToolFacts): ToolKind {
 
 /** The changes a file row states: the arguments' own, or the landed ones for a call whose arguments name no file. */
 function fileChanges(facts: CodewhaleToolFacts): FileEditDiff[] {
-  return facts.requestedChanges.length > 0 ? facts.requestedChanges : facts.landedChanges ?? []
+  return facts.requestedChanges.length > 0
+    ? facts.requestedChanges
+    : facts.landedChanges ?? []
 }
 
 /**
@@ -211,17 +226,29 @@ export function codewhaleToolCall(own: CodewhaleToolFrame, sides: CodewhaleToolS
       // The opening frame states the call is running. A final frame states its outcome
       // through `providerOutcome`, so its own word adds nothing.
       frameStatus: facts.resultAvailable ? 'unstated' : 'in_progress',
-      providerOutcome: facts.interrupted ? 'interrupted' : facts.failed ? 'failed' : null,
+      providerOutcome: facts.interrupted
+        ? 'interrupted'
+        : facts.failed ? 'failed' : null,
       retainedOutcome: retainedOutcome(parsed?.completion),
       rowFinal: codewhaleToolSpanRole(own, parsed) === 'result',
       resultFrameLanded: facts.resultAvailable,
     },
   }
-  const spec = facts.resultFrame?.deferredLoad ? codewhaleSchemaLoadSpec(facts, facts.kind) : codewhaleSpecFor(facts, facts.kind)
+  const spec = facts.resultFrame?.deferredLoad
+    ? codewhaleSchemaLoadSpec(facts, facts.kind)
+    : codewhaleSpecFor(facts, facts.kind)
   // The tool's OWN name, which the icon tooltip states. A row that states none falls
   // back to the kind's word, because a name invented here is not one the agent sent.
   const label = spec.label ?? (facts.toolName || undefined)
-  return createToolCall(envelope, { ...spec, images: isGenericKind(spec.kind) ? [] : facts.images, ...(label !== undefined ? { label } : {}) })
+  return createToolCall(envelope, {
+    ...spec,
+    images: isGenericKind(spec.kind)
+      ? []
+      : facts.images,
+    ...(label !== undefined
+      ? { label }
+      : {}),
+  })
 }
 
 /**
@@ -234,7 +261,11 @@ export function codewhaleToolCall(own: CodewhaleToolFrame, sides: CodewhaleToolS
  * a schema rather than a result, so they stay unparsed.
  */
 function codewhaleSchemaLoadSpec<K extends ToolKind>(facts: CodewhaleToolFacts, kind: K): ToolCallSpecVariant<K> {
-  return { kind, request: codewhaleRequestFor(kind, facts), result: unparsedResult(facts.text) }
+  return {
+    kind,
+    request: codewhaleRequestFor(kind, facts),
+    result: unparsedResult(facts.text),
+  }
 }
 
 /** The action one background-task call performs, from its name and then its `action`. */
@@ -247,7 +278,9 @@ function codewhaleWebQuery(args: Record<string, unknown>): string {
   const direct = pickString(args, 'query') || pickString(args, 'q')
   if (direct)
     return direct
-  const advanced = Array.isArray(args.search_query) ? args.search_query.find(isObject) : undefined
+  const advanced = Array.isArray(args.search_query)
+    ? args.search_query.find(isObject)
+    : undefined
   return pickString(advanced, 'q') || pickString(advanced, 'query')
 }
 
@@ -269,8 +302,12 @@ export const CODEWHALE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<CodewhaleToo
   execute: (args, facts): ToolRequestByKind['execute'] => codewhaleExecuteRequest(facts.toolName, args),
   // The change the arguments ask for, or the landed one for a call whose arguments
   // this build cannot read.
-  edit: (_args, facts): ToolRequestByKind['edit'] => ({ changes: fileChanges(facts) }),
-  write: (_args, facts): ToolRequestByKind['write'] => ({ changes: fileChanges(facts) }),
+  edit: (_args, facts): ToolRequestByKind['edit'] => ({
+    changes: fileChanges(facts),
+  }),
+  write: (_args, facts): ToolRequestByKind['write'] => ({
+    changes: fileChanges(facts),
+  }),
   // The server and the tool, which the runtime folds into the tool NAME.
   mcp: (args, facts): ToolRequestByKind['mcp'] => {
     const identity = codewhaleMcpToolName(facts.toolName)
@@ -279,27 +316,52 @@ export const CODEWHALE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<CodewhaleToo
   // A notice to the reader states a title and a body. A message to a subagent names
   // the child it goes to.
   message: (args, facts): ToolRequestByKind['message'] => {
-    if (facts.toolName === CODEWHALE_TOOL.Notify)
-      return { text: [pickString(args, 'title'), pickString(args, 'body')].filter(Boolean).join('\n') }
+    if (facts.toolName === CODEWHALE_TOOL.Notify) {
+      return {
+        text: [
+          pickString(args, 'title'),
+          pickString(args, 'body'),
+        ].filter(Boolean).join('\n'),
+      }
+    }
     const to = pickString(args, 'agent_id') || pickString(args, 'to')
-    return { ...(to ? { to } : {}), text: pickString(args, 'message') || pickString(args, 'prompt') || pickString(args, 'text') }
+    return {
+      ...(to
+        ? { to }
+        : {}),
+      text: pickString(args, 'message') || pickString(args, 'prompt') || pickString(args, 'text'),
+    }
   },
   // The parsed questions, whose shape is Codewhale's own.
-  question: (args): ToolRequestByKind['question'] => ({ questions: codewhaleQuestionsFromToolInput(args) }),
+  question: (args): ToolRequestByKind['question'] => ({
+    questions: codewhaleQuestionsFromToolInput(args),
+  }),
   // The file, or the handle and the stored result the two reference tools read.
   read: (args): ToolRequestByKind['read'] => codewhaleReadRequest(args),
   // The action, which the tool name or Codewhale's own `action` word states.
   task: (args, facts): ToolRequestByKind['task'] => {
     const taskId = pickString(args, 'task_id') || pickString(args, 'id') || pickString(args, 'run_id') || pickString(args, 'terminal_id') || pickString(args, 'name')
-    return { action: codewhaleTaskAction(facts), ...(taskId ? { taskId } : {}) }
+    return {
+      action: codewhaleTaskAction(facts),
+      ...(taskId
+        ? { taskId }
+        : {}),
+    }
   },
   // The parsed items, and the explanation `update_plan` gives above them.
   todo: (args, facts): ToolRequestByKind['todo'] => {
     const note = codewhalePlanNote(facts.toolName, args)
-    return { items: codewhaleTodoItems(facts.toolName, args) ?? [], ...(note ? { note } : {}) }
+    return {
+      items: codewhaleTodoItems(facts.toolName, args) ?? [],
+      ...(note
+        ? { note }
+        : {}),
+    }
   },
   // The advanced `search_query` list, which the shared reader does not know.
-  web_search: (args): ToolRequestByKind['web_search'] => ({ query: codewhaleWebQuery(args) }),
+  web_search: (args): ToolRequestByKind['web_search'] => ({
+    query: codewhaleWebQuery(args),
+  }),
 }
 
 /** One kind's declared request: Codewhale's own reading, or the shared table's. */
@@ -321,25 +383,45 @@ function codewhaleFailure(facts: CodewhaleToolFacts): ToolFailureResult {
 function codewhaleProseResult(facts: CodewhaleToolFacts): { result?: ProseResult | ToolFailureResult } {
   if (!facts.resultAvailable)
     return {}
-  return facts.failed || facts.interrupted ? { result: codewhaleFailure(facts) } : { result: proseResult(facts.text) }
+  return facts.failed || facts.interrupted
+    ? {
+        result: codewhaleFailure(facts),
+      }
+    : {
+        result: proseResult(facts.text),
+      }
 }
 
 /** The result side of a kind this build reads only as text. */
 function codewhaleUnreadResult(facts: CodewhaleToolFacts): { result?: ToolFailureResult | UnparsedToolResult } {
   if (!facts.resultAvailable)
     return {}
-  if (facts.failed || facts.interrupted)
-    return { result: codewhaleFailure(facts) }
-  return facts.text ? { result: unparsedResult(facts.text) } : {}
+  if (facts.failed || facts.interrupted) {
+    return {
+      result: codewhaleFailure(facts),
+    }
+  }
+  return facts.text
+    ? {
+        result: unparsedResult(facts.text),
+      }
+    : {}
 }
 
 /** The result side the generic card states. */
 function codewhaleGenericResult(facts: CodewhaleToolFacts): { result?: GenericToolResult | ToolFailureResult } {
   if (!facts.resultAvailable)
     return {}
-  if (facts.failed || facts.interrupted)
-    return { result: codewhaleFailure(facts) }
-  return { result: { content: codewhaleToolContent(facts.text, facts.images) } }
+  if (facts.failed || facts.interrupted) {
+    return {
+      result: codewhaleFailure(facts),
+    }
+  }
+  return {
+    result: {
+      content: codewhaleToolContent(facts.text, facts.images),
+    },
+  }
 }
 
 /**
@@ -352,16 +434,27 @@ function codewhaleGenericResult(facts: CodewhaleToolFacts): { result?: GenericTo
 function codewhaleFileChangeResult(facts: CodewhaleToolFacts): { result?: FileChangeResult | ToolFailureResult | UnparsedToolResult } {
   if (!facts.resultAvailable)
     return {}
-  if (facts.failed || facts.interrupted)
-    return { result: codewhaleFailure(facts) }
+  if (facts.failed || facts.interrupted) {
+    return {
+      result: codewhaleFailure(facts),
+    }
+  }
   // A landed record whose hunks this build could not place states the files alone.
   // The arguments then state the change better, so they answer when they name one.
   const landed = facts.landedChanges
-  if (landed && (landed.some(fileEditDrawsDiff) || facts.requestedChanges.length === 0))
-    return { result: { changes: landed } }
-  if (facts.requestedChanges.length > 0)
-    return { result: { changes: facts.requestedChanges } }
-  return { result: unparsedResult(facts.text) }
+  if (landed && (landed.some(fileEditDrawsDiff) || facts.requestedChanges.length === 0)) {
+    return {
+      result: { changes: landed },
+    }
+  }
+  if (facts.requestedChanges.length > 0) {
+    return {
+      result: { changes: facts.requestedChanges },
+    }
+  }
+  return {
+    result: unparsedResult(facts.text),
+  }
 }
 
 /**
@@ -370,7 +463,12 @@ function codewhaleFileChangeResult(facts: CodewhaleToolFacts): { result?: FileCh
  */
 function codewhaleArgumentsOnly<P extends ToolKind>(kind: P): (facts: CodewhaleToolFacts) => ToolCallSpecVariant<P> {
   // The inner arrow states its OWN return type, for the reason the table states.
-  return (facts): ToolCallSpecVariant<P> => ({ kind, request: codewhaleRequestFor(kind, facts), title: codewhaleCallTitle(facts), ...codewhaleUnreadResult(facts) })
+  return (facts): ToolCallSpecVariant<P> => ({
+    kind,
+    request: codewhaleRequestFor(kind, facts),
+    title: codewhaleCallTitle(facts),
+    ...codewhaleUnreadResult(facts),
+  })
 }
 
 /**
@@ -385,12 +483,29 @@ export const CODEWHALE_TOOL_READERS: ToolCallSpecReaderTable<CodewhaleToolFacts>
     const request = codewhaleRequestFor('read', facts)
     if (!facts.resultAvailable)
       return { kind: 'read', request }
-    if (facts.failed || facts.interrupted)
-      return { kind: 'read', request, result: codewhaleFailure(facts) }
-    return { kind: 'read', request, result: codewhaleReadResult(facts.text, request) }
+    if (facts.failed || facts.interrupted) {
+      return {
+        kind: 'read',
+        request,
+        result: codewhaleFailure(facts),
+      }
+    }
+    return {
+      kind: 'read',
+      request,
+      result: codewhaleReadResult(facts.text, request),
+    }
   },
-  edit: (facts): ToolCallSpecVariant<'edit'> => ({ kind: 'edit', request: codewhaleRequestFor('edit', facts), ...codewhaleFileChangeResult(facts) }),
-  write: (facts): ToolCallSpecVariant<'write'> => ({ kind: 'write', request: codewhaleRequestFor('write', facts), ...codewhaleFileChangeResult(facts) }),
+  edit: (facts): ToolCallSpecVariant<'edit'> => ({
+    kind: 'edit',
+    request: codewhaleRequestFor('edit', facts),
+    ...codewhaleFileChangeResult(facts),
+  }),
+  write: (facts): ToolCallSpecVariant<'write'> => ({
+    kind: 'write',
+    request: codewhaleRequestFor('write', facts),
+    ...codewhaleFileChangeResult(facts),
+  }),
   execute: (facts): ToolCallSpecVariant<'execute'> => {
     // NO title: the command states itself in the shared header.
     const request = codewhaleRequestFor('execute', facts)
@@ -399,85 +514,182 @@ export const CODEWHALE_TOOL_READERS: ToolCallSpecReaderTable<CodewhaleToolFacts>
     // A command that RAN states its exit code, and its output is the answer whatever
     // the code says. A call that never ran -- a refusal, a sandbox denial -- states no
     // code, and its words are the reason.
-    if (facts.metadata[CODEWHALE_RESULT_METADATA.ExitCode] !== undefined || !(facts.failed || facts.interrupted))
-      return { kind: 'execute', request, result: { commands: [codewhaleCommandResult(facts.text, facts.metadata)], unresolvedTerminals: [] } }
+    if (facts.metadata[CODEWHALE_RESULT_METADATA.ExitCode] !== undefined || !(facts.failed || facts.interrupted)) {
+      return {
+        kind: 'execute',
+        request,
+        result: {
+          commands: [
+            codewhaleCommandResult(facts.text, facts.metadata),
+          ],
+          unresolvedTerminals: [],
+        },
+      }
+    }
     // A command that ran and exited nonzero states its code only in its words.
-    const ranAndFailed = facts.failed ? codewhaleFailedCommand(facts.text, facts.metadata) : undefined
-    if (ranAndFailed)
-      return { kind: 'execute', request, result: { commands: [ranAndFailed], unresolvedTerminals: [] } }
-    return { kind: 'execute', request, result: codewhaleFailure(facts) }
+    const ranAndFailed = facts.failed
+      ? codewhaleFailedCommand(facts.text, facts.metadata)
+      : undefined
+    if (ranAndFailed) {
+      return {
+        kind: 'execute',
+        request,
+        result: {
+          commands: [ranAndFailed],
+          unresolvedTerminals: [],
+        },
+      }
+    }
+    return {
+      kind: 'execute',
+      request,
+      result: codewhaleFailure(facts),
+    }
   },
   glob: (facts): ToolCallSpecVariant<'glob'> => {
     const request = codewhaleRequestFor('glob', facts)
     if (!facts.resultAvailable)
       return { kind: 'glob', request }
-    if (facts.failed || facts.interrupted)
-      return { kind: 'glob', request, result: codewhaleFailure(facts) }
+    if (facts.failed || facts.interrupted) {
+      return {
+        kind: 'glob',
+        request,
+        result: codewhaleFailure(facts),
+      }
+    }
     return { kind: 'glob', request, result: codewhaleFileSearchResult(facts.text) ?? unparsedResult(facts.text) }
   },
   grep: (facts): ToolCallSpecVariant<'grep'> => {
     const request = codewhaleRequestFor('grep', facts)
     if (!facts.resultAvailable)
       return { kind: 'grep', request }
-    if (facts.failed || facts.interrupted)
-      return { kind: 'grep', request, result: codewhaleFailure(facts) }
+    if (facts.failed || facts.interrupted) {
+      return {
+        kind: 'grep',
+        request,
+        result: codewhaleFailure(facts),
+      }
+    }
     return { kind: 'grep', request, result: codewhaleGrepResult(facts.text) ?? unparsedResult(facts.text) }
   },
   search: (facts): ToolCallSpecVariant<'search'> => {
     const request = codewhaleRequestFor('search', facts)
     if (!facts.resultAvailable)
       return { kind: 'search', request }
-    if (facts.failed || facts.interrupted)
-      return { kind: 'search', request, result: codewhaleFailure(facts) }
-    return { kind: 'search', request, result: codewhaleCorpusSearchResult(facts.toolName, facts.text) }
+    if (facts.failed || facts.interrupted) {
+      return {
+        kind: 'search',
+        request,
+        result: codewhaleFailure(facts),
+      }
+    }
+    return {
+      kind: 'search',
+      request,
+      result: codewhaleCorpusSearchResult(facts.toolName, facts.text),
+    }
   },
   list: (facts): ToolCallSpecVariant<'list'> => {
     const request = codewhaleRequestFor('list', facts)
     if (!facts.resultAvailable)
       return { kind: 'list', request }
-    if (facts.failed || facts.interrupted)
-      return { kind: 'list', request, result: codewhaleFailure(facts) }
+    if (facts.failed || facts.interrupted) {
+      return {
+        kind: 'list',
+        request,
+        result: codewhaleFailure(facts),
+      }
+    }
     return { kind: 'list', request, result: codewhaleListResult(facts.text) ?? unparsedResult(facts.text) }
   },
   fetch: (facts): ToolCallSpecVariant<'fetch'> => {
     const request = codewhaleRequestFor('fetch', facts)
     if (!facts.resultAvailable)
       return { kind: 'fetch', request }
-    if (facts.failed || facts.interrupted)
-      return { kind: 'fetch', request, result: codewhaleFailure(facts) }
+    if (facts.failed || facts.interrupted) {
+      return {
+        kind: 'fetch',
+        request,
+        result: codewhaleFailure(facts),
+      }
+    }
     const durationMs = facts.metadata[CODEWHALE_RESULT_METADATA.DurationMs]
-    return { kind: 'fetch', request, result: { result: facts.text, ...(typeof durationMs === 'number' ? { durationMs } : {}) } }
+    return {
+      kind: 'fetch',
+      request,
+      result: {
+        result: facts.text,
+        ...(typeof durationMs === 'number'
+          ? { durationMs }
+          : {}),
+      },
+    }
   },
   web_search: (facts): ToolCallSpecVariant<'web_search'> => {
     const request = codewhaleRequestFor('web_search', facts)
     if (!facts.resultAvailable)
       return { kind: 'web_search', request }
-    if (facts.failed || facts.interrupted)
-      return { kind: 'web_search', request, result: codewhaleFailure(facts) }
-    return { kind: 'web_search', request, result: { links: [], summary: facts.text } }
+    if (facts.failed || facts.interrupted) {
+      return {
+        kind: 'web_search',
+        request,
+        result: codewhaleFailure(facts),
+      }
+    }
+    return {
+      kind: 'web_search',
+      request,
+      result: { links: [], summary: facts.text },
+    }
   },
   agent: (facts): ToolCallSpecVariant<'agent'> => {
     const request = codewhaleRequestFor('agent', facts)
     const title = request.description || codewhaleCallTitle(facts)
     if (!facts.resultAvailable)
       return { kind: 'agent', request, title }
-    if (facts.failed || facts.interrupted)
-      return { kind: 'agent', request, title, result: codewhaleFailure(facts) }
+    if (facts.failed || facts.interrupted) {
+      return {
+        kind: 'agent',
+        request,
+        title,
+        result: codewhaleFailure(facts),
+      }
+    }
     const runs = codewhaleAgentRuns(facts.text, request)
-    return { kind: 'agent', request, title, result: runs ? { agents: runs } : unparsedResult(facts.text) }
+    return {
+      kind: 'agent',
+      request,
+      title,
+      result: runs
+        ? { agents: runs }
+        : unparsedResult(facts.text),
+    }
   },
   task: (facts): ToolCallSpecVariant<'task'> => {
     const request = codewhaleRequestFor('task', facts)
     const title = codewhaleCallTitle(facts)
     if (!facts.resultAvailable)
       return { kind: 'task', request, title }
-    if (facts.failed || facts.interrupted)
-      return { kind: 'task', request, title, result: codewhaleFailure(facts) }
+    if (facts.failed || facts.interrupted) {
+      return {
+        kind: 'task',
+        request,
+        title,
+        result: codewhaleFailure(facts),
+      }
+    }
     // A workflow run states its own status beside the words, which is the answer the
     // reader wants first.
     const status = pickString(facts.metadata, CODEWHALE_RESULT_FIELD.Status)
-    const outcome = facts.toolName === CODEWHALE_TOOL.Workflow ? WORKFLOW_STATUS_OUTCOMES.get(status) ?? (status ? 'running' : 'completed') : 'completed'
-    return { kind: 'task', request, title, result: { outcome, output: facts.text } }
+    const outcome = facts.toolName === CODEWHALE_TOOL.Workflow
+      ? WORKFLOW_STATUS_OUTCOMES.get(status) ?? (status ? 'running' : 'completed')
+      : 'completed'
+    return {
+      kind: 'task',
+      request,
+      title,
+      result: { outcome, output: facts.text },
+    }
   },
   todo: (facts): ToolCallSpecVariant<'todo'> => {
     // NEVER empty by accident: `codewhaleReclassify` answers `other` for arguments that
@@ -485,38 +697,108 @@ export const CODEWHALE_TOOL_READERS: ToolCallSpecReaderTable<CodewhaleToolFacts>
     const request = codewhaleRequestFor('todo', facts)
     if (!facts.resultAvailable)
       return { kind: 'todo', request }
-    if (facts.failed || facts.interrupted)
-      return { kind: 'todo', request, result: codewhaleFailure(facts) }
+    if (facts.failed || facts.interrupted) {
+      return {
+        kind: 'todo',
+        request,
+        result: codewhaleFailure(facts),
+      }
+    }
     // The runtime's own checklist wins once the call lands: it numbers the items and
     // normalizes their status.
     const items = codewhaleChecklistItems(facts.metadata) ?? request.items
-    return { kind: 'todo', request, result: { items, ...(request.note !== undefined ? { note: request.note } : {}) } }
+    return {
+      kind: 'todo',
+      request,
+      result: {
+        items,
+        ...(request.note !== undefined
+          ? { note: request.note }
+          : {}),
+      },
+    }
   },
   question: (facts): ToolCallSpecVariant<'question'> => {
     const request = codewhaleRequestFor('question', facts)
     if (!facts.resultAvailable)
       return { kind: 'question', request }
-    if (facts.failed || facts.interrupted)
-      return { kind: 'question', request, result: codewhaleFailure(facts) }
+    if (facts.failed || facts.interrupted) {
+      return {
+        kind: 'question',
+        request,
+        result: codewhaleFailure(facts),
+      }
+    }
     // The runtime REDACTS the answers from the call's own result, so the row states
     // none. The saved answer beside it is LeapMux's record of what the reader sent.
-    return { kind: 'question', request, result: { answers: [] } }
+    return {
+      kind: 'question',
+      request,
+      result: { answers: [] },
+    }
   },
-  mcp: (facts): ToolCallSpecVariant<'mcp'> => ({ kind: 'mcp', request: codewhaleRequestFor('mcp', facts), ...codewhaleGenericResult(facts) }),
+  mcp: (facts): ToolCallSpecVariant<'mcp'> => ({
+    kind: 'mcp',
+    request: codewhaleRequestFor('mcp', facts),
+    ...codewhaleGenericResult(facts),
+  }),
   // The prose kinds. Each states its own kind, so a shared generic entry does not put
   // the kind and the request beyond the checker.
-  agents: (facts): ToolCallSpecVariant<'agents'> => ({ kind: 'agents', request: codewhaleRequestFor('agents', facts), title: codewhaleCallTitle(facts), ...codewhaleProseResult(facts) }),
-  memory: (facts): ToolCallSpecVariant<'memory'> => ({ kind: 'memory', request: codewhaleRequestFor('memory', facts), title: codewhaleCallTitle(facts), ...codewhaleProseResult(facts) }),
-  message: (facts): ToolCallSpecVariant<'message'> => ({ kind: 'message', request: codewhaleRequestFor('message', facts), title: codewhaleCallTitle(facts), ...codewhaleProseResult(facts) }),
-  report: (facts): ToolCallSpecVariant<'report'> => ({ kind: 'report', request: codewhaleRequestFor('report', facts), title: codewhaleCallTitle(facts), ...codewhaleProseResult(facts) }),
-  skill: (facts): ToolCallSpecVariant<'skill'> => ({ kind: 'skill', request: codewhaleRequestFor('skill', facts), title: codewhaleCallTitle(facts), ...codewhaleProseResult(facts) }),
-  trigger: (facts): ToolCallSpecVariant<'trigger'> => ({ kind: 'trigger', request: codewhaleRequestFor('trigger', facts), title: codewhaleCallTitle(facts), ...codewhaleProseResult(facts) }),
-  wait: (facts): ToolCallSpecVariant<'wait'> => ({ kind: 'wait', request: codewhaleRequestFor('wait', facts), title: codewhaleCallTitle(facts), ...codewhaleProseResult(facts) }),
+  agents: (facts): ToolCallSpecVariant<'agents'> => ({
+    kind: 'agents',
+    request: codewhaleRequestFor('agents', facts),
+    title: codewhaleCallTitle(facts),
+    ...codewhaleProseResult(facts),
+  }),
+  memory: (facts): ToolCallSpecVariant<'memory'> => ({
+    kind: 'memory',
+    request: codewhaleRequestFor('memory', facts),
+    title: codewhaleCallTitle(facts),
+    ...codewhaleProseResult(facts),
+  }),
+  message: (facts): ToolCallSpecVariant<'message'> => ({
+    kind: 'message',
+    request: codewhaleRequestFor('message', facts),
+    title: codewhaleCallTitle(facts),
+    ...codewhaleProseResult(facts),
+  }),
+  report: (facts): ToolCallSpecVariant<'report'> => ({
+    kind: 'report',
+    request: codewhaleRequestFor('report', facts),
+    title: codewhaleCallTitle(facts),
+    ...codewhaleProseResult(facts),
+  }),
+  skill: (facts): ToolCallSpecVariant<'skill'> => ({
+    kind: 'skill',
+    request: codewhaleRequestFor('skill', facts),
+    title: codewhaleCallTitle(facts),
+    ...codewhaleProseResult(facts),
+  }),
+  trigger: (facts): ToolCallSpecVariant<'trigger'> => ({
+    kind: 'trigger',
+    request: codewhaleRequestFor('trigger', facts),
+    title: codewhaleCallTitle(facts),
+    ...codewhaleProseResult(facts),
+  }),
+  wait: (facts): ToolCallSpecVariant<'wait'> => ({
+    kind: 'wait',
+    request: codewhaleRequestFor('wait', facts),
+    title: codewhaleCallTitle(facts),
+    ...codewhaleProseResult(facts),
+  }),
   // The generic card, for a tool no vocabulary lists.
-  other: (facts): ToolCallSpecVariant<'other'> => ({ kind: 'other', request: codewhaleRequestFor('other', facts), ...codewhaleGenericResult(facts) }),
+  other: (facts): ToolCallSpecVariant<'other'> => ({
+    kind: 'other',
+    request: codewhaleRequestFor('other', facts),
+    ...codewhaleGenericResult(facts),
+  }),
   // UNREACHABLE: `codewhaleReclassify` folds `''` to `other`. The entry exists because
   // the table is total, and it states the same card at its own kind.
-  unspecified: (facts): ToolCallSpecVariant<'unspecified'> => ({ kind: 'unspecified', request: codewhaleRequestFor('unspecified', facts), ...codewhaleGenericResult(facts) }),
+  unspecified: (facts): ToolCallSpecVariant<'unspecified'> => ({
+    kind: 'unspecified',
+    request: codewhaleRequestFor('unspecified', facts),
+    ...codewhaleGenericResult(facts),
+  }),
   // The kinds no Codewhale tool takes: the name table maps no tool to them, and no
   // action reaches one.
   chart: codewhaleArgumentsOnly('chart'),

@@ -16,6 +16,11 @@ fastAgentTest('returns the actual native MCP input cancel without a browser form
   await expectCancelledMcpInput(native, {
     receiptLog,
     callId,
-    invoke: () => invokeNativeMcp(native, { server: server.name, tool: 'ask', input: {}, callId }),
+    invoke: () => invokeNativeMcp(native, {
+      server: server.name,
+      tool: 'ask',
+      input: {},
+      callId,
+    }),
   })
 })

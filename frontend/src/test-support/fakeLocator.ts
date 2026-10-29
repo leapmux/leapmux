@@ -44,9 +44,16 @@ export function fakeLocator<T extends object = object>(answer: LocatorCheckAnswe
     _apiName: 'Locator',
     async _expect(expression: string, options: Omit<LocatorCheck, 'expression'>) {
       const answered = await answer({ ...options, expression })
-      const { matches, received } = typeof answered === 'boolean' ? { matches: answered, received: answered } : answered
+      const { matches, received } = typeof answered === 'boolean'
+        ? { matches: answered, received: answered }
+        : answered
       // Playwright prints `received.value` in a failure message.
-      return { matches, received: { value: received ?? matches }, log: [], timedOut: false }
+      return {
+        matches,
+        received: { value: received ?? matches },
+        log: [],
+        timedOut: false,
+      }
     },
   }
   return Object.assign(locator, members) as unknown as Locator & T
@@ -58,7 +65,9 @@ export function fakeLocator<T extends object = object>(answer: LocatorCheckAnswe
  */
 export function recordingLocator<T extends object = object>(name: string, log: string[], answer: LocatorCheckAnswerer = () => true, members?: T): Locator & T {
   return fakeLocator((check) => {
-    log.push(`${name}:${check.expression}${check.expectedNumber === undefined ? '' : `=${check.expectedNumber}`}`)
+    log.push(`${name}:${check.expression}${check.expectedNumber === undefined
+      ? ''
+      : `=${check.expectedNumber}`}`)
     return answer(check)
   }, members)
 }
@@ -98,14 +107,22 @@ export function fakeLocatorTree<P extends object = object>(options: FakeLocatorT
     getByLabel: (label: string) => node(`${path} >> label=${label}`),
     getByText: (text: string, textOptions?: { exact?: boolean }) => node(`${path} >> text=${text}${textOptions?.exact ? ' exact' : ''}`),
     getByRole: (role: string, roleOptions?: { name?: string, exact?: boolean }) =>
-      node(`${path} >> role=${role}${roleOptions?.name === undefined ? '' : `[name=${roleOptions.name}${roleOptions.exact ? ' exact' : ''}]`}`),
+      node(`${path} >> role=${role}${roleOptions?.name === undefined
+        ? ''
+        : `[name=${roleOptions.name}${roleOptions.exact ? ' exact' : ''}]`}`),
     first: () => node(`${path}.first`),
     nth: (index: number) => node(`${path}.nth(${index})`),
     filter: (filter: { hasText?: string | RegExp, has?: { path: string }, visible?: boolean }) => {
       const parts = [
-        filter.hasText === undefined ? '' : `hasText=${String(filter.hasText)}`,
-        filter.has === undefined ? '' : `has=(${filter.has.path})`,
-        filter.visible === undefined ? '' : `visible=${filter.visible}`,
+        filter.hasText === undefined
+          ? ''
+          : `hasText=${String(filter.hasText)}`,
+        filter.has === undefined
+          ? ''
+          : `has=(${filter.has.path})`,
+        filter.visible === undefined
+          ? ''
+          : `visible=${filter.visible}`,
       ].filter(Boolean)
       return node(`${path}[${parts.join(' ')}]`)
     },

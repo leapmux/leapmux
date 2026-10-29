@@ -34,7 +34,7 @@ export function clickNativeToolApproval(elements: Element[], approvalAllowed = t
   if (!button)
     return false
   if (!(button instanceof HTMLButtonElement))
-    throw new Error('The native approval control must be an actual button.')
+    throw new TypeError('The native approval control must be an actual button.')
   const style = globalThis.getComputedStyle(button)
   if (!button.isConnected || button.hidden || button.matches(':disabled') || button.getClientRects().length === 0
     || style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') {
@@ -52,7 +52,9 @@ export async function processNativeToolApproval(control: NativeToolApprovalOpera
     return 'completed'
   if (await control.clickIfReady())
     return 'approval'
-  return await control.completed() ? 'completed' : 'waiting'
+  return await control.completed()
+    ? 'completed'
+    : 'waiting'
 }
 
 /** The most native approvals that one wait allows. A turn that asks more often than this has a defect. */
@@ -156,9 +158,15 @@ export interface NativeToolTurnRequests {
 /** The model step that answers one {@link NativeToolStep}. The copies keep the caller's arrays out of the script. */
 function nativeToolModelStep(step: NativeToolStep): MockModelStep {
   return {
-    ...(step.reasoning !== undefined ? { reasoning: step.reasoning } : {}),
+    ...(step.reasoning !== undefined
+      ? { reasoning: step.reasoning }
+      : {}),
     toolCalls: [...step.toolCalls],
-    ...(step.captures ? { captures: { ...step.captures } } : {}),
+    ...(step.captures
+      ? {
+          captures: { ...step.captures },
+        }
+      : {}),
   }
 }
 
@@ -193,7 +201,20 @@ export async function runNativeToolSteps(context: NativeScenarioContext, turn: N
  */
 export async function runNativeToolTurn(context: NativeScenarioContext, turn: NativeToolTurn): Promise<NativeToolTurnRequests> {
   const { toolCalls, reasoning, captures, ...rest } = turn
-  const start = await runNativeToolSteps(context, { ...rest, steps: [{ toolCalls, ...(reasoning !== undefined ? { reasoning } : {}), ...(captures ? { captures } : {}) }] })
+  const start = await runNativeToolSteps(context, {
+    ...rest,
+    steps: [
+      {
+        toolCalls,
+        ...(reasoning !== undefined
+          ? { reasoning }
+          : {}),
+        ...(captures
+          ? { captures }
+          : {}),
+      },
+    ],
+  })
   return {
     start,
     toolRequest: await context.modelScript.requestAt(start),
@@ -369,9 +390,13 @@ export async function expectShellToolRows(
     await expect(toolRows(page).filter({ hasText: 'printf' }).filter({ hasText: command.printedPrefix }).first(), 'a tool row shows the command').toBeVisible()
     await expect(railedRows(page).filter({ hasText: command.output }).first(), 'the output row draws the rail of its span').toBeVisible()
     await expect(resultRows.first(), 'the result row of the command reaches its final status')
-      .toHaveAttribute('data-tool-status', command.exitCode === 0 ? 'completed' : /^(?:completed|failed)$/)
+      .toHaveAttribute('data-tool-status', command.exitCode === 0
+        ? 'completed'
+        : /^(?:completed|failed)$/)
     if (command.exitCode !== 0) {
-      await expect(outputRows.filter({ hasText: toolOutcomeLabel('failed', `exit ${command.exitCode}`) }).first(), 'the header of the failed row states the exit code')
+      await expect(outputRows.filter({
+        hasText: toolOutcomeLabel('failed', `exit ${command.exitCode}`),
+      }).first(), 'the header of the failed row states the exit code')
         .toBeVisible()
     }
     if (exceptions.outputFilePath === undefined)
@@ -433,22 +458,53 @@ export async function exerciseShellToolExecution(
   expect(existsSync(outputFile)).toBe(false)
   const marker = uniqueMarker()
   const commands = [
-    { callId: `shell-${marker}-0`, command: `${printfMarkerCommand(`SHELL${marker}`, 42)} > ${quotePosixShellArgument(outputFile)}; cat ${quotePosixShellArgument(outputFile)}`, printedPrefix: `SHELL${marker}`, output: `SHELL${marker}42`, exitCode: 0 },
-    ...(options.includeFailure === false ? [] : [{ callId: `shell-${marker}-1`, command: `${printfMarkerCommand(`SHELLERR${marker}`, 77)} >&2; exit 7`, printedPrefix: `SHELLERR${marker}`, output: `SHELLERR${marker}77`, exitCode: 7 }]),
+    {
+      callId: `shell-${marker}-0`,
+      command: `${printfMarkerCommand(`SHELL${marker}`, 42)} > ${quotePosixShellArgument(outputFile)}; cat ${quotePosixShellArgument(outputFile)}`,
+      printedPrefix: `SHELL${marker}`,
+      output: `SHELL${marker}42`,
+      exitCode: 0,
+    },
+    ...(options.includeFailure === false
+      ? []
+      : [
+          {
+            callId: `shell-${marker}-1`,
+            command: `${printfMarkerCommand(`SHELLERR${marker}`, 77)} >&2; exit 7`,
+            printedPrefix: `SHELLERR${marker}`,
+            output: `SHELLERR${marker}77`,
+            exitCode: 7,
+          },
+        ]),
   ]
   // The gate files live in the literal private tool directory. A hold that quotes its path incorrectly runs the marker
   // command, and the check of `command-expanded-marker` below finds it. Each command takes its own gate, so a provider
   // that runs the two calls one after the other releases the first before the second starts.
-  const gates = commands.map(() => options.outputGate ? createOutputGate(directory) : undefined)
+  const gates = commands.map(() => options.outputGate
+    ? createOutputGate(directory)
+    : undefined)
   const calls = commands.map((command, index) => bashToolCall(context.provider, command.callId, gates[index]?.hold(command.command) ?? command.command))
   const callPerAnswer = ONE_SHELL_CALL_PER_ANSWER.has(context.provider)
-  const steps: MockModelStep[] = callPerAnswer ? calls.map(call => ({ toolCalls: [call] })) : [{ toolCalls: calls }]
+  const steps: MockModelStep[] = callPerAnswer
+    ? calls.map(call => ({
+        toolCalls: [call],
+      }))
+    : [
+        { toolCalls: calls },
+      ]
   const answer = 'The native shell scenario ended.'
   const stepIndex = await context.modelScript.queue(...steps, nativeTextStep(context, answer))
   await sendMessage(context.page, context.modelScript.prompt('Run the native shell scenario.'))
   const gated = commands.flatMap((command, index) => {
     const gate = gates[index]
-    return gate ? [{ gate, shown: () => expect(toolRows(context.page).filter({ hasText: command.output }).first(), 'the live view shows the output of the held command').toBeVisible() }] : []
+    return gate
+      ? [
+          {
+            gate,
+            shown: () => expect(toolRows(context.page).filter({ hasText: command.output }).first(), 'the live view shows the output of the held command').toBeVisible(),
+          },
+        ]
+      : []
   })
   await runWithGatedOutputs(gated, () => waitForNativeToolSteps(context, stepIndex + steps.length + 1))
   const rowCommands: ShellRowCommand[] = []
@@ -468,7 +524,12 @@ export async function exerciseShellToolExecution(
     }
     else {
       expect(result.text, 'the next model request holds the output of the command').toContain(command.output)
-      rowCommands.push({ ...command, ...(evidence.absentRowText === undefined ? {} : { absentRowText: evidence.absentRowText }) })
+      rowCommands.push({
+        ...command,
+        ...(evidence.absentRowText === undefined
+          ? {}
+          : { absentRowText: evidence.absentRowText }),
+      })
     }
     if (command.exitCode === 0) {
       expect(readFileSync(outputFile, 'utf8')).toBe(`${command.output}\n`)
@@ -536,9 +597,21 @@ export function nativeFileEditSequence(provider: NativeScenarioContext['provider
     filePath,
     prompt: 'Create the file, read it, then change parityBefore to parityAfter.',
     steps: [
-      { toolCalls: [bashToolCall(provider, 'seed-file', `printf "${PARITY_BEFORE}\\n" > ${quotePosixShellArgument(filePath)}`)] },
-      { toolCalls: [readToolCall(provider, 'read-file', filePath)] },
-      { toolCalls: [editToolCall(provider, 'edit-file', { path: filePath, before: PARITY_BEFORE, after: PARITY_AFTER })] },
+      {
+        toolCalls: [
+          bashToolCall(provider, 'seed-file', `printf "${PARITY_BEFORE}\\n" > ${quotePosixShellArgument(filePath)}`),
+        ],
+      },
+      {
+        toolCalls: [
+          readToolCall(provider, 'read-file', filePath),
+        ],
+      },
+      {
+        toolCalls: [
+          editToolCall(provider, 'edit-file', { path: filePath, before: PARITY_BEFORE, after: PARITY_AFTER }),
+        ],
+      },
     ],
     answer: 'The file is edited.',
   }
@@ -566,7 +639,11 @@ export function nativeFileWriteSequence(provider: NativeScenarioContext['provide
     filePath,
     prompt: `Write ${options.fileName} with one marker line.`,
     steps: [
-      { toolCalls: [writeToolCall(provider, 'write-file', { path: filePath, content: 'written-42\n' })] },
+      {
+        toolCalls: [
+          writeToolCall(provider, 'write-file', { path: filePath, content: 'written-42\n' }),
+        ],
+      },
     ],
     answer: 'The file is written.',
   }
@@ -622,7 +699,9 @@ export async function exerciseNativeFileRead(
   const lines = [1, 2, 3].map(index => `${options.linePrefix}-${index}`)
   writeFileSync(notes, `${lines.join('\n')}\n`)
   await runNativeToolTurn(context, {
-    toolCalls: [readToolCall(context.provider, 'read-notes', notes)],
+    toolCalls: [
+      readToolCall(context.provider, 'read-notes', notes),
+    ],
     prompt: 'Read the notes back.',
     answer: 'I read the notes.',
   })
@@ -638,7 +717,9 @@ export async function exerciseNativeFileEdit(context: NativeScenarioContext, opt
   const path = join(options.directory, NATIVE_FILE_NAMES.edit)
   writeFileSync(path, `${PARITY_BEFORE}\n`)
   await runNativeToolTurn(context, {
-    toolCalls: [editToolCall(context.provider, 'parity-edit', { path, before: PARITY_BEFORE, after: PARITY_AFTER })],
+    toolCalls: [
+      editToolCall(context.provider, 'parity-edit', { path, before: PARITY_BEFORE, after: PARITY_AFTER }),
+    ],
     prompt: 'Change parity.ts.',
     answer: 'I changed parity.ts.',
   })
@@ -664,7 +745,9 @@ export async function exerciseNativeFileWrite(
   const path = join(options.directory, NATIVE_FILE_NAMES.write)
   expect(existsSync(path), 'the written file does not exist before the write').toBe(false)
   await runNativeToolTurn(context, {
-    toolCalls: [writeToolCall(context.provider, 'write-call', { path, content: options.content })],
+    toolCalls: [
+      writeToolCall(context.provider, 'write-call', { path, content: options.content }),
+    ],
     prompt: 'Write the note.',
     answer: 'I wrote the note.',
   })
@@ -696,11 +779,25 @@ export async function exerciseFileToolExecution(
   expect(existsSync(created)).toBe(false)
   const stepIndex = await runNativeToolSteps(context, {
     steps: [
-      { toolCalls: [readToolCall(context.provider, 'native-read-before', file)] },
+      {
+        toolCalls: [
+          readToolCall(context.provider, 'native-read-before', file),
+        ],
+      },
       options.editStep?.('native-edit', file, before, after)
-      ?? { toolCalls: [editToolCall(context.provider, 'native-edit', { path: file, before, after })] },
-      { toolCalls: [options.readAfterCall?.('native-read-after', file) ?? readToolCall(context.provider, 'native-read-after', file)] },
-      { toolCalls: [writeToolCall(context.provider, 'native-write', { path: created, content: written })] },
+      ?? {
+        toolCalls: [
+          editToolCall(context.provider, 'native-edit', { path: file, before, after }),
+        ],
+      },
+      {
+        toolCalls: [options.readAfterCall?.('native-read-after', file) ?? readToolCall(context.provider, 'native-read-after', file)],
+      },
+      {
+        toolCalls: [
+          writeToolCall(context.provider, 'native-write', { path: created, content: written }),
+        ],
+      },
     ],
     prompt: 'Read the scratch file, edit it, read it again, and create the second file.',
     answer: 'The native file operations ended.',

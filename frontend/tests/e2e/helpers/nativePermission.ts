@@ -89,7 +89,9 @@ export async function exerciseNativePermissionDecision(context: NativeScenarioCo
     throw new Error('A denied command prints no output, so it cannot open an output gate.')
   // A test can answer two requests in one session, so each decision gets its own answer text.
   const answer = `The native permission decision reached the next turn. ${uniqueMarker('DECISION')}`
-  const start = await context.modelScript.queue({ toolCalls: [options.toolCall] }, nativeTextStep(context, answer))
+  const start = await context.modelScript.queue({
+    toolCalls: [options.toolCall],
+  }, nativeTextStep(context, answer))
   await sendMessage(context.page, context.modelScript.prompt('Run the scripted permission probe.'))
   await context.modelScript.waitForSteps(start + 1)
   const banner = await waitForControlBanner(context.page)
@@ -122,7 +124,9 @@ export function allowNativeOperation(
 ): (checkBanner: (banner: Locator) => Promise<void>) => Promise<MockModelRequestRecord> {
   return checkBanner => exerciseNativePermissionDecision(context, {
     toolCall: operation.toolCall,
-    ...(operation.outputGate ? { outputGate: operation.outputGate } : {}),
+    ...(operation.outputGate
+      ? { outputGate: operation.outputGate }
+      : {}),
     decision: 'allow',
     beforeDecision: async (banner) => {
       await operation.beforeDecision()
@@ -144,7 +148,9 @@ export function allowNativeOperation(
 export async function exerciseAllowThenFeedbackRejection(context: NativeScenarioContext, options: { workingDir: string }): Promise<void> {
   // The commands hold the paths unquoted, as the model writes them, so a path must not need shell quoting.
   // A Windows path may hold a drive colon and backslash separators beside the plain characters.
-  const unquotedAbsolute = process.platform === 'win32' ? /^[A-Z]:[\\/][\w.\\/-]*$/i : /^\/[\w./-]+$/
+  const unquotedAbsolute = process.platform === 'win32'
+    ? /^[A-Z]:[\\/][\w.\\/-]*$/i
+    : /^\/[\w./-]+$/
   if (!isAbsolute(options.workingDir) || !unquotedAbsolute.test(options.workingDir))
     throw new Error('The allow-then-refuse scenario requires an absolute working directory that needs no shell quoting.')
   const approved = join(options.workingDir, 'approved.txt')
@@ -156,8 +162,16 @@ export async function exerciseAllowThenFeedbackRejection(context: NativeScenario
   const approvedCommand = `printf approved > ${approved}`
   const rejectedCommand = `printf rejected > ${rejected}`
   const start = await context.modelScript.queue(
-    { toolCalls: [bashToolCall(context.provider, 'native-approved', approvedCommand)] },
-    { toolCalls: [bashToolCall(context.provider, 'native-rejected', rejectedCommand)] },
+    {
+      toolCalls: [
+        bashToolCall(context.provider, 'native-approved', approvedCommand),
+      ],
+    },
+    {
+      toolCalls: [
+        bashToolCall(context.provider, 'native-rejected', rejectedCommand),
+      ],
+    },
     nativeTextStep(context, answer),
   )
   await sendMessage(context.page, context.modelScript.prompt('Create the two scripted files.'))
@@ -302,7 +316,11 @@ export async function exerciseNativePermissionReason(context: NativeScenarioCont
   const reason = `Leave the target as it is. ${uniqueMarker('REASON')}`
   const refusalAnswer = `The refusal reached the model. ${uniqueMarker('REFUSAL')}`
   const reasonAnswer = `The reason reached the model. ${uniqueMarker('FOLLOWUP')}`
-  const steps: MockModelStep[] = [{ toolCalls: [options.toolCall] }]
+  const steps: MockModelStep[] = [
+    {
+      toolCalls: [options.toolCall],
+    },
+  ]
   if (continues)
     steps.push(nativeTextStep(context, refusalAnswer))
   if (options.route === 'next-message')
@@ -388,7 +406,12 @@ export interface RememberedAllow {
 export async function exerciseRememberedAllow(context: ManagedNativeScenarioContext, options: RememberedAllow): Promise<void> {
   const saved = (options.ruleFiles ?? []).map((path) => {
     assertPrivateNativeAncestor(path, getGlobalState().tmpDir, { refuseSymlink: true })
-    return { path, content: existsSync(path) ? readFileSync(path) : undefined }
+    return {
+      path,
+      content: existsSync(path)
+        ? readFileSync(path)
+        : undefined,
+    }
   })
   await withCleanup(async () => {
     const firstAnswer = `The first call ran. ${uniqueMarker('FIRST')}`
@@ -461,7 +484,9 @@ export async function exerciseNativePermissionRefusal(context: ManagedNativeScen
   viewProof?: () => Promise<void>
 }): Promise<void> {
   const agent = await currentNativeAgent(context)
-  const start = await context.modelScript.queue({ toolCalls: [options.toolCall] })
+  const start = await context.modelScript.queue({
+    toolCalls: [options.toolCall],
+  })
   await sendMessage(context.page, context.modelScript.prompt(options.prompt))
   await context.modelScript.waitForSteps(start + 1)
   const banner = await waitForControlBanner(context.page)
@@ -503,7 +528,9 @@ export async function exerciseNativePermissionWrite(
       expect(readFileSync(scenario.file, 'utf8')).toBe(scenario.before)
     },
     nativeProof: scenario.prove,
-    ...(options.viewProof ? { viewProof: options.viewProof } : {}),
+    ...(options.viewProof
+      ? { viewProof: options.viewProof }
+      : {}),
   })
 }
 
@@ -520,7 +547,9 @@ export async function exerciseNativeToolWrite(
       toolCalls: [scenario.toolCall],
       prompt: 'Run the scripted native preset write.',
       answer,
-      permissions: options.permission === 'native' ? 'allow' : 'none',
+      permissions: options.permission === 'native'
+        ? 'allow'
+        : 'none',
     })
     await scenario.prove(resultRequest)
     await expect(assistantBubbles(context.page).filter({ hasText: answer }).first()).toBeVisible()

@@ -13,25 +13,39 @@ qoderTest.describe('qoder CLI tool execution', () => {
   qoderTest('runs a Bash tool and draws its span', async ({ native }) => {
     const { page } = native
     const call = bashToolCall(native.provider, 'call-1', 'echo hi')
-    await runNativeToolTurn(native, { toolCalls: [call], prompt: 'Run echo hi.', answer: 'The command ran.' })
+    await runNativeToolTurn(native, {
+      toolCalls: [call],
+      prompt: 'Run echo hi.',
+      answer: 'The command ran.',
+    })
 
     await expect(assistantBubbles(page).filter({ hasText: 'The command ran.' }).first()).toBeVisible()
     // A tool call opens a span, so a row of this call draws a rail.
-    await expect(railedRows(page).filter({ has: page.locator(`[data-tool-call-id="${cssAttributeValue(call.id)}"]`) }).first()).toBeVisible()
+    await expect(railedRows(page).filter({
+      has: page.locator(`[data-tool-call-id="${cssAttributeValue(call.id)}"]`),
+    }).first()).toBeVisible()
   })
 })
 
 qoderTest('runs successful and failed native commands with their actual output', async ({ native }) => {
   // Qoder CLI begins the result of a failed command with an `Exit code N` line. The row header states the code, and
   // the body draws only the output.
-  await exerciseShellToolExecution(native, { absentRowText: ['Exit code'] })
+  await exerciseShellToolExecution(native, {
+    absentRowText: ['Exit code'],
+  })
 })
 
 qoderTest('keeps two native Bash calls and their different commands and outputs', async ({ native }) => {
   const { page } = native
   const proofs = [
-    { call: bashToolCall(native.provider, 'native-qoder-first-command', 'node -e "process.stdout.write(\'QODERFIRST\' + (40 + 2))"'), output: 'QODERFIRST42' },
-    { call: bashToolCall(native.provider, 'native-qoder-second-command', 'node -e "process.stdout.write(\'QODERSECOND\' + (70 + 7))"'), output: 'QODERSECOND77' },
+    {
+      call: bashToolCall(native.provider, 'native-qoder-first-command', 'node -e "process.stdout.write(\'QODERFIRST\' + (40 + 2))"'),
+      output: 'QODERFIRST42',
+    },
+    {
+      call: bashToolCall(native.provider, 'native-qoder-second-command', 'node -e "process.stdout.write(\'QODERSECOND\' + (70 + 7))"'),
+      output: 'QODERSECOND77',
+    },
   ]
   const calls = proofs.map(proof => proof.call)
   const initial = await currentNativeAgent(native)
@@ -55,12 +69,16 @@ qoderTest('keeps two native Bash calls and their different commands and outputs'
     const rows = snapshot.messages.filter(message => message.agentSessionId === current.agentSessionId && message.spanId === call.id)
     expect(rows).toHaveLength(2)
     const originals = rows.map(nativeMessageBody)
-    const blocks = originals.filter(isObject).flatMap(frame => isObject(frame.message) && Array.isArray(frame.message.content) ? frame.message.content.filter(isObject) : [])
+    const blocks = originals.filter(isObject).flatMap(frame => isObject(frame.message) && Array.isArray(frame.message.content)
+      ? frame.message.content.filter(isObject)
+      : [])
     const opener = blocks.filter(block => block.type === 'tool_use' && block.id === call.id)
     const result = blocks.filter(block => block.type === 'tool_result' && block.tool_use_id === call.id)
     expect(opener).toHaveLength(1)
     expect(result).toHaveLength(1)
-    const input = isObject(opener[0]?.input) ? opener[0].input : undefined
+    const input = isObject(opener[0]?.input)
+      ? opener[0].input
+      : undefined
     expect(input?.command).toBe(command)
     expect(result[0]?.content).toBe(output)
     const requestRow = toolCallRow(page, call.id, 'request')

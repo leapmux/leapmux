@@ -13,7 +13,9 @@ beforeAll(() => {
 describe('agents renderer', () => {
   checkKindModule({
     kind: 'agents',
-    request: { team: { name: 'Platform' } },
+    request: {
+      team: { name: 'Platform' },
+    },
     titlePart: 'Platform',
     result: { text: 'one agent', format: 'plain' },
     resultPart: 'one agent',

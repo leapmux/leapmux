@@ -40,7 +40,17 @@ function zcodeOptions(question: Record<string, unknown>): ControlQuestion['optio
       return []
     const description = pickString(option, 'description')
     const preview = pickString(option, 'preview')
-    return [{ label, ...(description ? { description } : {}), ...(preview.trim() ? { preview } : {}) }]
+    return [
+      {
+        label,
+        ...(description
+          ? { description }
+          : {}),
+        ...(preview.trim()
+          ? { preview }
+          : {}),
+      },
+    ]
   })
 }
 
@@ -101,7 +111,12 @@ export function zcodeQuestionsFromToolInput(input: Record<string, unknown>): Que
     input.questions,
     (question) => {
       const header = pickString(question, 'header')
-      return { ...(header ? { header } : {}), question: zcodeQuestionText(question) }
+      return {
+        ...(header
+          ? { header }
+          : {}),
+        question: zcodeQuestionText(question),
+      }
     },
     (option) => {
       const label = pickString(option, 'label') || pickString(option, 'value')
@@ -111,8 +126,12 @@ export function zcodeQuestionsFromToolInput(input: Record<string, unknown>): Que
       const preview = pickString(option, 'preview')
       return {
         label,
-        ...(description ? { description } : {}),
-        ...(preview ? { preview } : {}),
+        ...(description
+          ? { description }
+          : {}),
+        ...(preview
+          ? { preview }
+          : {}),
       }
     },
   )

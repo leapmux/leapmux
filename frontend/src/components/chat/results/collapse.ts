@@ -22,7 +22,9 @@ export function countLines(text: string): number {
   let lines = 1
   for (let index = text.indexOf('\n'); index !== -1; index = text.indexOf('\n', index + 1))
     lines++
-  return text.endsWith('\n') ? lines - 1 : lines
+  return text.endsWith('\n')
+    ? lines - 1
+    : lines
 }
 
 /**

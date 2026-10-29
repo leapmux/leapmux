@@ -24,7 +24,12 @@ lettaTest('discards the cancelled model response after its first streamed chunk'
 
 // Letta Code's question lets its turn go on and end, so a question holds no turn. A permission request does.
 lettaTest('withdraws a waiting permission and accepts the next queued turn', async ({ askingLettaWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingLettaWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: askingLettaWorkspace.workspaceId,
+  })
   await exerciseControlInterrupt(context, { control: 'permission' })
 })
 

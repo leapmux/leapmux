@@ -8,8 +8,17 @@ function finished(text: string, rawOutput?: unknown, status = 'completed') {
     sessionUpdate: 'tool_call_update',
     toolCallId: 'call',
     status,
-    content: text ? [{ type: 'content', content: { type: 'text', text } }] : [],
-    ...(rawOutput !== undefined ? { rawOutput } : {}),
+    content: text
+      ? [
+          {
+            type: 'content',
+            content: { type: 'text', text },
+          },
+        ]
+      : [],
+    ...(rawOutput !== undefined
+      ? { rawOutput }
+      : {}),
   })
 }
 
@@ -19,7 +28,9 @@ describe('kiroAgentRequest', () => {
       description: 'context-gatherer',
       agentType: 'context-gatherer',
       prompt: 'Look.',
-      metadata: [{ label: 'Reason', value: 'Needs context' }],
+      metadata: [
+        { label: 'Reason', value: 'Needs context' },
+      ],
       registryKey: 'call-1',
     })
   })

@@ -9,7 +9,9 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createSessionIdState } from '~/hooks/createSessionIdState'
 import { menuOptionValues, menuTrigger, menuTriggerText, pickMenuValue } from '~/test-support/menu'
 
-vi.mock('~/api/workerRpc', () => ({ listAgentSessions: vi.fn() }))
+vi.mock('~/api/workerRpc', () => ({
+  listAgentSessions: vi.fn(),
+}))
 
 const listAgentSessions = vi.mocked(workerRpc.listAgentSessions)
 
@@ -45,7 +47,9 @@ interface FieldOverrides {
 // three cases that must not fire the RPC.
 function renderField(overrides: FieldOverrides = {}) {
   const state = createSessionIdState(() => AgentProvider.CLAUDE_CODE)
-  const provider = 'agentProvider' in overrides ? overrides.agentProvider : AgentProvider.CLAUDE_CODE
+  const provider = 'agentProvider' in overrides
+    ? overrides.agentProvider
+    : AgentProvider.CLAUDE_CODE
   render(() => (
     <ResumeSessionField
       state={state}
@@ -191,7 +195,9 @@ describe('ResumeSessionField', () => {
     const { state } = renderField()
     await flush()
 
-    fireEvent.input(textInput()!, { target: { value: '--dangerously-skip-permissions' } })
+    fireEvent.input(textInput()!, {
+      target: { value: '--dangerously-skip-permissions' },
+    })
     const describedBy = textInput()!.getAttribute('aria-describedby')
     expect(describedBy).toBeTruthy()
     const message = document.getElementById(describedBy!)
@@ -231,7 +237,12 @@ describe('ResumeSessionField', () => {
     fireEvent.click(refreshButton())
     await flush()
 
-    expect(menuOptionValues(MENU)).toEqual(['', TYPE_A_HANDLE_VALUE, 'ses_a', 'ses_b'])
+    expect(menuOptionValues(MENU)).toEqual([
+      '',
+      TYPE_A_HANDLE_VALUE,
+      'ses_a',
+      'ses_b',
+    ])
   })
 
   it('refuses a second fetch while one is in flight', async () => {
@@ -298,7 +309,9 @@ describe('ResumeSessionField', () => {
 
     const input = textInput()
     expect(input).toBeInTheDocument()
-    fireEvent.input(input!, { target: { value: 'ses_typed' } })
+    fireEvent.input(input!, {
+      target: { value: 'ses_typed' },
+    })
     expect(state.trimmed()).toBe('ses_typed')
 
     setDir('/other')
@@ -357,7 +370,9 @@ describe('ResumeSessionField', () => {
     await flush()
 
     pickMenuValue(MENU, TYPE_A_HANDLE_VALUE)
-    fireEvent.input(textInput()!, { target: { value: 'ses_from_elsewhere' } })
+    fireEvent.input(textInput()!, {
+      target: { value: 'ses_from_elsewhere' },
+    })
     expect(state.trimmed()).toBe('ses_from_elsewhere')
 
     fireEvent.click(pickFromListButton()!)
@@ -404,7 +419,9 @@ describe('ResumeSessionField', () => {
     await flush()
 
     // A control character is the simplest handle the shared token rule refuses.
-    fireEvent.input(textInput()!, { target: { value: 'bad\x00id' } })
+    fireEvent.input(textInput()!, {
+      target: { value: 'bad\x00id' },
+    })
     expect(state.error()).not.toBeNull()
 
     listAgentSessions.mockResolvedValue(response('ses_a'))

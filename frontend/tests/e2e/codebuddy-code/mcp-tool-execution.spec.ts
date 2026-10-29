@@ -18,11 +18,22 @@ codebuddyTest.describe('CodeBuddy Code MCP input form', () => {
     await withCodebuddyUserMcpServer(leapmuxServer.agentEnv, server, async () => {
       await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, CODEBUDDY_AGENT, { ...CODEBUDDY_BYPASS, workingDir })
       await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-      const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+      const context = await nativeContext({
+        page,
+        modelScript,
+        leapmuxServer,
+        workspaceId: authenticatedEmptyWorkspace.workspaceId,
+      })
       const call = mcpToolCall(context.provider, 'codebuddy-mcp-echo', { server: server.name, tool: 'echo', input: echoArguments })
       const start = await modelScript.queue(
-        { toolCalls: [codebuddyWaitForMcpServersToolCall('wait-for-echo', [server.name])] },
-        { toolCalls: [call] },
+        {
+          toolCalls: [
+            codebuddyWaitForMcpServersToolCall('wait-for-echo', [server.name]),
+          ],
+        },
+        {
+          toolCalls: [call],
+        },
         nativeTextStep(context, 'The MCP echo completed.'),
       )
       await sendMessage(page, modelScript.prompt(`Wait for ${server.name}, then call its echo tool.`))

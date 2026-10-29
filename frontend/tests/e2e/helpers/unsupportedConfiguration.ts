@@ -141,9 +141,15 @@ const SETTINGS_GROUP_TRIGGER_PREFIX = 'composer-group-'
 async function offeredSettingsGroups(page: Page): Promise<SettingGroupName[]> {
   const menu = await openPlusMenu(page)
   const triggers = await menu.locator(`[role="menuitem"][data-testid^="${SETTINGS_GROUP_TRIGGER_PREFIX}"]`)
-    .evaluateAll(rows => rows.map(row => ({ testId: row.getAttribute('data-testid') ?? '', label: (row.textContent ?? '').trim() })))
+    .evaluateAll(rows => rows.map(row => ({
+      testId: row.getAttribute('data-testid') ?? '',
+      label: (row.textContent ?? '').trim(),
+    })))
   await closeComposerMenus(page)
-  return triggers.map(trigger => ({ id: trigger.testId.slice(SETTINGS_GROUP_TRIGGER_PREFIX.length), label: trigger.label }))
+  return triggers.map(trigger => ({
+    id: trigger.testId.slice(SETTINGS_GROUP_TRIGGER_PREFIX.length),
+    label: trigger.label,
+  }))
 }
 
 /**
@@ -189,7 +195,9 @@ export async function expectMissingPermissionShortcut(
   const agent = await currentNativeAgent(context)
   expect(agent.status).toBe(AgentStatus.ACTIVE)
   expect(agent.optionGroups.length).toBeGreaterThan(0)
-  const absent = options.preset === 'smart' ? { smart: 'absent' as const } : { bypass: 'absent' as const }
+  const absent = options.preset === 'smart'
+    ? { smart: 'absent' as const }
+    : { bypass: 'absent' as const }
   await expectPermissionShortcuts(context.page, absent)
   await context.page.reload()
   await waitForNativeSettingsHydrated(context.page)

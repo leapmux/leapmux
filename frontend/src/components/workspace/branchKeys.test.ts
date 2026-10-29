@@ -236,7 +236,10 @@ describe('repoKeyAndLabel', () => {
   it('keys an origin-less repo by its toplevel, labelled with the basename', () => {
     seedRepo('w1', '/home/me/alpha', {})
     expect(repoKeyAndLabel({ workerId: 'w1', gitToplevel: '/home/me/alpha' }, store))
-      .toEqual({ key: repoKeyForLocal('/home/me/alpha'), label: 'alpha' })
+      .toEqual({
+        key: repoKeyForLocal('/home/me/alpha'),
+        label: 'alpha',
+      })
   })
 
   it('keeps two origin-less repos on one worker apart', () => {

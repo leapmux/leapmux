@@ -15,7 +15,12 @@ const provider = AgentProvider.KIMI_CODE
 
 /** One row as the store resolves it, with the completion column when the test states one. */
 function resolved(payload: Record<string, unknown>, completion?: MessageCompletion): ResolvedMessageContent {
-  return resolveMessageForRendering({ ...input(payload, undefined, provider), ...(completion !== undefined ? { completion } : {}) }, provider)
+  return resolveMessageForRendering({
+    ...input(payload, undefined, provider),
+    ...(completion !== undefined
+      ? { completion }
+      : {}),
+  }, provider)
 }
 
 interface Sides {
@@ -39,8 +44,12 @@ function extract(payload: Record<string, unknown>, category: MessageCategory, si
     resolved: resolved(payload, options.rowCompletion),
     category,
     span,
-    ...(options.spanType !== undefined ? { spanType: options.spanType } : {}),
-    ...(options.completion !== undefined ? { completion: options.completion } : {}),
+    ...(options.spanType !== undefined
+      ? { spanType: options.spanType }
+      : {}),
+    ...(options.completion !== undefined
+      ? { completion: options.completion }
+      : {}),
   })
 }
 
@@ -69,7 +78,13 @@ describe('kimiExtractRow', () => {
   })
 
   it('answers null for a category it does not read', () => {
-    for (const kind of ['assistant_text', 'assistant_thinking', 'result_divider', 'hidden', 'unknown'] as const)
+    for (const kind of [
+      'assistant_text',
+      'assistant_thinking',
+      'result_divider',
+      'hidden',
+      'unknown',
+    ] as const)
       expect(extract(kimiToolStart(CALL, KIMI_TOOL.Bash, { command: 'ls' }), { kind } as MessageCategory), kind).toBeNull()
   })
 
@@ -87,7 +102,12 @@ describe('kimiExtractRow', () => {
     expect(request).toMatchObject({ hasResultRow: true })
     // The request row reads the answer off its span's result.
     expect(request.call.status).toBe('completed')
-    expect(request.call.result).toStrictEqual({ commands: [{ output: 'a.go\n', exitCode: 0 }], unresolvedTerminals: [] })
+    expect(request.call.result).toStrictEqual({
+      commands: [
+        { output: 'a.go\n', exitCode: 0 },
+      ],
+      unresolvedTerminals: [],
+    })
 
     const answer = toolRow(extract(result, { kind: 'tool_result' }, { request: start, result }, { spanType: KIMI_TOOL.Bash }))
     expect(answer.role).toBe('result')
@@ -109,19 +129,33 @@ describe('kimiExtractRow', () => {
     const start = kimiToolStart(CALL, KIMI_TOOL.Bash, { command: 'ls' })
     const notice = kimiFrame(KIMI_EVENT.Warning, { message: 'Low disk' })
     expect(toolRow(extract(start, { kind: 'tool_use' }, { request: start, result: notice }))).toMatchObject({ role: 'request', hasResultRow: false })
-    expect(toolRow(extract(start, { kind: 'tool_use' }, { request: start, result: kimiToolResult('call_2', 'x') }))).toMatchObject({ role: 'request', hasResultRow: false })
+    expect(toolRow(extract(start, { kind: 'tool_use' }, {
+      request: start,
+      result: kimiToolResult('call_2', 'x'),
+    }))).toMatchObject({ role: 'request', hasResultRow: false })
 
     const result = kimiToolResult(CALL, 'a.go')
     expect(toolRow(extract(result, { kind: 'tool_result' }, { request: notice, result }, { spanType: KIMI_TOOL.Bash }))).toMatchObject({ role: 'result', hasRequestRow: false })
-    expect(toolRow(extract(result, { kind: 'tool_result' }, { request: kimiToolStart('call_2', KIMI_TOOL.Bash, { command: 'ls' }), result }, { spanType: KIMI_TOOL.Bash })))
+    expect(toolRow(extract(result, { kind: 'tool_result' }, {
+      request: kimiToolStart('call_2', KIMI_TOOL.Bash, { command: 'ls' }),
+      result,
+    }, { spanType: KIMI_TOOL.Bash })))
       .toMatchObject({ role: 'result', hasRequestRow: false })
   })
 
   it('counts no span side that the loaded window does not show', () => {
     const start = kimiToolStart(CALL, KIMI_TOOL.Bash, { command: 'ls' })
     const result = kimiToolResult(CALL, 'a.go')
-    expect(toolRow(extract(start, { kind: 'tool_use' }, { request: start, result, visible: { result: false } }))).toMatchObject({ role: 'request', hasResultRow: false })
-    expect(toolRow(extract(result, { kind: 'tool_result' }, { request: start, result, visible: { request: false } }, { spanType: KIMI_TOOL.Bash })))
+    expect(toolRow(extract(start, { kind: 'tool_use' }, {
+      request: start,
+      result,
+      visible: { result: false },
+    }))).toMatchObject({ role: 'request', hasResultRow: false })
+    expect(toolRow(extract(result, { kind: 'tool_result' }, {
+      request: start,
+      result,
+      visible: { request: false },
+    }, { spanType: KIMI_TOOL.Bash })))
       .toMatchObject({ role: 'result', hasRequestRow: false })
   })
 

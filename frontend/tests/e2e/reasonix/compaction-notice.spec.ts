@@ -12,7 +12,9 @@ import { exerciseReasonixCompactAsModelText, prepareCompactionReasonix } from '.
 import { nativeContext, REASONIX_AGENT } from './scenarios'
 
 reasonixTest('retains native context without a compaction notice after the slash command', async ({ native }) => {
-  await expectNoCompactionNotice(native, { relatedProof: () => exerciseReasonixCompactAsModelText(native) })
+  await expectNoCompactionNotice(native, {
+    relatedProof: () => exerciseReasonixCompactAsModelText(native),
+  })
 })
 
 reasonixTest('shows automatic native compaction and keeps its notice after reload', async ({ page, leapmuxServer, modelScript }) => {
@@ -23,19 +25,38 @@ reasonixTest('shows automatic native compaction and keeps its notice after reloa
     prepare: runDirectory => prepareCompactionReasonix(runDirectory, leapmuxServer.mockModelUrl),
     openAgent: (server, workspaceId, workingDir) => openAgentViaAPI(server, workspaceId, workingDir, agentOpenOptions(REASONIX_AGENT.provider)),
   }, async ({ server, workspaceId }) => {
-    const native = await nativeContext({ page, leapmuxServer: server, workspaceId, modelScript })
+    const native = await nativeContext({
+      page,
+      leapmuxServer: server,
+      workspaceId,
+      modelScript,
+    })
     const before = await currentNativeAgent(native)
     const summaryMarker = `REASONIX_NATIVE_SUMMARY_${uniqueMarker()}`
     const rule = 'the native context summary'
     await modelScript.rule({
       name: rule,
-      when: { system: String.raw`^You are compacting the earlier part of a coding agent's conversation to save context\.`, lastMessage: { role: 'user', text: String.raw`^\[assistant\]\nSeed 0\.` } },
-      respond: { text: `## Goal\nContinue the compaction test.\n## Standing facts & constraints\n${summaryMarker}`, usage: { inputTokens: 10000, outputTokens: 80 } },
+      when: {
+        system: String.raw`^You are compacting the earlier part of a coding agent's conversation to save context\.`,
+        lastMessage: { role: 'user', text: String.raw`^\[assistant\]\nSeed 0\.` },
+      },
+      respond: {
+        text: `## Goal\nContinue the compaction test.\n## Standing facts & constraints\n${summaryMarker}`,
+        usage: { inputTokens: 10000, outputTokens: 80 },
+      },
       once: true,
     })
     const padding = Array.from({ length: 400 }, (_, index) => `OLD_ASSISTANT_PADDING_${index} contains material for context compaction.`).join('\n')
     for (let index = 0; index < 5; index++) {
-      const start = await modelScript.queue({ text: `${modelScript.prompt(`Seed ${index}.`)}\n${padding}`, usage: { inputTokens: index === 4 ? 45000 : 10000, outputTokens: 6000 } })
+      const start = await modelScript.queue({
+        text: `${modelScript.prompt(`Seed ${index}.`)}\n${padding}`,
+        usage: {
+          inputTokens: index === 4
+            ? 45000
+            : 10000,
+          outputTokens: 6000,
+        },
+      })
       await sendMessage(page, modelScript.prompt(`Return scripted context preparation turn ${index}.`))
       await modelScript.waitForSteps(start + 1)
       await expect(assistantBubbles(page).filter({ hasText: `Seed ${index}.` }).first()).toBeVisible()

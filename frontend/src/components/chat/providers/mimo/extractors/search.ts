@@ -41,7 +41,9 @@ export function mimoGrepMatches(text: string, count: number): MiMoGrepListing | 
   if (!heading || Number(heading[1]) !== count)
     return null
   // The number of rows the tool printed: all of them, or the first page alone.
-  const shown = heading[2] === undefined ? count : Number(heading[2])
+  const shown = heading[2] === undefined
+    ? count
+    : Number(heading[2])
   const matches: SearchMatch[] = []
   const notices: string[] = []
   let path = ''
@@ -87,7 +89,14 @@ export function mimoGrepMatches(text: string, count: number): MiMoGrepListing | 
   if (matches.length !== Math.min(count, shown) || (path && !pathHasMatch))
     return null
   // The notice row shows one line, so the two notices join as two sentences.
-  return { matches, ...(notices.length > 0 ? { notice: notices.join(' ') } : {}) }
+  return {
+    matches,
+    ...(notices.length > 0
+      ? {
+          notice: notices.join(' '),
+        }
+      : {}),
+  }
 }
 
 /**
@@ -97,13 +106,25 @@ export function mimoGrepMatches(text: string, count: number): MiMoGrepListing | 
 export function mimoGlobFiles(text: string, count: number): { files: string[], notice?: string } | null {
   if (!Number.isSafeInteger(count) || count < 0)
     return null
-  if (count === 0)
-    return text.trim() === MIMO_SEARCH_EMPTY ? { files: [] } : null
+  if (count === 0) {
+    return text.trim() === MIMO_SEARCH_EMPTY
+      ? { files: [] }
+      : null
+  }
   const rows = text.split(/\r?\n/).filter(row => row !== '')
   const last = rows[rows.length - 1] ?? ''
-  const notice = /^\(Results are truncated: .*\)$/.test(last) ? last.slice(1, -1) : undefined
-  const files = notice === undefined ? rows : rows.slice(0, -1)
+  const notice = /^\(Results are truncated: .*\)$/.test(last)
+    ? last.slice(1, -1)
+    : undefined
+  const files = notice === undefined
+    ? rows
+    : rows.slice(0, -1)
   if (files.length !== count || files.some(file => file.startsWith('(')))
     return null
-  return { files, ...(notice !== undefined ? { notice } : {}) }
+  return {
+    files,
+    ...(notice !== undefined
+      ? { notice }
+      : {}),
+  }
 }

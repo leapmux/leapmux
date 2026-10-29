@@ -17,18 +17,28 @@ export function commandCodeExtractRow(input: RowExtractionInput): ChatRow | null
       return leapmuxPlanExecutionRow(payload)
     case 'assistant_text': {
       const text = commandCodeText(commandCodeEvent(payload)?.content)
-      return text ? { kind: 'assistant-text', text } : { kind: 'hidden' }
+      return text
+        ? { kind: 'assistant-text', text }
+        : { kind: 'hidden' }
     }
     case 'assistant_thinking': {
       const text = pickString(commandCodeEvent(payload), 'text')
-      return text ? { kind: 'assistant-thinking', text } : { kind: 'hidden' }
+      return text
+        ? { kind: 'assistant-thinking', text }
+        : { kind: 'hidden' }
     }
     case 'tool_use':
     case 'tool_result': {
       if (input.span.role === 'none')
         return null
       const call = commandCodeToolCall(input)
-      return call ? toolCallRow(call, input.span.role === 'other' ? input.category.kind === 'tool_use' ? 'request' : 'result' : input.span.role, input.span.visibleRows) : null
+      return call
+        ? toolCallRow(call, input.span.role === 'other'
+            ? input.category.kind === 'tool_use'
+              ? 'request'
+              : 'result'
+            : input.span.role, input.span.visibleRows)
+        : null
     }
     default:
       return null

@@ -143,7 +143,9 @@ describe('createDialogState', () => {
         interface State { id: string, resolve: () => void, gitState: { dirty: boolean } | null }
         const d = createUpdatableDialogState<State>()
         d.open({ id: 'one', resolve, gitState: null })
-        d.update({ gitState: { dirty: true } })
+        d.update({
+          gitState: { dirty: true },
+        })
         const after = d.value()
         expect(after?.id).toBe('one')
         expect(after?.resolve).toBe(resolve)

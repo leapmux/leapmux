@@ -51,8 +51,12 @@ export const TabContextMenu: Component<TabContextMenuProps> = (props) => {
   return (
     <Show when={hasAnyItem()}>
       <DropdownMenu
-        {...(props.contextMenuFor !== undefined ? { contextMenuFor: props.contextMenuFor } : {})}
-        {...(props['data-testid'] !== undefined ? { 'data-testid': props['data-testid'] } : {})}
+        {...(props.contextMenuFor !== undefined
+          ? { contextMenuFor: props.contextMenuFor }
+          : {})}
+        {...(props['data-testid'] !== undefined
+          ? { 'data-testid': props['data-testid'] }
+          : {})}
       >
         <Show when={props.onRename}>
           <button role="menuitem" data-testid="tab-menu-rename" onClick={() => props.onRename!()}>

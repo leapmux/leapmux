@@ -17,5 +17,8 @@ export async function terminalWith(text: string, cols = 40): Promise<Terminal> {
 
 /** The range xterm reports for a link: 1-based, and `end.x` is inclusive. */
 export function linkRange(row: number, startColumn: number, endColumn: number): IBufferRange {
-  return { start: { x: startColumn, y: row }, end: { x: endColumn, y: row } }
+  return {
+    start: { x: startColumn, y: row },
+    end: { x: endColumn, y: row },
+  }
 }

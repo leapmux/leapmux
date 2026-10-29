@@ -42,7 +42,9 @@ export function createSelectionWrapPlugin() {
 
           // Bracket wrapping — works everywhere including code blocks
           if (BRACKET_PAIRS[text]) {
-            const open = text === ')' || text === ']' || text === '}' ? BRACKET_PAIRS[text] : text
+            const open = text === ')' || text === ']' || text === '}'
+              ? BRACKET_PAIRS[text]
+              : text
             const close = BRACKET_PAIRS[open]
             if (close === undefined)
               return false

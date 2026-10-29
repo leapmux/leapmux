@@ -113,7 +113,9 @@ async function runCeremonyInPage(
     if (!begin.sessionId || !begin.optionsJson)
       throw new Error(`${spec.beginProcedure} returned incomplete payload`)
 
-    const credential = await ceremony({ optionsJSON: unwrap(begin.optionsJson) })
+    const credential = await ceremony({
+      optionsJSON: unwrap(begin.optionsJson),
+    })
     const finishRes = await fetch(`${hubUrl}/leapmux.v1.${spec.finishProcedure}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -169,7 +171,13 @@ export async function signUpWithPasskeyViaAPIInBrowser(
   await page.goto(`${hubUrl}/login`)
   await runCeremonyInPage(page, hubUrl, {
     beginProcedure: 'AuthService/BeginPasskeySignUp',
-    beginBody: { username, displayName, email, captchaPayload: captcha.captchaPayload, honeypot: captcha.honeypot },
+    beginBody: {
+      username,
+      displayName,
+      email,
+      captchaPayload: captcha.captchaPayload,
+      honeypot: captcha.honeypot,
+    },
     ceremonyMethod: 'startRegistration',
     finishProcedure: 'AuthService/FinishPasskeySignUp',
   })

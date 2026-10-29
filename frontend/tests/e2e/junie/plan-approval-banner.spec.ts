@@ -34,12 +34,18 @@ junieTest.describe('Junie plan review', () => {
     const watch = await watchNativeControls(leapmuxServer, agent.id)
     await withCleanup(async () => {
       const start = await modelScript.queue({
-        toolCalls: [junieSubmitPlanToolCall(
-          'junie-denied-plan',
-          'deny-the-plan',
-          [{ name: 'Requirements', content: '- Keep this plan unimplemented.\n' }],
-          [{ name: 'Keep this plan unimplemented', description: 'Change no files.' }],
-        )],
+        toolCalls: [
+          junieSubmitPlanToolCall(
+            'junie-denied-plan',
+            'deny-the-plan',
+            [
+              { name: 'Requirements', content: '- Keep this plan unimplemented.\n' },
+            ],
+            [
+              { name: 'Keep this plan unimplemented', description: 'Change no files.' },
+            ],
+          ),
+        ],
       })
       await sendMessage(page, modelScript.prompt('Plan the change.'))
       await modelScript.waitForSteps(start + 1)
@@ -61,14 +67,18 @@ junieTest.describe('Junie plan review', () => {
       const params = pickObject(decision.request, 'params')
       const toolCallId = pickString(pickObject(params, 'toolCall'), 'toolCallId')
       expect(toolCallId).not.toBe('')
-      const options = Array.isArray(params?.options) ? params.options.filter(isObject) : []
+      const options = Array.isArray(params?.options)
+        ? params.options.filter(isObject)
+        : []
       const revise = options.find(option => option.optionId === 'revise')
       expect(revise).toMatchObject({ kind: KIND_REJECT_ONCE })
       expect(options.findIndex(option => option.kind === KIND_REJECT_ONCE)).toBe(options.indexOf(revise ?? {}))
       expect(decision.response).toEqual({
         jsonrpc: '2.0',
         id: observed.payload.id,
-        result: { outcome: { outcome: ACP_PERMISSION_OUTCOME.Selected, optionId: 'revise' } },
+        result: {
+          outcome: { outcome: ACP_PERMISSION_OUTCOME.Selected, optionId: 'revise' },
+        },
       })
       // The saved row repeats the words of the option, which Junie states in the request.
       const reviseLabel = pickString(revise, 'name')
@@ -79,7 +89,12 @@ junieTest.describe('Junie plan review', () => {
         spanId: toolCallId,
         accepts: frame => frame.sessionUpdate === ACP_UPDATE.ToolCallUpdate && frame.toolCallId === toolCallId && frame.status === 'completed',
       })
-      expect(refusal.frame.content).toMatchObject([{ type: 'content', content: { type: 'text', text: 'Plan not implemented.' } }])
+      expect(refusal.frame.content).toMatchObject([
+        {
+          type: 'content',
+          content: { type: 'text', text: 'Plan not implemented.' },
+        },
+      ])
 
       await page.reload()
       await expect(savedControlAnswer(page)).toHaveText(reviseLabel)

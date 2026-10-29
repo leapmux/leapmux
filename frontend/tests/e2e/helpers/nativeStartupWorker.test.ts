@@ -22,7 +22,10 @@ const calls = vi.hoisted(() => ({
   environment: vi.fn(),
 }))
 vi.mock('./nativeWorker', () => ({ withNativeWorker: calls.worker }))
-vi.mock('./runDirectory', async importOriginal => ({ ...await importOriginal<typeof import('./runDirectory')>(), createTestDirectory: calls.directory }))
+vi.mock('./runDirectory', async importOriginal => ({
+  ...await importOriginal<typeof import('./runDirectory')>(),
+  createTestDirectory: calls.directory,
+}))
 vi.mock('./server', () => ({ hubSpawnEnv: calls.environment }))
 
 const scratchRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../.tmp')
@@ -51,12 +54,21 @@ function workerFixture() {
     provider: AgentProvider.CODEX,
     providerAgent: { provider: AgentProvider.CODEX, prefix: 'native-e2e' },
     workspaceId: 'controlled-startup-workspace',
-    leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'controlled-token', workerId: 'suite-worker', agentEnv: { HOME: home, PATH: process.env.PATH ?? '' } },
+    leapmuxServer: {
+      hubUrl: 'http://unused.invalid',
+      adminToken: 'controlled-token',
+      workerId: 'suite-worker',
+      agentEnv: { HOME: home, PATH: process.env.PATH ?? '' },
+    },
     get page(): Page { throw new Error('The startup wrapper unit must not access a browser.') },
     get modelScript(): ModelScript { throw new Error('The startup wrapper unit must not access a model.') },
   }
   const peer: NativeWorker<ManagedNativeScenarioContext['leapmuxServer']> = {
-    server: { ...context.leapmuxServer, workerId: 'actual-private-worker', agentEnv: { HOME: home, PATH: process.env.PATH ?? '', PRIVATE_PIN: 'actual-worker' } },
+    server: {
+      ...context.leapmuxServer,
+      workerId: 'actual-private-worker',
+      agentEnv: { HOME: home, PATH: process.env.PATH ?? '', PRIVATE_PIN: 'actual-worker' },
+    },
     workerId: 'actual-private-worker',
     dataDir: join(directory, 'actual-worker-data'),
     output: createServerOutput(),
@@ -65,7 +77,12 @@ function workerFixture() {
   calls.worker.mockImplementation(async (_server: unknown, _options: unknown, use: (worker: typeof peer) => Promise<void>) => use(peer))
   const program = join(directory, 'native-fixture.cjs')
   writeFileSync(program, 'process.exitCode=0')
-  const launch: NativeStartupLaunch = { binaryName: 'native-fixture', executable: process.execPath, args: [program], holdWhen: ['runtime'] }
+  const launch: NativeStartupLaunch = {
+    binaryName: 'native-fixture',
+    executable: process.execPath,
+    args: [program],
+    holdWhen: ['runtime'],
+  }
   return { context, peer, launch }
 }
 
@@ -94,20 +111,43 @@ describe('withNativeStartupWorker', () => {
       expect(existsSync(wrapper.scriptPath)).toBe(true)
     })
     expect(callbackCount).toBe(1)
-    expect(calls.worker).toHaveBeenCalledWith(context.leapmuxServer, expect.objectContaining({ dataDirPrefix: 'native-startup-worker', workerName: 'Native startup test', env: expect.objectContaining({ PATH: expect.any(String), ZDOTDIR: expect.any(String) }) }), expect.any(Function))
+    expect(calls.worker).toHaveBeenCalledWith(context.leapmuxServer, expect.objectContaining({
+      dataDirPrefix: 'native-startup-worker',
+      workerName: 'Native startup test',
+      env: expect.objectContaining({
+        PATH: expect.any(String),
+        ZDOTDIR: expect.any(String),
+      }),
+    }), expect.any(Function))
   })
 
   it('forwards selected observation options to the actual startup wrapper', async () => {
     const { context, launch } = workerFixture()
     const workingDir = join(directory, 'actual cwd 漢字')
     mkdirSync(workingDir)
-    const environment = { TMPDIR: join(directory, 'actual temporary') }
-    const options = { failRuntime: false, observeEnvironment: ['TMPDIR'] }
+    const environment = {
+      TMPDIR: join(directory, 'actual temporary'),
+    }
+    const options = {
+      failRuntime: false,
+      observeEnvironment: ['TMPDIR'],
+    }
     await withNativeStartupWorker(context, launch, options, async (_workerId, wrapper) => {
-      const child = spawn(process.execPath, [wrapper.scriptPath, 'runtime'], { cwd: workingDir, env: { ...process.env, ...environment }, stdio: ['ignore', 'pipe', 'pipe'] })
+      const child = spawn(process.execPath, [wrapper.scriptPath, 'runtime'], {
+        cwd: workingDir,
+        env: {
+          ...process.env,
+          ...environment,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
       children.push(child)
       const exited = once(child, 'exit')
-      expect(await wrapper.entry).toEqual({ pid: child.pid, argv: ['runtime'], observation: { workingDir, environment } })
+      expect(await wrapper.entry).toEqual({
+        pid: child.pid,
+        argv: ['runtime'],
+        observation: { workingDir, environment },
+      })
       await wrapper.release()
       expect(await exited).toEqual([0, null])
     })
@@ -137,7 +177,9 @@ describe('withNativeStartupWorker', () => {
         throw cleanupFailure
       })
       throw callbackFailure
-    })).rejects.toMatchObject({ errors: [callbackFailure, cleanupFailure] })
+    })).rejects.toMatchObject({
+      errors: [callbackFailure, cleanupFailure],
+    })
   })
 })
 
@@ -170,7 +212,13 @@ describe('nativeStartupShellEnvironment', () => {
     mkdirSync(home)
     const environment = { ...process.env, HOME: home, ZDOTDIR: home }
     const controlled = nativeStartupShellEnvironment(join(directory, 'private-shell'), wrapper, environment)
-    const result = execFileSync('/bin/zsh', ['-lic', 'command -v native-fixture'], { env: { ...environment, ...controlled }, encoding: 'utf8' })
+    const result = execFileSync('/bin/zsh', ['-lic', 'command -v native-fixture'], {
+      env: {
+        ...environment,
+        ...controlled,
+      },
+      encoding: 'utf8',
+    })
     expect(result.trim()).toBe(binary)
   })
 })

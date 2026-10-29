@@ -51,9 +51,13 @@ function storedAssistantTextRow(payload: Record<string, unknown>): ChatRow {
     return { kind: 'hidden' }
   const text = payload.content
     .filter(block => isObject(block) && pickString(block, 'type') === 'output_text')
-    .map(block => isObject(block) ? pickString(block, 'text') ?? '' : '')
+    .map(block => isObject(block)
+      ? pickString(block, 'text') ?? ''
+      : '')
     .join('')
-  return text ? { kind: 'assistant-text', text } : { kind: 'hidden' }
+  return text
+    ? { kind: 'assistant-text', text }
+    : { kind: 'hidden' }
 }
 
 /** Keep a stored native function record in the same tool span as its partner. */
@@ -62,10 +66,14 @@ function storedFunctionToolRow(payload: Record<string, unknown>, span: RowExtrac
   const requestPayload = span.request?.parentObject
   const callId = storedFunctionCallID(payload) ?? ''
   const pairedRequest = callId !== '' && isObject(requestPayload) && storedFunctionCallID(requestPayload) === callId
-  const request = isResult && pairedRequest ? requestPayload : payload
+  const request = isResult && pairedRequest
+    ? requestPayload
+    : payload
   const toolName = pickString(request, 'name') || 'Tool'
   const args = storedFunctionArgs(request.arguments)
-  const resultText = isResult ? storedFunctionOutputText(payload.output) : ''
+  const resultText = isResult
+    ? storedFunctionOutputText(payload.output)
+    : ''
   const isError = isResult && storedFunctionFailed(payload)
   const call = codebuddyToolCall({
     callId,
@@ -90,9 +98,13 @@ function textRow(
   kind: 'assistant-text' | 'assistant-thinking',
 ): ChatRow {
   const text = anthropicBlocks(payload, blockType)
-    .map(block => anthropicBlockText(block, blockType === 'thinking' ? 'thinking' : 'text'))
+    .map(block => anthropicBlockText(block, blockType === 'thinking'
+      ? 'thinking'
+      : 'text'))
     .join('')
-  return text ? { kind, text } : { kind: 'hidden' }
+  return text
+    ? { kind, text }
+    : { kind: 'hidden' }
 }
 
 function toolSpanRow(
@@ -103,26 +115,40 @@ function toolSpanRow(
   const use = anthropicBlock(payload, 'tool_use')
   const result = anthropicBlock(payload, 'tool_result')
   // A result row states no tool name of its own; the span's request does.
-  const spanRequestUse = span.request ? anthropicBlock(span.request.parentObject ?? {}, 'tool_use') : undefined
+  const spanRequestUse = span.request
+    ? anthropicBlock(span.request.parentObject ?? {}, 'tool_use')
+    : undefined
   const callId = pickString(use, 'id', undefined) ?? pickString(result, 'tool_use_id')
-  const requestUse = callId !== '' && spanRequestUse && spanRequestUse.id === callId ? spanRequestUse : undefined
+  const requestUse = callId !== '' && spanRequestUse && spanRequestUse.id === callId
+    ? spanRequestUse
+    : undefined
   const toolName = String(use?.name ?? requestUse?.name ?? '')
   const input = use?.input ?? requestUse?.input
-  const args = isObject(input) ? input : {}
-  const resultText = result ? resultContentText(result) : ''
+  const args = isObject(input)
+    ? input
+    : {}
+  const resultText = result
+    ? resultContentText(result)
+    : ''
   const isError = result?.is_error === true
   const commandExit = codebuddyCommandExit(result)
   const commandOutput = codebuddyCommandOutput(result, resultText)
 
-  const role = span.role === 'result' || (span.role === 'other' && !use) ? 'result' : 'request'
+  const role = span.role === 'result' || (span.role === 'other' && !use)
+    ? 'result'
+    : 'request'
   const call = codebuddyToolCall({
     callId,
     toolName,
     args,
     resultText,
     isError,
-    ...(commandExit === undefined ? {} : { commandExit }),
-    ...(commandOutput === undefined ? {} : { commandOutput }),
+    ...(commandExit === undefined
+      ? {}
+      : { commandExit }),
+    ...(commandOutput === undefined
+      ? {}
+      : { commandOutput }),
     lifecycle: {
       frameStatus: result ? 'completed' : 'in_progress',
       providerOutcome: null,

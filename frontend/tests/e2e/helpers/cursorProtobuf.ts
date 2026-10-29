@@ -24,7 +24,9 @@ export function encodeVarint(value: number): Uint8Array {
   do {
     const byte = rest & 0x7F
     rest = Math.floor(rest / 128)
-    bytes.push(rest > 0 ? byte | 0x80 : byte)
+    bytes.push(rest > 0
+      ? byte | 0x80
+      : byte)
   } while (rest > 0)
   return Uint8Array.from(bytes)
 }
@@ -50,7 +52,11 @@ export function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
 
 /** One length-delimited field: its tag, its length, then the payload. */
 export function encodeLengthDelimited(fieldNumber: number, payload: Uint8Array): Uint8Array {
-  return concatBytes([encodeTag(fieldNumber, WIRE_LENGTH_DELIMITED), encodeVarint(payload.byteLength), payload])
+  return concatBytes([
+    encodeTag(fieldNumber, WIRE_LENGTH_DELIMITED),
+    encodeVarint(payload.byteLength),
+    payload,
+  ])
 }
 
 /** One length-delimited field carrying UTF-8 text. */
@@ -60,12 +66,17 @@ export function encodeStringField(fieldNumber: number, value: string): Uint8Arra
 
 /** One varint field: its tag, then its value. */
 export function encodeVarintField(fieldNumber: number, value: number): Uint8Array {
-  return concatBytes([encodeTag(fieldNumber, WIRE_VARINT), encodeVarint(value)])
+  return concatBytes([
+    encodeTag(fieldNumber, WIRE_VARINT),
+    encodeVarint(value),
+  ])
 }
 
 /** One boolean field. Protobuf omits a false, so this writes the field only for a true. */
 export function encodeBoolField(fieldNumber: number, value: boolean): Uint8Array {
-  return value ? encodeVarintField(fieldNumber, 1) : new Uint8Array(0)
+  return value
+    ? encodeVarintField(fieldNumber, 1)
+    : new Uint8Array(0)
 }
 
 export interface CursorProtobufFields {
@@ -94,7 +105,10 @@ class MalformedCursorProtobuf extends Error {}
  * lenient read keeps the fields that came before the malformed bytes.
  */
 export function readCursorProtobufFields(bytes: Uint8Array, options: CursorProtobufReadOptions = {}): CursorProtobufFields {
-  const fields: CursorProtobufFields = { strings: new Map(), integers: new Map() }
+  const fields: CursorProtobufFields = {
+    strings: new Map(),
+    integers: new Map(),
+  }
   try {
     readFieldsInto(bytes, fields)
   }
@@ -170,7 +184,9 @@ export function cursorProtobufRepeated(fields: CursorProtobufFields, field: numb
 /** The last occurrence of a length-delimited field, as UTF-8 text. */
 export function cursorProtobufString(fields: CursorProtobufFields, field: number): string | undefined {
   const value = cursorProtobufBytes(fields, field)
-  return value !== undefined ? new TextDecoder().decode(value) : undefined
+  return value !== undefined
+    ? new TextDecoder().decode(value)
+    : undefined
 }
 
 /** A varint field as a number, or undefined when it is absent or outside the safe integer range. */
@@ -178,8 +194,12 @@ export function cursorProtobufNumber(fields: CursorProtobufFields, field: number
   const value = fields.integers.get(field)
   if (value === undefined)
     return undefined
-  const normalized = signed ? BigInt.asIntN(32, value) : value
-  return normalized <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(normalized) : undefined
+  const normalized = signed
+    ? BigInt.asIntN(32, value)
+    : value
+  return normalized <= BigInt(Number.MAX_SAFE_INTEGER)
+    ? Number(normalized)
+    : undefined
 }
 
 /**

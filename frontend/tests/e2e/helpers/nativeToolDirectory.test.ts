@@ -22,7 +22,10 @@ describe('createNativeToolDirectory', () => {
     expect(dirname(first)).toBe(directory)
     expect(dirname(second)).toBe(directory)
     expect(basename(first)).toMatch(/^native path \$\(touch command-expanded-marker\) ; & ' `-/)
-    expect(readdirSync(directory).sort()).toEqual([basename(first), basename(second)].sort())
+    expect(readdirSync(directory).sort()).toEqual([
+      basename(first),
+      basename(second),
+    ].sort())
   })
 
   it.runIf(existsSync('/bin/sh'))('writes and reads actual bytes without expanding its directory', () => {
@@ -30,10 +33,18 @@ describe('createNativeToolDirectory', () => {
     execFileSync('/bin/sh', ['-c', `printf 'native-%s\\n' "$((40 + 2))" > ${quotePosixShellArgument(target)}; cat ${quotePosixShellArgument(target)}`], { cwd: directory })
     expect(readFileSync(target, 'utf8')).toBe('native-42\n')
     expect(existsSync(join(directory, 'command-expanded-marker'))).toBe(false)
-    expect(readdirSync(directory)).toEqual([basename(dirname(target))])
+    expect(readdirSync(directory)).toEqual([
+      basename(dirname(target)),
+    ])
   })
 
-  it.each(['', '.', '..', 'relative/path', '/invalid\0path'])('rejects a nonabsolute or invalid working directory %j', (workingDir) => {
+  it.each([
+    '',
+    '.',
+    '..',
+    'relative/path',
+    '/invalid\0path',
+  ])('rejects a nonabsolute or invalid working directory %j', (workingDir) => {
     expect(() => createNativeToolDirectory(workingDir)).toThrow('absolute private working directory')
     expect(readdirSync(directory)).toEqual([])
   })

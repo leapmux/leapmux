@@ -71,7 +71,9 @@ function hashlineHeaderPath(row: string): string | null {
     return null
   const body = line.slice(1, -1)
   const hash = body.lastIndexOf('#')
-  const path = hash < 0 ? body : body.slice(0, hash)
+  const path = hash < 0
+    ? body
+    : body.slice(0, hash)
   if (hash >= 0 && !HASHLINE_TAG.test(body.slice(hash + 1)))
     return null
   if (!path || path.includes('#') || hasOrphanBracket(path))
@@ -95,7 +97,13 @@ export function ohMyPiHashlineChanges(input: string): FileEditDiff[] {
     const line = raw.trim()
     const headerPath = hashlineHeaderPath(line)
     if (headerPath !== null) {
-      current = { filePath: headerPath, operation: 'edit', oldStr: '', newStr: '', structuredPatch: null }
+      current = {
+        filePath: headerPath,
+        operation: 'edit',
+        oldStr: '',
+        newStr: '',
+        structuredPatch: null,
+      }
       changes.push(current)
       continue
     }
@@ -157,10 +165,16 @@ function resultChange(entry: Record<string, unknown>, fallbackPath: string): Fil
   const sourcePath = pickString(entry, 'sourcePath')
   return {
     filePath,
-    ...(sourcePath && sourcePath !== filePath ? { previousPath: sourcePath } : {}),
+    ...(sourcePath && sourcePath !== filePath
+      ? { previousPath: sourcePath }
+      : {}),
     operation: changeOperation(pickString(entry, 'op'), sourcePath),
-    oldStr: typeof oldText === 'string' ? oldText : '',
-    newStr: typeof newText === 'string' ? newText : '',
+    oldStr: typeof oldText === 'string'
+      ? oldText
+      : '',
+    newStr: typeof newText === 'string'
+      ? newText
+      : '',
     structuredPatch: null,
   }
 }
@@ -183,7 +197,9 @@ function prunedChange(entry: Record<string, unknown>): FileEditDiff | null {
   const sourcePath = pickString(entry, 'sourcePath')
   return {
     filePath,
-    ...(sourcePath && sourcePath !== filePath ? { previousPath: sourcePath } : {}),
+    ...(sourcePath && sourcePath !== filePath
+      ? { previousPath: sourcePath }
+      : {}),
     operation: changeOperation(pickString(entry, 'op'), sourcePath),
     oldStr: '',
     newStr: '',
@@ -208,11 +224,15 @@ export function ohMyPiResultChanges(details: Record<string, unknown>, fallbackPa
       if (!isObject(entry) || entry.isError === true)
         return []
       const change = resultChange(entry, '') ?? prunedChange(entry)
-      return change ? [change] : []
+      return change
+        ? [change]
+        : []
     })
   }
   const change = resultChange(details, fallbackPath)
-  return change ? [change] : []
+  return change
+    ? [change]
+    : []
 }
 
 /** The file a `write` call wrote: its whole content, added. */
@@ -220,5 +240,11 @@ export function ohMyPiWriteChange(args: Record<string, unknown>, resolvedPath: s
   const filePath = resolvedPath || pickString(args, 'path')
   if (!filePath)
     return null
-  return { filePath, operation: 'add', oldStr: '', newStr: pickString(args, 'content'), structuredPatch: null }
+  return {
+    filePath,
+    operation: 'add',
+    oldStr: '',
+    newStr: pickString(args, 'content'),
+    structuredPatch: null,
+  }
 }

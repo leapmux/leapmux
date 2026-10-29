@@ -16,7 +16,13 @@ claudeTest.describe('Claude Code compaction notice', () => {
     const gate = 'claude-compaction-hold'
     await withCleanup(async () => {
       const outcomes = await Promise.allSettled([
-        exerciseNativeCompaction(native, { summary: { route: 'rule', when: { user: CLAUDE_SUMMARIZER_PATTERN }, respond: { text: MANUAL_COMPACTION_SUMMARY, gate } } }),
+        exerciseNativeCompaction(native, {
+          summary: {
+            route: 'rule',
+            when: { user: CLAUDE_SUMMARIZER_PATTERN },
+            respond: { text: MANUAL_COMPACTION_SUMMARY, gate },
+          },
+        }),
         (async () => {
           try {
             await native.modelScript.waitForGate(gate)

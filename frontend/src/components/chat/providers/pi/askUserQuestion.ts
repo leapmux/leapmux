@@ -24,7 +24,11 @@ import { piQuestionFromSource, piQuestionOptionLine } from './questionSource'
 export function piSelectOptions(payload: Record<string, unknown>): Array<{ label: string }> {
   const options = payload.options
   return Array.isArray(options)
-    ? options.flatMap(option => typeof option === 'string' ? [{ label: option }] : [])
+    ? options.flatMap(option => typeof option === 'string'
+        ? [
+            { label: option },
+          ]
+        : [])
     : []
 }
 
@@ -38,29 +42,47 @@ export function piQuestionsFromPayload(payload: Record<string, unknown>, source?
   const method = pickString(payload, 'method')
   const question = piQuestionFromSource(payload, source)
   if (question && method === PI_DIALOG_METHOD.Input && question.multiSelect) {
-    return [{
-      id: pickString(payload, 'id'),
-      question: question.prompt,
-      ...(question.header ? { header: question.header } : {}),
-      multiSelect: true,
-      allowEmpty: true,
-      options: question.options.map((option, index) => ({ ...option, value: String(index + 1) })),
-    }]
+    return [
+      {
+        id: pickString(payload, 'id'),
+        question: question.prompt,
+        ...(question.header
+          ? { header: question.header }
+          : {}),
+        multiSelect: true,
+        allowEmpty: true,
+        options: question.options.map((option, index) => ({
+          ...option,
+          value: String(index + 1),
+        })),
+      },
+    ]
   }
   if (method === PI_DIALOG_METHOD.Select) {
-    return [{
-      id: pickString(payload, 'id'),
-      question: question?.prompt ?? (pickString(payload, 'title') || 'Choose an option'),
-      ...(question?.header ? { header: question.header } : {}),
-      options: question
-        ? question.options.map((option, index) => ({ ...option, value: piQuestionOptionLine(option, index) }))
-        : piSelectOptions(payload),
-    }]
+    return [
+      {
+        id: pickString(payload, 'id'),
+        question: question?.prompt ?? (pickString(payload, 'title') || 'Choose an option'),
+        ...(question?.header
+          ? { header: question.header }
+          : {}),
+        options: question
+          ? question.options.map((option, index) => ({
+              ...option,
+              value: piQuestionOptionLine(option, index),
+            }))
+          : piSelectOptions(payload),
+      },
+    ]
   }
-  return [{
-    id: pickString(payload, 'id'),
-    question: question?.title ?? (pickString(payload, 'title') || 'Enter a value'),
-    options: [],
-    ...(method === PI_DIALOG_METHOD.Input ? { allowEmpty: true } : {}),
-  }]
+  return [
+    {
+      id: pickString(payload, 'id'),
+      question: question?.title ?? (pickString(payload, 'title') || 'Enter a value'),
+      options: [],
+      ...(method === PI_DIALOG_METHOD.Input
+        ? { allowEmpty: true }
+        : {}),
+    },
+  ]
 }

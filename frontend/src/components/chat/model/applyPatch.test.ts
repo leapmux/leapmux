@@ -85,7 +85,14 @@ describe('applyPatchFileChanges', () => {
   it('preserves a move that changes no content', () => {
     const files = applyPatchFileChanges('*** Begin Patch\n*** Update File: old.ts\n*** Move to: new.ts\n*** End Patch')
     expect(files).toHaveLength(1)
-    expect(files![0]).toMatchObject({ filePath: 'new.ts', previousPath: 'old.ts', operation: 'move', structuredPatch: null, oldStr: '', newStr: '' })
+    expect(files![0]).toMatchObject({
+      filePath: 'new.ts',
+      previousPath: 'old.ts',
+      operation: 'move',
+      structuredPatch: null,
+      oldStr: '',
+      newStr: '',
+    })
   })
 
   // The patch is a model-written tool argument, so a second trailing newline is

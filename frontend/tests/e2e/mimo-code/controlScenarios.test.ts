@@ -10,7 +10,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { createMiMoControlDeletion } from './controlScenarios'
 
-const native = vi.hoisted(() => ({ currentAgent: vi.fn() }))
+const native = vi.hoisted(() => ({
+  currentAgent: vi.fn(),
+}))
 vi.mock('../helpers/nativeScenario', async (importOriginal) => {
   const original = await importOriginal<typeof import('../helpers/nativeScenario')>()
   return { ...original, currentNativeAgent: native.currentAgent }
@@ -38,12 +40,20 @@ afterEach(() => rmSync(workingDir, { recursive: true, force: true }))
 function commandOf(plan: Awaited<ReturnType<typeof createMiMoControlDeletion>>): string {
   const command = plan.toolCall.arguments?.command
   if (typeof command !== 'string')
-    throw new Error('The planned MiMo control deletion holds no shell command.')
+    throw new TypeError('The planned MiMo control deletion holds no shell command.')
   return command
 }
 
 function resultRecord(callId: string, output: string): MockModelRequestRecord {
-  return { protocol: 'openai-chat-completions', path: '/chat/completions', body: { messages: [{ role: 'tool', tool_call_id: callId, content: output }] } }
+  return {
+    protocol: 'openai-chat-completions',
+    path: '/chat/completions',
+    body: {
+      messages: [
+        { role: 'tool', tool_call_id: callId, content: output },
+      ],
+    },
+  }
 }
 
 describe('createMiMoControlDeletion', () => {
@@ -81,7 +91,13 @@ describe('createMiMoControlDeletion', () => {
     const plan = await createMiMoControlDeletion(context, 'editor')
     const file = join(workingDir, 'native-editor-control.txt')
     await plan.beforeDecision()
-    const child = spawn('/bin/sh', ['-c', commandOf(plan)], { cwd: workingDir, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn('/bin/sh', [
+      '-c',
+      commandOf(plan),
+    ], {
+      cwd: workingDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
     try {
       let stdout = ''
       child.stdout.on('data', chunk => stdout += String(chunk))
@@ -103,6 +119,8 @@ describe('createMiMoControlDeletion', () => {
     const plan = await createMiMoControlDeletion(context, 'editor')
     // The proof throws at once or rejects, whichever the plan type allows. Playwright's `expect` fails with the values
     // that it compared: the file must be gone.
-    await expect((async () => plan.nativeProof(resultRecord(plan.toolCall.id, 'NATIVECONTROL42\n')))()).rejects.toMatchObject({ matcherResult: { actual: true, expected: false } })
+    await expect((async () => plan.nativeProof(resultRecord(plan.toolCall.id, 'NATIVECONTROL42\n')))()).rejects.toMatchObject({
+      matcherResult: { actual: true, expected: false },
+    })
   })
 })

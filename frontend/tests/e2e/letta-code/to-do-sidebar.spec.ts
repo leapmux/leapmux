@@ -8,11 +8,31 @@ lettaTest.describe('tracks the Letta Code to-do list', () => {
   lettaTest('the sidebar follows task creation and updates, and keeps them after a reload', async ({ native }) => {
     const { page, modelScript } = native
     await modelScript.queue(
-      { toolCalls: [lettaTaskCreateToolCall('create-first', 'Inspect the repository', 'Read the repository files.')] },
-      { toolCalls: [lettaTaskCreateToolCall('create-second', 'List three checks', 'List three checks to run.')] },
-      { toolCalls: [lettaTaskUpdateToolCall('complete-first', 'task_1', 'completed')] },
-      { toolCalls: [lettaTaskUpdateToolCall('start-second', 'task_2', 'in_progress')] },
-      { toolCalls: [lettaTaskListToolCall('list-tasks')] },
+      {
+        toolCalls: [
+          lettaTaskCreateToolCall('create-first', 'Inspect the repository', 'Read the repository files.'),
+        ],
+      },
+      {
+        toolCalls: [
+          lettaTaskCreateToolCall('create-second', 'List three checks', 'List three checks to run.'),
+        ],
+      },
+      {
+        toolCalls: [
+          lettaTaskUpdateToolCall('complete-first', 'task_1', 'completed'),
+        ],
+      },
+      {
+        toolCalls: [
+          lettaTaskUpdateToolCall('start-second', 'task_2', 'in_progress'),
+        ],
+      },
+      {
+        toolCalls: [
+          lettaTaskListToolCall('list-tasks'),
+        ],
+      },
       { text: 'The list is written.' },
     )
     await sendMessage(page, modelScript.prompt('Write a three-step to-do list.'))
@@ -28,7 +48,11 @@ lettaTest.describe('tracks the Letta Code to-do list', () => {
     await expect(list.locator('[data-task-checkbox="in_progress"]')).toHaveCount(1)
 
     await modelScript.queue(
-      { toolCalls: [lettaTaskUpdateToolCall('complete-second', 'task_2', 'completed')] },
+      {
+        toolCalls: [
+          lettaTaskUpdateToolCall('complete-second', 'task_2', 'completed'),
+        ],
+      },
       { text: 'Every step is done.' },
     )
     await sendMessage(page, modelScript.prompt('Mark every step done.'))

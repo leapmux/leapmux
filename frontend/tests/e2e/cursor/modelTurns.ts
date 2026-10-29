@@ -10,5 +10,8 @@ export function cursorModelTurns(request: MockModelRequestRecord): NativeModelTu
   if (!isObject(request.body) || typeof request.body.prompt !== 'string')
     throw new Error('The Cursor turn reader requires the prompt of its native Run request.')
   const history = request.serverContext?.messages ?? []
-  return [...history.map(message => ({ role: message.role, text: message.content })), { role: 'user', text: request.body.prompt }]
+  return [
+    ...history.map(message => ({ role: message.role, text: message.content })),
+    { role: 'user', text: request.body.prompt },
+  ]
 }

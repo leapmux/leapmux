@@ -61,7 +61,12 @@ export const MIN_WINDOW_DIMENSION = 0.05
  * floating window — also used as the fallback when a restored proto is
  * missing width/height. Tweaks here propagate to both call sites.
  */
-const DEFAULT_FW_GEOMETRY = { x: 0.2, y: 0.15, width: 0.4, height: 0.5 } as const
+const DEFAULT_FW_GEOMETRY = {
+  x: 0.2,
+  y: 0.15,
+  width: 0.4,
+  height: 0.5,
+} as const
 
 /**
  * Cascade offset (fraction of the parent container) applied to each new
@@ -173,7 +178,9 @@ export function createKeyedOverrides<T>(): KeyedOverrides<T> {
       next.delete(key)
       return next
     }),
-    clearAll: () => setOverrides(prev => prev.size === 0 ? prev : new Map()),
+    clearAll: () => setOverrides(prev => prev.size === 0
+      ? prev
+      : new Map()),
     retain: keep => setOverrides((prev) => {
       // Copy lazily, on the first key that actually goes: a sweep that finds
       // nothing stale must hand back `prev` so no consumer re-derives.
@@ -452,7 +459,9 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
       // emits for it -- so a peer's resize landing mid-drag stays visible
       // instead of being masked by the pointer-down size until the drop. The
       // union makes that structural: a move override has no width/height to read.
-      const size = override?.kind === 'resize' ? override : undefined
+      const size = override?.kind === 'resize'
+        ? override
+        : undefined
       const opOverride = opGestures.get(rendered.windowId)?.value
       result.push({
         id: rendered.windowId,
@@ -462,7 +471,9 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
         height: size ? size.height : rendered.height,
         opacity: opOverride ?? rendered.opacity,
         layoutRoot,
-        focusedTileId: localFocus !== undefined ? localFocus : fallbackFocus,
+        focusedTileId: localFocus !== undefined
+          ? localFocus
+          : fallbackFocus,
       })
     }
     // Apply local z-order overlay so explicit bringToFront calls land
@@ -712,7 +723,9 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
 
   function findWindow(id: string): FloatingWindowState | null {
     const idx = findWindowIndex(id)
-    return idx < 0 ? null : projectedWindows()[idx] ?? null
+    return idx < 0
+      ? null
+      : projectedWindows()[idx] ?? null
   }
 
   // disposeWindowLocally is the teardown sequence shared by every
@@ -730,7 +743,9 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
     // common case; without the guards, every empty-window cleanup
     // would re-trigger `projectedWindows` even when nothing changed.
     // (`focusByWindow.clear` carries its own; only zOrder needs one here.)
-    setZOrder(z => z.includes(id) ? z.filter(x => x !== id) : z)
+    setZOrder(z => z.includes(id)
+      ? z.filter(x => x !== id)
+      : z)
     focusByWindow.clear(id)
   }
 
@@ -773,15 +788,21 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
         if (!win)
           return []
         const grid = findGridById(win.layoutRoot, gridId)
-        return grid ? getAllTileIds(grid) : []
+        return grid
+          ? getAllTileIds(grid)
+          : []
       },
       findHeirTile: (tileId) => {
         const win = findWindow(windowId)
-        return win ? findHeirTileId(win.layoutRoot, tileId) : null
+        return win
+          ? findHeirTileId(win.layoutRoot, tileId)
+          : null
       },
       firstLeafId: () => {
         const win = findWindow(windowId)
-        return win ? firstLeafId(win.layoutRoot) ?? null : null
+        return win
+          ? firstLeafId(win.layoutRoot) ?? null
+          : null
       },
       splitTile: (tileId, direction) => { splitTile(windowId, tileId, direction) },
       makeGrid: (tileId, rows, cols) => { makeGrid(windowId, tileId, rows, cols) },
@@ -792,7 +813,10 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
 
   const ownerEntries = mapArray(
     () => projectedWindows(),
-    w => [w.id, buildOwner(w.id)] as const,
+    w => [
+      w.id,
+      buildOwner(w.id),
+    ] as const,
   )
   const ownersById = createMemo(() => new Map(ownerEntries()))
 
@@ -866,7 +890,9 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
       // must still be compared against where it started, not against its own
       // previous intermediate value (which would make every flush look like a
       // change).
-      const base = existing !== undefined ? existing.base : findWindow(id)?.opacity
+      const base = existing !== undefined
+        ? existing.base
+        : findWindow(id)?.opacity
       // The debounce fires the SAME scoped `flushOpacity` the per-window teardown
       // store method call, rather than re-implementing its body here -- a
       // second copy would drift from its same-value short-circuit. The third
@@ -1018,7 +1044,9 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
       // no-op check answers the same question for an off-screen window as for
       // an on-screen one.
       const recorded = focusByWindow.get(windowId)
-      const effective = recorded !== undefined ? recorded : firstLeafId(root)
+      const effective = recorded !== undefined
+        ? recorded
+        : firstLeafId(root)
       if (effective === tileId)
         return
       focusByWindow.set(windowId, tileId)
@@ -1099,7 +1127,9 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
      */
     getAllTileIdsFor(workspaceId: string): string[] {
       const set = floatingTileIndex().tilesByWorkspace.get(workspaceId)
-      return set ? [...set] : []
+      return set
+        ? [...set]
+        : []
     },
 
     getWindow(id: string): FloatingWindowState | null {

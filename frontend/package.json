@@ -8,16 +8,16 @@
   },
   "scripts": {
     "preinstall": "node scripts/only-bun.mjs",
-    "dev": "vinxi dev --port 4328",
-    "build": "vinxi build",
-    "preview": "vinxi start",
+    "dev": "vite dev --port 4328",
+    "build": "vite build",
+    "preview": "vite preview",
     "test": "node scripts/run-vitest.mjs run",
     "test:watch": "node scripts/run-vitest.mjs",
     "test:e2e": "bun scripts/run-e2e.ts",
     "lint": "eslint --cache --cache-strategy content --cache-location node_modules/.cache/eslint/frontend .",
     "lint:fix": "bun run lint --fix",
-    "typecheck": "node --max-old-space-size=4096 node_modules/typescript/bin/tsc --noEmit && bun run typecheck:e2e",
-    "typecheck:e2e": "node --max-old-space-size=4096 node_modules/typescript/bin/tsc --noEmit -p tsconfig.e2e.json"
+    "typecheck": "tsc --noEmit && bun run typecheck:e2e",
+    "typecheck:e2e": "tsc --noEmit -p tsconfig.e2e.json"
   },
   "dependencies": {
     "@bufbuild/protobuf": "2.14.0",
@@ -69,8 +69,7 @@
     "solid-js": "^1.9.15",
     "source-map-js": "^1.2.1",
     "tinykeys": "^4.0.0",
-    "unified": "^11.0.5",
-    "vinxi": "0.5.11"
+    "unified": "^11.0.5"
   },
   "devDependencies": {
     "@antfu/eslint-config": "^10.0.0",
@@ -80,6 +79,7 @@
     "@tauri-apps/cli": "^2.11.4",
     "@testing-library/jest-dom": "^7.0.1",
     "@typescript-eslint/utils": "8.68.0",
+    "@typescript/native": "npm:typescript@^7.0.2",
     "@vanilla-extract/vite-plugin": "^5.2.6",
     "ajv": "^8.20.0",
     "ds-store": "^0.1.6",
@@ -88,9 +88,9 @@
     "fake-indexeddb": "^6.2.5",
     "jiti": "^2.7.0",
     "jsdom": "^30.0.1",
-    "magic-string": "^1.2.3",
+    "nitro": "3.0.260903-beta",
     "solid-refresh": "^0.6.3",
-    "typescript": "^7.0.0",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
     "vite": "^8.2.2",
     "vite-plugin-solid": "^2.11.14",
     "vitest": "^5.0.0"
@@ -102,8 +102,5 @@
   },
   "ignoreScripts": [
     "macos-alias"
-  ],
-  "patchedDependencies": {
-    "vinxi@0.5.11": "patches/vinxi@0.5.11.patch"
-  }
+  ]
 }

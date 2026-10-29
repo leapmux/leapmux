@@ -36,7 +36,9 @@ export const PasswordFields: Component<PasswordFieldsProps> = (props) => {
           {(() => {
             const err = () => passwordError(props)
             const s = () => passwordStrength(props.password())
-            const color = () => err() ? '--danger' : s().color
+            const color = () => err()
+              ? '--danger'
+              : s().color
             return (
               <div class={styles.strengthRow}>
                 <Show when={!err()}>

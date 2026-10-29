@@ -28,7 +28,9 @@ import { PathInput } from './PathInput'
  * keeps the spread's getter reactivity.
  */
 function flavorProps(flavor: PathFlavor | undefined): { flavor?: PathFlavor } {
-  return flavor === undefined ? {} : { flavor }
+  return flavor === undefined
+    ? {}
+    : { flavor }
 }
 
 /**
@@ -68,7 +70,9 @@ export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
   // as its own state -- `workerPaths.ts` is the named helper.
   const flavor = createMemo(() => {
     const os = workerInfoStore.getOs(workerId())
-    return os ? flavorFromOs(os) : undefined
+    return os
+      ? flavorFromOs(os)
+      : undefined
   })
 
   // Windows only. `filesystemRoot` already knows a POSIX worker has exactly
@@ -106,7 +110,11 @@ export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
     const f = flavor()
     return filesystemRoot(props.state.workingDir(), f)
       ?? filesystemRoot(homeDir(), f)
-      ?? (f === 'posix' ? '/' : f === 'win32' ? drives.roots()[0] : undefined)
+      ?? (f === 'posix'
+        ? '/'
+        : f === 'win32'
+          ? drives.roots()[0]
+          : undefined)
   })
 
   /**
@@ -116,7 +124,9 @@ export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
    * root, so this one rule hides the control on every platform with nothing
    * to offer, and the layout needs no OS test of its own.
    */
-  const driveMenuRoot = createMemo(() => (drives.roots().length > 1 ? treeRoot() : undefined))
+  const driveMenuRoot = createMemo(() => (drives.roots().length > 1
+    ? treeRoot()
+    : undefined))
 
   // Both refresh entry points do the same thing, so a user never ends up with
   // a re-listed tree beside a stale drive menu. `refresh` is a no-op while the
@@ -159,11 +169,17 @@ export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
       actions={(
         <>
           <IconButton
-            icon={showHiddenFiles() ? Eye : EyeOff}
+            icon={showHiddenFiles()
+              ? Eye
+              : EyeOff}
             iconSize="sm"
             size="sm"
-            title={shortcutHint(showHiddenFiles() ? 'Hide hidden files' : 'Show hidden files', 'app.toggleHiddenFiles')}
-            state={showHiddenFiles() ? IconButtonState.Enabled : IconButtonState.Active}
+            title={shortcutHint(showHiddenFiles()
+              ? 'Hide hidden files'
+              : 'Show hidden files', 'app.toggleHiddenFiles')}
+            state={showHiddenFiles()
+              ? IconButtonState.Enabled
+              : IconButtonState.Active}
             onClick={() => setShowHiddenFiles(prev => !prev)}
             data-testid="directory-selector-show-hidden-toggle"
           />
@@ -172,7 +188,9 @@ export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
             iconSize="sm"
             size="sm"
             title="Go to home directory"
-            state={homeDir() ? IconButtonState.Enabled : IconButtonState.Disabled}
+            state={homeDir()
+              ? IconButtonState.Enabled
+              : IconButtonState.Disabled}
             onClick={goHome}
             data-testid="directory-selector-home"
           />

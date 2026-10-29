@@ -24,13 +24,25 @@ function selection(initial: ActiveTab) {
     const [workingDir, setWorkingDir] = createSignal(initial.workingDir)
     const [filePath, setFilePath] = createSignal(initial.filePath ?? '')
     const [selected, select] = createSignal('')
-    followActiveTabSelection({ activeTabKey: tabKey, workingDir, activeFilePath: filePath, selection: selected, setSelection: select })
+    followActiveTabSelection({
+      activeTabKey: tabKey,
+      workingDir,
+      activeFilePath: filePath,
+      selection: selected,
+      setSelection: select,
+    })
     const activate = (tab: ActiveTab) => batch(() => {
       setTabKey(tab.key)
       setWorkingDir(tab.workingDir)
       setFilePath(tab.filePath ?? '')
     })
-    api = { setTabKey, setWorkingDir, activate, select, selected }
+    api = {
+      setTabKey,
+      setWorkingDir,
+      activate,
+      select,
+      selected,
+    }
     return disposeRoot
   })
   return { ...api, dispose }

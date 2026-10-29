@@ -6,11 +6,25 @@ import { ampToolResultRow, ampToolUseRow } from './toolResults.fixtures'
 import '~/components/chat/providers'
 
 function classify(parent: Record<string, unknown> | undefined, extra: Record<string, unknown> = {}, wrapper?: { old_seqs: number[], messages: unknown[] }) {
-  return classifyAmpMessage({ ...input(parent, wrapper, AgentProvider.AMP), ...extra })
+  return classifyAmpMessage({
+    ...input(parent, wrapper, AgentProvider.AMP),
+    ...extra,
+  })
 }
 
 /** One assistant row that holds the given blocks. */
-const assistant = (content: unknown[]) => ({ type: 'assistant', message: { type: 'message', role: 'assistant', content, stop_reason: null }, session_id: 'T-1' })
+function assistant(content: unknown[]) {
+  return {
+    type: 'assistant',
+    message: {
+      type: 'message',
+      role: 'assistant',
+      content,
+      stop_reason: null,
+    },
+    session_id: 'T-1',
+  }
+}
 
 describe('classifyAmpMessage', () => {
   it('reads LeapMux\'s own user row', () => {
@@ -20,8 +34,18 @@ describe('classifyAmpMessage', () => {
   })
 
   it('reads a result row as the turn divider, a success and an error alike', () => {
-    expect(classify({ type: 'result', subtype: 'success', is_error: false, result: 'done' })).toEqual({ kind: 'result_divider' })
-    expect(classify({ type: 'result', subtype: 'error_during_execution', is_error: true, error: 'x' })).toEqual({ kind: 'result_divider' })
+    expect(classify({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: 'done',
+    })).toEqual({ kind: 'result_divider' })
+    expect(classify({
+      type: 'result',
+      subtype: 'error_during_execution',
+      is_error: true,
+      error: 'x',
+    })).toEqual({ kind: 'result_divider' })
   })
 
   it('reads the tool rows by their side of the span', () => {
@@ -35,42 +59,89 @@ describe('classifyAmpMessage', () => {
   })
 
   it('reads an assistant row by the block it holds', () => {
-    expect(classify(assistant([{ type: 'text', text: 'Hello.' }]))).toEqual({ kind: 'assistant_text' })
-    expect(classify(assistant([{ type: 'thinking', thinking: '**Planning**' }]))).toEqual({ kind: 'assistant_thinking' })
+    expect(classify(assistant([
+      { type: 'text', text: 'Hello.' },
+    ]))).toEqual({ kind: 'assistant_text' })
+    expect(classify(assistant([
+      { type: 'thinking', thinking: '**Planning**' },
+    ]))).toEqual({ kind: 'assistant_thinking' })
   })
 
   it('classifies a stored empty assistant row as unknown', () => {
-    expect(classify(assistant([{ type: 'text', text: '  ' }]))).toEqual({ kind: 'unknown' })
-    expect(classify(assistant([{ type: 'thinking', thinking: '' }]))).toEqual({ kind: 'unknown' })
-    expect(classify(assistant([{ type: 'redacted_thinking', data: 'abc' }]))).toEqual({ kind: 'unknown' })
+    expect(classify(assistant([
+      { type: 'text', text: '  ' },
+    ]))).toEqual({ kind: 'unknown' })
+    expect(classify(assistant([
+      { type: 'thinking', thinking: '' },
+    ]))).toEqual({ kind: 'unknown' })
+    expect(classify(assistant([
+      { type: 'redacted_thinking', data: 'abc' },
+    ]))).toEqual({ kind: 'unknown' })
     expect(classify(assistant([]))).toEqual({ kind: 'unknown' })
   })
 
   it('reads a call before the text of a row the worker kept whole', () => {
-    const whole = assistant([{ type: 'text', text: 'Running.' }, { type: 'tool_use', id: 'TU-1', name: 'shell_command', input: {} }])
+    const whole = assistant([
+      { type: 'text', text: 'Running.' },
+      {
+        type: 'tool_use',
+        id: 'TU-1',
+        name: 'shell_command',
+        input: {},
+      },
+    ])
     expect(classify(whole)).toEqual({ kind: 'tool_use' })
-    expect(classify(assistant([{ type: 'thinking', thinking: 'Hmm.' }, { type: 'text', text: 'Yes.' }]))).toEqual({ kind: 'assistant_text' })
+    expect(classify(assistant([
+      { type: 'thinking', thinking: 'Hmm.' },
+      { type: 'text', text: 'Yes.' },
+    ]))).toEqual({ kind: 'assistant_text' })
   })
 
   it('shows a block of a later Amp as the raw row', () => {
-    expect(classify(assistant([{ type: 'image', source: {} }]))).toEqual({ kind: 'unknown' })
+    expect(classify(assistant([
+      { type: 'image', source: {} },
+    ]))).toEqual({ kind: 'unknown' })
   })
 
   it('draws a non-tool user row as unknown', () => {
-    expect(classify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'echo' }] } })).toEqual({ kind: 'unknown' })
-    expect(classify({ type: 'user', message: { role: 'user', content: 'a string' } })).toEqual({ kind: 'unknown' })
+    expect(classify({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'echo' },
+        ],
+      },
+    })).toEqual({ kind: 'unknown' })
+    expect(classify({
+      type: 'user',
+      message: { role: 'user', content: 'a string' },
+    })).toEqual({ kind: 'unknown' })
   })
 
   // A block with no call id states no call, so it owns no span and its row reads by
   // the blocks that remain.
   it('reads a call block with no id as no call', () => {
-    expect(classify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'x' }] } })).toEqual({ kind: 'unknown' })
-    expect(classify(assistant([{ type: 'tool_use', name: 'shell_command', input: {} }, { type: 'text', text: 'Running.' }]))).toEqual({ kind: 'assistant_text' })
+    expect(classify({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', content: 'x' },
+        ],
+      },
+    })).toEqual({ kind: 'unknown' })
+    expect(classify(assistant([
+      { type: 'tool_use', name: 'shell_command', input: {} },
+      { type: 'text', text: 'Running.' },
+    ]))).toEqual({ kind: 'assistant_text' })
   })
 
   it('reads a row with no type and no string content as unknown', () => {
     expect(classify({ content: 42 })).toEqual({ kind: 'unknown' })
-    expect(classify({ content: ['a'] })).toEqual({ kind: 'unknown' })
+    expect(classify({
+      content: ['a'],
+    })).toEqual({ kind: 'unknown' })
   })
 
   it('keeps a system line and an unknown line inspectable', () => {
@@ -80,7 +151,13 @@ describe('classifyAmpMessage', () => {
 
   it('reads LeapMux\'s own notifications', () => {
     expect(classify({ type: 'agent_error', error: 'The Amp process exited unexpectedly' }).kind).toBe('notification')
-    const thread = classify(undefined, {}, { old_seqs: [], messages: [{ type: 'context_cleared' }, { type: 'interrupted' }] })
+    const thread = classify(undefined, {}, {
+      old_seqs: [],
+      messages: [
+        { type: 'context_cleared' },
+        { type: 'interrupted' },
+      ],
+    })
     expect(thread.kind).toBe('notification')
   })
 

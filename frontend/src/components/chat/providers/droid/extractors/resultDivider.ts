@@ -20,15 +20,25 @@ export function droidResultDivider(parsed: unknown, completion?: MessageCompleti
   if (!isObject(parsed) || pickString(parsed, DROID_NOTIFICATION_FIELD.Type) !== DROID_NOTIFICATION.AgentTurnCompleted)
     return null
   const reason = pickString(parsed, DROID_NOTIFICATION_FIELD.Reason)
-  if (completion === MessageCompletion.INTERRUPTED || reason === DROID_TURN_END_REASON.Cancelled || reason === DROID_TURN_END_REASON.ProcessExit)
-    return { label: turnEndLabel('interrupted'), isError: true }
-  if (completion === MessageCompletion.ERROR)
-    return { label: turnEndLabel('failed'), isError: true }
+  if (completion === MessageCompletion.INTERRUPTED || reason === DROID_TURN_END_REASON.Cancelled || reason === DROID_TURN_END_REASON.ProcessExit) {
+    return {
+      label: turnEndLabel('interrupted'),
+      isError: true,
+    }
+  }
+  if (completion === MessageCompletion.ERROR) {
+    return {
+      label: turnEndLabel('failed'),
+      isError: true,
+    }
+  }
   switch (reason) {
     case '':
     case DROID_TURN_END_REASON.Completed:
     case DROID_TURN_END_REASON.SpecHandoff:
-      return { label: turnEndLabel('ended') }
+      return {
+        label: turnEndLabel('ended'),
+      }
     case DROID_TURN_END_REASON.Error:
     case DROID_TURN_END_REASON.PermissionRejected:
     case DROID_TURN_END_REASON.StructuredOutputMissing:
@@ -44,6 +54,9 @@ export function droidResultDivider(parsed: unknown, completion?: MessageCompleti
     case DROID_TURN_END_REASON.CompletionPersistenceFailed:
     case DROID_TURN_END_REASON.NoApproverAvailable:
     default:
-      return { label: turnEndLabel('failed'), isError: true }
+      return {
+        label: turnEndLabel('failed'),
+        isError: true,
+      }
   }
 }

@@ -617,7 +617,12 @@ describe('ChannelManager encryption modes', () => {
         const channelId = `ch-classic-${Math.random().toString(36).slice(2, 8)}`
         const pair = createTestSession()
         classicSessions.set(channelId, pair)
-        return { channelId, handshakePayload: new Uint8Array(48), userId: 'hub-authenticated-user', maxMessageSize: DEFAULT_MAX_MESSAGE_SIZE }
+        return {
+          channelId,
+          handshakePayload: new Uint8Array(48),
+          userId: 'hub-authenticated-user',
+          maxMessageSize: DEFAULT_MAX_MESSAGE_SIZE,
+        }
       },
       async closeChannel(_channelId: string) {},
       createWebSocket(): ChannelSocket {
@@ -634,7 +639,9 @@ describe('ChannelManager encryption modes', () => {
     }
 
     function mockClassicHS2(_state: any, _message2: Uint8Array) {
-      const entries = [...classicSessions.entries()]
+      const entries = [
+        ...classicSessions.entries(),
+      ]
       const lastEntry = entries.at(-1)
       if (!lastEntry)
         throw new Error('No session registered')
@@ -864,13 +871,18 @@ describe('ChannelManager key pinning across concurrent opens', () => {
   // TOFU prompt exists to catch.
   it('prompts on a key change for a worker whose pin was written during a concurrent open', async () => {
     let ws: AutoOpenMockWebSocket | null = null
-    const keys = new Map([['w1', 1], ['w2', 2]])
+    const keys = new Map([
+      ['w1', 1],
+      ['w2', 2],
+    ])
     const transport = makeKeyedTransport(() => {
       ws = new AutoOpenMockWebSocket()
       return ws
     }, keys)
     const confirmKeyPin = vi.fn().mockResolvedValue('accept' as KeyPinDecision)
-    const cm = makeIdentityCipherManager(transport, { keyPins: acceptingKeyPins(confirmKeyPin) })
+    const cm = makeIdentityCipherManager(transport, {
+      keyPins: acceptingKeyPins(confirmKeyPin),
+    })
     try {
       const p1 = cm.getOrOpenChannel('w1')
       const p2 = cm.getOrOpenChannel('w2')

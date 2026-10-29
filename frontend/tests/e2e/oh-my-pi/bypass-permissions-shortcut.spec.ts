@@ -8,6 +8,11 @@ ohMyPiTest('applies native Bypass before and after reload without a permission p
 })
 
 ohMyPiTest('approves a pending tool and the next tool when Bypass changes during a turn', async ({ askingOhMyPiWorkspace, page, modelScript, leapmuxServer }) => {
-  const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingOhMyPiWorkspace.workspaceId })
+  const native = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: askingOhMyPiWorkspace.workspaceId,
+  })
   await exerciseMidTurnBypass(native)
 })

@@ -31,13 +31,17 @@ function fromMcpToolCall(item: Record<string, unknown>): McpCallFacts {
   const argsJson = prettifyArgsJson(item.arguments)
 
   const result = pickObject(item, 'result')
-  const rawContent: unknown[] = result && Array.isArray(result.content) ? result.content : []
+  const rawContent: unknown[] = result && Array.isArray(result.content)
+    ? result.content
+    : []
   const content: McpContentItem[] = rawContent.map(parseMcpContentItem)
   const structuredJson = prettifyStructuredJson(result?.structuredContent)
 
   const errorObj = pickObject(item, 'error')
   const errorMessage = pickString(errorObj, 'message')
-  const error = errorMessage.length > 0 ? errorMessage : undefined
+  const error = errorMessage.length > 0
+    ? errorMessage
+    : undefined
   const durationMs = pickNumber(item, 'durationMs', undefined)
 
   return {
@@ -45,10 +49,18 @@ function fromMcpToolCall(item: Record<string, unknown>): McpCallFacts {
     tool: pickString(item, 'tool', 'Tool'),
     argsJson,
     content,
-    ...(structuredJson !== undefined ? { structuredJson } : {}),
-    ...(error !== undefined ? { error } : {}),
-    ...(failed ? { failed } : {}),
-    ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(structuredJson !== undefined
+      ? { structuredJson }
+      : {}),
+    ...(error !== undefined
+      ? { error }
+      : {}),
+    ...(failed
+      ? { failed }
+      : {}),
+    ...(durationMs !== undefined
+      ? { durationMs }
+      : {}),
   }
 }
 
@@ -56,16 +68,26 @@ function fromDynamicToolCall(item: Record<string, unknown>): McpCallFacts {
   const failed = item.status === 'failed' || item.status === 'cancelled' || item.status === 'declined' || undefined
   const argsJson = prettifyArgsJson(item.arguments)
 
-  const items: unknown[] = Array.isArray(item.contentItems) ? item.contentItems : []
+  const items: unknown[] = Array.isArray(item.contentItems)
+    ? item.contentItems
+    : []
   const content: McpContentItem[] = items.flatMap((entry): McpContentItem[] => {
     if (!isObject(entry))
       return []
-    if (entry.type === 'inputText' && typeof entry.text === 'string')
-      return [{ type: 'text', text: entry.text }]
+    if (entry.type === 'inputText' && typeof entry.text === 'string') {
+      return [
+        { type: 'text', text: entry.text },
+      ]
+    }
     const image = parseImageBlock(entry)
-    if (image)
-      return [{ type: 'image', source: image }]
-    return [{ type: 'unknown', raw: entry }]
+    if (image) {
+      return [
+        { type: 'image', source: image },
+      ]
+    }
+    return [
+      { type: 'unknown', raw: entry },
+    ]
   })
 
   const durationMs = pickNumber(item, 'durationMs', undefined)
@@ -74,7 +96,11 @@ function fromDynamicToolCall(item: Record<string, unknown>): McpCallFacts {
     tool: pickString(item, 'tool', 'Tool'),
     argsJson,
     content,
-    ...(failed ? { failed } : {}),
-    ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(failed
+      ? { failed }
+      : {}),
+    ...(durationMs !== undefined
+      ? { durationMs }
+      : {}),
   }
 }

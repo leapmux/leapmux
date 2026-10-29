@@ -18,7 +18,9 @@ qwenTest('loads project context configuration without a workspace trust decision
       prepare: (project) => {
         context.prepare(project)
         mkdirSync(join(project.directory, '.qwen'), { recursive: true })
-        writeFileSync(join(project.directory, '.qwen', 'settings.json'), JSON.stringify({ context: { fileName: PROJECT_CONTEXT } }))
+        writeFileSync(join(project.directory, '.qwen', 'settings.json'), JSON.stringify({
+          context: { fileName: PROJECT_CONTEXT },
+        }))
       },
       prove: context.prove,
     },

@@ -62,7 +62,11 @@ describe('chatViewportGeometry createViewportSizeObserver', () => {
     }
 
     emit(width: number, height: number): void {
-      this.cb([{ contentRect: { width, height } } as ResizeObserverEntry], this as unknown as ResizeObserver)
+      this.cb([
+        {
+          contentRect: { width, height },
+        } as ResizeObserverEntry,
+      ], this as unknown as ResizeObserver)
     }
   }
 
@@ -76,7 +80,10 @@ describe('chatViewportGeometry createViewportSizeObserver', () => {
     try {
       const widths: number[] = []
       const heights: number[] = []
-      const obs = createViewportSizeObserver({ onWidth: w => widths.push(w), onHeight: h => heights.push(h) })
+      const obs = createViewportSizeObserver({
+        onWidth: w => widths.push(w),
+        onHeight: h => heights.push(h),
+      })
       const el = {} as HTMLElement
       obs.observe(el)
       expect(instance!.observed).toContain(el)
@@ -95,7 +102,10 @@ describe('chatViewportGeometry createViewportSizeObserver', () => {
       // A real change to one axis fires ONLY that axis.
       instance!.emit(900, 600.4) // 900 -> bucket 904; 600.4 -> round 600 (unchanged)
       await Promise.resolve()
-      expect(widths).toEqual([800, bucketWidth(900)])
+      expect(widths).toEqual([
+        800,
+        bucketWidth(900),
+      ])
       expect(heights).toEqual([600])
 
       obs.disconnect()
@@ -116,7 +126,10 @@ describe('chatViewportGeometry createViewportSizeObserver', () => {
     try {
       const widths: number[] = []
       const heights: number[] = []
-      const obs = createViewportSizeObserver({ onWidth: w => widths.push(w), onHeight: h => heights.push(h) })
+      const obs = createViewportSizeObserver({
+        onWidth: w => widths.push(w),
+        onHeight: h => heights.push(h),
+      })
       obs.observe({} as HTMLElement)
       // The observe callback runs synchronously and queues the writes as microtasks;
       // the consumer tears us down before they flush. The deferred writes must NOT land.
@@ -136,7 +149,10 @@ describe('chatViewportGeometry createViewportSizeObserver', () => {
     // @ts-expect-error -- remove RO to exercise the unavailable guard.
     delete globalThis.ResizeObserver
     try {
-      const obs = createViewportSizeObserver({ onWidth: () => {}, onHeight: () => {} })
+      const obs = createViewportSizeObserver({
+        onWidth: () => {},
+        onHeight: () => {},
+      })
       expect(() => {
         obs.observe({} as HTMLElement)
         obs.disconnect()

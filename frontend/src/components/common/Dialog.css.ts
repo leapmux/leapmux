@@ -41,6 +41,20 @@ export const standard = style({
   'maxWidth': '900px',
   'display': 'flex',
   'flexDirection': 'column',
+  // Oat does not clip a dialog, and a modal dialog then takes the UA's
+  // `overflow: auto`, which scrolls the panel itself whenever a child overflows
+  // it. `body` below is the scroll container, so the panel clips at its border.
+  'overflow': 'hidden',
+  // The dialog owns its transition, at `motion.fast`, because `Dialog.tsx`
+  // unmounts a closing dialog after `motion.fast` ms. Oat's own durations
+  // (200ms for opacity, 300ms for transform) outlast that delay, and the dialog
+  // then vanishes in the middle of its fade.
+  'transition': [
+    `opacity ${motion.fast}ms ease`,
+    `transform ${motion.fast}ms ease`,
+    `overlay ${motion.fast}ms ease allow-discrete`,
+    `display ${motion.fast}ms ease allow-discrete`,
+  ].join(', '),
   '@media': {
     [`(max-width: ${breakpoints.sm - 1}px)`]: {
       minWidth: 'unset',
@@ -101,22 +115,20 @@ globalStyle(`.${standard}:not([open])`, {
   display: 'none',
 })
 
-// Dialog open: the entry animation (opacity 0 -> 1, transform
-// scale(0.95) -> scale(1)) is supplied by @knadh/oat's `dialog.css`
-// via `@starting-style` + Oat's `transition: opacity 150ms,
-// transform 150ms, ...`. We don't ship our own @keyframes for the
-// open path because running both simultaneously caused a visible
-// double-fade flash.
+// Dialog open: @knadh/oat's `dialog.css` supplies the entry values through
+// `@starting-style` (opacity 0, transform `translateY(0.5rem) scale(0.96)`),
+// and the `transition` on `standard` above animates them to the open state.
+// We don't ship our own @keyframes for the open path because running both
+// simultaneously caused a visible double-fade flash.
 //
 // Dialog close: Solid removes the dialog from the DOM as soon as the
 // parent's `<Show>` flips, so any exit transition tied to `[open]`
 // being removed never gets to play. We drive the exit by toggling a
 // `.closing` marker class on the dialog (while [open] is still set)
 // that overrides Oat's `:is([open])` values back to the @starting-
-// style values (opacity 0, transform scale(0.95)) -- Oat's existing
-// transition on `opacity`/`transform` animates the change. This
-// stays inside a single transition pipeline so the open-time flicker
-// doesn't return.
+// style values -- the same transition on `opacity`/`transform` animates
+// the change. This stays inside a single transition pipeline so the
+// open-time flicker doesn't return.
 //
 // Backdrop: Oat declares an opacity transition for `dialog::backdrop`
 // in its @layer animations rule, but the transition isn't consistently
@@ -146,19 +158,19 @@ const backdropExit = keyframes({
 export const closing = style({})
 
 // Pin the dialog back to Oat's @starting-style values once .closing
-// flips. Oat's `transition: opacity 150ms, transform 150ms, ...`
-// (from `@layer components`) animates the change to those values
+// flips. The transition on `standard` animates the change to those values
 // over `motion.fast` ms; `Dialog.tsx` delays the unmount by the same
 // duration so the transition has time to complete.
 globalStyle(`.${standard}.${closing}[open]`, {
   opacity: 0,
-  transform: 'scale(0.95)',
+  transform: 'translateY(0.5rem) scale(0.96)',
 })
 
-// Settle the OPEN dialog on `transform: none`, not on Oat's `scale(1)`.
+// Settle the OPEN dialog on `transform: none`, not on Oat's
+// `translateY(0) scale(1)`.
 //
-// A transform of any kind -- `scale(1)` included, which computes to the
-// identity matrix and paints nothing -- makes the element a CONTAINING BLOCK
+// A transform of any kind -- Oat's included, which computes to the identity
+// matrix and paints nothing -- makes the element a CONTAINING BLOCK
 // for its `position: fixed` descendants. Every menu inside a dialog is one:
 // `DropdownMenu` positions its popover with viewport coordinates from
 // `calcPopoverPosition`, so a containing block that is not the viewport
@@ -174,9 +186,8 @@ globalStyle(`.${standard}.${closing}[open]`, {
 // frame or two outside it, and that frame is the visible jump.
 //
 // The animation is unaffected. `none` interpolates as the identity matrix, so
-// Oat's transition still runs `scale(0.95)` -> `none` on open and the
-// `.closing` rule above still runs `none` -> `scale(0.95)` on close --
-// confirmed in both Chromium and WebKit.
+// the transition still runs Oat's starting transform -> `none` on open and the
+// `.closing` rule above still runs `none` -> that transform on close.
 //
 // `:not(.closing)` keeps this out of the exit: that rule needs its scale, and
 // the two selectors carry equal specificity, so an overlap would be decided by
@@ -197,8 +208,9 @@ const animationOff = {
 // element could paint at its non-animation state (e.g. the dim
 // `rgba(0,0,0,0.5)` background) before the keyframe's `from` (alpha
 // 0) takes effect. Without it the backdrop briefly flashes fully dim
-// before fading in from transparent. Matches Oat's
-// `dialog:is([open])::backdrop { background-color: rgb(0 0 0 / 0.5) }`.
+// before fading in from transparent. The keyframes own the backdrop, so Oat's
+// own open backdrop, `light-dark(rgb(0 0 0 / 0.4), rgb(0 0 0 / 0.8))`, never
+// shows.
 globalStyle(`.${standard}[open]::backdrop`, {
   backgroundColor: 'rgba(0, 0, 0, 0.5)',
   animation: `${backdropEnter} ${motion.fast}ms ease-out both`,
@@ -254,7 +266,6 @@ export const huge = style({
       width: '100%',
       maxWidth: '100%',
       minWidth: 0,
-      overflow: 'hidden',
     },
   },
 })

@@ -232,7 +232,9 @@ function JBIcon(props: JBIconProps & { spec: JBSpec }): JSX.Element {
   const idPrefix = createUniqueId()
   const grad = (key: string) => `${idPrefix}-${key}`
   const resolveFill = (fill: string) =>
-    fill.startsWith('url(#') ? `url(#${grad(fill.slice(5, -1))})` : fill
+    fill.startsWith('url(#')
+      ? `url(#${grad(fill.slice(5, -1))})`
+      : fill
   const linearEntries = () => Object.entries(props.spec.linears ?? {})
   const radialEntries = () => Object.entries(props.spec.radials ?? {})
   return (
@@ -280,8 +282,26 @@ function JBIcon(props: JBIconProps & { spec: JBSpec }): JSX.Element {
 // IntelliJ IDEA Ultimate — orange / red / blue
 const SPEC_INTELLIJ_IDEA: JBSpec = {
   linears: {
-    a: { x1: '-.39', x2: '24.39', y1: '7.67', y2: '61.13', stops: [{ offset: '.1', color: '#FC801D' }, { offset: '.59', color: '#FE2857' }] },
-    b: { x1: '4.33', x2: '62.92', y1: '59.93', y2: '1.34', stops: [{ offset: '.21', color: '#FE2857' }, { offset: '.7', color: '#007EFF' }] },
+    a: {
+      x1: '-.39',
+      x2: '24.39',
+      y1: '7.67',
+      y2: '61.13',
+      stops: [
+        { offset: '.1', color: '#FC801D' },
+        { offset: '.59', color: '#FE2857' },
+      ],
+    },
+    b: {
+      x1: '4.33',
+      x2: '62.92',
+      y1: '59.93',
+      y2: '1.34',
+      stops: [
+        { offset: '.21', color: '#FE2857' },
+        { offset: '.7', color: '#007EFF' },
+      ],
+    },
   },
   outer: [
     { fill: '#FF8100', d: 'M16.4501 6H4.19132C1.88757 6 .03007 7.88688.066946 10.1906l.17625 11.0431C.261946 22.415.786321 23.5312 1.6832 24.3l38.1587 32.7069c.7475.6406 1.7.9931 2.6844.9931h11.3494c2.2781 0 4.125-1.8469 4.125-4.125V42.8719c0-1.1894-.5138-2.3213-1.4088-3.1044L19.1663 7.02063C18.4144 6.3625 17.4494 6 16.4501 6Z' },
@@ -297,7 +317,13 @@ const SPEC_INTELLIJ_IDEA: JBSpec = {
 // IntelliJ IDEA Community — radial yellow→cyan
 const SPEC_INTELLIJ_IDEA_CE: JBSpec = {
   radials: {
-    a: { transform: 'translate(61.7225 1.69625) scale(84.0131)', stops: [{ offset: '.03', color: '#FE2857' }, { offset: '.71', color: '#007EFF' }] },
+    a: {
+      transform: 'translate(61.7225 1.69625) scale(84.0131)',
+      stops: [
+        { offset: '.03', color: '#FE2857' },
+        { offset: '.71', color: '#007EFF' },
+      ],
+    },
   },
   outer: [
     { fill: 'url(#a)', d: 'M59.875 0H25.7087c-1.0937 0-2.1431.434375-2.9168 1.20812L1.20812 22.7919C.434375 23.5656 0 24.6144 0 25.7087V59.875C0 62.1531 1.84687 64 4.125 64h34.1662c1.0944 0 2.1432-.4344 2.9169-1.2081l21.5825-21.5838c.7738-.7737 1.2081-1.8225 1.2081-2.9162L64 4.12563C64 1.8475 62.1531.000625 59.875.000625V0Z' },
@@ -310,8 +336,26 @@ const SPEC_INTELLIJ_IDEA_CE: JBSpec = {
 
 const SPEC_WEBSTORM: JBSpec = {
   linears: {
-    a: { x1: '7.67', x2: '61.13', y1: '64.39', y2: '39.61', stops: [{ offset: '.22', color: '#F0EB18' }, { offset: '.59', color: '#00C4F4' }] },
-    b: { x1: '59.93', x2: '1.34', y1: '59.68', y2: '1.08', stops: [{ offset: '.19', color: '#00C4F4' }, { offset: '.83', color: '#007DFE' }] },
+    a: {
+      x1: '7.67',
+      x2: '61.13',
+      y1: '64.39',
+      y2: '39.61',
+      stops: [
+        { offset: '.22', color: '#F0EB18' },
+        { offset: '.59', color: '#00C4F4' },
+      ],
+    },
+    b: {
+      x1: '59.93',
+      x2: '1.34',
+      y1: '59.68',
+      y2: '1.08',
+      stops: [
+        { offset: '.19', color: '#00C4F4' },
+        { offset: '.83', color: '#007DFE' },
+      ],
+    },
   },
   outer: [
     { fill: '#F0EB18', d: 'M6 47.5494v12.2587c0 2.3038 1.88688 4.1613 4.1906 4.1244l11.0431-.1763c1.1813-.0187 2.2975-.5431 3.0663-1.44l32.7069-38.1581c.6406-.7475.9931-1.7.9931-2.6844V10.125C58 7.84687 56.1531 6 53.875 6H42.8719c-1.1894 0-2.3213.51375-3.1044 1.40875L7.02063 44.8331C6.3625 45.585 6 46.55 6 47.5494Z' },
@@ -326,8 +370,26 @@ const SPEC_WEBSTORM: JBSpec = {
 
 const SPEC_GOLAND: JBSpec = {
   linears: {
-    a: { x1: '64.39', x2: '39.61', y1: '56.33', y2: '2.87', stops: [{ offset: '.24', color: '#00D886' }, { offset: '.51', color: '#007DFE' }] },
-    b: { x1: '59.68', x2: '1.08', y1: '4.07', y2: '62.66', stops: [{ offset: '.27', color: '#007DFE' }, { offset: '.7', color: '#D249FC' }] },
+    a: {
+      x1: '64.39',
+      x2: '39.61',
+      y1: '56.33',
+      y2: '2.87',
+      stops: [
+        { offset: '.24', color: '#00D886' },
+        { offset: '.51', color: '#007DFE' },
+      ],
+    },
+    b: {
+      x1: '59.68',
+      x2: '1.08',
+      y1: '4.07',
+      y2: '62.66',
+      stops: [
+        { offset: '.27', color: '#007DFE' },
+        { offset: '.7', color: '#D249FC' },
+      ],
+    },
   },
   outer: [
     { fill: '#00D886', d: 'M47.55 58h12.2588c2.3037 0 4.1612-1.8869 4.1243-4.1906l-.1762-11.0431c-.0188-1.1813-.5431-2.2975-1.44-3.0663L24.1588 6.99312C23.4113 6.3525 22.4587 6 21.4744 6H10.125C7.84687 6 6 7.84687 6 10.125v11.0031c0 1.1894.51375 2.3213 1.40875 3.1044L44.8338 56.9794C45.5856 57.6375 46.5506 58 47.55 58Z' },
@@ -342,8 +404,26 @@ const SPEC_GOLAND: JBSpec = {
 
 const SPEC_RUSTROVER: JBSpec = {
   linears: {
-    a: { x1: '7.67', x2: '61.13', y1: '64.39', y2: '39.61', stops: [{ offset: '.08', color: '#00D886' }, { offset: '.46', color: '#FFAB00' }] },
-    b: { x1: '59.93', x2: '1.34', y1: '59.68', y2: '1.08', stops: [{ offset: '.19', color: '#FFAB00' }, { offset: '.83', color: '#FF004C' }] },
+    a: {
+      x1: '7.67',
+      x2: '61.13',
+      y1: '64.39',
+      y2: '39.61',
+      stops: [
+        { offset: '.08', color: '#00D886' },
+        { offset: '.46', color: '#FFAB00' },
+      ],
+    },
+    b: {
+      x1: '59.93',
+      x2: '1.34',
+      y1: '59.68',
+      y2: '1.08',
+      stops: [
+        { offset: '.19', color: '#FFAB00' },
+        { offset: '.83', color: '#FF004C' },
+      ],
+    },
   },
   outer: [
     { fill: '#00D886', d: 'M6 47.5494v12.2587c0 2.3038 1.88688 4.1613 4.1906 4.1244l11.0431-.1763c1.1813-.0187 2.2975-.5431 3.0663-1.44l32.7069-38.1581c.6406-.7475.9931-1.7.9931-2.6844V10.125C58 7.84687 56.1531 6 53.875 6H42.8719c-1.1894 0-2.3213.51375-3.1044 1.40875L7.02063 44.8331C6.3625 45.585 6 46.55 6 47.5494Z' },
@@ -358,8 +438,26 @@ const SPEC_RUSTROVER: JBSpec = {
 
 const SPEC_PYCHARM: JBSpec = {
   linears: {
-    a: { x1: '7.67', x2: '61.13', y1: '64.39', y2: '39.61', stops: [{ offset: '.1', color: '#00D886' }, { offset: '.59', color: '#F0EB18' }] },
-    b: { x1: '59.93', x2: '1.34', y1: '59.68', y2: '1.08', stops: [{ offset: '.3', color: '#F0EB18' }, { offset: '.7', color: '#00C4F4' }] },
+    a: {
+      x1: '7.67',
+      x2: '61.13',
+      y1: '64.39',
+      y2: '39.61',
+      stops: [
+        { offset: '.1', color: '#00D886' },
+        { offset: '.59', color: '#F0EB18' },
+      ],
+    },
+    b: {
+      x1: '59.93',
+      x2: '1.34',
+      y1: '59.68',
+      y2: '1.08',
+      stops: [
+        { offset: '.3', color: '#F0EB18' },
+        { offset: '.7', color: '#00C4F4' },
+      ],
+    },
   },
   outer: [
     { fill: '#00D886', d: 'M6 47.55v12.2588c0 2.3037 1.88688 4.1612 4.1906 4.1243l11.0431-.1762c1.1813-.0188 2.2975-.5431 3.0663-1.44l32.7069-38.1581c.6406-.7475.9931-1.7001.9931-2.6844V10.125C58 7.84687 56.1531 6 53.875 6H42.8719c-1.1894 0-2.3213.51375-3.1044 1.40875L7.02063 44.8338C6.3625 45.5856 6 46.5506 6 47.55Z' },
@@ -374,7 +472,13 @@ const SPEC_PYCHARM: JBSpec = {
 
 const SPEC_PYCHARM_CE: JBSpec = {
   radials: {
-    a: { transform: 'translate(61.7225 1.75875) scale(84.0131)', stops: [{ offset: '.03', color: '#F0EB18' }, { offset: '.71', color: '#00C4F4' }] },
+    a: {
+      transform: 'translate(61.7225 1.75875) scale(84.0131)',
+      stops: [
+        { offset: '.03', color: '#F0EB18' },
+        { offset: '.71', color: '#00C4F4' },
+      ],
+    },
   },
   outer: [
     { fill: 'url(#a)', d: 'M59.875.0625H25.7087c-1.0937 0-2.1431.434375-2.9168 1.20812L1.20812 22.8544C.434375 23.6281 0 24.6769 0 25.7712v34.1663c0 2.2781 1.84687 4.125 4.125 4.125h34.1662c1.0944 0 2.1432-.4344 2.9169-1.2081l21.5825-21.5838c.7738-.7737 1.2081-1.8225 1.2081-2.9162L64 4.18812C64 1.91 62.1531.063125 59.875.063125V.0625Z' },
@@ -388,8 +492,26 @@ const SPEC_PYCHARM_CE: JBSpec = {
 
 const SPEC_PHPSTORM: JBSpec = {
   linears: {
-    a: { x1: '56.33', x2: '2.87', y1: '-.39', y2: '24.39', stops: [{ offset: '.16', color: '#D249FC' }, { offset: '.55', color: '#FF2D90' }] },
-    b: { x1: '4.07', x2: '62.66', y1: '4.33', y2: '62.92', stops: [{ offset: '.3', color: '#FF2D90' }, { offset: '.7', color: '#7256FF' }] },
+    a: {
+      x1: '56.33',
+      x2: '2.87',
+      y1: '-.39',
+      y2: '24.39',
+      stops: [
+        { offset: '.16', color: '#D249FC' },
+        { offset: '.55', color: '#FF2D90' },
+      ],
+    },
+    b: {
+      x1: '4.07',
+      x2: '62.66',
+      y1: '4.33',
+      y2: '62.92',
+      stops: [
+        { offset: '.3', color: '#FF2D90' },
+        { offset: '.7', color: '#7256FF' },
+      ],
+    },
   },
   outer: [
     { fill: '#D249FC', d: 'M58 16.4462V4.18741C58 1.88366 56.1131.026165 53.8094.06304L42.7663.23929c-1.1813.01875-2.2975.543125-3.0663 1.44L6.99312 39.8374C6.3525 40.5849 6 41.5374 6 42.5218v11.3494c0 2.2781 1.84687 4.125 4.125 4.125h11.0031c1.1894 0 2.3213-.5138 3.1044-1.4088l32.7469-37.425C57.6375 18.4105 58 17.4455 58 16.4462Z' },
@@ -404,8 +526,26 @@ const SPEC_PHPSTORM: JBSpec = {
 
 const SPEC_RUBYMINE: JBSpec = {
   linears: {
-    a: { x1: '4.33', x2: '62.92', y1: '59.93', y2: '1.34', stops: [{ offset: '.29', color: '#FF2358' }, { offset: '.75', color: '#7256FF' }] },
-    b: { x1: '-.39', x2: '24.39', y1: '7.67', y2: '61.12', stops: [{ offset: '.29', color: '#FF8100' }, { offset: '.56', color: '#FF2358' }] },
+    a: {
+      x1: '4.33',
+      x2: '62.92',
+      y1: '59.93',
+      y2: '1.34',
+      stops: [
+        { offset: '.29', color: '#FF2358' },
+        { offset: '.75', color: '#7256FF' },
+      ],
+    },
+    b: {
+      x1: '-.39',
+      x2: '24.39',
+      y1: '7.67',
+      y2: '61.12',
+      stops: [
+        { offset: '.29', color: '#FF8100' },
+        { offset: '.56', color: '#FF2358' },
+      ],
+    },
   },
   outer: [
     { fill: 'url(#a)', d: 'M59.8753 0H25.7484c-1.658 0-3.1549.993115-3.7999 2.5206L6.1507 39.9415c-.21874.5181-.32937 1.0756-.32437 1.6381l.15 18.3286c.01875 2.2649 1.85996 4.0912 4.12497 4.0912h17.6652c.8056 0 1.5931-.2357 2.2662-.6782l32.1088-21.1085c1.1606-.7625 1.8587-2.0581 1.8587-3.4468V4.12496C64.0002 1.84686 62.1534 0 59.8753 0Z' },
@@ -420,8 +560,26 @@ const SPEC_RUBYMINE: JBSpec = {
 
 const SPEC_CLION: JBSpec = {
   linears: {
-    a: { x1: '4.07', x2: '62.66', y1: '4.33', y2: '62.92', stops: [{ offset: '.29', color: '#009AE5' }, { offset: '.7', color: '#00D980' }] },
-    b: { x1: '56.33', x2: '2.87', y1: '-.39', y2: '24.39', stops: [{ offset: '.3', color: '#FF2D90' }, { offset: '.54', color: '#009AE5' }] },
+    a: {
+      x1: '4.07',
+      x2: '62.66',
+      y1: '4.33',
+      y2: '62.92',
+      stops: [
+        { offset: '.29', color: '#009AE5' },
+        { offset: '.7', color: '#00D980' },
+      ],
+    },
+    b: {
+      x1: '56.33',
+      x2: '2.87',
+      y1: '-.39',
+      y2: '24.39',
+      stops: [
+        { offset: '.3', color: '#FF2D90' },
+        { offset: '.54', color: '#009AE5' },
+      ],
+    },
   },
   outer: [
     { fill: 'url(#a)', d: 'M64 59.8777V25.7502c0-1.6582-.9931-3.155-2.5206-3.8L24.0581 6.15266c-.5181-.21875-1.0756-.32937-1.6381-.32437l-18.32875.15C1.82625 5.99641 0 7.83766 0 10.1027v17.6656c0 .8056.235625 1.5931.678125 2.2662L21.7869 62.1439c.7625 1.1606 2.0581 1.8588 3.4468 1.8588H59.875c2.2781 0 4.125-1.8469 4.125-4.125Z' },
@@ -436,8 +594,26 @@ const SPEC_CLION: JBSpec = {
 
 const SPEC_RIDER: JBSpec = {
   linears: {
-    a: { x1: '64.39', x2: '39.61', y1: '56.33', y2: '2.87', stops: [{ offset: '.21', color: '#007DFE' }, { offset: '.55', color: '#FFB700' }] },
-    b: { x1: '59.68', x2: '1.08', y1: '4.07', y2: '62.66', stops: [{ offset: '.23', color: '#FFB700' }, { offset: '.73', color: '#FF0A67' }] },
+    a: {
+      x1: '64.39',
+      x2: '39.61',
+      y1: '56.33',
+      y2: '2.87',
+      stops: [
+        { offset: '.21', color: '#007DFE' },
+        { offset: '.55', color: '#FFB700' },
+      ],
+    },
+    b: {
+      x1: '59.68',
+      x2: '1.08',
+      y1: '4.07',
+      y2: '62.66',
+      stops: [
+        { offset: '.23', color: '#FFB700' },
+        { offset: '.73', color: '#FF0A67' },
+      ],
+    },
   },
   outer: [
     { fill: '#007DFE', d: 'M47.5494 58h12.2587c2.3038 0 4.1613-1.8869 4.1244-4.1906l-.1763-11.0431c-.0187-1.1813-.5431-2.2975-1.44-3.0663L24.1581 6.99312C23.4106 6.3525 22.4581 6 21.4737 6H10.125C7.84687 6 6 7.84687 6 10.125v11.0031c0 1.1894.51375 2.3213 1.40875 3.1044L44.8337 56.9794C45.5856 57.6375 46.5506 58 47.55 58h-.0006Z' },
@@ -452,8 +628,26 @@ const SPEC_RIDER: JBSpec = {
 
 const SPEC_DATAGRIP: JBSpec = {
   linears: {
-    a: { x1: '59.68', x2: '1.08', y1: '4.07', y2: '62.66', stops: [{ offset: '.28', color: '#7256FF' }, { offset: '.66', color: '#00D980' }] },
-    b: { x1: '64.39', x2: '39.61', y1: '56.33', y2: '2.87', stops: [{ offset: '.3', color: '#FF43F2' }, { offset: '.54', color: '#7256FF' }] },
+    a: {
+      x1: '59.68',
+      x2: '1.08',
+      y1: '4.07',
+      y2: '62.66',
+      stops: [
+        { offset: '.28', color: '#7256FF' },
+        { offset: '.66', color: '#00D980' },
+      ],
+    },
+    b: {
+      x1: '64.39',
+      x2: '39.61',
+      y1: '56.33',
+      y2: '2.87',
+      stops: [
+        { offset: '.3', color: '#FF43F2' },
+        { offset: '.54', color: '#7256FF' },
+      ],
+    },
   },
   outer: [
     { fill: 'url(#a)', d: 'M4.125 64h34.1275c1.6581 0 3.155-.9931 3.8-2.5206L57.85 24.0581c.2187-.5181.3294-1.0756.3244-1.6381l-.15-18.32875C58.0056 1.82625 56.1644 0 53.8994 0H36.2337c-.8056 0-1.5931.235625-2.2662.678125L1.85938 21.7869C.69875 22.55 0 23.845 0 25.2337V59.875C0 62.1531 1.84687 64 4.125 64Z' },
@@ -567,7 +761,13 @@ function FileManagerIcon(props: { size: number, class?: string }): JSX.Element {
   // also brings lucide's `aria-hidden` default, so the row's accessible name
   // stays the application's name alone.
   return (
-    <SvgIconFrame size={props.size} {...(props.class !== undefined ? { class: props.class } : {})} style={iconStyle(props.size)}>
+    <SvgIconFrame
+      size={props.size}
+      {...(props.class !== undefined
+        ? { class: props.class }
+        : {})}
+      style={iconStyle(props.size)}
+    >
       <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
     </SvgIconFrame>
   )
@@ -579,7 +779,13 @@ function FileManagerIcon(props: { size: number, class?: string }): JSX.Element {
 // manager has an entry of its own.
 function GenericAppIcon(props: { size: number, class?: string }): JSX.Element {
   return (
-    <SvgIconFrame size={props.size} {...(props.class !== undefined ? { class: props.class } : {})} style={iconStyle(props.size)}>
+    <SvgIconFrame
+      size={props.size}
+      {...(props.class !== undefined
+        ? { class: props.class }
+        : {})}
+      style={iconStyle(props.size)}
+    >
       <path d="m16 18 6-6-6-6" />
       <path d="m8 6-6 6 6 6" />
     </SvgIconFrame>
@@ -588,7 +794,17 @@ function GenericAppIcon(props: { size: number, class?: string }): JSX.Element {
 
 // Bind each JBIcon variant to its spec so all entries share the same
 // `(size, class) => JSX` signature.
-const jb = (spec: JBSpec): IconComponent => p => <JBIcon size={p.size} {...(p.class !== undefined ? { class: p.class } : {})} spec={spec} />
+function jb(spec: JBSpec): IconComponent {
+  return p => (
+    <JBIcon
+      size={p.size}
+      {...(p.class !== undefined
+        ? { class: p.class }
+        : {})}
+      spec={spec}
+    />
+  )
+}
 
 // `satisfies Record<ExternalAppId, IconComponent>` enforces at compile time
 // that every supported application has an icon — adding an id to
@@ -624,5 +840,13 @@ export function ExternalAppIcon(props: ExternalAppIconProps): JSX.Element {
   const size = () => props.size ?? 16
   const component = (): IconComponent =>
     (props.id && EXTERNAL_APP_ICONS[props.id as ExternalAppId]) || GenericAppIcon
-  return <Dynamic component={component()} size={size()} {...(props.class !== undefined ? { class: props.class } : {})} />
+  return (
+    <Dynamic
+      component={component()}
+      size={size()}
+      {...(props.class !== undefined
+        ? { class: props.class }
+        : {})}
+    />
+  )
 }

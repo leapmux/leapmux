@@ -55,7 +55,12 @@ export async function invokeNativeMcpTool(context: NativeScenarioContext, call: 
  */
 export async function exerciseMcpEcho(context: NativeScenarioContext, value: string, options: { receiptLog?: string } = {}): Promise<void> {
   const callId = `mcp-${value}`
-  const request = await invokeNativeMcpTool(context, { server: MCP_ECHO_SERVER_NAME, tool: 'echo', callId, input: { value } })
+  const request = await invokeNativeMcpTool(context, {
+    server: MCP_ECHO_SERVER_NAME,
+    tool: 'echo',
+    callId,
+    input: { value },
+  })
   expect((await nativeToolOutcome(context, request, callId)).text).toContain(`MCP_ECHO:${value}`)
   if (options.receiptLog) {
     await waitForMcpToolListed(options.receiptLog, 'echo')
@@ -64,7 +69,9 @@ export async function exerciseMcpEcho(context: NativeScenarioContext, value: str
     expect(receipt.toolResults.some(result => result.tool === 'echo' && result.text === `MCP_ECHO:${value}` && !result.isError)).toBe(true)
     expect(receipt.elicitationRequests).toEqual([])
   }
-  await expect(assistantBubbles(context.page).filter({ hasText: nativeMcpAnswer(callId) }).first()).toBeVisible()
+  await expect(assistantBubbles(context.page).filter({
+    hasText: nativeMcpAnswer(callId),
+  }).first()).toBeVisible()
 }
 
 /** Where a provider reads its MCP servers, and how the file registers one server. */

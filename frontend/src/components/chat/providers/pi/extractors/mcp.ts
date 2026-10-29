@@ -7,12 +7,18 @@ import { PI_MCP_RESOURCE_TOOL, PI_MCP_RESULT_FIELD, PI_MCP_TOOL_PREFIX, PI_TOOL_
 export function piNativeMcpIdentity(toolName: string, details: Record<string, unknown> | null | undefined): { server: string, tool: string } | undefined {
   const server = pickString(details, PI_MCP_RESULT_FIELD.Server)
   const tool = pickString(details, PI_MCP_RESULT_FIELD.Tool)
-  if (toolName.startsWith(PI_MCP_TOOL_PREFIX))
-    return server && tool ? { server, tool } : undefined
+  if (toolName.startsWith(PI_MCP_TOOL_PREFIX)) {
+    return server && tool
+      ? { server, tool }
+      : undefined
+  }
   if (tool !== toolName)
     return undefined
-  if (toolName === PI_MCP_RESOURCE_TOOL.Read)
-    return server ? { server, tool } : undefined
+  if (toolName === PI_MCP_RESOURCE_TOOL.Read) {
+    return server
+      ? { server, tool }
+      : undefined
+  }
   // A listing without a server covers every connected server.
   if ((toolName === PI_MCP_RESOURCE_TOOL.List || toolName === PI_MCP_RESOURCE_TOOL.ListTemplates)
     && typeof details?.[PI_MCP_RESULT_FIELD.Server] === 'string') {
@@ -30,5 +36,7 @@ export function piNativeMcpContent(toolName: string, result: Record<string, unkn
   // Resource reads keep their original URIs and blobs beside the model's converted content.
   if (toolName === PI_MCP_RESOURCE_TOOL.Read)
     return asContentArray(native[PI_MCP_RESULT_FIELD.Contents])?.map(resource => ({ type: 'resource', resource })) ?? null
-  return toolName.startsWith(PI_MCP_TOOL_PREFIX) ? asContentArray(native[PI_TOOL_RESULT_FIELD.Content]) : null
+  return toolName.startsWith(PI_MCP_TOOL_PREFIX)
+    ? asContentArray(native[PI_TOOL_RESULT_FIELD.Content])
+    : null
 }

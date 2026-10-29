@@ -28,9 +28,13 @@ function makeResult(toolUseResult: Record<string, unknown> | undefined, content:
     type: 'user',
     message: {
       role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: 'r1', content }],
+      content: [
+        { type: 'tool_result', tool_use_id: 'r1', content },
+      ],
     },
-    ...(toolUseResult ? { tool_use_result: toolUseResult } : {}),
+    ...(toolUseResult
+      ? { tool_use_result: toolUseResult }
+      : {}),
   }
 }
 
@@ -171,7 +175,9 @@ describe('opencode search tool_call_update rendering', () => {
       kind: 'search',
       status: 'completed',
       title: 'Search foo',
-      rawOutput: { metadata: { matches: 4 } },
+      rawOutput: {
+        metadata: { matches: 4 },
+      },
     })
     expect(container.textContent ?? '').toContain('Found 4 matches')
   })
@@ -182,7 +188,9 @@ describe('opencode search tool_call_update rendering', () => {
       kind: 'search',
       status: 'completed',
       title: 'Search nope',
-      rawOutput: { metadata: { matches: 0 } },
+      rawOutput: {
+        metadata: { matches: 0 },
+      },
     })
     expect(container.textContent ?? '').toContain('No matches found')
   })

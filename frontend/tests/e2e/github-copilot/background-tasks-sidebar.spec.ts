@@ -21,7 +21,11 @@ copilotTest('shows a completion notice when an asynchronous shell exits', async 
   await modelScript.fallback(nativeTextStep(native, 'The background shell completion was received.'))
   await withCleanup(async () => {
     const start = await modelScript.queue(
-      { toolCalls: [copilotAsyncBashToolCall('background-shell', output.command)] },
+      {
+        toolCalls: [
+          copilotAsyncBashToolCall('background-shell', output.command),
+        ],
+      },
       nativeTextStep(native, 'The background command is active.'),
     )
     await sendMessage(page, modelScript.prompt('Start the scripted asynchronous command.'))

@@ -93,11 +93,16 @@ export async function exerciseNativeWorkspaceTrustLimit(
     throw new Error('The failed workspace startup requires the native configuration error.')
   // The project follows the rule of the provider. A provider that reads its configuration up to the repository root
   // then reads this project alone, and not the sentinel files of the run root above it (`./ancestorInstructions.ts`).
-  const project = { directory: newNativeWorkingDir(context, 'native-workspace-trust-'), marker: uniqueMarker('NATIVEWORKSPACECONFIG') }
+  const project = {
+    directory: newNativeWorkingDir(context, 'native-workspace-trust-'),
+    marker: uniqueMarker('NATIVEWORKSPACECONFIG'),
+  }
   await options.projectConfiguration.prepare(project)
   const run = async (privateContext: ManagedNativeScenarioContext, wrapper?: NativeStartupWrapper) => {
     let agentId = ''
-    const expectedStatus = options.startup === 'failed' ? AgentStatus.STARTUP_FAILED : AgentStatus.ACTIVE
+    const expectedStatus = options.startup === 'failed'
+      ? AgentStatus.STARTUP_FAILED
+      : AgentStatus.ACTIVE
     const completeStartup = async () => {
       const agent = await retryUntilPass(async () => {
         const current = await nativeAgentById(privateContext, agentId)
@@ -112,7 +117,9 @@ export async function exerciseNativeWorkspaceTrustLimit(
       additionalTestIds: ['dialog-editor'],
       start: async () => {
         const server = privateContext.leapmuxServer
-        const overrides = options.optionValues ? { optionValues: options.optionValues } : {}
+        const overrides = options.optionValues
+          ? { optionValues: options.optionValues }
+          : {}
         agentId = await openAgentViaAPI(server, privateContext.workspaceId, project.directory, agentOpenOptions(privateContext.provider, overrides))
         if (wrapper) {
           await wrapper.entry
@@ -125,12 +132,17 @@ export async function exerciseNativeWorkspaceTrustLimit(
         expect(agent?.workingDir).toBe(project.directory)
       },
       relatedProof: () => options.projectConfiguration.prove(privateContext, { ...project, agentId }),
-      ...(options.startup === 'failed' ? { nativeCompletion: completeStartup } : {}),
+      ...(options.startup === 'failed'
+        ? { nativeCompletion: completeStartup }
+        : {}),
     })
   }
   if (options.worker) {
     await withNativeStartupWorker(context, options.worker.launch, { workerEnvironment: options.worker.workerEnvironment }, async (workerId, wrapper) => {
-      await run({ ...context, leapmuxServer: { ...context.leapmuxServer, workerId } }, wrapper)
+      await run({
+        ...context,
+        leapmuxServer: { ...context.leapmuxServer, workerId },
+      }, wrapper)
     })
   }
   else {
@@ -207,8 +219,14 @@ const PROJECT_MCP_ANSWER = 'The native project configuration probe completed.'
 function prepareMcpServerProject(writeConfiguration: (directory: string, server: ProjectMcpServer) => void): NativeProjectConfigurationProof['prepare'] {
   return ({ directory }) => {
     ensureGitRepositoryRoot(directory)
-    const echo = writeMcpEchoServer(directory, { receiptLog: join(directory, PROJECT_MCP_RECEIPT) })
-    writeConfiguration(directory, { name: PROJECT_MCP_SERVER_NAME, command: echo.command, args: [...echo.args] })
+    const echo = writeMcpEchoServer(directory, {
+      receiptLog: join(directory, PROJECT_MCP_RECEIPT),
+    })
+    writeConfiguration(directory, {
+      name: PROJECT_MCP_SERVER_NAME,
+      command: echo.command,
+      args: [...echo.args],
+    })
   }
 }
 
@@ -271,7 +289,9 @@ export async function exerciseMissingWorkspaceTrustRoute(
   await exerciseUnsupportedControlThroughPermission(context, {
     purpose: 'workspace-trust',
     classify: options.classify,
-    ...(options.operation ? { operation: await options.operation() } : {}),
+    ...(options.operation
+      ? { operation: await options.operation() }
+      : {}),
   })
 }
 

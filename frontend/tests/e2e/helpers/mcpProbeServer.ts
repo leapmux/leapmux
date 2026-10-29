@@ -33,7 +33,12 @@ export function mcpProbeServer(name: string, script: string): McpProbeServer {
   assertMcpServerName(name)
   if (script.trim() === '')
     throw new Error('An MCP server needs the path of its script.')
-  return { name, script, command: process.execPath, args: [script] }
+  return {
+    name,
+    script,
+    command: process.execPath,
+    args: [script],
+  }
 }
 
 /** The common native MCP configuration: one `{ command, args }` entry for each server, under its name. */
@@ -54,7 +59,10 @@ export function mcpServersConfig(...servers: readonly McpProbeServer[]): McpServ
     assertMcpServerName(server.name)
     if (Object.hasOwn(mcpServers, server.name))
       throw new Error(`The MCP configuration holds two servers named ${server.name}.`)
-    mcpServers[server.name] = { command: server.command, args: [...server.args] }
+    mcpServers[server.name] = {
+      command: server.command,
+      args: [...server.args],
+    }
   }
   return { mcpServers }
 }

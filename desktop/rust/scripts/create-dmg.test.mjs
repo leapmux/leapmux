@@ -50,14 +50,37 @@ if (tool === 'mktemp') {
   process.exit(18)
 }
 `)
-  for (const tool of ['hdiutil', 'mktemp', 'du', 'cp', 'ln', 'node', 'chmod', 'sync', 'sleep', 'find']) {
+  for (const tool of [
+    'hdiutil',
+    'mktemp',
+    'du',
+    'cp',
+    'ln',
+    'node',
+    'chmod',
+    'sync',
+    'sleep',
+    'find',
+  ]) {
     const path = join(bin, tool)
     writeFileSync(path, `#!/bin/sh\nexec "$DMG_BUN" "$DMG_DRIVER" ${tool} "$@"\n`)
     chmodSync(path, 0o755)
   }
-  const result = spawnSync('bash', [join(import.meta.dirname, 'create-dmg.sh'), 'test', app, output], {
+  const result = spawnSync('bash', [
+    join(import.meta.dirname, 'create-dmg.sh'),
+    'test',
+    app,
+    output,
+  ], {
     encoding: 'utf8',
-    env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, DMG_TEST_ROOT: root, DMG_BUN: process.execPath, DMG_DRIVER: driver, ...extra },
+    env: {
+      ...process.env,
+      PATH: `${bin}${delimiter}${process.env.PATH}`,
+      DMG_TEST_ROOT: root,
+      DMG_BUN: process.execPath,
+      DMG_DRIVER: driver,
+      ...extra,
+    },
   })
   const calls = readFileSync(join(root, 'calls'), 'utf8').trim().split('\n').map(line => JSON.parse(line))
   return { root, app, output, calls, result }
@@ -101,7 +124,9 @@ describe.skipIf(process.platform === 'win32')('disk image assembly', () => {
   it('waits only after an actual busy detach', () => {
     const { calls, result } = runImage({ DMG_BUSY: '1' })
     expect(result.status, result.stderr).toBe(0)
-    expect(calls.filter(call => call[0] === 'sleep')).toEqual([['sleep', '1']])
+    expect(calls.filter(call => call[0] === 'sleep')).toEqual([
+      ['sleep', '1'],
+    ])
   })
 
   it('forces its own busy mount after five attempts', () => {
@@ -113,7 +138,10 @@ describe.skipIf(process.platform === 'win32')('disk image assembly', () => {
     expect(detach[5]).toContain('-force')
     expect(new Set(detach.map(call => call[2])).size).toBe(1)
     expect(detach[5][2].startsWith(root)).toBe(true)
-    expect(calls.filter(call => call[0] === 'sleep')).toEqual([1, 2, 3, 4].map(delay => ['sleep', String(delay)]))
+    expect(calls.filter(call => call[0] === 'sleep')).toEqual([1, 2, 3, 4].map(delay => [
+      'sleep',
+      String(delay),
+    ]))
   })
 
   it('does not retry a detach error other than resource busy', () => {

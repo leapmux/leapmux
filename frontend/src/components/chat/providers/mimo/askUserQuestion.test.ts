@@ -6,7 +6,15 @@ const QUESTION = {
   properties: {
     id: 'que_1',
     questions: [
-      { question: 'Which database?', header: 'Database', options: [{ label: 'SQLite' }, { label: 'Postgres' }], multiple: true },
+      {
+        question: 'Which database?',
+        header: 'Database',
+        options: [
+          { label: 'SQLite' },
+          { label: 'Postgres' },
+        ],
+        multiple: true,
+      },
       { question: 'Anything else?', options: [] },
     ],
   },
@@ -16,14 +24,31 @@ const QUESTION = {
 describe('mimoIsQuestionRequest', () => {
   it('recognizes a question and not a plan approval', () => {
     expect(mimoIsQuestionRequest(QUESTION)).toBe(true)
-    expect(mimoIsQuestionRequest({ ...QUESTION, request: { tool_name: 'plan_exit' } })).toBe(false)
+    expect(mimoIsQuestionRequest({
+      ...QUESTION,
+      request: { tool_name: 'plan_exit' },
+    })).toBe(false)
     expect(mimoIsQuestionRequest({ type: 'permission.asked' })).toBe(false)
   })
 
   // An MCP server's confirmation is a question on the wire, and the elicitation
   // form answers it. The question card must leave it to that form.
   it('leaves an MCP elicitation to the elicitation form', () => {
-    const elicitation = { ...QUESTION, properties: { id: 'que_2', questions: [{ key: 'mcp_elicitation', header: 'docs', question: 'docs\n\nProceed?', options: [], custom: false }] } }
+    const elicitation = {
+      ...QUESTION,
+      properties: {
+        id: 'que_2',
+        questions: [
+          {
+            key: 'mcp_elicitation',
+            header: 'docs',
+            question: 'docs\n\nProceed?',
+            options: [],
+            custom: false,
+          },
+        ],
+      },
+    }
     expect(mimoIsQuestionRequest(elicitation)).toBe(false)
   })
 
@@ -42,7 +67,16 @@ describe('mimoIsQuestionRequest', () => {
   // Only the one question MiMo asks for an elicitation is one. A question that
   // carries the key beside another question is an ordinary question.
   it('recognizes a request of two questions that holds the key', () => {
-    const mixed = { ...QUESTION, properties: { id: 'que_3', questions: [{ key: 'mcp_elicitation', question: 'A?' }, { question: 'B?' }] } }
+    const mixed = {
+      ...QUESTION,
+      properties: {
+        id: 'que_3',
+        questions: [
+          { key: 'mcp_elicitation', question: 'A?' },
+          { question: 'B?' },
+        ],
+      },
+    }
     expect(mimoIsQuestionRequest(mixed)).toBe(true)
   })
 })

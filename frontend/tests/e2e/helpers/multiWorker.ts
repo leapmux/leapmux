@@ -66,7 +66,9 @@ export async function startMultiWorkerHarness(count = 2): Promise<MultiWorkerHar
     shutdown ??= (async () => {
       await additions
       await finishCleanup([
-        hubUrl ? closeTestChannels(hubUrl) : Promise.resolve(),
+        hubUrl
+          ? closeTestChannels(hubUrl)
+          : Promise.resolve(),
         stopProcesses([...processes]),
       ])
       for (const directory of directories)
@@ -76,7 +78,13 @@ export async function startMultiWorkerHarness(count = 2): Promise<MultiWorkerHar
   }
 
   return cleanupOnFailure(async () => {
-    const hubProc = spawnTestProcess(binaryPath, ['hub', '-listen', '127.0.0.1:0', '-data-dir', hubDataDir], {
+    const hubProc = spawnTestProcess(binaryPath, [
+      'hub',
+      '-listen',
+      '127.0.0.1:0',
+      '-data-dir',
+      hubDataDir,
+    ], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: hubSpawnEnv(),
     })
@@ -103,7 +111,12 @@ export async function startMultiWorkerHarness(count = 2): Promise<MultiWorkerHar
             processes.add(spawned)
           },
         })
-        const worker = { id: registered.workerId, name, dataDir, proc: registered.proc }
+        const worker = {
+          id: registered.workerId,
+          name,
+          dataDir,
+          proc: registered.proc,
+        }
         workers.push(worker)
         return worker
       }, async () => {
@@ -125,12 +138,24 @@ export async function startMultiWorkerHarness(count = 2): Promise<MultiWorkerHar
       const attempt = additions.then(() => spawnWorker(name))
       // The caller receives the failure. The queue must remain available for subsequent additions and cleanup.
       additions = attempt.then(() => {}, () => {})
-      return started ? attempt.catch(error => reportStartupFailure(output, `The worker ${name} of the multi-worker harness`, error)) : attempt
+      return started
+        ? attempt.catch(error => reportStartupFailure(output, `The worker ${name} of the multi-worker harness`, error))
+        : attempt
     }
 
     for (let i = 0; i < count; i++)
       await addWorker(`worker-${String.fromCharCode(65 + i)}`)
     started = true
-    return { hubUrl, hubDataDir, hubProc, adminToken, adminUserId, workers, output, addWorker, stop }
+    return {
+      hubUrl,
+      hubDataDir,
+      hubProc,
+      adminToken,
+      adminUserId,
+      workers,
+      output,
+      addWorker,
+      stop,
+    }
   }, stop).catch(error => reportStartupFailure(output, 'The multi-worker harness', error))
 }

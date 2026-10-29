@@ -49,7 +49,9 @@ export function cutAtCodeUnit(s: string, at: number): string {
 
 /** The node's children, or `[]` for leaf nodes -- the one home for the narrowing cast. */
 function childrenOf(node: Nodes): Nodes[] {
-  return 'children' in node && Array.isArray(node.children) ? node.children as Nodes[] : []
+  return 'children' in node && Array.isArray(node.children)
+    ? node.children as Nodes[]
+    : []
 }
 
 const ATOMIC_INLINE = new Set([
@@ -61,7 +63,12 @@ const ATOMIC_INLINE = new Set([
   'html',
 ])
 
-const DELIMITER = new Set(['strong', 'emphasis', 'delete', 'inlineCode'])
+const DELIMITER = new Set([
+  'strong',
+  'emphasis',
+  'delete',
+  'inlineCode',
+])
 
 // `[ \t>]` (not `[>\s]`): `\s` would also match `\n`, letting the prefix class
 // walk across lines if an exec slice ever spanned one -- same reasoning as
@@ -88,7 +95,9 @@ function snapPastEntity(text: string, offset: number): number {
   if (!match)
     return offset
   const entityEnd = amp + match[0].length
-  return offset < entityEnd ? entityEnd : offset
+  return offset < entityEnd
+    ? entityEnd
+    : offset
 }
 
 /**
@@ -139,8 +148,12 @@ class MarkdownCutter {
     // NaN would compare false against everything below -- skipping the ≤0
     // guard, voiding FLOOR, and slicing to an empty string, so a broken caller
     // would get a bare ellipsis. Degrade it to the defensive hard-cut path.
-    const limit = Number.isNaN(limitOffset) ? 0 : limitOffset
-    this.limitOffset = limit > 0 ? snapPastEntity(text, limit) : limit
+    const limit = Number.isNaN(limitOffset)
+      ? 0
+      : limitOffset
+    this.limitOffset = limit > 0
+      ? snapPastEntity(text, limit)
+      : limit
   }
 
   cut(): string {
@@ -389,7 +402,10 @@ class MarkdownCutter {
       // after it would be absorbed into the block -- which remark-rehype then
       // drops entirely (no allowDangerousHtml), losing the ellipsis. Only HTML
       // inside a paragraph/heading is inline.
-      this.candidates.push({ offset: end, kind: inInlineContext ? 'inline' : 'block' })
+      this.candidates.push({
+        offset: end,
+        kind: inInlineContext ? 'inline' : 'block',
+      })
       return
     }
 
@@ -537,7 +553,9 @@ class MarkdownCutter {
     // that line needs the same prefix the fence opener carried, or the `…`
     // escapes the container and the synthesized closing fence re-parses as a
     // second, empty fence.
-    const ellipsisLinePrefix = sliced.endsWith('\n') ? prefix : ''
+    const ellipsisLinePrefix = sliced.endsWith('\n')
+      ? prefix
+      : ''
     const closer = `\n${prefix}${fenceRun}`
     return sliced + ellipsisLinePrefix + PREVIEW_ELLIPSIS + closer
   }

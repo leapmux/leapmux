@@ -21,9 +21,17 @@ kiroTest('runs the actual project MCP tool and receives its native service resul
     },
   })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   // Kiro loads the server in the background. Its tool exists once Kiro lists it.
   await waitForMcpToolListed(receiptLog, 'echo')
   // The permissive preset runs the tool without a request, so the call must raise no banner.
-  await expectNoNativeControl(context, { testId: 'control-banner', relatedProof: () => exerciseMcpEcho(context, 'KIRO_NATIVE_ECHO_VALUE', { receiptLog }) })
+  await expectNoNativeControl(context, {
+    testId: 'control-banner',
+    relatedProof: () => exerciseMcpEcho(context, 'KIRO_NATIVE_ECHO_VALUE', { receiptLog }),
+  })
 })

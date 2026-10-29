@@ -26,7 +26,9 @@ describe('GEMINI_TOOL_KINDS', () => {
       kind: 'other',
       title: name,
       content: [],
-      locations: [{ path: '/w/notes.txt' }],
+      locations: [
+        { path: '/w/notes.txt' },
+      ],
     }, geminiToolCallAdapter, undefined)
     expect(call.kind).toBe(kind)
     expect(call.name).toBe(name)

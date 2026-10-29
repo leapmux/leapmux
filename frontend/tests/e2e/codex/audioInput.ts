@@ -20,7 +20,9 @@ export function codexAudioInputs(request: Pick<MockModelRequestRecord, 'protocol
     for (const part of row.content.filter(isObject)) {
       if (part.type !== 'input_audio')
         continue
-      const match = typeof part.audio_url === 'string' ? /^data:([^;,]+);base64,([A-Za-z0-9+/]*={0,2})$/u.exec(part.audio_url) : null
+      const match = typeof part.audio_url === 'string'
+        ? /^data:([^;,]+);base64,([A-Za-z0-9+/]*={0,2})$/u.exec(part.audio_url)
+        : null
       if (!match)
         throw new Error('The native audio item has no canonical base64 data URI.')
       const bytes = Buffer.from(match[2]!, 'base64')

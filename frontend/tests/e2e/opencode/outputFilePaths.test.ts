@@ -19,7 +19,12 @@ const frame = {
 }
 
 describe('readOpenCodeNativeOutput', () => {
-  runNativeOutputReaderCases({ read: readOpenCodeNativeOutput, frame, path, pointerError: 'The native OpenCode result has no exact filesystem output pointer.' })
+  runNativeOutputReaderCases({
+    read: readOpenCodeNativeOutput,
+    frame,
+    path,
+    pointerError: 'The native OpenCode result has no exact filesystem output pointer.',
+  })
 })
 
 describe('openCodeTailWindowMarkers', () => {
@@ -29,13 +34,29 @@ describe('openCodeTailWindowMarkers', () => {
   const preview = (from: number, to: number) => `...output truncated...\nFull output saved to: ${path}\n${lines.slice(from, to).join('\n')}`
 
   it('accepts every tail window that a cut output can leave, the middle line and a lost end included', () => {
-    for (const [from, to] of [[3, 7], [5, 9], [8, 11], [1, 2]]) {
-      const receipt = { paths: [path], previewText: preview(from!, to!) }
-      expect(checkNativeOutputReceipt(receipt, output, openCodeTailWindowMarkers(output))).toEqual({ path, previewMarkers: ['TAIL-line-'], absentMarker: 'TAIL-line-0:', rowAbsentMarkers: ['TAIL-line-0:'] })
+    for (const [from, to] of [
+      [3, 7],
+      [5, 9],
+      [8, 11],
+      [1, 2],
+    ]) {
+      const receipt = {
+        paths: [path],
+        previewText: preview(from!, to!),
+      }
+      expect(checkNativeOutputReceipt(receipt, output, openCodeTailWindowMarkers(output))).toEqual({
+        path,
+        previewMarkers: ['TAIL-line-'],
+        absentMarker: 'TAIL-line-0:',
+        rowAbsentMarkers: ['TAIL-line-0:'],
+      })
     }
   })
 
   it('refuses a preview that holds the first line, which no cut output keeps', () => {
-    expect(() => checkNativeOutputReceipt({ paths: [path], previewText: preview(0, 4) }, output, openCodeTailWindowMarkers(output))).toThrow('holds the absent line')
+    expect(() => checkNativeOutputReceipt({
+      paths: [path],
+      previewText: preview(0, 4),
+    }, output, openCodeTailWindowMarkers(output))).toThrow('holds the absent line')
   })
 })

@@ -27,13 +27,17 @@ function requireKimiOutputFilePath(path: string): string {
 /** Accept exactly one native complete footer. Task metadata does not supply missing complete counts. */
 function kimiPerLineOutputFile(text: string): KimiNativeOutputPointer {
   const lines = text.split('\n')
-  const pointers = lines.flatMap((line, index) => line.startsWith(KIMI_OUTPUT_FILE_HEADER.PerLineMarker) ? [index] : [])
+  const pointers = lines.flatMap((line, index) => line.startsWith(KIMI_OUTPUT_FILE_HEADER.PerLineMarker)
+    ? [index]
+    : [])
   const index = pointers[0]
   if (pointers.length !== 1 || index === undefined || (lines[index] !== KIMI_OUTPUT_FILE_HEADER.PerLineComplete && lines[index] !== KIMI_OUTPUT_FILE_HEADER.PerLineCompleteText)
     || lines[index + 2] !== KIMI_OUTPUT_FILE_HEADER.PerLineNextStep || !lines[index + 1]?.startsWith(`${KIMI_OUTPUT_FILE_POINTER.Path}: `)) {
     throw new Error('The native Kimi result has no complete output-file pointer.')
   }
-  return { path: requireKimiOutputFilePath(lines[index + 1]!.slice(`${KIMI_OUTPUT_FILE_POINTER.Path}: `.length)) }
+  return {
+    path: requireKimiOutputFilePath(lines[index + 1]!.slice(`${KIMI_OUTPUT_FILE_POINTER.Path}: `.length)),
+  }
 }
 
 /** Require the native complete-output pointer and its exact tool call identity. */
@@ -73,14 +77,24 @@ export function kimiNativeOutputPointer(text: string, callId: string, expectedTo
   if (!/^[1-9]\d*$/u.test(size) || !Number.isSafeInteger(Number(size)) || Number(size) <= KIMI_OUTPUT_FILE_LIMIT.InlineCharacters || Number(size) > 10_000_000) {
     throw new Error('The native Kimi output path has an invalid full path or complete character count.')
   }
-  const byteFields = [...header.matchAll(/^output_size_bytes:([^\r\n]*)$/gm)]
+  const byteFields = [
+    ...header.matchAll(/^output_size_bytes:([^\r\n]*)$/gm),
+  ]
   if (byteFields.length > 1)
     throw new Error('The native Kimi output path repeats its byte count.')
   const byteField = byteFields[0]?.[1]
   const bytes = byteField?.slice(1)
   if (byteField !== undefined && (!/^ [1-9]\d*$/u.test(byteField) || !Number.isSafeInteger(Number(bytes)) || Number(bytes) < Number(size)))
     throw new Error('The native Kimi output path has an invalid complete byte count.')
-  return { path, chars: Number(size), ...(bytes === undefined ? {} : { bytes: Number(bytes) }) }
+  return {
+    path,
+    chars: Number(size),
+    ...(bytes === undefined
+      ? {}
+      : {
+          bytes: Number(bytes),
+        }),
+  }
 }
 
 /** Read the original dotted result event within its exact native span. */
@@ -102,5 +116,11 @@ export function readKimiNativeOutput(snapshot: NativeMessageSnapshot, callId: st
   const parts = pointer.path.replaceAll('\\', '/').split('/')
   if (!parts.includes(snapshot.agentSessionId) || !parts.includes(String(record.frame.agentId)))
     throw new Error('The native Kimi path belongs to another session or agent.')
-  return { ...pointer, paths: [pointer.path], previewText, frame: record.frame, content: record.message.content }
+  return {
+    ...pointer,
+    paths: [pointer.path],
+    previewText,
+    frame: record.frame,
+    content: record.message.content,
+  }
 }

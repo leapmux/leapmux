@@ -11,7 +11,10 @@ describe('copilot native read details', () => {
   })
 
   it('retains empty file content and an explicit starting line', () => {
-    const result = copilotReadResult({ content: '' }, { path: '/project/empty.txt', view_range: [2, -1] })
+    const result = copilotReadResult({ content: '' }, {
+      path: '/project/empty.txt',
+      view_range: [2, -1],
+    })
     expect(result.lines).toEqual([])
     expect(result.fallbackContent).toBe('')
   })

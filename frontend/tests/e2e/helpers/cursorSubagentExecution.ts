@@ -26,6 +26,9 @@ export class CursorSubagentExecution {
     if (reply.id !== this.id || (reply.execID !== undefined && reply.execID !== this.call.callID))
       throw new Error('The native Cursor child reply has a different execution or tool ID.')
     this.completed = true
-    return { update: cursorTaskCompletedFromNativeReply(this.call, reply), reply }
+    return {
+      update: cursorTaskCompletedFromNativeReply(this.call, reply),
+      reply,
+    }
   }
 }

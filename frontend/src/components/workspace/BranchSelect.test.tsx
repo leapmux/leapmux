@@ -55,34 +55,62 @@ describe('BranchSelect', () => {
   })
 
   it('lists local branches before remote ones', () => {
-    renderBranchSelect({ local: [branch('main')], remote: [branch('origin/dev', true)] })
+    renderBranchSelect({
+      local: [
+        branch('main'),
+      ],
+      remote: [
+        branch('origin/dev', true),
+      ],
+    })
     expect(menuOptions(MENU)).toEqual(['main', 'origin/dev'])
   })
 
   it('heads each group the way optgroup used to', () => {
     // `<optgroup label>` became a heading the menu draws whenever the group
     // changes, so Local and Remote still read apart.
-    renderBranchSelect({ local: [branch('main')], remote: [branch('origin/dev', true)] })
+    renderBranchSelect({
+      local: [
+        branch('main'),
+      ],
+      remote: [
+        branch('origin/dev', true),
+      ],
+    })
     expect(screen.getByText('Local')).toBeInTheDocument()
     expect(screen.getByText('Remote')).toBeInTheDocument()
   })
 
   it('omits a group heading when that list is empty', () => {
-    renderBranchSelect({ local: [branch('main')], remote: [] })
+    renderBranchSelect({
+      local: [
+        branch('main'),
+      ],
+      remote: [],
+    })
     expect(screen.getByText('Local')).toBeInTheDocument()
     expect(screen.queryByText('Remote')).toBeNull()
   })
 
   it('marks the current branch only when asked', () => {
     const { unmount } = renderBranchSelect({
-      local: [branch('main'), branch('dev')],
+      local: [
+        branch('main'),
+        branch('dev'),
+      ],
       currentBranch: 'main',
       showCurrent: true,
     })
     expect(menuOptions(MENU)).toEqual(['main (current)', 'dev'])
     unmount()
 
-    renderBranchSelect({ local: [branch('main')], currentBranch: 'main', showCurrent: false })
+    renderBranchSelect({
+      local: [
+        branch('main'),
+      ],
+      currentBranch: 'main',
+      showCurrent: false,
+    })
     expect(menuOptions(MENU)).toEqual(['main'])
   })
 
@@ -91,7 +119,12 @@ describe('BranchSelect', () => {
   // the list one entry long in a repository with no branches, which is what
   // stopped `LoadingMenu` deriving its own empty state.
   it('shows the prompt on the trigger and never as an option', () => {
-    renderBranchSelect({ local: [branch('main')], value: '' })
+    renderBranchSelect({
+      local: [
+        branch('main'),
+      ],
+      value: '',
+    })
     expect(menuOptions(MENU)).toEqual(['main'])
     expect(menuTriggerText(MENU)).toContain('Select a branch...')
   })
@@ -106,13 +139,24 @@ describe('BranchSelect', () => {
   })
 
   it('fires onChange with the picked branch', () => {
-    const { onChange } = renderBranchSelect({ local: [branch('main'), branch('dev')], value: 'main' })
+    const { onChange } = renderBranchSelect({
+      local: [
+        branch('main'),
+        branch('dev'),
+      ],
+      value: 'main',
+    })
     pickMenuValue(MENU, 'dev')
     expect(onChange).toHaveBeenCalledWith('dev')
   })
 
   it('honours the caller disable on top of its own', () => {
-    renderBranchSelect({ local: [branch('main')], disabled: true })
+    renderBranchSelect({
+      local: [
+        branch('main'),
+      ],
+      disabled: true,
+    })
     expect(menuTrigger(MENU)).toBeDisabled()
   })
 
@@ -122,33 +166,47 @@ describe('BranchSelect', () => {
   describe('filter', () => {
     function renderMany() {
       return renderBranchSelect({
-        local: [branch('main'), branch('feature/login'), branch('feature/signup')],
-        remote: [branch('origin/main', true)],
+        local: [
+          branch('main'),
+          branch('feature/login'),
+          branch('feature/signup'),
+        ],
+        remote: [
+          branch('origin/main', true),
+        ],
       })
     }
 
     it('narrows the list to the matching branches', () => {
       renderMany()
-      fireEvent.input(screen.getByTestId('loading-menu-filter'), { target: { value: 'feature' } })
+      fireEvent.input(screen.getByTestId('loading-menu-filter'), {
+        target: { value: 'feature' },
+      })
       expect(menuOptions(MENU)).toEqual(['feature/login', 'feature/signup'])
     })
 
     it('matches without regard to case', () => {
       renderMany()
-      fireEvent.input(screen.getByTestId('loading-menu-filter'), { target: { value: 'LOGIN' } })
+      fireEvent.input(screen.getByTestId('loading-menu-filter'), {
+        target: { value: 'LOGIN' },
+      })
       expect(menuOptions(MENU)).toEqual(['feature/login'])
     })
 
     it('says so rather than showing an empty menu', () => {
       renderMany()
-      fireEvent.input(screen.getByTestId('loading-menu-filter'), { target: { value: 'nothing' } })
+      fireEvent.input(screen.getByTestId('loading-menu-filter'), {
+        target: { value: 'nothing' },
+      })
       expect(menuOptions(MENU)).toEqual([])
       expect(screen.getByText('No matches')).toBeInTheDocument()
     })
 
     it('still commits the branch the user picks out of a filtered list', () => {
       const { onChange } = renderMany()
-      fireEvent.input(screen.getByTestId('loading-menu-filter'), { target: { value: 'signup' } })
+      fireEvent.input(screen.getByTestId('loading-menu-filter'), {
+        target: { value: 'signup' },
+      })
       pickMenuValue(MENU, 'feature/signup')
       expect(onChange).toHaveBeenCalledWith('feature/signup')
     })

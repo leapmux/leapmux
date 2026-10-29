@@ -17,18 +17,26 @@ const updateAgentSettings = vi.fn()
 
 function confirmedResponse(values: Record<string, string | undefined>) {
   return {
-    optionSettlements: Object.fromEntries(Object.entries(values).map(([axis, value]) => [axis, {
-      state: AgentOptionSettlementState.CONFIRMED,
-      ...(value === undefined ? {} : { value }),
-    }])),
+    optionSettlements: Object.fromEntries(Object.entries(values).map(([axis, value]) => [
+      axis,
+      {
+        state: AgentOptionSettlementState.CONFIRMED,
+        ...(value === undefined
+          ? {}
+          : { value }),
+      },
+    ])),
   }
 }
 
 function unresolvedResponse(...axes: string[]) {
   return {
-    optionSettlements: Object.fromEntries(axes.map(axis => [axis, {
-      state: AgentOptionSettlementState.UNRESOLVED,
-    }])),
+    optionSettlements: Object.fromEntries(axes.map(axis => [
+      axis,
+      {
+        state: AgentOptionSettlementState.UNRESOLVED,
+      },
+    ])),
   }
 }
 
@@ -83,14 +91,26 @@ const permissionGroup = create(AvailableOptionGroupSchema, {
   order: 90,
   mutable: true,
   currentValue: 'default',
-  options: [opt('default', 'Default')],
+  options: [
+    opt('default', 'Default'),
+  ],
 })
 
 // The tab's starting catalog before any switch (running on Opus[1m] at xhigh). The
 // reconcile now reads the settled values from the RPC reply, not this catalog, so the
 // tests drive resolved settings through updateAgentSettings' settlements.
 function opusCatalog(): AvailableOptionGroup[] {
-  return [modelGroup('opus[1m]'), effortGroup(['auto', 'high', 'xhigh', 'ultracode', 'max'], 'xhigh', 'high'), permissionGroup]
+  return [
+    modelGroup('opus[1m]'),
+    effortGroup([
+      'auto',
+      'high',
+      'xhigh',
+      'ultracode',
+      'max',
+    ], 'xhigh', 'high'),
+    permissionGroup,
+  ]
 }
 
 type Stores = ReturnType<typeof createTestTabStores>
@@ -106,7 +126,13 @@ type Stores = ReturnType<typeof createTestTabStores>
 function seedAgent(meta: Record<string, unknown>): Stores {
   const harness = installTestBridge({ workspaceId: 'ws-1' })
   const stores = createTestTabStores('ws-1')
-  emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'a', workerId: 'w1' })
+  emitAddTab({
+    type: TabType.AGENT,
+    id: 'a1',
+    tileId: harness.rootTileId,
+    position: 'a',
+    workerId: 'w1',
+  })
   stores.metadata.patch('a1', meta)
   return stores
 }
@@ -117,10 +143,15 @@ function stubProps(stores: Stores) {
     metadata: stores.metadata,
     selection: stores.selection,
     getActiveWorkspaceId: () => 'ws-1',
-    settingsLoading: { start: () => {}, stop: () => {} },
+    settingsLoading: {
+      start: () => {},
+      stop: () => {},
+    },
     getCurrentTabContext: () => ({ workerId: '', workingDir: '' }),
     agentSessionStore: {},
-    agentInputQueueStore: { clearAgent: () => {} },
+    agentInputQueueStore: {
+      clearAgent: () => {},
+    },
     chatStore: {},
     controlStore: {},
     layoutStore: {},
@@ -139,7 +170,9 @@ async function runChange(
 ) {
   await createRoot(async (dispose) => {
     const ops = useAgentOperations(stubProps(stores))
-    await ops.handleAgentSettingChange('a1', { sets: { [change.groupKey]: change.value } })
+    await ops.handleAgentSettingChange('a1', {
+      sets: { [change.groupKey]: change.value },
+    })
     dispose()
   })
 }
@@ -166,7 +199,9 @@ describe('useAgentOperations settings reconciliation', () => {
 
     expect(updateAgentSettings).toHaveBeenCalledWith('w1', {
       agentId: 'a1',
-      settings: { options: { model: 'default' } },
+      settings: {
+        options: { model: 'default' },
+      },
     })
     const tab = stores.view.getAgentTab('a1')
     // Without the post-RPC reconciliation, the optimistic model would be frozen on
@@ -199,11 +234,18 @@ describe('useAgentOperations settings reconciliation', () => {
       order: 20,
       mutable: true,
       currentValue: 'low',
-      options: [opt('low', 'Low'), opt('high', 'High'), opt('xhigh', 'Extra high')],
+      options: [
+        opt('low', 'Low'),
+        opt('high', 'High'),
+        opt('xhigh', 'Extra high'),
+      ],
     })
     const stores = seedAgent({
       optionValues: { model: 'opus[1m]', reasoning_effort: 'low' },
-      optionGroups: [modelGroup('opus[1m]'), reasoningGroup],
+      optionGroups: [
+        modelGroup('opus[1m]'),
+        reasoningGroup,
+      ],
     })
 
     updateAgentSettings.mockResolvedValue(confirmedResponse({ reasoning_effort: 'high' }))
@@ -262,12 +304,30 @@ describe('useAgentOperations settings reconciliation', () => {
         mutable: true,
         currentValue: current,
         options: [
-          create(AvailableOptionSchema, { id: 'opus[1m]', name: 'Opus (1M context)', subGroups: [tiers()] }),
-          create(AvailableOptionSchema, { id: 'sonnet', name: 'Sonnet', subGroups: [tiers()] }),
+          create(AvailableOptionSchema, {
+            id: 'opus[1m]',
+            name: 'Opus (1M context)',
+            subGroups: [
+              tiers(),
+            ],
+          }),
+          create(AvailableOptionSchema, {
+            id: 'sonnet',
+            name: 'Sonnet',
+            subGroups: [
+              tiers(),
+            ],
+          }),
           create(AvailableOptionSchema, { id: 'haiku', name: 'Haiku' }),
         ],
       })
-      return current === 'haiku' ? [model, permissionGroup] : [model, effortGroup(['auto', 'high', 'xhigh', 'max'], effort, 'high'), permissionGroup]
+      return current === 'haiku'
+        ? [model, permissionGroup]
+        : [
+            model,
+            effortGroup(['auto', 'high', 'xhigh', 'max'], effort, 'high'),
+            permissionGroup,
+          ]
     }
 
     it('sends the model alone and keeps an effort that the new model offers', async () => {
@@ -282,7 +342,9 @@ describe('useAgentOperations settings reconciliation', () => {
 
       expect(updateAgentSettings).toHaveBeenCalledWith('w1', {
         agentId: 'a1',
-        settings: { options: { model: 'sonnet' } },
+        settings: {
+          options: { model: 'sonnet' },
+        },
       })
       const tab = stores.view.getAgentTab('a1')
       expect(tab?.optionValues?.model).toBe('sonnet')
@@ -301,7 +363,9 @@ describe('useAgentOperations settings reconciliation', () => {
 
       expect(updateAgentSettings).toHaveBeenCalledWith('w1', {
         agentId: 'a1',
-        settings: { options: { model: 'haiku' } },
+        settings: {
+          options: { model: 'haiku' },
+        },
       })
       const tab = stores.view.getAgentTab('a1')
       expect(tab?.optionValues?.model).toBe('haiku')
@@ -347,10 +411,14 @@ describe('useAgentOperations settings reconciliation', () => {
     await createRoot(async (dispose) => {
       const ops = useAgentOperations(stubProps(stores))
       // A: optimistic write effort='max', RPC hangs (not awaited).
-      const aDone = ops.handleAgentSettingChange('a1', { sets: { effort: 'max' } })
+      const aDone = ops.handleAgentSettingChange('a1', {
+        sets: { effort: 'max' },
+      })
       expect(stores.view.getAgentTab('a1')?.optionValues?.effort).toBe('max')
       // B: optimistic write effort='low', RPC resolves -> B is the newest selection.
-      await ops.handleAgentSettingChange('a1', { sets: { effort: 'low' } })
+      await ops.handleAgentSettingChange('a1', {
+        sets: { effort: 'low' },
+      })
       expect(stores.view.getAgentTab('a1')?.optionValues?.effort).toBe('low')
       // A now fails. Its rollback must NOT restore A's prior 'high' over B's 'low':
       // A's optimistic value is no longer current, so the rollback is skipped.
@@ -383,10 +451,14 @@ describe('useAgentOperations settings reconciliation', () => {
     await createRoot(async (dispose) => {
       const ops = useAgentOperations(stubProps(stores))
       // A: optimistic model='default' (expectedEffort captured as the pre-change 'high').
-      const aDone = ops.handleAgentSettingChange('a1', { sets: { model: 'default' } })
+      const aDone = ops.handleAgentSettingChange('a1', {
+        sets: { model: 'default' },
+      })
       expect(stores.view.getAgentTab('a1')?.optionValues?.model).toBe('default')
       // B: optimistic effort='low', RPC resolves -> B is the newest effort selection.
-      await ops.handleAgentSettingChange('a1', { sets: { effort: 'low' } })
+      await ops.handleAgentSettingChange('a1', {
+        sets: { effort: 'low' },
+      })
       expect(stores.view.getAgentTab('a1')?.optionValues?.effort).toBe('low')
       // A settles: the relaunch resolved 'default' -> 'sonnet' and reset effort to 'high'.
       resolveA(confirmedResponse({ model: 'sonnet', effort: 'high' }))
@@ -421,9 +493,15 @@ describe('useAgentOperations settings reconciliation', () => {
 
     await createRoot(async (dispose) => {
       const ops = useAgentOperations(stubProps(stores))
-      const oldChange = ops.handleAgentSettingChange('a1', { sets: { model: 'default' } })
-      await ops.handleAgentSettingChange('a1', { sets: { model: 'opus[1m]' } })
-      const newestChange = ops.handleAgentSettingChange('a1', { sets: { model: 'default' } })
+      const oldChange = ops.handleAgentSettingChange('a1', {
+        sets: { model: 'default' },
+      })
+      await ops.handleAgentSettingChange('a1', {
+        sets: { model: 'opus[1m]' },
+      })
+      const newestChange = ops.handleAgentSettingChange('a1', {
+        sets: { model: 'default' },
+      })
 
       resolveOld(confirmedResponse({ model: 'sonnet' }))
       await oldChange
@@ -455,13 +533,21 @@ describe('useAgentOperations settings reconciliation', () => {
       .mockImplementationOnce(() => { throw new Error('reconcile store fault') })
 
     const stop = vi.fn()
-    const props = { ...stubProps(stores), settingsLoading: { start: () => {}, stop } } as Parameters<typeof useAgentOperations>[0]
+    const props = {
+      ...stubProps(stores),
+      settingsLoading: {
+        start: () => {},
+        stop,
+      },
+    } as Parameters<typeof useAgentOperations>[0]
 
     await createRoot(async (dispose) => {
       const ops = useAgentOperations(props)
       // The reconcile fault surfaces (a genuine programming error), but it happens AFTER
       // the success path -- not inside the RPC-failure rollback guard.
-      const pending = ops.handleAgentSettingChange('a1', { sets: { model: 'default' } })
+      const pending = ops.handleAgentSettingChange('a1', {
+        sets: { model: 'default' },
+      })
       await expect(pending).rejects.toThrow('reconcile store fault')
       dispose()
     })
@@ -486,11 +572,18 @@ describe('useAgentOperations settings reconciliation', () => {
       order: 10,
       mutable: true,
       currentValue,
-      options: [opt('auto', 'Auto'), opt('claude-fable-5[effort=high]', 'claude-fable-5'), opt('gpt-5.5[reasoning=medium]', 'gpt-5.5')],
+      options: [
+        opt('auto', 'Auto'),
+        opt('claude-fable-5[effort=high]', 'claude-fable-5'),
+        opt('gpt-5.5[reasoning=medium]', 'gpt-5.5'),
+      ],
     })
     const stores = seedAgent({
       optionValues: { model: 'auto', permissionMode: 'agent' },
-      optionGroups: [cursorModel('auto'), permissionGroup],
+      optionGroups: [
+        cursorModel('auto'),
+        permissionGroup,
+      ],
     })
 
     // Cursor applies the switch LIVE and the reply confirms the same concrete model.
@@ -531,7 +624,9 @@ describe('useAgentOperations settings reconciliation', () => {
     expect(updateAgentSettings).toHaveBeenCalledTimes(1)
     expect(updateAgentSettings).toHaveBeenCalledWith('w1', {
       agentId: 'a1',
-      settings: { options: { permission_profile: ':danger-full-access', permissionMode: 'never' } },
+      settings: {
+        options: { permission_profile: ':danger-full-access', permissionMode: 'never' },
+      },
     })
   })
 
@@ -546,7 +641,9 @@ describe('useAgentOperations settings reconciliation', () => {
 
     await createRoot(async (dispose) => {
       const ops = useAgentOperations(stubProps(stores))
-      await ops.handleAgentSettingChange('a1', { sets: { permission_profile: ':danger-full-access', permissionMode: 'never' } })
+      await ops.handleAgentSettingChange('a1', {
+        sets: { permission_profile: ':danger-full-access', permissionMode: 'never' },
+      })
       dispose()
     })
 
@@ -578,11 +675,15 @@ describe('useAgentOperations settings reconciliation', () => {
     await createRoot(async (dispose) => {
       const ops = useAgentOperations(stubProps(stores))
       // A: permission_profile=':danger-full-access' + permissionMode='never', RPC hangs (not awaited).
-      const aDone = ops.handleAgentSettingChange('a1', { sets: { permission_profile: ':danger-full-access', permissionMode: 'never' } })
+      const aDone = ops.handleAgentSettingChange('a1', {
+        sets: { permission_profile: ':danger-full-access', permissionMode: 'never' },
+      })
       expect(stores.view.getAgentTab('a1')?.optionValues?.permission_profile).toBe(':danger-full-access')
       expect(stores.view.getAgentTab('a1')?.optionValues?.permissionMode).toBe('never')
       // B: overwrites ONLY permissionMode and resolves -> B is the newest selection for that axis.
-      await ops.handleAgentSettingChange('a1', { sets: { permissionMode: 'plan' } })
+      await ops.handleAgentSettingChange('a1', {
+        sets: { permissionMode: 'plan' },
+      })
       expect(stores.view.getAgentTab('a1')?.optionValues?.permissionMode).toBe('plan')
       // A now fails. Its rollback must SKIP permissionMode (B's 'plan' is newer, no longer A's
       // 'never') yet still roll back permission_profile (still A's value, no prior -> deleted).
@@ -627,7 +728,9 @@ describe('useAgentOperations settings reconciliation', () => {
 
     await createRoot(async (dispose) => {
       const ops = useAgentOperations(stubProps(stores))
-      await ops.handleAgentSettingChange('a1', { sets: { permissionMode: 'plan' } })
+      await ops.handleAgentSettingChange('a1', {
+        sets: { permissionMode: 'plan' },
+      })
       dispose()
     })
 

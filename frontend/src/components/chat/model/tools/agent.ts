@@ -72,5 +72,7 @@ export function agentRunStatusLabel(run: AgentRun): string {
   // string, and `pickString` answers `''` for a key the record does not carry -- so
   // `??` alone let an agent record with no status word suppress the outcome word this
   // function exists to supply, and the card headed itself with no state at all.
-  return run.statusLabel || (run.outcome === 'unknown' ? '' : run.outcome)
+  return run.statusLabel || (run.outcome === 'unknown'
+    ? ''
+    : run.outcome)
 }

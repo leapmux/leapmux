@@ -41,19 +41,28 @@ type FwField = Exclude<MessageInitShape<typeof SetFloatingWindowRegisterOpSchema
 function setNodeOp(nodeId: string, field: NodeField, p: bigint, l: bigint, c: string) {
   return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
-    body: { case: 'setNodeRegister', value: create(SetNodeRegisterOpSchema, { nodeId, field }) },
+    body: {
+      case: 'setNodeRegister',
+      value: create(SetNodeRegisterOpSchema, { nodeId, field }),
+    },
   })
 }
 function setTabOp(tabId: string, field: TabField, p: bigint, l: bigint, c: string) {
   return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
-    body: { case: 'setTabRegister', value: create(SetTabRegisterOpSchema, { tabType: TabType.AGENT, tabId, field }) },
+    body: {
+      case: 'setTabRegister',
+      value: create(SetTabRegisterOpSchema, { tabType: TabType.AGENT, tabId, field }),
+    },
   })
 }
 function setFwOp(windowId: string, field: FwField, p: bigint, l: bigint, c: string) {
   return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
-    body: { case: 'setFloatingWindowRegister', value: create(SetFloatingWindowRegisterOpSchema, { windowId, field }) },
+    body: {
+      case: 'setFloatingWindowRegister',
+      value: create(SetFloatingWindowRegisterOpSchema, { windowId, field }),
+    },
   })
 }
 function doubles(values: number[]) {
@@ -79,7 +88,10 @@ function setNodeColsOp(nodeId: string, cols: number, p: bigint, l: bigint, c: st
   return setNodeOp(nodeId, { case: 'cols', value: cols }, p, l, c)
 }
 function setNodeRatiosOp(nodeId: string, ratios: number[], p: bigint, l: bigint, c: string) {
-  return setNodeOp(nodeId, { case: 'ratios', value: doubles(ratios) }, p, l, c)
+  return setNodeOp(nodeId, {
+    case: 'ratios',
+    value: doubles(ratios),
+  }, p, l, c)
 }
 function setFwRootOp(windowId: string, rootNodeId: string, p: bigint, l: bigint, c: string) {
   return setFwOp(windowId, { case: 'rootNodeId', value: rootNodeId }, p, l, c)
@@ -93,25 +105,37 @@ function setFwXOp(windowId: string, x: number, p: bigint, l: bigint, c: string) 
 function tombstoneWorkspaceOp(workspaceId: string, p: bigint, l: bigint, c: string) {
   return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
-    body: { case: 'tombstoneWorkspace', value: create(TombstoneWorkspaceOpSchema, { workspaceId }) },
+    body: {
+      case: 'tombstoneWorkspace',
+      value: create(TombstoneWorkspaceOpSchema, { workspaceId }),
+    },
   })
 }
 function tombstoneNodeOp(nodeId: string, p: bigint, l: bigint, c: string) {
   return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
-    body: { case: 'tombstoneNode', value: create(TombstoneNodeOpSchema, { nodeId }) },
+    body: {
+      case: 'tombstoneNode',
+      value: create(TombstoneNodeOpSchema, { nodeId }),
+    },
   })
 }
 function tombstoneTabOp(tabId: string, p: bigint, l: bigint, c: string) {
   return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
-    body: { case: 'tombstoneTab', value: create(TombstoneTabOpSchema, { tabType: TabType.AGENT, tabId }) },
+    body: {
+      case: 'tombstoneTab',
+      value: create(TombstoneTabOpSchema, { tabType: TabType.AGENT, tabId }),
+    },
   })
 }
 function tombstoneFwOp(windowId: string, p: bigint, l: bigint, c: string) {
   return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
-    body: { case: 'tombstoneFloatingWindow', value: create(TombstoneFloatingWindowOpSchema, { windowId }) },
+    body: {
+      case: 'tombstoneFloatingWindow',
+      value: create(TombstoneFloatingWindowOpSchema, { windowId }),
+    },
   })
 }
 function setTabTileOp(tabId: string, tileId: string, p: bigint, l: bigint, c: string) {
@@ -426,13 +450,19 @@ describe('projection cache', () => {
   function setWorkspaceRootOp(workspaceId: string, rootNodeId: string, p: bigint, l: bigint, c: string) {
     return create(CrdtOpSchema, {
       canonicalHlc: hlc(p, l, c),
-      body: { case: 'setWorkspaceRootNode', value: create(SetWorkspaceRootNodeOpSchema, { workspaceId, rootNodeId }) },
+      body: {
+        case: 'setWorkspaceRootNode',
+        value: create(SetWorkspaceRootNodeOpSchema, { workspaceId, rootNodeId }),
+      },
     })
   }
   function setWorkspaceOp(workspaceId: string, p: bigint, l: bigint, c: string) {
     return create(CrdtOpSchema, {
       canonicalHlc: hlc(p, l, c),
-      body: { case: 'setWorkspaceRegister', value: create(SetWorkspaceRegisterOpSchema, { workspaceId }) },
+      body: {
+        case: 'setWorkspaceRegister',
+        value: create(SetWorkspaceRegisterOpSchema, { workspaceId }),
+      },
     })
   }
 
@@ -441,8 +471,24 @@ describe('projection cache', () => {
   const FUZZ_TABS = ['t0', 't1', 't2', 't3'] as const
   const FUZZ_WINDOWS = ['f0', 'f1'] as const
   const FUZZ_KINDS = [NodeKind.LEAF, NodeKind.SPLIT, NodeKind.GRID] as const
-  const FUZZ_RATIOS = [[], [0.5, 0.5], [0.25, 0.75], [1, 2, 3], [-1, 0.5]] as const
-  const FUZZ_POSITIONS = ['', 'N', 'V', 'a', 'z', '0,0', '0,1', '1,0', '1,1'] as const
+  const FUZZ_RATIOS = [
+    [],
+    [0.5, 0.5],
+    [0.25, 0.75],
+    [1, 2, 3],
+    [-1, 0.5],
+  ] as const
+  const FUZZ_POSITIONS = [
+    '',
+    'N',
+    'V',
+    'a',
+    'z',
+    '0,0',
+    '0,1',
+    '1,0',
+    '1,1',
+  ] as const
 
   /**
    * Every op kind the projection reads, including the ones no shared fixture
@@ -454,31 +500,127 @@ describe('projection cache', () => {
    * the end of the test are what keep that from passing silently.
    */
   const FUZZ_OPS: Array<{ weight: number, make: (rand: () => number, seq: number) => ReturnType<typeof setNodeKindOp> }> = [
-    { weight: 8, make: (r, s) => setNodeKindOp(pick(r, FUZZ_NODES), pick(r, FUZZ_KINDS), 1n, BigInt(s), 'z') },
-    { weight: 8, make: (r, s) => setNodeParentOp(pick(r, FUZZ_NODES), pick(r, [...FUZZ_NODES, 'ghost', '']), 1n, BigInt(s), 'z') },
-    { weight: 6, make: (r, s) => setNodePosOp(pick(r, FUZZ_NODES), pick(r, FUZZ_POSITIONS), 1n, BigInt(s), 'z') },
-    { weight: 4, make: (r, s) => setNodeDirOp(pick(r, FUZZ_NODES), pick(r, [SplitDirection.HORIZONTAL, SplitDirection.VERTICAL]), 1n, BigInt(s), 'z') },
-    { weight: 6, make: (r, s) => setNodeRatiosOp(pick(r, FUZZ_NODES), [...pick(r, FUZZ_RATIOS)], 1n, BigInt(s), 'z') },
-    { weight: 4, make: (r, s) => setNodeRowsOp(pick(r, FUZZ_NODES), Math.floor(r() * 4), 1n, BigInt(s), 'z') },
-    { weight: 4, make: (r, s) => setNodeColsOp(pick(r, FUZZ_NODES), Math.floor(r() * 4), 1n, BigInt(s), 'z') },
-    { weight: 4, make: (r, s) => setNodeOp(pick(r, FUZZ_NODES), { case: 'rowRatios', value: doubles([...pick(r, FUZZ_RATIOS)]) }, 1n, BigInt(s), 'z') },
-    { weight: 4, make: (r, s) => setNodeOp(pick(r, FUZZ_NODES), { case: 'colRatios', value: doubles([...pick(r, FUZZ_RATIOS)]) }, 1n, BigInt(s), 'z') },
-    { weight: 1, make: (r, s) => tombstoneNodeOp(pick(r, FUZZ_NODES), 1n, BigInt(s), 'z') },
-    { weight: 8, make: (r, s) => setTabTileOp(pick(r, FUZZ_TABS), pick(r, [...FUZZ_NODES, 'ghost', '']), 1n, BigInt(s), 'z') },
-    { weight: 4, make: (r, s) => setTabOp(pick(r, FUZZ_TABS), { case: 'position', value: pick(r, FUZZ_POSITIONS) }, 1n, BigInt(s), 'z') },
-    { weight: 4, make: (r, s) => setTabOp(pick(r, FUZZ_TABS), { case: 'workerId', value: pick(r, ['', 'w-1', 'w-2']) }, 1n, BigInt(s), 'z') },
-    { weight: 1, make: (r, s) => tombstoneTabOp(pick(r, FUZZ_TABS), 1n, BigInt(s), 'z') },
-    { weight: 6, make: (r, s) => setFwRootOp(pick(r, FUZZ_WINDOWS), pick(r, [...FUZZ_NODES, 'ghost']), 1n, BigInt(s), 'z') },
-    { weight: 6, make: (r, s) => setFwWorkspaceOp(pick(r, FUZZ_WINDOWS), pick(r, [...FUZZ_WORKSPACES, 'gone']), 1n, BigInt(s), 'z') },
-    { weight: 4, make: (r, s) => setFwOp(pick(r, FUZZ_WINDOWS), { case: 'x', value: r() * 100 }, 1n, BigInt(s), 'z') },
-    { weight: 4, make: (r, s) => setFwOp(pick(r, FUZZ_WINDOWS), { case: 'y', value: r() * 100 }, 1n, BigInt(s), 'z') },
-    { weight: 4, make: (r, s) => setFwOp(pick(r, FUZZ_WINDOWS), { case: 'width', value: r() * 500 }, 1n, BigInt(s), 'z') },
-    { weight: 4, make: (r, s) => setFwOp(pick(r, FUZZ_WINDOWS), { case: 'height', value: r() * 500 }, 1n, BigInt(s), 'z') },
-    { weight: 4, make: (r, s) => setFwOp(pick(r, FUZZ_WINDOWS), { case: 'opacity', value: r() }, 1n, BigInt(s), 'z') },
-    { weight: 1, make: (r, s) => tombstoneFwOp(pick(r, FUZZ_WINDOWS), 1n, BigInt(s), 'z') },
-    { weight: 3, make: (r, s) => setWorkspaceOp(pick(r, FUZZ_WORKSPACES), 1n, BigInt(s), 'z') },
-    { weight: 3, make: (r, s) => setWorkspaceRootOp(pick(r, FUZZ_WORKSPACES), pick(r, FUZZ_NODES), 1n, BigInt(s), 'z') },
-    { weight: 1, make: (r, s) => tombstoneWorkspaceOp(pick(r, FUZZ_WORKSPACES), 1n, BigInt(s), 'z') },
+    {
+      weight: 8,
+      make: (r, s) => setNodeKindOp(pick(r, FUZZ_NODES), pick(r, FUZZ_KINDS), 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 8,
+      make: (r, s) => setNodeParentOp(pick(r, FUZZ_NODES), pick(r, [...FUZZ_NODES, 'ghost', '']), 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 6,
+      make: (r, s) => setNodePosOp(pick(r, FUZZ_NODES), pick(r, FUZZ_POSITIONS), 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 4,
+      make: (r, s) => setNodeDirOp(pick(r, FUZZ_NODES), pick(r, [SplitDirection.HORIZONTAL, SplitDirection.VERTICAL]), 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 6,
+      make: (r, s) => setNodeRatiosOp(pick(r, FUZZ_NODES), [
+        ...pick(r, FUZZ_RATIOS),
+      ], 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 4,
+      make: (r, s) => setNodeRowsOp(pick(r, FUZZ_NODES), Math.floor(r() * 4), 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 4,
+      make: (r, s) => setNodeColsOp(pick(r, FUZZ_NODES), Math.floor(r() * 4), 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 4,
+      make: (r, s) => setNodeOp(pick(r, FUZZ_NODES), {
+        case: 'rowRatios',
+        value: doubles([
+          ...pick(r, FUZZ_RATIOS),
+        ]),
+      }, 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 4,
+      make: (r, s) => setNodeOp(pick(r, FUZZ_NODES), {
+        case: 'colRatios',
+        value: doubles([
+          ...pick(r, FUZZ_RATIOS),
+        ]),
+      }, 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 1,
+      make: (r, s) => tombstoneNodeOp(pick(r, FUZZ_NODES), 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 8,
+      make: (r, s) => setTabTileOp(pick(r, FUZZ_TABS), pick(r, [...FUZZ_NODES, 'ghost', '']), 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 4,
+      make: (r, s) => setTabOp(pick(r, FUZZ_TABS), {
+        case: 'position',
+        value: pick(r, FUZZ_POSITIONS),
+      }, 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 4,
+      make: (r, s) => setTabOp(pick(r, FUZZ_TABS), {
+        case: 'workerId',
+        value: pick(r, ['', 'w-1', 'w-2']),
+      }, 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 1,
+      make: (r, s) => tombstoneTabOp(pick(r, FUZZ_TABS), 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 6,
+      make: (r, s) => setFwRootOp(pick(r, FUZZ_WINDOWS), pick(r, [...FUZZ_NODES, 'ghost']), 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 6,
+      make: (r, s) => setFwWorkspaceOp(pick(r, FUZZ_WINDOWS), pick(r, [...FUZZ_WORKSPACES, 'gone']), 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 4,
+      make: (r, s) => setFwOp(pick(r, FUZZ_WINDOWS), { case: 'x', value: r() * 100 }, 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 4,
+      make: (r, s) => setFwOp(pick(r, FUZZ_WINDOWS), { case: 'y', value: r() * 100 }, 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 4,
+      make: (r, s) => setFwOp(pick(r, FUZZ_WINDOWS), { case: 'width', value: r() * 500 }, 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 4,
+      make: (r, s) => setFwOp(pick(r, FUZZ_WINDOWS), { case: 'height', value: r() * 500 }, 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 4,
+      make: (r, s) => setFwOp(pick(r, FUZZ_WINDOWS), {
+        case: 'opacity',
+        value: r(),
+      }, 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 1,
+      make: (r, s) => tombstoneFwOp(pick(r, FUZZ_WINDOWS), 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 3,
+      make: (r, s) => setWorkspaceOp(pick(r, FUZZ_WORKSPACES), 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 3,
+      make: (r, s) => setWorkspaceRootOp(pick(r, FUZZ_WORKSPACES), pick(r, FUZZ_NODES), 1n, BigInt(s), 'z'),
+    },
+    {
+      weight: 1,
+      make: (r, s) => tombstoneWorkspaceOp(pick(r, FUZZ_WORKSPACES), 1n, BigInt(s), 'z'),
+    },
   ]
   const FUZZ_TOTAL_WEIGHT = FUZZ_OPS.reduce((n, o) => n + o.weight, 0)
 
@@ -532,8 +674,14 @@ describe('projection cache', () => {
       const state = newState('user')
       // Two workspaces exist up front so the very first ops land somewhere; the
       // third is only reachable through `setWorkspaceRegister`.
-      for (const wsId of ['wA', 'wB'])
-        state.workspaces[wsId] = create(WorkspaceContentsRecordSchema, { workspaceId: wsId, rootNodeId: wsId === 'wA' ? 'n0' : 'n1' })
+      for (const wsId of ['wA', 'wB']) {
+        state.workspaces[wsId] = create(WorkspaceContentsRecordSchema, {
+          workspaceId: wsId,
+          rootNodeId: wsId === 'wA'
+            ? 'n0'
+            : 'n1',
+        })
+      }
       const cache = new ProjectionCache()
       // Last non-empty parent seen per node, so a move can be counted ACROSS a
       // redaction. It cannot be spotted on a live record: `parentId` is
@@ -618,7 +766,9 @@ describe('projection cache', () => {
         const leaf = `leaf${ws}${side}`
         applyOp(state, setNodeKindOp(leaf, NodeKind.LEAF, 1n, next(), 'a'))
         applyOp(state, setNodeParentOp(leaf, `root${ws}`, 1n, next(), 'a'))
-        applyOp(state, setNodePosOp(leaf, side === '1' ? 'N' : 'V', 1n, next(), 'a'))
+        applyOp(state, setNodePosOp(leaf, side === '1'
+          ? 'N'
+          : 'V', 1n, next(), 'a'))
         applyOp(state, setTabTileOp(`tab${ws}${side}`, leaf, 1n, next(), 'a'))
       }
     }
@@ -666,7 +816,17 @@ describe('projection cache', () => {
     const leaf = state.nodes.leafA1
     cache.tree('leafA1', leaf, [], () => {
       builds += 1
-      return { nodeId: 'leafA1', kind: NodeKind.LEAF, direction: 0, ratios: [], rows: 0, cols: 0, rowRatios: [], colRatios: [], children: [] }
+      return {
+        nodeId: 'leafA1',
+        kind: NodeKind.LEAF,
+        direction: 0,
+        ratios: [],
+        rows: 0,
+        cols: 0,
+        rowRatios: [],
+        colRatios: [],
+        children: [],
+      }
     })
     expect(builds, 'a cleared entry must be rebuilt, not served back from the pending twin').toBe(1)
   })
@@ -734,12 +894,30 @@ describe('projection cache', () => {
   })
 
   it.each([
-    ['a kind flip', (s: ReturnType<typeof twoWorkspaces>) => applyOp(s.state, setNodeKindOp('leafA1', NodeKind.GRID, 1n, s.next(), 'b'))],
-    ['a tombstoned node', (s: ReturnType<typeof twoWorkspaces>) => applyOp(s.state, tombstoneNodeOp('leafA1', 1n, s.next(), 'b'))],
-    ['a new workspace root', (s: ReturnType<typeof twoWorkspaces>) => applyOp(s.state, setNodeParentOp('fwRoot', 'rootA', 1n, s.next(), 'b'))],
-    ['a tombstoned window', (s: ReturnType<typeof twoWorkspaces>) => applyOp(s.state, tombstoneFwOp('fw1', 1n, s.next(), 'b'))],
-    ['a tombstoned workspace', (s: ReturnType<typeof twoWorkspaces>) => applyOp(s.state, tombstoneWorkspaceOp('wA', 1n, s.next(), 'b'))],
-    ['a tombstoned tab', (s: ReturnType<typeof twoWorkspaces>) => applyOp(s.state, tombstoneTabOp('tabA1', 1n, s.next(), 'b'))],
+    [
+      'a kind flip',
+      (s: ReturnType<typeof twoWorkspaces>) => applyOp(s.state, setNodeKindOp('leafA1', NodeKind.GRID, 1n, s.next(), 'b')),
+    ],
+    [
+      'a tombstoned node',
+      (s: ReturnType<typeof twoWorkspaces>) => applyOp(s.state, tombstoneNodeOp('leafA1', 1n, s.next(), 'b')),
+    ],
+    [
+      'a new workspace root',
+      (s: ReturnType<typeof twoWorkspaces>) => applyOp(s.state, setNodeParentOp('fwRoot', 'rootA', 1n, s.next(), 'b')),
+    ],
+    [
+      'a tombstoned window',
+      (s: ReturnType<typeof twoWorkspaces>) => applyOp(s.state, tombstoneFwOp('fw1', 1n, s.next(), 'b')),
+    ],
+    [
+      'a tombstoned workspace',
+      (s: ReturnType<typeof twoWorkspaces>) => applyOp(s.state, tombstoneWorkspaceOp('wA', 1n, s.next(), 'b')),
+    ],
+    [
+      'a tombstoned tab',
+      (s: ReturnType<typeof twoWorkspaces>) => applyOp(s.state, tombstoneTabOp('tabA1', 1n, s.next(), 'b')),
+    ],
   ])('misses on %s, and still answers what the uncached projection would', (_label, mutate) => {
     const fixture = twoWorkspaces()
     const cache = new ProjectionCache()
@@ -795,7 +973,11 @@ describe('projection cache', () => {
     // Three of four cells. The missing one renders as a virtual empty leaf,
     // which used to be a fresh object per call -- enough on its own to make
     // every grid with a hole miss forever.
-    for (const [id, pos] of [['c00', '0,0'], ['c01', '0,1'], ['c10', '1,0']] as const) {
+    for (const [id, pos] of [
+      ['c00', '0,0'],
+      ['c01', '0,1'],
+      ['c10', '1,0'],
+    ] as const) {
       applyOp(state, setNodeKindOp(id, NodeKind.LEAF, 1n, next(), 'a'))
       applyOp(state, setNodeParentOp(id, 'root', 1n, next(), 'a'))
       applyOp(state, setNodePosOp(id, pos, 1n, next(), 'a'))
@@ -966,8 +1148,14 @@ describe('projection cache', () => {
     ratios: next => setNodeRatiosOp('grid', [0.9, 0.1], 1n, next(), 'a'),
     rows: next => setNodeRowsOp('grid', 3, 1n, next(), 'a'),
     cols: next => setNodeColsOp('grid', 3, 1n, next(), 'a'),
-    rowRatios: next => setNodeOp('grid', { case: 'rowRatios', value: doubles([0.7, 0.3]) }, 1n, next(), 'a'),
-    colRatios: next => setNodeOp('grid', { case: 'colRatios', value: doubles([0.7, 0.3]) }, 1n, next(), 'a'),
+    rowRatios: next => setNodeOp('grid', {
+      case: 'rowRatios',
+      value: doubles([0.7, 0.3]),
+    }, 1n, next(), 'a'),
+    colRatios: next => setNodeOp('grid', {
+      case: 'colRatios',
+      value: doubles([0.7, 0.3]),
+    }, 1n, next(), 'a'),
   }
 
   it.each(Object.entries(NODE_REGISTERS))('rebuilds the subtree when %s changes', (_name, write) => {
@@ -982,8 +1170,14 @@ describe('projection cache', () => {
     applyOp(state, setNodeKindOp('grid', NodeKind.GRID, 1n, next(), 'a'))
     applyOp(state, setNodeRowsOp('grid', 2, 1n, next(), 'a'))
     applyOp(state, setNodeColsOp('grid', 2, 1n, next(), 'a'))
-    applyOp(state, setNodeOp('grid', { case: 'rowRatios', value: doubles([0.5, 0.5]) }, 1n, next(), 'a'))
-    applyOp(state, setNodeOp('grid', { case: 'colRatios', value: doubles([0.5, 0.5]) }, 1n, next(), 'a'))
+    applyOp(state, setNodeOp('grid', {
+      case: 'rowRatios',
+      value: doubles([0.5, 0.5]),
+    }, 1n, next(), 'a'))
+    applyOp(state, setNodeOp('grid', {
+      case: 'colRatios',
+      value: doubles([0.5, 0.5]),
+    }, 1n, next(), 'a'))
     applyOp(state, setNodeRatiosOp('grid', [0.5, 0.5], 1n, next(), 'a'))
     applyOp(state, setNodeDirOp('grid', SplitDirection.HORIZONTAL, 1n, next(), 'a'))
     for (const [i, cell] of ['0,0', '0,1', '1,0', '1,1'].entries()) {

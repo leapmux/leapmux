@@ -24,7 +24,14 @@ function makeToolUseMessage(name: string, input: Record<string, unknown>) {
   return {
     type: 'assistant',
     message: {
-      content: [{ type: 'tool_use', id: 'test-id', name, input }],
+      content: [
+        {
+          type: 'tool_use',
+          id: 'test-id',
+          name,
+          input,
+        },
+      ],
     },
   }
 }
@@ -149,14 +156,31 @@ describe('write/edit tool_use messages state the change they request', () => {
   it('drops the request once the paired tool_result lands', () => {
     const toolResultParsed = resolveMessageForRendering(parseMessageContent(makeFakeMessage({
       type: 'user',
-      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'test-id', content: 'Updated successfully.' }] },
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'test-id', content: 'Updated successfully.' },
+        ],
+      },
       tool_use_result: {
         type: 'update',
         filePath: '/tmp/test.go',
-        structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] }],
+        structuredPatch: [
+          {
+            oldStart: 1,
+            oldLines: 1,
+            newStart: 1,
+            newLines: 1,
+            lines: ['-old', '+new'],
+          },
+        ],
       },
     })), AgentProvider.CLAUDE_CODE)
-    const context: MessageContentRenderContext = { sources: testMessageSources({ result: () => (toolResultParsed) }) }
+    const context: MessageContentRenderContext = {
+      sources: testMessageSources({
+        result: () => (toolResultParsed),
+      }),
+    }
     const category = { kind: 'tool_use' } as MessageCategory
     const { container } = render(() =>
       renderMessageContent(makeToolUseMessage('Write', writeInput), context, category, AgentProvider.CLAUDE_CODE),
@@ -191,11 +215,13 @@ function makeReadToolResult(resultContent: string, context?: Partial<MessageCont
     type: 'user',
     message: {
       role: 'user',
-      content: [{
-        tool_use_id: 'test-read',
-        type: 'tool_result',
-        content: resultContent,
-      }],
+      content: [
+        {
+          tool_use_id: 'test-read',
+          type: 'tool_result',
+          content: resultContent,
+        },
+      ],
     },
   }
   return {
@@ -278,7 +304,13 @@ describe('renderMessageContent provider resolution', () => {
 // `{"jsonrpc":"2.0","method":"session.event",...}`, which is the raw-JSON row the shared
 // standard forbids.
 describe('the row no renderer claimed', () => {
-  const frame = { jsonrpc: '2.0', method: 'session.event', params: { event: { type: 'not.a.known.event' } } }
+  const frame = {
+    jsonrpc: '2.0',
+    method: 'session.event',
+    params: {
+      event: { type: 'not.a.known.event' },
+    },
+  }
 
   it('states that LeapMux has no display for it, and does not print the frame', () => {
     const { container } = render(() => renderMessageContent(frame, undefined, { kind: 'unknown' } as MessageCategory, AgentProvider.GITHUB_COPILOT))
@@ -288,13 +320,19 @@ describe('the row no renderer claimed', () => {
 
   // The frame is the only content the row has, so it is one click away rather than gone.
   it('keeps the frame in the body the expand control opens', () => {
-    const context: MessageContentRenderContext = { getMessageUiState: () => true, setMessageUiState: () => {} }
+    const context: MessageContentRenderContext = {
+      getMessageUiState: () => true,
+      setMessageUiState: () => {},
+    }
     const { container } = render(() => renderMessageContent(frame, context, { kind: 'unknown' } as MessageCategory, AgentProvider.GITHUB_COPILOT))
     expect(container.textContent).toContain('not.a.known.event')
   })
 
   it('limits a large frame after the expand control opens it', () => {
-    const context: MessageContentRenderContext = { getMessageUiState: () => true, setMessageUiState: () => {} }
+    const context: MessageContentRenderContext = {
+      getMessageUiState: () => true,
+      setMessageUiState: () => {},
+    }
     const source = `UNKNOWN_HEAD${'x'.repeat(100_000)}UNKNOWN_TAIL`
     const { container } = render(() => renderMessageContent(source, context, { kind: 'unknown' } as MessageCategory))
 
@@ -316,7 +354,14 @@ describe('the row no renderer claimed', () => {
 
 describe('thinking renderer honors context.expandUiKey', () => {
   it('reads expand-state under the context-supplied key, not its own THINKING literal', () => {
-    const parsed = { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'a long private thought' }] } }
+    const parsed = {
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'thinking', thinking: 'a long private thought' },
+        ],
+      },
+    }
     const category = { kind: 'assistant_thinking' } as MessageCategory
     const getMessageUiState = vi.fn().mockReturnValue(false)
     const setMessageUiState = vi.fn()
@@ -373,7 +418,12 @@ describe('a user row whose provider has no plugin', () => {
   })
 
   it('lists the attachments carried on the same payload', () => {
-    const parsed = { content: 'see this', attachments: [{ filename: 'diagram.png', mime_type: 'image/png' }] }
+    const parsed = {
+      content: 'see this',
+      attachments: [
+        { filename: 'diagram.png', mime_type: 'image/png' },
+      ],
+    }
     const { container } = render(() =>
       renderMessageContent(parsed, undefined, { kind: 'user_content' } as MessageCategory, AgentProvider.UNSPECIFIED))
     expect(container.textContent).toContain('diagram.png')
@@ -387,7 +437,12 @@ describe('a user row whose provider has no plugin', () => {
     // A file dragged in with no typed text. The empty string is the boundary the
     // neutral branch has to pass through to UserContentMessage: a renderer that
     // treated it as "nothing to draw" would show an empty card for a real message.
-    const parsed = { content: '', attachments: [{ filename: 'notes.pdf', mime_type: 'application/pdf' }] }
+    const parsed = {
+      content: '',
+      attachments: [
+        { filename: 'notes.pdf', mime_type: 'application/pdf' },
+      ],
+    }
     const { container } = render(() =>
       renderMessageContent(parsed, undefined, { kind: 'user_content' } as MessageCategory, AgentProvider.UNSPECIFIED))
     expect(container.textContent).toContain('notes.pdf')
@@ -407,7 +462,10 @@ describe('a user row whose provider has no plugin', () => {
 
 describe('provider completion fields', () => {
   it('does not interpret a provider field as LeapMux completion', () => {
-    const message = { ...makeToolUseMessage('Read', { file_path: '/a.ts' }), _leapmux: { completion: 'error' } }
+    const message = {
+      ...makeToolUseMessage('Read', { file_path: '/a.ts' }),
+      _leapmux: { completion: 'error' },
+    }
     const { container } = render(() => renderMessageContent(message, undefined, { kind: 'tool_use' } as MessageCategory, AgentProvider.CLAUDE_CODE))
     expect(container.querySelector('[role="note"]')).toBeNull()
     expect(container.textContent).toContain('/a.ts')

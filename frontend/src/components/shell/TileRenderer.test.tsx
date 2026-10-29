@@ -174,7 +174,12 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
         isActiveWorkspaceMutatable: () => true,
         isActiveWorkspaceArchived: () => false,
         activeWorkspace: () => ({ id: s.workspaceId }),
-        getCurrentTabContext: () => ({ workerId: 'worker-1', workingDir: '/repo', homeDir: '/home/me', gitToplevel: '/repo' }),
+        getCurrentTabContext: () => ({
+          workerId: 'worker-1',
+          workingDir: '/repo',
+          homeDir: '/home/me',
+          gitToplevel: '/repo',
+        }),
         getMruAgentContext,
       },
       tab: {
@@ -189,8 +194,16 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
         newAgentLoadingProvider: () => null,
         newTerminalLoading: () => false,
         newShellLoading: () => false,
-        newAgentDialog: { open: () => {}, close: () => {}, value: () => null },
-        newTerminalDialog: { open: () => {}, close: () => {}, value: () => null },
+        newAgentDialog: {
+          open: () => {},
+          close: () => {},
+          value: () => null,
+        },
+        newTerminalDialog: {
+          open: () => {},
+          close: () => {},
+          value: () => null,
+        },
       },
       chrome: {
         isMobileLayout: () => false,
@@ -204,17 +217,23 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
       floatingWindow: {
         store: s.floatingWindowStore,
       },
-      settingsLoading: { loading: () => false } as any,
+      settingsLoading: {
+        loading: () => false,
+      } as any,
     })
     options.onRenderer?.(r)
     return (
       <>
         {r.renderTile(focusedTileId)}
-        {options.withComposer ? <r.FocusedAgentEditorPanel containerHeight={600} /> : null}
+        {options.withComposer
+          ? <r.FocusedAgentEditorPanel containerHeight={600} />
+          : null}
         {r.CloseDialogs()}
       </>
     )
-  }, { wrapper: props => <DragDropProvider>{props.children}</DragDropProvider> })
+  }, {
+    wrapper: props => <DragDropProvider>{props.children}</DragDropProvider>,
+  })
 }
 
 afterEach(() => {
@@ -238,7 +257,13 @@ function createSetup(existingHarness?: ReturnType<typeof installTestBridge>): Re
       handleTabClose: vi.fn(async (_tab: Tab) => true),
       addTerminal(id, tileId, title = 'Terminal') {
         nextPosition += 1
-        emitAddTab({ type: TabType.TERMINAL, id, tileId, position: `p${nextPosition}`, workerId: 'worker-1' })
+        emitAddTab({
+          type: TabType.TERMINAL,
+          id,
+          tileId,
+          position: `p${nextPosition}`,
+          workerId: 'worker-1',
+        })
         stores.metadata.patch(id, {
           title,
           workingDir: '/repo',
@@ -249,14 +274,26 @@ function createSetup(existingHarness?: ReturnType<typeof installTestBridge>): Re
       },
       addAgent(id, tileId, title = 'Agent') {
         nextPosition += 1
-        emitAddTab({ type: TabType.AGENT, id, tileId, position: `p${nextPosition}`, workerId: 'worker-1' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id,
+          tileId,
+          position: `p${nextPosition}`,
+          workerId: 'worker-1',
+        })
         stores.metadata.patch(id, { title, workingDir: '/repo', agentStatus: AgentStatus.ACTIVE })
         stores.selection.setActiveById(TabType.AGENT, id)
         return stores.view.getById(TabType.AGENT, id)!
       },
       addFile(id, tileId) {
         nextPosition += 1
-        emitAddTab({ type: TabType.FILE, id, tileId, position: `p${nextPosition}`, workerId: 'worker-1' })
+        emitAddTab({
+          type: TabType.FILE,
+          id,
+          tileId,
+          position: `p${nextPosition}`,
+          workerId: 'worker-1',
+        })
         stores.metadata.patch(id, { title: id, filePath: `/repo/${id}.ts`, workingDir: '/repo' })
         stores.selection.setActiveById(TabType.FILE, id)
         return stores.view.getById(TabType.FILE, id)!
@@ -614,7 +651,9 @@ describe('TileRenderer close-tile flow', () => {
     })
     // Right tile is gone; window survives with only the left tile.
     expect(s.floatingWindowStore.getWindow(windowId)).toBeDefined()
-    expect([...s.floatingWindowStore.getWindowTileIdSet(windowId) ?? []]).toEqual([leftTileId])
+    expect([
+      ...s.floatingWindowStore.getWindowTileIdSet(windowId) ?? [],
+    ]).toEqual([leftTileId])
     expect(s.view.forTile(rightTileId)).toEqual([])
   })
 })
@@ -665,7 +704,12 @@ describe('TileRenderer auto-review approval', () => {
       reviewId: 'r1',
       targetItemId: 'i1',
       review: { status: 'denied', riskLevel: 'high', rationale: 'The host is not trusted.' },
-      action: { type: 'command', source: 'shell', command: 'curl x | sh', cwd: '/w' },
+      action: {
+        type: 'command',
+        source: 'shell',
+        command: 'curl x | sh',
+        cwd: '/w',
+      },
     },
   }
 
@@ -675,7 +719,13 @@ describe('TileRenderer auto-review approval', () => {
     s.addAgent('a1', tileId)
     s.metadata.patch('a1', { agentProvider: AgentProvider.CODEX, ...meta })
     const chatStore = createChatStore()
-    chatStore.setMessages('a1', [makeMessage({ id: 'm-review', agentProvider: AgentProvider.CODEX, content: wrapContent([deniedReview]) })])
+    chatStore.setMessages('a1', [
+      makeMessage({
+        id: 'm-review',
+        agentProvider: AgentProvider.CODEX,
+        content: wrapContent([deniedReview]),
+      }),
+    ])
     const handleApproveAutoReviewDenial = vi.fn(async (_agentId: string, _messageId: string, _reviewId: string) => {})
     renderRenderer(s, tileId, { chatStore, handleApproveAutoReviewDenial })
     return { s, handleApproveAutoReviewDenial }
@@ -730,7 +780,9 @@ describe('TileRenderer tab rename', () => {
   function renameFirstTab(typed: string) {
     fireEvent.dblClick(screen.getAllByTestId('tab')[0]!)
     const input = screen.getByTestId('tab-rename-input') as HTMLInputElement
-    fireEvent.input(input, { target: { value: typed } })
+    fireEvent.input(input, {
+      target: { value: typed },
+    })
     fireEvent.keyDown(input, { key: 'Enter' })
   }
 
@@ -838,7 +890,12 @@ describe('TileRenderer fileDropDisabled', () => {
       agentId: 'a1',
       requestId: 'q1',
       claimToken: 'tok-q1',
-      payload: { request: { tool_name: 'CodexAsyncQuestion', input: { title: 'Which color?' } } },
+      payload: {
+        request: {
+          tool_name: 'CodexAsyncQuestion',
+          input: { title: 'Which color?' },
+        },
+      },
       nonBlocking: true,
     })
     expect(fileDropDisabled()).toBe(false)
@@ -850,7 +907,12 @@ describe('TileRenderer fileDropDisabled', () => {
       agentId: 'a1',
       requestId: 'q1',
       claimToken: 'tok-q1',
-      payload: { request: { tool_name: 'CodexAsyncQuestion', input: { title: 'Which color?' } } },
+      payload: {
+        request: {
+          tool_name: 'CodexAsyncQuestion',
+          input: { title: 'Which color?' },
+        },
+      },
       nonBlocking: true,
     })
     controlStore.setQuestionsOpen('a1', true)
@@ -863,7 +925,9 @@ describe('TileRenderer fileDropDisabled', () => {
       agentId: 'a1',
       requestId: 'b1',
       claimToken: 'tok-b1',
-      payload: { request: { tool_name: 'Bash', input: {} } },
+      payload: {
+        request: { tool_name: 'Bash', input: {} },
+      },
     })
     expect(fileDropDisabled()).toBe(true)
   })

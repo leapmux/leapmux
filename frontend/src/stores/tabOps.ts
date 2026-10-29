@@ -71,7 +71,9 @@ export function emitAddTab(tab: {
 }
 
 export function emitRemoveTab(type: TabType, id: string): string | null {
-  return emitOps(ctx => [tombstoneTab(ctx, type, id)])
+  return emitOps(ctx => [
+    tombstoneTab(ctx, type, id),
+  ])
 }
 
 /**
@@ -134,7 +136,9 @@ export function emitReviveTab(tab: {
 }
 
 export function emitSetTabPosition(type: TabType, id: string, position: string): string | null {
-  return emitOps(ctx => [setTabPosition(ctx, type, id, position)])
+  return emitOps(ctx => [
+    setTabPosition(ctx, type, id, position),
+  ])
 }
 
 /**
@@ -143,7 +147,9 @@ export function emitSetTabPosition(type: TabType, id: string, position: string):
  * (the proto convention), so omit the key rather than pass it through.
  */
 function tabPositionView(tab: Tab): { position?: string } {
-  return tab.position === undefined ? {} : { position: tab.position }
+  return tab.position === undefined
+    ? {}
+    : { position: tab.position }
 }
 
 /**
@@ -160,7 +166,9 @@ export function emitMoveTabToTile(type: TabType, id: string, tileId: string): st
   const current = getCRDTBridge()?.speculativeState()?.tabs[id]?.tileId?.value
   if (current === tileId)
     return null
-  return emitOps(ctx => [setTabTileId(ctx, type, id, tileId)])
+  return emitOps(ctx => [
+    setTabTileId(ctx, type, id, tileId),
+  ])
 }
 
 /**
@@ -219,7 +227,9 @@ export function emitMergeTabsIntoTile(
   let lastPos = targetTabs.at(-1)?.position ?? ''
   const moves: { type: TabType, id: string, position: string }[] = []
   for (const tab of sourceTabs) {
-    const newPos = lastPos ? after(lastPos) : first()
+    const newPos = lastPos
+      ? after(lastPos)
+      : first()
     lastPos = newPos
     moves.push({ type: tab.type, id: tab.id, position: newPos })
   }
@@ -267,5 +277,7 @@ export function positionAfterKey(tabsInTile: Tab[], afterKey: string | undefined
   if (!afterKey)
     return positionAtEnd(tabsInTile)
   const idx = tabsInTile.findIndex(t => tabKey(t) === afterKey)
-  return positionAtInsertIdx(tabsInTile.map(tabPositionView), idx >= 0 ? idx + 1 : tabsInTile.length)
+  return positionAtInsertIdx(tabsInTile.map(tabPositionView), idx >= 0
+    ? idx + 1
+    : tabsInTile.length)
 }

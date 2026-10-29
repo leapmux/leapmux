@@ -12,7 +12,14 @@ export const taskRenderer: ToolKindRenderer<'task'> = {
     return call.title ?? 'Task'
   },
   result(call, view) {
-    return <StatusResultBody source={call.result} {...(view.context !== undefined ? { context: view.context } : {})} />
+    return (
+      <StatusResultBody
+        source={call.result}
+        {...(view.context !== undefined
+          ? { context: view.context }
+          : {})}
+      />
+    )
   },
   resultMeta(call) {
     return {

@@ -17,12 +17,19 @@ diracTest.describe('native session resume', () => {
   const provider: AgentProvider = AgentProvider.DIRAC
   const label = 'Dirac'
   diracTest('reattaches an incomplete task with its stored model context', async ({ page, leapmuxServer, modelScript }) => {
-    const { subjectId, subjectDir, keeperId } = await openResumeSubject({ page, modelScript, leapmuxServer }, { label, subjectOptions: () => agentOpenOptions(provider) })
+    const { subjectId, subjectDir, keeperId } = await openResumeSubject({ page, modelScript, leapmuxServer }, {
+      label,
+      subjectOptions: () => agentOpenOptions(provider),
+    })
     const texts = nativeResumeTexts()
     const firstAnswer = texts.originalAnswer
     const diracGate = 'dirac-incomplete-resume'
     const progressStep = await modelScript.queue(
-      { toolCalls: [diracRespondToolCall('dirac-resume-progress', 'progress', firstAnswer)] },
+      {
+        toolCalls: [
+          diracRespondToolCall('dirac-resume-progress', 'progress', firstAnswer),
+        ],
+      },
       { gate: diracGate, text: 'The first task remains incomplete.' },
     )
     let sessionId = ''
@@ -48,7 +55,11 @@ diracTest.describe('native session resume', () => {
     await expectReopenedNativeAgent({ page, leapmuxServer }, { agentProvider: provider, agentSessionId: sessionId }, [subjectId, keeperId])
     await expect(userBubbles(page).filter({ hasText: texts.originalPrompt })).toHaveCount(1)
     await expect(assistantBubbles(page).filter({ hasText: firstAnswer })).toHaveCount(1)
-    const resumedStep = await modelScript.queue({ toolCalls: [diracRespondToolCall('dirac-resume-second', 'complete', texts.resumedAnswer)] })
+    const resumedStep = await modelScript.queue({
+      toolCalls: [
+        diracRespondToolCall('dirac-resume-second', 'complete', texts.resumedAnswer),
+      ],
+    })
     await sendMessage(page, modelScript.prompt(texts.resumedPrompt))
     await modelScript.waitForSteps(resumedStep + 1)
     await waitForAgentIdle(page)

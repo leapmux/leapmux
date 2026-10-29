@@ -57,5 +57,11 @@ export function createSessionIdState(provider: Accessor<AgentProvider | undefine
     const rule = pluginFor(provider())?.session?.validateResumeHandle ?? validateSessionId
     return rule(v)
   })
-  return { value, setValue, error, trimmed, isFilePath }
+  return {
+    value,
+    setValue,
+    error,
+    trimmed,
+    isFilePath,
+  }
 }

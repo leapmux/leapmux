@@ -14,7 +14,24 @@ import { ALL_VARIANTS, DEFAULT_THEME_ID, themeById, THEMES } from '~/styles/them
  * catalogue's `AnsiPalette`. One list, so a slot cannot be checked on one side
  * and missed on the other.
  */
-const ANSI_SLOTS = ['Black', 'Red', 'Green', 'Yellow', 'Blue', 'Magenta', 'Cyan', 'White', 'BrightBlack', 'BrightRed', 'BrightGreen', 'BrightYellow', 'BrightBlue', 'BrightMagenta', 'BrightCyan', 'BrightWhite'] as const
+const ANSI_SLOTS = [
+  'Black',
+  'Red',
+  'Green',
+  'Yellow',
+  'Blue',
+  'Magenta',
+  'Cyan',
+  'White',
+  'BrightBlack',
+  'BrightRed',
+  'BrightGreen',
+  'BrightYellow',
+  'BrightBlue',
+  'BrightMagenta',
+  'BrightCyan',
+  'BrightWhite',
+] as const
 
 // The syntax catalogue lives apart from `~/styles/themes/` -- those modules are
 // plain data with no imports so the notice script can read them, and a TextMate
@@ -123,7 +140,12 @@ describe('loadSyntaxTheme', () => {
     // `isSyntaxThemeName` and `resolveBundledLang` both ask with `Object.hasOwn`
     // for this reason.
     const known = await loadSyntaxTheme(syntaxPairFor(DEFAULT_THEME_ID).dark) as { tokenColors?: unknown[] }
-    for (const name of ['constructor', 'toString', 'valueOf', 'hasOwnProperty']) {
+    for (const name of [
+      'constructor',
+      'toString',
+      'valueOf',
+      'hasOwnProperty',
+    ]) {
       const theme = await loadSyntaxTheme(name) as { tokenColors?: unknown[], name?: string }
       expect(theme.tokenColors?.length).toBe(known.tokenColors?.length)
       expect(theme.name).toBe(name)
@@ -221,7 +243,13 @@ describe('the syntax themes this repo vendors', () => {
     // Upstream ships 80 rules and 82. Well under that means the copy lost
     // rules, and granularity went with them.
     expect(rules.length).toBeGreaterThanOrEqual(40)
-    const scopes = rules.flatMap(r => Array.isArray(r.scope) ? r.scope : r.scope ? [String(r.scope)] : [])
+    const scopes = rules.flatMap(r => Array.isArray(r.scope)
+      ? r.scope
+      : r.scope
+        ? [
+            String(r.scope),
+          ]
+        : [])
     // The scopes a real grammar emits for the constructs a reader most needs
     // told apart. `entity.name.function` is the one the first, hand-written
     // generation missed -- `print(1)` came back as a single span.

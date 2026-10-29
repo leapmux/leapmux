@@ -5,7 +5,9 @@ import { assistantBubbles, messageContents, sendMessage, waitForAgentIdle } from
 codexTest('a retried stream keeps only the retried answer', async ({ native }) => {
   const { page, modelScript } = native
   const start = await modelScript.queue(
-    { error: { status: 500, message: 'cut', midStream: true } },
+    {
+      error: { status: 500, message: 'cut', midStream: true },
+    },
     { text: 'FULL-ANSWER' },
   )
   await sendMessage(page, modelScript.prompt('Stream the scripted answer.'))

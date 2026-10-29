@@ -74,67 +74,76 @@ const spanLineColumnBase = style({
 })
 
 /** Vertical line running through the column center. */
-export const spanLineActive = style([spanLineColumnBase, {
-  '::before': {
-    content: '""',
-    position: 'absolute',
-    left: '50%',
-    top: 0,
-    bottom: 0,
-    width: `${LINE_THICKNESS}px`,
-    transform: 'translateX(-50%)',
-    backgroundColor: 'var(--span-line-color, var(--border))',
+export const spanLineActive = style([
+  spanLineColumnBase,
+  {
+    '::before': {
+      content: '""',
+      position: 'absolute',
+      left: '50%',
+      top: 0,
+      bottom: 0,
+      width: `${LINE_THICKNESS}px`,
+      transform: 'translateX(-50%)',
+      backgroundColor: 'var(--span-line-color, var(--border))',
+    },
   },
-}])
+])
 
 /** Empty column (no active span). */
 export const spanLineEmpty = style([spanLineColumnBase])
 
 /** Horizontal connector from the vertical line to the message (├ shape). */
-export const spanLineConnector = style([spanLineColumnBase, {
-  '::before': {
-    content: '""',
-    position: 'absolute',
-    left: '50%',
-    top: 0,
-    bottom: 0,
-    width: `${LINE_THICKNESS}px`,
-    transform: 'translateX(-50%)',
-    backgroundColor: 'var(--span-line-color, var(--border))',
+export const spanLineConnector = style([
+  spanLineColumnBase,
+  {
+    '::before': {
+      content: '""',
+      position: 'absolute',
+      left: '50%',
+      top: 0,
+      bottom: 0,
+      width: `${LINE_THICKNESS}px`,
+      transform: 'translateX(-50%)',
+      backgroundColor: 'var(--span-line-color, var(--border))',
+    },
+    '::after': {
+      content: '""',
+      position: 'absolute',
+      left: '50%',
+      top: `${CONNECTOR_Y}px`,
+      right: `${CONNECTOR_GAP}px`,
+      height: `${LINE_THICKNESS}px`,
+      backgroundColor: 'var(--span-line-color, var(--border))',
+    },
   },
-  '::after': {
-    content: '""',
-    position: 'absolute',
-    left: '50%',
-    top: `${CONNECTOR_Y}px`,
-    right: `${CONNECTOR_GAP}px`,
-    height: `${LINE_THICKNESS}px`,
-    backgroundColor: 'var(--span-line-color, var(--border))',
-  },
-}])
+])
 
 /** Bottom-corner connector (└ shape): vertical line down to connector, then horizontal. */
-export const spanLineConnectorEnd = style([spanLineColumnBase, {
-  '::before': {
-    content: '""',
-    position: 'absolute',
-    left: '50%',
-    top: 0,
-    height: `${CONNECTOR_Y + LINE_THICKNESS}px`,
-    width: `${LINE_THICKNESS}px`,
-    transform: 'translateX(-50%)',
-    backgroundColor: 'var(--span-line-color, var(--border))',
+export const spanLineConnectorEnd = style([
+  spanLineColumnBase,
+  {
+    '::before': {
+      content: '""',
+      position: 'absolute',
+      left: '50%',
+      top: 0,
+      height: `${CONNECTOR_Y + LINE_THICKNESS}px`,
+      width: `${LINE_THICKNESS}px`,
+      transform: 'translateX(-50%)',
+      backgroundColor: 'var(--span-line-color, var(--border))',
+    },
+    '::after': {
+      content: '""',
+      position: 'absolute',
+      left: '50%',
+      top: `${CONNECTOR_Y}px`,
+      right: `${CONNECTOR_GAP}px`,
+      height: `${LINE_THICKNESS}px`,
+      backgroundColor: 'var(--span-line-color, var(--border))',
+    },
   },
-  '::after': {
-    content: '""',
-    position: 'absolute',
-    left: '50%',
-    top: `${CONNECTOR_Y}px`,
-    right: `${CONNECTOR_GAP}px`,
-    height: `${LINE_THICKNESS}px`,
-    backgroundColor: 'var(--span-line-color, var(--border))',
-  },
-}])
+])
 
 /**
  * Build the horizontal passthrough gradient with a gap for the bridge arc.
@@ -144,54 +153,62 @@ function passthroughGradient(rightEnd: string) {
   const c = 'var(--span-passthrough-color, var(--border))'
   const gapL = `calc(50% - ${BRIDGE_RADIUS - BRIDGE_SEAM}px)`
   const gapR = `calc(50% + ${BRIDGE_RADIUS - BRIDGE_SEAM}px)`
-  return `linear-gradient(to right, ${c} 0, ${c} ${gapL}, transparent ${gapL}, transparent ${gapR}, ${c} ${gapR}, ${c} ${rightEnd}${rightEnd !== '100%' ? `, transparent ${rightEnd}` : ''})`
+  return `linear-gradient(to right, ${c} 0, ${c} ${gapL}, transparent ${gapL}, transparent ${gapR}, ${c} ${gapR}, ${c} ${rightEnd}${rightEnd !== '100%'
+    ? `, transparent ${rightEnd}`
+    : ''})`
 }
 
 /** Active vertical line with a horizontal pass-through that hops over the vertical line. */
-export const spanLineActivePassthrough = style([spanLineColumnBase, {
-  'backgroundImage': passthroughGradient('100%'),
-  'backgroundSize': `100% ${LINE_THICKNESS}px`,
-  'backgroundPosition': `0 ${CONNECTOR_Y}px`,
-  'backgroundRepeat': 'no-repeat',
-  '::before': {
-    content: '""',
-    position: 'absolute',
-    left: '50%',
-    top: 0,
-    bottom: 0,
-    width: `${LINE_THICKNESS}px`,
-    transform: 'translateX(-50%)',
-    backgroundColor: 'var(--span-line-color, var(--border))',
+export const spanLineActivePassthrough = style([
+  spanLineColumnBase,
+  {
+    'backgroundImage': passthroughGradient('100%'),
+    'backgroundSize': `100% ${LINE_THICKNESS}px`,
+    'backgroundPosition': `0 ${CONNECTOR_Y}px`,
+    'backgroundRepeat': 'no-repeat',
+    '::before': {
+      content: '""',
+      position: 'absolute',
+      left: '50%',
+      top: 0,
+      bottom: 0,
+      width: `${LINE_THICKNESS}px`,
+      transform: 'translateX(-50%)',
+      backgroundColor: 'var(--span-line-color, var(--border))',
+    },
+    '::after': {
+      content: '""',
+      position: 'absolute',
+      boxSizing: 'border-box',
+      left: '50%',
+      top: `${BRIDGE_TOP}px`,
+      width: `${BRIDGE_DIAMETER}px`,
+      height: `${BRIDGE_BOTTOM - BRIDGE_TOP + BRIDGE_SEAM}px`,
+      transform: 'translateX(-50%)',
+      borderLeft: `${LINE_THICKNESS}px solid var(--span-passthrough-color, var(--border))`,
+      borderRight: `${LINE_THICKNESS}px solid var(--span-passthrough-color, var(--border))`,
+      borderTop: `${LINE_THICKNESS}px solid var(--span-passthrough-color, var(--border))`,
+      borderBottom: 'none',
+      borderRadius: `${BRIDGE_RADIUS}px ${BRIDGE_RADIUS}px 0 0`,
+    },
   },
-  '::after': {
-    content: '""',
-    position: 'absolute',
-    boxSizing: 'border-box',
-    left: '50%',
-    top: `${BRIDGE_TOP}px`,
-    width: `${BRIDGE_DIAMETER}px`,
-    height: `${BRIDGE_BOTTOM - BRIDGE_TOP + BRIDGE_SEAM}px`,
-    transform: 'translateX(-50%)',
-    borderLeft: `${LINE_THICKNESS}px solid var(--span-passthrough-color, var(--border))`,
-    borderRight: `${LINE_THICKNESS}px solid var(--span-passthrough-color, var(--border))`,
-    borderTop: `${LINE_THICKNESS}px solid var(--span-passthrough-color, var(--border))`,
-    borderBottom: 'none',
-    borderRadius: `${BRIDGE_RADIUS}px ${BRIDGE_RADIUS}px 0 0`,
-  },
-}])
+])
 
 /** Empty column with a horizontal pass-through line. */
-export const spanLinePassthrough = style([spanLineColumnBase, {
-  '::before': {
-    content: '""',
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: `${CONNECTOR_Y}px`,
-    height: `${LINE_THICKNESS}px`,
-    backgroundColor: 'var(--span-passthrough-color, var(--border))',
+export const spanLinePassthrough = style([
+  spanLineColumnBase,
+  {
+    '::before': {
+      content: '""',
+      position: 'absolute',
+      left: 0,
+      right: 0,
+      top: `${CONNECTOR_Y}px`,
+      height: `${LINE_THICKNESS}px`,
+      backgroundColor: 'var(--span-passthrough-color, var(--border))',
+    },
   },
-}])
+])
 
 /** Shorten the rightmost passthrough column so it doesn't touch the message content. */
 globalStyle(`${spanLineActivePassthrough}:last-child`, {
@@ -238,22 +255,33 @@ function spanVars(ansi: AnsiPalette): Record<string, string> {
   return Object.fromEntries(paletteIndices.map(i => [`--span-palette-${i}`, colors[i]!]))
 }
 
-globalStyle(':root', { vars: spanVars(resolveVariant(defaultTheme, undefined, 'light').terminal) })
+globalStyle(':root', {
+  vars: spanVars(resolveVariant(defaultTheme, undefined, 'light').terminal),
+})
 for (const variant of LIGHT_VARIANTS) {
   globalStyle(
     lightVariantSelector(variant),
-    { vars: spanVars(variant.terminal) },
+    {
+      vars: spanVars(variant.terminal),
+    },
   )
 }
 for (const variant of DARK_VARIANTS) {
   globalStyle(
     darkVariantSelector(variant),
-    { vars: spanVars(variant.terminal) },
+    {
+      vars: spanVars(variant.terminal),
+    },
   )
 }
 
 export const spanLineColors = styleVariants(
-  Object.fromEntries(paletteIndices.map(i => [`color${i}`, { vars: { '--span-line-color': `var(--span-palette-${i})` } }])),
+  Object.fromEntries(paletteIndices.map(i => [
+    `color${i}`,
+    {
+      vars: { '--span-line-color': `var(--span-palette-${i})` },
+    },
+  ])),
 )
 
 // ─── Gap-bridge overlay ─────────────────────────────────────────────
@@ -291,5 +319,10 @@ export const spanGapBridge = style({
 })
 
 export const spanPassthroughColors = styleVariants(
-  Object.fromEntries(paletteIndices.map(i => [`color${i}`, { vars: { '--span-passthrough-color': `var(--span-palette-${i})` } }])),
+  Object.fromEntries(paletteIndices.map(i => [
+    `color${i}`,
+    {
+      vars: { '--span-passthrough-color': `var(--span-palette-${i})` },
+    },
+  ])),
 )

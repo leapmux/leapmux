@@ -20,5 +20,7 @@ export function acpWebFetchFromToolCall(
     return null
   const result = collectAcpToolText(toolUse, { rawObjects: false })
   return webFetchFromObj(pickObject(toolUse, ACP_SUPPLEMENT.RawOutput), { resultFallback: result })
-    ?? (result ? { result } : null)
+    ?? (result
+      ? { result }
+      : null)
 }

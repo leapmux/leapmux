@@ -8,7 +8,9 @@ import { fakeLocator } from '~/test-support/fakeLocator'
 import { expectAttachmentOutcome, selectAttachmentFixture, sendWithAttachment, writeAttachmentFixture, writeAudioAttachmentFixture, writeVideoAttachmentFixture } from './attachments'
 
 let runDir: string
-vi.mock('./server', () => ({ getGlobalState: () => ({ tmpDir: runDir }) }))
+vi.mock('./server', () => ({
+  getGlobalState: () => ({ tmpDir: runDir }),
+}))
 
 const ui = vi.hoisted(() => ({
   events: [] as string[],
@@ -19,7 +21,9 @@ vi.mock('./ui', () => ({
   sendMessage: ui.send,
   waitForNativeSettingsHydrated: ui.hydration,
 }))
-const toasts = vi.hoisted(() => ({ recorded: vi.fn<(page: unknown, text: string | RegExp) => Promise<void>>() }))
+const toasts = vi.hoisted(() => ({
+  recorded: vi.fn<(page: unknown, text: string | RegExp) => Promise<void>>(),
+}))
 vi.mock('./toast', () => ({ expectToastRecorded: toasts.recorded }))
 
 beforeEach(() => {
@@ -71,7 +75,18 @@ describe('writeAttachmentFixture', () => {
   it('writes a decodable PNG for the image kind', () => {
     const bytes = readFileSync(writeAttachmentFixture('image', 'x.png'))
     // 8-byte PNG signature, then IHDR.
-    expect([...bytes.subarray(0, 8)]).toEqual([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+    expect([
+      ...bytes.subarray(0, 8),
+    ]).toEqual([
+      0x89,
+      0x50,
+      0x4E,
+      0x47,
+      0x0D,
+      0x0A,
+      0x1A,
+      0x0A,
+    ])
     expect(bytes.length).toBeGreaterThan(8)
   })
 
@@ -116,7 +131,9 @@ describe('writeAttachmentFixture', () => {
     const pixel = (x: number, y: number) => {
       expect(pixels[y * rowLength]).toBe(0)
       const start = y * rowLength + 1 + x * 3
-      return [...pixels.subarray(start, start + 3)]
+      return [
+        ...pixels.subarray(start, start + 3),
+      ]
     }
     expect(pixel(3, 3)).toEqual([255, 0, 0])
     expect(pixel(12, 3)).toEqual([0, 255, 0])
@@ -131,7 +148,12 @@ describe('writeAttachmentFixture', () => {
   it('writes a visible PDF page with exact cross-reference offsets', () => {
     const body = readFileSync(writeAttachmentFixture('pdf', 'page.pdf'), 'utf8')
     expect(body).toContain('(LEAPMUX_PDF_PAGE_49) Tj')
-    for (const color of ['1 0 0 rg', '0 1 0 rg', '0 0 1 rg', '1 1 0 rg'])
+    for (const color of [
+      '1 0 0 rg',
+      '0 1 0 rg',
+      '0 0 1 rg',
+      '1 1 0 rg',
+    ])
       expect(body).toContain(color)
 
     const start = /startxref\n(\d+)\n%%EOF\n?$/.exec(body)
@@ -175,7 +197,9 @@ describe('expectAttachmentOutcome', () => {
         throw stop
       },
     }
-    return { locator: () => input } as unknown as Page
+    return {
+      locator: () => input,
+    } as unknown as Page
   }
 
   it.each([true, false])('waits for the live native settings catalog before it attaches the file (supported: %s)', async (supported) => {
@@ -190,8 +214,11 @@ describe('expectAttachmentOutcome', () => {
     const visible = vi.fn()
     const page = {
       locator: (selector: string) => {
-        if (selector === '[data-testid="file-input"]')
-          return { setInputFiles: async () => { ui.events.push('attach') } }
+        if (selector === '[data-testid="file-input"]') {
+          return {
+            setInputFiles: async () => { ui.events.push('attach') },
+          }
+        }
         if (selector === '[data-testid="attachment-pill"]:visible')
           return pills
         visible(selector)
@@ -247,8 +274,11 @@ describe('writeAudioAttachmentFixture', () => {
     let crc = 0
     for (const byte of bytes) {
       crc ^= byte << 8
-      for (let bit = 0; bit < 8; bit++)
-        crc = ((crc << 1) ^ (crc & 0x8000 ? 0x8005 : 0)) & 0xFFFF
+      for (let bit = 0; bit < 8; bit++) {
+        crc = ((crc << 1) ^ (crc & 0x8000
+          ? 0x8005
+          : 0)) & 0xFFFF
+      }
     }
     return crc
   }
@@ -375,12 +405,27 @@ describe('writeVideoAttachmentFixture', () => {
     const table = boxes(requiredBox(boxes(requiredBox(media, 'minf')), 'stbl'))
     const sizes = requiredBox(table, 'stsz')
     expect(sizes.readUInt32BE(8)).toBe(2)
-    const frameSizes = sizes.readUInt32BE(4) === 0 ? [sizes.readUInt32BE(12), sizes.readUInt32BE(16)] : [sizes.readUInt32BE(4), sizes.readUInt32BE(4)]
+    const frameSizes = sizes.readUInt32BE(4) === 0
+      ? [
+          sizes.readUInt32BE(12),
+          sizes.readUInt32BE(16),
+        ]
+      : [
+          sizes.readUInt32BE(4),
+          sizes.readUInt32BE(4),
+        ]
     for (const size of frameSizes)
       expect(size).toBeGreaterThan(0)
     expect(frameSizes.reduce((sum, size) => sum + size, 0)).toBe(requiredBox(root, 'mdat').length)
   })
-  it.each(['', '..', '../escape.mp4', '/absolute.mp4', 'clip.wav', 'clip.mp4/another'])('refuses an invalid video filename: %j', (name) => {
+  it.each([
+    '',
+    '..',
+    '../escape.mp4',
+    '/absolute.mp4',
+    'clip.wav',
+    'clip.mp4/another',
+  ])('refuses an invalid video filename: %j', (name) => {
     expect(() => writeVideoAttachmentFixture(name)).toThrow('MP4 filename')
   })
 })

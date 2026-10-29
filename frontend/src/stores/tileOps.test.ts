@@ -140,14 +140,22 @@ function mkCtx() {
 }
 
 function mkHlc(p: bigint) {
-  return { $typeName: 'leapmux.v1.HLC' as const, physical: p, logical: 0n, clientId: 'seed' }
+  return {
+    $typeName: 'leapmux.v1.HLC' as const,
+    physical: p,
+    logical: 0n,
+    clientId: 'seed',
+  }
 }
 
 function mkLeafNode(id: string, parentId: string = '') {
   return create(NodeRecordSchema, {
     nodeId: id,
     parentId,
-    kind: { value: NodeKind.LEAF, hlc: mkHlc(1n) },
+    kind: {
+      value: NodeKind.LEAF,
+      hlc: mkHlc(1n),
+    },
   })
 }
 
@@ -155,7 +163,10 @@ function mkSplitNode(id: string, parentId: string = '') {
   return create(NodeRecordSchema, {
     nodeId: id,
     parentId,
-    kind: { value: NodeKind.SPLIT, hlc: mkHlc(1n) },
+    kind: {
+      value: NodeKind.SPLIT,
+      hlc: mkHlc(1n),
+    },
   })
 }
 
@@ -163,7 +174,10 @@ function mkGridNode(id: string, parentId: string = '') {
   return create(NodeRecordSchema, {
     nodeId: id,
     parentId,
-    kind: { value: NodeKind.GRID, hlc: mkHlc(1n) },
+    kind: {
+      value: NodeKind.GRID,
+      hlc: mkHlc(1n),
+    },
   })
 }
 
@@ -171,7 +185,10 @@ function mkTab(tabId: string, tileId: string) {
   return create(TabRecordSchema, {
     tabType: TabType.AGENT,
     tabId,
-    tileId: { value: tileId, hlc: mkHlc(2n) },
+    tileId: {
+      value: tileId,
+      hlc: mkHlc(2n),
+    },
   })
 }
 
@@ -687,8 +704,13 @@ describe('buildCloseTileOps', () => {
 
   it('tombstones the tile and its tabs when there is no SPLIT parent', () => {
     const state = create(UserCrdtStateSchema, {
-      nodes: { root: mkLeafNode('root'), tile: mkLeafNode('tile', 'root') },
-      tabs: { 'tab-1': mkTab('tab-1', 'tile') },
+      nodes: {
+        root: mkLeafNode('root'),
+        tile: mkLeafNode('tile', 'root'),
+      },
+      tabs: {
+        'tab-1': mkTab('tab-1', 'tile'),
+      },
     })
     const ops = buildCloseTileOps(mkCtx(), state, 'tile')
     const kinds = ops.map(o => o.body.case)
@@ -753,7 +775,10 @@ describe('buildCloseTileOps', () => {
         parent: create(NodeRecordSchema, {
           nodeId: 'parent',
           parentId: 'root',
-          kind: { value: NodeKind.GRID, hlc: mkHlc(1n) },
+          kind: {
+            value: NodeKind.GRID,
+            hlc: mkHlc(1n),
+          },
         }),
         closing: mkLeafNode('closing', 'parent'),
         sibling: mkLeafNode('sibling', 'parent'),
@@ -793,7 +818,9 @@ describe('buildCloseTileOps', () => {
     // Only the closing leaf is tombstoned. The GRID + cells stay alive.
     const tombstonedNodes = ops
       .filter(o => o.body.case === 'tombstoneNode')
-      .map(o => o.body.case === 'tombstoneNode' ? o.body.value.nodeId : '')
+      .map(o => o.body.case === 'tombstoneNode'
+        ? o.body.value.nodeId
+        : '')
     expect(tombstonedNodes).toEqual(['emptyLeaf'])
     // No tab migration; no kind flip.
     expect(ops.filter(o => o.body.case === 'setTabRegister')).toHaveLength(0)
@@ -810,12 +837,16 @@ describe('buildCloseTileOps', () => {
         leafB: mkLeafNode('leafB', 'innerSplit'),
         emptyLeaf: mkLeafNode('emptyLeaf', 'parent'),
       },
-      tabs: { 'tab-A': mkTab('tab-A', 'leafA') },
+      tabs: {
+        'tab-A': mkTab('tab-A', 'leafA'),
+      },
     })
     const ops = buildCloseTileOps(mkCtx(), state, 'emptyLeaf')
     const tombstonedNodes = ops
       .filter(o => o.body.case === 'tombstoneNode')
-      .map(o => o.body.case === 'tombstoneNode' ? o.body.value.nodeId : '')
+      .map(o => o.body.case === 'tombstoneNode'
+        ? o.body.value.nodeId
+        : '')
     expect(tombstonedNodes).toEqual(['emptyLeaf'])
     expect(ops.filter(o => o.body.case === 'setTabRegister')).toHaveLength(0)
     expect(ops.filter(o => o.body.case === 'setNodeRegister')).toHaveLength(0)
@@ -827,7 +858,9 @@ describe('buildCloseTileOps', () => {
     // callers must not close registered roots — but the builder
     // should still produce a sensible op sequence.
     const state = create(UserCrdtStateSchema, {
-      nodes: { tile: mkLeafNode('tile') },
+      nodes: {
+        tile: mkLeafNode('tile'),
+      },
     })
     const ops = buildCloseTileOps(mkCtx(), state, 'tile')
     expect(ops.map(o => o.body.case)).toEqual(['tombstoneNode'])
@@ -848,7 +881,9 @@ describe('buildCloseSubtreeOps', () => {
     const ops = buildCloseSubtreeOps(mkCtx(), state, 'root')
     const tombstoned = ops
       .filter(o => o.body.case === 'tombstoneNode')
-      .map(o => o.body.case === 'tombstoneNode' ? o.body.value.nodeId : '')
+      .map(o => o.body.case === 'tombstoneNode'
+        ? o.body.value.nodeId
+        : '')
     expect(tombstoned).toContain('a')
     expect(tombstoned).toContain('b')
     expect(tombstoned).toContain('c')
@@ -867,7 +902,9 @@ describe('buildCloseSubtreeOps', () => {
     const ops = buildCloseSubtreeOps(mkCtx(), state, 'root', { tombstoneRoot: false })
     const tombstoned = ops
       .filter(o => o.body.case === 'tombstoneNode')
-      .map(o => o.body.case === 'tombstoneNode' ? o.body.value.nodeId : '')
+      .map(o => o.body.case === 'tombstoneNode'
+        ? o.body.value.nodeId
+        : '')
     expect(tombstoned).toContain('a')
     expect(tombstoned).not.toContain('root')
   })
@@ -903,8 +940,12 @@ describe('buildCloseSubtreeOps', () => {
 
   it('tombstones tabs when migrateTabsTo is unset', () => {
     const state = create(UserCrdtStateSchema, {
-      nodes: { root: mkLeafNode('root') },
-      tabs: { 'tab-A': mkTab('tab-A', 'root') },
+      nodes: {
+        root: mkLeafNode('root'),
+      },
+      tabs: {
+        'tab-A': mkTab('tab-A', 'root'),
+      },
     })
     const ops = buildCloseSubtreeOps(mkCtx(), state, 'root')
     expect(ops.find(o => o.body.case === 'tombstoneTab')).toBeDefined()
@@ -916,7 +957,9 @@ describe('buildCloseSubtreeOps', () => {
     // exactly zero ops. Used by callers that want only the subtree
     // tombstones without affecting the root.
     const state = create(UserCrdtStateSchema, {
-      nodes: { root: mkLeafNode('root') },
+      nodes: {
+        root: mkLeafNode('root'),
+      },
     })
     const ops = buildCloseSubtreeOps(mkCtx(), state, 'root', { tombstoneRoot: false })
     expect(ops).toHaveLength(0)
@@ -939,8 +982,13 @@ describe('precomputed childIndex equivalence', () => {
 
   it('buildCloseTileOps: no SPLIT-parent path matches build-internally output', () => {
     const state = create(UserCrdtStateSchema, {
-      nodes: { root: mkLeafNode('root'), tile: mkLeafNode('tile', 'root') },
-      tabs: { 'tab-1': mkTab('tab-1', 'tile') },
+      nodes: {
+        root: mkLeafNode('root'),
+        tile: mkLeafNode('tile', 'root'),
+      },
+      tabs: {
+        'tab-1': mkTab('tab-1', 'tile'),
+      },
     })
     const idx = buildChildIndex(state)
     const a = buildCloseTileOps(mkCtx(), state, 'tile')

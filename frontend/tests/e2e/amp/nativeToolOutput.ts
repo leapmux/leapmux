@@ -17,7 +17,9 @@ export function ampNativeOutputLimit(text: string, completeOutput: string): AmpN
   if (value.output.length >= completeOutput.length || !completeOutput.endsWith(value.output))
     throw new Error('The Amp retained output differs from the controlled complete output.')
   if (Object.hasOwn(value, 'truncation')) {
-    const truncation = isObject(value.truncation) ? value.truncation : undefined
+    const truncation = isObject(value.truncation)
+      ? value.truncation
+      : undefined
     if (!truncation || typeof truncation.prefixLinesOmitted !== 'number'
       || !Number.isSafeInteger(truncation.prefixLinesOmitted) || truncation.prefixLinesOmitted <= 0) {
       throw new Error('The Amp large shell result has no exact native omitted-prefix count.')
@@ -27,6 +29,6 @@ export function ampNativeOutputLimit(text: string, completeOutput: string): AmpN
   if (value.output !== completeOutput.slice(-AMP_NATIVE_ASCII_TAIL_LENGTH))
     throw new Error('The Amp native tail differs from the exact controlled tail.')
   if (typeof value.exitCode !== 'number' || !Number.isSafeInteger(value.exitCode))
-    throw new Error('The Amp native tail has no valid exit code.')
+    throw new TypeError('The Amp native tail has no valid exit code.')
   return { output: value.output, exitCode: value.exitCode }
 }

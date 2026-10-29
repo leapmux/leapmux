@@ -71,7 +71,9 @@ function bytesToHex(bytes: Uint8Array): string {
   let out = ''
   for (let i = 0; i < bytes.length; i++) {
     const b = bytes[i]?.toString(16) ?? ''
-    out += b.length === 1 ? `0${b}` : b
+    out += b.length === 1
+      ? `0${b}`
+      : b
   }
   return out
 }
@@ -117,64 +119,100 @@ describe('parity', () => {
       // Two clients add two tabs concurrently.
       create(CrdtOpSchema, {
         canonicalHlc: hlc(10n, 0n, 'a'),
-        body: { case: 'setTabRegister', value: create(SetTabRegisterOpSchema, {
-          tabType: TabType.AGENT,
-          tabId: 'tA',
-          field: { case: 'tileId', value: 'root' },
-        }) },
+        body: {
+          case: 'setTabRegister',
+          value: create(SetTabRegisterOpSchema, {
+            tabType: TabType.AGENT,
+            tabId: 'tA',
+            field: { case: 'tileId', value: 'root' },
+          }),
+        },
       }),
       create(CrdtOpSchema, {
         canonicalHlc: hlc(10n, 1n, 'a'),
-        body: { case: 'setTabRegister', value: create(SetTabRegisterOpSchema, {
-          tabType: TabType.AGENT,
-          tabId: 'tA',
-          field: { case: 'workerId', value: 'w1' },
-        }) },
+        body: {
+          case: 'setTabRegister',
+          value: create(SetTabRegisterOpSchema, {
+            tabType: TabType.AGENT,
+            tabId: 'tA',
+            field: { case: 'workerId', value: 'w1' },
+          }),
+        },
       }),
       create(CrdtOpSchema, {
         canonicalHlc: hlc(11n, 0n, 'b'),
-        body: { case: 'setTabRegister', value: create(SetTabRegisterOpSchema, {
-          tabType: TabType.TERMINAL,
-          tabId: 'tB',
-          field: { case: 'tileId', value: 'root' },
-        }) },
+        body: {
+          case: 'setTabRegister',
+          value: create(SetTabRegisterOpSchema, {
+            tabType: TabType.TERMINAL,
+            tabId: 'tB',
+            field: { case: 'tileId', value: 'root' },
+          }),
+        },
       }),
       // Tombstone tA at higher HLC.
       create(CrdtOpSchema, {
         canonicalHlc: hlc(50n, 0n, 'a'),
-        body: { case: 'tombstoneTab', value: create(TombstoneTabOpSchema, { tabType: TabType.AGENT, tabId: 'tA' }) },
+        body: {
+          case: 'tombstoneTab',
+          value: create(TombstoneTabOpSchema, { tabType: TabType.AGENT, tabId: 'tA' }),
+        },
       }),
       // Late SetTab on tA — must drop (remove-wins).
       create(CrdtOpSchema, {
         canonicalHlc: hlc(60n, 0n, 'a'),
-        body: { case: 'setTabRegister', value: create(SetTabRegisterOpSchema, {
-          tabType: TabType.AGENT,
-          tabId: 'tA',
-          field: { case: 'tileId', value: 'late' },
-        }) },
+        body: {
+          case: 'setTabRegister',
+          value: create(SetTabRegisterOpSchema, {
+            tabType: TabType.AGENT,
+            tabId: 'tA',
+            field: { case: 'tileId', value: 'late' },
+          }),
+        },
       }),
       // Floating window with an opacity that includes -0.0 (canonicalized).
       create(CrdtOpSchema, {
         canonicalHlc: hlc(70n, 0n, 'a'),
-        body: { case: 'setFloatingWindowRegister', value: create(SetFloatingWindowRegisterOpSchema, {
-          windowId: 'fw1',
-          field: { case: 'opacity', value: -0.0 },
-        }) },
+        body: {
+          case: 'setFloatingWindowRegister',
+          value: create(SetFloatingWindowRegisterOpSchema, {
+            windowId: 'fw1',
+            field: { case: 'opacity', value: -0.0 },
+          }),
+        },
       }),
       // Concurrent ratio writes on a node.
       create(CrdtOpSchema, {
         canonicalHlc: hlc(80n, 0n, 'a'),
-        body: { case: 'setNodeRegister', value: create(SetNodeRegisterOpSchema, {
-          nodeId: 'split1',
-          field: { case: 'ratios', value: { $typeName: 'leapmux.v1.DoubleList', values: [0.6, 0.4] } as never },
-        }) },
+        body: {
+          case: 'setNodeRegister',
+          value: create(SetNodeRegisterOpSchema, {
+            nodeId: 'split1',
+            field: {
+              case: 'ratios',
+              value: {
+                $typeName: 'leapmux.v1.DoubleList',
+                values: [0.6, 0.4],
+              } as never,
+            },
+          }),
+        },
       }),
       create(CrdtOpSchema, {
         canonicalHlc: hlc(81n, 0n, 'b'),
-        body: { case: 'setNodeRegister', value: create(SetNodeRegisterOpSchema, {
-          nodeId: 'split1',
-          field: { case: 'ratios', value: { $typeName: 'leapmux.v1.DoubleList', values: [0.3, 0.7] } as never },
-        }) },
+        body: {
+          case: 'setNodeRegister',
+          value: create(SetNodeRegisterOpSchema, {
+            nodeId: 'split1',
+            field: {
+              case: 'ratios',
+              value: {
+                $typeName: 'leapmux.v1.DoubleList',
+                values: [0.3, 0.7],
+              } as never,
+            },
+          }),
+        },
       }),
     ]
     const baseline = canonicalize(applyAll(ops))
@@ -187,17 +225,23 @@ describe('parity', () => {
   it('-0.0 produces byte-equal canonical output as +0.0', () => {
     const posOp = create(CrdtOpSchema, {
       canonicalHlc: hlc(10n, 0n, 'a'),
-      body: { case: 'setFloatingWindowRegister', value: create(SetFloatingWindowRegisterOpSchema, {
-        windowId: 'fw',
-        field: { case: 'opacity', value: 0.0 },
-      }) },
+      body: {
+        case: 'setFloatingWindowRegister',
+        value: create(SetFloatingWindowRegisterOpSchema, {
+          windowId: 'fw',
+          field: { case: 'opacity', value: 0.0 },
+        }),
+      },
     })
     const negOp = create(CrdtOpSchema, {
       canonicalHlc: hlc(10n, 0n, 'a'),
-      body: { case: 'setFloatingWindowRegister', value: create(SetFloatingWindowRegisterOpSchema, {
-        windowId: 'fw',
-        field: { case: 'opacity', value: -0.0 },
-      }) },
+      body: {
+        case: 'setFloatingWindowRegister',
+        value: create(SetFloatingWindowRegisterOpSchema, {
+          windowId: 'fw',
+          field: { case: 'opacity', value: -0.0 },
+        }),
+      },
     })
     expect(canonicalize(applyAll([posOp]))).toBe(canonicalize(applyAll([negOp])))
   })
@@ -212,15 +256,24 @@ describe('parity', () => {
     const ops: CrdtOp[] = [
       create(CrdtOpSchema, {
         canonicalHlc: hlc(10n, 0n, 'hub'),
-        body: { case: 'setWorkspaceRegister', value: create(SetWorkspaceRegisterOpSchema, { workspaceId: 'w1' }) },
+        body: {
+          case: 'setWorkspaceRegister',
+          value: create(SetWorkspaceRegisterOpSchema, { workspaceId: 'w1' }),
+        },
       }),
       create(CrdtOpSchema, {
         canonicalHlc: hlc(20n, 0n, 'hub'),
-        body: { case: 'tombstoneWorkspace', value: create(TombstoneWorkspaceOpSchema, { workspaceId: 'w2' }) },
+        body: {
+          case: 'tombstoneWorkspace',
+          value: create(TombstoneWorkspaceOpSchema, { workspaceId: 'w2' }),
+        },
       }),
       create(CrdtOpSchema, {
         canonicalHlc: hlc(30n, 0n, 'hub'),
-        body: { case: 'setWorkspaceRegister', value: create(SetWorkspaceRegisterOpSchema, { workspaceId: 'w3' }) },
+        body: {
+          case: 'setWorkspaceRegister',
+          value: create(SetWorkspaceRegisterOpSchema, { workspaceId: 'w3' }),
+        },
       }),
     ]
     const baseline = canonicalize(applyAll(ops))

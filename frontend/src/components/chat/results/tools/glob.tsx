@@ -16,7 +16,13 @@ export function renderGlobTitle(pattern?: string, path?: string, cwd?: string, h
   // `toolInputCode`, as `renderSearchTitle` gives its own pattern. An unclassed span
   // reaches the header as JSX, which `ToolUseLayout` leaves alone -- so the title lost
   // the monospace face and the one-line clip, and a long glob wrapped the header.
-  return <span class={toolInputCode}>{`${displayPattern}${path ? ` ${relativizePath(path, cwd, homeDir)}` : ''}`}</span>
+  return (
+    <span class={toolInputCode}>
+      {`${displayPattern}${path
+        ? ` ${relativizePath(path, cwd, homeDir)}`
+        : ''}`}
+    </span>
+  )
 }
 
 export const globRenderer: ToolKindRenderer<'glob'> = {
@@ -26,10 +32,20 @@ export const globRenderer: ToolKindRenderer<'glob'> = {
     return renderGlobTitle(call.request.pattern, call.request.paths[0], context?.workingDir, context?.homeDir) ?? call.title ?? 'Glob'
   },
   summary(call, view) {
-    return call.request.paths.length > 1 ? pathLines(view, call.request.paths) : null
+    return call.request.paths.length > 1
+      ? pathLines(view, call.request.paths)
+      : null
   },
   result(call, view) {
-    return <SearchResultBody source={call.result} kind="glob" {...(view.context !== undefined ? { context: view.context } : {})} />
+    return (
+      <SearchResultBody
+        source={call.result}
+        kind="glob"
+        {...(view.context !== undefined
+          ? { context: view.context }
+          : {})}
+      />
+    )
   },
   resultMeta(call) {
     return {

@@ -28,9 +28,13 @@ export function clineEditRequest(toolName: string, args: Record<string, unknown>
   const newText = pickString(args, 'new_text')
   // An insertion states no before side: the text lands between two lines.
   const insertLine = pickNumber(args, 'insert_line', undefined)
-  const oldText = insertLine === undefined ? pickString(args, 'old_text') : ''
+  const oldText = insertLine === undefined
+    ? pickString(args, 'old_text')
+    : ''
   const change: FileEditDiff = fileEditDiffFromOldNew(path, oldText, newText)
-  return { changes: [change] }
+  return {
+    changes: [change],
+  }
 }
 
 /**
@@ -41,5 +45,7 @@ export function clineEditResult(request: EditRequest, output: unknown): EditResu
   const operations = clineOperations(output)
   if (operations.length === 0 || operations.some(operation => !operation.success))
     return null
-  return request.changes.length > 0 ? { changes: request.changes } : null
+  return request.changes.length > 0
+    ? { changes: request.changes }
+    : null
 }

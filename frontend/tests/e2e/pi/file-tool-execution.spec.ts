@@ -14,7 +14,9 @@ piTest('write tool creates a file and the chat surfaces the path', async ({ auth
   const path = join(workingDir, 'pi-test-file.txt')
   expect(existsSync(path)).toBe(false)
   const { resultRequest } = await runNativeToolTurn(native, {
-    toolCalls: [writeToolCall(native.provider, 'write-call', { path, content: 'pi was here' })],
+    toolCalls: [
+      writeToolCall(native.provider, 'write-call', { path, content: 'pi was here' }),
+    ],
     prompt: 'Use the native write tool to create the supplied file.',
     answer: 'The native write completed.',
   })

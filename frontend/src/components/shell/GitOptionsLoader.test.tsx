@@ -25,21 +25,30 @@ function stubGitInfo(opts: {
 
 describe('GitOptionsLoader', () => {
   it('renders the spinner while loading is true', () => {
-    const gitInfo = stubGitInfo({ loading: () => true, showGitOptions: () => false })
+    const gitInfo = stubGitInfo({
+      loading: () => true,
+      showGitOptions: () => false,
+    })
     render(() => <GitOptionsLoader gitInfo={gitInfo}>{() => <div data-testid="body">body</div>}</GitOptionsLoader>)
     expect(screen.getByText(/Loading branch info/)).toBeInTheDocument()
     expect(screen.queryByTestId('body')).toBeNull()
   })
 
   it('renders the children when loading is false and showGitOptions is true', () => {
-    const gitInfo = stubGitInfo({ loading: () => false, showGitOptions: () => true })
+    const gitInfo = stubGitInfo({
+      loading: () => false,
+      showGitOptions: () => true,
+    })
     render(() => <GitOptionsLoader gitInfo={gitInfo}>{() => <div data-testid="body">body</div>}</GitOptionsLoader>)
     expect(screen.queryByText(/Loading branch info/)).toBeNull()
     expect(screen.getByTestId('body')).toBeInTheDocument()
   })
 
   it('renders nothing when loading is false and the path is not a git repo', () => {
-    const gitInfo = stubGitInfo({ loading: () => false, showGitOptions: () => false })
+    const gitInfo = stubGitInfo({
+      loading: () => false,
+      showGitOptions: () => false,
+    })
     render(() => <GitOptionsLoader gitInfo={gitInfo}>{() => <div data-testid="body">body</div>}</GitOptionsLoader>)
     expect(screen.queryByText(/Loading branch info/)).toBeNull()
     expect(screen.queryByTestId('body')).toBeNull()
@@ -50,7 +59,10 @@ describe('GitOptionsLoader', () => {
     // loading flips back to true while showGitOptions stays true from
     // the previous probe. The loader must defer to the spinner so the
     // children aren't double-mounted against stale data.
-    const gitInfo = stubGitInfo({ loading: () => true, showGitOptions: () => true })
+    const gitInfo = stubGitInfo({
+      loading: () => true,
+      showGitOptions: () => true,
+    })
     render(() => <GitOptionsLoader gitInfo={gitInfo}>{() => <div data-testid="body">body</div>}</GitOptionsLoader>)
     expect(screen.getByText(/Loading branch info/)).toBeInTheDocument()
     expect(screen.queryByTestId('body')).toBeNull()

@@ -37,7 +37,13 @@ function setup() {
     rootTileId: harness.rootTileId,
     add(id: string, tileId = harness.rootTileId) {
       seq += 1
-      emitAddTab({ type: TabType.AGENT, id, tileId, position: `p${seq}`, workerId: 'w' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id,
+        tileId,
+        position: `p${seq}`,
+        workerId: 'w',
+      })
     },
     restore: createTabSelectionRestorer({
       selection: stores.selection,
@@ -100,7 +106,9 @@ describe('createTabSelectionRestorer', () => {
     createRoot((dispose) => {
       const s = setup()
       s.add('a1')
-      sessionStorageSet(tileActiveTabsKey(WS), JSON.stringify({ [s.rootTileId]: key('a1') }))
+      sessionStorageSet(tileActiveTabsKey(WS), JSON.stringify({
+        [s.rootTileId]: key('a1'),
+      }))
 
       s.restore(WS)
 
@@ -248,7 +256,13 @@ describe('createTabSelectionRestorer', () => {
 
         // The bootstrap lands; the next pass must still restore.
         seedWorkspace(s.harness, LATE, 'late-tile')
-        emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: 'late-tile', position: 'p1', workerId: 'w' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a1',
+          tileId: 'late-tile',
+          position: 'p1',
+          workerId: 'w',
+        })
         s.restore(LATE)
         expect(s.selection.state.activeByWorkspace[LATE]).toBe(key('a1'))
         dispose()

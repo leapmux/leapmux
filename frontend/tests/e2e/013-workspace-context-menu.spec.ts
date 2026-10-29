@@ -60,7 +60,10 @@ test.describe('Workspace Context Menu', () => {
         height: row.getBoundingClientRect().height,
       })))
     expect(leafHeights.length).toBeGreaterThan(0)
-    const rhythm = [{ label: 'the workspace row', height: workspaceHeight }, ...leafHeights]
+    const rhythm = [
+      { label: 'the workspace row', height: workspaceHeight },
+      ...leafHeights,
+    ]
     expect(new Set(rhythm.map(row => row.height)), `every sidebar row must measure the same: ${JSON.stringify(rhythm)}`)
       .toEqual(new Set([workspaceHeight]))
   })

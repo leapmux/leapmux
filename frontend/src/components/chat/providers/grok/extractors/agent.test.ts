@@ -8,8 +8,15 @@ function finished(text: string, rawOutput?: unknown, status = 'completed') {
     sessionUpdate: 'tool_call_update',
     toolCallId: 'call',
     status,
-    content: [{ type: 'content', content: { type: 'text', text } }],
-    ...(rawOutput !== undefined ? { rawOutput } : {}),
+    content: [
+      {
+        type: 'content',
+        content: { type: 'text', text },
+      },
+    ],
+    ...(rawOutput !== undefined
+      ? { rawOutput }
+      : {}),
   })
 }
 
@@ -38,7 +45,9 @@ describe('grokAgentRequest', () => {
   })
 
   it('reads the resumed subagent from task_id when resume_from is absent', () => {
-    expect(grokAgentRequest({ prompt: 'p', task_id: 'sub-9' }, 'T', 'c').metadata).toEqual([{ label: 'Resumes', value: 'sub-9' }])
+    expect(grokAgentRequest({ prompt: 'p', task_id: 'sub-9' }, 'T', 'c').metadata).toEqual([
+      { label: 'Resumes', value: 'sub-9' },
+    ])
   })
 
   // `false` and an absent flag both mean a foreground run, and the row states nothing.
@@ -84,7 +93,13 @@ describe('grokAgentRun', () => {
 
   // A zero is a count that Grok stated, so the row keeps it; only an absent count goes.
   it('keeps a zero count and a zero duration, and drops an absent one', () => {
-    const run = grokAgentRun(finished('Done.', { type: 'SubagentCompleted', output: '', subagent_id: 'sub-1', tool_calls: 0, duration_ms: 0 }), request)
+    const run = grokAgentRun(finished('Done.', {
+      type: 'SubagentCompleted',
+      output: '',
+      subagent_id: 'sub-1',
+      tool_calls: 0,
+      duration_ms: 0,
+    }), request)
     expect(run.metadata).toEqual([
       { label: 'Agent ID', value: 'sub-1' },
       { label: 'Tool calls', value: '0' },
@@ -100,7 +115,9 @@ describe('grokAgentRun', () => {
       agentId: 'sub-2',
       outcome: 'running',
       statusLabel: 'running in the background',
-      metadata: [{ label: 'Agent ID', value: 'sub-2' }],
+      metadata: [
+        { label: 'Agent ID', value: 'sub-2' },
+      ],
       body: text,
     })
   })
@@ -113,7 +130,14 @@ describe('grokAgentRun', () => {
 
   it('keeps the outcome of a failed or stopped call whatever its record says', () => {
     const record = { type: 'SubagentCompleted', output: 'Old report', subagent_id: 'sub-1' }
-    expect(grokAgentRun(finished('Boom', record, 'failed'), request)).toEqual({ description: 'List files', registryKey: 'call-1', agentId: '', outcome: 'failed', metadata: [], body: 'Boom' })
+    expect(grokAgentRun(finished('Boom', record, 'failed'), request)).toEqual({
+      description: 'List files',
+      registryKey: 'call-1',
+      agentId: '',
+      outcome: 'failed',
+      metadata: [],
+      body: 'Boom',
+    })
     expect(grokAgentRun(finished('Stopped', record, 'cancelled'), request)).toMatchObject({ agentId: '', outcome: 'stopped', body: 'Stopped' })
   })
 
@@ -125,8 +149,17 @@ describe('grokAgentRun', () => {
 
 describe('grokWorkflowRequest', () => {
   it('states the saved workflow, its script and its arguments', () => {
-    const facts = finished('started', { type: 'Workflow', name: 'review-changes', script_path: '/s/review.js', run_id: 'wf-1' })
-    expect(grokWorkflowRequest({ source: 'await agent("x")', args: { depth: 2 }, validate_only: true }, facts)).toEqual({
+    const facts = finished('started', {
+      type: 'Workflow',
+      name: 'review-changes',
+      script_path: '/s/review.js',
+      run_id: 'wf-1',
+    })
+    expect(grokWorkflowRequest({
+      source: 'await agent("x")',
+      args: { depth: 2 },
+      validate_only: true,
+    }, facts)).toEqual({
       description: 'review-changes',
       prompt: 'await agent("x")',
       promptLabel: 'Script',
@@ -141,7 +174,9 @@ describe('grokWorkflowRequest', () => {
 
   it('states string arguments as they are, and no entry for null arguments', () => {
     const facts = finished('started', { type: 'Workflow', run_id: 'wf-1' })
-    expect(grokWorkflowRequest({ args: 'a b' }, facts).metadata).toEqual([{ label: 'Arguments', value: 'a b' }])
+    expect(grokWorkflowRequest({ args: 'a b' }, facts).metadata).toEqual([
+      { label: 'Arguments', value: 'a b' },
+    ])
     expect(grokWorkflowRequest({ args: null }, facts).metadata).toBeUndefined()
   })
 
@@ -159,7 +194,9 @@ describe('grokWorkflowRun', () => {
       description: 'review-changes',
       agentId: 'wf-1',
       outcome: 'running',
-      metadata: [{ label: 'Run ID', value: 'wf-1' }],
+      metadata: [
+        { label: 'Run ID', value: 'wf-1' },
+      ],
       body: 'Workflow review-changes started.',
     })
   })
@@ -171,12 +208,24 @@ describe('grokWorkflowRun', () => {
   })
 
   it('reads a call with no run id as completed, with the text as its body', () => {
-    expect(grokWorkflowRun(finished('Nothing to run.'), request, {})).toEqual({ description: 'review-changes', agentId: '', outcome: 'completed', metadata: [], body: 'Nothing to run.' })
+    expect(grokWorkflowRun(finished('Nothing to run.'), request, {})).toEqual({
+      description: 'review-changes',
+      agentId: '',
+      outcome: 'completed',
+      metadata: [],
+      body: 'Nothing to run.',
+    })
   })
 
   it('keeps the outcome of a failed or stopped call', () => {
     const record = { type: 'Workflow', run_id: 'wf-1' }
-    expect(grokWorkflowRun(finished('Syntax error', record, 'failed'), request, {})).toEqual({ description: 'review-changes', agentId: '', outcome: 'failed', metadata: [], body: 'Syntax error' })
+    expect(grokWorkflowRun(finished('Syntax error', record, 'failed'), request, {})).toEqual({
+      description: 'review-changes',
+      agentId: '',
+      outcome: 'failed',
+      metadata: [],
+      body: 'Syntax error',
+    })
     expect(grokWorkflowRun(finished('Stopped', record, 'cancelled'), request, {})).toMatchObject({ outcome: 'stopped', agentId: '' })
   })
 })

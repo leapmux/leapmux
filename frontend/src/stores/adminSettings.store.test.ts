@@ -11,13 +11,24 @@ const resetSetting = vi.hoisted(() => vi.fn())
 const loadSystemInfo = vi.hoisted(() => vi.fn(() => Promise.resolve()))
 
 vi.mock('~/api/clients', () => ({
-  adminSettingsClient: { listSettings, updateSetting, updateSettingSecret, resetSetting },
+  adminSettingsClient: {
+    listSettings,
+    updateSetting,
+    updateSettingSecret,
+    resetSetting,
+  },
 }))
 
 vi.mock('~/lib/systemInfo', () => ({ loadSystemInfo }))
 
 function value(key: string, effectiveJson: string, customized = false): SettingValue {
-  return { key, valueJson: effectiveJson, effectiveJson, customized, secretSet: {} } as unknown as SettingValue
+  return {
+    key,
+    valueJson: effectiveJson,
+    effectiveJson,
+    customized,
+    secretSet: {},
+  } as unknown as SettingValue
 }
 
 describe('createAdminSettingsStore', () => {
@@ -32,8 +43,21 @@ describe('createAdminSettingsStore', () => {
 
   it('loads descriptors and values when enabled', async () => {
     listSettings.mockResolvedValue({
-      descriptors: [{ key: 'session_duration_seconds', category: 'general', title: 'Session duration', summary: '', order: 30, hiddenInSolo: false, restart: false, fields: [] }],
-      values: [value('session_duration_seconds', '604800')],
+      descriptors: [
+        {
+          key: 'session_duration_seconds',
+          category: 'general',
+          title: 'Session duration',
+          summary: '',
+          order: 30,
+          hiddenInSolo: false,
+          restart: false,
+          fields: [],
+        },
+      ],
+      values: [
+        value('session_duration_seconds', '604800'),
+      ],
     })
     const store = createAdminSettingsStore(() => true)
     await store.load()
@@ -52,19 +76,31 @@ describe('createAdminSettingsStore', () => {
   it('a stale response never overwrites a newer one', async () => {
     let resolveFirst: (v: unknown) => void = () => {}
     listSettings.mockImplementationOnce(() => new Promise(resolve => (resolveFirst = resolve)))
-    listSettings.mockResolvedValueOnce({ descriptors: [], values: [value('smtp', '{"host":"a"}')] })
+    listSettings.mockResolvedValueOnce({
+      descriptors: [],
+      values: [
+        value('smtp', '{"host":"a"}'),
+      ],
+    })
     const store = createAdminSettingsStore(() => true)
     const first = store.load()
     const second = store.load()
     await second
-    resolveFirst({ descriptors: [], values: [value('smtp', '{"host":"stale"}')] })
+    resolveFirst({
+      descriptors: [],
+      values: [
+        value('smtp', '{"host":"stale"}'),
+      ],
+    })
     await first
     expect(store.values().get('smtp')?.effectiveJson).toBe('{"host":"a"}')
   })
 
   it('merges write replies (public, secret, reset) and records rejections without applying', async () => {
     const store = createAdminSettingsStore(() => true)
-    updateSetting.mockResolvedValue({ value: value('session_duration_seconds', '3600', true) })
+    updateSetting.mockResolvedValue({
+      value: value('session_duration_seconds', '3600', true),
+    })
     await store.update('session_duration_seconds', '3600')
     expect(store.values().get('session_duration_seconds')?.effectiveJson).toBe('3600')
 
@@ -72,7 +108,9 @@ describe('createAdminSettingsStore', () => {
     // returns `.value` from the RPC so the row re-renders with the server's
     // truth (a secret's `secretSet` flips to true). Asserting only the call
     // argument would still pass if the reply were dropped.
-    updateSettingSecret.mockResolvedValue({ value: value('smtp', '{"host":"mail"}', true) })
+    updateSettingSecret.mockResolvedValue({
+      value: value('smtp', '{"host":"mail"}', true),
+    })
     await store.updateSecret('smtp', '{"password":"hunter2"}')
     expect(updateSettingSecret).toHaveBeenCalledWith({ key: 'smtp', partialJson: '{"password":"hunter2"}' })
     expect(store.values().get('smtp')?.effectiveJson).toBe('{"host":"mail"}')
@@ -91,7 +129,9 @@ describe('createAdminSettingsStore', () => {
     expect(store.values().get('session_duration_seconds')?.effectiveJson).toBe('3600')
     expect(store.state.writeError).toMatchObject({ key: 'session_duration_seconds' })
 
-    resetSetting.mockResolvedValue({ value: value('session_duration_seconds', '604800', false) })
+    resetSetting.mockResolvedValue({
+      value: value('session_duration_seconds', '604800', false),
+    })
     await store.reset('session_duration_seconds')
     expect(store.values().get('session_duration_seconds')?.effectiveJson).toBe('604800')
 
@@ -104,8 +144,21 @@ describe('createAdminSettingsStore', () => {
   it('clears its contents when the session loses admin', async () => {
     const [enabled, setEnabled] = createSignal(true)
     listSettings.mockResolvedValue({
-      descriptors: [{ key: 'smtp', category: 'email', title: 'SMTP relay', summary: '', order: 10, hiddenInSolo: false, restart: false, fields: [] }],
-      values: [value('smtp', '{}')],
+      descriptors: [
+        {
+          key: 'smtp',
+          category: 'email',
+          title: 'SMTP relay',
+          summary: '',
+          order: 10,
+          hiddenInSolo: false,
+          restart: false,
+          fields: [],
+        },
+      ],
+      values: [
+        value('smtp', '{}'),
+      ],
     })
     const store = createAdminSettingsStore(enabled)
     await store.load()
@@ -135,15 +188,21 @@ describe('createAdminSettingsStore system-info convergence', () => {
   it('re-reads the system info after each accepted write', async () => {
     const store = createAdminSettingsStore(() => true)
 
-    updateSetting.mockResolvedValue({ value: value('public_url', '"https://hub.example"', true) })
+    updateSetting.mockResolvedValue({
+      value: value('public_url', '"https://hub.example"', true),
+    })
     await store.update('public_url', '"https://hub.example"')
     expect(loadSystemInfo).toHaveBeenCalledWith(true)
 
-    updateSettingSecret.mockResolvedValue({ value: value('smtp', '{"host":"mail"}', true) })
+    updateSettingSecret.mockResolvedValue({
+      value: value('smtp', '{"host":"mail"}', true),
+    })
     await store.updateSecret('smtp', '{"password":"hunter2"}')
     expect(loadSystemInfo).toHaveBeenCalledTimes(2)
 
-    resetSetting.mockResolvedValue({ value: value('public_url', '""', false) })
+    resetSetting.mockResolvedValue({
+      value: value('public_url', '""', false),
+    })
     await store.reset('public_url')
     expect(loadSystemInfo).toHaveBeenCalledTimes(3)
   })
@@ -173,7 +232,9 @@ describe('createAdminSettingsStore system-info convergence', () => {
   it('merges the reply without waiting for the refresh', async () => {
     const store = createAdminSettingsStore(() => true)
     loadSystemInfo.mockReturnValue(new Promise(() => {}))
-    updateSetting.mockResolvedValue({ value: value('public_url', '"https://hub.example"', true) })
+    updateSetting.mockResolvedValue({
+      value: value('public_url', '"https://hub.example"', true),
+    })
 
     await store.update('public_url', '"https://hub.example"')
     expect(store.values().get('public_url')?.effectiveJson).toBe('"https://hub.example"')
@@ -185,7 +246,9 @@ describe('createAdminSettingsStore system-info convergence', () => {
   it('keeps an accepted write accepted when the refresh fails', async () => {
     const store = createAdminSettingsStore(() => true)
     loadSystemInfo.mockRejectedValue(new Error('hub unreachable'))
-    updateSetting.mockResolvedValue({ value: value('public_url', '"https://hub.example"', true) })
+    updateSetting.mockResolvedValue({
+      value: value('public_url', '"https://hub.example"', true),
+    })
 
     await store.update('public_url', '"https://hub.example"')
     expect(store.state.writeError).toBeNull()

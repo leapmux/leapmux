@@ -23,7 +23,10 @@ droidTest.describe('Factory Droid settings', () => {
       },
       nativeProof: async (request) => {
         expect(request.path).toBe(BUILT_IN_ROUTE)
-        expect(request.body).toMatchObject({ model: BUILT_IN_MODEL, output_config: { effort: 'high' } })
+        expect(request.body).toMatchObject({
+          model: BUILT_IN_MODEL,
+          output_config: { effort: 'high' },
+        })
         await expectDroidNativeSettings(native, { modelId: BUILT_IN_MODEL, reasoningEffort: 'high' })
       },
     })
@@ -46,7 +49,10 @@ droidTest.describe('Factory Droid model switch', () => {
       model: 'claude-opus-5',
       nativeProof: (request) => {
         expect(request.path).toBe(BUILT_IN_ROUTE)
-        expect(request.body).toMatchObject({ model: 'claude-opus-5', output_config: { effort: 'low' } })
+        expect(request.body).toMatchObject({
+          model: 'claude-opus-5',
+          output_config: { effort: 'low' },
+        })
       },
     })
   })
@@ -64,7 +70,10 @@ droidTest.describe('Factory Droid model switch', () => {
       settled: 'high',
       nativeProof: (request) => {
         expect(request.path).toBe(BUILT_IN_ROUTE)
-        expect(request.body).toMatchObject({ model: BUILT_IN_MODEL, output_config: { effort: 'high' } })
+        expect(request.body).toMatchObject({
+          model: BUILT_IN_MODEL,
+          output_config: { effort: 'high' },
+        })
       },
     })
   })

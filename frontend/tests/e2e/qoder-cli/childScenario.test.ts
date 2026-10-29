@@ -6,7 +6,12 @@ import { QODER_CHILD_SYSTEM, qoderChildTurn } from './childScenario'
 const childPrompt = mockScenarioPrompt('qoder-child-turn', 'Reply with the single word PONG.')
 
 function answers(systemText: string, userText: string): boolean {
-  return matchesRequest(qoderChildTurn('Reply with the single word PONG'), { protocol: 'anthropic-messages', systemText, userText, body: {} })
+  return matchesRequest(qoderChildTurn('Reply with the single word PONG'), {
+    protocol: 'anthropic-messages',
+    systemText,
+    userText,
+    body: {},
+  })
 }
 
 describe('qoderChildTurn', () => {

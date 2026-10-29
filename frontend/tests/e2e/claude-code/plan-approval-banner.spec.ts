@@ -205,8 +205,12 @@ claudeTest.describe('plan mode - bypass permissions', () => {
           padding: style.padding,
         }
       }
-      const radios = [...element.querySelectorAll('[role="radio"]')]
-      const copies = [...element.querySelectorAll('[data-pill-selection-labels] [data-label]')]
+      const radios = [
+        ...element.querySelectorAll('[role="radio"]'),
+      ]
+      const copies = [
+        ...element.querySelectorAll('[data-pill-selection-labels] [data-label]'),
+      ]
       return radios.map((radio, index) => ({
         label: radio.textContent ?? '',
         radio: metrics(radio),

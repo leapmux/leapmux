@@ -46,5 +46,7 @@ export function createPersistedSignal<T>(
 
 /** A `parse` for a stored boolean, with an explicit default. */
 export function persistedBoolean(fallback: boolean): (stored: unknown) => boolean {
-  return stored => (typeof stored === 'boolean' ? stored : fallback)
+  return stored => (typeof stored === 'boolean'
+    ? stored
+    : fallback)
 }

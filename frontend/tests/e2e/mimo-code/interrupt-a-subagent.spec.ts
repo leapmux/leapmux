@@ -17,7 +17,15 @@ import { MIMO_HELD_CHILD_TURN, mimoChildTurn } from './childScenario'
 
 mimoTest('proves the unsupported native child interrupt route while its original task runs', async ({ native }) => {
   await applyPermissionPreset(native.page, 'bypass')
-  await expectUnsupportedSubagent(native, { operation: 'interrupt', openChild: () => openHeldChildTab(native, { childTurn: MIMO_HELD_CHILD_TURN, rootTurnsAfterSpawn: [{ text: 'The actual native child completed.' }] }) })
+  await expectUnsupportedSubagent(native, {
+    operation: 'interrupt',
+    openChild: () => openHeldChildTab(native, {
+      childTurn: MIMO_HELD_CHILD_TURN,
+      rootTurnsAfterSpawn: [
+        { text: 'The actual native child completed.' },
+      ],
+    }),
+  })
 })
 
 mimoTest('cancels the exact native child while its parent completes normally after reload', async ({ native }) => {
@@ -32,14 +40,25 @@ mimoTest('cancels the exact native child while its parent completes normally aft
     await modelScript.rule({
       name: 'the native child holds its own partial answer',
       when: mimoChildTurn(task),
-      respond: { text: `${partial} This suffix never completes.`, stream: { chunkChars: partial.length, delayMs: 0, gates: [{ afterChunk: 1, name: gate }] } },
+      respond: {
+        text: `${partial} This suffix never completes.`,
+        stream: {
+          chunkChars: partial.length,
+          delayMs: 0,
+          gates: [
+            { afterChunk: 1, name: gate },
+          ],
+        },
+      },
     })
     const start = await modelScript.queue({
-      toolCalls: [spawnSubagentToolCall(native.provider, 'native-child-cancel-spawn', {
-        description: 'Native child cancellation',
-        prompt: modelScript.prompt(task),
-        background: true,
-      })],
+      toolCalls: [
+        spawnSubagentToolCall(native.provider, 'native-child-cancel-spawn', {
+          description: 'Native child cancellation',
+          prompt: modelScript.prompt(task),
+          background: true,
+        }),
+      ],
     }, { text: 'The parent starts its actual background child.' })
     modelScript.allowUnconsumed('The native actor cancellation ends the held child response before its final chunk.')
     await sendMessage(page, modelScript.prompt('Start the scripted native child in the background and answer once.'))
@@ -48,7 +67,11 @@ mimoTest('cancels the exact native child while its parent completes normally aft
     await expect(assistantBubbles(page).filter({ hasText: 'The parent starts its actual background child.' })).toBeVisible()
     const spawnRows = (await readNativeMessageSnapshot(native, parent.id)).messages.flatMap((message) => {
       const part = mimoToolPart(nativeMessageBody(message))
-      return part?.callId === 'native-child-cancel-spawn' && part.status === MIMO_TOOL_STATUS.Completed ? [{ message, part }] : []
+      return part?.callId === 'native-child-cancel-spawn' && part.status === MIMO_TOOL_STATUS.Completed
+        ? [
+            { message, part },
+          ]
+        : []
     })
     expect(spawnRows).toHaveLength(1)
     const spawn = spawnRows[0]
@@ -67,7 +90,11 @@ mimoTest('cancels the exact native child while its parent completes normally aft
     expect(child?.providerChildKey).toBe(spawn.part.partId)
     expect(child?.spawnSpanId).toBe(spawn.message.spanId)
     await tabById(page, parent.id).click()
-    await modelScript.queue({ toolCalls: [mimoActorCancelToolCall('native-child-cancel', actorId)] }, { text: parentAnswer })
+    await modelScript.queue({
+      toolCalls: [
+        mimoActorCancelToolCall('native-child-cancel', actorId),
+      ],
+    }, { text: parentAnswer })
     // A native child completion notice can start another parent turn.
     await modelScript.fallback({ text: 'The parent reads its native child cancellation notice.' })
     await sendMessage(page, modelScript.prompt(`Cancel the existing native actor ${actorId} and answer normally.`))
@@ -81,16 +108,22 @@ mimoTest('cancels the exact native child while its parent completes normally aft
       expect(answer && parseAssembledMessage(nativeMessageBody(answer))?.completion).toBe('complete')
       const dividers = root.messages.flatMap((message) => {
         const divider = mimoResultDivider(nativeMessageBody(message), message.completion)
-        return divider ? [divider] : []
+        return divider
+          ? [divider]
+          : []
       })
       expect(dividers.length).toBeGreaterThan(0)
       expect(dividers.every(divider => divider.label === 'Turn ended')).toBe(true)
       const own = await readNativeMessageSnapshot(native, childId)
       const childAnswers = own.messages.flatMap((message) => {
         const assembled = parseAssembledMessage(nativeMessageBody(message))
-        return assembled?.text === partial ? [assembled] : []
+        return assembled?.text === partial
+          ? [assembled]
+          : []
       })
-      expect(childAnswers).toEqual([{ kind: 'text', text: partial, completion: 'interrupted' }])
+      expect(childAnswers).toEqual([
+        { kind: 'text', text: partial, completion: 'interrupted' },
+      ])
     }
     for (const reload of [false, true]) {
       if (reload)

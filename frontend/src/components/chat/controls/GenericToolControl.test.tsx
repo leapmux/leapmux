@@ -10,7 +10,10 @@ function makeRequest(requestId = 'req-1', agentId = 'agent-1'): ControlRequest {
     requestId,
     agentId,
     payload: {
-      request: { tool_name: 'Bash', input: { command: 'ls' } },
+      request: {
+        tool_name: 'Bash',
+        input: { command: 'ls' },
+      },
     },
   }
 }
@@ -34,7 +37,12 @@ describe('GenericToolActions', () => {
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        presets={{ bypass: { sets: { permissionMode: 'bypassPermissions' } }, apply: vi.fn() }}
+        presets={{
+          bypass: {
+            sets: { permissionMode: 'bypassPermissions' },
+          },
+          apply: vi.fn(),
+        }}
       />
     ))
 
@@ -55,7 +63,12 @@ describe('GenericToolActions', () => {
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={true}
         onTriggerSend={() => {}}
-        presets={{ bypass: { sets: { permissionMode: 'bypassPermissions' } }, apply: vi.fn() }}
+        presets={{
+          bypass: {
+            sets: { permissionMode: 'bypassPermissions' },
+          },
+          apply: vi.fn(),
+        }}
       />
     ))
 
@@ -77,7 +90,12 @@ describe('GenericToolActions', () => {
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        presets={{ bypass: { sets: { permissionMode: 'bypassPermissions' } }, apply }}
+        presets={{
+          bypass: {
+            sets: { permissionMode: 'bypassPermissions' },
+          },
+          apply,
+        }}
       />
     ))
 
@@ -114,7 +132,10 @@ describe('GenericToolActions', () => {
     expect(respondCall).toBeDefined()
     const [bytes] = respondCall ?? []
     expect(JSON.parse(new TextDecoder().decode(bytes))).toMatchObject({
-      response: { request_id: 'req-deny', response: { behavior: 'deny' } },
+      response: {
+        request_id: 'req-deny',
+        response: { behavior: 'deny' },
+      },
     })
   })
 
@@ -131,8 +152,12 @@ describe('GenericToolActions', () => {
         hasEditorContent={false}
         onTriggerSend={() => {}}
         presets={{
-          smart: { sets: { permissionMode: 'auto' } },
-          bypass: { sets: { permissionMode: 'bypassPermissions' } },
+          smart: {
+            sets: { permissionMode: 'auto' },
+          },
+          bypass: {
+            sets: { permissionMode: 'bypassPermissions' },
+          },
           apply,
         }}
       />
@@ -154,7 +179,9 @@ describe('GenericToolActions', () => {
     expect(decoded.response.response.updatedInput).toEqual({ command: 'ls' })
 
     // Verify the preset was applied -- the same change the composer menu item makes.
-    expect(apply).toHaveBeenCalledWith({ sets: { permissionMode: 'bypassPermissions' } })
+    expect(apply).toHaveBeenCalledWith({
+      sets: { permissionMode: 'bypassPermissions' },
+    })
   })
 
   it('applies the smart preset when Smart is selected', async () => {
@@ -169,8 +196,12 @@ describe('GenericToolActions', () => {
         hasEditorContent={false}
         onTriggerSend={() => {}}
         presets={{
-          smart: { sets: { permissionMode: 'auto' } },
-          bypass: { sets: { permissionMode: 'bypassPermissions' } },
+          smart: {
+            sets: { permissionMode: 'auto' },
+          },
+          bypass: {
+            sets: { permissionMode: 'bypassPermissions' },
+          },
           apply,
         }}
       />
@@ -179,7 +210,9 @@ describe('GenericToolActions', () => {
     fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Smart' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
-    expect(apply).toHaveBeenCalledWith({ sets: { permissionMode: 'auto' } })
+    expect(apply).toHaveBeenCalledWith({
+      sets: { permissionMode: 'auto' },
+    })
   })
 
   it('opens on the preset the session has on', async () => {
@@ -196,8 +229,12 @@ describe('GenericToolActions', () => {
         hasEditorContent={false}
         onTriggerSend={() => {}}
         presets={{
-          smart: { sets: { permissionMode: 'auto' } },
-          bypass: { sets: { permissionMode: 'bypassPermissions' } },
+          smart: {
+            sets: { permissionMode: 'auto' },
+          },
+          bypass: {
+            sets: { permissionMode: 'bypassPermissions' },
+          },
           apply,
           active: 'bypass',
         }}
@@ -207,7 +244,9 @@ describe('GenericToolActions', () => {
     expect(permissionPillGroup().getByRole('radio', { name: 'Bypass' })).toBeChecked()
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
-    expect(apply).toHaveBeenCalledWith({ sets: { permissionMode: 'bypassPermissions' } })
+    expect(apply).toHaveBeenCalledWith({
+      sets: { permissionMode: 'bypassPermissions' },
+    })
   })
 
   it('applies nothing when no preset is on', async () => {
@@ -224,8 +263,12 @@ describe('GenericToolActions', () => {
         hasEditorContent={false}
         onTriggerSend={() => {}}
         presets={{
-          smart: { sets: { permissionMode: 'auto' } },
-          bypass: { sets: { permissionMode: 'bypassPermissions' } },
+          smart: {
+            sets: { permissionMode: 'auto' },
+          },
+          bypass: {
+            sets: { permissionMode: 'bypassPermissions' },
+          },
           apply,
         }}
       />
@@ -248,7 +291,12 @@ describe('GenericToolActions', () => {
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        presets={{ bypass: { sets: { permissionMode: 'bypassPermissions' } }, apply }}
+        presets={{
+          bypass: {
+            sets: { permissionMode: 'bypassPermissions' },
+          },
+          apply,
+        }}
       />
     ))
 
@@ -281,7 +329,12 @@ describe('GenericToolActions', () => {
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        presets={{ bypass: { sets: { permissionMode: 'bypassPermissions' } }, apply: vi.fn() }}
+        presets={{
+          bypass: {
+            sets: { permissionMode: 'bypassPermissions' },
+          },
+          apply: vi.fn(),
+        }}
       />
     ))
 

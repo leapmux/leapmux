@@ -100,7 +100,9 @@ export function ToolHeaderActions(props: {
       'timestamp',
       ...leadingActions(actions(), mirrored).map(action => action.id),
     ]
-    return mirrored ? swapPairs(screen) : screen
+    return mirrored
+      ? swapPairs(screen)
+      : screen
   })
 
   const trailingCells = createMemo(() => trailingActions(actions()).map(action => action.id))

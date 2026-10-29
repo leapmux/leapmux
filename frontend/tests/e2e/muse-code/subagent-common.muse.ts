@@ -96,15 +96,27 @@ export interface MuseChildReadinessContext {
 }
 
 function diagnosticResult<T>(result: PromiseSettledResult<T>, project: (value: T) => unknown = value => value): unknown {
-  if (result.status === 'fulfilled')
-    return { status: result.status, value: project(result.value) }
+  if (result.status === 'fulfilled') {
+    return {
+      status: result.status,
+      value: project(result.value),
+    }
+  }
   const reason: unknown = result.reason
-  return { status: result.status, reason: reason instanceof Error ? { name: reason.name, message: reason.message, stack: reason.stack } : String(reason) }
+  return {
+    status: result.status,
+    reason: reason instanceof Error
+      ? { name: reason.name, message: reason.message, stack: reason.stack }
+      : String(reason),
+  }
 }
 
 function diagnosticValue(read: () => unknown): unknown {
   try {
-    return diagnosticResult({ status: 'fulfilled', value: read() })
+    return diagnosticResult({
+      status: 'fulfilled',
+      value: read(),
+    })
   }
   catch (reason) {
     return diagnosticResult({ status: 'rejected', reason })
@@ -138,16 +150,22 @@ export async function attachMuseChildReadinessFailure(native: ManagedNativeScena
   const { parentId, childId, lastQueue } = context
   const [parentQueue, childQueue, parentSnapshot, childSnapshot, model] = await Promise.allSettled([
     Promise.resolve().then(() => readNativeInputQueue(native.leapmuxServer, parentId)),
-    Promise.resolve().then(() => childId ? readNativeInputQueue(native.leapmuxServer, childId) : Promise.reject(new Error('The Worker child ID is unresolved.'))),
+    Promise.resolve().then(() => childId
+      ? readNativeInputQueue(native.leapmuxServer, childId)
+      : Promise.reject(new Error('The Worker child ID is unresolved.'))),
     Promise.resolve().then(() => readNativeMessageSnapshot(native, parentId)),
-    Promise.resolve().then(() => childId ? readNativeMessageSnapshot(native, childId) : Promise.reject(new Error('The Worker child ID is unresolved.'))),
+    Promise.resolve().then(() => childId
+      ? readNativeMessageSnapshot(native, childId)
+      : Promise.reject(new Error('The Worker child ID is unresolved.'))),
     Promise.resolve().then(() => native.modelScript.status()),
   ])
   let logs: PromiseSettledResult<MuseNativeSessionLogs>
   try {
     if (parentSnapshot.status !== 'fulfilled')
       throw new Error('The owning native parent session is unavailable.')
-    logs = { status: 'fulfilled', value: await readMuseNativeSessionLogs(parentSnapshot.value.agentSessionId, childSnapshot.status === 'fulfilled' ? childSnapshot.value.agentSessionId : undefined, native.leapmuxServer.agentEnv?.XDG_DATA_HOME) }
+    logs = { status: 'fulfilled', value: await readMuseNativeSessionLogs(parentSnapshot.value.agentSessionId, childSnapshot.status === 'fulfilled'
+      ? childSnapshot.value.agentSessionId
+      : undefined, native.leapmuxServer.agentEnv?.XDG_DATA_HOME) }
   }
   catch (reason) {
     logs = { status: 'rejected', reason }
@@ -156,16 +174,29 @@ export async function attachMuseChildReadinessFailure(native: ManagedNativeScena
     parentId,
     childId,
     lastQueue,
-    queues: { parent: diagnosticResult(parentQueue), child: diagnosticResult(childQueue) },
-    transcripts: { parent: diagnosticResult(parentSnapshot, diagnosticTranscript), child: diagnosticResult(childSnapshot, diagnosticTranscript) },
+    queues: {
+      parent: diagnosticResult(parentQueue),
+      child: diagnosticResult(childQueue),
+    },
+    transcripts: {
+      parent: diagnosticResult(parentSnapshot, diagnosticTranscript),
+      child: diagnosticResult(childSnapshot, diagnosticTranscript),
+    },
     model: diagnosticResult(model),
-    nativeLogs: diagnosticResult(logs, value => ({ parent: diagnosticResult(value.parent, log => ({ path: log.path, bytes: log.bytes.length })), child: diagnosticResult(value.child, log => ({ path: log.path, bytes: log.bytes.length })) })),
+    nativeLogs: diagnosticResult(logs, value => ({
+      parent: diagnosticResult(value.parent, log => ({ path: log.path, bytes: log.bytes.length })),
+      child: diagnosticResult(value.child, log => ({ path: log.path, bytes: log.bytes.length })),
+    })),
   }
-  const attachments: { name: string, body: string | Buffer, contentType: string }[] = [{
-    name: 'muse-held-child-readiness',
-    body: JSON.stringify(evidence, (_key, value) => typeof value === 'bigint' ? String(value) : value),
-    contentType: 'application/json',
-  }]
+  const attachments: { name: string, body: string | Buffer, contentType: string }[] = [
+    {
+      name: 'muse-held-child-readiness',
+      body: JSON.stringify(evidence, (_key, value) => typeof value === 'bigint'
+        ? String(value)
+        : value),
+      contentType: 'application/json',
+    },
+  ]
   if (logs.status === 'fulfilled') {
     for (const [owner, result] of Object.entries(logs.value)) {
       if (result.status === 'fulfilled')
@@ -183,25 +214,52 @@ export async function openMuseChild(native: ManagedNativeScenarioContext, held: 
   await modelScript.rule(
     {
       name: 'the Muse child runs its own command',
-      when: { body: ['Workflow child completion protocol', MUSE_CHILD_TASK] },
+      when: {
+        body: ['Workflow child completion protocol', MUSE_CHILD_TASK],
+      },
       once: true,
-      respond: { text: MUSE_CHILD_PROGRESS, toolCalls: [bashToolCall(native.provider, 'muse-child-first', 'printf \'MUSE_CHILD_OUTPUT_%s\\n\' 42')] },
+      respond: {
+        text: MUSE_CHILD_PROGRESS,
+        toolCalls: [
+          bashToolCall(native.provider, 'muse-child-first', 'printf \'MUSE_CHILD_OUTPUT_%s\\n\' 42'),
+        ],
+      },
     },
     {
       name: 'the Muse child reaches its next command boundary',
-      when: { body: ['Workflow child completion protocol', MUSE_CHILD_OUTPUT] },
+      when: {
+        body: ['Workflow child completion protocol', MUSE_CHILD_OUTPUT],
+      },
       once: true,
-      respond: { ...(held ? { gate: MUSE_CHILD_GATE } : {}), toolCalls: [bashToolCall(native.provider, 'muse-child-later', 'printf \'MUSE_CHILD_LATER_%s\\n\' 77')] },
+      respond: {
+        ...(held
+          ? { gate: MUSE_CHILD_GATE }
+          : {}),
+        toolCalls: [
+          bashToolCall(native.provider, 'muse-child-later', 'printf \'MUSE_CHILD_LATER_%s\\n\' 77'),
+        ],
+      },
     },
     {
       name: 'the Muse child submits its own result',
-      when: { body: ['Workflow child completion protocol', MUSE_CHILD_LATER_OUTPUT] },
+      when: {
+        body: ['Workflow child completion protocol', MUSE_CHILD_LATER_OUTPUT],
+      },
       once: true,
-      respond: { text: MUSE_CHILD_RESULT, toolCalls: [museSubmitResultToolCall('muse-child-submit', 'The child result contract is complete.')] },
+      respond: {
+        text: MUSE_CHILD_RESULT,
+        toolCalls: [
+          museSubmitResultToolCall('muse-child-submit', 'The child result contract is complete.'),
+        ],
+      },
     },
   )
   const start = await modelScript.queue(
-    { toolCalls: [codeExecutionToolCall(native.provider, 'muse-child-workflow', `export default async function workflow(host) { return await host.agent({ input: ${JSON.stringify(childInput)} }); }`)] },
+    {
+      toolCalls: [
+        codeExecutionToolCall(native.provider, 'muse-child-workflow', `export default async function workflow(host) { return await host.agent({ input: ${JSON.stringify(childInput)} }); }`),
+      ],
+    },
     { text: 'The parent received the native child outcome.' },
   )
   let childId: string | undefined
@@ -236,15 +294,24 @@ export async function openMuseChild(native: ManagedNativeScenarioContext, held: 
       await tabById(page, openedChildId).click()
       await waitForAgentIdle(page)
     }
-    return { row, childId: openedChildId, parentId, finish }
+    return {
+      row,
+      childId: openedChildId,
+      parentId,
+      finish,
+    }
   }
   catch (error) {
     if (held) {
       try {
         await attachMuseChildReadinessFailure(native, {
           parentId,
-          ...(childId === undefined ? {} : { childId }),
-          ...(lastQueue === undefined ? {} : { lastQueue }),
+          ...(childId === undefined
+            ? {}
+            : { childId }),
+          ...(lastQueue === undefined
+            ? {}
+            : { lastQueue }),
         }, test.info())
       }
       catch {

@@ -9,9 +9,22 @@ import { DEFAULT_FILE_SORT_ORDER } from '~/lib/fileSort'
 import { FilesSection, FilesSectionHeaderActions } from './FilesSection'
 
 vi.mock('~/api/workerRpc', () => ({
-  listDirectory: vi.fn(async () => ({ listings: [{ path: '', entries: [], truncated: false, totalEntries: 0 }] })),
-  statFile: vi.fn(async () => ({ info: { modTime: '2026-01-01T00:00:00Z' } })),
-  channelManager: { subscribe: () => () => {} },
+  listDirectory: vi.fn(async () => ({
+    listings: [
+      {
+        path: '',
+        entries: [],
+        truncated: false,
+        totalEntries: 0,
+      },
+    ],
+  })),
+  statFile: vi.fn(async () => ({
+    info: { modTime: '2026-01-01T00:00:00Z' },
+  })),
+  channelManager: {
+    subscribe: () => () => {},
+  },
 }))
 
 const WORKER_ID = 'w1'
@@ -72,12 +85,17 @@ function renderSection(files: GitFileStatusEntry[]) {
       ref={(h) => { handle = h }}
     />
   ))
-  return { ...result, handle: () => handle }
+  return {
+    ...result,
+    handle: () => handle,
+  }
 }
 
 function flatListNames(): string[] {
   const list = document.querySelector('[data-testid="files-flat-list"]')
-  return [...(list?.children ?? [])].map(el => el.textContent ?? '')
+  return [
+    ...(list?.children ?? []),
+  ].map(el => el.textContent ?? '')
 }
 
 const FILES = [
@@ -216,7 +234,12 @@ describe('FilesSection flat list ordering', () => {
     openFlatList(handle)
     handle().setSortOrder({ key: 'size', direction: 'desc' })
     await waitFor(() => expect(flatListNames()).toHaveLength(4))
-    expect(flatListNames()).toEqual(['zzz-build/', 'src/apple.ts', 'src/cherry.js', 'src/banana.md'])
+    expect(flatListNames()).toEqual([
+      'zzz-build/',
+      'src/apple.ts',
+      'src/cherry.js',
+      'src/banana.md',
+    ])
   })
 
   /**
@@ -243,7 +266,10 @@ describe('FilesSection flat list ordering', () => {
    * at the epoch, which is where a defaulted 0 / "" would put them.
    */
   it('sorts an entry with no stat last under both directions', async () => {
-    const { handle } = renderSection([...FILES, gitEntry({ path: 'src/deleted.ts' })])
+    const { handle } = renderSection([
+      ...FILES,
+      gitEntry({ path: 'src/deleted.ts' }),
+    ])
     openFlatList(handle)
 
     handle().setSortOrder({ key: 'size', direction: 'asc' })
@@ -299,11 +325,15 @@ describe('FilesSectionHeaderActions', () => {
   })
 
   it('shows the flat-list toggle only while a filter is active', () => {
-    const { unmount } = renderActions(stubHandle({ isFiltered: () => true }))
+    const { unmount } = renderActions(stubHandle({
+      isFiltered: () => true,
+    }))
     expect(screen.getByTestId('files-flat-list-toggle')).toBeInTheDocument()
     unmount()
 
-    renderActions(stubHandle({ isFiltered: () => false }))
+    renderActions(stubHandle({
+      isFiltered: () => false,
+    }))
     expect(screen.queryByTestId('files-flat-list-toggle')).not.toBeInTheDocument()
   })
 
@@ -324,7 +354,9 @@ describe('FilesSectionHeaderActions', () => {
   })
 
   it('reads the sort order off the handle', () => {
-    renderActions(stubHandle({ sortOrder: () => ({ key: 'size', direction: 'desc' }) }))
+    renderActions(stubHandle({
+      sortOrder: () => ({ key: 'size', direction: 'desc' }),
+    }))
     expect(screen.getByTestId('files-sort-key-size').getAttribute('aria-checked')).toBe('true')
     expect(screen.getByTestId('files-sort-direction-desc').getAttribute('aria-checked')).toBe('true')
   })

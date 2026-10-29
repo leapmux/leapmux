@@ -12,11 +12,15 @@ export function deepseekHarnessExtractRow(input: RowExtractionInput): ChatRow | 
   switch (input.category.kind) {
     case 'assistant_text': {
       const text = pickString(deepseekHarnessAssistantBlock(payload), 'text')
-      return text ? { kind: 'assistant-text', text } : { kind: 'hidden' }
+      return text
+        ? { kind: 'assistant-text', text }
+        : { kind: 'hidden' }
     }
     case 'assistant_thinking': {
       const text = pickString(deepseekHarnessAssistantBlock(payload), 'text')
-      return text ? { kind: 'assistant-thinking', text } : { kind: 'hidden' }
+      return text
+        ? { kind: 'assistant-thinking', text }
+        : { kind: 'hidden' }
     }
     case 'user_content': {
       const data = deepseekHarnessEventData(payload, DEEPSEEK_HARNESS_EVENT.UserMessage)
@@ -32,10 +36,21 @@ export function deepseekHarnessExtractRow(input: RowExtractionInput): ChatRow | 
               return []
             const filename = pickString(ref, 'name')
             const mimeType = pickString(ref, 'mediaType')
-            return [{ ...(filename ? { filename } : {}), ...(mimeType ? { mimeType } : {}) }]
+            return [
+              {
+                ...(filename
+                  ? { filename }
+                  : {}),
+                ...(mimeType
+                  ? { mimeType }
+                  : {}),
+              },
+            ]
           })
         : []
-      return text || attachments.length > 0 ? { kind: 'user', text, attachments } : { kind: 'hidden' }
+      return text || attachments.length > 0
+        ? { kind: 'user', text, attachments }
+        : { kind: 'hidden' }
     }
     case 'plan_execution':
       return leapmuxPlanExecutionRow(payload)
@@ -46,7 +61,11 @@ export function deepseekHarnessExtractRow(input: RowExtractionInput): ChatRow | 
       const call = deepseekHarnessToolCall(input)
       if (!call)
         return null
-      const role = input.span.role === 'other' ? input.category.kind === 'tool_use' ? 'request' : 'result' : input.span.role
+      const role = input.span.role === 'other'
+        ? input.category.kind === 'tool_use'
+          ? 'request'
+          : 'result'
+        : input.span.role
       return toolCallRow(call, role, input.span.visibleRows)
     }
     default:

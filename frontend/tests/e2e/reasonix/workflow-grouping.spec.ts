@@ -4,5 +4,8 @@ import { reasonixTest } from '../reasonix-fixtures'
 import { REASONIX_CHILD } from './childScenario'
 
 reasonixTest('keeps two actual native children outside workflow groups after reload', async ({ native }) => {
-  await exerciseUngroupedNativeChildren(native, { openChild: slot => openProfiledNativeChild(native, REASONIX_CHILD, slot), catalogProof: true })
+  await exerciseUngroupedNativeChildren(native, {
+    openChild: slot => openProfiledNativeChild(native, REASONIX_CHILD, slot),
+    catalogProof: true,
+  })
 })

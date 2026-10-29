@@ -5,7 +5,18 @@ import '~/components/chat/providers'
 import '~/components/chat/providers/testMocks'
 
 function nativeItem(kind: string, fields: Record<string, unknown> = {}) {
-  return { method: 'item/completed', params: { sessionId: 'native-session', item: { itemId: 'native-item', kind, status: 'completed', ...fields } } }
+  return {
+    method: 'item/completed',
+    params: {
+      sessionId: 'native-session',
+      item: {
+        itemId: 'native-item',
+        kind,
+        status: 'completed',
+        ...fields,
+      },
+    },
+  }
 }
 
 describe('museExtractRow', () => {
@@ -18,7 +29,26 @@ describe('museExtractRow', () => {
     { kind: 'agentMessage', rowKind: 'assistant-text', text: '  Proved partial reply\n' },
     { kind: 'reasoning', rowKind: 'assistant-thinking', text: '  Proved partial reasoning\n' },
   ])('keeps the exact interrupted native $kind revision', ({ kind, rowKind, text }) => {
-    const payload = { method: 'item/updated', params: { sessionId: 'child', viewCursor: 'proved-cursor', sourceRange: { stream: { kind: 'session', id: 'child' }, first: { id: 'source', sequence: 1 }, last: { id: 'source', sequence: 1 } }, item: { itemId: 'partial', revision: 2, kind, status: 'inProgress', text, futureNativeField: { exact: 'retained' } } } }
+    const payload = {
+      method: 'item/updated',
+      params: {
+        sessionId: 'child',
+        viewCursor: 'proved-cursor',
+        sourceRange: {
+          stream: { kind: 'session', id: 'child' },
+          first: { id: 'source', sequence: 1 },
+          last: { id: 'source', sequence: 1 },
+        },
+        item: {
+          itemId: 'partial',
+          revision: 2,
+          kind,
+          status: 'inProgress',
+          text,
+          futureNativeField: { exact: 'retained' },
+        },
+      },
+    }
     const before = structuredClone(payload)
     expect(providerRow(AgentProvider.MUSE_CODE, payload, { agentSessionId: 'child', completion: MessageCompletion.INTERRUPTED }))
       .toEqual({ kind: rowKind, text })
@@ -26,7 +56,9 @@ describe('museExtractRow', () => {
   })
 
   it('keeps reasoning summary segments in native order', () => {
-    expect(providerRow(AgentProvider.MUSE_CODE, nativeItem('reasoning', { summary: ['First', 'Second'] })))
+    expect(providerRow(AgentProvider.MUSE_CODE, nativeItem('reasoning', {
+      summary: ['First', 'Second'],
+    })))
       .toEqual({ kind: 'assistant-thinking', text: 'First\n\nSecond' })
   })
 

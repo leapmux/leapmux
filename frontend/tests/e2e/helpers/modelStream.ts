@@ -58,7 +58,12 @@ function createControlledModelStream(
     async* chunks(text) {
       if (text === undefined)
         return
-      for (const chunk of textChunks({ text, ...(stream ? { stream } : {}) })) {
+      for (const chunk of textChunks({
+        text,
+        ...(stream
+          ? { stream }
+          : {}),
+      })) {
         if (!active())
           return
         if (emitted > 0 && !await control.pause())

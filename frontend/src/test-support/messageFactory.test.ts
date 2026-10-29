@@ -8,7 +8,9 @@ describe('makeTranscriptMessage', () => {
     const structured = makeTranscriptMessage({
       id: 'structured',
       provider: AgentProvider.CODEX,
-      content: { item: { type: 'reasoning', text: 'Inspect' } },
+      content: {
+        item: { type: 'reasoning', text: 'Inspect' },
+      },
     }, 1n)
     const bytes = rawContent({ captured: true })
     const captured = makeTranscriptMessage({
@@ -17,7 +19,9 @@ describe('makeTranscriptMessage', () => {
       rawContent: bytes,
     }, 2n)
 
-    expect(JSON.parse(new TextDecoder().decode(structured.content))).toEqual({ item: { type: 'reasoning', text: 'Inspect' } })
+    expect(JSON.parse(new TextDecoder().decode(structured.content))).toEqual({
+      item: { type: 'reasoning', text: 'Inspect' },
+    })
     expect(captured.content).toBe(bytes)
   })
 
@@ -28,7 +32,12 @@ describe('makeTranscriptMessage', () => {
     },
     {
       label: 'both payload sources',
-      frame: { id: 'duplicate-content', provider: AgentProvider.CODEX, content: {}, rawContent: rawContent({}) },
+      frame: {
+        id: 'duplicate-content',
+        provider: AgentProvider.CODEX,
+        content: {},
+        rawContent: rawContent({}),
+      },
     },
   ])('rejects $label at a JavaScript boundary', ({ frame }) => {
     expect(() => makeTranscriptMessage(frame as TranscriptFrame, 1n)).toThrow('exactly one')

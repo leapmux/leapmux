@@ -27,10 +27,26 @@ deepseekHarnessTest('keeps native output paths and the exact inline preview afte
       // The fields of the record that a reload must not change: the frame, the paths, the preview, and the row bytes.
       const readRecord = (snapshot: NativeMessageSnapshot) => {
         const receipt = readDeepseekHarnessNativeOutput(snapshot, capture.nativeCallId)
-        return { frame: receipt.frame, paths: receipt.paths, previewText: receipt.previewText, content: receipt.message.content }
+        return {
+          frame: receipt.frame,
+          paths: receipt.paths,
+          previewText: receipt.previewText,
+          content: receipt.message.content,
+        }
       }
       const receipt = readDeepseekHarnessNativeOutput(capture.snapshot, capture.nativeCallId)
-      await testInfo.attach('deepseek-native-output-path-receipt', { body: JSON.stringify({ agentId: capture.agent.id, sessionId: capture.agent.agentSessionId, callId: capture.nativeCallId, paths: receipt.paths, previewText: receipt.previewText, frame: receipt.frame, supplement: receipt.supplement }), contentType: 'application/json' })
+      await testInfo.attach('deepseek-native-output-path-receipt', {
+        body: JSON.stringify({
+          agentId: capture.agent.id,
+          sessionId: capture.agent.agentSessionId,
+          callId: capture.nativeCallId,
+          paths: receipt.paths,
+          previewText: receipt.previewText,
+          frame: receipt.frame,
+          supplement: receipt.supplement,
+        }),
+        contentType: 'application/json',
+      })
       // DeepSeek can declare one path for each output stream and one for its spill file, so the proof requires at
       // least one path, not exactly one. `proveNativeOutputReceipt` cannot run this proof, because its receipt check
       // (`checkNativeOutputReceipt`) requires exactly one declared path.
@@ -61,16 +77,48 @@ for (const layout of ['omitted-middle-image', 'retained-end-images'] as const) {
     const output = computedNativeToolOutput({ lineCount: 8000, padding: 30 })
     const image: McpResultContent = { type: 'image', path: imagePath }
     const content: McpResultContent[] = layout === 'omitted-middle-image'
-      ? [{ type: 'text', text: output.text }, image, { type: 'text', text: output.text }]
-      : [{ type: 'text', text: output.firstMarker }, image, { type: 'text', text: output.text }, image, { type: 'text', text: output.lastMarker }]
+      ? [
+          { type: 'text', text: output.text },
+          image,
+          { type: 'text', text: output.text },
+        ]
+      : [
+          { type: 'text', text: output.firstMarker },
+          image,
+          { type: 'text', text: output.text },
+          image,
+          { type: 'text', text: output.lastMarker },
+        ]
     const receiptLog = join(directory, 'receipts.json')
     const server = writeMcpResultServer(directory, { receiptLog, inspectContent: content })
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     await withDeepseekHarnessMcp(context, { server, workingDir: directory }, async (privateContext) => {
       const callId = `native-mcp-paths-${layout}`
       const input = { count: 0, enabled: false, text: 'The exact native mixed result.' }
-      const request = await invokeNativeMcpTool(privateContext, { server: server.name, tool: 'inspect', callId, input })
-      await proveDeepseekHarnessMixedMcpOutput(privateContext, { callId, request, input, receiptLog, expected: content, firstMarker: output.firstMarker, omittedMarker: output.omittedMarker, retainedImages: layout === 'retained-end-images' ? 2 : 0, testInfo })
+      const request = await invokeNativeMcpTool(privateContext, {
+        server: server.name,
+        tool: 'inspect',
+        callId,
+        input,
+      })
+      await proveDeepseekHarnessMixedMcpOutput(privateContext, {
+        callId,
+        request,
+        input,
+        receiptLog,
+        expected: content,
+        firstMarker: output.firstMarker,
+        omittedMarker: output.omittedMarker,
+        retainedImages: layout === 'retained-end-images'
+          ? 2
+          : 0,
+        testInfo,
+      })
     })
   })
 }

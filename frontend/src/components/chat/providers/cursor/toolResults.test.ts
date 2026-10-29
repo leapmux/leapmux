@@ -17,15 +17,21 @@ const KINDS: ToolVocabularyCheck = {
 // Each name comes from the fixture table's own keys, so the lookups miss for the type alone.
 function callOf(name: string) {
   const fixture = CURSOR_TOOL_RESULTS.fixtures[name]
-  return fixture === undefined ? null : providerToolCall(AgentProvider.CURSOR, fixture.payload, fixture.options)
+  return fixture === undefined
+    ? null
+    : providerToolCall(AgentProvider.CURSOR, fixture.payload, fixture.options)
 }
 const failureCallOf = (fixture: ToolFailureFixture) => providerToolCall(AgentProvider.CURSOR, fixture.payload, fixture.options)
 
 /** The `tool_call` request that each fixture pairs with, read alone as a call still in flight. */
 function requestCallOf(name: string) {
   const fixture = CURSOR_TOOL_RESULTS.fixtures[name]
-  const frame = fixture === undefined ? null : openingFrameOf(fixture)
-  return frame === null ? null : providerToolCall(AgentProvider.CURSOR, frame)
+  const frame = fixture === undefined
+    ? null
+    : openingFrameOf(fixture)
+  return frame === null
+    ? null
+    : providerToolCall(AgentProvider.CURSOR, frame)
 }
 
 describe('cursor tool results', () => {

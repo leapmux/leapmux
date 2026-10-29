@@ -64,8 +64,12 @@ export function readCodeBuddyShellResult(request: MockModelRequestRecord, comman
     throw new Error('The CodeBuddy native record has no stdout field.')
   }
   const footerStart = record.lastIndexOf('\nExit Code: ')
-  const footer = footerStart >= prefix.length ? /^\nExit Code: (0|-?[1-9]\d*)\nSignal: \(none\)$/u.exec(record.slice(footerStart)) : null
-  const exitCode = footer ? Number(footer[1]) : Number.NaN
+  const footer = footerStart >= prefix.length
+    ? /^\nExit Code: (0|-?[1-9]\d*)\nSignal: \(none\)$/u.exec(record.slice(footerStart))
+    : null
+  const exitCode = footer
+    ? Number(footer[1])
+    : Number.NaN
   if (!Number.isSafeInteger(exitCode) || exitCode !== command.exitCode)
     throw new Error('The CodeBuddy native record has an invalid exit or signal.')
   const streams = record.slice(prefix.length, footerStart).split('\nStderr: ')
@@ -74,10 +78,27 @@ export function readCodeBuddyShellResult(request: MockModelRequestRecord, comman
   validateMetadata(nativeToolResultEntry(request, command.callId), exitCode)
   const stdout = streams[0]!
   const stderr = streams[1]!
-  const output = exitCode === 0 ? stdout : stderr
-  if (output.includes(command.output))
-    return { kind: 'output', outcome: { text: record, exitCode, failed: exitCode !== 0 }, absentRowText: ['Stdout:', 'Stderr:', 'Exit Code:', 'Signal:'] }
-  if (exitCode === 7 && stdout === '(empty)' && stderr === '(empty)')
-    return { kind: 'record', outcome: { text: record, exitCode, failed: true }, record }
+  const output = exitCode === 0
+    ? stdout
+    : stderr
+  if (output.includes(command.output)) {
+    return {
+      kind: 'output',
+      outcome: { text: record, exitCode, failed: exitCode !== 0 },
+      absentRowText: [
+        'Stdout:',
+        'Stderr:',
+        'Exit Code:',
+        'Signal:',
+      ],
+    }
+  }
+  if (exitCode === 7 && stdout === '(empty)' && stderr === '(empty)') {
+    return {
+      kind: 'record',
+      outcome: { text: record, exitCode, failed: true },
+      record,
+    }
+  }
   throw new Error('The CodeBuddy native record omits the required command output.')
 }

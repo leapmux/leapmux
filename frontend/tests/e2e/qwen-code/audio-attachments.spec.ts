@@ -37,27 +37,54 @@ async function withAudioCatalog(server: NativeContextFixtures['leapmuxServer'], 
 
 qwenTest('delivers WAV and FLAC bytes with and without prompts and retains all attachments after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   await withAudioCatalog(leapmuxServer, async () => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    await openNativeAgent(context, { directoryPrefix: 'qwen-audio-', overrides: { model: QWEN_MODEL_ID } })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
+    await openNativeAgent(context, {
+      directoryPrefix: 'qwen-audio-',
+      overrides: { model: QWEN_MODEL_ID },
+    })
     await proveNativeAudioAttachments(context, 'openai-chat-completions')
   })
 })
 
 qwenTest('retains unsupported audio input and retries the same recording after a native model switch', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   await withAudioCatalog(leapmuxServer, async () => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    await openNativeAgent(context, { directoryPrefix: 'qwen-audio-refusal-', overrides: { model: TEXT_MODEL_ID } })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
+    await openNativeAgent(context, {
+      directoryPrefix: 'qwen-audio-refusal-',
+      overrides: { model: TEXT_MODEL_ID },
+    })
     await proveNativeAudioModelRetry(context, QWEN_MODEL_ID)
   })
 })
 
 qwenTest('keeps a recording queued after refusing midturn steering and delivers it once after the turn', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   await withAudioCatalog(leapmuxServer, async () => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    await openNativeAgent(context, { directoryPrefix: 'qwen-audio-queue-', overrides: { model: QWEN_MODEL_ID } })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
+    await openNativeAgent(context, {
+      directoryPrefix: 'qwen-audio-queue-',
+      overrides: { model: QWEN_MODEL_ID },
+    })
     const gate = 'qwen-audio-queue'
     await withCleanup(async () => {
-      const step = await modelScript.queue({ ...nativeTextStep(context, 'The first turn ended.'), gate }, nativeTextStep(context, 'The queued recording arrived.'))
+      const step = await modelScript.queue({
+        ...nativeTextStep(context, 'The first turn ended.'),
+        gate,
+      }, nativeTextStep(context, 'The queued recording arrived.'))
       await sendMessage(page, modelScript.prompt('Wait for the held answer.'))
       await modelScript.waitForGate(gate)
       const name = 'queued-recording.wav'

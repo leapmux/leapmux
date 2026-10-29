@@ -64,7 +64,9 @@ function updateKinds(body: Buffer): string[] {
     }
     const update = fields.get(FIELD_INTERACTION_UPDATE)?.[0]
     if (!update) {
-      kinds.push(fields.has(2) ? 'execRequest' : 'unknown')
+      kinds.push(fields.has(2)
+        ? 'execRequest'
+        : 'unknown')
       continue
     }
     const inner = readCursorProtobufFields(update).strings
@@ -102,7 +104,11 @@ async function runStreamBody(
   opening?: { payload: Uint8Array, flags: number, encoding?: string, errors?: string[] },
   extraHandlers?: Pick<CursorRunHandlers, 'contextRules'>,
 ): Promise<Buffer> {
-  const replies = reply === undefined ? [] : reply instanceof Uint8Array ? [reply] : reply
+  const replies = reply === undefined
+    ? []
+    : reply instanceof Uint8Array
+      ? [reply]
+      : reply
   const server = createServer((request, response) => {
     const handlers: CursorRunHandlers = {
       ...extraHandlers,
@@ -110,8 +116,12 @@ async function runStreamBody(
       completed: (prompt: string, _frame: Uint8Array, text: string) => receipts?.push({ prompt, text }),
     }
     void serveCursorRun(request, response, handlers).catch((error: unknown) => {
-      opening?.errors?.push(error instanceof Error ? error.message : String(error))
-      response.destroy(error instanceof Error ? error : new Error(String(error)))
+      opening?.errors?.push(error instanceof Error
+        ? error.message
+        : String(error))
+      response.destroy(error instanceof Error
+        ? error
+        : new Error(String(error)))
     })
   })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()))
@@ -122,7 +132,12 @@ async function runStreamBody(
   const { port } = server.address() as AddressInfo
   const response = await fetch(`http://127.0.0.1:${port}${CURSOR_RUN_PATH}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/connect+proto', ...(opening?.encoding === undefined ? {} : { 'connect-content-encoding': opening.encoding }) },
+    headers: {
+      'content-type': 'application/connect+proto',
+      ...(opening?.encoding === undefined
+        ? {}
+        : { 'connect-content-encoding': opening.encoding }),
+    },
     body: Buffer.concat([
       Buffer.from(connectFrame(opening?.payload ?? clientMessageWithPrompt('Say the mock word.'), opening?.flags ?? 0)),
       ...replies.map(frame => Buffer.from(connectFrame(frame))),
@@ -166,7 +181,12 @@ describe('CURSOR_MOCK_MODELS', () => {
       for (const effort of ['low', 'high']) {
         for (const thinking of ['false', 'true']) {
           for (const fast of ['false', 'true']) {
-            const wanted = [{ id: 'context', value: context }, { id: 'effort', value: effort }, { id: 'thinking', value: thinking }, { id: 'fast', value: fast }]
+            const wanted = [
+              { id: 'context', value: context },
+              { id: 'effort', value: effort },
+              { id: 'thinking', value: thinking },
+              { id: 'fast', value: fast },
+            ]
             expect(model?.variants.map(variant => variant.parameters)).toContainEqual(wanted)
           }
         }
@@ -184,7 +204,12 @@ describe('CURSOR_MOCK_MODELS', () => {
 
   it('offers both native effort IDs and independent boolean controls', () => {
     const definitions = CURSOR_MOCK_MODELS.flatMap(model => model.parameterDefinitions ?? [])
-    expect(definitions.map(definition => definition.id)).toEqual(expect.arrayContaining(['effort', 'reasoning_effort', 'thinking', 'fast']))
+    expect(definitions.map(definition => definition.id)).toEqual(expect.arrayContaining([
+      'effort',
+      'reasoning_effort',
+      'thinking',
+      'fast',
+    ]))
     for (const id of ['thinking', 'fast']) {
       const definition = definitions.find(definition => definition.id === id)
       expect(definition?.kind).toBe('boolean')
@@ -201,18 +226,50 @@ describe('CURSOR_MOCK_MODELS', () => {
 
 describe('cursorToolCallsFrom', () => {
   it('keeps actual native child execution separate from Task arguments and simulated child text', () => {
-    const call = { id: 'native-child', name: CURSOR_TASK_TOOL, arguments: { description: 'Read a native file.', prompt: 'Read the actual file.' }, nativeExecution: { modelId: 'default' } }
+    const call = {
+      id: 'native-child',
+      name: CURSOR_TASK_TOOL,
+      arguments: { description: 'Read a native file.', prompt: 'Read the actual file.' },
+      nativeExecution: { modelId: 'default' },
+    }
     const [task] = cursorToolCallsFrom([call])
-    expect(task).toMatchObject({ nativeExecution: { modelId: 'default' }, call: { callID: call.id, prompt: call.arguments.prompt } })
+    expect(task).toMatchObject({
+      nativeExecution: { modelId: 'default' },
+      call: { callID: call.id, prompt: call.arguments.prompt },
+    })
     expect(task).toHaveProperty('call', { callID: call.id, description: call.arguments.description, prompt: call.arguments.prompt })
-    expect(() => cursorToolCallsFrom([{ ...call, name: 'read' }])).toThrow('Only a native Cursor task')
-    expect(() => cursorToolCallsFrom([{ ...call, taskProgress: 'Invented child progress.' }])).toThrow('cannot use scripted child progress')
+    expect(() => cursorToolCallsFrom([
+      { ...call, name: 'read' },
+    ])).toThrow('Only a native Cursor task')
+    expect(() => cursorToolCallsFrom([
+      { ...call, taskProgress: 'Invented child progress.' },
+    ])).toThrow('cannot use scripted child progress')
   })
   it('keeps task progress outside Task arguments and refuses it on another tool', () => {
-    const tools = cursorToolCallsFrom([{ id: 'task-live', name: CURSOR_TASK_TOOL, arguments: { prompt: 'Read.' }, taskProgress: 'Native child text.', completionGate: 'native-finish' }])
-    expect(tools[0]).toMatchObject({ kind: 'task', call: { callID: 'task-live', prompt: 'Read.' }, taskProgress: 'Native child text.', completionGate: 'native-finish' })
+    const tools = cursorToolCallsFrom([
+      {
+        id: 'task-live',
+        name: CURSOR_TASK_TOOL,
+        arguments: { prompt: 'Read.' },
+        taskProgress: 'Native child text.',
+        completionGate: 'native-finish',
+      },
+    ])
+    expect(tools[0]).toMatchObject({
+      kind: 'task',
+      call: { callID: 'task-live', prompt: 'Read.' },
+      taskProgress: 'Native child text.',
+      completionGate: 'native-finish',
+    })
     expect(tools[0]).toHaveProperty('call', { callID: 'task-live', description: '', prompt: 'Read.' })
-    expect(() => cursorToolCallsFrom([{ id: 'shell-live', name: 'shell', arguments: { command: 'pwd' }, taskProgress: 'Incorrect native child text.' }])).toThrow('Only a native Cursor task')
+    expect(() => cursorToolCallsFrom([
+      {
+        id: 'shell-live',
+        name: 'shell',
+        arguments: { command: 'pwd' },
+        taskProgress: 'Incorrect native child text.',
+      },
+    ])).toThrow('Only a native Cursor task')
   })
 
   it('answers an empty list for an absent or empty tool-call list', () => {
@@ -222,43 +279,110 @@ describe('cursorToolCallsFrom', () => {
 
   it('keeps a native Task call', () => {
     const calls = cursorToolCallsFrom([
-      { id: 'b', name: CURSOR_TASK_TOOL, arguments: { description: 'Probe', prompt: 'Go.', report: 'PONG' } },
+      {
+        id: 'b',
+        name: CURSOR_TASK_TOOL,
+        arguments: { description: 'Probe', prompt: 'Go.', report: 'PONG' },
+      },
     ])
-    expect(calls).toEqual([{ kind: 'task', call: { callID: 'b', description: 'Probe', prompt: 'Go.' }, report: 'PONG' }])
+    expect(calls).toEqual([
+      {
+        kind: 'task',
+        call: { callID: 'b', description: 'Probe', prompt: 'Go.' },
+        report: 'PONG',
+      },
+    ])
   })
 
   it('refuses an unknown tool instead of silently dropping a scripted call', () => {
-    expect(() => cursorToolCallsFrom([{ id: 'a', name: 'Bash', arguments: { command: 'echo hi' } }]))
+    expect(() => cursorToolCallsFrom([
+      {
+        id: 'a',
+        name: 'Bash',
+        arguments: { command: 'echo hi' },
+      },
+    ]))
       .toThrow('no native encoder for Bash')
   })
 
   it('substitutes an empty string for each absent argument', () => {
     // The encoder writes every field, so an undefined would reach the wire as
     // the text "undefined" rather than as an absent value.
-    expect(cursorToolCallsFrom([{ id: 'b', name: CURSOR_TASK_TOOL }]))
-      .toEqual([{ kind: 'task', call: { callID: 'b', description: '', prompt: '' }, report: '' }])
+    expect(cursorToolCallsFrom([
+      { id: 'b', name: CURSOR_TASK_TOOL },
+    ]))
+      .toEqual([
+        {
+          kind: 'task',
+          call: { callID: 'b', description: '', prompt: '' },
+          report: '',
+        },
+      ])
   })
 
   it('keeps Todo calls in order and gives each row a stable native id', () => {
     expect(cursorToolCallsFrom([
-      { id: 'todo-1', name: 'updateTodos', arguments: { todos: [
-        { content: 'Inspect', status: 'TODO_STATUS_COMPLETED' },
-        { content: 'Report', status: 'TODO_STATUS_IN_PROGRESS' },
-      ] } },
-      { id: 'task-2', name: CURSOR_TASK_TOOL, arguments: { description: 'Review', prompt: 'Check.' } },
+      {
+        id: 'todo-1',
+        name: 'updateTodos',
+        arguments: {
+          todos: [
+            { content: 'Inspect', status: 'TODO_STATUS_COMPLETED' },
+            { content: 'Report', status: 'TODO_STATUS_IN_PROGRESS' },
+          ],
+        },
+      },
+      {
+        id: 'task-2',
+        name: CURSOR_TASK_TOOL,
+        arguments: { description: 'Review', prompt: 'Check.' },
+      },
     ])).toEqual([
-      { kind: 'todo', call: { callID: 'todo-1', merge: false, todos: [
-        { id: '1', content: 'Inspect', status: 'completed' },
-        { id: '2', content: 'Report', status: 'in_progress' },
-      ] } },
-      { kind: 'task', call: { callID: 'task-2', description: 'Review', prompt: 'Check.' }, report: '' },
+      {
+        kind: 'todo',
+        call: {
+          callID: 'todo-1',
+          merge: false,
+          todos: [
+            { id: '1', content: 'Inspect', status: 'completed' },
+            { id: '2', content: 'Report', status: 'in_progress' },
+          ],
+        },
+      },
+      {
+        kind: 'task',
+        call: { callID: 'task-2', description: 'Review', prompt: 'Check.' },
+        report: '',
+      },
     ])
   })
 
   it('refuses malformed Todo rows and unknown status words', () => {
-    expect(() => cursorToolCallsFrom([{ id: 'x', name: 'updateTodos', arguments: {} }])).toThrow('todos list')
-    expect(() => cursorToolCallsFrom([{ id: 'x', name: 'updateTodos', arguments: { todos: [{ status: 'TODO_STATUS_PENDING' }] } }])).toThrow('needs content')
-    expect(() => cursorToolCallsFrom([{ id: 'x', name: 'updateTodos', arguments: { todos: [{ content: 'Inspect', status: 'wrong' }] } }])).toThrow('unsupported status')
+    expect(() => cursorToolCallsFrom([
+      { id: 'x', name: 'updateTodos', arguments: {} },
+    ])).toThrow('todos list')
+    expect(() => cursorToolCallsFrom([
+      {
+        id: 'x',
+        name: 'updateTodos',
+        arguments: {
+          todos: [
+            { status: 'TODO_STATUS_PENDING' },
+          ],
+        },
+      },
+    ])).toThrow('needs content')
+    expect(() => cursorToolCallsFrom([
+      {
+        id: 'x',
+        name: 'updateTodos',
+        arguments: {
+          todos: [
+            { content: 'Inspect', status: 'wrong' },
+          ],
+        },
+      },
+    ])).toThrow('unsupported status')
   })
 
   it('decodes each call that the shared Cursor encoders write', () => {
@@ -273,104 +397,269 @@ describe('cursorToolCallsFrom', () => {
         { step: 'Third', status: 'completed' },
       ]),
     ])).toEqual([
-      { kind: 'execution', call: { kind: 'shell', callID: 'shell-1', command: 'pwd' } },
-      { kind: 'execution', call: { kind: 'read', callID: 'read-1', path: '/work/a.txt' } },
-      { kind: 'execution', call: { kind: 'write', callID: 'write-1', path: '/work/b.txt', content: 'B' } },
-      { kind: 'execution', call: { kind: 'edit', callID: 'edit-1', path: '/work/b.txt', before: 'B', after: 'C' } },
-      { kind: 'todo', call: { callID: 'todo-1', merge: false, todos: [
-        { id: '1', content: 'First', status: 'pending' },
-        { id: '2', content: 'Second', status: 'in_progress' },
-        { id: '3', content: 'Third', status: 'completed' },
-      ] } },
+      {
+        kind: 'execution',
+        call: { kind: 'shell', callID: 'shell-1', command: 'pwd' },
+      },
+      {
+        kind: 'execution',
+        call: { kind: 'read', callID: 'read-1', path: '/work/a.txt' },
+      },
+      {
+        kind: 'execution',
+        call: {
+          kind: 'write',
+          callID: 'write-1',
+          path: '/work/b.txt',
+          content: 'B',
+        },
+      },
+      {
+        kind: 'execution',
+        call: {
+          kind: 'edit',
+          callID: 'edit-1',
+          path: '/work/b.txt',
+          before: 'B',
+          after: 'C',
+        },
+      },
+      {
+        kind: 'todo',
+        call: {
+          callID: 'todo-1',
+          merge: false,
+          todos: [
+            { id: '1', content: 'First', status: 'pending' },
+            { id: '2', content: 'Second', status: 'in_progress' },
+            { id: '3', content: 'Third', status: 'completed' },
+          ],
+        },
+      },
     ])
   })
 
   it('reads the cancelled status word and the merge flag that the shared Cursor merge encoder writes', () => {
-    expect(cursorToolCallsFrom([cursorMergeTodosToolCall('todo-2', [
-      { id: '2', content: 'Second', status: 'cancelled' },
-      { id: '4', content: 'Fourth', status: 'pending' },
-    ])])).toEqual([{ kind: 'todo', call: { callID: 'todo-2', merge: true, todos: [
-      { id: '2', content: 'Second', status: 'cancelled' },
-      { id: '4', content: 'Fourth', status: 'pending' },
-    ] } }])
+    expect(cursorToolCallsFrom([
+      cursorMergeTodosToolCall('todo-2', [
+        { id: '2', content: 'Second', status: 'cancelled' },
+        { id: '4', content: 'Fourth', status: 'pending' },
+      ]),
+    ])).toEqual([
+      {
+        kind: 'todo',
+        call: {
+          callID: 'todo-2',
+          merge: true,
+          todos: [
+            { id: '2', content: 'Second', status: 'cancelled' },
+            { id: '4', content: 'Fourth', status: 'pending' },
+          ],
+        },
+      },
+    ])
   })
 
   it('reads the cancelled status word of a replacement list', () => {
-    const [call] = cursorToolCallsFrom([{ id: 'todo-1', name: CURSOR_UPDATE_TODOS_TOOL, arguments: { todos: [{ content: 'Dropped', status: CURSOR_TODO_STATUS_WORDS.cancelled }] } }])
-    expect(call).toEqual({ kind: 'todo', call: { callID: 'todo-1', merge: false, todos: [{ id: '1', content: 'Dropped', status: 'cancelled' }] } })
+    const [call] = cursorToolCallsFrom([
+      {
+        id: 'todo-1',
+        name: CURSOR_UPDATE_TODOS_TOOL,
+        arguments: {
+          todos: [
+            { content: 'Dropped', status: CURSOR_TODO_STATUS_WORDS.cancelled },
+          ],
+        },
+      },
+    ])
+    expect(call).toEqual({
+      kind: 'todo',
+      call: {
+        callID: 'todo-1',
+        merge: false,
+        todos: [
+          { id: '1', content: 'Dropped', status: 'cancelled' },
+        ],
+      },
+    })
   })
 
   it('keeps a native GenerateImage call and its image data', () => {
-    expect(cursorToolCallsFrom([{
-      id: 'image-1',
-      name: CURSOR_GENERATE_IMAGE_TOOL,
-      arguments: { description: 'A square', filePath: '/work/square.png', imageData: 'cG5n' },
-    }])).toEqual([{
-      kind: 'generateImage',
-      call: { callID: 'image-1', description: 'A square', filePath: '/work/square.png', imageData: 'cG5n' },
-    }])
+    expect(cursorToolCallsFrom([
+      {
+        id: 'image-1',
+        name: CURSOR_GENERATE_IMAGE_TOOL,
+        arguments: { description: 'A square', filePath: '/work/square.png', imageData: 'cG5n' },
+      },
+    ])).toEqual([
+      {
+        kind: 'generateImage',
+        call: {
+          callID: 'image-1',
+          description: 'A square',
+          filePath: '/work/square.png',
+          imageData: 'cG5n',
+        },
+      },
+    ])
   })
 
   it('refuses an incomplete GenerateImage result', () => {
-    expect(() => cursorToolCallsFrom([{
-      id: 'image-1',
-      name: CURSOR_GENERATE_IMAGE_TOOL,
-      arguments: { description: 'A square', filePath: '/work/square.png' },
-    }])).toThrow('needs a description, file path, and image data')
+    expect(() => cursorToolCallsFrom([
+      {
+        id: 'image-1',
+        name: CURSOR_GENERATE_IMAGE_TOOL,
+        arguments: { description: 'A square', filePath: '/work/square.png' },
+      },
+    ])).toThrow('needs a description, file path, and image data')
   })
 
   it('reads native question, plan, and web-fetch queries', () => {
     expect(cursorToolCallsFrom([
-      { id: 'q', name: 'askQuestion', arguments: { title: 'Color', questions: [
-        { id: 'question-1', prompt: 'Which color?', options: [{ id: 'blue', label: 'Blue' }], allowMultiple: false },
-      ] } },
-      { id: 'p', name: 'createPlan', arguments: { name: 'Review', overview: 'No edits', plan: '# Plan' } },
-      { id: 'f', name: 'webFetch', arguments: { url: 'https://example.invalid/probe' } },
+      {
+        id: 'q',
+        name: 'askQuestion',
+        arguments: {
+          title: 'Color',
+          questions: [
+            {
+              id: 'question-1',
+              prompt: 'Which color?',
+              options: [
+                { id: 'blue', label: 'Blue' },
+              ],
+              allowMultiple: false,
+            },
+          ],
+        },
+      },
+      {
+        id: 'p',
+        name: 'createPlan',
+        arguments: { name: 'Review', overview: 'No edits', plan: '# Plan' },
+      },
+      {
+        id: 'f',
+        name: 'webFetch',
+        arguments: { url: 'https://example.invalid/probe' },
+      },
     ])).toEqual([
-      { kind: 'question', callID: 'q', title: 'Color', questions: [
-        { id: 'question-1', prompt: 'Which color?', options: [{ id: 'blue', label: 'Blue' }], allowMultiple: false },
-      ] },
-      { kind: 'plan', callID: 'p', name: 'Review', overview: 'No edits', plan: '# Plan' },
+      {
+        kind: 'question',
+        callID: 'q',
+        title: 'Color',
+        questions: [
+          {
+            id: 'question-1',
+            prompt: 'Which color?',
+            options: [
+              { id: 'blue', label: 'Blue' },
+            ],
+            allowMultiple: false,
+          },
+        ],
+      },
+      {
+        kind: 'plan',
+        callID: 'p',
+        name: 'Review',
+        overview: 'No edits',
+        plan: '# Plan',
+      },
       { kind: 'webFetch', callID: 'f', url: 'https://example.invalid/probe' },
     ])
   })
 
   it('refuses malformed native interaction queries', () => {
-    expect(() => cursorToolCallsFrom([{ id: 'q', name: 'askQuestion', arguments: { title: 'Color', questions: [] } }]))
+    expect(() => cursorToolCallsFrom([
+      {
+        id: 'q',
+        name: 'askQuestion',
+        arguments: { title: 'Color', questions: [] },
+      },
+    ]))
       .toThrow('needs a title and questions')
-    expect(() => cursorToolCallsFrom([{ id: 'p', name: 'createPlan', arguments: { name: 'Review' } }]))
+    expect(() => cursorToolCallsFrom([
+      {
+        id: 'p',
+        name: 'createPlan',
+        arguments: { name: 'Review' },
+      },
+    ]))
       .toThrow('needs a name, overview, and plan')
-    expect(() => cursorToolCallsFrom([{ id: 'f', name: 'webFetch', arguments: { url: 'file:///work/secret' } }]))
+    expect(() => cursorToolCallsFrom([
+      {
+        id: 'f',
+        name: 'webFetch',
+        arguments: { url: 'file:///work/secret' },
+      },
+    ]))
       .toThrow('needs an HTTP URL')
   })
 
   it('keeps a native local MCP call and its structured input', () => {
-    expect(cursorToolCallsFrom([{
-      id: 'mcp-1',
-      name: CURSOR_MCP_TOOL,
-      arguments: { server: 'form_probe', tool: 'echo', input: { count: 0, enabled: false } },
-    }])).toEqual([{
-      kind: 'mcp',
-      call: { callID: 'mcp-1', server: 'form_probe', tool: 'echo', input: { count: 0, enabled: false } },
-    }])
+    expect(cursorToolCallsFrom([
+      {
+        id: 'mcp-1',
+        name: CURSOR_MCP_TOOL,
+        arguments: {
+          server: 'form_probe',
+          tool: 'echo',
+          input: { count: 0, enabled: false },
+        },
+      },
+    ])).toEqual([
+      {
+        kind: 'mcp',
+        call: {
+          callID: 'mcp-1',
+          server: 'form_probe',
+          tool: 'echo',
+          input: { count: 0, enabled: false },
+        },
+      },
+    ])
   })
 
   it('refuses a local MCP call with no server or object input', () => {
-    expect(() => cursorToolCallsFrom([{ id: 'mcp-1', name: CURSOR_MCP_TOOL, arguments: { server: '', tool: 'ask', input: {} } }]))
+    expect(() => cursorToolCallsFrom([
+      {
+        id: 'mcp-1',
+        name: CURSOR_MCP_TOOL,
+        arguments: { server: '', tool: 'ask', input: {} },
+      },
+    ]))
       .toThrow('needs a server, tool, and object input')
-    expect(() => cursorToolCallsFrom([{ id: 'mcp-1', name: CURSOR_MCP_TOOL, arguments: { server: 'form_probe', tool: 'ask', input: [] } }]))
+    expect(() => cursorToolCallsFrom([
+      {
+        id: 'mcp-1',
+        name: CURSOR_MCP_TOOL,
+        arguments: { server: 'form_probe', tool: 'ask', input: [] },
+      },
+    ]))
       .toThrow('needs a server, tool, and object input')
   })
 })
 
 describe('cursorToolCallsFrom request context', () => {
   it('keeps a request context query and its call identity', () => {
-    expect(cursorToolCallsFrom([{ id: 'context-1', name: CURSOR_REQUEST_CONTEXT_TOOL, arguments: {} }]))
-      .toEqual([{ kind: 'requestContext', callID: 'context-1' }])
+    expect(cursorToolCallsFrom([
+      { id: 'context-1', name: CURSOR_REQUEST_CONTEXT_TOOL, arguments: {} },
+    ]))
+      .toEqual([
+        { kind: 'requestContext', callID: 'context-1' },
+      ])
   })
 
   it('refuses a request context call that carries provider-service metadata', () => {
-    expect(() => cursorToolCallsFrom([{ id: 'context-1', name: CURSOR_REQUEST_CONTEXT_TOOL, arguments: {}, completionGate: 'gate' }]))
+    expect(() => cursorToolCallsFrom([
+      {
+        id: 'context-1',
+        name: CURSOR_REQUEST_CONTEXT_TOOL,
+        arguments: {},
+        completionGate: 'gate',
+      },
+    ]))
       .toThrow('Only a native Cursor task supports provider-service tool metadata')
   })
 })
@@ -417,16 +706,36 @@ describe('answerCursorStartup', () => {
 describe('serveCursorRun', () => {
   it.each([true, false])('streams a web fetch around its native approval reply when approved is %s', async (approved) => {
     const receipts: { prompt: string, text: string }[] = []
-    const result = encodeLengthDelimited(approved ? 1 : 2, approved ? new Uint8Array(0) : encodeStringField(1, 'User rejected'))
+    const result = encodeLengthDelimited(approved ? 1 : 2, approved
+      ? new Uint8Array(0)
+      : encodeStringField(1, 'User rejected'))
     const reply = encodeLengthDelimited(6, Buffer.concat([
-      Uint8Array.from([0x08, ...encodeVarint(300)]),
+      Uint8Array.from([
+        0x08,
+        ...encodeVarint(300),
+      ]),
       encodeLengthDelimited(9, result),
     ]))
-    const body = await runStreamBody(async () => ({ toolCalls: [{ kind: 'webFetch', callID: 'fetch-1', url: 'https://example.invalid/probe' }] }), receipts, reply)
-    expect(updateKinds(body)).toEqual(['setBlob', 'toolStarted', 'interactionQuery', 'toolCompleted', 'setBlob', 'textDelta', 'turnEnded', 'endOfStream'])
+    const body = await runStreamBody(async () => ({
+      toolCalls: [
+        { kind: 'webFetch', callID: 'fetch-1', url: 'https://example.invalid/probe' },
+      ],
+    }), receipts, reply)
+    expect(updateKinds(body)).toEqual([
+      'setBlob',
+      'toolStarted',
+      'interactionQuery',
+      'toolCompleted',
+      'setBlob',
+      'textDelta',
+      'turnEnded',
+      'endOfStream',
+    ])
     const updates = takeConnectFrames(new Uint8Array(body)).frames.flatMap(({ payload }) => {
       const tool = descend(payload, [1, 3, 2, 37])
-      return tool ? [tool] : []
+      return tool
+        ? [tool]
+        : []
     })
     expect(updates).toHaveLength(1)
     expect(new TextDecoder().decode(descend(updates[0]!, [1, 1])!)).toBe('https://example.invalid/probe')
@@ -434,34 +743,75 @@ describe('serveCursorRun', () => {
       expect(descend(updates[0]!, [2, 1])).toBeDefined()
     else
       expect(new TextDecoder().decode(descend(updates[0]!, [2, 3, 1])!)).toBe('User rejected')
-    expect(receipts).toEqual([{ prompt: 'Say the mock word.', text: approved ? 'Cursor web fetch approved' : 'Cursor web fetch rejected: User rejected' }])
+    expect(receipts).toEqual([
+      {
+        prompt: 'Say the mock word.',
+        text: approved ? 'Cursor web fetch approved' : 'Cursor web fetch rejected: User rejected',
+      },
+    ])
   })
 
   it('keeps a web fetch open when its native permission query has no reply', async () => {
     const receipts: { prompt: string, text: string }[] = []
-    const body = await runStreamBody(async () => ({ toolCalls: [{ kind: 'webFetch', callID: 'fetch-open', url: 'https://example.invalid/open' }] }), receipts)
-    expect(updateKinds(body)).toEqual(['setBlob', 'toolStarted', 'interactionQuery', 'endOfStream'])
+    const body = await runStreamBody(async () => ({
+      toolCalls: [
+        { kind: 'webFetch', callID: 'fetch-open', url: 'https://example.invalid/open' },
+      ],
+    }), receipts)
+    expect(updateKinds(body)).toEqual([
+      'setBlob',
+      'toolStarted',
+      'interactionQuery',
+      'endOfStream',
+    ])
     expect(receipts).toEqual([])
   })
 
   it('completes actual native child execution from its client-supplied identity and report', async () => {
     const receipts: { prompt: string, text: string }[] = []
     const run = readCursorProtobufFields(clientMessageWithPrompt('Say the mock word.')).strings.get(1)![0]!
-    const parent = encodeLengthDelimited(1, Buffer.concat([run, encodeStringField(5, 'actual-native-parent')]))
+    const parent = encodeLengthDelimited(1, Buffer.concat([
+      run,
+      encodeStringField(5, 'actual-native-parent'),
+    ]))
     const reply = cursorSubagentReplyFixture(301, cursorSubagentSuccessFixture({ agentID: 'actual-native-child', finalMessage: 'ACTUAL_NATIVE_CHILD_REPORT', toolCallCount: 1 }), 'native-child-call')
-    const body = await runStreamBody(async () => ({ text: 'The native parent finished.', toolCalls: [{ kind: 'task', call: { callID: 'native-child-call', description: 'Read the actual file.', prompt: 'Execute the native child.' }, report: 'THIS_SCRIPTED_REPORT_MUST_NOT_APPEAR', nativeExecution: { modelId: 'default' } }] }), receipts, reply, { payload: parent, flags: 0 })
+    const body = await runStreamBody(async () => ({
+      text: 'The native parent finished.',
+      toolCalls: [
+        {
+          kind: 'task',
+          call: { callID: 'native-child-call', description: 'Read the actual file.', prompt: 'Execute the native child.' },
+          report: 'THIS_SCRIPTED_REPORT_MUST_NOT_APPEAR',
+          nativeExecution: { modelId: 'default' },
+        },
+      ],
+    }), receipts, reply, { payload: parent, flags: 0 })
     expect(body.includes(Buffer.from('actual-native-child'))).toBe(true)
     expect(body.includes(Buffer.from('ACTUAL_NATIVE_CHILD_REPORT'))).toBe(true)
     expect(body.includes(Buffer.from('THIS_SCRIPTED_REPORT_MUST_NOT_APPEAR'))).toBe(false)
     expect(updateKinds(body).filter(kind => kind === 'toolCompleted')).toHaveLength(1)
-    expect(receipts).toEqual([{ prompt: 'Say the mock word.', text: 'The native parent finished.\nACTUAL_NATIVE_CHILD_REPORT' }])
+    expect(receipts).toEqual([
+      { prompt: 'Say the mock word.', text: 'The native parent finished.\nACTUAL_NATIVE_CHILD_REPORT' },
+    ])
   })
 
   it('does not complete a native child when no actual client reply arrives', async () => {
     const receipts: { prompt: string, text: string }[] = []
     const run = readCursorProtobufFields(clientMessageWithPrompt('Say the mock word.')).strings.get(1)![0]!
-    const parent = encodeLengthDelimited(1, Buffer.concat([run, encodeStringField(5, 'actual-native-parent')]))
-    const body = await runStreamBody(async () => ({ toolCalls: [{ kind: 'task', call: { callID: 'native-child-call', description: 'Read.', prompt: 'Execute the child.' }, report: 'No fake report.', nativeExecution: { modelId: 'default' } }] }), receipts, undefined, { payload: parent, flags: 0 })
+    const parent = encodeLengthDelimited(1, Buffer.concat([
+      run,
+      encodeStringField(5, 'actual-native-parent'),
+    ]))
+    const body = await runStreamBody(async () => ({
+      toolCalls: [
+        {
+          kind: 'task',
+          call: { callID: 'native-child-call', description: 'Read.', prompt: 'Execute the child.' },
+          report: 'No fake report.',
+          nativeExecution: { modelId: 'default' },
+        },
+      ],
+    }), receipts, undefined, { payload: parent, flags: 0 })
     expect(updateKinds(body)).not.toContain('toolCompleted')
     expect(updateKinds(body)).toContain('execRequest')
     expect(receipts).toEqual([])
@@ -471,7 +821,9 @@ describe('serveCursorRun', () => {
     it(`reports the completed native turn once with text length ${text.length}`, async () => {
       const receipts: { prompt: string, text: string }[] = []
       await runStreamBody(async () => ({ text }), receipts)
-      expect(receipts).toEqual([{ prompt: 'Say the mock word.', text }])
+      expect(receipts).toEqual([
+        { prompt: 'Say the mock word.', text },
+      ])
     })
   }
 
@@ -486,36 +838,66 @@ describe('serveCursorRun', () => {
     const text = encodeLengthDelimited(1, encodeStringField(1, 'REAL_MCP_REPLY'))
     const success = encodeLengthDelimited(1, encodeLengthDelimited(1, text))
     const reply = encodeLengthDelimited(2, Buffer.concat([
-      Uint8Array.from([0x08, ...encodeVarint(301)]),
+      Uint8Array.from([
+        0x08,
+        ...encodeVarint(301),
+      ]),
       encodeLengthDelimited(11, success),
     ]))
-    await runStreamBody(async () => ({ text: 'ROOT_ANSWER', toolCalls: [{ kind: 'mcp', call: { callID: 'mcp-1', server: 'form_probe', tool: 'echo', input: {} } }] }), receipts, reply)
-    expect(receipts).toEqual([{ prompt: 'Say the mock word.', text: 'ROOT_ANSWER\nREAL_MCP_REPLY' }])
+    await runStreamBody(async () => ({
+      text: 'ROOT_ANSWER',
+      toolCalls: [
+        {
+          kind: 'mcp',
+          call: {
+            callID: 'mcp-1',
+            server: 'form_probe',
+            tool: 'echo',
+            input: {},
+          },
+        },
+      ],
+    }), receipts, reply)
+    expect(receipts).toEqual([
+      { prompt: 'Say the mock word.', text: 'ROOT_ANSWER\nREAL_MCP_REPLY' },
+    ])
   })
 
   it('asks for the request context and hands the stated rules to the turn before its text', async () => {
     const receipts: { prompt: string, text: string }[] = []
     const stated: { path: string, content: string }[][] = []
-    const reply = cursorRequestContextReply(301, [{ path: '/project/AGENTS.md', content: 'NATIVE_PROJECT_CONFIG' }])
+    const reply = cursorRequestContextReply(301, [
+      { path: '/project/AGENTS.md', content: 'NATIVE_PROJECT_CONFIG' },
+    ])
     const body = await runStreamBody(async () => ({
       text: 'ROOT_ANSWER',
-      toolCalls: [{ kind: 'requestContext', callID: 'context-1' }],
+      toolCalls: [
+        { kind: 'requestContext', callID: 'context-1' },
+      ],
       requestContextRules: rules => stated.push(rules.map(rule => ({ ...rule }))),
     }), receipts, reply)
-    expect(stated).toEqual([[{ path: '/project/AGENTS.md', content: 'NATIVE_PROJECT_CONFIG' }]])
+    expect(stated).toEqual([
+      [
+        { path: '/project/AGENTS.md', content: 'NATIVE_PROJECT_CONFIG' },
+      ],
+    ])
     const kinds = updateKinds(body)
     expect(kinds.indexOf('execRequest')).toBeGreaterThanOrEqual(0)
     expect(kinds.indexOf('execRequest')).toBeLessThan(kinds.indexOf('textDelta'))
     // The query is no tool call of the transcript, and its rules are no part of the reply text.
     expect(kinds).not.toContain('toolStarted')
-    expect(receipts).toEqual([{ prompt: 'Say the mock word.', text: 'ROOT_ANSWER' }])
+    expect(receipts).toEqual([
+      { prompt: 'Say the mock word.', text: 'ROOT_ANSWER' },
+    ])
   })
 
   it('states an empty rule list for a project with no rules', async () => {
     const stated: unknown[][] = []
     await runStreamBody(async () => ({
       text: 'ROOT_ANSWER',
-      toolCalls: [{ kind: 'requestContext', callID: 'context-1' }],
+      toolCalls: [
+        { kind: 'requestContext', callID: 'context-1' },
+      ],
       requestContextRules: rules => stated.push([...rules]),
     }), undefined, cursorRequestContextReply(301, []))
     expect(stated).toEqual([[]])
@@ -525,7 +907,9 @@ describe('serveCursorRun', () => {
     const receipts: { prompt: string, text: string }[] = []
     const body = await runStreamBody(async () => ({
       text: 'ROOT_ANSWER',
-      toolCalls: [{ kind: 'requestContext', callID: 'context-1' }],
+      toolCalls: [
+        { kind: 'requestContext', callID: 'context-1' },
+      ],
       requestContextRules: () => {},
     }), receipts)
     expect(updateKinds(body)).toContain('execRequest')
@@ -536,64 +920,135 @@ describe('serveCursorRun', () => {
   it('refuses a request context answer with another id, and one that no handler can take', async () => {
     const errors: string[] = []
     await expect(runStreamBody(async () => ({
-      toolCalls: [{ kind: 'requestContext', callID: 'context-1' }],
+      toolCalls: [
+        { kind: 'requestContext', callID: 'context-1' },
+      ],
       requestContextRules: () => {},
-    }), undefined, cursorRequestContextReply(999, []), { payload: clientMessageWithPrompt('Say the mock word.'), flags: 0, errors })).rejects.toThrow('fetch failed')
+    }), undefined, cursorRequestContextReply(999, []), {
+      payload: clientMessageWithPrompt('Say the mock word.'),
+      flags: 0,
+      errors,
+    })).rejects.toThrow('fetch failed')
     expect(errors).toEqual(['Cursor replied to request context query 301 with id 999'])
 
     const unhandled: string[] = []
-    await expect(runStreamBody(async () => ({ toolCalls: [{ kind: 'requestContext', callID: 'context-1' }] }), undefined, cursorRequestContextReply(301, []), { payload: clientMessageWithPrompt('Say the mock word.'), flags: 0, errors: unhandled })).rejects.toThrow('fetch failed')
+    await expect(runStreamBody(async () => ({
+      toolCalls: [
+        { kind: 'requestContext', callID: 'context-1' },
+      ],
+    }), undefined, cursorRequestContextReply(301, []), {
+      payload: clientMessageWithPrompt('Say the mock word.'),
+      flags: 0,
+      errors: unhandled,
+    })).rejects.toThrow('fetch failed')
     expect(unhandled).toEqual(['A native Cursor request context query requires a scenario handler'])
   })
 
   describe('with a handler for the rules of each turn', () => {
-    const rules = [{ path: '/run-root/work/AGENTS.md', content: 'PROJECT_RULE' }]
+    const rules = [
+      { path: '/run-root/work/AGENTS.md', content: 'PROJECT_RULE' },
+    ]
 
     it('asks for the request context after the user record and before the first tool call, and states the rules once', async () => {
       const receipts: { prompt: string, text: string }[] = []
       const stated: { path: string, content: string }[][] = []
-      const body = await runStreamBody(async () => ({ text: 'ROOT_ANSWER', toolCalls: [{ kind: 'todo', call: { callID: 'todo-1', todos: [{ id: '1', content: 'One', status: 'pending' }], merge: false } }] }), receipts, cursorRequestContextReply(301, rules), undefined, { contextRules: given => stated.push(given.map(rule => ({ ...rule }))) })
+      const body = await runStreamBody(async () => ({
+        text: 'ROOT_ANSWER',
+        toolCalls: [
+          {
+            kind: 'todo',
+            call: {
+              callID: 'todo-1',
+              todos: [
+                { id: '1', content: 'One', status: 'pending' },
+              ],
+              merge: false,
+            },
+          },
+        ],
+      }), receipts, cursorRequestContextReply(301, rules), undefined, {
+        contextRules: given => stated.push(given.map(rule => ({ ...rule }))),
+      })
       expect(stated).toEqual([rules])
-      expect(updateKinds(body)).toEqual(['setBlob', 'execRequest', 'toolStarted', 'toolCompleted', 'setBlob', 'textDelta', 'turnEnded', 'endOfStream'])
+      expect(updateKinds(body)).toEqual([
+        'setBlob',
+        'execRequest',
+        'toolStarted',
+        'toolCompleted',
+        'setBlob',
+        'textDelta',
+        'turnEnded',
+        'endOfStream',
+      ])
       // The rules belong to the request, not to the answer text.
-      expect(receipts).toEqual([{ prompt: 'Say the mock word.', text: 'ROOT_ANSWER' }])
+      expect(receipts).toEqual([
+        { prompt: 'Say the mock word.', text: 'ROOT_ANSWER' },
+      ])
     })
 
     it('asks also for a turn that no scripted step answers, and then ends it with no text', async () => {
       const stated: unknown[][] = []
-      const body = await runStreamBody(async () => undefined, undefined, cursorRequestContextReply(301, rules), undefined, { contextRules: given => stated.push([...given]) })
+      const body = await runStreamBody(async () => undefined, undefined, cursorRequestContextReply(301, rules), undefined, {
+        contextRules: given => stated.push([...given]),
+      })
       expect(stated).toEqual([rules])
-      expect(updateKinds(body)).toEqual(['setBlob', 'execRequest', 'turnEnded', 'endOfStream'])
+      expect(updateKinds(body)).toEqual([
+        'setBlob',
+        'execRequest',
+        'turnEnded',
+        'endOfStream',
+      ])
     })
 
     it('holds the turn while the CLI leaves the query unanswered', async () => {
       const receipts: { prompt: string, text: string }[] = []
-      const body = await runStreamBody(async () => ({ text: 'ROOT_ANSWER' }), receipts, undefined, undefined, { contextRules: () => {} })
+      const body = await runStreamBody(async () => ({ text: 'ROOT_ANSWER' }), receipts, undefined, undefined, {
+        contextRules: () => {},
+      })
       expect(updateKinds(body)).toEqual(['setBlob', 'execRequest', 'endOfStream'])
       expect(receipts).toEqual([])
     })
 
     it('refuses an answer to the turn query with another id', async () => {
       const errors: string[] = []
-      await expect(runStreamBody(async () => ({ text: 'ROOT_ANSWER' }), undefined, cursorRequestContextReply(999, rules), { payload: clientMessageWithPrompt('Say the mock word.'), flags: 0, errors }, { contextRules: () => {} })).rejects.toThrow('fetch failed')
+      await expect(runStreamBody(async () => ({ text: 'ROOT_ANSWER' }), undefined, cursorRequestContextReply(999, rules), {
+        payload: clientMessageWithPrompt('Say the mock word.'),
+        flags: 0,
+        errors,
+      }, {
+        contextRules: () => {},
+      })).rejects.toThrow('fetch failed')
       expect(errors).toEqual(['Cursor replied to request context query 301 with id 999'])
     })
 
     it('hands a later scripted query to the scenario handler, apart from the turn query', async () => {
       const turn: unknown[][] = []
       const scripted: unknown[][] = []
-      const later = [{ path: '/run-root/work/CLAUDE.md', content: 'LATER_RULE' }]
+      const later = [
+        { path: '/run-root/work/CLAUDE.md', content: 'LATER_RULE' },
+      ]
       await runStreamBody(async () => ({
         text: 'ROOT_ANSWER',
-        toolCalls: [{ kind: 'requestContext', callID: 'context-1' }],
+        toolCalls: [
+          { kind: 'requestContext', callID: 'context-1' },
+        ],
         requestContextRules: given => scripted.push([...given]),
-      }), undefined, [cursorRequestContextReply(301, rules), cursorRequestContextReply(302, later)], undefined, { contextRules: given => turn.push([...given]) })
+      }), undefined, [
+        cursorRequestContextReply(301, rules),
+        cursorRequestContextReply(302, later),
+      ], undefined, {
+        contextRules: given => turn.push([...given]),
+      })
       expect(turn).toEqual([rules])
       expect(scripted).toEqual([later])
     })
 
     it('asks nothing for an answer that ends in a native error', async () => {
-      const body = await runStreamBody(async () => ({ error: { message: 'The model failed.', status: 500 } }), undefined, undefined, undefined, { contextRules: () => {} })
+      const body = await runStreamBody(async () => ({
+        error: { message: 'The model failed.', status: 500 },
+      }), undefined, undefined, undefined, {
+        contextRules: () => {},
+      })
       expect(updateKinds(body)).not.toContain('execRequest')
     })
   })
@@ -605,29 +1060,90 @@ describe('serveCursorRun', () => {
   it('states the typed text of each answer beside the selected options', async () => {
     const receipts: { prompt: string, text: string }[] = []
     const answers = [
-      Buffer.concat([encodeStringField(1, 'question-1'), encodeStringField(2, 'option-red'), encodeStringField(3, 'and a little purple')]),
-      Buffer.concat([encodeStringField(1, 'question-2'), encodeStringField(3, 'neither "size"')]),
+      Buffer.concat([
+        encodeStringField(1, 'question-1'),
+        encodeStringField(2, 'option-red'),
+        encodeStringField(3, 'and a little purple'),
+      ]),
+      Buffer.concat([
+        encodeStringField(1, 'question-2'),
+        encodeStringField(3, 'neither "size"'),
+      ]),
     ]
     const reply = encodeLengthDelimited(6, Buffer.concat([
-      Uint8Array.from([0x08, ...encodeVarint(300)]),
+      Uint8Array.from([
+        0x08,
+        ...encodeVarint(300),
+      ]),
       encodeLengthDelimited(3, encodeLengthDelimited(1, encodeLengthDelimited(1, Buffer.concat(answers.map(answer => encodeLengthDelimited(1, answer)))))),
     ]))
-    await runStreamBody(async () => ({ toolCalls: [{ kind: 'question', callID: 'q-1', title: 'Color', questions: [
-      { id: 'question-1', prompt: 'Which color?', allowMultiple: false, options: [{ id: 'option-red', label: 'Red' }] },
-      { id: 'question-2', prompt: 'Which size?', allowMultiple: false, options: [{ id: 'option-small', label: 'Small' }] },
-    ] }] }), receipts, reply)
-    expect(receipts).toEqual([{ prompt: 'Say the mock word.', text: 'Cursor question selected: option-red; typed: question-1: "and a little purple", question-2: "neither \\"size\\""' }])
+    await runStreamBody(async () => ({
+      toolCalls: [
+        {
+          kind: 'question',
+          callID: 'q-1',
+          title: 'Color',
+          questions: [
+            {
+              id: 'question-1',
+              prompt: 'Which color?',
+              allowMultiple: false,
+              options: [
+                { id: 'option-red', label: 'Red' },
+              ],
+            },
+            {
+              id: 'question-2',
+              prompt: 'Which size?',
+              allowMultiple: false,
+              options: [
+                { id: 'option-small', label: 'Small' },
+              ],
+            },
+          ],
+        },
+      ],
+    }), receipts, reply)
+    expect(receipts).toEqual([
+      { prompt: 'Say the mock word.', text: 'Cursor question selected: option-red; typed: question-1: "and a little purple", question-2: "neither \\"size\\""' },
+    ])
   })
 
   it('reports the actual selected option from a native interaction reply', async () => {
     const receipts: { prompt: string, text: string }[] = []
-    const answer = Buffer.concat([encodeStringField(1, 'question-1'), encodeStringField(2, 'option-red')])
+    const answer = Buffer.concat([
+      encodeStringField(1, 'question-1'),
+      encodeStringField(2, 'option-red'),
+    ])
     const reply = encodeLengthDelimited(6, Buffer.concat([
-      Uint8Array.from([0x08, ...encodeVarint(300)]),
+      Uint8Array.from([
+        0x08,
+        ...encodeVarint(300),
+      ]),
       encodeLengthDelimited(3, encodeLengthDelimited(1, encodeLengthDelimited(1, encodeLengthDelimited(1, answer)))),
     ]))
-    await runStreamBody(async () => ({ toolCalls: [{ kind: 'question', callID: 'q-1', title: 'Color', questions: [{ id: 'question-1', prompt: 'Which color?', allowMultiple: false, options: [{ id: 'option-red', label: 'Red' }] }] }] }), receipts, reply)
-    expect(receipts).toEqual([{ prompt: 'Say the mock word.', text: 'Cursor question selected: option-red' }])
+    await runStreamBody(async () => ({
+      toolCalls: [
+        {
+          kind: 'question',
+          callID: 'q-1',
+          title: 'Color',
+          questions: [
+            {
+              id: 'question-1',
+              prompt: 'Which color?',
+              allowMultiple: false,
+              options: [
+                { id: 'option-red', label: 'Red' },
+              ],
+            },
+          ],
+        },
+      ],
+    }), receipts, reply)
+    expect(receipts).toEqual([
+      { prompt: 'Say the mock word.', text: 'Cursor question selected: option-red' },
+    ])
   })
 
   for (const [id, reason] of [
@@ -638,10 +1154,33 @@ describe('serveCursorRun', () => {
       const receipts: { prompt: string, text: string }[] = []
       const errors: string[] = []
       const reply = encodeLengthDelimited(2, Buffer.concat([
-        ...(id === undefined ? [] : [Uint8Array.from([0x08, ...encodeVarint(id)])]),
+        ...(id === undefined
+          ? []
+          : [
+              Uint8Array.from([
+                0x08,
+                ...encodeVarint(id),
+              ]),
+            ]),
         encodeLengthDelimited(11, encodeLengthDelimited(2, encodeStringField(1, 'failure'))),
       ]))
-      await expect(runStreamBody(async () => ({ toolCalls: [{ kind: 'mcp', call: { callID: 'mcp-1', server: 'form_probe', tool: 'echo', input: {} } }] }), receipts, reply, { payload: clientMessageWithPrompt('Say the mock word.'), flags: 0, errors })).rejects.toThrow('fetch failed')
+      await expect(runStreamBody(async () => ({
+        toolCalls: [
+          {
+            kind: 'mcp',
+            call: {
+              callID: 'mcp-1',
+              server: 'form_probe',
+              tool: 'echo',
+              input: {},
+            },
+          },
+        ],
+      }), receipts, reply, {
+        payload: clientMessageWithPrompt('Say the mock word.'),
+        flags: 0,
+        errors,
+      })).rejects.toThrow('fetch failed')
       expect(errors).toEqual([reason])
       expect(receipts).toEqual([])
     })
@@ -649,7 +1188,19 @@ describe('serveCursorRun', () => {
 
   it('adds no completion receipt when the client leaves a native request unanswered', async () => {
     const receipts: { prompt: string, text: string }[] = []
-    await runStreamBody(async () => ({ toolCalls: [{ kind: 'mcp', call: { callID: 'mcp-1', server: 'form_probe', tool: 'echo', input: {} } }] }), receipts)
+    await runStreamBody(async () => ({
+      toolCalls: [
+        {
+          kind: 'mcp',
+          call: {
+            callID: 'mcp-1',
+            server: 'form_probe',
+            tool: 'echo',
+            input: {},
+          },
+        },
+      ],
+    }), receipts)
     expect(receipts).toEqual([])
   })
 
@@ -657,11 +1208,25 @@ describe('serveCursorRun', () => {
     const body = await runStreamBody(async () => ({ text: 'Plain answer survives the native session.' }))
     const records = takeConnectFrames(new Uint8Array(body)).frames.flatMap(({ payload: frame }) => {
       const data = descend(frame, [FIELD_KV_SERVER_MESSAGE, 3, 2])
-      return data === undefined ? [] : [JSON.parse(new TextDecoder().decode(data))]
+      return data === undefined
+        ? []
+        : [
+            JSON.parse(new TextDecoder().decode(data)),
+          ]
     })
     expect(records).toEqual(expect.arrayContaining([
-      expect.objectContaining({ role: 'user', content: [{ type: 'text', text: 'Say the mock word.' }] }),
-      expect.objectContaining({ role: 'assistant', content: [{ type: 'text', text: 'Plain answer survives the native session.' }] }),
+      expect.objectContaining({
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Say the mock word.' },
+        ],
+      }),
+      expect.objectContaining({
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Plain answer survives the native session.' },
+        ],
+      }),
     ]))
   })
 
@@ -675,14 +1240,31 @@ describe('serveCursorRun', () => {
     // child's report survives -- the agent reads them out of Cursor's own store.
     expect(await runStream(async () => ({
       text: 'Delegated and done.',
-      toolCalls: [{ kind: 'task', call: { callID: 'task-1', description: 'Probe', prompt: 'Go.' }, report: 'PONG' }],
+      toolCalls: [
+        {
+          kind: 'task',
+          call: { callID: 'task-1', description: 'Probe', prompt: 'Go.' },
+          report: 'PONG',
+        },
+      ],
     }))).toBe('setBlob,toolStarted,toolCompleted,setBlob,setBlob,setBlob,textDelta,turnEnded,endOfStream')
   })
 
   it('writes a Todo snapshot before its answer', async () => {
     expect(await runStream(async () => ({
       text: 'The list is ready.',
-      toolCalls: [{ kind: 'todo', call: { callID: 'todo-1', merge: false, todos: [{ id: '1', content: 'Inspect', status: 'pending' }] } }],
+      toolCalls: [
+        {
+          kind: 'todo',
+          call: {
+            callID: 'todo-1',
+            merge: false,
+            todos: [
+              { id: '1', content: 'Inspect', status: 'pending' },
+            ],
+          },
+        },
+      ],
     }))).toBe('setBlob,toolStarted,toolCompleted,setBlob,textDelta,turnEnded,endOfStream')
   })
 
@@ -753,7 +1335,9 @@ describe('serveCursorRun', () => {
     // A transport fault here reads in the agent as a broken endpoint; an empty
     // answer reads as a turn that said nothing, which is what happened.
     const server = createServer((request, response) => {
-      void serveCursorRun(request, response, { answer: async () => ({ text: 'never' }) })
+      void serveCursorRun(request, response, {
+        answer: async () => ({ text: 'never' }),
+      })
     })
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()))
     close.push(() => new Promise<void>((resolve) => {
@@ -774,7 +1358,13 @@ describe('serveCursorRun', () => {
     const server = createServer((request, response) => {
       void serveCursorRun(request, response, {
         answer: async () => ({
-          toolCalls: [{ kind: 'task', call: { callID: 'task-1', description: 'Probe', prompt: 'Go.' }, report: 'PONG_FROM_CHILD' }],
+          toolCalls: [
+            {
+              kind: 'task',
+              call: { callID: 'task-1', description: 'Probe', prompt: 'Go.' },
+              report: 'PONG_FROM_CHILD',
+            },
+          ],
         }),
       })
     })
@@ -807,24 +1397,49 @@ describe('native Cursor request compression', () => {
     const body = await runStreamBody(async (prompt) => {
       prompts.push(prompt)
       return { text: 'The compressed native child answered.' }
-    }, receipts, undefined, { payload: gzipSync(clientMessageWithPrompt('Say the mock word.')), flags: 1, encoding: 'gzip' })
+    }, receipts, undefined, {
+      payload: gzipSync(clientMessageWithPrompt('Say the mock word.')),
+      flags: 1,
+      encoding: 'gzip',
+    })
     expect(prompts).toEqual(['Say the mock word.'])
-    expect(receipts).toEqual([{ prompt: 'Say the mock word.', text: 'The compressed native child answered.' }])
+    expect(receipts).toEqual([
+      { prompt: 'Say the mock word.', text: 'The compressed native child answered.' },
+    ])
     expect(updateKinds(body)).toContain('textDelta')
     expect(updateKinds(body).at(-1)).toBe('endOfStream')
   })
 
   it.each([
-    { encoding: undefined, payload: gzipSync(clientMessageWithPrompt('Say the mock word.')), reason: /encoding|gzip/ },
-    { encoding: 'br', payload: gzipSync(clientMessageWithPrompt('Say the mock word.')), reason: /encoding|br/ },
-    { encoding: 'gzip', payload: Buffer.from('This is not gzip.'), reason: /gzip|header|compressed/ },
+    {
+      encoding: undefined,
+      payload: gzipSync(clientMessageWithPrompt('Say the mock word.')),
+      reason: /encoding|gzip/,
+    },
+    {
+      encoding: 'br',
+      payload: gzipSync(clientMessageWithPrompt('Say the mock word.')),
+      reason: /encoding|br/,
+    },
+    {
+      encoding: 'gzip',
+      payload: Buffer.from('This is not gzip.'),
+      reason: /gzip|header|compressed/,
+    },
   ])('refuses an invalid native compressed request with $encoding', async ({ encoding, payload, reason }) => {
     const errors: string[] = []
     const prompts: string[] = []
     const pending = runStreamBody(async (prompt) => {
       prompts.push(prompt)
       return { text: 'An invalid compressed frame must not reach this answer.' }
-    }, undefined, undefined, { payload, flags: 1, errors, ...(encoding === undefined ? {} : { encoding }) })
+    }, undefined, undefined, {
+      payload,
+      flags: 1,
+      errors,
+      ...(encoding === undefined
+        ? {}
+        : { encoding }),
+    })
     await expect(pending).rejects.toThrow('fetch failed')
     expect(prompts).toEqual([])
     expect(errors).toHaveLength(1)
@@ -841,7 +1456,13 @@ interface InstructionFileCheck {
 
 /** A guard that records each check and refuses nothing. */
 function recordingGuard(checks: InstructionFileCheck[] = []): InstructionFileGuard {
-  return { check: (context, files, policy) => checks.push({ context, files: files.map(file => ({ ...file })), policy }) }
+  return {
+    check: (context, files, policy) => checks.push({
+      context,
+      files: files.map(file => ({ ...file })),
+      policy,
+    }),
+  }
 }
 
 /**
@@ -857,7 +1478,9 @@ async function startOwnedCursor(host: MockModelScriptHost, guard: InstructionFil
       settled.push(owned)
       if (!owned)
         response.writeHead(404).end()
-    }).catch((error: unknown) => response.destroy(error instanceof Error ? error : new Error(String(error))))
+    }).catch((error: unknown) => response.destroy(error instanceof Error
+      ? error
+      : new Error(String(error))))
   })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
   close.push(() => new Promise<void>((resolve) => {
@@ -889,7 +1512,9 @@ async function startOwnedCursor(host: MockModelScriptHost, guard: InstructionFil
           Buffer.from(connectFrame(cursorRequestContextReply(301, rules))),
           ...laterRules.map((given, index) => Buffer.from(connectFrame(cursorRequestContextReply(302 + index, given)))),
         ]),
-        ...(signal ? { signal } : {}),
+        ...(signal
+          ? { signal }
+          : {}),
       })
       return Buffer.from(await response.arrayBuffer())
     },
@@ -933,7 +1558,13 @@ describe('createCursorSurface', () => {
     const bytes = await owned.run('actual-conversation', prompt)
     expect(updateKinds(bytes)).toContain('textDelta')
     expect(contexts).toHaveLength(1)
-    expect(contexts[0]).toMatchObject({ protocol: 'openai-responses', path: CURSOR_RUN_PATH, systemText: '', userText: prompt, scenarioID: 'surface-native' })
+    expect(contexts[0]).toMatchObject({
+      protocol: 'openai-responses',
+      path: CURSOR_RUN_PATH,
+      systemText: '',
+      userText: prompt,
+      scenarioID: 'surface-native',
+    })
     expect(contexts[0]?.body).toEqual({ prompt, attachments: [], conversationId: 'actual-conversation' })
     expect(contexts[0]?.nativeRequest).toBeDefined()
     expect(contexts[0]?.serverContext).toEqual({ conversationId: 'actual-conversation', messages: [] })
@@ -943,7 +1574,9 @@ describe('createCursorSurface', () => {
     const contexts: ModelRequestContext[] = []
     const registered = new Set(['registered-exhausted'])
     let supply = false
-    const owned = await startOwnedCursor(cursorScriptHost(registered, contexts, context => supply ? { text: context.userText } : undefined))
+    const owned = await startOwnedCursor(cursorScriptHost(registered, contexts, context => supply
+      ? { text: context.userText }
+      : undefined))
     await owned.run('exhausted-id', mockScenarioPrompt('registered-exhausted', 'No step remains.'))
     await owned.run('unregistered-id', mockScenarioPrompt('unregistered-now', 'This scenario does not exist.'))
     registered.add('unregistered-now')
@@ -965,7 +1598,10 @@ describe('createCursorSurface', () => {
     await owned.run('two', mockScenarioPrompt('surface-history', 'Other native turn.'))
     await owned.run('one', 'Bare next turn.')
     expect(contexts[1]?.serverContext?.messages).toEqual([])
-    expect(contexts[2]?.serverContext?.messages).toEqual([{ role: 'user', content: first }, { role: 'assistant', content: first }])
+    expect(contexts[2]?.serverContext?.messages).toEqual([
+      { role: 'user', content: first },
+      { role: 'assistant', content: first },
+    ])
     registered.delete('surface-history')
     owned.surface.clearScenario('surface-history')
     await owned.run('one', 'After scenario deletion.')
@@ -1003,7 +1639,9 @@ describe('createCursorSurface', () => {
     ]
     const prompt = mockScenarioPrompt('surface-rules', 'Read the project rules.')
     expect(updateKinds(await owned.run('rules-conversation', prompt, undefined, rules))).toContain('textDelta')
-    expect(checks).toEqual([{ context: contexts[0], files: rules, policy: 'known-escape' }])
+    expect(checks).toEqual([
+      { context: contexts[0], files: rules, policy: 'known-escape' },
+    ])
     expect(checks[0]?.context).toMatchObject({ scenarioID: 'surface-rules', userText: prompt })
     expect(contexts[0]?.nativeRequest?.contextRules).toEqual(rules)
   })
@@ -1012,10 +1650,14 @@ describe('createCursorSurface', () => {
     const contexts: ModelRequestContext[] = []
     const checks: InstructionFileCheck[] = []
     const owned = await startOwnedCursor(cursorScriptHost(new Set(), contexts), recordingGuard(checks))
-    const rules = [{ path: '/elsewhere/AGENTS.md', content: 'OUTSIDE' }]
+    const rules = [
+      { path: '/elsewhere/AGENTS.md', content: 'OUTSIDE' },
+    ]
     const bytes = await owned.run('unmatched-conversation', 'A bare prompt with no marker.', undefined, rules)
     expect(updateKinds(bytes)).not.toContain('textDelta')
-    expect(checks.map(check => ({ files: check.files, scenarioID: check.context.scenarioID }))).toEqual([{ files: rules, scenarioID: 'ambient' }])
+    expect(checks.map(check => ({ files: check.files, scenarioID: check.context.scenarioID }))).toEqual([
+      { files: rules, scenarioID: 'ambient' },
+    ])
   })
 
   it('checks every scripted context reply and keeps the latest rules on the original turn witness', async () => {
@@ -1028,8 +1670,12 @@ describe('createCursorSurface', () => {
         cursorRequestContextToolCall('context-second'),
       ],
     })), recordingGuard(checks))
-    const initial = [{ path: '/run-root/work/AGENTS.md', content: 'Initial rules.' }]
-    const later = [{ path: '/outside/CLAUDE.md', content: 'Outside rules.' }]
+    const initial = [
+      { path: '/run-root/work/AGENTS.md', content: 'Initial rules.' },
+    ]
+    const later = [
+      { path: '/outside/CLAUDE.md', content: 'Outside rules.' },
+    ]
 
     await owned.run('later-rules-conversation', mockScenarioPrompt('surface-later-rules', 'Read every context reply.'), undefined, initial, [later, []])
 
@@ -1042,7 +1688,11 @@ describe('createCursorSurface', () => {
     const contexts: ModelRequestContext[] = []
     const owned = await startOwnedCursor(cursorScriptHost(new Set(), contexts))
     expect((await fetch(`${owned.url}/v1/chat/completions`)).status).toBe(404)
-    const startup = await fetch(`${owned.url}/aiserver.v1.AiService/GetUserSettings`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+    const startup = await fetch(`${owned.url}/aiserver.v1.AiService/GetUserSettings`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })
     expect(startup.status).toBe(200)
     expect(await startup.json()).toEqual({})
     expect(contexts).toEqual([])

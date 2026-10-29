@@ -294,11 +294,19 @@ function inspectEslint(files: readonly string[], samples: readonly LintSample[],
   `
   const stdout = execFileSync(
     process.execPath,
-    ['--input-type=module', '-e', script, ...files],
+    [
+      '--input-type=module',
+      '-e',
+      script,
+      ...files,
+    ],
     {
       cwd: frontendRoot,
       encoding: 'utf8',
-      input: JSON.stringify({ samples, ruleIds: [...ruleIds] }),
+      input: JSON.stringify({
+        samples,
+        ruleIds: [...ruleIds],
+      }),
       maxBuffer: 32 * 1024 * 1024,
     },
   )
@@ -326,11 +334,22 @@ function selectorsFor(entry: unknown): string[] {
     return []
   return entry
     .slice(1)
-    .map(option => (typeof option === 'string' ? option : (option as { selector?: string }).selector))
+    .map(option => (typeof option === 'string'
+      ? option
+      : (option as { selector?: string }).selector))
     .filter((selector): selector is string => typeof selector === 'string')
 }
 
-const SAMPLES: LintSample[] = [...RESTRICTED_IMPORT_SAMPLES, ...RESTRICTED_ASSERTION_SAMPLES, ...PROVIDER_DECISION_SAMPLES, ...WIRE_TOKEN_SAMPLES, ...CONTRACT_TABLE_SAMPLES, ...REGISTRATION_SAMPLES, ...WORKING_DIR_BRAND_SAMPLES, ...ALLOWED_ARCHITECTURE_SAMPLES]
+const SAMPLES: LintSample[] = [
+  ...RESTRICTED_IMPORT_SAMPLES,
+  ...RESTRICTED_ASSERTION_SAMPLES,
+  ...PROVIDER_DECISION_SAMPLES,
+  ...WIRE_TOKEN_SAMPLES,
+  ...CONTRACT_TABLE_SAMPLES,
+  ...REGISTRATION_SAMPLES,
+  ...WORKING_DIR_BRAND_SAMPLES,
+  ...ALLOWED_ARCHITECTURE_SAMPLES,
+]
 
 describe('no-restricted-syntax keeps the base selectors', () => {
   let resolved: Record<string, unknown>

@@ -85,18 +85,24 @@ export function ThemeChooser<T extends ThemeValue | TerminalThemeValue>(
   const matching = () => props.matchUi !== undefined && props.value.name === MATCH_UI
   /** The value that actually decides what is painted: the app's while matching. */
   const effective = (): ThemeValue | TerminalThemeValue =>
-    matching() ? props.matchUi! : props.value
+    matching()
+      ? props.matchUi!
+      : props.value
 
   const selectedName = () => {
     if (matching())
       return MATCH_UI
     const name = props.value.name
-    return isThemeId(name) ? name : DEFAULT_THEME_ID
+    return isThemeId(name)
+      ? name
+      : DEFAULT_THEME_ID
   }
 
   const selectedMode = (): ThemeMode => {
     const mode = effective().mode
-    return isThemeMode(mode) ? mode : MODE_OPTIONS[0].key
+    return isThemeMode(mode)
+      ? mode
+      : MODE_OPTIONS[0].key
   }
 
   /**
@@ -109,7 +115,9 @@ export function ThemeChooser<T extends ThemeValue | TerminalThemeValue>(
     return props.systemMode
   }
 
-  const theme = () => themeById(matching() ? props.matchUi!.name : props.value.name)
+  const theme = () => themeById(matching()
+    ? props.matchUi!.name
+    : props.value.name)
 
   /**
    * Group variants by their Light or Dark side and give each group an accessible name.
@@ -123,8 +131,16 @@ export function ThemeChooser<T extends ThemeValue | TerminalThemeValue>(
    */
   const variantGroups = createMemo(
     on(() => theme().id, () => ([
-      { polarity: 'light' as const, label: 'Light', items: variantsFor(theme(), 'light') },
-      { polarity: 'dark' as const, label: 'Dark', items: variantsFor(theme(), 'dark') },
+      {
+        polarity: 'light' as const,
+        label: 'Light',
+        items: variantsFor(theme(), 'light'),
+      },
+      {
+        polarity: 'dark' as const,
+        label: 'Dark',
+        items: variantsFor(theme(), 'dark'),
+      },
     ].filter(g => g.items.length > 0))),
   )
   const current = () => resolveVariant(theme(), effective().variant?.[polarity()], polarity())
@@ -152,9 +168,14 @@ export function ThemeChooser<T extends ThemeValue | TerminalThemeValue>(
   // The merge and its parameter type must preserve this distinction when selectName changes the palette.
   const commit = (patch: Omit<Partial<ThemeValue>, 'variant'> & { variant?: ThemeVariantChoice | undefined }) => {
     setWriteError(null)
-    void Promise.resolve(props.onChange({ ...props.value, ...patch } as T))
+    void Promise.resolve(props.onChange({
+      ...props.value,
+      ...patch,
+    } as T))
       .catch((err: unknown) => {
-        setWriteError(err instanceof Error ? err.message : String(err))
+        setWriteError(err instanceof Error
+          ? err.message
+          : String(err))
       })
   }
 
@@ -181,13 +202,17 @@ export function ThemeChooser<T extends ThemeValue | TerminalThemeValue>(
   const selectVariant = (chosen: ThemeVariant) => {
     // Write the variant under its own polarity even when the current view displays the other side.
     // A light view can therefore select the dark Macchiato variant.
-    const other: ResolvedThemeMode = chosen.polarity === 'light' ? 'dark' : 'light'
+    const other: ResolvedThemeMode = chosen.polarity === 'light'
+      ? 'dark'
+      : 'light'
     const twin = variantsFor(theme(), other).find(v => v.label === chosen.label)
     commit({
       variant: {
         ...props.value.variant,
         [chosen.polarity]: chosen.id,
-        ...(twin ? { [other]: twin.id } : {}),
+        ...(twin
+          ? { [other]: twin.id }
+          : {}),
       },
     })
   }
@@ -210,7 +235,9 @@ export function ThemeChooser<T extends ThemeValue | TerminalThemeValue>(
           >
             <ThemeSwatch variant={current()} />
             <span class={styles.triggerText}>
-              {matching() ? 'Match UI' : themeLabel(theme(), props.surface ?? 'ui')}
+              {matching()
+                ? 'Match UI'
+                : themeLabel(theme(), props.surface ?? 'ui')}
             </span>
             <Icon icon={ChevronDown} size="xs" aria-hidden="true" />
           </button>

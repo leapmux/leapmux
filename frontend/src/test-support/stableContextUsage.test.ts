@@ -68,7 +68,9 @@ describe('createStableContext usage', () => {
     // for the wrong reason, quietly retiring the guard.
     expect(byKey.size, 'the scan found no createStableContext keys at all').toBeGreaterThan(0)
 
-    const duplicated = [...byKey.entries()]
+    const duplicated = [
+      ...byKey.entries(),
+    ]
       .filter(([, owners]) => owners.length > 1)
       .map(([key, owners]) => `${key} (${owners.join(', ')})`)
 

@@ -138,8 +138,12 @@ export async function isMachExecutable(path: string, read: ProcessExecutableIO['
   const ranges: Array<{ start: number, end: number }> = []
   for (let index = 0; index < count; index++) {
     const start = index * stride
-    const offset = fat64 ? Number(architectures.getBigUint64(start + 8, little)) : architectures.getUint32(start + 8, little)
-    const size = fat64 ? Number(architectures.getBigUint64(start + 16, little)) : architectures.getUint32(start + 12, little)
+    const offset = fat64
+      ? Number(architectures.getBigUint64(start + 8, little))
+      : architectures.getUint32(start + 8, little)
+    const size = fat64
+      ? Number(architectures.getBigUint64(start + 16, little))
+      : architectures.getUint32(start + 12, little)
     const end = offset + size
     if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(size) || !Number.isSafeInteger(end) || offset < 8 + table.length || size < 16)
       throw new Error('The native fat Mach-O architecture range is invalid.')
@@ -153,8 +157,14 @@ export async function isMachExecutable(path: string, read: ProcessExecutableIO['
       throw new Error('The native fat Mach-O architecture header is incomplete.')
     const sliceView = new DataView(slice.buffer, slice.byteOffset, slice.byteLength)
     const sliceMagic = sliceView.getUint32(0, false)
-    if (![0xFEEDFACE, 0xFEEDFACF, 0xCEFAEDFE, 0xCFFAEDFE].includes(sliceMagic))
+    if (![
+      0xFEEDFACE,
+      0xFEEDFACF,
+      0xCEFAEDFE,
+      0xCFFAEDFE,
+    ].includes(sliceMagic)) {
       throw new Error('The native fat Mach-O architecture has no Mach-O header.')
+    }
     const sliceExecutable = sliceView.getUint32(12, sliceMagic === 0xCEFAEDFE || sliceMagic === 0xCFFAEDFE) === 2
     if (index > 0 && executable !== sliceExecutable)
       throw new Error('The native fat Mach-O architectures disagree about executable identity.')
@@ -172,9 +182,16 @@ export async function processExecutable(pid: number, platform: NodeJS.Platform =
     path = await io.readLink(`/proc/${pid}/exe`)
   }
   else if (platform === 'win32') {
-    const text = await io.command('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' | Select-Object ProcessId,ExecutablePath | ConvertTo-Json -Compress`])
+    const text = await io.command('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' | Select-Object ProcessId,ExecutablePath | ConvertTo-Json -Compress`,
+    ])
     const decoded: unknown = JSON.parse(text)
-    const records = Array.isArray(decoded) ? decoded : [decoded]
+    const records = Array.isArray(decoded)
+      ? decoded
+      : [decoded]
     const record = records[0]
     if (records.length !== 1 || typeof record !== 'object' || record === null || !('ProcessId' in record) || record.ProcessId !== pid
       || !('ExecutablePath' in record) || typeof record.ExecutablePath !== 'string' || !record.ExecutablePath.trim()) {
@@ -185,7 +202,11 @@ export async function processExecutable(pid: number, platform: NodeJS.Platform =
   else if (platform === 'darwin') {
     // The kernel path avoids unrelated deleted text mappings and mutable argv titles.
     // macOS requires its system Python command for this libproc metadata query.
-    const text = await io.command('/usr/bin/python3', ['-c', DARWIN_PROCESS_PATH_QUERY, String(pid)])
+    const text = await io.command('/usr/bin/python3', [
+      '-c',
+      DARWIN_PROCESS_PATH_QUERY,
+      String(pid),
+    ])
     path = parseKernelProcessPath(text, pid)
     const executable = io.inspect
       ? await io.inspect(path, read => isMachExecutable(path, (_path, offset, length) => read(offset, length)))
@@ -196,7 +217,10 @@ export async function processExecutable(pid: number, platform: NodeJS.Platform =
   else {
     throw new Error(`The physical executable query does not support ${platform}.`)
   }
-  if (!(platform === 'win32' ? win32.isAbsolute(path) : isAbsolute(path)))
+  if (!(platform === 'win32'
+    ? win32.isAbsolute(path)
+    : isAbsolute(path))) {
     throw new Error('The native executable query returned a relative path.')
+  }
   return io.realPath(path)
 }

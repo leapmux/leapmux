@@ -8,7 +8,12 @@ import { openCodeTailWindowMarkers, readOpenCodeNativeOutput } from '../opencode
 import { KILO_AGENT, nativeContext } from './scenarios'
 
 kiloTest('keeps the native output path and exact inline preview after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   await openProviderAgent(leapmuxServer, context.workspaceId, KILO_AGENT, { directoryPrefix: 'native-output-path-kilo-' })
   await openWorkspace(page, context.workspaceId)
   const output = computedNativeToolOutput({ lineCount: 8000, padding: 30 })

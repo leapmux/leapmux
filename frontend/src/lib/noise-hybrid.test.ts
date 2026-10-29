@@ -140,8 +140,14 @@ function responderHandshake(
 
   return {
     message2: concatBytes(noiseMsg2, sig),
-    send: { k: tempK1.slice(0, 32), n: 0 },
-    receive: { k: tempK2.slice(0, 32), n: 0 },
+    send: {
+      k: tempK1.slice(0, 32),
+      n: 0,
+    },
+    receive: {
+      k: tempK2.slice(0, 32),
+      n: 0,
+    },
   }
 }
 

@@ -12,13 +12,26 @@ vi.mock('~/api/workerRpc', () => ({
 
 /** A turn end that Grok states for a turn it started by itself. */
 function turnCompleted(update: Record<string, unknown>) {
-  return { jsonrpc: '2.0', method: '_x.ai/session_notification', params: { sessionId: 's', update: { sessionUpdate: 'turn_completed', ...update } } }
+  return {
+    jsonrpc: '2.0',
+    method: '_x.ai/session_notification',
+    params: {
+      sessionId: 's',
+      update: { sessionUpdate: 'turn_completed', ...update },
+    },
+  }
 }
 
 describe('grok provider', () => {
   const plugin = providerFor(AgentProvider.GROK_BUILD)!
 
-  describeACPProviderBasics(AgentProvider.GROK_BUILD, { text: true, image: true, pdf: true, audio: false, binary: true })
+  describeACPProviderBasics(AgentProvider.GROK_BUILD, {
+    text: true,
+    image: true,
+    pdf: true,
+    audio: false,
+    binary: true,
+  })
 
   it('carries plan mode on the permission-mode axis', () => {
     expect(plugin.configuration?.planMode).toMatchObject({ groupKey: 'permissionMode', planValue: 'plan', defaultValue: 'default' })
@@ -28,8 +41,12 @@ describe('grok provider', () => {
   // An agent that reports no mode yet is in Grok's default mode, not in plan mode.
   it('reads the current mode from the permission-mode option, and the default mode when it is absent', () => {
     const planMode = plugin.configuration?.planMode
-    expect(planMode?.currentMode({ optionValues: { permissionMode: 'plan' } })).toBe('plan')
-    expect(planMode?.currentMode({ optionValues: { permissionMode: 'ask' } })).toBe('ask')
+    expect(planMode?.currentMode({
+      optionValues: { permissionMode: 'plan' },
+    })).toBe('plan')
+    expect(planMode?.currentMode({
+      optionValues: { permissionMode: 'ask' },
+    })).toBe('ask')
     expect(planMode?.currentMode({ optionValues: {} })).toBe('default')
     expect(planMode?.currentMode({})).toBe('default')
   })
@@ -42,8 +59,12 @@ describe('grok provider', () => {
   // its own, and each preset sets that option.
   it('maps smart and bypass permissions to the approval mode', () => {
     expect(plugin.controls?.permissionPresets).toEqual({
-      smart: { sets: { approvalMode: 'auto' } },
-      bypass: { sets: { approvalMode: 'always-approve' } },
+      smart: {
+        sets: { approvalMode: 'auto' },
+      },
+      bypass: {
+        sets: { approvalMode: 'always-approve' },
+      },
     })
   })
 
@@ -54,7 +75,15 @@ describe('grok provider', () => {
   })
 
   it('reads its own MCP elicitation method', () => {
-    expect(plugin.controls?.elicitation?.({ method: '_x.ai/mcp/elicit', params: { serverName: 'docs', message: 'Pick one', mode: 'form', requestedSchema: { type: 'object' } } })).toEqual({
+    expect(plugin.controls?.elicitation?.({
+      method: '_x.ai/mcp/elicit',
+      params: {
+        serverName: 'docs',
+        message: 'Pick one',
+        mode: 'form',
+        requestedSchema: { type: 'object' },
+      },
+    })).toEqual({
       mode: 'form',
       message: 'Pick one',
       server: 'docs',

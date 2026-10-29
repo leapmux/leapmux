@@ -6,7 +6,9 @@ describe('mountPresenceHeartbeat', () => {
   beforeEach(() => {
     // Fake performance so monotonicNow (throttle clock) advances with
     // vi.advanceTimersByTime — wall Date.now is irrelevant here.
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'performance'],
+    })
   })
   afterEach(() => {
     vi.useRealTimers()
@@ -124,10 +126,19 @@ describe('claimPresenceWhenReady', () => {
       const [workspaceId, writeWorkspaceId] = createSignal(initial.workspaceId)
       setBootstrapped = writeBootstrapped
       setWorkspaceId = writeWorkspaceId
-      claimPresenceWhenReady({ bootstrapped, workspaceId, pingNow: () => sent.push(workspaceId()) })
+      claimPresenceWhenReady({
+        bootstrapped,
+        workspaceId,
+        pingNow: () => sent.push(workspaceId()),
+      })
       return disposeRoot
     })
-    return { sent, setBootstrapped: (value: boolean) => setBootstrapped(value), setWorkspaceId: (value: string) => setWorkspaceId(value), dispose }
+    return {
+      sent,
+      setBootstrapped: (value: boolean) => setBootstrapped(value),
+      setWorkspaceId: (value: string) => setWorkspaceId(value),
+      dispose,
+    }
   }
 
   it('sends nothing before the stream bootstraps', () => {

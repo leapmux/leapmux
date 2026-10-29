@@ -27,7 +27,9 @@ const PAYLOAD: Record<string, Record<string, unknown>> = {
     input: { file_path: '/repo/a.ts' },
   },
   [ZCODE_EVENT.TurnCompleted]: { resultType: 'success', duration: 1200 },
-  [ZCODE_EVENT.TurnFailed]: { error: { message: 'the model refused' } },
+  [ZCODE_EVENT.TurnFailed]: {
+    error: { message: 'the model refused' },
+  },
   [ZCODE_EVENT.PermissionResolved]: { decision: 'deny', toolName: 'Read' },
 }
 
@@ -67,7 +69,9 @@ describe('zcode event vocabulary', () => {
       ZCODE_EVENT.SessionClosed,
     ])
     expect(kind, `${type} must match the current worker's stored-row policy`)
-      .toBe(notifications.has(type) ? 'notification' : 'unknown')
+      .toBe(notifications.has(type)
+        ? 'notification'
+        : 'unknown')
   })
 
   // A type from a release later than this one still has to render as something. It

@@ -14,7 +14,11 @@ import { AMP_TOOL_NAME } from './toolNames'
 const GENERIC: Record<string, string> = {}
 
 const CHECK: ToolVocabularyCheck = {
-  names: [...Object.values(AMP_TOOL_NAME), ...Object.values(AMP_SUBAGENT_TOOL), ...Object.values(AMP_SHELL_TOOL)],
+  names: [
+    ...Object.values(AMP_TOOL_NAME),
+    ...Object.values(AMP_SUBAGENT_TOOL),
+    ...Object.values(AMP_SHELL_TOOL),
+  ],
   kindOf: ampToolKind,
   generic: GENERIC,
   // The table answers `unspecified` for a name it does not hold: "the provider states

@@ -48,7 +48,9 @@ function agentType(input: Record<string, unknown>): string {
   if (custom)
     return pickString(AGENT_TYPES, custom) || custom
   const kind = type && Object.keys(type).find(key => isObject(type[key]))
-  return kind ? pickString(AGENT_TYPES, kind) || kind : ''
+  return kind
+    ? pickString(AGENT_TYPES, kind) || kind
+    : ''
 }
 
 /** Protobuf JSON stores duration_ms as a decimal string. Keep large values exact. */
@@ -58,7 +60,9 @@ function duration(value: unknown): string | undefined {
   const number = Number(value)
   if (!Number.isFinite(number) || number < 0 || !Number.isInteger(number))
     return undefined
-  return Number.isSafeInteger(number) ? formatDuration(number) : `${value}ms`
+  return Number.isSafeInteger(number)
+    ? formatDuration(number)
+    : `${value}ms`
 }
 
 /**
@@ -99,9 +103,15 @@ export function cursorAgentCall(
   const background = pickBoolean(success, 'isBackground') ?? pickBoolean(raw, 'isBackground') ?? false
   const failed = tool.status === 'failed' || native?.isError === true || nativeError !== null
   const stopped = tool.status === 'cancelled'
-  const status = stopped ? 'stopped' : failed ? 'failed' : background ? 'running' : 'completed'
+  const status = stopped
+    ? 'stopped'
+    : failed
+      ? 'failed'
+      : background ? 'running' : 'completed'
   const reports = Array.isArray(success?.conversationSteps)
-    ? success.conversationSteps.map(step => pickString(isObject(step) ? pickObject(step, 'assistantMessage') : undefined, 'text')).filter(Boolean)
+    ? success.conversationSteps.map(step => pickString(isObject(step)
+        ? pickObject(step, 'assistantMessage')
+        : undefined, 'text')).filter(Boolean)
     : []
   const suffix = pickString(success, 'resultSuffix')
   const error = pickString(nativeError, 'error') || pickString(raw, 'error')
@@ -110,26 +120,40 @@ export function cursorAgentCall(
   const finished = facts.finished
   const report = [...reports, suffix].filter(Boolean).join('\n\n')
   const originalOutput = collectAcpToolText(tool, { rawObjects: false })
-  const output = finished ? error || report || nativeReport || originalOutput : originalOutput
+  const output = finished
+    ? error || report || nativeReport || originalOutput
+    : originalOutput
   const source: AgentRun = {
     description,
     agentId,
     statusLabel: status,
     outcome: status,
     metadata,
-    body: output || (!background && !failed && !stopped ? 'The provider did not supply a report.' : ''),
+    body: output || (!background && !failed && !stopped
+      ? 'The provider did not supply a report.'
+      : ''),
   }
   const request: AgentRequest = {
     description,
     agentType: agentType(input),
     prompt: pickString(input, 'prompt'),
-    metadata: modelName ? [{ label: 'Model', value: modelName }] : [],
+    metadata: modelName
+      ? [
+          { label: 'Model', value: modelName },
+        ]
+      : [],
   }
   return {
     kind: 'agent',
     label: 'Task',
     title: description || 'Task',
     request,
-    ...(finished ? { result: { agents: [source] } } : {}),
+    ...(finished
+      ? {
+          result: {
+            agents: [source],
+          },
+        }
+      : {}),
   }
 }

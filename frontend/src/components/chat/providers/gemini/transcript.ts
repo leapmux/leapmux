@@ -20,17 +20,29 @@ function geminiNativeRow(input: RowExtractionInput): ChatRow | null {
     return { kind: 'hidden' }
   if (part.kind === 'thought')
     return { kind: 'assistant-thinking', text: part.text }
-  return message.type === 'user' ? { kind: 'user', text: part.text, attachments: [] } : { kind: 'assistant-text', text: part.text }
+  return message.type === 'user'
+    ? { kind: 'user', text: part.text, attachments: [] }
+    : { kind: 'assistant-text', text: part.text }
 }
 
 /** Compose captured ACP hooks with Gemini's exact native child-record readers. */
 export function composeGeminiTranscript(base: ProviderTranscriptCapability): ProviderTranscriptCapability {
   return {
     ...base,
-    resolveMessage: parsed => geminiNativeMessage(parsed) || geminiStoredToolRecord(parsed.parentObject) ? parsed.parentObject : base.resolveMessage?.(parsed),
+    resolveMessage: parsed => geminiNativeMessage(parsed) || geminiStoredToolRecord(parsed.parentObject)
+      ? parsed.parentObject
+      : base.resolveMessage?.(parsed),
     classify: createGeminiClassifier(base),
-    spanRole: parsed => geminiStoredToolRecord(parsed.parentObject) ? 'result' : geminiNativeMessage(parsed) ? 'other' : base.spanRole(parsed),
-    relatedMessages: parsed => geminiNativeMessage(parsed) || geminiStoredToolRecord(parsed.parentObject) ? [] : base.relatedMessages?.(parsed) ?? [],
-    extractRow: input => geminiNativeMessage(input.resolved) || geminiStoredToolRecord(input.resolved.parentObject) ? geminiNativeRow(input) : base.extractRow(input),
+    spanRole: parsed => geminiStoredToolRecord(parsed.parentObject)
+      ? 'result'
+      : geminiNativeMessage(parsed)
+        ? 'other'
+        : base.spanRole(parsed),
+    relatedMessages: parsed => geminiNativeMessage(parsed) || geminiStoredToolRecord(parsed.parentObject)
+      ? []
+      : base.relatedMessages?.(parsed) ?? [],
+    extractRow: input => geminiNativeMessage(input.resolved) || geminiStoredToolRecord(input.resolved.parentObject)
+      ? geminiNativeRow(input)
+      : base.extractRow(input),
   }
 }

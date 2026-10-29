@@ -24,35 +24,101 @@ describe('questionsFromWire', () => {
   })
 
   it('keeps the readable questions beside the elements it drops', () => {
-    expect(questionsFromWire([null, { question: 'Which one?', options: [{ label: 'A' }] }])).toEqual([
-      { question: 'Which one?', options: [{ label: 'A' }] },
+    expect(questionsFromWire([
+      null,
+      {
+        question: 'Which one?',
+        options: [
+          { label: 'A' },
+        ],
+      },
+    ])).toEqual([
+      {
+        question: 'Which one?',
+        options: [
+          { label: 'A' },
+        ],
+      },
     ])
   })
 
   it('gives an element with no readable text an empty question rather than undefined', () => {
-    expect(questionsFromWire([{ options: [{ label: 'A' }] }])).toEqual([{ question: '', options: [{ label: 'A' }] }])
+    expect(questionsFromWire([
+      {
+        options: [
+          { label: 'A' },
+        ],
+      },
+    ])).toEqual([
+      {
+        question: '',
+        options: [
+          { label: 'A' },
+        ],
+      },
+    ])
   })
 
   it('coerces a non-array options field to the empty list the For needs', () => {
-    expect(questionsFromWire([{ question: 'Which one?', options: 'A' }])).toEqual([{ question: 'Which one?', options: [] }])
-    expect(questionsFromWire([{ question: 'Which one?' }])).toEqual([{ question: 'Which one?', options: [] }])
+    expect(questionsFromWire([
+      { question: 'Which one?', options: 'A' },
+    ])).toEqual([
+      { question: 'Which one?', options: [] },
+    ])
+    expect(questionsFromWire([
+      { question: 'Which one?' },
+    ])).toEqual([
+      { question: 'Which one?', options: [] },
+    ])
   })
 
   // A question that states no option is a real one -- it asks for free text, and
   // `allowEmpty` is what says the provider accepts an empty answer.
   it('keeps a question that offers no option', () => {
-    expect(questionsFromWire([{ question: 'Say more', options: [], allowEmpty: true }]))
-      .toEqual([{ question: 'Say more', options: [], allowEmpty: true }])
+    expect(questionsFromWire([
+      { question: 'Say more', options: [], allowEmpty: true },
+    ]))
+      .toEqual([
+        { question: 'Say more', options: [], allowEmpty: true },
+      ])
   })
 
   it('carries every other field the element stated', () => {
-    expect(questionsFromWire([{ id: 'q1', question: 'Which one?', header: 'Pick', options: [{ label: 'A' }], multiSelect: true }]))
-      .toEqual([{ id: 'q1', question: 'Which one?', header: 'Pick', options: [{ label: 'A' }], multiSelect: true }])
+    expect(questionsFromWire([
+      {
+        id: 'q1',
+        question: 'Which one?',
+        header: 'Pick',
+        options: [
+          { label: 'A' },
+        ],
+        multiSelect: true,
+      },
+    ]))
+      .toEqual([
+        {
+          id: 'q1',
+          question: 'Which one?',
+          header: 'Pick',
+          options: [
+            { label: 'A' },
+          ],
+          multiSelect: true,
+        },
+      ])
   })
 })
 
 describe('control response identity', () => {
-  it.each(['42', '0', '-5', '001', '1e3', '9007199254740993', 'abc-123'])('preserves the worker request ID %s', (requestId) => {
+  it.each([
+    '42',
+    '0',
+    '-5',
+    '001',
+    '1e3',
+    '9007199254740993',
+    'abc-123',
+  ])('preserves the worker request ID %s', (requestId) => {
     expect(buildJsonRpcResult(requestId, { count: 0, enabled: false, text: '' })).toEqual({
       jsonrpc: '2.0',
       id: requestId,
@@ -75,8 +141,14 @@ describe('createControlAnswerState', () => {
   // A partial seed is the shape that comes back from storage: an older record
   // carries no `switches` key at all, and it must not become `undefined`.
   it('fills the absent fields of a partial seed with the empty defaults', () => {
-    const state = createControlAnswerState({ selections: { 0: ['Postgres'] } })
-    expect(state.selections()).toEqual({ 0: ['Postgres'] })
+    const state = createControlAnswerState({
+      selections: {
+        0: ['Postgres'],
+      },
+    })
+    expect(state.selections()).toEqual({
+      0: ['Postgres'],
+    })
     expect(state.customTexts()).toEqual({})
     expect(state.currentPage()).toBe(0)
     expect(state.switches()).toEqual({})
@@ -84,7 +156,9 @@ describe('createControlAnswerState', () => {
   })
 
   it('seeds the pill choices like every other field', () => {
-    const state = createControlAnswerState({ choices: { 'control-permissions-pill': 'bypass' } })
+    const state = createControlAnswerState({
+      choices: { 'control-permissions-pill': 'bypass' },
+    })
     expect(state.choices()).toEqual({ 'control-permissions-pill': 'bypass' })
   })
 })
@@ -200,7 +274,13 @@ describe('sendSelectedOptionResponse', () => {
     await sendSelectedOptionResponse(onRespond, 'jsonrpc:3', 'reject-1')
     expect(onRespond).toHaveBeenCalledOnce()
     const [bytes, options] = onRespond.mock.calls[0]!
-    expect(JSON.parse(new TextDecoder().decode(bytes))).toEqual({ jsonrpc: '2.0', id: 'jsonrpc:3', result: { outcome: { outcome: 'selected', optionId: 'reject-1' } } })
+    expect(JSON.parse(new TextDecoder().decode(bytes))).toEqual({
+      jsonrpc: '2.0',
+      id: 'jsonrpc:3',
+      result: {
+        outcome: { outcome: 'selected', optionId: 'reject-1' },
+      },
+    })
     expect(options).toBeUndefined()
   })
 

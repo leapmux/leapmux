@@ -32,7 +32,9 @@ export function parseCodexDecision(value: unknown): CodexDecision | null {
   }
   if ('applyNetworkPolicyAmendment' in value) {
     const body = value.applyNetworkPolicyAmendment
-    const amendment = isObject(body) ? body.network_policy_amendment : undefined
+    const amendment = isObject(body)
+      ? body.network_policy_amendment
+      : undefined
     if (isObject(amendment)
       && typeof amendment.host === 'string'
       && (amendment.action === 'allow' || amendment.action === 'deny')) {
@@ -176,8 +178,16 @@ const CODEX_ALLOW_CHOICE_SPECS: ReadonlyArray<{
   label: string
   detail: (decision: CodexDecision) => string
 }> = [
-  { match: decision => decision === 'accept', label: 'Once', detail: () => 'Once' },
-  { match: decision => decision === 'acceptForSession', label: 'Session', detail: () => 'Session' },
+  {
+    match: decision => decision === 'accept',
+    label: 'Once',
+    detail: () => 'Once',
+  },
+  {
+    match: decision => decision === 'acceptForSession',
+    label: 'Session',
+    detail: () => 'Session',
+  },
   {
     match: decision => typeof decision === 'object' && 'acceptWithExecpolicyAmendment' in decision,
     label: 'Command rule',
@@ -205,7 +215,11 @@ function codexAllowChoiceSpecIndex(decision: CodexDecision): number {
  */
 function codexAllowChoices(decisions: CodexDecision[]): PillChoices | undefined {
   const candidates = decisions
-    .map((decision, sourceIndex) => ({ decision, sourceIndex, specIndex: codexAllowChoiceSpecIndex(decision) }))
+    .map((decision, sourceIndex) => ({
+      decision,
+      sourceIndex,
+      specIndex: codexAllowChoiceSpecIndex(decision),
+    }))
     // A repeated string decision draws two pills whose keys differ and whose
     // names cannot: `detail` returns a constant for `accept` and
     // `acceptForSession`, so `disambiguateLabels` has nothing to tell them
@@ -233,7 +247,9 @@ function codexAllowChoices(decisions: CodexDecision[]): PillChoices | undefined 
   // The guard then narrows the options to the tuple type.
   // Keep the options and selected decision in one result so a removed group cannot send an unoffered rule.
   const options = choices.map(choice => ({ key: choice.key, label: choice.label }))
-  return isPillOptions(options) ? { choices, options } : undefined
+  return isPillOptions(options)
+    ? { choices, options }
+    : undefined
 }
 
 /** The allow choices and the exact pill options they draw, built together. */
@@ -274,12 +290,16 @@ export interface ResolvedCodexDecisions {
  * Only an intact parsed list can establish that a polarity is absent.
  */
 export function resolveCodexDecisions(raw: unknown): ResolvedCodexDecisions {
-  const offered = Array.isArray(raw) ? raw : []
+  const offered = Array.isArray(raw)
+    ? raw
+    : []
   const parsed = offered
     .map(parseCodexDecision)
     .filter((decision): decision is CodexDecision => decision !== null)
   const narrowed = parsed.length < offered.length
-  const decisions: CodexDecision[] = parsed.length > 0 ? parsed : ['accept', 'cancel']
+  const decisions: CodexDecision[] = parsed.length > 0
+    ? parsed
+    : ['accept', 'cancel']
   const offeredNegative = decisions.find(isNegativeDecision)
   const offeredPositive = decisions.find(decision => decision === 'accept')
     ?? decisions.find(decision => !isNegativeDecision(decision))
@@ -287,7 +307,9 @@ export function resolveCodexDecisions(raw: unknown): ResolvedCodexDecisions {
   const positive = offeredPositive ?? (narrowed ? 'accept' : undefined)
   const allowChoices = codexAllowChoices(decisions)
   const consumed = new Set<CodexDecision>(
-    allowChoices?.choices.map(choice => choice.decision) ?? (positive ? [positive] : []),
+    allowChoices?.choices.map(choice => choice.decision) ?? (positive
+      ? [positive]
+      : []),
   )
   if (negative)
     consumed.add(negative)
@@ -295,9 +317,15 @@ export function resolveCodexDecisions(raw: unknown): ResolvedCodexDecisions {
   // Omit a missing optional choice.
   // The banner uses that absence to omit its decision button.
   return {
-    ...(negative !== undefined ? { negative } : {}),
-    ...(positive !== undefined ? { positive } : {}),
-    ...(allowChoices !== undefined ? { allowChoices } : {}),
+    ...(negative !== undefined
+      ? { negative }
+      : {}),
+    ...(positive !== undefined
+      ? { positive }
+      : {}),
+    ...(allowChoices !== undefined
+      ? { allowChoices }
+      : {}),
     additional,
   }
 }
@@ -330,7 +358,9 @@ function codexUserInputAnswers(
     return null
 
   const params = pickObject(request, 'params', undefined)
-  const questions = Array.isArray(params?.questions) ? params.questions : []
+  const questions = Array.isArray(params?.questions)
+    ? params.questions
+    : []
 
   const labels = new Map<string, string>()
   const order: string[] = []
@@ -381,10 +411,14 @@ function codexDecisionText(request: Record<string, unknown> | undefined, respons
     if (trimmed === 'decline' && pickString(request, 'method', '').endsWith('/requestApproval'))
       return 'Deny'
     const parsed = parseCodexDecision(trimmed)
-    return parsed ? codexDecisionLabel(parsed) : null
+    return parsed
+      ? codexDecisionLabel(parsed)
+      : null
   }
   const parsed = parseCodexDecision(decision)
-  return parsed ? codexDecisionLabel(parsed) : null
+  return parsed
+    ? codexDecisionLabel(parsed)
+    : null
 }
 
 /**

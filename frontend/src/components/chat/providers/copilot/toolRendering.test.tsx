@@ -23,12 +23,18 @@ function frame(type: string, data: Record<string, unknown>): Record<string, unkn
   return {
     jsonrpc: '2.0',
     method: 'session.event',
-    params: { sessionId: 'session-1', event: { id: `${type}-1`, type, data } },
+    params: {
+      sessionId: 'session-1',
+      event: { id: `${type}-1`, type, data },
+    },
   }
 }
 
 function parsed(row: Record<string, unknown>): ResolvedMessageContent {
-  return { ...input(row, undefined, AgentProvider.GITHUB_COPILOT), supplementalContent: undefined }
+  return {
+    ...input(row, undefined, AgentProvider.GITHUB_COPILOT),
+    supplementalContent: undefined,
+  }
 }
 
 function start(args: Record<string, unknown>, toolName: string, toolCallId = CALL) {
@@ -50,14 +56,26 @@ function titleTextOf(call: ToolCall): string {
 /** Render one row with the sources the store would supply for its pair. */
 function renderRow(row: Record<string, unknown>, request?: Record<string, unknown>, spanType?: string, requestVisible = false) {
   const category = plugin().transcript.classify(input(row))
-  const role = request === undefined ? plugin().transcript.spanRole?.(input(row)) ?? 'other' : 'result'
+  const role = request === undefined
+    ? plugin().transcript.spanRole?.(input(row)) ?? 'other'
+    : 'result'
   const sources = testMessageSources({
     current: () => parsed(row),
-    ...(request ? { request: () => parsed(request) } : {}),
+    ...(request
+      ? {
+          request: () => parsed(request),
+        }
+      : {}),
     role: () => role,
     visibleRows: () => ({ request: requestVisible, result: role === 'result' }),
   })
-  return render(() => renderMessageContent(row, { premeasureMode: true, ...(spanType !== undefined ? { spanType } : {}), sources }, category, AgentProvider.GITHUB_COPILOT))
+  return render(() => renderMessageContent(row, {
+    premeasureMode: true,
+    ...(spanType !== undefined
+      ? { spanType }
+      : {}),
+    sources,
+  }, category, AgentProvider.GITHUB_COPILOT))
 }
 
 /** Render the result half of one tool call, with its start row as the request. */
@@ -81,7 +99,10 @@ describe('copilot native tool rendering', () => {
   })
 
   it('recovers file lines from the native read details and copies the displayed content', () => {
-    const args = { path: '/project/sample.txt', view_range: [2, 4] }
+    const args = {
+      path: '/project/sample.txt',
+      view_range: [2, 4],
+    }
     const result = {
       result: {
         content: 'Shortened for the model',
@@ -128,7 +149,15 @@ describe('copilot native tool rendering', () => {
     const { container } = renderResult({ command: 'printf command-output' }, COPILOT_TOOL.Bash, {
       result: {
         content: 'command-output\n<shellId: 0 completed with exit code 0>',
-        contents: [{ type: 'shell_exit', shellId: '0', exitCode: 0, cwd: '/project', outputPreview: 'command-output\n' }],
+        contents: [
+          {
+            type: 'shell_exit',
+            shellId: '0',
+            exitCode: 0,
+            cwd: '/project',
+            outputPreview: 'command-output\n',
+          },
+        ],
       },
     })
     expect(container.textContent).toContain('command-output')
@@ -140,7 +169,9 @@ describe('copilot native tool rendering', () => {
 
   it('shows the empty-output notice for an actual landed empty result', () => {
     const args = { command: 'true' }
-    const result = { result: { content: '' } }
+    const result = {
+      result: { content: '' },
+    }
     const call = providerToolCall(AgentProvider.GITHUB_COPILOT, complete(result), {
       spanType: COPILOT_TOOL.Bash,
       request: parsed(start(args, COPILOT_TOOL.Bash)),
@@ -148,7 +179,12 @@ describe('copilot native tool rendering', () => {
     expect(call).toMatchObject({
       kind: 'execute',
       status: 'completed',
-      result: { commands: [{ output: '' }], unresolvedTerminals: [] },
+      result: {
+        commands: [
+          { output: '' },
+        ],
+        unresolvedTerminals: [],
+      },
     })
     const { container } = renderResult(args, COPILOT_TOOL.Bash, result)
     expect(container.textContent).toContain('[no output]')
@@ -177,12 +213,17 @@ describe('copilot native tool rendering', () => {
       },
     }
     const row = complete(result)
-    const options = { spanType: COPILOT_TOOL.Bash, request: parsed(start(args, COPILOT_TOOL.Bash)) }
+    const options = {
+      spanType: COPILOT_TOOL.Bash,
+      request: parsed(start(args, COPILOT_TOOL.Bash)),
+    }
     const meta = providerToolMeta(AgentProvider.GITHUB_COPILOT, row, options)
     expect(meta?.copyableContent()).toContain('Rendered an image.')
     expect(meta?.copyableContent()).toContain('false')
     expect(meta?.copyableContent()).toContain('0')
-    expect(providerRowImages(AgentProvider.GITHUB_COPILOT, row, options)).toEqual([{ mimeType: 'image/png', data: 'aW1hZ2U=' }])
+    expect(providerRowImages(AgentProvider.GITHUB_COPILOT, row, options)).toEqual([
+      { mimeType: 'image/png', data: 'aW1hZ2U=' },
+    ])
     const { container } = renderResult(args, COPILOT_TOOL.Bash, result)
     expect(container.textContent).toContain('Rendered an image.')
     expect(container.textContent).toContain('"enabled": false')
@@ -219,7 +260,9 @@ describe('copilot native tool rendering', () => {
       success: false,
       error: { code: 'rejected', message: 'The user rejected this tool call.' },
     }, true)
-    expect([...container.querySelectorAll(`.${toolUseHeader}`)].map(node => node.textContent)).toEqual(['Declined'])
+    expect([
+      ...container.querySelectorAll(`.${toolUseHeader}`),
+    ].map(node => node.textContent)).toEqual(['Declined'])
     expect(container.textContent).toContain('The user rejected this tool call.')
     expect(container.textContent).not.toContain('Error')
   })
@@ -246,7 +289,12 @@ describe('copilot native tool rendering', () => {
   })
 
   it('shows the launch instruction in the request row and the report in the result row', () => {
-    const args = { description: 'Inspect the project', prompt: 'Read the entry points.', agent_type: 'explore', mode: 'sync' }
+    const args = {
+      description: 'Inspect the project',
+      prompt: 'Read the entry points.',
+      agent_type: 'explore',
+      mode: 'sync',
+    }
     const request = renderRow(start(args, COPILOT_TOOL.Task))
     expect(request.container.textContent).toContain('Read the entry points.')
     expect(request.container.textContent).not.toContain('The entry points exist.')
@@ -259,14 +307,21 @@ describe('copilot native tool rendering', () => {
   })
 
   it('keeps a matching file whose name starts with the no-match phrase', () => {
-    const { container } = renderResult({ pattern: 'needle', paths: ['No matches found.ts'] }, COPILOT_TOOL.Grep, {
+    const { container } = renderResult({
+      pattern: 'needle',
+      paths: ['No matches found.ts'],
+    }, COPILOT_TOOL.Grep, {
       result: { content: 'No matches found.ts:needle' },
     })
     expect(container.textContent).toContain('No matches found.ts:needle')
   })
 
   it('counts matches when the requested context is zero', () => {
-    const { container } = renderResult({ pattern: 'needle', paths: ['/project'], C: 0 }, COPILOT_TOOL.Grep, {
+    const { container } = renderResult({
+      pattern: 'needle',
+      paths: ['/project'],
+      C: 0,
+    }, COPILOT_TOOL.Grep, {
       result: { content: 'a.ts:needle\na.ts:needle again' },
     })
     expect(container.textContent).toContain('2 matches in 1 file')
@@ -276,7 +331,10 @@ describe('copilot native tool rendering', () => {
   // for no line numbers. The file count has to read both, so it cuts at the line number
   // when there is one and at the first colon when there is not.
   it('counts the files of a numbered grep output', () => {
-    const { container } = renderResult({ pattern: 'needle', paths: ['/project'] }, COPILOT_TOOL.Grep, {
+    const { container } = renderResult({
+      pattern: 'needle',
+      paths: ['/project'],
+    }, COPILOT_TOOL.Grep, {
       result: { content: 'a.ts:12:needle\na.ts:40:needle again\nb.ts:3:needle' },
     })
     expect(container.textContent).toContain('3 matches in 2 files')
@@ -285,14 +343,21 @@ describe('copilot native tool rendering', () => {
   // An absolute Windows path carries its own colon. Cutting at the FIRST one filed
   // every match under the drive letter, so two files read as one.
   it('counts a Windows path as one file, not as its drive letter', () => {
-    const { container } = renderResult({ pattern: 'needle', paths: ['C:\\repo'] }, COPILOT_TOOL.Grep, {
+    const { container } = renderResult({
+      pattern: 'needle',
+      paths: ['C:\\repo'],
+    }, COPILOT_TOOL.Grep, {
       result: { content: 'C:\\repo\\a.ts:12:needle\nC:\\repo\\b.ts:3:needle' },
     })
     expect(container.textContent).toContain('2 matches in 2 files')
   })
 
   it('does not count context lines when the native flag carries a leading dash', () => {
-    const { container } = renderResult({ 'pattern': 'needle', 'paths': ['/project'], '-C': 1 }, COPILOT_TOOL.Grep, {
+    const { container } = renderResult({
+      'pattern': 'needle',
+      'paths': ['/project'],
+      '-C': 1,
+    }, COPILOT_TOOL.Grep, {
       result: { content: 'a.ts:before\na.ts:needle\na.ts:after' },
     })
     expect(container.textContent).not.toContain('Found 3 matches')
@@ -300,12 +365,19 @@ describe('copilot native tool rendering', () => {
   })
 
   it('shows a single native path-array target for a glob request', () => {
-    const { container } = renderRow(start({ pattern: '*.ts', paths: ['/project'] }, COPILOT_TOOL.Glob))
+    const { container } = renderRow(start({
+      pattern: '*.ts',
+      paths: ['/project'],
+    }, COPILOT_TOOL.Glob))
     expect(container.textContent).toContain('/project')
   })
 
   it('shows every requested search path from the native array', () => {
-    const { container } = renderRow(start({ pattern: 'answer', paths: ['/project/one', '/project/two'], output_mode: 'content' }, COPILOT_TOOL.Grep))
+    const { container } = renderRow(start({
+      pattern: 'answer',
+      paths: ['/project/one', '/project/two'],
+      output_mode: 'content',
+    }, COPILOT_TOOL.Grep))
     expect(container.textContent).toContain('/project/one')
     expect(container.textContent).toContain('/project/two')
   })
@@ -334,7 +406,10 @@ describe('copilot native tool rendering', () => {
   })
 
   it('renders the file content the view tool returns with its requested range', () => {
-    const { container } = renderResult({ path: '/project/sample.py', view_range: [5, 6] }, COPILOT_TOOL.View, {
+    const { container } = renderResult({
+      path: '/project/sample.py',
+      view_range: [5, 6],
+    }, COPILOT_TOOL.View, {
       result: { content: 'answer = 42\nprint(answer)' },
     })
     expect(container.textContent).toContain('answer = 42')
@@ -388,12 +463,26 @@ describe('copilot native tool rendering', () => {
   // -- `ToolMessageLayout` states that rule -- so the header of THIS row is the outcome
   // word alone, and the title reaches a reader on every row that stands by itself.
   it('titles a failed edit with the file it asked to change, and draws no diff', () => {
-    const args = { command: 'str_replace', path: '/project/parity.ts', old_str: 'before', new_str: 'after' }
-    const row = complete({ success: false, error: { message: 'no match for the old text' } })
-    const call = providerToolCall(AgentProvider.GITHUB_COPILOT, row, { spanType: COPILOT_TOOL.StrReplaceEditor, request: parsed(start(args, COPILOT_TOOL.StrReplaceEditor)) })!
+    const args = {
+      command: 'str_replace',
+      path: '/project/parity.ts',
+      old_str: 'before',
+      new_str: 'after',
+    }
+    const row = complete({
+      success: false,
+      error: { message: 'no match for the old text' },
+    })
+    const call = providerToolCall(AgentProvider.GITHUB_COPILOT, row, {
+      spanType: COPILOT_TOOL.StrReplaceEditor,
+      request: parsed(start(args, COPILOT_TOOL.StrReplaceEditor)),
+    })!
     expect(titleTextOf(call)).toContain('parity.ts')
 
-    const { container } = renderResult(args, COPILOT_TOOL.StrReplaceEditor, { success: false, error: { message: 'no match for the old text' } })
+    const { container } = renderResult(args, COPILOT_TOOL.StrReplaceEditor, {
+      success: false,
+      error: { message: 'no match for the old text' },
+    })
     expect(container.textContent).toContain('no match for the old text')
     // The failure landed nothing, so neither half of the diff draws.
     expect(container.textContent).not.toContain('Requested changes')
@@ -403,24 +492,37 @@ describe('copilot native tool rendering', () => {
 
   it('titles a failed move with both of the paths it asked for', () => {
     const args = { source: '/project/old name.ts', path: '/project/new name.ts' }
-    const row = complete({ success: false, error: { message: 'the destination exists' } })
-    const call = providerToolCall(AgentProvider.GITHUB_COPILOT, row, { spanType: COPILOT_TOOL.Move, request: parsed(start(args, COPILOT_TOOL.Move)) })!
+    const row = complete({
+      success: false,
+      error: { message: 'the destination exists' },
+    })
+    const call = providerToolCall(AgentProvider.GITHUB_COPILOT, row, {
+      spanType: COPILOT_TOOL.Move,
+      request: parsed(start(args, COPILOT_TOOL.Move)),
+    })!
     expect(titleTextOf(call)).toBe('/project/old name.ts \u2192 /project/new name.ts')
 
-    const { container } = renderResult(args, COPILOT_TOOL.Move, { success: false, error: { message: 'the destination exists' } })
+    const { container } = renderResult(args, COPILOT_TOOL.Move, {
+      success: false,
+      error: { message: 'the destination exists' },
+    })
     expect(container.textContent).toContain('the destination exists')
   })
 
   // `ProseResultBody` picks the markdown body for `markdown` and a `<pre>` block for
   // `plain`, so a roster answered as plain draws its own asterisks and table pipes.
   it('draws a subagent roster as markdown rather than as raw characters', () => {
-    const { container } = renderResult({}, COPILOT_TOOL.ListAgents, { result: { content: '- **explore** reads the code' } })
+    const { container } = renderResult({}, COPILOT_TOOL.ListAgents, {
+      result: { content: '- **explore** reads the code' },
+    })
     expect(container.querySelector('li strong')?.textContent).toBe('explore')
     expect(container.textContent).not.toContain('**explore**')
   })
 
   it('draws a completion report as markdown rather than as raw characters', () => {
-    const { container } = renderResult({}, COPILOT_TOOL.TaskComplete, { result: { content: '## Result\n\n- Read **two** files.' } })
+    const { container } = renderResult({}, COPILOT_TOOL.TaskComplete, {
+      result: { content: '## Result\n\n- Read **two** files.' },
+    })
     expect(container.querySelector('h2')?.textContent).toBe('Result')
     expect(container.querySelector('li strong')?.textContent).toBe('two')
     expect(container.textContent).not.toContain('## Result')
@@ -429,7 +531,9 @@ describe('copilot native tool rendering', () => {
   // The three kinds whose answer is one composed line keep the `<pre>` block, which
   // states the runtime's own line breaks exactly as it sent them.
   it('draws a scratch-board note as plain text', () => {
-    const { container } = renderResult({}, COPILOT_TOOL.ContextBoard, { result: { content: 'note: keep **these** bytes' } })
+    const { container } = renderResult({}, COPILOT_TOOL.ContextBoard, {
+      result: { content: 'note: keep **these** bytes' },
+    })
     expect(container.querySelector('strong')).toBeNull()
     expect(container.textContent).toContain('note: keep **these** bytes')
   })
@@ -437,33 +541,64 @@ describe('copilot native tool rendering', () => {
   // Copilot carries every picture in `extraContent`, so a failure path that drops it
   // takes the image with it -- and the image tab's index list shrinks by the same one.
   it.each([
-    [COPILOT_TOOL.View, { path: '/p/a.png' }],
-    [COPILOT_TOOL.Grep, { pattern: 'needle' }],
-    [COPILOT_TOOL.WebFetch, { url: 'https://example.com' }],
+    [
+      COPILOT_TOOL.View,
+      { path: '/p/a.png' },
+    ],
+    [
+      COPILOT_TOOL.Grep,
+      { pattern: 'needle' },
+    ],
+    [
+      COPILOT_TOOL.WebFetch,
+      { url: 'https://example.com' },
+    ],
   ])('draws the picture a failed %s attached', (toolName, args) => {
-    const failure = { success: false, error: { message: 'it broke', contents: [{ type: 'image', mimeType: 'image/png', data: 'aW1hZ2U=' }] } }
+    const failure = {
+      success: false,
+      error: {
+        message: 'it broke',
+        contents: [
+          { type: 'image', mimeType: 'image/png', data: 'aW1hZ2U=' },
+        ],
+      },
+    }
     const row = complete(failure)
-    const options = { spanType: toolName, request: parsed(start(args, toolName)) }
-    expect(providerRowImages(AgentProvider.GITHUB_COPILOT, row, options)).toMatchObject([{ mimeType: 'image/png', data: 'aW1hZ2U=' }])
+    const options = {
+      spanType: toolName,
+      request: parsed(start(args, toolName)),
+    }
+    expect(providerRowImages(AgentProvider.GITHUB_COPILOT, row, options)).toMatchObject([
+      { mimeType: 'image/png', data: 'aW1hZ2U=' },
+    ])
     const { container } = renderResult(args, toolName, failure)
     expect(container.querySelectorAll('img')).toHaveLength(1)
   })
 
   // A running edit has only ASKED to change the file; the finished one changed it.
   it('separates a requested file change from a confirmed one', () => {
-    const args = { command: 'str_replace', path: '/project/parity.ts', old_str: 'before', new_str: 'after' }
+    const args = {
+      command: 'str_replace',
+      path: '/project/parity.ts',
+      old_str: 'before',
+      new_str: 'after',
+    }
     const request = renderRow(start(args, COPILOT_TOOL.StrReplaceEditor))
     expect(request.container.textContent).toContain('Requested changes')
     expect(request.container.querySelector('[data-file-diff]')?.textContent).toContain('after')
 
-    const { container } = renderResult(args, COPILOT_TOOL.StrReplaceEditor, { result: { content: 'Saved' } })
+    const { container } = renderResult(args, COPILOT_TOOL.StrReplaceEditor, {
+      result: { content: 'Saved' },
+    })
     expect(container.textContent).not.toContain('Requested changes')
     expect(container.querySelector('[data-file-diff]')?.textContent).toContain('after')
   })
 
   it('renders a native file creation as a written file', () => {
     const args = { path: '/project/created.ts', file_text: 'export const created = true\n' }
-    const { container } = renderResult(args, COPILOT_TOOL.Create, { result: { content: 'Created' } })
+    const { container } = renderResult(args, COPILOT_TOOL.Create, {
+      result: { content: 'Created' },
+    })
     expect(container.querySelector('[data-file-diff]')?.textContent).toContain('export const created = true')
   })
 
@@ -490,7 +625,9 @@ describe('copilot native tool rendering', () => {
     const { container } = renderResult({ path: '/project/sample.py' }, COPILOT_TOOL.View, {
       result: {
         content: 'answer = 42',
-        contents: [{ type: 'text', text: '**Read note**' }],
+        contents: [
+          { type: 'text', text: '**Read note**' },
+        ],
         structuredContent: { bytes: 0 },
       },
     })
@@ -505,21 +642,30 @@ describe('copilot native tool rendering', () => {
   // content IS its result.
   it('renders an unrecognized tool through the shared rich body', () => {
     const { container } = renderResult({ query: 'rendering' }, 'probe_echo', {
-      result: { content: 'Result', contents: [{ type: 'text', text: '**Rich body**' }] },
+      result: {
+        content: 'Result',
+        contents: [
+          { type: 'text', text: '**Rich body**' },
+        ],
+      },
     })
     expect(container.querySelector('strong')?.textContent).toBe('Rich body')
     expect(container.textContent).toContain('Arguments')
   })
 
   it('resolves the tool name from the span when the start row is absent', () => {
-    const { container } = renderRow(complete({ result: { content: 'recovered output' } }), undefined, COPILOT_TOOL.Bash)
+    const { container } = renderRow(complete({
+      result: { content: 'recovered output' },
+    }), undefined, COPILOT_TOOL.Bash)
     expect(container.textContent).toContain('recovered output')
   })
 
   // No start row AND no span type: the completion has only its content to show, and
   // it must show that rather than a tool name it never read.
   it('shows an unmatched completion by its content alone', () => {
-    const { container } = renderRow(complete({ result: { content: 'recovered output' } }), undefined, undefined)
+    const { container } = renderRow(complete({
+      result: { content: 'recovered output' },
+    }), undefined, undefined)
     expect(container.textContent).toContain('recovered output')
     for (const invented of ['Run command', 'Read file', 'Search'])
       expect(container.textContent).not.toContain(invented)
@@ -536,8 +682,16 @@ describe('a copilot tool row the turn interrupted', () => {
   function renderRetained() {
     // The row's OWN parsed content carries the completion, which is what marks this
     // copy of the start frame as the call's end.
-    const retained = { ...parsed(request), completion: MessageCompletion.INTERRUPTED }
-    const sources = testMessageSources({ current: () => retained, request: () => parsed(request), role: () => 'result', visibleRows: () => ({ request: true, result: true }) })
+    const retained = {
+      ...parsed(request),
+      completion: MessageCompletion.INTERRUPTED,
+    }
+    const sources = testMessageSources({
+      current: () => retained,
+      request: () => parsed(request),
+      role: () => 'result',
+      visibleRows: () => ({ request: true, result: true }),
+    })
     return render(() => renderMessageContent(
       request,
       { premeasureMode: true, spanType: COPILOT_TOOL.Bash, sources },
@@ -552,7 +706,9 @@ describe('a copilot tool row the turn interrupted', () => {
     expect(container.textContent).not.toContain(args.command)
     // The interruption is the row's only header. The request card above it already
     // states the tool and the command.
-    expect([...container.querySelectorAll(`.${toolUseHeader}`)].map(node => node.textContent))
+    expect([
+      ...container.querySelectorAll(`.${toolUseHeader}`),
+    ].map(node => node.textContent))
       .toEqual(['Interrupted'])
   })
 
@@ -560,7 +716,11 @@ describe('a copilot tool row the turn interrupted', () => {
   // The view must not claim that its output was empty.
   it('keeps absent native output separate from an empty result', () => {
     const call = providerToolCall(AgentProvider.GITHUB_COPILOT, request, { completion: MessageCompletion.INTERRUPTED })
-    expect(call).toMatchObject({ kind: 'execute', status: 'cancelled', request: { command: args.command } })
+    expect(call).toMatchObject({
+      kind: 'execute',
+      status: 'cancelled',
+      request: { command: args.command },
+    })
     expect(call?.result).toBeUndefined()
     const { container } = renderRetained()
     expect(container.textContent).toBe('Interrupted')

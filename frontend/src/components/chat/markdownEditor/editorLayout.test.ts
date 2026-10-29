@@ -36,7 +36,10 @@ function stubbedRoot(): HTMLElement {
 
 function stubbedRow(width: number): HTMLElement {
   const row = document.createElement('div')
-  Object.defineProperty(row, 'clientWidth', { get: () => width, configurable: true })
+  Object.defineProperty(row, 'clientWidth', {
+    get: () => width,
+    configurable: true,
+  })
   return row
 }
 
@@ -58,10 +61,14 @@ function withLayout(
   document.body.replaceChildren()
   const root = stubbedRoot()
   document.body.appendChild(root)
-  const row = opts.rowWidth == null ? undefined : stubbedRow(opts.rowWidth)
+  const row = opts.rowWidth == null
+    ? undefined
+    : stubbedRow(opts.rowWidth)
   if (row)
     document.body.appendChild(row)
-  const actionSlot = opts.actionSlotWidth == null ? undefined : stubbedActionSlot(opts.actionSlotWidth)
+  const actionSlot = opts.actionSlotWidth == null
+    ? undefined
+    : stubbedActionSlot(opts.actionSlotWidth)
   if (actionSlot)
     document.body.appendChild(actionSlot)
 
@@ -95,7 +102,10 @@ describe('createEditorLayout', () => {
     // rather than flashing expanded before the first measurement lands.
     // No `rowWidth` at all is the unmeasured case: the layout sees no row.
     withLayout({}, (layout) => {
-      layout.setDocStats({ multiLine: false, text: 'x'.repeat(500) })
+      layout.setDocStats({
+        multiLine: false,
+        text: 'x'.repeat(500),
+      })
       expect(layout.contentExpanded()).toBe(false)
     })
   })
@@ -127,14 +137,20 @@ describe('createEditorLayout', () => {
     // Available width = 1000 - leftPad(0) - rightPad(96) = 904; the expand
     // margin is 16, so 50 characters (500px) is comfortably inside.
     withLayout({ rowWidth: 1000 }, (layout) => {
-      layout.setDocStats({ multiLine: false, text: 'x'.repeat(50) })
+      layout.setDocStats({
+        multiLine: false,
+        text: 'x'.repeat(50),
+      })
       expect(layout.contentExpanded()).toBe(false)
     })
   })
 
   it('expands once the text would wrap at the collapsed width', () => {
     withLayout({ rowWidth: 1000 }, (layout) => {
-      layout.setDocStats({ multiLine: false, text: 'x'.repeat(100) })
+      layout.setDocStats({
+        multiLine: false,
+        text: 'x'.repeat(100),
+      })
       expect(layout.contentExpanded()).toBe(true)
     })
   })
@@ -145,15 +161,24 @@ describe('createEditorLayout', () => {
     // expanded layout it already has: the mode switch itself changes the
     // measured width, so equal thresholds would flip back and forth forever.
     withLayout({ rowWidth: 1000 }, (layout) => {
-      layout.setDocStats({ multiLine: false, text: 'x'.repeat(100) })
+      layout.setDocStats({
+        multiLine: false,
+        text: 'x'.repeat(100),
+      })
       expect(layout.contentExpanded()).toBe(true)
 
       // 88 chars = 880px: past the collapse threshold, inside the expand one.
-      layout.setDocStats({ multiLine: false, text: 'x'.repeat(88) })
+      layout.setDocStats({
+        multiLine: false,
+        text: 'x'.repeat(88),
+      })
       expect(layout.contentExpanded()).toBe(true)
 
       // 87 chars = 870px: below both, so it finally collapses.
-      layout.setDocStats({ multiLine: false, text: 'x'.repeat(87) })
+      layout.setDocStats({
+        multiLine: false,
+        text: 'x'.repeat(87),
+      })
       expect(layout.contentExpanded()).toBe(false)
     })
   })

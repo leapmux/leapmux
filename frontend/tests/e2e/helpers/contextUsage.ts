@@ -42,7 +42,9 @@ function usageTotal(usage: MockModelUsage): number {
 export function usageMarkers(usage: MockModelUsage): string[] {
   if (usage.inputTokens === undefined && usage.outputTokens === undefined)
     return []
-  return [formatTokenCount(usageTotal(usage))]
+  return [
+    formatTokenCount(usageTotal(usage)),
+  ]
 }
 
 /** The Context row of the agent info card, as token counts. */
@@ -78,7 +80,10 @@ export function parseContextRow(cardText: string): ContextRowReading | undefined
   const match = /Context\s*(\d+(?:\.\d+)?)([kM]?)\s*\/\s*(\d+(?:\.\d+)?)([kM]?)/.exec(cardText)
   if (!match)
     return undefined
-  return { tokens: parseTokenCount(match[1]!, match[2]!), window: parseTokenCount(match[3]!, match[4]!) }
+  return {
+    tokens: parseTokenCount(match[1]!, match[2]!),
+    window: parseTokenCount(match[3]!, match[4]!),
+  }
 }
 
 /** Open the agent info card, read its Context row, and close the card. */
@@ -113,8 +118,13 @@ export const SCRIPTED_CONTEXT_USAGE: Readonly<MockModelUsage> = { inputTokens: 1
  * The default uses SCRIPTED_CONTEXT_USAGE. A caller can supply another block to test a later update.
  */
 export async function exerciseContextUsage(context: NativeScenarioContext, options: { usage?: MockModelUsage } = {}): Promise<MockModelUsage> {
-  const usage = { ...(options.usage ?? SCRIPTED_CONTEXT_USAGE) }
-  const step = await context.modelScript.queue({ ...nativeTextStep(context, 'Usage recorded.'), usage })
+  const usage = {
+    ...(options.usage ?? SCRIPTED_CONTEXT_USAGE),
+  }
+  const step = await context.modelScript.queue({
+    ...nativeTextStep(context, 'Usage recorded.'),
+    usage,
+  })
   await sendMessage(context.page, context.modelScript.prompt('Reply once.'))
   await context.modelScript.waitForSteps(step + 1)
   await waitForAgentIdle(context.page)

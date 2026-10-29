@@ -20,7 +20,9 @@ function cursorAnswerLines(
   outcome: Record<string, unknown>,
 ): string | null {
   const params = pickObject(request, 'params', undefined)
-  const questions = Array.isArray(params?.questions) ? params.questions : []
+  const questions = Array.isArray(params?.questions)
+    ? params.questions
+    : []
 
   const promptById = new Map<string, string>()
   const optionLabelById = new Map<string, Map<string, string>>()
@@ -33,7 +35,9 @@ function cursorAnswerLines(
       continue
     promptById.set(id, pickString(q, 'prompt', '').trim())
     const optionLabels = new Map<string, string>()
-    const options = Array.isArray(q.options) ? q.options : []
+    const options = Array.isArray(q.options)
+      ? q.options
+      : []
     for (const opt of options) {
       if (!isObject(opt))
         continue
@@ -46,7 +50,9 @@ function cursorAnswerLines(
     order.push(id)
   }
 
-  const answers = Array.isArray(outcome.answers) ? outcome.answers : []
+  const answers = Array.isArray(outcome.answers)
+    ? outcome.answers
+    : []
   const answerByQuestion = new Map<string, string[]>()
   for (const answer of answers) {
     if (!isObject(answer))
@@ -60,7 +66,9 @@ function cursorAnswerLines(
       if (!optId)
         continue
       const optionLabel = optionLabelById.get(questionId)?.get(optId)
-      mapped.push(optionLabel && optionLabel.trim() ? optionLabel.trim() : optId)
+      mapped.push(optionLabel && optionLabel.trim()
+        ? optionLabel.trim()
+        : optId)
     }
     // Cursor's answer carries the reader's own words beside the option ids, and they read
     // back as one more answer to the same question. A question answered with typed text

@@ -3,5 +3,8 @@ import { lettaTest } from '../letta-fixtures'
 import { relatedNativeProof } from './scenarios'
 
 lettaTest('exposes no separate native fast mode setting', async ({ native }) => {
-  await expectMissingSetting(native, { feature: 'fast-mode', relatedProof: () => relatedNativeProof(native) })
+  await expectMissingSetting(native, {
+    feature: 'fast-mode',
+    relatedProof: () => relatedNativeProof(native),
+  })
 })

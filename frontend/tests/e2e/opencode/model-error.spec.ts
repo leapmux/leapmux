@@ -10,7 +10,9 @@ opencodeTest('shows the native model failure and accepts a later valid prompt', 
 opencodeTest('keeps only the retried answer after a mid-stream failure', async ({ native }) => {
   const { page, modelScript } = native
   const start = await modelScript.queue(
-    { error: { status: 503, message: 'Service unavailable', midStream: true } },
+    {
+      error: { status: 503, message: 'Service unavailable', midStream: true },
+    },
     { text: 'FULL-ANSWER-AFTER-RETRY' },
   )
   await sendMessage(page, modelScript.prompt('Stream the scripted answer.'))

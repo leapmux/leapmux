@@ -155,7 +155,9 @@ export async function enterMessageText(page: Page, text: string, entry: MessageE
  * tinykeys maps `$mod` the same way.
  */
 export function platformModifier(platform: NodeJS.Platform): 'Meta' | 'Control' {
-  return platform === 'darwin' ? 'Meta' : 'Control'
+  return platform === 'darwin'
+    ? 'Meta'
+    : 'Control'
 }
 
 /**
@@ -464,12 +466,18 @@ export async function scrollChatRowIntoView(page: Page, sequence: bigint): Promi
       row.scrollIntoView({ block: 'center', behavior: 'instant' })
       return true
     }
-    const sequences = [...element.querySelectorAll<HTMLElement>('[data-seq]')].map(row => row.dataset.seq).filter((value): value is string => value !== undefined && /^[1-9]\d*$/.test(value)).map(BigInt)
+    const sequences = [
+      ...element.querySelectorAll<HTMLElement>('[data-seq]'),
+    ].map(row => row.dataset.seq).filter((value): value is string => value !== undefined && /^[1-9]\d*$/.test(value)).map(BigInt)
     if (sequences.length === 0)
       return false
     const target = BigInt(sequence)
-    const first = sequences.reduce((a, b) => a < b ? a : b)
-    const direction = target < first ? -1 : 1
+    const first = sequences.reduce((a, b) => a < b
+      ? a
+      : b)
+    const direction = target < first
+      ? -1
+      : 1
     element.scrollTop += direction * Math.max(1, element.clientHeight * 0.8)
     return false
   }, sequence.toString()), { message: 'the stored chat row enters the rendered viewport' }).toBe(true)
@@ -555,7 +563,9 @@ export function savedControlAnswer(page: Page) {
  * The test attribute avoids dependence on hashed style class names.
  */
 export function bandRows(page: Page, kind?: 'text' | 'thought') {
-  const selector = kind === undefined ? '[data-band]' : `[data-band="${kind}"]`
+  const selector = kind === undefined
+    ? '[data-band]'
+    : `[data-band="${kind}"]`
   return page.locator(selector + VISIBLE)
 }
 
@@ -581,7 +591,9 @@ export function chatScrollContainer(page: Page) {
  */
 export function fileChangeRow(page: Page, path: string): Locator {
   return page.locator('[data-seq]:visible')
-    .filter({ has: page.getByTestId('git-diff-stats') })
+    .filter({
+      has: page.getByTestId('git-diff-stats'),
+    })
     .filter({ hasText: path })
     .first()
 }
@@ -683,7 +695,9 @@ function readChatBoxGeometry(
     const chain: string[] = []
     for (let node: Element | null = el; node && chain.length < 8; node = node.parentElement) {
       const testId = node.getAttribute('data-testid')
-      chain.push(node.tagName.toLowerCase() + (testId ? `[${testId}]` : ''))
+      chain.push(node.tagName.toLowerCase() + (testId
+        ? `[${testId}]`
+        : ''))
     }
     return { outside: `ancestors: ${chain.join(' < ')}` }
   }
@@ -696,7 +710,9 @@ function readChatBoxGeometry(
     listWidth: list.clientWidth,
     rightGap: padLeft + list.clientWidth - self.right,
     leftGap: self.left - padLeft,
-    topGapInRow: row ? self.top - row.getBoundingClientRect().top : null,
+    topGapInRow: row
+      ? self.top - row.getBoundingClientRect().top
+      : null,
     radius: globalThis.getComputedStyle(el).borderTopRightRadius,
   }
 }
@@ -748,7 +764,13 @@ export async function measureBubbleEdges(locator: Locator): Promise<BubbleEdges>
   const { listWidth, rightGap, leftGap, topGapInRow, radius } = await measureChatBox(locator, 'measureBubbleEdges')
   if (topGapInRow === null)
     throw new Error('measureBubbleEdges: element has no row to measure against')
-  return { listWidth, rightGap, leftGap, topGapInRow, radius }
+  return {
+    listWidth,
+    rightGap,
+    leftGap,
+    topGapInRow,
+    radius,
+  }
 }
 
 /**
@@ -778,7 +800,9 @@ export function lastAssistantBubble(page: Page) {
 export function firstAssistantMessageRow(page: Page) {
   return assistantBubbles(page)
     .locator('..')
-    .filter({ has: page.locator('[data-testid="message-quote"]') })
+    .filter({
+      has: page.locator('[data-testid="message-quote"]'),
+    })
     .first()
 }
 
@@ -875,7 +899,9 @@ export async function waitForAgentIdle(page: Page) {
   // This helper alone cannot distinguish a completed turn from one that starts after the observation interval.
   // Callers must also check the expected response or operation result.
   await thinking.waitFor({ state: 'visible', timeout: APPEARANCE_PROBE_MS }).catch(() => {})
-  await expect(thinking).not.toBeVisible({ timeout: waitTimeoutBeforeTestDeadline() })
+  await expect(thinking).not.toBeVisible({
+    timeout: waitTimeoutBeforeTestDeadline(),
+  })
 }
 
 // ──────────────────────────────────────────────
@@ -1242,7 +1268,9 @@ const BROWSER_PREFS_TTL_MS = browserPrefsTtlMs()
  */
 export async function getBrowserPref(page: Page, userId: string, field: string): Promise<string | null> {
   const value = await getBrowserPrefValue(page, userId, field)
-  return value === null ? null : String(value)
+  return value === null
+    ? null
+    : String(value)
 }
 
 /**
@@ -1256,7 +1284,9 @@ export async function getBrowserPrefValue(page: Page, userId: string, field: str
   if (prefs == null || typeof prefs !== 'object')
     return null
   const value = (prefs as Record<string, unknown>)[field]
-  return value === undefined ? null : value
+  return value === undefined
+    ? null
+    : value
 }
 
 /**
@@ -1314,13 +1344,15 @@ export async function loginViaToken(page: Page, token: string) {
   if (name === undefined)
     throw new Error(`loginViaToken: token is not a "<name>=<value>" cookie string: ${token}`)
   const value = rest.join('=')
-  await page.context().addCookies([{
-    name,
-    value,
-    domain: E2E_BROWSER_HOST,
-    path: '/',
-    httpOnly: true,
-  }])
+  await page.context().addCookies([
+    {
+      name,
+      value,
+      domain: E2E_BROWSER_HOST,
+      path: '/',
+      httpOnly: true,
+    },
+  ])
 }
 
 /**
@@ -1466,7 +1498,9 @@ async function nativeSettingsAgent(page: Page): Promise<NativeSettingsAgent> {
   const { tab } = fromJson(LocateTabResponseSchema, located)
   if (!tab || tab.tabId !== agentId || tab.tabType !== TabType.AGENT || !tab.workerId)
     throw new Error('The native settings tab lookup returned no matching Worker identity.')
-  const context = { leapmuxServer: { hubUrl, adminToken: cookie, workerId: tab.workerId } }
+  const context = {
+    leapmuxServer: { hubUrl, adminToken: cookie, workerId: tab.workerId },
+  }
   let agent = await nativeAgentById(context, agentId)
   if (agent?.status === AgentStatus.STARTING) {
     agent = await retryUntilPass(async () => {
@@ -1490,7 +1524,9 @@ async function nativeSettingsAgent(page: Page): Promise<NativeSettingsAgent> {
  * reader needs that fact to tell a restart, a stop, and a missing tab apart.
  */
 function notActiveSettingsAgentError(agent: AgentInfo | null | undefined): Error {
-  const reported = agent ? (AgentStatus[agent.status] ?? String(agent.status)) : 'no row'
+  const reported = agent
+    ? (AgentStatus[agent.status] ?? String(agent.status))
+    : 'no row'
   return new Error(`The native settings agent is not active on its owning Worker (${reported}).`)
 }
 
@@ -1523,7 +1559,9 @@ export async function applyPermissionPreset(page: Page, kind: 'smart' | 'bypass'
       const groupMenu = await openSettingsMenu(page, groupId)
       const selected = groupMenu.getByTestId(`${groupId}-${value}`)
       await expect(selected).toBeEnabled()
-      const selectedAttribute = (await selected.getAttribute('role')) === 'option' ? 'aria-selected' : 'aria-checked'
+      const selectedAttribute = (await selected.getAttribute('role')) === 'option'
+        ? 'aria-selected'
+        : 'aria-checked'
       await expect(selected).toHaveAttribute(selectedAttribute, 'true')
     }
     await closeComposerMenus(page)
@@ -1536,7 +1574,10 @@ export async function applyPermissionPreset(page: Page, kind: 'smart' | 'bypass'
     const current = await nativeAgentById(snapshot.context, snapshot.agent.id)
     if (!current)
       throw new Error(`The Worker holds no native agent ${snapshot.agent.id}.`)
-    expect(Object.fromEntries(entries.map(([groupId]) => [groupId, nativeOptionValue(current, groupId)])), 'the Worker applies every option of the preset')
+    expect(Object.fromEntries(entries.map(([groupId]) => [
+      groupId,
+      nativeOptionValue(current, groupId),
+    ])), 'the Worker applies every option of the preset')
       .toEqual(Object.fromEntries(entries))
   })
 }
@@ -1687,7 +1728,9 @@ export async function expectSettingsOptionChosen(page: Page, testId: string) {
   await expect(async () => {
     const menu = await openSettingsMenu(page, settingsGroupIdOf(testId))
     const option = menu.locator(`[data-testid="${testId}"]`)
-    const selectedAttribute = (await option.getAttribute('role')) === 'option' ? 'aria-selected' : 'aria-checked'
+    const selectedAttribute = (await option.getAttribute('role')) === 'option'
+      ? 'aria-selected'
+      : 'aria-checked'
     await expect(option).toHaveAttribute(selectedAttribute, 'true')
   }).toPass()
   await closeComposerMenus(page)
@@ -1703,7 +1746,9 @@ export async function expectSettingsOptionChosen(page: Page, testId: string) {
 export function treeRow(page: Page, name: string, options: { exact?: boolean } = {}): Locator {
   const rows = page.locator(`[data-testid="tree-row"]${VISIBLE}`)
   const matching = options.exact
-    ? rows.filter({ has: page.getByTestId('tree-row-name').getByText(name, { exact: true }) })
+    ? rows.filter({
+        has: page.getByTestId('tree-row-name').getByText(name, { exact: true }),
+      })
     : rows.filter({ hasText: name })
   return matching.first()
 }

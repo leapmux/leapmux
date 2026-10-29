@@ -7,8 +7,11 @@ import { ACP_SESSION_UPDATE } from './updateVocabulary'
 /** Read the tool-span role from one resolved Agent Client Protocol frame. */
 export function acpSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
   const tool = parsed.parentObject
-  if (tool?.sessionUpdate === ACP_SESSION_UPDATE.TOOL_CALL)
-    return acpToolFinished(tool, parsed.completion) ? 'result' : 'request'
+  if (tool?.sessionUpdate === ACP_SESSION_UPDATE.TOOL_CALL) {
+    return acpToolFinished(tool, parsed.completion)
+      ? 'result'
+      : 'request'
+  }
   if (tool?.sessionUpdate === ACP_SESSION_UPDATE.TOOL_CALL_UPDATE && acpToolFinished(tool, parsed.completion))
     return 'result'
   return 'other'

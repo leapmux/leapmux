@@ -13,13 +13,23 @@ ohMyPiTest('delivers a steered message to the native child and keeps its parent 
   const message = 'Also say OMP_CHILD_STEERED in your report.'
   await modelScript.rule({
     name: 'the child reads its steered message',
-    when: { body: ['"name":"yield"', message] },
-    respond: { toolCalls: [ohMyPiYieldToolCall('steered-child-yield', 'OMP_CHILD_STEERED')] },
+    when: {
+      body: ['"name":"yield"', message],
+    },
+    respond: {
+      toolCalls: [
+        ohMyPiYieldToolCall('steered-child-yield', 'OMP_CHILD_STEERED'),
+      ],
+    },
     once: true,
   })
   const child = await openHeldChildTab(native, {
     ...ohMyPiHeldChild(),
-    heldAnswer: { toolCalls: [bashToolCall(native.provider, 'child-ready', 'printf child-ready')] },
+    heldAnswer: {
+      toolCalls: [
+        bashToolCall(native.provider, 'child-ready', 'printf child-ready'),
+      ],
+    },
   })
   try {
     await steerQueuedInput(page, { message, match: 'Also say' })

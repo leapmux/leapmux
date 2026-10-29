@@ -22,7 +22,11 @@ function claudePlanPermissions(payload: Record<string, unknown>) {
       return []
     const tool = pickString(value, 'tool')
     const prompt = pickString(value, 'prompt')
-    return tool.trim() && prompt.trim() ? [{ tool, prompt }] : []
+    return tool.trim() && prompt.trim()
+      ? [
+          { tool, prompt },
+        ]
+      : []
   })
 }
 
@@ -52,8 +56,12 @@ export function claudeExtractControl(input: ControlExtractionInput): ExtractedCo
   // and `controlSurface` asks it first -- so a `question` returned here only ever
   // reached a line that threw it away.
   const toolName = getToolName(payload)
-  if (toolName === CLAUDE_TOOL_NAMES.EXIT_PLAN_MODE)
-    return { kind: 'plan', permissions: claudePlanPermissions(payload) }
+  if (toolName === CLAUDE_TOOL_NAMES.EXIT_PLAN_MODE) {
+    return {
+      kind: 'plan',
+      permissions: claudePlanPermissions(payload),
+    }
+  }
   const toolInput = getToolInput(payload)
   // A shell call states its command, which the banner draws as code above the
   // arguments. One shared body spelled `'Bash'` inline for every provider that
@@ -67,7 +75,9 @@ export function claudeExtractControl(input: ControlExtractionInput): ExtractedCo
     permission: {
       title: toolName,
       input: toolInput,
-      ...(command !== undefined ? { command } : {}),
+      ...(command !== undefined
+        ? { command }
+        : {}),
       options: CLAUDE_PERMISSION_OPTIONS,
     },
   }

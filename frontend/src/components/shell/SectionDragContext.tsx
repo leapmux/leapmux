@@ -193,7 +193,12 @@ export function SectionDragProvider(props: SectionDragProviderProps) {
         if (nearBefore && nearAfter) {
           const distBefore = Math.abs(lastPointerY! - droppable.layout.top)
           const distAfter = Math.abs(lastPointerY! - droppable.layout.bottom)
-          setDropIndicator({ targetSectionId, position: distBefore <= distAfter ? 'before' : 'after' })
+          setDropIndicator({
+            targetSectionId,
+            position: distBefore <= distAfter
+              ? 'before'
+              : 'after',
+          })
         }
         else if (nearBefore) {
           setDropIndicator({ targetSectionId, position: 'before' })
@@ -262,7 +267,9 @@ export function SectionDragProvider(props: SectionDragProviderProps) {
       const sideStr = dropId.slice(SIDEBAR_ZONE_PREFIX.length)
       // Only show the zone indicator for cross-sidebar moves.
       // Same-sidebar zone drops are no-ops, so showing an indicator is misleading.
-      const targetSidebar = sideStr === 'left' ? Sidebar.LEFT : Sidebar.RIGHT
+      const targetSidebar = sideStr === 'left'
+        ? Sidebar.LEFT
+        : Sidebar.RIGHT
       const draggedSection = props.sections().find(s => s.id === sectionId)
       if (draggedSection && draggedSection.sidebar === targetSidebar) {
         currentDropTarget = null
@@ -330,7 +337,9 @@ export function SectionDragProvider(props: SectionDragProviderProps) {
         else if (lastPointerY !== null) {
           const distBefore = Math.abs(lastPointerY - droppable.layout.top)
           const distAfter = Math.abs(lastPointerY - droppable.layout.bottom)
-          insertPos = distBefore <= distAfter ? 'before' : 'after'
+          insertPos = distBefore <= distAfter
+            ? 'before'
+            : 'after'
         }
         else {
           insertPos = computeInsertPosition(sectionId, targetSectionId, sections)
@@ -362,14 +371,18 @@ export function SectionDragProvider(props: SectionDragProviderProps) {
           // Insert before target
           // findIndex proved targetIdx valid and the ternary bounds targetIdx - 1;
           // the '' defaults are the type-level guard alone.
-          const prevPos = targetIdx > 0 ? sidebarSections[targetIdx - 1]?.position ?? '' : ''
+          const prevPos = targetIdx > 0
+            ? sidebarSections[targetIdx - 1]?.position ?? ''
+            : ''
           position = mid(prevPos, sidebarSections[targetIdx]?.position ?? '')
         }
       }
       else if (dropId.startsWith(SIDEBAR_ZONE_PREFIX)) {
         // Dropped on a sidebar zone — append at end
         const sideStr = dropId.slice(SIDEBAR_ZONE_PREFIX.length)
-        targetSidebar = sideStr === 'left' ? Sidebar.LEFT : Sidebar.RIGHT
+        targetSidebar = sideStr === 'left'
+          ? Sidebar.LEFT
+          : Sidebar.RIGHT
 
         if (draggedSection.sidebar === targetSidebar)
           return // Same sidebar zone without a target — no-op
@@ -383,7 +396,9 @@ export function SectionDragProvider(props: SectionDragProviderProps) {
           .sort((a, b) => a.position.localeCompare(b.position))
 
         const lastSection = sidebarSections.at(-1)
-        position = lastSection ? mid(lastSection.position, '') : mid('', '')
+        position = lastSection
+          ? mid(lastSection.position, '')
+          : mid('', '')
       }
       else {
         return

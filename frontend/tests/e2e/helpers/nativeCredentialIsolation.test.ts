@@ -25,7 +25,13 @@ vi.mock('./nativeConversation', async importOriginal => ({
   ...await importOriginal<typeof import('./nativeConversation')>(),
   sendNativeAnswer: async (_context: unknown, prompt: string): Promise<MockModelRequestRecord> => {
     suite.turn.push(prompt)
-    return { protocol: 'anthropic-messages', path: '/v1/messages', stepIndex: 0, body: {}, mockCredential: { accepted: true } } as MockModelRequestRecord
+    return {
+      protocol: 'anthropic-messages',
+      path: '/v1/messages',
+      stepIndex: 0,
+      body: {},
+      mockCredential: { accepted: true },
+    } as MockModelRequestRecord
   },
 }))
 
@@ -51,13 +57,35 @@ describe('assertIsolatedConfiguration', () => {
 
   it('accepts a configuration that points at the mock and states the credential and each marker', () => {
     const configuration = `base_url = "${origin}/v1"\napi_key = "${key}"\nprovider = "mock"`
-    expect(() => assertIsolatedConfiguration(configuration, { mockOrigin: origin, expectedCredential: key, configurationMarkers: ['provider = "mock"'] })).not.toThrow()
+    expect(() => assertIsolatedConfiguration(configuration, {
+      mockOrigin: origin,
+      expectedCredential: key,
+      configurationMarkers: ['provider = "mock"'],
+    })).not.toThrow()
   })
 
   it.each([
-    ['no mock origin', 'api_key = "mock-key-123"', { expectedCredential: key }, 'does not point at the suite mock'],
-    ['no credential', `base_url = "${origin}"`, { expectedCredential: key }, 'does not state the expected credential'],
-    ['no marker', `base_url = "${origin}"\napi_key = "${key}"`, { expectedCredential: key, configurationMarkers: ['provider = "mock"'] }, 'lacks the marker'],
+    [
+      'no mock origin',
+      'api_key = "mock-key-123"',
+      { expectedCredential: key },
+      'does not point at the suite mock',
+    ],
+    [
+      'no credential',
+      `base_url = "${origin}"`,
+      { expectedCredential: key },
+      'does not state the expected credential',
+    ],
+    [
+      'no marker',
+      `base_url = "${origin}"\napi_key = "${key}"`,
+      {
+        expectedCredential: key,
+        configurationMarkers: ['provider = "mock"'],
+      },
+      'lacks the marker',
+    ],
   ])('refuses a configuration with %s', (_name, configuration, rules, message) => {
     expect(() => assertIsolatedConfiguration(configuration, { mockOrigin: origin, ...rules })).toThrow(message)
   })
@@ -66,18 +94,35 @@ describe('assertIsolatedConfiguration', () => {
   // CLI states that the file holds none, and the accepted mock credential of the turn proves the key.
   it('accepts a configuration that specifies an environment variable and holds no key', () => {
     const configuration = `base_url = "${origin}"\napi_key_env = "LEAPMUX_E2E_MODEL_API_KEY"`
-    expect(() => assertIsolatedConfiguration(configuration, { mockOrigin: origin, absentFromConfiguration: [key], configurationMarkers: ['api_key_env = "LEAPMUX_E2E_MODEL_API_KEY"'] })).not.toThrow()
+    expect(() => assertIsolatedConfiguration(configuration, {
+      mockOrigin: origin,
+      absentFromConfiguration: [key],
+      configurationMarkers: ['api_key_env = "LEAPMUX_E2E_MODEL_API_KEY"'],
+    })).not.toThrow()
   })
 
   it('refuses a configuration that holds a key that it must not hold', () => {
     const configuration = `base_url = "${origin}"\napi_key_env = "LEAPMUX_E2E_MODEL_API_KEY"\napi_key = "${key}"`
-    expect(() => assertIsolatedConfiguration(configuration, { mockOrigin: origin, absentFromConfiguration: [key] })).toThrow('holds text that it must not hold')
+    expect(() => assertIsolatedConfiguration(configuration, {
+      mockOrigin: origin,
+      absentFromConfiguration: [key],
+    })).toThrow('holds text that it must not hold')
   })
 
   it.each([
     ['no statement about the credential', {}, 'must state its credential'],
-    ['an empty expected credential', { expectedCredential: '' }, 'must be nonempty'],
-    ['an empty text that must be absent', { absentFromConfiguration: [''] }, 'must be nonempty'],
+    [
+      'an empty expected credential',
+      { expectedCredential: '' },
+      'must be nonempty',
+    ],
+    [
+      'an empty text that must be absent',
+      {
+        absentFromConfiguration: [''],
+      },
+      'must be nonempty',
+    ],
   ])('refuses rules with %s', (_name, rules, message) => {
     expect(() => assertIsolatedConfiguration(`base_url = "${origin}"`, { mockOrigin: origin, ...rules })).toThrow(message)
   })
@@ -86,7 +131,17 @@ describe('assertIsolatedConfiguration', () => {
 describe('exerciseCredentialIsolation', () => {
   // An unset environment variable reaches the inline configuration as undefined.
   // The check refuses it before any environment read or browser access.
-  it.each([[['']], [[undefined]], [['http://127.0.0.1:4100', undefined]]])('refuses the inline configuration %j before any other step', async (inlineConfiguration) => {
+  it.each([
+    [
+      [''],
+    ],
+    [
+      [undefined],
+    ],
+    [
+      ['http://127.0.0.1:4100', undefined],
+    ],
+  ])('refuses the inline configuration %j before any other step', async (inlineConfiguration) => {
     const context = {
       provider: AgentProvider.CODEX,
       workspaceId: 'credential-boundary',
@@ -100,7 +155,14 @@ describe('exerciseCredentialIsolation', () => {
         throw new Error('The inline configuration check must run before model access.')
       },
     }
-    await expect(Reflect.apply(exerciseCredentialIsolation, undefined, [context, { inlineConfiguration, privateDirectories: [runDir], expectedCredential: 'mock-key-123' }])).rejects.toThrow('Each inline native configuration must be a nonempty string.')
+    await expect(Reflect.apply(exerciseCredentialIsolation, undefined, [
+      context,
+      {
+        inlineConfiguration,
+        privateDirectories: [runDir],
+        expectedCredential: 'mock-key-123',
+      },
+    ])).rejects.toThrow('Each inline native configuration must be a nonempty string.')
   })
 })
 
@@ -118,7 +180,13 @@ describe('exerciseCredentialIsolation with private directories', () => {
       workspaceId: 'credential-workspace',
       page: {} as Page,
       modelScript: {} as ModelScript,
-      leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused', agentEnv: { HOME: home }, mockModelUrl: `${origin}/mock` },
+      leapmuxServer: {
+        hubUrl: 'http://unused.invalid',
+        adminToken: 'unused',
+        workerId: 'unused',
+        agentEnv: { HOME: home },
+        mockModelUrl: `${origin}/mock`,
+      },
     }
     return { context, home }
   }
@@ -127,7 +195,11 @@ describe('exerciseCredentialIsolation with private directories', () => {
     const { context, home } = scenario()
     const config = join(home, '.claude')
     mkdirSync(config)
-    await exerciseCredentialIsolation(context, { privateDirectories: [home, config], inlineConfiguration: [origin, key], expectedCredential: key })
+    await exerciseCredentialIsolation(context, {
+      privateDirectories: [home, config],
+      inlineConfiguration: [origin, key],
+      expectedCredential: key,
+    })
     expect(suite.turn).toHaveLength(1)
   })
 
@@ -135,7 +207,11 @@ describe('exerciseCredentialIsolation with private directories', () => {
   it('states a private directory that does not exist before the turn, and runs no turn', async () => {
     const { context, home } = scenario()
     const absent = join(home, '.claude')
-    await expect(exerciseCredentialIsolation(context, { privateDirectories: [home, absent], inlineConfiguration: [origin, key], expectedCredential: key }))
+    await expect(exerciseCredentialIsolation(context, {
+      privateDirectories: [home, absent],
+      inlineConfiguration: [origin, key],
+      expectedCredential: key,
+    }))
       .rejects
       .toThrow(`The private directory ${absent} does not exist before the native turn.`)
     expect(suite.turn).toEqual([])
@@ -145,15 +221,33 @@ describe('exerciseCredentialIsolation with private directories', () => {
     const { context, home } = scenario()
     const outside = join(scratch, 'outside-run')
     mkdirSync(outside)
-    await expect(exerciseCredentialIsolation(context, { privateDirectories: [home, outside], inlineConfiguration: [origin, key], expectedCredential: key }))
+    await expect(exerciseCredentialIsolation(context, {
+      privateDirectories: [home, outside],
+      inlineConfiguration: [origin, key],
+      expectedCredential: key,
+    }))
       .rejects
       .toThrow('outside the E2E run')
     expect(suite.turn).toEqual([])
   })
 
-  it.each([[['']], [[undefined]]])('refuses the private directories %j before any other step', async (privateDirectories) => {
+  it.each([
+    [
+      [''],
+    ],
+    [
+      [undefined],
+    ],
+  ])('refuses the private directories %j before any other step', async (privateDirectories) => {
     const { context } = scenario()
-    await expect(Reflect.apply(exerciseCredentialIsolation, undefined, [context, { privateDirectories, inlineConfiguration: [origin, key], expectedCredential: key }]))
+    await expect(Reflect.apply(exerciseCredentialIsolation, undefined, [
+      context,
+      {
+        privateDirectories,
+        inlineConfiguration: [origin, key],
+        expectedCredential: key,
+      },
+    ]))
       .rejects
       .toThrow('Each private directory must be a nonempty path.')
     expect(suite.turn).toEqual([])
@@ -162,8 +256,15 @@ describe('exerciseCredentialIsolation with private directories', () => {
   it('states an isolated HOME that does not exist', async () => {
     const { context } = scenario()
     const absentHome = join(runDir, 'absent-home')
-    const server = { ...context.leapmuxServer, agentEnv: { HOME: absentHome } }
-    await expect(exerciseCredentialIsolation({ ...context, leapmuxServer: server }, { privateDirectories: [runDir], inlineConfiguration: [origin, key], expectedCredential: key }))
+    const server = {
+      ...context.leapmuxServer,
+      agentEnv: { HOME: absentHome },
+    }
+    await expect(exerciseCredentialIsolation({ ...context, leapmuxServer: server }, {
+      privateDirectories: [runDir],
+      inlineConfiguration: [origin, key],
+      expectedCredential: key,
+    }))
       .rejects
       .toThrow(`The isolated native HOME ${absentHome} does not exist.`)
   })

@@ -9,8 +9,13 @@ import { withPreferences } from '~/test-support/preferencesProvider'
 import { RepoContextMenu } from './RepoContextMenu'
 
 vi.mock('~/api/workerRpc', () => ({
-  listAvailableProviders: vi.fn(async () => ({ providers: [AgentProvider.CLAUDE_CODE] })),
-  listAvailableShells: vi.fn(async () => ({ shells: ['/bin/zsh'], defaultShell: '/bin/zsh' })),
+  listAvailableProviders: vi.fn(async () => ({
+    providers: [AgentProvider.CLAUDE_CODE],
+  })),
+  listAvailableShells: vi.fn(async () => ({
+    shells: ['/bin/zsh'],
+    defaultShell: '/bin/zsh',
+  })),
 }))
 
 const listProviders = workerRpc.listAvailableProviders as unknown as ReturnType<typeof vi.fn>
@@ -52,7 +57,9 @@ function checkout(overrides: Partial<RepoCheckout> = {}): RepoCheckout {
 
 function renderMenu(overrides: Partial<Parameters<typeof RepoContextMenu>[0]> = {}) {
   const props = {
-    checkouts: () => [checkout()],
+    checkouts: () => [
+      checkout(),
+    ],
     actionsFor: () => stubBranchMenuActions(),
     disabledReasonFor: () => undefined,
     onCollapseAllBranches: vi.fn(),
@@ -177,7 +184,9 @@ describe('RepoContextMenu', () => {
   })
 
   it('dims Collapse all branches once there is nothing left to collapse', () => {
-    const props = renderMenu({ nothingToCollapse: () => true })
+    const props = renderMenu({
+      nothingToCollapse: () => true,
+    })
     openMenu()
 
     const item = screen.getByTestId('repo-collapse-branches') as HTMLButtonElement
@@ -189,7 +198,9 @@ describe('RepoContextMenu', () => {
   // An offline Worker takes the tab-creation items with it, and nothing else:
   // the repository rows copy text the browser already holds.
   it('disables only the tab-creation items when the checkout\'s worker is offline', () => {
-    renderMenu({ disabledReasonFor: () => 'This Worker is offline.' })
+    renderMenu({
+      disabledReasonFor: () => 'This Worker is offline.',
+    })
     openMenu()
 
     expect(screen.getByRole('menuitem', { name: 'New agent...', hidden: true })).toBeDisabled()
@@ -199,7 +210,9 @@ describe('RepoContextMenu', () => {
   // A branch row with no branch name has no ref to bind, so the tab-creation
   // items have no target -- but the path is still real and still copyable.
   it('keeps the repository block when a checkout has no bindable actions', () => {
-    renderMenu({ actionsFor: () => undefined })
+    renderMenu({
+      actionsFor: () => undefined,
+    })
     openMenu()
 
     const items = itemsOf('repo-context-menu')
@@ -208,7 +221,9 @@ describe('RepoContextMenu', () => {
   })
 
   it('renders only the collapse item when the repository has no checkout', () => {
-    renderMenu({ checkouts: () => [] })
+    renderMenu({
+      checkouts: () => [],
+    })
     openMenu()
 
     expect(itemsOf('repo-context-menu')).toEqual(['Collapse all branches'])

@@ -30,13 +30,24 @@ const resolveSolidRefreshVirtual = {
 
 export default defineConfig({
   // Native conformance fixtures require raw reads when JSON transforms reject valid UTF-16 units.
-  server: { fs: { allow: [...VITE_SOURCE_DIRECTORIES, fileURLToPath(new URL('../testdata', import.meta.url))] } },
+  server: {
+    fs: {
+      allow: [
+        ...VITE_SOURCE_DIRECTORIES,
+        fileURLToPath(new URL('../testdata', import.meta.url)),
+      ],
+    },
+  },
   resolve: {
     // tsconfig.json supplies one `~` mapping for the compiler and both runners.
     tsconfigPaths: true,
   },
   // Tests require no HMR injection. Its /@solid-refresh ID breaks fileURLToPath on Windows.
-  plugins: [vanillaExtractPlugin(), resolveSolidRefreshVirtual, solid({ hot: false })],
+  plugins: [
+    vanillaExtractPlugin(),
+    resolveSolidRefreshVirtual,
+    solid({ hot: false }),
+  ],
   test: {
     // Threads avoid the cost of one process per file. Keep isolation for per-file mocks.
     pool: 'threads',
@@ -59,13 +70,20 @@ export default defineConfig({
         'computations created outside a `createRoot` or `render` will never be disposed',
         'cleanups created outside a `createRoot` or `render` will never be run',
       ]
-      return solidDevNoise.some(message => log.includes(message)) ? false : undefined
+      return solidDevNoise.some(message => log.includes(message))
+        ? false
+        : undefined
     },
     // Playwright owns .spec.ts. Keep co-located .test.ts files in Vitest.
     exclude: ['tests/e2e/**/*.spec.ts', 'node_modules/**'],
     projects: [
       {
         // Solid adds browser conditions and DOM matchers. Node tests require neither.
+        // Vitest 5 makes an inline project extend the root by default, and the
+        // root's Solid plugin then resolves packages such as
+        // decode-named-character-reference to their DOM builds, which fail at
+        // import under the node environment.
+        extends: false,
         resolve: { tsconfigPaths: true },
         test: {
           name: 'node',
@@ -80,7 +98,9 @@ export default defineConfig({
       },
       {
         // The node tests that read the local calendar. vitest.node.ts states
-        // why they need forked processes and not threads.
+        // why they need forked processes and not threads. It does not extend
+        // the root, for the same reason as the node project.
+        extends: false,
         resolve: { tsconfigPaths: true },
         test: {
           name: 'node-timezone',
@@ -102,7 +122,10 @@ export default defineConfig({
           // The incorrect value makes every element appear clipped and prevents tests from reaching the unclipped branch.
           // Correct that difference before proposing a switch from jsdom.
           environment: 'jsdom',
-          exclude: [...NODE_TEST_FILES, ...TIMEZONE_TEST_FILES],
+          exclude: [
+            ...NODE_TEST_FILES,
+            ...TIMEZONE_TEST_FILES,
+          ],
           // Install IDBKeyRange before Dexie and the file's broadcast bus before storage.
           setupFiles: ['./vitest.idbKeyRange.ts', './vitest.broadcastChannel.ts', './vitest.setup.ts'],
           sequence: { setupFiles: 'list' },

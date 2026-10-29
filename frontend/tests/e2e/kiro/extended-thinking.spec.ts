@@ -29,7 +29,9 @@ kiroTest('applies thinking independently of a fixed native model and effort befo
     nativeProof: (request, step) => {
       expect(request.body).toHaveProperty('conversationState.currentMessage.userInputMessage.modelId', 'kiro-e2e-thinking')
       expect(request.body).toHaveProperty('additionalModelRequestFields.output_config.effort', 'medium')
-      expect(request.body).toHaveProperty('additionalModelRequestFields.thinking.type', step.value === 'on' ? 'adaptive' : 'disabled')
+      expect(request.body).toHaveProperty('additionalModelRequestFields.thinking.type', step.value === 'on'
+        ? 'adaptive'
+        : 'disabled')
     },
   })
 })

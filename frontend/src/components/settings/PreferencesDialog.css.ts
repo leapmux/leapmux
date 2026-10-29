@@ -76,14 +76,17 @@ export const nav = style({
 })
 
 /** Phone-band section picker: oat-styled trigger (mirrors form select chrome). */
-export const navSelect = style([fieldTrigger, {
-  width: '100%',
-  marginBottom: 'var(--space-1)',
-  padding: 'var(--space-2) var(--space-3)',
-  justifyContent: 'space-between',
-  gap: 'var(--space-3)',
-  textAlign: 'left',
-}])
+export const navSelect = style([
+  fieldTrigger,
+  {
+    width: '100%',
+    marginBottom: 'var(--space-1)',
+    padding: 'var(--space-2) var(--space-3)',
+    justifyContent: 'space-between',
+    gap: 'var(--space-3)',
+    textAlign: 'left',
+  },
+])
 
 export const navSelectValue = style({
   minWidth: 0,
@@ -134,9 +137,12 @@ export const navButtonActive = style({
  * sits flush under the search box with no margin to reset. `navSeparator`
  * supplies the space above ADMINISTRATION.
  */
-export const navDivider = style([menuSectionHeader, {
-  userSelect: 'none',
-}])
+export const navDivider = style([
+  menuSectionHeader,
+  {
+    userSelect: 'none',
+  },
+])
 
 /**
  * The rule above a section header, matching the `<hr>` a dropdown menu

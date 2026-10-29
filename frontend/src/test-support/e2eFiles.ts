@@ -39,5 +39,7 @@ export const e2eRoot = join(frontendRoot, 'tests', 'e2e')
  */
 export function collectE2EFiles(): string[] {
   // A misplaced TSX spec must reach the layout guard even though Playwright does not collect it.
-  return collectFiles(e2eRoot, { matches: name => name.endsWith('.ts') || name.endsWith('.tsx') })
+  return collectFiles(e2eRoot, {
+    matches: name => name.endsWith('.ts') || name.endsWith('.tsx'),
+  })
 }

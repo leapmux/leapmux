@@ -11,19 +11,33 @@ import { cursorToolCallAdapter } from './extractors/toolCall'
  * holds (`task`), and the four that state their own name inside `rawInput` because the
  * worker knows each by its JSON-RPC method and never reads the tool name.
  */
-const FRONTEND_TOOL_NAMES = ['createPlan', 'askQuestion', 'updateTodos', 'generateImage'] as const
+const FRONTEND_TOOL_NAMES = [
+  'createPlan',
+  'askQuestion',
+  'updateTodos',
+  'generateImage',
+] as const
 
 /** The kind the adapter answers for one call that states its own name. */
 function kindOf(name: string): ToolKind {
   return acpToolCall(
-    { sessionUpdate: 'tool_call', toolCallId: 'vocab-1', status: 'pending', kind: 'other', rawInput: { _toolName: name } },
+    {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'vocab-1',
+      status: 'pending',
+      kind: 'other',
+      rawInput: { _toolName: name },
+    },
     cursorToolCallAdapter,
     undefined,
   ).kind
 }
 
 const CHECK: ToolVocabularyCheck = {
-  names: [...Object.values(CURSOR_TOOL), ...FRONTEND_TOOL_NAMES],
+  names: [
+    ...Object.values(CURSOR_TOOL),
+    ...FRONTEND_TOOL_NAMES,
+  ],
   kindOf,
   generic: {},
   // The uncategorized trio folds to `mcp`: the card that identifies what ran when

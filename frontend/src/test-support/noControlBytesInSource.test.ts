@@ -31,7 +31,9 @@ interface Offender {
 /** Every source file under the guarded roots, as an absolute path. */
 function collectSourceFiles(): string[] {
   return SOURCE_ROOTS.flatMap(root =>
-    collectFiles(join(frontendRoot, root), { matches: name => SOURCE_FILE.test(name) }),
+    collectFiles(join(frontendRoot, root), {
+      matches: name => SOURCE_FILE.test(name),
+    }),
   )
 }
 
@@ -40,8 +42,12 @@ describe('source hygiene', () => {
     const offenders: Offender[] = []
     for (const file of collectSourceFiles()) {
       const offset = readFileSync(file).indexOf(0x00)
-      if (offset !== -1)
-        offenders.push({ path: posixRelative(frontendRoot, file), offset })
+      if (offset !== -1) {
+        offenders.push({
+          path: posixRelative(frontendRoot, file),
+          offset,
+        })
+      }
     }
 
     const detail = offenders.map(o => `${o.path} (byte ${o.offset})`).join('\n  ')

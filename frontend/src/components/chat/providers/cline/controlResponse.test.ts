@@ -3,12 +3,29 @@ import { describe, expect, it } from 'vitest'
 import { CLINE_DECLINE_REASON, CLINE_PERMISSION_MODE } from '~/generated/contracts/cline-protocol'
 import { clineControlResponseSummary } from './controlResponse'
 
-const approval = (toolName: string) => ({ version: 'v1', event: 'approval.requested', sessionId: 's1', payload: { approvalId: 'approval_1', toolName } })
+function approval(toolName: string) {
+  return {
+    version: 'v1',
+    event: 'approval.requested',
+    sessionId: 's1',
+    payload: { approvalId: 'approval_1', toolName },
+  }
+}
 
-const question = { version: 'v1', event: 'capability.requested', sessionId: 's1', payload: { requestId: 'capreq_1', capabilityName: 'tool_executor.askQuestion' } }
+const question = {
+  version: 'v1',
+  event: 'capability.requested',
+  sessionId: 's1',
+  payload: { requestId: 'capreq_1', capabilityName: 'tool_executor.askQuestion' },
+}
 
 function summary(request: Record<string, unknown>, response: unknown) {
-  return clineControlResponseSummary({ requestId: 'r1', claimToken: '', request, response } as PersistedControlResponse)
+  return clineControlResponseSummary({
+    requestId: 'r1',
+    claimToken: '',
+    request,
+    response,
+  } as PersistedControlResponse)
 }
 
 describe('clineControlResponseSummary', () => {
@@ -31,9 +48,17 @@ describe('clineControlResponseSummary', () => {
   })
 
   it('words a question answered with no text', () => {
-    expect(summary(question, { requestId: 'capreq_1', ok: true, payload: { result: '  ' } })).toEqual({ kind: 'label', text: 'No answer' })
+    expect(summary(question, {
+      requestId: 'capreq_1',
+      ok: true,
+      payload: { result: '  ' },
+    })).toEqual({ kind: 'label', text: 'No answer' })
     expect(summary(question, { requestId: 'capreq_1', ok: true })).toEqual({ kind: 'label', text: 'No answer' })
-    expect(summary(question, { requestId: 'capreq_1', ok: true, payload: { result: 3 } })).toEqual({ kind: 'label', text: 'No answer' })
+    expect(summary(question, {
+      requestId: 'capreq_1',
+      ok: true,
+      payload: { result: 3 },
+    })).toEqual({ kind: 'label', text: 'No answer' })
   })
 
   it('words a declined question whose error is blank as a plain decline', () => {
@@ -46,7 +71,12 @@ describe('clineControlResponseSummary', () => {
   })
 
   it('reads a reply that is not a record as no answer', () => {
-    for (const response of ['Allow', 3, null, ['ok']])
+    for (const response of [
+      'Allow',
+      3,
+      null,
+      ['ok'],
+    ])
       expect(summary(approval('editor'), response), JSON.stringify(response)).toBeNull()
   })
 })

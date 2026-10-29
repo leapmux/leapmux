@@ -69,7 +69,9 @@ export function parseImageBlock(block: ContentBlock): ImageBlockSource | null {
   if (type === 'resource') {
     // A resource URI belongs to the MCP server and does not identify a file on
     // the worker, so this branch never fills filePath.
-    const resource = isObject(block.resource) ? block.resource : block
+    const resource = isObject(block.resource)
+      ? block.resource
+      : block
     const mimeType = pickString(resource, 'mimeType')
     if (!mimeType.toLowerCase().startsWith('image/'))
       return null
@@ -101,12 +103,16 @@ export function parseImageBlock(block: ContentBlock): ImageBlockSource | null {
   // `mimeType?: string` on ImageBlockSource requires the key to be absent, not
   // present-with-undefined, when the provider did not state one.
   const withMime = (source: { url?: string, data?: string }, mime: string | undefined): ImageBlockSource =>
-    withPath(mime === undefined ? source : { ...source, mimeType: mime })
+    withPath(mime === undefined
+      ? source
+      : { ...source, mimeType: mime })
 
   // Codex `dynamicToolCall` content item: a URL, usually already a data URL.
   if (type === 'inputImage') {
     const imageUrl = pickString(block, 'imageUrl', undefined)
-    return withPath(imageUrl ? { url: imageUrl } : {})
+    return withPath(imageUrl
+      ? { url: imageUrl }
+      : {})
   }
 
   const mimeType = pickString(block, 'mimeType', undefined)
@@ -115,8 +121,11 @@ export function parseImageBlock(block: ContentBlock): ImageBlockSource | null {
   // Accept complete data URLs in data. Otherwise, the renderer would prepend a second data-URL prefix.
   // A colon cannot occur in base64, so URL detection cannot misread a valid base64 payload.
   const data = pickString(block, 'data', undefined)
-  if (data)
-    return withMime(isRenderableUrl(data) ? { url: data } : { data }, mimeType)
+  if (data) {
+    return withMime(isRenderableUrl(data)
+      ? { url: data }
+      : { data }, mimeType)
+  }
 
   // MCP `url` variant: a server may state a fetchable URL instead of inlining.
   const url = pickString(block, 'url', undefined)
@@ -129,7 +138,9 @@ export function parseImageBlock(block: ContentBlock): ImageBlockSource | null {
     return withMime({ url: dataUrl }, mimeType ?? pickString(block, 'mediaType', undefined))
 
   // Anthropic nested shape.
-  const source = isObject(block.source) ? block.source : null
+  const source = isObject(block.source)
+    ? block.source
+    : null
   if (source) {
     if (source.type === 'base64') {
       const b64 = pickString(source, 'data', undefined)
@@ -149,8 +160,11 @@ export function parseImageBlock(block: ContentBlock): ImageBlockSource | null {
 
   // Already-normalized MCP shape (`urlOrData` holds either a URL or bare base64).
   const urlOrData = pickString(block, 'urlOrData', undefined)
-  if (urlOrData)
-    return withMime(isRenderableUrl(urlOrData) ? { url: urlOrData } : { data: urlOrData }, mimeType)
+  if (urlOrData) {
+    return withMime(isRenderableUrl(urlOrData)
+      ? { url: urlOrData }
+      : { data: urlOrData }, mimeType)
+  }
 
   return withMime({}, mimeType)
 }
@@ -197,7 +211,9 @@ function isRenderableUrl(value: string): boolean {
  * The content parser and provider extractors share this rule.
  */
 export function withFallbackFilePath<T extends ImageBlockSource>(source: T, filePath: string | undefined): T {
-  return filePath && !source.filePath ? { ...source, filePath } : source
+  return filePath && !source.filePath
+    ? { ...source, filePath }
+    : source
 }
 
 /**
@@ -207,7 +223,9 @@ export function withFallbackFilePath<T extends ImageBlockSource>(source: T, file
  */
 function imageBlockFilePath(block: Record<string, unknown>): string | undefined {
   const uri = pickString(block, 'uri')
-  return uri ? fileUriToPath(uri) : undefined
+  return uri
+    ? fileUriToPath(uri)
+    : undefined
 }
 
 /** Why an image draws as a placeholder rather than inline. */
@@ -232,7 +250,10 @@ export function parseDataImageUrl(url: string | undefined): { mimeType: string, 
   const mimeType = (params.shift() ?? '').toLowerCase()
   if (!params.some(param => param.toLowerCase() === 'base64'))
     return null
-  return { mimeType, base64: url.slice(comma + 1) }
+  return {
+    mimeType,
+    base64: url.slice(comma + 1),
+  }
 }
 
 /**
@@ -299,8 +320,11 @@ export function imageBlockToMarkdown(source: ImageBlockSource): string | null {
   if (info.reason === 'external-url' && source.url)
     return `[image](${source.url})`
   // Preserve a text placeholder for an image that exceeds the inline size limit.
-  if (info.reason === 'too-large')
-    return source.mimeType ? `[image: ${source.mimeType} — too large to embed]` : '[image: too large to embed]'
+  if (info.reason === 'too-large') {
+    return source.mimeType
+      ? `[image: ${source.mimeType} — too large to embed]`
+      : '[image: too large to embed]'
+  }
   // Include unsupported formats only when the provider supplies a MIME type.
   if (info.reason === 'unsupported-mime' && source.mimeType)
     return `[image: ${source.mimeType} — unsupported format]`
@@ -312,7 +336,9 @@ export function imageBlockToMarkdown(source: ImageBlockSource): string | null {
  * Include the MIME type when the provider supplies one.
  */
 export function imageSkipPlaceholder(reason: ImageSkipReason | undefined, mimeType?: string): string {
-  const suffix = mimeType ? `: ${mimeType}` : ''
+  const suffix = mimeType
+    ? `: ${mimeType}`
+    : ''
   switch (reason) {
     case 'too-large':
       return `[image${suffix} — too large to render inline]`

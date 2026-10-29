@@ -18,7 +18,9 @@ import { MarkdownText } from './messageRenderers'
 
 /** Fallback label for a mark whose content has no previewable text. */
 function markLabel(type: number): string {
-  return type === MarkType.CONTROL_RESPONSE ? 'Your response' : 'Your message'
+  return type === MarkType.CONTROL_RESPONSE
+    ? 'Your response'
+    : 'Your message'
 }
 
 /** "N messages" wording shared by a cluster dot's aria-label and its card header. */
@@ -28,7 +30,9 @@ function clusterCountLabel(count: number): string {
 
 /** Accessible label / card fallback for a dot: a count for a cluster, else the mark type. */
 export function dotLabel(cluster: DotCluster): string {
-  return cluster.count > 1 ? clusterCountLabel(cluster.count) : markLabel(cluster.type)
+  return cluster.count > 1
+    ? clusterCountLabel(cluster.count)
+    : markLabel(cluster.type)
 }
 
 /**

@@ -17,15 +17,21 @@ const KINDS: ToolVocabularyCheck = {
 // Each name comes from the fixture table's own keys, so the lookup misses for the type alone.
 function callOf(name: string) {
   const fixture = REASONIX_TOOL_RESULTS.fixtures[name]
-  return fixture === undefined ? null : providerToolCall(AgentProvider.REASONIX, fixture.payload, fixture.options)
+  return fixture === undefined
+    ? null
+    : providerToolCall(AgentProvider.REASONIX, fixture.payload, fixture.options)
 }
 const failureCallOf = (fixture: ToolFailureFixture) => providerToolCall(AgentProvider.REASONIX, fixture.payload, fixture.options)
 
 /** The `tool_call` request that each fixture pairs with, read alone as a call still in flight. */
 function requestCallOf(name: string) {
   const fixture = REASONIX_TOOL_RESULTS.fixtures[name]
-  const frame = fixture === undefined ? null : openingFrameOf(fixture)
-  return frame === null ? null : providerToolCall(AgentProvider.REASONIX, frame)
+  const frame = fixture === undefined
+    ? null
+    : openingFrameOf(fixture)
+  return frame === null
+    ? null
+    : providerToolCall(AgentProvider.REASONIX, frame)
 }
 
 describe('reasonix tool results', () => {

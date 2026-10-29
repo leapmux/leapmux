@@ -6,7 +6,13 @@ beforeEach(() => vi.useFakeTimers())
 afterEach(() => vi.useRealTimers())
 
 describe('validateProcessShutdownDelay', () => {
-  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])('rejects an invalid delay: %s', (delay) => {
+  it.each([
+    0,
+    -1,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    2_147_483_648,
+  ])('rejects an invalid delay: %s', (delay) => {
     expect(() => validateProcessShutdownDelay(delay)).toThrow(RangeError)
   })
 
@@ -16,7 +22,13 @@ describe('validateProcessShutdownDelay', () => {
 })
 
 describe('process shutdown', () => {
-  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])('rejects an invalid shutdown delay without signaling the process: %s', async (delay) => {
+  it.each([
+    0,
+    -1,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    2_147_483_648,
+  ])('rejects an invalid shutdown delay without signaling the process: %s', async (delay) => {
     const { emitter, proc } = createProcessStub()
     await expect(stopProcess(proc, delay)).rejects.toBeInstanceOf(RangeError)
     expect(emitter.kill).not.toHaveBeenCalled()
@@ -24,7 +36,10 @@ describe('process shutdown', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it.each([{ pid: undefined }, { signalCode: 'SIGTERM' as const }])('skips a process without a live handle: %j', async (options) => {
+  it.each([
+    { pid: undefined },
+    { signalCode: 'SIGTERM' as const },
+  ])('skips a process without a live handle: %j', async (options) => {
     const { emitter, proc } = createProcessStub(options)
     await stopProcess(proc)
     expect(emitter.kill).not.toHaveBeenCalled()

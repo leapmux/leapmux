@@ -31,12 +31,23 @@ export function diracScriptReceipt(frames: readonly DiracScriptFrame[], script: 
   for (const { original, supplemental } of frames) {
     if (!isObject(original) || typeof original.toolCallId !== 'string' || !original.toolCallId)
       continue
-    const provider = isObject(supplemental) ? supplemental[MESSAGE_SUPPLEMENT_FIELD.Provider] : undefined
-    const request = isObject(provider) ? { ...original, ...provider } : original
+    const provider = isObject(supplemental)
+      ? supplemental[MESSAGE_SUPPLEMENT_FIELD.Provider]
+      : undefined
+    const request = isObject(provider)
+      ? {
+          ...original,
+          ...provider,
+        }
+      : original
     if (request.toolCallId !== original.toolCallId)
       throw new Error('The native Dirac script supplement belongs to another card.')
     const input = request.rawInput
-    const name = typeof request.name === 'string' ? request.name : isObject(input) ? input.tool : undefined
+    const name = typeof request.name === 'string'
+      ? request.name
+      : isObject(input)
+        ? input.tool
+        : undefined
     if (isObject(input) && name === 'execute_command' && (input.tool === undefined || input.tool === name) && input.language === 'node'
       && input.displayName === 'Node script' && diracNativeScriptCommand(input.command, script)) {
       starts.set(original.toolCallId, input)
@@ -65,5 +76,10 @@ export function diracScriptReceipt(frames: readonly DiracScriptFrame[], script: 
   const failed = result.status === 'failed'
   if (failed !== (output.exitCode !== 0))
     throw new Error('The native Dirac script status disagrees with its exit code.')
-  return { callId, output: output.output, exitCode: output.exitCode, failed }
+  return {
+    callId,
+    output: output.output,
+    exitCode: output.exitCode,
+    failed,
+  }
 }

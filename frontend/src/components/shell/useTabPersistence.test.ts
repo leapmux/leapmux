@@ -77,8 +77,18 @@ async function withPersistence(
 describe('useTabPersistence', () => {
   it('persists the workspace active tab key', async () => {
     await withPersistence(({ selection, view, rootTileId }) => {
-      emitAddTab({ type: TabType.AGENT, id: 'first', tileId: rootTileId, position: 'a' })
-      emitAddTab({ type: TabType.AGENT, id: 'second', tileId: rootTileId, position: 'b' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'first',
+        tileId: rootTileId,
+        position: 'a',
+      })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'second',
+        tileId: rootTileId,
+        position: 'b',
+      })
       selection.setActiveById(TabType.AGENT, 'second')
       expect(view.forWorkspace(WS)).toHaveLength(2)
     })
@@ -87,7 +97,12 @@ describe('useTabPersistence', () => {
 
   it('persists per-tile active tabs', async () => {
     await withPersistence(({ selection, rootTileId }) => {
-      emitAddTab({ type: TabType.AGENT, id: 'a', tileId: rootTileId, position: 'a' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a',
+        tileId: rootTileId,
+        position: 'a',
+      })
       selection.setActiveById(TabType.AGENT, 'a')
     })
     const raw = sessionStorageGet<string>(tileActiveTabsKey(WS))
@@ -113,7 +128,12 @@ describe('useTabPersistence', () => {
    */
   it('writes nothing when the user has not focused a tile', async () => {
     await withPersistence(({ selection, rootTileId }) => {
-      emitAddTab({ type: TabType.AGENT, id: 'a', tileId: rootTileId, position: 'a' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a',
+        tileId: rootTileId,
+        position: 'a',
+      })
       selection.setActiveById(TabType.AGENT, 'a')
       // Deliberately no setFocusedTile: `focusedTileId()` would still answer
       // with the first leaf, which is exactly what must not be persisted.
@@ -126,7 +146,12 @@ describe('useTabPersistence', () => {
   // stomp the very keys it is about to read back.
   it('does not write before the bootstrap delivers the workspace', async () => {
     await withPersistence(({ selection, layoutStore, rootTileId }) => {
-      emitAddTab({ type: TabType.AGENT, id: 'a', tileId: rootTileId, position: 'a' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a',
+        tileId: rootTileId,
+        position: 'a',
+      })
       selection.setActiveById(TabType.AGENT, 'a')
       layoutStore.setFocusedTile(rootTileId)
     }, { loading: true })
@@ -169,7 +194,12 @@ describe('useTabPersistence', () => {
   // chosen would pass against a writer that never reclaims anything.
   it('clears the workspace active-tab key when the last tab is closed', async () => {
     await withPersistence(({ selection, view, rootTileId }) => {
-      emitAddTab({ type: TabType.AGENT, id: 'only', tileId: rootTileId, position: 'a' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'only',
+        tileId: rootTileId,
+        position: 'a',
+      })
       selection.setActiveById(TabType.AGENT, 'only')
       emitRemoveTab(TabType.AGENT, 'only')
       expect(view.forWorkspace(WS), 'the workspace really is empty now').toHaveLength(0)
@@ -183,7 +213,12 @@ describe('useTabPersistence', () => {
   // dead TILES, so a tile that outlives its tabs keeps pointing at one of them.
   it('clears the per-tile keys when the last tab is closed', async () => {
     await withPersistence(({ selection, rootTileId }) => {
-      emitAddTab({ type: TabType.AGENT, id: 'only', tileId: rootTileId, position: 'a' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'only',
+        tileId: rootTileId,
+        position: 'a',
+      })
       selection.setActiveById(TabType.AGENT, 'only')
       emitRemoveTab(TabType.AGENT, 'only')
       expect(selection.state.activeByTile[rootTileId], 'the tile pointer outlived its tab')
@@ -199,9 +234,24 @@ describe('useTabPersistence', () => {
   // `mruHead` with every stamp back at zero, i.e. to the FIRST tab.
   it('persists the promoted survivor when the active tab is closed', async () => {
     await withPersistence(({ selection, rootTileId }) => {
-      emitAddTab({ type: TabType.AGENT, id: 'first', tileId: rootTileId, position: 'a' })
-      emitAddTab({ type: TabType.AGENT, id: 'second', tileId: rootTileId, position: 'b' })
-      emitAddTab({ type: TabType.AGENT, id: 'third', tileId: rootTileId, position: 'c' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'first',
+        tileId: rootTileId,
+        position: 'a',
+      })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'second',
+        tileId: rootTileId,
+        position: 'b',
+      })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'third',
+        tileId: rootTileId,
+        position: 'c',
+      })
       selection.setActiveById(TabType.AGENT, 'second')
       selection.setActiveById(TabType.AGENT, 'third')
       emitRemoveTab(TabType.AGENT, 'third')
@@ -220,8 +270,18 @@ describe('useTabPersistence', () => {
   it('does not persist a pointer to a tab that moved to another workspace', async () => {
     await withPersistence(({ selection, view, rootTileId, harness }) => {
       const elsewhere = seedWorkspace(harness, 'other-ws', 'other-tile')
-      emitAddTab({ type: TabType.AGENT, id: 'stays', tileId: rootTileId, position: 'a' })
-      emitAddTab({ type: TabType.AGENT, id: 'moves', tileId: rootTileId, position: 'b' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'stays',
+        tileId: rootTileId,
+        position: 'a',
+      })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'moves',
+        tileId: rootTileId,
+        position: 'b',
+      })
       selection.setActiveById(TabType.AGENT, 'stays')
       selection.setActiveById(TabType.AGENT, 'moves')
       emitMoveTabToWorkspace(TabType.AGENT, 'moves', elsewhere, 'a')
@@ -244,8 +304,18 @@ describe('useTabPersistence', () => {
     // 'second' was touched last (higher stamp).
     sessionStorageSet(KEY_TAB_MRU, { first: 1, second: 2 })
     await withPersistence(({ selection, view, rootTileId }) => {
-      emitAddTab({ type: TabType.AGENT, id: 'first', tileId: rootTileId, position: 'a' })
-      emitAddTab({ type: TabType.AGENT, id: 'second', tileId: rootTileId, position: 'b' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'first',
+        tileId: rootTileId,
+        position: 'a',
+      })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'second',
+        tileId: rootTileId,
+        position: 'b',
+      })
       expect(view.forWorkspace(WS), 'the tabs really are projected').toHaveLength(2)
       expect(selection.state.activeByWorkspace[WS], 'nothing chosen yet').toBeUndefined()
       // The healed head is the MRU tab, NOT position-order `first`.
@@ -261,7 +331,12 @@ describe('useTabPersistence', () => {
   it('persists the healed per-tile pointer when nothing has been chosen', async () => {
     sessionStorageSet(KEY_TAB_MRU, { first: 1 })
     await withPersistence(({ selection, rootTileId }) => {
-      emitAddTab({ type: TabType.AGENT, id: 'first', tileId: rootTileId, position: 'a' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'first',
+        tileId: rootTileId,
+        position: 'a',
+      })
       expect(selection.state.activeByTile[rootTileId], 'nothing chosen yet').toBeUndefined()
     })
     const raw = sessionStorageGet<string>(tileActiveTabsKey(WS))
@@ -285,7 +360,12 @@ describe('useTabPersistence', () => {
   // them into a tree that has no such tile.
   it('persists only the tiles belonging to this workspace', async () => {
     await withPersistence(({ selection, rootTileId }) => {
-      emitAddTab({ type: TabType.AGENT, id: 'a', tileId: rootTileId, position: 'a' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a',
+        tileId: rootTileId,
+        position: 'a',
+      })
       selection.setActiveById(TabType.AGENT, 'a')
       // A tile id from some other workspace's tree.
       selection.restore('other-ws', null, { 'tile-elsewhere': `${TabType.AGENT}:elsewhere` })
@@ -303,8 +383,18 @@ describe('useTabPersistence', () => {
       const win = floatingWindowStore.addWindow()
       expect(win, 'the test bridge must mint a floating window').toBeTruthy()
       windowTileId = win!.tileId
-      emitAddTab({ type: TabType.AGENT, id: 'main', tileId: rootTileId, position: 'a' })
-      emitAddTab({ type: TabType.AGENT, id: 'floating', tileId: windowTileId, position: 'b' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'main',
+        tileId: rootTileId,
+        position: 'a',
+      })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'floating',
+        tileId: windowTileId,
+        position: 'b',
+      })
       selection.setActiveById(TabType.AGENT, 'main')
       selection.setActiveById(TabType.AGENT, 'floating')
     })

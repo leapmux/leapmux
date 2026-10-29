@@ -24,9 +24,13 @@ export function encodeNativeXmlText(text: string): string {
 export function nativeXmlField(body: string, tag: string): string | undefined {
   if (!/^[a-z][a-z0-9-]*$/.test(tag))
     throw new Error('The native XML field requires a valid tag.')
-  const fields = [...body.matchAll(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, 'g'))]
+  const fields = [
+    ...body.matchAll(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, 'g')),
+  ]
   if (fields.length > 1)
     throw new Error(`The native XML repeats ${tag}.`)
   const value = fields[0]?.[1]
-  return value === undefined ? undefined : decodeNativeXmlText(value)
+  return value === undefined
+    ? undefined
+    : decodeNativeXmlText(value)
 }

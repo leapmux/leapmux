@@ -160,12 +160,19 @@ export function zcodeToolCall(row: ZCodeRow, parsed?: ParsedMessageContent): Too
   // about that, so the row's own flag is the only notice a truncated read, fetch,
   // agent, to-do, task or message row can get -- each of them used to end mid-content
   // with no word for why.
-  const marked = facts.truncated && !ZCODE_ROW_STATES_NO_TRUNCATION.has(spec.kind) ? { ...spec, truncated: true } : spec
+  const marked = facts.truncated && !ZCODE_ROW_STATES_NO_TRUNCATION.has(spec.kind)
+    ? { ...spec, truncated: true }
+    : spec
   // The tool's OWN name, which the icon tooltip states. A row that states none
   // falls back to the kind's word, because a name invented here is not one the
   // agent reported.
   const label = marked.label ?? (row.toolName || undefined)
-  return createToolCall(envelope, { ...marked, ...(label !== undefined ? { label } : {}) })
+  return createToolCall(envelope, {
+    ...marked,
+    ...(label !== undefined
+      ? { label }
+      : {}),
+  })
 }
 
 /**
@@ -182,9 +189,14 @@ export function zcodeToolFacts(row: ZCodeRow, update: ZCodeToolUpdate, parsed: P
   const displayHint = pickString(rawDisplay, 'kind') || undefined
   // A PROGRESS frame states its partial output as two tails on the payload, which
   // the shared result shape reads as the content.
-  const payloadOf = isObject(row.parsed) ? pickObject(row.parsed, 'payload') : undefined
+  const payloadOf = isObject(row.parsed)
+    ? pickObject(row.parsed, 'payload')
+    : undefined
   const progressText = update.kind === ZCODE_TOOL_KIND.Progress
-    ? [pickString(payloadOf, 'stdoutTail'), pickString(payloadOf, 'stderrTail')].filter(Boolean).join('\n')
+    ? [
+        pickString(payloadOf, 'stdoutTail'),
+        pickString(payloadOf, 'stderrTail'),
+      ].filter(Boolean).join('\n')
     : ''
   const images = zcodeToolResultImages(row)
   const input = zcodeToolInput(row)
@@ -210,22 +222,34 @@ export function zcodeToolFacts(row: ZCodeRow, update: ZCodeToolUpdate, parsed: P
     fileDiff: extractZCodeFileDiff(row),
     // The RAW arguments answer here too. `zcodeResolvedInput` adds a file path and
     // takes nothing away, so the `patch` it would hand over is this same text.
-    patchChanges: row.toolName === ZCODE_TOOL.ApplyPatch ? applyPatchFileChanges(pickString(input, 'patch')) : null,
-    text: update.isError ? zcodeErrorText(update) || 'Tool call failed' : (update.result?.content ?? progressText),
+    patchChanges: row.toolName === ZCODE_TOOL.ApplyPatch
+      ? applyPatchFileChanges(pickString(input, 'patch'))
+      : null,
+    text: update.isError
+      ? zcodeErrorText(update) || 'Tool call failed'
+      : (update.result?.content ?? progressText),
     finished,
     resultFrameLanded,
     resultAvailable: resultFrameLanded || pairedResultFrameLanded || (finished && update.result !== null),
     failed: update.isError,
     truncated: rawDisplay?.truncated === true || update.result?.truncated === true,
     images,
-    nodeImages: displayHint === ZCODE_DISPLAY.NodeImages ? images : [],
+    nodeImages: displayHint === ZCODE_DISPLAY.NodeImages
+      ? images
+      : [],
   }
   // No swap moves a call INTO a file kind, so running the recovery on the first kind
   // recovers the same path the final kind would. The file-change swap needs this
   // order: a write whose path arrives only in the result display states its file
   // after the recovery, never before it.
-  const resolved = { ...classified, input: zcodeResolvedInput(classified.kind, row, input) }
-  return { ...resolved, kind: zcodeReclassify(resolved) }
+  const resolved = {
+    ...classified,
+    input: zcodeResolvedInput(classified.kind, row, input),
+  }
+  return {
+    ...resolved,
+    kind: zcodeReclassify(resolved),
+  }
 }
 
 /**
@@ -297,7 +321,9 @@ function zcodeResolvedInput(kind: ToolKind, row: ZCodeRow, input: Record<string,
   if (!ZCODE_FILE_KINDS.has(kind) || pickFirstString(input, TOOL_FILE_PATH_KEYS))
     return input
   const filePath = zcodeFilePath(row)
-  return filePath ? { ...input, filePath } : input
+  return filePath
+    ? { ...input, filePath }
+    : input
 }
 
 /**
@@ -324,12 +350,26 @@ function zcodeResolvedInput(kind: ToolKind, row: ZCodeRow, input: Record<string,
 export const ZCODE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ZCodeToolFacts> = {
   // The subagent TYPE, which ZCode spells `subagent_type`. The shared entry declares no
   // such field, and it reads `instructions` beside `prompt`, which ZCode never sends.
-  agent: (args): ToolRequestByKind['agent'] => ({ description: pickString(args, 'description'), agentType: pickString(args, 'subagent_type'), prompt: pickString(args, 'prompt') }),
+  agent: (args): ToolRequestByKind['agent'] => ({
+    description: pickString(args, 'description'),
+    agentType: pickString(args, 'subagent_type'),
+    prompt: pickString(args, 'prompt'),
+  }),
   // The change that LANDED, which the result display carries as a structured patch.
   // The shared entry states an empty list, because no other provider's arguments
   // describe a diff.
-  edit: (args, facts): ToolRequestByKind['edit'] => ({ changes: zcodeFileChanges('edit', args, facts), ...(args.replace_all === true ? { replaceAll: true } : {}) }),
-  write: (args, facts): ToolRequestByKind['write'] => ({ changes: zcodeFileChanges('write', args, facts), ...(args.replace_all === true ? { replaceAll: true } : {}) }),
+  edit: (args, facts): ToolRequestByKind['edit'] => ({
+    changes: zcodeFileChanges('edit', args, facts),
+    ...(args.replace_all === true
+      ? { replaceAll: true }
+      : {}),
+  }),
+  write: (args, facts): ToolRequestByKind['write'] => ({
+    changes: zcodeFileChanges('write', args, facts),
+    ...(args.replace_all === true
+      ? { replaceAll: true }
+      : {}),
+  }),
   // The LANGUAGE, which the tool name states: the three JavaScript tools run code in
   // ZCode's own sandbox. The shared entry sees the arguments alone.
   execute: (args, facts): ToolRequestByKind['execute'] => {
@@ -338,8 +378,12 @@ export const ZCODE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ZCodeToolFacts> 
       command: facts.toolName === ZCODE_TOOL.EvalWorkflowSnippet
         ? pickString(args, 'code') || pickString(args, 'path')
         : pickString(args, 'command'),
-      ...(ZCODE_SANDBOX_TOOLS.has(facts.toolName) ? { language: 'javascript' } : {}),
-      ...(description ? { description } : {}),
+      ...(ZCODE_SANDBOX_TOOLS.has(facts.toolName)
+        ? { language: 'javascript' }
+        : {}),
+      ...(description
+        ? { description }
+        : {}),
     }
   },
   // The SERVER and the TOOL, which the result display's own source states and the wire
@@ -350,12 +394,18 @@ export const ZCODE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ZCodeToolFacts> 
       : parseMcpToolName(facts.toolName)
     // The display's own `input` string states the arguments: pretty-print it the
     // shared way, which keeps a big integer the app-server sent exactly.
-    const displayInput = facts.display?.kind === 'mcp' ? pickString(facts.rawDisplay, 'input') : ''
+    const displayInput = facts.display?.kind === 'mcp'
+      ? pickString(facts.rawDisplay, 'input')
+      : ''
     return {
       server: identity?.server ?? '',
       tool: identity?.tool ?? facts.toolName,
       args,
-      ...(displayInput ? { argsText: prettifyArgsJson(displayInput) } : {}),
+      ...(displayInput
+        ? {
+            argsText: prettifyArgsJson(displayInput),
+          }
+        : {}),
     }
   },
   // The words the RESULT carries, which a message states when its arguments do not,
@@ -363,13 +413,17 @@ export const ZCODE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ZCodeToolFacts> 
   message: (args, facts): ToolRequestByKind['message'] => {
     const to = pickString(args, 'to') || pickString(args, 'recipient')
     return {
-      ...(to ? { to } : {}),
+      ...(to
+        ? { to }
+        : {}),
       text: pickString(args, 'message') || facts.text,
     }
   },
   // The parsed QUESTIONS. The shared entry states an empty list, because the shape of
   // a question is each provider's own.
-  question: (args): ToolRequestByKind['question'] => ({ questions: zcodeQuestionsFromToolInput(args) }),
+  question: (args): ToolRequestByKind['question'] => ({
+    questions: zcodeQuestionsFromToolInput(args),
+  }),
   // The ACTION, which the display hint states: one hint reads a task's output and the
   // other stops it. The shared entry answers `other` for every call.
   task: (args, facts): ToolRequestByKind['task'] => {
@@ -384,7 +438,9 @@ export const ZCODE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ZCodeToolFacts> 
         : facts.displayHint === ZCODE_DISPLAY.TaskOutput
           ? 'output'
           : listsWorkflows ? 'list' : 'other',
-      ...(taskId ? { taskId } : {}),
+      ...(taskId
+        ? { taskId }
+        : {}),
     }
   },
   // The parsed ITEMS. The shared entry states an empty list for the same reason the
@@ -436,57 +492,119 @@ export const ZCODE_TOOL_READERS: ToolCallSpecReaderTable<ZCodeToolFacts> = {
     const request = zcodeRequestFor('mcp', facts)
     if (!facts.resultAvailable)
       return { kind: 'mcp', request }
-    const source = facts.display?.kind === 'mcp' ? facts.display.source : null
+    const source = facts.display?.kind === 'mcp'
+      ? facts.display.source
+      : null
     if (source) {
       return {
         kind: 'mcp',
         request,
         result: {
           content: source.content,
-          ...(source.structuredJson !== undefined ? { structuredJson: source.structuredJson } : {}),
-          ...(source.error !== undefined ? { error: source.error } : {}),
-          ...(source.durationMs !== undefined ? { durationMs: source.durationMs } : {}),
+          ...(source.structuredJson !== undefined
+            ? { structuredJson: source.structuredJson }
+            : {}),
+          ...(source.error !== undefined
+            ? { error: source.error }
+            : {}),
+          ...(source.durationMs !== undefined
+            ? { durationMs: source.durationMs }
+            : {}),
         },
-        ...(source.failed && !facts.failed ? { statusOverride: 'failed' as const } : {}),
+        ...(source.failed && !facts.failed
+          ? { statusOverride: 'failed' as const }
+          : {}),
       }
     }
-    if (facts.failed)
-      return { kind: 'mcp', request, result: failedResult(facts.text) }
-    if (facts.display?.kind === 'images')
-      return { kind: 'mcp', request, result: { content: zcodeTextAndNodeImages(facts) } }
-    return { kind: 'mcp', request, result: unparsedResult(facts.text) }
+    if (facts.failed) {
+      return {
+        kind: 'mcp',
+        request,
+        result: failedResult(facts.text),
+      }
+    }
+    if (facts.display?.kind === 'images') {
+      return {
+        kind: 'mcp',
+        request,
+        result: {
+          content: zcodeTextAndNodeImages(facts),
+        },
+      }
+    }
+    return {
+      kind: 'mcp',
+      request,
+      result: unparsedResult(facts.text),
+    }
   },
   task: (facts): ToolCallSpecVariant<'task'> => {
     const request = zcodeRequestFor('task', facts)
     const title = zcodeCallTitle(facts)
     if (!facts.resultAvailable)
       return { kind: 'task', request, title }
-    const display = facts.display?.kind === 'status' ? facts.display : null
+    const display = facts.display?.kind === 'status'
+      ? facts.display
+      : null
     if (display) {
       return {
         kind: 'task',
         request,
         title,
-        result: { title: display.title, outcome: zcodeTaskStatus(display.status), ...(display.command !== undefined ? { command: display.command } : {}), output: display.output },
+        result: {
+          title: display.title,
+          outcome: zcodeTaskStatus(display.status),
+          ...(display.command !== undefined
+            ? { command: display.command }
+            : {}),
+          output: display.output,
+        },
       }
     }
-    if (facts.failed)
-      return { kind: 'task', request, title, result: failedResult(facts.text) }
-    return { kind: 'task', request, title, result: { outcome: 'completed', output: facts.text } }
+    if (facts.failed) {
+      return {
+        kind: 'task',
+        request,
+        title,
+        result: failedResult(facts.text),
+      }
+    }
+    return {
+      kind: 'task',
+      request,
+      title,
+      result: { outcome: 'completed', output: facts.text },
+    }
   },
   message: (facts): ToolCallSpecVariant<'message'> => {
     const request = zcodeRequestFor('message', facts)
     const title = zcodeCallTitle(facts)
-    const display = facts.display?.kind === 'status' ? facts.display : null
+    const display = facts.display?.kind === 'status'
+      ? facts.display
+      : null
     // A message display states its own words -- 'Message sent', 'Failed' -- which
     // the row keeps as its answer, and its failure folds into the outcome word.
     const statesMessage = facts.displayHint === ZCODE_DISPLAY.LocalAgentMessage || facts.displayHint === ZCODE_DISPLAY.RespondToCoordinator
-    const words = display && statesMessage ? [display.title, display.output].filter(Boolean).join('\n') : ''
+    const words = display && statesMessage
+      ? [display.title, display.output].filter(Boolean).join('\n')
+      : ''
     if (!facts.resultAvailable)
       return { kind: 'message', request, title }
-    if (facts.failed || display?.status === 'failed')
-      return { kind: 'message', request, title, statusOverride: 'failed', result: failedResult(words || facts.text) }
-    return { kind: 'message', request, title, result: proseResult(words || facts.text) }
+    if (facts.failed || display?.status === 'failed') {
+      return {
+        kind: 'message',
+        request,
+        title,
+        statusOverride: 'failed',
+        result: failedResult(words || facts.text),
+      }
+    }
+    return {
+      kind: 'message',
+      request,
+      title,
+      result: proseResult(words || facts.text),
+    }
   },
   agent: (facts): ToolCallSpecVariant<'agent'> => {
     const request = zcodeRequestFor('agent', facts)
@@ -494,9 +612,26 @@ export const ZCODE_TOOL_READERS: ToolCallSpecReaderTable<ZCodeToolFacts> = {
     if (!facts.resultAvailable)
       return { kind: 'agent', request, title }
     const source = zcodeAgentResult(facts.row)
-    if (source)
-      return { kind: 'agent', request, title, result: { agents: [source] } }
-    return { kind: 'agent', request, title, ...(facts.text ? { result: unparsedResult(facts.text) } : {}) }
+    if (source) {
+      return {
+        kind: 'agent',
+        request,
+        title,
+        result: {
+          agents: [source],
+        },
+      }
+    }
+    return {
+      kind: 'agent',
+      request,
+      title,
+      ...(facts.text
+        ? {
+            result: unparsedResult(facts.text),
+          }
+        : {}),
+    }
   },
   todo: (facts): ToolCallSpecVariant<'todo'> => {
     // NEVER empty by accident here: `zcodeReclassify` answers `other` for an input
@@ -506,22 +641,50 @@ export const ZCODE_TOOL_READERS: ToolCallSpecReaderTable<ZCodeToolFacts> = {
     // carries, and a copy here is a second place for the wording to drift.
     if (!facts.resultAvailable)
       return { kind: 'todo', request }
-    if (facts.failed)
-      return { kind: 'todo', request, result: failedResult(facts.text) }
-    return { kind: 'todo', request, result: { items: request.items } }
+    if (facts.failed) {
+      return {
+        kind: 'todo',
+        request,
+        result: failedResult(facts.text),
+      }
+    }
+    return {
+      kind: 'todo',
+      request,
+      result: { items: request.items },
+    }
   },
   question: (facts): ToolCallSpecVariant<'question'> => {
     const request = zcodeRequestFor('question', facts)
     const title = zcodeCallTitle(facts)
     if (!facts.resultAvailable)
       return { kind: 'question', request, title }
-    if (facts.failed)
-      return { kind: 'question', request, title, result: failedResult(facts.text) }
+    if (facts.failed) {
+      return {
+        kind: 'question',
+        request,
+        title,
+        result: failedResult(facts.text),
+      }
+    }
     // The QUESTION's own header, not the row title -- which for a non-execute kind
     // falls back to the tool name, so a finished question read
     // "**AskUserQuestion** - <the chosen option>".
     const header = request.questions[0]?.header || request.questions[0]?.question || 'Question'
-    return { kind: 'question', request, title, ...(facts.text ? { result: { answers: [{ header, answer: facts.text }] } } : {}) }
+    return {
+      kind: 'question',
+      request,
+      title,
+      ...(facts.text
+        ? {
+            result: {
+              answers: [
+                { header, answer: facts.text },
+              ],
+            },
+          }
+        : {}),
+    }
   },
   execute: (facts): ToolCallSpecVariant<'execute'> => {
     // NO title. The command states itself in the shared header, and every other kind's
@@ -539,7 +702,12 @@ export const ZCODE_TOOL_READERS: ToolCallSpecReaderTable<ZCodeToolFacts> = {
     if (command) {
       // The command body draws its own notice, so the row keeps no flag -- a second
       // one would print `Output truncated` twice under one result.
-      const source = facts.truncated ? { ...zcodeBashToCommandResult(command), truncated: true } : zcodeBashToCommandResult(command)
+      const source = facts.truncated
+        ? {
+            ...zcodeBashToCommandResult(command),
+            truncated: true,
+          }
+        : zcodeBashToCommandResult(command)
       // A timed-out Bash says the call was STOPPED, not failed, and the command body
       // reads that label off the one outcome word. `statusOverride` is the declared
       // way for a payload to state an outcome its envelope cannot see -- the envelope
@@ -547,62 +715,156 @@ export const ZCODE_TOOL_READERS: ToolCallSpecReaderTable<ZCodeToolFacts> = {
       return {
         kind: 'execute',
         request,
-        result: { commands: [source], unresolvedTerminals: [] },
+        result: {
+          commands: [source],
+          unresolvedTerminals: [],
+        },
         images: facts.nodeImages,
-        ...(command.timedOut ? { statusOverride: 'cancelled' } : {}),
+        ...(command.timedOut
+          ? { statusOverride: 'cancelled' }
+          : {}),
       }
     }
-    if (facts.failed)
-      return { kind: 'execute', request, result: failedResult(facts.text), images: facts.nodeImages }
-    return { kind: 'execute', request, result: unparsedResult(facts.text), images: facts.nodeImages }
+    if (facts.failed) {
+      return {
+        kind: 'execute',
+        request,
+        result: failedResult(facts.text),
+        images: facts.nodeImages,
+      }
+    }
+    return {
+      kind: 'execute',
+      request,
+      result: unparsedResult(facts.text),
+      images: facts.nodeImages,
+    }
   },
   read: (facts): ToolCallSpecVariant<'read'> => {
     const request = zcodeRequestFor('read', facts)
     if (!facts.resultAvailable)
       return { kind: 'read', request }
-    if (facts.failed)
-      return { kind: 'read', request, result: failedResult(facts.text) }
+    if (facts.failed) {
+      return {
+        kind: 'read',
+        request,
+        result: failedResult(facts.text),
+      }
+    }
     const source = extractZCodeRead(facts.row)
-    if (source)
-      return { kind: 'read', request, result: source, images: facts.images }
-    return { kind: 'read', request, result: unparsedResult(facts.text), images: facts.images }
+    if (source) {
+      return {
+        kind: 'read',
+        request,
+        result: source,
+        images: facts.images,
+      }
+    }
+    return {
+      kind: 'read',
+      request,
+      result: unparsedResult(facts.text),
+      images: facts.images,
+    }
   },
   // Two entries for one reading, because each states its OWN kind. A shared generic
   // entry would put the kind and the request beyond the checker again, which is the
   // defect this table exists to remove.
-  glob: (facts): ToolCallSpecVariant<'glob'> => ({ kind: 'glob', request: zcodeRequestFor('glob', facts), ...zcodeSearchResult(facts) }),
-  grep: (facts): ToolCallSpecVariant<'grep'> => ({ kind: 'grep', request: zcodeRequestFor('grep', facts), ...zcodeSearchResult(facts) }),
-  edit: (facts): ToolCallSpecVariant<'edit'> => ({ kind: 'edit', request: zcodeRequestFor('edit', facts), ...zcodeFileChangeResult(facts) }),
-  write: (facts): ToolCallSpecVariant<'write'> => ({ kind: 'write', request: zcodeRequestFor('write', facts), ...zcodeFileChangeResult(facts) }),
+  glob: (facts): ToolCallSpecVariant<'glob'> => ({
+    kind: 'glob',
+    request: zcodeRequestFor('glob', facts),
+    ...zcodeSearchResult(facts),
+  }),
+  grep: (facts): ToolCallSpecVariant<'grep'> => ({
+    kind: 'grep',
+    request: zcodeRequestFor('grep', facts),
+    ...zcodeSearchResult(facts),
+  }),
+  edit: (facts): ToolCallSpecVariant<'edit'> => ({
+    kind: 'edit',
+    request: zcodeRequestFor('edit', facts),
+    ...zcodeFileChangeResult(facts),
+  }),
+  write: (facts): ToolCallSpecVariant<'write'> => ({
+    kind: 'write',
+    request: zcodeRequestFor('write', facts),
+    ...zcodeFileChangeResult(facts),
+  }),
   fetch: (facts): ToolCallSpecVariant<'fetch'> => {
     const request = zcodeRequestFor('fetch', facts)
     if (!facts.resultAvailable)
       return { kind: 'fetch', request }
-    if (facts.failed)
-      return { kind: 'fetch', request, result: failedResult(facts.text) }
-    return { kind: 'fetch', request, result: { result: facts.text, ...(facts.update.durationMs != null ? { durationMs: facts.update.durationMs } : {}) } }
+    if (facts.failed) {
+      return {
+        kind: 'fetch',
+        request,
+        result: failedResult(facts.text),
+      }
+    }
+    return {
+      kind: 'fetch',
+      request,
+      result: {
+        result: facts.text,
+        ...(facts.update.durationMs != null
+          ? { durationMs: facts.update.durationMs }
+          : {}),
+      },
+    }
   },
   web_search: (facts): ToolCallSpecVariant<'web_search'> => {
     const request = zcodeRequestFor('web_search', facts)
     if (!facts.resultAvailable)
       return { kind: 'web_search', request }
-    if (facts.failed)
-      return { kind: 'web_search', request, result: failedResult(facts.text) }
-    return { kind: 'web_search', request, result: { links: [], summary: facts.text } }
+    if (facts.failed) {
+      return {
+        kind: 'web_search',
+        request,
+        result: failedResult(facts.text),
+      }
+    }
+    return {
+      kind: 'web_search',
+      request,
+      result: { links: [], summary: facts.text },
+    }
   },
   // The three kinds whose declared result IS prose. Each states its own kind for the
   // reason the search pair states theirs.
-  switch_mode: (facts): ToolCallSpecVariant<'switch_mode'> => ({ kind: 'switch_mode', request: zcodeRequestFor('switch_mode', facts), title: zcodeCallTitle(facts), ...zcodeProseResult(facts) }),
-  skill: (facts): ToolCallSpecVariant<'skill'> => ({ kind: 'skill', request: zcodeRequestFor('skill', facts), title: zcodeCallTitle(facts), ...zcodeProseResult(facts) }),
-  trigger: (facts): ToolCallSpecVariant<'trigger'> => ({ kind: 'trigger', request: zcodeRequestFor('trigger', facts), title: zcodeCallTitle(facts), ...zcodeProseResult(facts) }),
+  switch_mode: (facts): ToolCallSpecVariant<'switch_mode'> => ({
+    kind: 'switch_mode',
+    request: zcodeRequestFor('switch_mode', facts),
+    title: zcodeCallTitle(facts),
+    ...zcodeProseResult(facts),
+  }),
+  skill: (facts): ToolCallSpecVariant<'skill'> => ({
+    kind: 'skill',
+    request: zcodeRequestFor('skill', facts),
+    title: zcodeCallTitle(facts),
+    ...zcodeProseResult(facts),
+  }),
+  trigger: (facts): ToolCallSpecVariant<'trigger'> => ({
+    kind: 'trigger',
+    request: zcodeRequestFor('trigger', facts),
+    title: zcodeCallTitle(facts),
+    ...zcodeProseResult(facts),
+  }),
   // The generic card, for a tool no vocabulary lists.
-  other: (facts): ToolCallSpecVariant<'other'> => ({ kind: 'other', request: zcodeRequestFor('other', facts), ...zcodeGenericToolResult(facts) }),
+  other: (facts): ToolCallSpecVariant<'other'> => ({
+    kind: 'other',
+    request: zcodeRequestFor('other', facts),
+    ...zcodeGenericToolResult(facts),
+  }),
   // UNREACHABLE, and the one entry here that a ZCode row could otherwise reach:
   // `zcodeReclassify` folds `''` to `other`, because a row with no tool name has no
   // label to separate it from an uncategorized one. The entry exists because the table
   // is total, and it states the same card at its OWN kind -- so a build that stops
   // folding draws the card rather than an empty row.
-  unspecified: (facts): ToolCallSpecVariant<'unspecified'> => ({ kind: 'unspecified', request: zcodeRequestFor('unspecified', facts), ...zcodeGenericToolResult(facts) }),
+  unspecified: (facts): ToolCallSpecVariant<'unspecified'> => ({
+    kind: 'unspecified',
+    request: zcodeRequestFor('unspecified', facts),
+    ...zcodeGenericToolResult(facts),
+  }),
   // The eleven kinds no ZCode tool takes: `ZCODE_TOOL_KINDS` maps no name to any of
   // them, and no display hint reaches one. With `''` above, twelve of the thirty kinds
   // are unreachable and the other eighteen are what ZCode produces.
@@ -637,7 +899,12 @@ function zcodeArgumentsOnly<P extends ToolKind>(kind: P): (facts: ZCodeToolFacts
   // declares it. A contextual signature is not an annotated position, so without this
   // the literal escapes the excess-property check -- the same hole every table entry
   // closes, one level down.
-  return (facts): ToolCallSpecVariant<P> => ({ kind, request: zcodeRequestFor(kind, facts), title: zcodeCallTitle(facts), ...zcodeUnreadResult(facts) })
+  return (facts): ToolCallSpecVariant<P> => ({
+    kind,
+    request: zcodeRequestFor(kind, facts),
+    title: zcodeCallTitle(facts),
+    ...zcodeUnreadResult(facts),
+  })
 }
 
 /** The row's own header words: the description the arguments state, then the tool's name. */
@@ -649,29 +916,52 @@ function zcodeCallTitle(facts: ZCodeToolFacts): string {
 function zcodeUnreadResult(facts: ZCodeToolFacts): { result?: ToolFailureResult | UnparsedToolResult } {
   if (!facts.resultAvailable)
     return {}
-  if (facts.failed)
-    return { result: failedResult(facts.text) }
-  return facts.text ? { result: unparsedResult(facts.text) } : {}
+  if (facts.failed) {
+    return {
+      result: failedResult(facts.text),
+    }
+  }
+  return facts.text
+    ? {
+        result: unparsedResult(facts.text),
+      }
+    : {}
 }
 
 /** The result side every prose kind shares: none, the failure, or the words. */
 function zcodeProseResult(facts: ZCodeToolFacts): { result?: ProseResult | ToolFailureResult } {
   if (!facts.resultAvailable)
     return {}
-  return facts.failed ? { result: failedResult(facts.text) } : { result: proseResult(facts.text) }
+  return facts.failed
+    ? {
+        result: failedResult(facts.text),
+      }
+    : {
+        result: proseResult(facts.text),
+      }
 }
 
 /** The result side `glob` and `grep` share. */
 function zcodeSearchResult(facts: ZCodeToolFacts): { result?: SearchResult | ToolFailureResult | UnparsedToolResult } {
   if (!facts.resultAvailable)
     return {}
-  if (facts.failed)
-    return { result: failedResult(facts.text) }
+  if (facts.failed) {
+    return {
+      result: failedResult(facts.text),
+    }
+  }
   const source = extractZCodeSearch(facts.row)
-  if (!source)
-    return { result: unparsedResult(facts.text) }
+  if (!source) {
+    return {
+      result: unparsedResult(facts.text),
+    }
+  }
   // The search body draws its own notice, so the row keeps no flag.
-  return { result: facts.truncated ? { ...source, truncated: true } : source }
+  return {
+    result: facts.truncated
+      ? { ...source, truncated: true }
+      : source,
+  }
 }
 
 /**
@@ -694,21 +984,37 @@ function zcodeSearchResult(facts: ZCodeToolFacts): { result?: SearchResult | Too
 function zcodeFileChangeResult(facts: ZCodeToolFacts): { result?: FileChangeResult | ToolFailureResult | UnparsedToolResult } {
   if (!facts.resultAvailable)
     return {}
-  if (facts.failed)
-    return { result: failedResult(facts.text) }
-  if (facts.patchChanges)
-    return { result: { changes: facts.patchChanges } }
-  if (facts.fileDiff)
-    return { result: { changes: [facts.fileDiff] } }
-  return { result: unparsedResult(facts.text) }
+  if (facts.failed) {
+    return {
+      result: failedResult(facts.text),
+    }
+  }
+  if (facts.patchChanges) {
+    return {
+      result: { changes: facts.patchChanges },
+    }
+  }
+  if (facts.fileDiff) {
+    return {
+      result: {
+        changes: [facts.fileDiff],
+      },
+    }
+  }
+  return {
+    result: unparsedResult(facts.text),
+  }
 }
 
 /** The result side the generic card states: the words and the sandbox pictures together. */
 function zcodeGenericToolResult(facts: ZCodeToolFacts): { result?: GenericToolResult | ToolFailureResult } {
   if (!facts.resultAvailable)
     return {}
-  if (facts.failed)
-    return { result: failedResult(facts.text) }
+  if (facts.failed) {
+    return {
+      result: failedResult(facts.text),
+    }
+  }
   // The pictures ride INSIDE the content, which is what `ToolCallBase.images` states
   // for the generic trio: `GenericToolBody` never reads the call's own image list, so a
   // node-image row attached its pictures where nothing draws them.
@@ -722,7 +1028,11 @@ function zcodeGenericToolResult(facts: ZCodeToolFacts): { result?: GenericToolRe
 /** Keep native Node pictures with their text in generic and MCP result bodies. */
 function zcodeTextAndNodeImages(facts: ZCodeToolFacts): Array<{ type: 'text', text: string } | { type: 'image', source: ImageResultSource }> {
   return [
-    ...(facts.text ? [{ type: 'text' as const, text: facts.text }] : []),
+    ...(facts.text
+      ? [
+          { type: 'text' as const, text: facts.text },
+        ]
+      : []),
     ...facts.nodeImages.map(source => ({ type: 'image' as const, source })),
   ]
 }
@@ -745,14 +1055,20 @@ function zcodeFileChanges(kind: 'edit' | 'write', args: Record<string, unknown>,
   if (facts.patchChanges)
     return facts.patchChanges
   const requested = facts.fileDiff ?? zcodeRequestedFileChange(kind, args)
-  return requested ? [requested] : []
+  return requested
+    ? [requested]
+    : []
 }
 
 /** ZCode's own status words, in the shared outcome vocabulary. */
 function zcodeTaskStatus(status: 'success' | 'failed' | 'waiting' | 'stopped'): TaskStatus {
   // `waiting` is ZCode's word for a task that has not answered; the shared vocabulary
   // spells that `running`, which is what the subagent card already called it.
-  return status === 'success' ? 'completed' : status === 'waiting' ? 'running' : status
+  return status === 'success'
+    ? 'completed'
+    : status === 'waiting'
+      ? 'running'
+      : status
 }
 
 /** The action one cron call performs: the arguments' own word, then the tool's name. */
@@ -768,11 +1084,29 @@ function zcodeRequestedFileChange(kind: 'edit' | 'write', input: Record<string, 
   const filePath = pickFirstString(input, TOOL_FILE_PATH_KEYS)
   if (!filePath)
     return null
-  if (kind === 'write')
-    return { filePath, operation: 'add', oldStr: '', newStr: pickString(input, 'content'), structuredPatch: null }
+  if (kind === 'write') {
+    return {
+      filePath,
+      operation: 'add',
+      oldStr: '',
+      newStr: pickString(input, 'content'),
+      structuredPatch: null,
+    }
+  }
   const oldStr = pickString(input, 'old_string', undefined)
   const newStr = pickString(input, 'new_string', undefined)
-  if (oldStr === undefined && newStr === undefined)
-    return { filePath, oldStr: '', newStr: '', structuredPatch: null }
-  return { filePath, oldStr: oldStr ?? '', newStr: newStr ?? '', structuredPatch: null }
+  if (oldStr === undefined && newStr === undefined) {
+    return {
+      filePath,
+      oldStr: '',
+      newStr: '',
+      structuredPatch: null,
+    }
+  }
+  return {
+    filePath,
+    oldStr: oldStr ?? '',
+    newStr: newStr ?? '',
+    structuredPatch: null,
+  }
 }

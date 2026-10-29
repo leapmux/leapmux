@@ -337,7 +337,9 @@ export class ChannelSession {
       if (mlkemSS !== null)
         mlkemSS.fill(0)
       this.deps.onSendFailure(ch, err)
-      throw err instanceof Error ? err : new ChannelError('client', formatErrorMessage(err))
+      throw err instanceof Error
+        ? err
+        : new ChannelError('client', formatErrorMessage(err))
     }
 
     const { accepted, retryAfterMs } = await outcome
@@ -346,7 +348,9 @@ export class ChannelSession {
       ch.rekeyNotBefore = 0
     }
     else {
-      const backoff = retryAfterMs > 0 ? retryAfterMs : DEFAULT_REJECT_BACKOFF_MS
+      const backoff = retryAfterMs > 0
+        ? retryAfterMs
+        : DEFAULT_REJECT_BACKOFF_MS
       ch.rekeyNotBefore = monotonicNow() + backoff
       if (this.pastHardCeiling(ch)) {
         await this.deps.closeChannel(ch.channelId)
@@ -421,7 +425,9 @@ export class ChannelSession {
       }
       const { dhSecret, pqSecret } = deriveRekeySecrets(rm.ePriv, responderPub, rm.mlkemSS)
       const dhForRecv = dhSecret.slice()
-      const pqForRecv = pqSecret !== null ? pqSecret.slice() : null
+      const pqForRecv = pqSecret !== null
+        ? pqSecret.slice()
+        : null
       // retainPrev=false for send (it keeps no grace window — the replaced key
       // is zeroed structurally, no follow-up clearPrev to remember); true for
       // receive (retains prev so in-flight old-key frames still decrypt).

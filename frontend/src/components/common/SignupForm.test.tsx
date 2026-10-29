@@ -84,24 +84,34 @@ describe('signup form display-name mirror', () => {
   it('mirrors the username into the display name as the user types', () => {
     renderForm()
 
-    fireEvent.input(usernameInput(), { target: { value: 'alice' } })
+    fireEvent.input(usernameInput(), {
+      target: { value: 'alice' },
+    })
     expect(displayNameInput().value).toBe('alice')
 
     // Follows edits to the username, raw casing included: the slug is
     // lowercased at submit, but the display name keeps what the user typed.
-    fireEvent.input(usernameInput(), { target: { value: 'Alice-dev' } })
+    fireEvent.input(usernameInput(), {
+      target: { value: 'Alice-dev' },
+    })
     expect(displayNameInput().value).toBe('Alice-dev')
   })
 
   it('stops mirroring once the user edits the display name directly', () => {
     renderForm()
 
-    fireEvent.input(usernameInput(), { target: { value: 'alice' } })
-    fireEvent.input(displayNameInput(), { target: { value: 'Alice Smith' } })
+    fireEvent.input(usernameInput(), {
+      target: { value: 'alice' },
+    })
+    fireEvent.input(displayNameInput(), {
+      target: { value: 'Alice Smith' },
+    })
     expect(displayNameInput().value).toBe('Alice Smith')
 
     // Later username typing must not overwrite the user's own name.
-    fireEvent.input(usernameInput(), { target: { value: 'bob' } })
+    fireEvent.input(usernameInput(), {
+      target: { value: 'bob' },
+    })
     expect(usernameInput().value).toBe('bob')
     expect(displayNameInput().value).toBe('Alice Smith')
   })
@@ -109,11 +119,19 @@ describe('signup form display-name mirror', () => {
   it('does not re-arm the mirror after the user clears the display name', () => {
     renderForm()
 
-    fireEvent.input(usernameInput(), { target: { value: 'alice' } })
-    fireEvent.input(displayNameInput(), { target: { value: 'x' } })
-    fireEvent.input(displayNameInput(), { target: { value: '' } })
+    fireEvent.input(usernameInput(), {
+      target: { value: 'alice' },
+    })
+    fireEvent.input(displayNameInput(), {
+      target: { value: 'x' },
+    })
+    fireEvent.input(displayNameInput(), {
+      target: { value: '' },
+    })
 
-    fireEvent.input(usernameInput(), { target: { value: 'bobby' } })
+    fireEvent.input(usernameInput(), {
+      target: { value: 'bobby' },
+    })
     expect(displayNameInput().value).toBe('')
   })
 })
@@ -130,7 +148,9 @@ describe('signup form passkey path', () => {
     // is configured.
     setSystemInfoMock({ emailEnabled: true })
     renderForm()
-    fireEvent.input(usernameInput(), { target: { value: 'alice' } })
+    fireEvent.input(usernameInput(), {
+      target: { value: 'alice' },
+    })
     fireEvent.click(screen.getByRole('radio', { name: 'Passkey' }))
     expect(screen.getByRole('button', { name: 'Sign up with passkey' })).toBeDisabled()
     expect(mockBeginPasskeySignUp).not.toHaveBeenCalled()
@@ -188,10 +208,18 @@ describe('signup form passkey path', () => {
   it('re-enables Create account after a failed attempt and refreshes captcha info on PermissionDenied', async () => {
     mockSignUp.mockRejectedValue(new ConnectError('denied', Code.PermissionDenied))
     renderForm()
-    fireEvent.input(usernameInput(), { target: { value: 'alice' } })
-    fireEvent.input(screen.getByLabelText('Email'), { target: { value: 'alice@example.com' } })
-    fireEvent.input(screen.getByLabelText('New Password'), { target: { value: 'newpass123' } })
-    fireEvent.input(screen.getByLabelText('Confirm Password'), { target: { value: 'newpass123' } })
+    fireEvent.input(usernameInput(), {
+      target: { value: 'alice' },
+    })
+    fireEvent.input(screen.getByLabelText('Email'), {
+      target: { value: 'alice@example.com' },
+    })
+    fireEvent.input(screen.getByLabelText('New Password'), {
+      target: { value: 'newpass123' },
+    })
+    fireEvent.input(screen.getByLabelText('Confirm Password'), {
+      target: { value: 'newpass123' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
     await vi.waitFor(() => {
       expect(mockSignUp).toHaveBeenCalledOnce()
@@ -206,13 +234,21 @@ describe('signup username validation', () => {
     vi.clearAllMocks()
     resetSystemInfoMock()
     resetCaptchaMocks()
-    mockSignUp.mockResolvedValue({ user: { id: 'created-user' } })
+    mockSignUp.mockResolvedValue({
+      user: { id: 'created-user' },
+    })
   })
 
   function fillCredentials(username: string) {
-    fireEvent.input(usernameInput(), { target: { value: username } })
-    fireEvent.input(screen.getByLabelText('New Password'), { target: { value: 'newpass123' } })
-    fireEvent.input(screen.getByLabelText('Confirm Password'), { target: { value: 'newpass123' } })
+    fireEvent.input(usernameInput(), {
+      target: { value: username },
+    })
+    fireEvent.input(screen.getByLabelText('New Password'), {
+      target: { value: 'newpass123' },
+    })
+    fireEvent.input(screen.getByLabelText('Confirm Password'), {
+      target: { value: 'newpass123' },
+    })
   }
 
   it.each(['admin', 'Admin', ' ADMIN '])('rejects reserved usernames before sending a request: %s', async (username) => {

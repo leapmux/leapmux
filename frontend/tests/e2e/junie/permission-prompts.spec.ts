@@ -12,12 +12,19 @@ import { JUNIE_AGENT, nativeContext } from './scenarios'
 // the banner draws no scope pills and no allow-always test exists for Junie.
 junieTest.describe('Junie control requests', () => {
   junieTest('an allowed command runs, and its output reaches the chat', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT, { optionValues: { brave_mode: 'off' } })
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT, {
+      optionValues: { brave_mode: 'off' },
+    })
     const output = join(workingDir, 'junie-allow-out.txt')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
     // The context answers through Junie's own answer tool, as the model of a Junie turn does.
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     await exerciseNativePermissionDecision(context, {
       toolCall: bashToolCall(context.provider, 'junie-allow', `echo "junie-$((40 + 2))" | tee ${output}`),
       decision: 'allow',
@@ -34,11 +41,18 @@ junieTest.describe('Junie control requests', () => {
   })
 
   junieTest('a denied command does not run', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT, { optionValues: { brave_mode: 'off' } })
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT, {
+      optionValues: { brave_mode: 'off' },
+    })
     const output = join(workingDir, 'junie-deny-out.txt')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     await exerciseNativePermissionDecision(context, {
       toolCall: bashToolCall(context.provider, 'junie-deny', `echo "junie-should-not-run" | tee ${output}`),
       decision: 'deny',
@@ -52,11 +66,18 @@ junieTest.describe('Junie control requests', () => {
 
   // The ACP reply selects an option, and an option carries no text. The reason follows as the reader's next message.
   junieTest('sends the reader\'s typed refusal reason as the next message', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT, { optionValues: { brave_mode: 'off' } })
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT, {
+      optionValues: { brave_mode: 'off' },
+    })
     const output = join(workingDir, 'junie-reason-out.txt')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     await exerciseNativePermissionReason(context, {
       toolCall: bashToolCall(context.provider, 'junie-reason', `echo "junie-should-not-run" | tee ${output}`),
       route: 'next-message',

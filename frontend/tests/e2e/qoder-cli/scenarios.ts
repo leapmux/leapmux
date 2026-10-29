@@ -21,7 +21,10 @@ export async function nativeContext(fixtures: NativeContextFixtures): Promise<Ma
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */
 export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStartupLaunch {
-  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: 'qodercli', holdWhen: ['-p'] })
+  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, {
+    binaryName: 'qodercli',
+    holdWhen: ['-p'],
+  })
 }
 
 /** Open this provider's actual child task and hold its native final answer. Qoder CLI needs only the defaults. */

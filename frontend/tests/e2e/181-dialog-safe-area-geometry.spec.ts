@@ -96,7 +96,12 @@ async function readDialogGeometry(page: import('@playwright/test').Page) {
         width: d.width,
         height: d.height,
       },
-      close: { top: c.top, right: c.right, bottom: c.bottom, left: c.left },
+      close: {
+        top: c.top,
+        right: c.right,
+        bottom: c.bottom,
+        left: c.left,
+      },
       computed: {
         top: cs.top,
         right: cs.right,
@@ -136,7 +141,9 @@ function assertClearsSafeArea(
 test.describe('dialog safe-area geometry (portrait)', () => {
   // Width < sm so phone-band dialog rules apply (huge uses width:auto +
   // SAFE_MAX_HEIGHT, not the desktop SAFE_MAX_WIDTH_HUGE path).
-  test.use({ viewport: { width: 390, height: 844 } })
+  test.use({
+    viewport: { width: 390, height: 844 },
+  })
 
   test('panel and close button clear status bar and home indicator', async ({
     page,
@@ -181,7 +188,9 @@ test.describe('dialog safe-area geometry (portrait)', () => {
 test.describe('dialog safe-area geometry (landscape notch)', () => {
   // iPhone 14 Pro landscape CSS pixels; width ≥ sm so the desktop-band dialog
   // rules apply while horizontal safe-area insets are still non-zero.
-  test.use({ viewport: { width: 844, height: 390 } })
+  test.use({
+    viewport: { width: 844, height: 390 },
+  })
 
   test('panel and close button clear a right-side notch', async ({
     page,
@@ -231,7 +240,9 @@ test.describe('dialog safe-area geometry (landscape notch)', () => {
 test.describe('dialog design max-width (zero safe-area insets)', () => {
   // Wide desktop: without composition, SAFE_MAX_WIDTH alone is ~100dvw and
   // would let a standard modal grow past the 900px design ceiling.
-  test.use({ viewport: { width: 1400, height: 900 } })
+  test.use({
+    viewport: { width: 1400, height: 900 },
+  })
 
   test('standard dialog width stays at or below 900px', async ({
     page,

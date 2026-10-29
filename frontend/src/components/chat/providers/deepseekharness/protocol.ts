@@ -19,7 +19,9 @@ export function deepseekHarnessAssistantBlock(payload: unknown): Record<string, 
   if (typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0)
     return undefined
   const block = content[index]
-  return isObject(block) ? block : undefined
+  return isObject(block)
+    ? block
+    : undefined
 }
 
 /** Preserve the native text sequence. Image blocks take their own display path. */

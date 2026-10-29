@@ -21,7 +21,9 @@ const scratch = resolve(import.meta.dirname, '../../../..', '.tmp')
 mkdirSync(scratch, { recursive: true })
 const runDir = mkdtempSync(join(scratch, 'attachment-probe-'))
 // Vitest hoists this call. The factory reads runDir only when a fixture is written.
-vi.mock('./server', () => ({ getGlobalState: () => ({ tmpDir: runDir }) }))
+vi.mock('./server', () => ({
+  getGlobalState: () => ({ tmpDir: runDir }),
+}))
 const pdfPath = writeAttachmentFixture('pdf')
 const pdf = readFileSync(pdfPath)
 const encoded = pdf.toString('base64')
@@ -44,7 +46,10 @@ function chat(...messages: unknown[]): MockModelRequestRecord {
 }
 
 function chatFile(fileData: unknown): unknown {
-  return { type: 'file', file: { filename: 'doc.pdf', file_data: fileData } }
+  return {
+    type: 'file',
+    file: { filename: 'doc.pdf', file_data: fileData },
+  }
 }
 
 function pdfDataURI(data: string): string {
@@ -56,14 +61,21 @@ function anthropic(...messages: unknown[]): MockModelRequestRecord {
 }
 
 function anthropicDocument(data: unknown, mediaType = 'application/pdf'): unknown {
-  return { type: 'document', source: { type: 'base64', media_type: mediaType, data } }
+  return {
+    type: 'document',
+    source: { type: 'base64', media_type: mediaType, data },
+  }
 }
 
 function kiro(documents: unknown, history: unknown[] = []): MockModelRequestRecord {
-  return nativeRequest('aws-event-stream', { conversationState: {
-    currentMessage: { userInputMessage: { content: 'Inspect the attached file.', documents } },
-    history,
-  } })
+  return nativeRequest('aws-event-stream', {
+    conversationState: {
+      currentMessage: {
+        userInputMessage: { content: 'Inspect the attached file.', documents },
+      },
+      history,
+    },
+  })
 }
 
 function google(...contents: unknown[]): MockModelRequestRecord {
@@ -71,7 +83,15 @@ function google(...contents: unknown[]): MockModelRequestRecord {
 }
 
 function status(...requests: MockModelRequestRecord[]): MockModelScenarioStatus {
-  return { complete: true, nextStep: requests.length, stepCount: requests.length, ruleMatches: {}, pendingGates: [], unexpectedRequests: [], requests }
+  return {
+    complete: true,
+    nextStep: requests.length,
+    stepCount: requests.length,
+    ruleMatches: {},
+    pendingGates: [],
+    unexpectedRequests: [],
+    requests,
+  }
 }
 
 function responses(...input: unknown[]): MockModelRequestRecord {
@@ -83,11 +103,17 @@ function pngDataURI(data: string): string {
 }
 
 function chatImage(url: unknown): unknown {
-  return { type: 'image_url', image_url: { url } }
+  return {
+    type: 'image_url',
+    image_url: { url },
+  }
 }
 
 function anthropicImage(data: unknown, mediaType = 'image/png'): unknown {
-  return { type: 'image', source: { type: 'base64', media_type: mediaType, data } }
+  return {
+    type: 'image',
+    source: { type: 'base64', media_type: mediaType, data },
+  }
 }
 
 function responsesImage(url: unknown): unknown {
@@ -95,10 +121,14 @@ function responsesImage(url: unknown): unknown {
 }
 
 function kiroImages(images: unknown, history: unknown[] = []): MockModelRequestRecord {
-  return nativeRequest('aws-event-stream', { conversationState: {
-    currentMessage: { userInputMessage: { content: 'Inspect the attached file.', images } },
-    history,
-  } })
+  return nativeRequest('aws-event-stream', {
+    conversationState: {
+      currentMessage: {
+        userInputMessage: { content: 'Inspect the attached file.', images },
+      },
+      history,
+    },
+  })
 }
 
 /**
@@ -119,14 +149,24 @@ function imageProof(request: MockModelRequestRecord): Promise<void> {
 }
 
 /** The pixels that a browser decodes from the quadrant fixture, in reading order, with full alpha. */
-const SOURCE_QUADRANTS = [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255], [255, 255, 0, 255]]
+const SOURCE_QUADRANTS = [
+  [255, 0, 0, 255],
+  [0, 255, 0, 255],
+  [0, 0, 255, 255],
+  [255, 255, 0, 255],
+]
 
 /**
  * Bytes that start with a WebP signature. A unit test decodes no pixels, so the
  * signature is all that the format check reads. The browser suite in
  * ../209-attachment-model-proof.spec.ts decodes a real WebP.
  */
-const webp = Buffer.concat([Buffer.from('RIFF', 'latin1'), Buffer.from([0x1A, 0, 0, 0]), Buffer.from('WEBPVP8L', 'latin1'), Buffer.alloc(18, 0x2F)])
+const webp = Buffer.concat([
+  Buffer.from('RIFF', 'latin1'),
+  Buffer.from([0x1A, 0, 0, 0]),
+  Buffer.from('WEBPVP8L', 'latin1'),
+  Buffer.alloc(18, 0x2F),
+])
 const webpBase64 = webp.toString('base64')
 const webpURI = `data:image/webp;base64,${webpBase64}`
 
@@ -150,16 +190,30 @@ function sha256Hex(bytes: Buffer): string {
 
 /** Amp's thread content as the mock records it on Amp's actor route. */
 function amp(...messages: unknown[]): MockModelRequestRecord {
-  return { protocol: 'anthropic-messages', path: AMP_ACTOR_PATH_PREFIX, stepIndex: 0, body: { messages } }
+  return {
+    protocol: 'anthropic-messages',
+    path: AMP_ACTOR_PATH_PREFIX,
+    stepIndex: 0,
+    body: { messages },
+  }
 }
 
 /** An image block in Amp's own shape, which spells the media type `mediaType` and adds `sourcePath`. */
 function ampImage(data: unknown, mediaType = 'image/png'): unknown {
-  return { type: 'image', sourcePath: 'stream-json://stdin/line-1/image-1', source: { type: 'base64', mediaType, data } }
+  return {
+    type: 'image',
+    sourcePath: 'stream-json://stdin/line-1/image-1',
+    source: { type: 'base64', mediaType, data },
+  }
 }
 
 function cursor(attachments: unknown): MockModelRequestRecord {
-  return { protocol: 'openai-responses', path: CURSOR_RUN_PATH, stepIndex: 0, body: { prompt: 'Inspect the attached file.', attachments, conversationId: 'conversation-1' } }
+  return {
+    protocol: 'openai-responses',
+    path: CURSOR_RUN_PATH,
+    stepIndex: 0,
+    body: { prompt: 'Inspect the attached file.', attachments, conversationId: 'conversation-1' },
+  }
 }
 
 /** Another valid PDF with the same page marker: the fixture with a later version header. */
@@ -170,51 +224,203 @@ function sameMarkerPdf(): Buffer {
 describe('nativeUserStrings', () => {
   it('reads Google user bytes without model media, tool results, or instructions', () => {
     const body = {
-      systemInstruction: { parts: [{ text: 'SYSTEM_ONLY' }] },
-      tools: [{ functionDeclarations: [{ description: 'SCHEMA_ONLY' }] }],
+      systemInstruction: {
+        parts: [
+          { text: 'SYSTEM_ONLY' },
+        ],
+      },
+      tools: [
+        {
+          functionDeclarations: [
+            { description: 'SCHEMA_ONLY' },
+          ],
+        },
+      ],
       contents: [
-        { role: 'model', parts: [{ inlineData: { mimeType: 'image/png', data: 'MODEL_ONLY' } }] },
-        { role: 'user', parts: [{ text: 'ACTUAL_USER' }, { inlineData: { mimeType: 'audio/wav', data: 'ACTUAL_BYTES' } }] },
-        { role: 'user', parts: [{ functionResponse: { response: { data: 'RESULT_ONLY' } } }] },
+        {
+          role: 'model',
+          parts: [
+            {
+              inlineData: { mimeType: 'image/png', data: 'MODEL_ONLY' },
+            },
+          ],
+        },
+        {
+          role: 'user',
+          parts: [
+            { text: 'ACTUAL_USER' },
+            {
+              inlineData: { mimeType: 'audio/wav', data: 'ACTUAL_BYTES' },
+            },
+          ],
+        },
+        {
+          role: 'user',
+          parts: [
+            {
+              functionResponse: {
+                response: { data: 'RESULT_ONLY' },
+              },
+            },
+          ],
+        },
       ],
     }
     expect(nativeUserStrings(body)).toEqual(['ACTUAL_USER', 'audio/wav', 'ACTUAL_BYTES'])
   })
 
-  it.each([undefined, null, false, 0, '', {}, { contents: null }, { contents: [null, {}, { role: 'user', parts: null }] }])('handles absent or malformed native user contents: %j', (body) => {
+  it.each([
+    undefined,
+    null,
+    false,
+    0,
+    '',
+    {},
+    { contents: null },
+    {
+      contents: [
+        null,
+        {},
+        { role: 'user', parts: null },
+      ],
+    },
+  ])('handles absent or malformed native user contents: %j', (body) => {
     expect(nativeUserStrings(body)).toEqual([])
   })
 
   it('preserves the existing generic API user content reader', () => {
-    expect(nativeUserStrings({ messages: [{ role: 'system', content: 'SYSTEM_ONLY' }, { role: 'user', content: [{ type: 'text', text: 'ACTUAL_USER' }, { type: 'image_url', image_url: { url: 'ACTUAL_IMAGE' } }] }] }))
-      .toEqual(['text', 'ACTUAL_USER', 'image_url', 'ACTUAL_IMAGE'])
+    expect(nativeUserStrings({
+      messages: [
+        { role: 'system', content: 'SYSTEM_ONLY' },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'ACTUAL_USER' },
+            {
+              type: 'image_url',
+              image_url: { url: 'ACTUAL_IMAGE' },
+            },
+          ],
+        },
+      ],
+    }))
+      .toEqual([
+        'text',
+        'ACTUAL_USER',
+        'image_url',
+        'ACTUAL_IMAGE',
+      ])
   })
 })
 
 describe('current text attachment evidence', () => {
-  it.each(['chat', 'anthropic', 'responses', 'response string', 'Google', 'Cursor', 'Kiro'] as const)('accepts current native text through %s', async (format) => {
+  it.each([
+    'chat',
+    'anthropic',
+    'responses',
+    'response string',
+    'Google',
+    'Cursor',
+    'Kiro',
+  ] as const)('accepts current native text through %s', async (format) => {
     const path = writeAttachmentFixture('text', 'current-text-positive.txt')
     const source = readFileSync(path, 'utf8')
     const record = {
-      'chat': chat({ role: 'user', content: [{ type: 'text', text: source }] }),
-      'anthropic': anthropic({ role: 'user', content: [{ type: 'text', text: source }] }, { role: 'system', content: 'Later native instructions.' }),
-      'responses': nativeRequest('openai-responses', { input: [{ role: 'user', content: [{ type: 'input_text', text: source }] }] }),
+      'chat': chat({
+        role: 'user',
+        content: [
+          { type: 'text', text: source },
+        ],
+      }),
+      'anthropic': anthropic({
+        role: 'user',
+        content: [
+          { type: 'text', text: source },
+        ],
+      }, { role: 'system', content: 'Later native instructions.' }),
+      'responses': nativeRequest('openai-responses', {
+        input: [
+          {
+            role: 'user',
+            content: [
+              { type: 'input_text', text: source },
+            ],
+          },
+        ],
+      }),
       'response string': nativeRequest('openai-responses', { input: source }),
-      'Google': nativeRequest('google-generative-language', { contents: [{ role: 'user', parts: [{ text: source }] }] }),
-      'Cursor': cursor([{ kind: 'file', filename: 'current-text-positive.txt', data: source }]),
-      'Kiro': nativeRequest('aws-event-stream', { conversationState: { currentMessage: { userInputMessage: { content: source } } } }),
+      'Google': nativeRequest('google-generative-language', {
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: source },
+            ],
+          },
+        ],
+      }),
+      'Cursor': cursor([
+        { kind: 'file', filename: 'current-text-positive.txt', data: source },
+      ]),
+      'Kiro': nativeRequest('aws-event-stream', {
+        conversationState: {
+          currentMessage: {
+            userInputMessage: { content: source },
+          },
+        },
+      }),
     }[format]
     await expect(expectNativeAttachmentProof(noBrowser, status(record), 'text', path)).resolves.toBeUndefined()
   })
 
-  it.each(['earlier turn', 'tool result', 'Google tool result', 'content metadata'] as const)('rejects file text outside the current input: %s', async (location) => {
+  it.each([
+    'earlier turn',
+    'tool result',
+    'Google tool result',
+    'content metadata',
+  ] as const)('rejects file text outside the current input: %s', async (location) => {
     const path = writeAttachmentFixture('text', 'current-text-proof.txt')
     const source = readFileSync(path, 'utf8')
     const record = {
       'earlier turn': chat({ role: 'user', content: source }, { role: 'assistant', content: 'An earlier answer.' }, { role: 'user', content: 'A new prompt without the file.' }),
-      'tool result': anthropic({ role: 'assistant', content: [{ type: 'tool_use', id: 'read', name: 'Read', input: {} }] }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'read', content: source }] }),
-      'Google tool result': nativeRequest('google-generative-language', { contents: [{ role: 'user', parts: [{ functionResponse: { name: 'read', response: { result: 'done' } } }, { text: source }] }] }),
-      'content metadata': chat({ role: 'user', content: [{ type: 'text', text: 'No file text here.', metadata: source }] }),
+      'tool result': anthropic({
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'read',
+            name: 'Read',
+            input: {},
+          },
+        ],
+      }, {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'read', content: source },
+        ],
+      }),
+      'Google tool result': nativeRequest('google-generative-language', {
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                functionResponse: {
+                  name: 'read',
+                  response: { result: 'done' },
+                },
+              },
+              { text: source },
+            ],
+          },
+        ],
+      }),
+      'content metadata': chat({
+        role: 'user',
+        content: [
+          { type: 'text', text: 'No file text here.', metadata: source },
+        ],
+      }),
     }[location]
     await expect(expectNativeAttachmentProof(noBrowser, status(record), 'text', path)).rejects.toThrow(location === 'tool result' || location === 'Google tool result'
       ? 'the native request has no user content for the attachment'
@@ -239,55 +445,123 @@ describe('expectNativePdfPart', () => {
   describe('accepts the exact PDF in a typed PDF part of the current user turn', () => {
     it('accepts an Anthropic document block', () => {
       expect(() => expectNativePdfPart(anthropic(
-        { role: 'user', content: [{ type: 'text', text: 'Read the attached PDF.' }, anthropicDocument(encoded)] },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Read the attached PDF.' },
+            anthropicDocument(encoded),
+          ],
+        },
       ), pdf)).not.toThrow()
     })
 
     it('accepts a Chat Completions file part with a file name', () => {
       expect(() => expectNativePdfPart(chat(
         { role: 'system', content: 'You are a coding agent.' },
-        { role: 'user', content: [{ type: 'text', text: 'Read the attached PDF.' }, chatFile(pdfDataURI(encoded))] },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Read the attached PDF.' },
+            chatFile(pdfDataURI(encoded)),
+          ],
+        },
       ), pdf)).not.toThrow()
     })
 
     it('accepts a Chat Completions file part without a file name', () => {
       expect(() => expectNativePdfPart(chat(
-        { role: 'user', content: [{ type: 'text', text: 'Read this document.' }, { type: 'file', file: { file_data: pdfDataURI(encoded) } }] },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Read this document.' },
+            {
+              type: 'file',
+              file: {
+                file_data: pdfDataURI(encoded),
+              },
+            },
+          ],
+        },
       ), pdf)).not.toThrow()
     })
 
     it('accepts a Kiro document of the current user input message', () => {
-      expect(() => expectNativePdfPart(kiro([{ name: 'kiro-doc', format: 'pdf', source: { bytes: encoded } }]), pdf)).not.toThrow()
+      expect(() => expectNativePdfPart(kiro([
+        {
+          name: 'kiro-doc',
+          format: 'pdf',
+          source: { bytes: encoded },
+        },
+      ]), pdf)).not.toThrow()
     })
 
     it('accepts a Google inlineData part', () => {
       expect(() => expectNativePdfPart(google(
-        { role: 'user', parts: [{ text: 'Read the attached PDF.' }, { inlineData: { mimeType: 'application/pdf', data: encoded } }] },
+        {
+          role: 'user',
+          parts: [
+            { text: 'Read the attached PDF.' },
+            {
+              inlineData: { mimeType: 'application/pdf', data: encoded },
+            },
+          ],
+        },
       ), pdf)).not.toThrow()
     })
 
     it('accepts a part in a later user message of the same turn', () => {
       expect(() => expectNativePdfPart(chat(
         { role: 'user', content: '<system-reminder>context</system-reminder>' },
-        { role: 'user', content: [chatFile(pdfDataURI(encoded))] },
+        {
+          role: 'user',
+          content: [
+            chatFile(pdfDataURI(encoded)),
+          ],
+        },
       ), pdf)).not.toThrow()
     })
 
     it('accepts the part when an instruction row follows the user row, as Claude Code 2.1 sends its environment', () => {
       expect(() => expectNativePdfPart(anthropic(
-        { role: 'user', content: [{ type: 'text', text: 'Read the attached PDF.' }, anthropicDocument(encoded)] },
-        { role: 'system', content: [{ type: 'text', text: '# Environment' }] },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Read the attached PDF.' },
+            anthropicDocument(encoded),
+          ],
+        },
+        {
+          role: 'system',
+          content: [
+            { type: 'text', text: '# Environment' },
+          ],
+        },
       ), pdf)).not.toThrow()
       expect(() => expectNativePdfPart(chat(
-        { role: 'user', content: [chatFile(pdfDataURI(encoded))] },
+        {
+          role: 'user',
+          content: [
+            chatFile(pdfDataURI(encoded)),
+          ],
+        },
         { role: 'developer', content: 'Follow the project rules.' },
       ), pdf)).not.toThrow()
     })
 
     it('accepts the exact part beside another typed part that carries different bytes', () => {
       expect(() => expectNativePdfPart(kiro([
-        { name: 'header', format: 'pdf', source: { bytes: pdf.subarray(0, 8).toString('base64') } },
-        { name: 'kiro-doc', format: 'pdf', source: { bytes: encoded } },
+        {
+          name: 'header',
+          format: 'pdf',
+          source: {
+            bytes: pdf.subarray(0, 8).toString('base64'),
+          },
+        },
+        {
+          name: 'kiro-doc',
+          format: 'pdf',
+          source: { bytes: encoded },
+        },
       ]), pdf)).not.toThrow()
     })
   })
@@ -295,18 +569,61 @@ describe('expectNativePdfPart', () => {
   describe('rejects a conversion sample without the original PDF bytes', () => {
     it('rejects the page marker in user text', () => {
       expect(() => expectNativePdfPart(chat({ role: 'user', content: 'LEAPMUX_PDF_PAGE_49' }), pdf)).toThrow(NO_PDF_PART)
-      expect(() => expectNativePdfPart(anthropic({ role: 'user', content: [{ type: 'text', text: 'Page text: LEAPMUX_PDF_PAGE_49' }] }), pdf)).toThrow(NO_PDF_PART)
+      expect(() => expectNativePdfPart(anthropic({
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Page text: LEAPMUX_PDF_PAGE_49' },
+        ],
+      }), pdf)).toThrow(NO_PDF_PART)
     })
 
     it('rejects an unrelated image with the four quadrant colors', () => {
       const raster = `data:image/png;base64,${png.toString('base64')}`
-      expect(() => expectNativePdfPart(chat({ role: 'user', content: [{ type: 'image_url', image_url: { url: raster } }] }), pdf)).toThrow(NO_PDF_PART)
-      expect(() => expectNativePdfPart(anthropic({ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: png.toString('base64') } }] }), pdf)).toThrow(NO_PDF_PART)
-      expect(() => expectNativePdfPart(google({ role: 'user', parts: [{ inlineData: { mimeType: 'image/png', data: png.toString('base64') } }] }), pdf)).toThrow('declares mimeType=image/png, not PDF')
+      expect(() => expectNativePdfPart(chat({
+        role: 'user',
+        content: [
+          {
+            type: 'image_url',
+            image_url: { url: raster },
+          },
+        ],
+      }), pdf)).toThrow(NO_PDF_PART)
+      expect(() => expectNativePdfPart(anthropic({
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/png',
+              data: png.toString('base64'),
+            },
+          },
+        ],
+      }), pdf)).toThrow(NO_PDF_PART)
+      expect(() => expectNativePdfPart(google({
+        role: 'user',
+        parts: [
+          {
+            inlineData: {
+              mimeType: 'image/png',
+              data: png.toString('base64'),
+            },
+          },
+        ],
+      }), pdf)).toThrow('declares mimeType=image/png, not PDF')
     })
 
     it('rejects an Anthropic document whose source is extracted text', () => {
-      const request = anthropic({ role: 'user', content: [{ type: 'document', source: { type: 'text', media_type: 'text/plain', data: 'LEAPMUX_PDF_PAGE_49' } }] })
+      const request = anthropic({
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: { type: 'text', media_type: 'text/plain', data: 'LEAPMUX_PDF_PAGE_49' },
+          },
+        ],
+      })
       expect(() => expectNativePdfPart(request, pdf)).toThrow('messages[0].content[0] has a source of type text, not base64 bytes')
     })
   })
@@ -314,35 +631,131 @@ describe('expectNativePdfPart', () => {
   describe('rejects the complete PDF bytes outside a typed PDF part', () => {
     it('rejects the base64 as plain user text', () => {
       expect(() => expectNativePdfPart(chat({ role: 'user', content: encoded }), pdf)).toThrow(NO_PDF_PART)
-      expect(() => expectNativePdfPart(chat({ role: 'user', content: [{ type: 'text', text: encoded }] }), pdf)).toThrow(NO_PDF_PART)
-      expect(() => expectNativePdfPart(anthropic({ role: 'user', content: [{ type: 'text', text: encoded }] }), pdf)).toThrow(NO_PDF_PART)
+      expect(() => expectNativePdfPart(chat({
+        role: 'user',
+        content: [
+          { type: 'text', text: encoded },
+        ],
+      }), pdf)).toThrow(NO_PDF_PART)
+      expect(() => expectNativePdfPart(anthropic({
+        role: 'user',
+        content: [
+          { type: 'text', text: encoded },
+        ],
+      }), pdf)).toThrow(NO_PDF_PART)
     })
 
     it('rejects a complete PDF data URI inside a text part or an image part', () => {
-      expect(() => expectNativePdfPart(chat({ role: 'user', content: [{ type: 'text', text: pdfDataURI(encoded) }] }), pdf)).toThrow(NO_PDF_PART)
-      expect(() => expectNativePdfPart(chat({ role: 'user', content: [{ type: 'image_url', image_url: { url: pdfDataURI(encoded) } }] }), pdf)).toThrow(NO_PDF_PART)
+      expect(() => expectNativePdfPart(chat({
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: pdfDataURI(encoded),
+          },
+        ],
+      }), pdf)).toThrow(NO_PDF_PART)
+      expect(() => expectNativePdfPart(chat({
+        role: 'user',
+        content: [
+          {
+            type: 'image_url',
+            image_url: {
+              url: pdfDataURI(encoded),
+            },
+          },
+        ],
+      }), pdf)).toThrow(NO_PDF_PART)
     })
 
     it('rejects the base64 in the Kiro user text with no document', () => {
-      const request = nativeRequest('aws-event-stream', { conversationState: { currentMessage: { userInputMessage: { content: encoded } } } })
+      const request = nativeRequest('aws-event-stream', {
+        conversationState: {
+          currentMessage: {
+            userInputMessage: { content: encoded },
+          },
+        },
+      })
       expect(() => expectNativePdfPart(request, pdf)).toThrow(NO_PDF_PART)
     })
   })
 
   describe('rejects a typed part that declares another type', () => {
     it.each([
-      ['an Anthropic document', anthropic({ role: 'user', content: [anthropicDocument(encoded, 'application/octet-stream')] }), 'declares media_type=application/octet-stream, not PDF'],
-      ['a Chat Completions file part', chat({ role: 'user', content: [chatFile(`data:application/octet-stream;base64,${encoded}`)] }), 'declares file.file_data=data:application/octet-stream, not PDF'],
-      ['a Chat Completions file part with an image type', chat({ role: 'user', content: [chatFile(`data:image/png;base64,${encoded}`)] }), 'declares file.file_data=data:image/png, not PDF'],
-      ['a Kiro document', kiro([{ name: 'doc', format: 'docx', source: { bytes: encoded } }]), 'declares format=docx, not PDF'],
-      ['a Kiro document with no format', kiro([{ name: 'doc', source: { bytes: encoded } }]), 'declares format=undefined, not PDF'],
-      ['a Google inlineData part', google({ role: 'user', parts: [{ inlineData: { mimeType: 'application/octet-stream', data: encoded } }] }), 'declares mimeType=application/octet-stream, not PDF'],
+      [
+        'an Anthropic document',
+        anthropic({
+          role: 'user',
+          content: [
+            anthropicDocument(encoded, 'application/octet-stream'),
+          ],
+        }),
+        'declares media_type=application/octet-stream, not PDF',
+      ],
+      [
+        'a Chat Completions file part',
+        chat({
+          role: 'user',
+          content: [
+            chatFile(`data:application/octet-stream;base64,${encoded}`),
+          ],
+        }),
+        'declares file.file_data=data:application/octet-stream, not PDF',
+      ],
+      [
+        'a Chat Completions file part with an image type',
+        chat({
+          role: 'user',
+          content: [
+            chatFile(`data:image/png;base64,${encoded}`),
+          ],
+        }),
+        'declares file.file_data=data:image/png, not PDF',
+      ],
+      [
+        'a Kiro document',
+        kiro([
+          {
+            name: 'doc',
+            format: 'docx',
+            source: { bytes: encoded },
+          },
+        ]),
+        'declares format=docx, not PDF',
+      ],
+      [
+        'a Kiro document with no format',
+        kiro([
+          {
+            name: 'doc',
+            source: { bytes: encoded },
+          },
+        ]),
+        'declares format=undefined, not PDF',
+      ],
+      [
+        'a Google inlineData part',
+        google({
+          role: 'user',
+          parts: [
+            {
+              inlineData: { mimeType: 'application/octet-stream', data: encoded },
+            },
+          ],
+        }),
+        'declares mimeType=application/octet-stream, not PDF',
+      ],
     ])('rejects %s', (_name, request, message) => {
       expect(() => expectNativePdfPart(request, pdf)).toThrow(message)
     })
 
     it('rejects a MIME type that differs only in case', () => {
-      expect(() => expectNativePdfPart(chat({ role: 'user', content: [chatFile(`data:Application/PDF;base64,${encoded}`)] }), pdf)).toThrow('not PDF')
+      expect(() => expectNativePdfPart(chat({
+        role: 'user',
+        content: [
+          chatFile(`data:Application/PDF;base64,${encoded}`),
+        ],
+      }), pdf)).toThrow('not PDF')
     })
   })
 
@@ -355,18 +768,45 @@ describe('expectNativePdfPart', () => {
       ['an empty string', '', 'has a file.file_data that is not of the form data:<type>;base64,<data>'],
       ['null', null, 'has null in file.file_data, not a base64 data URI'],
       ['a number', 42, 'has a number in file.file_data, not a base64 data URI'],
-      ['an object', { data: encoded }, 'has an object in file.file_data, not a base64 data URI'],
+      [
+        'an object',
+        { data: encoded },
+        'has an object in file.file_data, not a base64 data URI',
+      ],
     ])('rejects %s', (_name, fileData, message) => {
-      expect(() => expectNativePdfPart(chat({ role: 'user', content: [chatFile(fileData)] }), pdf)).toThrow(message)
+      expect(() => expectNativePdfPart(chat({
+        role: 'user',
+        content: [
+          chatFile(fileData),
+        ],
+      }), pdf)).toThrow(message)
     })
 
     it('rejects an uploaded file reference and an absent file object', () => {
-      expect(() => expectNativePdfPart(chat({ role: 'user', content: [{ type: 'file', file: { file_id: 'file-abc' } }] }), pdf)).toThrow('has no value in file.file_data')
-      expect(() => expectNativePdfPart(chat({ role: 'user', content: [{ type: 'file' }] }), pdf)).toThrow('has no value in file.file_data')
+      expect(() => expectNativePdfPart(chat({
+        role: 'user',
+        content: [
+          {
+            type: 'file',
+            file: { file_id: 'file-abc' },
+          },
+        ],
+      }), pdf)).toThrow('has no value in file.file_data')
+      expect(() => expectNativePdfPart(chat({
+        role: 'user',
+        content: [
+          { type: 'file' },
+        ],
+      }), pdf)).toThrow('has no value in file.file_data')
     })
 
     it('rejects a PDF data URI with an empty payload', () => {
-      expect(() => expectNativePdfPart(chat({ role: 'user', content: [chatFile(pdfDataURI(''))] }), pdf)).toThrow('has empty data')
+      expect(() => expectNativePdfPart(chat({
+        role: 'user',
+        content: [
+          chatFile(pdfDataURI('')),
+        ],
+      }), pdf)).toThrow('has empty data')
     })
   })
 
@@ -376,132 +816,311 @@ describe('expectNativePdfPart', () => {
       ['null', null, 'has null in place of base64 bytes'],
       ['an absent value', undefined, 'has no value in place of base64 bytes'],
       ['a number', 0, 'has a number in place of base64 bytes'],
-      ['an object', { bytes: encoded }, 'has an object in place of base64 bytes'],
-      ['an array', [...pdf], 'has an array in place of base64 bytes'],
+      [
+        'an object',
+        { bytes: encoded },
+        'has an object in place of base64 bytes',
+      ],
+      [
+        'an array',
+        [...pdf],
+        'has an array in place of base64 bytes',
+      ],
     ])('rejects %s in an Anthropic document', (_name, data, message) => {
-      expect(() => expectNativePdfPart(anthropic({ role: 'user', content: [anthropicDocument(data)] }), pdf)).toThrow(message)
+      expect(() => expectNativePdfPart(anthropic({
+        role: 'user',
+        content: [
+          anthropicDocument(data),
+        ],
+      }), pdf)).toThrow(message)
     })
 
     it.each([
       ['null', null, 'has null in place of base64 bytes'],
       ['an empty string', '', 'has empty data'],
     ])('rejects %s in Kiro document bytes', (_name, bytes, message) => {
-      expect(() => expectNativePdfPart(kiro([{ name: 'doc', format: 'pdf', source: { bytes } }]), pdf)).toThrow(message)
+      expect(() => expectNativePdfPart(kiro([
+        {
+          name: 'doc',
+          format: 'pdf',
+          source: { bytes },
+        },
+      ]), pdf)).toThrow(message)
     })
 
     it('rejects a Kiro document with no source', () => {
-      expect(() => expectNativePdfPart(kiro([{ name: 'doc', format: 'pdf' }]), pdf)).toThrow('has no value in place of base64 bytes')
+      expect(() => expectNativePdfPart(kiro([
+        { name: 'doc', format: 'pdf' },
+      ]), pdf)).toThrow('has no value in place of base64 bytes')
     })
 
     it('rejects a Google inlineData part with no data', () => {
-      expect(() => expectNativePdfPart(google({ role: 'user', parts: [{ inlineData: { mimeType: 'application/pdf' } }] }), pdf)).toThrow('has no value in place of base64 bytes')
+      expect(() => expectNativePdfPart(google({
+        role: 'user',
+        parts: [
+          {
+            inlineData: { mimeType: 'application/pdf' },
+          },
+        ],
+      }), pdf)).toThrow('has no value in place of base64 bytes')
     })
   })
 
   describe('rejects bytes that differ from the source', () => {
     it('rejects the PDF header alone', () => {
       const header = pdf.subarray(0, 8).toString('base64')
-      expect(() => expectNativePdfPart(anthropic({ role: 'user', content: [anthropicDocument(header)] }), pdf))
+      expect(() => expectNativePdfPart(anthropic({
+        role: 'user',
+        content: [
+          anthropicDocument(header),
+        ],
+      }), pdf))
         .toThrow(/has 8 bytes with SHA-256 [0-9a-f]{64}, not the 740-byte source with SHA-256 c3ca84e7858231d16759b15431cbfd39aafe0ed0738da79a2af43744a26e6b4f/)
     })
 
     it('rejects the PDF without its last byte', () => {
       const truncated = pdf.subarray(0, pdf.length - 1).toString('base64')
-      expect(() => expectNativePdfPart(chat({ role: 'user', content: [chatFile(pdfDataURI(truncated))] }), pdf)).toThrow(`has ${pdf.length - 1} bytes`)
+      expect(() => expectNativePdfPart(chat({
+        role: 'user',
+        content: [
+          chatFile(pdfDataURI(truncated)),
+        ],
+      }), pdf)).toThrow(`has ${pdf.length - 1} bytes`)
     })
 
     it('rejects the PDF with one changed byte', () => {
       const corrupt = Buffer.from(pdf)
       corrupt[pdf.length - 2] = corrupt[pdf.length - 2]! ^ 0x01
-      expect(() => expectNativePdfPart(kiro([{ name: 'doc', format: 'pdf', source: { bytes: corrupt.toString('base64') } }]), pdf)).toThrow(`has ${pdf.length} bytes with SHA-256`)
+      expect(() => expectNativePdfPart(kiro([
+        {
+          name: 'doc',
+          format: 'pdf',
+          source: {
+            bytes: corrupt.toString('base64'),
+          },
+        },
+      ]), pdf)).toThrow(`has ${pdf.length} bytes with SHA-256`)
     })
 
     it('rejects the PDF with extra bytes after it', () => {
-      const extended = Buffer.concat([pdf, Buffer.from('\n')]).toString('base64')
-      expect(() => expectNativePdfPart(google({ role: 'user', parts: [{ inlineData: { mimeType: 'application/pdf', data: extended } }] }), pdf)).toThrow(`has ${pdf.length + 1} bytes`)
+      const extended = Buffer.concat([
+        pdf,
+        Buffer.from('\n'),
+      ]).toString('base64')
+      expect(() => expectNativePdfPart(google({
+        role: 'user',
+        parts: [
+          {
+            inlineData: { mimeType: 'application/pdf', data: extended },
+          },
+        ],
+      }), pdf)).toThrow(`has ${pdf.length + 1} bytes`)
     })
 
     it('rejects another file that holds the same page marker', () => {
       const other = sameMarkerPdf()
       expect(other.equals(pdf)).toBe(false)
       expect(other.toString('latin1')).toContain('LEAPMUX_PDF_PAGE_49')
-      expect(() => expectNativePdfPart(anthropic({ role: 'user', content: [anthropicDocument(other.toString('base64'))] }), pdf)).toThrow('bytes with SHA-256')
+      expect(() => expectNativePdfPart(anthropic({
+        role: 'user',
+        content: [
+          anthropicDocument(other.toString('base64')),
+        ],
+      }), pdf)).toThrow('bytes with SHA-256')
     })
 
     it.each([
-      ['without its padding', () => encoded.replace(/=+$/, '')],
-      ['in the URL-safe alphabet', () => encoded.replaceAll('+', '-').replaceAll('/', '_')],
-      ['with a line break every 76 characters', () => encoded.replace(/(.{76})/g, '$1\n')],
-      ['with surrounding white space', () => ` ${encoded} `],
+      [
+        'without its padding',
+        () => encoded.replace(/=+$/, ''),
+      ],
+      [
+        'in the URL-safe alphabet',
+        () => encoded.replaceAll('+', '-').replaceAll('/', '_'),
+      ],
+      [
+        'with a line break every 76 characters',
+        () => encoded.replace(/(.{76})/g, '$1\n'),
+      ],
+      [
+        'with surrounding white space',
+        () => ` ${encoded} `,
+      ],
     ])('rejects the complete PDF base64 %s', (_name, form) => {
       const data = form()
       expect(data).not.toBe(encoded)
       expect(Buffer.from(data, 'base64').equals(pdf)).toBe(true)
-      expect(() => expectNativePdfPart(anthropic({ role: 'user', content: [anthropicDocument(data)] }), pdf)).toThrow('has data that is not canonical base64')
+      expect(() => expectNativePdfPart(anthropic({
+        role: 'user',
+        content: [
+          anthropicDocument(data),
+        ],
+      }), pdf)).toThrow('has data that is not canonical base64')
     })
   })
 
   describe('rejects the exact PDF outside the current user turn', () => {
     it('rejects a system message', () => {
       expect(() => expectNativePdfPart(chat(
-        { role: 'system', content: [chatFile(pdfDataURI(encoded))] },
+        {
+          role: 'system',
+          content: [
+            chatFile(pdfDataURI(encoded)),
+          ],
+        },
         { role: 'user', content: 'Read the attached PDF.' },
       ), pdf)).toThrow(NO_PDF_PART)
     })
 
     it('rejects a trailing instruction row that carries the PDF', () => {
       expect(() => expectNativePdfPart(anthropic(
-        { role: 'user', content: [{ type: 'text', text: 'Read the attached PDF.' }] },
-        { role: 'system', content: [anthropicDocument(encoded)] },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Read the attached PDF.' },
+          ],
+        },
+        {
+          role: 'system',
+          content: [
+            anthropicDocument(encoded),
+          ],
+        },
       ), pdf)).toThrow(NO_PDF_PART)
     })
 
     it('rejects an earlier turn that an assistant row ends, even when an instruction row follows the current user row', () => {
       expect(() => expectNativePdfPart(anthropic(
-        { role: 'user', content: [anthropicDocument(encoded)] },
-        { role: 'assistant', content: [{ type: 'text', text: 'Read.' }] },
-        { role: 'user', content: [{ type: 'text', text: 'Summarize it again.' }] },
-        { role: 'system', content: [{ type: 'text', text: '# Environment' }] },
+        {
+          role: 'user',
+          content: [
+            anthropicDocument(encoded),
+          ],
+        },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'Read.' },
+          ],
+        },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Summarize it again.' },
+          ],
+        },
+        {
+          role: 'system',
+          content: [
+            { type: 'text', text: '# Environment' },
+          ],
+        },
       ), pdf)).toThrow(NO_PDF_PART)
     })
 
     it('rejects the Anthropic system field', () => {
-      const request = nativeRequest('anthropic-messages', { system: [anthropicDocument(encoded)], messages: [{ role: 'user', content: 'Read the attached PDF.' }] })
+      const request = nativeRequest('anthropic-messages', {
+        system: [
+          anthropicDocument(encoded),
+        ],
+        messages: [
+          { role: 'user', content: 'Read the attached PDF.' },
+        ],
+      })
       expect(() => expectNativePdfPart(request, pdf)).toThrow(NO_PDF_PART)
     })
 
     it('rejects the Google system instruction', () => {
       const request = nativeRequest('google-generative-language', {
-        systemInstruction: { parts: [{ inlineData: { mimeType: 'application/pdf', data: encoded } }] },
-        contents: [{ role: 'user', parts: [{ text: 'Read the attached PDF.' }] }],
+        systemInstruction: {
+          parts: [
+            {
+              inlineData: { mimeType: 'application/pdf', data: encoded },
+            },
+          ],
+        },
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: 'Read the attached PDF.' },
+            ],
+          },
+        ],
       })
       expect(() => expectNativePdfPart(request, pdf)).toThrow(NO_PDF_PART)
     })
 
     it('rejects an assistant message that ends the history', () => {
-      expect(() => expectNativePdfPart(chat({ role: 'assistant', content: [chatFile(pdfDataURI(encoded))] }), pdf)).toThrow(NO_PDF_PART)
+      expect(() => expectNativePdfPart(chat({
+        role: 'assistant',
+        content: [
+          chatFile(pdfDataURI(encoded)),
+        ],
+      }), pdf)).toThrow(NO_PDF_PART)
     })
 
     it('rejects a document inside an Anthropic tool result, which a file read produces', () => {
-      const request = anthropic({ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: [anthropicDocument(encoded)] }] })
+      const request = anthropic({
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_1',
+            content: [
+              anthropicDocument(encoded),
+            ],
+          },
+        ],
+      })
       expect(() => expectNativePdfPart(request, pdf)).toThrow(NO_PDF_PART)
     })
 
     it('rejects a file part in the user row that follows a tool row, the synthetic carrier that Copilot and Junie build for a tool\'s file', () => {
       expect(() => expectNativePdfPart(chat(
         { role: 'user', content: 'Read the plan.' },
-        { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'view', arguments: '{}' } }] },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            {
+              id: 'call_1',
+              type: 'function',
+              function: { name: 'view', arguments: '{}' },
+            },
+          ],
+        },
         { role: 'tool', tool_call_id: 'call_1', content: 'viewed' },
-        { role: 'user', content: [chatFile(pdfDataURI(encoded))] },
+        {
+          role: 'user',
+          content: [
+            chatFile(pdfDataURI(encoded)),
+          ],
+        },
       ), pdf)).toThrow(NO_PDF_PART)
     })
 
     it('rejects the same synthetic carrier when a genuine user row follows it in the same turn', () => {
       expect(() => expectNativePdfPart(chat(
         { role: 'user', content: 'Read the plan.' },
-        { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'view', arguments: '{}' } }] },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            {
+              id: 'call_1',
+              type: 'function',
+              function: { name: 'view', arguments: '{}' },
+            },
+          ],
+        },
         { role: 'tool', tool_call_id: 'call_1', content: 'viewed' },
-        { role: 'user', content: [chatFile(pdfDataURI(encoded))] },
+        {
+          role: 'user',
+          content: [
+            chatFile(pdfDataURI(encoded)),
+          ],
+        },
         { role: 'user', content: 'Summarize what you saw.' },
       ), pdf)).toThrow(NO_PDF_PART)
     })
@@ -509,26 +1128,66 @@ describe('expectNativePdfPart', () => {
     it('accepts the part in a user row that follows the assistant row that answered a tool call', () => {
       expect(() => expectNativePdfPart(chat(
         { role: 'user', content: 'Read the plan.' },
-        { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'view', arguments: '{}' } }] },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            {
+              id: 'call_1',
+              type: 'function',
+              function: { name: 'view', arguments: '{}' },
+            },
+          ],
+        },
         { role: 'tool', tool_call_id: 'call_1', content: 'viewed' },
         { role: 'assistant', content: 'Viewed.' },
-        { role: 'user', content: [chatFile(pdfDataURI(encoded))] },
+        {
+          role: 'user',
+          content: [
+            chatFile(pdfDataURI(encoded)),
+          ],
+        },
       ), pdf)).not.toThrow()
     })
 
     it('rejects a document beside an Anthropic tool result in the same message', () => {
-      const request = anthropic({ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'Read the file.' }, anthropicDocument(encoded)] })
+      const request = anthropic({
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'toolu_1', content: 'Read the file.' },
+          anthropicDocument(encoded),
+        ],
+      })
       expect(() => expectNativePdfPart(request, pdf)).toThrow(NO_PDF_PART)
     })
 
     it('rejects a Google inlineData part beside a functionResponse in the same content', () => {
-      const request = google({ role: 'user', parts: [{ functionResponse: { id: 'call-1', name: 'read_file', response: { output: 'read' } } }, { inlineData: { mimeType: 'application/pdf', data: encoded } }] })
+      const request = google({
+        role: 'user',
+        parts: [
+          {
+            functionResponse: {
+              id: 'call-1',
+              name: 'read_file',
+              response: { output: 'read' },
+            },
+          },
+          {
+            inlineData: { mimeType: 'application/pdf', data: encoded },
+          },
+        ],
+      })
       expect(() => expectNativePdfPart(request, pdf)).toThrow(NO_PDF_PART)
     })
 
     it('rejects a Chat Completions file that only an earlier turn carries', () => {
       expect(() => expectNativePdfPart(chat(
-        { role: 'user', content: [chatFile(pdfDataURI(encoded))] },
+        {
+          role: 'user',
+          content: [
+            chatFile(pdfDataURI(encoded)),
+          ],
+        },
         { role: 'assistant', content: 'Read it.' },
         { role: 'user', content: 'Reply once without attachments.' },
       ), pdf)).toThrow(NO_PDF_PART)
@@ -536,30 +1195,83 @@ describe('expectNativePdfPart', () => {
 
     it('rejects an Anthropic document that only an earlier turn carries', () => {
       expect(() => expectNativePdfPart(anthropic(
-        { role: 'user', content: [anthropicDocument(encoded)] },
-        { role: 'assistant', content: [{ type: 'text', text: 'Read it.' }] },
-        { role: 'user', content: [{ type: 'text', text: 'Reply once without attachments.' }] },
+        {
+          role: 'user',
+          content: [
+            anthropicDocument(encoded),
+          ],
+        },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'Read it.' },
+          ],
+        },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Reply once without attachments.' },
+          ],
+        },
       ), pdf)).toThrow(NO_PDF_PART)
     })
 
     it('rejects a Kiro document that only the history carries', () => {
-      const earlier = { userInputMessage: { content: 'Earlier.', documents: [{ name: 'kiro-doc', format: 'pdf', source: { bytes: encoded } }] } }
+      const earlier = {
+        userInputMessage: {
+          content: 'Earlier.',
+          documents: [
+            {
+              name: 'kiro-doc',
+              format: 'pdf',
+              source: { bytes: encoded },
+            },
+          ],
+        },
+      }
       expect(() => expectNativePdfPart(kiro([], [earlier]), pdf)).toThrow(NO_PDF_PART)
     })
 
     it('rejects a Google inlineData part that only an earlier turn carries', () => {
       expect(() => expectNativePdfPart(google(
-        { role: 'user', parts: [{ inlineData: { mimeType: 'application/pdf', data: encoded } }] },
-        { role: 'model', parts: [{ text: 'Read it.' }] },
-        { role: 'user', parts: [{ text: 'Reply once without attachments.' }] },
+        {
+          role: 'user',
+          parts: [
+            {
+              inlineData: { mimeType: 'application/pdf', data: encoded },
+            },
+          ],
+        },
+        {
+          role: 'model',
+          parts: [
+            { text: 'Read it.' },
+          ],
+        },
+        {
+          role: 'user',
+          parts: [
+            { text: 'Reply once without attachments.' },
+          ],
+        },
       ), pdf)).toThrow(NO_PDF_PART)
     })
   })
 
   it('states the location and the defect of each typed part that comes close', () => {
     const request = kiro([
-      { name: 'one', format: 'docx', source: { bytes: encoded } },
-      { name: 'two', format: 'pdf', source: { bytes: pdf.subarray(0, 8).toString('base64') } },
+      {
+        name: 'one',
+        format: 'docx',
+        source: { bytes: encoded },
+      },
+      {
+        name: 'two',
+        format: 'pdf',
+        source: {
+          bytes: pdf.subarray(0, 8).toString('base64'),
+        },
+      },
     ])
     expect(() => expectNativePdfPart(request, pdf)).toThrow(
       'the current user turn of the scripted aws-event-stream request carries no typed PDF part with the exact source bytes: '
@@ -574,8 +1286,26 @@ describe('expectNativePdfPart', () => {
     'text',
     {},
     { messages: null },
-    { messages: [null, {}, { role: 'user', content: null }, { role: 'user', content: 'text' }] },
-    { messages: [{ role: 'user', content: [null, 'text', { type: 'document', source: null }] }] },
+    {
+      messages: [
+        null,
+        {},
+        { role: 'user', content: null },
+        { role: 'user', content: 'text' },
+      ],
+    },
+    {
+      messages: [
+        {
+          role: 'user',
+          content: [
+            null,
+            'text',
+            { type: 'document', source: null },
+          ],
+        },
+      ],
+    },
   ])('rejects an absent or malformed Anthropic body: %j', (body) => {
     expect(() => expectNativePdfPart(nativeRequest('anthropic-messages', body), pdf)).toThrow('the current user turn of the scripted anthropic-messages request')
   })
@@ -584,8 +1314,22 @@ describe('expectNativePdfPart', () => {
     undefined,
     null,
     { conversationState: null },
-    { conversationState: { currentMessage: { userInputMessage: { documents: null } } } },
-    { conversationState: { currentMessage: { userInputMessage: { documents: [null] } } } },
+    {
+      conversationState: {
+        currentMessage: {
+          userInputMessage: { documents: null },
+        },
+      },
+    },
+    {
+      conversationState: {
+        currentMessage: {
+          userInputMessage: {
+            documents: [null],
+          },
+        },
+      },
+    },
   ])('rejects an absent or malformed Kiro body: %j', (body) => {
     expect(() => expectNativePdfPart(nativeRequest('aws-event-stream', body), pdf)).toThrow('the current user turn of the scripted aws-event-stream request')
   })
@@ -593,43 +1337,125 @@ describe('expectNativePdfPart', () => {
   it.each([
     undefined,
     { contents: null },
-    { contents: [null, { role: 'user', parts: null }, { role: 'user', parts: [null, { inlineData: null }] }] },
+    {
+      contents: [
+        null,
+        { role: 'user', parts: null },
+        {
+          role: 'user',
+          parts: [
+            null,
+            { inlineData: null },
+          ],
+        },
+      ],
+    },
   ])('rejects an absent or malformed Google body: %j', (body) => {
     expect(() => expectNativePdfPart(nativeRequest('google-generative-language', body), pdf)).toThrow(NO_PDF_PART)
   })
 
   it('accepts the exact PDF in a Responses input_file part', () => {
-    const request = nativeRequest('openai-responses', { input: [{ role: 'user', content: [{ type: 'input_file', file_data: pdfDataURI(encoded) }] }] })
+    const request = nativeRequest('openai-responses', {
+      input: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'input_file',
+              file_data: pdfDataURI(encoded),
+            },
+          ],
+        },
+      ],
+    })
     expect(() => expectNativePdfPart(request, pdf)).not.toThrow()
   })
 
   it('accepts a Responses file after user context and before a trailing instruction', () => {
     const request = responses(
-      { role: 'user', content: [{ type: 'input_text', text: 'Environment context.' }] },
-      { role: 'user', content: [{ type: 'input_file', filename: 'doc.pdf', file_data: pdfDataURI(encoded) }] },
+      {
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'Environment context.' },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            filename: 'doc.pdf',
+            file_data: pdfDataURI(encoded),
+          },
+        ],
+      },
       { role: 'developer', content: 'Follow the project instructions.' },
     )
     expect(() => expectNativePdfPart(request, pdf)).not.toThrow()
   })
 
-  it.each(['system', 'developer', 'assistant', 'tool'])('rejects a Responses file in a %s row', (role) => {
-    const request = responses({ role, content: [{ type: 'input_file', file_data: pdfDataURI(encoded) }] })
+  it.each([
+    'system',
+    'developer',
+    'assistant',
+    'tool',
+  ])('rejects a Responses file in a %s row', (role) => {
+    const request = responses({
+      role,
+      content: [
+        {
+          type: 'input_file',
+          file_data: pdfDataURI(encoded),
+        },
+      ],
+    })
     expect(() => expectNativePdfPart(request, pdf)).toThrow(NO_PDF_PART)
   })
 
   it('rejects a Responses file from an earlier turn', () => {
     const request = responses(
-      { role: 'user', content: [{ type: 'input_file', file_data: pdfDataURI(encoded) }] },
-      { role: 'assistant', content: [{ type: 'output_text', text: 'The earlier answer.' }] },
-      { role: 'user', content: [{ type: 'input_text', text: 'A new turn without a file.' }] },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file_data: pdfDataURI(encoded),
+          },
+        ],
+      },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'output_text', text: 'The earlier answer.' },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'A new turn without a file.' },
+        ],
+      },
     )
     expect(() => expectNativePdfPart(request, pdf)).toThrow(NO_PDF_PART)
   })
 
   it('rejects a Responses file in tool output or unrelated metadata', () => {
-    const part = { type: 'input_file', file_data: pdfDataURI(encoded) }
-    expect(() => expectNativePdfPart(responses({ type: 'function_call_output', call_id: 'tool', output: [part] }), pdf)).toThrow(NO_PDF_PART)
-    expect(() => expectNativePdfPart(responses({ role: 'user', content: [{ type: 'input_text', text: encoded }], metadata: { file: part } }), pdf)).toThrow(NO_PDF_PART)
+    const part = {
+      type: 'input_file',
+      file_data: pdfDataURI(encoded),
+    }
+    expect(() => expectNativePdfPart(responses({
+      type: 'function_call_output',
+      call_id: 'tool',
+      output: [part],
+    }), pdf)).toThrow(NO_PDF_PART)
+    expect(() => expectNativePdfPart(responses({
+      role: 'user',
+      content: [
+        { type: 'input_text', text: encoded },
+      ],
+      metadata: { file: part },
+    }), pdf)).toThrow(NO_PDF_PART)
   })
 
   it.each([
@@ -637,16 +1463,38 @@ describe('expectNativePdfPart', () => {
     { name: 'remote URL', data: 'https://example.invalid/doc.pdf', reason: 'not of the form data:' },
     { name: 'raw base64', data: encoded, reason: 'not of the form data:' },
     { name: 'wrong media type', data: `data:text/plain;base64,${encoded}`, reason: 'not PDF' },
-    { name: 'empty bytes', data: pdfDataURI(''), reason: 'has empty data' },
-    { name: 'missing padding', data: pdfDataURI(encoded.slice(0, -1)), reason: 'not canonical base64' },
-    { name: 'truncated bytes', data: pdfDataURI(pdf.subarray(0, -1).toString('base64')), reason: `has ${pdf.length - 1} bytes` },
+    {
+      name: 'empty bytes',
+      data: pdfDataURI(''),
+      reason: 'has empty data',
+    },
+    {
+      name: 'missing padding',
+      data: pdfDataURI(encoded.slice(0, -1)),
+      reason: 'not canonical base64',
+    },
+    {
+      name: 'truncated bytes',
+      data: pdfDataURI(pdf.subarray(0, -1).toString('base64')),
+      reason: `has ${pdf.length - 1} bytes`,
+    },
   ])('rejects a Responses file with $name', ({ data, reason }) => {
-    const request = responses({ role: 'user', content: [{ type: 'input_file', file_data: data }] })
+    const request = responses({
+      role: 'user',
+      content: [
+        { type: 'input_file', file_data: data },
+      ],
+    })
     expect(() => expectNativePdfPart(request, pdf)).toThrow(reason)
   })
 
   it('rejects a Responses file ID that supplies no original bytes', () => {
-    const request = responses({ role: 'user', content: [{ type: 'input_file', file_id: 'file-existing' }] })
+    const request = responses({
+      role: 'user',
+      content: [
+        { type: 'input_file', file_id: 'file-existing' },
+      ],
+    })
     expect(() => expectNativePdfPart(request, pdf)).toThrow('has no value in file_data')
   })
 
@@ -654,7 +1502,15 @@ describe('expectNativePdfPart', () => {
     const changed = Buffer.from(pdf)
     expect(changed[0]).toBe(0x25)
     changed[0] = 0
-    const request = responses({ role: 'user', content: [{ type: 'input_file', file_data: pdfDataURI(changed.toString('base64')) }] })
+    const request = responses({
+      role: 'user',
+      content: [
+        {
+          type: 'input_file',
+          file_data: pdfDataURI(changed.toString('base64')),
+        },
+      ],
+    })
     expect(() => expectNativePdfPart(request, pdf)).toThrow('bytes with SHA-256')
   })
 })
@@ -668,46 +1524,127 @@ describe('expectNativeFilePart', () => {
   ])('reads exact current AWS %s document bytes and rejects another format', (format, mime) => {
     const source = Buffer.from([0x50, 0x4B, 3, 4, 0xFF])
     const encoded = source.toString('base64')
-    expect(() => expectNativeFilePart(kiro([{ name: 'office', format, source: { bytes: encoded } }]), source, mime)).not.toThrow()
-    expect(() => expectNativeFilePart(kiro([{ name: 'office', format: 'pdf', source: { bytes: encoded } }]), source, mime)).toThrow('not')
-    expect(() => expectNativeFilePart(kiro([{ name: 'office', format, source: { bytes: Buffer.from([1, 2, 3]).toString('base64') } }]), source, mime)).toThrow('bytes with SHA-256')
-    expect(() => expectNativeFilePart(kiro([], [{ userInputMessage: { documents: [{ name: 'earlier', format, source: { bytes: encoded } }] } }]), source, mime)).toThrow('the current user turn of the scripted aws-event-stream request carries no typed')
+    expect(() => expectNativeFilePart(kiro([
+      {
+        name: 'office',
+        format,
+        source: { bytes: encoded },
+      },
+    ]), source, mime)).not.toThrow()
+    expect(() => expectNativeFilePart(kiro([
+      {
+        name: 'office',
+        format: 'pdf',
+        source: { bytes: encoded },
+      },
+    ]), source, mime)).toThrow('not')
+    expect(() => expectNativeFilePart(kiro([
+      {
+        name: 'office',
+        format,
+        source: {
+          bytes: Buffer.from([1, 2, 3]).toString('base64'),
+        },
+      },
+    ]), source, mime)).toThrow('bytes with SHA-256')
+    expect(() => expectNativeFilePart(kiro([], [
+      {
+        userInputMessage: {
+          documents: [
+            {
+              name: 'earlier',
+              format,
+              source: { bytes: encoded },
+            },
+          ],
+        },
+      },
+    ]), source, mime)).toThrow('the current user turn of the scripted aws-event-stream request carries no typed')
   })
 
-  const wav = Buffer.concat([Buffer.from('RIFF', 'latin1'), Buffer.from([0x24, 0, 0, 0]), Buffer.from('WAVEfmt ', 'latin1')])
+  const wav = Buffer.concat([
+    Buffer.from('RIFF', 'latin1'),
+    Buffer.from([0x24, 0, 0, 0]),
+    Buffer.from('WAVEfmt ', 'latin1'),
+  ])
   const wavBase64 = wav.toString('base64')
 
   it('accepts the exact bytes of a non-PDF type in each typed file shape', () => {
-    expect(() => expectNativeFilePart(google({ role: 'user', parts: [{ text: 'Read the valid WAV.' }, { inlineData: { mimeType: 'audio/wav', data: wavBase64 } }] }), wav, 'audio/wav')).not.toThrow()
-    expect(() => expectNativeFilePart(chat({ role: 'user', content: [chatFile(`data:audio/wav;base64,${wavBase64}`)] }), wav, 'audio/wav')).not.toThrow()
-    expect(() => expectNativeFilePart(anthropic({ role: 'user', content: [anthropicDocument(wavBase64, 'audio/wav')] }), wav, 'audio/wav')).not.toThrow()
+    expect(() => expectNativeFilePart(google({
+      role: 'user',
+      parts: [
+        { text: 'Read the valid WAV.' },
+        {
+          inlineData: { mimeType: 'audio/wav', data: wavBase64 },
+        },
+      ],
+    }), wav, 'audio/wav')).not.toThrow()
+    expect(() => expectNativeFilePart(chat({
+      role: 'user',
+      content: [
+        chatFile(`data:audio/wav;base64,${wavBase64}`),
+      ],
+    }), wav, 'audio/wav')).not.toThrow()
+    expect(() => expectNativeFilePart(anthropic({
+      role: 'user',
+      content: [
+        anthropicDocument(wavBase64, 'audio/wav'),
+      ],
+    }), wav, 'audio/wav')).not.toThrow()
   })
 
   it('fails a part that declares another media type', () => {
-    expect(() => expectNativeFilePart(google({ role: 'user', parts: [{ inlineData: { mimeType: 'audio/x-wav', data: wavBase64 } }] }), wav, 'audio/wav'))
+    expect(() => expectNativeFilePart(google({
+      role: 'user',
+      parts: [
+        {
+          inlineData: { mimeType: 'audio/x-wav', data: wavBase64 },
+        },
+      ],
+    }), wav, 'audio/wav'))
       .toThrow('contents[0].parts[0] declares mimeType=audio/x-wav, not audio/wav')
   })
 
   it('fails a data URI with a media type parameter', () => {
-    expect(() => expectNativeFilePart(chat({ role: 'user', content: [chatFile(`data:audio/wav;codecs=1;base64,${wavBase64}`)] }), wav, 'audio/wav'))
+    expect(() => expectNativeFilePart(chat({
+      role: 'user',
+      content: [
+        chatFile(`data:audio/wav;codecs=1;base64,${wavBase64}`),
+      ],
+    }), wav, 'audio/wav'))
       .toThrow('has a file.file_data that is not of the form data:<type>;base64,<data>')
   })
 
   it('fails the exact bytes outside a typed part, and different bytes inside one', () => {
     expect(() => expectNativeFilePart(chat({ role: 'user', content: wavBase64 }), wav, 'audio/wav'))
       .toThrow('carries no typed audio/wav part with the exact source bytes')
-    expect(() => expectNativeFilePart(chat({ role: 'user', content: [chatFile(`data:audio/wav;base64,${wav.subarray(0, 4).toString('base64')}`)] }), wav, 'audio/wav'))
+    expect(() => expectNativeFilePart(chat({
+      role: 'user',
+      content: [
+        chatFile(`data:audio/wav;base64,${wav.subarray(0, 4).toString('base64')}`),
+      ],
+    }), wav, 'audio/wav'))
       .toThrow('has 4 bytes with SHA-256')
   })
 
   it('accepts a declared type that an anchored pattern matches, and fails one that it does not match', () => {
-    const request = chat({ role: 'user', content: [chatFile(`data:application/octet-stream;base64,${wavBase64}`)] })
+    const request = chat({
+      role: 'user',
+      content: [
+        chatFile(`data:application/octet-stream;base64,${wavBase64}`),
+      ],
+    })
     expect(() => expectNativeFilePart(request, wav, /^application\//)).not.toThrow()
     expect(() => expectNativeFilePart(request, wav, /^audio\//)).toThrow('declares file.file_data=data:application/octet-stream, not /^audio\\//')
   })
 
   it('refuses an empty media type and a pattern that keeps a match position', () => {
-    const request = chat({ role: 'user', content: [chatFile(`data:audio/wav;base64,${wavBase64}`)] })
+    const request = chat({
+      role: 'user',
+      content: [
+        chatFile(`data:audio/wav;base64,${wavBase64}`),
+      ],
+    })
     expect(() => expectNativeFilePart(request, wav, '')).toThrow('needs the media type that the part declares')
     expect(() => expectNativeFilePart(request, wav, /^audio\//g)).toThrow('without the g or y flag')
     expect(() => expectNativeFilePart(request, wav, /^audio\//y)).toThrow('without the g or y flag')
@@ -720,24 +1657,110 @@ describe('expectNativeImagePart', () => {
   it('uses a fixture whose base64 has padding and a slash, so each non-canonical form below differs from it', () => {
     expect(pngBase64.endsWith('=')).toBe(true)
     expect(pngBase64).toContain('/')
-    expect(png.subarray(0, 8)).toEqual(Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]))
+    expect(png.subarray(0, 8)).toEqual(Buffer.from([
+      0x89,
+      0x50,
+      0x4E,
+      0x47,
+      0x0D,
+      0x0A,
+      0x1A,
+      0x0A,
+    ]))
   })
 
   describe('accepts the exact PNG in a typed image part of the current user turn', () => {
     it.each([
-      ['an Anthropic image block', anthropic({ role: 'user', content: [{ type: 'text', text: 'Inspect the attached file.' }, anthropicImage(pngBase64)] })],
-      ['a Chat Completions image part with a detail level', chat(
-        { role: 'system', content: 'You are a coding agent.' },
-        { role: 'user', content: [{ type: 'text', text: 'Inspect the attached file.' }, { type: 'image_url', image_url: { url: pngDataURI(pngBase64), detail: 'auto' } }] },
-      )],
-      ['a Responses input image', responses(
-        { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'Follow the project rules.' }] },
-        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Inspect the attached file.' }, { type: 'input_image', image_url: pngDataURI(pngBase64), detail: 'auto' }] },
-      )],
-      ['a Cursor context image', cursor([{ kind: 'image', data: pngBase64, mimeType: 'image/png' }])],
-      ['an Amp thread image in Amp\'s own block shape', amp({ role: 'user', content: [{ type: 'text', text: 'Inspect the attached file.' }, ampImage(pngBase64)] })],
-      ['a Kiro image of the current user input message', kiroImages([{ format: 'png', source: { bytes: pngBase64 } }])],
-      ['a Google inlineData part', google({ role: 'user', parts: [{ text: 'Inspect the attached file.' }, { inlineData: { mimeType: 'image/png', data: pngBase64 } }] })],
+      [
+        'an Anthropic image block',
+        anthropic({
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Inspect the attached file.' },
+            anthropicImage(pngBase64),
+          ],
+        }),
+      ],
+      [
+        'a Chat Completions image part with a detail level',
+        chat(
+          { role: 'system', content: 'You are a coding agent.' },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Inspect the attached file.' },
+              {
+                type: 'image_url',
+                image_url: {
+                  url: pngDataURI(pngBase64),
+                  detail: 'auto',
+                },
+              },
+            ],
+          },
+        ),
+      ],
+      [
+        'a Responses input image',
+        responses(
+          {
+            type: 'message',
+            role: 'developer',
+            content: [
+              { type: 'input_text', text: 'Follow the project rules.' },
+            ],
+          },
+          {
+            type: 'message',
+            role: 'user',
+            content: [
+              { type: 'input_text', text: 'Inspect the attached file.' },
+              {
+                type: 'input_image',
+                image_url: pngDataURI(pngBase64),
+                detail: 'auto',
+              },
+            ],
+          },
+        ),
+      ],
+      [
+        'a Cursor context image',
+        cursor([
+          { kind: 'image', data: pngBase64, mimeType: 'image/png' },
+        ]),
+      ],
+      [
+        'an Amp thread image in Amp\'s own block shape',
+        amp({
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Inspect the attached file.' },
+            ampImage(pngBase64),
+          ],
+        }),
+      ],
+      [
+        'a Kiro image of the current user input message',
+        kiroImages([
+          {
+            format: 'png',
+            source: { bytes: pngBase64 },
+          },
+        ]),
+      ],
+      [
+        'a Google inlineData part',
+        google({
+          role: 'user',
+          parts: [
+            { text: 'Inspect the attached file.' },
+            {
+              inlineData: { mimeType: 'image/png', data: pngBase64 },
+            },
+          ],
+        }),
+      ],
     ])('accepts %s', async (_name, request) => {
       await expect(expectNativeImagePart(request, png, noDecode)).resolves.toBeUndefined()
     })
@@ -745,78 +1768,253 @@ describe('expectNativeImagePart', () => {
     it('accepts a part in a later user message of the same turn', async () => {
       await expect(expectNativeImagePart(chat(
         { role: 'user', content: '<system-reminder>context</system-reminder>' },
-        { role: 'user', content: [chatImage(pngDataURI(pngBase64))] },
+        {
+          role: 'user',
+          content: [
+            chatImage(pngDataURI(pngBase64)),
+          ],
+        },
       ), png, noDecode)).resolves.toBeUndefined()
     })
 
     it('accepts the part when an instruction row follows the user row, as Claude Code 2.1 sends its environment', async () => {
       await expect(expectNativeImagePart(anthropic(
-        { role: 'user', content: [{ type: 'text', text: 'Inspect the attached file.' }, anthropicImage(pngBase64)] },
-        { role: 'system', content: [{ type: 'text', text: '# Environment' }] },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Inspect the attached file.' },
+            anthropicImage(pngBase64),
+          ],
+        },
+        {
+          role: 'system',
+          content: [
+            { type: 'text', text: '# Environment' },
+          ],
+        },
       ), png, noDecode)).resolves.toBeUndefined()
     })
 
     it('accepts the current turn after an earlier turn that a tool call ended', async () => {
       await expect(expectNativeImagePart(anthropic(
-        { role: 'user', content: [{ type: 'text', text: 'List the files.' }] },
-        { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: {} }] },
-        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'shot.png' }] },
-        { role: 'assistant', content: [{ type: 'text', text: 'One file.' }] },
-        { role: 'user', content: [{ type: 'text', text: 'Inspect the attached file.' }, anthropicImage(pngBase64)] },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'List the files.' },
+          ],
+        },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_1',
+              name: 'Bash',
+              input: {},
+            },
+          ],
+        },
+        {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 'toolu_1', content: 'shot.png' },
+          ],
+        },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'One file.' },
+          ],
+        },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Inspect the attached file.' },
+            anthropicImage(pngBase64),
+          ],
+        },
       ), png, noDecode)).resolves.toBeUndefined()
     })
 
     it('accepts the exact part beside another typed part that carries different bytes', async () => {
       await expect(expectNativeImagePart(kiroImages([
-        { format: 'png', source: { bytes: png.subarray(0, 8).toString('base64') } },
-        { format: 'png', source: { bytes: pngBase64 } },
+        {
+          format: 'png',
+          source: {
+            bytes: png.subarray(0, 8).toString('base64'),
+          },
+        },
+        {
+          format: 'png',
+          source: { bytes: pngBase64 },
+        },
       ]), png, noDecode)).resolves.toBeUndefined()
     })
 
     it('accepts another PNG fixture, such as the 64x64 tool image that the Kiro and Grok specs attach', async () => {
       const tool = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAb0lEQVR42u3YMREAIAwEwZcYicjBFSigykwatjgDW15S63wdAAAAAAAAAODdTi8AAAAAAAAAAAAAAAAAAAAAgCECAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJjqArCUycOeoJLSAAAAAElFTkSuQmCC', 'base64')
-      await expect(expectNativeImagePart(kiroImages([{ format: 'png', source: { bytes: tool.toString('base64') } }]), tool, noDecode)).resolves.toBeUndefined()
-      await expect(expectNativeImagePart(kiroImages([{ format: 'png', source: { bytes: pngBase64 } }]), tool, noDecode)).rejects.toThrow('not the 168-byte source')
+      await expect(expectNativeImagePart(kiroImages([
+        {
+          format: 'png',
+          source: {
+            bytes: tool.toString('base64'),
+          },
+        },
+      ]), tool, noDecode)).resolves.toBeUndefined()
+      await expect(expectNativeImagePart(kiroImages([
+        {
+          format: 'png',
+          source: { bytes: pngBase64 },
+        },
+      ]), tool, noDecode)).rejects.toThrow('not the 168-byte source')
     })
   })
 
   describe('reads each route by its own block shape', () => {
     it('rejects an Anthropic-shaped block on Amp\'s route, which Amp never sends', async () => {
-      await expect(expectNativeImagePart(amp({ role: 'user', content: [anthropicImage(pngBase64)] }), png, noDecode)).rejects.toThrow('mediaType=undefined')
+      await expect(expectNativeImagePart(amp({
+        role: 'user',
+        content: [
+          anthropicImage(pngBase64),
+        ],
+      }), png, noDecode)).rejects.toThrow('mediaType=undefined')
     })
 
     it('rejects an Amp-shaped block on the Anthropic route', async () => {
-      await expect(expectNativeImagePart(anthropic({ role: 'user', content: [ampImage(pngBase64)] }), png, noDecode)).rejects.toThrow('media_type=undefined')
+      await expect(expectNativeImagePart(anthropic({
+        role: 'user',
+        content: [
+          ampImage(pngBase64),
+        ],
+      }), png, noDecode)).rejects.toThrow('media_type=undefined')
     })
 
     it('rejects an Amp image beside a tool result, and an Amp image of another type', async () => {
-      await expect(expectNativeImagePart(amp({ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'Read.' }, ampImage(pngBase64)] }), png, noDecode)).rejects.toThrow(NO_IMAGE_PART)
-      await expect(expectNativeImagePart(amp({ role: 'user', content: [ampImage(pngBase64, 'image/jpeg')] }), png, noDecode)).rejects.toThrow('mediaType=image/jpeg')
+      await expect(expectNativeImagePart(amp({
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'toolu_1', content: 'Read.' },
+          ampImage(pngBase64),
+        ],
+      }), png, noDecode)).rejects.toThrow(NO_IMAGE_PART)
+      await expect(expectNativeImagePart(amp({
+        role: 'user',
+        content: [
+          ampImage(pngBase64, 'image/jpeg'),
+        ],
+      }), png, noDecode)).rejects.toThrow('mediaType=image/jpeg')
     })
   })
 
   describe('rejects a typed part that declares another type than the source', () => {
     it.each([
-      ['an Anthropic image', anthropic({ role: 'user', content: [anthropicImage(pngBase64, 'image/jpeg')] }), 'messages[0].content[0] declares media_type=image/jpeg, not image/png'],
-      ['a Chat Completions image part', chat({ role: 'user', content: [chatImage(`data:application/octet-stream;base64,${pngBase64}`)] }), 'messages[0].content[0] declares image_url.url=data:application/octet-stream, not image/png'],
-      ['a Responses input image', responses({ role: 'user', content: [responsesImage(`data:image/webp;base64,${pngBase64}`)] }), 'input[0].content[0] declares image_url=data:image/webp, not image/png'],
-      ['a Cursor context image', cursor([{ kind: 'image', data: pngBase64, mimeType: 'image/gif' }]), 'attachments[0] declares mimeType=image/gif, not image/png'],
-      ['a Cursor context image with no media type', cursor([{ kind: 'image', data: pngBase64 }]), 'attachments[0] declares mimeType=undefined, not image/png'],
-      ['a Kiro image', kiroImages([{ format: 'pdf', source: { bytes: pngBase64 } }]), 'conversationState.currentMessage.userInputMessage.images[0] declares format=pdf, not image/png'],
-      ['a Kiro image with no format', kiroImages([{ source: { bytes: pngBase64 } }]), 'images[0] declares format=undefined, not image/png'],
-      ['a Google inlineData part', google({ role: 'user', parts: [{ inlineData: { mimeType: 'image/jpeg', data: pngBase64 } }] }), 'contents[0].parts[0] declares mimeType=image/jpeg, not image/png'],
+      [
+        'an Anthropic image',
+        anthropic({
+          role: 'user',
+          content: [
+            anthropicImage(pngBase64, 'image/jpeg'),
+          ],
+        }),
+        'messages[0].content[0] declares media_type=image/jpeg, not image/png',
+      ],
+      [
+        'a Chat Completions image part',
+        chat({
+          role: 'user',
+          content: [
+            chatImage(`data:application/octet-stream;base64,${pngBase64}`),
+          ],
+        }),
+        'messages[0].content[0] declares image_url.url=data:application/octet-stream, not image/png',
+      ],
+      [
+        'a Responses input image',
+        responses({
+          role: 'user',
+          content: [
+            responsesImage(`data:image/webp;base64,${pngBase64}`),
+          ],
+        }),
+        'input[0].content[0] declares image_url=data:image/webp, not image/png',
+      ],
+      [
+        'a Cursor context image',
+        cursor([
+          { kind: 'image', data: pngBase64, mimeType: 'image/gif' },
+        ]),
+        'attachments[0] declares mimeType=image/gif, not image/png',
+      ],
+      [
+        'a Cursor context image with no media type',
+        cursor([
+          { kind: 'image', data: pngBase64 },
+        ]),
+        'attachments[0] declares mimeType=undefined, not image/png',
+      ],
+      [
+        'a Kiro image',
+        kiroImages([
+          {
+            format: 'pdf',
+            source: { bytes: pngBase64 },
+          },
+        ]),
+        'conversationState.currentMessage.userInputMessage.images[0] declares format=pdf, not image/png',
+      ],
+      [
+        'a Kiro image with no format',
+        kiroImages([
+          {
+            source: { bytes: pngBase64 },
+          },
+        ]),
+        'images[0] declares format=undefined, not image/png',
+      ],
+      [
+        'a Google inlineData part',
+        google({
+          role: 'user',
+          parts: [
+            {
+              inlineData: { mimeType: 'image/jpeg', data: pngBase64 },
+            },
+          ],
+        }),
+        'contents[0].parts[0] declares mimeType=image/jpeg, not image/png',
+      ],
     ])('rejects %s', async (_name, request, message) => {
       await expect(expectNativeImagePart(request, png, noDecode)).rejects.toThrow(message)
     })
 
     it('rejects a media type that differs only in case', async () => {
-      await expect(expectNativeImagePart(chat({ role: 'user', content: [chatImage(`data:Image/PNG;base64,${pngBase64}`)] }), png, noDecode)).rejects.toThrow('not image/png')
+      await expect(expectNativeImagePart(chat({
+        role: 'user',
+        content: [
+          chatImage(`data:Image/PNG;base64,${pngBase64}`),
+        ],
+      }), png, noDecode)).rejects.toThrow('not image/png')
     })
 
     it('rejects a typed part of another kind that holds the PNG', async () => {
-      await expect(expectNativeImagePart(chat({ role: 'user', content: [chatFile(pngDataURI(pngBase64))] }), png, noDecode)).rejects.toThrow(NO_IMAGE_PART)
-      await expect(expectNativeImagePart(cursor([{ kind: 'document', data: pngBase64, mimeType: 'image/png' }]), png, noDecode)).rejects.toThrow(NO_IMAGE_PART)
-      await expect(expectNativeImagePart(responses({ role: 'user', content: [{ type: 'input_file', file_data: pngDataURI(pngBase64) }] }), png, noDecode)).rejects.toThrow(NO_IMAGE_PART)
+      await expect(expectNativeImagePart(chat({
+        role: 'user',
+        content: [
+          chatFile(pngDataURI(pngBase64)),
+        ],
+      }), png, noDecode)).rejects.toThrow(NO_IMAGE_PART)
+      await expect(expectNativeImagePart(cursor([
+        { kind: 'document', data: pngBase64, mimeType: 'image/png' },
+      ]), png, noDecode)).rejects.toThrow(NO_IMAGE_PART)
+      await expect(expectNativeImagePart(responses({
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file_data: pngDataURI(pngBase64),
+          },
+        ],
+      }), png, noDecode)).rejects.toThrow(NO_IMAGE_PART)
     })
   })
 
@@ -827,26 +2025,73 @@ describe('expectNativeImagePart', () => {
       ['a data URI with a media type parameter', `data:image/png;name=shot.png;base64,${pngBase64}`, 'has a image_url.url that is not of the form data:<type>;base64,<data>'],
       ['a URL', 'https://example.com/shot.png', 'has a image_url.url that is not of the form data:<type>;base64,<data>'],
       ['null', null, 'has null in image_url.url, not a base64 data URI'],
-      ['an object', { data: pngBase64 }, 'has an object in image_url.url, not a base64 data URI'],
+      [
+        'an object',
+        { data: pngBase64 },
+        'has an object in image_url.url, not a base64 data URI',
+      ],
     ])('rejects %s in a Chat Completions image part', async (_name, url, message) => {
-      await expect(expectNativeImagePart(chat({ role: 'user', content: [chatImage(url)] }), png, noDecode)).rejects.toThrow(message)
+      await expect(expectNativeImagePart(chat({
+        role: 'user',
+        content: [
+          chatImage(url),
+        ],
+      }), png, noDecode)).rejects.toThrow(message)
     })
 
     it('rejects a Chat Completions image part whose image_url is a bare string or absent', async () => {
-      await expect(expectNativeImagePart(chat({ role: 'user', content: [{ type: 'image_url', image_url: pngDataURI(pngBase64) }] }), png, noDecode)).rejects.toThrow('has no value in image_url.url')
-      await expect(expectNativeImagePart(chat({ role: 'user', content: [{ type: 'image_url' }] }), png, noDecode)).rejects.toThrow('has no value in image_url.url')
+      await expect(expectNativeImagePart(chat({
+        role: 'user',
+        content: [
+          {
+            type: 'image_url',
+            image_url: pngDataURI(pngBase64),
+          },
+        ],
+      }), png, noDecode)).rejects.toThrow('has no value in image_url.url')
+      await expect(expectNativeImagePart(chat({
+        role: 'user',
+        content: [
+          { type: 'image_url' },
+        ],
+      }), png, noDecode)).rejects.toThrow('has no value in image_url.url')
     })
 
     it('rejects a Responses input image that refers to an uploaded file or wraps its URL in an object', async () => {
-      await expect(expectNativeImagePart(responses({ role: 'user', content: [{ type: 'input_image', file_id: 'file-abc' }] }), png, noDecode)).rejects.toThrow('has no value in image_url, not a base64 data URI')
-      await expect(expectNativeImagePart(responses({ role: 'user', content: [responsesImage({ url: pngDataURI(pngBase64) })] }), png, noDecode)).rejects.toThrow('has an object in image_url, not a base64 data URI')
+      await expect(expectNativeImagePart(responses({
+        role: 'user',
+        content: [
+          { type: 'input_image', file_id: 'file-abc' },
+        ],
+      }), png, noDecode)).rejects.toThrow('has no value in image_url, not a base64 data URI')
+      await expect(expectNativeImagePart(responses({
+        role: 'user',
+        content: [
+          responsesImage({
+            url: pngDataURI(pngBase64),
+          }),
+        ],
+      }), png, noDecode)).rejects.toThrow('has an object in image_url, not a base64 data URI')
     })
 
     it('rejects an Anthropic image whose source is a URL or absent', async () => {
-      await expect(expectNativeImagePart(anthropic({ role: 'user', content: [{ type: 'image', source: { type: 'url', url: 'https://example.com/shot.png' } }] }), png, noDecode))
+      await expect(expectNativeImagePart(anthropic({
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: { type: 'url', url: 'https://example.com/shot.png' },
+          },
+        ],
+      }), png, noDecode))
         .rejects
         .toThrow('messages[0].content[0] has a source of type url, not base64 bytes')
-      await expect(expectNativeImagePart(anthropic({ role: 'user', content: [{ type: 'image' }] }), png, noDecode)).rejects.toThrow('messages[0].content[0] has no source')
+      await expect(expectNativeImagePart(anthropic({
+        role: 'user',
+        content: [
+          { type: 'image' },
+        ],
+      }), png, noDecode)).rejects.toThrow('messages[0].content[0] has no source')
     })
   })
 
@@ -856,19 +2101,41 @@ describe('expectNativeImagePart', () => {
       ['null', null, 'has null in place of base64 bytes'],
       ['an absent value', undefined, 'has no value in place of base64 bytes'],
       ['a number', 0, 'has a number in place of base64 bytes'],
-      ['an object', { bytes: pngBase64 }, 'has an object in place of base64 bytes'],
-      ['an array', [...png], 'has an array in place of base64 bytes'],
+      [
+        'an object',
+        { bytes: pngBase64 },
+        'has an object in place of base64 bytes',
+      ],
+      [
+        'an array',
+        [...png],
+        'has an array in place of base64 bytes',
+      ],
     ])('rejects %s in an Anthropic image', async (_name, data, message) => {
-      await expect(expectNativeImagePart(anthropic({ role: 'user', content: [anthropicImage(data)] }), png, noDecode)).rejects.toThrow(message)
+      await expect(expectNativeImagePart(anthropic({
+        role: 'user',
+        content: [
+          anthropicImage(data),
+        ],
+      }), png, noDecode)).rejects.toThrow(message)
     })
 
     it('rejects a PNG data URI with an empty payload', async () => {
-      await expect(expectNativeImagePart(chat({ role: 'user', content: [chatImage(pngDataURI(''))] }), png, noDecode)).rejects.toThrow('has empty data')
+      await expect(expectNativeImagePart(chat({
+        role: 'user',
+        content: [
+          chatImage(pngDataURI('')),
+        ],
+      }), png, noDecode)).rejects.toThrow('has empty data')
     })
 
     it('rejects a Kiro image with no source and a Cursor image with no data', async () => {
-      await expect(expectNativeImagePart(kiroImages([{ format: 'png' }]), png, noDecode)).rejects.toThrow('has no value in place of base64 bytes')
-      await expect(expectNativeImagePart(cursor([{ kind: 'image', mimeType: 'image/png' }]), png, noDecode)).rejects.toThrow('has no value in place of base64 bytes')
+      await expect(expectNativeImagePart(kiroImages([
+        { format: 'png' },
+      ]), png, noDecode)).rejects.toThrow('has no value in place of base64 bytes')
+      await expect(expectNativeImagePart(cursor([
+        { kind: 'image', mimeType: 'image/png' },
+      ]), png, noDecode)).rejects.toThrow('has no value in place of base64 bytes')
     })
   })
 
@@ -876,83 +2143,181 @@ describe('expectNativeImagePart', () => {
     it('rejects the PNG signature alone', async () => {
       // The zlib build decides the deflated bytes, so the expected size and hash come from the fixture file.
       const signature = png.subarray(0, 8)
-      await expect(expectNativeImagePart(anthropic({ role: 'user', content: [anthropicImage(signature.toString('base64'))] }), png, noDecode))
+      await expect(expectNativeImagePart(anthropic({
+        role: 'user',
+        content: [
+          anthropicImage(signature.toString('base64')),
+        ],
+      }), png, noDecode))
         .rejects
         .toThrow(`has 8 bytes with SHA-256 ${sha256Hex(signature)}, not the ${png.length}-byte source with SHA-256 ${sha256Hex(png)}`)
     })
 
     it('rejects the PNG without its last byte', async () => {
       const truncated = png.subarray(0, png.length - 1).toString('base64')
-      await expect(expectNativeImagePart(chat({ role: 'user', content: [chatImage(pngDataURI(truncated))] }), png, noDecode)).rejects.toThrow(`has ${png.length - 1} bytes`)
+      await expect(expectNativeImagePart(chat({
+        role: 'user',
+        content: [
+          chatImage(pngDataURI(truncated)),
+        ],
+      }), png, noDecode)).rejects.toThrow(`has ${png.length - 1} bytes`)
     })
 
     it('rejects the PNG with one changed byte', async () => {
       const corrupt = Buffer.from(png)
       corrupt[png.length - 2] = corrupt[png.length - 2]! ^ 0x01
-      await expect(expectNativeImagePart(kiroImages([{ format: 'png', source: { bytes: corrupt.toString('base64') } }]), png, noDecode)).rejects.toThrow(`has ${png.length} bytes with SHA-256`)
+      await expect(expectNativeImagePart(kiroImages([
+        {
+          format: 'png',
+          source: {
+            bytes: corrupt.toString('base64'),
+          },
+        },
+      ]), png, noDecode)).rejects.toThrow(`has ${png.length} bytes with SHA-256`)
     })
 
     it('rejects the PNG with extra bytes after it', async () => {
-      const extended = Buffer.concat([png, Buffer.from([0])]).toString('base64')
-      await expect(expectNativeImagePart(google({ role: 'user', parts: [{ inlineData: { mimeType: 'image/png', data: extended } }] }), png, noDecode)).rejects.toThrow(`has ${png.length + 1} bytes`)
+      const extended = Buffer.concat([
+        png,
+        Buffer.from([0]),
+      ]).toString('base64')
+      await expect(expectNativeImagePart(google({
+        role: 'user',
+        parts: [
+          {
+            inlineData: { mimeType: 'image/png', data: extended },
+          },
+        ],
+      }), png, noDecode)).rejects.toThrow(`has ${png.length + 1} bytes`)
     })
 
     it('rejects a transcoded image, which a provider that sends the source bytes does not write', async () => {
-      await expect(expectNativeImagePart(chat({ role: 'user', content: [chatImage(webpURI)] }), png, noDecode))
+      await expect(expectNativeImagePart(chat({
+        role: 'user',
+        content: [
+          chatImage(webpURI),
+        ],
+      }), png, noDecode))
         .rejects
         .toThrow('messages[0].content[0] declares image_url.url=data:image/webp, not image/png')
     })
 
     it.each([
-      ['without its padding', () => pngBase64.replace(/=+$/, '')],
-      ['in the URL-safe alphabet', () => pngBase64.replaceAll('+', '-').replaceAll('/', '_')],
-      ['with a line break every 76 characters', () => pngBase64.replace(/(.{76})/g, '$1\n')],
-      ['with surrounding white space', () => ` ${pngBase64} `],
+      [
+        'without its padding',
+        () => pngBase64.replace(/=+$/, ''),
+      ],
+      [
+        'in the URL-safe alphabet',
+        () => pngBase64.replaceAll('+', '-').replaceAll('/', '_'),
+      ],
+      [
+        'with a line break every 76 characters',
+        () => pngBase64.replace(/(.{76})/g, '$1\n'),
+      ],
+      [
+        'with surrounding white space',
+        () => ` ${pngBase64} `,
+      ],
     ])('rejects the complete PNG base64 %s', async (_name, form) => {
       const data = form()
       expect(data).not.toBe(pngBase64)
       expect(Buffer.from(data, 'base64').equals(png)).toBe(true)
-      await expect(expectNativeImagePart(anthropic({ role: 'user', content: [anthropicImage(data)] }), png, noDecode)).rejects.toThrow('has data that is not canonical base64')
+      await expect(expectNativeImagePart(anthropic({
+        role: 'user',
+        content: [
+          anthropicImage(data),
+        ],
+      }), png, noDecode)).rejects.toThrow('has data that is not canonical base64')
     })
   })
 
   describe('rejects the exact PNG outside the current user turn', () => {
     it('rejects a trailing instruction row that carries the PNG', async () => {
       await expect(expectNativeImagePart(anthropic(
-        { role: 'user', content: [{ type: 'text', text: 'Inspect the attached file.' }] },
-        { role: 'system', content: [anthropicImage(pngBase64)] },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Inspect the attached file.' },
+          ],
+        },
+        {
+          role: 'system',
+          content: [
+            anthropicImage(pngBase64),
+          ],
+        },
       ), png, noDecode)).rejects.toThrow(NO_IMAGE_PART)
     })
 
     it('rejects an earlier turn that an assistant row ends, even when an instruction row follows the current user row', async () => {
       await expect(expectNativeImagePart(anthropic(
-        { role: 'user', content: [anthropicImage(pngBase64)] },
-        { role: 'assistant', content: [{ type: 'text', text: 'Read.' }] },
-        { role: 'user', content: [{ type: 'text', text: 'Describe it again.' }] },
-        { role: 'system', content: [{ type: 'text', text: '# Environment' }] },
+        {
+          role: 'user',
+          content: [
+            anthropicImage(pngBase64),
+          ],
+        },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'Read.' },
+          ],
+        },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Describe it again.' },
+          ],
+        },
+        {
+          role: 'system',
+          content: [
+            { type: 'text', text: '# Environment' },
+          ],
+        },
       ), png, noDecode)).rejects.toThrow(NO_IMAGE_PART)
     })
 
     it('rejects a Responses image after which a tool call output ends the history', async () => {
       await expect(expectNativeImagePart(responses(
-        { type: 'message', role: 'user', content: [responsesImage(pngDataURI(pngBase64))] },
-        { type: 'function_call', call_id: 'call_1', name: 'shell', arguments: '{}' },
+        {
+          type: 'message',
+          role: 'user',
+          content: [
+            responsesImage(pngDataURI(pngBase64)),
+          ],
+        },
+        {
+          type: 'function_call',
+          call_id: 'call_1',
+          name: 'shell',
+          arguments: '{}',
+        },
         { type: 'function_call_output', call_id: 'call_1', output: 'done' },
       ), png, noDecode)).rejects.toThrow(NO_IMAGE_PART)
     })
 
     it('rejects a Cursor image that the mock projects from another route', async () => {
-      const elsewhere: MockModelRequestRecord = { ...cursor([{ kind: 'image', data: pngBase64, mimeType: 'image/png' }]), path: '/v1/responses' }
+      const elsewhere: MockModelRequestRecord = {
+        ...cursor([
+          { kind: 'image', data: pngBase64, mimeType: 'image/png' },
+        ]),
+        path: '/v1/responses',
+      }
       await expect(expectNativeImagePart(elsewhere, png, noDecode)).rejects.toThrow(NO_IMAGE_PART)
     })
   })
 
   it('states the location and the defect of each typed part that comes close', async () => {
-    const request = chat({ role: 'user', content: [
-      { type: 'text', text: pngBase64 },
-      chatImage(`data:image/jpeg;base64,${pngBase64}`),
-      chatImage(pngDataURI(png.subarray(0, 8).toString('base64'))),
-    ] })
+    const request = chat({
+      role: 'user',
+      content: [
+        { type: 'text', text: pngBase64 },
+        chatImage(`data:image/jpeg;base64,${pngBase64}`),
+        chatImage(pngDataURI(png.subarray(0, 8).toString('base64'))),
+      ],
+    })
     await expect(expectNativeImagePart(request, png, noDecode)).rejects.toThrow(
       'the current user turn of the scripted openai-chat-completions request does not carry the complete image file in a typed image part with the exact source bytes: '
       + 'messages[0].content[1] declares image_url.url=data:image/jpeg, not image/png; '
@@ -961,23 +2326,116 @@ describe('expectNativeImagePart', () => {
   })
 
   it.each([
-    ['anthropic-messages', [undefined, null, 'text', {}, { messages: null }, { messages: [null, {}, { role: 'user', content: null }, { role: 'user', content: [null, 'text'] }] }]],
-    ['openai-chat-completions', [undefined, { messages: [{ role: 'user', content: [null, { type: 'image_url', image_url: null }] }] }]],
-    ['openai-responses', [undefined, { input: 'text' }, { input: [null, { role: 'user', content: 'text' }] }]],
-    ['aws-event-stream', [undefined, { conversationState: null }, { conversationState: { currentMessage: { userInputMessage: { images: null } } } }]],
-    ['google-generative-language', [undefined, { contents: null }, { contents: [null, { role: 'user', parts: null }, { role: 'user', parts: [null, { inlineData: null }] }] }]],
+    [
+      'anthropic-messages',
+      [
+        undefined,
+        null,
+        'text',
+        {},
+        { messages: null },
+        {
+          messages: [
+            null,
+            {},
+            { role: 'user', content: null },
+            {
+              role: 'user',
+              content: [null, 'text'],
+            },
+          ],
+        },
+      ],
+    ],
+    [
+      'openai-chat-completions',
+      [
+        undefined,
+        {
+          messages: [
+            {
+              role: 'user',
+              content: [
+                null,
+                { type: 'image_url', image_url: null },
+              ],
+            },
+          ],
+        },
+      ],
+    ],
+    [
+      'openai-responses',
+      [
+        undefined,
+        { input: 'text' },
+        {
+          input: [
+            null,
+            { role: 'user', content: 'text' },
+          ],
+        },
+      ],
+    ],
+    [
+      'aws-event-stream',
+      [
+        undefined,
+        { conversationState: null },
+        {
+          conversationState: {
+            currentMessage: {
+              userInputMessage: { images: null },
+            },
+          },
+        },
+      ],
+    ],
+    [
+      'google-generative-language',
+      [
+        undefined,
+        { contents: null },
+        {
+          contents: [
+            null,
+            { role: 'user', parts: null },
+            {
+              role: 'user',
+              parts: [
+                null,
+                { inlineData: null },
+              ],
+            },
+          ],
+        },
+      ],
+    ],
   ] satisfies Array<[MockModelProtocol, unknown[]]>)('rejects an absent or malformed %s body', async (protocol, bodies) => {
     for (const body of bodies)
       await expect(expectNativeImagePart(nativeRequest(protocol, body), png, noDecode)).rejects.toThrow(`the current user turn of the scripted ${protocol} request does not carry the complete image file`)
   })
 
   it('rejects an absent or malformed Cursor projection', async () => {
-    for (const attachments of [undefined, null, 'image', [null, { kind: 'file', data: 'text' }]])
+    for (const attachments of [
+      undefined,
+      null,
+      'image',
+      [
+        null,
+        { kind: 'file', data: 'text' },
+      ],
+    ])
       await expect(expectNativeImagePart(cursor(attachments), png, noDecode)).rejects.toThrow(NO_IMAGE_PART)
   })
 
   it('fails when the fixture has no image signature', async () => {
-    await expect(expectNativeImagePart(chat({ role: 'user', content: [chatImage(pngDataURI(pngBase64))] }), Buffer.from('not an image'), noDecode))
+    await expect(expectNativeImagePart(chat({
+      role: 'user',
+      content: [
+        chatImage(pngDataURI(pngBase64)),
+      ],
+    }), Buffer.from('not an image'), noDecode))
       .rejects
       .toThrow('the image fixture has no image signature that the proof can identify')
   })
@@ -986,11 +2444,53 @@ describe('expectNativeImagePart', () => {
     const NO_WEBP_PART = 'does not carry the complete image file in a typed image/webp part that decodes to the four source colors'
 
     it.each([
-      ['a Chat Completions image part', chat({ role: 'user', content: [chatImage(webpURI)] })],
-      ['an Anthropic image block', anthropic({ role: 'user', content: [anthropicImage(webpBase64, 'image/webp')] })],
-      ['a Responses input image', responses({ role: 'user', content: [responsesImage(webpURI)] })],
-      ['a Google inlineData part', google({ role: 'user', parts: [{ inlineData: { mimeType: 'image/webp', data: webpBase64 } }] })],
-      ['a Kiro image', kiroImages([{ format: 'webp', source: { bytes: webpBase64 } }])],
+      [
+        'a Chat Completions image part',
+        chat({
+          role: 'user',
+          content: [
+            chatImage(webpURI),
+          ],
+        }),
+      ],
+      [
+        'an Anthropic image block',
+        anthropic({
+          role: 'user',
+          content: [
+            anthropicImage(webpBase64, 'image/webp'),
+          ],
+        }),
+      ],
+      [
+        'a Responses input image',
+        responses({
+          role: 'user',
+          content: [
+            responsesImage(webpURI),
+          ],
+        }),
+      ],
+      [
+        'a Google inlineData part',
+        google({
+          role: 'user',
+          parts: [
+            {
+              inlineData: { mimeType: 'image/webp', data: webpBase64 },
+            },
+          ],
+        }),
+      ],
+      [
+        'a Kiro image',
+        kiroImages([
+          {
+            format: 'webp',
+            source: { bytes: webpBase64 },
+          },
+        ]),
+      ],
     ])('accepts %s whose bytes decode to the four source colors', async (_name, request) => {
       await expect(expectNativeImagePart(request, png, decoderFor(webpURI), 'image/webp')).resolves.toBeUndefined()
     })
@@ -1001,27 +2501,54 @@ describe('expectNativeImagePart', () => {
       const canonical = bytes.toString('base64')
       const urlSafe = canonical.replaceAll('+', '-').replaceAll('/', '_')
       expect(urlSafe).not.toBe(canonical)
-      const request = google({ role: 'user', parts: [{ inlineData: { mimeType: 'image/webp', data: urlSafe } }] })
+      const request = google({
+        role: 'user',
+        parts: [
+          {
+            inlineData: { mimeType: 'image/webp', data: urlSafe },
+          },
+        ],
+      })
       await expect(expectNativeImagePart(request, png, decoderFor(`data:image/webp;base64,${canonical}`), 'image/webp')).resolves.toBeUndefined()
     })
 
     it('rejects the exact PNG, which the provider does not send', async () => {
-      await expect(expectNativeImagePart(chat({ role: 'user', content: [chatImage(pngDataURI(pngBase64))] }), png, noDecode, 'image/webp'))
+      await expect(expectNativeImagePart(chat({
+        role: 'user',
+        content: [
+          chatImage(pngDataURI(pngBase64)),
+        ],
+      }), png, noDecode, 'image/webp'))
         .rejects
         .toThrow('messages[0].content[0] declares image_url.url=data:image/png, not image/webp')
     })
 
     it('rejects a part that declares the stated type but holds bytes of another format', async () => {
-      await expect(expectNativeImagePart(chat({ role: 'user', content: [chatImage(`data:image/webp;base64,${pngBase64}`)] }), png, noDecode, 'image/webp'))
+      await expect(expectNativeImagePart(chat({
+        role: 'user',
+        content: [
+          chatImage(`data:image/webp;base64,${pngBase64}`),
+        ],
+      }), png, noDecode, 'image/webp'))
         .rejects
         .toThrow('messages[0].content[0] holds image/png bytes, not the image/webp that it declares')
-      await expect(expectNativeImagePart(chat({ role: 'user', content: [chatImage(`data:image/webp;base64,${Buffer.from('not an image').toString('base64')}`)] }), png, noDecode, 'image/webp'))
+      await expect(expectNativeImagePart(chat({
+        role: 'user',
+        content: [
+          chatImage(`data:image/webp;base64,${Buffer.from('not an image').toString('base64')}`),
+        ],
+      }), png, noDecode, 'image/webp'))
         .rejects
         .toThrow('holds bytes with no known image signature, not the image/webp that it declares')
     })
 
     it('rejects a part that declares another image type, even with bytes of the stated format', async () => {
-      await expect(expectNativeImagePart(chat({ role: 'user', content: [chatImage(`data:image/png;base64,${webpBase64}`)] }), png, noDecode, 'image/webp'))
+      await expect(expectNativeImagePart(chat({
+        role: 'user',
+        content: [
+          chatImage(`data:image/png;base64,${webpBase64}`),
+        ],
+      }), png, noDecode, 'image/webp'))
         .rejects
         .toThrow('declares image_url.url=data:image/png, not image/webp')
     })
@@ -1029,33 +2556,97 @@ describe('expectNativeImagePart', () => {
     it('rejects non-canonical base64 before it decodes the image', async () => {
       const unpadded = webpBase64.replace(/=+$/, '')
       expect(unpadded).not.toBe(webpBase64)
-      await expect(expectNativeImagePart(chat({ role: 'user', content: [chatImage(`data:image/webp;base64,${unpadded}`)] }), png, noDecode, 'image/webp'))
+      await expect(expectNativeImagePart(chat({
+        role: 'user',
+        content: [
+          chatImage(`data:image/webp;base64,${unpadded}`),
+        ],
+      }), png, noDecode, 'image/webp'))
         .rejects
         .toThrow('has data that is not canonical base64')
     })
 
     it.each([
-      ['white', [[255, 255, 255, 255], [255, 255, 255, 255], [255, 255, 255, 255], [255, 255, 255, 255]]],
-      ['the quadrants in another order', [[0, 255, 0, 255], [255, 0, 0, 255], [0, 0, 255, 255], [255, 255, 0, 255]]],
-      ['transparent', [[255, 0, 0, 0], [0, 255, 0, 0], [0, 0, 255, 0], [255, 255, 0, 0]]],
-      ['one quadrant past the channel tolerance', [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255], [255, 255, 60, 255]]],
-      ['three quadrants', [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255]]],
+      [
+        'white',
+        [
+          [255, 255, 255, 255],
+          [255, 255, 255, 255],
+          [255, 255, 255, 255],
+          [255, 255, 255, 255],
+        ],
+      ],
+      [
+        'the quadrants in another order',
+        [
+          [0, 255, 0, 255],
+          [255, 0, 0, 255],
+          [0, 0, 255, 255],
+          [255, 255, 0, 255],
+        ],
+      ],
+      [
+        'transparent',
+        [
+          [255, 0, 0, 0],
+          [0, 255, 0, 0],
+          [0, 0, 255, 0],
+          [255, 255, 0, 0],
+        ],
+      ],
+      [
+        'one quadrant past the channel tolerance',
+        [
+          [255, 0, 0, 255],
+          [0, 255, 0, 255],
+          [0, 0, 255, 255],
+          [255, 255, 60, 255],
+        ],
+      ],
+      [
+        'three quadrants',
+        [
+          [255, 0, 0, 255],
+          [0, 255, 0, 255],
+          [0, 0, 255, 255],
+        ],
+      ],
     ])('rejects a part whose pixels decode to %s', async (_name, pixels) => {
-      await expect(expectNativeImagePart(chat({ role: 'user', content: [chatImage(webpURI)] }), png, decoderFor(webpURI, pixels), 'image/webp'))
+      await expect(expectNativeImagePart(chat({
+        role: 'user',
+        content: [
+          chatImage(webpURI),
+        ],
+      }), png, decoderFor(webpURI, pixels), 'image/webp'))
         .rejects
         .toThrow(`messages[0].content[0] decodes to the quadrant pixels ${JSON.stringify(pixels)}, not the four source colors`)
     })
 
     it('accepts pixels within the channel tolerance', async () => {
-      const near = [[230, 20, 10, 250], [25, 240, 30, 255], [10, 15, 220, 245], [240, 250, 40, 255]]
-      await expect(expectNativeImagePart(chat({ role: 'user', content: [chatImage(webpURI)] }), png, decoderFor(webpURI, near), 'image/webp')).resolves.toBeUndefined()
+      const near = [
+        [230, 20, 10, 250],
+        [25, 240, 30, 255],
+        [10, 15, 220, 245],
+        [240, 250, 40, 255],
+      ]
+      await expect(expectNativeImagePart(chat({
+        role: 'user',
+        content: [
+          chatImage(webpURI),
+        ],
+      }), png, decoderFor(webpURI, near), 'image/webp')).resolves.toBeUndefined()
     })
 
     it('rejects a part that fails to decode', async () => {
       const broken: QuadrantDecoder = async () => {
         throw new Error('the browser cannot decode the image')
       }
-      await expect(expectNativeImagePart(chat({ role: 'user', content: [chatImage(webpURI)] }), png, broken, 'image/webp'))
+      await expect(expectNativeImagePart(chat({
+        role: 'user',
+        content: [
+          chatImage(webpURI),
+        ],
+      }), png, broken, 'image/webp'))
         .rejects
         .toThrow('messages[0].content[0] fails to decode: the browser cannot decode the image')
     })
@@ -1064,18 +2655,54 @@ describe('expectNativeImagePart', () => {
       const decode = decoderFor(webpURI)
       await expect(expectNativeImagePart(chat({ role: 'user', content: `Inspect this: ${webpURI}` }), png, decode, 'image/webp')).rejects.toThrow(NO_WEBP_PART)
       await expect(expectNativeImagePart(chat(
-        { role: 'user', content: [chatImage(webpURI)] },
+        {
+          role: 'user',
+          content: [
+            chatImage(webpURI),
+          ],
+        },
         { role: 'assistant', content: 'Read it.' },
         { role: 'user', content: 'Inspect the attached file.' },
       ), png, decode, 'image/webp')).rejects.toThrow(NO_WEBP_PART)
       await expect(expectNativeImagePart(anthropic(
-        { role: 'user', content: [{ type: 'text', text: 'Inspect the attached file.' }] },
-        { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: {} }] },
-        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: [anthropicImage(webpBase64, 'image/webp')] }] },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Inspect the attached file.' },
+          ],
+        },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_1',
+              name: 'Read',
+              input: {},
+            },
+          ],
+        },
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_1',
+              content: [
+                anthropicImage(webpBase64, 'image/webp'),
+              ],
+            },
+          ],
+        },
       ), png, decode, 'image/webp')).rejects.toThrow(NO_WEBP_PART)
       await expect(expectNativeImagePart(chat(
         { role: 'user', content: 'Inspect the attached file.' },
-        { role: 'system', content: [chatImage(webpURI)] },
+        {
+          role: 'system',
+          content: [
+            chatImage(webpURI),
+          ],
+        },
       ), png, decode, 'image/webp')).rejects.toThrow(NO_WEBP_PART)
     })
   })
@@ -1085,11 +2712,22 @@ describe('expectNativeAttachmentProof', () => {
   const NO_COMPLETE_IMAGE = 'does not carry the complete image file'
 
   it('accepts the exact PNG in a typed image part without decoding it', async () => {
-    await expect(imageProof(anthropic({ role: 'user', content: [{ type: 'text', text: 'Inspect the attached file.' }, anthropicImage(pngBase64)] }))).resolves.toBeUndefined()
+    await expect(imageProof(anthropic({
+      role: 'user',
+      content: [
+        { type: 'text', text: 'Inspect the attached file.' },
+        anthropicImage(pngBase64),
+      ],
+    }))).resolves.toBeUndefined()
   })
 
   it('applies a transcoded image type to an image attachment only', async () => {
-    const request = chat({ role: 'user', content: [chatFile(pdfDataURI(encoded))] })
+    const request = chat({
+      role: 'user',
+      content: [
+        chatFile(pdfDataURI(encoded)),
+      ],
+    })
     await expect(expectNativeAttachmentProof(noBrowser, status(request), 'pdf', pdfPath, { protocol: 'openai-chat-completions', transcodedImageType: 'image/webp' }))
       .rejects
       .toThrow('a transcoded image type applies to an image attachment, not to a pdf attachment')
@@ -1097,7 +2735,12 @@ describe('expectNativeAttachmentProof', () => {
   })
 
   it('rejects a media type on a PDF attachment', async () => {
-    const request = chat({ role: 'user', content: [chatFile(pdfDataURI(encoded))] })
+    const request = chat({
+      role: 'user',
+      content: [
+        chatFile(pdfDataURI(encoded)),
+      ],
+    })
     await expect(expectNativeAttachmentProof(noBrowser, status(request), 'pdf', pdfPath, { mediaType: 'application/pdf' }))
       .rejects
       .toThrow('a media type applies to an audio or binary attachment, not to a pdf attachment')
@@ -1114,7 +2757,12 @@ describe('expectNativeAttachmentProof', () => {
   })
 
   it('accepts a binary attachment in a typed file part of the declared type', async () => {
-    const request = chat({ role: 'user', content: [chatFile(`data:application/macbinary;base64,${binary.toString('base64')}`)] })
+    const request = chat({
+      role: 'user',
+      content: [
+        chatFile(`data:application/macbinary;base64,${binary.toString('base64')}`),
+      ],
+    })
     await expect(expectNativeAttachmentProof(noBrowser, status(request), 'binary', binaryPath, { protocol: 'openai-chat-completions', mediaType: /^application\// }))
       .resolves
       .toBeUndefined()
@@ -1125,7 +2773,16 @@ describe('expectNativeAttachmentProof', () => {
 
   it('reads the request of the step that stepIndex states', async () => {
     const clean = chat({ role: 'user', content: 'Reply once without attachments.' })
-    const withPdf = nativeRequest('openai-chat-completions', { messages: [{ role: 'user', content: [chatFile(pdfDataURI(encoded))] }] }, 2)
+    const withPdf = nativeRequest('openai-chat-completions', {
+      messages: [
+        {
+          role: 'user',
+          content: [
+            chatFile(pdfDataURI(encoded)),
+          ],
+        },
+      ],
+    }, 2)
     await expect(expectNativeAttachmentProof(noBrowser, status(clean, withPdf), 'pdf', pdfPath, { protocol: 'openai-chat-completions', stepIndex: 2 }))
       .resolves
       .toBeUndefined()
@@ -1135,7 +2792,12 @@ describe('expectNativeAttachmentProof', () => {
   })
 
   it('fails a request on another model API than the protocol states', async () => {
-    const request = chat({ role: 'user', content: [chatFile(pdfDataURI(encoded))] })
+    const request = chat({
+      role: 'user',
+      content: [
+        chatFile(pdfDataURI(encoded)),
+      ],
+    })
     await expect(expectNativeAttachmentProof(noBrowser, status(request), 'pdf', pdfPath, { protocol: 'anthropic-messages' })).rejects.toThrow('the scripted request uses the model API of the provider')
   })
 
@@ -1147,7 +2809,12 @@ describe('expectNativeAttachmentProof', () => {
         return SOURCE_QUADRANTS
       },
     })
-    await expect(expectNativeAttachmentProof(page, status(chat({ role: 'user', content: [chatImage(webpURI)] })), 'image', pngPath, { protocol: 'openai-chat-completions', transcodedImageType: 'image/webp' }))
+    await expect(expectNativeAttachmentProof(page, status(chat({
+      role: 'user',
+      content: [
+        chatImage(webpURI),
+      ],
+    })), 'image', pngPath, { protocol: 'openai-chat-completions', transcodedImageType: 'image/webp' }))
       .resolves
       .toBeUndefined()
     expect(decoded).toEqual([webpURI])
@@ -1155,41 +2822,205 @@ describe('expectNativeAttachmentProof', () => {
 
   describe('rejects the complete PNG outside a typed image part', () => {
     it.each([
-      ['a Chat Completions string', chat({ role: 'user', content: `Inspect this: ${pngBase64}` })],
-      ['a Chat Completions text part', chat({ role: 'user', content: [{ type: 'text', text: pngBase64 }] })],
-      ['an Anthropic text block', anthropic({ role: 'user', content: [{ type: 'text', text: pngBase64 }] })],
-      ['a Responses input text part', responses({ role: 'user', content: [{ type: 'input_text', text: pngBase64 }] })],
-      ['a Google text part', google({ role: 'user', parts: [{ text: pngBase64 }] })],
-      ['the Kiro user text', nativeRequest('aws-event-stream', { conversationState: { currentMessage: { userInputMessage: { content: pngBase64 } } } })],
+      [
+        'a Chat Completions string',
+        chat({ role: 'user', content: `Inspect this: ${pngBase64}` }),
+      ],
+      [
+        'a Chat Completions text part',
+        chat({
+          role: 'user',
+          content: [
+            { type: 'text', text: pngBase64 },
+          ],
+        }),
+      ],
+      [
+        'an Anthropic text block',
+        anthropic({
+          role: 'user',
+          content: [
+            { type: 'text', text: pngBase64 },
+          ],
+        }),
+      ],
+      [
+        'a Responses input text part',
+        responses({
+          role: 'user',
+          content: [
+            { type: 'input_text', text: pngBase64 },
+          ],
+        }),
+      ],
+      [
+        'a Google text part',
+        google({
+          role: 'user',
+          parts: [
+            { text: pngBase64 },
+          ],
+        }),
+      ],
+      [
+        'the Kiro user text',
+        nativeRequest('aws-event-stream', {
+          conversationState: {
+            currentMessage: {
+              userInputMessage: { content: pngBase64 },
+            },
+          },
+        }),
+      ],
     ])('rejects the base64 in %s', async (_name, request) => {
       await expect(imageProof(request)).rejects.toThrow(NO_COMPLETE_IMAGE)
     })
 
     it('rejects a complete PNG data URI inside a text part', async () => {
-      await expect(imageProof(chat({ role: 'user', content: [{ type: 'text', text: pngDataURI(pngBase64) }] }))).rejects.toThrow(NO_COMPLETE_IMAGE)
-      await expect(imageProof(anthropic({ role: 'user', content: [{ type: 'text', text: pngDataURI(pngBase64) }] }))).rejects.toThrow(NO_COMPLETE_IMAGE)
+      await expect(imageProof(chat({
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: pngDataURI(pngBase64),
+          },
+        ],
+      }))).rejects.toThrow(NO_COMPLETE_IMAGE)
+      await expect(imageProof(anthropic({
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: pngDataURI(pngBase64),
+          },
+        ],
+      }))).rejects.toThrow(NO_COMPLETE_IMAGE)
     })
   })
 
   describe('rejects a typed part that declares a type other than the PNG', () => {
     it.each([
-      ['a Chat Completions image with a binary type', chat({ role: 'user', content: [chatImage(`data:application/octet-stream;base64,${pngBase64}`)] })],
-      ['a Chat Completions image with a text type', chat({ role: 'user', content: [chatImage(`data:text/plain;base64,${pngBase64}`)] })],
-      ['an Anthropic image with a binary type', anthropic({ role: 'user', content: [anthropicImage(pngBase64, 'application/octet-stream')] })],
-      ['an Anthropic document that holds the PNG', anthropic({ role: 'user', content: [{ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pngBase64 } }] })],
-      ['a Responses input image with a binary type', responses({ role: 'user', content: [responsesImage(`data:application/octet-stream;base64,${pngBase64}`)] })],
-      ['a Google inlineData part with a binary type', google({ role: 'user', parts: [{ inlineData: { mimeType: 'application/octet-stream', data: pngBase64 } }] })],
-      ['a Kiro image with a document format', kiroImages([{ format: 'pdf', source: { bytes: pngBase64 } }])],
-      ['a Kiro document that holds the PNG', kiro([{ name: 'shot', format: 'pdf', source: { bytes: pngBase64 } }])],
+      [
+        'a Chat Completions image with a binary type',
+        chat({
+          role: 'user',
+          content: [
+            chatImage(`data:application/octet-stream;base64,${pngBase64}`),
+          ],
+        }),
+      ],
+      [
+        'a Chat Completions image with a text type',
+        chat({
+          role: 'user',
+          content: [
+            chatImage(`data:text/plain;base64,${pngBase64}`),
+          ],
+        }),
+      ],
+      [
+        'an Anthropic image with a binary type',
+        anthropic({
+          role: 'user',
+          content: [
+            anthropicImage(pngBase64, 'application/octet-stream'),
+          ],
+        }),
+      ],
+      [
+        'an Anthropic document that holds the PNG',
+        anthropic({
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: { type: 'base64', media_type: 'application/pdf', data: pngBase64 },
+            },
+          ],
+        }),
+      ],
+      [
+        'a Responses input image with a binary type',
+        responses({
+          role: 'user',
+          content: [
+            responsesImage(`data:application/octet-stream;base64,${pngBase64}`),
+          ],
+        }),
+      ],
+      [
+        'a Google inlineData part with a binary type',
+        google({
+          role: 'user',
+          parts: [
+            {
+              inlineData: { mimeType: 'application/octet-stream', data: pngBase64 },
+            },
+          ],
+        }),
+      ],
+      [
+        'a Kiro image with a document format',
+        kiroImages([
+          {
+            format: 'pdf',
+            source: { bytes: pngBase64 },
+          },
+        ]),
+      ],
+      [
+        'a Kiro document that holds the PNG',
+        kiro([
+          {
+            name: 'shot',
+            format: 'pdf',
+            source: { bytes: pngBase64 },
+          },
+        ]),
+      ],
     ])('rejects %s', async (_name, request) => {
       await expect(imageProof(request)).rejects.toThrow(NO_COMPLETE_IMAGE)
     })
 
     it.each([
-      ['a Chat Completions image', chat({ role: 'user', content: [chatImage(`data:image/jpeg;base64,${pngBase64}`)] })],
-      ['an Anthropic image', anthropic({ role: 'user', content: [anthropicImage(pngBase64, 'image/webp')] })],
-      ['a Google inlineData part', google({ role: 'user', parts: [{ inlineData: { mimeType: 'image/gif', data: pngBase64 } }] })],
-      ['a Kiro image', kiroImages([{ format: 'jpeg', source: { bytes: pngBase64 } }])],
+      [
+        'a Chat Completions image',
+        chat({
+          role: 'user',
+          content: [
+            chatImage(`data:image/jpeg;base64,${pngBase64}`),
+          ],
+        }),
+      ],
+      [
+        'an Anthropic image',
+        anthropic({
+          role: 'user',
+          content: [
+            anthropicImage(pngBase64, 'image/webp'),
+          ],
+        }),
+      ],
+      [
+        'a Google inlineData part',
+        google({
+          role: 'user',
+          parts: [
+            {
+              inlineData: { mimeType: 'image/gif', data: pngBase64 },
+            },
+          ],
+        }),
+      ],
+      [
+        'a Kiro image',
+        kiroImages([
+          {
+            format: 'jpeg',
+            source: { bytes: pngBase64 },
+          },
+        ]),
+      ],
     ])('rejects PNG bytes that %s declares as another image type', async (_name, request) => {
       await expect(imageProof(request)).rejects.toThrow(NO_COMPLETE_IMAGE)
     })
@@ -1198,61 +3029,147 @@ describe('expectNativeAttachmentProof', () => {
   describe('rejects the exact PNG outside the current user turn', () => {
     it('rejects a system message', async () => {
       await expect(imageProof(chat(
-        { role: 'system', content: [chatImage(pngDataURI(pngBase64))] },
+        {
+          role: 'system',
+          content: [
+            chatImage(pngDataURI(pngBase64)),
+          ],
+        },
         { role: 'user', content: 'Inspect the attached file.' },
       ))).rejects.toThrow(NO_COMPLETE_IMAGE)
     })
 
     it('rejects the Anthropic system field', async () => {
-      const request = nativeRequest('anthropic-messages', { system: [anthropicImage(pngBase64)], messages: [{ role: 'user', content: 'Inspect the attached file.' }] })
+      const request = nativeRequest('anthropic-messages', {
+        system: [
+          anthropicImage(pngBase64),
+        ],
+        messages: [
+          { role: 'user', content: 'Inspect the attached file.' },
+        ],
+      })
       await expect(imageProof(request)).rejects.toThrow(NO_COMPLETE_IMAGE)
     })
 
     it('rejects the Google system instruction', async () => {
       const request = nativeRequest('google-generative-language', {
-        systemInstruction: { parts: [{ inlineData: { mimeType: 'image/png', data: pngBase64 } }] },
-        contents: [{ role: 'user', parts: [{ text: 'Inspect the attached file.' }] }],
+        systemInstruction: {
+          parts: [
+            {
+              inlineData: { mimeType: 'image/png', data: pngBase64 },
+            },
+          ],
+        },
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: 'Inspect the attached file.' },
+            ],
+          },
+        ],
       })
       await expect(imageProof(request)).rejects.toThrow(NO_COMPLETE_IMAGE)
     })
 
     it('rejects a Responses developer message', async () => {
       await expect(imageProof(responses(
-        { role: 'developer', content: [responsesImage(pngDataURI(pngBase64))] },
-        { role: 'user', content: [{ type: 'input_text', text: 'Inspect the attached file.' }] },
+        {
+          role: 'developer',
+          content: [
+            responsesImage(pngDataURI(pngBase64)),
+          ],
+        },
+        {
+          role: 'user',
+          content: [
+            { type: 'input_text', text: 'Inspect the attached file.' },
+          ],
+        },
       ))).rejects.toThrow(NO_COMPLETE_IMAGE)
     })
 
     it('rejects an assistant message that ends the history', async () => {
       await expect(imageProof(chat(
         { role: 'user', content: 'Inspect the attached file.' },
-        { role: 'assistant', content: [chatImage(pngDataURI(pngBase64))] },
+        {
+          role: 'assistant',
+          content: [
+            chatImage(pngDataURI(pngBase64)),
+          ],
+        },
       ))).rejects.toThrow(NO_COMPLETE_IMAGE)
     })
 
     it('rejects a Chat Completions tool message', async () => {
       await expect(imageProof(chat(
         { role: 'user', content: 'Inspect the attached file.' },
-        { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read', arguments: '{}' } }] },
-        { role: 'tool', tool_call_id: 'call_1', content: [chatImage(pngDataURI(pngBase64))] },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            {
+              id: 'call_1',
+              type: 'function',
+              function: { name: 'read', arguments: '{}' },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          tool_call_id: 'call_1',
+          content: [
+            chatImage(pngDataURI(pngBase64)),
+          ],
+        },
       ))).rejects.toThrow(NO_COMPLETE_IMAGE)
     })
 
     it('rejects an image in the user row that follows a tool row, the synthetic carrier that Copilot and Junie build for a tool\'s image', async () => {
       await expect(imageProof(chat(
         { role: 'user', content: 'Inspect the file.' },
-        { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'view', arguments: '{}' } }] },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            {
+              id: 'call_1',
+              type: 'function',
+              function: { name: 'view', arguments: '{}' },
+            },
+          ],
+        },
         { role: 'tool', tool_call_id: 'call_1', content: 'viewed' },
-        { role: 'user', content: [chatImage(pngDataURI(pngBase64))] },
+        {
+          role: 'user',
+          content: [
+            chatImage(pngDataURI(pngBase64)),
+          ],
+        },
       ))).rejects.toThrow(NO_COMPLETE_IMAGE)
     })
 
     it('rejects the same synthetic carrier when a genuine user row follows it in the same turn', async () => {
       await expect(imageProof(chat(
         { role: 'user', content: 'Inspect the file.' },
-        { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'view', arguments: '{}' } }] },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            {
+              id: 'call_1',
+              type: 'function',
+              function: { name: 'view', arguments: '{}' },
+            },
+          ],
+        },
         { role: 'tool', tool_call_id: 'call_1', content: 'viewed' },
-        { role: 'user', content: [chatImage(pngDataURI(pngBase64))] },
+        {
+          role: 'user',
+          content: [
+            chatImage(pngDataURI(pngBase64)),
+          ],
+        },
         { role: 'user', content: 'What did you see?' },
       ))).rejects.toThrow(NO_COMPLETE_IMAGE)
     })
@@ -1260,49 +3177,162 @@ describe('expectNativeAttachmentProof', () => {
     it('accepts the part in a user row that follows the assistant row that answered a tool call', async () => {
       await expect(imageProof(chat(
         { role: 'user', content: 'Inspect the file.' },
-        { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'view', arguments: '{}' } }] },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            {
+              id: 'call_1',
+              type: 'function',
+              function: { name: 'view', arguments: '{}' },
+            },
+          ],
+        },
         { role: 'tool', tool_call_id: 'call_1', content: 'viewed' },
         { role: 'assistant', content: 'Viewed.' },
-        { role: 'user', content: [chatImage(pngDataURI(pngBase64))] },
+        {
+          role: 'user',
+          content: [
+            chatImage(pngDataURI(pngBase64)),
+          ],
+        },
       ))).resolves.toBeUndefined()
     })
 
     it('rejects an image inside an Anthropic tool result, which a file read produces', async () => {
       await expect(imageProof(anthropic(
-        { role: 'user', content: [{ type: 'text', text: 'Inspect the attached file.' }] },
-        { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: {} }] },
-        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: [anthropicImage(pngBase64)] }] },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Inspect the attached file.' },
+          ],
+        },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_1',
+              name: 'Read',
+              input: {},
+            },
+          ],
+        },
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_1',
+              content: [
+                anthropicImage(pngBase64),
+              ],
+            },
+          ],
+        },
       ))).rejects.toThrow(NO_COMPLETE_IMAGE)
     })
 
     it('rejects an Anthropic image beside a tool result', async () => {
       await expect(imageProof(anthropic(
-        { role: 'user', content: [{ type: 'text', text: 'Inspect the attached file.' }] },
-        { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: {} }] },
-        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'Read the image.' }, anthropicImage(pngBase64)] },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Inspect the attached file.' },
+          ],
+        },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_1',
+              name: 'Read',
+              input: {},
+            },
+          ],
+        },
+        {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 'toolu_1', content: 'Read the image.' },
+            anthropicImage(pngBase64),
+          ],
+        },
       ))).rejects.toThrow(NO_COMPLETE_IMAGE)
     })
 
     it('rejects a Google inlineData part beside a function response', async () => {
       await expect(imageProof(google(
-        { role: 'user', parts: [{ text: 'Inspect the attached file.' }] },
-        { role: 'model', parts: [{ functionCall: { name: 'read_file', args: {} } }] },
-        { role: 'user', parts: [{ functionResponse: { name: 'read_file', response: { output: 'Read the image.' } } }, { inlineData: { mimeType: 'image/png', data: pngBase64 } }] },
+        {
+          role: 'user',
+          parts: [
+            { text: 'Inspect the attached file.' },
+          ],
+        },
+        {
+          role: 'model',
+          parts: [
+            {
+              functionCall: { name: 'read_file', args: {} },
+            },
+          ],
+        },
+        {
+          role: 'user',
+          parts: [
+            {
+              functionResponse: {
+                name: 'read_file',
+                response: { output: 'Read the image.' },
+              },
+            },
+            {
+              inlineData: { mimeType: 'image/png', data: pngBase64 },
+            },
+          ],
+        },
       ))).rejects.toThrow(NO_COMPLETE_IMAGE)
     })
 
     it('rejects a Kiro image of a tool result turn', async () => {
-      const request = nativeRequest('aws-event-stream', { conversationState: { currentMessage: { userInputMessage: {
-        content: '',
-        images: [{ format: 'png', source: { bytes: pngBase64 } }],
-        userInputMessageContext: { toolResults: [{ toolUseId: 'tool_1', status: 'success', content: [{ text: 'Read the image.' }] }] },
-      } } } })
+      const request = nativeRequest('aws-event-stream', {
+        conversationState: {
+          currentMessage: {
+            userInputMessage: {
+              content: '',
+              images: [
+                {
+                  format: 'png',
+                  source: { bytes: pngBase64 },
+                },
+              ],
+              userInputMessageContext: {
+                toolResults: [
+                  {
+                    toolUseId: 'tool_1',
+                    status: 'success',
+                    content: [
+                      { text: 'Read the image.' },
+                    ],
+                  },
+                ],
+              },
+            },
+          },
+        },
+      })
       await expect(imageProof(request)).rejects.toThrow(NO_COMPLETE_IMAGE)
     })
 
     it('rejects a Chat Completions image that only an earlier turn carries', async () => {
       await expect(imageProof(chat(
-        { role: 'user', content: [chatImage(pngDataURI(pngBase64))] },
+        {
+          role: 'user',
+          content: [
+            chatImage(pngDataURI(pngBase64)),
+          ],
+        },
         { role: 'assistant', content: 'Read it.' },
         { role: 'user', content: 'Inspect the attached file.' },
       ))).rejects.toThrow(NO_COMPLETE_IMAGE)
@@ -1310,30 +3340,90 @@ describe('expectNativeAttachmentProof', () => {
 
     it('rejects an Anthropic image that only an earlier turn carries', async () => {
       await expect(imageProof(anthropic(
-        { role: 'user', content: [anthropicImage(pngBase64)] },
-        { role: 'assistant', content: [{ type: 'text', text: 'Read it.' }] },
-        { role: 'user', content: [{ type: 'text', text: 'Inspect the attached file.' }] },
+        {
+          role: 'user',
+          content: [
+            anthropicImage(pngBase64),
+          ],
+        },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'Read it.' },
+          ],
+        },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Inspect the attached file.' },
+          ],
+        },
       ))).rejects.toThrow(NO_COMPLETE_IMAGE)
     })
 
     it('rejects a Responses input image that only an earlier turn carries', async () => {
       await expect(imageProof(responses(
-        { type: 'message', role: 'user', content: [responsesImage(pngDataURI(pngBase64))] },
-        { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Read it.' }] },
-        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Inspect the attached file.' }] },
+        {
+          type: 'message',
+          role: 'user',
+          content: [
+            responsesImage(pngDataURI(pngBase64)),
+          ],
+        },
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [
+            { type: 'output_text', text: 'Read it.' },
+          ],
+        },
+        {
+          type: 'message',
+          role: 'user',
+          content: [
+            { type: 'input_text', text: 'Inspect the attached file.' },
+          ],
+        },
       ))).rejects.toThrow(NO_COMPLETE_IMAGE)
     })
 
     it('rejects a Google inlineData image that only an earlier turn carries', async () => {
       await expect(imageProof(google(
-        { role: 'user', parts: [{ inlineData: { mimeType: 'image/png', data: pngBase64 } }] },
-        { role: 'model', parts: [{ text: 'Read it.' }] },
-        { role: 'user', parts: [{ text: 'Inspect the attached file.' }] },
+        {
+          role: 'user',
+          parts: [
+            {
+              inlineData: { mimeType: 'image/png', data: pngBase64 },
+            },
+          ],
+        },
+        {
+          role: 'model',
+          parts: [
+            { text: 'Read it.' },
+          ],
+        },
+        {
+          role: 'user',
+          parts: [
+            { text: 'Inspect the attached file.' },
+          ],
+        },
       ))).rejects.toThrow(NO_COMPLETE_IMAGE)
     })
 
     it('rejects a Kiro image that only the history carries', async () => {
-      const earlier = { userInputMessage: { content: 'Earlier.', images: [{ format: 'png', source: { bytes: pngBase64 } }] } }
+      const earlier = {
+        userInputMessage: {
+          content: 'Earlier.',
+          images: [
+            {
+              format: 'png',
+              source: { bytes: pngBase64 },
+            },
+          ],
+        },
+      }
       await expect(imageProof(kiroImages([], [earlier]))).rejects.toThrow(NO_COMPLETE_IMAGE)
     })
   })
@@ -1343,17 +3433,55 @@ describe('expectNativeAttachmentProof', () => {
 function scriptedContext(textStep?: NativeScenarioContext['textStep']) {
   const queue = vi.fn<(...steps: unknown[]) => Promise<number>>(async () => 0)
   const modelScript = { queue } as unknown as ModelScript
-  const context: NativeScenarioContext = { page: noBrowser, modelScript, provider: AgentProvider.CLAUDE_CODE, ...(textStep ? { textStep } : {}) }
+  const context: NativeScenarioContext = {
+    page: noBrowser,
+    modelScript,
+    provider: AgentProvider.CLAUDE_CODE,
+    ...(textStep
+      ? { textStep }
+      : {}),
+  }
   return { context, queue }
 }
 
 describe('exerciseAttachmentDelivery', () => {
   it.each<[string, AttachmentKind, AttachmentDeliveryOptions, string]>([
-    ['a custom proof with a transcoded image type', 'image', { proof: () => undefined, transcodedImageType: 'image/webp' }, 'a custom attachment proof replaces the typed-part proof'],
-    ['a custom proof with a binary media type', 'binary', { proof: () => undefined, mediaType: 'audio/wav' }, 'a custom attachment proof replaces the typed-part proof'],
-    ['a transcoded image type for a PDF', 'pdf', { transcodedImageType: 'image/png' }, 'a transcoded image type applies to an image attachment, not to a pdf attachment'],
-    ['a binary media type for a text file', 'text', { mediaType: 'text/plain' }, 'a media type applies to an audio or binary attachment, not to a text attachment'],
-    ['a binary file with no media type and no proof', 'binary', {}, 'an audio or binary attachment proof needs the media type that its typed file part declares'],
+    [
+      'a custom proof with a transcoded image type',
+      'image',
+      {
+        proof: () => undefined,
+        transcodedImageType: 'image/webp',
+      },
+      'a custom attachment proof replaces the typed-part proof',
+    ],
+    [
+      'a custom proof with a binary media type',
+      'binary',
+      {
+        proof: () => undefined,
+        mediaType: 'audio/wav',
+      },
+      'a custom attachment proof replaces the typed-part proof',
+    ],
+    [
+      'a transcoded image type for a PDF',
+      'pdf',
+      { transcodedImageType: 'image/png' },
+      'a transcoded image type applies to an image attachment, not to a pdf attachment',
+    ],
+    [
+      'a binary media type for a text file',
+      'text',
+      { mediaType: 'text/plain' },
+      'a media type applies to an audio or binary attachment, not to a text attachment',
+    ],
+    [
+      'a binary file with no media type and no proof',
+      'binary',
+      {},
+      'an audio or binary attachment proof needs the media type that its typed file part declares',
+    ],
   ])('refuses %s before it queues a step', async (_name, kind, options, message) => {
     const { context, queue } = scriptedContext()
     await expect(exerciseAttachmentDelivery(context, kind, 'attachment.bin', options)).rejects.toThrow(message)
@@ -1364,13 +3492,23 @@ describe('exerciseAttachmentDelivery', () => {
     const stop = new Error('The fake script stops the turn.')
     const { context, queue } = scriptedContext()
     queue.mockRejectedValueOnce(stop)
-    await expect(exerciseAttachmentDelivery(context, 'binary', 'grok-blob.bin', { proof: () => undefined })).rejects.toBe(stop)
+    await expect(exerciseAttachmentDelivery(context, 'binary', 'grok-blob.bin', {
+      proof: () => undefined,
+    })).rejects.toBe(stop)
     expect(queue).toHaveBeenCalledOnce()
   })
 
   it('queues its answer through the text step of the context', async () => {
     const stop = new Error('The fake script stops the turn.')
-    const answer = (text: string) => ({ toolCalls: [{ id: 'native-answer', name: 'answer', arguments: { text } }] })
+    const answer = (text: string) => ({
+      toolCalls: [
+        {
+          id: 'native-answer',
+          name: 'answer',
+          arguments: { text },
+        },
+      ],
+    })
     const { context, queue } = scriptedContext(answer)
     queue.mockRejectedValueOnce(stop)
     await expect(exerciseAttachmentDelivery(context, 'text', 'notes.txt')).rejects.toBe(stop)
@@ -1387,7 +3525,15 @@ describe('expectRefusedAttachmentsAbsent', () => {
 
   it('queues its clean answer through the text step of the context', async () => {
     const stop = new Error('The fake script stops the turn.')
-    const answer = (text: string) => ({ toolCalls: [{ id: 'native-answer', name: 'answer', arguments: { text } }] })
+    const answer = (text: string) => ({
+      toolCalls: [
+        {
+          id: 'native-answer',
+          name: 'answer',
+          arguments: { text },
+        },
+      ],
+    })
     const { context, queue } = scriptedContext(answer)
     queue.mockRejectedValueOnce(stop)
     await expect(expectRefusedAttachmentsAbsent(context, [binaryPath])).rejects.toBe(stop)
@@ -1397,8 +3543,17 @@ describe('expectRefusedAttachmentsAbsent', () => {
 
 describe('scriptedRequest', () => {
   it('selects the request that consumed the given step', () => {
-    const withPdf = chat({ role: 'user', content: [chatFile(pdfDataURI(encoded))] })
-    const clean = nativeRequest('openai-chat-completions', { messages: [{ role: 'user', content: 'Reply once without attachments.' }] }, 1)
+    const withPdf = chat({
+      role: 'user',
+      content: [
+        chatFile(pdfDataURI(encoded)),
+      ],
+    })
+    const clean = nativeRequest('openai-chat-completions', {
+      messages: [
+        { role: 'user', content: 'Reply once without attachments.' },
+      ],
+    }, 1)
     const recorded = status(withPdf, clean)
     expect(scriptedRequest(recorded)).toBe(withPdf)
     expect(scriptedRequest(recorded, 'openai-chat-completions', 1)).toBe(clean)
@@ -1407,7 +3562,12 @@ describe('scriptedRequest', () => {
   })
 
   it('skips a request that a rule answered without a step', () => {
-    const ruled: MockModelRequestRecord = { protocol: 'openai-chat-completions', path: '/', rule: 'title', body: {} }
+    const ruled: MockModelRequestRecord = {
+      protocol: 'openai-chat-completions',
+      path: '/',
+      rule: 'title',
+      body: {},
+    }
     expect(() => scriptedRequest(status(ruled))).toThrow('The model script holds no request for step 0')
   })
 
@@ -1423,10 +3583,22 @@ describe('scriptedRequest', () => {
 
 describe('expectNativeAudioPart', () => {
   const source = Buffer.from([0, 1, 2, 255])
-  const part = { inlineData: { mimeType: 'audio/wav', data: source.toString('base64') } }
+  const part = {
+    inlineData: {
+      mimeType: 'audio/wav',
+      data: source.toString('base64'),
+    },
+  }
 
   it('requires typed audio with the exact original bytes in the current user turn', () => {
-    expect(() => expectNativeAudioPart(nativeRequest('google-generative-language', { contents: [{ role: 'user', parts: [part] }] }), source, 'audio/wav')).not.toThrow()
+    expect(() => expectNativeAudioPart(nativeRequest('google-generative-language', {
+      contents: [
+        {
+          role: 'user',
+          parts: [part],
+        },
+      ],
+    }), source, 'audio/wav')).not.toThrow()
   })
 
   it.each([
@@ -1436,38 +3608,102 @@ describe('expectNativeAudioPart', () => {
     ['m4a', 'audio/mp4'],
     ['ogg', 'audio/ogg'],
   ])('reads exact Chat audio bytes with native format %s', (format, mime) => {
-    const request = chat({ role: 'user', content: [{ type: 'input_audio', input_audio: { format, data: source.toString('base64') } }] })
+    const request = chat({
+      role: 'user',
+      content: [
+        {
+          type: 'input_audio',
+          input_audio: {
+            format,
+            data: source.toString('base64'),
+          },
+        },
+      ],
+    })
     expect(() => expectNativeAudioPart(request, source, mime)).not.toThrow()
   })
 
   it('reads a Chat audio data URI with its MIME alias and rejects a contradictory format', () => {
     const audio = { format: 'wav', data: `data:audio/x-wav;base64,${source.toString('base64')}` }
-    expect(() => expectNativeAudioPart(chat({ role: 'user', content: [{ type: 'input_audio', input_audio: audio }] }), source, 'audio/x-wav')).not.toThrow()
-    expect(() => expectNativeAudioPart(chat({ role: 'user', content: [{ type: 'input_audio', input_audio: { ...audio, format: 'mp3' } }] }), source, 'audio/x-wav')).toThrow('no typed audio')
+    expect(() => expectNativeAudioPart(chat({
+      role: 'user',
+      content: [
+        { type: 'input_audio', input_audio: audio },
+      ],
+    }), source, 'audio/x-wav')).not.toThrow()
+    expect(() => expectNativeAudioPart(chat({
+      role: 'user',
+      content: [
+        {
+          type: 'input_audio',
+          input_audio: { ...audio, format: 'mp3' },
+        },
+      ],
+    }), source, 'audio/x-wav')).toThrow('no typed audio')
   })
 
   it.each([
-    { data: source.toString('base64') },
-    { format: 'unknown', data: source.toString('base64') },
-    { format: 'mpeg', data: source.toString('base64') },
-    { format: 'mp4', data: source.toString('base64') },
-    { format: 'webm', data: source.toString('base64') },
-    { format: 'aac', data: source.toString('base64') },
+    {
+      data: source.toString('base64'),
+    },
+    {
+      format: 'unknown',
+      data: source.toString('base64'),
+    },
+    {
+      format: 'mpeg',
+      data: source.toString('base64'),
+    },
+    {
+      format: 'mp4',
+      data: source.toString('base64'),
+    },
+    {
+      format: 'webm',
+      data: source.toString('base64'),
+    },
+    {
+      format: 'aac',
+      data: source.toString('base64'),
+    },
     { format: 'wav' },
     { format: 'wav', data: '' },
     { format: 'wav', data: 'not base64' },
-    { format: 'wav', data: source.subarray(0, 2).toString('base64') },
+    {
+      format: 'wav',
+      data: source.subarray(0, 2).toString('base64'),
+    },
     { format: 'wav', data: 'https://example.invalid/voice.wav' },
   ])('rejects malformed or mismatched Chat audio $format/$data', (input_audio) => {
-    expect(() => expectNativeAudioPart(chat({ role: 'user', content: [{ type: 'input_audio', input_audio }] }), source, 'audio/wav')).toThrow('no typed audio')
+    expect(() => expectNativeAudioPart(chat({
+      role: 'user',
+      content: [
+        { type: 'input_audio', input_audio },
+      ],
+    }), source, 'audio/wav')).toThrow('no typed audio')
   })
 
   it('rejects Chat audio in earlier history, tool output and unrelated metadata', () => {
-    const audio = { type: 'input_audio', input_audio: { format: 'wav', data: source.toString('base64') } }
+    const audio = {
+      type: 'input_audio',
+      input_audio: {
+        format: 'wav',
+        data: source.toString('base64'),
+      },
+    }
     for (const request of [
-      chat({ role: 'user', content: [audio] }, { role: 'assistant', content: 'Earlier answer.' }, { role: 'user', content: 'A new turn.' }),
-      chat({ role: 'tool', content: [audio] }),
-      chat({ role: 'system', content: [audio] }),
+      chat({
+        role: 'user',
+        content: [audio],
+      }, { role: 'assistant', content: 'Earlier answer.' }, { role: 'user', content: 'A new turn.' }),
+      chat({
+        role: 'tool',
+        content: [audio],
+      }),
+      chat({
+        role: 'system',
+        content: [audio],
+      }),
       chat({ role: 'user', content: 'Read the file.', metadata: audio }),
     ]) {
       expect(() => expectNativeAudioPart(request, source, 'audio/wav')).toThrow('no typed audio')
@@ -1476,43 +3712,102 @@ describe('expectNativeAudioPart', () => {
 
   it.each(['inlineData', 'inline_data'])('reads Google %s with snake-case MIME and URL-safe padded bytes', (field) => {
     const data = source.toString('base64').replaceAll('+', '-').replaceAll('/', '_')
-    const request = google({ role: 'user', parts: [{ [field]: { mime_type: 'audio/wav', data } }] })
+    const request = google({
+      role: 'user',
+      parts: [
+        {
+          [field]: { mime_type: 'audio/wav', data },
+        },
+      ],
+    })
     expect(() => expectNativeAudioPart(request, source, 'audio/wav')).not.toThrow()
     expect(nativeUserStrings(request.body)).toContain(data)
   })
 
   it('rejects conflicting Google MIME or wrapper aliases', () => {
-    const inline = { mime_type: 'audio/wav', data: source.toString('base64') }
+    const inline = {
+      mime_type: 'audio/wav',
+      data: source.toString('base64'),
+    }
     for (const part of [
-      { inlineData: { ...inline, mimeType: 'audio/mpeg' } },
-      { inlineData: inline, inline_data: { ...inline, mime_type: 'audio/mpeg' } },
+      {
+        inlineData: { ...inline, mimeType: 'audio/mpeg' },
+      },
+      {
+        inlineData: inline,
+        inline_data: { ...inline, mime_type: 'audio/mpeg' },
+      },
     ]) {
-      expect(() => expectNativeAudioPart(google({ role: 'user', parts: [part] }), source, 'audio/wav')).toThrow('no typed audio')
+      expect(() => expectNativeAudioPart(google({
+        role: 'user',
+        parts: [part],
+      }), source, 'audio/wav')).toThrow('no typed audio')
     }
   })
 
   it('reads a native Responses audio URL and rejects a file used in its place', () => {
     const audio_url = `data:audio/wav;base64,${source.toString('base64')}`
-    expect(() => expectNativeAudioPart(responses({ role: 'user', content: [{ type: 'input_audio', audio_url }] }), source, 'audio/wav')).not.toThrow()
-    expect(() => expectNativeAudioPart(responses({ role: 'user', content: [{ type: 'input_file', file_data: audio_url }] }), source, 'audio/wav')).toThrow('no typed audio')
+    expect(() => expectNativeAudioPart(responses({
+      role: 'user',
+      content: [
+        { type: 'input_audio', audio_url },
+      ],
+    }), source, 'audio/wav')).not.toThrow()
+    expect(() => expectNativeAudioPart(responses({
+      role: 'user',
+      content: [
+        { type: 'input_file', file_data: audio_url },
+      ],
+    }), source, 'audio/wav')).toThrow('no typed audio')
   })
 
   it('does not mistake an invalid Anthropic audio document for an audio route', () => {
-    const request = anthropic({ role: 'user', content: [anthropicDocument(source.toString('base64'), 'audio/wav')] })
+    const request = anthropic({
+      role: 'user',
+      content: [
+        anthropicDocument(source.toString('base64'), 'audio/wav'),
+      ],
+    })
     expect(() => expectNativeAudioPart(request, source, 'audio/wav')).toThrow('no typed audio')
   })
 
   it('rejects text transcripts and prior audio history', () => {
-    const request = nativeRequest('google-generative-language', { contents: [
-      { role: 'user', parts: [part] },
-      { role: 'model', parts: [{ text: 'Earlier answer' }] },
-      { role: 'user', parts: [{ text: 'A transcript of the earlier audio.' }] },
-    ] })
+    const request = nativeRequest('google-generative-language', {
+      contents: [
+        {
+          role: 'user',
+          parts: [part],
+        },
+        {
+          role: 'model',
+          parts: [
+            { text: 'Earlier answer' },
+          ],
+        },
+        {
+          role: 'user',
+          parts: [
+            { text: 'A transcript of the earlier audio.' },
+          ],
+        },
+      ],
+    })
     expect(() => expectNativeAudioPart(request, source, 'audio/wav')).toThrow('no typed audio')
   })
 
   it('rejects a binary MIME type even when the bytes and loose type pattern match', () => {
-    const request = nativeRequest('google-generative-language', { contents: [{ role: 'user', parts: [{ inlineData: { ...part.inlineData, mimeType: 'application/octet-stream' } }] }] })
+    const request = nativeRequest('google-generative-language', {
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            {
+              inlineData: { ...part.inlineData, mimeType: 'application/octet-stream' },
+            },
+          ],
+        },
+      ],
+    })
     expect(() => expectNativeAudioPart(request, source, /.*/u)).toThrow('no typed audio')
   })
 })

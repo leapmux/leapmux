@@ -49,5 +49,7 @@ export function disambiguateLabels<T>(
   const labels = items.map(label)
   for (const one of labels)
     counts.set(one, (counts.get(one) ?? 0) + 1)
-  return items.map((item, index) => ((counts.get(labels[index]!) ?? 0) > 1 ? distinct(item) : labels[index]!))
+  return items.map((item, index) => ((counts.get(labels[index]!) ?? 0) > 1
+    ? distinct(item)
+    : labels[index]!))
 }

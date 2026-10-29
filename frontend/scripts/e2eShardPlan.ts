@@ -43,10 +43,18 @@ export function readDurationHistory(path: string): DurationHistoryRead {
     const content = readOptionalStateFile(path)
     if (content === undefined)
       return { status: 'absent' }
-    return { status: 'present', files: parseDurationHistory(JSON.parse(content)) }
+    return {
+      status: 'present',
+      files: parseDurationHistory(JSON.parse(content)),
+    }
   }
   catch (error) {
-    return { status: 'unreadable', reason: error instanceof Error ? error.message : String(error) }
+    return {
+      status: 'unreadable',
+      reason: error instanceof Error
+        ? error.message
+        : String(error),
+    }
   }
 }
 
@@ -55,7 +63,9 @@ export function readDurationHistory(path: string): DurationHistoryRead {
  * A run of a few files then keeps the durations of the files that it did not select.
  */
 export function mergeDurationHistory(previous: DurationHistoryRead, measured: DurationHistory): DurationHistory {
-  const files = new Map(previous.status === 'present' ? previous.files : [])
+  const files = new Map(previous.status === 'present'
+    ? previous.files
+    : [])
   for (const [file, duration] of measured)
     files.set(file, duration)
   return files
@@ -69,7 +79,11 @@ export function writeDurationHistory(path: string, history: DurationHistory, io?
 
 /** Compare by UTF-16 code unit, which does not change with the locale. */
 function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0
+  return left < right
+    ? -1
+    : left > right
+      ? 1
+      : 0
 }
 
 export interface FileEstimate {
@@ -82,7 +96,9 @@ export interface FileEstimate {
 function median(values: readonly number[]): number {
   const sorted = [...values].sort((left, right) => left - right)
   const middle = Math.floor(sorted.length / 2)
-  return sorted.length % 2 === 1 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2
+  return sorted.length % 2 === 1
+    ? sorted[middle]!
+    : (sorted[middle - 1]! + sorted[middle]!) / 2
 }
 
 /**
@@ -97,7 +113,9 @@ export function estimateFileDurations(coverage: E2ETestCoverage, history: Durati
     selectedCases.set(testCase.file, (selectedCases.get(testCase.file) ?? 0) + 1)
   const recorded = coverage.files.map((file) => {
     const entry = history.get(file)
-    return entry === undefined ? undefined : entry.durationMs / entry.cases * (selectedCases.get(file) ?? 0)
+    return entry === undefined
+      ? undefined
+      : entry.durationMs / entry.cases * (selectedCases.get(file) ?? 0)
   })
   const known = recorded.filter(estimate => estimate !== undefined)
   if (known.length === 0)
@@ -105,7 +123,9 @@ export function estimateFileDurations(coverage: E2ETestCoverage, history: Durati
   const fallback = median(known)
   return coverage.files.map((file, index) => {
     const estimateMs = recorded[index]
-    return estimateMs === undefined ? { file, estimateMs: fallback, source: 'median' } : { file, estimateMs, source: 'history' }
+    return estimateMs === undefined
+      ? { file, estimateMs: fallback, source: 'median' }
+      : { file, estimateMs, source: 'history' }
   })
 }
 
@@ -125,7 +145,9 @@ export function assignLongestFirst(estimates: readonly FileEstimate[], count: nu
   if (!Number.isSafeInteger(count) || count < 1)
     throw new Error('The E2E shard count must be a positive integer.')
   const ordered = [...estimates].sort((left, right) => right.estimateMs - left.estimateMs || compareText(left.file, right.file))
-  const shards = Array.from({ length: Math.min(count, estimates.length) }, (): { files: FileEstimate[], estimateMs: number } => ({ files: [], estimateMs: 0 }))
+  const shards = Array.from({
+    length: Math.min(count, estimates.length),
+  }, (): { files: FileEstimate[], estimateMs: number } => ({ files: [], estimateMs: 0 }))
   for (const estimate of ordered) {
     let target = shards[0]!
     for (const shard of shards.slice(1)) {
@@ -135,7 +157,10 @@ export function assignLongestFirst(estimates: readonly FileEstimate[], count: nu
     target.files.push(estimate)
     target.estimateMs += estimate.estimateMs
   }
-  return shards.map(shard => ({ files: shard.files.sort((left, right) => compareText(left.file, right.file)), estimateMs: shard.estimateMs }))
+  return shards.map(shard => ({
+    files: shard.files.sort((left, right) => compareText(left.file, right.file)),
+    estimateMs: shard.estimateMs,
+  }))
 }
 
 // Playwright's loadTestList (playwright/lib/runner/index.js) does these things to each line:
@@ -202,7 +227,10 @@ export function planShards(input: ShardPlanInput): ShardPlan {
   const estimates = estimateFileDurations(coverage, input.history.files)
   if (estimates === undefined)
     return staticPlan('the duration history holds no selected file')
-  return { kind: 'balanced', shards: assignLongestFirst(estimates, total) }
+  return {
+    kind: 'balanced',
+    shards: assignLongestFirst(estimates, total),
+  }
 }
 
 function seconds(milliseconds: number): string {
@@ -215,9 +243,14 @@ export function formatShardPlan(plan: ShardPlan, historyPath: string): string {
     return `E2E shard plan: Playwright's own --shard=i/${plan.total} split. Reason: ${plan.reason}. Duration history: ${historyPath}\n`
   const lines = [`E2E shard plan: ${plan.shards.length} shards, balanced by the duration history at ${historyPath}`]
   for (const [index, shard] of plan.shards.entries()) {
-    lines.push(`  Shard ${index + 1}/${plan.shards.length}: ${shard.files.length} ${shard.files.length === 1 ? 'file' : 'files'}, estimated ${seconds(shard.estimateMs)}`)
-    for (const file of shard.files)
-      lines.push(`    ${file.file}: ${seconds(file.estimateMs)}${file.source === 'median' ? ' (median estimate, no history)' : ''}`)
+    lines.push(`  Shard ${index + 1}/${plan.shards.length}: ${shard.files.length} ${shard.files.length === 1
+      ? 'file'
+      : 'files'}, estimated ${seconds(shard.estimateMs)}`)
+    for (const file of shard.files) {
+      lines.push(`    ${file.file}: ${seconds(file.estimateMs)}${file.source === 'median'
+        ? ' (median estimate, no history)'
+        : ''}`)
+    }
   }
   return `${lines.join('\n')}\n`
 }

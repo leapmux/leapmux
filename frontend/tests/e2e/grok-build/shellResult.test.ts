@@ -6,10 +6,21 @@ function request(content: string, callId = 'actual-grok-shell'): MockModelReques
   return {
     protocol: 'openai-chat-completions',
     path: '/v1/chat/completions',
-    body: { messages: [
-      { role: 'assistant', tool_calls: [{ id: callId, type: 'function', function: { name: 'Bash', arguments: '{"command":"printf CALCULATED42"}' } }] },
-      { role: 'tool', tool_call_id: callId, content },
-    ] },
+    body: {
+      messages: [
+        {
+          role: 'assistant',
+          tool_calls: [
+            {
+              id: callId,
+              type: 'function',
+              function: { name: 'Bash', arguments: '{"command":"printf CALCULATED42"}' },
+            },
+          ],
+        },
+        { role: 'tool', tool_call_id: callId, content },
+      ],
+    },
   }
 }
 
@@ -52,20 +63,41 @@ describe('readGrokShellResult', () => {
     expect(readGrokShellResult(request(text), 'actual-grok-shell')).toEqual({ text, exitCode: 0, failed: false })
   })
   it('does not read native exit metadata from the scripted command arguments', () => {
-    const native: MockModelRequestRecord = { protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { messages: [
-      { role: 'assistant', tool_calls: [{ id: 'actual-grok-shell', type: 'function', function: { name: 'Bash', arguments: '{"command":"printf \'exit: 7\\n\'"}' } }] },
-      { role: 'tool', tool_call_id: 'actual-grok-shell', content: 'ACTUAL_OUTPUT\n' },
-    ] } }
+    const native: MockModelRequestRecord = {
+      protocol: 'openai-chat-completions',
+      path: '/v1/chat/completions',
+      body: {
+        messages: [
+          {
+            role: 'assistant',
+            tool_calls: [
+              {
+                id: 'actual-grok-shell',
+                type: 'function',
+                function: { name: 'Bash', arguments: '{"command":"printf \'exit: 7\\n\'"}' },
+              },
+            ],
+          },
+          { role: 'tool', tool_call_id: 'actual-grok-shell', content: 'ACTUAL_OUTPUT\n' },
+        ],
+      },
+    }
     expect(() => readGrokShellResult(native, 'actual-grok-shell')).toThrow('complete safe integer exit header')
   })
   it('refuses a result from another native call even when its output contains a valid header', () => {
     expect(() => readGrokShellResult(request('exit: 7\nACTUAL_FAILURE\n', 'another-call'), 'actual-grok-shell')).toThrow('0 results')
   })
   it('refuses duplicate results for the same exact native call', () => {
-    const native: MockModelRequestRecord = { protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { messages: [
-      { role: 'tool', tool_call_id: 'actual-grok-shell', content: 'exit: 0\nFIRST42\n' },
-      { role: 'tool', tool_call_id: 'actual-grok-shell', content: 'exit: 7\nSECOND77\n' },
-    ] } }
+    const native: MockModelRequestRecord = {
+      protocol: 'openai-chat-completions',
+      path: '/v1/chat/completions',
+      body: {
+        messages: [
+          { role: 'tool', tool_call_id: 'actual-grok-shell', content: 'exit: 0\nFIRST42\n' },
+          { role: 'tool', tool_call_id: 'actual-grok-shell', content: 'exit: 7\nSECOND77\n' },
+        ],
+      },
+    }
     expect(() => readGrokShellResult(native, 'actual-grok-shell')).toThrow('2 results')
   })
   it('refuses an empty native call identity before reading any result', () => {

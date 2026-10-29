@@ -78,7 +78,11 @@ setTimeout(() => server.close(), 180000).unref()
     await expectAssistantAnswer(page)
 
     // Script the Bash decision. The actual native command supplies the heartbeat.
-    const serverStep = await modelScript.queue({ toolCalls: [bashToolCall(AgentProvider.CLAUDE_CODE, 'run-server', `node ${quotePosixShellArgument(script)}`)] })
+    const serverStep = await modelScript.queue({
+      toolCalls: [
+        bashToolCall(AgentProvider.CLAUDE_CODE, 'run-server', `node ${quotePosixShellArgument(script)}`),
+      ],
+    })
     await sendMessage(page, modelScript.prompt(`Run the Node.js integration test server at ${script} in the foreground.`))
     await modelScript.waitForSteps(serverStep + 1)
     // The native tool card proves delivery. An absent failure banner can pass before the send reply arrives.
@@ -114,5 +118,7 @@ setTimeout(() => server.close(), 180000).unref()
 claudeTest('returns native shell success and failure output to the following model request', async ({ native }) => {
   // Claude Code begins the result of a failed command with an `Exit code N` line. The row header states the code, and
   // the body draws only the output.
-  await exerciseShellToolExecution(native, { absentRowText: ['Exit code'] })
+  await exerciseShellToolExecution(native, {
+    absentRowText: ['Exit code'],
+  })
 })

@@ -41,13 +41,20 @@ function hue(value: string): number | undefined {
   if (max === min)
     return undefined
   const d = max - min
-  const h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4
+  const h = max === r
+    ? ((g - b) / d) % 6
+    : max === g
+      ? (b - r) / d + 2
+      : (r - g) / d + 4
   return (h * 60 + 360) % 360
 }
 
 /** The shorter way round the colour wheel between two hues, in degrees. */
 function hueGap(a: string, b: string): number {
-  const [x, y] = [hue(a), hue(b)]
+  const [x, y] = [
+    hue(a),
+    hue(b),
+  ]
   if (x === undefined || y === undefined)
     return 0
   const raw = Math.abs(x - y)
@@ -226,7 +233,13 @@ describe('theme catalogue', () => {
     // Not an exhaustive list -- just the ones whose absence would be visible
     // immediately on either surface.
     for (const { id, variant, palette } of ALL) {
-      for (const token of ['--background', '--foreground', '--primary', '--accent', '--border']) {
+      for (const token of [
+        '--background',
+        '--foreground',
+        '--primary',
+        '--accent',
+        '--border',
+      ]) {
         expect(palette, `${id}/${variant} is missing ${token}`).toHaveProperty([token])
       }
     }
@@ -409,7 +422,10 @@ describe('theme catalogue', () => {
       // UNTINTED surface does not reach it either. What the tint may not do is
       // take a large share of whatever the theme started with.
       const plain = contrast(palette['--foreground']!, surface)
-      for (const [layer, bg] of [['row', row], ['word-diff', word]] as const) {
+      for (const [layer, bg] of [
+        ['row', row],
+        ['word-diff', word],
+      ] as const) {
         const kept = contrast(palette['--foreground']!, bg) / plain
         expect(kept, `${id}: a ${role} ${layer} keeps only ${(kept * 100).toFixed(0)}% of the surface's contrast`)
           .toBeGreaterThanOrEqual(0.5)
@@ -442,9 +458,38 @@ describe('theme catalogue', () => {
   })
 })
 
-const ANSI_SLOTS = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white', 'brightBlack', 'brightRed', 'brightGreen', 'brightYellow', 'brightBlue', 'brightMagenta', 'brightCyan', 'brightWhite'] as const
-const CHROMATIC = ['red', 'green', 'yellow', 'blue', 'magenta', 'cyan'] as const
-const ACHROMATIC = ['black', 'white', 'brightBlack', 'brightWhite'] as const
+const ANSI_SLOTS = [
+  'black',
+  'red',
+  'green',
+  'yellow',
+  'blue',
+  'magenta',
+  'cyan',
+  'white',
+  'brightBlack',
+  'brightRed',
+  'brightGreen',
+  'brightYellow',
+  'brightBlue',
+  'brightMagenta',
+  'brightCyan',
+  'brightWhite',
+] as const
+const CHROMATIC = [
+  'red',
+  'green',
+  'yellow',
+  'blue',
+  'magenta',
+  'cyan',
+] as const
+const ACHROMATIC = [
+  'black',
+  'white',
+  'brightBlack',
+  'brightWhite',
+] as const
 
 // The ANSI sets come from a community scheme collection rather than from each
 // project directly, and their quality varies. `Atom One Light` in that
@@ -467,7 +512,10 @@ describe('theme terminal palettes', () => {
     const byColor = new Map<string, string[]>()
     for (const slot of CHROMATIC) {
       const key = ansi[slot]!.toLowerCase()
-      byColor.set(key, [...(byColor.get(key) ?? []), slot])
+      byColor.set(key, [
+        ...(byColor.get(key) ?? []),
+        slot,
+      ])
     }
     for (const [color, slots] of byColor)
       expect(slots, `${slots.join(' and ')} both use ${color}`).toHaveLength(1)
@@ -496,7 +544,14 @@ describe('theme terminal palettes', () => {
       ['cyan', 'brightCyan'],
       ['white', 'brightWhite'],
     ] as const
-    const CHROMATIC = ['red', 'green', 'yellow', 'blue', 'magenta', 'cyan']
+    const CHROMATIC = [
+      'red',
+      'green',
+      'yellow',
+      'blue',
+      'magenta',
+      'cyan',
+    ]
 
     const collapsed: Record<string, string[]> = {}
     for (const { id, terminal } of ALL) {
@@ -508,9 +563,27 @@ describe('theme terminal palettes', () => {
     }
 
     expect(collapsed).toEqual({
-      'nord-light': ['red', 'green', 'yellow', 'blue', 'magenta'],
-      'nord-light-brighter': ['red', 'green', 'yellow', 'blue', 'magenta'],
-      'nord-dark': ['red', 'green', 'yellow', 'blue', 'magenta'],
+      'nord-light': [
+        'red',
+        'green',
+        'yellow',
+        'blue',
+        'magenta',
+      ],
+      'nord-light-brighter': [
+        'red',
+        'green',
+        'yellow',
+        'blue',
+        'magenta',
+      ],
+      'nord-dark': [
+        'red',
+        'green',
+        'yellow',
+        'blue',
+        'magenta',
+      ],
       'one-light': CHROMATIC,
       'one-dark': [...CHROMATIC, 'white'],
       'rose-pine-dawn': [...CHROMATIC, 'white'],
@@ -539,7 +612,15 @@ describe('theme terminal palettes', () => {
     // background -- it is what programs fill and shadow with -- and which end
     // depends on the scheme's convention. The case above already requires the
     // other end to carry readable text.
-    for (const slot of [...CHROMATIC, 'brightRed', 'brightGreen', 'brightYellow', 'brightBlue', 'brightMagenta', 'brightCyan'] as const) {
+    for (const slot of [
+      ...CHROMATIC,
+      'brightRed',
+      'brightGreen',
+      'brightYellow',
+      'brightBlue',
+      'brightMagenta',
+      'brightCyan',
+    ] as const) {
       const ratio = contrast(ansi[slot]!, bg)
       expect(ratio, `${slot} is ${ratio.toFixed(2)}:1 on ${bg}`).toBeGreaterThanOrEqual(1.7)
     }
@@ -560,7 +641,11 @@ describe('theme terminal palettes', () => {
     // The Default theme is exempt, and is the ONE theme that can be: its ANSI
     // set is Dimidium's, a different project from its palette, which is why it
     // alone carries a `terminalLabel`. Its green sits 20.5 degrees off.
-    for (const [role, slot] of [['danger', 'red'], ['success', 'green'], ['warning', 'yellow']] as const) {
+    for (const [role, slot] of [
+      ['danger', 'red'],
+      ['success', 'green'],
+      ['warning', 'yellow'],
+    ] as const) {
       const gap = hueGap(palette[`--${role}`]!, terminal[slot]!)
       expect(gap, `${id}: --${role} is ${gap.toFixed(0)} degrees off ANSI ${slot}`).toBeLessThanOrEqual(20)
     }
@@ -619,7 +704,14 @@ describe('themeById', () => {
   it('falls back to the default theme for a name this build does not carry', () => {
     // Reached by an ordinary path, not only by corruption: a preference written
     // by a newer build names a theme this one has never heard of.
-    for (const name of ['', 'nope', 'Catppuccin', 'default ', undefined, null])
+    for (const name of [
+      '',
+      'nope',
+      'Catppuccin',
+      'default ',
+      undefined,
+      null,
+    ])
       expect(themeById(name), `themeById(${JSON.stringify(name)})`).toBe(THEMES[0])
   })
 })
@@ -640,7 +732,10 @@ describe('resolveVariant fallbacks', () => {
   // matching on the id alone admitted both.
   it('answers the polarity asked for when defaults is broken', () => {
     for (const dark of ['no-such-variant', 'one-light']) {
-      const broken = { ...oneTheme, defaults: { light: 'one-light', dark } }
+      const broken = {
+        ...oneTheme,
+        defaults: { light: 'one-light', dark },
+      }
       expect(resolveVariant(broken, undefined, 'dark').polarity, dark).toBe('dark')
     }
   })
@@ -716,7 +811,12 @@ describe('paletteColorToHex', () => {
   // Every colour the terminal takes from the palette must survive the trip.
   it('yields a form xterm can parse for every variant', () => {
     for (const { id, palette } of ALL_VARIANTS.map(v => ({ id: v.id, palette: v.palette }))) {
-      for (const token of ['--background', '--foreground', '--primary', '--accent'] as const) {
+      for (const token of [
+        '--background',
+        '--foreground',
+        '--primary',
+        '--accent',
+      ] as const) {
         const hex = paletteColorToHex(palette[token]!)
         expect(hex, `${id} ${token} is ${hex}`).toMatch(/^#[0-9a-f]{6}$/i)
       }

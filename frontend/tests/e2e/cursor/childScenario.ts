@@ -44,20 +44,38 @@ export async function openCursorRunningChild(
     gate,
     // The Cursor parent states its Task call and its answer in one model turn.
     parentSteps: toolTurnSteps([spawn], { text: 'The native parent received its child report.' }, 'same-step'),
-    ...(options.allowExistingRows === undefined ? {} : { allowExistingRows: options.allowExistingRows }),
+    ...(options.allowExistingRows === undefined
+      ? {}
+      : { allowExistingRows: options.allowExistingRows }),
     rowText: description,
-    rules: [{
-      name: 'the actual Cursor child reads its private file',
-      when: { user: `^NATIVECURSORCHILD${suffix}:` },
-      respond: {
-        toolCalls: [readToolCall(context.provider, `cursor-native-read-${suffix}`, filePath)],
-        text: answer,
-        stream: { chunkChars: 1, delayMs: 0, gates: [{ afterChunk: 1, name: gate }] },
+    rules: [
+      {
+        name: 'the actual Cursor child reads its private file',
+        when: { user: `^NATIVECURSORCHILD${suffix}:` },
+        respond: {
+          toolCalls: [
+            readToolCall(context.provider, `cursor-native-read-${suffix}`, filePath),
+          ],
+          text: answer,
+          stream: {
+            chunkChars: 1,
+            delayMs: 0,
+            gates: [
+              { afterChunk: 1, name: gate },
+            ],
+          },
+        },
+        once: true,
       },
-      once: true,
-    }],
+    ],
   })
-  return { ...child, prompt, marker, answer, filePath }
+  return {
+    ...child,
+    prompt,
+    marker,
+    answer,
+    filePath,
+  }
 }
 
 /**
@@ -71,11 +89,13 @@ export async function exerciseCursorTaskDelegation(context: ManagedNativeScenari
 
   // The remote Task service supplies this report without starting a local child.
   const start = await modelScript.queue({
-    toolCalls: [spawnSubagentToolCall(context.provider, 'spawn-cursor', {
-      description: 'Ask the subagent for one word',
-      prompt: 'Reply with the single word PONG.',
-      report: 'PONG',
-    })],
+    toolCalls: [
+      spawnSubagentToolCall(context.provider, 'spawn-cursor', {
+        description: 'Ask the subagent for one word',
+        prompt: 'Reply with the single word PONG.',
+        report: 'PONG',
+      }),
+    ],
   })
   await sendMessage(page, modelScript.prompt('Delegate one word to a subagent.'))
   await modelScript.waitForSteps(start + 1)

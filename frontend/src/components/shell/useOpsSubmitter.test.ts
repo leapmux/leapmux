@@ -8,14 +8,20 @@ import { createOpsSubmitter } from './useOpsSubmitter'
 
 // The submitter's only user-visible side effect on a permanent rejection is a
 // warn toast; stub it so the tests don't spin up the toast store.
-vi.mock('~/components/common/Toast', () => ({ showWarnToast: vi.fn() }))
+vi.mock('~/components/common/Toast', () => ({
+  showWarnToast: vi.fn(),
+}))
 // Default client is never used (every test injects its own), but the module
 // pulls it in at import time.
 vi.mock('~/api/clients', () => ({
-  userCRDTClient: { submitOps: vi.fn() },
+  userCRDTClient: {
+    submitOps: vi.fn(),
+  },
   // The unload path uses a SECOND client, over the keepalive transport: a
   // normal fetch started while the page is unloading is cancelled with it.
-  userCRDTUnloadClient: { submitOps: vi.fn() },
+  userCRDTUnloadClient: {
+    submitOps: vi.fn(),
+  },
 }))
 
 function batch(id: string) {
@@ -52,22 +58,29 @@ function makeFakePending(opts: FakePendingOpts = {}) {
 
 function rejectedResponse(batchId: string) {
   return {
-    results: [{
-      batchId,
-      outcome: {
-        case: 'rejected' as const,
-        value: { $typeName: 'leapmux.v1.BatchRejection', reason: BatchRejectionReason.BATCH_REJECTION_FORBIDDEN_WORKSPACE, offendingOpId: '' },
+    results: [
+      {
+        batchId,
+        outcome: {
+          case: 'rejected' as const,
+          value: { $typeName: 'leapmux.v1.BatchRejection', reason: BatchRejectionReason.BATCH_REJECTION_FORBIDDEN_WORKSPACE, offendingOpId: '' },
+        },
       },
-    }],
+    ],
   }
 }
 
 function committedResponse(batchId: string) {
   return {
-    results: [{
-      batchId,
-      outcome: { case: 'committed' as const, value: { committed: [], epoch: 5n } },
-    }],
+    results: [
+      {
+        batchId,
+        outcome: {
+          case: 'committed' as const,
+          value: { committed: [], epoch: 5n },
+        },
+      },
+    ],
   }
 }
 
@@ -252,10 +265,18 @@ describe('createOpsSubmitter (retry requeue)', () => {
         revertPendingBatch: vi.fn(),
       }
       const submitOps = vi.fn()
-        .mockResolvedValueOnce({ results: [
-          { batchId: 'b-refresh', outcome: { case: 'rejected' as const, value: rejection } },
-          { batchId: 'b-plain', outcome: { case: 'rejected' as const, value: rejection } },
-        ] })
+        .mockResolvedValueOnce({
+          results: [
+            {
+              batchId: 'b-refresh',
+              outcome: { case: 'rejected' as const, value: rejection },
+            },
+            {
+              batchId: 'b-plain',
+              outcome: { case: 'rejected' as const, value: rejection },
+            },
+          ],
+        })
         .mockResolvedValueOnce(committedResponse('b-plain'))
       const submitter = createOpsSubmitter({
         pending: () => pending as never,
@@ -403,10 +424,18 @@ describe('createOpsSubmitter (op coalescing)', () => {
   function opacityBatch(batchId: string, opId: string, windowId: string, opacity: number) {
     return create(OpBatchSchema, {
       batchId,
-      ops: [{
-        opId,
-        body: { case: 'setFloatingWindowRegister', value: { windowId, field: { case: 'opacity', value: opacity } } },
-      }],
+      ops: [
+        {
+          opId,
+          body: {
+            case: 'setFloatingWindowRegister',
+            value: {
+              windowId,
+              field: { case: 'opacity', value: opacity },
+            },
+          },
+        },
+      ],
     })
   }
 
@@ -485,10 +514,18 @@ describe('createOpsSubmitter (parked-retry supersession)', () => {
   function xBatch(batchId: string, opId: string, windowId: string, x: number) {
     return create(OpBatchSchema, {
       batchId,
-      ops: [{
-        opId,
-        body: { case: 'setFloatingWindowRegister', value: { windowId, field: { case: 'x', value: x } } },
-      }],
+      ops: [
+        {
+          opId,
+          body: {
+            case: 'setFloatingWindowRegister',
+            value: {
+              windowId,
+              field: { case: 'x', value: x },
+            },
+          },
+        },
+      ],
     })
   }
 
@@ -573,7 +610,9 @@ describe('createOpsSubmitter unload flush', () => {
   afterEach(() => vi.useRealTimers())
 
   it('sends over the keepalive client when flushing for unload', async () => {
-    const submitter = createOpsSubmitter({ pending: () => makeFakePending() as never })
+    const submitter = createOpsSubmitter({
+      pending: () => makeFakePending() as never,
+    })
     vi.mocked(userCRDTUnloadClient.submitOps).mockResolvedValue({ results: [] } as never)
 
     submitter.enqueue(batch('b1'))
@@ -584,7 +623,9 @@ describe('createOpsSubmitter unload flush', () => {
   })
 
   it('uses the ordinary client for a normal flush', async () => {
-    const submitter = createOpsSubmitter({ pending: () => makeFakePending() as never })
+    const submitter = createOpsSubmitter({
+      pending: () => makeFakePending() as never,
+    })
     vi.mocked(userCRDTClient.submitOps).mockResolvedValue({ results: [] } as never)
 
     submitter.enqueue(batch('b1'))
@@ -598,7 +639,9 @@ describe('createOpsSubmitter unload flush', () => {
   // outright above it, so an oversized unload flush must not be handed to it --
   // that would turn a probably-cancelled send into a guaranteed rejection.
   it('falls back to the ordinary client when the batch exceeds the keepalive budget', async () => {
-    const submitter = createOpsSubmitter({ pending: () => makeFakePending() as never })
+    const submitter = createOpsSubmitter({
+      pending: () => makeFakePending() as never,
+    })
     vi.mocked(userCRDTClient.submitOps).mockResolvedValue({ results: [] } as never)
 
     const huge = create(OpBatchSchema, {

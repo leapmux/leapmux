@@ -19,7 +19,14 @@ function renderToolUseText(input: Record<string, unknown>): string {
   const msg = {
     type: 'assistant',
     message: {
-      content: [{ type: 'tool_use', id: 'test-listagents', name: 'ListAgents', input }],
+      content: [
+        {
+          type: 'tool_use',
+          id: 'test-listagents',
+          name: 'ListAgents',
+          input,
+        },
+      ],
     },
   }
   const category: MessageCategory = { kind: 'tool_use' }
@@ -32,9 +39,13 @@ function listAgentsToolResult(resultContent: string, toolUseResult?: Record<stri
     type: 'user',
     message: {
       role: 'user',
-      content: [{ tool_use_id: 'test-listagents', type: 'tool_result', content: resultContent }],
+      content: [
+        { tool_use_id: 'test-listagents', type: 'tool_result', content: resultContent },
+      ],
     },
-    ...(toolUseResult ? { tool_use_result: toolUseResult } : {}),
+    ...(toolUseResult
+      ? { tool_use_result: toolUseResult }
+      : {}),
   }
 }
 

@@ -7,5 +7,13 @@ deepseekHarnessTest('uses private native configuration and the exact mock creden
   const home = leapmuxServer.agentEnv.DSH_HOME
   if (!home)
     throw new Error('The private DeepSeek Harness home is absent.')
-  await exerciseCredentialIsolation(native, { privateDirectories: [home], expectedCredential: MODEL_KEY, configurationFiles: [join(home, 'cordis.patch.yml')], inlineConfiguration: [`DEEPSEEK_API_KEY=${leapmuxServer.agentEnv.DEEPSEEK_API_KEY}`], configurationMarkers: ['deepseek-official', 'deepseek-flash'] })
+  await exerciseCredentialIsolation(native, {
+    privateDirectories: [home],
+    expectedCredential: MODEL_KEY,
+    configurationFiles: [
+      join(home, 'cordis.patch.yml'),
+    ],
+    inlineConfiguration: [`DEEPSEEK_API_KEY=${leapmuxServer.agentEnv.DEEPSEEK_API_KEY}`],
+    configurationMarkers: ['deepseek-official', 'deepseek-flash'],
+  })
 })

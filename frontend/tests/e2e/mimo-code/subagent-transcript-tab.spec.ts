@@ -29,10 +29,12 @@ mimoTest.describe('MiMo Code subagent registry', () => {
     })
     const start = await modelScript.queue(
       {
-        toolCalls: [spawnSubagentToolCall(native.provider, 'spawn-mimo', {
-          description: 'Ask the subagent for one word',
-          prompt: modelScript.prompt(childTask),
-        })],
+        toolCalls: [
+          spawnSubagentToolCall(native.provider, 'spawn-mimo', {
+            description: 'Ask the subagent for one word',
+            prompt: modelScript.prompt(childTask),
+          }),
+        ],
       },
       { text: 'The subagent reported PONG.' },
     )

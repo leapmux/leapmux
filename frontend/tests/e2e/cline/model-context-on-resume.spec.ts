@@ -22,7 +22,11 @@ const CLI_RUN_TIMEOUT_MS = 120_000
 async function runClineOnce(cwd: string, agentEnv: Record<string, string>, prompt: string): Promise<void> {
   await promisify(execFile)('cline', ['--json', prompt], {
     cwd,
-    env: { ...hubSpawnEnv(), ...agentEnv, CLINE_SESSION_BACKEND_MODE: 'local' },
+    env: {
+      ...hubSpawnEnv(),
+      ...agentEnv,
+      CLINE_SESSION_BACKEND_MODE: 'local',
+    },
     timeout: CLI_RUN_TIMEOUT_MS,
     maxBuffer: 16 << 20,
   })

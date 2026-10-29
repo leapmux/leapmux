@@ -27,7 +27,9 @@ droidTest.describe('attachments for Factory Droid', () => {
       await withDroidAttachmentWorkspace({ page, leapmuxServer, modelScript }, { primary: provider }, async (native) => {
         const before = await currentNativeAgent(native)
         expect(before.agentSessionId).not.toBe('')
-        const protocol = provider === 'anthropic' ? 'anthropic-messages' : 'openai-responses'
+        const protocol = provider === 'anthropic'
+          ? 'anthropic-messages'
+          : 'openai-responses'
         await exerciseAttachmentDelivery(native, 'pdf', `droid-${provider}-first.pdf`, { protocol })
         await page.reload()
         await waitForNativeSettingsHydrated(page)
@@ -47,7 +49,12 @@ droidTest.describe('attachments for Factory Droid', () => {
       const file = await expectAttachmentOutcome(page, 'pdf', { supported: true, fileName: 'droid-retry.pdf' })
       await sendWithAttachment(page, modelScript.prompt('Inspect this PDF after choosing a compatible model.'))
       const failed = await expectNativeInputRefusal(native, 'selected Factory Droid model')
-      expect(failed.attachments).toMatchObject([{ filename: basename(file), size: BigInt(statSync(file).size) }])
+      expect(failed.attachments).toMatchObject([
+        {
+          filename: basename(file),
+          size: BigInt(statSync(file).size),
+        },
+      ])
       const status = await modelScript.status()
       expect(status.nextStep).toBe(step)
       expect(status.unexpectedRequests).toEqual([])
@@ -66,7 +73,9 @@ droidTest.describe('attachments for Factory Droid', () => {
       expect(request.protocol).toBe('anthropic-messages')
       await expectAttachmentInRequest(page, request, 'pdf', file)
       await expect(inputQueue(page)).toHaveCount(0)
-      await expect(userBubbles(page).filter({ hasText: basename(file) })).toHaveCount(1)
+      await expect(userBubbles(page).filter({
+        hasText: basename(file),
+      })).toHaveCount(1)
       await expect(assistantBubbles(page).filter({ hasText: answer })).toBeVisible()
       expectSameNativeSession(before, await currentNativeAgent(native), 'Retrying the PDF')
     })
@@ -77,10 +86,19 @@ droidTest.describe('attachments for Factory Droid', () => {
       const file = writeAttachmentFixture('pdf', 'droid-oversized.pdf')
       appendFileSync(file, Buffer.alloc(3 * 1024 * 1024 + 1 - statSync(file).size, 0x20))
       const step = (await modelScript.status()).nextStep
-      await expectAttachmentOutcome(page, 'pdf', { supported: true, fileName: basename(file), fixturePath: file })
+      await expectAttachmentOutcome(page, 'pdf', {
+        supported: true,
+        fileName: basename(file),
+        fixturePath: file,
+      })
       await sendWithAttachment(page, modelScript.prompt('Inspect the oversized PDF.'))
       const failed = await expectNativeInputRefusal(native, '3 MiB')
-      expect(failed.attachments).toMatchObject([{ filename: basename(file), size: BigInt(statSync(file).size) }])
+      expect(failed.attachments).toMatchObject([
+        {
+          filename: basename(file),
+          size: BigInt(statSync(file).size),
+        },
+      ])
       const status = await modelScript.status()
       expect(status.nextStep).toBe(step)
       expect(status.unexpectedRequests).toEqual([])
@@ -112,7 +130,12 @@ async function withDroidAttachmentWorkspace(
     prepare: directory => prepareDroidAttachments(directory, leapmuxServer.mockModelUrl, routes.primary, routes.alternate),
     openAgent: (server, workspaceId, workingDir) => openAgentViaAPI(server, workspaceId, workingDir, agentOpenOptions(DROID_AGENT.provider)),
   }, async ({ server, workspaceId }) => {
-    const native = await nativeContext({ page, leapmuxServer: server, workspaceId, modelScript })
+    const native = await nativeContext({
+      page,
+      leapmuxServer: server,
+      workspaceId,
+      modelScript,
+    })
     await waitForNativeSettingsHydrated(page)
     await run(native)
   })

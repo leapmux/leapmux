@@ -47,7 +47,9 @@ export function createRafResizeObserver(
     if (disconnected || pendingEntries.size === 0)
       return
 
-    const entries = [...pendingEntries.values()]
+    const entries = [
+      ...pendingEntries.values(),
+    ]
     pendingEntries.clear()
     callback(entries, observer)
   }

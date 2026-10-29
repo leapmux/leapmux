@@ -54,7 +54,17 @@ export function createClineEnvironment(options: ClineEnvironmentOptions): Record
   writePrivateJSON(join(settingsDir, 'global-settings.json'), { telemetryOptOut: true, autoUpdateEnabled: false })
   const echoServer = options.mcpEchoServer
   writePrivateJSON(join(settingsDir, 'cline_mcp_settings.json'), {
-    mcpServers: echoServer ? { [echoServer.name]: { transport: { type: 'stdio', command: echoServer.command, args: [...echoServer.args] } } } : {},
+    mcpServers: echoServer
+      ? {
+          [echoServer.name]: {
+            transport: {
+              type: 'stdio',
+              command: echoServer.command,
+              args: [...echoServer.args],
+            },
+          },
+        }
+      : {},
   })
   writePrivateJSON(join(cacheDir, 'feature-flags.json'), clineFeatureFlags(writtenAt))
   return {
@@ -111,7 +121,9 @@ export function clineProviders(options: Pick<ClineEnvironmentOptions, 'providerI
           apiKey: options.modelKey,
           model: options.modelID,
           baseUrl: options.baseURL,
-          ...(options.reasoning === undefined ? {} : { reasoning: options.reasoning }),
+          ...(options.reasoning === undefined
+            ? {}
+            : { reasoning: options.reasoning }),
         },
         updatedAt: new Date(updatedAt).toISOString(),
         tokenSource: 'manual',
@@ -125,5 +137,10 @@ export function clineProviders(options: Pick<ClineEnvironmentOptions, 'providerI
  * after `updatedAt`, which covers a whole run.
  */
 function clineFeatureFlags(updatedAt: number): Record<string, unknown> {
-  return { version: 2, updatedAt, userId: null, flagsPayload: { featureFlags: {}, featureFlagPayloads: {} } }
+  return {
+    version: 2,
+    updatedAt,
+    userId: null,
+    flagsPayload: { featureFlags: {}, featureFlagPayloads: {} },
+  }
 }

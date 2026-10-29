@@ -15,7 +15,9 @@ commandCodeTest('shows exact image bytes from the actual native file tool before
   const path = join(agent.workingDir, 'native-tool-image.png')
   copyFileSync(writeAttachmentFixture('image'), path)
   const { resultRequest } = await runNativeToolTurn(native, {
-    toolCalls: [readToolCall(native.provider, 'native-image-read', path)],
+    toolCalls: [
+      readToolCall(native.provider, 'native-image-read', path),
+    ],
     prompt: 'Read the supplied native image file.',
     answer: 'The actual native image reached the next model turn.',
   })

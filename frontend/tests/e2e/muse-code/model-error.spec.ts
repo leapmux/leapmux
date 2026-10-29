@@ -8,7 +8,14 @@ museTest('shows the native model error and accepts the next valid turn', async (
 
 museTest('marks the cut attempt and folds the retry', async ({ native }) => {
   await exerciseModelRetry(native, {
-    errors: [{ status: 503, message: 'The response ended early.', code: 'server_error', midStream: 'truncate' }],
+    errors: [
+      {
+        status: 503,
+        message: 'The response ended early.',
+        code: 'server_error',
+        midStream: 'truncate',
+      },
+    ],
     failedAttempt: 'error',
   })
 })

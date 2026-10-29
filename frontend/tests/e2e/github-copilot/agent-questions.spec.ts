@@ -5,14 +5,16 @@ import { exerciseQuestionIsolation } from '../helpers/nativeQuestionIsolation'
 
 copilotTest('answers one native ask_user choice and resumes the model turn', async ({ native }) => {
   const { result, request } = await exerciseQuestionAnswer(native, {
-    questions: [{
-      question: 'Which color should I use?',
-      header: 'Color',
-      options: [
-        { label: 'Blue', description: 'Use blue.' },
-        { label: 'Green', description: 'Use green.' },
-      ],
-    }],
+    questions: [
+      {
+        question: 'Which color should I use?',
+        header: 'Color',
+        options: [
+          { label: 'Blue', description: 'Use blue.' },
+          { label: 'Green', description: 'Use green.' },
+        ],
+      },
+    ],
     callId: 'copilot-question',
     prompt: 'Ask me which color to use, then report that choice.',
     answer: 'I used the chosen color.',

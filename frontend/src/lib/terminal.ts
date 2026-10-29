@@ -173,7 +173,9 @@ export function resolveTerminalRendererPreference(
 ): ResolvedTerminalRenderer {
   if (pref === 'canvas' || pref === 'webgl')
     return pref
-  return isLinuxDesktopTauri() ? 'canvas' : 'webgl'
+  return isLinuxDesktopTauri()
+    ? 'canvas'
+    : 'webgl'
 }
 
 function isLinuxDesktopTauri(): boolean {
@@ -204,7 +206,9 @@ export function resolveTerminalThemeMode(
   uiMode: ThemeMode,
   prefersDark: boolean,
 ): ResolvedThemeMode {
-  const mode = pref === MATCH_UI ? uiMode : pref
+  const mode = pref === MATCH_UI
+    ? uiMode
+    : pref
   if (mode === 'light' || mode === 'dark')
     return mode
   return prefersDark ? 'dark' : 'light'
@@ -264,7 +268,9 @@ export function terminalThemeFor(
   // background, and a tile terminal opening first would leave the quake panel
   // opaque. Both are silent, because the reference guard in TerminalView then
   // reports the stale object as unchanged.
-  const cacheKey = transparentBackground ? `${resolved.id}:transparent` : resolved.id
+  const cacheKey = transparentBackground
+    ? `${resolved.id}:transparent`
+    : resolved.id
   const cached = terminalThemeCache.get(cacheKey)
   if (cached)
     return cached
@@ -376,7 +382,9 @@ export function applyTerminalData(instance: TerminalInstance, payload: TerminalD
   }
   const { data, endOffset, currentOffset, onParsed } = payload
   const deltaStart = endOffset - data.byteLength
-  const unrendered = currentOffset > deltaStart ? data.subarray(currentOffset - deltaStart) : data
+  const unrendered = currentOffset > deltaStart
+    ? data.subarray(currentOffset - deltaStart)
+    : data
   if (unrendered.byteLength === 0) {
     onParsed?.()
     return Math.max(currentOffset, endOffset)
@@ -469,8 +477,12 @@ export function createTerminalInstance(
     // Without it the WebGL renderer paints an OPAQUE background behind every
     // glyph, so a translucent panel reads as opaque wherever there is text.
     allowTransparency: transparentBackground,
-    ...(opts?.cols ? { cols: opts.cols } : {}),
-    ...(opts?.rows ? { rows: opts.rows } : {}),
+    ...(opts?.cols
+      ? { cols: opts.cols }
+      : {}),
+    ...(opts?.rows
+      ? { rows: opts.rows }
+      : {}),
     // Supplying this is what keeps xterm's own `defaultActivate` unreachable,
     // and that handler is broken under the desktop shell in two ways at once.
     // It calls `window.confirm`, which Tauri replaces with an ASYNCHRONOUS

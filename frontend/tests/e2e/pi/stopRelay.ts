@@ -150,7 +150,9 @@ export async function withPiRetrySignal<T>(
           onStart(Buffer.from(packet.bytes, 'base64'))
         }
         catch (error) {
-          failure = error instanceof Error ? error : new Error(String(error))
+          failure = error instanceof Error
+            ? error
+            : new Error(String(error))
           socket.destroy()
           return
         }
@@ -173,6 +175,8 @@ export async function withPiRetrySignal<T>(
   finally {
     for (const socket of sockets)
       socket.destroy()
-    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+    await new Promise<void>((resolve, reject) => server.close(error => error
+      ? reject(error)
+      : resolve()))
   }
 }

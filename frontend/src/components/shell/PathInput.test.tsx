@@ -16,7 +16,9 @@ function renderInput(props: {
     <PathInput
       selectedPath={props.selectedPath}
       homeDir={props.homeDir}
-      {...(props.flavor !== undefined ? { flavor: props.flavor } : {})}
+      {...(props.flavor !== undefined
+        ? { flavor: props.flavor }
+        : {})}
       onSubmit={props.onSubmit}
     />
   ))
@@ -33,7 +35,9 @@ describe('pathInput on a Windows worker', () => {
     const onSubmit = vi.fn()
     renderInput({ ...windowsProps, onSubmit })
     const input = pathInput()
-    fireEvent.input(input, { target: { value: '~\\Documents' } })
+    fireEvent.input(input, {
+      target: { value: '~\\Documents' },
+    })
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(onSubmit).toHaveBeenCalledWith('C:\\Users\\test\\Documents')
   })
@@ -42,7 +46,9 @@ describe('pathInput on a Windows worker', () => {
     const onSubmit = vi.fn()
     renderInput({ ...windowsProps, onSubmit })
     const input = pathInput()
-    fireEvent.input(input, { target: { value: '~/Documents' } })
+    fireEvent.input(input, {
+      target: { value: '~/Documents' },
+    })
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(onSubmit).toHaveBeenCalledWith('C:\\Users\\test\\Documents')
   })
@@ -51,7 +57,9 @@ describe('pathInput on a Windows worker', () => {
     const onSubmit = vi.fn()
     renderInput({ ...windowsProps, onSubmit })
     const input = pathInput()
-    fireEvent.input(input, { target: { value: 'C:\\Windows\\System32' } })
+    fireEvent.input(input, {
+      target: { value: 'C:\\Windows\\System32' },
+    })
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(onSubmit).toHaveBeenCalledWith('C:\\Windows\\System32')
   })
@@ -59,7 +67,9 @@ describe('pathInput on a Windows worker', () => {
   it('shows a hint when a POSIX path is entered on a Windows worker', async () => {
     const onSubmit = vi.fn()
     renderInput({ ...windowsProps, onSubmit })
-    fireEvent.input(pathInput(), { target: { value: '/home/alice/proj' } })
+    fireEvent.input(pathInput(), {
+      target: { value: '/home/alice/proj' },
+    })
     const hint = await screen.findByTestId('path-flavor-hint')
     expect(hint.textContent).toMatch(/POSIX path/i)
   })
@@ -72,7 +82,9 @@ describe('pathInput on a POSIX worker', () => {
     const onSubmit = vi.fn()
     renderInput({ ...posixProps, onSubmit })
     const input = pathInput()
-    fireEvent.input(input, { target: { value: '~/proj' } })
+    fireEvent.input(input, {
+      target: { value: '~/proj' },
+    })
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(onSubmit).toHaveBeenCalledWith('/home/alice/proj')
   })
@@ -80,7 +92,9 @@ describe('pathInput on a POSIX worker', () => {
   it('shows a hint when a Windows-looking path is entered on a POSIX worker', async () => {
     const onSubmit = vi.fn()
     renderInput({ ...posixProps, onSubmit })
-    fireEvent.input(pathInput(), { target: { value: 'C:\\Users\\alice' } })
+    fireEvent.input(pathInput(), {
+      target: { value: 'C:\\Users\\alice' },
+    })
     const hint = await screen.findByTestId('path-flavor-hint')
     expect(hint.textContent).toMatch(/Windows path/i)
   })
@@ -88,7 +102,9 @@ describe('pathInput on a POSIX worker', () => {
   it('does not show a hint for a matching POSIX path', () => {
     const onSubmit = vi.fn()
     renderInput({ ...posixProps, onSubmit })
-    fireEvent.input(pathInput(), { target: { value: '/opt/data' } })
+    fireEvent.input(pathInput(), {
+      target: { value: '/opt/data' },
+    })
     expect(screen.queryByTestId('path-flavor-hint')).toBeNull()
   })
 })
@@ -102,12 +118,20 @@ describe('pathInput before the worker reports its os', () => {
    * `C:\` path would be flagged as a mistake.
    */
   it('shows no flavor hint while the flavor is unknown', () => {
-    renderInput({ selectedPath: '', homeDir: '', onSubmit: vi.fn() })
+    renderInput({
+      selectedPath: '',
+      homeDir: '',
+      onSubmit: vi.fn(),
+    })
 
-    fireEvent.input(pathInput(), { target: { value: 'C:\\Users\\alice' } })
+    fireEvent.input(pathInput(), {
+      target: { value: 'C:\\Users\\alice' },
+    })
     expect(screen.queryByTestId('path-flavor-hint')).toBeNull()
 
-    fireEvent.input(pathInput(), { target: { value: '/home/alice' } })
+    fireEvent.input(pathInput(), {
+      target: { value: '/home/alice' },
+    })
     expect(screen.queryByTestId('path-flavor-hint')).toBeNull()
   })
 
@@ -116,7 +140,9 @@ describe('pathInput before the worker reports its os', () => {
     const onSubmit = vi.fn()
     renderInput({ selectedPath: '', homeDir: '', onSubmit })
 
-    fireEvent.input(pathInput(), { target: { value: '/opt/data' } })
+    fireEvent.input(pathInput(), {
+      target: { value: '/opt/data' },
+    })
     fireEvent.keyDown(pathInput(), { key: 'Enter' })
 
     expect(onSubmit).toHaveBeenCalledWith('/opt/data')
@@ -127,7 +153,11 @@ describe('pathInput submission', () => {
   const posixProps = { selectedPath: '/home/alice', homeDir: '/home/alice', flavor: 'posix' as const }
 
   it('shows the selected path tildified', () => {
-    renderInput({ ...posixProps, selectedPath: '/home/alice/proj', onSubmit: vi.fn() })
+    renderInput({
+      ...posixProps,
+      selectedPath: '/home/alice/proj',
+      onSubmit: vi.fn(),
+    })
     expect(pathInput().value).toBe('~/proj')
   })
 
@@ -135,7 +165,9 @@ describe('pathInput submission', () => {
     const onSubmit = vi.fn()
     renderInput({ ...posixProps, onSubmit })
     const input = pathInput()
-    fireEvent.input(input, { target: { value: '~/other' } })
+    fireEvent.input(input, {
+      target: { value: '~/other' },
+    })
     fireEvent.blur(input)
     expect(onSubmit).toHaveBeenCalledWith('/home/alice/other')
   })
@@ -151,7 +183,9 @@ describe('pathInput submission', () => {
     const onSubmit = vi.fn()
     renderInput({ ...posixProps, onSubmit })
     const input = pathInput()
-    fireEvent.input(input, { target: { value: '   ' } })
+    fireEvent.input(input, {
+      target: { value: '   ' },
+    })
     fireEvent.keyDown(input, { key: 'Enter' })
     fireEvent.blur(input)
     expect(onSubmit).not.toHaveBeenCalled()
@@ -161,7 +195,9 @@ describe('pathInput submission', () => {
     const onSubmit = vi.fn()
     renderInput({ ...posixProps, onSubmit })
     const input = pathInput()
-    fireEvent.input(input, { target: { value: '  ~/proj  ' } })
+    fireEvent.input(input, {
+      target: { value: '  ~/proj  ' },
+    })
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(onSubmit).toHaveBeenCalledWith('/home/alice/proj')
   })
@@ -170,7 +206,9 @@ describe('pathInput submission', () => {
     const onSubmit = vi.fn()
     renderInput({ ...posixProps, onSubmit })
     const input = pathInput()
-    fireEvent.input(input, { target: { value: '~/proj' } })
+    fireEvent.input(input, {
+      target: { value: '~/proj' },
+    })
     fireEvent.keyDown(input, { key: 'a' })
     expect(onSubmit).not.toHaveBeenCalled()
   })
@@ -227,7 +265,9 @@ describe('pathInput leading slot', () => {
     ))
 
     const input = screen.getByPlaceholderText('Enter path...')
-    fireEvent.input(input, { target: { value: '/etc/hosts' } })
+    fireEvent.input(input, {
+      target: { value: '/etc/hosts' },
+    })
 
     const hint = await screen.findByTestId('path-flavor-hint')
     const row = screen.getByTestId('slot').parentElement!

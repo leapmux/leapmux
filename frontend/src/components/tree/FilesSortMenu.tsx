@@ -23,8 +23,14 @@ export interface FilesSortMenuProps {
  * group in one popover.
  */
 export const FilesSortMenu: Component<FilesSortMenuProps> = (props) => {
-  const setKey = (key: FileSortKey) => props.onChange({ ...props.sortOrder(), key })
-  const setDirection = (direction: FileSortDirection) => props.onChange({ ...props.sortOrder(), direction })
+  const setKey = (key: FileSortKey) => props.onChange({
+    ...props.sortOrder(),
+    key,
+  })
+  const setDirection = (direction: FileSortDirection) => props.onChange({
+    ...props.sortOrder(),
+    direction,
+  })
 
   return (
     <DropdownMenu
@@ -37,7 +43,9 @@ export const FilesSortMenu: Component<FilesSortMenuProps> = (props) => {
       trigger={triggerProps => (
         <IconButton
           {...triggerProps}
-          icon={props.sortOrder().direction === 'desc' ? ArrowDownWideNarrow : ArrowUpNarrowWide}
+          icon={props.sortOrder().direction === 'desc'
+            ? ArrowDownWideNarrow
+            : ArrowUpNarrowWide}
           iconSize="sm"
           size="sm"
           title={`Sort by ${sortKeyLabel(props.sortOrder().key).toLowerCase()} (${sortDirectionLabel(props.sortOrder().key, props.sortOrder().direction)})`}

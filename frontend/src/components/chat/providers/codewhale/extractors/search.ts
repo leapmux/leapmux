@@ -36,9 +36,19 @@ export function codewhaleGrepResult(text: string): SearchResult | null {
     if (!filePath)
       return []
     const lineNumber = pickNumber(match, 'line_number')
-    return [{ filePath, ...(lineNumber !== null ? { lineNumber } : {}), text: pickString(match, 'line') }]
+    return [
+      {
+        filePath,
+        ...(lineNumber !== null
+          ? { lineNumber }
+          : {}),
+        text: pickString(match, 'line'),
+      },
+    ]
   })
-  const filenames = [...new Set(lines.map(line => line.filePath))]
+  const filenames = [
+    ...new Set(lines.map(line => line.filePath)),
+  ]
   const total = pickNumber(document, 'total_matches')
   return {
     filenames,
@@ -46,7 +56,9 @@ export function codewhaleGrepResult(text: string): SearchResult | null {
     lines,
     numFiles: filenames.length,
     numLines: lines.length,
-    ...(total !== null ? { matchCount: total } : {}),
+    ...(total !== null
+      ? { matchCount: total }
+      : {}),
     truncated: pickBool(document, 'truncated'),
     fallbackContent: text,
     empty: lines.length === 0,
@@ -101,10 +113,14 @@ function codewhaleToolSearchResult(text: string): SearchResult | null {
  * which is exactly the text the language server answered with.
  */
 export function codewhaleCorpusSearchResult(toolName: string, text: string): SearchResult {
-  const structured = toolName === CODEWHALE_TOOL.ToolSearch ? codewhaleToolSearchResult(text) : null
+  const structured = toolName === CODEWHALE_TOOL.ToolSearch
+    ? codewhaleToolSearchResult(text)
+    : null
   if (structured)
     return structured
-  const lines = text ? text.split('\n').filter(line => line.trim() !== '') : []
+  const lines = text
+    ? text.split('\n').filter(line => line.trim() !== '')
+    : []
   return {
     filenames: [],
     content: text,

@@ -14,13 +14,23 @@ describe('getMessageContent', () => {
   })
 
   it('returns null when message.content is not an array', () => {
-    expect(getMessageContent({ message: { content: 'plain' } })).toBeNull()
-    expect(getMessageContent({ message: { content: { type: 'text' } } })).toBeNull()
+    expect(getMessageContent({
+      message: { content: 'plain' },
+    })).toBeNull()
+    expect(getMessageContent({
+      message: {
+        content: { type: 'text' },
+      },
+    })).toBeNull()
   })
 
   it('returns the content array', () => {
-    const blocks = [{ type: 'text', text: 'hi' }]
-    expect(getMessageContent({ message: { content: blocks } })).toBe(blocks)
+    const blocks = [
+      { type: 'text', text: 'hi' },
+    ]
+    expect(getMessageContent({
+      message: { content: blocks },
+    })).toBe(blocks)
   })
 })
 
@@ -114,14 +124,20 @@ describe('joinContentParagraphs', () => {
 
   it('embeds Anthropic-shape base64 images as Markdown', () => {
     expect(joinContentParagraphs([
-      { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'BASE64' } },
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/jpeg', data: 'BASE64' },
+      },
     ], { text: 'text' })).toBe('![image](data:image/jpeg;base64,BASE64)')
   })
 
   it('emits a hyperlink (not inline embed) for external image URLs', () => {
     expect(joinContentParagraphs([
       { type: 'text', text: 'find at' },
-      { type: 'image', source: { type: 'url', url: 'https://example.com/x.png' } },
+      {
+        type: 'image',
+        source: { type: 'url', url: 'https://example.com/x.png' },
+      },
     ], { text: 'text' })).toBe('find at\n\n[image](https://example.com/x.png)')
   })
 
@@ -151,7 +167,10 @@ describe('markdownImageFormatter', () => {
 
   it('returns null for image blocks with no recognizable shape', () => {
     expect(markdownImageFormatter({ type: 'image' })).toBeNull()
-    expect(markdownImageFormatter({ type: 'image', source: { type: 'unknown' } })).toBeNull()
+    expect(markdownImageFormatter({
+      type: 'image',
+      source: { type: 'unknown' },
+    })).toBeNull()
   })
 
   it('formats Pi-shape images as inline Markdown', () => {
@@ -178,7 +197,10 @@ describe('splitToolResultContent', () => {
   it('returns the same text as joinContentParagraphs with images skipped', () => {
     const blocks = [
       { type: 'text', text: 'before' },
-      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: 'AAAA' },
+      },
       { type: 'text', text: 'after' },
     ]
     expect(splitToolResultContent(blocks, { text: 'text' }).text)
@@ -188,11 +210,16 @@ describe('splitToolResultContent', () => {
   it('keeps the base64 out of the text and hands it back as a source', () => {
     const { text, images } = splitToolResultContent([
       { type: 'text', text: 'here is the screenshot' },
-      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: 'AAAA' },
+      },
     ], { text: 'text' })
     expect(text).toBe('here is the screenshot')
     expect(text).not.toContain('base64')
-    expect(images).toEqual([{ data: 'AAAA', mimeType: 'image/png' }])
+    expect(images).toEqual([
+      { data: 'AAAA', mimeType: 'image/png' },
+    ])
   })
 
   it('preserves wire order across several images', () => {
@@ -213,7 +240,9 @@ describe('splitToolResultContent', () => {
       { type: 'image', mimeType: 'image/png' },
     ], { text: 'text' })
     expect(text).toBe('')
-    expect(images).toEqual([{ mimeType: 'image/png' }])
+    expect(images).toEqual([
+      { mimeType: 'image/png' },
+    ])
   })
 
   it('returns empty halves for null content', () => {
@@ -249,7 +278,12 @@ describe('forEachContentBlock guarantees', () => {
         return null
       },
     )
-    expect(seen).toEqual(['constructor', 'toString', 'valueOf', '__proto__'])
+    expect(seen).toEqual([
+      'constructor',
+      'toString',
+      'valueOf',
+      '__proto__',
+    ])
   })
 
   // The ordering guarantee an image tab's permanent `imageIndex` rests on.

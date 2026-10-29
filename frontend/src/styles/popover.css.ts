@@ -99,12 +99,15 @@ export const popoverBase = style({
  * link card grew a horizontal scrollbar that pushed its remove button out of
  * view. One of them also sets a competing `max-width` of its own.
  */
-export const popoverColumnClamp = style([popoverBase, {
-  flexDirection: 'column',
-  maxWidth: VIEWPORT_MAX_WIDTH,
-  maxHeight: VIEWPORT_MAX_HEIGHT,
-  overflowY: 'auto',
-}])
+export const popoverColumnClamp = style([
+  popoverBase,
+  {
+    flexDirection: 'column',
+    maxWidth: VIEWPORT_MAX_WIDTH,
+    maxHeight: VIEWPORT_MAX_HEIGHT,
+    overflowY: 'auto',
+  },
+])
 
 /**
  * The custom properties `DropdownMenu` measures onto its popover, so a MENU can
@@ -137,13 +140,16 @@ export const DIALOG_HEIGHT_VAR = '--dropdown-dialog-height'
 const triggerWidth = `var(${TRIGGER_WIDTH_VAR}, 100vw)`
 const dialogHeight = `var(${DIALOG_HEIGHT_VAR}, 100vh)`
 
-export const popoverMenuClamp = style([popoverColumnClamp, {
-  maxHeight: `min(${dialogHeight}, ${VIEWPORT_MAX_HEIGHT})`,
-  overflow: 'auto',
-  // A swipe that reaches the end of the list must not carry on into whatever
-  // sits behind the menu.
-  overscrollBehavior: 'contain',
-}])
+export const popoverMenuClamp = style([
+  popoverColumnClamp,
+  {
+    maxHeight: `min(${dialogHeight}, ${VIEWPORT_MAX_HEIGHT})`,
+    overflow: 'auto',
+    // A swipe that reaches the end of the list must not carry on into whatever
+    // sits behind the menu.
+    overscrollBehavior: 'contain',
+  },
+])
 
 /**
  * The extra clamp a FIELD-shaped menu takes: never wider than its own trigger.
@@ -162,10 +168,13 @@ export const popoverMenuClamp = style([popoverColumnClamp, {
  * `min-width: 12rem`, and a min-width ALWAYS beats a max-width -- a trigger
  * narrower than 12rem would otherwise keep a popover wider than itself.
  */
-export const popoverFieldMenuClamp = style([popoverMenuClamp, {
-  maxWidth: `min(${triggerWidth}, ${VIEWPORT_MAX_WIDTH})`,
-  minWidth: `min(12rem, ${triggerWidth})`,
-}])
+export const popoverFieldMenuClamp = style([
+  popoverMenuClamp,
+  {
+    maxWidth: `min(${triggerWidth}, ${VIEWPORT_MAX_WIDTH})`,
+    minWidth: `min(12rem, ${triggerWidth})`,
+  },
+])
 
 /**
  * The inset a card gives its content when it FLOATS over the reader's work.
@@ -212,10 +221,14 @@ export const popoverCardPadding = style({
  * Composes Oat's `card` as a plain class name (vanilla-extract accepts one in a style list), so
  * the fill, the border and the radius follow Oat rather than being restated here.
  */
-export const floatingCardSurface = style(['card', popoverCardPadding, {
-  boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
-  lineHeight: 1.4,
-}])
+export const floatingCardSurface = style([
+  'card',
+  popoverCardPadding,
+  {
+    boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
+    lineHeight: 1.4,
+  },
+])
 
 /**
  * The class list for a popover whose content is a CARD -- labelled rows, a list,

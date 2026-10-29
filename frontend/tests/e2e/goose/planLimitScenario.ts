@@ -16,7 +16,12 @@ export async function exerciseGoosePlanLimit(context: ManagedNativeScenarioConte
   if (!before.workingDir)
     throw new Error('The native Chat mode proof requires a private working directory.')
   const modes = nativeOptionGroup(before, 'permissionMode')?.options.map(option => option.id)
-  expect(modes).toEqual(expect.arrayContaining(['chat', 'auto', 'approve', 'smart_approve']))
+  expect(modes).toEqual(expect.arrayContaining([
+    'chat',
+    'auto',
+    'approve',
+    'smart_approve',
+  ]))
   expect(modes).not.toContain('plan')
   const baseline = await sendNativeAnswer(context, 'Report the native tool catalog before Chat mode.', 'The native execution mode is ready.')
   const names = nativeModelToolNames(baseline)
@@ -29,7 +34,9 @@ export async function exerciseGoosePlanLimit(context: ManagedNativeScenarioConte
   const callId = 'goose-native-chat-tool'
   // The turn approves nothing, so an approval request blocks the turn and fails the proof.
   const { resultRequest } = await runNativeToolTurn(context, {
-    toolCalls: [bashToolCall(context.provider, callId, `printf native-chat-tool > ${quotePosixShellArgument(file)}`)],
+    toolCalls: [
+      bashToolCall(context.provider, callId, `printf native-chat-tool > ${quotePosixShellArgument(file)}`),
+    ],
     prompt: 'Try the supplied tool while the native mode is Chat.',
     answer: 'The native Chat mode skips tools and has no plan approval.',
     permissions: 'none',

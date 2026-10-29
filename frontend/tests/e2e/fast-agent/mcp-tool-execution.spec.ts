@@ -15,7 +15,12 @@ fastAgentTest('returns actual local MCP results for a value and an empty string'
   await connectNativeMcp(native, server, receiptLog)
   for (const value of [`ECHOVALUE${randomUUID()}`, '']) {
     const callId = `fast-echo-${randomUUID()}`
-    const next = await invokeNativeMcp(native, { server: server.name, tool: 'echo', input: { value }, callId })
+    const next = await invokeNativeMcp(native, {
+      server: server.name,
+      tool: 'echo',
+      input: { value },
+      callId,
+    })
     const expected = `MCP_ECHO:${value}`
     expect(nativeToolResult(next, callId)).toContain(expected)
     const receipt = readMcpServerReceipt(receiptLog)

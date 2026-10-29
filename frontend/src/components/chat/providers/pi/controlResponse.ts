@@ -65,7 +65,9 @@ export function piAskAnswerValue(answerState: ControlAnswerState, questions?: Co
   if (selections.length) {
     const multiSelect = questions?.[0]?.multiSelect || (payload?.method === PI_DIALOG_METHOD.Input && payload.placeholder === '1,3')
     // The length test above pinned the first selection; `?? ''` is the type-level guard alone.
-    return multiSelect ? selections.join(',') : selections[0] ?? ''
+    return multiSelect
+      ? selections.join(',')
+      : selections[0] ?? ''
   }
   return answerState.customTexts()[0] ?? ''
 }
@@ -107,7 +109,11 @@ export function piControlResponseSummary(cr: PersistedControlResponse): ControlR
     case PI_DIALOG_METHOD.Input:
     case PI_DIALOG_METHOD.Editor:
     case '': {
-      return typeof response.value === 'string' ? label(response.value === '' ? 'Empty answer' : response.value) : null
+      return typeof response.value === 'string'
+        ? label(response.value === ''
+            ? 'Empty answer'
+            : response.value)
+        : null
     }
     default:
       return null

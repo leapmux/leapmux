@@ -79,7 +79,13 @@ describe('claude tool vocabulary', () => {
  * `Object.prototype`, so a table keyed by one had to become a Map.
  */
 describe('claude tool tables over an Object.prototype name', () => {
-  const inherited = ['constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__']
+  const inherited = [
+    'constructor',
+    'toString',
+    'valueOf',
+    'hasOwnProperty',
+    '__proto__',
+  ]
 
   it.each(inherited)('passes a tool called %s through unchanged', (name) => {
     expect(canonicalClaudeToolName(name)).toBe(name)

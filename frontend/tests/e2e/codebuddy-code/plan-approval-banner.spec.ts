@@ -19,8 +19,16 @@ codebuddyTest.describe('CodeBuddy Code plan approval', () => {
     await modelScript.fallback({ text: 'Working through the plan.' })
 
     const start = await modelScript.queue(
-      { toolCalls: [enterPlanModeToolCall(PROVIDER, 'enter-plan')] },
-      { toolCalls: [exitPlanModeToolCall(PROVIDER, 'exit-plan-1', modelScript.prompt(planText('first')))] },
+      {
+        toolCalls: [
+          enterPlanModeToolCall(PROVIDER, 'enter-plan'),
+        ],
+      },
+      {
+        toolCalls: [
+          exitPlanModeToolCall(PROVIDER, 'exit-plan-1', modelScript.prompt(planText('first'))),
+        ],
+      },
     )
     await sendMessage(page, modelScript.prompt('Enter plan mode and present the plan.'))
     await modelScript.waitForSteps(start + 2)
@@ -43,7 +51,11 @@ codebuddyTest.describe('CodeBuddy Code plan approval', () => {
     await waitForSettingsIdle(page)
     await expectSettingsOptionChosen(page, 'thinking-true')
 
-    const second = await modelScript.queue({ toolCalls: [exitPlanModeToolCall(PROVIDER, 'exit-plan-2', modelScript.prompt(planText('second')))] })
+    const second = await modelScript.queue({
+      toolCalls: [
+        exitPlanModeToolCall(PROVIDER, 'exit-plan-2', modelScript.prompt(planText('second'))),
+      ],
+    })
     await modelScript.rule({
       name: 'the approved plan continues in the native model',
       when: { body: 'Exited plan mode' },

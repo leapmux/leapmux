@@ -157,7 +157,9 @@ export async function closeNativeAgentAndWait(
   const server = context.leapmuxServer
   const closed = await closeAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, agentId)
   if (closed.failureMessage || closed.failureDetail) {
-    const detail = closed.failureDetail ? ` (${closed.failureDetail})` : ''
+    const detail = closed.failureDetail
+      ? ` (${closed.failureDetail})`
+      : ''
     throw new Error(`The Worker refused to close agent ${agentId}: ${closed.failureMessage || 'no message'}${detail}`)
   }
   await waitForWorkerAgentsClosed(context, [agentId])
@@ -180,7 +182,9 @@ export async function waitForWorkerAgentsClosed(
   // A Worker read can fail for a moment during a reconnect, so the wait retries the reads and the match together.
   await retryUntilPass(async () => {
     const agents = await Promise.all(agentIds.map(agentId => nativeAgentById(context, agentId)))
-    const listed = agents.flatMap(agent => agent ? [agent.id] : [])
+    const listed = agents.flatMap(agent => agent
+      ? [agent.id]
+      : [])
     expect(listed, `The Worker still lists the closed agents ${listed.join(', ')}.`).toEqual([])
   })
 }
@@ -236,7 +240,9 @@ async function listAgentsForWait(hubUrl: string, token: string, workerId: string
 function lastFailedRead(reads: AgentListReads): string {
   if (reads.lastFailure === undefined)
     return ''
-  return `; the last read that failed: ${reads.lastFailure instanceof Error ? reads.lastFailure.message : String(reads.lastFailure)}`
+  return `; the last read that failed: ${reads.lastFailure instanceof Error
+    ? reads.lastFailure.message
+    : String(reads.lastFailure)}`
 }
 
 /**
@@ -252,7 +258,9 @@ async function workspaceTabIdsViaAPI(
   const data = await callHub<{ tabs?: Array<{ tabType: string, tabId: string }> }>(
     hubUrl,
     'WorkspaceService/ListTabs',
-    { workspaceIds: [workspaceId] },
+    {
+      workspaceIds: [workspaceId],
+    },
     { cookie: token, operation: `workspaceTabIdsViaAPI(${workspaceId})` },
   )
   return (data.tabs ?? []).filter(tab => tab.tabType === tabType).map(tab => tab.tabId)
@@ -289,7 +297,13 @@ export async function listAgentsViaAPI(
     ListAgentsResponseSchema,
     { tabIds: agentTabIds },
   )
-  return resp.agents.map(a => ({ id: a.id, title: a.title, workingDir: a.workingDir, status: a.status, startupError: a.startupError }))
+  return resp.agents.map(a => ({
+    id: a.id,
+    title: a.title,
+    workingDir: a.workingDir,
+    status: a.status,
+    startupError: a.startupError,
+  }))
 }
 
 /**
@@ -357,7 +371,9 @@ export async function waitForWorkerTabTitle(
   // next attempt. `toPass` retries the read and the match together.
   await expect(async () => {
     expect((await list()).map(tab => tab.title), message).toContain(title)
-  }).toPass({ timeout: waitTimeoutBeforeTestDeadline() })
+  }).toPass({
+    timeout: waitTimeoutBeforeTestDeadline(),
+  })
 }
 
 /**

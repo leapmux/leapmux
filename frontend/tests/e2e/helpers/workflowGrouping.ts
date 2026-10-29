@@ -153,8 +153,11 @@ export function ungroupedChildTaskProblem(tasks: readonly UngroupedChildTask[], 
   if (children.some(task => task.status !== BackgroundTaskStatus.SUCCEEDED))
     return 'a subagent task is not completed'
   const ids = children.map(task => task.childAgentId)
-  if (childAgentIds === 'absent')
-    return ids.every(id => id === '') ? '' : `a subagent task holds a child agent: ${JSON.stringify(ids)}`
+  if (childAgentIds === 'absent') {
+    return ids.every(id => id === '')
+      ? ''
+      : `a subagent task holds a child agent: ${JSON.stringify(ids)}`
+  }
   if (ids.some(id => id.trim() === ''))
     return 'a subagent task holds no child agent'
   if (new Set(ids).size !== 2)
@@ -179,7 +182,10 @@ export async function expectUngroupedChildRows(
     await expectNoNativeWorkflowGroups(context, options.parentId)
     await expandBackgroundTasksSection(context.page)
     await expect(rows).toHaveCount(2)
-    const pair = [rows.nth(0), rows.nth(1)] as const
+    const pair = [
+      rows.nth(0),
+      rows.nth(1),
+    ] as const
     for (const row of pair) {
       await expect(row).toHaveAttribute('data-status', 'succeeded')
       expect(await workflowGroupHeading(row), 'an ungrouped row has no group heading').toBe('')
@@ -229,7 +235,10 @@ export async function exerciseUngroupedNativeChildren(
   }, second.finish)
   if (options.catalogProof)
     await expectNoWorkflowToolOffered(context.modelScript)
-  await expectUngroupedChildRows(context, { childAgentIds: [first.childId, second.childId], parentId: first.parentId })
+  await expectUngroupedChildRows(context, {
+    childAgentIds: [first.childId, second.childId],
+    parentId: first.parentId,
+  })
 }
 
 /** Require a running child row that links its agent, and a Worker task of that child without a workflow group. */

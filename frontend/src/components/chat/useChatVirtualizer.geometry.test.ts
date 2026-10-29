@@ -25,8 +25,12 @@ describe('useChatVirtualizer geometry', () => {
   it('hydrates cached zero and invalidates it when the layout key changes', () => {
     createRoot((dispose) => {
       try {
-        const { virt, setList } = setup([{ id: 'empty', heightKey: 'old', hasSpanLines: false }])
-        expect(virt.primeHeights([{ id: 'empty', heightKey: 'old', height: 0 }])).toBe(1)
+        const { virt, setList } = setup([
+          { id: 'empty', heightKey: 'old', hasSpanLines: false },
+        ])
+        expect(virt.primeHeights([
+          { id: 'empty', heightKey: 'old', height: 0 },
+        ])).toBe(1)
         expect(virt.hasMeasuredHeight('empty')).toBe(true)
         expect(virt.totalHeight()).toBe(0)
         expect(virt.estimateHeight()).toBe(100)
@@ -34,7 +38,9 @@ describe('useChatVirtualizer geometry', () => {
         expect(virt.heightOfIndex(0)).toBe(0.2)
         expect(virt.measure('empty', 0)).toBe(true)
         expect(virt.heightOfIndex(0)).toBe(0)
-        setList([{ id: 'empty', heightKey: 'new', hasSpanLines: false }])
+        setList([
+          { id: 'empty', heightKey: 'new', hasSpanLines: false },
+        ])
         expect(virt.hasMeasuredHeight('empty')).toBe(false)
         expect(virt.primeHeight('empty', 0, 'old')).toBe(false)
         expect(virt.primeHeight('missing', 0)).toBe(false)
@@ -82,7 +88,12 @@ describe('useChatVirtualizer geometry', () => {
         virt.measure('m3', 40)
         const atStart = virt.anchorAt(0)!
         const insideBody = virt.anchorAt(10)!
-        expect(atStart).toEqual({ id: 'm1', offsetWithinRow: 0, basisHeight: 0, gapFraction: 0 })
+        expect(atStart).toEqual({
+          id: 'm1',
+          offsetWithinRow: 0,
+          basisHeight: 0,
+          gapFraction: 0,
+        })
         expect(insideBody.id).toBe('m3')
         expect(virt.scrollTopForAnchor(insideBody)).toBe(10)
         virt.measure('m1', 20)
@@ -115,7 +126,11 @@ describe('useChatVirtualizer geometry', () => {
   it('uses the small gap when the lower row has span lines', () => {
     createRoot((dispose) => {
       // rows: plain, span, plain -> gap(0)=small (row1 has span), gap(1)=large (row2 plain)
-      const { virt } = setup(makeItems([{ seq: 1 }, { seq: 2, span: true }, { seq: 3 }]))
+      const { virt } = setup(makeItems([
+        { seq: 1 },
+        { seq: 2, span: true },
+        { seq: 3 },
+      ]))
       expect(virt.offsetOfIndex(1)).toBe(110) // 100 + small gap (lower row has span)
       expect(virt.offsetOfIndex(2)).toBe(230) // +100 + large gap (lower row plain)
       expect(virt.totalHeight()).toBe(330) // +100
@@ -128,7 +143,10 @@ describe('useChatVirtualizer geometry', () => {
     // adjacent bands overlap by one border width so the pair shows ONE line.
     it('overlaps two adjacent bands by the band border width', () => {
       createRoot((dispose) => {
-        const { virt } = setup(makeItems([{ seq: 1, kind: 'assistant_text' }, { seq: 2, kind: 'assistant_thinking' }]))
+        const { virt } = setup(makeItems([
+          { seq: 1, kind: 'assistant_text' },
+          { seq: 2, kind: 'assistant_thinking' },
+        ]))
         expect(virt.offsetOfIndex(1)).toBe(100 - BAND_BORDER_PX)
         expect(virt.totalHeight()).toBe(200 - BAND_BORDER_PX)
         dispose()
@@ -194,7 +212,9 @@ describe('useChatVirtualizer geometry', () => {
 
     it('adds no gap after the last row, band or not', () => {
       createRoot((dispose) => {
-        const { virt } = setup(makeItems([{ seq: 1, kind: 'assistant_text' }]))
+        const { virt } = setup(makeItems([
+          { seq: 1, kind: 'assistant_text' },
+        ]))
         expect(virt.totalHeight()).toBe(100)
         dispose()
       })
@@ -222,7 +242,10 @@ describe('useChatVirtualizer geometry', () => {
 
     it('treats a row with no kind as a non-band', () => {
       createRoot((dispose) => {
-        const { virt } = setup(makeItems([{ seq: 1 }, { seq: 2 }]))
+        const { virt } = setup(makeItems([
+          { seq: 1 },
+          { seq: 2 },
+        ]))
         expect(virt.offsetOfIndex(1)).toBe(120)
         dispose()
       })
@@ -367,7 +390,12 @@ describe('useChatVirtualizer geometry', () => {
       // contribution has to LEAVE its old bucket and the new one ENTER the current bucket, or a
       // phantom count strands in the old bucket and skews every future estimate for that kind.
       const [list, setList] = createSignal<VirtualItem[]>([
-        { id: 'a', hasSpanLines: false, heightKey: 'k1', kind: 'user_text' },
+        {
+          id: 'a',
+          hasSpanLines: false,
+          heightKey: 'k1',
+          kind: 'user_text',
+        },
         { id: 'probeUser', hasSpanLines: false, kind: 'user_text' }, // unmeasured
         { id: 'probeTool', hasSpanLines: false, kind: 'tool_result' }, // unmeasured
       ])
@@ -386,7 +414,12 @@ describe('useChatVirtualizer geometry', () => {
       // stale-key delete and the commit hits the re-measure branch with
       // prevEntry.kind ('user_text') != kind ('tool_result').
       setList([
-        { id: 'a', hasSpanLines: false, heightKey: 'k1', kind: 'tool_result' },
+        {
+          id: 'a',
+          hasSpanLines: false,
+          heightKey: 'k1',
+          kind: 'tool_result',
+        },
         { id: 'probeUser', hasSpanLines: false, kind: 'user_text' },
         { id: 'probeTool', hasSpanLines: false, kind: 'tool_result' },
       ])
@@ -495,7 +528,9 @@ describe('useChatVirtualizer geometry', () => {
 
   it('counts only the commits that reached the offset map, never a rejected one', () => {
     createRoot((dispose) => {
-      const items: VirtualItem[] = [{ id: 'a', hasSpanLines: false, heightKey: 'k1' }]
+      const items: VirtualItem[] = [
+        { id: 'a', hasSpanLines: false, heightKey: 'k1' },
+      ]
       const [list] = createSignal(items)
       const virt = useChatVirtualizer({
         items: list,
@@ -559,7 +594,9 @@ describe('useChatVirtualizer geometry', () => {
 
   it('reports zero commits when the geometry moved without one (a prepend)', () => {
     createRoot((dispose) => {
-      const [list, setList] = createSignal<VirtualItem[]>([{ id: 'b', hasSpanLines: false }])
+      const [list, setList] = createSignal<VirtualItem[]>([
+        { id: 'b', hasSpanLines: false },
+      ])
       const virt = useChatVirtualizer({
         items: list,
         overscanPx: 0,
@@ -572,7 +609,10 @@ describe('useChatVirtualizer geometry', () => {
 
       // A prepend moves the offset map with no height commit at all. `commits: 0` beside a
       // non-zero totalHeightDelta is what tells a drift WARN that no measurement caused it.
-      setList([{ id: 'a', hasSpanLines: false }, { id: 'b', hasSpanLines: false }])
+      setList([
+        { id: 'a', hasSpanLines: false },
+        { id: 'b', hasSpanLines: false },
+      ])
       expect(virt.totalHeight()).toBe(200)
       expect(virt.takeMeasurementBatch()).toEqual({ commits: 0, deltaSum: 0, totalHeightDelta: 100 })
       dispose()
@@ -587,7 +627,9 @@ describe('useChatVirtualizer geometry', () => {
 
   it('records firstMeasure on the first commit only, not on a re-measure', () => {
     createRoot((dispose) => {
-      const items: VirtualItem[] = [{ id: 'a', hasSpanLines: false }]
+      const items: VirtualItem[] = [
+        { id: 'a', hasSpanLines: false },
+      ]
       const [list] = createSignal(items)
       const virt = useChatVirtualizer({
         items: list,
@@ -621,7 +663,9 @@ describe('useChatVirtualizer geometry', () => {
 
   it('primes a measured height and records it as a premeasure commit', () => {
     createRoot((dispose) => {
-      const items: VirtualItem[] = [{ id: 'a', hasSpanLines: false, heightKey: 'k1' }]
+      const items: VirtualItem[] = [
+        { id: 'a', hasSpanLines: false, heightKey: 'k1' },
+      ]
       const [list] = createSignal(items)
       const virt = useChatVirtualizer({
         items: list,
@@ -677,7 +721,9 @@ describe('useChatVirtualizer geometry', () => {
         gapSmallPx: 10,
         gapLargePx: 20,
       })
-      setList([{ id: 'a', hasSpanLines: false, heightKey: 'new' }])
+      setList([
+        { id: 'a', hasSpanLines: false, heightKey: 'new' },
+      ])
       expect(virt.primeHeight('a', 275, 'old')).toBe(false)
       expect(virt.heightOfIndex(0)).toBe(100)
       expect(virt.hasMeasuredHeight('a')).toBe(false)
@@ -699,7 +745,9 @@ describe('useChatVirtualizer geometry', () => {
       })
       expect(virt.primeHeight('a', 275, 'old')).toBe(true)
       expect(virt.heightOfIndex(0)).toBe(275)
-      setList([{ id: 'a', hasSpanLines: false, heightKey: 'new' }])
+      setList([
+        { id: 'a', hasSpanLines: false, heightKey: 'new' },
+      ])
       expect(virt.heightOfIndex(0)).toBe(100)
       expect(virt.hasMeasuredHeight('a')).toBe(false)
       dispose()
@@ -757,14 +805,30 @@ describe('useChatVirtualizer geometry', () => {
         { id: 'b', hasSpanLines: false }, // gap(a->b) = large (20)
         { id: 'c', hasSpanLines: false },
       ])
-      const virt = useChatVirtualizer({ items: list, overscanPx: 0, estimateHeight: 100, gapSmallPx: 10, gapLargePx: 20 })
+      const virt = useChatVirtualizer({
+        items: list,
+        overscanPx: 0,
+        estimateHeight: 100,
+        gapSmallPx: 10,
+        gapLargePx: 20,
+      })
       // Row 'a' is an UNMEASURED 100px estimate; the 20px gap below it spans [100,120).
       // A scrollTop within the row body has no gap fraction.
-      expect(virt.anchorAt(60)).toEqual({ id: 'a', offsetWithinRow: 60, basisHeight: 100, gapFraction: 0 })
+      expect(virt.anchorAt(60)).toEqual({
+        id: 'a',
+        offsetWithinRow: 60,
+        basisHeight: 100,
+        gapFraction: 0,
+      })
       // ...a scrollTop of 110 lands 10px into the 20px gap = HALFWAY (fraction 0.5).
       // offsetWithinRow clamps to the row bottom; gapFraction carries the in-gap part.
       const anchor = virt.anchorAt(110)
-      expect(anchor).toEqual({ id: 'a', offsetWithinRow: 100, basisHeight: 100, gapFraction: 0.5 })
+      expect(anchor).toEqual({
+        id: 'a',
+        offsetWithinRow: 100,
+        basisHeight: 100,
+        gapFraction: 0.5,
+      })
       // Resolve reproduces the exact in-gap position: 100 (row bottom) + 0.5 * 20.
       expect(virt.scrollTopForAnchor(anchor!)).toBe(110)
 
@@ -786,7 +850,13 @@ describe('useChatVirtualizer geometry', () => {
         { id: 'a', hasSpanLines: false },
         { id: 'b', hasSpanLines: false },
       ])
-      const virt = useChatVirtualizer({ items: list, overscanPx: 0, estimateHeight: 100, gapSmallPx: 10, gapLargePx: 20 })
+      const virt = useChatVirtualizer({
+        items: list,
+        overscanPx: 0,
+        estimateHeight: 100,
+        gapSmallPx: 10,
+        gapLargePx: 20,
+      })
       // An anchor restored from old persistence carries no gapFraction -> the prior
       // gap-independent pin-to-row-bottom behavior (no NaN from a missing field).
       expect(virt.scrollTopForAnchor({ id: 'a', offsetWithinRow: 100, basisHeight: 100 })).toBe(100)
@@ -810,7 +880,12 @@ describe('useChatVirtualizer geometry', () => {
       })
       // Anchor at the MIDDLE of the 100px fallback (scrollTop 50 -> fraction 0.5).
       const anchor = virt.anchorAt(50)
-      expect(anchor).toEqual({ id: 'a', offsetWithinRow: 50, basisHeight: 100, gapFraction: 0 })
+      expect(anchor).toEqual({
+        id: 'a',
+        offsetWithinRow: 50,
+        basisHeight: 100,
+        gapFraction: 0,
+      })
       // Before measure, resolve returns the captured 50 (basis == current fallback).
       expect(virt.scrollTopForAnchor(anchor!)).toBe(50)
       // Row 'a' measures 600. The 0.5 fraction maps to 0.5 * 600 = 300 -- the pin
@@ -841,11 +916,21 @@ describe('useChatVirtualizer geometry', () => {
 
     it('omits stale measured height when the height key changes', () => {
       createRoot((dispose) => {
-        const [list, setList] = createSignal<VirtualItem[]>([{ id: 'a', hasSpanLines: false, heightKey: 'old' }])
-        const virt = useChatVirtualizer({ items: list, overscanPx: 0, estimateHeight: 100, gapSmallPx: 10, gapLargePx: 20 })
+        const [list, setList] = createSignal<VirtualItem[]>([
+          { id: 'a', hasSpanLines: false, heightKey: 'old' },
+        ])
+        const virt = useChatVirtualizer({
+          items: list,
+          overscanPx: 0,
+          estimateHeight: 100,
+          gapSmallPx: 10,
+          gapLargePx: 20,
+        })
         expect(virt.measure('a', 250)).toBe(true)
         expect(virt.heightDebugOfId('a')).toEqual({ measured: 250 })
-        setList([{ id: 'a', hasSpanLines: false, heightKey: 'new' }])
+        setList([
+          { id: 'a', hasSpanLines: false, heightKey: 'new' },
+        ])
         expect(virt.heightDebugOfId('a')).toEqual({ measured: undefined })
         dispose()
       })
@@ -862,10 +947,20 @@ describe('useChatVirtualizer geometry', () => {
 })
 
 describe('sameVirtualItems geometry equality', () => {
-  const base: VirtualItem = { id: 'm1', hasSpanLines: false, heightKey: 'k1', seq: 1n, kind: 'user_text' }
+  const base: VirtualItem = {
+    id: 'm1',
+    hasSpanLines: false,
+    heightKey: 'k1',
+    seq: 1n,
+    kind: 'user_text',
+  }
 
   it('is true for arrays equal on the geometry fields', () => {
-    expect(sameVirtualItems([{ ...base }], [{ ...base }])).toBe(true)
+    expect(sameVirtualItems([
+      { ...base },
+    ], [
+      { ...base },
+    ])).toBe(true)
   })
 
   it('ignores non-geometry fields (seq) when they differ', () => {
@@ -877,11 +972,19 @@ describe('sameVirtualItems geometry equality', () => {
   })
 
   it('is false when any geometry field differs', () => {
-    expect(sameVirtualItems([base], [{ ...base, id: 'm2' }])).toBe(false)
-    expect(sameVirtualItems([base], [{ ...base, hasSpanLines: true }])).toBe(false)
-    expect(sameVirtualItems([base], [{ ...base, heightKey: 'k2' }])).toBe(false)
+    expect(sameVirtualItems([base], [
+      { ...base, id: 'm2' },
+    ])).toBe(false)
+    expect(sameVirtualItems([base], [
+      { ...base, hasSpanLines: true },
+    ])).toBe(false)
+    expect(sameVirtualItems([base], [
+      { ...base, heightKey: 'k2' },
+    ])).toBe(false)
     // kind feeds the per-kind estimate bucket, so a kind change is geometry-relevant.
-    expect(sameVirtualItems([base], [{ ...base, kind: 'tool_result' }])).toBe(false)
+    expect(sameVirtualItems([base], [
+      { ...base, kind: 'tool_result' },
+    ])).toBe(false)
   })
 
   it('is false for different lengths and true for the same reference', () => {
@@ -938,7 +1041,9 @@ describe('primeHeights bulk hydration and snapshotheights', () => {
         const { virt } = setup(plainItems(2))
         virt.attachRow('m1', fakeRow(150))
         virt.measure('m1', 150)
-        const adopted = virt.primeHeights([{ id: 'm1', heightKey: undefined, height: 999 }])
+        const adopted = virt.primeHeights([
+          { id: 'm1', heightKey: undefined, height: 999 },
+        ])
         expect(adopted).toBe(0)
         expect(virt.heightOfIndex(0)).toBe(150)
       }
@@ -952,7 +1057,9 @@ describe('primeHeights bulk hydration and snapshotheights', () => {
     createRoot((dispose) => {
       const { virt } = setup(plainItems(2))
       virt.setVisibleMeasurementDeferral(true)
-      expect(virt.primeHeights([{ id: 'm1', heightKey: undefined, height: 220 }])).toBe(0)
+      expect(virt.primeHeights([
+        { id: 'm1', heightKey: undefined, height: 220 },
+      ])).toBe(0)
       expect(virt.hasMeasuredHeight('m1')).toBe(false)
       expect(virt.hasPendingPremeasuredHeight('m1')).toBe(true)
       virt.setVisibleMeasurementDeferral(false)

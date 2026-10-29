@@ -3,5 +3,8 @@ import { expectMissingPermissionShortcut } from '../helpers/unsupportedConfigura
 import { opencodeTest } from '../opencode-fixtures'
 
 opencodeTest('proves the native smart-permissions-shortcut limit after a real sidebar operation', async ({ native }) => {
-  await expectMissingPermissionShortcut(native, { preset: 'smart', relatedProof: () => exerciseRelatedTodo(native) })
+  await expectMissingPermissionShortcut(native, {
+    preset: 'smart',
+    relatedProof: () => exerciseRelatedTodo(native),
+  })
 })

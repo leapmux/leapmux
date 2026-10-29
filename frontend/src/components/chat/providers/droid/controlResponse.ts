@@ -117,8 +117,14 @@ function questionDisplay(result: Record<string, unknown>, answers: unknown[]): C
     return label(CANCELLED_WORD)
   const lines = answers.filter(isObject).flatMap((entry) => {
     const question = pickString(entry, DROID_ASK_USER_FIELD.Question).trim()
-    const line = question ? labeledAnswerLine(question, [pickString(entry, DROID_ASK_USER_FIELD.Answer)]) : null
-    return line ? [line] : []
+    const line = question
+      ? labeledAnswerLine(question, [
+          pickString(entry, DROID_ASK_USER_FIELD.Answer),
+        ])
+      : null
+    return line
+      ? [line]
+      : []
   })
   return label(joinAnswerLines(lines) ?? NO_ANSWER_WORDS)
 }

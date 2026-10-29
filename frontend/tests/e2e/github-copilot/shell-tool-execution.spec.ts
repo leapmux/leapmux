@@ -12,7 +12,10 @@ import { bypassToolRequests } from './scenarios'
 copilotTest('keeps actual native shell output and a failed command result', async ({ native }) => {
   // GitHub Copilot ends each result with `<shellId: N completed with exit code N>`. The row header states a nonzero
   // code, and the body draws only the output.
-  await exerciseShellToolExecution(native, { prepare: () => bypassToolRequests(native), absentRowText: ['<shellId:', 'completed with exit code'] })
+  await exerciseShellToolExecution(native, {
+    prepare: () => bypassToolRequests(native),
+    absentRowText: ['<shellId:', 'completed with exit code'],
+  })
 })
 
 copilotTest('keeps both output segments visible while the native shell still runs', async ({ native }) => {
@@ -38,7 +41,9 @@ copilotTest('keeps both output segments visible while the native shell still run
       await expect(output).toContainText(firstOutput)
     },
   }, () => runNativeToolTurn(native, {
-    toolCalls: [bashToolCall(native.provider, 'copilot-live-chunks', command)],
+    toolCalls: [
+      bashToolCall(native.provider, 'copilot-live-chunks', command),
+    ],
     prompt: 'Run the command with two controlled output segments.',
     answer: 'Both native output segments completed.',
     permissions: 'none',

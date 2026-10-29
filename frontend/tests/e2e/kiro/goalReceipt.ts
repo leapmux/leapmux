@@ -27,7 +27,9 @@ export interface KiroGoalCancellation {
 
 /** Read the actual workflow step session from its native model request. */
 export function kiroGoalSessionId(request: MockModelRequestRecord): string {
-  const state = isObject(request.body) && isObject(request.body.conversationState) ? request.body.conversationState : undefined
+  const state = isObject(request.body) && isObject(request.body.conversationState)
+    ? request.body.conversationState
+    : undefined
   if (request.protocol !== 'aws-event-stream' || typeof state?.conversationId !== 'string' || state.conversationId.trim() === '')
     throw new Error('The Kiro goal request requires its actual native session ID.')
   return state.conversationId
@@ -80,7 +82,12 @@ export function kiroGoalCancellation(messages: readonly KiroGoalMessage[], execu
     throw new Error('The native Kiro cancellation receipts are out of order.')
   if (start.message.id !== `${executionId}-turn-start` || usage.message.id !== `${executionId}-usage` || end.message.id !== `${executionId}-turn-end` || usage.message.payload.status !== 'aborted' || end.message.payload.stopReason !== 'cancelled')
     return undefined
-  return { executionId, startMessageId: start.message.id, usageMessageId: usage.message.id, endMessageId: end.message.id }
+  return {
+    executionId,
+    startMessageId: start.message.id,
+    usageMessageId: usage.message.id,
+    endMessageId: end.message.id,
+  }
 }
 
 /** Read only the exact native child file under the private run and HOME. */

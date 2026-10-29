@@ -146,7 +146,11 @@ export function createScrollBufferFiller(deps: {
   // immune to user scroll (we track the ROW), the opposite side's load, and the far-end
   // trim. Null when the ref row was trimmed / the virtualizer can't anchor.
   const sideContent = (side: 'older' | 'newer'): number | null =>
-    !lastRefAnchor ? null : (side === 'older' ? deps.contentAbove : deps.contentBelow)(lastRefAnchor)
+    !lastRefAnchor
+      ? null
+      : (side === 'older'
+          ? deps.contentAbove
+          : deps.contentBelow)(lastRefAnchor)
 
   // Fold the LAST load's outcome into the per-side selection state, judged by THAT side's
   // own visible-content growth: a flat signal means the page was all hidden (mark that
@@ -181,9 +185,14 @@ export function createScrollBufferFiller(deps: {
   const selectSideToLoad = (older: boolean, newer: boolean): 'older' | 'newer' => {
     const olderEligible = older && !stuck.older
     const newerEligible = newer && !stuck.newer
-    if (olderEligible || newerEligible)
-      return olderEligible && (deps.lastScrollDir() === 'older' || !newerEligible) ? 'older' : 'newer'
-    return older && (deps.lastScrollDir() === 'older' || !newer) ? 'older' : 'newer'
+    if (olderEligible || newerEligible) {
+      return olderEligible && (deps.lastScrollDir() === 'older' || !newerEligible)
+        ? 'older'
+        : 'newer'
+    }
+    return older && (deps.lastScrollDir() === 'older' || !newer)
+      ? 'older'
+      : 'newer'
   }
 
   const fill = () => {

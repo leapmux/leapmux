@@ -25,12 +25,16 @@ export function zcodeExtractRow(input: RowExtractionInput): ChatRow | null {
       // A model response with no text is a row with nothing to show, not one this
       // provider failed to read.
       const text = zcodeAssistantText(payload)
-      return text ? { kind: 'assistant-text', text } : { kind: 'hidden' }
+      return text
+        ? { kind: 'assistant-text', text }
+        : { kind: 'hidden' }
     }
     case 'assistant_plan': {
       // The same reader the classifier used, so the two layers state one answer.
       const plan = zcodePlanText(payload, spanType, parsed.supplementalContent)
-      return plan === null ? null : { kind: 'assistant-plan', text: plan }
+      return plan === null
+        ? null
+        : { kind: 'assistant-plan', text: plan }
     }
     case 'tool_use':
     case 'tool_result':
@@ -57,14 +61,23 @@ function zcodeToolSpanRow(input: RowExtractionInput): ChatRow | null {
   // separate one for it -- so the row itself stands in, which is what lets a
   // still-open call carry the input the `model.streaming` fragments delivered.
   const spanRequest = span.request
-    ?? (zcodeExtractTool(parsed.parentObject)?.kind === ZCODE_TOOL_KIND.Scheduled ? parsed : undefined)
+    ?? (zcodeExtractTool(parsed.parentObject)?.kind === ZCODE_TOOL_KIND.Scheduled
+      ? parsed
+      : undefined)
   const own = zcodeRow(parsed.parentObject, spanType, spanRequest, parsed.supplementalContent)
-  const call: ToolCall | null = zcodeToolCall({ ...own, ...(span.result !== undefined ? { result: span.result } : {}) }, parsed)
+  const call: ToolCall | null = zcodeToolCall({
+    ...own,
+    ...(span.result !== undefined
+      ? { result: span.result }
+      : {}),
+  }, parsed)
   if (!call)
     return null
   const update = zcodeExtractTool(parsed.parentObject)
   const role: ToolSpanRowRole = zcodeToolSpanRole(update?.kind ?? '', parsed) === 'result'
     ? 'result'
-    : update?.kind === ZCODE_TOOL_KIND.Scheduled ? 'request' : 'update'
+    : update?.kind === ZCODE_TOOL_KIND.Scheduled
+      ? 'request'
+      : 'update'
   return toolCallRow(call, role, span.visibleRows)
 }

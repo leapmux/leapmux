@@ -30,14 +30,20 @@ export function codewhaleExtractControl(input: ControlExtractionInput): Extracte
   const reason = pickString(approval, CODEWHALE_APPROVAL_FIELD.IntentSummary) || pickString(approval, CODEWHALE_APPROVAL_FIELD.Summary)
   // A command tool states the command it runs, which the banner draws as code above
   // the arguments. The kind table decides which tools those are.
-  const command = codewhaleToolKind(toolName) === 'execute' ? pickString(toolInput, 'command') : ''
+  const command = codewhaleToolKind(toolName) === 'execute'
+    ? pickString(toolInput, 'command')
+    : ''
   return {
     kind: 'permission',
     permission: {
       title: toolName,
-      ...(reason ? { reason } : {}),
+      ...(reason
+        ? { reason }
+        : {}),
       input: toolInput,
-      ...(command ? { command } : {}),
+      ...(command
+        ? { command }
+        : {}),
       options: [],
     },
   }

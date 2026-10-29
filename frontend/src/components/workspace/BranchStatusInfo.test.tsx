@@ -95,7 +95,9 @@ describe('BranchStatusInfo', () => {
   it('shows unpushed commit count', () => {
     render(() => (
       <BranchStatusInfo
-        branch={branch({ gitState: gitState({ unpushedCommitCount: 3 }) })}
+        branch={branch({
+          gitState: gitState({ unpushedCommitCount: 3 }),
+        })}
         affectedTabs={affectedTabs()}
       />
     ))
@@ -106,7 +108,9 @@ describe('BranchStatusInfo', () => {
   it('shows the "not pushed to remote" line when remoteBranchMissing is true', () => {
     render(() => (
       <BranchStatusInfo
-        branch={branch({ gitState: gitState({ remoteBranchMissing: true, upstreamExists: false }) })}
+        branch={branch({
+          gitState: gitState({ remoteBranchMissing: true, upstreamExists: false }),
+        })}
         affectedTabs={affectedTabs()}
       />
     ))
@@ -116,7 +120,9 @@ describe('BranchStatusInfo', () => {
   it('shows the "not pushed to remote" line when upstream is missing but canPush is true', () => {
     render(() => (
       <BranchStatusInfo
-        branch={branch({ gitState: gitState({ upstreamExists: false, canPush: true }) })}
+        branch={branch({
+          gitState: gitState({ upstreamExists: false, canPush: true }),
+        })}
         affectedTabs={affectedTabs()}
       />
     ))
@@ -126,7 +132,9 @@ describe('BranchStatusInfo', () => {
   it('hides the "not pushed to remote" line when upstream is missing and canPush is false', () => {
     render(() => (
       <BranchStatusInfo
-        branch={branch({ gitState: gitState({ upstreamExists: false, canPush: false }) })}
+        branch={branch({
+          gitState: gitState({ upstreamExists: false, canPush: false }),
+        })}
         affectedTabs={affectedTabs()}
       />
     ))
@@ -153,7 +161,9 @@ describe('BranchStatusInfo', () => {
   it('hides the clean message once there are unpushed commits', () => {
     render(() => (
       <BranchStatusInfo
-        branch={branch({ gitState: gitState({ unpushedCommitCount: 1 }) })}
+        branch={branch({
+          gitState: gitState({ unpushedCommitCount: 1 }),
+        })}
         affectedTabs={affectedTabs()}
       />
     ))
@@ -204,7 +214,12 @@ describe('BranchStatusInfo', () => {
     render(() => (
       <BranchStatusInfo
         branch={branch()}
-        affectedTabs={affectedTabs({ agents: 0, terminals: 0, files: 2, willStop: true })}
+        affectedTabs={affectedTabs({
+          agents: 0,
+          terminals: 0,
+          files: 2,
+          willStop: true,
+        })}
       />
     ))
     expect(screen.getByText('2 files will be closed.')).toBeInTheDocument()
@@ -216,7 +231,12 @@ describe('BranchStatusInfo', () => {
     render(() => (
       <BranchStatusInfo
         branch={branch()}
-        affectedTabs={affectedTabs({ agents: 1, terminals: 0, files: 3, willStop: true })}
+        affectedTabs={affectedTabs({
+          agents: 1,
+          terminals: 0,
+          files: 3,
+          willStop: true,
+        })}
       />
     ))
     expect(screen.getByText('1 agent will be stopped, 3 files will be closed.')).toBeInTheDocument()

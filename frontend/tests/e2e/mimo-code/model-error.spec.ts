@@ -11,7 +11,14 @@ mimoTest('shows the native model failure and accepts the next valid prompt', asy
 mimoTest('marks the partial text that MiMo restores after a failed stream', async ({ native }) => {
   const { page, modelScript } = native
   const message = nativeErrorMarker()
-  const step = await modelScript.queue({ error: { status: 400, code: 'invalid_request_error', message, midStream: true } })
+  const step = await modelScript.queue({
+    error: {
+      status: 400,
+      code: 'invalid_request_error',
+      message,
+      midStream: true,
+    },
+  })
   await sendMessage(page, modelScript.prompt('Run the scripted stream failure.'))
   await modelScript.waitForSteps(step + 1)
   for (const reload of [false, true]) {

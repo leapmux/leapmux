@@ -4,14 +4,25 @@ import { assertMcpServerName, mcpProbeServer, mcpServersConfig } from './mcpProb
 
 describe('mcpProbeServer', () => {
   it('starts the script through the Node.js runtime of the test process', () => {
-    expect(mcpProbeServer('form_probe', '/run/form.mjs')).toEqual({ name: 'form_probe', script: '/run/form.mjs', command: process.execPath, args: ['/run/form.mjs'] })
+    expect(mcpProbeServer('form_probe', '/run/form.mjs')).toEqual({
+      name: 'form_probe',
+      script: '/run/form.mjs',
+      command: process.execPath,
+      args: ['/run/form.mjs'],
+    })
   })
 
   it.each(['echo_probe', 'probe', 'Probe-2'])('accepts the server name %j', (name) => {
     expect(mcpProbeServer(name, '/run/server.mjs').name).toBe(name)
   })
 
-  it.each(['', 'form probe', 'form.probe', 'form/probe', 'probé'])('refuses the server name %j', (name) => {
+  it.each([
+    '',
+    'form probe',
+    'form.probe',
+    'form/probe',
+    'probé',
+  ])('refuses the server name %j', (name) => {
     expect(() => mcpProbeServer(name, '/run/server.mjs')).toThrow('MCP server name')
   })
 
@@ -32,7 +43,10 @@ describe('assertMcpServerName', () => {
 
 describe('mcpServersConfig', () => {
   it('refuses a server object whose name a configuration cannot hold', () => {
-    const server = { ...mcpProbeServer('form_probe', '/run/form.mjs'), name: 'form probe' }
+    const server = {
+      ...mcpProbeServer('form_probe', '/run/form.mjs'),
+      name: 'form probe',
+    }
     expect(() => mcpServersConfig(server)).toThrow('MCP server name')
   })
 
@@ -41,8 +55,14 @@ describe('mcpServersConfig', () => {
     const form = mcpProbeServer('form_probe', '/run/form.mjs')
     expect(mcpServersConfig(echo, form)).toEqual({
       mcpServers: {
-        echo_probe: { command: process.execPath, args: ['/run/echo.mjs'] },
-        form_probe: { command: process.execPath, args: ['/run/form.mjs'] },
+        echo_probe: {
+          command: process.execPath,
+          args: ['/run/echo.mjs'],
+        },
+        form_probe: {
+          command: process.execPath,
+          args: ['/run/form.mjs'],
+        },
       },
     })
   })

@@ -20,7 +20,10 @@ export async function nativeContext(fixtures: NativeContextFixtures): Promise<Ma
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */
 export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStartupLaunch {
-  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: 'goose', holdWhen: ['acp'] })
+  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, {
+    binaryName: 'goose',
+    holdWhen: ['acp'],
+  })
 }
 
 /**
@@ -42,11 +45,17 @@ export async function askBeforeEachTool(context: Pick<ManagedNativeScenarioConte
   await context.modelScript.rule({
     name: `goose-native-tool-judge-${uniqueMarker()}`,
     when: { system: 'permission-safety classifier' },
-    respond: { toolCalls: [goosePermissionJudgmentToolCall('goose-tool-judge', [])] },
+    respond: {
+      toolCalls: [
+        goosePermissionJudgmentToolCall('goose-tool-judge', []),
+      ],
+    },
   })
 }
 
 /** The related proof of a missing-setting cell: a native to-do call fills the sidebar. */
 export async function relatedNativeProof(context: ManagedNativeScenarioContext): Promise<void> {
-  await exerciseRelatedTodo(context, { prepare: () => bypassToolRequests(context) })
+  await exerciseRelatedTodo(context, {
+    prepare: () => bypassToolRequests(context),
+  })
 }

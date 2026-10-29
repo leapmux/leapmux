@@ -6,5 +6,7 @@ export function codewhaleToolOutputFiles(supplemental: unknown): Record<string, 
   if (!isObject(supplemental))
     return undefined
   const outputFiles = supplemental[CODEWHALE_SUPPLEMENT_FIELD.OutputFiles]
-  return isObject(outputFiles) ? outputFiles : undefined
+  return isObject(outputFiles)
+    ? outputFiles
+    : undefined
 }

@@ -11,7 +11,11 @@ cursorTest('resolves an actual native control without exposing a multiline edito
   const { page, modelScript } = native
   await expectNoNativeEditorRequest(native, {
     relatedProof: async () => {
-      const start = await modelScript.queue({ toolCalls: [askUserQuestionToolCall(native.provider, 'native-editor-limit-question', [NATIVE_CONTROL_QUESTION])] })
+      const start = await modelScript.queue({
+        toolCalls: [
+          askUserQuestionToolCall(native.provider, 'native-editor-limit-question', [NATIVE_CONTROL_QUESTION]),
+        ],
+      })
       await sendMessage(page, modelScript.prompt('Ask the scripted native control question.'))
       await modelScript.waitForSteps(start + 1)
       const banner = await waitForControlBanner(page)

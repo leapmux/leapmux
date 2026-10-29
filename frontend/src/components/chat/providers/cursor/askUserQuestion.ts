@@ -26,18 +26,30 @@ export function getCursorQuestions(payload: Record<string, unknown>): ControlQue
     const prompt = pickString(question, 'prompt')
     // The question's own words head it; the id stands in when it states none.
     const header = prompt || id
-    return [{
-      ...(id !== undefined ? { id } : {}),
-      question: prompt,
-      ...(header !== undefined ? { header } : {}),
-      multiSelect: question.allowMultiple === true,
-      // The native ACP adapter copies selectedOptionIds but drops freeformText.
-      allowCustomText: false,
-      options: (Array.isArray(question.options) ? question.options : []).filter(isObject).flatMap((option) => {
-        const label = pickString(option, 'label') || pickString(option, 'id')
-        return label ? [{ value: pickString(option, 'id') || label, label }] : []
-      }),
-    }]
+    return [
+      {
+        ...(id !== undefined
+          ? { id }
+          : {}),
+        question: prompt,
+        ...(header !== undefined
+          ? { header }
+          : {}),
+        multiSelect: question.allowMultiple === true,
+        // The native ACP adapter copies selectedOptionIds but drops freeformText.
+        allowCustomText: false,
+        options: (Array.isArray(question.options)
+          ? question.options
+          : []).filter(isObject).flatMap((option) => {
+          const label = pickString(option, 'label') || pickString(option, 'id')
+          return label
+            ? [
+                { value: pickString(option, 'id') || label, label },
+              ]
+            : []
+        }),
+      },
+    ]
   })
 }
 
@@ -86,7 +98,9 @@ export function sendCursorQuestionRejectResponse(
     result: {
       outcome: {
         outcome: ACP_PERMISSION_OUTCOME.Cancelled,
-        ...(reason ? { reason } : {}),
+        ...(reason
+          ? { reason }
+          : {}),
       },
     },
   })

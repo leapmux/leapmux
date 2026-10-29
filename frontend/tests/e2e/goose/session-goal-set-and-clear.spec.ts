@@ -28,7 +28,9 @@ gooseTest('marks the goal achieved when its round ends with a clean final messag
 gooseTest('keeps the goal active when the round fails to reach the model', async ({ native }) => {
   const { page, modelScript } = native
   const objective = scriptedObjective(modelScript, 'Stay active while the service fails the round.')
-  await modelScript.fallback({ error: { status: 503, message: 'probe stub: service unavailable' } })
+  await modelScript.fallback({
+    error: { status: 503, message: 'probe stub: service unavailable' },
+  })
   await setGoal(page, objective)
   await waitForAgentIdle(page)
   await expectGoalStatus(page, 'active')

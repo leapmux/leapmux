@@ -19,9 +19,21 @@ kimiTest.describe('uses Kimi Code tools', () => {
     const path = join(createNativeToolDirectory(authenticatedKimiWorkspace.workingDir), 'parity.ts')
     const start = await runNativeToolSteps(native, {
       steps: [
-        { toolCalls: [writeToolCall(native.provider, 'seed-file', { path, content: `${PARITY_BEFORE}\n` })] },
-        { toolCalls: [editToolCall(native.provider, 'parity-edit', { path, before: PARITY_BEFORE, after: PARITY_AFTER })] },
-        { toolCalls: [readToolCall(native.provider, 'parity-read', path)] },
+        {
+          toolCalls: [
+            writeToolCall(native.provider, 'seed-file', { path, content: `${PARITY_BEFORE}\n` }),
+          ],
+        },
+        {
+          toolCalls: [
+            editToolCall(native.provider, 'parity-edit', { path, before: PARITY_BEFORE, after: PARITY_AFTER }),
+          ],
+        },
+        {
+          toolCalls: [
+            readToolCall(native.provider, 'parity-read', path),
+          ],
+        },
       ],
       prompt: 'Create parity.ts, change it, and read it back.',
       answer: 'I changed parity.ts and read it back.',

@@ -27,7 +27,21 @@ const RUST_DIR = resolve(import.meta.dirname, '..')
 // exists twice there, as `<size>x<size>/apps` and as `<size>x<size>@2/apps`.
 // Nothing outside this list is reachable: an icon lookup reads index.theme, so a
 // directory that index.theme omits is invisible even though the file is on disk.
-const HICOLOR_SIZES = [16, 22, 24, 32, 36, 48, 64, 72, 96, 128, 192, 256, 512]
+const HICOLOR_SIZES = [
+  16,
+  22,
+  24,
+  32,
+  36,
+  48,
+  64,
+  72,
+  96,
+  128,
+  192,
+  256,
+  512,
+]
 
 function readJson(name) {
   return JSON.parse(readFileSync(join(RUST_DIR, name), 'utf8'))
@@ -128,14 +142,22 @@ describe('SHARED_ICON_FILES', () => {
 
 describe('ALL_ICON_FILES', () => {
   it('holds each file of both platform lists exactly once', () => {
-    expect([...new Set(ALL_ICON_FILES)]).toEqual(ALL_ICON_FILES)
-    for (const name of [...LINUX_ICON_FILES, ...SHARED_ICON_FILES]) {
+    expect([
+      ...new Set(ALL_ICON_FILES),
+    ]).toEqual(ALL_ICON_FILES)
+    for (const name of [
+      ...LINUX_ICON_FILES,
+      ...SHARED_ICON_FILES,
+    ]) {
       expect(ALL_ICON_FILES).toContain(name)
     }
   })
 
   it('adds no file that neither platform ships', () => {
-    const shipped = new Set([...LINUX_ICON_FILES, ...SHARED_ICON_FILES])
+    const shipped = new Set([
+      ...LINUX_ICON_FILES,
+      ...SHARED_ICON_FILES,
+    ])
     for (const name of ALL_ICON_FILES) {
       expect(shipped.has(name)).toBe(true)
     }
@@ -156,7 +178,10 @@ describe('TRAY_ICON_FILES', () => {
   })
 
   it('appears in neither config bundle.icon', () => {
-    const declared = new Set([...baseConfig.bundle.icon, ...linuxConfig.bundle.icon])
+    const declared = new Set([
+      ...baseConfig.bundle.icon,
+      ...linuxConfig.bundle.icon,
+    ])
     for (const { name } of TRAY_ICON_FILES) {
       expect(declared.has(`icons/${name}`)).toBe(false)
       expect(declared.has(name)).toBe(false)

@@ -71,7 +71,12 @@ describe('startWaitLimitForTests', () => {
     expect(waitTimeoutBeforeTestDeadline()).toBe(0)
   })
 
-  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])('refuses the limit %s, which states no finite wait', (limitMs) => {
+  it.each([
+    0,
+    -1,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+  ])('refuses the limit %s, which states no finite wait', (limitMs) => {
     expect(() => startWaitLimitForTests(limitMs)).toThrow('A wait limit must be a positive number of milliseconds')
     expect(currentTestDeadline()).toBeUndefined()
   })
@@ -125,7 +130,13 @@ describe('nativeCommandTimeout', () => {
     expect(() => nativeCommandTimeout(undefined, 60_000, Number.NaN)).toThrow('a finite test deadline and current time')
   })
 
-  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])('refuses the limit %s, which is not a positive whole number of milliseconds', (limit) => {
+  it.each([
+    0,
+    -1,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+  ])('refuses the limit %s, which is not a positive whole number of milliseconds', (limit) => {
     expect(() => nativeCommandTimeout(undefined, limit, 0)).toThrow('positive whole number of milliseconds')
   })
 

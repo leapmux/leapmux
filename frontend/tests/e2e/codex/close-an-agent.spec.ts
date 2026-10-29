@@ -21,7 +21,9 @@ codexTest.describe('codex agent lifecycle', () => {
     await expect(closeBtn).toBeVisible()
     await closeBtn.click()
     if (inspection.shouldPrompt) {
-      const dialog = page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: 'Close last tab', exact: true }) })
+      const dialog = page.getByRole('dialog').filter({
+        has: page.getByRole('heading', { name: 'Close last tab', exact: true }),
+      })
       await expect(dialog).toBeVisible()
       await dialog.getByRole('button', { name: 'Close anyway', exact: true }).click()
       await dialog.getByRole('button', { name: 'Confirm?', exact: true }).click()

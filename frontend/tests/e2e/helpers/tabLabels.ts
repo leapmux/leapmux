@@ -31,6 +31,8 @@ export function readTabLabels(tabs: Element[], chrome: string): string[] {
  * Drag and restore specs use them to verify tab metadata.
  */
 export async function tabbarLabels(page: Page, tabType: 'agent' | 'terminal'): Promise<string[]> {
-  const tabs = tabType === 'agent' ? agentTabs(page) : terminalTabs(page)
+  const tabs = tabType === 'agent'
+    ? agentTabs(page)
+    : terminalTabs(page)
   return tabs.evaluateAll(readTabLabels, TAB_CHROME_SELECTOR)
 }

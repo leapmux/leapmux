@@ -109,7 +109,9 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
   // Build initial open state: start from provided initial state (preserves
   // state for async-loaded sections), then overlay defaults for sections that
   // are already present but have no saved preference.
-  const initialOpen: Record<string, boolean> = { ...(props.initialOpenSections ?? {}) }
+  const initialOpen: Record<string, boolean> = {
+    ...(props.initialOpenSections ?? {}),
+  }
   // eslint-disable-next-line solid/reactivity -- read once for initialization
   for (const s of props.sections) {
     if (s.railOnly)
@@ -231,7 +233,9 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
     <>
       <div
         class={styles.sidebarInner}
-        style={{ display: props.isCollapsed ? 'none' : undefined }}
+        style={{
+          display: props.isCollapsed ? 'none' : undefined,
+        }}
         data-testid={`sidebar-${props.side}`}
         ref={(el) => {
           containerRef = el
@@ -345,7 +349,9 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                 {/* Resize handle between expanded panes */}
                 <Show when={showResizeHandle()}>
                   <div
-                    class={`${styles.paneResizeHandle} ${draggingHandleIndex() === handleIdx() ? styles.paneResizeHandleActive : ''}`}
+                    class={`${styles.paneResizeHandle} ${draggingHandleIndex() === handleIdx()
+                      ? styles.paneResizeHandleActive
+                      : ''}`}
                     data-testid="pane-resize-handle"
                     onPointerDown={(e: PointerEvent) => handleResizeStart(handleIdx(), e)}
                     onDblClick={handleResetSplit}
@@ -365,15 +371,23 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                     if (droppable)
                       (droppable as any).ref(el)
                   }}
-                  class={`${styles.collapsiblePane} ${sectionOpen() ? styles.collapsiblePaneExpanded : ''} ${draggable?.isActiveDraggable ? styles.collapsiblePaneDragging : ''}`}
+                  class={`${styles.collapsiblePane} ${sectionOpen()
+                    ? styles.collapsiblePaneExpanded
+                    : ''} ${draggable?.isActiveDraggable ? styles.collapsiblePaneDragging : ''}`}
                   style={flexStyle()}
                   data-testid={section().testId}
-                  data-closed={sectionOpen() ? undefined : ''}
+                  data-closed={sectionOpen()
+                    ? undefined
+                    : ''}
                 >
                   <div
                     role="button"
-                    class={`${styles.collapsibleTrigger} ${isStatic() || !canCollapse() ? styles.collapsibleTriggerStatic : ''}`}
-                    data-testid={section().testId ? `${section().testId}-summary` : undefined}
+                    class={`${styles.collapsibleTrigger} ${isStatic() || !canCollapse()
+                      ? styles.collapsibleTriggerStatic
+                      : ''}`}
+                    data-testid={section().testId
+                      ? `${section().testId}-summary`
+                      : undefined}
                     onClick={() => {
                       if (sectionOpen() && !canCollapse())
                         return
@@ -422,7 +436,10 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                       </div>
                     </Show>
                   </div>
-                  <div class={`${styles.collapsibleContent}${sectionOpen() ? ` ${styles.collapsibleContentExpanded}` : ''}`}>
+                  <div class={`${styles.collapsibleContent}${sectionOpen()
+                    ? ` ${styles.collapsibleContentExpanded}`
+                    : ''}`}
+                  >
                     <div class={styles.collapsibleContentInner}>
                       <div class={styles.sidebarContent}>
                         {renderedContent}
@@ -447,7 +464,12 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
 
         {/* Empty drop zone shown when sidebar has no sections */}
         <Show when={expandableSectionIds().length === 0 && hasDndContext}>
-          <div class={`${styles.emptyDropZone} ${sectionDrag?.draggedSectionId() ? styles.emptyDropZoneActive : ''}`} data-testid={`empty-drop-zone-${props.side}`}>
+          <div
+            class={`${styles.emptyDropZone} ${sectionDrag?.draggedSectionId()
+              ? styles.emptyDropZoneActive
+              : ''}`}
+            data-testid={`empty-drop-zone-${props.side}`}
+          >
             <Show
               when={sectionDrag?.draggedSectionId()}
               fallback={<span>No sections</span>}

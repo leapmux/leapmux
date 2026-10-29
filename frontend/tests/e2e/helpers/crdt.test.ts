@@ -28,10 +28,24 @@ function hub(answer: (method: string, body: unknown) => Response) {
 }
 
 function seed() {
-  return seedTabIntoWorkspace({ hubUrl, cookie: 'leapmux-session=s', workspaceId: 'ws-1', tabType: TabType.AGENT, tabId: 'agent-1', workerId: 'worker-1', userEvents })
+  return seedTabIntoWorkspace({
+    hubUrl,
+    cookie: 'leapmux-session=s',
+    workspaceId: 'ws-1',
+    tabType: TabType.AGENT,
+    tabId: 'agent-1',
+    workerId: 'worker-1',
+    userEvents,
+  })
 }
 
-const committed = () => Response.json({ results: [{ committed: {} }] })
+function committed() {
+  return Response.json({
+    results: [
+      { committed: {} },
+    ],
+  })
+}
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -40,24 +54,50 @@ afterEach(() => {
 
 describe('seedTabIntoWorkspace', () => {
   it('submits the tile, position, and Worker registers, and returns once ListTabs shows the tab', async () => {
-    const { methods, bodies } = hub(method => method === 'UserCRDT/SubmitOps' ? committed() : Response.json({ tabs: [{ tabId: 'agent-1' }] }))
+    const { methods, bodies } = hub(method => method === 'UserCRDT/SubmitOps'
+      ? committed()
+      : Response.json({
+          tabs: [
+            { tabId: 'agent-1' },
+          ],
+        }))
     await seed()
     expect(methods).toEqual(['UserCRDT/SubmitOps', 'WorkspaceService/ListTabs'])
     expect(bodies[0]).toMatchObject({
       epoch: '7',
-      batches: [{ ops: [
-        { setTabRegister: { tabType: TabType.AGENT, tabId: 'agent-1', tileId: 'root-node' } },
-        { setTabRegister: { tabType: TabType.AGENT, tabId: 'agent-1', position: 'M' } },
-        { setTabRegister: { tabType: TabType.AGENT, tabId: 'agent-1', workerId: 'worker-1' } },
-      ] }],
+      batches: [
+        {
+          ops: [
+            {
+              setTabRegister: { tabType: TabType.AGENT, tabId: 'agent-1', tileId: 'root-node' },
+            },
+            {
+              setTabRegister: { tabType: TabType.AGENT, tabId: 'agent-1', position: 'M' },
+            },
+            {
+              setTabRegister: { tabType: TabType.AGENT, tabId: 'agent-1', workerId: 'worker-1' },
+            },
+          ],
+        },
+      ],
     })
-    expect(bodies[1]).toEqual({ workspaceIds: ['ws-1'] })
+    expect(bodies[1]).toEqual({
+      workspaceIds: ['ws-1'],
+    })
   })
 
   it('reads ListTabs again until the tab shows', async () => {
     vi.useFakeTimers()
     let reads = 0
-    const { methods } = hub(method => method === 'UserCRDT/SubmitOps' ? committed() : Response.json({ tabs: ++reads < 3 ? [] : [{ tabId: 'agent-1' }] }))
+    const { methods } = hub(method => method === 'UserCRDT/SubmitOps'
+      ? committed()
+      : Response.json({
+          tabs: ++reads < 3
+            ? []
+            : [
+                { tabId: 'agent-1' },
+              ],
+        }))
     const seeding = seed()
     await vi.advanceTimersByTimeAsync(1_000)
     await expect(seeding).resolves.toBeUndefined()
@@ -66,7 +106,9 @@ describe('seedTabIntoWorkspace', () => {
 
   it('states the hub reason of a refused ListTabs read when the tab never shows', async () => {
     vi.useFakeTimers()
-    hub(method => method === 'UserCRDT/SubmitOps' ? committed() : new Response('{"code":"unavailable","message":"projection rebuilds"}', { status: 503 }))
+    hub(method => method === 'UserCRDT/SubmitOps'
+      ? committed()
+      : new Response('{"code":"unavailable","message":"projection rebuilds"}', { status: 503 }))
     const outcome = seed().then(() => null, (error: unknown) => error)
     await vi.advanceTimersByTimeAsync(5_000)
     const failure = await outcome
@@ -82,9 +124,17 @@ describe('seedTabIntoWorkspace', () => {
   })
 
   it('refuses a batch that the hub rejected or did not commit', async () => {
-    hub(() => Response.json({ results: [{ rejected: { reason: 'conflict' } }] }))
+    hub(() => Response.json({
+      results: [
+        {
+          rejected: { reason: 'conflict' },
+        },
+      ],
+    }))
     await expect(seed()).rejects.toThrow('SubmitOps batch rejected: {"reason":"conflict"}')
-    hub(() => Response.json({ results: [{}] }))
+    hub(() => Response.json({
+      results: [{}],
+    }))
     await expect(seed()).rejects.toThrow('SubmitOps batch had no committed result')
   })
 })

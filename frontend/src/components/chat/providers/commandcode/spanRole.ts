@@ -16,9 +16,15 @@ export function commandCodeSpanRole(parsed: ResolvedMessageContent): ToolSpanRol
   if (!event || !pickString(event, 'toolCallId'))
     return 'other'
   const type = pickString(event, 'type')
-  return type === COMMAND_CODE_EVENT.ToolQueued ? 'request' : COMMAND_CODE_TOOL_RESULTS.has(type) ? 'result' : 'other'
+  return type === COMMAND_CODE_EVENT.ToolQueued
+    ? 'request'
+    : COMMAND_CODE_TOOL_RESULTS.has(type)
+      ? 'result'
+      : 'other'
 }
 
 export function commandCodeRelatedMessages(parsed: ResolvedMessageContent): readonly ToolSpanSide[] {
-  return commandCodeSpanRole(parsed) === 'result' ? ['request'] : []
+  return commandCodeSpanRole(parsed) === 'result'
+    ? ['request']
+    : []
 }

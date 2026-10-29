@@ -39,7 +39,9 @@ export function registerOpenCodeProtocolProvider(opts: OpenCodeProtocolOptions):
   registerACPProvider({
     provider: opts.provider,
     nativeNotifications: openCodeNativeNotifications,
-    ...(opts.outputFilePaths ? { outputFilePaths: opts.outputFilePaths } : {}),
+    ...(opts.outputFilePaths
+      ? { outputFilePaths: opts.outputFilePaths }
+      : {}),
     toolCallAdapter: openCodeToolCallAdapterFor(opts),
     settingsConfig: {
       kind: 'optionGroup',
@@ -50,7 +52,13 @@ export function registerOpenCodeProtocolProvider(opts: OpenCodeProtocolOptions):
     extractControl: openCodeExtractControl,
     planValue: PLAN_PRIMARY_AGENT,
     permissionPresets: openCodePermissionPresets,
-    attachments: { text: true, image: true, pdf: true, audio: [...OPENCODE_AUDIO_MIME], binary: false },
+    attachments: {
+      text: true,
+      image: true,
+      pdf: true,
+      audio: [...OPENCODE_AUDIO_MIME],
+      binary: false,
+    },
     // This registration supplies the same question handling for both providers.
     // The backend's questionRequestContext hook also supplies one family implementation.
     controlResponseDisplay: openCodeControlResponseSummary,

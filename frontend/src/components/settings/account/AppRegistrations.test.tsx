@@ -28,7 +28,9 @@ vi.mock('~/api/clients', () => ({
 const authState = vi.hoisted(() => ({ admin: false }))
 
 vi.mock('~/context/AuthContext', () => ({
-  useAuth: () => ({ user: () => ({ id: 'u1', username: 'tester', isAdmin: authState.admin }) }),
+  useAuth: () => ({
+    user: () => ({ id: 'u1', username: 'tester', isAdmin: authState.admin }),
+  }),
 }))
 
 /** One registration, as the hub answers it. */
@@ -53,7 +55,11 @@ describe('accountAppRegistrations', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     authState.admin = false
-    mockList.mockResolvedValue({ apps: [app], nextCursor: '', openRegistrationEnabled: false })
+    mockList.mockResolvedValue({
+      apps: [app],
+      nextCursor: '',
+      openRegistrationEnabled: false,
+    })
     mockRegister.mockResolvedValue({ app, clientSecret: '' })
     mockRevoke.mockResolvedValue({ revokedCredentialCount: 0n })
     mockUpdate.mockResolvedValue({ app })
@@ -76,7 +82,14 @@ describe('accountAppRegistrations', () => {
 
   it('names the administrator who vouched', async () => {
     mockList.mockResolvedValue({
-      apps: [{ ...app, verified: true, verifiedAt: { seconds: 1767225600n, nanos: 0 }, verifiedByUsername: 'ada' }],
+      apps: [
+        {
+          ...app,
+          verified: true,
+          verifiedAt: { seconds: 1767225600n, nanos: 0 },
+          verifiedByUsername: 'ada',
+        },
+      ],
     })
     render(() => <AppRegistrations />)
     expect(await screen.findByText('verified by ada')).toBeInTheDocument()
@@ -99,7 +112,14 @@ describe('accountAppRegistrations', () => {
   // (scopeToken's type no longer accepts the value at all).
   it('drops a non-grantable scope from the ceiling and logs it', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
-    mockList.mockResolvedValue({ apps: [{ ...app, scopes: [Scope.WORKSPACE_READ, Scope.NEVER] }] })
+    mockList.mockResolvedValue({
+      apps: [
+        {
+          ...app,
+          scopes: [Scope.WORKSPACE_READ, Scope.NEVER],
+        },
+      ],
+    })
     render(() => <AppRegistrations />)
     const ceiling = await screen.findByTestId('app-ceiling-app-1')
     expect(ceiling).toHaveTextContent('workspace:read')
@@ -117,7 +137,9 @@ describe('accountAppRegistrations', () => {
   it('loads every page of the listing', async () => {
     const pageTwo = { ...app, clientId: 'app-51', clientName: 'Page two app' }
     mockList.mockResolvedValueOnce({
-      apps: [{ ...app, clientId: 'app-1', clientName: 'Page one app' }],
+      apps: [
+        { ...app, clientId: 'app-1', clientName: 'Page one app' },
+      ],
       nextCursor: 'cursor-2',
       openRegistrationEnabled: false,
     }).mockResolvedValueOnce({
@@ -147,7 +169,10 @@ describe('accountAppRegistrations', () => {
     expect(screen.queryByTestId('open-registration-note')).not.toBeInTheDocument()
     unmount()
 
-    mockList.mockResolvedValue({ apps: [app], openRegistrationEnabled: true })
+    mockList.mockResolvedValue({
+      apps: [app],
+      openRegistrationEnabled: true,
+    })
     render(() => <AppRegistrations />)
     expect(await screen.findByTestId('open-registration-note')).toHaveTextContent(/Open registration is on/)
   })
@@ -157,7 +182,9 @@ describe('accountAppRegistrations', () => {
   // being offered and then failing.
   it('refuses to retire a built-in registration', async () => {
     mockList.mockResolvedValue({
-      apps: [{ ...app, registrationSource: 'builtin', clientName: 'LeapMux control CLI' }],
+      apps: [
+        { ...app, registrationSource: 'builtin', clientName: 'LeapMux control CLI' },
+      ],
     })
     render(() => <AppRegistrations />)
     await screen.findByText('LeapMux control CLI')
@@ -167,7 +194,9 @@ describe('accountAppRegistrations', () => {
   it('retires after a confirmation and reports the cascade', async () => {
     mockRevoke.mockResolvedValue({ revokedCredentialCount: 3n })
     mockList
-      .mockResolvedValueOnce({ apps: [app] })
+      .mockResolvedValueOnce({
+        apps: [app],
+      })
       .mockResolvedValueOnce({ apps: [] })
     render(() => <AppRegistrations />)
     await screen.findByText('My integration')
@@ -215,7 +244,9 @@ describe('accountAppRegistrations', () => {
       await screen.findByText('My integration')
 
       fireEvent.click(screen.getByRole('button', { name: 'Register an app' }))
-      fireEvent.input(screen.getByLabelText(/Name/), { target: { value: 'CI bot' } })
+      fireEvent.input(screen.getByLabelText(/Name/), {
+        target: { value: 'CI bot' },
+      })
       fireEvent.click(screen.getByLabelText('workspace:read'))
       fireEvent.click(screen.getByRole('button', { name: 'Register' }))
 
@@ -240,7 +271,9 @@ describe('accountAppRegistrations', () => {
       const submit = screen.getByRole('button', { name: 'Register' })
       expect(submit).toBeDisabled()
 
-      fireEvent.input(screen.getByLabelText(/Name/), { target: { value: 'CI bot' } })
+      fireEvent.input(screen.getByLabelText(/Name/), {
+        target: { value: 'CI bot' },
+      })
       expect(submit).toBeDisabled()
 
       fireEvent.click(screen.getByLabelText('workspace:read'))
@@ -256,7 +289,9 @@ describe('accountAppRegistrations', () => {
       await screen.findByText('My integration')
 
       fireEvent.click(screen.getByRole('button', { name: 'Register an app' }))
-      fireEvent.input(screen.getByLabelText(/Name/), { target: { value: 'CI bot' } })
+      fireEvent.input(screen.getByLabelText(/Name/), {
+        target: { value: 'CI bot' },
+      })
       fireEvent.click(screen.getByLabelText('workspace:read'))
       fireEvent.click(screen.getByRole('button', { name: 'Register' }))
 
@@ -275,7 +310,9 @@ describe('accountAppRegistrations', () => {
       await screen.findByText('My integration')
 
       fireEvent.click(screen.getByRole('button', { name: 'Register an app' }))
-      fireEvent.input(screen.getByLabelText(/Name/), { target: { value: 'CI bot' } })
+      fireEvent.input(screen.getByLabelText(/Name/), {
+        target: { value: 'CI bot' },
+      })
       fireEvent.click(screen.getByLabelText('workspace:read'))
       fireEvent.click(screen.getByRole('button', { name: 'Register' }))
 
@@ -289,7 +326,9 @@ describe('accountAppRegistrations', () => {
       await screen.findByText('My integration')
 
       fireEvent.click(screen.getByRole('button', { name: 'Register an app' }))
-      fireEvent.input(screen.getByLabelText(/Name/), { target: { value: 'CI bot' } })
+      fireEvent.input(screen.getByLabelText(/Name/), {
+        target: { value: 'CI bot' },
+      })
       fireEvent.click(screen.getByLabelText('workspace:read'))
       fireEvent.click(screen.getByRole('button', { name: 'Register' }))
 
@@ -325,7 +364,9 @@ describe('accountAppRegistrations', () => {
       expect(screen.getByLabelText('workspace:read')).toBeChecked()
       expect(screen.getByLabelText('workspace:read')).toBeDisabled()
 
-      fireEvent.input(screen.getByLabelText(/Name/), { target: { value: 'CI bot' } })
+      fireEvent.input(screen.getByLabelText(/Name/), {
+        target: { value: 'CI bot' },
+      })
       fireEvent.click(screen.getByRole('button', { name: 'Register' }))
       await waitFor(() => expect(mockRegister).toHaveBeenCalled())
       const sent = mockRegister.mock.calls[0]![0] as { scopes: number[] }
@@ -381,7 +422,9 @@ describe('accountAppRegistrations', () => {
       expect(within(form).getByLabelText('workspace:read')).toBeChecked()
       expect(within(form).getByLabelText('agent:read')).not.toBeChecked()
 
-      fireEvent.input(within(form).getByLabelText(/Name/), { target: { value: 'Renamed' } })
+      fireEvent.input(within(form).getByLabelText(/Name/), {
+        target: { value: 'Renamed' },
+      })
       fireEvent.click(within(form).getByLabelText('file:read'))
       fireEvent.click(within(form).getByLabelText('git:read'))
       fireEvent.click(within(form).getByRole('button', { name: 'Save' }))
@@ -407,7 +450,9 @@ describe('accountAppRegistrations', () => {
     // refuses the edit, so the control states that instead of failing.
     it('refuses to edit a built-in registration', async () => {
       mockList.mockResolvedValue({
-        apps: [{ ...app, registrationSource: 'builtin', clientName: 'LeapMux control CLI' }],
+        apps: [
+          { ...app, registrationSource: 'builtin', clientName: 'LeapMux control CLI' },
+        ],
       })
       render(() => <AppRegistrations />)
       await screen.findByText('LeapMux control CLI')
@@ -424,7 +469,9 @@ describe('accountAppRegistrations', () => {
 
       fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
       const form = await screen.findByTestId('edit-app-form-app-1')
-      fireEvent.input(within(form).getByLabelText(/Name/), { target: { value: 'Renamed' } })
+      fireEvent.input(within(form).getByLabelText(/Name/), {
+        target: { value: 'Renamed' },
+      })
       fireEvent.click(within(form).getByRole('button', { name: 'Save' }))
 
       expect(await screen.findByText(/the hub refused/)).toBeInTheDocument()
@@ -448,7 +495,11 @@ describe('accountAppRegistrations', () => {
 
     // Refusing only reduces access, so it takes no dialog -- one click.
     it('refuses without a dialog and reports that live windows close', async () => {
-      mockList.mockResolvedValue({ apps: [{ ...app, elevationAllowed: true }] })
+      mockList.mockResolvedValue({
+        apps: [
+          { ...app, elevationAllowed: true },
+        ],
+      })
       render(() => <AppRegistrations />)
       await screen.findByText('My integration')
       expect(screen.getByText('step-up allowed')).toBeInTheDocument()
@@ -463,7 +514,9 @@ describe('accountAppRegistrations', () => {
     // change, so the control is offered on the built-in row too.
     it('is offered on a built-in registration', async () => {
       mockList.mockResolvedValue({
-        apps: [{ ...app, registrationSource: 'builtin', clientName: 'LeapMux control CLI' }],
+        apps: [
+          { ...app, registrationSource: 'builtin', clientName: 'LeapMux control CLI' },
+        ],
       })
       render(() => <AppRegistrations />)
       await screen.findByText('LeapMux control CLI')
@@ -495,7 +548,14 @@ describe('accountAppRegistrations', () => {
     it('withdraws an existing vouch', async () => {
       authState.admin = true
       mockList.mockResolvedValue({
-        apps: [{ ...app, verified: true, verifiedAt: { seconds: 1767225600n, nanos: 0 }, verifiedByUsername: 'ada' }],
+        apps: [
+          {
+            ...app,
+            verified: true,
+            verifiedAt: { seconds: 1767225600n, nanos: 0 },
+            verifiedByUsername: 'ada',
+          },
+        ],
       })
       render(() => <AppRegistrations />)
       await screen.findByText('verified by ada')
@@ -516,7 +576,9 @@ describe('accountAppRegistrations', () => {
       await screen.findByTestId('hub-wide-app-registrations')
 
       fireEvent.click(screen.getByRole('button', { name: 'Register a hub-wide app' }))
-      fireEvent.input(screen.getByLabelText(/Name/), { target: { value: 'Deploy bot' } })
+      fireEvent.input(screen.getByLabelText(/Name/), {
+        target: { value: 'Deploy bot' },
+      })
       fireEvent.click(screen.getByLabelText('workspace:read'))
       fireEvent.click(screen.getByRole('button', { name: 'Register' }))
 
@@ -533,7 +595,14 @@ describe('accountAppRegistrations', () => {
     // registrations never cross the wire to a panel that cannot draw them.
     it('asks the hub for the hub-wide reach alone', async () => {
       mockList.mockResolvedValue({
-        apps: [{ ...app, clientId: 'app-hub', clientName: 'Hub tool', visibility: 2 }],
+        apps: [
+          {
+            ...app,
+            clientId: 'app-hub',
+            clientName: 'Hub tool',
+            visibility: 2,
+          },
+        ],
       })
       render(() => <AppRegistrations variant="hub-wide" />)
 
@@ -546,7 +615,9 @@ describe('accountAppRegistrations', () => {
     })
 
     it('asks for its whole editable set on the user panel', async () => {
-      mockList.mockResolvedValue({ apps: [app] })
+      mockList.mockResolvedValue({
+        apps: [app],
+      })
       render(() => <AppRegistrations />)
 
       expect(await screen.findByTestId('app-registration-app-1')).toBeInTheDocument()
@@ -573,10 +644,18 @@ describe('refresh generation guard', () => {
     // generation is parked mid-pagination.
     const stalePageTwo = deferred<{ apps: typeof app[], nextCursor: string, openRegistrationEnabled: boolean }>()
     mockList
-      .mockResolvedValueOnce({ apps: [app], nextCursor: 'cursor-2', openRegistrationEnabled: false })
+      .mockResolvedValueOnce({
+        apps: [app],
+        nextCursor: 'cursor-2',
+        openRegistrationEnabled: false,
+      })
       .mockReturnValueOnce(stalePageTwo.promise)
       // A write path then fires a NEWER refresh, which answers in one page.
-      .mockResolvedValueOnce({ apps: [newerApp], nextCursor: '', openRegistrationEnabled: false })
+      .mockResolvedValueOnce({
+        apps: [newerApp],
+        nextCursor: '',
+        openRegistrationEnabled: false,
+      })
     render(() => <AppRegistrations />)
 
     // The register form's success handler PREPENDS the row the response
@@ -584,7 +663,9 @@ describe('refresh generation guard', () => {
     // older refresh is still parked, and must SURVIVE that refresh landing.
     mockRegister.mockResolvedValue({ app: newerApp, clientSecret: '' })
     fireEvent.click(screen.getByRole('button', { name: 'Register an app' }))
-    fireEvent.input(screen.getByLabelText(/Name/), { target: { value: 'CI bot' } })
+    fireEvent.input(screen.getByLabelText(/Name/), {
+      target: { value: 'CI bot' },
+    })
     fireEvent.click(screen.getByLabelText('workspace:read'))
     fireEvent.click(screen.getByRole('button', { name: 'Register' }))
     await waitFor(() => expect(mockRegister).toHaveBeenCalled())
@@ -593,7 +674,11 @@ describe('refresh generation guard', () => {
     await waitFor(() => expect(screen.getByText('Newer registration')).toBeInTheDocument())
 
     // The OLDER refresh's parked page resolves now, carrying the stale list.
-    stalePageTwo.resolve({ apps: [app], nextCursor: '', openRegistrationEnabled: false })
+    stalePageTwo.resolve({
+      apps: [app],
+      nextCursor: '',
+      openRegistrationEnabled: false,
+    })
     await new Promise(resolve => setTimeout(resolve, 20))
 
     expect(screen.getByText('Newer registration')).toBeInTheDocument()

@@ -26,7 +26,15 @@ const KILO_FAMILY = { refusals: KILO_REFUSED_TOOL_ERRORS, toolKinds: kiloToolKin
 /** One Kilo tool call, with the kind Kilo's own protocol layer answers for it. */
 function kiloCall(title: string, kind = 'other', tool: Record<string, unknown> = {}): ToolCall {
   return acpToolCall(
-    { sessionUpdate: 'tool_call', toolCallId: 'kilo-tool', status: 'pending', kind, title, rawInput: MINIMAL_INPUT[title], ...tool },
+    {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'kilo-tool',
+      status: 'pending',
+      kind,
+      title,
+      rawInput: MINIMAL_INPUT[title],
+      ...tool,
+    },
     openCodeToolCallAdapterFor(KILO_FAMILY),
     undefined,
   )
@@ -85,7 +93,13 @@ describe('kiloToolKind', () => {
   // not take Kilo's names.
   it('leaves an OpenCode row alone', () => {
     const call = acpToolCall(
-      { sessionUpdate: 'tool_call', toolCallId: 'oc-tool', status: 'pending', kind: 'other', title: 'semantic_search' },
+      {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'oc-tool',
+        status: 'pending',
+        kind: 'other',
+        title: 'semantic_search',
+      },
       openCodeToolCallAdapterFor({ refusals: OPENCODE_REFUSED_TOOL_ERRORS }),
       undefined,
     )
@@ -99,7 +113,18 @@ describe('kiloToolKind', () => {
 // description tells the model "the chart is the response". The row must draw that
 // configuration; the JSON dump it drew instead is the response the tool forbade.
 describe('the kilo chart tool', () => {
-  const CONFIG = { type: 'bar', data: { labels: ['A', 'B'], datasets: [{ label: 'Hits', data: [3, 5] }] } }
+  const CONFIG = {
+    type: 'bar',
+    data: {
+      labels: ['A', 'B'],
+      datasets: [
+        {
+          label: 'Hits',
+          data: [3, 5],
+        },
+      ],
+    },
+  }
 
   function chartRow(output: string, metadata?: Record<string, unknown>) {
     return acpToolCall({
@@ -108,9 +133,19 @@ describe('the kilo chart tool', () => {
       status: 'completed',
       kind: 'other',
       title: 'chart',
-      rawInput: { title: 'Weekly hits', spec: JSON.stringify(CONFIG) },
-      rawOutput: metadata ? { metadata } : undefined,
-      content: [{ type: 'content', content: { type: 'text', text: output } }],
+      rawInput: {
+        title: 'Weekly hits',
+        spec: JSON.stringify(CONFIG),
+      },
+      rawOutput: metadata
+        ? { metadata }
+        : undefined,
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: output },
+        },
+      ],
     }, openCodeToolCallAdapterFor(KILO_FAMILY), undefined)
   }
 
@@ -118,7 +153,9 @@ describe('the kilo chart tool', () => {
     const call = chartRow(JSON.stringify(CONFIG), { title: 'Weekly hits', description: 'per region' })
     expect(call.kind).toBe('chart')
     expect(call.label).toBe('Chart')
-    const source = call.kind === 'chart' ? typedResult(call) : undefined
+    const source = call.kind === 'chart'
+      ? typedResult(call)
+      : undefined
     expect(source?.shape).toBe('bar')
     expect(source?.title).toBe('Weekly hits')
     expect(source?.description).toBe('per region')
@@ -137,7 +174,12 @@ describe('the kilo chart tool', () => {
       kind: 'other',
       title: 'chart',
       rawInput: { spec: '{' },
-      content: [{ type: 'content', content: { type: 'text', text: 'The chart tool is not installed' } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'The chart tool is not installed' },
+        },
+      ],
     }, openCodeToolCallAdapterFor(KILO_FAMILY), undefined)
     expect(call.kind).toBe('chart')
     expect(isToolFailureResult(call.result) && call.result.text).toBe('The chart tool is not installed')
@@ -145,14 +187,18 @@ describe('the kilo chart tool', () => {
 
   it('states no arguments, so the configuration is not printed beside its own picture', () => {
     const call = chartRow(JSON.stringify(CONFIG))
-    expect(call.kind === 'chart' && call.request ? call.request.spec : undefined).toBe(JSON.stringify(CONFIG))
+    expect(call.kind === 'chart' && call.request
+      ? call.request.spec
+      : undefined).toBe(JSON.stringify(CONFIG))
   })
 
   // The tool answers with a sentence rather than a configuration when the model hands
   // it something it cannot parse. The row states that reason instead of a picture.
   it('carries the reason when the call returned no configuration', () => {
     const call = chartRow('Invalid chart spec: could not parse JSON.')
-    const source = call.kind === 'chart' ? typedResult(call) : undefined
+    const source = call.kind === 'chart'
+      ? typedResult(call)
+      : undefined
     expect(source?.error).toBe('The chart configuration is not readable JSON.')
   })
 
@@ -168,7 +214,10 @@ describe('the kilo chart tool', () => {
       status: 'pending',
       kind: 'other',
       title: 'chart',
-      rawInput: { title: 'Weekly hits', spec: JSON.stringify(CONFIG) },
+      rawInput: {
+        title: 'Weekly hits',
+        spec: JSON.stringify(CONFIG),
+      },
     }, openCodeToolCallAdapterFor(KILO_FAMILY), undefined)
     expect(call.kind).toBe('chart')
     expect(call.kind === 'chart' && call.request.spec).toBe(JSON.stringify(CONFIG))

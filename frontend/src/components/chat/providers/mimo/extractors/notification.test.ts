@@ -6,27 +6,64 @@ import { mimoCompactionEnded, mimoErrorText, mimoNotificationEntry } from './not
 describe('mimoNotificationEntry', () => {
   it('reads a notice status as a status line', () => {
     expect(mimoNotificationEntry(statusFrame('notice', { message: 'The native usage notice.' })))
-      .toEqual([{ kind: 'status', text: 'The native usage notice.' }])
+      .toEqual([
+        { kind: 'status', text: 'The native usage notice.' },
+      ])
   })
 
   it('reads a subagent retry attempt with checked counters', () => {
-    expect(mimoNotificationEntry(mimoFrame('session.retry.attempt', { messageID: 'child-message', attempt: 1, maxAttempts: 8, reason: 'child failure', nextDelayMs: 2092 })))
-      .toEqual([{ kind: 'retry', scope: 'api', attempt: 1, maxAttempts: 8, error: 'child failure', delayMs: 2092 }])
-    expect(mimoNotificationEntry(mimoFrame('session.retry.attempt', { attempt: -1, maxAttempts: 1.5, nextDelayMs: Infinity, reason: ' ' })))
-      .toEqual([{ kind: 'retry', scope: 'api' }])
+    expect(mimoNotificationEntry(mimoFrame('session.retry.attempt', {
+      messageID: 'child-message',
+      attempt: 1,
+      maxAttempts: 8,
+      reason: 'child failure',
+      nextDelayMs: 2092,
+    })))
+      .toEqual([
+        {
+          kind: 'retry',
+          scope: 'api',
+          attempt: 1,
+          maxAttempts: 8,
+          error: 'child failure',
+          delayMs: 2092,
+        },
+      ])
+    expect(mimoNotificationEntry(mimoFrame('session.retry.attempt', {
+      attempt: -1,
+      maxAttempts: 1.5,
+      nextDelayMs: Infinity,
+      reason: ' ',
+    })))
+      .toEqual([
+        { kind: 'retry', scope: 'api' },
+      ])
     expect(mimoNotificationEntry(statusFrame('retry', { attempt: -1, message: ' ' })))
-      .toEqual([{ kind: 'retry', scope: 'api' }])
+      .toEqual([
+        { kind: 'retry', scope: 'api' },
+      ])
   })
 
   it('reads a retry of the same turn', () => {
     expect(mimoNotificationEntry(statusFrame('retry', { attempt: 2, message: 'overloaded', next: 1 }))).toEqual([
-      { kind: 'retry', scope: 'api', attempt: 2, error: 'overloaded' },
+      {
+        kind: 'retry',
+        scope: 'api',
+        attempt: 2,
+        error: 'overloaded',
+      },
     ])
   })
 
   it('reads a compaction end and leaves a stored start unclaimed', () => {
     expect(mimoNotificationEntry(compactionFrame(false))).toEqual([])
-    expect(mimoNotificationEntry(compactionFrame(true, true))).toEqual([{ kind: 'compaction', phase: 'end', detail: { trigger: 'auto' } }])
+    expect(mimoNotificationEntry(compactionFrame(true, true))).toEqual([
+      {
+        kind: 'compaction',
+        phase: 'end',
+        detail: { trigger: 'auto' },
+      },
+    ])
   })
 
   it('reads an error outside a turn', () => {
@@ -38,19 +75,28 @@ describe('mimoNotificationEntry', () => {
   it('states nothing for any other row', () => {
     expect(mimoNotificationEntry(statusFrame('idle'))).toEqual([])
     expect(mimoNotificationEntry(toolFrame('bash', {}))).toEqual([])
-    expect(mimoNotificationEntry({ type: 'session.error', properties: { error: {} } })).toEqual([])
+    expect(mimoNotificationEntry({
+      type: 'session.error',
+      properties: { error: {} },
+    })).toEqual([])
     expect(mimoNotificationEntry({ content: 'hi' })).toEqual([])
   })
 
   // The first retry states its attempt, and a later release may drop the message. The
   // entry states only what the frame gives.
   it('reads a retry that states no attempt and no message', () => {
-    expect(mimoNotificationEntry(statusFrame('retry'))).toEqual([{ kind: 'retry', scope: 'api' }])
-    expect(mimoNotificationEntry(statusFrame('retry', { attempt: '2', message: '' }))).toEqual([{ kind: 'retry', scope: 'api' }])
+    expect(mimoNotificationEntry(statusFrame('retry'))).toEqual([
+      { kind: 'retry', scope: 'api' },
+    ])
+    expect(mimoNotificationEntry(statusFrame('retry', { attempt: '2', message: '' }))).toEqual([
+      { kind: 'retry', scope: 'api' },
+    ])
   })
 
   it('reads the attempt zero, and not as an absent attempt', () => {
-    expect(mimoNotificationEntry(statusFrame('retry', { attempt: 0 }))).toEqual([{ kind: 'retry', scope: 'api', attempt: 0 }])
+    expect(mimoNotificationEntry(statusFrame('retry', { attempt: 0 }))).toEqual([
+      { kind: 'retry', scope: 'api', attempt: 0 },
+    ])
   })
 
   it('states nothing for a status event with no status', () => {
@@ -62,15 +108,33 @@ describe('mimoNotificationEntry', () => {
   it('leaves a stored null-projection start unclaimed', () => {
     const frame = compactionFrame(false)
     const part = (frame.properties as { part: Record<string, unknown> }).part
-    expect(mimoNotificationEntry({ ...frame, properties: { ...frame.properties as object, part: { ...part, projection: null } } }))
+    expect(mimoNotificationEntry({
+      ...frame,
+      properties: {
+        ...frame.properties as object,
+        part: { ...part, projection: null },
+      },
+    }))
       .toEqual([])
   })
 
   it('reads only a true auto flag as an automatic compaction', () => {
     const frame = compactionFrame(true)
     const part = (frame.properties as { part: Record<string, unknown> }).part
-    expect(mimoNotificationEntry({ ...frame, properties: { ...frame.properties as object, part: { ...part, auto: 'true' } } }))
-      .toEqual([{ kind: 'compaction', phase: 'end', detail: { trigger: 'manual' } }])
+    expect(mimoNotificationEntry({
+      ...frame,
+      properties: {
+        ...frame.properties as object,
+        part: { ...part, auto: 'true' },
+      },
+    }))
+      .toEqual([
+        {
+          kind: 'compaction',
+          phase: 'end',
+          detail: { trigger: 'manual' },
+        },
+      ])
   })
 
   it('states nothing for a part update with no part', () => {
@@ -78,23 +142,50 @@ describe('mimoNotificationEntry', () => {
   })
 
   it('reads an error that states only its name, or only its message', () => {
-    expect(mimoNotificationEntry(errorFrame('ProviderAuthError', ''))).toEqual([{ kind: 'text', text: 'MiMo reported an error: ProviderAuthError' }])
-    expect(mimoNotificationEntry(errorFrame('', 'no credentials'))).toEqual([{ kind: 'text', text: 'MiMo reported an error: no credentials' }])
-    expect(mimoNotificationEntry(mimoFrame(MIMO_EVENT.SessionError, { sessionID: TEST_SESSION, error: { name: 'UnknownError' } })))
-      .toEqual([{ kind: 'text', text: 'MiMo reported an error: UnknownError' }])
+    expect(mimoNotificationEntry(errorFrame('ProviderAuthError', ''))).toEqual([
+      { kind: 'text', text: 'MiMo reported an error: ProviderAuthError' },
+    ])
+    expect(mimoNotificationEntry(errorFrame('', 'no credentials'))).toEqual([
+      { kind: 'text', text: 'MiMo reported an error: no credentials' },
+    ])
+    expect(mimoNotificationEntry(mimoFrame(MIMO_EVENT.SessionError, {
+      sessionID: TEST_SESSION,
+      error: { name: 'UnknownError' },
+    })))
+      .toEqual([
+        { kind: 'text', text: 'MiMo reported an error: UnknownError' },
+      ])
   })
 })
 
 describe('mimoErrorText', () => {
   it('reads the name and the message of the error', () => {
-    expect(mimoErrorText({ error: { name: 'APIError', data: { message: 'rate limited' } } })).toEqual({ name: 'APIError', message: 'rate limited' })
+    expect(mimoErrorText({
+      error: {
+        name: 'APIError',
+        data: { message: 'rate limited' },
+      },
+    })).toEqual({ name: 'APIError', message: 'rate limited' })
   })
 
   it.each([
     ['no error', {}],
-    ['an error that is text', { error: 'boom' }],
-    ['an error with no data', { error: {} }],
-    ['a message that is not text', { error: { data: { message: 42 } } }],
+    [
+      'an error that is text',
+      { error: 'boom' },
+    ],
+    [
+      'an error with no data',
+      { error: {} },
+    ],
+    [
+      'a message that is not text',
+      {
+        error: {
+          data: { message: 42 },
+        },
+      },
+    ],
   ])('reads empty words from %s', (_name, properties) => {
     expect(mimoErrorText(properties)).toEqual({ name: '', message: '' })
   })
@@ -102,7 +193,9 @@ describe('mimoErrorText', () => {
 
 describe('mimoCompactionEnded', () => {
   it('reads a projection as the end and an absent or null one as not', () => {
-    expect(mimoCompactionEnded({ projection: { summary: 'x' } })).toBe(true)
+    expect(mimoCompactionEnded({
+      projection: { summary: 'x' },
+    })).toBe(true)
     // An empty projection still states that the compaction ended.
     expect(mimoCompactionEnded({ projection: '' })).toBe(true)
     expect(mimoCompactionEnded({ projection: null })).toBe(false)

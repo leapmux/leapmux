@@ -34,11 +34,16 @@ vi.mock('../helpers/nativeScenario', async importOriginal => ({
   ...await importOriginal<typeof import('../helpers/nativeScenario')>(),
   nativeAgentById: calls.agent,
 }))
-vi.mock('../helpers/api', () => ({ getTestChannel: async () => ({ callWorker: calls.worker }) }))
+vi.mock('../helpers/api', () => ({
+  getTestChannel: async () => ({ callWorker: calls.worker }),
+}))
 vi.mock('../helpers/nativeLifecycle', () => ({ exerciseSessionResume: calls.lifecycle }))
 vi.mock('../helpers/nativeToolOutputFile', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../helpers/nativeToolOutputFile')>()
-  return { ...actual, readNativeToolOutputFile: (path: string, maxBytes: number) => actual.readNativeToolOutputFile(path, maxBytes, calls.io) }
+  return {
+    ...actual,
+    readNativeToolOutputFile: (path: string, maxBytes: number) => actual.readNativeToolOutputFile(path, maxBytes, calls.io),
+  }
 })
 
 const scratchRoot = resolve(import.meta.dirname, '../../../../.tmp')
@@ -77,7 +82,9 @@ function fixture(status = AgentStatus.ACTIVE) {
   mkdirSync(chats, { recursive: true })
   mkdirSync(workingDir)
   mkdirSync(output)
-  writeFileSync(join(nativeRoot, 'projects.json'), JSON.stringify({ projects: { [workingDir]: 'controlled-project' } }))
+  writeFileSync(join(nativeRoot, 'projects.json'), JSON.stringify({
+    projects: { [workingDir]: 'controlled-project' },
+  }))
   writeFileSync(join(project, '.project_root'), workingDir)
   const agent = create(AgentInfoSchema, {
     id: 'original-worker-agent',
@@ -86,20 +93,31 @@ function fixture(status = AgentStatus.ACTIVE) {
     status,
     workingDir,
     agentSessionId: '1df17a24-50da-4090-a7e9-87b38feec450',
-    ...(status === AgentStatus.STARTUP_FAILED ? { startupError: 'Native load failed: -32603 No previous sessions found for this project.' } : {}),
+    ...(status === AgentStatus.STARTUP_FAILED
+      ? { startupError: 'Native load failed: -32603 No previous sessions found for this project.' }
+      : {}),
   })
   const context: ManagedNativeScenarioContext = {
     provider: agent.agentProvider,
     providerAgent: { provider: agent.agentProvider, prefix: 'native-e2e' },
     workspaceId: 'resume-workspace',
-    leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'controlled-token', workerId: agent.workerId, agentEnv: { GEMINI_CLI_HOME: home } },
+    leapmuxServer: {
+      hubUrl: 'http://unused.invalid',
+      adminToken: 'controlled-token',
+      workerId: agent.workerId,
+      agentEnv: { GEMINI_CLI_HOME: home },
+    },
     page: Object.assign({} as Page, {
       locator: (selector: string) => {
         expect(selector).toContain(':visible')
         const tab = Object.assign({} as Locator, {
           first: () => tab,
-          count: async () => calls.selectedId === null ? 0 : 1,
-          getAttribute: async (name: string) => name === 'data-tab-id' ? calls.selectedId : null,
+          count: async () => calls.selectedId === null
+            ? 0
+            : 1,
+          getAttribute: async (name: string) => name === 'data-tab-id'
+            ? calls.selectedId
+            : null,
         })
         return tab
       },
@@ -115,12 +133,27 @@ function fixture(status = AgentStatus.ACTIVE) {
       attachments.push({ name, path: options.path })
     }),
   }
-  const owner = { sessionId: agent.agentSessionId, projectHash: createHash('sha256').update(workingDir).digest('hex'), kind: 'main' }
+  const owner = {
+    sessionId: agent.agentSessionId,
+    projectHash: createHash('sha256').update(workingDir).digest('hex'),
+    kind: 'main',
+  }
   const archive = join(chats, 'session-2026-10-04T01-02-1df17a24.jsonl')
   const text = `${[
     owner,
-    { id: 'native-original-user', type: 'user', content: 'Original 漢字 prompt', zero: 0, enabled: false, absent: null, empty: '' },
-    { $set: { messages: [] }, nativeMetadata: { zero: 0, enabled: false, absent: null } },
+    {
+      id: 'native-original-user',
+      type: 'user',
+      content: 'Original 漢字 prompt',
+      zero: 0,
+      enabled: false,
+      absent: null,
+      empty: '',
+    },
+    {
+      $set: { messages: [] },
+      nativeMetadata: { zero: 0, enabled: false, absent: null },
+    },
   ].map(record => JSON.stringify(record)).join('\n')}\n`
   writeFileSync(archive, text)
   const row = makeMessage({
@@ -130,18 +163,59 @@ function fixture(status = AgentStatus.ACTIVE) {
     spanId: 'native-span',
     parentSpanId: 'native-parent',
     spanType: 'execute',
-    content: Uint8Array.from(Buffer.from(JSON.stringify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Native 漢字', zero: 0, enabled: false, absent: null } }))),
-    supplementalContent: Uint8Array.from(Buffer.from(JSON.stringify({ provider: { zero: 0, enabled: false, empty: '', absent: null }, metadata: { elapsed_ms: 0 } }))),
+    content: Uint8Array.from(Buffer.from(JSON.stringify({
+      sessionUpdate: 'agent_message_chunk',
+      content: {
+        type: 'text',
+        text: 'Native 漢字',
+        zero: 0,
+        enabled: false,
+        absent: null,
+      },
+    }))),
+    supplementalContent: Uint8Array.from(Buffer.from(JSON.stringify({
+      provider: {
+        zero: 0,
+        enabled: false,
+        empty: '',
+        absent: null,
+      },
+      metadata: { elapsed_ms: 0 },
+    }))),
   })
   calls.agent.mockResolvedValue(agent)
-  calls.worker.mockResolvedValue(create(ListAgentMessagesResponseSchema, { messages: [row] }))
+  calls.worker.mockResolvedValue(create(ListAgentMessagesResponseSchema, {
+    messages: [row],
+  }))
   const receipt = (phase = 'stored') => object(JSON.parse(readFileSync(join(output, `gemini-resume-${phase}-receipt.json`), 'utf8')))
-  return { context, testInfo, agent, owner, archive, text, row, attachments, receipt, project, chats, nativeRoot, workingDir }
+  return {
+    context,
+    testInfo,
+    agent,
+    owner,
+    archive,
+    text,
+    row,
+    attachments,
+    receipt,
+    project,
+    chats,
+    nativeRoot,
+    workingDir,
+  }
 }
 
 function filePorts(text: string, path: string) {
   const bytes = Buffer.from(text)
-  const stat: NativeToolOutputFileStat = { dev: 1, ino: 2, size: bytes.length, mtimeMs: 3, ctimeMs: 4, isFile: () => true, isSymbolicLink: () => false }
+  const stat: NativeToolOutputFileStat = {
+    dev: 1,
+    ino: 2,
+    size: bytes.length,
+    mtimeMs: 3,
+    ctimeMs: 4,
+    isFile: () => true,
+    isSymbolicLink: () => false,
+  }
   const io: NativeToolOutputFileIO = {
     realpath: vi.fn(() => dirname(path)),
     lstat: vi.fn(() => stat),
@@ -168,7 +242,14 @@ describe('captureGeminiResumeEvidence', () => {
     expect(decoded.parentSpanId).toBe('native-parent')
     expect(decoded.agentSessionId).toBe(f.agent.agentSessionId)
     const archive = objects(result.archives)[0]
-    expect(archive).toMatchObject({ state: 'owned-observation', sessionId: f.agent.agentSessionId, projectHash: f.owner.projectHash, kind: 'main', bytes: Buffer.byteLength(f.text), incompleteTrailingLine: false })
+    expect(archive).toMatchObject({
+      state: 'owned-observation',
+      sessionId: f.agent.agentSessionId,
+      projectHash: f.owner.projectHash,
+      kind: 'main',
+      bytes: Buffer.byteLength(f.text),
+      incompleteTrailingLine: false,
+    })
     const path = f.attachments.find(item => item.name === archive?.attachment)?.path
     if (!path)
       throw new Error('The owned native archive attachment is absent.')
@@ -182,14 +263,24 @@ describe('captureGeminiResumeEvidence', () => {
   it.each([AgentStatus.STARTING, AgentStatus.STARTUP_FAILED])('reads pending Worker pages without an ACTIVE wait for status %s', async (status) => {
     const f = fixture(status)
     const later = makeMessage({ ...f.row, id: 'worker-later', seq: 9007199254740993n })
-    calls.worker.mockReset().mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [f.row], hasMore: true })).mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [later] }))
+    calls.worker.mockReset().mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, {
+      messages: [f.row],
+      hasMore: true,
+    })).mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, {
+      messages: [later],
+    }))
     await captureGeminiResumeEvidence(f.context, f.testInfo, { phase: 'opened', prior: f.agent })
     const result = f.receipt('opened')
     expect(object(result.workerRead).state).toBe('complete-observation')
     expect(objects(result.messages).map(item => item.seq)).toEqual(['1', '9007199254740993'])
     expect(calls.agent).toHaveBeenCalledTimes(2)
     expect(calls.worker.mock.calls[0]?.[4]).toEqual({ agentId: f.agent.id, anchor: MessagePageAnchor.OLDEST, limit: MESSAGE_PAGE_LIMIT })
-    expect(calls.worker.mock.calls[1]?.[4]).toEqual({ agentId: f.agent.id, anchor: MessagePageAnchor.AFTER, cursorSeq: 1n, limit: MESSAGE_PAGE_LIMIT })
+    expect(calls.worker.mock.calls[1]?.[4]).toEqual({
+      agentId: f.agent.id,
+      anchor: MessagePageAnchor.AFTER,
+      cursorSeq: 1n,
+      limit: MESSAGE_PAGE_LIMIT,
+    })
     if (status === AgentStatus.STARTUP_FAILED)
       expect(object(result.workerBefore).startupError).toBe(f.agent.startupError)
   })
@@ -199,7 +290,11 @@ describe('captureGeminiResumeEvidence', () => {
   // the receipt before its checks.
   it('keeps a pending row with sequence zero, as the read of a started agent does', async () => {
     const f = fixture(AgentStatus.STARTUP_FAILED)
-    calls.worker.mockResolvedValue(create(ListAgentMessagesResponseSchema, { messages: [makeMessage({ ...f.row, seq: 0n })] }))
+    calls.worker.mockResolvedValue(create(ListAgentMessagesResponseSchema, {
+      messages: [
+        makeMessage({ ...f.row, seq: 0n }),
+      ],
+    }))
     await captureGeminiResumeEvidence(f.context, f.testInfo, { phase: 'opened', prior: f.agent })
     const result = f.receipt('opened')
     expect(object(result.workerRead).state).toBe('failed')
@@ -207,26 +302,49 @@ describe('captureGeminiResumeEvidence', () => {
     expect(objects(result.messages)[0]?.seq).toBe('0')
   })
 
-  it.each(['absent tab', 'absent agent', 'keeper', 'foreign session', 'foreign child', 'foreign worker'])('records %s without certifying its Worker transcript', async (condition) => {
+  it.each([
+    'absent tab',
+    'absent agent',
+    'keeper',
+    'foreign session',
+    'foreign child',
+    'foreign worker',
+  ])('records %s without certifying its Worker transcript', async (condition) => {
     const f = fixture(AgentStatus.STARTUP_FAILED)
-    if (condition === 'absent tab')
+    if (condition === 'absent tab') {
       calls.selectedId = null
-    else if (condition === 'absent agent')
+    }
+    else if (condition === 'absent agent') {
       calls.agent.mockResolvedValue(null)
-    else if (condition === 'keeper')
-      calls.agent.mockResolvedValue(create(AgentInfoSchema, { ...f.agent, workingDir: join(directory, 'keeper') }))
-    else if (condition === 'foreign session')
+    }
+    else if (condition === 'keeper') {
+      calls.agent.mockResolvedValue(create(AgentInfoSchema, {
+        ...f.agent,
+        workingDir: join(directory, 'keeper'),
+      }))
+    }
+    else if (condition === 'foreign session') {
       calls.agent.mockResolvedValue(create(AgentInfoSchema, { ...f.agent, agentSessionId: '91a4ca8d-77a3-4a0f-ab4f-ae770ed92187' }))
-    else if (condition === 'foreign child')
+    }
+    else if (condition === 'foreign child') {
       calls.agent.mockResolvedValue(create(AgentInfoSchema, { ...f.agent, parentAgentId: 'another-parent', rootAgentId: 'another-root' }))
-    else
+    }
+    else {
       calls.agent.mockResolvedValue(create(AgentInfoSchema, { ...f.agent, workerId: 'another-worker' }))
+    }
     await captureGeminiResumeEvidence(f.context, f.testInfo, { phase: 'opened', prior: f.agent })
     expect(object(f.receipt('opened').workerRead).state).not.toBe('complete-observation')
     expect(calls.worker).not.toHaveBeenCalled()
   })
 
-  it.each(['absent ID', 'duplicate ID', 'negative sequence', 'same sequence', 'descending sequence', 'empty more page'])('retains returned bytes and rejects a pending page with %s', async (condition) => {
+  it.each([
+    'absent ID',
+    'duplicate ID',
+    'negative sequence',
+    'same sequence',
+    'descending sequence',
+    'empty more page',
+  ])('retains returned bytes and rejects a pending page with %s', async (condition) => {
     const f = fixture(AgentStatus.STARTUP_FAILED)
     const bad = makeMessage({ ...f.row, id: 'later-row', seq: 2n })
     if (condition === 'absent ID')
@@ -239,16 +357,33 @@ describe('captureGeminiResumeEvidence', () => {
       bad.seq = 1n
     else if (condition === 'descending sequence')
       bad.seq = 0n
-    calls.worker.mockReset().mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: [f.row], hasMore: true })).mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, { messages: condition === 'empty more page' ? [] : [bad], hasMore: condition === 'empty more page' }))
+    calls.worker.mockReset().mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, {
+      messages: [f.row],
+      hasMore: true,
+    })).mockResolvedValueOnce(create(ListAgentMessagesResponseSchema, {
+      messages: condition === 'empty more page'
+        ? []
+        : [bad],
+      hasMore: condition === 'empty more page',
+    }))
     await captureGeminiResumeEvidence(f.context, f.testInfo, { phase: 'opened', prior: f.agent })
     const result = f.receipt('opened')
     expect(object(result.workerRead).state).toBe('failed')
     expect(objects(result.messages)[0]?.id).toBe(f.row.id)
-    expect(objects(result.messages)).toHaveLength(condition === 'empty more page' ? 1 : 2)
+    expect(objects(result.messages)).toHaveLength(condition === 'empty more page'
+      ? 1
+      : 2)
     expect(calls.worker).toHaveBeenCalledTimes(2)
   })
 
-  it.each(['session', 'parent', 'root', 'spawn', 'provider child', 'directory'])('records unstable ownership after a %s change', async (condition) => {
+  it.each([
+    'session',
+    'parent',
+    'root',
+    'spawn',
+    'provider child',
+    'directory',
+  ])('records unstable ownership after a %s change', async (condition) => {
     const f = fixture(AgentStatus.STARTUP_FAILED)
     const changed = create(AgentInfoSchema, { ...f.agent })
     if (condition === 'session')
@@ -279,27 +414,54 @@ describe('captureGeminiResumeEvidence', () => {
     expect(f.attachments.filter(item => item.name.includes('-archive-'))).toHaveLength(2)
   })
 
-  it.each(['UUID', 'project hash', 'child kind', 'changed header', 'changed set', 'invalid set', 'record before header', 'empty file', 'invalid full line'])('refuses an archive with %s', async (condition) => {
+  it.each([
+    'UUID',
+    'project hash',
+    'child kind',
+    'changed header',
+    'changed set',
+    'invalid set',
+    'record before header',
+    'empty file',
+    'invalid full line',
+  ])('refuses an archive with %s', async (condition) => {
     const f = fixture()
     let text = f.text
-    if (condition === 'UUID')
+    if (condition === 'UUID') {
       text = JSON.stringify({ ...f.owner, sessionId: '1df17a24-FOREIGN-native-session' })
-    else if (condition === 'project hash')
-      text = JSON.stringify({ ...f.owner, projectHash: 'f'.repeat(64) })
-    else if (condition === 'child kind')
+    }
+    else if (condition === 'project hash') {
+      text = JSON.stringify({
+        ...f.owner,
+        projectHash: 'f'.repeat(64),
+      })
+    }
+    else if (condition === 'child kind') {
       text = JSON.stringify({ ...f.owner, kind: 'subagent' })
-    else if (condition === 'changed header')
-      text += `${JSON.stringify({ ...f.owner, projectHash: 'f'.repeat(64) })}\n`
-    else if (condition === 'changed set')
-      text += `${JSON.stringify({ $set: { sessionId: '1df17a24-FOREIGN-native-session' } })}\n`
-    else if (condition === 'invalid set')
+    }
+    else if (condition === 'changed header') {
+      text += `${JSON.stringify({
+        ...f.owner,
+        projectHash: 'f'.repeat(64),
+      })}\n`
+    }
+    else if (condition === 'changed set') {
+      text += `${JSON.stringify({
+        $set: { sessionId: '1df17a24-FOREIGN-native-session' },
+      })}\n`
+    }
+    else if (condition === 'invalid set') {
       text += `${JSON.stringify({ $set: null })}\n`
-    else if (condition === 'record before header')
+    }
+    else if (condition === 'record before header') {
       text = `${JSON.stringify({ id: 'early', type: 'user', content: '' })}\n${text}`
-    else if (condition === 'empty file')
+    }
+    else if (condition === 'empty file') {
       text = ''
-    else
+    }
+    else {
       text += '{broken}\n'
+    }
     writeFileSync(f.archive, text)
     await captureGeminiResumeEvidence(f.context, f.testInfo, { phase: 'stored', prior: f.agent })
     expect(objects(f.receipt().archives)[0]?.state).toBe('refused')
@@ -321,10 +483,14 @@ describe('captureGeminiResumeEvidence', () => {
 
   it.each(['registry', 'project marker'])('refuses a foreign %s before attaching archive contents', async (condition) => {
     const f = fixture()
-    if (condition === 'registry')
-      writeFileSync(join(f.nativeRoot, 'projects.json'), JSON.stringify({ projects: { [f.workingDir]: '../foreign' } }))
-    else
+    if (condition === 'registry') {
+      writeFileSync(join(f.nativeRoot, 'projects.json'), JSON.stringify({
+        projects: { [f.workingDir]: '../foreign' },
+      }))
+    }
+    else {
       writeFileSync(join(f.project, '.project_root'), join(directory, 'foreign-project'))
+    }
     await captureGeminiResumeEvidence(f.context, f.testInfo, { phase: 'stored', prior: f.agent })
     expect(objects(f.receipt().archives)[0]?.state).toBe('refused')
     expect(f.attachments.filter(item => item.name.includes('-archive-'))).toEqual([])
@@ -332,7 +498,13 @@ describe('captureGeminiResumeEvidence', () => {
 
   it('preserves a legacy root archive without kind and an empty native message', async () => {
     const f = fixture()
-    const owner = { sessionId: f.owner.sessionId, projectHash: f.owner.projectHash, messages: [{ id: 'empty-native', type: 'gemini', content: '' }] }
+    const owner = {
+      sessionId: f.owner.sessionId,
+      projectHash: f.owner.projectHash,
+      messages: [
+        { id: 'empty-native', type: 'gemini', content: '' },
+      ],
+    }
     writeFileSync(f.archive, JSON.stringify(owner))
     await captureGeminiResumeEvidence(f.context, f.testInfo, { phase: 'stored', prior: f.agent })
     expect(objects(f.receipt().archives)[0]).toMatchObject({ state: 'owned-observation', kind: null })
@@ -341,13 +513,30 @@ describe('captureGeminiResumeEvidence', () => {
   it('rejects a symlinked archive through the existing stable reader', async () => {
     const f = fixture()
     const ports = filePorts(f.text, f.archive)
-    ports.io.lstat = () => ({ ...ports.stat, isSymbolicLink: () => true })
+    ports.io.lstat = () => ({
+      ...ports.stat,
+      isSymbolicLink: () => true,
+    })
     await captureGeminiResumeEvidence(f.context, f.testInfo, { phase: 'stored', prior: f.agent })
-    expect(objects(f.receipt().archives)[0]).toMatchObject({ state: 'failed', attachment: null, sha256: null, sessionId: null })
+    expect(objects(f.receipt().archives)[0]).toMatchObject({
+      state: 'failed',
+      attachment: null,
+      sha256: null,
+      sessionId: null,
+    })
     expect(ports.io.open).not.toHaveBeenCalled()
   })
 
-  it.each(['before open', 'inode', 'mtime', 'ctime', 'append', 'partial read', 'directory', 'path replacement'])('refuses certification after %s changes without a file retry', async (condition) => {
+  it.each([
+    'before open',
+    'inode',
+    'mtime',
+    'ctime',
+    'append',
+    'partial read',
+    'directory',
+    'path replacement',
+  ])('refuses certification after %s changes without a file retry', async (condition) => {
     const f = fixture()
     const ports = filePorts(f.text, f.archive)
     if (condition === 'before open') {
@@ -358,11 +547,15 @@ describe('captureGeminiResumeEvidence', () => {
     }
     else if (condition === 'directory') {
       let reads = 0
-      ports.io.realpath = vi.fn(() => ++reads === 1 ? dirname(f.archive) : join(directory, 'foreign-directory'))
+      ports.io.realpath = vi.fn(() => ++reads === 1
+        ? dirname(f.archive)
+        : join(directory, 'foreign-directory'))
     }
     else if (condition === 'path replacement') {
       let reads = 0
-      ports.io.lstat = vi.fn(() => ++reads === 1 ? ports.stat : { ...ports.stat, ino: 99 })
+      ports.io.lstat = vi.fn(() => ++reads === 1
+        ? ports.stat
+        : { ...ports.stat, ino: 99 })
     }
     else {
       let reads = 0
@@ -375,23 +568,39 @@ describe('captureGeminiResumeEvidence', () => {
         changed.ctimeMs = 99
       else
         changed.size++
-      ports.io.stat = vi.fn(() => ++reads === 1 ? ports.stat : changed)
+      ports.io.stat = vi.fn(() => ++reads === 1
+        ? ports.stat
+        : changed)
     }
     await captureGeminiResumeEvidence(f.context, f.testInfo, { phase: 'stored', prior: f.agent })
-    expect(objects(f.receipt().archives)[0]).toMatchObject({ state: 'failed', attachment: null, sha256: null, sessionId: null })
+    expect(objects(f.receipt().archives)[0]).toMatchObject({
+      state: 'failed',
+      attachment: null,
+      sha256: null,
+      sessionId: null,
+    })
     expect(ports.io.open).toHaveBeenCalledTimes(1)
     expect(ports.io.close).toHaveBeenCalledTimes(1)
-    expect(ports.io.read).toHaveBeenCalledTimes(condition === 'before open' ? 0 : 1)
+    expect(ports.io.read).toHaveBeenCalledTimes(condition === 'before open'
+      ? 0
+      : 1)
   })
 
   it('accepts the exact sixteen MiB limit and preserves the full captured digest', async () => {
     const f = fixture()
     const limit = 16 * 1024 * 1024
     const base = JSON.stringify({ ...f.owner, padding: '' })
-    const text = JSON.stringify({ ...f.owner, padding: 'x'.repeat(limit - Buffer.byteLength(base)) })
+    const text = JSON.stringify({
+      ...f.owner,
+      padding: 'x'.repeat(limit - Buffer.byteLength(base)),
+    })
     const ports = filePorts(text, f.archive)
     await captureGeminiResumeEvidence(f.context, f.testInfo, { phase: 'stored', prior: f.agent })
-    expect(objects(f.receipt().archives)[0]).toMatchObject({ state: 'owned-observation', bytes: limit, sha256: createHash('sha256').update(ports.bytes).digest('hex') })
+    expect(objects(f.receipt().archives)[0]).toMatchObject({
+      state: 'owned-observation',
+      bytes: limit,
+      sha256: createHash('sha256').update(ports.bytes).digest('hex'),
+    })
     expect(ports.io.read).toHaveBeenCalledTimes(1)
     expect(ports.io.close).toHaveBeenCalledTimes(1)
   })
@@ -464,13 +673,48 @@ describe('captureGeminiResumeEvidence', () => {
   })
 
   it.each([
-    { label: 'negative number', value: -7, valueKind: 'number', encoded: -7 },
-    { label: 'negative zero', value: -0, valueKind: 'number', encoded: '-0' },
-    { label: 'infinity', value: Number.POSITIVE_INFINITY, valueKind: 'number', encoded: 'Infinity' },
-    { label: 'not a number', value: Number.NaN, valueKind: 'number', encoded: 'NaN' },
-    { label: 'undefined', value: undefined, valueKind: 'undefined', encoded: null },
-    { label: 'large bigint', value: 9007199254740993n, valueKind: 'bigint', encoded: '9007199254740993' },
-    { label: 'symbol', value: Symbol('native-cause'), valueKind: 'symbol', encoded: 'Symbol(native-cause)' },
+    {
+      label: 'negative number',
+      value: -7,
+      valueKind: 'number',
+      encoded: -7,
+    },
+    {
+      label: 'negative zero',
+      value: -0,
+      valueKind: 'number',
+      encoded: '-0',
+    },
+    {
+      label: 'infinity',
+      value: Number.POSITIVE_INFINITY,
+      valueKind: 'number',
+      encoded: 'Infinity',
+    },
+    {
+      label: 'not a number',
+      value: Number.NaN,
+      valueKind: 'number',
+      encoded: 'NaN',
+    },
+    {
+      label: 'undefined',
+      value: undefined,
+      valueKind: 'undefined',
+      encoded: null,
+    },
+    {
+      label: 'large bigint',
+      value: 9007199254740993n,
+      valueKind: 'bigint',
+      encoded: '9007199254740993',
+    },
+    {
+      label: 'symbol',
+      value: Symbol('native-cause'),
+      valueKind: 'symbol',
+      encoded: 'Symbol(native-cause)',
+    },
   ])('retains a present $label cause through JSON serialization', async ({ value, valueKind, encoded }) => {
     const f = fixture()
     const ports = filePorts(f.text, f.archive)
@@ -485,7 +729,12 @@ describe('captureGeminiResumeEvidence', () => {
   it('retains enumerable native error fields and a shared null-prototype cause', async () => {
     const f = fixture()
     const ports = filePorts(f.text, f.archive)
-    const cause: Record<string, unknown> = Object.assign(Object.create(null), { zero: 0, enabled: false, empty: '', absent: null })
+    const cause: Record<string, unknown> = Object.assign(Object.create(null), {
+      zero: 0,
+      enabled: false,
+      empty: '',
+      absent: null,
+    })
     cause.self = cause
     const failure = Object.assign(new Error('Native structured cause', { cause }), { code: 0, retry: false, details: cause })
     ports.io.read = () => {
@@ -494,12 +743,42 @@ describe('captureGeminiResumeEvidence', () => {
     await captureGeminiResumeEvidence(f.context, f.testInfo, { phase: 'stored', prior: f.agent })
     const components = objects(object(objects(f.receipt().archives)[0]?.error).components)
     expect(components).toEqual(expect.arrayContaining([
-      expect.objectContaining({ relation: 'property', key: 'code', valueKind: 'number', value: 0 }),
-      expect.objectContaining({ relation: 'property', key: 'retry', valueKind: 'boolean', value: false }),
-      expect.objectContaining({ relation: 'property', key: 'zero', valueKind: 'number', value: 0 }),
-      expect.objectContaining({ relation: 'property', key: 'enabled', valueKind: 'boolean', value: false }),
-      expect.objectContaining({ relation: 'property', key: 'empty', valueKind: 'string', value: '' }),
-      expect.objectContaining({ relation: 'property', key: 'absent', valueKind: 'null', value: null }),
+      expect.objectContaining({
+        relation: 'property',
+        key: 'code',
+        valueKind: 'number',
+        value: 0,
+      }),
+      expect.objectContaining({
+        relation: 'property',
+        key: 'retry',
+        valueKind: 'boolean',
+        value: false,
+      }),
+      expect.objectContaining({
+        relation: 'property',
+        key: 'zero',
+        valueKind: 'number',
+        value: 0,
+      }),
+      expect.objectContaining({
+        relation: 'property',
+        key: 'enabled',
+        valueKind: 'boolean',
+        value: false,
+      }),
+      expect.objectContaining({
+        relation: 'property',
+        key: 'empty',
+        valueKind: 'string',
+        value: '',
+      }),
+      expect.objectContaining({
+        relation: 'property',
+        key: 'absent',
+        valueKind: 'null',
+        value: null,
+      }),
     ]))
     const causeNode = components.find(item => item.relation === 'cause')
     expect(components.find(item => item.key === 'self')?.reference).toBe(causeNode?.id)
@@ -509,7 +788,12 @@ describe('captureGeminiResumeEvidence', () => {
   it('retains array positions and a function cause without recursive data', async () => {
     const f = fixture()
     const ports = filePorts(f.text, f.archive)
-    const cause = [0, false, null, () => undefined]
+    const cause = [
+      0,
+      false,
+      null,
+      () => undefined,
+    ]
     ports.io.read = () => {
       throw new Error('Native array cause', { cause })
     }
@@ -549,7 +833,10 @@ describe('captureGeminiResumeEvidence', () => {
     const f = fixture(AgentStatus.STARTUP_FAILED)
     calls.worker.mockResolvedValue(create(ListAgentMessagesResponseSchema))
     await captureGeminiResumeEvidence(f.context, f.testInfo, { phase: 'opened', prior: f.agent })
-    expect(f.receipt('opened')).toMatchObject({ messages: [], workerRead: { state: 'complete-observation' } })
+    expect(f.receipt('opened')).toMatchObject({
+      messages: [],
+      workerRead: { state: 'complete-observation' },
+    })
     expect(calls.worker).toHaveBeenCalledTimes(1)
   })
 
@@ -570,7 +857,17 @@ describe('captureGeminiResumeEvidence', () => {
 
   it('preserves the continued model request without a version or replay-completion claim', async () => {
     const f = fixture()
-    const request: MockModelRequestRecord = { protocol: 'google-generative-language', path: '/v1beta/models/mock:streamGenerateContent', body: { contents: [], zero: 0, enabled: false, empty: '', absent: null } }
+    const request: MockModelRequestRecord = {
+      protocol: 'google-generative-language',
+      path: '/v1beta/models/mock:streamGenerateContent',
+      body: {
+        contents: [],
+        zero: 0,
+        enabled: false,
+        empty: '',
+        absent: null,
+      },
+    }
     await captureGeminiResumeEvidence(f.context, f.testInfo, { phase: 'continued', prior: f.agent, request })
     const result = f.receipt('continued')
     expect(result.request).toEqual(request)
@@ -583,7 +880,11 @@ describe('captureGeminiResumeEvidence', () => {
 describe('exerciseGeminiResumeWithEvidence', () => {
   it('captures all three real callback phases and returns the unchanged resume result', async () => {
     const f = fixture()
-    const request: MockModelRequestRecord = { protocol: 'google-generative-language', path: '/v1beta/models/mock:streamGenerateContent', body: { contents: [] } }
+    const request: MockModelRequestRecord = {
+      protocol: 'google-generative-language',
+      path: '/v1beta/models/mock:streamGenerateContent',
+      body: { contents: [] },
+    }
     const result: NativeResumeResult = {
       marker: '0123456789abcdef0123456789abcdef',
       originalPrompt: 'Keep RESUMEPROMPT0123456789abcdef0123456789abcdef for the stored session.',
@@ -631,7 +932,15 @@ describe('exerciseGeminiResumeWithEvidence', () => {
         await options?.resumeEvidence?.({ phase, prior: f.agent })
         log.push(`${phase} done`)
       }
-      return { marker: '', originalPrompt: '', originalAnswer: '', resumedPrompt: '', resumedAnswer: '', originalRequest: { protocol: 'google-generative-language', path: '', body: {} }, request: { protocol: 'google-generative-language', path: '', body: {} } }
+      return {
+        marker: '',
+        originalPrompt: '',
+        originalAnswer: '',
+        resumedPrompt: '',
+        resumedAnswer: '',
+        originalRequest: { protocol: 'google-generative-language', path: '', body: {} },
+        request: { protocol: 'google-generative-language', path: '', body: {} },
+      }
     })
     await exerciseGeminiResumeWithEvidence(f.context, f.testInfo, clock)
     expect(log).toEqual(['sleep 50000', 'stored done', 'opened done'])
@@ -643,9 +952,20 @@ describe('exerciseGeminiResumeWithEvidence', () => {
     const sleep = vi.fn<(milliseconds: number) => Promise<void>>()
     calls.lifecycle.mockImplementation(async (_context, options) => {
       await options?.resumeEvidence?.({ phase: 'stored', prior: f.agent })
-      return { marker: '', originalPrompt: '', originalAnswer: '', resumedPrompt: '', resumedAnswer: '', originalRequest: { protocol: 'google-generative-language', path: '', body: {} }, request: { protocol: 'google-generative-language', path: '', body: {} } }
+      return {
+        marker: '',
+        originalPrompt: '',
+        originalAnswer: '',
+        resumedPrompt: '',
+        resumedAnswer: '',
+        originalRequest: { protocol: 'google-generative-language', path: '', body: {} },
+        request: { protocol: 'google-generative-language', path: '', body: {} },
+      }
     })
-    await exerciseGeminiResumeWithEvidence(f.context, f.testInfo, { now: () => Date.parse('2026-10-04T01:03:00.000Z'), sleep })
+    await exerciseGeminiResumeWithEvidence(f.context, f.testInfo, {
+      now: () => Date.parse('2026-10-04T01:03:00.000Z'),
+      sleep,
+    })
     expect(sleep).not.toHaveBeenCalled()
   })
 
@@ -677,7 +997,11 @@ describe('exerciseGeminiResumeWithEvidence', () => {
     const failure = new Error('Exact original native answer failure')
     calls.lifecycle.mockRejectedValue(failure)
     await expect(exerciseGeminiResumeWithEvidence(f.context, f.testInfo)).rejects.toBe(failure)
-    expect(f.receipt('failed')).toMatchObject({ priorAgent: null, archives: [], workerRead: { state: 'not-read' } })
+    expect(f.receipt('failed')).toMatchObject({
+      priorAgent: null,
+      archives: [],
+      workerRead: { state: 'not-read' },
+    })
     expect(calls.worker).not.toHaveBeenCalled()
   })
 

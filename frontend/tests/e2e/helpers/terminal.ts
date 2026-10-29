@@ -47,7 +47,9 @@ export async function getTerminalText(page: Page): Promise<string> {
 export async function getTerminalRows(page: Page): Promise<number> {
   return page.evaluate(() => {
     const read = (window as any).__getActiveTerminalRows
-    return typeof read === 'function' ? read() as number : 0
+    return typeof read === 'function'
+      ? read() as number
+      : 0
   })
 }
 
@@ -60,7 +62,9 @@ export async function waitForTerminalText(page: Page, text: string): Promise<voi
     throw new Error('A terminal text wait needs text, because every terminal contains the empty string.')
   await expect(async () => {
     expect(await getTerminalText(page), 'the active terminal shows the text').toContain(text)
-  }).toPass({ timeout: waitTimeoutBeforeTestDeadline() })
+  }).toPass({
+    timeout: waitTimeoutBeforeTestDeadline(),
+  })
 }
 
 /**
@@ -83,7 +87,9 @@ export async function waitForTerminalReady(page: Page): Promise<void> {
   await expect(async () => {
     await typeInTerminal(page, `echo ${marker.slice(0, 3)}""${marker.slice(3)}`)
     expect(await getTerminalText(page)).toContain(marker)
-  }).toPass({ timeout: waitTimeoutBeforeTestDeadline() })
+  }).toPass({
+    timeout: waitTimeoutBeforeTestDeadline(),
+  })
 }
 
 /**
@@ -119,7 +125,9 @@ export async function typeInTerminal(page: Page, command: string, delay = 30): P
 export async function sendActiveTerminalInput(page: Page, text: string): Promise<boolean> {
   return page.evaluate((s) => {
     const fn = (window as any).__sendActiveTerminalInput
-    return typeof fn === 'function' ? fn(s) === true : false
+    return typeof fn === 'function'
+      ? fn(s) === true
+      : false
   }, text)
 }
 
@@ -140,7 +148,9 @@ export async function clickTerminalText(page: Page, text: string): Promise<void>
       text,
     )
     expect(point, `no terminal cell shows ${text}`).not.toBeNull()
-  }).toPass({ timeout: waitTimeoutBeforeTestDeadline() })
+  }).toPass({
+    timeout: waitTimeoutBeforeTestDeadline(),
+  })
 
   // Hover ANOTHER cell first. xterm activates a link on mouseup, and only for
   // the link its last hover resolved -- so a modal that opened over the

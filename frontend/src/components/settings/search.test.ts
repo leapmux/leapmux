@@ -21,7 +21,9 @@ function match(entries: SearchEntry[], query: string, order: readonly string[] =
 
 describe('matchSettings', () => {
   it('matches case-insensitively over the label', () => {
-    const hits = match([entry({ label: 'Turn-end volume' })], 'VOLUME')
+    const hits = match([
+      entry({ label: 'Turn-end volume' }),
+    ], 'VOLUME')
     expect(hits).toHaveLength(1)
     const group = hits[0]
     if (group === undefined)
@@ -34,23 +36,45 @@ describe('matchSettings', () => {
 
   it('matches help, group title, keywords, and enum option labels', () => {
     const entries = [
-      entry({ label: 'By help', navId: 'notifications', groupTitle: 'Notifications', help: 'playback VOLUME' }),
+      entry({
+        label: 'By help',
+        navId: 'notifications',
+        groupTitle: 'Notifications',
+        help: 'playback VOLUME',
+      }),
       entry({ label: 'By nothing', navId: 'chat', groupTitle: 'Chat & Composer' }),
-      entry({ label: 'By keyword', keywords: ['volume'] }),
-      entry({ label: 'By option', optionLabels: ['Dark', 'Light'] }),
+      entry({
+        label: 'By keyword',
+        keywords: ['volume'],
+      }),
+      entry({
+        label: 'By option',
+        optionLabels: ['Dark', 'Light'],
+      }),
     ]
     const hits = match(entries, 'volume')
     expect(hits.flatMap(g => g.entries.map(e => e.label))).toEqual(['By keyword', 'By help'])
 
-    expect(match([entry({ optionLabels: ['Dark'] })], 'dark')).toHaveLength(1)
-    expect(match([entry({ groupTitle: 'Chat & Composer', label: 'Nope' })], 'composer')).toHaveLength(1)
+    expect(match([
+      entry({
+        optionLabels: ['Dark'],
+      }),
+    ], 'dark')).toHaveLength(1)
+    expect(match([
+      entry({ groupTitle: 'Chat & Composer', label: 'Nope' }),
+    ], 'composer')).toHaveLength(1)
   })
 
   it('groups hits by nav group in navigation order and omits empty groups', () => {
     const entries = [
       entry({ label: 'Advanced label', navId: 'advanced', groupTitle: 'Advanced' }),
       entry({ label: 'Appearance label', navId: 'appearance', groupTitle: 'Appearance' }),
-      entry({ label: 'Another', navId: 'appearance', groupTitle: 'Appearance', keywords: ['label'] }),
+      entry({
+        label: 'Another',
+        navId: 'appearance',
+        groupTitle: 'Appearance',
+        keywords: ['label'],
+      }),
     ]
     const hits = match(entries, 'label')
     expect(hits.map(g => g.navId)).toEqual(['appearance', 'advanced'])
@@ -72,12 +96,17 @@ describe('matchSettings', () => {
       entry({ navId: 'admin-advanced', groupTitle: 'Advanced', label: 'Debug queue' }),
     ], 'debug')
     expect(hits.map(g => g.navId)).toEqual(['advanced', 'admin-advanced'])
-    expect(hits.map(g => g.entries.map(e => e.label))).toEqual([['Debug logging'], ['Debug queue']])
+    expect(hits.map(g => g.entries.map(e => e.label))).toEqual([
+      ['Debug logging'],
+      ['Debug queue'],
+    ])
   })
 
   it('omits a group whose nav id the caller did not list', () => {
     const hits = match(
-      [entry({ navId: 'admin-advanced', groupTitle: 'Advanced' })],
+      [
+        entry({ navId: 'admin-advanced', groupTitle: 'Advanced' }),
+      ],
       'label',
       NAV_GROUPS.filter(g => !g.admin).map(g => g.id),
     )
@@ -85,8 +114,12 @@ describe('matchSettings', () => {
   })
 
   it('matches nothing on an empty or whitespace query', () => {
-    expect(match([entry()], '')).toEqual([])
-    expect(match([entry()], '   ')).toEqual([])
+    expect(match([
+      entry(),
+    ], '')).toEqual([])
+    expect(match([
+      entry(),
+    ], '   ')).toEqual([])
   })
 
   it('renders breadcrumbs as Group › Label', () => {
@@ -97,13 +130,15 @@ describe('matchSettings', () => {
 
 describe('buildSearchIndex', () => {
   it('folds every searchable field into one lower-case haystack', () => {
-    const [indexed] = buildSearchIndex([entry({
-      label: 'Turn-End Volume',
-      help: 'Playback VOLUME',
-      groupTitle: 'Notifications',
-      keywords: ['Sound'],
-      optionLabels: ['Ding Dong'],
-    })])
+    const [indexed] = buildSearchIndex([
+      entry({
+        label: 'Turn-End Volume',
+        help: 'Playback VOLUME',
+        groupTitle: 'Notifications',
+        keywords: ['Sound'],
+        optionLabels: ['Ding Dong'],
+      }),
+    ])
     if (indexed === undefined)
       throw new Error('no indexed entry')
     expect(indexed.haystack).toBe('turn-end volume playback volume notifications sound ding dong')
@@ -111,7 +146,9 @@ describe('buildSearchIndex', () => {
   })
 
   it('tolerates an entry with no help, keywords, or option labels', () => {
-    const [indexed] = buildSearchIndex([entry({ label: 'Theme' })])
+    const [indexed] = buildSearchIndex([
+      entry({ label: 'Theme' }),
+    ])
     if (indexed === undefined)
       throw new Error('no indexed entry')
     expect(indexed.haystack).toBe('theme  appearance')

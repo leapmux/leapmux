@@ -12,4 +12,9 @@ const noSidePair: ToolSpanSide = noSideRole
 // @ts-expect-error An unknown role cannot identify a pair side.
 const unknownPair: ToolSpanSide = unknownRole
 
-void [requestSide, resultSide, noSidePair, unknownPair]
+void [
+  requestSide,
+  resultSide,
+  noSidePair,
+  unknownPair,
+]

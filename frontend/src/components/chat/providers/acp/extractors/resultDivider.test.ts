@@ -9,17 +9,26 @@ describe('acpResultDivider', () => {
     expect(acpResultDivider({
       id: 'msg-1',
       role: 'result',
-      content: { stopReason: 'end_turn', usage: { totalTokens: 100 } },
+      content: {
+        stopReason: 'end_turn',
+        usage: { totalTokens: 100 },
+      },
     })).toEqual({ label: 'Turn ended' })
   })
 
   it('qualifies a wrapped non-end_turn stop reason', () => {
-    expect(acpResultDivider({ role: 'result', content: { stopReason: 'max_tokens' } }))
+    expect(acpResultDivider({
+      role: 'result',
+      content: { stopReason: 'max_tokens' },
+    }))
       .toEqual({ label: 'Turn ended (max_tokens)' })
   })
 
   it('reports a wrapped cancel as interrupted', () => {
-    expect(acpResultDivider({ role: 'result', content: { stopReason: 'cancelled' } }))
+    expect(acpResultDivider({
+      role: 'result',
+      content: { stopReason: 'cancelled' },
+    }))
       .toEqual({ label: 'Turn interrupted' })
   })
 })
@@ -38,7 +47,9 @@ describe('acpStopReasonDivider', () => {
 })
 
 describe('acpDividerReader', () => {
-  const agentTurnEnd = (parent: Record<string, unknown>) => parent.method === 'vendor/end_turn' ? String(parent.reason ?? '') : undefined
+  const agentTurnEnd = (parent: Record<string, unknown>) => parent.method === 'vendor/end_turn'
+    ? String(parent.reason ?? '')
+    : undefined
 
   it('reads the provider\'s own turn end, and the prompt response otherwise', () => {
     const read = acpDividerReader(agentTurnEnd)
@@ -52,7 +63,10 @@ describe('acpDividerReader', () => {
   // test would fall through to, so the label shows which of the two answered.
   it('reads an empty stop reason from the hook as a plain end, not as no answer', () => {
     const read = acpDividerReader(() => '')
-    expect(read({ role: 'result', content: { stopReason: 'cancelled' } })).toEqual({ label: 'Turn ended' })
+    expect(read({
+      role: 'result',
+      content: { stopReason: 'cancelled' },
+    })).toEqual({ label: 'Turn ended' })
   })
 
   it('asks the hook only about an object', () => {
@@ -60,7 +74,9 @@ describe('acpDividerReader', () => {
     const read = acpDividerReader(agentTurnEnd)
     expect(read(null)).toBeNull()
     expect(read('end_turn')).toBeNull()
-    expect(read([{ stopReason: 'end_turn' }])).toBeNull()
+    expect(read([
+      { stopReason: 'end_turn' },
+    ])).toBeNull()
     expect(agentTurnEnd).not.toHaveBeenCalled()
   })
 

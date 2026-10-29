@@ -88,8 +88,20 @@ describe('useWorkerPrivateStreams', () => {
     await createRoot(async (dispose) => {
       const s = mount()
       seedWorkspace(s.harness, 'ws-other', 'other-root')
-      emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: s.harness.rootTileId, position: 'a', workerId: 'w1' })
-      emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: 'other-root', position: 'a', workerId: 'w2' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: s.harness.rootTileId,
+        position: 'a',
+        workerId: 'w1',
+      })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a2',
+        tileId: 'other-root',
+        position: 'a',
+        workerId: 'w2',
+      })
       s.run()
       await flush()
 
@@ -102,7 +114,13 @@ describe('useWorkerPrivateStreams', () => {
     await createRoot(async (dispose) => {
       const s = mount()
       seedWorkspace(s.harness, 'ws-other', 'other-root')
-      emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: 'other-root', position: 'a', workerId: 'w2' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a2',
+        tileId: 'other-root',
+        position: 'a',
+        workerId: 'w2',
+      })
       s.run()
       await flush()
 
@@ -125,9 +143,27 @@ describe('useWorkerPrivateStreams', () => {
     await createRoot(async (dispose) => {
       const s = mount()
       seedWorkspace(s.harness, 'ws-other', 'other-root')
-      emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: s.harness.rootTileId, position: 'a', workerId: 'w1' })
-      emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: s.harness.rootTileId, position: 'b', workerId: 'w1' })
-      emitAddTab({ type: TabType.AGENT, id: 'a3', tileId: 'other-root', position: 'a', workerId: 'w1' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: s.harness.rootTileId,
+        position: 'a',
+        workerId: 'w1',
+      })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a2',
+        tileId: s.harness.rootTileId,
+        position: 'b',
+        workerId: 'w1',
+      })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a3',
+        tileId: 'other-root',
+        position: 'a',
+        workerId: 'w1',
+      })
       s.run()
       await flush()
 
@@ -149,7 +185,13 @@ describe('useWorkerPrivateStreams', () => {
       // An empty second workspace: nothing in it, so a (workspace, worker) key
       // would have produced no stream for it at all.
       seedWorkspace(s.harness, 'ws-empty', 'empty-root')
-      emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: s.harness.rootTileId, position: 'a', workerId: 'w1' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: s.harness.rootTileId,
+        position: 'a',
+        workerId: 'w1',
+      })
       s.run()
       await flush()
 
@@ -158,11 +200,20 @@ describe('useWorkerPrivateStreams', () => {
 
       // The first tab lands in the empty workspace on the SAME worker. No new
       // stream is needed, and none is opened — the live one already covers it.
-      emitAddTab({ type: TabType.FILE, id: 'f1', tileId: 'empty-root', position: 'a', workerId: 'w1' })
+      emitAddTab({
+        type: TabType.FILE,
+        id: 'f1',
+        tileId: 'empty-root',
+        position: 'a',
+        workerId: 'w1',
+      })
       await flush()
 
       expect(opened).toHaveLength(before)
-      firstOpened().onTabPayloadRegistered({ tabId: 'f1', payload: { kind: 'file', filePath: '/repo/nested/new.ts', workingDir: '/repo' } })
+      firstOpened().onTabPayloadRegistered({
+        tabId: 'f1',
+        payload: { kind: 'file', filePath: '/repo/nested/new.ts', workingDir: '/repo' },
+      })
       expect(s.metadata.get('f1')?.hydrated, 'the event is a worker answer, so the hydrator has nothing left to ask').toBe(true)
       dispose()
     })
@@ -179,11 +230,20 @@ describe('useWorkerPrivateStreams', () => {
   it('mirrors an unfilled tab\'s path AND working dir from the stream', async () => {
     await createRoot(async (dispose) => {
       const s = mount()
-      emitAddTab({ type: TabType.FILE, id: 'f1', tileId: s.harness.rootTileId, position: 'a', workerId: 'w1' })
+      emitAddTab({
+        type: TabType.FILE,
+        id: 'f1',
+        tileId: s.harness.rootTileId,
+        position: 'a',
+        workerId: 'w1',
+      })
       s.run()
       await flush()
 
-      firstOpened().onTabPayloadRegistered({ tabId: 'f1', payload: { kind: 'file', filePath: '/repo/nested/new.ts', workingDir: '/repo' } })
+      firstOpened().onTabPayloadRegistered({
+        tabId: 'f1',
+        payload: { kind: 'file', filePath: '/repo/nested/new.ts', workingDir: '/repo' },
+      })
 
       expect(s.metadata.get('f1')).toMatchObject({
         filePath: '/repo/nested/new.ts',
@@ -205,13 +265,28 @@ describe('useWorkerPrivateStreams', () => {
     await createRoot(async (dispose) => {
       const s = mount()
       // A worker to subscribe to, but no `f-early` row yet.
-      emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: s.harness.rootTileId, position: 'a', workerId: 'w1' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: s.harness.rootTileId,
+        position: 'a',
+        workerId: 'w1',
+      })
       s.run()
       await flush()
 
-      firstOpened().onTabPayloadRegistered({ tabId: 'f-early', payload: { kind: 'file', filePath: '/repo/early.ts', workingDir: '/repo' } })
+      firstOpened().onTabPayloadRegistered({
+        tabId: 'f-early',
+        payload: { kind: 'file', filePath: '/repo/early.ts', workingDir: '/repo' },
+      })
 
-      emitAddTab({ type: TabType.FILE, id: 'f-early', tileId: s.harness.rootTileId, position: 'b', workerId: 'w1' })
+      emitAddTab({
+        type: TabType.FILE,
+        id: 'f-early',
+        tileId: s.harness.rootTileId,
+        position: 'b',
+        workerId: 'w1',
+      })
       s.run()
       await flush()
 
@@ -234,13 +309,22 @@ describe('useWorkerPrivateStreams', () => {
   it('fills a missing working dir on a tab that already has its path', async () => {
     await createRoot(async (dispose) => {
       const s = mount()
-      emitAddTab({ type: TabType.FILE, id: 'f2', tileId: s.harness.rootTileId, position: 'a', workerId: 'w1' })
+      emitAddTab({
+        type: TabType.FILE,
+        id: 'f2',
+        tileId: s.harness.rootTileId,
+        position: 'a',
+        workerId: 'w1',
+      })
       s.run()
       await flush()
       // What `handleFileOpen` writes when the context has not hydrated yet.
       s.metadata.patch('f2', { filePath: '/repo/nested/new.ts', workingDir: '' })
 
-      firstOpened().onTabPayloadRegistered({ tabId: 'f2', payload: { kind: 'file', filePath: '/repo/nested/new.ts', workingDir: '/repo' } })
+      firstOpened().onTabPayloadRegistered({
+        tabId: 'f2',
+        payload: { kind: 'file', filePath: '/repo/nested/new.ts', workingDir: '/repo' },
+      })
 
       expect(s.metadata.get('f2')).toMatchObject({
         filePath: '/repo/nested/new.ts',
@@ -261,12 +345,21 @@ describe('useWorkerPrivateStreams', () => {
   it('replaces a local guess with the worker-resolved values', async () => {
     await createRoot(async (dispose) => {
       const s = mount()
-      emitAddTab({ type: TabType.FILE, id: 'f3', tileId: s.harness.rootTileId, position: 'a', workerId: 'w1' })
+      emitAddTab({
+        type: TabType.FILE,
+        id: 'f3',
+        tileId: s.harness.rootTileId,
+        position: 'a',
+        workerId: 'w1',
+      })
       s.run()
       await flush()
       s.metadata.patch('f3', { filePath: '/guess/a.ts', workingDir: '/guess' })
 
-      firstOpened().onTabPayloadRegistered({ tabId: 'f3', payload: { kind: 'file', filePath: '/repo/a.ts', workingDir: '/repo/wt' } })
+      firstOpened().onTabPayloadRegistered({
+        tabId: 'f3',
+        payload: { kind: 'file', filePath: '/repo/a.ts', workingDir: '/repo/wt' },
+      })
 
       expect(s.metadata.get('f3')).toMatchObject({
         filePath: '/repo/a.ts',
@@ -285,12 +378,21 @@ describe('useWorkerPrivateStreams', () => {
   it('does not let an empty event field clear a known value', async () => {
     await createRoot(async (dispose) => {
       const s = mount()
-      emitAddTab({ type: TabType.FILE, id: 'f4', tileId: s.harness.rootTileId, position: 'a', workerId: 'w1' })
+      emitAddTab({
+        type: TabType.FILE,
+        id: 'f4',
+        tileId: s.harness.rootTileId,
+        position: 'a',
+        workerId: 'w1',
+      })
       s.run()
       await flush()
       s.metadata.patch('f4', { filePath: '/repo/a.ts', workingDir: '/repo' })
 
-      firstOpened().onTabPayloadRegistered({ tabId: 'f4', payload: { kind: 'file', filePath: '', workingDir: '' } })
+      firstOpened().onTabPayloadRegistered({
+        tabId: 'f4',
+        payload: { kind: 'file', filePath: '', workingDir: '' },
+      })
 
       expect(s.metadata.get('f4')).toMatchObject({
         filePath: '/repo/a.ts',
@@ -303,7 +405,12 @@ describe('useWorkerPrivateStreams', () => {
   it('skips a tab with no worker to subscribe to', async () => {
     await createRoot(async (dispose) => {
       const s = mount()
-      emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: s.harness.rootTileId, position: 'a' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: s.harness.rootTileId,
+        position: 'a',
+      })
       s.run()
       await flush()
 
@@ -322,7 +429,13 @@ describe('useWorkerPrivateStreams', () => {
     async function withCommand(fn: (s: ReturnType<typeof mount>) => void) {
       await createRoot(async (dispose) => {
         const s = mount()
-        emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: s.harness.rootTileId, position: 'a', workerId: 'w1' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a1',
+          tileId: s.harness.rootTileId,
+          position: 'a',
+          workerId: 'w1',
+        })
         s.metadata.patch('a1', { workingDir: QUAKE_DIR })
         s.run()
         await flush()
@@ -395,7 +508,13 @@ describe('useWorkerPrivateStreams', () => {
   it('closes every stream when the owner disposes', async () => {
     await createRoot(async (dispose) => {
       const s = mount()
-      emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: s.harness.rootTileId, position: 'a', workerId: 'w1' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: s.harness.rootTileId,
+        position: 'a',
+        workerId: 'w1',
+      })
       s.run()
       await flush()
       expect(opened).toHaveLength(1)

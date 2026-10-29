@@ -43,7 +43,9 @@ describe('PendingOpsManager', () => {
 
   it('submit applies the batch speculatively (canonical_hlc fallback)', () => {
     const ctx = { originClientId: 'clientA', clock: mgr.clock }
-    const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
+    const batch = newBatch([
+      setNodeKind(ctx, 'n1', NodeKind.LEAF),
+    ])
     mgr.submit(batch)
     // speculativeState should reflect n1 living as a leaf.
     const node = mgr.state.speculativeState.nodes.n1
@@ -55,7 +57,9 @@ describe('PendingOpsManager', () => {
 
   it('consumeRemote on an echoed batch drops it from pending and applies to confirmed', () => {
     const ctx = { originClientId: 'clientA', clock: mgr.clock }
-    const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
+    const batch = newBatch([
+      setNodeKind(ctx, 'n1', NodeKind.LEAF),
+    ])
     mgr.submit(batch)
     expect(mgr.state.pendingBatches.length).toBe(1)
     // Hub echoes back the same batch_id with a canonical_hlc stamped.
@@ -68,7 +72,10 @@ describe('PendingOpsManager', () => {
   })
 
   it('consumeRemote on a non-echoed batch applies to confirmed and recomputes speculative', () => {
-    const op = setNodeKind({ originClientId: 'other', clock: new HLCClock('other') }, 'remote-node', NodeKind.SPLIT)
+    const op = setNodeKind({
+      originClientId: 'other',
+      clock: new HLCClock('other'),
+    }, 'remote-node', NodeKind.SPLIT)
     op.canonicalHlc = create(HLCSchema, { physical: 200n, logical: 0n, clientId: 'hub' })
     mgr.consumeRemote(newBatch([op]))
     expect(mgr.state.confirmedState.nodes['remote-node']?.kind?.value).toBe(NodeKind.SPLIT)
@@ -80,7 +87,9 @@ describe('PendingOpsManager', () => {
     // baseline to fold onto (not replace).
     mgr.bootstrap({
       userId: 'user',
-      nodes: { exist: create(NodeRecordSchema, { nodeId: 'exist' }) },
+      nodes: {
+        exist: create(NodeRecordSchema, { nodeId: 'exist' }),
+      },
       tabs: {},
       floatingWindows: {},
       workspaces: {},
@@ -90,14 +99,26 @@ describe('PendingOpsManager', () => {
     // A locally-pending optimistic batch must survive a delta (same as it
     // survives a full-snapshot re-bootstrap).
     const ctx = { originClientId: 'clientA', clock: mgr.clock }
-    const pending = newBatch([setNodeKind(ctx, 'pending-node', NodeKind.LEAF)])
+    const pending = newBatch([
+      setNodeKind(ctx, 'pending-node', NodeKind.LEAF),
+    ])
     mgr.submit(pending)
     expect(mgr.state.pendingBatches).toHaveLength(1)
 
-    const deltaOp = setNodeKind({ originClientId: 'other', clock: new HLCClock('other') }, 'delta-node', NodeKind.GRID)
+    const deltaOp = setNodeKind({
+      originClientId: 'other',
+      clock: new HLCClock('other'),
+    }, 'delta-node', NodeKind.GRID)
     deltaOp.canonicalHlc = create(HLCSchema, { physical: 300n, logical: 0n, clientId: 'hub' })
     mgr.applyDelta(create(ResumeDeltaSchema, {
-      frames: [create(WatchUserEventSchema, { event: { case: 'batch', value: newBatch([deltaOp]) } })],
+      frames: [
+        create(WatchUserEventSchema, {
+          event: {
+            case: 'batch',
+            value: newBatch([deltaOp]),
+          },
+        }),
+      ],
       maxHlc: create(HLCSchema, { physical: 300n, logical: 0n, clientId: 'hub' }),
       currentEpoch: 5n,
     }))
@@ -136,10 +157,20 @@ describe('PendingOpsManager', () => {
     })
     // A delta tail op at physical=200; delta.maxHlc at physical=500 (simulating
     // the state's true max sitting above the tail, e.g. an op the filter kept).
-    const deltaOp = setNodeKind({ originClientId: 'other', clock: new HLCClock('other') }, 'delta-node', NodeKind.LEAF)
+    const deltaOp = setNodeKind({
+      originClientId: 'other',
+      clock: new HLCClock('other'),
+    }, 'delta-node', NodeKind.LEAF)
     deltaOp.canonicalHlc = create(HLCSchema, { physical: 200n, logical: 0n, clientId: 'hub' })
     mgr.applyDelta(create(ResumeDeltaSchema, {
-      frames: [create(WatchUserEventSchema, { event: { case: 'batch', value: newBatch([deltaOp]) } })],
+      frames: [
+        create(WatchUserEventSchema, {
+          event: {
+            case: 'batch',
+            value: newBatch([deltaOp]),
+          },
+        }),
+      ],
       maxHlc: create(HLCSchema, { physical: 500n, logical: 0n, clientId: 'hub' }),
       currentEpoch: 1n,
     }))
@@ -160,7 +191,9 @@ describe('PendingOpsManager', () => {
       currentEpoch: 1n,
     })
     const ctx = { originClientId: 'clientA', clock: mgr.clock }
-    const pending = newBatch([setNodeKind(ctx, 'echoed', NodeKind.LEAF)])
+    const pending = newBatch([
+      setNodeKind(ctx, 'echoed', NodeKind.LEAF),
+    ])
     mgr.submit(pending)
     // The same batch_id arrives in a delta (an echo): it is dropped from
     // pending and NOT double-applied (the op is still applied once, matching
@@ -168,9 +201,17 @@ describe('PendingOpsManager', () => {
     const echoOp = soleOp(pending)
     echoOp.canonicalHlc = create(HLCSchema, { physical: 150n, logical: 0n, clientId: 'hub' })
     mgr.applyDelta(create(ResumeDeltaSchema, {
-      frames: [create(WatchUserEventSchema, {
-        event: { case: 'batch', value: create(OpBatchSchema, { batchId: pending.batchId, ops: [echoOp] }) },
-      })],
+      frames: [
+        create(WatchUserEventSchema, {
+          event: {
+            case: 'batch',
+            value: create(OpBatchSchema, {
+              batchId: pending.batchId,
+              ops: [echoOp],
+            }),
+          },
+        }),
+      ],
       maxHlc: create(HLCSchema, { physical: 150n, logical: 0n, clientId: 'hub' }),
       currentEpoch: 1n,
     }))
@@ -187,7 +228,9 @@ describe('PendingOpsManager', () => {
     mgr.bootstrap({
       userId: 'user',
       nodes: {},
-      tabs: { tA: { tabId: 'tA', tabType: TabType.AGENT } },
+      tabs: {
+        tA: { tabId: 'tA', tabType: TabType.AGENT },
+      },
       floatingWindows: {},
       workspaces: {},
       maxHlc: create(HLCSchema, { physical: 100n, logical: 0n, clientId: 'hub' }),
@@ -195,19 +238,26 @@ describe('PendingOpsManager', () => {
     })
     // A pending op on tA that the removed frame must drop.
     const ctx = { originClientId: 'clientA', clock: mgr.clock }
-    mgr.submit(newBatch([setTabTileId(ctx, TabType.AGENT, 'tA', 'tile')]))
+    mgr.submit(newBatch([
+      setTabTileId(ctx, TabType.AGENT, 'tA', 'tile'),
+    ]))
     expect(mgr.state.pendingBatches).toHaveLength(1)
 
     const result = mgr.applyDelta(create(ResumeDeltaSchema, {
-      frames: [create(WatchUserEventSchema, {
-        event: {
-          case: 'entityRemoved',
-          value: create(EntityRemovedSchema, {
-            atHlc: create(HLCSchema, { physical: 200n, logical: 0n, clientId: 'hub' }),
-            entity: { case: 'tab', value: create(TabIdentSchema, { tabType: TabType.AGENT, tabId: 'tA' }) },
-          }),
-        },
-      })],
+      frames: [
+        create(WatchUserEventSchema, {
+          event: {
+            case: 'entityRemoved',
+            value: create(EntityRemovedSchema, {
+              atHlc: create(HLCSchema, { physical: 200n, logical: 0n, clientId: 'hub' }),
+              entity: {
+                case: 'tab',
+                value: create(TabIdentSchema, { tabType: TabType.AGENT, tabId: 'tA' }),
+              },
+            }),
+          },
+        }),
+      ],
       maxHlc: create(HLCSchema, { physical: 200n, logical: 0n, clientId: 'hub' }),
       currentEpoch: 1n,
     }))
@@ -234,15 +284,20 @@ describe('PendingOpsManager', () => {
       currentEpoch: 1n,
     })
     mgr.applyDelta(create(ResumeDeltaSchema, {
-      frames: [create(WatchUserEventSchema, {
-        event: {
-          case: 'entityMaterialized',
-          value: create(EntityMaterializedSchema, {
-            atHlc: create(HLCSchema, { physical: 200n, logical: 0n, clientId: 'hub' }),
-            entity: { case: 'tab', value: { tabId: 'tNew', tabType: TabType.AGENT } },
-          }),
-        },
-      })],
+      frames: [
+        create(WatchUserEventSchema, {
+          event: {
+            case: 'entityMaterialized',
+            value: create(EntityMaterializedSchema, {
+              atHlc: create(HLCSchema, { physical: 200n, logical: 0n, clientId: 'hub' }),
+              entity: {
+                case: 'tab',
+                value: { tabId: 'tNew', tabType: TabType.AGENT },
+              },
+            }),
+          },
+        }),
+      ],
       maxHlc: create(HLCSchema, { physical: 200n, logical: 0n, clientId: 'hub' }),
       currentEpoch: 1n,
     }))
@@ -259,7 +314,9 @@ describe('PendingOpsManager', () => {
       userId: 'user',
       nodes: {},
       tabs: {},
-      floatingWindows: { fw1: { windowId: 'fw1' } },
+      floatingWindows: {
+        fw1: { windowId: 'fw1' },
+      },
       workspaces: {},
       maxHlc: create(HLCSchema, { physical: 1n, logical: 0n, clientId: 'hub' }),
       currentEpoch: 1n,
@@ -269,12 +326,16 @@ describe('PendingOpsManager', () => {
 
   it('consumeBatchCommitted replaces clientHlc with canonicalHlc and applies to confirmed', () => {
     const ctx = { originClientId: 'clientA', clock: mgr.clock }
-    const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.GRID)])
+    const batch = newBatch([
+      setNodeKind(ctx, 'n1', NodeKind.GRID),
+    ])
     mgr.submit(batch)
     const opId = soleOp(batch).opId
     const canonical = create(HLCSchema, { physical: 500n, logical: 3n, clientId: 'hub' })
     mgr.consumeBatchCommitted(batch.batchId, create(BatchCommittedSchema, {
-      committed: [create(CommittedOpSchema, { opId, canonicalHlc: canonical })],
+      committed: [
+        create(CommittedOpSchema, { opId, canonicalHlc: canonical }),
+      ],
       maxHlc: canonical,
       epoch: 7n,
     }))
@@ -309,7 +370,9 @@ describe('PendingOpsManager', () => {
 
   it('consumeBatchRejected drops the batch and reports retryable=false for non-retryable reasons', () => {
     const ctx = { originClientId: 'clientA', clock: mgr.clock }
-    const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
+    const batch = newBatch([
+      setNodeKind(ctx, 'n1', NodeKind.LEAF),
+    ])
     mgr.submit(batch)
     const result = mgr.consumeBatchRejected(batch.batchId, create(BatchRejectionSchema, {
       reason: 10, // BATCH_REJECTION_TAB_PLACEMENT_INVALID
@@ -324,7 +387,9 @@ describe('PendingOpsManager', () => {
 
   it('consumeBatchRejected reports retryable=true only for EPOCH_REQUIRED', () => {
     const ctx = { originClientId: 'clientA', clock: mgr.clock }
-    const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
+    const batch = newBatch([
+      setNodeKind(ctx, 'n1', NodeKind.LEAF),
+    ])
     mgr.submit(batch)
     const result = mgr.consumeBatchRejected(batch.batchId, create(BatchRejectionSchema, {
       reason: BatchRejectionReason.BATCH_REJECTION_EPOCH_REQUIRED,
@@ -345,7 +410,9 @@ describe('PendingOpsManager', () => {
       BatchRejectionReason.BATCH_REJECTION_STALE_EPOCH,
       99, // out of the enum range entirely
     ]) {
-      const batch = newBatch([setNodeKind(ctx, `n-${reason}`, NodeKind.LEAF)])
+      const batch = newBatch([
+        setNodeKind(ctx, `n-${reason}`, NodeKind.LEAF),
+      ])
       mgr.submit(batch)
       const result = mgr.consumeBatchRejected(batch.batchId, create(BatchRejectionSchema, {
         reason: reason as BatchRejectionReason,
@@ -357,7 +424,9 @@ describe('PendingOpsManager', () => {
 
   it('keeps a retryable batch applied on rejection; revertPendingBatch drops it', () => {
     const ctx = { originClientId: 'clientA', clock: mgr.clock }
-    const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
+    const batch = newBatch([
+      setNodeKind(ctx, 'n1', NodeKind.LEAF),
+    ])
     mgr.submit(batch)
     expect(mgr.state.speculativeState.nodes.n1?.kind?.value).toBe(NodeKind.LEAF)
 
@@ -380,7 +449,9 @@ describe('PendingOpsManager', () => {
 
   it('a kept retryable batch is reconciled (not double-applied) when the retry commits', () => {
     const ctx = { originClientId: 'clientA', clock: mgr.clock }
-    const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.GRID)])
+    const batch = newBatch([
+      setNodeKind(ctx, 'n1', NodeKind.GRID),
+    ])
     mgr.submit(batch)
     mgr.consumeBatchRejected(batch.batchId, create(BatchRejectionSchema, {
       reason: BatchRejectionReason.BATCH_REJECTION_EPOCH_REQUIRED,
@@ -392,7 +463,9 @@ describe('PendingOpsManager', () => {
     // confirmed and dropped from pending exactly once.
     const canonical = create(HLCSchema, { physical: 900n, logical: 1n, clientId: 'hub' })
     mgr.consumeBatchCommitted(batch.batchId, create(BatchCommittedSchema, {
-      committed: [create(CommittedOpSchema, { opId: soleOp(batch).opId, canonicalHlc: canonical })],
+      committed: [
+        create(CommittedOpSchema, { opId: soleOp(batch).opId, canonicalHlc: canonical }),
+      ],
       maxHlc: canonical,
       epoch: 8n,
     }))
@@ -449,7 +522,9 @@ describe('PendingOpsManager', () => {
     const notify = vi.fn()
     const m = makeMgr(notify)
     const ctx = { originClientId: 'clientA', clock: m.clock }
-    const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
+    const batch = newBatch([
+      setNodeKind(ctx, 'n1', NodeKind.LEAF),
+    ])
     m.submit(batch)
     expect(notify).toHaveBeenCalledTimes(1)
 
@@ -471,8 +546,12 @@ describe('PendingOpsManager', () => {
       setTabTileId(ctx, t, 'tA', 'rootTile'),
     ]))
 
-    const b1 = newBatch([setTabTileId(ctx, t, 'tA', 'A')])
-    const b2 = newBatch([setTabTileId(ctx, t, 'tA', 'B')])
+    const b1 = newBatch([
+      setTabTileId(ctx, t, 'tA', 'A'),
+    ])
+    const b2 = newBatch([
+      setTabTileId(ctx, t, 'tA', 'B'),
+    ])
     mgr.submit(b1)
     mgr.submit(b2)
     // Second submission's clientHlc is larger → speculative says 'B'.
@@ -486,7 +565,9 @@ describe('PendingOpsManager', () => {
       clientId: 'hub',
     })
     mgr.consumeBatchCommitted(b1.batchId, create(BatchCommittedSchema, {
-      committed: [create(CommittedOpSchema, { opId: soleOp(b1).opId, canonicalHlc: b1Canonical })],
+      committed: [
+        create(CommittedOpSchema, { opId: soleOp(b1).opId, canonicalHlc: b1Canonical }),
+      ],
       maxHlc: b1Canonical,
       epoch: 1n,
     }))
@@ -532,7 +613,10 @@ describe('PendingOpsManager', () => {
     })
 
     it('alias holds after a remote batch lands (still empty pending)', () => {
-      const op = setNodeKind({ originClientId: 'remote', clock: new HLCClock('remote') }, 'r1', NodeKind.SPLIT)
+      const op = setNodeKind({
+        originClientId: 'remote',
+        clock: new HLCClock('remote'),
+      }, 'r1', NodeKind.SPLIT)
       op.canonicalHlc = create(HLCSchema, { physical: 1n, logical: 0n, clientId: 'remote' })
       mgr.consumeRemote(newBatch([op]))
       expect(mgr.state.pendingBatches.length).toBe(0)
@@ -547,7 +631,9 @@ describe('PendingOpsManager', () => {
       // detach contract is observable.
       mgr.recomputeSpeculative()
       expect(mgr.state.speculativeState).toBe(mgr.state.confirmedState)
-      const batch = newBatch([setNodeKind(ctx, 'local1', NodeKind.LEAF)])
+      const batch = newBatch([
+        setNodeKind(ctx, 'local1', NodeKind.LEAF),
+      ])
       mgr.submit(batch)
       // Post-submit: distinct objects.
       expect(mgr.state.speculativeState).not.toBe(mgr.state.confirmedState)
@@ -559,7 +645,9 @@ describe('PendingOpsManager', () => {
 
     it('alias re-establishes after the last pending batch settles via echo', () => {
       const ctx = { originClientId: 'clientA', clock: mgr.clock }
-      const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
+      const batch = newBatch([
+        setNodeKind(ctx, 'n1', NodeKind.LEAF),
+      ])
       mgr.submit(batch)
       expect(mgr.state.speculativeState).not.toBe(mgr.state.confirmedState)
 
@@ -573,13 +661,17 @@ describe('PendingOpsManager', () => {
 
     it('alias re-establishes after batch-committed drains the pending queue', () => {
       const ctx = { originClientId: 'clientA', clock: mgr.clock }
-      const batch = newBatch([setNodeKind(ctx, 'n2', NodeKind.LEAF)])
+      const batch = newBatch([
+        setNodeKind(ctx, 'n2', NodeKind.LEAF),
+      ])
       mgr.submit(batch)
       const committed = create(BatchCommittedSchema, {
-        committed: [create(CommittedOpSchema, {
-          opId: soleOp(batch).opId,
-          canonicalHlc: create(HLCSchema, { physical: 200n, logical: 0n, clientId: 'hub' }),
-        })],
+        committed: [
+          create(CommittedOpSchema, {
+            opId: soleOp(batch).opId,
+            canonicalHlc: create(HLCSchema, { physical: 200n, logical: 0n, clientId: 'hub' }),
+          }),
+        ],
       })
       mgr.consumeBatchCommitted(batch.batchId, committed)
       expect(mgr.state.pendingBatches.length).toBe(0)
@@ -588,7 +680,9 @@ describe('PendingOpsManager', () => {
 
     it('alias re-establishes after batch-rejected drains the pending queue', () => {
       const ctx = { originClientId: 'clientA', clock: mgr.clock }
-      const batch = newBatch([setNodeKind(ctx, 'n3', NodeKind.LEAF)])
+      const batch = newBatch([
+        setNodeKind(ctx, 'n3', NodeKind.LEAF),
+      ])
       mgr.submit(batch)
       // The rejection reason is immaterial here -- this test only cares
       // about alias re-establishment after the pending queue drains, not
@@ -604,8 +698,12 @@ describe('PendingOpsManager', () => {
 
     it('alias stays detached while multiple batches are pending, then re-aliases when all drain', () => {
       const ctx = { originClientId: 'clientA', clock: mgr.clock }
-      const b1 = newBatch([setNodeKind(ctx, 'a', NodeKind.LEAF)])
-      const b2 = newBatch([setNodeKind(ctx, 'b', NodeKind.LEAF)])
+      const b1 = newBatch([
+        setNodeKind(ctx, 'a', NodeKind.LEAF),
+      ])
+      const b2 = newBatch([
+        setNodeKind(ctx, 'b', NodeKind.LEAF),
+      ])
       mgr.submit(b1)
       mgr.submit(b2)
       expect(mgr.state.speculativeState).not.toBe(mgr.state.confirmedState)
@@ -630,15 +728,22 @@ describe('PendingOpsManager', () => {
       const ctx = { originClientId: 'clientA', clock: mgr.clock }
       // Seed a tab into confirmedState so batch 2 mutates a PRE-EXISTING
       // record (a new one lands in the shallow-copied map and is harmless).
-      const seed = setTabTileId({ originClientId: 'remote', clock: new HLCClock('remote') }, TabType.AGENT, 'tA', 'tile-CONFIRMED')
+      const seed = setTabTileId({
+        originClientId: 'remote',
+        clock: new HLCClock('remote'),
+      }, TabType.AGENT, 'tA', 'tile-CONFIRMED')
       seed.canonicalHlc = create(HLCSchema, { physical: 1n, logical: 0n, clientId: 'remote' })
       mgr.consumeRemote(newBatch([seed]))
       expect(mgr.state.confirmedState.tabs.tA?.tileId?.value).toBe('tile-CONFIRMED')
 
       // Batch 1 touches a DIFFERENT record, so tabs.tA is never cloned.
-      mgr.submit(newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)]))
+      mgr.submit(newBatch([
+        setNodeKind(ctx, 'n1', NodeKind.LEAF),
+      ]))
       // Batch 2 lands while batch 1 is still pending.
-      const b2 = newBatch([setTabTileId(ctx, TabType.AGENT, 'tA', 'tile-SPECULATIVE')])
+      const b2 = newBatch([
+        setTabTileId(ctx, TabType.AGENT, 'tA', 'tile-SPECULATIVE'),
+      ])
       mgr.submit(b2)
 
       expect(mgr.state.speculativeState.tabs.tA?.tileId?.value).toBe('tile-SPECULATIVE')
@@ -651,12 +756,19 @@ describe('PendingOpsManager', () => {
       // rejection that was supposed to undo it -- permanently, and under the
       // local HLC, which then suppresses lower-HLC remote writes.
       const ctx = { originClientId: 'clientA', clock: mgr.clock }
-      const seed = setTabTileId({ originClientId: 'remote', clock: new HLCClock('remote') }, TabType.AGENT, 'tA', 'tile-CONFIRMED')
+      const seed = setTabTileId({
+        originClientId: 'remote',
+        clock: new HLCClock('remote'),
+      }, TabType.AGENT, 'tA', 'tile-CONFIRMED')
       seed.canonicalHlc = create(HLCSchema, { physical: 1n, logical: 0n, clientId: 'remote' })
       mgr.consumeRemote(newBatch([seed]))
 
-      mgr.submit(newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)]))
-      const b2 = newBatch([setTabTileId(ctx, TabType.AGENT, 'tA', 'tile-SPECULATIVE')])
+      mgr.submit(newBatch([
+        setNodeKind(ctx, 'n1', NodeKind.LEAF),
+      ]))
+      const b2 = newBatch([
+        setTabTileId(ctx, TabType.AGENT, 'tA', 'tile-SPECULATIVE'),
+      ])
       mgr.submit(b2)
       mgr.consumeBatchRejected(b2.batchId, create(BatchRejectionSchema, {
         reason: BatchRejectionReason.BATCH_REJECTION_STALE_EPOCH,
@@ -700,7 +812,9 @@ describe('PendingOpsManager', () => {
 
     it('submit leaves op.canonicalHlc unset on the persisted batch', () => {
       const ctx = { originClientId: 'clientA', clock: mgr.clock }
-      const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
+      const batch = newBatch([
+        setNodeKind(ctx, 'n1', NodeKind.LEAF),
+      ])
       // Sanity: ops are minted with clientHlc only.
       expect(batch.ops[0]?.clientHlc).toBeDefined()
       expect(batch.ops[0]?.canonicalHlc).toBeUndefined()
@@ -714,12 +828,17 @@ describe('PendingOpsManager', () => {
 
     it('recomputeSpeculative does not mutate op.canonicalHlc when re-folding pending batches', () => {
       const ctx = { originClientId: 'clientA', clock: mgr.clock }
-      const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
+      const batch = newBatch([
+        setNodeKind(ctx, 'n1', NodeKind.LEAF),
+      ])
       mgr.submit(batch)
       // A foreign remote op forces a recompute (via consumeRemote →
       // recomputeSpeculative). The pending batch's op should remain
       // canonical-less afterwards.
-      const remote = setNodeKind({ originClientId: 'other', clock: new HLCClock('other') }, 'other-node', NodeKind.SPLIT)
+      const remote = setNodeKind({
+        originClientId: 'other',
+        clock: new HLCClock('other'),
+      }, 'other-node', NodeKind.SPLIT)
       remote.canonicalHlc = create(HLCSchema, { physical: 999n, logical: 0n, clientId: 'hub' })
       mgr.consumeRemote(newBatch([remote]))
       expect(batch.ops[0]?.canonicalHlc).toBeUndefined()
@@ -729,12 +848,16 @@ describe('PendingOpsManager', () => {
 
     it('consumeBatchCommitted is the only path that stamps canonicalHlc on the persisted op', () => {
       const ctx = { originClientId: 'clientA', clock: mgr.clock }
-      const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.GRID)])
+      const batch = newBatch([
+        setNodeKind(ctx, 'n1', NodeKind.GRID),
+      ])
       mgr.submit(batch)
       expect(batch.ops[0]?.canonicalHlc).toBeUndefined()
       const canonical = create(HLCSchema, { physical: 700n, logical: 0n, clientId: 'hub' })
       mgr.consumeBatchCommitted(batch.batchId, create(BatchCommittedSchema, {
-        committed: [create(CommittedOpSchema, { opId: soleOp(batch).opId, canonicalHlc: canonical })],
+        committed: [
+          create(CommittedOpSchema, { opId: soleOp(batch).opId, canonicalHlc: canonical }),
+        ],
         maxHlc: canonical,
         epoch: 1n,
       }))
@@ -747,7 +870,9 @@ describe('PendingOpsManager', () => {
       // Edge case: a malformed op missing both HLCs. Speculative apply
       // should silently skip it rather than throw or corrupt state.
       const ctx = { originClientId: 'clientA', clock: mgr.clock }
-      const batch = newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)])
+      const batch = newBatch([
+        setNodeKind(ctx, 'n1', NodeKind.LEAF),
+      ])
       const malformed = soleOp(batch)
       malformed.clientHlc = undefined as never
       malformed.canonicalHlc = undefined as never
@@ -767,22 +892,37 @@ describe('PendingOpsManager', () => {
     function buildPayload(): HydrationPayload {
       const state = create(UserCrdtStateSchema, {
         userId: 'user',
-        nodes: { base: create(NodeRecordSchema, { nodeId: 'base' }) },
+        nodes: {
+          base: create(NodeRecordSchema, { nodeId: 'base' }),
+        },
         tabs: {},
         floatingWindows: {},
         workspaces: {},
         maxHlc: create(HLCSchema, { physical: 100n, logical: 0n, clientId: 'hub' }),
         currentEpoch: 5n,
       })
-      const deltaOp = setNodeKind({ originClientId: 'other', clock: new HLCClock('other') }, 'replayed', NodeKind.GRID)
+      const deltaOp = setNodeKind({
+        originClientId: 'other',
+        clock: new HLCClock('other'),
+      }, 'replayed', NodeKind.GRID)
       deltaOp.canonicalHlc = create(HLCSchema, { physical: 200n, logical: 0n, clientId: 'hub' })
-      const frame = create(WatchUserEventSchema, { event: { case: 'batch', value: newBatch([deltaOp]) } })
+      const frame = create(WatchUserEventSchema, {
+        event: {
+          case: 'batch',
+          value: newBatch([deltaOp]),
+        },
+      })
       // A recorded op-log holds COMPLETE batch sequences: the batch frame plus
       // the batch_end that closes it. The watermark advances only on batch_end,
       // so a fixture without one would replay the ops but leave the cursor at
       // T_c -- which is exactly the mid-sequence-drop case, not a normal log.
       const end = create(WatchUserEventSchema, {
-        event: { case: 'batchEnd', value: { atHlc: create(HLCSchema, { physical: 200n, logical: 0n, clientId: 'hub' }) } },
+        event: {
+          case: 'batchEnd',
+          value: {
+            atHlc: create(HLCSchema, { physical: 200n, logical: 0n, clientId: 'hub' }),
+          },
+        },
       })
       return {
         state,
@@ -859,7 +999,10 @@ describe('PendingOpsManager', () => {
       expect(recorded).toHaveLength(0)
 
       // A confirmed remote batch IS recorded.
-      const op = setNodeKind({ originClientId: 'other', clock: new HLCClock('other') }, 'n1', NodeKind.LEAF)
+      const op = setNodeKind({
+        originClientId: 'other',
+        clock: new HLCClock('other'),
+      }, 'n1', NodeKind.LEAF)
       op.canonicalHlc = create(HLCSchema, { physical: 2n, logical: 0n, clientId: 'hub' })
       mgr.consumeRemote(newBatch([op]))
       expect(recorded).toHaveLength(1)
@@ -867,7 +1010,9 @@ describe('PendingOpsManager', () => {
 
       // A speculative submit is NOT recorded.
       const ctx = { originClientId: 'clientA', clock: mgr.clock }
-      mgr.submit(newBatch([setNodeKind(ctx, 'spec', NodeKind.LEAF)]))
+      mgr.submit(newBatch([
+        setNodeKind(ctx, 'spec', NodeKind.LEAF),
+      ]))
       expect(recorded).toHaveLength(1)
     })
 
@@ -882,8 +1027,15 @@ describe('PendingOpsManager', () => {
       const mgr = makeMgr()
       const recorded: unknown[] = []
       const remote = (nodeId: string, at: number) => {
-        const op = setNodeKind({ originClientId: 'other', clock: new HLCClock('other') }, nodeId, NodeKind.LEAF)
-        op.canonicalHlc = create(HLCSchema, { physical: BigInt(at), logical: 0n, clientId: 'hub' })
+        const op = setNodeKind({
+          originClientId: 'other',
+          clock: new HLCClock('other'),
+        }, nodeId, NodeKind.LEAF)
+        op.canonicalHlc = create(HLCSchema, {
+          physical: BigInt(at),
+          logical: 0n,
+          clientId: 'hub',
+        })
         return newBatch([op])
       }
 
@@ -908,10 +1060,20 @@ describe('PendingOpsManager', () => {
       const mgr = makeMgr()
       mgr.hydrate(buildPayload())
       // Watermark is at 200 after hydrate. A delta at 300 must fold on top.
-      const deltaOp = setNodeKind({ originClientId: 'other', clock: new HLCClock('other') }, 'post-resume', NodeKind.SPLIT)
+      const deltaOp = setNodeKind({
+        originClientId: 'other',
+        clock: new HLCClock('other'),
+      }, 'post-resume', NodeKind.SPLIT)
       deltaOp.canonicalHlc = create(HLCSchema, { physical: 300n, logical: 0n, clientId: 'hub' })
       mgr.applyDelta(create(ResumeDeltaSchema, {
-        frames: [create(WatchUserEventSchema, { event: { case: 'batch', value: newBatch([deltaOp]) } })],
+        frames: [
+          create(WatchUserEventSchema, {
+            event: {
+              case: 'batch',
+              value: newBatch([deltaOp]),
+            },
+          }),
+        ],
         maxHlc: create(HLCSchema, { physical: 300n, logical: 0n, clientId: 'hub' }),
         currentEpoch: 5n,
       }))
@@ -943,10 +1105,12 @@ describe('PendingOpsManager', () => {
       const batch = newBatch([op], 'own-batch-1')
       mgr.submit(batch)
       mgr.consumeBatchCommitted('own-batch-1', create(BatchCommittedSchema, {
-        committed: [create(CommittedOpSchema, {
-          opId: op.opId,
-          canonicalHlc: create(HLCSchema, { physical: 2n, logical: 0n, clientId: 'hub' }),
-        })],
+        committed: [
+          create(CommittedOpSchema, {
+            opId: op.opId,
+            canonicalHlc: create(HLCSchema, { physical: 2n, logical: 0n, clientId: 'hub' }),
+          }),
+        ],
         maxHlc: create(HLCSchema, { physical: 2n, logical: 0n, clientId: 'hub' }),
         epoch: 1n,
       }))
@@ -960,7 +1124,10 @@ describe('PendingOpsManager', () => {
       expect(recorded).toEqual(['own-batch-1'])
 
       // A genuinely remote batch (different batchId) records normally.
-      const remoteOp = setNodeKind({ originClientId: 'other', clock: new HLCClock('other') }, 'remoteNode', NodeKind.GRID)
+      const remoteOp = setNodeKind({
+        originClientId: 'other',
+        clock: new HLCClock('other'),
+      }, 'remoteNode', NodeKind.GRID)
       remoteOp.canonicalHlc = create(HLCSchema, { physical: 3n, logical: 0n, clientId: 'hub' })
       mgr.consumeRemote(newBatch([remoteOp], 'remote-batch-1'))
       expect(recorded).toEqual(['own-batch-1', 'remote-batch-1'])
@@ -987,10 +1154,12 @@ describe('PendingOpsManager', () => {
       const op = setNodeKind(ctx, 'ownNode', NodeKind.LEAF)
       mgr.submit(newBatch([op], 'own-batch-1'))
       mgr.consumeBatchCommitted('own-batch-1', create(BatchCommittedSchema, {
-        committed: [create(CommittedOpSchema, {
-          opId: op.opId,
-          canonicalHlc: create(HLCSchema, { physical: 2n, logical: 0n, clientId: 'hub' }),
-        })],
+        committed: [
+          create(CommittedOpSchema, {
+            opId: op.opId,
+            canonicalHlc: create(HLCSchema, { physical: 2n, logical: 0n, clientId: 'hub' }),
+          }),
+        ],
         maxHlc: create(HLCSchema, { physical: 2n, logical: 0n, clientId: 'hub' }),
         epoch: 1n,
       }))
@@ -999,12 +1168,25 @@ describe('PendingOpsManager', () => {
       // The resume tail carries the lost echo AND a genuinely remote batch.
       const echoOp = setNodeKind(ctx, 'ownNode', NodeKind.LEAF)
       echoOp.canonicalHlc = create(HLCSchema, { physical: 2n, logical: 0n, clientId: 'hub' })
-      const remoteOp = setNodeKind({ originClientId: 'other', clock: new HLCClock('other') }, 'remoteNode', NodeKind.GRID)
+      const remoteOp = setNodeKind({
+        originClientId: 'other',
+        clock: new HLCClock('other'),
+      }, 'remoteNode', NodeKind.GRID)
       remoteOp.canonicalHlc = create(HLCSchema, { physical: 3n, logical: 0n, clientId: 'hub' })
       mgr.applyDelta(create(ResumeDeltaSchema, {
         frames: [
-          create(WatchUserEventSchema, { event: { case: 'batch', value: newBatch([echoOp], 'own-batch-1') } }),
-          create(WatchUserEventSchema, { event: { case: 'batch', value: newBatch([remoteOp], 'remote-batch-1') } }),
+          create(WatchUserEventSchema, {
+            event: {
+              case: 'batch',
+              value: newBatch([echoOp], 'own-batch-1'),
+            },
+          }),
+          create(WatchUserEventSchema, {
+            event: {
+              case: 'batch',
+              value: newBatch([remoteOp], 'remote-batch-1'),
+            },
+          }),
         ],
         maxHlc: create(HLCSchema, { physical: 3n, logical: 0n, clientId: 'hub' }),
         currentEpoch: 1n,
@@ -1030,13 +1212,26 @@ describe('PendingOpsManager', () => {
         onCheckpointReset: () => {},
       })
 
-      const remoteOp = setNodeKind({ originClientId: 'other', clock: new HLCClock('other') }, 'peerNode', NodeKind.LEAF)
+      const remoteOp = setNodeKind({
+        originClientId: 'other',
+        clock: new HLCClock('other'),
+      }, 'peerNode', NodeKind.LEAF)
       remoteOp.canonicalHlc = create(HLCSchema, { physical: 5n, logical: 0n, clientId: 'hub' })
       mgr.applyDelta(create(ResumeDeltaSchema, {
         frames: [
-          create(WatchUserEventSchema, { event: { case: 'batch', value: newBatch([remoteOp], 'peer-batch-1') } }),
           create(WatchUserEventSchema, {
-            event: { case: 'batchEnd', value: { atHlc: create(HLCSchema, { physical: 5n, logical: 0n, clientId: 'hub' }) } },
+            event: {
+              case: 'batch',
+              value: newBatch([remoteOp], 'peer-batch-1'),
+            },
+          }),
+          create(WatchUserEventSchema, {
+            event: {
+              case: 'batchEnd',
+              value: {
+                atHlc: create(HLCSchema, { physical: 5n, logical: 0n, clientId: 'hub' }),
+              },
+            },
           }),
         ],
         maxHlc: create(HLCSchema, { physical: 5n, logical: 0n, clientId: 'hub' }),
@@ -1064,14 +1259,23 @@ describe('PendingOpsManager', () => {
       })
 
       const ctx = { originClientId: 'clientA', clock: mgr.clock }
-      const hlcAt = (n: number) => create(HLCSchema, { physical: BigInt(n), logical: 0n, clientId: 'hub' })
+      const hlcAt = (n: number) => create(HLCSchema, {
+        physical: BigInt(n),
+        logical: 0n,
+        clientId: 'hub',
+      })
       // One more commit than the cap holds, with NO echo arriving for any.
       const overflow = MAX_OWN_ECHO_BATCH_IDS + 1
       for (let i = 0; i < overflow; i++) {
         const op = setNodeKind(ctx, `n${i}`, NodeKind.LEAF)
         mgr.submit(newBatch([op], `b${i}`))
         mgr.consumeBatchCommitted(`b${i}`, create(BatchCommittedSchema, {
-          committed: [create(CommittedOpSchema, { opId: op.opId, canonicalHlc: hlcAt(i + 1) })],
+          committed: [
+            create(CommittedOpSchema, {
+              opId: op.opId,
+              canonicalHlc: hlcAt(i + 1),
+            }),
+          ],
           maxHlc: hlcAt(i + 1),
           epoch: 1n,
         }))
@@ -1115,7 +1319,10 @@ describe('PendingOpsManager', () => {
       // cursor must NOT move -- the batch's own ops have not arrived yet.
       mgr.consumeEntityMaterialized(create(EntityMaterializedSchema, {
         atHlc,
-        entity: { case: 'node', value: create(NodeRecordSchema, { nodeId: 'crossed-in' }) },
+        entity: {
+          case: 'node',
+          value: create(NodeRecordSchema, { nodeId: 'crossed-in' }),
+        },
       }))
       expect(mgr.state.confirmedState.nodes['crossed-in']).toBeDefined()
       expect(mgr.state.resumeWatermark?.physical).toBe(100n)
@@ -1123,7 +1330,10 @@ describe('PendingOpsManager', () => {
       // The batch frame lands. Still no advance: a trailing entity_removed for
       // the same batch may yet follow, and losing it would leave a redacted
       // entity rendered with the cursor already past the batch.
-      const op = setNodeKind({ originClientId: 'other', clock: new HLCClock('other') }, 'edited', NodeKind.GRID)
+      const op = setNodeKind({
+        originClientId: 'other',
+        clock: new HLCClock('other'),
+      }, 'edited', NodeKind.GRID)
       op.canonicalHlc = atHlc
       mgr.consumeRemote(newBatch([op], 'seq-batch'))
       expect(mgr.state.confirmedState.nodes.edited?.kind?.value).toBe(NodeKind.GRID)
@@ -1157,10 +1367,12 @@ describe('PendingOpsManager', () => {
       const op = setNodeKind(ctx, 'ownNode', NodeKind.LEAF)
       mgr.submit(newBatch([op], 'own-batch'))
       mgr.consumeBatchCommitted('own-batch', create(BatchCommittedSchema, {
-        committed: [create(CommittedOpSchema, {
-          opId: op.opId,
-          canonicalHlc: create(HLCSchema, { physical: 500n, logical: 0n, clientId: 'hub' }),
-        })],
+        committed: [
+          create(CommittedOpSchema, {
+            opId: op.opId,
+            canonicalHlc: create(HLCSchema, { physical: 500n, logical: 0n, clientId: 'hub' }),
+          }),
+        ],
         maxHlc: create(HLCSchema, { physical: 500n, logical: 0n, clientId: 'hub' }),
         epoch: 1n,
       }))
@@ -1196,10 +1408,12 @@ describe('PendingOpsManager', () => {
       const own = setNodeKind(ctx, 'ownNode', NodeKind.LEAF)
       mgr.submit(newBatch([own], 'own-batch'))
       mgr.consumeBatchCommitted('own-batch', create(BatchCommittedSchema, {
-        committed: [create(CommittedOpSchema, {
-          opId: own.opId,
-          canonicalHlc: create(HLCSchema, { physical: 500n, logical: 0n, clientId: 'hub' }),
-        })],
+        committed: [
+          create(CommittedOpSchema, {
+            opId: own.opId,
+            canonicalHlc: create(HLCSchema, { physical: 500n, logical: 0n, clientId: 'hub' }),
+          }),
+        ],
         maxHlc: create(HLCSchema, { physical: 500n, logical: 0n, clientId: 'hub' }),
         epoch: 1n,
       }))
@@ -1234,10 +1448,12 @@ describe('PendingOpsManager', () => {
       mgr.submit(newBatch([opB], 'multi-b'))
 
       const commit = (opId: string, physical: bigint) => create(BatchCommittedSchema, {
-        committed: [create(CommittedOpSchema, {
-          opId,
-          canonicalHlc: create(HLCSchema, { physical, logical: 0n, clientId: 'hub' }),
-        })],
+        committed: [
+          create(CommittedOpSchema, {
+            opId,
+            canonicalHlc: create(HLCSchema, { physical, logical: 0n, clientId: 'hub' }),
+          }),
+        ],
         maxHlc: create(HLCSchema, { physical, logical: 0n, clientId: 'hub' }),
         epoch: 1n,
       })
@@ -1273,7 +1489,9 @@ describe('PendingOpsManager', () => {
 
       // Seed a pending batch against the pre-bootstrap state.
       const ctx = { originClientId: 'clientA', clock: mgr.clock }
-      mgr.submit(newBatch([setNodeKind(ctx, 'speculative', NodeKind.LEAF)], 'pending-1'))
+      mgr.submit(newBatch([
+        setNodeKind(ctx, 'speculative', NodeKind.LEAF),
+      ], 'pending-1'))
       expect(mgr.state.pendingBatches).toHaveLength(1)
 
       mgr.bootstrap({
@@ -1295,7 +1513,9 @@ describe('PendingOpsManager', () => {
       // and the dedup key from the prior session are gone. hydrate resets them
       // so a freshly-echoed batch isn't suppressed by a stale id.
       const mgr = makeMgr()
-      mgr.submit(newBatch([setNodeKind({ originClientId: 'clientA', clock: mgr.clock }, 's', NodeKind.LEAF)], 'stale-1'))
+      mgr.submit(newBatch([
+        setNodeKind({ originClientId: 'clientA', clock: mgr.clock }, 's', NodeKind.LEAF),
+      ], 'stale-1'))
       expect(mgr.state.pendingBatches).toHaveLength(1)
 
       mgr.hydrate(buildPayload())
@@ -1314,7 +1534,10 @@ describe('PendingOpsManager', () => {
         onCheckpointReset: () => {},
       })
       // consumeRemote of a remote batch records (dedup key is null post-hydrate).
-      const remoteOp = setNodeKind({ originClientId: 'other', clock: new HLCClock('other') }, 'n', NodeKind.GRID)
+      const remoteOp = setNodeKind({
+        originClientId: 'other',
+        clock: new HLCClock('other'),
+      }, 'n', NodeKind.GRID)
       remoteOp.canonicalHlc = create(HLCSchema, { physical: 250n, logical: 0n, clientId: 'hub' })
       mgr.consumeRemote(newBatch([remoteOp], 'fresh-remote-1'))
       expect(recorded).toEqual(['fresh-remote-1'])
@@ -1337,9 +1560,15 @@ describe('pruneTombstonesAtOrBelow', () => {
       nodes: {
         // No tombstoneAt at all -- a live record.
         live: {},
-        old: { tombstoneAt: { physical: 5n, logical: 0n, clientId: 'hub' } },
-        atFloor: { tombstoneAt: { physical: 10n, logical: 0n, clientId: 'hub' } },
-        recent: { tombstoneAt: { physical: 20n, logical: 0n, clientId: 'hub' } },
+        old: {
+          tombstoneAt: { physical: 5n, logical: 0n, clientId: 'hub' },
+        },
+        atFloor: {
+          tombstoneAt: { physical: 10n, logical: 0n, clientId: 'hub' },
+        },
+        recent: {
+          tombstoneAt: { physical: 20n, logical: 0n, clientId: 'hub' },
+        },
       },
     })
   }
@@ -1380,8 +1609,16 @@ describe('pruneTombstonesAtOrBelow', () => {
   it('pins by kind, so an id shared across maps is not over-pinned', () => {
     const state = create(UserCrdtStateSchema, {
       userId: 'u',
-      nodes: { shared: { tombstoneAt: { physical: 5n, logical: 0n, clientId: 'hub' } } },
-      tabs: { shared: { tombstoneAt: { physical: 5n, logical: 0n, clientId: 'hub' } } },
+      nodes: {
+        shared: {
+          tombstoneAt: { physical: 5n, logical: 0n, clientId: 'hub' },
+        },
+      },
+      tabs: {
+        shared: {
+          tombstoneAt: { physical: 5n, logical: 0n, clientId: 'hub' },
+        },
+      },
     })
     pruneTombstonesAtOrBelow(
       state,
@@ -1404,18 +1641,26 @@ describe('PendingOpsManager compactTombstones with unconfirmed local ops', () =>
     const ctx = { originClientId: 'clientA', clock: mgr.clock }
 
     // A local drag that has not been confirmed yet.
-    mgr.submit(newBatch([setTabTileId(ctx, TabType.AGENT, 'tA', 'tile-b')]))
+    mgr.submit(newBatch([
+      setTabTileId(ctx, TabType.AGENT, 'tA', 'tile-b'),
+    ]))
     expect(mgr.state.pendingBatches).toHaveLength(1)
 
     // A peer closes the tab, and batch_end moves the watermark past the
     // tombstone so it becomes eligible for pruning.
     const peerTombstone = tombstoneTab(
-      { originClientId: 'peer', clock: new HLCClock('peer') },
+      {
+        originClientId: 'peer',
+        clock: new HLCClock('peer'),
+      },
       TabType.AGENT,
       'tA',
     )
     peerTombstone.canonicalHlc = create(HLCSchema, { physical: 500n, logical: 0n, clientId: 'peer' })
-    mgr.consumeRemote(create(OpBatchSchema, { batchId: 'peer-batch', ops: [peerTombstone] }))
+    mgr.consumeRemote(create(OpBatchSchema, {
+      batchId: 'peer-batch',
+      ops: [peerTombstone],
+    }))
     mgr.consumeBatchEnd(create(HLCSchema, { physical: 500n, logical: 0n, clientId: 'peer' }))
 
     expect(mgr.state.confirmedState.tabs.tA?.tombstoneAt).toBeDefined()
@@ -1453,12 +1698,18 @@ describe('PendingOpsManager compactTombstones with unconfirmed local ops', () =>
   it('still prunes once the pending batch is gone', () => {
     const mgr = makeMgr()
     const peerTombstone = tombstoneTab(
-      { originClientId: 'peer', clock: new HLCClock('peer') },
+      {
+        originClientId: 'peer',
+        clock: new HLCClock('peer'),
+      },
       TabType.AGENT,
       'tA',
     )
     peerTombstone.canonicalHlc = create(HLCSchema, { physical: 500n, logical: 0n, clientId: 'peer' })
-    mgr.consumeRemote(create(OpBatchSchema, { batchId: 'peer-batch', ops: [peerTombstone] }))
+    mgr.consumeRemote(create(OpBatchSchema, {
+      batchId: 'peer-batch',
+      ops: [peerTombstone],
+    }))
     mgr.consumeBatchEnd(create(HLCSchema, { physical: 500n, logical: 0n, clientId: 'peer' }))
 
     expect(mgr.compactTombstones()).toBe(1)
@@ -1483,7 +1734,14 @@ describe('batch-end boundary', () => {
     const replay = makeMgr()
     replay.hydrate({
       state: create(UserCrdtStateSchema, { userId: 'u' }),
-      frames: [create(WatchUserEventSchema, { event: { case: 'batchEnd', value: { atHlc } } })],
+      frames: [
+        create(WatchUserEventSchema, {
+          event: {
+            case: 'batchEnd',
+            value: { atHlc },
+          },
+        }),
+      ],
       watermark: { physical: 1n, logical: 0n, clientId: 'hub' },
       currentEpoch: 1n,
       truncated: false,
@@ -1504,7 +1762,11 @@ describe('batch-end boundary', () => {
     const replay = makeMgr()
     replay.hydrate({
       state: create(UserCrdtStateSchema, { userId: 'u' }),
-      frames: [create(WatchUserEventSchema, { event: { case: 'batchEnd', value: {} } })],
+      frames: [
+        create(WatchUserEventSchema, {
+          event: { case: 'batchEnd', value: {} },
+        }),
+      ],
       watermark: { physical: 7n, logical: 0n, clientId: 'hub' },
       currentEpoch: 1n,
       truncated: false,
@@ -1525,7 +1787,9 @@ describe('PendingOpsManager compactTombstones', () => {
       userId: 'u',
       nodes: {
         live: {},
-        gone: { tombstoneAt: { physical: 5n, logical: 0n, clientId: 'hub' } },
+        gone: {
+          tombstoneAt: { physical: 5n, logical: 0n, clientId: 'hub' },
+        },
       },
     })
     mgr.state.resumeWatermark = create(HLCSchema, { physical: 9n, logical: 0n, clientId: 'hub' })
@@ -1541,7 +1805,11 @@ describe('PendingOpsManager compactTombstones', () => {
     const mgr = makeMgr()
     mgr.state.confirmedState = create(UserCrdtStateSchema, {
       userId: 'u',
-      nodes: { gone: { tombstoneAt: { physical: 5n, logical: 0n, clientId: 'hub' } } },
+      nodes: {
+        gone: {
+          tombstoneAt: { physical: 5n, logical: 0n, clientId: 'hub' },
+        },
+      },
     })
     delete mgr.state.resumeWatermark
 
@@ -1558,18 +1826,29 @@ describe('PendingOpsManager compactTombstones with an unrecognized op', () => {
   it('prunes nothing rather than pruning with a partial pin set', () => {
     const mgr = makeMgr()
     const peerTombstone = tombstoneTab(
-      { originClientId: 'peer', clock: new HLCClock('peer') },
+      {
+        originClientId: 'peer',
+        clock: new HLCClock('peer'),
+      },
       TabType.AGENT,
       'tA',
     )
     peerTombstone.canonicalHlc = create(HLCSchema, { physical: 500n, logical: 0n, clientId: 'peer' })
-    mgr.consumeRemote(create(OpBatchSchema, { batchId: 'peer-batch', ops: [peerTombstone] }))
+    mgr.consumeRemote(create(OpBatchSchema, {
+      batchId: 'peer-batch',
+      ops: [peerTombstone],
+    }))
     mgr.consumeBatchEnd(create(HLCSchema, { physical: 500n, logical: 0n, clientId: 'peer' }))
 
     // A pending batch carrying a body from a hypothetical newer build.
     mgr.state.pendingBatches.push({
       batchId: 'from-the-future',
-      ops: [{ opId: 'x', body: { case: 'someOpFromANewerBuild', value: {} } }],
+      ops: [
+        {
+          opId: 'x',
+          body: { case: 'someOpFromANewerBuild', value: {} },
+        },
+      ],
     } as never)
 
     expect(mgr.compactTombstones()).toBe(0)

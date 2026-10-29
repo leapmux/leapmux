@@ -19,7 +19,12 @@ import { pluginFor } from './providers/registry'
 const logger = createLogger('rowExtraction')
 
 /** The empty span context for a caller that resolved no sibling row. */
-const NO_SPAN: ToolSpanContext = { request: undefined, result: undefined, role: 'other', visibleRows: { request: false, result: false } }
+const NO_SPAN: ToolSpanContext = {
+  request: undefined,
+  result: undefined,
+  role: 'other',
+  visibleRows: { request: false, result: false },
+}
 
 export interface RowExtractionOptions {
   /** The request and result of this row's tool span, already resolved. */
@@ -56,7 +61,9 @@ export type ChatRowExtraction = {
 
 /** The LeapMux metadata of a stored row, or undefined when the row carries none. */
 function rowMetadata(parsed: ResolvedMessageContent): Record<string, unknown> | undefined {
-  return isObject(parsed.messageMetadata) ? parsed.messageMetadata : undefined
+  return isObject(parsed.messageMetadata)
+    ? parsed.messageMetadata
+    : undefined
 }
 
 /**
@@ -66,7 +73,9 @@ function rowMetadata(parsed: ResolvedMessageContent): Record<string, unknown> | 
  * The transcript uses the other outcomes to show unsupported payloads and extraction failures.
  */
 export function extractedRow(extraction: ChatRowExtraction): ChatRow | null {
-  return extraction.kind === 'row' ? extraction.row : null
+  return extraction.kind === 'row'
+    ? extraction.row
+    : null
 }
 
 /**
@@ -98,8 +107,12 @@ export function extractChatRow(
     // Resolve them before parsing the provider frame, which can be unreadable.
     // The shared row model keeps this answer available to every reader.
     // Run the provider's display hook here once.
-    if (category.kind === 'control_response')
-      return row({ kind: 'control-response', display: resolveControlResponseSummary(category.response, plugin?.controls?.controlResponseDisplay) })
+    if (category.kind === 'control_response') {
+      return row({
+        kind: 'control-response',
+        display: resolveControlResponseSummary(category.response, plugin?.controls?.controlResponseDisplay),
+      })
+    }
 
     // The Worker joins streamed chunks and stores completion in the assembled envelope.
     // A set completion column takes precedence over that envelope.
@@ -123,7 +136,13 @@ export function extractChatRow(
           return row({ kind: 'assistant-plan', text: assembled.text })
         case 'assistant_text': {
           const segments = plugin?.transcript.assistantTextSegments?.(assembled.text)
-          return row({ kind: 'assistant-text', text: assembled.text, ...(segments ? { segments } : {}) })
+          return row({
+            kind: 'assistant-text',
+            text: assembled.text,
+            ...(segments
+              ? { segments }
+              : {}),
+          })
         }
       }
     }
@@ -134,7 +153,15 @@ export function extractChatRow(
       const divider = plugin?.transcript.extractDivider?.(payload, options.completion)
       const meta = dividerMetaFromMessage(parsed)
       return divider
-        ? row({ kind: 'divider', divider: { ...divider, ...(meta === undefined ? {} : { meta }) } })
+        ? row({
+            kind: 'divider',
+            divider: {
+              ...divider,
+              ...(meta === undefined
+                ? {}
+                : { meta }),
+            },
+          })
         : unsupported()
     }
     // Classification supplies parsed notification entries. Every reader uses those same model values.
@@ -142,7 +169,12 @@ export function extractChatRow(
     if (category.kind === 'notification') {
       const approvals = approvedReviewIdsOf(rowMetadata(parsed)?.[MESSAGE_METADATA_FIELD.AutoReviewApprovals])
       return category.entries.length > 0
-        ? row({ kind: 'notification', thread: { entries: withApprovedReviews(category.entries, approvals) } })
+        ? row({
+            kind: 'notification',
+            thread: {
+              entries: withApprovedReviews(category.entries, approvals),
+            },
+          })
         : unsupported()
     }
     // LeapMux stores user messages as {content, attachments?} without a provider envelope.
@@ -152,21 +184,33 @@ export function extractChatRow(
     // as `user_content` too, and only that provider knows the shape of the frame.
     if (category.kind === 'user_content' && !plugin) {
       const userRow = leapmuxUserRow(parsed.parentObject)
-      return userRow ? row(userRow) : unsupported()
+      return userRow
+        ? row(userRow)
+        : unsupported()
     }
     const extract = plugin?.transcript.extractRow
     if (!extract)
       return unsupported()
     const snapshotValue = rowMetadata(parsed)?.[MESSAGE_METADATA_FIELD.TodoSnapshot]
-    const todoSnapshot = snapshotValue === undefined ? null : protoJsonTodoToItem(snapshotValue)
+    const todoSnapshot = snapshotValue === undefined
+      ? null
+      : protoJsonTodoToItem(snapshotValue)
     const input: RowExtractionInput = {
       resolved: parsed,
       category,
       span: options.span ?? NO_SPAN,
-      ...(options.spanId === undefined ? {} : { spanId: options.spanId }),
-      ...(options.spanType === undefined ? {} : { spanType: options.spanType }),
-      ...(options.completion === undefined ? {} : { completion: options.completion }),
-      ...(todoSnapshot !== null ? { todoSnapshot } : {}),
+      ...(options.spanId === undefined
+        ? {}
+        : { spanId: options.spanId }),
+      ...(options.spanType === undefined
+        ? {}
+        : { spanType: options.spanType }),
+      ...(options.completion === undefined
+        ? {}
+        : { completion: options.completion }),
+      ...(todoSnapshot !== null
+        ? { todoSnapshot }
+        : {}),
       ...(snapshotValue === undefined
         ? { todoSnapshotDiagnostic: 'TaskUpdate metadata is missing todo_snapshot; the persisted row is corrupted.' }
         : todoSnapshot === null
@@ -181,13 +225,21 @@ export function extractChatRow(
       return row(extracted)
     const paths = normalizeOutputFilePaths(outputFilePaths(input, extracted.call))
     return paths.length > 0
-      ? row({ ...extracted, call: { ...extracted.call, outputFilePaths: paths } })
+      ? row({
+          ...extracted,
+          call: { ...extracted.call, outputFilePaths: paths },
+        })
       : row(extracted)
   }
   catch (err) {
     // Return an extraction failure instead of throwing into an effect or promise outside the render tree.
     // Log it once here. Keep the error distinct from an unsupported provider frame.
     logger.warn('Failed to read a row', err)
-    return { kind: 'failed', payload, error: err, completion }
+    return {
+      kind: 'failed',
+      payload,
+      error: err,
+      completion,
+    }
   }
 }

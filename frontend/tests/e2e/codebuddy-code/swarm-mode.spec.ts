@@ -13,14 +13,33 @@ import { openProviderAgent } from '../helpers/workspace'
 import { nativeContext, nativeLaunch } from './scenarios'
 
 codebuddyTest('passes the native Swarm flag at launch and retains its setting after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
-  const initial = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const initial = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   await withNativeStartupWorker(initial, nativeLaunch(initial), {}, async (workerId, wrapper) => {
     const server = { ...leapmuxServer, workerId }
-    const context = await nativeContext({ page, modelScript, leapmuxServer: server, workspaceId: initial.workspaceId })
-    const opening = openProviderAgent(server, context.workspaceId, context.providerAgent, { directoryPrefix: 'codebuddy-swarm-launch-', optionValues: { swarmMode: 'true' } })
-    const entry = await Promise.race([wrapper.entry, opening.then(() => wrapper.entry)])
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer: server,
+      workspaceId: initial.workspaceId,
+    })
+    const opening = openProviderAgent(server, context.workspaceId, context.providerAgent, {
+      directoryPrefix: 'codebuddy-swarm-launch-',
+      optionValues: { swarmMode: 'true' },
+    })
+    const entry = await Promise.race([
+      wrapper.entry,
+      opening.then(() => wrapper.entry),
+    ])
     expect(entry.argv.filter(argument => argument === '--swarm')).toHaveLength(1)
-    await testInfo.attach('codebuddy-native-swarm-argv', { body: JSON.stringify(entry), contentType: 'application/json' })
+    await testInfo.attach('codebuddy-native-swarm-argv', {
+      body: JSON.stringify(entry),
+      contentType: 'application/json',
+    })
     await wrapper.release()
     await opening
     await openWorkspace(page, context.workspaceId)
@@ -46,18 +65,25 @@ codebuddyTest('enables native Swarm from Off and keeps the parent session throug
   })
   await sendNativeAnswer(native, 'Keep this context before the native Swarm teammate.', 'The native parent is ready for its teammate.')
   const before = await currentNativeAgent(native)
-  const settings = { model: nativeOptionValue(before, 'model'), permissionMode: nativeOptionValue(before, 'permissionMode') }
+  const settings = {
+    model: nativeOptionValue(before, 'model'),
+    permissionMode: nativeOptionValue(before, 'permissionMode'),
+  }
   const script = nativeChildScriptContext(native)
   const identity = heldChildIdentity(script)
   const spawn = codebuddyTeammateToolCall(identity.spawn.id, { teammateName: 'native-swarm-mate', description: identity.description, prompt: identity.prompt })
   const completedReply = 'The native teammate completion notice was received.'
   const options = heldChildOptions(script, { ...identity, spawn }, {
-    rules: [{
-      name: 'the native teammate completion notice',
-      when: { lastMessage: { role: 'user', text: '<teammate-message teammate_id="system" summary="native-swarm-mate completed:' } },
-      respond: { text: completedReply },
-      once: true,
-    }],
+    rules: [
+      {
+        name: 'the native teammate completion notice',
+        when: {
+          lastMessage: { role: 'user', text: '<teammate-message teammate_id="system" summary="native-swarm-mate completed:' },
+        },
+        respond: { text: completedReply },
+        once: true,
+      },
+    ],
   })
   const child = await openRunningNativeChild(native, options)
   const task = (await readNativeSidebarSnapshot(native, child.parentId)).backgroundTasks.find(task => task.childAgentId === child.childId)
@@ -74,7 +100,11 @@ codebuddyTest('enables native Swarm from Off and keeps the parent session throug
       // The native SDK flushes idle task events only when the next user turn starts.
       // TaskOutput checks the real task state before its completion reaches the row.
       const start = await native.modelScript.queue(
-        { toolCalls: [codebuddyTaskOutputToolCall('native-swarm-task-output', task.id)] },
+        {
+          toolCalls: [
+            codebuddyTaskOutputToolCall('native-swarm-task-output', task.id),
+          ],
+        },
         nativeTextStep(native, 'The native completed teammate task was read.'),
       )
       await sendMessage(native.page, native.modelScript.prompt('Read the native teammate task snapshot.'))
@@ -94,7 +124,14 @@ codebuddyTest('enables native Swarm from Off and keeps the parent session throug
   await testInfo.attach('codebuddy-native-swarm-parent', {
     body: JSON.stringify({
       before: { id: before.id, sessionId: before.agentSessionId, settings },
-      after: { id: after.id, sessionId: after.agentSessionId, settings: { model: nativeOptionValue(after, 'model'), permissionMode: nativeOptionValue(after, 'permissionMode') } },
+      after: {
+        id: after.id,
+        sessionId: after.agentSessionId,
+        settings: {
+          model: nativeOptionValue(after, 'model'),
+          permissionMode: nativeOptionValue(after, 'permissionMode'),
+        },
+      },
       spawn,
       taskId: task.id,
     }),

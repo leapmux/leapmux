@@ -215,8 +215,12 @@ class Parser {
       // Handle boolean literals
       if (name === 'true')
         return { type: 'true' }
-      if (name === 'false')
-        return { type: 'not', child: { type: 'true' } }
+      if (name === 'false') {
+        return {
+          type: 'not',
+          child: { type: 'true' },
+        }
+      }
 
       // Check for comparison operators
       const next = this.peek()

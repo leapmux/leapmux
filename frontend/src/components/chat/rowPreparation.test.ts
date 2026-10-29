@@ -30,7 +30,9 @@ function message(fields: {
     seq: 5n,
     agentProvider: fields.provider,
     // Omitted (not undefined) when the fixture states none; `create` rejects an explicit undefined.
-    ...(fields.completion !== undefined ? { completion: fields.completion } : {}),
+    ...(fields.completion !== undefined
+      ? { completion: fields.completion }
+      : {}),
     spanId: fields.spanId ?? 'span-1',
     spanType: fields.spanType ?? '',
     contentCompression: ContentCompression.NONE,
@@ -52,18 +54,62 @@ const ACP_INNER = {
   sessionUpdate: 'tool_call_update',
   toolCallId: 'call-1',
   status: 'completed',
-  content: [{ type: 'content', content: { type: 'text', text: 'the output' } }],
+  content: [
+    {
+      type: 'content',
+      content: { type: 'text', text: 'the output' },
+    },
+  ],
 }
-const ACP_WRAPPED = { id: 'n1', role: 'result', seq: 3, content: ACP_INNER }
+const ACP_WRAPPED = {
+  id: 'n1',
+  role: 'result',
+  seq: 3,
+  content: ACP_INNER,
+}
 
 describe('prepareMessage', () => {
   const compactionStarts = [
-    { provider: AgentProvider.CLAUDE_CODE, content: { type: 'system', subtype: 'status', status: 'compacting' } },
-    { provider: AgentProvider.CODEX, content: { method: 'item/started', params: { item: { type: 'contextCompaction' } } } },
-    { provider: AgentProvider.ZCODE, content: { type: 'session.updated', payload: { operationId: 'compact-1', trigger: 'auto', status: 'started' } } },
-    { provider: AgentProvider.PI, content: { type: 'compaction_start', reason: 'auto' } },
-    { provider: AgentProvider.OH_MY_PI, content: { type: 'auto_compaction_start', reason: 'auto' } },
-    { provider: AgentProvider.GITHUB_COPILOT, content: { method: 'session.event', params: { event: { type: 'session.compaction_start', data: { trigger: 'auto' } } } } },
+    {
+      provider: AgentProvider.CLAUDE_CODE,
+      content: { type: 'system', subtype: 'status', status: 'compacting' },
+    },
+    {
+      provider: AgentProvider.CODEX,
+      content: {
+        method: 'item/started',
+        params: {
+          item: { type: 'contextCompaction' },
+        },
+      },
+    },
+    {
+      provider: AgentProvider.ZCODE,
+      content: {
+        type: 'session.updated',
+        payload: { operationId: 'compact-1', trigger: 'auto', status: 'started' },
+      },
+    },
+    {
+      provider: AgentProvider.PI,
+      content: { type: 'compaction_start', reason: 'auto' },
+    },
+    {
+      provider: AgentProvider.OH_MY_PI,
+      content: { type: 'auto_compaction_start', reason: 'auto' },
+    },
+    {
+      provider: AgentProvider.GITHUB_COPILOT,
+      content: {
+        method: 'session.event',
+        params: {
+          event: {
+            type: 'session.compaction_start',
+            data: { trigger: 'auto' },
+          },
+        },
+      },
+    },
   ]
 
   it.each(compactionStarts)('identifies a stored native start for provider $provider without changing its category', (fields) => {
@@ -75,12 +121,30 @@ describe('prepareMessage', () => {
   it('identifies only nonempty threads that contain starts alone', () => {
     const start = compactionStarts[1]!
     for (const [messages, expected] of [
-      [[start.content, start.content], true],
+      [
+        [start.content, start.content],
+        true,
+      ],
       [[], false],
-      [[start.content, { method: 'warning', params: { message: 'Keep this notice' } }], false],
-      [[start.content, null], false],
+      [
+        [
+          start.content,
+          {
+            method: 'warning',
+            params: { message: 'Keep this notice' },
+          },
+        ],
+        false,
+      ],
+      [
+        [start.content, null],
+        false,
+      ],
     ] as const) {
-      const prepared = prepareMessage(message({ provider: start.provider, content: { type: 'notification_thread', old_seqs: [], messages } }))
+      const prepared = prepareMessage(message({
+        provider: start.provider,
+        content: { type: 'notification_thread', old_seqs: [], messages },
+      }))
       expect(prepared).toMatchObject({ compactionStartOnly: expected })
     }
   })
@@ -88,14 +152,28 @@ describe('prepareMessage', () => {
   it('keeps a mixed thread even when the other member draws no entry', () => {
     const prepared = prepareMessage(message({
       provider: AgentProvider.PI,
-      content: { type: 'notification_thread', old_seqs: [], messages: [{ type: 'compaction_start' }, { type: 'queue_update' }] },
+      content: {
+        type: 'notification_thread',
+        old_seqs: [],
+        messages: [
+          { type: 'compaction_start' },
+          { type: 'queue_update' },
+        ],
+      },
     }))
     expect(prepared.compactionStartOnly).toBe(false)
   })
 
   it('identifies a native start-only thread for every implemented provider', () => {
     for (const fields of compactionStarts) {
-      const prepared = prepareMessage(message({ provider: fields.provider, content: { type: 'notification_thread', old_seqs: [], messages: [fields.content] } }))
+      const prepared = prepareMessage(message({
+        provider: fields.provider,
+        content: {
+          type: 'notification_thread',
+          old_seqs: [],
+          messages: [fields.content],
+        },
+      }))
       expect(prepared.compactionStartOnly).toBe(true)
       expect(prepared.category.kind).not.toBe('hidden')
     }
@@ -144,7 +222,10 @@ describe('prepareMessage', () => {
   it('takes a caller supplied parse rather than parsing again', () => {
     const source = message({ provider: AgentProvider.OPENCODE, content: ACP_INNER })
     const original = parseMessageContent(source)
-    const resolved = resolveMessageForRendering({ ...original, parentObject: { ...ACP_INNER, status: 'pending' } }, AgentProvider.OPENCODE)
+    const resolved = resolveMessageForRendering({
+      ...original,
+      parentObject: { ...ACP_INNER, status: 'pending' },
+    }, AgentProvider.OPENCODE)
     const prepared = prepareMessage(source, { original, resolved })
     expect(prepared.original).toBe(original)
     expect(prepared.resolved).toBe(resolved)
@@ -153,7 +234,11 @@ describe('prepareMessage', () => {
   it('keeps an obsolete forwarded user frame unknown in either transcript', () => {
     const forwarded = message({
       provider: AgentProvider.CLAUDE_CODE,
-      content: { type: 'user', parent_tool_use_id: 'task-1', message: { role: 'user' } },
+      content: {
+        type: 'user',
+        parent_tool_use_id: 'task-1',
+        message: { role: 'user' },
+      },
     })
     expect(prepareMessage(forwarded, { isChildTranscript: false }).category.kind).toBe('unknown')
     expect(prepareMessage(forwarded, { isChildTranscript: true }).category.kind).toBe('unknown')
@@ -178,7 +263,10 @@ describe('prepareMessage', () => {
   // A tab can lack worker metadata while hydration runs, so its provider is
   // UNSPECIFIED and no plugin answers. Preparation must still reach a category.
   it('prepares a message whose provider has no plugin', () => {
-    const prepared = prepareMessage(message({ provider: AgentProvider.UNSPECIFIED, content: { content: 'typed this' } }))
+    const prepared = prepareMessage(message({
+      provider: AgentProvider.UNSPECIFIED,
+      content: { content: 'typed this' },
+    }))
     expect(prepared.category.kind).toBe('unsupported_provider')
     expect(prepared.resolved.parentObject).toEqual({ content: 'typed this' })
   })
@@ -201,10 +289,18 @@ describe('extractPreparedRow', () => {
   it('derives the span role from the provider', () => {
     const pending = prepareMessage(message({
       provider: AgentProvider.OPENCODE,
-      content: { sessionUpdate: 'tool_call', toolCallId: 'call-1', status: 'pending', title: 'Run it', kind: 'execute' },
+      content: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'call-1',
+        status: 'pending',
+        title: 'Run it',
+        kind: 'execute',
+      },
     }))
     const finished = prepareMessage(message({ provider: AgentProvider.OPENCODE, content: ACP_INNER }))
-    const roleOf = (row: ReturnType<typeof extractedRow>) => row?.kind === 'tool' ? row.role : null
+    const roleOf = (row: ReturnType<typeof extractedRow>) => row?.kind === 'tool'
+      ? row.role
+      : null
     expect(roleOf(extractedRow(extractPreparedRow(pending)))).toBe('request')
     expect(roleOf(extractedRow(extractPreparedRow(finished)))).toBe('result')
   })
@@ -215,23 +311,44 @@ describe('extractPreparedRow', () => {
   it('takes an explicit sides over the derived one', () => {
     const request = prepareMessage(message({
       provider: AgentProvider.OPENCODE,
-      content: { sessionUpdate: 'tool_call', toolCallId: 'call-1', status: 'pending', title: 'Run it', kind: 'execute' },
+      content: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'call-1',
+        status: 'pending',
+        title: 'Run it',
+        kind: 'execute',
+      },
     }))
     const prepared = prepareMessage(message({ provider: AgentProvider.OPENCODE, content: ACP_INNER }))
     const withRequest = extractedRow(extractPreparedRow(prepared, {
-      span: { request: request.resolved, result: prepared.resolved, role: 'result', visibleRows: { request: true, result: true } },
+      span: {
+        request: request.resolved,
+        result: prepared.resolved,
+        role: 'result',
+        visibleRows: { request: true, result: true },
+      },
     }))
-    expect(withRequest?.kind === 'tool' ? withRequest.hasRequestRow : null).toBe(true)
+    expect(withRequest?.kind === 'tool'
+      ? withRequest.hasRequestRow
+      : null).toBe(true)
     // The default states no sibling at all, which is the answer for a reader that
     // resolved none -- so the two cannot be reading the same sides.
     const alone = extractedRow(extractPreparedRow(prepared))
-    expect(alone?.kind === 'tool' ? alone.hasRequestRow : null).toBe(false)
+    expect(alone?.kind === 'tool'
+      ? alone.hasRequestRow
+      : null).toBe(false)
   })
 
   it('does not treat fetched sibling data as a visible sibling row', () => {
     const request = prepareMessage(message({
       provider: AgentProvider.OPENCODE,
-      content: { sessionUpdate: 'tool_call', toolCallId: 'call-1', status: 'pending', title: 'Run it', kind: 'execute' },
+      content: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'call-1',
+        status: 'pending',
+        title: 'Run it',
+        kind: 'execute',
+      },
     }))
     const prepared = prepareMessage(message({ provider: AgentProvider.OPENCODE, content: ACP_INNER }))
     const row = extractedRow(extractPreparedRow(prepared, {
@@ -242,8 +359,12 @@ describe('extractPreparedRow', () => {
         visibleRows: { request: false, result: true },
       },
     }))
-    expect(row?.kind === 'tool' ? row.hasRequestRow : null).toBe(false)
-    expect(row?.kind === 'tool' ? row.call.request : null).toBeDefined()
+    expect(row?.kind === 'tool'
+      ? row.hasRequestRow
+      : null).toBe(false)
+    expect(row?.kind === 'tool'
+      ? row.call.request
+      : null).toBeDefined()
   })
 
   // LeapMux's own completion column reaches the extraction through the message, so
@@ -272,7 +393,16 @@ describe('prepareChatRow', () => {
   it('reads a recovered body into the row', () => {
     const { extraction } = prepareChatRow(message({
       provider: AgentProvider.CODEX,
-      content: { threadId: 't1', turnId: 'r1', item: { type: 'commandExecution', id: 'c1', status: 'inProgress', command: 'printf partial' } },
+      content: {
+        threadId: 't1',
+        turnId: 'r1',
+        item: {
+          type: 'commandExecution',
+          id: 'c1',
+          status: 'inProgress',
+          command: 'printf partial',
+        },
+      },
       supplement: { itemId: 'c1', itemType: 'commandExecution', aggregatedOutput: 'Running 240 tests' },
       completion: MessageCompletion.INTERRUPTED,
     }))
@@ -281,6 +411,8 @@ describe('prepareChatRow', () => {
     if (row?.kind !== 'tool' || row.call.kind !== 'execute')
       return
     const result = row.call.result
-    expect(result && 'commands' in result ? result.commands[0]?.output : null).toBe('Running 240 tests')
+    expect(result && 'commands' in result
+      ? result.commands[0]?.output
+      : null).toBe('Running 240 tests')
   })
 })

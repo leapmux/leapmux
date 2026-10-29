@@ -21,7 +21,12 @@ diracTest.describe('native mcp tool execution', () => {
     const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, DIRAC_AGENT, { workingDir })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await tabById(page, agentId).click()
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     const request = await sendNativeAnswer(context, 'Reply once.', 'The native turn ended.')
     const tools = nativeModelToolNames(request)
     expect(tools).toContain('respond')
@@ -32,7 +37,12 @@ diracTest.describe('native mcp tool execution', () => {
 
 mcpDiracTest('offers no MCP tool after its actual native ACP request accepts the configured server list', async ({ configuredMcpDiracWorkspace, page, modelScript }) => {
   const workspace = configuredMcpDiracWorkspace
-  const context = await nativeContext({ page, modelScript, leapmuxServer: workspace.server, workspaceId: workspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer: workspace.server,
+    workspaceId: workspace.workspaceId,
+  })
   const agent = await currentNativeAgent(context)
   const observation = readDiracMcpSessionObservation(workspace.sessionReceipt)
   expect(observation.request.params).toEqual(expect.objectContaining({ cwd: workspace.workingDir, mcpServers: workspace.configuredServers }))

@@ -14,5 +14,11 @@ registerACPProvider({
   defaultPermissionMode: GOOSE_DEFAULT_MODE,
   permissionPresets: goosePermissionPresets,
   classifyToolCallUpdate: classifyGooseToolCallUpdate,
-  attachments: { text: true, image: true, pdf: false, audio: false, binary: false },
+  attachments: {
+    text: true,
+    image: true,
+    pdf: false,
+    audio: false,
+    binary: false,
+  },
 })

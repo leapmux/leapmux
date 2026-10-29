@@ -26,12 +26,18 @@ export function extractPiSearch(payload: Record<string, unknown>): SearchResult 
     || details?.linesTruncated === true
     || ['matchLimitReached', 'resultLimitReached', 'entryLimitReached'].some(key => pickCounter(details, key) !== undefined)
   // Pi appends its own notice after a blank line. Only remove it when metadata confirms a limit.
-  const noticeMatch = truncated ? PI_SEARCH_NOTICE.exec(text) : null
-  const content = noticeMatch ? text.slice(0, noticeMatch.index) : text
+  const noticeMatch = truncated
+    ? PI_SEARCH_NOTICE.exec(text)
+    : null
+  const content = noticeMatch
+    ? text.slice(0, noticeMatch.index)
+    : text
   const notice = noticeMatch?.[1]
   if (tool.toolName !== PI_SEARCH_TOOL.Grep) {
     const empty = content === 'No files found matching pattern' || content === '(empty directory)' || content === ''
-    const filenames = empty ? [] : content.split('\n').filter(line => line !== '')
+    const filenames = empty
+      ? []
+      : content.split('\n').filter(line => line !== '')
     return {
       filenames,
       numFiles: filenames.length,
@@ -40,22 +46,30 @@ export function extractPiSearch(payload: Record<string, unknown>): SearchResult 
       fallbackContent: empty ? '' : content,
       empty,
       truncated,
-      ...(notice !== undefined ? { notice } : {}),
+      ...(notice !== undefined
+        ? { notice }
+        : {}),
     }
   }
   const matches = grepMatches(content.split('\n'))
-  const matchCount = matches.lines.length || (content === 'No matches found' || content === '' ? 0 : undefined)
+  const matchCount = matches.lines.length || (content === 'No matches found' || content === ''
+    ? 0
+    : undefined)
   return {
     filenames: [],
     content,
     numFiles: matches.numFiles,
     numLines: matches.lines.length,
-    ...(matchCount !== undefined ? { matchCount } : {}),
+    ...(matchCount !== undefined
+      ? { matchCount }
+      : {}),
     fallbackContent: content,
     // The wording Pi prints for a grep that matched nothing, which the counter above
     // already reads. One spelling serves both.
     empty: content === 'No matches found' || content.trim() === '',
     truncated,
-    ...(notice !== undefined ? { notice } : {}),
+    ...(notice !== undefined
+      ? { notice }
+      : {}),
   }
 }

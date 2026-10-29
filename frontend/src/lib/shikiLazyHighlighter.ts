@@ -91,7 +91,9 @@ export interface LazyHighlighter {
  */
 export function resolveBundledLang(lang: string): BundledLanguage | undefined {
   const key = lang.toLowerCase()
-  return Object.hasOwn(bundledLanguages, key) ? (key as BundledLanguage) : undefined
+  return Object.hasOwn(bundledLanguages, key)
+    ? (key as BundledLanguage)
+    : undefined
 }
 
 export function createLazyOnigurumaHighlighter(): LazyHighlighter {
@@ -161,7 +163,9 @@ export function createLazyOnigurumaHighlighter(): LazyHighlighter {
     ensureLanguage,
     isLanguageLoaded: (lang) => {
       const canonical = resolveBundledLang(lang)
-      return canonical ? loaded.has(canonical) : false
+      return canonical
+        ? loaded.has(canonical)
+        : false
     },
     getHighlighter: () => highlighter,
     ensureThemes: async (pair) => {

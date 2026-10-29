@@ -19,7 +19,10 @@ export function diracOutputFileFrames(snapshot: Pick<NativeMessageSnapshot, 'age
   if (!snapshot.agentSessionId)
     throw new Error('The native Dirac output requires its current Worker session.')
   return snapshot.messages.filter(message => message.agentSessionId === snapshot.agentSessionId)
-    .map(message => ({ original: nativeMessageBody(message), supplemental: nativeMessageSupplement(message) }))
+    .map(message => ({
+      original: nativeMessageBody(message),
+      supplemental: nativeMessageSupplement(message),
+    }))
 }
 
 /** Read one final native log pointer without reading its file. */
@@ -32,7 +35,9 @@ export function diracNativeLogPath(output: unknown): string | undefined {
   if (pointers.length !== 1 || pointers[0] !== last)
     return undefined
   const path = last?.slice(DIRAC_OUTPUT_REFERENCE.TextPrefix.length)
-  return isFilesystemPath(path) && /[\\/]dirac[\\/]large-output-\d+-[a-z0-9]+\.log$/u.test(path) ? path : undefined
+  return isFilesystemPath(path) && /[\\/]dirac[\\/]large-output-\d+-[a-z0-9]+\.log$/u.test(path)
+    ? path
+    : undefined
 }
 
 /** Require the generated command owner and its declared private log path. */
@@ -41,7 +46,9 @@ export function diracNativeOutputPaths(frames: readonly DiracScriptFrame[], scri
     throw new Error('The native Dirac output requires its private runtime temp directory.')
   const receipt = diracScriptReceipt(frames, script)
   const path = diracNativeLogPath(receipt.output)
-  const parts = path ? relative(temporaryDir, path).split(sep) : []
+  const parts = path
+    ? relative(temporaryDir, path).split(sep)
+    : []
   if (!path || parts.length !== 2 || parts[0] !== DIRAC_OUTPUT_REFERENCE.DirectoryName || parts.includes('..'))
     throw new Error('The native Dirac log belongs to another runtime temp directory.')
   const closing = frames.filter(({ original }) => isObject(original) && acpClosedToolCall(original, receipt.callId))
@@ -50,6 +57,12 @@ export function diracNativeOutputPaths(frames: readonly DiracScriptFrame[], scri
   const preamble = receipt.exitCode === 0
     ? 'Command executed successfully (exit code 0).\nOutput:\n'
     : `Command failed with exit code ${receipt.exitCode}.\nOutput:\n`
-  const previewText = receipt.output.startsWith(preamble) ? receipt.output.slice(preamble.length) : receipt.output
-  return { ...receipt, paths: [path], previewText }
+  const previewText = receipt.output.startsWith(preamble)
+    ? receipt.output.slice(preamble.length)
+    : receipt.output
+  return {
+    ...receipt,
+    paths: [path],
+    previewText,
+  }
 }

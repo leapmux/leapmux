@@ -204,7 +204,12 @@ test.describe('chat scroll rail auto-hide', () => {
     // strip came back through another.
     const paint = await page.locator(RAIL).evaluate((el) => {
       const s = globalThis.getComputedStyle(el)
-      return { color: s.backgroundColor, image: s.backgroundImage, border: s.borderStyle, shadow: s.boxShadow }
+      return {
+        color: s.backgroundColor,
+        image: s.backgroundImage,
+        border: s.borderStyle,
+        shadow: s.boxShadow,
+      }
     })
     // An unset background computes to fully transparent, and every colour a rule
     // could set differs from it.
@@ -233,7 +238,9 @@ test.describe('chat scroll rail auto-hide', () => {
       'the row toolbar inset',
       (matches) => {
         const el = matches.find(candidate => candidate.isConnected)
-        return el ? globalThis.getComputedStyle(el).right : null
+        return el
+          ? globalThis.getComputedStyle(el).right
+          : null
       },
     )
     expect(await toolbarRight()).toBe('0px')
@@ -275,7 +282,12 @@ test.describe('chat scroll rail auto-hide', () => {
     // scrollTop stays at 0.
     await page.evaluate(({ railSel, x, y }) => {
       const el = document.querySelector(railSel)!
-      el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: x, clientY: y, pointerId: 1 }))
+      el.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true,
+        clientX: x,
+        clientY: y,
+        pointerId: 1,
+      }))
     }, { railSel: RAIL, x: clickX, y: clickY })
     await expect(rail).toHaveCSS('opacity', '1')
     await expect.poll(async () => await scroller.evaluate((el: HTMLElement) => el.scrollTop)).toBe(0)

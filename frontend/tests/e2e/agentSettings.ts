@@ -115,7 +115,9 @@ export function agentOpenOptions(provider: AgentProvider, overrides: AgentOpenOv
     agentProvider: provider,
     model: overrides.model ?? pinned.model,
     optionValues: {
-      ...(pinned.effort ? { [OPTION_ID_EFFORT]: pinned.effort } : {}),
+      ...(pinned.effort
+        ? { [OPTION_ID_EFFORT]: pinned.effort }
+        : {}),
       ...overrides.optionValues,
     },
   }

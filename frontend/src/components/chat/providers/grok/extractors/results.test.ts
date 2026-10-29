@@ -2,12 +2,16 @@ import { describe, expect, it } from 'vitest'
 import { grokCommandExit, grokDirectoryEntries, grokGrepResult, grokListResult, grokRawOutput, grokStreamText } from './results'
 
 function bytes(text: string): number[] {
-  return [...new TextEncoder().encode(text)]
+  return [
+    ...new TextEncoder().encode(text),
+  ]
 }
 
 describe('grokRawOutput', () => {
   it('answers the record only under its own type', () => {
-    const tool = { rawOutput: { type: 'Bash', exit_code: 0 } }
+    const tool = {
+      rawOutput: { type: 'Bash', exit_code: 0 },
+    }
     expect(grokRawOutput(tool, 'Bash')).toEqual({ type: 'Bash', exit_code: 0 })
     expect(grokRawOutput(tool, 'ListDir')).toBeUndefined()
     expect(grokRawOutput({ rawOutput: 'text' }, 'Bash')).toBeUndefined()
@@ -40,29 +44,48 @@ describe('grokStreamText', () => {
 
 describe('grokCommandExit', () => {
   it('reads the exit code', () => {
-    expect(grokCommandExit({ rawOutput: { type: 'Bash', exit_code: 2, signal: null } })).toEqual({ exitCode: 2 })
-    expect(grokCommandExit({ rawOutput: { type: 'Bash', exit_code: 0 } })).toEqual({ exitCode: 0 })
+    expect(grokCommandExit({
+      rawOutput: { type: 'Bash', exit_code: 2, signal: null },
+    })).toEqual({ exitCode: 2 })
+    expect(grokCommandExit({
+      rawOutput: { type: 'Bash', exit_code: 0 },
+    })).toEqual({ exitCode: 0 })
   })
 
   it('reads a signal ahead of the code Grok states beside it', () => {
-    expect(grokCommandExit({ rawOutput: { type: 'Bash', exit_code: -1, signal: 'SIGKILL' } })).toEqual({ signal: 'SIGKILL' })
+    expect(grokCommandExit({
+      rawOutput: { type: 'Bash', exit_code: -1, signal: 'SIGKILL' },
+    })).toEqual({ signal: 'SIGKILL' })
   })
 
   it('answers nothing for another output or a record with no exit', () => {
-    expect(grokCommandExit({ rawOutput: { type: 'BackgroundTaskStarted', task_id: 't' } })).toBeUndefined()
-    expect(grokCommandExit({ rawOutput: { type: 'Bash' } })).toBeUndefined()
-    expect(grokCommandExit({ rawOutput: { type: 'Bash', exit_code: '2' } })).toBeUndefined()
+    expect(grokCommandExit({
+      rawOutput: { type: 'BackgroundTaskStarted', task_id: 't' },
+    })).toBeUndefined()
+    expect(grokCommandExit({
+      rawOutput: { type: 'Bash' },
+    })).toBeUndefined()
+    expect(grokCommandExit({
+      rawOutput: { type: 'Bash', exit_code: '2' },
+    })).toBeUndefined()
   })
 
   it('reads the code when the signal is empty, and keeps a negative code', () => {
-    expect(grokCommandExit({ rawOutput: { type: 'Bash', exit_code: 1, signal: '' } })).toEqual({ exitCode: 1 })
-    expect(grokCommandExit({ rawOutput: { type: 'Bash', exit_code: -1, signal: null } })).toEqual({ exitCode: -1 })
+    expect(grokCommandExit({
+      rawOutput: { type: 'Bash', exit_code: 1, signal: '' },
+    })).toEqual({ exitCode: 1 })
+    expect(grokCommandExit({
+      rawOutput: { type: 'Bash', exit_code: -1, signal: null },
+    })).toEqual({ exitCode: -1 })
   })
 })
 
 describe('grokDirectoryEntries', () => {
   it('reads each entry relative to the root', () => {
-    expect(grokDirectoryEntries('- /w/probe/\n  - hello.txt\n  - probe.txt')).toEqual([{ path: 'hello.txt' }, { path: 'probe.txt' }])
+    expect(grokDirectoryEntries('- /w/probe/\n  - hello.txt\n  - probe.txt')).toEqual([
+      { path: 'hello.txt' },
+      { path: 'probe.txt' },
+    ])
   })
 
   it('reads a nested directory into the paths of its entries', () => {
@@ -82,7 +105,9 @@ describe('grokDirectoryEntries', () => {
   // An entry deeper than its parent allows states no parent, so the reader keeps its
   // name alone rather than fail or invent a directory.
   it('reads an entry that skips a level as its name alone', () => {
-    expect(grokDirectoryEntries('- /w/\n      - deep.ts')).toEqual([{ path: 'deep.ts' }])
+    expect(grokDirectoryEntries('- /w/\n      - deep.ts')).toEqual([
+      { path: 'deep.ts' },
+    ])
   })
 
   it('answers null for text that is not the tree', () => {
@@ -95,30 +120,59 @@ describe('grokDirectoryEntries', () => {
 
 describe('grokListResult', () => {
   it('reads the listing of a ListDir record', () => {
-    expect(grokListResult({ rawOutput: { type: 'ListDir', Content: { content: '- /w/\n  - a.txt', absolute_root_path: '/w' } } })).toEqual({ entries: [{ path: 'a.txt' }] })
+    expect(grokListResult({
+      rawOutput: {
+        type: 'ListDir',
+        Content: { content: '- /w/\n  - a.txt', absolute_root_path: '/w' },
+      },
+    })).toEqual({
+      entries: [
+        { path: 'a.txt' },
+      ],
+    })
   })
 
   it('answers null for another record', () => {
-    expect(grokListResult({ rawOutput: { type: 'ListDir', DirectoryNotFound: { path: '/x' } } })).toBeNull()
+    expect(grokListResult({
+      rawOutput: {
+        type: 'ListDir',
+        DirectoryNotFound: { path: '/x' },
+      },
+    })).toBeNull()
     expect(grokListResult({})).toBeNull()
   })
 })
 
 describe('grokGrepResult', () => {
   it('reads the grouped matches', () => {
-    const result = grokGrepResult({ rawOutput: {
-      type: 'GrepSearch',
-      stdout: bytes('Found 2 matching lines\n/w/a.txt\n1:probe\n'),
-      match_count: 2,
-      file_matches: [
-        { path: '/w/a.txt', matches: [{ line_number: 1, content: 'probe' }] },
-        { path: '/w/b.txt', matches: [{ line_number: 4, content: 'probe again' }] },
-      ],
-    } })
+    const result = grokGrepResult({
+      rawOutput: {
+        type: 'GrepSearch',
+        stdout: bytes('Found 2 matching lines\n/w/a.txt\n1:probe\n'),
+        match_count: 2,
+        file_matches: [
+          {
+            path: '/w/a.txt',
+            matches: [
+              { line_number: 1, content: 'probe' },
+            ],
+          },
+          {
+            path: '/w/b.txt',
+            matches: [
+              { line_number: 4, content: 'probe again' },
+            ],
+          },
+        ],
+      },
+    })
     expect(result).toEqual({
       filenames: ['/w/a.txt', '/w/b.txt'],
       content: '',
-      lines: [{ filePath: '/w/a.txt', lineNumber: 1, text: 'probe' }, { filePath: '/w/b.txt', lineNumber: 4, text: 'probe again' }],
+      lines: [
+        { filePath: '/w/a.txt', lineNumber: 1, text: 'probe' },
+        { filePath: '/w/b.txt', lineNumber: 4, text: 'probe again' },
+      ],
       numFiles: 2,
       numLines: 2,
       matchCount: 2,
@@ -129,40 +183,99 @@ describe('grokGrepResult', () => {
   })
 
   it('states an empty search as empty', () => {
-    const result = grokGrepResult({ rawOutput: { type: 'GrepSearch', stdout: '', match_count: 0, file_matches: [] } })
+    const result = grokGrepResult({
+      rawOutput: {
+        type: 'GrepSearch',
+        stdout: '',
+        match_count: 0,
+        file_matches: [],
+      },
+    })
     expect(result?.empty).toBe(true)
     expect(result?.numFiles).toBe(0)
   })
 
   it('counts the matches when Grok states no count', () => {
-    expect(grokGrepResult({ rawOutput: { type: 'GrepSearch', file_matches: [{ path: '/a', matches: [{ content: 'x' }, { line_number: 2, content: 'y' }] }] } })?.matchCount).toBe(2)
+    expect(grokGrepResult({
+      rawOutput: {
+        type: 'GrepSearch',
+        file_matches: [
+          {
+            path: '/a',
+            matches: [
+              { content: 'x' },
+              { line_number: 2, content: 'y' },
+            ],
+          },
+        ],
+      },
+    })?.matchCount).toBe(2)
   })
 
   it('names each file once, skips an entry that is no object, and states no line number that Grok omits', () => {
-    const result = grokGrepResult({ rawOutput: {
-      type: 'GrepSearch',
-      file_matches: [
-        { path: '/a', matches: [{ line_number: 1, content: 'x' }] },
-        'noise',
-        { path: '/a', matches: [{ content: 'y' }, 7] },
-        { path: '', matches: [{ line_number: 2, content: 'z' }] },
-        { path: '/b', matches: 'none' },
-      ],
-    } })
+    const result = grokGrepResult({
+      rawOutput: {
+        type: 'GrepSearch',
+        file_matches: [
+          {
+            path: '/a',
+            matches: [
+              { line_number: 1, content: 'x' },
+            ],
+          },
+          'noise',
+          {
+            path: '/a',
+            matches: [
+              { content: 'y' },
+              7,
+            ],
+          },
+          {
+            path: '',
+            matches: [
+              { line_number: 2, content: 'z' },
+            ],
+          },
+          { path: '/b', matches: 'none' },
+        ],
+      },
+    })
     expect(result?.filenames).toEqual(['/a'])
     expect(result?.numFiles).toBe(1)
-    expect(result?.lines).toEqual([{ filePath: '/a', lineNumber: 1, text: 'x' }, { filePath: '/a', text: 'y' }, { filePath: '', lineNumber: 2, text: 'z' }])
+    expect(result?.lines).toEqual([
+      { filePath: '/a', lineNumber: 1, text: 'x' },
+      { filePath: '/a', text: 'y' },
+      { filePath: '', lineNumber: 2, text: 'z' },
+    ])
     expect(result?.matchCount).toBe(3)
   })
 
   // Grok's own count wins: it counts the matches it found, and the file groups can
   // hold fewer when Grok cut the list.
   it('keeps the count that Grok states over the lines it grouped', () => {
-    expect(grokGrepResult({ rawOutput: { type: 'GrepSearch', match_count: 250, file_matches: [{ path: '/a', matches: [{ content: 'x' }] }] } })?.matchCount).toBe(250)
+    expect(grokGrepResult({
+      rawOutput: {
+        type: 'GrepSearch',
+        match_count: 250,
+        file_matches: [
+          {
+            path: '/a',
+            matches: [
+              { content: 'x' },
+            ],
+          },
+        ],
+      },
+    })?.matchCount).toBe(250)
   })
 
   it('answers null for a record without the grouped matches', () => {
-    expect(grokGrepResult({ rawOutput: { type: 'GrepSearch', stdout: [] } })).toBeNull()
-    expect(grokGrepResult({ rawOutput: { type: 'Bash' } })).toBeNull()
+    expect(grokGrepResult({
+      rawOutput: { type: 'GrepSearch', stdout: [] },
+    })).toBeNull()
+    expect(grokGrepResult({
+      rawOutput: { type: 'Bash' },
+    })).toBeNull()
   })
 })

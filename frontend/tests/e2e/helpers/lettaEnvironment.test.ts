@@ -7,7 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { exeExtensionOnPath } from './binaryOnPath'
 import { createLettaEnvironment } from './lettaEnvironment'
 
-const setup = vi.hoisted(() => ({ execute: vi.fn<(file: string, args?: readonly string[], options?: ExecFileSyncOptions) => Buffer>() }))
+const setup = vi.hoisted(() => ({
+  execute: vi.fn<(file: string, args?: readonly string[], options?: ExecFileSyncOptions) => Buffer>(),
+}))
 
 // The Letta setup commands run an installed CLI. These tests answer them with a recorder.
 vi.mock('node:child_process', async (importOriginal) => {
@@ -20,7 +22,9 @@ vi.mock('node:child_process', async (importOriginal) => {
           callback(null, setup.execute(file, args, options).toString(), '')
         }
         catch (error) {
-          callback(error instanceof Error ? error : new Error(String(error)), '', '')
+          callback(error instanceof Error
+            ? error
+            : new Error(String(error)), '', '')
         }
       })
       return new actual.ChildProcess()
@@ -31,7 +35,16 @@ vi.mock('node:child_process', async (importOriginal) => {
 let runDirectory: string
 let previousPath: string | undefined
 const temporaryEnv = { TMPDIR: '/unit/tmp', TEMP: '/unit/tmp', TMP: '/unit/tmp' }
-const options = () => ({ runDirectory, homeDir: join(runDirectory, 'home'), shimsDirectory: join(runDirectory, 'shims'), baseURL: 'http://127.0.0.1:4567/v1', modelKey: 'unit-key', temporaryEnv })
+function options() {
+  return {
+    runDirectory,
+    homeDir: join(runDirectory, 'home'),
+    shimsDirectory: join(runDirectory, 'shims'),
+    baseURL: 'http://127.0.0.1:4567/v1',
+    modelKey: 'unit-key',
+    temporaryEnv,
+  }
+}
 
 beforeEach(() => {
   const scratch = resolve(import.meta.dirname, '../../../../.tmp')
@@ -56,7 +69,10 @@ describe('createLettaEnvironment', () => {
   it('provides private ChatGPT credentials with the native account claim', async () => {
     const env = await createLettaEnvironment(options())
     const auth = JSON.parse(readFileSync(join(env.LETTA_LOCAL_BACKEND_DIR!, 'providers', 'auth.json'), 'utf8'))
-    expect(auth.providers['openai-codex']).toMatchObject({ provider_type: 'chatgpt_oauth', auth: { type: 'oauth', accountId: 'leapmux-letta-mock-account' } })
+    expect(auth.providers['openai-codex']).toMatchObject({
+      provider_type: 'chatgpt_oauth',
+      auth: { type: 'oauth', accountId: 'leapmux-letta-mock-account' },
+    })
     const payload = JSON.parse(Buffer.from(auth.providers['openai-codex'].auth.access.split('.')[1], 'base64').toString('utf8'))
     expect(payload['https://api.openai.com/auth'].chatgpt_account_id).toBe('leapmux-letta-mock-account')
     expect(env).not.toHaveProperty('NODE_OPTIONS')
@@ -88,8 +104,15 @@ describe('createLettaEnvironment', () => {
       DISABLE_AUTOUPDATER: '1',
     })
     const auth = JSON.parse(readFileSync(join(env.LETTA_LOCAL_BACKEND_DIR!, 'providers', 'auth.json'), 'utf8'))
-    expect(auth.providers['openai-compatible']).toEqual({ auth: { type: 'api', key: 'unit-key' }, base_url: 'http://127.0.0.1:4567/v1' })
-    expect(auth.providers.openai).toMatchObject({ provider_type: 'openai', auth: { type: 'api', key: 'unit-key' }, base_url: 'http://127.0.0.1:4567/v1' })
+    expect(auth.providers['openai-compatible']).toEqual({
+      auth: { type: 'api', key: 'unit-key' },
+      base_url: 'http://127.0.0.1:4567/v1',
+    })
+    expect(auth.providers.openai).toMatchObject({
+      provider_type: 'openai',
+      auth: { type: 'api', key: 'unit-key' },
+      base_url: 'http://127.0.0.1:4567/v1',
+    })
     expect(JSON.parse(readFileSync(join(env.LETTA_HOME!, 'settings.json'), 'utf8'))).toEqual({ preferredBackendMode: 'local' })
   })
 
@@ -101,17 +124,44 @@ describe('createLettaEnvironment', () => {
   it('runs both setup commands against the isolated store, with no proxy and the updater off', async () => {
     const binaries = join(runDirectory, 'binaries')
     mkdirSync(binaries)
-    const letta = join(binaries, process.platform === 'win32' ? `letta${exeExtensionOnPath()}` : 'letta')
+    const letta = join(binaries, process.platform === 'win32'
+      ? `letta${exeExtensionOnPath()}`
+      : 'letta')
     writeFileSync(letta, 'controlled setup boundary', { mode: 0o755 })
     process.env.PATH = binaries
     const env = await createLettaEnvironment(options())
     expect(setup.execute.mock.calls.map(([file, args]) => [file, args])).toEqual([
-      [letta, ['backend', 'local']],
-      [letta, ['connect', 'openai-compatible', '--base-url', 'http://127.0.0.1:4567/v1', '--api-key', 'unit-key']],
+      [
+        letta,
+        ['backend', 'local'],
+      ],
+      [
+        letta,
+        [
+          'connect',
+          'openai-compatible',
+          '--base-url',
+          'http://127.0.0.1:4567/v1',
+          '--api-key',
+          'unit-key',
+        ],
+      ],
     ])
     for (const [, , commandOptions] of setup.execute.mock.calls) {
-      expect(commandOptions?.env).toMatchObject({ ...temporaryEnv, HOME: env.LETTA_HOME, DISABLE_AUTOUPDATER: '1', NO_PROXY: '127.0.0.1,localhost' })
-      for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy'])
+      expect(commandOptions?.env).toMatchObject({
+        ...temporaryEnv,
+        HOME: env.LETTA_HOME,
+        DISABLE_AUTOUPDATER: '1',
+        NO_PROXY: '127.0.0.1,localhost',
+      })
+      for (const key of [
+        'HTTP_PROXY',
+        'HTTPS_PROXY',
+        'http_proxy',
+        'https_proxy',
+        'ALL_PROXY',
+        'all_proxy',
+      ])
         expect(commandOptions?.env, key).not.toHaveProperty(key)
     }
   })
@@ -119,7 +169,9 @@ describe('createLettaEnvironment', () => {
   it('reports failed native setup without continuing to another command', async () => {
     const binaries = join(runDirectory, 'binaries')
     mkdirSync(binaries)
-    writeFileSync(join(binaries, process.platform === 'win32' ? 'letta.exe' : 'letta'), 'controlled setup boundary', { mode: 0o755 })
+    writeFileSync(join(binaries, process.platform === 'win32'
+      ? 'letta.exe'
+      : 'letta'), 'controlled setup boundary', { mode: 0o755 })
     process.env.PATH = binaries
     setup.execute.mockImplementation(() => {
       throw new Error('The store is already prepared.')

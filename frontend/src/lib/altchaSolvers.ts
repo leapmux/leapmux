@@ -26,7 +26,9 @@ declare global {
 // solved), but it may be empty or missing in malformed responses — treat
 // those as nothing to register rather than throwing.
 export async function ensureAltchaSolver(algorithm: string | undefined | null): Promise<void> {
-  const registry = typeof window !== 'undefined' ? window.$altcha?.algorithms : undefined
+  const registry = typeof window !== 'undefined'
+    ? window.$altcha?.algorithms
+    : undefined
   if (!registry || !algorithm || registry.has(algorithm)) {
     return
   }

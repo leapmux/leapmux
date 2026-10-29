@@ -29,7 +29,9 @@ describe('acpToolSupplement', () => {
 describe('acpSupplementTerminals', () => {
   it('reads every field the worker stored for a terminal', () => {
     const terminals = acpSupplementTerminals({
-      terminals: { 'term-1': { output: 'ok\n', truncated: true, exitCode: 3 } },
+      terminals: {
+        'term-1': { output: 'ok\n', truncated: true, exitCode: 3 },
+      },
     })
     expect(terminals.get('term-1')).toEqual({ output: 'ok\n', truncated: true, exitCode: 3 })
   })
@@ -39,7 +41,14 @@ describe('acpSupplementTerminals', () => {
   // process has no status of its own, so any code beside it is noise.
   it('keeps one half of an ill-formed pair, and it is the signal', () => {
     const terminals = acpSupplementTerminals({
-      terminals: { 'term-1': { output: '', truncated: false, exitCode: 3, signal: 'killed' } },
+      terminals: {
+        'term-1': {
+          output: '',
+          truncated: false,
+          exitCode: 3,
+          signal: 'killed',
+        },
+      },
     })
     expect(terminals.get('term-1')).toEqual({ output: '', truncated: false, signal: 'killed' })
   })
@@ -47,9 +56,17 @@ describe('acpSupplementTerminals', () => {
   // The worker omits `exitCode` for a signalled process and `signal` for a normal
   // exit, so each one must be absent rather than answered as a default.
   it('leaves out the field the worker omitted', () => {
-    expect(acpSupplementTerminals({ terminals: { a: { output: '', truncated: false, exitCode: 0 } } }).get('a'))
+    expect(acpSupplementTerminals({
+      terminals: {
+        a: { output: '', truncated: false, exitCode: 0 },
+      },
+    }).get('a'))
       .toEqual({ output: '', truncated: false, exitCode: 0 })
-    expect(acpSupplementTerminals({ terminals: { a: { output: '', signal: 'terminated' } } }).get('a'))
+    expect(acpSupplementTerminals({
+      terminals: {
+        a: { output: '', signal: 'terminated' },
+      },
+    }).get('a'))
       .toEqual({ output: '', truncated: false, signal: 'terminated' })
   })
 
@@ -57,7 +74,13 @@ describe('acpSupplementTerminals', () => {
   // terminal it can read from one the host no longer holds, and `''` would read as a
   // command that printed nothing.
   it('drops an entry whose output is not text', () => {
-    expect(acpSupplementTerminals({ terminals: { a: { output: 7 }, b: 'nope', c: { truncated: true } } }).size).toBe(0)
+    expect(acpSupplementTerminals({
+      terminals: {
+        a: { output: 7 },
+        b: 'nope',
+        c: { truncated: true },
+      },
+    }).size).toBe(0)
   })
 
   it('answers nothing for a supplement that stores no terminal', () => {
@@ -69,17 +92,31 @@ describe('acpSupplementTerminals', () => {
   // with a function off `Object.prototype`, and the caller then reads an entry whose
   // `output` is undefined through a field the model declares as `string` -- which the
   // command body dereferences and crashes on.
-  it.each(['toString', 'constructor', 'valueOf', 'hasOwnProperty', '__proto__'])('holds no entry for the inherited id %s', (id) => {
+  it.each([
+    'toString',
+    'constructor',
+    'valueOf',
+    'hasOwnProperty',
+    '__proto__',
+  ])('holds no entry for the inherited id %s', (id) => {
     expect(acpSupplementTerminals(undefined).get(id)).toBeUndefined()
-    expect(acpSupplementTerminals({ terminals: { 'term-1': { output: 'ok' } } }).get(id)).toBeUndefined()
+    expect(acpSupplementTerminals({
+      terminals: {
+        'term-1': { output: 'ok' },
+      },
+    }).get(id)).toBeUndefined()
   })
 })
 
 describe('acp supplement payload readers', () => {
   it('answer only an object payload', () => {
-    expect(acpSupplementProtocol({ protocol: { content: [] } })).toEqual({ content: [] })
+    expect(acpSupplementProtocol({
+      protocol: { content: [] },
+    })).toEqual({ content: [] })
     expect(acpSupplementProtocol({ protocol: 'x' })).toBeUndefined()
-    expect(acpSupplementRawOutput({ rawOutput: { content: [] } })).toEqual({ content: [] })
+    expect(acpSupplementRawOutput({
+      rawOutput: { content: [] },
+    })).toEqual({ content: [] })
     expect(acpSupplementRawOutput(undefined)).toBeUndefined()
   })
 })

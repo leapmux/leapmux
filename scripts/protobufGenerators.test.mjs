@@ -6,7 +6,11 @@ import { describe, expect, it } from 'bun:test'
 
 const root = resolve(import.meta.dirname, '..')
 const config = Bun.YAML.parse(readFileSync(join(root, 'buf.gen.yaml'), 'utf8'))
-const result = spawnSync('go', ['mod', 'edit', '-json'], { cwd: join(root, 'backend'), encoding: 'utf8', env: { ...process.env, GOWORK: 'off', GOTOOLCHAIN: 'local' } })
+const result = spawnSync('go', ['mod', 'edit', '-json'], {
+  cwd: join(root, 'backend'),
+  encoding: 'utf8',
+  env: { ...process.env, GOWORK: 'off', GOTOOLCHAIN: 'local' },
+})
 expect(result.status, result.stderr).toBe(0)
 const requirements = JSON.parse(result.stdout).Require
 const frontend = JSON.parse(readFileSync(join(root, 'frontend/package.json'), 'utf8'))

@@ -29,10 +29,12 @@ const normalizedCommandBodyCalls = vi.hoisted(() => vi.fn())
 const tokenizeAsyncCalls = vi.hoisted(() => vi.fn())
 const tokenizeAsyncMock = vi.hoisted(() => vi.fn(async (lang: string, code: string) => {
   tokenizeAsyncCalls(lang, code)
-  return code.split('\n').map(line => [{
-    content: line,
-    className: 'sk-cmd-test',
-  }])
+  return code.split('\n').map(line => [
+    {
+      content: line,
+      className: 'sk-cmd-test',
+    },
+  ])
 }))
 const renderAnsiCalls = vi.hoisted(() => vi.fn())
 
@@ -103,7 +105,14 @@ describe('pi command syntax', () => {
   it('uses PowerShell syntax for the PowerShell tool', async () => {
     tokenizeAsyncCalls.mockClear()
     const command = 'Get-ChildItem -Path .'
-    renderPiToolRow({ payload: { type: 'tool_execution_start', toolName: 'powershell', toolCallId: 'ps', args: { command } } })
+    renderPiToolRow({
+      payload: {
+        type: 'tool_execution_start',
+        toolName: 'powershell',
+        toolCallId: 'ps',
+        args: { command },
+      },
+    })
     await waitFor(() => expect(tokenizeAsyncCalls).toHaveBeenCalled())
     expect(tokenizeAsyncCalls).toHaveBeenCalledWith('powershell', command)
   })
@@ -127,8 +136,21 @@ function renderClaudeToolUse(
   context?: MessageContentRenderContext,
 ) {
   const args = () => props.input
-  const toolUse = () => ({ type: 'tool_use', id: 'toolu_1', name: toolName, input: args() })
-  const parsed = () => ({ type: 'assistant', message: { role: 'assistant', content: [toolUse()] } })
+  const toolUse = () => ({
+    type: 'tool_use',
+    id: 'toolu_1',
+    name: toolName,
+    input: args(),
+  })
+  const parsed = () => ({
+    type: 'assistant',
+    message: {
+      role: 'assistant',
+      content: [
+        toolUse(),
+      ],
+    },
+  })
   const category = (): MessageCategory => ({ kind: 'tool_use' })
   return render(() => <>{renderMessageContent(parsed(), context, category(), AgentProvider.CLAUDE_CODE)}</>)
 }
@@ -138,9 +160,18 @@ function makeBashResult(toolUseResult: Record<string, unknown> | undefined, cont
     type: 'user',
     message: {
       role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: 'r1', content, is_error: isError }],
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'r1',
+          content,
+          is_error: isError,
+        },
+      ],
     },
-    ...(toolUseResult ? { tool_use_result: toolUseResult } : {}),
+    ...(toolUseResult
+      ? { tool_use_result: toolUseResult }
+      : {}),
   }
 }
 
@@ -165,7 +196,12 @@ function renderCodexMessageBubble(item: Record<string, unknown>, host?: MessageB
   // The prepared row ChatView would have supplied, stated rather than derived: this
   // fixture carries no `item.id`, so Codex's own classifier calls it `unknown`, and
   // these cases are about the mounted row's toolbar rather than the classification.
-  const content: ParsedMessageContent = { rawText: JSON.stringify(parsed), topLevel: parsed, parentObject: parsed, wrapper: null }
+  const content: ParsedMessageContent = {
+    rawText: JSON.stringify(parsed),
+    topLevel: parsed,
+    parentObject: parsed,
+    wrapper: null,
+  }
   const prepared: PreparedMessage = {
     compactionStartOnly: false,
     message,
@@ -177,8 +213,12 @@ function renderCodexMessageBubble(item: Record<string, unknown>, host?: MessageB
     <MessageBubble
       message={message}
       prepared={prepared}
-      {...(host !== undefined ? { host } : {})}
-      {...(opts.premeasureMode !== undefined ? { premeasureMode: opts.premeasureMode } : {})}
+      {...(host !== undefined
+        ? { host }
+        : {})}
+      {...(opts.premeasureMode !== undefined
+        ? { premeasureMode: opts.premeasureMode }
+        : {})}
     />
   ))
 }
@@ -225,8 +265,21 @@ async function settleCommandOverflowMeasure(): Promise<void> {
 function renderOpenCodeUpdateCommand(props: { rawInput: Record<string, unknown> }) {
   const args = () => props.rawInput
   const category = { kind: 'tool_use' } as MessageCategory
-  const parsed = () => input({ sessionUpdate: 'tool_call', toolCallId: 'acp-1', status: 'pending', kind: 'execute', title: 'Run command', rawInput: args() })
-  return render(() => <>{renderMessageContent(parsed(), { sources: testMessageSources({ current: parsed }) }, category, AgentProvider.OPENCODE)}</>)
+  const parsed = () => input({
+    sessionUpdate: 'tool_call',
+    toolCallId: 'acp-1',
+    status: 'pending',
+    kind: 'execute',
+    title: 'Run command',
+    rawInput: args(),
+  })
+  return render(() => (
+    <>
+      {renderMessageContent(parsed(), {
+        sources: testMessageSources({ current: parsed }),
+      }, category, AgentProvider.OPENCODE)}
+    </>
+  ))
 }
 
 function showFullCommandButton(container: HTMLElement): HTMLButtonElement | null {
@@ -259,8 +312,15 @@ describe('canonical command status label across providers', () => {
       status: 'completed',
       title: 'Run something',
       rawInput: { command: 'false' },
-      rawOutput: { metadata: { exit: 5 } },
-      content: [{ type: 'content', content: { text: 'failed' } }],
+      rawOutput: {
+        metadata: { exit: 5 },
+      },
+      content: [
+        {
+          type: 'content',
+          content: { text: 'failed' },
+        },
+      ],
     })
     expect(container.textContent ?? '').toContain('Error (exit 5)')
   })
@@ -272,10 +332,15 @@ describe('canonical command status label across providers', () => {
       status: 'completed',
       title: 'Run something',
       rawInput: { command: 'echo hi' },
-      rawOutput: { metadata: { exit: 0 } },
+      rawOutput: {
+        metadata: { exit: 0 },
+      },
       content: [
         { type: 'terminal', terminalId: 'term_abc123' },
-        { type: 'content', content: { text: 'hi\n' } },
+        {
+          type: 'content',
+          content: { text: 'hi\n' },
+        },
       ],
     })
     expect(container.textContent ?? '').toContain('Terminal term_abc123')
@@ -292,10 +357,19 @@ describe('canonical command status label across providers', () => {
       status: 'completed',
       title: 'Run verbose command',
       rawInput: { command: 'echo verbose' },
-      rawOutput: { metadata: { exit: 0 } },
-      content: [{ type: 'content', content: { text: output } }],
+      rawOutput: {
+        metadata: { exit: 0 },
+      },
+      content: [
+        {
+          type: 'content',
+          content: { text: output },
+        },
+      ],
     }, {
-      getMessageUiState: key => key === 'tool-result-expanded' ? expanded() : undefined,
+      getMessageUiState: key => key === 'tool-result-expanded'
+        ? expanded()
+        : undefined,
       setMessageUiState: (key, value) => {
         if (key === 'tool-result-expanded')
           setExpanded(value)
@@ -478,10 +552,14 @@ describe('command summary syntax highlighting selection stability', () => {
 
     // Pause, then the in-flight worker resolves WHILE paused: stashed, not yet applied.
     setPaused(true)
-    resolveTokens?.([[{
-      content: 'echo paused',
-      className: 'sk-cmd-stash',
-    }]])
+    resolveTokens?.([
+      [
+        {
+          content: 'echo paused',
+          className: 'sk-cmd-stash',
+        },
+      ],
+    ])
     await Promise.resolve()
 
     expect(container.querySelector('span[data-shiki-token]')).toBeNull()
@@ -519,7 +597,9 @@ describe('command summary syntax highlighting selection stability', () => {
   it('expands the command summary in place, clipping and unclipping one area', async () => {
     const dims = mockCollapsedCommandOverflow()
     try {
-      const { container } = renderClaudeToolUse('Bash', { input: { command: 'echo one\necho two\necho three\necho four' } })
+      const { container } = renderClaudeToolUse('Bash', {
+        input: { command: 'echo one\necho two\necho three\necho four' },
+      })
       await settleCommandOverflowMeasure()
 
       const button = showFullCommandButton(container)
@@ -547,12 +627,36 @@ describe('command summary syntax highlighting selection stability', () => {
   it('a paired Bash result draws the output alone, never the command again', () => {
     const request = input({
       type: 'assistant',
-      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'r1', name: 'Bash', input: { command: 'printf pair-only-marker', description: 'Say it' } }] },
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'r1',
+            name: 'Bash',
+            input: { command: 'printf pair-only-marker', description: 'Say it' },
+          },
+        ],
+      },
     })
     const result = input(makeBashResult({ tool_name: 'Bash', stdout: 'the output words' }, 'the output words'))
     const { container } = render(() => [
-      renderMessageContent(request, { sources: testMessageSources({ current: () => request, result: () => result, role: () => 'request', visibleRows: () => ({ request: true, result: true }) }) }, { kind: 'tool_use' }, AgentProvider.CLAUDE_CODE),
-      renderMessageContent(result, { sources: testMessageSources({ current: () => result, request: () => request, role: () => 'result', visibleRows: () => ({ request: true, result: true }) }) }, { kind: 'tool_result' }, AgentProvider.CLAUDE_CODE),
+      renderMessageContent(request, {
+        sources: testMessageSources({
+          current: () => request,
+          result: () => result,
+          role: () => 'request',
+          visibleRows: () => ({ request: true, result: true }),
+        }),
+      }, { kind: 'tool_use' }, AgentProvider.CLAUDE_CODE),
+      renderMessageContent(result, {
+        sources: testMessageSources({
+          current: () => result,
+          request: () => request,
+          role: () => 'result',
+          visibleRows: () => ({ request: true, result: true }),
+        }),
+      }, { kind: 'tool_result' }, AgentProvider.CLAUDE_CODE),
     ])
     // The request states the command. The completing row states what it answered.
     expect(container.textContent ?? '').toContain('the output words')
@@ -566,7 +670,9 @@ describe('command summary syntax highlighting selection stability', () => {
       scrollHeight.mockReturnValue(96)
       clientHeight.mockReturnValue(58)
 
-      const { container } = renderClaudeToolUse('Bash', { input: { command: 'echo short but visually wrapped' } })
+      const { container } = renderClaudeToolUse('Bash', {
+        input: { command: 'echo short but visually wrapped' },
+      })
       await new Promise(resolve => setTimeout(resolve, 0))
 
       expect(container.querySelector('[aria-label="Show full command"]')).not.toBeNull()
@@ -583,7 +689,9 @@ describe('command summary syntax highlighting selection stability', () => {
       const [command, setCommand] = createSignal('echo short but visually wrapped')
       const { container } = renderClaudeToolUse('Bash', {
         get input() {
-          return { command: command() }
+          return {
+            command: command(),
+          }
         },
       })
       await settleCommandOverflowMeasure()
@@ -608,7 +716,14 @@ describe('command summary syntax highlighting selection stability', () => {
       const [command, setCommand] = createSignal('echo short but visually wrapped')
       const { container } = renderPiToolRow({
         get payload() {
-          return { type: 'tool_execution_start', toolCallId: 'call_bash_1', toolName: 'bash', args: { command: command() } }
+          return {
+            type: 'tool_execution_start',
+            toolCallId: 'call_bash_1',
+            toolName: 'bash',
+            args: {
+              command: command(),
+            },
+          }
         },
       })
       await settleCommandOverflowMeasure()
@@ -633,7 +748,9 @@ describe('command summary syntax highlighting selection stability', () => {
       const [command, setCommand] = createSignal('echo short but visually wrapped')
       const { container } = renderOpenCodeUpdateCommand({
         get rawInput() {
-          return { command: command() }
+          return {
+            command: command(),
+          }
         },
       })
       await settleCommandOverflowMeasure()
@@ -922,7 +1039,16 @@ describe('command result \\r progress normalization', () => {
   })
 
   it('claude Bash: 8 \\r-separated progress segments collapse to head 3 + … + tail 3', () => {
-    const stdout = ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8'].join('\r')
+    const stdout = [
+      's1',
+      's2',
+      's3',
+      's4',
+      's5',
+      's6',
+      's7',
+      's8',
+    ].join('\r')
     const parsed = makeBashResult({ tool_name: 'Bash', stdout }, '')
     const { container } = renderClaudeToolResult(parsed, { spanType: 'Bash' })
     const text = container.textContent ?? ''
@@ -977,7 +1103,14 @@ describe('command result collapsibility accounts for \\r-normalized line count',
 
   it('codex commandExecution: rebase-style \\r progress is reported as collapsible', () => {
     const aggregatedOutput = 'From origin\n * branch    main       -> FETCH_HEAD\nRebasing (1/6)\rRebasing (2/6)\rRebasing (3/6)\rRebasing (4/6)\rRebasing (5/6)\rRebasing (6/6)\rDone.'
-    const meta = providerToolMeta(AgentProvider.CODEX, { item: { type: 'commandExecution', status: 'completed', aggregatedOutput, exitCode: 0 } }, { spanType: 'commandExecution' })
+    const meta = providerToolMeta(AgentProvider.CODEX, {
+      item: {
+        type: 'commandExecution',
+        status: 'completed',
+        aggregatedOutput,
+        exitCode: 0,
+      },
+    }, { spanType: 'commandExecution' })
     expect(meta?.collapsible).toBe(true)
   })
 })
@@ -988,34 +1121,134 @@ describe('retained command completion', () => {
   // `spanType` is the worker's record of the tool name. Copilot's completion event
   // carries no name of its own, so that record is what identifies the command.
   const cases: Array<{ provider: AgentProvider, result: Record<string, unknown>, spanType?: string }> = [
-    { provider: AgentProvider.CODEX, result: { item: { id: 'call', type: 'commandExecution', status: 'inProgress', command, aggregatedOutput: output } } },
-    { provider: AgentProvider.PI, result: { type: 'tool_execution_end', toolCallId: 'call', toolName: 'bash', args: { command }, result: { content: [{ type: 'text', text: output }] }, isError: true } },
-    { provider: AgentProvider.ZCODE, result: { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'call', toolName: 'Bash', input: { command }, result: { success: false, content: output } } } },
+    {
+      provider: AgentProvider.CODEX,
+      result: {
+        item: {
+          id: 'call',
+          type: 'commandExecution',
+          status: 'inProgress',
+          command,
+          aggregatedOutput: output,
+        },
+      },
+    },
+    {
+      provider: AgentProvider.PI,
+      result: {
+        type: 'tool_execution_end',
+        toolCallId: 'call',
+        toolName: 'bash',
+        args: { command },
+        result: {
+          content: [
+            { type: 'text', text: output },
+          ],
+        },
+        isError: true,
+      },
+    },
+    {
+      provider: AgentProvider.ZCODE,
+      result: {
+        type: 'tool.updated',
+        payload: {
+          kind: 'result',
+          toolCallId: 'call',
+          toolName: 'Bash',
+          input: { command },
+          result: { success: false, content: output },
+        },
+      },
+    },
     // omp's retained row is the call's own START frame, with the partial result the
     // worker kept beside it already merged in.
-    { provider: AgentProvider.OH_MY_PI, result: { type: 'tool_execution_start', toolCallId: 'call', toolName: 'bash', args: { command }, result: { content: [{ type: 'text', text: output }], details: {} } } },
+    {
+      provider: AgentProvider.OH_MY_PI,
+      result: {
+        type: 'tool_execution_start',
+        toolCallId: 'call',
+        toolName: 'bash',
+        args: { command },
+        result: {
+          content: [
+            { type: 'text', text: output },
+          ],
+          details: {},
+        },
+      },
+    },
     // Copilot's interrupted command is its own completion event. The turn's
     // interruption reaches the row as the message completion, not as a status word.
-    { provider: AgentProvider.GITHUB_COPILOT, result: copilotToolComplete('call', { success: false, result: { content: output } }), spanType: 'bash' },
+    {
+      provider: AgentProvider.GITHUB_COPILOT,
+      result: copilotToolComplete('call', {
+        success: false,
+        result: { content: output },
+      }),
+      spanType: 'bash',
+    },
     // Kimi Code sends no result for a call its turn cut off: the worker stores the
     // call's own start again, with the output it printed before it stopped.
-    { provider: AgentProvider.KIMI_CODE, result: { ...kimiToolStart('call', 'Bash', { command }), output }, spanType: 'Bash' },
+    {
+      provider: AgentProvider.KIMI_CODE,
+      result: {
+        ...kimiToolStart('call', 'Bash', { command }),
+        output,
+      },
+      spanType: 'Bash',
+    },
     // MiMo's cut command is its last running update, which states the output so far.
-    { provider: AgentProvider.MIMO_CODE, result: toolFrame(MIMO_TOOL.Bash, { status: MIMO_TOOL_STATUS.Running, input: { command }, metadata: { output } }, 'call'), spanType: MIMO_TOOL.Bash },
-    ...[AgentProvider.OPENCODE, AgentProvider.KILO, AgentProvider.GOOSE, AgentProvider.REASONIX, AgentProvider.CURSOR, AgentProvider.GROK_BUILD, AgentProvider.KIRO, AgentProvider.QWEN_CODE].map(provider => ({
+    {
+      provider: AgentProvider.MIMO_CODE,
+      result: toolFrame(MIMO_TOOL.Bash, {
+        status: MIMO_TOOL_STATUS.Running,
+        input: { command },
+        metadata: { output },
+      }, 'call'),
+      spanType: MIMO_TOOL.Bash,
+    },
+    ...[
+      AgentProvider.OPENCODE,
+      AgentProvider.KILO,
+      AgentProvider.GOOSE,
+      AgentProvider.REASONIX,
+      AgentProvider.CURSOR,
+      AgentProvider.GROK_BUILD,
+      AgentProvider.KIRO,
+      AgentProvider.QWEN_CODE,
+    ].map(provider => ({
       provider,
-      result: { sessionUpdate: 'tool_call_update', toolCallId: 'call', title: 'Run command', kind: 'execute', status: 'in_progress', rawInput: { command }, content: [{ type: 'content', content: { type: 'text', text: output } }] },
+      result: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'call',
+        title: 'Run command',
+        kind: 'execute',
+        status: 'in_progress',
+        rawInput: { command },
+        content: [
+          {
+            type: 'content',
+            content: { type: 'text', text: output },
+          },
+        ],
+      },
     })),
   ]
   it.each(cases)('uses the shared interrupted result for provider $provider', ({ provider, result, spanType }) => {
-    const parsed = { ...input(result, null, provider), completion: MessageCompletion.INTERRUPTED }
+    const parsed = {
+      ...input(result, null, provider),
+      completion: MessageCompletion.INTERRUPTED,
+    }
     const plugin = providerFor(provider)!
     expect(['tool_use', 'tool_result']).toContain(plugin?.transcript.classify(parsed).kind)
     expect(plugin?.transcript.spanRole?.(parsed)).toBe('result')
     const { container } = render(() => renderMessageContent(result, {
       premeasureMode: true,
       spanType,
-      sources: testMessageSources({ current: () => parsed }),
+      sources: testMessageSources({
+        current: () => parsed,
+      }),
     }, plugin?.transcript.classify(parsed), provider, MessageCompletion.INTERRUPTED))
     expect(container.textContent).toContain(output)
     expect(container.textContent).toContain('Interrupted')
@@ -1034,24 +1267,71 @@ describe('canonical failure word across the two routes', () => {
   const output = 'partial output before the failure'
   const command = 'false'
   const cases: Array<{ provider: AgentProvider, result: Record<string, unknown>, spanType?: string }> = [
-    { provider: AgentProvider.CLAUDE_CODE, result: makeBashResult({ tool_name: 'Bash', stdout: output, stderr: '' }, output, true), spanType: 'Bash' },
-    { provider: AgentProvider.GITHUB_COPILOT, result: copilotToolComplete('call', { success: false, result: { content: output } }), spanType: 'bash' },
-    { provider: AgentProvider.KIMI_CODE, result: kimiToolResult('call', `${output}\nCommand failed with exit code: 1.`, { isError: true }), spanType: 'Bash' },
+    {
+      provider: AgentProvider.CLAUDE_CODE,
+      result: makeBashResult({ tool_name: 'Bash', stdout: output, stderr: '' }, output, true),
+      spanType: 'Bash',
+    },
+    {
+      provider: AgentProvider.GITHUB_COPILOT,
+      result: copilotToolComplete('call', {
+        success: false,
+        result: { content: output },
+      }),
+      spanType: 'bash',
+    },
+    {
+      provider: AgentProvider.KIMI_CODE,
+      result: kimiToolResult('call', `${output}\nCommand failed with exit code: 1.`, { isError: true }),
+      spanType: 'Bash',
+    },
     // A MiMo turn that fails while a command runs ends the command with its last
     // running update, and the completion column states the failure.
-    { provider: AgentProvider.MIMO_CODE, result: toolFrame(MIMO_TOOL.Bash, { status: MIMO_TOOL_STATUS.Running, input: { command }, metadata: { output } }, 'call'), spanType: MIMO_TOOL.Bash },
-    ...[AgentProvider.OPENCODE, AgentProvider.KILO, AgentProvider.GOOSE, AgentProvider.REASONIX, AgentProvider.CURSOR].map(provider => ({
+    {
+      provider: AgentProvider.MIMO_CODE,
+      result: toolFrame(MIMO_TOOL.Bash, {
+        status: MIMO_TOOL_STATUS.Running,
+        input: { command },
+        metadata: { output },
+      }, 'call'),
+      spanType: MIMO_TOOL.Bash,
+    },
+    ...[
+      AgentProvider.OPENCODE,
+      AgentProvider.KILO,
+      AgentProvider.GOOSE,
+      AgentProvider.REASONIX,
+      AgentProvider.CURSOR,
+    ].map(provider => ({
       provider,
-      result: { sessionUpdate: 'tool_call_update', toolCallId: 'call', title: 'Run command', kind: 'execute', status: 'failed', rawInput: { command }, content: [{ type: 'content', content: { type: 'text', text: output } }] },
+      result: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'call',
+        title: 'Run command',
+        kind: 'execute',
+        status: 'failed',
+        rawInput: { command },
+        content: [
+          {
+            type: 'content',
+            content: { type: 'text', text: output },
+          },
+        ],
+      },
     })),
   ]
   it.each(cases)('uses the shared failure word for provider $provider', ({ provider, result, spanType }) => {
-    const parsed = { ...input(result, null, provider), completion: MessageCompletion.ERROR }
+    const parsed = {
+      ...input(result, null, provider),
+      completion: MessageCompletion.ERROR,
+    }
     const plugin = providerFor(provider)!
     const { container } = render(() => renderMessageContent(result, {
       premeasureMode: true,
       spanType,
-      sources: testMessageSources({ current: () => parsed }),
+      sources: testMessageSources({
+        current: () => parsed,
+      }),
     }, plugin?.transcript.classify(parsed), provider, MessageCompletion.ERROR))
     expect(container.textContent).toContain('Error')
     expect(container.textContent).not.toContain('Failed')
@@ -1067,18 +1347,41 @@ describe('a failed command under an error completion', () => {
   // Verbatim shape of a Qoder CLI 0.2.x Bash result for `printf ... >&2; exit 7`.
   const qoderFailedBash = {
     type: 'user',
-    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'shell-call', content: 'Exit code 7\nSHELLERR77', is_error: true }] },
+    message: {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'shell-call',
+          content: 'Exit code 7\nSHELLERR77',
+          is_error: true,
+        },
+      ],
+    },
     session_id: 'qoder-session',
-    tool_use_result: { kind: 'completed', stdout: 'SHELLERR77', stderr: '', exitCode: 7, signal: null, interrupted: false, isError: true },
+    tool_use_result: {
+      kind: 'completed',
+      stdout: 'SHELLERR77',
+      stderr: '',
+      exitCode: 7,
+      signal: null,
+      interrupted: false,
+      isError: true,
+    },
   }
 
   function renderFailedRow(completion: MessageCompletion) {
-    const parsed = { ...input(qoderFailedBash, null, AgentProvider.QODER), completion }
+    const parsed = {
+      ...input(qoderFailedBash, null, AgentProvider.QODER),
+      completion,
+    }
     const plugin = providerFor(AgentProvider.QODER)!
     return render(() => renderMessageContent(qoderFailedBash, {
       premeasureMode: true,
       spanType: 'Bash',
-      sources: testMessageSources({ current: () => parsed }),
+      sources: testMessageSources({
+        current: () => parsed,
+      }),
     }, plugin.transcript.classify(parsed), AgentProvider.QODER, completion))
   }
 
@@ -1098,7 +1401,14 @@ describe('a failed command under an error completion', () => {
 describe('command output preservation', () => {
   it('keeps HTML and CSS text that a command prints', () => {
     const output = '<div class="toolUseHeader__test">Printed HTML</div>\nAfter HTML'
-    const { container } = renderCodexItem({ type: 'commandExecution', id: 'html', command: 'cat fixture.html', aggregatedOutput: output, status: 'completed', exitCode: 0 }, { premeasureMode: true })
+    const { container } = renderCodexItem({
+      type: 'commandExecution',
+      id: 'html',
+      command: 'cat fixture.html',
+      aggregatedOutput: output,
+      status: 'completed',
+      exitCode: 0,
+    }, { premeasureMode: true })
     expect(container.textContent).toContain(output)
     expect(container.querySelector('div.toolUseHeader__test')).toBeNull()
   })
@@ -1106,16 +1416,65 @@ describe('command output preservation', () => {
 
 describe('retained file completion', () => {
   it.each([
-    { provider: AgentProvider.PI, result: { type: 'tool_execution_end', toolCallId: 'read', toolName: 'read', isError: true, result: { content: [{ type: 'text', text: 'partial file output' }] } } },
-    { provider: AgentProvider.ZCODE, result: { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'read', toolName: 'Read', result: { success: false, content: 'partial file output' } } } },
-    { provider: AgentProvider.KIMI_CODE, result: { ...kimiToolStart('read', 'Read', { path: '/a.ts' }), output: 'partial file output' } },
-    { provider: AgentProvider.OH_MY_PI, result: { type: 'tool_execution_start', toolCallId: 'read', toolName: 'read', args: { path: '/p/a.ts' }, result: { content: [{ type: 'text', text: 'partial file output' }], details: {} } } },
+    {
+      provider: AgentProvider.PI,
+      result: {
+        type: 'tool_execution_end',
+        toolCallId: 'read',
+        toolName: 'read',
+        isError: true,
+        result: {
+          content: [
+            { type: 'text', text: 'partial file output' },
+          ],
+        },
+      },
+    },
+    {
+      provider: AgentProvider.ZCODE,
+      result: {
+        type: 'tool.updated',
+        payload: {
+          kind: 'result',
+          toolCallId: 'read',
+          toolName: 'Read',
+          result: { success: false, content: 'partial file output' },
+        },
+      },
+    },
+    {
+      provider: AgentProvider.KIMI_CODE,
+      result: {
+        ...kimiToolStart('read', 'Read', { path: '/a.ts' }),
+        output: 'partial file output',
+      },
+    },
+    {
+      provider: AgentProvider.OH_MY_PI,
+      result: {
+        type: 'tool_execution_start',
+        toolCallId: 'read',
+        toolName: 'read',
+        args: { path: '/p/a.ts' },
+        result: {
+          content: [
+            { type: 'text', text: 'partial file output' },
+          ],
+          details: {},
+        },
+      },
+    },
   ])('renders one interruption header for a file result from provider $provider', ({ provider, result }) => {
-    const parsed = { ...input(result, null, provider), completion: MessageCompletion.INTERRUPTED }
+    const parsed = {
+      ...input(result, null, provider),
+      completion: MessageCompletion.INTERRUPTED,
+    }
     const plugin = providerFor(provider)!
     const { container } = render(() => renderMessageContent(result, {
       premeasureMode: true,
-      sources: testMessageSources({ current: () => parsed }),
+      sources: testMessageSources({
+        current: () => parsed,
+      }),
     }, plugin?.transcript.classify(parsed), provider, MessageCompletion.INTERRUPTED))
     expect(container.textContent?.match(/Interrupted/g)).toHaveLength(1)
     expect(container.textContent).not.toMatch(/Failed|Error|Text truncated/)

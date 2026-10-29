@@ -23,69 +23,242 @@ const readResult: ReadFileResult = { lines: null, fallbackContent: 'body' }
 const picture: ImageResultSource = { mimeType: 'image/png', data: 'aGk=' }
 
 // I1: a call that has not answered carries no result.
-const queued: ToolCall<'think'> = { id: 'q', name: 'Think', kind: 'think', request: think, status: 'pending', images: [] }
+const queued: ToolCall<'think'> = {
+  id: 'q',
+  name: 'Think',
+  kind: 'think',
+  request: think,
+  status: 'pending',
+  images: [],
+}
 void queued
 // @ts-expect-error I1: unfinished states pair with no result.
-const early: ToolCall<'think'> = { id: 'q', name: 'Think', kind: 'think', request: think, status: 'in_progress', images: [], result: proseResult('early') }
+const early: ToolCall<'think'> = {
+  id: 'q',
+  name: 'Think',
+  kind: 'think',
+  request: think,
+  status: 'in_progress',
+  images: [],
+  result: proseResult('early'),
+}
 void early
 
 // I2: 'completed' requires a typed or unparsed result, never a failure.
-const done: ToolCall<'think'> = { id: 'd', name: 'Think', kind: 'think', request: think, status: 'completed', images: [], result: proseResult('done') }
+const done: ToolCall<'think'> = {
+  id: 'd',
+  name: 'Think',
+  kind: 'think',
+  request: think,
+  status: 'completed',
+  images: [],
+  result: proseResult('done'),
+}
 void done
 // @ts-expect-error I2: 'completed' requires a result.
-const silent: ToolCall<'think'> = { id: 'd', name: 'Think', kind: 'think', request: think, status: 'completed', images: [] }
+const silent: ToolCall<'think'> = {
+  id: 'd',
+  name: 'Think',
+  kind: 'think',
+  request: think,
+  status: 'completed',
+  images: [],
+}
 void silent
 // @ts-expect-error I2: a completed call did not fail, so the failure brand is not its result.
-const failedDone: ToolCall<'think'> = { id: 'd', name: 'Think', kind: 'think', request: think, status: 'completed', images: [], result: failedResult('boom') }
+const failedDone: ToolCall<'think'> = {
+  id: 'd',
+  name: 'Think',
+  kind: 'think',
+  request: think,
+  status: 'completed',
+  images: [],
+  result: failedResult('boom'),
+}
 void failedDone
 
 // I4: the unparsed brand states the call completed, which a failed call did not.
-const failed: ToolCall<'read'> = { id: 'f', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'failed', images: [], result: failedResult('boom') }
+const failed: ToolCall<'read'> = {
+  id: 'f',
+  name: 'Read',
+  kind: 'read',
+  request: { path: '/a' },
+  status: 'failed',
+  images: [],
+  result: failedResult('boom'),
+}
 void failed
-const failedWithRecord: ToolCall<'read'> = { id: 'f', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'failed', images: [], result: readResult }
+const failedWithRecord: ToolCall<'read'> = {
+  id: 'f',
+  name: 'Read',
+  kind: 'read',
+  request: { path: '/a' },
+  status: 'failed',
+  images: [],
+  result: readResult,
+}
 void failedWithRecord
 // @ts-expect-error I4: the unparsed brand states the call completed, which a failed call did not.
-const failedUnparsed: ToolCall<'read'> = { id: 'f', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'failed', images: [], result: unparsedResult('raw') }
+const failedUnparsed: ToolCall<'read'> = {
+  id: 'f',
+  name: 'Read',
+  kind: 'read',
+  request: { path: '/a' },
+  status: 'failed',
+  images: [],
+  result: unparsedResult('raw'),
+}
 void failedUnparsed
 
 // Declined: a refused call carries words or a failure, never a produced payload.
-const declinedWords: ToolCall<'switch_mode'> = { id: 'x', name: 'ExitPlanMode', kind: 'switch_mode', request: { mode: 'plan' }, status: 'declined', images: [], result: proseResult('Not yet') }
+const declinedWords: ToolCall<'switch_mode'> = {
+  id: 'x',
+  name: 'ExitPlanMode',
+  kind: 'switch_mode',
+  request: { mode: 'plan' },
+  status: 'declined',
+  images: [],
+  result: proseResult('Not yet'),
+}
 void declinedWords
-const declinedFailure: ToolCall<'read'> = { id: 'x', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'declined', images: [], result: failedResult('refused') }
+const declinedFailure: ToolCall<'read'> = {
+  id: 'x',
+  name: 'Read',
+  kind: 'read',
+  request: { path: '/a' },
+  status: 'declined',
+  images: [],
+  result: failedResult('refused'),
+}
 void declinedFailure
 // @ts-expect-error Declined: a read that never ran produced no file body.
-const declinedRead: ToolCall<'read'> = { id: 'x', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'declined', images: [], result: readResult }
+const declinedRead: ToolCall<'read'> = {
+  id: 'x',
+  name: 'Read',
+  kind: 'read',
+  request: { path: '/a' },
+  status: 'declined',
+  images: [],
+  result: readResult,
+}
 void declinedRead
 // @ts-expect-error Declined: the unparsed brand states the call completed, which a refused one did not.
-const declinedUnparsed: ToolCall<'read'> = { id: 'x', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'declined', images: [], result: unparsedResult('raw') }
+const declinedUnparsed: ToolCall<'read'> = {
+  id: 'x',
+  name: 'Read',
+  kind: 'read',
+  request: { path: '/a' },
+  status: 'declined',
+  images: [],
+  result: unparsedResult('raw'),
+}
 void declinedUnparsed
 
 // Declined and incomplete calls carry no produced artifacts.
-const incomplete: ToolCall<'read'> = { id: 'i', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'incomplete', images: [] }
+const incomplete: ToolCall<'read'> = {
+  id: 'i',
+  name: 'Read',
+  kind: 'read',
+  request: { path: '/a' },
+  status: 'incomplete',
+  images: [],
+}
 void incomplete
 // @ts-expect-error Incomplete: no result exists.
-const incompleteResult: ToolCall<'read'> = { id: 'i', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'incomplete', images: [], result: readResult }
+const incompleteResult: ToolCall<'read'> = {
+  id: 'i',
+  name: 'Read',
+  kind: 'read',
+  request: { path: '/a' },
+  status: 'incomplete',
+  images: [],
+  result: readResult,
+}
 void incompleteResult
 // @ts-expect-error Incomplete: no extra content exists.
-const incompleteExtra: ToolCall<'read'> = { id: 'i', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'incomplete', images: [], extraContent: [] }
+const incompleteExtra: ToolCall<'read'> = {
+  id: 'i',
+  name: 'Read',
+  kind: 'read',
+  request: { path: '/a' },
+  status: 'incomplete',
+  images: [],
+  extraContent: [],
+}
 void incompleteExtra
 // @ts-expect-error Declined: no produced images exist.
-const declinedImage: ToolCall<'read'> = { id: 'x', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'declined', images: [picture], result: failedResult('refused') }
+const declinedImage: ToolCall<'read'> = {
+  id: 'x',
+  name: 'Read',
+  kind: 'read',
+  request: { path: '/a' },
+  status: 'declined',
+  images: [picture],
+  result: failedResult('refused'),
+}
 void declinedImage
 
 // Cancelled keeps whatever partial body it printed, in any of the three shapes.
-const partialTyped: ToolCall<'read'> = { id: 'c', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'cancelled', images: [], result: readResult }
-const partialFailed: ToolCall<'read'> = { id: 'c', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'cancelled', images: [], result: failedResult('cut') }
-const partialUnparsed: ToolCall<'read'> = { id: 'c', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'cancelled', images: [], result: unparsedResult('raw') }
+const partialTyped: ToolCall<'read'> = {
+  id: 'c',
+  name: 'Read',
+  kind: 'read',
+  request: { path: '/a' },
+  status: 'cancelled',
+  images: [],
+  result: readResult,
+}
+const partialFailed: ToolCall<'read'> = {
+  id: 'c',
+  name: 'Read',
+  kind: 'read',
+  request: { path: '/a' },
+  status: 'cancelled',
+  images: [],
+  result: failedResult('cut'),
+}
+const partialUnparsed: ToolCall<'read'> = {
+  id: 'c',
+  name: 'Read',
+  kind: 'read',
+  request: { path: '/a' },
+  status: 'cancelled',
+  images: [],
+  result: unparsedResult('raw'),
+}
 void [partialTyped, partialFailed, partialUnparsed]
 
 // I6: a generic kind's pictures ride in its result content, never on the call.
-const bare: ToolCall<'mcp'> = { id: 'g', name: 'Tool', kind: 'mcp', request: { server: 's', tool: 't', args: {} }, status: 'completed', images: [], result: { content: [] } }
+const bare: ToolCall<'mcp'> = {
+  id: 'g',
+  name: 'Tool',
+  kind: 'mcp',
+  request: { server: 's', tool: 't', args: {} },
+  status: 'completed',
+  images: [],
+  result: { content: [] },
+}
 void bare
-const pictured: ToolCall<'read'> = { id: 'g', name: 'Read', kind: 'read', request: { path: '/a' }, status: 'completed', images: [picture], result: readResult }
+const pictured: ToolCall<'read'> = {
+  id: 'g',
+  name: 'Read',
+  kind: 'read',
+  request: { path: '/a' },
+  status: 'completed',
+  images: [picture],
+  result: readResult,
+}
 void pictured
-// @ts-expect-error I6: a generic kind's pictures ride in its result content, never on the call.
-const withPictures: ToolCall<'mcp'> = { id: 'g', name: 'Tool', kind: 'mcp', request: { server: 's', tool: 't', args: {} }, status: 'completed', images: [picture], result: { content: [] } }
+const withPictures: ToolCall<'mcp'> = {
+  id: 'g',
+  name: 'Tool',
+  kind: 'mcp',
+  request: { server: 's', tool: 't', args: {} },
+  status: 'completed',
+  // @ts-expect-error I6: a generic kind's pictures ride in its result content, never on the call.
+  images: [picture],
+  result: { content: [] },
+}
 void withPictures
 
 // ---------------------------------------------------------------------------

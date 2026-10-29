@@ -26,8 +26,19 @@ afterEach(async () => {
 })
 
 function runCapture(capture: LettaMcpCliCapture, args: string[], executable = process.execPath) {
-  const expected: LettaMcpCliIdentity = { receiptId: capture.receiptId, callId: 'catalog-native', executable, args }
-  const child = spawn(process.execPath, [capture.scriptPath, expected.receiptId, expected.callId, executable, ...args], {
+  const expected: LettaMcpCliIdentity = {
+    receiptId: capture.receiptId,
+    callId: 'catalog-native',
+    executable,
+    args,
+  }
+  const child = spawn(process.execPath, [
+    capture.scriptPath,
+    expected.receiptId,
+    expected.callId,
+    executable,
+    ...args,
+  ], {
     cwd: directory,
     env: { ...process.env, LETTA_CAPTURE_ENV: 'private environment 한글' },
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -62,13 +73,24 @@ setImmediate(() => {
 })
 `)
     const capture = writeLettaMcpCliCapture(directory)
-    const args = [native, '', '0', 'false', 'quote " \' \\ 한글', '$(touch forbidden);`echo forbidden`']
+    const args = [
+      native,
+      '',
+      '0',
+      'false',
+      'quote " \' \\ 한글',
+      '$(touch forbidden);`echo forbidden`',
+    ]
     const operation = runCapture(capture, args)
     const result = await operation.closed
     expect(result.code).toBe(0)
     expect(result.signal).toBeNull()
     const receipt = readLettaMcpCliReceipt(capture.receiptPath, result.nativeResult, operation.expected)
-    expect(JSON.parse(receipt.stdout)).toEqual({ args: args.slice(1), environment: 'private environment 한글', value: '한글' })
+    expect(JSON.parse(receipt.stdout)).toEqual({
+      args: args.slice(1),
+      environment: 'private environment 한글',
+      value: '한글',
+    })
     expect(receipt.stderr).toBe('ACTUAL_STDERR_WARNING_한글\n')
     expect(result.nativeResult).toContain(receipt.stdout)
     expect(result.nativeResult).toContain(receipt.stderr)
@@ -150,7 +172,9 @@ setImmediate(() => {
     if (!winner || !operation)
       throw new Error('The concurrent native captures produced no successful receipt.')
     const receipt = readLettaMcpCliReceipt(capture.receiptPath, winner.nativeResult, operation.expected)
-    expect(receipt.stdout).toBe(winnerIndex === 0 ? 'FIRST' : 'SECOND')
+    expect(receipt.stdout).toBe(winnerIndex === 0
+      ? 'FIRST'
+      : 'SECOND')
   })
 
   it('preserves large native output without splitting its UTF8 characters', async () => {
@@ -168,8 +192,26 @@ setImmediate(() => {
 })
 
 describe('readLettaMcpCliReceipt', () => {
-  const identity: LettaMcpCliIdentity = { receiptId: 'actual-receipt', callId: 'catalog-native', executable: process.execPath, args: ['mcp', 'tools', 'echo', '--agent', 'agent-native'] }
-  const receipt: LettaMcpCliReceipt = { ...identity, stdout: '', stderr: '', exitCode: 0, signal: null, spawnError: null }
+  const identity: LettaMcpCliIdentity = {
+    receiptId: 'actual-receipt',
+    callId: 'catalog-native',
+    executable: process.execPath,
+    args: [
+      'mcp',
+      'tools',
+      'echo',
+      '--agent',
+      'agent-native',
+    ],
+  }
+  const receipt: LettaMcpCliReceipt = {
+    ...identity,
+    stdout: '',
+    stderr: '',
+    exitCode: 0,
+    signal: null,
+    spawnError: null,
+  }
   const marker = `LETTAMCPCLI:${identity.receiptId}:${identity.callId}`
   const nativeResult = `native stdout\n${marker}\nnative stderr`
 
@@ -185,12 +227,25 @@ describe('readLettaMcpCliReceipt', () => {
   it.each([
     { receiptId: 'another-receipt' },
     { callId: 'another-call' },
-    { executable: resolve(process.cwd(), 'another-executable') },
-    { args: [...identity.args, 'extra'] },
+    {
+      executable: resolve(process.cwd(), 'another-executable'),
+    },
+    {
+      args: [...identity.args, 'extra'],
+    },
   ])('rejects an altered native invocation identity: %j', (overrides) => {
-    expect(() => readLettaMcpCliReceipt(writeReceipt({ ...receipt, ...overrides }), nativeResult, identity)).toThrow('expected native invocation')
+    expect(() => readLettaMcpCliReceipt(writeReceipt({
+      ...receipt,
+      ...overrides,
+    }), nativeResult, identity)).toThrow('expected native invocation')
   })
-  it.each(['', marker.slice(1), `${marker}\n${marker}`, `prefix${marker}\n`, `${marker}suffix\n`])('rejects a missing, partial, or duplicate model result marker: %j', (result) => {
+  it.each([
+    '',
+    marker.slice(1),
+    `${marker}\n${marker}`,
+    `prefix${marker}\n`,
+    `${marker}suffix\n`,
+  ])('rejects a missing, partial, or duplicate model result marker: %j', (result) => {
     expect(() => readLettaMcpCliReceipt(writeReceipt(receipt), result, identity)).toThrow('one complete CLI receipt marker')
   })
   it.each([
@@ -202,7 +257,10 @@ describe('readLettaMcpCliReceipt', () => {
     {},
     { ...receipt, stdout: null },
     { ...receipt, stderr: false },
-    { ...receipt, args: [false] },
+    {
+      ...receipt,
+      args: [false],
+    },
     { ...receipt, exitCode: -1 },
     { ...receipt, exitCode: false },
     { ...receipt, exitCode: Number.POSITIVE_INFINITY },

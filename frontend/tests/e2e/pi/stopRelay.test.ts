@@ -38,7 +38,9 @@ async function runFixture(source: string, input: string, options: Partial<PiStop
     evidencePath: join(directory, 'evidence.jsonl'),
     ...options,
   }))
-  const child = spawn(process.execPath, [relay, ...argv], { stdio: ['pipe', 'pipe', 'pipe'] })
+  const child = spawn(process.execPath, [relay, ...argv], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
   children.push(child)
   const output: Buffer[] = []
   const stderr: Buffer[] = []
@@ -46,7 +48,11 @@ async function runFixture(source: string, input: string, options: Partial<PiStop
   child.stderr.on('data', chunk => stderr.push(Buffer.from(chunk)))
   const result = new Promise<{ code: number | null, output: Buffer, stderr: Buffer }>((resolveResult, reject) => {
     child.once('error', reject)
-    child.once('close', code => resolveResult({ code, output: Buffer.concat(output), stderr: Buffer.concat(stderr) }))
+    child.once('close', code => resolveResult({
+      code,
+      output: Buffer.concat(output),
+      stderr: Buffer.concat(stderr),
+    }))
   })
   child.stdin.end(input)
   return result
@@ -55,7 +61,9 @@ async function runFixture(source: string, input: string, options: Partial<PiStop
 describe('piStopRelayProgram', () => {
   it('does not hold a reply before the marked original prompt', async () => {
     const output = '{"type":"response","id":"leapmux-1","command":"abort","success":true}\n'
-    const result = await runFixture(`process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(${JSON.stringify(output)}));`, '{"type":"abort","id":"leapmux-1"}\n', { replacement: { prompt: 'REPLACEMENT', title: 'Question' } })
+    const result = await runFixture(`process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(${JSON.stringify(output)}));`, '{"type":"abort","id":"leapmux-1"}\n', {
+      replacement: { prompt: 'REPLACEMENT', title: 'Question' },
+    })
     expect(result.output.toString()).toBe(output)
     expect(result.code).toBe(0)
     expect(readFileSync(join(directory, 'evidence.jsonl'), 'utf8')).not.toContain('held-abort-reply')
@@ -63,14 +71,18 @@ describe('piStopRelayProgram', () => {
 
   it('retains a held reply and reports the absent replacement when the child ends', async () => {
     const output = '{"type":"response","id":"leapmux-1","command":"abort","success":true}\n'
-    const result = await runFixture(`process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(${JSON.stringify(output)}));`, '{"type":"prompt","message":"ORIGINAL"}\n{"type":"abort","id":"leapmux-1"}\n', { replacement: { prompt: 'REPLACEMENT', title: 'Question' } })
+    const result = await runFixture(`process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(${JSON.stringify(output)}));`, '{"type":"prompt","message":"ORIGINAL"}\n{"type":"abort","id":"leapmux-1"}\n', {
+      replacement: { prompt: 'REPLACEMENT', title: 'Question' },
+    })
     expect(result.output.toString()).toBe(output)
     expect(result.code).toBe(0)
     expect(readFileSync(join(directory, 'evidence.jsonl'), 'utf8')).toContain('unreleased-abort-reply')
   })
 
   it('reports a native spawn error and returns a failed exit', async () => {
-    const result = await runFixture('', '', { executable: join(directory, 'absent-native') })
+    const result = await runFixture('', '', {
+      executable: join(directory, 'absent-native'),
+    })
     expect(result.code).toBe(1)
     expect(result.output.length).toBe(0)
     expect(result.stderr.toString()).toContain('ENOENT')
@@ -84,7 +96,9 @@ describe('piStopRelayProgram', () => {
     { command: 'abort', success: true },
   ])('preserves an unmatched native response %j', async (fields) => {
     const output = ` \t${JSON.stringify({ type: 'response', ...fields })}\r\n`
-    const result = await runFixture(`process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(${JSON.stringify(output)}));`, '{"type":"prompt","message":"ORIGINAL"}\n{"type":"abort","id":"leapmux-1"}\n', { replacement: { prompt: 'REPLACEMENT', title: 'Question' } })
+    const result = await runFixture(`process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(${JSON.stringify(output)}));`, '{"type":"prompt","message":"ORIGINAL"}\n{"type":"abort","id":"leapmux-1"}\n', {
+      replacement: { prompt: 'REPLACEMENT', title: 'Question' },
+    })
     expect(result.code).toBe(0)
     expect(result.output.toString()).toBe(output)
     expect(readFileSync(join(directory, 'evidence.jsonl'), 'utf8')).not.toContain('held-abort-reply')
@@ -99,7 +113,13 @@ describe('piStopRelayProgram', () => {
   })
 
   it('passes every configured and runtime argument without shell interpretation', async () => {
-    const argv = ['--flag', '', '$HOME', '한글 and spaces', 'quote"text']
+    const argv = [
+      '--flag',
+      '',
+      '$HOME',
+      '한글 and spaces',
+      'quote"text',
+    ]
     const result = await runFixture(`process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(JSON.stringify(process.argv.slice(2))));`, '', {}, argv)
     expect(result.code).toBe(0)
     expect(JSON.parse(result.output.toString())).toEqual(argv)
@@ -122,7 +142,9 @@ describe('piStopRelayProgram', () => {
       expect(result.output.toString()).toBe(unrelated + start + start)
       expect(result.code).toBe(0)
     })
-    expect(signals).toEqual([Buffer.from(start)])
+    expect(signals).toEqual([
+      Buffer.from(start),
+    ])
   })
 
   it('holds only the matched native reply and releases its unchanged bytes after the real dialog', async () => {
@@ -145,14 +167,24 @@ input.on('line', line => {
 input.on('close', () => process.exit(0));
 `)
     const relay = join(directory, 'relay.cjs')
-    writeFileSync(relay, piStopRelayProgram({ executable: process.execPath, args: [native], originalMarker: 'ORIGINAL', replacement: { prompt: 'REPLACEMENT', title: 'Replacement question' }, evidencePath: evidence }))
-    const proc = spawn(process.execPath, [relay], { stdio: ['pipe', 'pipe', 'pipe'] })
+    writeFileSync(relay, piStopRelayProgram({
+      executable: process.execPath,
+      args: [native],
+      originalMarker: 'ORIGINAL',
+      replacement: { prompt: 'REPLACEMENT', title: 'Replacement question' },
+      evidencePath: evidence,
+    }))
+    const proc = spawn(process.execPath, [relay], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
     children.push(proc)
     const output: Buffer[] = []
     const failures: Buffer[] = []
     const closed = new Promise<void>((resolveClose, reject) => {
       proc.once('error', reject)
-      proc.once('close', code => code === 0 ? resolveClose() : reject(new Error(`Relay exited with ${code}: ${Buffer.concat(failures).toString()}`)))
+      proc.once('close', code => code === 0
+        ? resolveClose()
+        : reject(new Error(`Relay exited with ${code}: ${Buffer.concat(failures).toString()}`)))
     })
     proc.stderr.on('data', chunk => failures.push(Buffer.from(chunk)))
     const delivered = new Promise<void>((resolveDelivery) => {
@@ -171,7 +203,13 @@ input.on('close', () => process.exit(0));
       await closed
       expect(Buffer.concat(output).toString()).toBe(unrelated + dialog + reply)
       const records = readFileSync(evidence, 'utf8').trim().split('\n').map(line => JSON.parse(line) as { kind: string, bytes: string })
-      expect(records.filter(record => record.kind !== 'native-output' && record.kind !== 'native-process').map(record => record.kind)).toEqual(['abort-input', 'held-abort-reply', 'replacement-input', 'replacement-dialog', 'released-abort-reply'])
+      expect(records.filter(record => record.kind !== 'native-output' && record.kind !== 'native-process').map(record => record.kind)).toEqual([
+        'abort-input',
+        'held-abort-reply',
+        'replacement-input',
+        'replacement-dialog',
+        'released-abort-reply',
+      ])
       const held = records.find(record => record.kind === 'held-abort-reply')
       const released = records.find(record => record.kind === 'released-abort-reply')
       if (!held || !released)
@@ -189,22 +227,52 @@ input.on('close', () => process.exit(0));
 
 describe('createPiStopRelay', () => {
   it('uses the shared Node launcher with the platform extension', () => {
-    const launcher = createPiStopRelay(directory, { executable: process.execPath, originalMarker: 'ORIGINAL', evidencePath: join(directory, 'evidence.jsonl') })
-    expect(launcher).toBe(join(directory, process.platform === 'win32' ? 'pi.cmd' : 'pi'))
+    const launcher = createPiStopRelay(directory, {
+      executable: process.execPath,
+      originalMarker: 'ORIGINAL',
+      evidencePath: join(directory, 'evidence.jsonl'),
+    })
+    expect(launcher).toBe(join(directory, process.platform === 'win32'
+      ? 'pi.cmd'
+      : 'pi'))
     expect(readFileSync(launcher, 'utf8')).toContain(process.execPath)
     expect(readFileSync(launcher, 'utf8')).toContain(join(directory, 'stop-relay.cjs'))
   })
 
   it.each(['executable', 'originalMarker', 'evidencePath'] as const)('rejects an empty %s', (key) => {
-    expect(() => createPiStopRelay(directory, { executable: process.execPath, originalMarker: 'ORIGINAL', evidencePath: join(directory, 'evidence.jsonl'), [key]: '' })).toThrow('complete scenario values')
+    expect(() => createPiStopRelay(directory, {
+      executable: process.execPath,
+      originalMarker: 'ORIGINAL',
+      evidencePath: join(directory, 'evidence.jsonl'),
+      [key]: '',
+    })).toThrow('complete scenario values')
   })
 
-  it.each([0, -1, 65536, 1.5, Number.MAX_SAFE_INTEGER])('rejects the invalid signal port %s', (port) => {
-    expect(() => createPiStopRelay(directory, { executable: process.execPath, originalMarker: 'ORIGINAL', evidencePath: join(directory, 'evidence.jsonl'), retrySignal: { port, nonce: 'a'.repeat(64) } })).toThrow('valid port and private nonce')
+  it.each([
+    0,
+    -1,
+    65536,
+    1.5,
+    Number.MAX_SAFE_INTEGER,
+  ])('rejects the invalid signal port %s', (port) => {
+    expect(() => createPiStopRelay(directory, {
+      executable: process.execPath,
+      originalMarker: 'ORIGINAL',
+      evidencePath: join(directory, 'evidence.jsonl'),
+      retrySignal: {
+        port,
+        nonce: 'a'.repeat(64),
+      },
+    })).toThrow('valid port and private nonce')
   })
 
   it('rejects an absent private nonce', () => {
-    expect(() => createPiStopRelay(directory, { executable: process.execPath, originalMarker: 'ORIGINAL', evidencePath: join(directory, 'evidence.jsonl'), retrySignal: { port: 12345, nonce: '' } })).toThrow('valid port and private nonce')
+    expect(() => createPiStopRelay(directory, {
+      executable: process.execPath,
+      originalMarker: 'ORIGINAL',
+      evidencePath: join(directory, 'evidence.jsonl'),
+      retrySignal: { port: 12345, nonce: '' },
+    })).toThrow('valid port and private nonce')
   })
 })
 
@@ -217,7 +285,10 @@ describe('withPiRetrySignal', () => {
       await new Promise<void>((resolveClosed, reject) => {
         const socket = connect(signal.port, '127.0.0.1')
         socket.once('error', reject)
-        socket.once('connect', () => socket.end(`invalid\n${JSON.stringify({ nonce: signal.nonce, bytes: Buffer.from('{"type":"auto_retry_start"}\n').toString('base64') })}\n`))
+        socket.once('connect', () => socket.end(`invalid\n${JSON.stringify({
+          nonce: signal.nonce,
+          bytes: Buffer.from('{"type":"auto_retry_start"}\n').toString('base64'),
+        })}\n`))
         socket.once('close', () => resolveClosed())
       })
     })).rejects.toThrow(SyntaxError)

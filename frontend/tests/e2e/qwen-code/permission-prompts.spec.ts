@@ -26,8 +26,16 @@ qwenTest.describe('Qwen Code control requests', () => {
     const reason = 'Do not create the second file.'
 
     const start = await modelScript.queue(
-      { toolCalls: [bashToolCall(PROVIDER, 'qwen-approved', `touch ${approved}`)] },
-      { toolCalls: [bashToolCall(PROVIDER, 'qwen-rejected', `touch ${rejected}`)] },
+      {
+        toolCalls: [
+          bashToolCall(PROVIDER, 'qwen-approved', `touch ${approved}`),
+        ],
+      },
+      {
+        toolCalls: [
+          bashToolCall(PROVIDER, 'qwen-rejected', `touch ${rejected}`),
+        ],
+      },
     )
     await sendMessage(page, modelScript.prompt('Create the two scripted files.'))
     await modelScript.waitForSteps(start + 1)
@@ -70,7 +78,12 @@ qwenTest.describe('Qwen Code control requests', () => {
     const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsChip(page, 'Default')
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     const file = join(workingDir, 'qwen-project.txt')
     // Each run appends the marker, so the file states how many runs happened.
     const command = `printf qwen-project >> ${file}`

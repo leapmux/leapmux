@@ -4,7 +4,13 @@ import { describe, expect, it, vi } from 'vitest'
 import { restoreQuestionSelection, restoreQuestionTextDraft } from './nativeQuestionRestoration'
 
 describe('native question restoration validation', () => {
-  it.each([-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])('rejects page %s before reading the browser', async (pageIndex) => {
+  it.each([
+    -1,
+    0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])('rejects page %s before reading the browser', async (pageIndex) => {
     const read = vi.fn(() => {
       throw new Error('The browser must not be read.')
     })

@@ -55,7 +55,9 @@ export function OptionGroupMenuItems(props: OptionGroupMenuItemsProps): JSX.Elem
                 kind="radio"
                 label={item().label}
                 checked={props.current === item().value}
-                {...(props.disabled !== undefined ? { disabled: props.disabled } : {})}
+                {...(props.disabled !== undefined
+                  ? { disabled: props.disabled }
+                  : {})}
                 data-testid={`${props.testIdPrefix}-${item().value}`}
                 onSelect={() => props.onChange(item().value)}
               />
@@ -65,7 +67,9 @@ export function OptionGroupMenuItems(props: OptionGroupMenuItemsProps): JSX.Elem
             // nothing to say about itself that matters more than the reason.
             // Two nested Tooltips would otherwise resolve the outer one's
             // target to the inner one's wrapper rather than to the button.
-            const tip = () => (props.disabled ? props.disabledReason : item().tooltip)
+            const tip = () => (props.disabled
+              ? props.disabledReason
+              : item().tooltip)
             // Wrap only when there is tooltip text. A Tooltip mounts its own
             // wrapper and listeners even with nothing to show, and most option
             // values carry no description.
@@ -101,7 +105,9 @@ export function OptionGroupMenuItems(props: OptionGroupMenuItemsProps): JSX.Elem
           testIdPrefix={props.testIdPrefix}
           onSelect={props.onChange}
           autoFocus
-          {...(props.openKey !== undefined ? { resetKey: props.openKey } : {})}
+          {...(props.openKey !== undefined
+            ? { resetKey: props.openKey }
+            : {})}
         />
       </Show>
     </Show>

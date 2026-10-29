@@ -31,7 +31,13 @@ function Harness(props: { eligible: () => boolean }) {
     eligible: () => props.eligible(),
     gate: () => ({ premeasure: false, hold: false }),
   })
-  return <div data-testid="state">{tokens() ? 'TOKENS' : 'PLAIN'}</div>
+  return (
+    <div data-testid="state">
+      {tokens()
+        ? 'TOKENS'
+        : 'PLAIN'}
+    </div>
+  )
 }
 
 // Two-source hold gate (scroll-pause OR text-selection), mirroring how ReadResultView /
@@ -43,7 +49,13 @@ function HoldHarness(props: { paused: () => boolean, selecting: () => boolean })
     eligible: () => true,
     gate: () => ({ premeasure: false, hold: props.paused() || props.selecting() }),
   })
-  return <div data-testid="state">{tokens() ? 'TOKENS' : 'PLAIN'}</div>
+  return (
+    <div data-testid="state">
+      {tokens()
+        ? 'TOKENS'
+        : 'PLAIN'}
+    </div>
+  )
 }
 
 describe('useAsyncCodeTokens', () => {
@@ -88,7 +100,11 @@ describe('useAsyncCodeTokens', () => {
     // in-flight dispatch. The currentKey() recheck inside .then() must reject the now-stale
     // result. (Pre-fix this applied the tokens to an ineligible body.)
     setEligible(false)
-    resolveTokenize!([[{ content: '{' }]])
+    resolveTokenize!([
+      [
+        { content: '{' },
+      ],
+    ])
     await Promise.resolve()
     await Promise.resolve()
     expect(getByTestId('state').textContent).toBe('PLAIN')
@@ -110,7 +126,11 @@ describe('useAsyncCodeTokens', () => {
     // Eligibility flips true with lang/code/gate unchanged -> the effect must re-run + dispatch.
     setEligible(true)
     await waitFor(() => expect(resolveTokenize).toBeDefined())
-    resolveTokenize!([[{ content: '{' }]])
+    resolveTokenize!([
+      [
+        { content: '{' },
+      ],
+    ])
     await waitFor(() => expect(getByTestId('state').textContent).toBe('TOKENS'))
   })
 
@@ -121,7 +141,11 @@ describe('useAsyncCodeTokens', () => {
     const { getByTestId } = render(() => <Harness eligible={eligible} />)
 
     await waitFor(() => expect(resolveTokenize).toBeDefined())
-    resolveTokenize!([[{ content: '{' }]])
+    resolveTokenize!([
+      [
+        { content: '{' },
+      ],
+    ])
     await waitFor(() => expect(getByTestId('state').textContent).toBe('TOKENS'))
 
     setEligible(false)
@@ -133,7 +157,11 @@ describe('useAsyncCodeTokens', () => {
     const { getByTestId } = render(() => <Harness eligible={eligible} />)
 
     await waitFor(() => expect(resolveTokenize).toBeDefined())
-    resolveTokenize!([[{ content: '{' }]])
+    resolveTokenize!([
+      [
+        { content: '{' },
+      ],
+    ])
     await waitFor(() => expect(getByTestId('state').textContent).toBe('TOKENS'))
   })
 
@@ -155,7 +183,11 @@ describe('useAsyncCodeTokens', () => {
     // A text selection starts (hold on), then the worker resolves WHILE held -> stashed.
     setSelecting(true)
     await Promise.resolve()
-    resolveTokenize!([[{ content: '{' }]])
+    resolveTokenize!([
+      [
+        { content: '{' },
+      ],
+    ])
     await Promise.resolve()
     await Promise.resolve()
     expect(getByTestId('state').textContent).toBe('PLAIN')

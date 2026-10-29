@@ -11,7 +11,14 @@ describe('language option list (LANGUAGES)', () => {
 
   it('includes common languages, each with a non-empty label', () => {
     const ids = new Set(LANGUAGES.map(l => l.id))
-    for (const id of ['typescript', 'python', 'ruby', 'go', 'rust', 'swift'])
+    for (const id of [
+      'typescript',
+      'python',
+      'ruby',
+      'go',
+      'rust',
+      'swift',
+    ])
       expect(ids.has(id), id).toBe(true)
     expect(LANGUAGES.every(l => l.label.length > 0)).toBe(true)
   })

@@ -22,17 +22,21 @@ import { LETTA_AGENT } from './scenarios'
 
 const fixtures = vi.hoisted(() => new Map<string, unknown>())
 vi.mock('../letta-fixtures', () => ({
-  lettaTest: { extend: (definitions: Record<string, unknown>) => {
-    for (const [name, definition] of Object.entries(definitions))
-      fixtures.set(name, definition)
-    return {}
-  } },
+  lettaTest: {
+    extend: (definitions: Record<string, unknown>) => {
+      for (const [name, definition] of Object.entries(definitions))
+        fixtures.set(name, definition)
+      return {}
+    },
+  },
 }))
 vi.mock('../helpers/mockAgentEnvironment', async original => ({
   ...await original<typeof import('../helpers/mockAgentEnvironment')>(),
   createMockAgentEnvironment: vi.fn(),
 }))
-vi.mock('../helpers/privateNativeWorkspace', () => ({ withPrivateNativeWorkspace: vi.fn() }))
+vi.mock('../helpers/privateNativeWorkspace', () => ({
+  withPrivateNativeWorkspace: vi.fn(),
+}))
 vi.mock('../helpers/binaryOnPath', async original => ({
   ...await original<typeof import('../helpers/binaryOnPath')>(),
   requireBinary: vi.fn(),
@@ -50,7 +54,9 @@ vi.mock('../helpers/workerTabs', () => ({
   closeNativeAgentAndWait: vi.fn(async (_server: unknown, agentId: string) => { reopen.events.push(`close ${agentId}`) }),
 }))
 vi.mock('../helpers/ui', () => ({
-  tabById: (_page: unknown, agentId: string) => ({ click: async () => { reopen.events.push(`select ${agentId}`) } }),
+  tabById: (_page: unknown, agentId: string) => ({
+    click: async () => { reopen.events.push(`select ${agentId}`) },
+  }),
   waitForSettingsHydrated: async () => {},
 }))
 vi.mock('./mcpConfiguration', async original => ({
@@ -128,7 +134,9 @@ describe('cleanupRegisteredLettaMcp', () => {
     const restore = vi.fn(() => {
       throw restored
     })
-    await expect(cleanupRegisteredLettaMcp({ agentId: 'resumed-native-agent', close, restore })).rejects.toMatchObject({ errors: [closed, restored] })
+    await expect(cleanupRegisteredLettaMcp({ agentId: 'resumed-native-agent', close, restore })).rejects.toMatchObject({
+      errors: [closed, restored],
+    })
     expect(restore).toHaveBeenCalledTimes(1)
   })
 
@@ -143,19 +151,46 @@ describe('cleanupRegisteredLettaMcp', () => {
 
 describe('withRegisteredLettaMcp', () => {
   const server = { hubUrl: 'http://private-hub.test', adminToken: 'private-token', workerId: 'private-worker' }
-  const context = managedNativeContext({ page: {} as Page, modelScript: {} as ModelScript, leapmuxServer: server, workspaceId: 'private-workspace' }, LETTA_AGENT)
+  const context = managedNativeContext({
+    page: {} as Page,
+    modelScript: {} as ModelScript,
+    leapmuxServer: server,
+    workspaceId: 'private-workspace',
+  }, LETTA_AGENT)
 
   /** The private workspace of the fixture, whose agent the rule of Letta opened in `directory`. */
   function workspace(): PrivateMcpLettaWorkspace {
-    return { workspaceId: 'private-workspace', server: { ...server, agentEnv: {}, mockModelUrl: 'http://127.0.0.1:1' } as PrivateMcpLettaWorkspace['server'], runDirectory: directory, home: '/private/home', backendDirectory: '/private/backend', nodeExecutable: process.execPath, workingDir: directory }
+    return {
+      workspaceId: 'private-workspace',
+      server: { ...server, agentEnv: {}, mockModelUrl: 'http://127.0.0.1:1' } as PrivateMcpLettaWorkspace['server'],
+      runDirectory: directory,
+      home: '/private/home',
+      backendDirectory: '/private/backend',
+      nodeExecutable: process.execPath,
+      workingDir: directory,
+    }
   }
 
   /** The agent that the Worker reports: first the agent of the fixture in `workingDir`, then the reopened agent. */
   function reportAgents(workingDir: string): void {
-    const permission = [create(AvailableOptionGroupSchema, { id: OPTION_ID_PERMISSION_MODE, currentValue: LETTA_MODE.Unrestricted })]
+    const permission = [
+      create(AvailableOptionGroupSchema, { id: OPTION_ID_PERMISSION_MODE, currentValue: LETTA_MODE.Unrestricted }),
+    ]
     vi.mocked(currentNativeAgent)
-      .mockResolvedValueOnce(create(AgentInfoSchema, { id: 'letta-agent', agentProvider: AgentProvider.LETTA, agentSessionId: 'native-conversation', workingDir, optionGroups: permission }))
-      .mockResolvedValueOnce(create(AgentInfoSchema, { id: 'controlled-native-agent', agentProvider: AgentProvider.LETTA, agentSessionId: 'native-conversation', workingDir, optionGroups: permission }))
+      .mockResolvedValueOnce(create(AgentInfoSchema, {
+        id: 'letta-agent',
+        agentProvider: AgentProvider.LETTA,
+        agentSessionId: 'native-conversation',
+        workingDir,
+        optionGroups: permission,
+      }))
+      .mockResolvedValueOnce(create(AgentInfoSchema, {
+        id: 'controlled-native-agent',
+        agentProvider: AgentProvider.LETTA,
+        agentSessionId: 'native-conversation',
+        workingDir,
+        optionGroups: permission,
+      }))
   }
 
   beforeEach(() => {
@@ -173,7 +208,14 @@ describe('withRegisteredLettaMcp', () => {
     // The private Worker of the workspace holds the agent, so the reopen goes there.
     expect(openAgentViaAPI).toHaveBeenCalledExactlyOnceWith(fixture.server, 'private-workspace', directory, expect.objectContaining({ agentSessionId: 'native-conversation' }))
     expect(use).toHaveBeenCalledExactlyOnceWith({ agentId: 'letta-native-agent', conversationId: 'native-conversation' })
-    expect(reopen.events).toEqual(['close letta-agent', 'configure', 'select controlled-native-agent', 'use', 'close controlled-native-agent', 'restore'])
+    expect(reopen.events).toEqual([
+      'close letta-agent',
+      'configure',
+      'select controlled-native-agent',
+      'use',
+      'close controlled-native-agent',
+      'restore',
+    ])
   })
 
   it('refuses an agent that the Worker ran in another directory, before it closes or reopens anything', async () => {
@@ -188,17 +230,37 @@ describe('withRegisteredLettaMcp', () => {
 
 describe('prepareMcpLetta', () => {
   it('builds a private mock environment with a local backend in the run directory, and keeps its paths', async () => {
-    vi.mocked(createMockAgentEnvironment).mockResolvedValue({ homeDir: join(directory, 'home'), piAgentDir: directory, ohMyPiAgentDir: directory, env: { HOME: join(directory, 'home'), LETTA_LOCAL_BACKEND_DIR: join(directory, 'backend') } })
+    vi.mocked(createMockAgentEnvironment).mockResolvedValue({
+      homeDir: join(directory, 'home'),
+      piAgentDir: directory,
+      ohMyPiAgentDir: directory,
+      env: {
+        HOME: join(directory, 'home'),
+        LETTA_LOCAL_BACKEND_DIR: join(directory, 'backend'),
+      },
+    })
     const prepared = await prepareMcpLetta(directory, 'http://127.0.0.1:1')
     expect(createMockAgentEnvironment).toHaveBeenCalledExactlyOnceWith(directory, 'http://127.0.0.1:1')
     expect(prepared).toEqual({
-      agentEnv: { HOME: join(directory, 'home'), LETTA_LOCAL_BACKEND_DIR: join(directory, 'backend') },
-      setup: { home: join(directory, 'home'), backendDirectory: join(directory, 'backend'), nodeExecutable: process.execPath },
+      agentEnv: {
+        HOME: join(directory, 'home'),
+        LETTA_LOCAL_BACKEND_DIR: join(directory, 'backend'),
+      },
+      setup: {
+        home: join(directory, 'home'),
+        backendDirectory: join(directory, 'backend'),
+        nodeExecutable: process.execPath,
+      },
     })
   })
 
   it('refuses an environment with no local backend directory', async () => {
-    vi.mocked(createMockAgentEnvironment).mockResolvedValue({ homeDir: directory, piAgentDir: directory, ohMyPiAgentDir: directory, env: { HOME: directory } })
+    vi.mocked(createMockAgentEnvironment).mockResolvedValue({
+      homeDir: directory,
+      piAgentDir: directory,
+      ohMyPiAgentDir: directory,
+      env: { HOME: directory },
+    })
     await expect(prepareMcpLetta(directory, 'http://127.0.0.1:1')).rejects.toThrow('requires a local backend directory')
   })
 
@@ -210,7 +272,13 @@ describe('prepareMcpLetta', () => {
 })
 
 describe('privateMcpLettaWorkspace', () => {
-  const leapmuxServer = { hubUrl: 'http://private-hub.test', adminToken: 'private-token', workerId: 'suite-worker', agentEnv: { HOME: '/suite/home' }, mockModelUrl: 'http://127.0.0.1:1' }
+  const leapmuxServer = {
+    hubUrl: 'http://private-hub.test',
+    adminToken: 'private-token',
+    workerId: 'suite-worker',
+    agentEnv: { HOME: '/suite/home' },
+    mockModelUrl: 'http://127.0.0.1:1',
+  }
   const privateServer = { ...leapmuxServer, workerId: 'private-worker' }
   const setup = { home: '/private/home', backendDirectory: '/private/backend', nodeExecutable: process.execPath }
 
@@ -221,37 +289,78 @@ describe('privateMcpLettaWorkspace', () => {
   /** Run the fixture with the private workspace that the skeleton hands over after its startup, with `agent`. */
   async function runFixture(agent: MessageInitShape<typeof AgentInfoSchema>, use: (value: unknown) => Promise<void>) {
     vi.mocked(withPrivateNativeWorkspace).mockImplementation(async (_page, _server, options, useWorkspace) => {
-      expect(options).toMatchObject({ prefix: 'letta-mcp', workerName: 'Letta MCP test', providerAgent: LETTA_AGENT, openAgent: openMcpLettaAgent })
+      expect(options).toMatchObject({
+        prefix: 'letta-mcp',
+        workerName: 'Letta MCP test',
+        providerAgent: LETTA_AGENT,
+        openAgent: openMcpLettaAgent,
+      })
       await (useWorkspace as (value: unknown) => Promise<void>)({
         workspaceId: 'private-workspace',
         server: privateServer,
         agentId: 'letta-agent',
         workingDir: '/private/wd',
-        agent: create(AgentInfoSchema, { id: 'letta-agent', agentProvider: AgentProvider.LETTA, agentSessionId: 'native-conversation', ...agent }),
+        agent: create(AgentInfoSchema, {
+          id: 'letta-agent',
+          agentProvider: AgentProvider.LETTA,
+          agentSessionId: 'native-conversation',
+          ...agent,
+        }),
         runDirectory: directory,
         setup,
       })
     })
     const fixture = fixtures.get('privateMcpLettaWorkspace')
     if (typeof fixture !== 'function')
-      throw new Error('The private Letta MCP fixture definition is absent.')
+      throw new TypeError('The private Letta MCP fixture definition is absent.')
     await fixture({ page: {}, leapmuxServer }, use)
   }
 
   it('yields the workspace of a started Letta agent in native Unrestricted mode', async () => {
     const use = vi.fn(async () => {})
-    await runFixture({ optionGroups: [permissionMode(LETTA_MODE.Unrestricted)] }, use)
-    expect(use).toHaveBeenCalledExactlyOnceWith({ workspaceId: 'private-workspace', server: privateServer, runDirectory: directory, workingDir: '/private/wd', ...setup })
+    await runFixture({
+      optionGroups: [
+        permissionMode(LETTA_MODE.Unrestricted),
+      ],
+    }, use)
+    expect(use).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: 'private-workspace',
+      server: privateServer,
+      runDirectory: directory,
+      workingDir: '/private/wd',
+      ...setup,
+    })
   })
 
   // Playwright's `expect` fails with the values that it compared, which identify the check that refused the agent.
   it.each([
-    ['another provider', { agentProvider: AgentProvider.CLAUDE_CODE }, { actual: AgentProvider.CLAUDE_CODE, expected: AgentProvider.LETTA }],
-    ['no native conversation', { agentSessionId: '' }, { actual: '', expected: '' }],
-    ['another permission mode', { optionGroups: [permissionMode('default')] }, { actual: 'default', expected: LETTA_MODE.Unrestricted }],
+    [
+      'another provider',
+      { agentProvider: AgentProvider.CLAUDE_CODE },
+      { actual: AgentProvider.CLAUDE_CODE, expected: AgentProvider.LETTA },
+    ],
+    [
+      'no native conversation',
+      { agentSessionId: '' },
+      { actual: '', expected: '' },
+    ],
+    [
+      'another permission mode',
+      {
+        optionGroups: [
+          permissionMode('default'),
+        ],
+      },
+      { actual: 'default', expected: LETTA_MODE.Unrestricted },
+    ],
   ])('does not yield the workspace of an agent with %s', async (_case, agent, matcherResult) => {
     const use = vi.fn(async () => {})
-    await expect(runFixture({ optionGroups: [permissionMode(LETTA_MODE.Unrestricted)], ...agent }, use)).rejects.toMatchObject({ matcherResult })
+    await expect(runFixture({
+      optionGroups: [
+        permissionMode(LETTA_MODE.Unrestricted),
+      ],
+      ...agent,
+    }, use)).rejects.toMatchObject({ matcherResult })
     expect(use).not.toHaveBeenCalled()
   })
 })

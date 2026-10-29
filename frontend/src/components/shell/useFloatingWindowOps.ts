@@ -35,7 +35,12 @@ export interface FloatingWindowOps {
 
 export function useFloatingWindowOps(args: UseFloatingWindowOpsArgs): FloatingWindowOps {
   const { layoutStore, floatingWindowStore, view, selection } = args
-  const tileMove = useTileMove({ view, selection, layoutStore, floatingWindowStore })
+  const tileMove = useTileMove({
+    view,
+    selection,
+    layoutStore,
+    floatingWindowStore,
+  })
 
   const focusTile = (tileId: string): void => {
     focusTileShared(layoutStore, floatingWindowStore, tileId)

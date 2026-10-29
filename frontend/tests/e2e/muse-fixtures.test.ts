@@ -19,12 +19,17 @@ describe('museTest', () => {
   it('passes its own workspace and provider to the native scenario', async () => {
     const native = registered.fixtures?.native
     if (typeof native !== 'function')
-      throw new Error('The Muse native fixture was not registered.')
+      throw new TypeError('The Muse native fixture was not registered.')
     const page = {} as Page
     const modelScript = {} as ModelScript
     const leapmuxServer: NativeContextFixtures['leapmuxServer'] = { hubUrl: 'http://127.0.0.1:1', adminToken: 'test', workerId: 'worker' }
     let used = false
-    await native({ page, modelScript, leapmuxServer, providerWorkspace: { workspaceId: 'muse-workspace' } }, async (context: ManagedNativeScenarioContext) => {
+    await native({
+      page,
+      modelScript,
+      leapmuxServer,
+      providerWorkspace: { workspaceId: 'muse-workspace' },
+    }, async (context: ManagedNativeScenarioContext) => {
       used = true
       expect(context.page).toBe(page)
       expect(context.modelScript).toBe(modelScript)

@@ -25,7 +25,9 @@ describe('chatPremeasureWarmup', () => {
     enabled?: boolean
   }) {
     const ids = Array.from({ length: opts.count }, (_, i) => `m${i}`)
-    const entries = ids.map(id => ({ message: { id } } as ClassifiedEntry))
+    const entries = ids.map(id => ({
+      message: { id },
+    } as ClassifiedEntry))
     const items = ids.map(id => ({ id, hasSpanLines: false, heightKey: `k-${id}` } as VirtualItem))
     const measured = new Set<string>()
     const [enabled, setEnabled] = createSignal(opts.enabled ?? true)
@@ -50,25 +52,51 @@ describe('chatPremeasureWarmup', () => {
       for (const c of warmup.warmupCandidates())
         measured.add(c.item.id)
     }
-    return { warmup, currentIds, measureBatch, measured, setEnabled, setRange, setEntriesSig, setItemsSig, dispose }
+    return {
+      warmup,
+      currentIds,
+      measureBatch,
+      measured,
+      setEnabled,
+      setRange,
+      setEntriesSig,
+      setItemsSig,
+      dispose,
+    }
   }
 
   it('emits nothing until the idle delay, then the nearest rows outside the covered band', () => {
     // 20 rows, range [8, 10), band half-width 2 -> covered [6, 12).
-    const h = makeHarness({ count: 20, range: { start: 8, end: 10 } })
+    const h = makeHarness({
+      count: 20,
+      range: { start: 8, end: 10 },
+    })
     expect(h.currentIds()).toEqual([])
     vi.advanceTimersByTime(WARMUP_IDLE_DELAY_MS - 1)
     expect(h.currentIds()).toEqual([])
     vi.advanceTimersByTime(1)
     // Alternating outward from the band edges (above 5,4,3,2 / below 12,13,14,15),
     // capped at the batch size.
-    expect(h.currentIds()).toEqual(['m5', 'm12', 'm4', 'm13', 'm3', 'm14', 'm2', 'm15'])
+    expect(h.currentIds()).toEqual([
+      'm5',
+      'm12',
+      'm4',
+      'm13',
+      'm3',
+      'm14',
+      'm2',
+      'm15',
+    ])
     expect(h.currentIds()).toHaveLength(WARMUP_BATCH_ROWS)
     h.dispose()
   })
 
   it('skips measured rows and drains outward over ticks until the window is dry', () => {
-    const h = makeHarness({ count: 12, range: { start: 4, end: 6 }, excludedBandRows: 2 })
+    const h = makeHarness({
+      count: 12,
+      range: { start: 4, end: 6 },
+      excludedBandRows: 2,
+    })
     // Covered band [2, 8); outside rows: 1,0 above and 8..11 below = 6 rows.
     vi.advanceTimersByTime(WARMUP_IDLE_DELAY_MS)
     expect(h.currentIds()).toEqual(['m1', 'm8', 'm0', 'm9', 'm10', 'm11'])
@@ -83,7 +111,11 @@ describe('chatPremeasureWarmup', () => {
   })
 
   it('clears the band immediately when disabled and resumes after the idle delay', () => {
-    const h = makeHarness({ count: 10, range: { start: 0, end: 2 }, excludedBandRows: 1 })
+    const h = makeHarness({
+      count: 10,
+      range: { start: 0, end: 2 },
+      excludedBandRows: 1,
+    })
     vi.advanceTimersByTime(WARMUP_IDLE_DELAY_MS)
     expect(h.currentIds()).not.toEqual([])
 
@@ -101,12 +133,18 @@ describe('chatPremeasureWarmup', () => {
   })
 
   it('re-arms a parked ticker when new rows arrive', () => {
-    const h = makeHarness({ count: 4, range: { start: 0, end: 4 }, excludedBandRows: 2 })
+    const h = makeHarness({
+      count: 4,
+      range: { start: 0, end: 4 },
+      excludedBandRows: 2,
+    })
     vi.advanceTimersByTime(WARMUP_IDLE_DELAY_MS + WARMUP_TICK_MS)
     expect(h.currentIds()).toEqual([]) // whole window covered by the band
 
     const moreIds = Array.from({ length: 12 }, (_, i) => `m${i}`)
-    h.setEntriesSig(moreIds.map(id => ({ message: { id } } as ClassifiedEntry)))
+    h.setEntriesSig(moreIds.map(id => ({
+      message: { id },
+    } as ClassifiedEntry)))
     h.setItemsSig(moreIds.map(id => ({ id, hasSpanLines: false, heightKey: `k-${id}` } as VirtualItem)))
     vi.advanceTimersByTime(WARMUP_IDLE_DELAY_MS)
     expect(h.currentIds()).toEqual(['m6', 'm7', 'm8', 'm9', 'm10', 'm11'])
@@ -114,7 +152,10 @@ describe('chatPremeasureWarmup', () => {
   })
 
   it('emits nothing for an empty window and parks the ticker', () => {
-    const h = makeHarness({ count: 0, range: { start: 0, end: 0 } })
+    const h = makeHarness({
+      count: 0,
+      range: { start: 0, end: 0 },
+    })
     vi.advanceTimersByTime(WARMUP_IDLE_DELAY_MS + 10 * WARMUP_TICK_MS)
     expect(h.currentIds()).toEqual([])
     expect(vi.getTimerCount()).toBe(0)
@@ -122,7 +163,10 @@ describe('chatPremeasureWarmup', () => {
   })
 
   it('stops all timers on dispose', () => {
-    const h = makeHarness({ count: 20, range: { start: 8, end: 10 } })
+    const h = makeHarness({
+      count: 20,
+      range: { start: 8, end: 10 },
+    })
     vi.advanceTimersByTime(WARMUP_IDLE_DELAY_MS)
     expect(h.currentIds()).not.toEqual([])
     h.dispose()

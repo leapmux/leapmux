@@ -36,15 +36,27 @@ describe('requireAcpToolSupplement', () => {
   const original = { sessionUpdate: 'tool_call_update', toolCallId: 'call-1', status: 'completed' }
 
   it('returns the supplement whose identity matches the frame', () => {
-    const supplement = { ...original, rawOutput: { output: 'native' } }
+    const supplement = {
+      ...original,
+      rawOutput: { output: 'native' },
+    }
     expect(requireAcpToolSupplement(original, supplement, 'Goose terminal')).toBe(supplement)
   })
 
   it.each([
     { label: 'an absent supplement', supplemental: undefined },
-    { label: 'a supplement of another call', supplemental: { ...original, toolCallId: 'call-2' } },
-    { label: 'a supplement of another status', supplemental: { ...original, status: 'in_progress' } },
-    { label: 'a supplement that omits an identity key', supplemental: { sessionUpdate: 'tool_call_update', toolCallId: 'call-1' } },
+    {
+      label: 'a supplement of another call',
+      supplemental: { ...original, toolCallId: 'call-2' },
+    },
+    {
+      label: 'a supplement of another status',
+      supplemental: { ...original, status: 'in_progress' },
+    },
+    {
+      label: 'a supplement that omits an identity key',
+      supplemental: { sessionUpdate: 'tool_call_update', toolCallId: 'call-1' },
+    },
   ])('refuses $label with the label of the read', ({ supplemental }) => {
     expect(() => requireAcpToolSupplement(original, supplemental, 'Goose terminal'))
       .toThrow('The native Goose terminal record belongs to another result.')

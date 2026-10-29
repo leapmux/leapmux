@@ -34,10 +34,13 @@ export const dragHandle = style([dragHandleBase, {}])
  * there too. Only touch-only devices — phones, iPad without a trackpad —
  * see it.
  */
-export const dragHandleAuto = style([dragHandleBase, {
-  '@media': {
-    '(any-pointer: fine)': {
-      display: 'none',
+export const dragHandleAuto = style([
+  dragHandleBase,
+  {
+    '@media': {
+      '(any-pointer: fine)': {
+        display: 'none',
+      },
     },
   },
-}])
+])

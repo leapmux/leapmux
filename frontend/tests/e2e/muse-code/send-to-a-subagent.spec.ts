@@ -26,9 +26,16 @@ for (const active of [true, false]) {
       const child = await openMuseChild(native, active)
       await modelScript.rule({
         name: rule,
-        when: { body: ['Workflow child completion protocol', note] },
+        when: {
+          body: ['Workflow child completion protocol', note],
+        },
         once: true,
-        respond: { text: answer, toolCalls: [museSubmitResultToolCall('muse-child-note-submit', 'The human note was processed.')] },
+        respond: {
+          text: answer,
+          toolCalls: [
+            museSubmitResultToolCall('muse-child-note-submit', 'The human note was processed.'),
+          ],
+        },
       })
       if (active) {
         await steerQueuedInput(page, { message: note, match: note })
@@ -43,7 +50,10 @@ for (const active of [true, false]) {
       if (!request)
         throw new Error('The native child did not consume its human note.')
       expect(nativeModelContextText(request)).toContain(note)
-      await testInfo.attach('muse-child-input-request', { body: JSON.stringify({ childId: child.childId, parentId: child.parentId, request }), contentType: 'application/json' })
+      await testInfo.attach('muse-child-input-request', {
+        body: JSON.stringify({ childId: child.childId, parentId: child.parentId, request }),
+        contentType: 'application/json',
+      })
       for (const reload of [false, true]) {
         if (reload)
           await page.reload()

@@ -70,7 +70,17 @@ describe('normalizeProgressOutput', () => {
     const input = [
       'pre line a',
       'pre line b',
-      ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8', 'p9'].join('\r'),
+      [
+        'p1',
+        'p2',
+        'p3',
+        'p4',
+        'p5',
+        'p6',
+        'p7',
+        'p8',
+        'p9',
+      ].join('\r'),
       'post line a',
       'post line b',
     ].join('\n')
@@ -130,9 +140,18 @@ describe('normalizedCommandBody', () => {
   })
 
   it('matches the hand-composed normalize+strip the call sites previously inlined', () => {
-    for (const input of ['\rfoo', 'a\rb\rc', 'plain', '\n\nx', 'a\r\nb']) {
+    for (const input of [
+      '\rfoo',
+      'a\rb\rc',
+      'plain',
+      '\n\nx',
+      'a\r\nb',
+    ]) {
       const norm = normalizeProgressOutput(input)
-      expect(normalizedCommandBody(input)).toEqual({ text: stripLeadingBlankLines(norm.text), hadCarriageReturns: norm.hadCarriageReturns })
+      expect(normalizedCommandBody(input)).toEqual({
+        text: stripLeadingBlankLines(norm.text),
+        hadCarriageReturns: norm.hadCarriageReturns,
+      })
     }
   })
 })

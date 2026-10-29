@@ -40,11 +40,16 @@ describe('ReadFileResultBody with no content', () => {
 describe('ReadFileResultBody output ownership', () => {
   it('marks the text of each read line without marking its line number', () => {
     const { container } = render(() => <ReadFileResultBody source={readFileResultFromContent({ content: 'alpha\nbeta' })} />)
-    expect([...container.querySelectorAll('[data-tool-output-preview]')].map(element => element.textContent)).toEqual(['alpha', 'beta'])
+    expect([
+      ...container.querySelectorAll('[data-tool-output-preview]'),
+    ].map(element => element.textContent)).toEqual(['alpha', 'beta'])
   })
 
   it('marks the returned fallback text and leaves the empty notice unmarked', () => {
-    const refused = { ...readFileResultFromContent({ content: '' }), fallbackContent: 'File content exceeds maximum allowed characters' }
+    const refused = {
+      ...readFileResultFromContent({ content: '' }),
+      fallbackContent: 'File content exceeds maximum allowed characters',
+    }
     const withText = render(() => <ReadFileResultBody source={refused} />)
     const outputs = withText.container.querySelectorAll('[data-tool-output-preview]')
     expect(outputs).toHaveLength(1)

@@ -25,7 +25,10 @@ function setNodeKindOp(nodeId: string, kind: NodeKind, p: bigint, l: bigint, c: 
     canonicalHlc: hlc(p, l, c),
     body: {
       case: 'setNodeRegister',
-      value: create(SetNodeRegisterOpSchema, { nodeId, field: { case: 'kind', value: kind } }),
+      value: create(SetNodeRegisterOpSchema, {
+        nodeId,
+        field: { case: 'kind', value: kind },
+      }),
     },
   })
 }
@@ -35,7 +38,10 @@ function setNodePositionOp(nodeId: string, position: string, p: bigint, l: bigin
     canonicalHlc: hlc(p, l, c),
     body: {
       case: 'setNodeRegister',
-      value: create(SetNodeRegisterOpSchema, { nodeId, field: { case: 'position', value: position } }),
+      value: create(SetNodeRegisterOpSchema, {
+        nodeId,
+        field: { case: 'position', value: position },
+      }),
     },
   })
 }
@@ -45,7 +51,10 @@ function setNodeParentOp(nodeId: string, parentId: string, p: bigint, l: bigint,
     canonicalHlc: hlc(p, l, c),
     body: {
       case: 'setNodeRegister',
-      value: create(SetNodeRegisterOpSchema, { nodeId, field: { case: 'parentId', value: parentId } }),
+      value: create(SetNodeRegisterOpSchema, {
+        nodeId,
+        field: { case: 'parentId', value: parentId },
+      }),
     },
   })
 }
@@ -53,7 +62,10 @@ function setNodeParentOp(nodeId: string, parentId: string, p: bigint, l: bigint,
 function tombstoneNodeOp(nodeId: string, p: bigint, l: bigint, c: string) {
   return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
-    body: { case: 'tombstoneNode', value: create(TombstoneNodeOpSchema, { nodeId }) },
+    body: {
+      case: 'tombstoneNode',
+      value: create(TombstoneNodeOpSchema, { nodeId }),
+    },
   })
 }
 
@@ -62,7 +74,11 @@ function setTabTileIdOp(tabId: string, tileId: string, p: bigint, l: bigint, c: 
     canonicalHlc: hlc(p, l, c),
     body: {
       case: 'setTabRegister',
-      value: create(SetTabRegisterOpSchema, { tabType: TabType.AGENT, tabId, field: { case: 'tileId', value: tileId } }),
+      value: create(SetTabRegisterOpSchema, {
+        tabType: TabType.AGENT,
+        tabId,
+        field: { case: 'tileId', value: tileId },
+      }),
     },
   })
 }
@@ -70,14 +86,22 @@ function setTabTileIdOp(tabId: string, tileId: string, p: bigint, l: bigint, c: 
 function tombstoneTabOp(tabId: string, p: bigint, l: bigint, c: string) {
   return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
-    body: { case: 'tombstoneTab', value: create(TombstoneTabOpSchema, { tabType: TabType.AGENT, tabId }) },
+    body: {
+      case: 'tombstoneTab',
+      value: create(TombstoneTabOpSchema, { tabType: TabType.AGENT, tabId }),
+    },
   })
 }
 
 function reviveTabOp(tabId: string, p: bigint, l: bigint, c: string) {
   return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
-    body: { case: 'reviveTab', value: create(ReviveTabOpSchema, { tab: { tabType: TabType.AGENT, tabId } }) },
+    body: {
+      case: 'reviveTab',
+      value: create(ReviveTabOpSchema, {
+        tab: { tabType: TabType.AGENT, tabId },
+      }),
+    },
   })
 }
 
@@ -86,7 +110,10 @@ function setFloatingXOp(windowId: string, x: number, p: bigint, l: bigint, c: st
     canonicalHlc: hlc(p, l, c),
     body: {
       case: 'setFloatingWindowRegister',
-      value: create(SetFloatingWindowRegisterOpSchema, { windowId, field: { case: 'x', value: x } }),
+      value: create(SetFloatingWindowRegisterOpSchema, {
+        windowId,
+        field: { case: 'x', value: x },
+      }),
     },
   })
 }

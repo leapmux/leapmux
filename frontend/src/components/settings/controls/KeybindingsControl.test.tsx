@@ -25,8 +25,12 @@ describe('buildCommandRows', () => {
   it('merges registered commands with defaults and marks overrides Custom', () => {
     const rows = buildCommandRows(
       WORKSPACE_KEYBINDINGS,
-      [{ key: 'F9', command: 'app.newAgent' }],
-      [{ id: 'app.newAgent', title: 'New Agent', category: 'App' }],
+      [
+        { key: 'F9', command: 'app.newAgent' },
+      ],
+      [
+        { id: 'app.newAgent', title: 'New Agent', category: 'App' },
+      ],
     )
     const newAgent = rows.find(r => r.command === 'app.newAgent')
     expect(newAgent?.customized).toBe(true)
@@ -111,8 +115,18 @@ describe('chordFromEvent', () => {
 describe('KeybindingsControl', () => {
   beforeEach(() => {
     resetCommands()
-    registerCommand({ id: 'app.newAgent', title: 'New Agent', category: 'App', handler: () => {} })
-    registerCommand({ id: 'app.openPreferences', title: 'Open Preferences', category: 'App', handler: () => {} })
+    registerCommand({
+      id: 'app.newAgent',
+      title: 'New Agent',
+      category: 'App',
+      handler: () => {},
+    })
+    registerCommand({
+      id: 'app.openPreferences',
+      title: 'Open Preferences',
+      category: 'App',
+      handler: () => {},
+    })
     listUserSettings.mockResolvedValue({ descriptors: [], values: [] })
     updateUserSetting.mockReset()
     updateUserSetting.mockResolvedValue({})
@@ -147,7 +161,9 @@ describe('KeybindingsControl', () => {
     keydown({ key: 'F9' })
     await waitFor(() => expect(updateUserSetting).toHaveBeenCalledWith({
       key: 'keybindings',
-      partialJson: JSON.stringify([{ key: 'F9', command: 'app.newAgent', when: '!dialogOpen' }]),
+      partialJson: JSON.stringify([
+        { key: 'F9', command: 'app.newAgent', when: '!dialogOpen' },
+      ]),
     }))
     await waitFor(() => expect(screen.getAllByText('Custom').length).toBeGreaterThan(0))
   })
@@ -171,10 +187,20 @@ describe('KeybindingsControl', () => {
   })
 
   it('resets a customized row', async () => {
-    const overrides: UserKeybindingOverride[] = [{ key: 'F9', command: 'app.newAgent', when: '!dialogOpen' }]
+    const overrides: UserKeybindingOverride[] = [
+      { key: 'F9', command: 'app.newAgent', when: '!dialogOpen' },
+    ]
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [{ key: 'keybindings', valueJson: JSON.stringify(overrides), effectiveJson: JSON.stringify(overrides), customized: true, secretSet: {} }],
+      values: [
+        {
+          key: 'keybindings',
+          valueJson: JSON.stringify(overrides),
+          effectiveJson: JSON.stringify(overrides),
+          customized: true,
+          secretSet: {},
+        },
+      ],
     })
     render(() => (
       <PreferencesProvider>

@@ -63,9 +63,15 @@ export interface BackgroundTaskRowSelection {
  * The selector escapes each ID, because the Worker or a script chooses it.
  */
 function backgroundTaskRowSelector(selection: BackgroundTaskRowSelection): string {
-  const kind = selection.kind === undefined ? '' : `[data-kind="${selection.kind}"]`
-  const taskId = selection.taskId === undefined ? '' : `[data-task-id="${cssAttributeValue(selection.taskId)}"]`
-  const childAgentId = selection.childAgentId === undefined ? '' : `[data-child-agent-id="${cssAttributeValue(selection.childAgentId)}"]`
+  const kind = selection.kind === undefined
+    ? ''
+    : `[data-kind="${selection.kind}"]`
+  const taskId = selection.taskId === undefined
+    ? ''
+    : `[data-task-id="${cssAttributeValue(selection.taskId)}"]`
+  const childAgentId = selection.childAgentId === undefined
+    ? ''
+    : `[data-child-agent-id="${cssAttributeValue(selection.childAgentId)}"]`
   return `[data-testid="bg-task-row"]${kind}${taskId}${childAgentId}`
 }
 
@@ -161,7 +167,9 @@ export async function openChildTabFromRow(page: Page, row: Locator): Promise<str
     childId = await row.getAttribute('data-child-agent-id') ?? ''
     return childId
   }).toMatch(/\S/)
-  const expectedIds = [...new Set([...before, childId])].sort()
+  const expectedIds = [
+    ...new Set([...before, childId]),
+  ].sort()
   await row.click()
   await expect(agentTabs).toHaveCount(expectedIds.length)
   expect((await tabIds()).sort(), 'the row selects only its exact native child tab').toEqual(expectedIds)
@@ -239,7 +247,10 @@ export interface HeldChildCase {
  * hold gate, so a caller that supplies `heldAnswer` cannot drop the gate with it.
  */
 export function heldChildAnswer(test: Pick<HeldChildCase, 'heldAnswer'>): MockModelStep {
-  return { ...(test.heldAnswer ?? { text: 'One, two, three.' }), gate: HELD_CHILD_GATE }
+  return {
+    ...(test.heldAnswer ?? { text: 'One, two, three.' }),
+    gate: HELD_CHILD_GATE,
+  }
 }
 
 /**
@@ -292,11 +303,15 @@ export async function openHeldChildTab(context: HeldChildContext, test: HeldChil
     })
     const start = await modelScript.queue(
       {
-        toolCalls: [spawnSubagentToolCall(context.provider, 'spawn-held-child', {
-          description: HELD_CHILD_TITLE,
-          prompt: modelScript.prompt(`${HELD_CHILD_TASK}.`),
-          ...(test.background === undefined ? {} : { background: test.background }),
-        })],
+        toolCalls: [
+          spawnSubagentToolCall(context.provider, 'spawn-held-child', {
+            description: HELD_CHILD_TITLE,
+            prompt: modelScript.prompt(`${HELD_CHILD_TASK}.`),
+            ...(test.background === undefined
+              ? {}
+              : { background: test.background }),
+          }),
+        ],
       },
       ...test.rootTurnsAfterSpawn,
     )
@@ -316,7 +331,14 @@ export async function openHeldChildTab(context: HeldChildContext, test: HeldChil
       await settle()
       await expectRowBecomesFinal(page, row)
     }
-    return { row, childId, parentId, heldTurns, release, finish }
+    return {
+      row,
+      childId,
+      parentId,
+      heldTurns,
+      release,
+      finish,
+    }
   }, settle)
 }
 
@@ -334,10 +356,16 @@ export interface HeldChildRowCase extends Pick<HeldChildCase, 'rowTitle' | 'held
 export async function exerciseHeldChildRow(context: HeldChildContext, options: HeldChildRowCase = {}): Promise<void> {
   const { page } = context
   const child = await openHeldChildTab(context, {
-    ...(options.rowTitle === undefined ? {} : { rowTitle: options.rowTitle }),
-    ...(options.heldAnswer === undefined ? {} : { heldAnswer: options.heldAnswer }),
+    ...(options.rowTitle === undefined
+      ? {}
+      : { rowTitle: options.rowTitle }),
+    ...(options.heldAnswer === undefined
+      ? {}
+      : { heldAnswer: options.heldAnswer }),
     childTurn: { user: HELD_CHILD_TASK },
-    rootTurnsAfterSpawn: [{ text: 'The actual native child completed.' }],
+    rootTurnsAfterSpawn: [
+      { text: 'The actual native child completed.' },
+    ],
   })
   await withCleanup(async () => {
     await tabById(page, child.parentId).click()
@@ -382,7 +410,13 @@ export type ChildInterruptCase = Omit<HeldChildCase, 'rootTurnsAfterSpawn'> & {
  */
 export async function exerciseChildInterrupt(context: HeldChildContext, test: ChildInterruptCase): Promise<void> {
   const { page, modelScript } = context
-  const child = await openHeldChildTab(context, { ...test, rootTurnsAfterSpawn: [...test.rootTurnsBeforeStop ?? [], { text: ROOT_AFTER_CHILD_STOP }] })
+  const child = await openHeldChildTab(context, {
+    ...test,
+    rootTurnsAfterSpawn: [
+      ...test.rootTurnsBeforeStop ?? [],
+      { text: ROOT_AFTER_CHILD_STOP },
+    ],
+  })
   // A failed stop leaves the child answer held. The release lets the child end, so the stop failure stays the report.
   await cleanupOnFailure(async () => {
     // The held answer never arrives. Registry status and activity report the stop.
@@ -483,7 +517,9 @@ export async function expectRowBecomesFinal(page: Page, row: Locator): Promise<v
   let settled: string | null = null
   await expect.poll(async () => {
     const status = await row.getAttribute('data-status')
-    settled = FINAL_STATUSES.includes(status as typeof FINAL_STATUSES[number]) ? status : null
+    settled = FINAL_STATUSES.includes(status as typeof FINAL_STATUSES[number])
+      ? status
+      : null
     return settled
   }).not.toBeNull()
   const label = END_LABELS[settled ?? '']

@@ -12,7 +12,9 @@ function thin(type = 2, little = true): Uint8Array {
   return data
 }
 
-function fixture(files: Record<string, Uint8Array> = { '/native/amp': thin() }) {
+function fixture(files: Record<string, Uint8Array> = {
+  '/native/amp': thin(),
+}) {
   const command = vi.fn<ProcessExecutableIO['command']>().mockResolvedValue(JSON.stringify({ pid: 42, path: '/native/amp' }))
   const readLink = vi.fn<ProcessExecutableIO['readLink']>().mockResolvedValue('/native/amp')
   const realPath = vi.fn<ProcessExecutableIO['realPath']>().mockImplementation(async path => path)
@@ -22,7 +24,13 @@ function fixture(files: Record<string, Uint8Array> = { '/native/amp': thin() }) 
       throw new Error('The actual executable file disappeared.')
     return file.subarray(offset, offset + length)
   })
-  return { io: { command, readLink, realPath, read }, command, readLink, realPath, read }
+  return {
+    io: { command, readLink, realPath, read },
+    command,
+    readLink,
+    realPath,
+    read,
+  }
 }
 
 describe('parseKernelProcessPath', () => {
@@ -30,7 +38,16 @@ describe('parseKernelProcessPath', () => {
     expect(parseKernelProcessPath(JSON.stringify({ pid: 42, path: '/private/native amp' }), 42)).toBe('/private/native amp')
   })
 
-  it.each(['', 'null', '[]', '{"pid":43,"path":"/native/amp"}', '{"pid":42,"path":"relative"}', '{"pid":42}', '{"pid":42,"path":4}', '[{"pid":42,"path":"/native/amp"},{"pid":42,"path":"/native/other"}]'])('refuses incomplete, foreign, or ambiguous kernel identity: %s', (text) => {
+  it.each([
+    '',
+    'null',
+    '[]',
+    '{"pid":43,"path":"/native/amp"}',
+    '{"pid":42,"path":"relative"}',
+    '{"pid":42}',
+    '{"pid":42,"path":4}',
+    '[{"pid":42,"path":"/native/amp"},{"pid":42,"path":"/native/other"}]',
+  ])('refuses incomplete, foreign, or ambiguous kernel identity: %s', (text) => {
     expect(() => parseKernelProcessPath(text, 42)).toThrow('kernel process identity')
   })
 })
@@ -52,9 +69,12 @@ describe('withProcessBinaryReader', () => {
     })
     let failure: unknown
     try {
-      await withProcessBinaryReader({ read: async () => {
-        throw inspection
-      }, close }, async (read) => {
+      await withProcessBinaryReader({
+        read: async () => {
+          throw inspection
+        },
+        close,
+      }, async (read) => {
         await read(0, 32)
         return true
       })
@@ -74,20 +94,28 @@ describe('withProcessBinaryReader', () => {
     const close = vi.fn(async () => {
       throw closure
     })
-    await expect(withProcessBinaryReader({ read: async () => thin(), close }, async () => true)).rejects.toBe(closure)
+    await expect(withProcessBinaryReader({
+      read: async () => thin(),
+      close,
+    }, async () => true)).rejects.toBe(closure)
     expect(close).toHaveBeenCalledTimes(1)
   })
 })
 
 describe('isMachExecutable', () => {
   it.each([true, false])('reads a thin executable header with little endian %s', async (little) => {
-    const { read } = fixture({ '/native/amp': thin(2, little) })
+    const { read } = fixture({
+      '/native/amp': thin(2, little),
+    })
     expect(await isMachExecutable('/native/amp', read)).toBe(true)
     expect(read).toHaveBeenCalledExactlyOnceWith('/native/amp', 0, 32)
   })
 
   it('ignores a valid library mapping and rejects a truncated header', async () => {
-    const { read } = fixture({ '/native/library': thin(6), '/native/short': new Uint8Array(3) })
+    const { read } = fixture({
+      '/native/library': thin(6),
+      '/native/short': new Uint8Array(3),
+    })
     expect(await isMachExecutable('/native/library', read)).toBe(false)
     await expect(isMachExecutable('/native/short', read)).rejects.toThrow('incomplete')
   })
@@ -102,7 +130,12 @@ describe('isMachExecutable', () => {
     data.set(thin(), 64)
     const { read } = fixture({ '/native/amp': data })
     expect(await isMachExecutable('/native/amp', read)).toBe(true)
-    expect(read.mock.calls).toEqual([['/native/amp', 0, 32], ['/native/amp', 8, 20], ['/native/amp', 95, 1], ['/native/amp', 64, 16]])
+    expect(read.mock.calls).toEqual([
+      ['/native/amp', 0, 32],
+      ['/native/amp', 8, 20],
+      ['/native/amp', 95, 1],
+      ['/native/amp', 64, 16],
+    ])
     view.setUint32(16, 2)
     await expect(isMachExecutable('/native/amp', read)).rejects.toThrow('range')
   })
@@ -168,28 +201,39 @@ describe('isMachExecutable', () => {
     view.setUint32(4, 1)
     view.setBigUint64(16, BigInt(Number.MAX_SAFE_INTEGER - 8))
     view.setBigUint64(24, 32n)
-    const read = vi.fn<ProcessExecutableIO['read']>().mockImplementation(async (_path, offset, length) => offset < 64 ? data.subarray(offset, offset + length) : thin().subarray(0, length))
+    const read = vi.fn<ProcessExecutableIO['read']>().mockImplementation(async (_path, offset, length) => offset < 64
+      ? data.subarray(offset, offset + length)
+      : thin().subarray(0, length))
     await expect(isMachExecutable('/native/amp', read)).rejects.toThrow('range')
   })
 })
 
 describe('processExecutable', () => {
   it('uses the exact Darwin kernel path without reading deleted unrelated mappings', async () => {
-    const { io, command, read } = fixture({ '/native/amp': thin() })
+    const { io, command, read } = fixture({
+      '/native/amp': thin(),
+    })
     command.mockResolvedValue(JSON.stringify({ pid: 42, path: '/native/amp' }))
     expect(await processExecutable(42, 'darwin', io)).toBe('/native/amp')
     expect(command).toHaveBeenCalledExactlyOnceWith('/usr/bin/python3', expect.arrayContaining(['-c', '42']))
     expect(read.mock.calls.every(([path]) => path === '/native/amp')).toBe(true)
   })
 
-  it.each([{ pid: 43, path: '/native/amp' }, { pid: 42, path: '' }, { pid: 42, path: 'relative' }, { path: '/native/amp' }])('refuses invalid Darwin kernel process identity: %j', async (record) => {
+  it.each([
+    { pid: 43, path: '/native/amp' },
+    { pid: 42, path: '' },
+    { pid: 42, path: 'relative' },
+    { path: '/native/amp' },
+  ])('refuses invalid Darwin kernel process identity: %j', async (record) => {
     const { io, command } = fixture()
     command.mockResolvedValue(JSON.stringify(record))
     await expect(processExecutable(42, 'darwin', io)).rejects.toThrow('kernel process identity')
   })
 
   it('refuses a non-executable kernel path and retains the actual native query failure', async () => {
-    const { io, command } = fixture({ '/native/library': thin(6) })
+    const { io, command } = fixture({
+      '/native/library': thin(6),
+    })
     command.mockResolvedValue(JSON.stringify({ pid: 42, path: '/native/library' }))
     await expect(processExecutable(42, 'darwin', io)).rejects.toThrow('Mach-O executable')
     const failure = new Error('The exact native process disappeared.')
@@ -198,15 +242,24 @@ describe('processExecutable', () => {
   })
 
   it('queries only one native Darwin PID and reads only its kernel executable', async () => {
-    const { io, command } = fixture({ '/native/amp': thin(), '/native/library': thin(6) })
+    const { io, command } = fixture({
+      '/native/amp': thin(),
+      '/native/library': thin(6),
+    })
     command.mockResolvedValue(JSON.stringify({ pid: 42, path: '/native/amp' }))
     expect(await processExecutable(42, 'darwin', io)).toBe('/native/amp')
     expect(command).toHaveBeenCalledExactlyOnceWith('/usr/bin/python3', expect.arrayContaining(['-c', '42']))
   })
 
   it('refuses ambiguous kernel records and preserves actual file-read errors', async () => {
-    const { io, command } = fixture({ '/native/amp': thin(), '/native/other': thin() })
-    command.mockResolvedValue(JSON.stringify([{ pid: 42, path: '/native/amp' }, { pid: 42, path: '/native/other' }]))
+    const { io, command } = fixture({
+      '/native/amp': thin(),
+      '/native/other': thin(),
+    })
+    command.mockResolvedValue(JSON.stringify([
+      { pid: 42, path: '/native/amp' },
+      { pid: 42, path: '/native/other' },
+    ]))
     await expect(processExecutable(42, 'darwin', io)).rejects.toThrow('kernel process identity')
     command.mockResolvedValue(JSON.stringify({ pid: 42, path: '/native/missing' }))
     await expect(processExecutable(42, 'darwin', io)).rejects.toThrow('disappeared')
@@ -224,7 +277,10 @@ describe('processExecutable', () => {
     const { io, command } = fixture()
     command.mockResolvedValue(JSON.stringify({ ProcessId: 42, ExecutablePath: 'C:\\native\\amp.exe' }))
     expect(await processExecutable(42, 'win32', io)).toBe('C:\\native\\amp.exe')
-    command.mockResolvedValue(JSON.stringify([{ ProcessId: 42, ExecutablePath: 'C:\\native\\amp.exe' }, { ProcessId: 42, ExecutablePath: 'C:\\native\\other.exe' }]))
+    command.mockResolvedValue(JSON.stringify([
+      { ProcessId: 42, ExecutablePath: 'C:\\native\\amp.exe' },
+      { ProcessId: 42, ExecutablePath: 'C:\\native\\other.exe' },
+    ]))
     await expect(processExecutable(42, 'win32', io)).rejects.toThrow('unique exact Windows')
     command.mockResolvedValue(JSON.stringify({ ProcessId: 43, ExecutablePath: 'C:\\native\\amp.exe' }))
     await expect(processExecutable(42, 'win32', io)).rejects.toThrow('unique exact Windows')
@@ -239,7 +295,14 @@ describe('processExecutable', () => {
     await expect(processExecutable(42, 'win32', io)).rejects.toThrow('unique exact Windows')
   })
 
-  it.each([0, -1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])('refuses an invalid PID before I/O: %s', async (pid) => {
+  it.each([
+    0,
+    -1,
+    0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])('refuses an invalid PID before I/O: %s', async (pid) => {
     const { io, command, readLink } = fixture()
     await expect(processExecutable(pid, 'darwin', io)).rejects.toThrow('positive safe PID')
     expect(command).not.toHaveBeenCalled()

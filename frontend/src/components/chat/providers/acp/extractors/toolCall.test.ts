@@ -26,16 +26,25 @@ import { ACP_SPEC_READERS, ACP_TOOL_REQUEST_OVERRIDES, acpResultAvailable, acpRe
  * own two fields over, so the question it asks stays the one it asked.
  */
 function resultArgs<K extends ToolKind>(call: ToolCallVariant<K>): { kind: K, result?: ToolResult<K> } {
-  return call.result === undefined ? { kind: call.kind } : { kind: call.kind, result: call.result }
+  return call.result === undefined
+    ? { kind: call.kind }
+    : { kind: call.kind, result: call.result }
 }
 
 describe('result wrapper resolution (ACP)', () => {
   it('resolves native result fields while retaining the original wrapper', () => {
     const raw = ' {"id":"native-result","role":"result","future":9007199254740993,"content":{"stopReason":"end_turn","usage":{"totalTokens":0}}} '
-    const message = makeMessage({ agentProvider: AgentProvider.OPENCODE, content: new TextEncoder().encode(raw), contentCompression: ContentCompression.NONE })
+    const message = makeMessage({
+      agentProvider: AgentProvider.OPENCODE,
+      content: new TextEncoder().encode(raw),
+      contentCompression: ContentCompression.NONE,
+    })
     const parsed = parseMessageContent(message)
     const resolved = resolveACPMessage(parsed)
-    expect(resolved).toEqual({ stopReason: 'end_turn', usage: { totalTokens: 0 } })
+    expect(resolved).toEqual({
+      stopReason: 'end_turn',
+      usage: { totalTokens: 0 },
+    })
     expect(classifyACPMessage()(resolveMessageForRendering({ ...parsed, parentObject: resolved }, AgentProvider.OPENCODE)).kind).toBe('result_divider')
     expect(parsed.parentObject?.role).toBe('result')
     expect(parsed.rawText).toBe(raw)
@@ -43,7 +52,10 @@ describe('result wrapper resolution (ACP)', () => {
   })
 
   it.each([
-    { role: 'assistant', content: { text: 'Keep the message' } },
+    {
+      role: 'assistant',
+      content: { text: 'Keep the message' },
+    },
     { stopReason: 'end_turn' },
     { role: 'result', content: null },
     { role: 'result', content: 0 },
@@ -58,11 +70,19 @@ describe('result wrapper resolution (ACP)', () => {
    * answered unchanged -- discarding a merge it already built. The worker's map
    * lookup has no prototype chain, so the two sides did not compute the same predicate.
    */
-  it.each(['toString', 'constructor', 'valueOf', 'hasOwnProperty'])('merges a protocol key named %s', (key) => {
+  it.each([
+    'toString',
+    'constructor',
+    'valueOf',
+    'hasOwnProperty',
+  ])('merges a protocol key named %s', (key) => {
     const frame = { sessionUpdate: 'tool_call_update', toolCallId: 'call-1', status: 'completed' }
     const resolved = resolveACPMessage({
       ...input(frame),
-      supplementalContent: { ...frame, protocol: { [key]: 'from the worker' } },
+      supplementalContent: {
+        ...frame,
+        protocol: { [key]: 'from the worker' },
+      },
     })
     expect(resolved?.[key]).toBe('from the worker')
     // The frame's OWN fields still win over the protocol payload.
@@ -79,7 +99,12 @@ describe('an interrupted tool call (ACP)', () => {
     sessionUpdate: 'tool_call_update',
     toolCallId: 'tc-1',
     status: 'in_progress',
-    content: [{ type: 'content', content: { type: 'text', text: 'partial output' } }],
+    content: [
+      {
+        type: 'content',
+        content: { type: 'text', text: 'partial output' },
+      },
+    ],
   }
   const message = makeMessage({
     agentProvider: AgentProvider.OPENCODE,
@@ -114,7 +139,11 @@ describe('an interrupted tool call (ACP)', () => {
     expect(call.kind).toBe('execute')
     expect(call.title).toBe('printf partial')
     expect(call.status).toBe('cancelled')
-    expect(call.result).toMatchObject({ commands: [{ output: 'partial output' }] })
+    expect(call.result).toMatchObject({
+      commands: [
+        { output: 'partial output' },
+      ],
+    })
   })
 
   it('classifies the row as a tool use although its status is not final', () => {
@@ -141,11 +170,17 @@ describe('acpToolCallNeedsResult', () => {
 
   it('reads the KIND the adapter chose, not the one the call declared', () => {
     // `agent` always asks for the result; `execute` with a command does not.
-    expect(acpToolCallNeedsResult(execute, () => ({ kind: 'agent', request: { description: '', prompt: '' } }))).toBe(true)
+    expect(acpToolCallNeedsResult(execute, () => ({
+      kind: 'agent',
+      request: { description: '', prompt: '' },
+    }))).toBe(true)
   })
 
   it('reads the typed request the adapter supplied', () => {
-    expect(acpToolCallNeedsResult({ ...execute, rawInput: {} }, () => ({ kind: 'execute', request: { command: 'ls -la' } }))).toBe(false)
+    expect(acpToolCallNeedsResult({ ...execute, rawInput: {} }, () => ({
+      kind: 'execute',
+      request: { command: 'ls -la' },
+    }))).toBe(false)
   })
 })
 
@@ -172,20 +207,31 @@ describe('a wire kind the shared tables do not know', () => {
   // less than one with the header "Tool", and the wire word reached the header while
   // nothing caught it.
   it('never titles a call with the bare wire word', () => {
-    const untitled = acpToolCall({ sessionUpdate: 'tool_call', toolCallId: 'bare', kind: 'other', status: 'pending' }, undefined, undefined)
+    const untitled = acpToolCall({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'bare',
+      kind: 'other',
+      status: 'pending',
+    }, undefined, undefined)
     expect(untitled.title).toBe('Tool')
     expect(untitled.kind).toBe('mcp')
   })
 
   it('reads a raw result object, as a literal other does', () => {
-    const withRaw = call({ rawOutput: { targetModeId: 'agent' } })
-    expect(withRaw.kind === 'mcp' ? typedResult(resultArgs(withRaw))?.structuredJson : undefined).toContain('targetModeId')
+    const withRaw = call({
+      rawOutput: { targetModeId: 'agent' },
+    })
+    expect(withRaw.kind === 'mcp'
+      ? typedResult(resultArgs(withRaw))?.structuredJson
+      : undefined).toContain('targetModeId')
   })
 
   it('keeps the arguments on the uncategorized card, as a literal other does', () => {
     const uncategorized = call()
     expect(uncategorized.kind).toBe('mcp')
-    expect(uncategorized.kind === 'mcp' ? (uncategorized.request as { args: Record<string, unknown> }).args : undefined).toEqual({ targetModeId: 'agent' })
+    expect(uncategorized.kind === 'mcp'
+      ? (uncategorized.request as { args: Record<string, unknown> }).args
+      : undefined).toEqual({ targetModeId: 'agent' })
   })
 })
 
@@ -194,7 +240,14 @@ describe('a wire kind the shared tables do not know', () => {
 // carried one. A reader that asked `finished` alone drew an empty answer for a call
 // the agent never answered.
 describe('acpResultAvailable', () => {
-  const frame = (status: string, extra: Record<string, unknown> = {}) => ({ sessionUpdate: 'tool_call_update', toolCallId: 'c', kind: 'read', status, rawInput: { path: '/p/a.ts' }, ...extra })
+  const frame = (status: string, extra: Record<string, unknown> = {}) => ({
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'c',
+    kind: 'read',
+    status,
+    rawInput: { path: '/p/a.ts' },
+    ...extra,
+  })
 
   it('answers true for a frame that states an end of its own, with or without content', () => {
     expect(acpResultAvailable(acpToolFacts(frame('completed')))).toBe(true)
@@ -202,7 +255,14 @@ describe('acpResultAvailable', () => {
   })
 
   it('answers false for a call that runs', () => {
-    expect(acpResultAvailable(acpToolFacts(frame('in_progress', { content: [{ type: 'content', content: { type: 'text', text: 'partial' } }] })))).toBe(false)
+    expect(acpResultAvailable(acpToolFacts(frame('in_progress', {
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'partial' },
+        },
+      ],
+    })))).toBe(false)
   })
 
   it('answers false for a row the turn end closed that holds nothing', () => {
@@ -212,9 +272,34 @@ describe('acpResultAvailable', () => {
   })
 
   it.each([
-    ['content', { content: [{ type: 'content', content: { type: 'text', text: 'one' } }] }],
-    ['a raw output', { rawOutput: { lines: 1 } }],
-    ['an image', { content: [{ type: 'content', content: { type: 'image', data: 'aGk=', mimeType: 'image/png' } }] }],
+    [
+      'content',
+      {
+        content: [
+          {
+            type: 'content',
+            content: { type: 'text', text: 'one' },
+          },
+        ],
+      },
+    ],
+    [
+      'a raw output',
+      {
+        rawOutput: { lines: 1 },
+      },
+    ],
+    [
+      'an image',
+      {
+        content: [
+          {
+            type: 'content',
+            content: { type: 'image', data: 'aGk=', mimeType: 'image/png' },
+          },
+        ],
+      },
+    ],
   ])('answers true for a row the turn end closed that holds %s', (_shape, extra) => {
     expect(acpResultAvailable(acpToolFacts(frame('in_progress', extra), undefined, MessageCompletion.COMPLETE))).toBe(true)
   })
@@ -238,7 +323,13 @@ describe('a call whose frame states no kind', () => {
     const untyped = call()
     expect(untyped.kind).toBe('mcp')
     expect(untyped.label).toBeUndefined()
-    expect(untyped.kind === 'mcp' ? untyped.request : undefined).toMatchObject({ server: '', tool: 'a_later_tool', args: { q: 'x' } })
+    expect(untyped.kind === 'mcp'
+      ? untyped.request
+      : undefined).toMatchObject({
+      server: '',
+      tool: 'a_later_tool',
+      args: { q: 'x' },
+    })
     expect(toolCallDisplayName(untyped)).toBe('a_later_tool')
   })
 
@@ -253,7 +344,9 @@ describe('a call whose frame states no kind', () => {
   it('still states a kind word that LeapMux does not know', () => {
     const unknown = call({ kind: 'switch_mode_x' })
     expect(unknown.label).toBe('Switch mode x')
-    expect(unknown.kind === 'mcp' ? unknown.request.tool : undefined).toBe('switch_mode_x')
+    expect(unknown.kind === 'mcp'
+      ? unknown.request.tool
+      : undefined).toBe('switch_mode_x')
   })
 })
 
@@ -268,7 +361,12 @@ describe('the protocol mode switch', () => {
     status,
     title: 'Switch Mode: agent',
     rawInput: { targetModeId: 'agent' },
-    content: [{ type: 'content', content: { type: 'text', text: 'Switched to agent mode.' } }],
+    content: [
+      {
+        type: 'content',
+        content: { type: 'text', text: 'Switched to agent mode.' },
+      },
+    ],
   }, undefined, undefined)
 
   it('keeps the wire kind rather than falling into the uncategorized bucket', () => {
@@ -281,7 +379,9 @@ describe('the protocol mode switch', () => {
   })
 
   it('draws its answer as the prose the kind reads', () => {
-    expect(call().kind === 'switch_mode' ? typedResult(resultArgs(call())) : undefined).toEqual({ text: 'Switched to agent mode.', format: 'plain' })
+    expect(call().kind === 'switch_mode'
+      ? typedResult(resultArgs(call()))
+      : undefined).toEqual({ text: 'Switched to agent mode.', format: 'plain' })
   })
 })
 
@@ -296,13 +396,35 @@ describe('the protocol mode switch', () => {
 // own (invariant I6), because its pictures arrive in the content blocks of its result.
 describe('the images one tool call carries', () => {
   const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
-  const call = { sessionUpdate: 'tool_call_update', toolCallId: 'img', status: 'completed', kind: 'other' }
-  const withBlock = { ...call, content: [{ type: 'content', content: { type: 'image', data: PNG, mimeType: 'image/png' } }] }
-  const generated: ACPToolCallAdapter = () => ({ kind: 'image', request: { prompt: 'a red square' }, result: {}, images: [{ filePath: '/repo/made.png' }] })
+  const call = {
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'img',
+    status: 'completed',
+    kind: 'other',
+  }
+  const withBlock = {
+    ...call,
+    content: [
+      {
+        type: 'content',
+        content: { type: 'image', data: PNG, mimeType: 'image/png' },
+      },
+    ],
+  }
+  const generated: ACPToolCallAdapter = () => ({
+    kind: 'image',
+    request: { prompt: 'a red square' },
+    result: {},
+    images: [
+      { filePath: '/repo/made.png' },
+    ],
+  })
 
   it('keeps what the adapter supplied', () => {
     const row = acpToolCall(call, generated, undefined)
-    expect(row.images).toEqual([{ filePath: '/repo/made.png' }])
+    expect(row.images).toEqual([
+      { filePath: '/repo/made.png' },
+    ])
   })
 
   // The card's own blocks arrive in its RESULT, and the shared image derivation reads
@@ -316,19 +438,31 @@ describe('the images one tool call carries', () => {
   // bytes the same frame happens to carry never reach the card beside it.
   it('prefers the adapter over the protocol blocks', () => {
     const row = acpToolCall(withBlock, generated, undefined)
-    expect(imagesForRow(toolRow(row))).toEqual([{ filePath: '/repo/made.png' }])
+    expect(imagesForRow(toolRow(row))).toEqual([
+      { filePath: '/repo/made.png' },
+    ])
   })
 })
 
 describe('the facts-and-builder adapter (ACP)', () => {
-  it.each(['pending', 'completed', 'failed', 'cancelled'])('keeps the requested change and the %s outcome apart', (status) => {
+  it.each([
+    'pending',
+    'completed',
+    'failed',
+    'cancelled',
+  ])('keeps the requested change and the %s outcome apart', (status) => {
     const call = acpToolCall({
       sessionUpdate: 'tool_call',
       toolCallId: 'edit',
       kind: 'edit',
       status,
       rawInput: { filePath: '/project/example.ts', oldString: 'before', newString: 'after' },
-      content: [{ type: 'content', content: { type: 'text', text: 'No file changes occurred.' } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'No file changes occurred.' },
+        },
+      ],
     }, undefined, undefined)
     expect(call.kind).toBe('edit')
     expect(call.kind === 'edit' && call.request.changes[0]).toMatchObject({ filePath: '/project/example.ts', oldStr: 'before' })
@@ -343,9 +477,18 @@ describe('the facts-and-builder adapter (ACP)', () => {
       kind: 'edit',
       status: 'completed',
       rawInput: { filePath: '/project/example.ts', oldString: 'before', newString: 'requested' },
-      content: [{ type: 'diff', path: '/project/example.ts', oldText: 'before', newText: 'confirmed' }],
+      content: [
+        {
+          type: 'diff',
+          path: '/project/example.ts',
+          oldText: 'before',
+          newText: 'confirmed',
+        },
+      ],
     }, undefined, undefined)
-    expect(call.kind === 'edit' && call.result && 'changes' in call.result ? call.result.changes[0] : undefined).toMatchObject({ newStr: 'confirmed' })
+    expect(call.kind === 'edit' && call.result && 'changes' in call.result
+      ? call.result.changes[0]
+      : undefined).toMatchObject({ newStr: 'confirmed' })
   })
 
   it('folds the generic trio to the mcp kind and its card', () => {
@@ -355,11 +498,18 @@ describe('the facts-and-builder adapter (ACP)', () => {
       kind: 'semantic_search',
       status: 'completed',
       rawInput: { query: 'needle' },
-      content: [{ type: 'content', content: { type: 'text', text: 'found' } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'found' },
+        },
+      ],
     }, undefined, undefined)
     expect(call.kind).toBe('mcp')
     expect(call.kind === 'mcp' && call.request.tool).toBe('semantic_search')
-    const typed = call.kind === 'mcp' ? typedResult(resultArgs(call)) : undefined
+    const typed = call.kind === 'mcp'
+      ? typedResult(resultArgs(call))
+      : undefined
     expect(typed ? typed.content[0] : undefined).toMatchObject({ type: 'text', text: 'found' })
   })
 })
@@ -372,13 +522,28 @@ describe('the facts-and-builder adapter (ACP)', () => {
  * request body either -- so a finished row of one drew its header over an empty card.
  */
 describe('the shared ACP lifecycle', () => {
-  const frame = { sessionUpdate: 'tool_call_update', toolCallId: 'tc-9', kind: 'other', title: 'report' }
-  const answered = { content: [{ type: 'content', content: { type: 'text', text: 'The words it printed' } }] }
+  const frame = {
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'tc-9',
+    kind: 'other',
+    title: 'report',
+  }
+  const answered = {
+    content: [
+      {
+        type: 'content',
+        content: { type: 'text', text: 'The words it printed' },
+      },
+    ],
+  }
 
   // A `task` row reaches a reader only through a provider's own kind table, so the
   // adapter asks the shared build for it -- which is where the ladder lives.
   function row(tool: Record<string, unknown>) {
-    return acpToolCall({ ...frame, ...tool }, facts => acpSpecFor(facts, 'task'), undefined)
+    return acpToolCall({
+      ...frame,
+      ...tool,
+    }, facts => acpSpecFor(facts, 'task'), undefined)
   }
 
   it('answers a finished arguments-only kind with the words it printed', () => {
@@ -421,11 +586,21 @@ describe('the shared ACP lifecycle', () => {
       kind: 'read',
       status: 'cancelled',
       rawInput: { filePath: '/project/a.ts' },
-      content: [{ type: 'content', content: { type: 'text', text: '1\tfirst\n2\tsecond\n' } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: '1\tfirst\n2\tsecond\n' },
+        },
+      ],
     }, undefined, undefined)
     expect(call.status).toBe('cancelled')
-    expect(call.kind === 'read' ? typedResult(resultArgs(call))?.lines : undefined)
-      .toStrictEqual([{ num: 1, text: 'first' }, { num: 2, text: 'second' }])
+    expect(call.kind === 'read'
+      ? typedResult(resultArgs(call))?.lines
+      : undefined)
+      .toStrictEqual([
+        { num: 1, text: 'first' },
+        { num: 2, text: 'second' },
+      ])
   })
 
   // A COMPLETED call answers -- invariant I2 -- so the ladder states a result even
@@ -465,10 +640,15 @@ describe('the shared ACP lifecycle', () => {
       kind: 'execute',
       status: 'failed',
       rawInput: { command: 'false' },
-      rawOutput: { output: 'no such file', metadata: { exit: 1 } },
+      rawOutput: {
+        output: 'no such file',
+        metadata: { exit: 1 },
+      },
     }, undefined, undefined)
     expect(call.kind).toBe('execute')
-    expect(call.kind === 'execute' ? typedResult(resultArgs(call))?.commands[0]?.exitCode : undefined).toBe(1)
+    expect(call.kind === 'execute'
+      ? typedResult(resultArgs(call))?.commands[0]?.exitCode
+      : undefined).toBe(1)
   })
 
   // An EMPTY typed result is one the ladder can replace. `image` answers `{}` at every
@@ -477,7 +657,10 @@ describe('the shared ACP lifecycle', () => {
   // finished, failed or stopped. The rule lives in the ladder rather than in the
   // builder, which is what keeps the lifecycle out of all thirty builders.
   function imageRow(tool: Record<string, unknown>) {
-    return acpToolCall({ ...frame, ...tool }, facts => acpSpecFor(facts, 'image'), undefined)
+    return acpToolCall({
+      ...frame,
+      ...tool,
+    }, facts => acpSpecFor(facts, 'image'), undefined)
   }
 
   it('answers the words a cancelled image call printed in place of its empty result', () => {
@@ -533,7 +716,12 @@ describe('the shared ACP lifecycle', () => {
       kind: 'read',
       status: stated,
       rawInput: { path: '/p/a.ts' },
-      content: [{ type: 'content', content: { text: '1\tconst a = 1\n' } }],
+      content: [
+        {
+          type: 'content',
+          content: { text: '1\tconst a = 1\n' },
+        },
+      ],
     }, undefined, undefined, MessageCompletion.COMPLETE)
     expect(call.status).toBe(expected)
   })
@@ -565,13 +753,34 @@ describe('acpResultStatesNothing', () => {
   })
 
   it.each([
-    ['a tool that answered no content blocks', { content: [] }],
-    ['a change that landed nothing', { changes: [] }],
-    ['a checklist somebody cleared', { items: [] }],
-    ['prose with no words in it', { text: '', format: 'plain' }],
-    ['a search that found no link', { links: [], summary: '' }],
-    ['a command list with no command', { commands: [], unresolvedTerminals: [] }],
-    ['a listing of an empty directory', { entries: [] }],
+    [
+      'a tool that answered no content blocks',
+      { content: [] },
+    ],
+    [
+      'a change that landed nothing',
+      { changes: [] },
+    ],
+    [
+      'a checklist somebody cleared',
+      { items: [] },
+    ],
+    [
+      'prose with no words in it',
+      { text: '', format: 'plain' },
+    ],
+    [
+      'a search that found no link',
+      { links: [], summary: '' },
+    ],
+    [
+      'a command list with no command',
+      { commands: [], unresolvedTerminals: [] },
+    ],
+    [
+      'a listing of an empty directory',
+      { entries: [] },
+    ],
   ])('keeps the empty answer of %s', (_case, result) => {
     expect(acpResultStatesNothing(result)).toBe(false)
   })
@@ -589,13 +798,27 @@ describe('acpResultStatesNothing', () => {
 // for the whole time the call runs, not once it finishes.
 describe('the file-change requests the arguments state', () => {
   function request(kind: string, rawInput: Record<string, unknown>) {
-    const call = acpToolCall({ sessionUpdate: 'tool_call', toolCallId: 'tc-12', kind, status: 'pending', rawInput }, undefined, undefined)
-    return call.kind === 'delete' || call.kind === 'move' ? call.request.changes : []
+    const call = acpToolCall({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'tc-12',
+      kind,
+      status: 'pending',
+      rawInput,
+    }, undefined, undefined)
+    return call.kind === 'delete' || call.kind === 'move'
+      ? call.request.changes
+      : []
   }
 
   it('states the file a delete asks to remove', () => {
     expect(request('delete', { file_path: '/p/gone.ts' })).toEqual([
-      { filePath: '/p/gone.ts', operation: 'delete', oldStr: '', newStr: '', structuredPatch: null },
+      {
+        filePath: '/p/gone.ts',
+        operation: 'delete',
+        oldStr: '',
+        newStr: '',
+        structuredPatch: null,
+      },
     ])
   })
 
@@ -605,13 +828,27 @@ describe('the file-change requests the arguments state', () => {
     ['old_path', 'new_path'],
   ])('states both files a move asks for, spelled %s and %s', (from, to) => {
     expect(request('move', { [from]: '/p/a.ts', [to]: '/p/b.ts' })).toEqual([
-      { filePath: '/p/b.ts', previousPath: '/p/a.ts', operation: 'move', oldStr: '', newStr: '', structuredPatch: null },
+      {
+        filePath: '/p/b.ts',
+        previousPath: '/p/a.ts',
+        operation: 'move',
+        oldStr: '',
+        newStr: '',
+        structuredPatch: null,
+      },
     ])
   })
 
   it('states the one file a half-stated move carries', () => {
     expect(request('move', { source_path: '/p/a.ts' })).toEqual([
-      { filePath: '/p/a.ts', previousPath: undefined, operation: 'move', oldStr: '', newStr: '', structuredPatch: null },
+      {
+        filePath: '/p/a.ts',
+        previousPath: undefined,
+        operation: 'move',
+        oldStr: '',
+        newStr: '',
+        structuredPatch: null,
+      },
     ])
   })
 
@@ -622,9 +859,17 @@ describe('the file-change requests the arguments state', () => {
 
   // The result row exists to state the file. Once the request does, it is not needed.
   it('stops asking for the result once the request states the file', () => {
-    const frame = { sessionUpdate: 'tool_call', toolCallId: 'tc-13', kind: 'delete', status: 'pending' }
+    const frame = {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'tc-13',
+      kind: 'delete',
+      status: 'pending',
+    }
     expect(acpToolCallNeedsResult({ ...frame, rawInput: {} }, undefined)).toBe(true)
-    expect(acpToolCallNeedsResult({ ...frame, rawInput: { path: '/p/gone.ts' } }, undefined)).toBe(false)
+    expect(acpToolCallNeedsResult({
+      ...frame,
+      rawInput: { path: '/p/gone.ts' },
+    }, undefined)).toBe(false)
   })
 
   // An edit that asks for several substitutions in one file states each of them. The
@@ -636,12 +881,32 @@ describe('the file-change requests the arguments state', () => {
       toolCallId: 'tc-14',
       kind: 'edit',
       status: 'pending',
-      rawInput: { path: '/p/file.ts', edits: [{ old_string: 'firstBefore', new_string: 'firstAfter' }, { old_string: 'secondBefore', new_string: 'secondAfter' }] },
+      rawInput: {
+        path: '/p/file.ts',
+        edits: [
+          { old_string: 'firstBefore', new_string: 'firstAfter' },
+          { old_string: 'secondBefore', new_string: 'secondAfter' },
+        ],
+      },
     }, undefined, undefined)
     expect(changes.kind).toBe('edit')
-    expect(changes.kind === 'edit' ? changes.request.changes : []).toStrictEqual([
-      { filePath: '/p/file.ts', structuredPatch: null, oldStr: 'firstBefore', newStr: 'firstAfter', showLineNumbers: false },
-      { filePath: '/p/file.ts', structuredPatch: null, oldStr: 'secondBefore', newStr: 'secondAfter', showLineNumbers: false },
+    expect(changes.kind === 'edit'
+      ? changes.request.changes
+      : []).toStrictEqual([
+      {
+        filePath: '/p/file.ts',
+        structuredPatch: null,
+        oldStr: 'firstBefore',
+        newStr: 'firstAfter',
+        showLineNumbers: false,
+      },
+      {
+        filePath: '/p/file.ts',
+        structuredPatch: null,
+        oldStr: 'secondBefore',
+        newStr: 'secondAfter',
+        showLineNumbers: false,
+      },
     ])
   })
 
@@ -656,7 +921,9 @@ describe('the file-change requests the arguments state', () => {
       status: 'pending',
       rawInput: { path: '/p/file.ts', oldText: 'same', newText: 'same' },
     }, undefined, undefined)
-    expect(call.kind === 'edit' ? call.request.changes.map(change => change.filePath) : []).toStrictEqual(['/p/file.ts'])
+    expect(call.kind === 'edit'
+      ? call.request.changes.map(change => change.filePath)
+      : []).toStrictEqual(['/p/file.ts'])
   })
 })
 
@@ -677,15 +944,37 @@ describe('the file-change requests the arguments state', () => {
  * (`a-file-change-states-no-file`), and the row becomes the uncategorized card.
  */
 describe('a file change that states its file alone', () => {
-  const failure = [{ type: 'content', content: { type: 'text', text: 'Permission denied.' } }]
-  const pathOnly = (operation: 'edit' | 'add') => [{ filePath: '/p/file.ts', operation, oldStr: '', newStr: '', structuredPatch: null, showLineNumbers: false }]
-  const fileChanges = (call: ToolCall) => call.kind === 'edit' || call.kind === 'write' ? call.request.changes : []
+  const failure = [
+    {
+      type: 'content',
+      content: { type: 'text', text: 'Permission denied.' },
+    },
+  ]
+  const pathOnly = (operation: 'edit' | 'add') => [
+    {
+      filePath: '/p/file.ts',
+      operation,
+      oldStr: '',
+      newStr: '',
+      structuredPatch: null,
+      showLineNumbers: false,
+    },
+  ]
+  const fileChanges = (call: ToolCall) => call.kind === 'edit' || call.kind === 'write'
+    ? call.request.changes
+    : []
 
   it.each([
     ['edit', 'edit'],
     ['write', 'add'],
   ] as const)('keeps the file of a running %s whose arguments state the path alone', (kind, operation) => {
-    const call = acpToolCall({ sessionUpdate: 'tool_call', toolCallId: 'path-only', kind, status: 'pending', rawInput: { path: '/p/file.ts' } }, undefined, undefined)
+    const call = acpToolCall({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'path-only',
+      kind,
+      status: 'pending',
+      rawInput: { path: '/p/file.ts' },
+    }, undefined, undefined)
     expect(call.degradation).toBeUndefined()
     expect(call.kind).toBe(kind)
     expect(fileChanges(call)).toStrictEqual(pathOnly(operation))
@@ -694,7 +983,16 @@ describe('a file change that states its file alone', () => {
   // The frame a refusal sends: the file is in `locations`, and the content holds the
   // reason alone.
   it('keeps the kind, the file and the reason of a failed edit that lists its file alone', () => {
-    const call = acpToolCall({ sessionUpdate: 'tool_call_update', toolCallId: 'path-only', kind: 'edit', status: 'failed', locations: [{ path: '/p/file.ts' }], content: failure }, undefined, undefined)
+    const call = acpToolCall({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'path-only',
+      kind: 'edit',
+      status: 'failed',
+      locations: [
+        { path: '/p/file.ts' },
+      ],
+      content: failure,
+    }, undefined, undefined)
     expect(call.degradation).toBeUndefined()
     expect(call.kind).toBe('edit')
     expect(call.status).toBe('failed')
@@ -706,8 +1004,31 @@ describe('a file change that states its file alone', () => {
   // PROPOSED diff, and the failed update replaces the content with the reason. The
   // joined call states the file and no diff, because the file took no change.
   it('states no diff for a failed edit whose opening frame proposed one', () => {
-    const opening = { sessionUpdate: 'tool_call', toolCallId: 'proposed', kind: 'edit', status: 'pending', title: 'Edit file.ts', content: [{ type: 'diff', path: '/p/file.ts', oldText: 'proposedBefore', newText: 'proposedAfter' }], locations: [{ path: '/p/file.ts' }] }
-    const ending = { sessionUpdate: 'tool_call_update', toolCallId: 'proposed', kind: 'edit', status: 'failed', content: failure }
+    const opening = {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'proposed',
+      kind: 'edit',
+      status: 'pending',
+      title: 'Edit file.ts',
+      content: [
+        {
+          type: 'diff',
+          path: '/p/file.ts',
+          oldText: 'proposedBefore',
+          newText: 'proposedAfter',
+        },
+      ],
+      locations: [
+        { path: '/p/file.ts' },
+      ],
+    }
+    const ending = {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'proposed',
+      kind: 'edit',
+      status: 'failed',
+      content: failure,
+    }
     const call = acpToolCall(resolveACPToolCall(ending, opening), undefined, undefined)
     expect(call.degradation).toBeUndefined()
     expect(call.kind).toBe('edit')
@@ -716,7 +1037,19 @@ describe('a file change that states its file alone', () => {
   })
 
   it('answers a completed edit that states its file alone with the words it printed', () => {
-    const call = acpToolCall({ sessionUpdate: 'tool_call_update', toolCallId: 'path-only', kind: 'edit', status: 'completed', rawInput: { filePath: '/p/file.ts' }, content: [{ type: 'content', content: { type: 'text', text: 'No change was needed.' } }] }, undefined, undefined)
+    const call = acpToolCall({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'path-only',
+      kind: 'edit',
+      status: 'completed',
+      rawInput: { filePath: '/p/file.ts' },
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'No change was needed.' },
+        },
+      ],
+    }, undefined, undefined)
     expect(call.degradation).toBeUndefined()
     expect(call.kind).toBe('edit')
     expect(fileChanges(call)).toStrictEqual(pathOnly('edit'))
@@ -725,18 +1058,41 @@ describe('a file change that states its file alone', () => {
 
   // The request already states the file, so the result row is not necessary to state it.
   it.each(['edit', 'write'])('stops asking for the result once the %s request states its file', (kind) => {
-    const frame = { sessionUpdate: 'tool_call', toolCallId: 'path-only', kind, status: 'pending' }
+    const frame = {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'path-only',
+      kind,
+      status: 'pending',
+    }
     expect(acpToolCallNeedsResult({ ...frame, rawInput: {} }, undefined)).toBe(true)
-    expect(acpToolCallNeedsResult({ ...frame, rawInput: { path: '/p/file.ts' } }, undefined)).toBe(false)
+    expect(acpToolCallNeedsResult({
+      ...frame,
+      rawInput: { path: '/p/file.ts' },
+    }, undefined)).toBe(false)
   })
 
   // The limit of the rule. A frame that identifies no ONE file still degrades, because
   // the row must not state a file that the call possibly did not touch.
   it.each([
     ['no file', {}],
-    ['two listed files', { locations: [{ path: '/p/a.ts' }, { path: '/p/b.ts' }] }],
+    [
+      'two listed files',
+      {
+        locations: [
+          { path: '/p/a.ts' },
+          { path: '/p/b.ts' },
+        ],
+      },
+    ],
   ])('degrades a failed edit that states %s', (_case, frame) => {
-    const call = acpToolCall({ sessionUpdate: 'tool_call_update', toolCallId: 'no-file', kind: 'edit', status: 'failed', content: failure, ...frame }, undefined, undefined)
+    const call = acpToolCall({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'no-file',
+      kind: 'edit',
+      status: 'failed',
+      content: failure,
+      ...frame,
+    }, undefined, undefined)
     expect(call.kind).toBe('other')
     expect(call.degradation).toStrictEqual({ fault: 'a-file-change-states-no-file', originalKind: 'edit' })
     expect(call.result).toStrictEqual(failedResult('Permission denied.'))
@@ -764,12 +1120,19 @@ describe('the mode switch request', () => {
     status: 'completed',
     title: 'Switch Mode',
     rawInput,
-    content: [{ type: 'content', content: { type: 'text', text: 'Switched.' } }],
+    content: [
+      {
+        type: 'content',
+        content: { type: 'text', text: 'Switched.' },
+      },
+    ],
   }, undefined, undefined)
 
   const requestOf = (rawInput: Record<string, unknown>) => {
     const call = switchCall(rawInput)
-    return call.kind === 'switch_mode' ? call.request : undefined
+    return call.kind === 'switch_mode'
+      ? call.request
+      : undefined
   }
 
   it('reads the mode the protocol spells targetModeId', () => {
@@ -811,32 +1174,57 @@ describe('ACP_TOOL_REQUEST_OVERRIDES', () => {
     ...frame,
   }, undefined, undefined)
 
-  const thought = [{ type: 'content', content: { type: 'text', text: 'Weighing two options.' } }]
+  const thought = [
+    {
+      type: 'content',
+      content: { type: 'text', text: 'Weighing two options.' },
+    },
+  ]
 
   it('deviates on exactly the two kinds its own facts answer', () => {
     expect(Object.keys(ACP_TOOL_REQUEST_OVERRIDES).sort()).toEqual(['agent', 'think'])
   })
 
   it('describes a launch by the call title the frame states', () => {
-    const call = overrideCall({ kind: 'agent', title: 'Inspect the parser', rawInput: { prompt: 'Read it' } })
-    expect(call.kind === 'agent' ? call.request : undefined).toEqual({ description: 'Inspect the parser', prompt: 'Read it' })
+    const call = overrideCall({
+      kind: 'agent',
+      title: 'Inspect the parser',
+      rawInput: { prompt: 'Read it' },
+    })
+    expect(call.kind === 'agent'
+      ? call.request
+      : undefined).toEqual({ description: 'Inspect the parser', prompt: 'Read it' })
     expect(DEFAULT_TOOL_REQUESTS.agent({ prompt: 'Read it' })).toEqual({ description: '', prompt: 'Read it' })
   })
 
   it('keeps the description the launch arguments state ahead of the frame title', () => {
-    const call = overrideCall({ kind: 'agent', title: 'Task', rawInput: { description: 'Inspect the parser', instructions: 'Read it' } })
-    expect(call.kind === 'agent' ? call.request : undefined).toEqual({ description: 'Inspect the parser', prompt: 'Read it' })
+    const call = overrideCall({
+      kind: 'agent',
+      title: 'Task',
+      rawInput: { description: 'Inspect the parser', instructions: 'Read it' },
+    })
+    expect(call.kind === 'agent'
+      ? call.request
+      : undefined).toEqual({ description: 'Inspect the parser', prompt: 'Read it' })
   })
 
   it('falls back to the flattened result text for a thought the arguments omit', () => {
     const call = overrideCall({ kind: 'think', rawInput: {}, content: thought })
-    expect(call.kind === 'think' ? call.request : undefined).toEqual({ text: 'Weighing two options.' })
+    expect(call.kind === 'think'
+      ? call.request
+      : undefined).toEqual({ text: 'Weighing two options.' })
     expect(DEFAULT_TOOL_REQUESTS.think({})).toEqual({ text: '' })
   })
 
   it('keeps the thought the arguments state ahead of the result text', () => {
-    const call = overrideCall({ kind: 'think', rawInput: { thought: 'Stated in the arguments.' }, content: thought })
-    expect(call.kind === 'think' ? call.request : undefined).toEqual({ text: 'Stated in the arguments.' })
+    const call = overrideCall({
+      kind: 'think',
+      rawInput: { thought: 'Stated in the arguments.' },
+      content: thought,
+    })
+    expect(call.kind === 'think'
+      ? call.request
+      : undefined).toEqual({ text: 'Stated in the arguments.' })
   })
 })
 
@@ -909,7 +1297,19 @@ const SHARED_ARGUMENT_PROBE: Record<string, unknown> = {
  * - the generic trio, whose card states a server and a tool that no argument
  *   carries.
  */
-const ACP_OWN_REQUEST_KINDS = ['unspecified', 'agent', 'edit', 'execute', 'fetch', 'mcp', 'other', 'read', 'search', 'think', 'write'] as const
+const ACP_OWN_REQUEST_KINDS = [
+  'unspecified',
+  'agent',
+  'edit',
+  'execute',
+  'fetch',
+  'mcp',
+  'other',
+  'read',
+  'search',
+  'think',
+  'write',
+] as const
 
 /**
  * Every other kind, which takes the shared declared request.
@@ -973,7 +1373,12 @@ describe('ACP_SPEC_READERS', () => {
     kind: 'other',
     status: 'completed',
     rawInput: SHARED_ARGUMENT_PROBE,
-    content: [{ type: 'content', content: { type: 'text', text: 'The words it printed' } }],
+    content: [
+      {
+        type: 'content',
+        content: { type: 'text', text: 'The words it printed' },
+      },
+    ],
   })
 
   it('states one builder for every tool kind', () => {
@@ -989,7 +1394,10 @@ describe('ACP_SPEC_READERS', () => {
   })
 
   it('splits every tool kind between the two lists above', () => {
-    expect([...ACP_OWN_REQUEST_KINDS, ...ACP_SHARED_REQUEST_KINDS].sort()).toStrictEqual([...TOOL_KINDS].sort())
+    expect([
+      ...ACP_OWN_REQUEST_KINDS,
+      ...ACP_SHARED_REQUEST_KINDS,
+    ].sort()).toStrictEqual([...TOOL_KINDS].sort())
   })
 
   // The probe has to REACH the facts, or the case below compares two empty requests
@@ -1026,7 +1434,14 @@ describe('a scalar ACP tool input', () => {
 
   function generic(rawInput: unknown, supplemental?: unknown) {
     const call = acpToolCall(
-      { sessionUpdate: 'tool_call_update', toolCallId: 'tc-scalar', kind: 'other', title: 'Probe', status: 'completed', rawInput },
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'tc-scalar',
+        kind: 'other',
+        title: 'Probe',
+        status: 'completed',
+        rawInput,
+      },
       undefined,
       supplemental,
     )
@@ -1045,7 +1460,11 @@ describe('a scalar ACP tool input', () => {
     expect(request.args).toStrictEqual({})
   })
 
-  it.each([42, true, ['one', 'two']])('keeps a non-object input (%j) visible as request text', (rawInput) => {
+  it.each([
+    42,
+    true,
+    ['one', 'two'],
+  ])('keeps a non-object input (%j) visible as request text', (rawInput) => {
     expect(generic(rawInput).argsText).toBe(prettifyArgsJson(rawInput))
   })
 
@@ -1054,7 +1473,13 @@ describe('a scalar ACP tool input', () => {
   // states the input it is about and nothing else.
   it('still fills a typed field from an object input', () => {
     const call = acpToolCall(
-      { sessionUpdate: 'tool_call_update', toolCallId: 'tc-read', kind: 'read', status: 'in_progress', rawInput: { filePath: '/p/a.ts' } },
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'tc-read',
+        kind: 'read',
+        status: 'in_progress',
+        rawInput: { filePath: '/p/a.ts' },
+      },
       undefined,
       undefined,
     )
@@ -1066,7 +1491,14 @@ describe('a scalar ACP tool input', () => {
   // empty path and the argument the tool sent reached nobody at all.
   it('degrades a known kind with a scalar input to the generic card', () => {
     const call = acpToolCall(
-      { sessionUpdate: 'tool_call_update', toolCallId: 'tc-read', kind: 'read', title: 'Read', status: 'completed', rawInput: '/p/a.ts' },
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'tc-read',
+        kind: 'read',
+        title: 'Read',
+        status: 'completed',
+        rawInput: '/p/a.ts',
+      },
       undefined,
       undefined,
     )
@@ -1081,7 +1513,16 @@ describe('a scalar ACP tool input', () => {
   it('keeps a known kind whose input is absent or null', () => {
     for (const rawInput of [undefined, null]) {
       const call = acpToolCall(
-        { sessionUpdate: 'tool_call_update', toolCallId: 'tc-read', kind: 'read', status: 'in_progress', rawInput, locations: [{ path: '/p/a.ts' }] },
+        {
+          sessionUpdate: 'tool_call_update',
+          toolCallId: 'tc-read',
+          kind: 'read',
+          status: 'in_progress',
+          rawInput,
+          locations: [
+            { path: '/p/a.ts' },
+          ],
+        },
         undefined,
         undefined,
       )
@@ -1094,8 +1535,17 @@ describe('a scalar ACP tool input', () => {
   // convention, so its kind must survive the degrade.
   it('lets a provider adapter state its own kind for a scalar input', () => {
     const call = acpToolCall(
-      { sessionUpdate: 'tool_call_update', toolCallId: 'tc-exec', kind: 'execute', status: 'in_progress', rawInput: 'ls -1' },
-      facts => ({ kind: 'execute', request: { command: facts.argsText ?? '' } }),
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'tc-exec',
+        kind: 'execute',
+        status: 'in_progress',
+        rawInput: 'ls -1',
+      },
+      facts => ({
+        kind: 'execute',
+        request: { command: facts.argsText ?? '' },
+      }),
       undefined,
     )
     expect(call.kind).toBe('execute')
@@ -1106,10 +1556,22 @@ describe('a scalar ACP tool input', () => {
     // `resolveACPMessage` replaces the whole request key from the supplement, and the
     // two halves merge only when BOTH are objects. A scalar therefore replaces the
     // object outright, and it has to survive that replacement.
-    const frame = { sessionUpdate: 'tool_call_update', toolCallId: 'tc-scalar', kind: 'other', title: 'Probe', status: 'completed', rawInput: { replaced: true } }
+    const frame = {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'tc-scalar',
+      kind: 'other',
+      title: 'Probe',
+      status: 'completed',
+      rawInput: { replaced: true },
+    }
     const resolved = resolveACPMessage({
       ...input(frame),
-      supplementalContent: { sessionUpdate: 'tool_call_update', toolCallId: 'tc-scalar', status: 'completed', rawInput: scalar },
+      supplementalContent: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'tc-scalar',
+        status: 'completed',
+        rawInput: scalar,
+      },
     })
     expect(resolved?.rawInput).toBe(scalar)
     const request = generic(scalar)
@@ -1126,29 +1588,51 @@ describe('a scalar ACP tool input', () => {
  */
 describe('the ACP think result', () => {
   const thought = 'Weighing two options.\nThe first one costs less.'
-  const content = [{ type: 'content', content: { type: 'text', text: thought } }]
+  const content = [
+    {
+      type: 'content',
+      content: { type: 'text', text: thought },
+    },
+  ]
 
   function think(frame: Record<string, unknown>) {
-    return acpToolCall({ sessionUpdate: 'tool_call_update', toolCallId: 'tc-think', kind: 'think', ...frame }, undefined, undefined)
+    return acpToolCall({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'tc-think',
+      kind: 'think',
+      ...frame,
+    }, undefined, undefined)
   }
 
   it('answers a finished thought as prose rather than as an unparsed payload', () => {
     const call = think({ status: 'completed', rawInput: {}, content })
     expect(call.kind).toBe('think')
     expect(isUnparsedToolResult(call.result)).toBe(false)
-    expect(call.kind === 'think' ? typedResult(resultArgs(call)) : undefined).toEqual({ text: thought, format: 'plain' })
+    expect(call.kind === 'think'
+      ? typedResult(resultArgs(call))
+      : undefined).toEqual({ text: thought, format: 'plain' })
   })
 
   // The thought arrives in the arguments just as often as in the content blocks, and
   // the request already folds the two. Reading the content alone answered the empty
   // string here, which suppresses the request line and draws nothing at all.
   it('answers the thought the arguments state when the call printed nothing', () => {
-    const call = think({ status: 'completed', rawInput: { thought } })
-    expect(call.kind === 'think' ? typedResult(resultArgs(call)) : undefined).toEqual({ text: thought, format: 'plain' })
+    const call = think({
+      status: 'completed',
+      rawInput: { thought },
+    })
+    expect(call.kind === 'think'
+      ? typedResult(resultArgs(call))
+      : undefined).toEqual({ text: thought, format: 'plain' })
   })
 
   it('answers nothing while the thought is still arriving', () => {
-    expect(think({ sessionUpdate: 'tool_call', status: 'in_progress', rawInput: {}, content }).result).toBeUndefined()
+    expect(think({
+      sessionUpdate: 'tool_call',
+      status: 'in_progress',
+      rawInput: {},
+      content,
+    }).result).toBeUndefined()
   })
 
   it('answers the reason a failed thought stated', () => {
@@ -1164,6 +1648,8 @@ describe('the ACP think result', () => {
     const call = think({ status: 'cancelled', rawInput: {}, content })
     expect(call.status).toBe('cancelled')
     expect(isToolFailureResult(call.result)).toBe(false)
-    expect(call.kind === 'think' ? typedResult(resultArgs(call)) : undefined).toStrictEqual({ text: thought, format: 'plain' })
+    expect(call.kind === 'think'
+      ? typedResult(resultArgs(call))
+      : undefined).toStrictEqual({ text: thought, format: 'plain' })
   })
 })

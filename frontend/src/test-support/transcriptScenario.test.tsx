@@ -23,7 +23,17 @@ function zcodeRequest(id: string, input: Record<string, unknown> | undefined, to
     spanId: CALL,
     spanType: toolName,
     agentSessionId: SESSION,
-    content: { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: CALL, toolName, ...(input === undefined ? { inputOmitted: true } : { input }) } },
+    content: {
+      type: 'tool.updated',
+      payload: {
+        kind: 'scheduled',
+        toolCallId: CALL,
+        toolName,
+        ...(input === undefined
+          ? { inputOmitted: true }
+          : { input }),
+      },
+    },
   }
 }
 
@@ -34,7 +44,14 @@ function zcodeResult(id: string, content: string, toolName = 'Bash'): Extract<Tr
     spanId: CALL,
     spanType: toolName,
     agentSessionId: SESSION,
-    content: { type: 'tool.updated', payload: { kind: 'result', toolCallId: CALL, result: { success: true, content } } },
+    content: {
+      type: 'tool.updated',
+      payload: {
+        kind: 'result',
+        toolCallId: CALL,
+        result: { success: true, content },
+      },
+    },
   }
 }
 
@@ -47,12 +64,37 @@ describe('the transcript scenario harness', () => {
     const firstOutput = 'first line\nsecond line\nthird line\nFIRST_EXPANDED_TAIL'
     const secondOutput = 'first line\nsecond line\nthird line\nSECOND_EXPANDED_TAIL'
     const secondCall = 'call-2'
-    const scenario = createTranscriptScenario({ archive: [
-      message(zcodeRequest('first-request', { command: 'printf first' }), 1n),
-      message(zcodeResult('first-result', firstOutput), 2n),
-      message({ ...zcodeRequest('second-request', { command: 'printf second' }), spanId: secondCall, content: { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: secondCall, toolName: 'Bash', input: { command: 'printf second' } } } }, 3n),
-      message({ ...zcodeResult('second-result', secondOutput), spanId: secondCall, content: { type: 'tool.updated', payload: { kind: 'result', toolCallId: secondCall, result: { success: true, content: secondOutput } } } }, 4n),
-    ] })
+    const scenario = createTranscriptScenario({
+      archive: [
+        message(zcodeRequest('first-request', { command: 'printf first' }), 1n),
+        message(zcodeResult('first-result', firstOutput), 2n),
+        message({
+          ...zcodeRequest('second-request', { command: 'printf second' }),
+          spanId: secondCall,
+          content: {
+            type: 'tool.updated',
+            payload: {
+              kind: 'scheduled',
+              toolCallId: secondCall,
+              toolName: 'Bash',
+              input: { command: 'printf second' },
+            },
+          },
+        }, 3n),
+        message({
+          ...zcodeResult('second-result', secondOutput),
+          spanId: secondCall,
+          content: {
+            type: 'tool.updated',
+            payload: {
+              kind: 'result',
+              toolCallId: secondCall,
+              result: { success: true, content: secondOutput },
+            },
+          },
+        }, 4n),
+      ],
+    })
     const first = scenario.renderBubble('first-result')
     const second = scenario.renderBubble('second-result')
     expect(first.container.textContent).not.toContain('FIRST_EXPANDED_TAIL')
@@ -115,7 +157,9 @@ describe('the transcript scenario harness', () => {
       windowIds: ['result'],
       fetchMessage: async (seq) => {
         fetches++
-        return seq === request.seq ? request : undefined
+        return seq === request.seq
+          ? request
+          : undefined
       },
     })
 
@@ -158,11 +202,20 @@ describe('the transcript scenario harness', () => {
     const before = scenario.toolRow('request').call
     scenario.replace({
       ...zcodeRequest('request', undefined),
-      supplemental: { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: CALL, input: { command: 'printf recovered' } } },
+      supplemental: {
+        type: 'tool.updated',
+        payload: {
+          kind: 'scheduled',
+          toolCallId: CALL,
+          input: { command: 'printf recovered' },
+        },
+      },
     })
     const after = scenario.toolRow('request').call
     expect(before).not.toBe(after)
-    expect(after.kind === 'execute' ? after.request.command : '').toBe('printf recovered')
+    expect(after.kind === 'execute'
+      ? after.request.command
+      : '').toBe('printf recovered')
   })
 
   it('changes the classified-entry object when a supplement lands', () => {
@@ -175,7 +228,14 @@ describe('the transcript scenario harness', () => {
     const before = scenario.entry('request')
     scenario.replace({
       ...zcodeRequest('request', undefined),
-      supplemental: { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: CALL, input: { command: 'printf second' } } },
+      supplemental: {
+        type: 'tool.updated',
+        payload: {
+          kind: 'scheduled',
+          toolCallId: CALL,
+          input: { command: 'printf second' },
+        },
+      },
     })
     const after = scenario.entry('request')
     expect(after).not.toBe(before)
@@ -193,7 +253,14 @@ describe('the transcript scenario harness', () => {
     const beforeText = before.container.textContent ?? ''
     scenario.replace({
       ...zcodeRequest('request', undefined),
-      supplemental: { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: CALL, input: { command: 'printf rendered' } } },
+      supplemental: {
+        type: 'tool.updated',
+        payload: {
+          kind: 'scheduled',
+          toolCallId: CALL,
+          input: { command: 'printf rendered' },
+        },
+      },
     })
     const after = scenario.renderBubble('request')
     const afterText = after.container.textContent ?? ''

@@ -26,7 +26,9 @@ function cachedHighlightedMarkdown(
   if (rowCached !== undefined)
     return rowCached
   const sharedCached = getCachedMarkdownHtml(text)
-  return sharedCached === undefined ? undefined : setCachedRenderValueForString(context, markdownCacheNamespace(), text, sharedCached)
+  return sharedCached === undefined
+    ? undefined
+    : setCachedRenderValueForString(context, markdownCacheNamespace(), text, sharedCached)
 }
 
 function rememberDisplayedMarkdown(
@@ -69,7 +71,9 @@ export function renderMarkdownForContext(text: string, context: MarkdownRenderCo
     return rememberDisplayedMarkdown(
       context,
       text,
-      cached === undefined ? html : setCachedRenderValueForString(context, markdownCacheNamespace(), text, cached),
+      cached === undefined
+        ? html
+        : setCachedRenderValueForString(context, markdownCacheNamespace(), text, cached),
     )
   }
   const rowCached = getCachedRenderValueForString<string>(context, markdownCacheNamespace(), text)
@@ -80,6 +84,8 @@ export function renderMarkdownForContext(text: string, context: MarkdownRenderCo
   return rememberDisplayedMarkdown(
     context,
     text,
-    cached === undefined ? html : setCachedRenderValueForString(context, markdownCacheNamespace(), text, cached),
+    cached === undefined
+      ? html
+      : setCachedRenderValueForString(context, markdownCacheNamespace(), text, cached),
   )
 }

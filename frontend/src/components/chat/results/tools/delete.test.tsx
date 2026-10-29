@@ -13,8 +13,26 @@ beforeAll(() => {
 describe('delete renderer', () => {
   checkKindModule({
     kind: 'delete',
-    request: { changes: [{ filePath: '/p/a.ts', oldStr: 'x', newStr: 'y', structuredPatch: null }] },
+    request: {
+      changes: [
+        {
+          filePath: '/p/a.ts',
+          oldStr: 'x',
+          newStr: 'y',
+          structuredPatch: null,
+        },
+      ],
+    },
     titlePart: 'a.ts',
-    result: { changes: [{ filePath: '/p/a.ts', oldStr: 'x', newStr: 'y', structuredPatch: null }] },
+    result: {
+      changes: [
+        {
+          filePath: '/p/a.ts',
+          oldStr: 'x',
+          newStr: 'y',
+          structuredPatch: null,
+        },
+      ],
+    },
   })
 })

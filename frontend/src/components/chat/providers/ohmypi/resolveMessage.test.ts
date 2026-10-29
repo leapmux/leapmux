@@ -2,11 +2,28 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it } from 'vitest'
 import { resolveOhMyPiMessage } from './resolveMessage'
 
-const startFrame = { type: 'tool_execution_start', toolCallId: 'call_1', toolName: 'bash', args: { command: 'sleep 60' } }
-const partial = { content: [{ type: 'text', text: 'so far' }], details: {} }
+const startFrame = {
+  type: 'tool_execution_start',
+  toolCallId: 'call_1',
+  toolName: 'bash',
+  args: { command: 'sleep 60' },
+}
+const partial = {
+  content: [
+    { type: 'text', text: 'so far' },
+  ],
+  details: {},
+}
 
 function parsed(parentObject: Record<string, unknown> | undefined, supplementalContent: unknown): ParsedMessageContent {
-  return { wrapper: null, topLevel: parentObject ?? null, parentObject, rawText: '', supplementalContent, messageMetadata: undefined }
+  return {
+    wrapper: null,
+    topLevel: parentObject ?? null,
+    parentObject,
+    rawText: '',
+    supplementalContent,
+    messageMetadata: undefined,
+  }
 }
 
 describe('resolveOhMyPiMessage', () => {
@@ -31,7 +48,12 @@ describe('resolveOhMyPiMessage', () => {
   })
 
   it('leaves an end frame and a frame with no call id alone', () => {
-    const endFrame = { type: 'tool_execution_end', toolCallId: 'call_1', toolName: 'bash', result: {} }
+    const endFrame = {
+      type: 'tool_execution_end',
+      toolCallId: 'call_1',
+      toolName: 'bash',
+      result: {},
+    }
     expect(resolveOhMyPiMessage(parsed(endFrame, { toolCallId: 'call_1', toolName: 'bash', partialResult: partial }))).toBe(endFrame)
     const noId = { type: 'tool_execution_start', toolName: 'bash' }
     expect(resolveOhMyPiMessage(parsed(noId, { toolCallId: '', toolName: 'bash', partialResult: partial }))).toBe(noId)
@@ -45,7 +67,11 @@ describe('resolveOhMyPiMessage', () => {
   })
 
   it('leaves the frame alone for a partial result that is not a record', () => {
-    for (const partialResult of ['so far', null, ['so far']])
+    for (const partialResult of [
+      'so far',
+      null,
+      ['so far'],
+    ])
       expect(resolveOhMyPiMessage(parsed(startFrame, { toolCallId: 'call_1', toolName: 'bash', partialResult })), JSON.stringify(partialResult)).toBe(startFrame)
   })
 

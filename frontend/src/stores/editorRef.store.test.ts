@@ -32,11 +32,19 @@ function makeRef(over: Partial<EditorRef> = {}): EditorRef {
       },
     }
   }
-  return { ...ref, ...over }
+  return {
+    ...ref,
+    ...over,
+  }
 }
 
 const writableRef = (over: Partial<EditorRef> = {}): EditorRef => makeRef(over)
-const readOnlyRef = (over: Partial<EditorRef> = {}): EditorRef => makeRef({ ...over, writable: () => false })
+function readOnlyRef(over: Partial<EditorRef> = {}): EditorRef {
+  return makeRef({
+    ...over,
+    writable: () => false,
+  })
+}
 
 describe('computeSeparator', () => {
   it('returns empty string when current is empty (block)', () => {
@@ -78,11 +86,20 @@ describe('insertIntoMruAgentEditor', () => {
   it('skips a non-agent tab at the MRU head and reaches the agent behind it', () => {
     const set = vi.fn()
     const activate = vi.fn()
-    registerEditorRef('a1', writableRef({ get: () => '', set }))
+    registerEditorRef('a1', writableRef({
+      get: () => '',
+      set,
+    }))
     try {
       insertIntoMruAgentEditor(
         // A terminal is the most recently touched tab; the agent is behind it.
-        { mruTabs: () => [terminal('t1'), agent('a1')], activate },
+        {
+          mruTabs: () => [
+            terminal('t1'),
+            agent('a1'),
+          ],
+          activate,
+        },
         'hello',
       )
       expect(set).toHaveBeenCalled()
@@ -97,7 +114,12 @@ describe('insertIntoMruAgentEditor', () => {
 
   it('does nothing when the workspace holds no agent at all', () => {
     const activate = vi.fn()
-    insertIntoMruAgentEditor({ mruTabs: () => [terminal('t1')], activate }, 'hello')
+    insertIntoMruAgentEditor({
+      mruTabs: () => [
+        terminal('t1'),
+      ],
+      activate,
+    }, 'hello')
     expect(activate).not.toHaveBeenCalled()
   })
 
@@ -117,11 +139,17 @@ describe('insertIntoMruAgentEditor', () => {
     }
     // The root is always steerable (no parentAgentId).
     const root: Tab = { type: TabType.AGENT, id: 'root-1', workspaceId: 'ws' }
-    registerEditorRef('root-1', writableRef({ get: () => '', set: setRoot }))
+    registerEditorRef('root-1', writableRef({
+      get: () => '',
+      set: setRoot,
+    }))
     try {
       insertIntoMruAgentEditor(
         // Non-steerable child is MRU; the root is behind it.
-        { mruTabs: () => [nonSteerableChild, root], activate },
+        {
+          mruTabs: () => [nonSteerableChild, root],
+          activate,
+        },
         'hello',
       )
       expect(setRoot, 'the steerable root must receive the text').toHaveBeenCalled()
@@ -146,10 +174,16 @@ describe('insertIntoMruAgentEditor', () => {
       acceptsMessages: true,
       agentProvider: AgentProvider.CODEX,
     }
-    registerEditorRef('c1', writableRef({ get: () => '', set: setChild }))
+    registerEditorRef('c1', writableRef({
+      get: () => '',
+      set: setChild,
+    }))
     try {
       insertIntoMruAgentEditor(
-        { mruTabs: () => [steerableChild], activate },
+        {
+          mruTabs: () => [steerableChild],
+          activate,
+        },
         'hello',
       )
       expect(setChild, 'a steerable child receives the text').toHaveBeenCalled()
@@ -166,7 +200,15 @@ describe('insertIntoMruAgentEditor', () => {
     // acceptsMessages is unknown before listAgents hydration. Register a
     // synthetic provider capability to exercise the fallback.
     __resetProviderRegistryForTest()
-    registerProvider(AgentProvider.CODEX, { transcript: { classify: () => ({} as never), spanRole: () => 'other', extractRow: () => null, extractDivider: () => null }, configuration: { supportsSubagentSend: true } })
+    registerProvider(AgentProvider.CODEX, {
+      transcript: {
+        classify: () => ({} as never),
+        spanRole: () => 'other',
+        extractRow: () => null,
+        extractDivider: () => null,
+      },
+      configuration: { supportsSubagentSend: true },
+    })
     const codexChildUnhydrated: Tab = {
       type: TabType.AGENT,
       id: 'c1',
@@ -174,10 +216,16 @@ describe('insertIntoMruAgentEditor', () => {
       parentAgentId: 'root-1',
       agentProvider: AgentProvider.CODEX,
     }
-    registerEditorRef('c1', writableRef({ get: () => '', set: setChild }))
+    registerEditorRef('c1', writableRef({
+      get: () => '',
+      set: setChild,
+    }))
     try {
       insertIntoMruAgentEditor(
-        { mruTabs: () => [codexChildUnhydrated], activate },
+        {
+          mruTabs: () => [codexChildUnhydrated],
+          activate,
+        },
         'hello',
       )
       expect(setChild, 'the provider fallback permits the pre-hydration child').toHaveBeenCalled()
@@ -198,7 +246,10 @@ describe('insertIntoMruAgentEditor', () => {
 describe('a read-only editor refuses writes', () => {
   it('insertIntoAgentEditor writes nothing and reports refused', () => {
     const set = vi.fn()
-    registerEditorRef('ro', readOnlyRef({ get: () => 'draft', set }))
+    registerEditorRef('ro', readOnlyRef({
+      get: () => 'draft',
+      set,
+    }))
     try {
       expect(insertIntoAgentEditor('ro', 'quoted')).toBe('refused')
       expect(set).not.toHaveBeenCalled()
@@ -210,7 +261,10 @@ describe('a read-only editor refuses writes', () => {
 
   it('insertIntoAgentEditor reports inserted for a writable editor', () => {
     const set = vi.fn()
-    registerEditorRef('rw', writableRef({ get: () => 'draft', set }))
+    registerEditorRef('rw', writableRef({
+      get: () => 'draft',
+      set,
+    }))
     try {
       expect(insertIntoAgentEditor('rw', 'quoted')).toBe('inserted')
       expect(set).toHaveBeenCalledWith('draft\n\nquoted')
@@ -241,7 +295,11 @@ describe('a read-only editor refuses writes', () => {
   it('getEditorRef hands out a handle whose set and insert are inert', () => {
     const set = vi.fn()
     const insert = vi.fn()
-    registerEditorRef('ro', readOnlyRef({ get: () => 'draft', set, insert }))
+    registerEditorRef('ro', readOnlyRef({
+      get: () => 'draft',
+      set,
+      insert,
+    }))
     try {
       const ref = getEditorRef('ro')
       ref?.set('replaced')
@@ -281,7 +339,12 @@ describe('a read-only editor refuses writes', () => {
     const set = vi.fn()
     const activate = vi.fn()
     insertIntoMruAgentEditor(
-      { mruTabs: () => [{ type: TabType.AGENT, id: 'later', workspaceId: 'ws' } as Tab], activate },
+      {
+        mruTabs: () => [
+          { type: TabType.AGENT, id: 'later', workspaceId: 'ws' } as Tab,
+        ],
+        activate,
+      },
       'queued',
     )
     registerEditorRef('later', readOnlyRef({ set }))
@@ -315,7 +378,9 @@ describe('a read-only editor refuses writes', () => {
     const root = { type: TabType.AGENT, id: 'root-1', workspaceId: 'ws' } as Tab
     let hydrated = false
     const deps = {
-      mruTabs: () => (hydrated ? [hydratedChild, root] : [optimisticChild, root]),
+      mruTabs: () => (hydrated
+        ? [hydratedChild, root]
+        : [optimisticChild, root]),
       activate: vi.fn(),
       notify,
     }
@@ -346,7 +411,11 @@ describe('a read-only editor refuses writes', () => {
     const target = { type: TabType.AGENT, id: 'ro-target', workspaceId: 'ws' } as Tab
     registerEditorRef('ro-target', readOnlyRef())
     try {
-      insertIntoMruAgentEditor({ mruTabs: () => [target], activate, notify }, 'quoted')
+      insertIntoMruAgentEditor({
+        mruTabs: () => [target],
+        activate,
+        notify,
+      }, 'quoted')
       expect(notify).toHaveBeenCalledOnce()
       expect(activate).toHaveBeenCalledWith(target)
     }
@@ -359,7 +428,12 @@ describe('a read-only editor refuses writes', () => {
     const set = vi.fn()
     const activate = vi.fn()
     insertIntoMruAgentEditor(
-      { mruTabs: () => [{ type: TabType.AGENT, id: 'later2', workspaceId: 'ws' } as Tab], activate },
+      {
+        mruTabs: () => [
+          { type: TabType.AGENT, id: 'later2', workspaceId: 'ws' } as Tab,
+        ],
+        activate,
+      },
       'queued',
     )
     registerEditorRef('later2', writableRef({ set }))
@@ -387,7 +461,12 @@ describe('insertIntoMruAgentEditor with a mounted read-only editor', () => {
     registerEditorRef('root-1', readOnlyRef({ set }))
     try {
       insertIntoMruAgentEditor(
-        { mruTabs: () => [{ type: TabType.AGENT, id: 'root-1', workspaceId: 'ws' } as Tab], activate },
+        {
+          mruTabs: () => [
+            { type: TabType.AGENT, id: 'root-1', workspaceId: 'ws' } as Tab,
+          ],
+          activate,
+        },
         'hello',
       )
       expect(set).not.toHaveBeenCalled()
@@ -414,7 +493,11 @@ describe('writable is re-read on every write', () => {
   it('follows a ref that becomes writable after registration', () => {
     const set = vi.fn()
     let writable = false
-    registerEditorRef('flip', makeRef({ get: () => '', set, writable: () => writable }))
+    registerEditorRef('flip', makeRef({
+      get: () => '',
+      set,
+      writable: () => writable,
+    }))
     try {
       expect(insertIntoAgentEditor('flip', 'first')).toBe('refused')
       writable = true
@@ -437,10 +520,19 @@ describe('writable is re-read on every write', () => {
     const activate = vi.fn()
     let writable = true
     insertIntoMruAgentEditor(
-      { mruTabs: () => [{ type: TabType.AGENT, id: 'flip-flush', workspaceId: 'ws' } as Tab], activate },
+      {
+        mruTabs: () => [
+          { type: TabType.AGENT, id: 'flip-flush', workspaceId: 'ws' } as Tab,
+        ],
+        activate,
+      },
       'queued',
     )
-    registerEditorRef('flip-flush', makeRef({ get: () => '', set, writable: () => writable }))
+    registerEditorRef('flip-flush', makeRef({
+      get: () => '',
+      set,
+      writable: () => writable,
+    }))
     try {
       writable = false
       await new Promise(resolve => setTimeout(resolve, 200))
@@ -459,11 +551,20 @@ describe('writable is re-read on every write', () => {
     const focus = vi.fn()
     const activate = vi.fn()
     insertIntoMruAgentEditor(
-      { mruTabs: () => [{ type: TabType.AGENT, id: 'gone-flush', workspaceId: 'ws' } as Tab], activate },
+      {
+        mruTabs: () => [
+          { type: TabType.AGENT, id: 'gone-flush', workspaceId: 'ws' } as Tab,
+        ],
+        activate,
+      },
       'queued',
     )
     // `get` stays empty so the flush would retry to its 10-attempt limit.
-    registerEditorRef('gone-flush', makeRef({ get: () => '', set, focus }))
+    registerEditorRef('gone-flush', makeRef({
+      get: () => '',
+      set,
+      focus,
+    }))
     unregisterEditorRef('gone-flush')
     await new Promise(resolve => setTimeout(resolve, 200))
     expect(set).not.toHaveBeenCalled()
@@ -473,7 +574,10 @@ describe('writable is re-read on every write', () => {
   it('follows a ref that becomes read-only after registration', () => {
     const insert = vi.fn()
     let writable = true
-    registerEditorRef('flip', makeRef({ insert, writable: () => writable }))
+    registerEditorRef('flip', makeRef({
+      insert,
+      writable: () => writable,
+    }))
     try {
       getEditorRef('flip')?.insert('a')
       writable = false

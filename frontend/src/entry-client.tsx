@@ -17,7 +17,7 @@ setBootPhase('mounting')
 // error." -- before mount(), so this listener is registered ahead of
 // @solidjs/start's dev overlay (which registers its own window `error` listener
 // during mount) and can stopImmediatePropagation the event before the overlay
-// pops a 500 dialog. The long/busy chat transcript trips the loop routinely, and
+// opens its error panel. The long/busy chat transcript trips the loop routinely, and
 // iOS Safari mutes an error when the share sheet resizes and snapshots the page;
 // see the helper for the full rationale. Dev-only: the overlay only exists in
 // dev, and prod keeps the browser's native error reporting untouched.
@@ -35,13 +35,6 @@ if (import.meta.env.DEV)
 // the toast and logs at warn level, so the sink deliberately does neither and
 // the fault is reported exactly once.
 installGlobalErrorSink({ report: showWarnToast })
-
-// Vinxi's generated client handler probes this module for a default export even
-// though the Solid client entry only needs the side-effectful mount call below.
-// Exporting a no-op default keeps the bundler quiet and is safe to ignore.
-export default function EntryClient(): null {
-  return null
-}
 
 mount(() => <StartClient />, document.getElementById('app')!)
 

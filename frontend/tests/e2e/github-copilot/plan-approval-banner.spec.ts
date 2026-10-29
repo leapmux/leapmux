@@ -33,7 +33,9 @@ copilotTest('plan-approval-banner: rejects the native exit tool, ends the turn, 
   await withCleanup(async () => {
     const callId = 'copilot-rejected-plan'
     const start = await modelScript.queue({
-      toolCalls: [exitPlanModeToolCall(AgentProvider.GITHUB_COPILOT, callId, 'Keep the Copilot plan unapproved.')],
+      toolCalls: [
+        exitPlanModeToolCall(AgentProvider.GITHUB_COPILOT, callId, 'Keep the Copilot plan unapproved.'),
+      ],
     })
     await sendMessage(page, modelScript.prompt('Present the plan for approval.'))
     await modelScript.waitForSteps(start + 1)
@@ -56,12 +58,19 @@ copilotTest('plan-approval-banner: rejects the native exit tool, ends the turn, 
     // The answer has no feedback field, which is what makes the runtime end the turn.
     expect(decision.response).toEqual({
       type: 'control_response',
-      response: { subtype: 'success', request_id: observed.requestId, response: { approved: false } },
+      response: {
+        subtype: 'success',
+        request_id: observed.requestId,
+        response: { approved: false },
+      },
     })
 
     // Copilot keeps the call ID of the model, and the root session holds exactly one completion of that call.
     const completion = copilotToolCompletion(snapshot, callId)
-    expect(completion, 'Copilot failed the exit tool call of the rejected plan').toMatchObject({ success: false, error: { code: 'rejected' } })
+    expect(completion, 'Copilot failed the exit tool call of the rejected plan').toMatchObject({
+      success: false,
+      error: { code: 'rejected' },
+    })
     expect(completion.error?.message).toContain('User requested changes but did not provide specific feedback.')
 
     await page.reload()

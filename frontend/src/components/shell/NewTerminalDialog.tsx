@@ -54,8 +54,12 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
   const { submit: { submitting, error, setError, formHandler }, worker, gitMode, pathInfo } = useWorkerDialog({
     submit: { fallback: 'Failed to create terminal' },
     worker: {
-      ...(props.defaultWorkerId !== undefined ? { preselectedWorkerId: props.defaultWorkerId } : {}),
-      ...(props.defaultWorkingDir !== undefined ? { defaultWorkingDir: props.defaultWorkingDir } : {}),
+      ...(props.defaultWorkerId !== undefined
+        ? { preselectedWorkerId: props.defaultWorkerId }
+        : {}),
+      ...(props.defaultWorkingDir !== undefined
+        ? { defaultWorkingDir: props.defaultWorkingDir }
+        : {}),
     },
     pathInfo: { remapWorktreeRoot: true },
   })
@@ -84,12 +88,16 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
     const intent = gitMode.currentIntent()
     return isTerminalCreateDisabled({
       submitting: submitting.loading(),
-      ...(reason !== undefined ? { blockedReason: reason } : {}),
+      ...(reason !== undefined
+        ? { blockedReason: reason }
+        : {}),
       workerId: worker.workerId(),
       workingDir: worker.workingDir(),
       shell: shell(),
       titleError: title.error(),
-      ...(intent !== undefined ? { git: intent } : {}),
+      ...(intent !== undefined
+        ? { git: intent }
+        : {}),
     })
   }
 

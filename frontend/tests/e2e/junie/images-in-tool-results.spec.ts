@@ -16,17 +16,27 @@ import { JUNIE_AGENT, nativeContext } from './scenarios'
 
 junieTest.describe('Junie images in tool results', () => {
   junieTest('receives no image bytes in the ACP tool row after the model sees the PNG', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }, testInfo) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     let imageName = ''
-    await openProviderAgent(leapmuxServer, context.workspaceId, JUNIE_AGENT, { optionValues: { brave_mode: 'on' }, prepare: (workingDir) => {
-      imageName = writeToolImage(workingDir, 'junie-mcp')
-      const server = writeMcpImageServer(workingDir, imageName)
-      writeJunieMcpConfig(workingDir, server.name, server.command, server.args)
-    } })
+    await openProviderAgent(leapmuxServer, context.workspaceId, JUNIE_AGENT, {
+      optionValues: { brave_mode: 'on' },
+      prepare: (workingDir) => {
+        imageName = writeToolImage(workingDir, 'junie-mcp')
+        const server = writeMcpImageServer(workingDir, imageName)
+        writeJunieMcpConfig(workingDir, server.name, server.command, server.args)
+      },
+    })
     await openWorkspace(page, context.workspaceId)
     await modelScript.rule(junieCapabilityAnswer('junie-image-capability', '1'))
     const { resultRequest } = await runNativeToolTurn(context, {
-      toolCalls: [mcpToolCall(context.provider, 'junie-mcp-image', { server: MCP_IMAGE_SERVER_NAME, tool: 'show', input: {} })],
+      toolCalls: [
+        mcpToolCall(context.provider, 'junie-mcp-image', { server: MCP_IMAGE_SERVER_NAME, tool: 'show', input: {} }),
+      ],
       prompt: `Call the ${MCP_IMAGE_SERVER_NAME} show tool once.`,
       answer: 'The MCP image is ready.',
     })
@@ -36,7 +46,10 @@ junieTest.describe('Junie images in tool results', () => {
       spanType: message.spanType,
       content: decompressContentToString(message.content, message.contentCompression),
     }))
-    await testInfo.attach('junie-mcp-image-worker-rows', { body: JSON.stringify(rows, null, 2), contentType: 'application/json' })
+    await testInfo.attach('junie-mcp-image-worker-rows', {
+      body: JSON.stringify(rows, null, 2),
+      contentType: 'application/json',
+    })
     const completed = rows.map((row) => {
       if (!row.content)
         return null

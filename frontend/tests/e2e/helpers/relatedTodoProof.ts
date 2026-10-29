@@ -38,8 +38,13 @@ export function relatedTodoTurn(provider: AgentProvider, options: Omit<RelatedTo
   const item = options.item ?? RELATED_TODO_ITEM
   if (item.trim() === '')
     throw new Error('The related to-do item needs text.')
-  const toolCall = options.toolCall ?? updateTodosToolCall(provider, RELATED_TODO_CALL_ID, [{ step: item, status: 'pending' }])
-  return { item, steps: toolTurnSteps([toolCall], { text: RELATED_TODO_ANSWER }, options.answerStep) }
+  const toolCall = options.toolCall ?? updateTodosToolCall(provider, RELATED_TODO_CALL_ID, [
+    { step: item, status: 'pending' },
+  ])
+  return {
+    item,
+    steps: toolTurnSteps([toolCall], { text: RELATED_TODO_ANSWER }, options.answerStep),
+  }
 }
 
 /** Exercise a real sidebar update before an absent provider control is checked. */
@@ -64,7 +69,9 @@ export async function exerciseRelatedTodo(context: ManagedNativeScenarioContext,
  * before and after the reload. The Background tasks section plays no part: a native to-do list is not a task row.
  */
 export async function expectRelatedTodoSurvivesReload(context: ManagedNativeScenarioContext, item: string): Promise<void> {
-  const expected = [{ content: item, status: TodoStatus.PENDING }]
+  const expected = [
+    { content: item, status: TodoStatus.PENDING },
+  ]
   const storedTodos = async () => (await readNativeSidebarSnapshot(context)).todos.map(todo => ({ content: todo.content, status: todo.status }))
   expect(await storedTodos()).toEqual(expected)
   await context.page.reload()

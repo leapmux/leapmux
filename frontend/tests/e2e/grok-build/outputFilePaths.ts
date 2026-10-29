@@ -22,5 +22,10 @@ export function readGrokNativeOutput(snapshot: NativeMessageSnapshot, callId: st
   if (!Array.isArray(bytes) || bytes.some(value => !Number.isInteger(value) || value < 0 || value > 255))
     throw new Error('The native Grok result has invalid preview bytes.')
   const previewText = new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(bytes))
-  return { paths: [path], previewText, frame: record.frame, content: record.message.content }
+  return {
+    paths: [path],
+    previewText,
+    frame: record.frame,
+    content: record.message.content,
+  }
 }

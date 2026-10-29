@@ -63,9 +63,15 @@ export function writeMcpEchoServer(directory: string, options: { receiptLog?: st
  */
 export function configuredMcpScript(configPath: string, serversKey: 'servers' | 'mcpServers', server: string): string {
   const config: unknown = JSON.parse(readFileSync(configPath, 'utf8'))
-  const servers = isObject(config) && isObject(config[serversKey]) ? config[serversKey] : null
-  const entry = servers && isObject(servers[server]) ? servers[server] : null
-  const script = entry && Array.isArray(entry.args) ? entry.args[0] : undefined
+  const servers = isObject(config) && isObject(config[serversKey])
+    ? config[serversKey]
+    : null
+  const entry = servers && isObject(servers[server])
+    ? servers[server]
+    : null
+  const script = entry && Array.isArray(entry.args)
+    ? entry.args[0]
+    : undefined
   if (typeof script !== 'string' || script === '')
     throw new Error(`The MCP configuration ${configPath} states no script for the server ${server} under ${serversKey}.`)
   return script

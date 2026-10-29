@@ -14,14 +14,31 @@ junieTest.describe('Junie tool execution', () => {
     const note = join(workingDir, 'note.txt')
     writeFileSync(note, 'junie-before\n')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
 
     // Junie answers through its answer tool, which the provider's text step builds.
     await runNativeToolSteps(context, {
       steps: [
-        { toolCalls: [bashToolCall(context.provider, 'junie-shell', 'echo "junie-$((40 + 2))"')] },
-        { toolCalls: [readToolCall(context.provider, 'junie-read', note)] },
-        { toolCalls: [editToolCall(context.provider, 'junie-edit', { path: note, before: 'junie-before', after: 'junie-after' })] },
+        {
+          toolCalls: [
+            bashToolCall(context.provider, 'junie-shell', 'echo "junie-$((40 + 2))"'),
+          ],
+        },
+        {
+          toolCalls: [
+            readToolCall(context.provider, 'junie-read', note),
+          ],
+        },
+        {
+          toolCalls: [
+            editToolCall(context.provider, 'junie-edit', { path: note, before: 'junie-before', after: 'junie-after' }),
+          ],
+        },
       ],
       prompt: 'Run the three scripted tools, then answer.',
       answer: 'All three tools ran.',

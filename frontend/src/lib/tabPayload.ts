@@ -53,7 +53,13 @@ export function tabPayloadView(payload: TabPayload | undefined): TabPayloadView 
 
 /** Build the FILE case for `registerTabPayload`. */
 export function fileTabPayload(filePath: string, workingDir: string): MessageInitShape<typeof TabPayloadSchema> {
-  return { workingDir, kind: { case: 'file', value: { filePath } } }
+  return {
+    workingDir,
+    kind: {
+      case: 'file',
+      value: { filePath },
+    },
+  }
 }
 
 /** Build the IMAGE case for `registerTabPayload`. */

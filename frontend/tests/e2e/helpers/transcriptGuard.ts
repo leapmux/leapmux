@@ -29,7 +29,14 @@ export function isRawFrameText(text: string): boolean {
     if (value === null || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length < 2)
       return false
     const fields = value as Record<string, unknown>
-    return ['type', 'method', 'event', 'subtype', 'sessionUpdate', 'jsonrpc'].some(key => typeof fields[key] === 'string')
+    return [
+      'type',
+      'method',
+      'event',
+      'subtype',
+      'sessionUpdate',
+      'jsonrpc',
+    ].some(key => typeof fields[key] === 'string')
   }
   catch {
     return false

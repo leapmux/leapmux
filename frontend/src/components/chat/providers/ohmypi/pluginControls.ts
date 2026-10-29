@@ -19,7 +19,9 @@ export const ohMyPiControls: ProviderControlCapability = {
       // This form answers only a select dialog. The dialog accepts one of its own options.
       // When the user selects no option, the handler dismisses the dialog. An empty answer would fail.
       const answer = ohMyPiDialogAnswer(answerState)
-      await sendOhMyPiResponse(sendControlResponse, answer.trim() ? ohMyPiValueResponse(request.requestId, answer) : ohMyPiCancelResponse(request.requestId))
+      await sendOhMyPiResponse(sendControlResponse, answer.trim()
+        ? ohMyPiValueResponse(request.requestId, answer)
+        : ohMyPiCancelResponse(request.requestId))
     },
     // A dismissed question sends omp's native cancellation. The `ask` tool then ends omp's run because a refused question stops it.
     sendReject: (request, sendControlResponse) => sendOhMyPiResponse(sendControlResponse, ohMyPiCancelResponse(request.requestId)),
@@ -42,6 +44,8 @@ export const ohMyPiControls: ProviderControlCapability = {
     ? ohMyPiValueResponse(requestId, OH_MY_PI_APPROVAL_DIALOG.Deny)
     : ohMyPiCancelResponse(requestId),
   controlFeedbackAsFollowUpMessage: isOhMyPiApproval,
-  controlEditorPurpose: payload => isOhMyPiApproval(payload) ? 'feedback' : 'none',
+  controlEditorPurpose: payload => isOhMyPiApproval(payload)
+    ? 'feedback'
+    : 'none',
   permissionPresets: ohMyPiPermissionPresets,
 }

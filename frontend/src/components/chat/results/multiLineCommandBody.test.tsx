@@ -12,9 +12,18 @@ import { CommandInputSummary } from './multiLineCommandBody'
  */
 function stubHeights(scrollHeight: number, clientHeight: number): () => void {
   const previous = ['scrollHeight', 'clientHeight'].map(name =>
-    [name, Object.getOwnPropertyDescriptor(HTMLElement.prototype, name)] as const)
-  Object.defineProperty(HTMLElement.prototype, 'scrollHeight', { configurable: true, get: () => scrollHeight })
-  Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => clientHeight })
+    [
+      name,
+      Object.getOwnPropertyDescriptor(HTMLElement.prototype, name),
+    ] as const)
+  Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+    configurable: true,
+    get: () => scrollHeight,
+  })
+  Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+    configurable: true,
+    get: () => clientHeight,
+  })
   return () => {
     for (const [name, descriptor] of previous) {
       if (descriptor)

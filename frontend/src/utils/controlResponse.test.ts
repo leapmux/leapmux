@@ -53,7 +53,10 @@ describe('buildControlResponseEnvelope', () => {
 
   it('states the same envelope the allow and deny builders produce', () => {
     expect(buildAllowResponse('req-8', { path: '/tmp/a' }))
-      .toEqual(buildControlResponseEnvelope('req-8', { behavior: 'allow', updatedInput: { path: '/tmp/a' } }))
+      .toEqual(buildControlResponseEnvelope('req-8', {
+        behavior: 'allow',
+        updatedInput: { path: '/tmp/a' },
+      }))
     expect(buildDenyResponse('req-8', 'no'))
       .toEqual(buildControlResponseEnvelope('req-8', { behavior: 'deny', message: 'no' }))
   })
@@ -61,10 +64,21 @@ describe('buildControlResponseEnvelope', () => {
 
 describe('withControlChoice', () => {
   it('adds the choice beside the behavior and keeps every other field', () => {
-    const envelope = buildControlResponseEnvelope('req-1', { behavior: 'allow', updatedInput: { a: 1 } })
+    const envelope = buildControlResponseEnvelope('req-1', {
+      behavior: 'allow',
+      updatedInput: { a: 1 },
+    })
     expect(withControlChoice(envelope, 'Option A')).toStrictEqual({
       type: 'control_response',
-      response: { subtype: 'success', request_id: 'req-1', response: { behavior: 'allow', updatedInput: { a: 1 }, choice: 'Option A' } },
+      response: {
+        subtype: 'success',
+        request_id: 'req-1',
+        response: {
+          behavior: 'allow',
+          updatedInput: { a: 1 },
+          choice: 'Option A',
+        },
+      },
     })
   })
 
@@ -77,11 +91,19 @@ describe('withControlChoice', () => {
 
   it('replaces a choice the envelope already carries', () => {
     const envelope = withControlChoice(buildDenyResponse('req-1'), 'Revise')
-    expect(withControlChoice(envelope, 'Reject and Exit')).toMatchObject({ response: { response: { choice: 'Reject and Exit' } } })
+    expect(withControlChoice(envelope, 'Reject and Exit')).toMatchObject({
+      response: {
+        response: { choice: 'Reject and Exit' },
+      },
+    })
   })
 
   it('builds the nested objects an envelope lacks', () => {
-    expect(withControlChoice({}, 'x')).toStrictEqual({ response: { response: { choice: 'x' } } })
+    expect(withControlChoice({}, 'x')).toStrictEqual({
+      response: {
+        response: { choice: 'x' },
+      },
+    })
   })
 
   // Only an object can carry the choice. A null, an array or a string in either
@@ -89,20 +111,39 @@ describe('withControlChoice', () => {
   // choice or drop the choice.
   it.each([
     ['null', null],
-    ['an array', ['a', 'b']],
+    [
+      'an array',
+      ['a', 'b'],
+    ],
     ['a string', 'ok'],
   ])('replaces an outer response that holds %s', (_shape, response) => {
     expect(withControlChoice({ type: 'control_response', response }, 'x'))
-      .toStrictEqual({ type: 'control_response', response: { response: { choice: 'x' } } })
+      .toStrictEqual({
+        type: 'control_response',
+        response: {
+          response: { choice: 'x' },
+        },
+      })
   })
 
   it.each([
     ['null', null],
-    ['an array', ['allow']],
+    [
+      'an array',
+      ['allow'],
+    ],
     ['a string', 'allow'],
   ])('replaces an inner response that holds %s and keeps the outer fields', (_shape, response) => {
-    expect(withControlChoice({ response: { subtype: 'success', request_id: 'req-1', response } }, 'x'))
-      .toStrictEqual({ response: { subtype: 'success', request_id: 'req-1', response: { choice: 'x' } } })
+    expect(withControlChoice({
+      response: { subtype: 'success', request_id: 'req-1', response },
+    }, 'x'))
+      .toStrictEqual({
+        response: {
+          subtype: 'success',
+          request_id: 'req-1',
+          response: { choice: 'x' },
+        },
+      })
   })
 })
 
@@ -117,28 +158,53 @@ describe('normalizeRejectionMessage', () => {
 
 describe('decodeControlBehaviorEnvelope', () => {
   it('decodes an allow envelope with the request id', () => {
-    expect(decodeControlBehaviorEnvelope({ response: { request_id: ' r ', response: { behavior: ' allow ' } } }))
+    expect(decodeControlBehaviorEnvelope({
+      response: {
+        request_id: ' r ',
+        response: { behavior: ' allow ' },
+      },
+    }))
       .toEqual({ requestId: 'r', behavior: 'allow', message: '' })
   })
 
   it('decodes a deny envelope with a typed reason', () => {
-    expect(decodeControlBehaviorEnvelope({ response: { request_id: 'r', response: { behavior: 'deny', message: '  not this way  ' } } }))
+    expect(decodeControlBehaviorEnvelope({
+      response: {
+        request_id: 'r',
+        response: { behavior: 'deny', message: '  not this way  ' },
+      },
+    }))
       .toEqual({ requestId: 'r', behavior: 'deny', message: 'not this way' })
   })
 
   it('collapses the sentinel message of a bare deny', () => {
-    expect(decodeControlBehaviorEnvelope({ response: { response: { behavior: 'deny', message: CONTROL_REJECTED_BY_USER_MESSAGE } } }))
+    expect(decodeControlBehaviorEnvelope({
+      response: {
+        response: { behavior: 'deny', message: CONTROL_REJECTED_BY_USER_MESSAGE },
+      },
+    }))
       .toEqual({ requestId: '', behavior: 'deny', message: '' })
   })
 
   it('returns null for a non-envelope (e.g. a JSON-RPC decision) or an unrecognized behavior', () => {
-    expect(decodeControlBehaviorEnvelope({ result: { decision: 'accept' } })).toBeNull()
-    expect(decodeControlBehaviorEnvelope({ response: { response: { behavior: 'maybe' } } })).toBeNull()
+    expect(decodeControlBehaviorEnvelope({
+      result: { decision: 'accept' },
+    })).toBeNull()
+    expect(decodeControlBehaviorEnvelope({
+      response: {
+        response: { behavior: 'maybe' },
+      },
+    })).toBeNull()
     expect(decodeControlBehaviorEnvelope('nope')).toBeNull()
   })
 
   it('is the shared reader behind the byte-oriented decodeControlResponseBehavior', () => {
-    const bytes = new TextEncoder().encode(JSON.stringify({ response: { request_id: 'r', response: { behavior: 'deny', message: 'x' } } }))
+    const bytes = new TextEncoder().encode(JSON.stringify({
+      response: {
+        request_id: 'r',
+        response: { behavior: 'deny', message: 'x' },
+      },
+    }))
     expect(decodeControlResponseBehavior(bytes)).toBe('deny')
     expect(decodeControlResponseBehavior(new TextEncoder().encode('not json'))).toBeNull()
   })

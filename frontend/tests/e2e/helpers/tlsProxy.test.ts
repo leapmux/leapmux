@@ -23,7 +23,10 @@ vi.mock('./server', async (original) => {
 })
 vi.mock('./runDirectory', async (original) => {
   const actual = await original<typeof import('./runDirectory')>()
-  return { ...actual, createTestDirectory: vi.fn(actual.createTestDirectory) }
+  return {
+    ...actual,
+    createTestDirectory: vi.fn(actual.createTestDirectory),
+  }
 })
 
 type TestServer = Server | https.Server
@@ -59,10 +62,15 @@ async function request(url: string, options: https.RequestOptions = {}): Promise
       const parts: Buffer[] = []
       response.on('data', part => parts.push(Buffer.from(part)))
       response.once('error', reject)
-      response.once('end', () => resolve({ status: response.statusCode ?? 0, body: Buffer.concat(parts).toString('utf8') }))
+      response.once('end', () => resolve({
+        status: response.statusCode ?? 0,
+        body: Buffer.concat(parts).toString('utf8'),
+      }))
     })
     req.once('error', reject)
-    req.end(options.method === 'POST' ? 'REQUEST42' : undefined)
+    req.end(options.method === 'POST'
+      ? 'REQUEST42'
+      : undefined)
   })
 }
 
@@ -110,7 +118,9 @@ afterEach(async () => {
     server.closeAllConnections()
     if (!server.listening)
       return
-    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+    await new Promise<void>((resolve, reject) => server.close(error => error
+      ? reject(error)
+      : resolve()))
   }))
   rmSync(state.root, { recursive: true, force: true })
 })
@@ -134,8 +144,13 @@ describe('startTlsProxy', () => {
 
   it('keeps concurrent proxies on distinct final ports', async () => {
     const hubUrl = await target()
-    const started = await Promise.allSettled([startTlsProxy(hubUrl), startTlsProxy(hubUrl)])
-    const proxies = started.flatMap(result => result.status === 'fulfilled' ? [result.value] : [])
+    const started = await Promise.allSettled([
+      startTlsProxy(hubUrl),
+      startTlsProxy(hubUrl),
+    ])
+    const proxies = started.flatMap(result => result.status === 'fulfilled'
+      ? [result.value]
+      : [])
     try {
       expect(started.every(result => result.status === 'fulfilled')).toBe(true)
       expect(new Set(proxies.map(proxy => proxy.url)).size).toBe(2)
@@ -160,7 +175,10 @@ describe('startTlsProxy', () => {
       expect(await request(second.url)).toEqual({ status: 200, body: 'REPLY42' })
     }
     finally {
-      await Promise.all([first.close(), second.close()])
+      await Promise.all([
+        first.close(),
+        second.close(),
+      ])
     }
   })
 
@@ -208,8 +226,11 @@ describe('startTlsProxy', () => {
     )
     try {
       expect(result.status).toBe('failed')
-      if (result.status === 'failed')
-        expect(result.error).toMatchObject({ message: expect.stringMatching(/readiness.*503/) })
+      if (result.status === 'failed') {
+        expect(result.error).toMatchObject({
+          message: expect.stringMatching(/readiness.*503/),
+        })
+      }
     }
     finally {
       if (result.status === 'ready')
@@ -354,9 +375,17 @@ describe('startTlsProxy', () => {
     })
     const proxy = await startTlsProxy(hubUrl)
     try {
-      expect(await request(`${proxy.url}/native/path?value=42`, { method: 'POST', headers: { origin: proxy.url } }))
+      expect(await request(`${proxy.url}/native/path?value=42`, {
+        method: 'POST',
+        headers: { origin: proxy.url },
+      }))
         .toEqual({ status: 201, body: 'FORWARDED42' })
-      expect(observed).toEqual({ body: 'REQUEST42', origin: proxy.url, host: new URL(hubUrl).host, url: '/native/path?value=42' })
+      expect(observed).toEqual({
+        body: 'REQUEST42',
+        origin: proxy.url,
+        host: new URL(hubUrl).host,
+        url: '/native/path?value=42',
+      })
     }
     finally {
       await proxy.close()
@@ -417,7 +446,10 @@ describe('startTlsProxy', () => {
     if (!server)
       throw new Error('The controlled TLS server is absent.')
     const close = vi.spyOn(server, 'close')
-    await Promise.all([proxy.close(), proxy.close()])
+    await Promise.all([
+      proxy.close(),
+      proxy.close(),
+    ])
     expect(close).toHaveBeenCalledTimes(1)
     expect(readdirSync(state.root)).toEqual([])
   })
@@ -436,7 +468,11 @@ describe('startTlsProxy', () => {
     })
     const proxy = await startTlsProxy(`http://127.0.0.1:${await listen(hub)}`)
     const client = await new Promise<Socket>((resolve, reject) => {
-      const req = https.request(proxy.url, { agent: false, rejectUnauthorized: false, headers: { connection: 'Upgrade', upgrade: 'websocket' } })
+      const req = https.request(proxy.url, {
+        agent: false,
+        rejectUnauthorized: false,
+        headers: { connection: 'Upgrade', upgrade: 'websocket' },
+      })
       req.once('error', reject)
       req.once('upgrade', (_response, socket: Socket) => {
         sockets.add(socket)
@@ -453,7 +489,9 @@ describe('startTlsProxy', () => {
     const server = [...tlsServers][0]
     if (!server)
       throw new Error('The controlled TLS server is absent.')
-    const owned = [...serverSockets.get(server) ?? []]
+    const owned = [
+      ...serverSockets.get(server) ?? [],
+    ]
     expect(owned.length).toBeGreaterThan(0)
     const closing = proxy.close()
     try {

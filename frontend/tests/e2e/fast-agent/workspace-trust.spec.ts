@@ -5,7 +5,12 @@ import { exerciseNativeWorkspaceTrustLimit, ignoredMcpServerProjectConfiguration
 import { nativeContext } from './scenarios'
 
 fastAgentTest('starts with a real project configuration and no native workspace trust barrier', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   await exerciseNativeWorkspaceTrustLimit(context, {
     projectConfiguration: ignoredMcpServerProjectConfiguration((directory, server) => {
       // A JSON string is a valid YAML scalar, and a JSON array is a valid YAML sequence, so each path stays quoted.

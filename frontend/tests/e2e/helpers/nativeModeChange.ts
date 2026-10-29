@@ -38,12 +38,16 @@ function matchingStoredNotices(messages: readonly AgentChatMessage[], owner: Age
     if (message.source !== MessageSource.LEAPMUX || message.agentProvider !== owner.agentProvider || message.agentSessionId !== change.sessionId)
       continue
     const body = nativeMessageBody(message)
-    const entries = isObject(body) && body.type === NOTIFICATION_THREAD_TYPE && Array.isArray(body.messages) ? body.messages : [body]
+    const entries = isObject(body) && body.type === NOTIFICATION_THREAD_TYPE && Array.isArray(body.messages)
+      ? body.messages
+      : [body]
     for (const entry of entries) {
       if (!isObject(entry) || entry[NOTIFICATION_FIELD.Type] !== NOTIFICATION_TYPE.SettingsChanged)
         continue
       const changes = entry[NOTIFICATION_FIELD.Changes]
-      const option = isObject(changes) ? changes[change.groupId] : undefined
+      const option = isObject(changes)
+        ? changes[change.groupId]
+        : undefined
       if (isObject(option)
         && option[NOTIFICATION_FIELD.Old] === change.oldValue
         && option[NOTIFICATION_FIELD.New] === change.value
@@ -77,7 +81,9 @@ export async function chooseNativeModeWithNotice(
   change: { groupId: string, value: string, label: string, previousLabel: string, noticeLabel: string },
 ): Promise<NativeModeNotice> {
   const { page, modelScript } = context
-  const owner = { ...await currentNativeAgent(context) }
+  const owner = {
+    ...await currentNativeAgent(context),
+  }
   const group = owner.optionGroups.find(group => group.id === change.groupId)
   if (!group || group.currentValue === '')
     throw new Error(`The native mode change requires a current value for option group ${change.groupId}.`)

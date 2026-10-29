@@ -35,7 +35,11 @@ export function insertMessageBySeq(list: AgentChatMessage[], message: AgentChatM
   if (list.length === 0 || (tail !== undefined && message.seq > tail.seq))
     return [...list, message]
   const index = lowerBoundBySeq(list, message.seq)
-  return [...list.slice(0, index), message, ...list.slice(index)]
+  return [
+    ...list.slice(0, index),
+    message,
+    ...list.slice(index),
+  ]
 }
 
 /**
@@ -77,7 +81,10 @@ export function applyFreshMessage(
   const duplicateIndex = lowerBoundBySeq(previous, message.seq)
   if (duplicateIndex < previous.length && previous[duplicateIndex]?.seq === message.seq)
     return { next: previous, inserted: false }
-  return { next: insertMessageBySeq(previous, message), inserted: true }
+  return {
+    next: insertMessageBySeq(previous, message),
+    inserted: true,
+  }
 }
 
 function olderRowsPrecedeWindowHead(older: AgentChatMessage[], base: AgentChatMessage[]): boolean {
@@ -161,7 +168,9 @@ export function mergeWindow(
       replacements.set(message.id, message)
     return false
   })
-  const updated = replacements.size > 0 ? previous.map(message => replacements.get(message.id) ?? message) : previous
+  const updated = replacements.size > 0
+    ? previous.map(message => replacements.get(message.id) ?? message)
+    : previous
   if (incoming.length === 0)
     return updated
 
@@ -175,8 +184,12 @@ export function mergeWindow(
     : updated
 
   if (side === 'older') {
-    if (olderRowsPrecedeWindowHead(incoming, base))
-      return [...incoming, ...base]
+    if (olderRowsPrecedeWindowHead(incoming, base)) {
+      return [
+        ...incoming,
+        ...base,
+      ]
+    }
     if (import.meta.env.DEV)
       throw new Error('mergeWindow: an older page overlaps the window head -- the older-side prepend would break seq ordering')
   }

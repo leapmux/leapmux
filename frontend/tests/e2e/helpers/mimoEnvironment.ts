@@ -83,12 +83,27 @@ function mimoCodeConfig(provider: OpenCodeFamilyProviderOptions, mcpConfirmation
   return {
     ...openCodeFamilyConfig(provider, mcpEchoServer),
     mcp: {
-      [mcpConfirmationServer.name]: { type: 'local', command: [mcpConfirmationServer.command, ...mcpConfirmationServer.args] },
-      [mcpEchoServer.name]: { type: 'local', command: [mcpEchoServer.command, ...mcpEchoServer.args] },
+      [mcpConfirmationServer.name]: {
+        type: 'local',
+        command: [mcpConfirmationServer.command, ...mcpConfirmationServer.args],
+      },
+      [mcpEchoServer.name]: {
+        type: 'local',
+        command: [mcpEchoServer.command, ...mcpEchoServer.args],
+      },
     },
-    agent: { title: { disable: true } },
+    agent: {
+      title: { disable: true },
+    },
     share: 'disabled',
     snapshot: false,
-    retry: { request: noRetry, stream: noRetry, network: noRetry, server: noRetry, rateLimit: noRetry, unknown: noRetry },
+    retry: {
+      request: noRetry,
+      stream: noRetry,
+      network: noRetry,
+      server: noRetry,
+      rateLimit: noRetry,
+      unknown: noRetry,
+    },
   }
 }

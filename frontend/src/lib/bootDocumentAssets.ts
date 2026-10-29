@@ -2,9 +2,11 @@
  * Cold-start document assets: splash paints first; app CSS and deep JS
  * preloads wait until after that paint.
  *
- * Solid Start's SPA `StartServer` already maps `context.assets` through
- * `renderAsset` into the `assets` prop. This module reads the RAW list from
- * `getRequestEvent().assets` and re-renders a filtered set:
+ * SolidStart's SPA `StartServer` passes the page event's `assets` to
+ * `useAssets`, which appends every entry stylesheet and modulepreload to
+ * `<head>` as is. `entry-server` takes the list off the event first (see
+ * `takeBootDocumentAssets`), and `BootDocumentHeadAssets` renders a filtered
+ * set:
  *
  * - stylesheets: `media="print"` + `data-boot-defer-css`, promoted to
  *   `media="all"` after a double rAF (see `bootDeferStylesScript`)
@@ -14,6 +16,8 @@
  * The promote script is a hashed inline `<script>` (CSP-safe). Do not use
  * `onload=` on the links — that needs `'unsafe-hashes'`.
  */
+
+import { isClientEntryChunk } from '~/lib/clientEntryChunk'
 
 /** Marker on deferred stylesheet links; the promote script selects on it. */
 export const BOOT_DEFER_CSS_ATTR = 'data-boot-defer-css'
@@ -26,7 +30,9 @@ export interface BootDocumentAsset {
 
 function hrefOf(asset: BootDocumentAsset): string {
   const href = asset.attrs?.href
-  return typeof href === 'string' ? href : ''
+  return typeof href === 'string'
+    ? href
+    : ''
 }
 
 function isStylesheet(asset: BootDocumentAsset): boolean {
@@ -41,50 +47,32 @@ function isModulepreload(asset: BootDocumentAsset): boolean {
 function hrefBasename(href: string): string {
   const path = href.replace(/^\.\//, '/').split('?', 1)[0] ?? href
   const slash = path.lastIndexOf('/')
-  return slash >= 0 ? path.slice(slash + 1) : path
+  return slash >= 0
+    ? path.slice(slash + 1)
+    : path
+}
+
+/** True when this modulepreload is the SPA client entry (not a deep chunk). */
+export function isClientEntryModulepreload(href: string): boolean {
+  return isClientEntryChunk(hrefBasename(href))
 }
 
 /**
- * True when this modulepreload is the SPA client entry (not a deep chunk).
+ * Removes the asset list from the page event and returns it.
  *
- * Prefer an exact match against the handler output path from the client
- * manifest. Fall back to equal basenames, then to the vinxi
- * `client-<hash>.js` basename when the manifest is absent (unit tests).
+ * Call it before `StartServer` renders. `StartServer` hands `event.assets` to
+ * `useAssets`, which would append every listed stylesheet and modulepreload
+ * to `<head>` beside the filtered set, so the stylesheets would block the
+ * splash paint after all.
  */
-export function isClientEntryModulepreload(
-  href: string,
-  clientEntryHref?: string,
-): boolean {
-  if (!href)
-    return false
-  if (clientEntryHref) {
-    const a = href.replace(/^\.\//, '/')
-    const b = clientEntryHref.replace(/^\.\//, '/')
-    if (a === b || hrefBasename(a) === hrefBasename(b))
-      return true
-    return false
-  }
-  return /\/client-[^/]+\.js(?:\?.*)?$/.test(href)
-}
-
-/**
- * Client entry href from Vinxi's build manifest, when the document runs
- * under StartServer. Undefined in unit tests.
- */
-export function resolveClientEntryHref(): string | undefined {
-  const manifest = (import.meta.env as { MANIFEST?: { client?: {
-    handler?: string
-    inputs?: Record<string, { output?: { path?: string } }>
-  } } }).MANIFEST?.client
-  if (!manifest?.handler || !manifest.inputs)
-    return undefined
-  const path = manifest.inputs[manifest.handler]?.output?.path
-  return typeof path === 'string' ? path : undefined
+export function takeBootDocumentAssets(event: { assets: BootDocumentAsset[] }): BootDocumentAsset[] {
+  const assets = event.assets
+  event.assets = []
+  return assets
 }
 
 export function partitionBootDocumentAssets(
   assets: readonly BootDocumentAsset[],
-  clientEntryHref?: string,
 ): {
   immediate: BootDocumentAsset[]
   deferredStylesheets: BootDocumentAsset[]
@@ -98,7 +86,7 @@ export function partitionBootDocumentAssets(
       continue
     }
     if (isModulepreload(asset)) {
-      if (isClientEntryModulepreload(hrefOf(asset), clientEntryHref))
+      if (isClientEntryModulepreload(hrefOf(asset)))
         immediate.push(asset)
       continue
     }

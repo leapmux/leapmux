@@ -47,22 +47,47 @@ export function lettaChildLaunch(request: MockModelRequestRecord, spawnCallId: s
   if (!isObject(input) || typeof input.description !== 'string' || input.description.trim() === '' || typeof input.prompt !== 'string' || input.prompt.trim() === '' || input.subagent_type !== 'general-purpose')
     throw new Error('The Letta Agent call contains invalid child arguments.')
   const result = nativeToolResult(request, spawnCallId)
-  const tasks = [...result.matchAll(/^Task running in background with task ID: (task_\d+)$/gm)]
-  const files = [...result.matchAll(/^Output file: ([^\r\n]+)$/gm)]
-  const agents = [...result.matchAll(/^Agent ID: (\S+)$/gm)]
-  const conversations = [...result.matchAll(/^Conversation ID: (\S+)$/gm)]
+  const tasks = [
+    ...result.matchAll(/^Task running in background with task ID: (task_\d+)$/gm),
+  ]
+  const files = [
+    ...result.matchAll(/^Output file: ([^\r\n]+)$/gm),
+  ]
+  const agents = [
+    ...result.matchAll(/^Agent ID: (\S+)$/gm),
+  ]
+  const conversations = [
+    ...result.matchAll(/^Conversation ID: (\S+)$/gm),
+  ]
   const taskId = tasks[0]?.[1]
   const outputFile = files[0]?.[1]
   if (tasks.length !== 1 || !taskId || files.length !== 1 || !outputFile || agents.length > 1 || conversations.length > 1)
     throw new Error('The Letta child receipt contains no unique native task identity.')
   const agentId = agents[0]?.[1]
   const conversationId = conversations[0]?.[1]
-  return { spawnCallId, description: input.description, taskId, outputFile, ...(agentId === undefined ? {} : { agentId }), ...(conversationId === undefined ? {} : { conversationId }) }
+  return {
+    spawnCallId,
+    description: input.description,
+    taskId,
+    outputFile,
+    ...(agentId === undefined
+      ? {}
+      : { agentId }),
+    ...(conversationId === undefined
+      ? {}
+      : { conversationId }),
+  }
 }
 
 /** Match one actual Letta task and its native subagent report. */
 export function lettaChildNoticeRule(launch: LettaChildLaunch, childId: string, options: LettaNoticeOptions): MockModelRule {
-  for (const field of ['name', 'spawnCallId', 'description', 'report', 'reply'] as const)
+  for (const field of [
+    'name',
+    'spawnCallId',
+    'description',
+    'report',
+    'reply',
+  ] as const)
     requireNotice(options[field], field)
   if (launch.spawnCallId !== options.spawnCallId || launch.description !== options.description)
     throw new Error('The Letta notification does not identify its actual Agent call.')
@@ -74,8 +99,12 @@ export function lettaChildNoticeRule(launch: LettaChildLaunch, childId: string, 
       requireNotice(launch[field], field)
   }
   const header = `subagent_type=general-purpose subagent_id=${escapeRegExp(childId)} subagent_status=success${
-    launch.agentId === undefined ? '(?: agent_id=[^\\s<>]+)?' : ` agent_id=${escapeRegExp(encodeNativeXmlText(launch.agentId))}`
-  }${launch.conversationId === undefined ? '(?: conversation_id=[^\\s<>]+)?' : ` conversation_id=${escapeRegExp(encodeNativeXmlText(launch.conversationId))}`
+    launch.agentId === undefined
+      ? '(?: agent_id=[^\\s<>]+)?'
+      : ` agent_id=${escapeRegExp(encodeNativeXmlText(launch.agentId))}`
+  }${launch.conversationId === undefined
+    ? '(?: conversation_id=[^\\s<>]+)?'
+    : ` conversation_id=${escapeRegExp(encodeNativeXmlText(launch.conversationId))}`
   }(?: runtime_session_id=[^\\s<>]+)?`
   const usage = '(?:\\n<usage>(?:total_tokens: \\d+(?:\\ntool_uses: \\d+)?(?:\\nduration_ms: \\d+)?|tool_uses: \\d+(?:\\nduration_ms: \\d+)?|duration_ms: \\d+)</usage>)?'
   const envelope = '^<task-notification>\\n'
@@ -85,9 +114,15 @@ export function lettaChildNoticeRule(launch: LettaChildLaunch, childId: string, 
     + `Full transcript available at: ${escapeRegExp(launch.outputFile)}$`
   return {
     name: options.name,
-    when: { protocol: 'openai-chat-completions', user: envelope, lastMessage: { role: 'user', text: envelope } },
+    when: {
+      protocol: 'openai-chat-completions',
+      user: envelope,
+      lastMessage: { role: 'user', text: envelope },
+    },
     respond: { text: options.reply },
-    ...(options.once === undefined ? {} : { once: options.once }),
+    ...(options.once === undefined
+      ? {}
+      : { once: options.once }),
   }
 }
 

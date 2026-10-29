@@ -24,7 +24,14 @@ import './providers'
  * render case behind it unreachable.
  */
 function parsed(parent: Record<string, unknown>, provider: AgentProvider = AgentProvider.CLAUDE_CODE): ResolvedMessageContent {
-  return resolveMessageForRendering({ wrapper: null, topLevel: parent, parentObject: parent, rawText: '', supplementalContent: undefined, messageMetadata: undefined }, provider)
+  return resolveMessageForRendering({
+    wrapper: null,
+    topLevel: parent,
+    parentObject: parent,
+    rawText: '',
+    supplementalContent: undefined,
+    messageMetadata: undefined,
+  }, provider)
 }
 
 /** The row an extraction produced, or null for either rowless outcome. */
@@ -54,8 +61,17 @@ function withOutputPaths(
   if (!plugin)
     throw new Error('The registered fixture provider is absent.')
   const previous = Object.getOwnPropertyDescriptor(plugin.transcript, 'outputFilePaths')
-  const call = toolCallFixture('execute', { result: { commands: [{ output: 'The native preview.' }], unresolvedTerminals: [] } })
-  const extracted = vi.spyOn(plugin.transcript, 'extractRow').mockReturnValue(result === undefined ? toolRow(call) : result)
+  const call = toolCallFixture('execute', {
+    result: {
+      commands: [
+        { output: 'The native preview.' },
+      ],
+      unresolvedTerminals: [],
+    },
+  })
+  const extracted = vi.spyOn(plugin.transcript, 'extractRow').mockReturnValue(result === undefined
+    ? toolRow(call)
+    : result)
   Object.defineProperty(plugin.transcript, 'outputFilePaths', { configurable: true, writable: true, value: paths })
   try {
     run(call, () => extracted.mock.calls[0]?.[0])
@@ -109,7 +125,10 @@ describe('extractChatRow output paths', () => {
 
   it('does not call the path capability for a non-tool row or an unsupported frame', () => {
     const hook = vi.fn(() => ['/native/ignored.log'])
-    for (const result of [{ kind: 'assistant-text', text: 'The native answer.' } as const, null]) {
+    for (const result of [
+      { kind: 'assistant-text', text: 'The native answer.' } as const,
+      null,
+    ]) {
       withOutputPaths(hook, () => {
         extractChatRow(AgentProvider.CLAUDE_CODE, parsed({ content: 'neutral fixture' }), { kind: 'assistant_text' })
       }, result)
@@ -140,7 +159,13 @@ describe('extractChatRow output paths', () => {
 })
 
 describe('extractChatRow turn end', () => {
-  const claudeResult = { type: 'result', subtype: 'success', duration_ms: 1200, num_tool_uses: 3, total_cost_usd: 0.25 }
+  const claudeResult = {
+    type: 'result',
+    subtype: 'success',
+    duration_ms: 1200,
+    num_tool_uses: 3,
+    total_cost_usd: 0.25,
+  }
 
   it('reads the provider label and the totals the worker measured', () => {
     const row = rowOf(extractChatRow(AgentProvider.CLAUDE_CODE, parsed(claudeResult), { kind: 'result_divider' }))
@@ -172,7 +197,10 @@ describe('extractChatRow notification thread', () => {
   it('reads every message of the thread into one row', () => {
     const row = rowOf(extractChatRow(AgentProvider.CLAUDE_CODE, parsed(cleared), {
       kind: 'notification',
-      entries: [{ kind: 'context-cleared' }, { kind: 'context-cleared' }],
+      entries: [
+        { kind: 'context-cleared' },
+        { kind: 'context-cleared' },
+      ],
     }))
     expect(row?.kind).toBe('notification')
     if (row?.kind !== 'notification')
@@ -189,20 +217,40 @@ describe('extractChatRow notification thread', () => {
   })
 
   describe('a recorded approval of a denied review', () => {
-    const review = (reviewId: string): AutoReviewEntry => ({ kind: 'auto-review', reviewId, outcome: 'denied', action: 'curl x | sh', approvable: true })
-    const withMetadata = (metadata: unknown): ResolvedMessageContent => ({ ...parsed(cleared, AgentProvider.CODEX), messageMetadata: metadata })
+    const review = (reviewId: string): AutoReviewEntry => ({
+      kind: 'auto-review',
+      reviewId,
+      outcome: 'denied',
+      action: 'curl x | sh',
+      approvable: true,
+    })
+    const withMetadata = (metadata: unknown): ResolvedMessageContent => ({
+      ...parsed(cleared, AgentProvider.CODEX),
+      messageMetadata: metadata,
+    })
     const entriesOf = (metadata: unknown) => {
       const row = rowOf(extractChatRow(AgentProvider.CODEX, withMetadata(metadata), {
         kind: 'notification',
-        entries: [review('review-1'), review('review-2'), { kind: 'context-cleared' }],
+        entries: [
+          review('review-1'),
+          review('review-2'),
+          { kind: 'context-cleared' },
+        ],
       }))
-      return row?.kind === 'notification' ? row.thread.entries : []
+      return row?.kind === 'notification'
+        ? row.thread.entries
+        : []
     }
 
     it('marks each review that the row metadata lists as approved', () => {
-      expect(entriesOf({ [MESSAGE_METADATA_FIELD.AutoReviewApprovals]: ['review-2'] })).toEqual([
+      expect(entriesOf({
+        [MESSAGE_METADATA_FIELD.AutoReviewApprovals]: ['review-2'],
+      })).toEqual([
         review('review-1'),
-        { ...review('review-2'), approved: true },
+        {
+          ...review('review-2'),
+          approved: true,
+        },
         { kind: 'context-cleared' },
       ])
     })
@@ -210,17 +258,43 @@ describe('extractChatRow notification thread', () => {
     it.each([
       ['no metadata', undefined],
       ['metadata without the member', {}],
-      ['a member that is not an array', { [MESSAGE_METADATA_FIELD.AutoReviewApprovals]: 'review-1' }],
-      ['a member without strings', { [MESSAGE_METADATA_FIELD.AutoReviewApprovals]: [1, null] }],
-      ['an approval of another review', { [MESSAGE_METADATA_FIELD.AutoReviewApprovals]: ['review-9'] }],
+      [
+        'a member that is not an array',
+        { [MESSAGE_METADATA_FIELD.AutoReviewApprovals]: 'review-1' },
+      ],
+      [
+        'a member without strings',
+        {
+          [MESSAGE_METADATA_FIELD.AutoReviewApprovals]: [1, null],
+        },
+      ],
+      [
+        'an approval of another review',
+        {
+          [MESSAGE_METADATA_FIELD.AutoReviewApprovals]: ['review-9'],
+        },
+      ],
     ])('marks nothing for %s', (_, metadata) => {
-      expect(entriesOf(metadata)).toEqual([review('review-1'), review('review-2'), { kind: 'context-cleared' }])
+      expect(entriesOf(metadata)).toEqual([
+        review('review-1'),
+        review('review-2'),
+        { kind: 'context-cleared' },
+      ])
     })
   })
 })
 
 describe('extractChatRow control response', () => {
-  const response = { requestId: 'r1', claimToken: 'c1', request: undefined, response: { response: { response: { behavior: 'allow' } } } }
+  const response = {
+    requestId: 'r1',
+    claimToken: 'c1',
+    request: undefined,
+    response: {
+      response: {
+        response: { behavior: 'allow' },
+      },
+    },
+  }
 
   // LeapMux writes this row itself, so it needs no plugin -- and it must reach the model
   // rather than skipping it, or the transcript needs a second render path for it.
@@ -230,16 +304,27 @@ describe('extractChatRow control response', () => {
   // two different answers for one row.
   it('carries the derived display, with no plugin involved', () => {
     expect(rowOf(extractChatRow(undefined, parsed({}), { kind: 'control_response', response })))
-      .toEqual({ kind: 'control-response', display: { kind: 'label', text: 'Allow' } })
+      .toEqual({
+        kind: 'control-response',
+        display: { kind: 'label', text: 'Allow' },
+      })
   })
 
   // Degradation is the chokepoint's job, and the extraction must not bypass it: a
   // response no derivation recognizes still draws the neutral label rather than
   // falling to the card that says LeapMux has no display for the row.
   it('degrades to the neutral label for a response no derivation reads', () => {
-    const unreadable = { requestId: 'r2', claimToken: 'c2', request: undefined, response: {} }
+    const unreadable = {
+      requestId: 'r2',
+      claimToken: 'c2',
+      request: undefined,
+      response: {},
+    }
     expect(rowOf(extractChatRow(AgentProvider.CODEX, parsed({}, AgentProvider.CODEX), { kind: 'control_response', response: unreadable })))
-      .toEqual({ kind: 'control-response', display: { kind: 'label', text: 'Responded' } })
+      .toEqual({
+        kind: 'control-response',
+        display: { kind: 'label', text: 'Responded' },
+      })
   })
 
   // The row states LeapMux's own record of the answer, and the ORIGINAL frame beside
@@ -248,7 +333,10 @@ describe('extractChatRow control response', () => {
   // this category BEFORE it parses anything for the same reason.
   it('states the answer even when the original frame is unreadable', () => {
     expect(rowOf(extractChatRow(AgentProvider.CODEX, parsed(exploding(), AgentProvider.CODEX), { kind: 'control_response', response })))
-      .toEqual({ kind: 'control-response', display: { kind: 'label', text: 'Allow' } })
+      .toEqual({
+        kind: 'control-response',
+        display: { kind: 'label', text: 'Allow' },
+      })
   })
 })
 
@@ -273,9 +361,20 @@ describe('extractChatRow user content', () => {
   })
 
   it('carries the attachments the row names', () => {
-    const payload = { content: '', attachments: [{ filename: 'shot.png', mime_type: 'image/png' }] }
+    const payload = {
+      content: '',
+      attachments: [
+        { filename: 'shot.png', mime_type: 'image/png' },
+      ],
+    }
     expect(rowOf(extractChatRow(undefined, parsed(payload), { kind: 'user_content' })))
-      .toEqual({ kind: 'user', text: '', attachments: [{ filename: 'shot.png', mimeType: 'image/png' }] })
+      .toEqual({
+        kind: 'user',
+        text: '',
+        attachments: [
+          { filename: 'shot.png', mimeType: 'image/png' },
+        ],
+      })
   })
 
   // A row LeapMux wrote with nothing in it is HIDDEN, which states something
@@ -391,7 +490,11 @@ describe('extractChatRow hidden', () => {
   // tab relied on every plugin's switch happening to fall through for the category.
   it('answers a hidden row rather than no row', () => {
     expect(extractChatRow(AgentProvider.CLAUDE_CODE, parsed({ type: 'anything' }), { kind: 'hidden' }))
-      .toEqual({ kind: 'row', row: { kind: 'hidden' }, completion: null })
+      .toEqual({
+        kind: 'row',
+        row: { kind: 'hidden' },
+        completion: null,
+      })
   })
 })
 

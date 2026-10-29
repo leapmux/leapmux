@@ -13,7 +13,13 @@ function request(extra: Record<string, unknown> = {}): MockModelRequestRecord {
         { role: 'system', content: 'ACTUAL_SYSTEM_INSTRUCTION' },
         { role: 'user', content: 'ACTUAL_PRIOR_USER_PROMPT' },
         { role: 'assistant', content: 'ACTUAL_PRIOR_ASSISTANT_ANSWER' },
-        { role: 'assistant', content: null, tool_calls: [{ id: 'native-call' }] },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            { id: 'native-call' },
+          ],
+        },
         { role: 'tool', content: 'ACTUAL_TOOL_OUTPUT' },
         { role: 'user', content: 'ACTUAL_NEXT_USER_PROMPT' },
       ],
@@ -28,7 +34,11 @@ describe('kimiModelContextText', () => {
     { text: 'The first line.\nThe second line.' },
     { text: 'The first field.\tThe second field.' },
   ])('preserves actual native text without JSON escapes: $text', ({ text }) => {
-    const record = request({ messages: [{ role: 'user', content: text }] })
+    const record = request({
+      messages: [
+        { role: 'user', content: text },
+      ],
+    })
     expect(nativeModelContextText(record)).not.toBe(text)
     expect(kimiModelContextText(record)).toBe(text)
   })
@@ -46,35 +56,90 @@ describe('kimiModelContextText', () => {
     const record = request()
     record.serverContext = {
       conversationId: 'unrelated-conversation',
-      messages: [{ role: 'user', content: 'UNRELATED_SERVER_CONTEXT' }],
+      messages: [
+        { role: 'user', content: 'UNRELATED_SERVER_CONTEXT' },
+      ],
     }
     expect(nativeModelContextText(record)).toContain('UNRELATED_SERVER_CONTEXT')
     expect(kimiModelContextText(record)).not.toContain('UNRELATED_SERVER_CONTEXT')
   })
 
-  it.each([null, false, 0, '', [], {}, { messages: null }, { messages: {} }].map(body => ({ body })))('rejects a missing native message array: $body', ({ body }) => {
+  it.each([
+    null,
+    false,
+    0,
+    '',
+    [],
+    {},
+    { messages: null },
+    { messages: {} },
+  ].map(body => ({ body })))('rejects a missing native message array: $body', ({ body }) => {
     expect(() => kimiModelContextText({ protocol: 'openai-chat-completions', path: '/v1/chat/completions', body })).toThrow('native message array')
   })
 
-  it.each([null, false, 0, {}, { content: 'No role.' }])('rejects an invalid native message: %j', (message) => {
-    expect(() => kimiModelContextText(request({ messages: [message] }))).toThrow('invalid native message')
+  it.each([
+    null,
+    false,
+    0,
+    {},
+    { content: 'No role.' },
+  ])('rejects an invalid native message: %j', (message) => {
+    expect(() => kimiModelContextText(request({
+      messages: [message],
+    }))).toThrow('invalid native message')
   })
 
   it.each([0, false, {}].map(content => ({ content })))('rejects non-text native content: $content', ({ content }) => {
-    expect(() => kimiModelContextText(request({ messages: [{ role: 'user', content }] }))).toThrow('non-text native message')
+    expect(() => kimiModelContextText(request({
+      messages: [
+        { role: 'user', content },
+      ],
+    }))).toThrow('non-text native message')
   })
 
   it('reads text from a multimodal history without leaking image URLs into the text', () => {
-    const value = request({ messages: [{ role: 'user', content: [{ type: 'text', text: 'Look here.' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,IMAGE_ONLY' } }] }, { role: 'user', content: 'Continue.' }] })
+    const value = request({
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Look here.' },
+            {
+              type: 'image_url',
+              image_url: { url: 'data:image/png;base64,IMAGE_ONLY' },
+            },
+          ],
+        },
+        { role: 'user', content: 'Continue.' },
+      ],
+    })
     expect(kimiModelContextText(value)).toBe('Look here.\nContinue.')
   })
 
-  it.each([null, { type: 'text', text: 0 }, { type: 'image_url', image_url: { url: 0 } }, { type: 'unknown', text: 'ignored' }])('rejects malformed native blocks: %j', (block) => {
-    expect(() => kimiModelContextText(request({ messages: [{ role: 'user', content: [block] }] }))).toThrow('invalid native content block')
+  it.each([
+    null,
+    { type: 'text', text: 0 },
+    {
+      type: 'image_url',
+      image_url: { url: 0 },
+    },
+    { type: 'unknown', text: 'ignored' },
+  ])('rejects malformed native blocks: %j', (block) => {
+    expect(() => kimiModelContextText(request({
+      messages: [
+        {
+          role: 'user',
+          content: [block],
+        },
+      ],
+    }))).toThrow('invalid native content block')
   })
 
   it('rejects another model protocol and preserves an explicit empty conversation', () => {
-    expect(() => kimiModelContextText({ ...request(), protocol: 'anthropic-messages' })).toThrow('native OpenAI chat completions request')
+    expect(() => kimiModelContextText({
+      ...request(),
+      protocol: 'anthropic-messages',
+    })).toThrow('native OpenAI chat completions request')
     expect(kimiModelContextText(request({ messages: [] }))).toBe('')
   })
 })

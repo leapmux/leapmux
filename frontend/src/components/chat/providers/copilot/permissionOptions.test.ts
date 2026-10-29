@@ -6,7 +6,14 @@ function permission(request: Record<string, unknown>): Record<string, unknown> {
   return {
     jsonrpc: '2.0',
     method: 'session.event',
-    params: { sessionId: 'session-1', event: { id: 'event-1', type: COPILOT_EVENT.PermissionRequested, data: { requestId: 'native-1', permissionRequest: request } } },
+    params: {
+      sessionId: 'session-1',
+      event: {
+        id: 'event-1',
+        type: COPILOT_EVENT.PermissionRequested,
+        data: { requestId: 'native-1', permissionRequest: request },
+      },
+    },
   }
 }
 
@@ -28,7 +35,13 @@ describe('copilotPermissionOptions', () => {
   it.each([
     { kind: 'write', canOfferSessionApproval: false },
     { kind: 'shell', canOfferSessionApproval: true, commands: [] },
-    { kind: 'shell', canOfferSessionApproval: true, commands: [{ identifier: '' }] },
+    {
+      kind: 'shell',
+      canOfferSessionApproval: true,
+      commands: [
+        { identifier: '' },
+      ],
+    },
     { kind: 'mcp' },
     { kind: 'future_kind' },
   ])('offers one approval alone for %o', (request) => {
@@ -81,7 +94,12 @@ describe('copilotDecisionOption', () => {
   // The decision word arrives off a persisted row, so a member of `Object.prototype`
   // reaches the two lookup tables. Each answers a FUNCTION there, which an index read
   // hands back as a real option -- and the caller then calls `startsWith` on it.
-  it.each(['toString', '__proto__', 'constructor', 'valueOf'])('answers undefined for the prototype member %s', (decision) => {
+  it.each([
+    'toString',
+    '__proto__',
+    'constructor',
+    'valueOf',
+  ])('answers undefined for the prototype member %s', (decision) => {
     expect(() => copilotDecisionOption(permission({ kind: 'read' }), decision)).not.toThrow()
     expect(copilotDecisionOption(permission({ kind: 'read' }), decision)).toBeUndefined()
   })

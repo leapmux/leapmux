@@ -14,9 +14,18 @@ import { fakeLocator } from '~/test-support/fakeLocator'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseBypassPermissions, exerciseSmartPermissions } from './nativeBypassPermissions'
 
-const fake = vi.hoisted(() => ({ events: [] as string[], runDir: '', workingDir: '', waits: [] as number[], reads: [] as number[], commands: [] as string[] }))
+const fake = vi.hoisted(() => ({
+  events: [] as string[],
+  runDir: '',
+  workingDir: '',
+  waits: [] as number[],
+  reads: [] as number[],
+  commands: [] as string[],
+}))
 
-vi.mock('./server', () => ({ getGlobalState: () => ({ tmpDir: fake.runDir }) }))
+vi.mock('./server', () => ({
+  getGlobalState: () => ({ tmpDir: fake.runDir }),
+}))
 vi.mock('./nativeScenario', async importOriginal => ({
   ...await importOriginal<typeof import('./nativeScenario')>(),
   currentNativeAgent: async () => {
@@ -37,10 +46,24 @@ vi.mock('./ui', async importOriginal => ({
   waitForNativeSettingsHydrated: async () => { fake.events.push('hydrated') },
   sendMessage: async () => { fake.events.push('send') },
   waitForAgentIdle: async () => { fake.events.push('idle') },
-  messageBubbles: () => ({ filter: ({ hasText }: { hasText: string }) => ({ first: () => passingLocator(`output ${hasText}`) }) }),
-  assistantBubbles: () => ({ filter: ({ hasText }: { hasText: string }) => ({ first: () => passingLocator(`answer ${hasText}`) }) }),
+  messageBubbles: () => ({
+    filter: ({ hasText }: { hasText: string }) => ({
+      first: () => passingLocator(`output ${hasText}`),
+    }),
+  }),
+  assistantBubbles: () => ({
+    filter: ({ hasText }: { hasText: string }) => ({
+      first: () => passingLocator(`answer ${hasText}`),
+    }),
+  }),
 }))
-vi.mock('./providerToolCalls', () => ({ bashToolCall: (_provider: AgentProvider, id: string, command: string) => ({ id, name: 'unit-native-shell', arguments: { command } }) }))
+vi.mock('./providerToolCalls', () => ({
+  bashToolCall: (_provider: AgentProvider, id: string, command: string) => ({
+    id,
+    name: 'unit-native-shell',
+    arguments: { command },
+  }),
+}))
 
 /** A fake locator whose Playwright checks pass and leave a record. */
 function passingLocator(name: string): Locator {
@@ -102,16 +125,34 @@ function shortcutContext(preset: 'smart' | 'bypass', options: { removeTarget?: b
         protocol: 'openai-chat-completions',
         path: '/chat/completions',
         // The ID of the tool call ends with the index of its pass, and the output holds the pass from 1.
-        body: { messages: [{ role: 'tool', tool_call_id: toolIds.at(-1), content: `${preset.toUpperCase()}-${Number(toolIds.at(-1)?.at(-1)) + 1}-42\n` }] },
+        body: {
+          messages: [
+            {
+              role: 'tool',
+              tool_call_id: toolIds.at(-1),
+              content: `${preset.toUpperCase()}-${Number(toolIds.at(-1)?.at(-1)) + 1}-42\n`,
+            },
+          ],
+        },
       }
     },
   } as unknown as ModelScript
-  return { page, modelScript, provider: AgentProvider.CLAUDE_CODE, providerAgent: { provider: AgentProvider.CLAUDE_CODE, prefix: 'native-e2e' }, workspaceId: 'workspace', leapmuxServer: { hubUrl: '', adminToken: '', workerId: '' } }
+  return {
+    page,
+    modelScript,
+    provider: AgentProvider.CLAUDE_CODE,
+    providerAgent: { provider: AgentProvider.CLAUDE_CODE, prefix: 'native-e2e' },
+    workspaceId: 'workspace',
+    leapmuxServer: { hubUrl: '', adminToken: '', workerId: '' },
+  }
 }
 
 describe('exerciseBypassPermissions', () => {
   it('uses one request when the native exchange contains both tools and the answer', async () => {
-    const proof = { answerStep: 'same-step' as const, settingsProof: () => {} }
+    const proof = {
+      answerStep: 'same-step' as const,
+      settingsProof: () => {},
+    }
     await exerciseBypassPermissions(shortcutContext('bypass'), proof)
     expect(fake.waits).toEqual([1, 2])
     expect(fake.reads).toEqual([0, 1])
@@ -158,9 +199,11 @@ describe('exerciseBypassPermissions', () => {
   })
 
   it('applies no preset when the preparation fails', async () => {
-    await expect(exerciseBypassPermissions(shortcutContext('bypass'), { prepare: async () => {
-      throw new Error('the default mode is not offered')
-    } })).rejects.toThrow('the default mode is not offered')
+    await expect(exerciseBypassPermissions(shortcutContext('bypass'), {
+      prepare: async () => {
+        throw new Error('the default mode is not offered')
+      },
+    })).rejects.toThrow('the default mode is not offered')
     expect(fake.events).toEqual([])
   })
 })

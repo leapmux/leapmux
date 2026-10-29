@@ -30,7 +30,12 @@ export function describeACPProviderBasics(provider: AgentProvider, attachments: 
     expect(plugin?.transcript.extractRow!({
       resolved: input(parent, null, provider),
       category: { kind: expected },
-      span: { request: undefined, result: undefined, role: 'other', visibleRows: { request: false, result: false } },
+      span: {
+        request: undefined,
+        result: undefined,
+        role: 'other',
+        visibleRows: { request: false, result: false },
+      },
     })).toBeNull()
   })
 
@@ -44,9 +49,29 @@ export function describeACPProviderBasics(provider: AgentProvider, attachments: 
 }
 
 export function renderACPToolPair(provider: AgentProvider, request: Record<string, unknown>, result: Record<string, unknown>, supplemental?: Record<string, unknown>) {
-  const start = { sessionUpdate: 'tool_call', toolCallId: 'call', status: 'pending', ...request }
-  const end = { sessionUpdate: 'tool_call_update', toolCallId: 'call', status: 'completed', ...result }
-  const parsed = { ...input(end), supplementalContent: supplemental ? { sessionUpdate: end.sessionUpdate, status: end.status, toolCallId: end.toolCallId, ...supplemental } : undefined }
+  const start = {
+    sessionUpdate: 'tool_call',
+    toolCallId: 'call',
+    status: 'pending',
+    ...request,
+  }
+  const end = {
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'call',
+    status: 'completed',
+    ...result,
+  }
+  const parsed = {
+    ...input(end),
+    supplementalContent: supplemental
+      ? {
+          sessionUpdate: end.sessionUpdate,
+          status: end.status,
+          toolCallId: end.toolCallId,
+          ...supplemental,
+        }
+      : undefined,
+  }
   const plugin = providerFor(provider)!
   const hasRequestRow = Object.keys(request).length > 0
   // Each row sits inside a FRAGMENT rather than being called bare: `render(fn)` calls
@@ -94,4 +119,11 @@ export function renderACPRow(provider: AgentProvider, parsed: Record<string, unk
   return render(() => <>{renderMessageContent(parsed, undefined, plugin?.transcript.classify(input(parsed)), provider)}</>)
 }
 
-export const acpTextContent = (text: string) => [{ type: 'content', content: { type: 'text', text } }]
+export function acpTextContent(text: string) {
+  return [
+    {
+      type: 'content',
+      content: { type: 'text', text },
+    },
+  ]
+}

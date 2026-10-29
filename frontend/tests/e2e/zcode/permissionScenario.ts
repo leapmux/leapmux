@@ -35,7 +35,11 @@ export async function exerciseZCodeRemovalPermission(context: ManagedNativeScena
   writeFileSync(path, content)
   const callId = `zcode-removal-${suffix}`
   const start = await context.modelScript.queue(
-    { toolCalls: [bashToolCall(context.provider, callId, command)] },
+    {
+      toolCalls: [
+        bashToolCall(context.provider, callId, command),
+      ],
+    },
     nativeTextStep(context, allowed ? 'The command ran.' : 'I stopped at the confirmation.'),
   )
   context.modelScript.allowUnconsumed('The native runtime can end the permission turn before another model request.')

@@ -22,5 +22,7 @@ export function kiroAgentTurnEnd(parent: Record<string, unknown>): string | unde
   if (pickString(kiro, KIRO_META.Kind) !== KIRO_KIND.TurnEnd)
     return undefined
   const reason = kiro?.[KIRO_META.StopReason]
-  return typeof reason === 'string' ? reason : ''
+  return typeof reason === 'string'
+    ? reason
+    : ''
 }

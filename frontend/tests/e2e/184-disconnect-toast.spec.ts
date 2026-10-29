@@ -15,8 +15,12 @@ async function recordWatchRedials(page: Page): Promise<{ maxFailures: () => Prom
     const failures: number[] = []
     Object.defineProperty(window, '__e2eWatchRedialFailures', { value: failures, configurable: true })
     window.addEventListener('leapmux:watch-events-redial', (event) => {
-      const detail: unknown = event instanceof CustomEvent ? event.detail : undefined
-      const count = typeof detail === 'object' && detail !== null ? Reflect.get(detail, 'failures') : undefined
+      const detail: unknown = event instanceof CustomEvent
+        ? event.detail
+        : undefined
+      const count = typeof detail === 'object' && detail !== null
+        ? Reflect.get(detail, 'failures')
+        : undefined
       if (typeof count === 'number')
         failures.push(count)
     })
@@ -25,7 +29,7 @@ async function recordWatchRedials(page: Page): Promise<{ maxFailures: () => Prom
     maxFailures: () => page.evaluate(() => {
       const failures: unknown = Reflect.get(window, '__e2eWatchRedialFailures')
       if (!Array.isArray(failures))
-        throw new Error('The redial record of this page is gone: a navigation replaced the page after it started.')
+        throw new TypeError('The redial record of this page is gone: a navigation replaced the page after it started.')
       return Math.max(0, ...failures.map(Number))
     }),
   }

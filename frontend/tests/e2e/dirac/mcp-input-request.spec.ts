@@ -22,7 +22,12 @@ diracTest('offers no project MCP input route in the actual native tool catalog',
   const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, DIRAC_AGENT, { workingDir })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
   await tabById(page, agentId).click()
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   const answer = 'The native project capability probe completed.'
   await expectNoNativeControl(context, {
     testId: 'elicitation-form',
@@ -41,7 +46,12 @@ diracTest('offers no project MCP input route in the actual native tool catalog',
 
 mcpDiracTest('starts no MCP form client from its actual configured native ACP server list', async ({ configuredMcpDiracWorkspace, page, modelScript }) => {
   const workspace = configuredMcpDiracWorkspace
-  const context = await nativeContext({ page, modelScript, leapmuxServer: workspace.server, workspaceId: workspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer: workspace.server,
+    workspaceId: workspace.workspaceId,
+  })
   const observation = readDiracMcpSessionObservation(workspace.sessionReceipt)
   expect(observation.request.params).toEqual(expect.objectContaining({ cwd: workspace.workingDir, mcpServers: workspace.configuredServers }))
   expect(observation.sessionId).toBe((await currentNativeAgent(context)).agentSessionId)

@@ -126,7 +126,13 @@ export function tokenizeAsync(
     return inFlight
 
   const dispatchToWorker = (): Promise<CachedToken[][] | null> => gate
-    .enqueue(() => client.request(id => ({ type: 'tokenize', id, lang, code, syntax: pair })), isLowPriority)
+    .enqueue(() => client.request(id => ({
+      type: 'tokenize',
+      id,
+      lang,
+      code,
+      syntax: pair,
+    })), isLowPriority)
     .then((interned) => {
       if (!interned)
         return null

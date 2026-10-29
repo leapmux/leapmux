@@ -16,7 +16,13 @@ import { KIRO_REJECTION_REASON, kiroMeta } from './protocol'
 export function kiroPermissionRejectReason(result: Record<string, unknown>, reason: string): Record<string, unknown> {
   const meta = pickObject(result, '_meta') ?? {}
   const kiro = pickObject(meta, KIRO_META.Namespace) ?? {}
-  return { ...result, _meta: { ...meta, [KIRO_META.Namespace]: { ...kiro, [KIRO_REJECTION_REASON]: reason } } }
+  return {
+    ...result,
+    _meta: {
+      ...meta,
+      [KIRO_META.Namespace]: { ...kiro, [KIRO_REJECTION_REASON]: reason },
+    },
+  }
 }
 
 /** The option of each consent scope of a saved reply, for an always-allow and an always-deny. */
@@ -28,7 +34,9 @@ const KIRO_SCOPE_OPTIONS: Readonly<Record<string, { allow: KiroAlwaysAllowID, de
 /** The option that the consent scope of a saved reply states, or undefined for the session. */
 function kiroSavedScope(result: Record<string, unknown>): { allow: KiroAlwaysAllowID, deny: KiroAlwaysDenyID } | undefined {
   const scope = pickString(pickObject(kiroMeta(result), KIRO_META.Consent), KIRO_META.Scope)
-  return Object.hasOwn(KIRO_SCOPE_OPTIONS, scope) ? KIRO_SCOPE_OPTIONS[scope] : undefined
+  return Object.hasOwn(KIRO_SCOPE_OPTIONS, scope)
+    ? KIRO_SCOPE_OPTIONS[scope]
+    : undefined
 }
 
 /**

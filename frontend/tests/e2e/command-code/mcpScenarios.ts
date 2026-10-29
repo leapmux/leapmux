@@ -35,11 +35,20 @@ export async function withCommandCodeMcp(context: ManagedNativeScenarioContext, 
   const config: unknown = JSON.parse(readFileSync(path, 'utf8'))
   if (!isObject(config) || !isObject(config.mcpServers))
     throw new Error('The private native MCP config has an invalid server table.')
-  const content = JSON.stringify({ ...config, mcpServers: { ...config.mcpServers, [options.server.name]: { command: options.server.command, args: options.server.args } } })
+  const content = JSON.stringify({
+    ...config,
+    mcpServers: {
+      ...config.mcpServers,
+      [options.server.name]: { command: options.server.command, args: options.server.args },
+    },
+  })
   await withNativeConfigurationFile({ path, content, runDir }, async () => {
     let agentID: string | undefined
     await withCleanup(async () => {
-      const agent = await openProviderAgent(context.leapmuxServer, context.workspaceId, COMMAND_CODE_AGENT, { optionValues: { permissionMode: 'bypass' }, workingDir: options.workingDir })
+      const agent = await openProviderAgent(context.leapmuxServer, context.workspaceId, COMMAND_CODE_AGENT, {
+        optionValues: { permissionMode: 'bypass' },
+        workingDir: options.workingDir,
+      })
       agentID = agent.agentId
       await openWorkspace(context.page, context.workspaceId)
       await run()

@@ -10,7 +10,9 @@ function currentTools(request: MockModelRequestRecord): unknown[] {
   if (request.protocol !== 'aws-event-stream')
     throw new Error('The native Kiro catalog requires an actual AWS model request.')
   const user = kiroCurrentUserInput(request.body)
-  const context = isObject(user?.userInputMessageContext) ? user.userInputMessageContext : undefined
+  const context = isObject(user?.userInputMessageContext)
+    ? user.userInputMessageContext
+    : undefined
   if (!Array.isArray(context?.tools) || context.tools.length === 0)
     throw new Error('The native Kiro request contains no tool catalog.')
   return context.tools
@@ -19,7 +21,9 @@ function currentTools(request: MockModelRequestRecord): unknown[] {
 /** Read Kiro's actual AWS tool specifications from its current user context. */
 export function kiroNativeToolNames(request: MockModelRequestRecord): string[] {
   return currentTools(request).map((tool) => {
-    const specification = isObject(tool) && isObject(tool.toolSpecification) ? tool.toolSpecification : undefined
+    const specification = isObject(tool) && isObject(tool.toolSpecification)
+      ? tool.toolSpecification
+      : undefined
     if (typeof specification?.name !== 'string' || !specification.name)
       throw new Error('The native Kiro catalog contains an invalid tool specification.')
     return specification.name
@@ -33,11 +37,15 @@ export function kiroNativeToolNames(request: MockModelRequestRecord): string[] {
  */
 export function kiroToolInputSchema(request: MockModelRequestRecord, name: string): Record<string, unknown> {
   const specification = currentTools(request)
-    .map(tool => isObject(tool) && isObject(tool.toolSpecification) ? tool.toolSpecification : undefined)
+    .map(tool => isObject(tool) && isObject(tool.toolSpecification)
+      ? tool.toolSpecification
+      : undefined)
     .find(candidate => candidate?.name === name)
   if (!specification)
     throw new Error(`The native Kiro catalog holds no tool ${name}.`)
-  const schema = isObject(specification.inputSchema) ? specification.inputSchema.json : undefined
+  const schema = isObject(specification.inputSchema)
+    ? specification.inputSchema.json
+    : undefined
   if (!isObject(schema))
     throw new Error(`The native Kiro tool ${name} states no JSON input schema.`)
   return schema
@@ -47,8 +55,12 @@ export function kiroToolInputSchema(request: MockModelRequestRecord, name: strin
 export function kiroActiveToolCatalog(request: MockModelRequestRecord): NativeToolDescriptor[] {
   const seen = new Set<string>()
   return currentTools(request).map((tool) => {
-    const specification = isObject(tool) && isObject(tool.toolSpecification) ? tool.toolSpecification : undefined
-    const schema = isObject(specification?.inputSchema) ? specification.inputSchema.json : undefined
+    const specification = isObject(tool) && isObject(tool.toolSpecification)
+      ? tool.toolSpecification
+      : undefined
+    const schema = isObject(specification?.inputSchema)
+      ? specification.inputSchema.json
+      : undefined
     if (typeof specification?.name !== 'string' || !specification.name.trim() || typeof specification.description !== 'string'
       || !isObject(schema) || schema.type !== 'object' || !isObject(schema.properties)) {
       throw new Error('The native Kiro active catalog contains an incomplete descriptor.')
@@ -65,34 +77,181 @@ export function kiroActiveToolCatalog(request: MockModelRequestRecord): NativeTo
 /** Detect source-language execution from each complete native descriptor. */
 export function kiroScriptExecutors(catalog: readonly NativeToolDescriptor[]): NativeToolDescriptor[] {
   return catalog.filter(tool => /(?:run|execute|evaluate|interpret).*?(?:javascript|typescript|python|script|code)|repl|interpreter/i.test(tool.description)
-    && Object.keys(isObject(tool.inputSchema.properties) ? tool.inputSchema.properties : {}).some(field => /^(?:source|script|code|expression|input)$/i.test(field)))
+    && Object.keys(isObject(tool.inputSchema.properties)
+      ? tool.inputSchema.properties
+      : {}).some(field => /^(?:source|script|code|expression|input)$/i.test(field)))
 }
 
 // KAS 0.66.8 xRr assembles these native tools for the current LeapMux capabilities.
 // Reject a new identity or source field until its native implementation receives an audit.
 const KIRO_ACTIVE_BUILTIN_FIELDS: ReadonlyMap<string, readonly string[]> = new Map([
-  ['read_file', ['path', 'offset', 'limit']],
-  ['execute_bash', ['command', 'description', 'cwd', 'run_in_background', 'timeout']],
-  ['execute_pwsh', ['command', 'description', 'cwd', 'run_in_background', 'timeout']],
-  ['fs_write', ['path', 'text']],
-  ['str_replace', ['path', 'oldStr', 'newStr', 'replace_all']],
-  ['list_directory', ['path', 'explanation', 'depth']],
-  ['delete_file', ['explanation', 'targetFile']],
-  ['fs_append', ['path', 'text']],
-  ['file_search', ['explanation', 'query', 'excludePattern', 'includeIgnoredFiles']],
-  ['grep_search', ['query', 'caseSensitive', 'file_type', 'includePattern', 'excludePattern', 'context', 'context_before', 'context_after', 'limit', 'offset', 'explanation']],
-  ['web_fetch', ['url', 'mode', 'searchPhrase']],
-  ['todo_list', ['command', 'tasks', 'task_list_description', 'completed_task_ids', 'context_update', 'modified_files', 'new_tasks', 'new_description', 'remove_task_ids']],
-  ['update_session_information', ['title', 'description', 'status']],
-  ['invoke_sub_agent', ['name', 'prompt', 'explanation', 'preset', 'contextFiles']],
-  ['disclose_context', ['name']],
-  ['kiro_powers', ['action', 'powerName', 'serverName', 'toolName', 'arguments', 'steeringFile', 'skillName']],
-  ['createHook', ['id', 'name', 'trigger', 'description', 'matcher', 'actionType', 'prompt', 'command', 'timeout']],
-  ['run_workflow', ['workflowPath', 'workflowPrompt', 'inputs', 'runLabel']],
-  ['inspect_workflow', ['workflowId']],
-  ['update_workflow', ['workflowId', 'action', 'status', 'statusReason', 'remainingSteps']],
-  ['validate_workflow', ['workflow']],
-  ['send_message', ['sessionId', 'message', 'severity']],
+  [
+    'read_file',
+    ['path', 'offset', 'limit'],
+  ],
+  [
+    'execute_bash',
+    [
+      'command',
+      'description',
+      'cwd',
+      'run_in_background',
+      'timeout',
+    ],
+  ],
+  [
+    'execute_pwsh',
+    [
+      'command',
+      'description',
+      'cwd',
+      'run_in_background',
+      'timeout',
+    ],
+  ],
+  [
+    'fs_write',
+    ['path', 'text'],
+  ],
+  [
+    'str_replace',
+    [
+      'path',
+      'oldStr',
+      'newStr',
+      'replace_all',
+    ],
+  ],
+  [
+    'list_directory',
+    ['path', 'explanation', 'depth'],
+  ],
+  [
+    'delete_file',
+    ['explanation', 'targetFile'],
+  ],
+  [
+    'fs_append',
+    ['path', 'text'],
+  ],
+  [
+    'file_search',
+    [
+      'explanation',
+      'query',
+      'excludePattern',
+      'includeIgnoredFiles',
+    ],
+  ],
+  [
+    'grep_search',
+    [
+      'query',
+      'caseSensitive',
+      'file_type',
+      'includePattern',
+      'excludePattern',
+      'context',
+      'context_before',
+      'context_after',
+      'limit',
+      'offset',
+      'explanation',
+    ],
+  ],
+  [
+    'web_fetch',
+    ['url', 'mode', 'searchPhrase'],
+  ],
+  [
+    'todo_list',
+    [
+      'command',
+      'tasks',
+      'task_list_description',
+      'completed_task_ids',
+      'context_update',
+      'modified_files',
+      'new_tasks',
+      'new_description',
+      'remove_task_ids',
+    ],
+  ],
+  [
+    'update_session_information',
+    ['title', 'description', 'status'],
+  ],
+  [
+    'invoke_sub_agent',
+    [
+      'name',
+      'prompt',
+      'explanation',
+      'preset',
+      'contextFiles',
+    ],
+  ],
+  [
+    'disclose_context',
+    ['name'],
+  ],
+  [
+    'kiro_powers',
+    [
+      'action',
+      'powerName',
+      'serverName',
+      'toolName',
+      'arguments',
+      'steeringFile',
+      'skillName',
+    ],
+  ],
+  [
+    'createHook',
+    [
+      'id',
+      'name',
+      'trigger',
+      'description',
+      'matcher',
+      'actionType',
+      'prompt',
+      'command',
+      'timeout',
+    ],
+  ],
+  [
+    'run_workflow',
+    [
+      'workflowPath',
+      'workflowPrompt',
+      'inputs',
+      'runLabel',
+    ],
+  ],
+  [
+    'inspect_workflow',
+    ['workflowId'],
+  ],
+  [
+    'update_workflow',
+    [
+      'workflowId',
+      'action',
+      'status',
+      'statusReason',
+      'remainingSteps',
+    ],
+  ],
+  [
+    'validate_workflow',
+    ['workflow'],
+  ],
+  [
+    'send_message',
+    ['sessionId', 'message', 'severity'],
+  ],
 ])
 
 /** The catalog name of the echo tool of the MCP echo server that `kiro/code-execution.spec.ts` registers. */
@@ -107,12 +266,19 @@ export function assertKiroActiveCatalog(catalog: readonly NativeToolDescriptor[]
     if (names.has(tool.name))
       throw new Error('The native Kiro active inventory contains duplicate identities.')
     names.add(tool.name)
-    const fields = tool.name === KIRO_ECHO_TOOL ? ['value'] : KIRO_ACTIVE_BUILTIN_FIELDS.get(tool.name)
+    const fields = tool.name === KIRO_ECHO_TOOL
+      ? ['value']
+      : KIRO_ACTIVE_BUILTIN_FIELDS.get(tool.name)
     if (!fields || !isObject(tool.inputSchema.properties))
       throw new Error(`The native Kiro tool ${tool.name} has no audited active descriptor.`)
     if (Object.keys(tool.inputSchema.properties).some(field => !fields.includes(field)))
       throw new Error(`The native Kiro tool ${tool.name} exposes an unaudited argument field.`)
-    const sourceFields = ['source', 'script', 'code', 'expression']
+    const sourceFields = [
+      'source',
+      'script',
+      'code',
+      'expression',
+    ]
     const schemaValues: unknown[] = [tool.inputSchema]
     const visited = new Set<object>()
     while (schemaValues.length > 0) {
@@ -133,7 +299,11 @@ export function assertKiroActiveCatalog(catalog: readonly NativeToolDescriptor[]
       schemaValues.push(...Object.values(value))
     }
     if (tool.name === 'execute_bash' || tool.name === 'execute_pwsh' || tool.name === 'read_file' || tool.name === KIRO_ECHO_TOOL) {
-      const field = tool.name === 'read_file' ? 'path' : tool.name === KIRO_ECHO_TOOL ? 'value' : 'command'
+      const field = tool.name === 'read_file'
+        ? 'path'
+        : tool.name === KIRO_ECHO_TOOL
+          ? 'value'
+          : 'command'
       const property = tool.inputSchema.properties[field]
       if (!isObject(property) || property.type !== 'string' || !Array.isArray(tool.inputSchema.required) || !tool.inputSchema.required.includes(field))
         throw new Error(`The native Kiro tool ${tool.name} lacks its required string input.`)

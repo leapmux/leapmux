@@ -39,8 +39,24 @@ describe('createDroidEnvironment', () => {
     createDroidEnvironment(options())
     const settings = JSON.parse(readFileSync(join(homeDir, '.factory', 'settings.json'), 'utf8'))
     expect(settings.customModels).toEqual([
-      expect.objectContaining({ id: 'custom:Unit-0', model: 'unit-model', index: 0, baseUrl: 'http://127.0.0.1:4567/v1', apiKey: 'unit-key', displayName: 'Mock Model', provider: 'generic-chat-completion-api' }),
-      expect.objectContaining({ id: 'custom:Unit-1', model: 'unit-alt', index: 1, baseUrl: 'http://127.0.0.1:4567/v1', apiKey: 'unit-key', displayName: 'Alternate Mock Model', provider: 'generic-chat-completion-api' }),
+      expect.objectContaining({
+        id: 'custom:Unit-0',
+        model: 'unit-model',
+        index: 0,
+        baseUrl: 'http://127.0.0.1:4567/v1',
+        apiKey: 'unit-key',
+        displayName: 'Mock Model',
+        provider: 'generic-chat-completion-api',
+      }),
+      expect.objectContaining({
+        id: 'custom:Unit-1',
+        model: 'unit-alt',
+        index: 1,
+        baseUrl: 'http://127.0.0.1:4567/v1',
+        apiKey: 'unit-key',
+        displayName: 'Alternate Mock Model',
+        provider: 'generic-chat-completion-api',
+      }),
     ])
     expect(settings.sessionDefaultSettings).toEqual({ model: 'custom:Unit-0', reasoningEffort: 'none', autonomyMode: 'normal' })
   })
@@ -53,7 +69,12 @@ describe('createDroidEnvironment', () => {
     const configured = {
       ...defaults,
       primary: { ...defaults.primary, provider: primary },
-      alternate: { ...defaults.alternate, ...(alternate === undefined ? {} : { provider: alternate }) },
+      alternate: {
+        ...defaults.alternate,
+        ...(alternate === undefined
+          ? {}
+          : { provider: alternate }),
+      },
     }
     const environment = createDroidEnvironment(configured)
     const settings = JSON.parse(readFileSync(join(homeDir, '.factory', 'settings.json'), 'utf8'))

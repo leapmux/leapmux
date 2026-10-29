@@ -37,11 +37,19 @@ describe('E2ELastRunReporter', () => {
     const instance = reporter(path)
     const accepted = vi.fn(() => true)
     const rejected = vi.fn(() => false)
-    instance.onBegin(undefined, { allTests: () => [{ id: 'accepted-test-id', ok: accepted }, { id: 'rejected-test-id', ok: rejected }] })
+    instance.onBegin(undefined, {
+      allTests: () => [
+        { id: 'accepted-test-id', ok: accepted },
+        { id: 'rejected-test-id', ok: rejected },
+      ],
+    })
 
     instance.onEnd({ status })
 
-    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ status, failedTests: ['rejected-test-id'] })
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({
+      status,
+      failedTests: ['rejected-test-id'],
+    })
     expect(accepted).toHaveBeenCalledTimes(1)
     expect(rejected).toHaveBeenCalledTimes(1)
     expect(instance.printsToStdio()).toBe(false)
@@ -51,19 +59,34 @@ describe('E2ELastRunReporter', () => {
     const path = destination()
     const instance = reporter(path)
     const outcome = { accepted: true }
-    instance.onBegin(undefined, { allTests: () => [{ id: 'settled-test-id', ok: () => outcome.accepted }] })
+    instance.onBegin(undefined, {
+      allTests: () => [
+        {
+          id: 'settled-test-id',
+          ok: () => outcome.accepted,
+        },
+      ],
+    })
     outcome.accepted = false
 
     instance.onEnd({ status: 'failed' })
 
-    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ status: 'failed', failedTests: ['settled-test-id'] })
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({
+      status: 'failed',
+      failedTests: ['settled-test-id'],
+    })
   })
 
   it('preserves distinct Playwright project and repeat IDs in Playwright\'s order', () => {
     const path = destination()
     const instance = reporter(path)
     const ids = ['project-two-repeat-one', 'project-one-repeat-zero', 'project-two-repeat-zero']
-    instance.onBegin(undefined, { allTests: () => ids.map(id => ({ id, ok: () => false })) })
+    instance.onBegin(undefined, {
+      allTests: () => ids.map(id => ({
+        id,
+        ok: () => false,
+      })),
+    })
 
     instance.onEnd({ status: 'failed' })
 
@@ -73,17 +96,33 @@ describe('E2ELastRunReporter', () => {
   it('preserves duplicate IDs just as Playwright\'s own last-run reporter does', () => {
     const path = destination()
     const instance = reporter(path)
-    instance.onBegin(undefined, { allTests: () => [{ id: 'repeated-test-id', ok: () => false }, { id: 'repeated-test-id', ok: () => false }] })
+    instance.onBegin(undefined, {
+      allTests: () => [
+        {
+          id: 'repeated-test-id',
+          ok: () => false,
+        },
+        {
+          id: 'repeated-test-id',
+          ok: () => false,
+        },
+      ],
+    })
 
     instance.onEnd({ status: 'failed' })
 
-    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ status: 'failed', failedTests: ['repeated-test-id', 'repeated-test-id'] })
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({
+      status: 'failed',
+      failedTests: ['repeated-test-id', 'repeated-test-id'],
+    })
   })
 
   it('stores an empty failed selection when the Playwright suite is empty', () => {
     const path = destination()
     const instance = reporter(path)
-    instance.onBegin(undefined, { allTests: () => [] })
+    instance.onBegin(undefined, {
+      allTests: () => [],
+    })
 
     instance.onEnd({ status: 'passed' })
 
@@ -102,9 +141,23 @@ describe('E2ELastRunReporter', () => {
   it('uses the most recent Playwright suite when a reporter instance receives another begin event', () => {
     const path = destination()
     const instance = reporter(path)
-    instance.onBegin(undefined, { allTests: () => [{ id: 'older-test-id', ok: () => false }] })
+    instance.onBegin(undefined, {
+      allTests: () => [
+        {
+          id: 'older-test-id',
+          ok: () => false,
+        },
+      ],
+    })
     instance.onEnd({ status: 'failed' })
-    instance.onBegin(undefined, { allTests: () => [{ id: 'newer-test-id', ok: () => true }] })
+    instance.onBegin(undefined, {
+      allTests: () => [
+        {
+          id: 'newer-test-id',
+          ok: () => true,
+        },
+      ],
+    })
 
     instance.onEnd({ status: 'passed' })
 
@@ -117,9 +170,16 @@ describe('E2ELastRunReporter', () => {
     writePlaywrightLastRunState(path, prior)
     const instance = reporter(path)
     const failure = new Error('The Playwright outcome cannot be read.')
-    instance.onBegin(undefined, { allTests: () => [{ id: 'test-id', ok: () => {
-      throw failure
-    } }] })
+    instance.onBegin(undefined, {
+      allTests: () => [
+        {
+          id: 'test-id',
+          ok: () => {
+            throw failure
+          },
+        },
+      ],
+    })
 
     expect(() => instance.onEnd({ status: 'failed' })).toThrow(failure)
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(prior)
@@ -129,13 +189,20 @@ describe('E2ELastRunReporter', () => {
     const path = destination()
     mkdirSync(path, { recursive: true })
     const instance = reporter(path)
-    instance.onBegin(undefined, { allTests: () => [] })
+    instance.onBegin(undefined, {
+      allTests: () => [],
+    })
 
     expect(() => instance.onEnd({ status: 'passed' })).toThrow(expect.objectContaining({ syscall: 'rename', dest: path }))
     expect(readdirSync(dirname(path))).toEqual(['.last-run.json'])
   })
 
-  it.each([undefined, '', 'relative-last-run.json', `${resolve('last-run')}\0suffix`])('rejects an invalid Playwright output destination: %j', (path) => {
+  it.each([
+    undefined,
+    '',
+    'relative-last-run.json',
+    `${resolve('last-run')}\0suffix`,
+  ])('rejects an invalid Playwright output destination: %j', (path) => {
     vi.stubEnv('PLAYWRIGHT_LAST_RUN_OUTPUT_FILE', path)
 
     expect(() => new E2ELastRunReporter()).toThrow('absolute path without NUL')
@@ -145,7 +212,10 @@ describe('E2ELastRunReporter', () => {
 describe('writePlaywrightLastRunState', () => {
   it('replaces the state with formatted Playwright JSON and leaves no draft', () => {
     const path = destination()
-    writePlaywrightLastRunState(path, { status: 'failed', failedTests: ['previous-test-id'] })
+    writePlaywrightLastRunState(path, {
+      status: 'failed',
+      failedTests: ['previous-test-id'],
+    })
 
     writePlaywrightLastRunState(path, { status: 'passed', failedTests: [] })
 
@@ -196,7 +266,10 @@ describe('readLastFailedState', () => {
     mkdirSync(dirname(path), { recursive: true })
     writeFileSync(path, content)
 
-    expect(readLastFailedState(path)).toEqual({ failedTests: ['one', 'two', 'one'], content })
+    expect(readLastFailedState(path)).toEqual({
+      failedTests: ['one', 'two', 'one'],
+      content,
+    })
   })
 
   it('accepts a state that lists no failed test', () => {
@@ -227,16 +300,35 @@ describe('readLastFailedState', () => {
     mkdirSync(dirname(path), { recursive: true })
     writeFileSync(path, '{"failedTests": [')
 
-    expect(() => readLastFailedState(path)).toThrow(expect.objectContaining({ message: expect.stringContaining('is not valid JSON'), cause: expect.any(SyntaxError) }))
+    expect(() => readLastFailedState(path)).toThrow(expect.objectContaining({
+      message: expect.stringContaining('is not valid JSON'),
+      cause: expect.any(SyntaxError),
+    }))
   })
 
   it.each([
     { label: 'an array', value: [] },
     { label: 'null', value: null },
-    { label: 'an absent ID list', value: { status: 'failed' } },
-    { label: 'a string ID list', value: { failedTests: 'one' } },
-    { label: 'a numeric ID', value: { failedTests: ['one', 2] } },
-    { label: 'an empty ID', value: { failedTests: [''] } },
+    {
+      label: 'an absent ID list',
+      value: { status: 'failed' },
+    },
+    {
+      label: 'a string ID list',
+      value: { failedTests: 'one' },
+    },
+    {
+      label: 'a numeric ID',
+      value: {
+        failedTests: ['one', 2],
+      },
+    },
+    {
+      label: 'an empty ID',
+      value: {
+        failedTests: [''],
+      },
+    },
   ])('refuses a state with $label', ({ value }) => {
     const path = destination()
     mkdirSync(dirname(path), { recursive: true })

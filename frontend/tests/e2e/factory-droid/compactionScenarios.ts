@@ -22,7 +22,10 @@ async function expectNoRawCompactionFrames(context: NativeScenarioContext): Prom
 
 /** Run the native compaction, then require its notice and no raw compaction frame, before and after a reload. */
 export async function exerciseCompletedManualCompaction(context: NativeScenarioContext, hold: NativeCompactionHold = {}): Promise<void> {
-  await exerciseNativeCompaction(context, { ...DROID_COMPACTION, ...hold })
+  await exerciseNativeCompaction(context, {
+    ...DROID_COMPACTION,
+    ...hold,
+  })
   await expectCompactionNotice(context.page)
   await expectNoRawCompactionFrames(context)
   await context.page.reload()

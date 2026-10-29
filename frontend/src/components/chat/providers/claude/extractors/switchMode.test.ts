@@ -21,12 +21,22 @@ function row(toolName: string, fields: Partial<ClaudeToolRow> = {}): ClaudeToolR
 
 /** The result row of a call the reader refused: an error flag over the feedback. */
 function refused(toolName: string): ClaudeToolRow {
-  return row(toolName, { role: 'result', isError: true, resultContent: 'Try a smaller scope.', toolUseResult: {} })
+  return row(toolName, {
+    role: 'result',
+    isError: true,
+    resultContent: 'Try a smaller scope.',
+    toolUseResult: {},
+  })
 }
 
 /** The result row of a call that proceeded. */
 function approved(toolName: string, toolUseResult: Record<string, unknown> = {}): ClaudeToolRow {
-  return row(toolName, { role: 'result', isError: false, resultContent: 'ok', toolUseResult })
+  return row(toolName, {
+    role: 'result',
+    isError: false,
+    resultContent: 'ok',
+    toolUseResult,
+  })
 }
 
 describe('claudeSwitchModeSpec', () => {
@@ -57,7 +67,9 @@ describe('claudeSwitchModeSpec', () => {
     const payload = claudeSwitchModeSpec({}, row(CLAUDE_TOOL_NAMES.EXIT_PLAN_MODE), approved(CLAUDE_TOOL_NAMES.EXIT_PLAN_MODE, { filePath: '/repo/.plans/one.md' }))
     expect(payload.request.declinedTitle).toBeUndefined()
     expect(payload.title).toBe('Plan approved')
-    expect(payload.metadata).toEqual([{ label: 'Plan file', value: '/repo/.plans/one.md' }])
+    expect(payload.metadata).toEqual([
+      { label: 'Plan file', value: '/repo/.plans/one.md' },
+    ])
   })
 
   it('words no refusal while the call runs', () => {

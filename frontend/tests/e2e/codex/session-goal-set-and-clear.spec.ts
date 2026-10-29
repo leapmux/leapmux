@@ -102,7 +102,9 @@ codexTest.describe('session goal for Codex', () => {
       // tool call here, which is the bug that this whole change removes.
       await expect.poll(transitions).toBeLessThan(10)
     }, async () => {
-      await finishCleanup([native.modelScript.releaseGateIfHeld('codex-session-goal-set-and-clear-hold-1')])
+      await finishCleanup([
+        native.modelScript.releaseGateIfHeld('codex-session-goal-set-and-clear-hold-1'),
+      ])
     })
   })
 
@@ -133,7 +135,9 @@ codexTest.describe('session goal for Codex', () => {
       // often as a plan. Because of this step, the chip lookup below asserts and
       // does not skip.
       await modelScript.queue({
-        toolCalls: [updateTodosToolCall(AgentProvider.CODEX, 'plan-1', initialTodoList(TODO_LIST_STEPS))],
+        toolCalls: [
+          updateTodosToolCall(AgentProvider.CODEX, 'plan-1', initialTodoList(TODO_LIST_STEPS)),
+        ],
       })
 
       // HOLD the next turn open. The goal is active, so Codex starts one turn
@@ -201,7 +205,9 @@ codexTest.describe('session goal for Codex', () => {
       await page.keyboard.press('Escape')
       await interruptButton(page).click()
     }, async () => {
-      await finishCleanup([native.modelScript.releaseGateIfHeld('codex-session-goal-set-and-clear-hold-2')])
+      await finishCleanup([
+        native.modelScript.releaseGateIfHeld('codex-session-goal-set-and-clear-hold-2'),
+      ])
     })
   })
 })

@@ -13,11 +13,19 @@ import { assistantBubbles, inputQueue, userBubbles, waitForAgentIdle } from './u
 export async function proveNativeAudioAttachments(context: NativeScenarioContext, protocol: MockModelProtocol): Promise<readonly MockModelRequestRecord[]> {
   const names: string[] = []
   const requests: MockModelRequestRecord[] = []
-  for (const [format, mediaType] of [['wav', ATTACHMENT_MEDIA_AUDIO_MIME.Wav], ['flac', ATTACHMENT_MEDIA_AUDIO_MIME.Flac]] as const) {
+  for (const [format, mediaType] of [
+    ['wav', ATTACHMENT_MEDIA_AUDIO_MIME.Wav],
+    ['flac', ATTACHMENT_MEDIA_AUDIO_MIME.Flac],
+  ] as const) {
     for (const attachmentOnly of [false, true]) {
       const name = `${format}-${attachmentOnly ? 'only' : 'prompt'}.${format}`
       names.push(name)
-      requests.push(await exerciseAttachmentDelivery(context, 'audio', name, { fixturePath: writeAudioAttachmentFixture(name, format), protocol, mediaType, attachmentOnly }))
+      requests.push(await exerciseAttachmentDelivery(context, 'audio', name, {
+        fixturePath: writeAudioAttachmentFixture(name, format),
+        protocol,
+        mediaType,
+        attachmentOnly,
+      }))
     }
   }
   await context.page.reload()

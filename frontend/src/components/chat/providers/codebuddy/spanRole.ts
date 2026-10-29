@@ -14,15 +14,27 @@ export function codebuddySpanRole(parsed: ResolvedMessageContent): ToolSpanRole 
   if (!parent || !isObject(parent))
     return 'other'
   const type = pickString(parent, 'type')
-  if (type === 'function_call')
-    return storedFunctionCallID(parent) ? 'request' : 'other'
-  if (type === 'function_call_output' || type === 'function_call_result')
-    return storedFunctionCallID(parent) && !storedFunctionIsProgress(parent) ? 'result' : 'other'
-  const message = isObject(parent.message) ? parent.message : undefined
-  const content = message && Array.isArray(message.content) ? message.content : []
+  if (type === 'function_call') {
+    return storedFunctionCallID(parent)
+      ? 'request'
+      : 'other'
+  }
+  if (type === 'function_call_output' || type === 'function_call_result') {
+    return storedFunctionCallID(parent) && !storedFunctionIsProgress(parent)
+      ? 'result'
+      : 'other'
+  }
+  const message = isObject(parent.message)
+    ? parent.message
+    : undefined
+  const content = message && Array.isArray(message.content)
+    ? message.content
+    : []
   const blockType = (name: string) =>
     content.some(block => isObject(block) && pickString(block, 'type') === name
-      && pickString(block, name === 'tool_use' ? 'id' : 'tool_use_id').trim() !== '')
+      && pickString(block, name === 'tool_use'
+        ? 'id'
+        : 'tool_use_id').trim() !== '')
 
   if (type === 'assistant' && blockType('tool_use'))
     return 'request'
@@ -33,5 +45,7 @@ export function codebuddySpanRole(parsed: ResolvedMessageContent): ToolSpanRole 
 
 /** Native result records need the request's tool name and arguments. */
 export function codebuddyRelatedMessages(parsed: ResolvedMessageContent): readonly ToolSpanSide[] {
-  return codebuddySpanRole(parsed) === 'result' ? ['request'] : []
+  return codebuddySpanRole(parsed) === 'result'
+    ? ['request']
+    : []
 }

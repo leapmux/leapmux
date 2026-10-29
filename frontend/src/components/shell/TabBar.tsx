@@ -74,7 +74,9 @@ const TabTextWithTooltip: Component<{ label: string, tooltip: string, showWhen: 
  * expressions, so a guard on the first cannot narrow the second.
  */
 function terminalStatusOf(tab: Tab): TerminalStatus | undefined {
-  return isTerminalTab(tab) ? tab.status : undefined
+  return isTerminalTab(tab)
+    ? tab.status
+    : undefined
 }
 
 /**
@@ -292,7 +294,9 @@ export const TabBar: Component<TabBarProps> = (props) => {
       // edit still names.
       const tab = untrack(() => {
         const key = editingTabKey()
-        return key === null ? undefined : tabByKey().get(key)
+        return key === null
+          ? undefined
+          : tabByKey().get(key)
       })
       if (tab)
         commitEdit(tab)
@@ -455,7 +459,9 @@ export const TabBar: Component<TabBarProps> = (props) => {
         aria-selected={props.activeTabKey === tabKey(tab())}
         class={surface.rowClass}
         classList={{ [styles.tabDragging]: row?.isActiveDraggable }}
-        style={dnd ? dnd.row.style() : undefined}
+        style={dnd
+          ? dnd.row.style()
+          : undefined}
         data-testid={surface.rowTestId}
         data-tab-type={tabTypeLabel(tab().type)}
         data-tab-id={tab().id}
@@ -500,7 +506,9 @@ export const TabBar: Component<TabBarProps> = (props) => {
           <IconButton
             icon={X}
             class={styles.tabClose}
-            state={isClosing() ? IconButtonState.Loading : IconButtonState.Enabled}
+            state={isClosing()
+              ? IconButtonState.Loading
+              : IconButtonState.Enabled}
             data-testid="tab-close"
             onPointerDown={e => e.stopPropagation()}
             onClick={(e) => {
@@ -516,15 +524,27 @@ export const TabBar: Component<TabBarProps> = (props) => {
             so it costs the row no layout either way. The optional props are
             omitted, not undefined: absent is what hides each item. */}
         <TabContextMenu
-          {...(dnd?.rowEl !== undefined ? { contextMenuFor: dnd.rowEl } : {})}
+          {...(dnd?.rowEl !== undefined
+            ? { contextMenuFor: dnd.rowEl }
+            : {})}
           data-testid={surface.menuTestId}
-          {...(canRename() ? { onRename: () => startEditing(tab()) } : {})}
-          {...(canCloseTab(props.archived) ? { onClose: () => props.onClose(tab()) } : {})}
+          {...(canRename()
+            ? {
+                onRename: () => startEditing(tab()),
+              }
+            : {})}
+          {...(canCloseTab(props.archived)
+            ? {
+                onClose: () => props.onClose(tab()),
+              }
+            : {})}
           isClosing={isClosing()}
           {...(() => {
             // Hoisted per evaluation so the spread narrows and stays reactive.
             const pop = props.tabPop?.(tab())
-            return pop !== undefined ? { pop } : {}
+            return pop !== undefined
+              ? { pop }
+              : {}
           })()}
         />
       </div>
@@ -586,9 +606,15 @@ export const TabBar: Component<TabBarProps> = (props) => {
           them, because there the items act on that branch instead. */}
       <NewTabMenuItems
         shortcuts
-        {...(props.newTab.availableProviders !== undefined ? { availableProviders: props.newTab.availableProviders } : {})}
-        {...(props.newTab.availableShells !== undefined ? { availableShells: props.newTab.availableShells } : {})}
-        {...(props.newTab.defaultShell !== undefined ? { defaultShell: props.newTab.defaultShell } : {})}
+        {...(props.newTab.availableProviders !== undefined
+          ? { availableProviders: props.newTab.availableProviders }
+          : {})}
+        {...(props.newTab.availableShells !== undefined
+          ? { availableShells: props.newTab.availableShells }
+          : {})}
+        {...(props.newTab.defaultShell !== undefined
+          ? { defaultShell: props.newTab.defaultShell }
+          : {})}
         onNewAgent={handleNewAgent}
         onNewAgentAdvanced={() => props.newTab.onNewAgentAdvanced?.()}
         onNewTerminalWithShell={shell => props.newTab.onNewTerminalWithShell?.(shell)}
@@ -653,7 +679,9 @@ export const TabBar: Component<TabBarProps> = (props) => {
                 zoneDroppable?.(el)
               }}
               class={styles.tabList}
-              classList={{ [styles.tabListDropTarget]: isDropTarget() }}
+              classList={{
+                [styles.tabListDropTarget]: isDropTarget(),
+              }}
               data-testid="tab-list"
               onDblClick={(e: MouseEvent) => {
                 const target = e.target as HTMLElement

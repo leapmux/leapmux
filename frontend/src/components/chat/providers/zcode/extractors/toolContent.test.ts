@@ -13,8 +13,14 @@ function fixture(child = false) {
     payload: {
       kind: 'result',
       toolCallId,
-      ...(child ? { agentId: 'agent', childSessionId: sessionId } : {}),
-      result: { success: true, content: 'Original attachment text', display: { kind: 'mcp_tool', serverName: 'docs', toolName: 'read' } },
+      ...(child
+        ? { agentId: 'agent', childSessionId: sessionId }
+        : {}),
+      result: {
+        success: true,
+        content: 'Original attachment text',
+        display: { kind: 'mcp_tool', serverName: 'docs', toolName: 'read' },
+      },
     },
   }
   const supplemental = {
@@ -31,12 +37,23 @@ function fixture(child = false) {
         state: {
           status: 'completed',
           input: {},
-          metadata: { modelContentLayout: [
-            { type: 'text', text: 'Before' },
-            { type: 'attachment', attachmentIndex: 0 },
-            { type: 'text', text: 'After' },
-          ] },
-          attachments: [{ type: 'file', sessionID: sessionId, messageID: 'message', mime: 'image/png', filename: 'MCP image', url: uri }],
+          metadata: {
+            modelContentLayout: [
+              { type: 'text', text: 'Before' },
+              { type: 'attachment', attachmentIndex: 0 },
+              { type: 'text', text: 'After' },
+            ],
+          },
+          attachments: [
+            {
+              type: 'file',
+              sessionID: sessionId,
+              messageID: 'message',
+              mime: 'image/png',
+              filename: 'MCP image',
+              url: uri,
+            },
+          ],
         },
       },
     },
@@ -52,7 +69,9 @@ describe('stored ZCode tool content', () => {
     const before = JSON.stringify(original)
     const content = zcodeMcpContent(row)
     expect(content?.map(item => item.type)).toEqual(['text', 'image', 'text'])
-    expect(zcodeToolResultImages(row)).toEqual([{ mimeType: 'image/png', url: 'data:image/png;base64,AQID', description: undefined }])
+    expect(zcodeToolResultImages(row)).toEqual([
+      { mimeType: 'image/png', url: 'data:image/png;base64,AQID', description: undefined },
+    ])
     expect(JSON.stringify(original)).toBe(before)
   })
 
@@ -82,15 +101,27 @@ describe('stored ZCode tool content', () => {
 
   it('recovers child identity from the matching request', () => {
     const { row, original, supplemental } = fixture(true)
-    const request = { type: original.type, payload: { ...original.payload, kind: 'scheduled', toolName: 'mcp__docs__read' } }
-    row.parsed = { ...original, payload: { ...original.payload, agentId: undefined, childSessionId: undefined } }
+    const request = {
+      type: original.type,
+      payload: { ...original.payload, kind: 'scheduled', toolName: 'mcp__docs__read' },
+    }
+    row.parsed = {
+      ...original,
+      payload: { ...original.payload, agentId: undefined, childSessionId: undefined },
+    }
     row.toolUseParsed = input(request)
     expect(zcodeToolResultImages(row)).toHaveLength(1)
     supplemental.nativeTool.sessionId = 'foreign-session'
     expect(zcodeToolResultImages(row)).toHaveLength(0)
   })
 
-  it.each(['call', 'tool', 'session', 'message', 'status'])('rejects a conflicting %s identity', (field) => {
+  it.each([
+    'call',
+    'tool',
+    'session',
+    'message',
+    'status',
+  ])('rejects a conflicting %s identity', (field) => {
     const { row, supplemental } = fixture()
     const native = supplemental.nativeTool
     if (field === 'call')
@@ -122,7 +153,10 @@ describe('stored ZCode tool content', () => {
 
   it('rejects a child tool ID without a native suffix', () => {
     const { row, original, supplemental } = fixture(true)
-    row.parsed = { ...original, payload: { ...original.payload, toolCallId: 'tool_subagent_agent_' } }
+    row.parsed = {
+      ...original,
+      payload: { ...original.payload, toolCallId: 'tool_subagent_agent_' },
+    }
     supplemental.payload.toolCallId = 'tool_subagent_agent_'
     supplemental.nativeTool.data.callID = ''
     expect(zcodeNativeTool(row)).toBeNull()

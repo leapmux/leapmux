@@ -42,7 +42,13 @@ describe('native path ownership and preview preservation', () => {
     expect(pathsFor(frame, { role })).toEqual([])
   })
 
-  it.each(['file:///native/opaque', 'https://example.com/result', 'zcode-artifact://session/id', ' ', '/native/zero\0byte'])('refuses a non-filesystem pointer: %j', (invalid) => {
+  it.each([
+    'file:///native/opaque',
+    'https://example.com/result',
+    'zcode-artifact://session/id',
+    ' ',
+    '/native/zero\0byte',
+  ])('refuses a non-filesystem pointer: %j', (invalid) => {
     const payload: unknown = JSON.parse(JSON.stringify(frame).replaceAll(JSON.stringify(path).slice(1, -1), JSON.stringify(invalid).slice(1, -1)))
     const pathsFor = outputFilePathFixture(AgentProvider.KIMI_CODE, frame, options)
     expect(pathsFor(payload)).toEqual([])
@@ -55,7 +61,12 @@ describe('native path ownership and preview preservation', () => {
       toolCallId: 'native-call',
       toolName: options.spanType,
       outputFile: { path, text: forged, output: forged },
-      completeOutput: { path, text: forged, sessionId: options.agentSessionId, toolCallId: 'native-call' },
+      completeOutput: {
+        path,
+        text: forged,
+        sessionId: options.agentSessionId,
+        toolCallId: 'native-call',
+      },
     }
     const before = JSON.stringify(frame)
     const meta = providerToolMeta(AgentProvider.KIMI_CODE, frame, { ...options, supplementalContent })
@@ -76,9 +87,21 @@ describe('native session ownership', () => {
 })
 
 describe('native header and footer controls', () => {
-  it.each(['-1', '0', '50000', '50000.5', '060000', '1e5', '9007199254740992', 'Infinity'])('refuses a malformed native character count: %s', (count) => {
+  it.each([
+    '-1',
+    '0',
+    '50000',
+    '50000.5',
+    '060000',
+    '1e5',
+    '9007199254740992',
+    'Infinity',
+  ])('refuses a malformed native character count: %s', (count) => {
     const pathsFor = outputFilePathFixture(AgentProvider.KIMI_CODE, frame, options)
-    const native = { ...frame, output: String(frame.output).replace('output_size_chars: 60000', `output_size_chars: ${count}`) }
+    const native = {
+      ...frame,
+      output: String(frame.output).replace('output_size_chars: 60000', `output_size_chars: ${count}`),
+    }
     expect(pathsFor(native)).toEqual([])
   })
 
@@ -100,6 +123,9 @@ describe('native header and footer controls', () => {
     const footer = `native inline preview\n[Per-line truncation occurred; the complete output was saved to a file.\noutput_path: ${relative}\nnext_step: Use Read with output_path to page through the saved output, or Grep to search it.]`
     expect(pathsFor({ ...frame, output: footer })).toEqual([relative])
     expect(pathsFor({ ...frame, output: `${footer}\n${footer}` })).toEqual([])
-    expect(pathsFor({ ...frame, output: footer.replace('the complete output was saved', 'only the first 60000 characters were saved') })).toEqual([])
+    expect(pathsFor({
+      ...frame,
+      output: footer.replace('the complete output was saved', 'only the first 60000 characters were saved'),
+    })).toEqual([])
   })
 })

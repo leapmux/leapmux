@@ -25,8 +25,20 @@ function quotaResponse(planUsed: number, addOnUsed: number, exceeded = false): M
       total_usage_percentage: planUsed,
       is_quota_exceeded: exceeded,
       expires_at: Date.now() + 7 * 86_400_000,
-      user_quota: { total: 1000, used: planUsed * 10, remaining: Math.max(0, 1000 - planUsed * 10), percentage: planUsed / 100, unit: 'credits' },
-      add_on_quota: { total: 200, used: addOnUsed * 2, remaining: Math.max(0, 200 - addOnUsed * 2), percentage: addOnUsed / 100, unit: 'credits' },
+      user_quota: {
+        total: 1000,
+        used: planUsed * 10,
+        remaining: Math.max(0, 1000 - planUsed * 10),
+        percentage: planUsed / 100,
+        unit: 'credits',
+      },
+      add_on_quota: {
+        total: 200,
+        used: addOnUsed * 2,
+        remaining: Math.max(0, 200 - addOnUsed * 2),
+        percentage: addOnUsed / 100,
+        unit: 'credits',
+      },
     },
   }
 }
@@ -36,7 +48,11 @@ function controlURL(scenarioId: string): URL {
 }
 
 async function configureQuota(scenarioId: string, profile: MockQuotaHTTPResponse): Promise<void> {
-  const response = await fetch(controlURL(scenarioId), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(profile) })
+  const response = await fetch(controlURL(scenarioId), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(profile),
+  })
   expect(response.status, await response.text()).toBe(200)
 }
 

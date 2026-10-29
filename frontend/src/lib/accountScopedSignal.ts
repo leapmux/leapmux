@@ -106,7 +106,9 @@ export function createAccountScopedSignal<T>(
     },
     set: (next) => {
       ensureSeeded()
-      setValue(typeof next === 'function' ? (next as (prev: T) => T) : () => next)
+      setValue(typeof next === 'function'
+        ? (next as (prev: T) => T)
+        : () => next)
     },
     reset: () => {
       seeded = false

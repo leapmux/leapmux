@@ -18,7 +18,9 @@ const OH_MY_PI_MISSING_REASON = 'Oh My Pi E2E requires the omp CLI on PATH (http
 const OH_MY_PI = lookupBinary('omp', OH_MY_PI_MISSING_REASON)
 export const OH_MY_PI_E2E_SKIP_REASON: string | null = OH_MY_PI.path === null
   ? OH_MY_PI.skipReason
-  : (versionOutput(OH_MY_PI.path) === null ? OH_MY_PI_MISSING_REASON : null)
+  : (versionOutput(OH_MY_PI.path) === null
+      ? OH_MY_PI_MISSING_REASON
+      : null)
 
 /**
  * The agent opens in omp's `yolo` approval mode, which runs every tool without asking.
@@ -27,7 +29,9 @@ export const OH_MY_PI_E2E_SKIP_REASON: string | null = OH_MY_PI.path === null
  * spec that tests tool rendering would otherwise answer an approval before each call.
  * The approval spec opens its own workspace in `write` mode.
  */
-export const OH_MY_PI_YOLO = { optionValues: { permissionMode: 'yolo' } }
+export const OH_MY_PI_YOLO = {
+  optionValues: { permissionMode: 'yolo' },
+}
 
 export const ohMyPiTest = createProviderTest({
   agent: OH_MY_PI_AGENT,

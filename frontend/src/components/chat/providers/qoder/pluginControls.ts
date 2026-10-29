@@ -20,7 +20,9 @@ import { qoderPermissionPresets } from './permissionPresets'
  * answer must not have.
  */
 export function sendQoderPermissionOption(onRespond: ControlResponseSender, requestId: string, optionId: string): Promise<void> {
-  const behavior = optionId === 'once' || optionId === 'session' ? 'allow' : 'deny'
+  const behavior = optionId === 'once' || optionId === 'session'
+    ? 'allow'
+    : 'deny'
   return sendResponse(onRespond, withControlChoice(
     buildControlResponseEnvelope(requestId, { behavior }),
     optionId,

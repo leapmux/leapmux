@@ -6,8 +6,17 @@ import { junieTest } from '../junie-fixtures'
 import { JUNIE_AGENT, nativeContext } from './scenarios'
 
 junieTest('resolves an actual native permission without a multiline editor request', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT, { optionValues: { brave_mode: 'off' } })
+  await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT, {
+    optionValues: { brave_mode: 'off' },
+  })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  await expectNoNativeEditorRequest(context, { relatedProof: () => exerciseNativePermissionWrite(context) })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
+  await expectNoNativeEditorRequest(context, {
+    relatedProof: () => exerciseNativePermissionWrite(context),
+  })
 })

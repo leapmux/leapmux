@@ -80,7 +80,9 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
     if (!menuOpen())
       return []
     return listRepoStartPoints(props.getTabs(), props.repoGitStore, {
-      ...(props.workerInfoFn !== undefined ? { workerInfoFn: props.workerInfoFn } : {}),
+      ...(props.workerInfoFn !== undefined
+        ? { workerInfoFn: props.workerInfoFn }
+        : {}),
     })
   })
 
@@ -98,7 +100,9 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
   // The memo, not a `<Show>`: `DropdownMenu` renders children eagerly and a
   // `createMemo` runs its body at setup, so an ungated builder would walk every
   // tab of every workspace on every reactive tick.
-  const infoRows = createMemo(() => (menuOpen() ? workspaceInfoRows(info()) : []))
+  const infoRows = createMemo(() => (menuOpen()
+    ? workspaceInfoRows(info())
+    : []))
 
   const moveTargets = () => props.sections.filter(
     s => s.id !== props.currentSectionId && isMoveTargetSection(s.sectionType),
@@ -142,12 +146,16 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
     // Per repository, not per workspace: each one sits on its own Worker, and
     // the menu names the repository before the action, so it can say which one
     // is unreachable instead of one sentence about all of them.
-    const reason = () => (isOnline(repo.startPoint.workerId) ? undefined : WORKER_OFFLINE_NEW_TAB_REASON)
+    const reason = () => (isOnline(repo.startPoint.workerId)
+      ? undefined
+      : WORKER_OFFLINE_NEW_TAB_REASON)
     // The FLAT shape names the repository in the item, because nothing else on
     // screen does. Inside a submenu the trigger already carries that name, and
     // repeating it there would read as a second repository.
     const startLabel = (verb: string) =>
-      (repos().length > 1 ? `${verb}...` : `${verb} in ${repo.label}...`)
+      (repos().length > 1
+        ? `${verb}...`
+        : `${verb} in ${repo.label}...`)
     // The test id only on the FLAT shape, which is the one repository the menu
     // renders without a submenu, so the id names exactly one item. Inside a
     // `<For>` it would be one id per repository, a selector nobody can predict;
@@ -162,7 +170,9 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
     const startItem = (label: string, testId: string, run: (at: WorkspaceStartAt) => void) => (
       <DisabledReasonMenuItem
         reason={reason()}
-        {...(repos().length > 1 ? {} : { 'data-testid': testId })}
+        {...(repos().length > 1
+          ? {}
+          : { 'data-testid': testId })}
         onClick={() => run(at())}
       >
         {label}
@@ -197,7 +207,9 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
   return (
     <DropdownMenu
       trigger={rowContextMenuTrigger({ 'data-testid': 'workspace-row-menu-trigger' })}
-      {...(props.contextMenuFor !== undefined ? { contextMenuFor: props.contextMenuFor } : {})}
+      {...(props.contextMenuFor !== undefined
+        ? { contextMenuFor: props.contextMenuFor }
+        : {})}
       onToggle={setMenuOpen}
       data-testid="workspace-context-menu"
     >

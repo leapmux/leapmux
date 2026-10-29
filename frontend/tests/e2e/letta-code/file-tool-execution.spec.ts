@@ -11,8 +11,16 @@ lettaTest.describe('Letta Code tool execution', () => {
     const notes = join(authenticatedLettaWorkspace.workingDir, 'notes.txt')
     await runNativeToolSteps(native, {
       steps: [
-        { toolCalls: [writeToolCall(native.provider, 'write-notes', { path: notes, content: 'letta-write-1\n' })] },
-        { toolCalls: [readToolCall(native.provider, 'read-notes', notes)] },
+        {
+          toolCalls: [
+            writeToolCall(native.provider, 'write-notes', { path: notes, content: 'letta-write-1\n' }),
+          ],
+        },
+        {
+          toolCalls: [
+            readToolCall(native.provider, 'read-notes', notes),
+          ],
+        },
       ],
       prompt: 'Write the notes and read them back.',
       answer: 'I wrote and read the notes.',

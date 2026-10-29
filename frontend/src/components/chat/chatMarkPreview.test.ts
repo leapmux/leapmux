@@ -52,7 +52,14 @@ function agentMessage(seq: bigint, text: string): AgentChatMessage {
   return create(AgentChatMessageSchema, {
     id: `m${seq}`,
     source: MessageSource.AGENT,
-    content: new TextEncoder().encode(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } })),
+    content: new TextEncoder().encode(JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'text', text },
+        ],
+      },
+    })),
     contentCompression: ContentCompression.NONE,
     seq,
     agentProvider: AgentProvider.CLAUDE_CODE,
@@ -75,7 +82,12 @@ afterEach(() => __resetMarkPreviewCacheForTest())
 
 describe('message mark preview text', () => {
   it('keeps text that ended with no known outcome in the preview', () => {
-    const message = messageOf({ type: 'assembled_message', kind: 'text', text: 'Native partial text', completion: 'finished' }, AgentProvider.CLAUDE_CODE, MessageSource.AGENT)
+    const message = messageOf({
+      type: 'assembled_message',
+      kind: 'text',
+      text: 'Native partial text',
+      completion: 'finished',
+    }, AgentProvider.CLAUDE_CODE, MessageSource.AGENT)
     message.completion = MessageCompletion.FINISHED
     expect(messageMarkPreviewText(message)).toBe('Native partial text\n\nText ended without a known outcome.')
   })
@@ -89,7 +101,17 @@ describe('message mark preview text', () => {
   // here the terminal output, which the provider's own frame states as an id alone.
   // Extracting with no sides read the raw frame and lost it.
   it('reads the supplemental half of an ACP tool row', () => {
-    const frame = { sessionUpdate: 'tool_call_update', toolCallId: 'c1', status: 'completed', kind: 'execute', title: 'Run', rawInput: { command: 'bun test' }, content: [{ type: 'terminal', terminalId: 't-1' }] }
+    const frame = {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'c1',
+      status: 'completed',
+      kind: 'execute',
+      title: 'Run',
+      rawInput: { command: 'bun test' },
+      content: [
+        { type: 'terminal', terminalId: 't-1' },
+      ],
+    }
     const message = create(AgentChatMessageSchema, {
       id: 'm1',
       source: MessageSource.AGENT,
@@ -99,19 +121,38 @@ describe('message mark preview text', () => {
       supplementalContentCompression: ContentCompression.NONE,
       content: new TextEncoder().encode(JSON.stringify(frame)),
       supplementalContent: new TextEncoder().encode(JSON.stringify({
-        provider: { sessionUpdate: 'tool_call_update', toolCallId: 'c1', status: 'completed', terminals: { 't-1': { output: 'build ok', exitCode: 0 } } },
+        provider: {
+          sessionUpdate: 'tool_call_update',
+          toolCallId: 'c1',
+          status: 'completed',
+          terminals: {
+            't-1': { output: 'build ok', exitCode: 0 },
+          },
+        },
       })),
     })
     expect(messageMarkPreviewText(message)).toContain('build ok')
   })
 
   it('resolves a persisted Codex control response to its decision label', () => {
-    const row = makeControlResponseMessage(AgentProvider.CODEX, { jsonrpc: '2.0', id: 7, result: { decision: 'accept' } }, { method: 'item/commandExecution/requestApproval' })
+    const row = makeControlResponseMessage(AgentProvider.CODEX, {
+      jsonrpc: '2.0',
+      id: 7,
+      result: { decision: 'accept' },
+    }, { method: 'item/commandExecution/requestApproval' })
     expect(messageMarkPreviewText(row)).toBe('Allow')
   })
 
   it('resolves a Claude rejection to its feedback preview', () => {
-    const row = makeControlResponseMessage(AgentProvider.CLAUDE_CODE, { type: 'control_response', response: { request_id: 'r', response: { behavior: 'deny', message: 'use ripgrep instead' } } }, { request: { tool_name: 'Bash' } })
+    const row = makeControlResponseMessage(AgentProvider.CLAUDE_CODE, {
+      type: 'control_response',
+      response: {
+        request_id: 'r',
+        response: { behavior: 'deny', message: 'use ripgrep instead' },
+      },
+    }, {
+      request: { tool_name: 'Bash' },
+    })
     expect(messageMarkPreviewText(row)).toBe('Sent feedback:\nuse ripgrep instead')
   })
 
@@ -123,17 +164,34 @@ describe('message mark preview text', () => {
   // top-level `content` string, and an assistant row states its words in blocks.
   // The row model reads the blocks, so the dot now previews what the row says.
   it('previews an assistant content-block array', () => {
-    expect(messageMarkPreviewText(messageOf({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } }))).toBe('hi')
+    expect(messageMarkPreviewText(messageOf({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'text', text: 'hi' },
+        ],
+      },
+    }))).toBe('hi')
   })
 
   it('returns null for a message with no previewable text', () => {
-    expect(messageMarkPreviewText(messageOf({ type: 'assistant', message: { content: [] } }))).toBeNull()
+    expect(messageMarkPreviewText(messageOf({
+      type: 'assistant',
+      message: { content: [] },
+    }))).toBeNull()
   })
 
   it('degrades to null when provider classification throws', () => {
     // A plugin failure before extraction must not poison the async fetch as transient.
     withThrowingPlugin(() => {
-      expect(messageMarkPreviewText(messageOf({ type: 'assistant', message: { content: [{ type: 'text', text: 'x' }] } }, AgentProvider.CLAUDE_CODE, MessageSource.AGENT))).toBeNull()
+      expect(messageMarkPreviewText(messageOf({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: 'x' },
+          ],
+        },
+      }, AgentProvider.CLAUDE_CODE, MessageSource.AGENT))).toBeNull()
     })
   })
 
@@ -194,7 +252,9 @@ describe('message mark preview text over a resolved payload', () => {
       seq: 5n,
       agentProvider,
       // Omitted (not undefined) when the fixture states no completion; `create` rejects an explicit undefined.
-      ...(completion !== undefined ? { completion } : {}),
+      ...(completion !== undefined
+        ? { completion }
+        : {}),
       contentCompression: ContentCompression.NONE,
       supplementalContentCompression: ContentCompression.NONE,
       content: new TextEncoder().encode(JSON.stringify(frame)),
@@ -210,7 +270,16 @@ describe('message mark preview text over a resolved payload', () => {
   it('includes the output a retained Codex command recovered', () => {
     const message = resolvedMessage(
       AgentProvider.CODEX,
-      { threadId: 'main-thread', turnId: 'turn-1', item: { type: 'commandExecution', id: 'command-1', status: 'inProgress', command: 'printf partial' } },
+      {
+        threadId: 'main-thread',
+        turnId: 'turn-1',
+        item: {
+          type: 'commandExecution',
+          id: 'command-1',
+          status: 'inProgress',
+          command: 'printf partial',
+        },
+      },
       { itemId: 'command-1', itemType: 'commandExecution', aggregatedOutput: 'Running 240 tests' },
       MessageCompletion.INTERRUPTED,
     )
@@ -222,8 +291,21 @@ describe('message mark preview text over a resolved payload', () => {
     // beside the retained start frame when the turn ends first.
     const message = resolvedMessage(
       AgentProvider.PI,
-      { type: 'tool_execution_start', toolCallId: 'call', toolName: 'bash', args: { command: 'ls' } },
-      { toolCallId: 'call', toolName: 'bash', partialResult: { content: [{ type: 'text', text: 'partial stdout' }] } },
+      {
+        type: 'tool_execution_start',
+        toolCallId: 'call',
+        toolName: 'bash',
+        args: { command: 'ls' },
+      },
+      {
+        toolCallId: 'call',
+        toolName: 'bash',
+        partialResult: {
+          content: [
+            { type: 'text', text: 'partial stdout' },
+          ],
+        },
+      },
       MessageCompletion.INTERRUPTED,
     )
     expect(messageMarkPreviewText(message)).toContain('partial stdout')
@@ -232,8 +314,24 @@ describe('message mark preview text over a resolved payload', () => {
   it('includes the arguments a scheduled ZCode call omitted', () => {
     const message = resolvedMessage(
       AgentProvider.ZCODE,
-      { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'call', toolName: 'Bash', inputOmitted: true, inputRef: 'model_stream' } },
-      { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'call', input: { command: 'printf recovered' } } },
+      {
+        type: 'tool.updated',
+        payload: {
+          kind: 'scheduled',
+          toolCallId: 'call',
+          toolName: 'Bash',
+          inputOmitted: true,
+          inputRef: 'model_stream',
+        },
+      },
+      {
+        type: 'tool.updated',
+        payload: {
+          kind: 'scheduled',
+          toolCallId: 'call',
+          input: { command: 'printf recovered' },
+        },
+      },
     )
     expect(messageMarkPreviewText(message)).toContain('printf recovered')
   })
@@ -260,7 +358,9 @@ describe('warmMarkPreview', () => {
     const [message, setMessage] = createSignal(userMessage(5n, 'before supplement'))
     const [contentVersion, setContentVersion] = createSignal(0)
     const context = testMessageContext({
-      messages: () => [message()],
+      messages: () => [
+        message(),
+      ],
       contentVersion: () => contentVersion(),
     })
     await warmMarkPreview('a1', 5n, context)
@@ -284,7 +384,10 @@ describe('warmMarkPreview', () => {
 
   it('fetches an out-of-window mark and caches its extracted preview', async () => {
     const fetchMessage = vi.fn().mockResolvedValue(userMessage(9n, 'far away'))
-    warmMarkPreview('a1', 9n, testMessageContext({ messageBySeq: () => undefined, fetchMessage }))
+    warmMarkPreview('a1', 9n, testMessageContext({
+      messageBySeq: () => undefined,
+      fetchMessage,
+    }))
     // Undefined = still resolving; the tooltip shows a loading line meanwhile.
     expect(getCachedMarkPreview('a1', 9n)).toBeUndefined()
     await vi.waitFor(() => expect(getCachedMarkPreview('a1', 9n)).toBe('far away'))
@@ -297,7 +400,10 @@ describe('warmMarkPreview', () => {
       resolve = r
     })
     const fetchMessage = vi.fn().mockReturnValue(pending)
-    const deps = testMessageContext({ messageBySeq: () => undefined, fetchMessage })
+    const deps = testMessageContext({
+      messageBySeq: () => undefined,
+      fetchMessage,
+    })
     warmMarkPreview('a1', 9n, deps)
     warmMarkPreview('a1', 9n, deps)
     expect(fetchMessage).toHaveBeenCalledOnce()
@@ -307,7 +413,10 @@ describe('warmMarkPreview', () => {
 
   it('does not re-fetch a seq already resolved', async () => {
     const fetchMessage = vi.fn().mockResolvedValue(userMessage(9n, 'once'))
-    const deps = testMessageContext({ messageBySeq: () => undefined, fetchMessage })
+    const deps = testMessageContext({
+      messageBySeq: () => undefined,
+      fetchMessage,
+    })
     warmMarkPreview('a1', 9n, deps)
     await vi.waitFor(() => expect(getCachedMarkPreview('a1', 9n)).toBe('once'))
     warmMarkPreview('a1', 9n, deps)
@@ -318,7 +427,10 @@ describe('warmMarkPreview', () => {
     // A second agent's entry, held from before the flood: this agent's eviction
     // walks its own bucket alone, so the flood cannot age another agent's preview
     // out of its cap.
-    warmMarkPreview('a2', 1n, testMessageContext({ messageBySeq: () => userMessage(1n, 'other agent'), fetchMessage: vi.fn() }))
+    warmMarkPreview('a2', 1n, testMessageContext({
+      messageBySeq: () => userMessage(1n, 'other agent'),
+      fetchMessage: vi.fn(),
+    }))
     for (let seq = 1n; seq <= 505n; seq++) {
       warmMarkPreview('a1', seq, testMessageContext({
         messageBySeq: () => userMessage(seq, `message ${seq}`),
@@ -332,7 +444,10 @@ describe('warmMarkPreview', () => {
 
   it('caches "" when the message is gone, so the rail shows a label without re-fetching', async () => {
     const fetchMessage = vi.fn().mockResolvedValue(undefined)
-    const deps = testMessageContext({ messageBySeq: () => undefined, fetchMessage })
+    const deps = testMessageContext({
+      messageBySeq: () => undefined,
+      fetchMessage,
+    })
     warmMarkPreview('a1', 9n, deps)
     await vi.waitFor(() => expect(getCachedMarkPreview('a1', 9n)).toBe(''))
     warmMarkPreview('a1', 9n, deps)
@@ -346,7 +461,10 @@ describe('warmMarkPreview', () => {
     const fetchMessage = vi.fn()
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValueOnce(userMessage(9n, 'recovered'))
-    const deps = testMessageContext({ messageBySeq: () => undefined, fetchMessage })
+    const deps = testMessageContext({
+      messageBySeq: () => undefined,
+      fetchMessage,
+    })
     await warmMarkPreview('a1', 9n, deps)
     // The rejection settles and the in-flight token is dropped, with nothing cached.
     await vi.waitFor(() => expect(fetchMessage).toHaveBeenCalledOnce())
@@ -363,7 +481,10 @@ describe('warmMarkPreview', () => {
     withThrowingPlugin(() => {
       const fetchMessage = vi.fn()
       expect(() =>
-        warmMarkPreview('a1', 4n, testMessageContext({ messageBySeq: () => agentMessage(4n, 'x'), fetchMessage })),
+        warmMarkPreview('a1', 4n, testMessageContext({
+          messageBySeq: () => agentMessage(4n, 'x'),
+          fetchMessage,
+        })),
       ).not.toThrow()
       expect(getCachedMarkPreview('a1', 4n)).toBe('')
       expect(fetchMessage).not.toHaveBeenCalled()
@@ -379,7 +500,10 @@ describe('warmMarkPreview', () => {
     const spy = vi.spyOn(registry, 'pluginFor').mockReturnValue(plugin)
     try {
       const fetchMessage = vi.fn().mockResolvedValue(agentMessage(9n, 'far'))
-      const deps = testMessageContext({ messageBySeq: () => undefined, fetchMessage })
+      const deps = testMessageContext({
+        messageBySeq: () => undefined,
+        fetchMessage,
+      })
       warmMarkPreview('a1', 9n, deps)
       await vi.waitFor(() => expect(getCachedMarkPreview('a1', 9n)).toBe(''))
       warmMarkPreview('a1', 9n, deps) // a second hover must NOT re-fetch
@@ -392,16 +516,28 @@ describe('warmMarkPreview', () => {
 
   it('ignores an invalid sequence', () => {
     const fetchMessage = vi.fn()
-    warmMarkPreview('a1', 0n, testMessageContext({ messageBySeq: () => undefined, fetchMessage }))
-    warmMarkPreview('a1', -1n, testMessageContext({ messageBySeq: () => undefined, fetchMessage }))
+    warmMarkPreview('a1', 0n, testMessageContext({
+      messageBySeq: () => undefined,
+      fetchMessage,
+    }))
+    warmMarkPreview('a1', -1n, testMessageContext({
+      messageBySeq: () => undefined,
+      fetchMessage,
+    }))
     expect(fetchMessage).not.toHaveBeenCalled()
     expect(getCachedMarkPreview('a1', 0n)).toBeUndefined()
     expect(getCachedMarkPreview('a1', -1n)).toBeUndefined()
   })
 
   it('forgetMarkPreview drops one agent\'s entries and leaves other agents intact', () => {
-    warmMarkPreview('a1', 5n, testMessageContext({ messageBySeq: () => userMessage(5n, 'agent one'), fetchMessage: vi.fn() }))
-    warmMarkPreview('a2', 5n, testMessageContext({ messageBySeq: () => userMessage(5n, 'agent two'), fetchMessage: vi.fn() }))
+    warmMarkPreview('a1', 5n, testMessageContext({
+      messageBySeq: () => userMessage(5n, 'agent one'),
+      fetchMessage: vi.fn(),
+    }))
+    warmMarkPreview('a2', 5n, testMessageContext({
+      messageBySeq: () => userMessage(5n, 'agent two'),
+      fetchMessage: vi.fn(),
+    }))
     expect(getCachedMarkPreview('a1', 5n)).toBe('agent one')
     expect(getCachedMarkPreview('a2', 5n)).toBe('agent two')
 
@@ -416,7 +552,10 @@ describe('warmMarkPreview', () => {
       resolve = r
     })
     const fetchMessage = vi.fn().mockReturnValue(pending)
-    warmMarkPreview('a1', 9n, testMessageContext({ messageBySeq: () => undefined, fetchMessage }))
+    warmMarkPreview('a1', 9n, testMessageContext({
+      messageBySeq: () => undefined,
+      fetchMessage,
+    }))
     expect(getCachedMarkPreview('a1', 9n)).toBeUndefined() // still resolving
 
     // Agent closed while the fetch is in flight: the cache has no entry yet to prune.
@@ -434,12 +573,18 @@ describe('warmMarkPreview', () => {
       resolveOld = r
     })
     const oldFetch = vi.fn().mockReturnValue(oldPending)
-    warmMarkPreview('a1', 9n, testMessageContext({ messageBySeq: () => undefined, fetchMessage: oldFetch }))
+    warmMarkPreview('a1', 9n, testMessageContext({
+      messageBySeq: () => undefined,
+      fetchMessage: oldFetch,
+    }))
 
     forgetMarkPreview('a1') // close
     // Reopen + re-warm: a fresh fetch resolves first with the current value.
     const newFetch = vi.fn().mockResolvedValue(userMessage(9n, 'fresh'))
-    warmMarkPreview('a1', 9n, testMessageContext({ messageBySeq: () => undefined, fetchMessage: newFetch }))
+    warmMarkPreview('a1', 9n, testMessageContext({
+      messageBySeq: () => undefined,
+      fetchMessage: newFetch,
+    }))
     await vi.waitFor(() => expect(getCachedMarkPreview('a1', 9n)).toBe('fresh'))
 
     // The OLD fetch resolves late; its token was superseded, so it must not clobber 'fresh'.
@@ -452,7 +597,10 @@ describe('warmMarkPreview', () => {
   it('re-fetches after forget so a stale "" does not survive a close/reopen', async () => {
     // First warm resolves empty (message transiently gone) and caches ''.
     const gone = vi.fn().mockResolvedValue(undefined)
-    warmMarkPreview('a1', 9n, testMessageContext({ messageBySeq: () => undefined, fetchMessage: gone }))
+    warmMarkPreview('a1', 9n, testMessageContext({
+      messageBySeq: () => undefined,
+      fetchMessage: gone,
+    }))
     await vi.waitFor(() => expect(getCachedMarkPreview('a1', 9n)).toBe(''))
 
     // Agent closed -> cache pruned. The reopened agent now has the message, and a re-warm
@@ -460,7 +608,10 @@ describe('warmMarkPreview', () => {
     forgetMarkPreview('a1')
     expect(getCachedMarkPreview('a1', 9n)).toBeUndefined()
     const back = vi.fn().mockResolvedValue(userMessage(9n, 'now available'))
-    warmMarkPreview('a1', 9n, testMessageContext({ messageBySeq: () => undefined, fetchMessage: back }))
+    warmMarkPreview('a1', 9n, testMessageContext({
+      messageBySeq: () => undefined,
+      fetchMessage: back,
+    }))
     await vi.waitFor(() => expect(getCachedMarkPreview('a1', 9n)).toBe('now available'))
     expect(back).toHaveBeenCalledOnce()
   })

@@ -37,7 +37,9 @@ function targetSlugs(labels: readonly string[]): string[] {
   const counts = new Map<string, number>()
   for (const slug of slugs)
     counts.set(slug, (counts.get(slug) ?? 0) + 1)
-  return slugs.map((slug, i) => (slug && counts.get(slug) === 1 ? slug : `${i}`))
+  return slugs.map((slug, i) => (slug && counts.get(slug) === 1
+    ? slug
+    : `${i}`))
 }
 
 /**

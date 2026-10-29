@@ -29,7 +29,9 @@ describe('passkeyManagement helpers', () => {
   })
 
   it('loadPasskeys returns the list with the server-derived RP ID', async () => {
-    const passkeys = [{ id: 'pk-1', friendlyName: 'Laptop', credentialId: 'cred-abc' }]
+    const passkeys = [
+      { id: 'pk-1', friendlyName: 'Laptop', credentialId: 'cred-abc' },
+    ]
     mockListPasskeys.mockResolvedValue({ passkeys, rpId: 'example.com' })
 
     await expect(loadPasskeys()).resolves.toEqual({ passkeys, rpId: 'example.com' })

@@ -31,7 +31,14 @@ async function check() {
   await expect.poll(async () => (await readAgent()).status).toBe(1)
 }`,
     })
-    expect(findings).toEqual([{ path: '/e2e/spec.ts', line: 3, enclosingFunction: 'check', chain: ['readAgent', 'getTestChannel'] }])
+    expect(findings).toEqual([
+      {
+        path: '/e2e/spec.ts',
+        line: 3,
+        enclosingFunction: 'check',
+        chain: ['readAgent', 'getTestChannel'],
+      },
+    ])
   })
 
   it('finds a channel method call and a Hub call in the poll function itself', () => {
@@ -39,7 +46,10 @@ async function check() {
       'a.ts': 'await expect.poll(async () => (await channel.callWorker(id)).paused).toBe(true)',
       'b.ts': 'await expect.poll(() => callHub(url)).toBe(true)',
     })
-    expect(findings.map(finding => finding.chain)).toEqual([['callWorker'], ['callHub']])
+    expect(findings.map(finding => finding.chain)).toEqual([
+      ['callWorker'],
+      ['callHub'],
+    ])
   })
 
   it('resolves a poll function that is a named local function', () => {
@@ -47,7 +57,9 @@ async function check() {
       'spec.ts': `const readQueue = async () => channel.callWorker('ListAgentInputQueue')
 await expect.poll(readQueue).toBe(true)`,
     })
-    expect(findings.map(finding => finding.chain)).toEqual([['readQueue', 'callWorker']])
+    expect(findings.map(finding => finding.chain)).toEqual([
+      ['readQueue', 'callWorker'],
+    ])
   })
 
   it('accepts a read that a catch clause turns into a value, and a read whose promise ends in a catch call', () => {
@@ -78,7 +90,9 @@ await expect.poll(() => getTestChannel().catch(() => null)).toBe(null)`,
 }
 await expect.poll(rethrows).toBe(null)`,
     })
-    expect(findings.map(finding => finding.chain)).toEqual([['rethrows', 'getTestChannel']])
+    expect(findings.map(finding => finding.chain)).toEqual([
+      ['rethrows', 'getTestChannel'],
+    ])
   })
 
   it('accepts a poll over a read that reaches no transport call, such as the mock model status', () => {
@@ -99,7 +113,9 @@ await expect.poll(status).toBe(1)`,
 }
 await expect.poll(() => walk(2)).toBe(1)`,
     })
-    expect(findings.map(finding => finding.chain)).toEqual([['walk', 'hubRequest']])
+    expect(findings.map(finding => finding.chain)).toEqual([
+      ['walk', 'hubRequest'],
+    ])
   })
 
   it('ignores a call that is not expect.poll', () => {
@@ -108,7 +124,10 @@ await expect.poll(() => walk(2)).toBe(1)`,
 })
 
 describe('e2e polls over Worker and Hub reads', () => {
-  const files = collectE2EFiles().map(path => ({ path, source: readFileSync(path, 'utf-8') }))
+  const files = collectE2EFiles().map(path => ({
+    path,
+    source: readFileSync(path, 'utf-8'),
+  }))
   const findings = throwingPollReads(files)
   const key = (finding: { path: string, enclosingFunction: string }) => `${posixRelative(e2eRoot, finding.path)} ${finding.enclosingFunction}`
 
@@ -129,6 +148,8 @@ describe('e2e polls over Worker and Hub reads', () => {
 
   it('keeps no accepted poll that the e2e tree no longer holds', () => {
     const found = new Set(findings.map(key))
-    expect([...ACCEPTED.keys()].filter(entry => !found.has(entry))).toEqual([])
+    expect([
+      ...ACCEPTED.keys(),
+    ].filter(entry => !found.has(entry))).toEqual([])
   })
 })

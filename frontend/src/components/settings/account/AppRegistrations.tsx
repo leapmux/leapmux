@@ -37,7 +37,9 @@ function createAppFormFields(initial?: { name: string, uri: string, redirects: s
   const [name, setName] = createSignal(initial?.name ?? '')
   const [uri, setUri] = createSignal(initial?.uri ?? '')
   const [redirects, setRedirects] = createSignal(initial?.redirects ?? '')
-  const [scopes, setScopes] = createSignal<Scope[]>(initial ? [...initial.scopes] : [])
+  const [scopes, setScopes] = createSignal<Scope[]>(initial
+    ? [...initial.scopes]
+    : [])
 
   const toggleScope = (scope: Scope) => {
     setScopes(current => current.includes(scope)
@@ -138,7 +140,15 @@ function createAppFormFields(initial?: { name: string, uri: string, redirects: s
     </>
   )
 
-  return { Fields, name, uri, scopes, closedScopes, redirectList, setName }
+  return {
+    Fields,
+    name,
+    uri,
+    scopes,
+    closedScopes,
+    redirectList,
+    setName,
+  }
 }
 
 /**
@@ -276,7 +286,11 @@ const RegisterAppForm: Component<{
         </p>
         <div class="hstack gap-2">
           <code data-testid="new-client-secret">{secret()}</code>
-          <button type="button" onClick={() => void copy()}>{copied() ? 'Copied' : 'Copy'}</button>
+          <button type="button" onClick={() => void copy()}>
+            {copied()
+              ? 'Copied'
+              : 'Copy'}
+          </button>
         </div>
         <div class={actionsFooter}>
           <button type="button" onClick={() => created() && props.onRegistered('App registered.', created()!)}>Done</button>
@@ -432,7 +446,9 @@ export const AppRegistrations: Component<AppRegistrationsProps> = (props) => {
       // variant is fixed for the panel's life, and a reactive read inside
       // the untracked page callback would re-evaluate per page for nothing.
       // eslint-disable-next-line solid/reactivity -- read once before the pagination on purpose, as the comment above states
-      const reach = hubWide() ? AppVisibility.HUB_WIDE : undefined
+      const reach = hubWide()
+        ? AppVisibility.HUB_WIDE
+        : undefined
       const collected = await fetchAllPages(
         async (cursor) => {
           // includeRevoked: a retired app stays readable because a live
@@ -443,12 +459,17 @@ export const AppRegistrations: Component<AppRegistrationsProps> = (props) => {
             cursor,
             limit: PAGE_SIZE,
             includeRevoked: true,
-            ...(reach === undefined ? {} : { visibility: reach }),
+            ...(reach === undefined
+              ? {}
+              : { visibility: reach }),
           })
           openRegistrationEnabled = resp.openRegistrationEnabled
           return { items: resp.apps, nextCursor: resp.nextCursor }
         },
-        { maxPages: MAX_PAGES, keyOf: app => app.clientId },
+        {
+          maxPages: MAX_PAGES,
+          keyOf: app => app.clientId,
+        },
       )
       if (generation === refreshGeneration) {
         setOpenRegistration(openRegistrationEnabled)
@@ -477,7 +498,10 @@ export const AppRegistrations: Component<AppRegistrationsProps> = (props) => {
     catch (e) {
       if (generation === refreshGeneration) {
         setLoadFailed(true)
-        setMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to load app registrations') })
+        setMessage({
+          type: 'error',
+          text: formatErrorMessage(e, 'Failed to load app registrations'),
+        })
       }
     }
     finally {
@@ -503,7 +527,9 @@ export const AppRegistrations: Component<AppRegistrationsProps> = (props) => {
       void refresh()
       return
     }
-    setApps(prev => prev.map(a => (a.clientId === app.clientId ? app : a)))
+    setApps(prev => prev.map(a => (a.clientId === app.clientId
+      ? app
+      : a)))
   }
 
   /** Prepend a row the panel just created. The listing orders newest first. */
@@ -526,12 +552,17 @@ export const AppRegistrations: Component<AppRegistrationsProps> = (props) => {
       setMessage({
         type: 'success',
         text: n > 0
-          ? `App retired. ${n} credential${n === 1 ? '' : 's'} revoked.`
+          ? `App retired. ${n} credential${n === 1
+            ? ''
+            : 's'} revoked.`
           : 'App retired.',
       })
     }
     catch (e) {
-      setMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to retire the app') })
+      setMessage({
+        type: 'error',
+        text: formatErrorMessage(e, 'Failed to retire the app'),
+      })
     }
     finally {
       setBusy(false)
@@ -575,7 +606,10 @@ export const AppRegistrations: Component<AppRegistrationsProps> = (props) => {
       })
     }
     catch (e) {
-      setMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to change the step-up setting') })
+      setMessage({
+        type: 'error',
+        text: formatErrorMessage(e, 'Failed to change the step-up setting'),
+      })
     }
     finally {
       setBusy(false)
@@ -591,10 +625,16 @@ export const AppRegistrations: Component<AppRegistrationsProps> = (props) => {
     try {
       const resp = await appClient.verifyApp({ clientId: app.clientId, verified })
       patchRow(resp.app)
-      setMessage({ type: 'success', text: verified ? 'Vouch recorded.' : 'Vouch withdrawn.' })
+      setMessage({
+        type: 'success',
+        text: verified ? 'Vouch recorded.' : 'Vouch withdrawn.',
+      })
     }
     catch (e) {
-      setMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to change the vouch') })
+      setMessage({
+        type: 'error',
+        text: formatErrorMessage(e, 'Failed to change the vouch'),
+      })
     }
     finally {
       setBusy(false)
@@ -607,12 +647,21 @@ export const AppRegistrations: Component<AppRegistrationsProps> = (props) => {
    */
   const liveCredentialNote = (app: App) => {
     const live = Number(app.liveCredentialCount)
-    return live > 0 ? `${live} live credential${live === 1 ? '' : 's'}` : ''
+    return live > 0
+      ? `${live} live credential${live === 1
+        ? ''
+        : 's'}`
+      : ''
   }
 
   return (
     <>
-      <div class="vstack gap-4" data-testid={hubWide() ? 'hub-wide-app-registrations' : 'app-registrations'}>
+      <div
+        class="vstack gap-4"
+        data-testid={hubWide()
+          ? 'hub-wide-app-registrations'
+          : 'app-registrations'}
+      >
         <Show when={loading()}>
           <div class={styles.credentialListLoading}><Spinner /></div>
         </Show>
@@ -670,7 +719,9 @@ export const AppRegistrations: Component<AppRegistrationsProps> = (props) => {
                     >
                       <span class="badge" data-variant="success">
                         verified
-                        {app.verifiedByUsername ? ` by ${app.verifiedByUsername}` : ''}
+                        {app.verifiedByUsername
+                          ? ` by ${app.verifiedByUsername}`
+                          : ''}
                       </span>
                     </Show>
                     {/*
@@ -755,10 +806,14 @@ export const AppRegistrations: Component<AppRegistrationsProps> = (props) => {
                   >
                     <button
                       type="button"
-                      onClick={() => setEditing(editing() === app.clientId ? null : app.clientId)}
+                      onClick={() => setEditing(editing() === app.clientId
+                        ? null
+                        : app.clientId)}
                       disabled={busy() || app.revokedAt !== undefined}
                     >
-                      {editing() === app.clientId ? 'Close' : 'Edit'}
+                      {editing() === app.clientId
+                        ? 'Close'
+                        : 'Edit'}
                     </button>
                   </Show>
                   {/*
@@ -798,7 +853,9 @@ export const AppRegistrations: Component<AppRegistrationsProps> = (props) => {
                       onClick={() => void setVerified(app, !app.verified)}
                       disabled={busy() || app.revokedAt !== undefined}
                     >
-                      {!app.verified ? 'Vouch' : 'Withdraw vouch'}
+                      {!app.verified
+                        ? 'Vouch'
+                        : 'Withdraw vouch'}
                     </button>
                   </Show>
                   {/*
@@ -860,14 +917,18 @@ export const AppRegistrations: Component<AppRegistrationsProps> = (props) => {
           fallback={(
             <div class={actionsFooter}>
               <button type="button" onClick={() => setCreating(true)} disabled={busy()}>
-                {hubWide() ? 'Register a hub-wide app' : 'Register an app'}
+                {hubWide()
+                  ? 'Register a hub-wide app'
+                  : 'Register an app'}
               </button>
             </div>
           )}
         >
           <RegisterAppForm
             busy={busy()}
-            visibility={hubWide() ? AppVisibility.HUB_WIDE : AppVisibility.PRIVATE}
+            visibility={hubWide()
+              ? AppVisibility.HUB_WIDE
+              : AppVisibility.PRIVATE}
             onCancel={() => setCreating(false)}
             onRegistered={(text, app) => {
               setCreating(false)

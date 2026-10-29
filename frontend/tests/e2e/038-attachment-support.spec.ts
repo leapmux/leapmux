@@ -23,7 +23,9 @@ type PastedFiles = 'listed' | 'empty'
  */
 async function pastePng(page: Page, options: { name: string, files: PastedFiles }): Promise<void> {
   await composerEditor(page).evaluate((editor, { name, files }) => {
-    const png = new File([new Uint8Array([0x89, 0x50, 0x4E, 0x47])], name, { type: 'image/png' })
+    const png = new File([
+      new Uint8Array([0x89, 0x50, 0x4E, 0x47]),
+    ], name, { type: 'image/png' })
     const clipboardData = new DataTransfer()
     clipboardData.items.add(png)
     if (files === 'empty')
@@ -102,7 +104,9 @@ test.describe('attachment support', () => {
       FileReader.prototype.readAsArrayBuffer = function (file) {
         if (file instanceof File && file.name === 'broken.txt') {
           queueMicrotask(() => {
-            Object.defineProperty(this, 'error', { value: new DOMException('The file is unavailable.', 'NotReadableError') })
+            Object.defineProperty(this, 'error', {
+              value: new DOMException('The file is unavailable.', 'NotReadableError'),
+            })
             this.dispatchEvent(new ProgressEvent('error'))
           })
         }
@@ -142,27 +146,33 @@ test.describe('attachment support', () => {
             success(new File(['readable file'], name, { type: 'text/plain' }))
         },
       }))
-      Object.defineProperty(item, 'webkitGetAsEntry', { value: () => ({
-        isFile: false,
-        isDirectory: true,
-        name: 'project',
-        fullPath: '/project',
-        createReader: () => {
-          let first = true
-          return { readEntries: (success: (entries: unknown[]) => void, failure: (error: DOMException) => void) => {
-            if (first) {
-              first = false
-              success(entries)
+      Object.defineProperty(item, 'webkitGetAsEntry', {
+        value: () => ({
+          isFile: false,
+          isDirectory: true,
+          name: 'project',
+          fullPath: '/project',
+          createReader: () => {
+            let first = true
+            return {
+              readEntries: (success: (entries: unknown[]) => void, failure: (error: DOMException) => void) => {
+                if (first) {
+                  first = false
+                  success(entries)
+                }
+                else {
+                  failure(new DOMException('Unavailable', 'NotReadableError'))
+                }
+              },
             }
-            else {
-              failure(new DOMException('Unavailable', 'NotReadableError'))
-            }
-          } }
-        },
-      }) })
+          },
+        }),
+      })
       // Chromium returns a new item wrapper on each lookup. Keep the configured
       // wrapper in this event so the directory entry remains observable.
-      Object.defineProperty(transfer, 'items', { value: [item] })
+      Object.defineProperty(transfer, 'items', {
+        value: [item],
+      })
       for (const type of ['dragenter', 'dragover', 'drop'])
         editor.dispatchEvent(new DragEvent(type, { dataTransfer: transfer, bubbles: true, cancelable: true }))
     })
@@ -289,7 +299,9 @@ test.describe('attachment support', () => {
     const bytes = Array.from(readFileSync(writeAttachmentFixture('image', 'dropped.png')))
     await editor.evaluate((element, bytes) => {
       const transfer = new DataTransfer()
-      transfer.items.add(new File([new Uint8Array(bytes)], 'dropped.png', { type: 'image/png' }))
+      transfer.items.add(new File([
+        new Uint8Array(bytes),
+      ], 'dropped.png', { type: 'image/png' }))
       for (const type of ['dragenter', 'dragover', 'drop'])
         element.dispatchEvent(new DragEvent(type, { dataTransfer: transfer, bubbles: true, cancelable: true }))
     }, bytes)

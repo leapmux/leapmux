@@ -13,7 +13,9 @@ import { bufferModelOutput } from './modelStream'
 const MODEL_ROUTE = /^\/v1(?:beta)?\/models\/([\w.-]+):(streamGenerateContent|generateContent|countTokens)$/
 
 function writeGoogleError(response: ServerResponse, code: number, status: string, message: string): void {
-  writeMockJSON(response, code, { error: { code, status, message } })
+  writeMockJSON(response, code, {
+    error: { code, status, message },
+  })
 }
 
 /** Handle the native Google API through the shared scenario and accounting host. */
@@ -25,10 +27,16 @@ export async function handleGoogleModelHttp(request: IncomingMessage, response: 
     await handleGoogleRequest(request, response, url, route[1]!, route[2]!, host)
   }
   catch (error) {
-    if (response.headersSent)
-      response.destroy(error instanceof Error ? error : new Error(String(error)))
-    else
-      writeGoogleError(response, 400, 'INVALID_ARGUMENT', error instanceof Error ? error.message : String(error))
+    if (response.headersSent) {
+      response.destroy(error instanceof Error
+        ? error
+        : new Error(String(error)))
+    }
+    else {
+      writeGoogleError(response, 400, 'INVALID_ARGUMENT', error instanceof Error
+        ? error.message
+        : String(error))
+    }
   }
   return true
 }
@@ -48,7 +56,9 @@ async function handleGoogleRequest(request: IncomingMessage, response: ServerRes
     throw new Error('The Google model request requires a contents array.')
   if (operation === 'countTokens') {
     // This estimate supplies metadata. It never consumes a scripted content turn.
-    const totalTokens = body.contents.length === 0 ? 0 : Math.ceil(Buffer.byteLength(JSON.stringify(body.contents), 'utf8') / 4)
+    const totalTokens = body.contents.length === 0
+      ? 0
+      : Math.ceil(Buffer.byteLength(JSON.stringify(body.contents), 'utf8') / 4)
     writeMockJSON(response, 200, { totalTokens })
     return
   }
@@ -65,7 +75,9 @@ async function handleGoogleRequest(request: IncomingMessage, response: ServerRes
     return
   }
   const { step } = answer
-  answer.recordHttpResponse(response, () => step.error ? { code: step.error.code ?? 'UNKNOWN', message: step.error.message } : undefined)
+  answer.recordHttpResponse(response, () => step.error
+    ? { code: step.error.code ?? 'UNKNOWN', message: step.error.message }
+    : undefined)
   if (step.stopReason !== undefined)
     stopReasonToken('google-generative-language', step.stopReason)
   if (!await answer.holdStep({ request, response }))
@@ -87,31 +99,63 @@ function googleUsage(step: MockModelStep) {
 
 function googleResponse(model: string, parts: Record<string, unknown>[], step?: MockModelStep) {
   return {
-    candidates: [{ index: 0, content: { role: 'model', parts }, ...(step ? { finishReason: 'STOP' } : {}) }],
+    candidates: [
+      {
+        index: 0,
+        content: { role: 'model', parts },
+        ...(step
+          ? { finishReason: 'STOP' }
+          : {}),
+      },
+    ],
     modelVersion: model,
-    ...(step ? { usageMetadata: googleUsage(step) } : {}),
+    ...(step
+      ? {
+          usageMetadata: googleUsage(step),
+        }
+      : {}),
   }
 }
 
 async function writeGoogleResponse(response: ServerResponse, streaming: boolean, model: string, step: MockModelStep, stream: ModelStream): Promise<void> {
-  const tools = step.toolCalls?.map(tool => ({ functionCall: { id: tool.id, name: tool.name, args: tool.arguments ?? {} } })) ?? []
+  const tools = step.toolCalls?.map(tool => ({
+    functionCall: { id: tool.id, name: tool.name, args: tool.arguments ?? {} },
+  })) ?? []
   if (!streaming) {
     if (!await bufferModelOutput(stream, step))
       return
     const parts = [
-      ...(step.reasoning === undefined ? [] : [{ text: step.reasoning, thought: true }]),
-      ...(step.text === undefined ? [] : [{ text: step.text }]),
+      ...(step.reasoning === undefined
+        ? []
+        : [
+            { text: step.reasoning, thought: true },
+          ]),
+      ...(step.text === undefined
+        ? []
+        : [
+            { text: step.text },
+          ]),
       ...tools,
     ]
     writeMockJSON(response, 200, googleResponse(model, parts, step), rateLimitHeaders(step))
     return
   }
-  writeResponseHeaders(response, 200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', ...rateLimitHeaders(step) })
+  writeResponseHeaders(response, 200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache',
+    ...rateLimitHeaders(step),
+  })
   const emit = (parts: Record<string, unknown>[], final?: MockModelStep) => response.write(`data: ${JSON.stringify(googleResponse(model, parts, final))}\n\n`)
-  for await (const text of stream.chunks(step.reasoning))
-    emit([{ text, thought: true }])
-  for await (const text of stream.chunks(step.text))
-    emit([{ text }])
+  for await (const text of stream.chunks(step.reasoning)) {
+    emit([
+      { text, thought: true },
+    ])
+  }
+  for await (const text of stream.chunks(step.text)) {
+    emit([
+      { text },
+    ])
+  }
   if (!stream.active)
     return
   emit(tools, step)

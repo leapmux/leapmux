@@ -16,7 +16,10 @@ import { assistantBubbles, composerEditor, controlButton, expectNoControlBanner,
 export const NATIVE_CONTROL_QUESTION: QuestionRequest = {
   question: 'Choose the native control proof.',
   header: 'Proof',
-  options: [{ label: 'Blue', description: 'Use blue.' }, { label: 'Green', description: 'Use green.' }],
+  options: [
+    { label: 'Blue', description: 'Use blue.' },
+    { label: 'Green', description: 'Use green.' },
+  ],
 }
 
 /** One native question turn: the model asks, the reader answers in the banner, and the model answers after it. */
@@ -59,7 +62,11 @@ async function startQuestion(context: NativeScenarioContext, options: QuestionSt
     throw new Error('A native question turn needs at least one question.')
   const callId = options.callId ?? 'native-question'
   const start = await context.modelScript.queue(
-    { toolCalls: [askUserQuestionToolCall(context.provider, callId, [...options.questions])] },
+    {
+      toolCalls: [
+        askUserQuestionToolCall(context.provider, callId, [...options.questions]),
+      ],
+    },
     ...continuation,
   )
   await sendMessage(context.page, context.modelScript.prompt(options.prompt ?? 'Ask the scripted question, then report the answer.'))
@@ -79,7 +86,9 @@ async function startQuestion(context: NativeScenarioContext, options: QuestionSt
  */
 export async function exerciseQuestionAnswer(context: NativeScenarioContext, options: QuestionAnswerOptions): Promise<QuestionAnswerTurn> {
   const answer = options.answer ?? 'The native question answer was recorded.'
-  const { start, callId, banner } = await startQuestion(context, options, [nativeTextStep(context, answer)])
+  const { start, callId, banner } = await startQuestion(context, options, [
+    nativeTextStep(context, answer),
+  ])
   await options.reply(banner)
   await context.modelScript.waitForSteps(start + 2)
   await waitForAgentIdle(context.page)
@@ -167,8 +176,12 @@ export async function askQuestions(
   const before = (await context.modelScript.status()).requests.length
   await context.modelScript.fallback(nativeTextStep(context, ASKED_QUESTIONS_ANSWER))
   await context.modelScript.queue({
-    toolCalls: [askUserQuestionToolCall(context.provider, ASKED_QUESTIONS_CALL_ID, [...questions])],
-    ...(options.gate === undefined ? {} : { gate: options.gate }),
+    toolCalls: [
+      askUserQuestionToolCall(context.provider, ASKED_QUESTIONS_CALL_ID, [...questions]),
+    ],
+    ...(options.gate === undefined
+      ? {}
+      : { gate: options.gate }),
   })
   await sendMessage(context.page, context.modelScript.prompt('Ask the scripted questions and tell me what I answered.'))
   if (options.gate === undefined)
@@ -216,14 +229,18 @@ export function chooseQuestionPages(
       await openPage(index)
       if ('text' in answer) {
         await composerEditor(page).fill(answer.text)
-        await restoreQuestionTextDraft(context, answer.text, questions.length > 1 ? index : undefined)
+        await restoreQuestionTextDraft(context, answer.text, questions.length > 1
+          ? index
+          : undefined)
       }
       else {
         for (const label of answer.labels)
           await pickQuestionOption(banner, label)
         // A single choice can advance the page. Return before verifying its stored value.
         await openPage(index)
-        await restoreQuestionSelection(context, banner, answer.labels.at(-1)!, questions.length > 1 ? index : undefined)
+        await restoreQuestionSelection(context, banner, answer.labels.at(-1)!, questions.length > 1
+          ? index
+          : undefined)
       }
       await expect(banner).toContainText(questions[index]!.question)
     }
@@ -252,20 +269,38 @@ export async function exerciseQuestionPages(
     {
       header: 'Color',
       question: 'Which native color should this test use?',
-      options: [{ label: 'Blue', description: 'Use blue.' }, { label: 'Green', description: 'Use green.' }],
+      options: [
+        { label: 'Blue', description: 'Use blue.' },
+        { label: 'Green', description: 'Use green.' },
+      ],
     },
     {
       header: 'Size',
       question: 'Which native sizes should this test use?',
       multiSelect: multiple,
-      options: [{ label: 'Small', description: 'Use small.' }, { label: 'Medium', description: 'Use medium.' }, { label: 'Large', description: 'Use large.' }],
+      options: [
+        { label: 'Small', description: 'Use small.' },
+        { label: 'Medium', description: 'Use medium.' },
+        { label: 'Large', description: 'Use large.' },
+      ],
     },
   ]
   const result = await exerciseQuestionAnswer(context, {
     questions,
     callId: 'native-question-pages',
-    reply: chooseQuestionPages(context, questions, [{ labels: ['Green'] }, { labels: multiple ? ['Large', 'Small'] : ['Large'] }]),
-    ...(options.readResult ? { readResult: options.readResult } : {}),
+    reply: chooseQuestionPages(context, questions, [
+      {
+        labels: ['Green'],
+      },
+      {
+        labels: multiple
+          ? ['Large', 'Small']
+          : ['Large'],
+      },
+    ]),
+    ...(options.readResult
+      ? { readResult: options.readResult }
+      : {}),
   })
   expect(result.result).toContain('Green')
   expect(result.result).toContain('Large')
@@ -294,20 +329,24 @@ export async function exerciseQuestionPreviews(context: ManagedNativeScenarioCon
     await expect(banner.getByRole('region', { name: 'Green preview' })).toBeInViewport()
     const size = await readAttached(banner, 'the native question preview banner', (matches) => {
       const element = matches.find(element => element.isConnected)
-      return element ? { width: element.clientWidth, scroll: element.scrollWidth } : null
+      return element
+        ? { width: element.clientWidth, scroll: element.scrollWidth }
+        : null
     })
     expect(size.width).toBeGreaterThan(0)
     expect(size.scroll).toBeLessThanOrEqual(size.width)
   }
   const turn = await exerciseQuestionAnswer(context, {
-    questions: [{
-      question: 'Pick a color.',
-      header: 'Color',
-      options: [
-        { label: 'Blue', description: 'Choose the color blue.', preview: diagram },
-        { label: 'Green', description: 'Choose the color green.', preview: `\`\`\`ts\n${NATIVE_QUESTION_CODE_PREVIEW}\n\`\`\`` },
-      ],
-    }],
+    questions: [
+      {
+        question: 'Pick a color.',
+        header: 'Color',
+        options: [
+          { label: 'Blue', description: 'Choose the color blue.', preview: diagram },
+          { label: 'Green', description: 'Choose the color green.', preview: `\`\`\`ts\n${NATIVE_QUESTION_CODE_PREVIEW}\n\`\`\`` },
+        ],
+      },
+    ],
     callId: 'color-question',
     reply: async (banner) => {
       await expectPreviews(banner)
@@ -333,7 +372,9 @@ export async function exerciseTypedQuestionAnswer(
   const turn = await exerciseQuestionAnswer(context, {
     questions,
     callId: 'typed-native-question',
-    reply: chooseQuestionPages(context, questions, [{ text }]),
+    reply: chooseQuestionPages(context, questions, [
+      { text },
+    ]),
     ...options,
   })
   expect(turn.result).toContain(text)

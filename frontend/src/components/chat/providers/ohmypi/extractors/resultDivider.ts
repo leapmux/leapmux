@@ -36,18 +36,33 @@ export function ohMyPiResultDivider(parsed: unknown, completion?: MessageComplet
     return null
   const durationMs = pickNumber(parsed, 'duration_ms')
   const continues = parsed.isTerminal === false && 'more work follows'
-  if (completion === MessageCompletion.INTERRUPTED)
-    return { label: turnEndLabel('interrupted', { durationMs }) }
+  if (completion === MessageCompletion.INTERRUPTED) {
+    return {
+      label: turnEndLabel('interrupted', { durationMs }),
+    }
+  }
   const assistant = lastAssistantMessage(parsed.messages)
-  const stopReason = assistant ? pickString(assistant, 'stopReason') : ''
+  const stopReason = assistant
+    ? pickString(assistant, 'stopReason')
+    : ''
   if (stopReason === OH_MY_PI_STOP_REASON.Error) {
     return {
-      label: turnEndLabel('failed', { durationMs, qualifiers: [continues], reason: pickString(assistant, 'errorMessage') }),
+      label: turnEndLabel('failed', {
+        durationMs,
+        qualifiers: [continues],
+        reason: pickString(assistant, 'errorMessage'),
+      }),
       isError: true,
     }
   }
-  if (stopReason === OH_MY_PI_STOP_REASON.Aborted)
-    return { label: turnEndLabel('interrupted', { durationMs, qualifiers: [continues] }) }
+  if (stopReason === OH_MY_PI_STOP_REASON.Aborted) {
+    return {
+      label: turnEndLabel('interrupted', {
+        durationMs,
+        qualifiers: [continues],
+      }),
+    }
+  }
   return {
     label: turnEndLabel('ended', {
       durationMs,

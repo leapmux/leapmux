@@ -12,12 +12,17 @@ describe('SpanLineGapBridges', () => {
   // gap bridge connects. The first row has nothing above it, so it never draws a bridge.
   const entry = (id: string): SpanBridgeEntry => ({
     message: { id, spanId: 's1' },
-    parsedSpanLines: [{ type: 'active', span_id: 's1' }],
+    parsedSpanLines: [
+      { type: 'active', span_id: 's1' },
+    ],
     category: { kind: 'assistant_text' },
   })
 
   it('draws a bridge for a connecting row but not for the first (unconnected) row', () => {
-    const entries = [entry('a'), entry('b')]
+    const entries = [
+      entry('a'),
+      entry('b'),
+    ]
     const { container } = render(() => (
       <SpanLineGapBridges
         entries={entries}
@@ -37,7 +42,10 @@ describe('SpanLineGapBridges', () => {
     // Models a fling skeleton: while the row shows a placeholder (no span column) its
     // bridge must hide, then reappear when the real row upgrades in.
     const [hidden, setHidden] = createSignal(false)
-    const entries = [entry('a'), entry('b')]
+    const entries = [
+      entry('a'),
+      entry('b'),
+    ]
     const { container } = render(() => (
       <SpanLineGapBridges
         entries={entries}
@@ -61,7 +69,10 @@ describe('SpanLineGapBridges', () => {
     // segment sized from a token was built for a gap that does not exist. Reading the
     // offset map's own decider collapses it, and keeps one function in charge of both a
     // row's offset and the rail that spans the space above it.
-    const entries = [entry('a'), entry('b')]
+    const entries = [
+      entry('a'),
+      entry('b'),
+    ]
     const render8 = render(() => (
       <SpanLineGapBridges
         entries={entries}

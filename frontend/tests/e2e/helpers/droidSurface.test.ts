@@ -23,11 +23,19 @@ describe('handleDroidHttp', () => {
     expect(JSON.parse(String(result.end.mock.calls[0]?.[0]))).toEqual({ userId: 'leapmux-e2e-user', orgId: 'leapmux-e2e-org' })
   })
 
-  it.each([undefined, '', 'Bearer other-key', 'isolated-key', 'Bearer isolated-key '])('refuses an absent or different credential: %j', (authorization) => {
+  it.each([
+    undefined,
+    '',
+    'Bearer other-key',
+    'isolated-key',
+    'Bearer isolated-key ',
+  ])('refuses an absent or different credential: %j', (authorization) => {
     const result = exchange('GET', '/v1/api/cli/whoami', authorization)
     expect(result.owned).toBe(true)
     expect(result.response.statusCode).toBe(401)
-    expect(JSON.parse(String(result.end.mock.calls[0]?.[0]))).toEqual({ error: { message: 'The identity request requires the isolated Droid model key.' } })
+    expect(JSON.parse(String(result.end.mock.calls[0]?.[0]))).toEqual({
+      error: { message: 'The identity request requires the isolated Droid model key.' },
+    })
   })
 
   it.each([

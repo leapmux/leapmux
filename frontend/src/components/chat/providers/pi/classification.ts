@@ -46,8 +46,11 @@ export function classifyPiMessage(input: ClassificationInput): MessageCategory {
 
   if (type === PI_EVENT.EntryAppended) {
     const entry = piSessionEntry(parent)
-    if (entry?.type === PI_ENTRY_TYPE.CustomMessage && entry.display === true)
-      return piContentText(parent).trim() ? { kind: 'assistant_text' } : { kind: 'hidden' }
+    if (entry?.type === PI_ENTRY_TYPE.CustomMessage && entry.display === true) {
+      return piContentText(parent).trim()
+        ? { kind: 'assistant_text' }
+        : { kind: 'hidden' }
+    }
     if (entry?.type === PI_ENTRY_TYPE.Compaction)
       return notification([parent])
     return { kind: 'unknown' }
@@ -68,7 +71,9 @@ export function classifyPiMessage(input: ClassificationInput): MessageCategory {
     if (piVisibleCustomMessage(parent)) {
       if (piSubagentNotifications(parent))
         return { kind: 'tool_result' }
-      return piContentText(parent).trim() ? { kind: 'assistant_text' } : { kind: 'hidden' }
+      return piContentText(parent).trim()
+        ? { kind: 'assistant_text' }
+        : { kind: 'hidden' }
     }
     const messageRole = pickString(pickObject(parent, 'message'), 'role')
     if (messageRole === PI_ROLE.Custom)
@@ -86,8 +91,11 @@ export function classifyPiMessage(input: ClassificationInput): MessageCategory {
     // A proposed plan uses piPlanStatement in both extraction paths.
     // Either span row can contain the plan, so test it before the two tool branches.
     const plan = piPlanStatement(parent)
-    if (plan)
-      return plan.kind === 'plan' ? { kind: 'assistant_plan' } : { kind: 'assistant_text' }
+    if (plan) {
+      return plan.kind === 'plan'
+        ? { kind: 'assistant_plan' }
+        : { kind: 'assistant_text' }
+    }
   }
   if (type === PI_EVENT.ToolExecutionStart) {
     // An interrupted call stores its start frame as a closing row with any native partial result.

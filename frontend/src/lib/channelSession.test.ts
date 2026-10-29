@@ -186,13 +186,18 @@ describe('channelSession', () => {
 
   it('shouldInitiateRekey is true on soft nonce or age', () => {
     const session = new ChannelSession(emptyDeps())
-    const soft = makeChannel({ session: mockCipher(true, false), lastRekeyAt: performance.now() })
+    const soft = makeChannel({
+      session: mockCipher(true, false),
+      lastRekeyAt: performance.now(),
+    })
     expect(session.shouldInitiateRekey(soft)).toBe(true)
 
     const aged = makeChannel({ lastRekeyAt: performance.now() - SESSION_KEY_MAX_AGE_MS - 1 })
     expect(session.shouldInitiateRekey(aged)).toBe(true)
 
-    const fresh = makeChannel({ lastRekeyAt: performance.now() })
+    const fresh = makeChannel({
+      lastRekeyAt: performance.now(),
+    })
     expect(session.shouldInitiateRekey(fresh)).toBe(false)
   })
 
@@ -370,7 +375,9 @@ describe('channelSession', () => {
       closeChannel: async () => {},
       onSendFailure: () => {},
     })
-    const ch = makeChannel({ lastRekeyAt: performance.now() })
+    const ch = makeChannel({
+      lastRekeyAt: performance.now(),
+    })
     await session.ensureRekeyed(ch)
     expect(sendToWire).not.toHaveBeenCalled()
   })
@@ -511,7 +518,9 @@ describe('channelSession', () => {
 
   it('needsRekeyGate is true for age or hard ceiling', () => {
     const session = new ChannelSession(emptyDeps())
-    expect(session.needsRekeyGate(makeChannel({ lastRekeyAt: performance.now() }))).toBe(false)
+    expect(session.needsRekeyGate(makeChannel({
+      lastRekeyAt: performance.now(),
+    }))).toBe(false)
     expect(session.needsRekeyGate(makeChannel({
       lastRekeyAt: performance.now() - SESSION_KEY_MAX_AGE_MS - 1,
     }))).toBe(true)

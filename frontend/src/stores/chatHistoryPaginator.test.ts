@@ -6,7 +6,9 @@ import { CATCH_UP_GAP_LIMIT, MESSAGE_PAGE_LIMIT } from '~/generated/contracts/ch
 
 // listAgentMessages is the only external dependency; hoist the mock so the factory
 // can reference it (vi.mock is hoisted above imports).
-const { listAgentMessages } = vi.hoisted(() => ({ listAgentMessages: vi.fn() }))
+const { listAgentMessages } = vi.hoisted(() => ({
+  listAgentMessages: vi.fn(),
+}))
 vi.mock('~/api/workerRpc', () => ({ listAgentMessages }))
 
 const { createHistoryPaginator, linkWatchSignal } = await import('./chatHistoryPaginator')
@@ -22,7 +24,13 @@ function makeMsg(seq: bigint, id?: string): AgentChatMessage {
 }
 
 function page(messages: AgentChatMessage[], hasMore: boolean, latestSeq?: bigint) {
-  return { messages, hasMore, latestSeq, todos: [], todosLoaded: false }
+  return {
+    messages,
+    hasMore,
+    latestSeq,
+    todos: [],
+    todosLoaded: false,
+  }
 }
 
 function harness(init: {
@@ -48,12 +56,23 @@ function harness(init: {
   const trimNewestEnd = vi.fn()
   const trimOldestEnd = vi.fn()
   const addMessage = vi.fn((agentId: string, msg: AgentChatMessage) => {
-    setState('messagesByAgent', agentId, prev => [...(prev ?? []), msg])
+    setState('messagesByAgent', agentId, prev => [
+      ...(prev ?? []),
+      msg,
+    ])
   })
   const mergeFetchedMessages = vi.fn(
     (agentId: string, fetched: AgentChatMessage[], side: 'older' | 'newer') => {
       setState('messagesByAgent', agentId, prev =>
-        side === 'older' ? [...fetched, ...(prev ?? [])] : [...(prev ?? []), ...fetched])
+        side === 'older'
+          ? [
+              ...fetched,
+              ...(prev ?? []),
+            ]
+          : [
+              ...(prev ?? []),
+              ...fetched,
+            ])
     },
   )
 
@@ -145,8 +164,15 @@ describe('chatHistoryPaginator', () => {
 
   describe('catchUpToTail is viewport-aware', () => {
     it('caps the oldest end to the CEILING (not the base), preserving a scrolled-up buffer', async () => {
-      const h = harness({ messages: [makeMsg(1n)], hasMoreNewer: false })
-      listAgentMessages.mockResolvedValue(page([makeMsg(2n)], false))
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+        hasMoreNewer: false,
+      })
+      listAgentMessages.mockResolvedValue(page([
+        makeMsg(2n),
+      ], false))
 
       await h.paginator.catchUpToTail('w', 'a', 1n)
 
@@ -162,7 +188,14 @@ describe('chatHistoryPaginator', () => {
       // broadcast that couldn't lower the high-water. The server has nothing more, so
       // the loop drains to an empty page; without a settle, caughtUp never resolves and
       // the continuous reconcile re-fires this empty fetch forever.
-      const h = harness({ messages: [makeMsg(1n)], hasMoreNewer: false, caughtUp: () => false, liveGet: () => 5n })
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+        hasMoreNewer: false,
+        caughtUp: () => false,
+        liveGet: () => 5n,
+      })
       listAgentMessages.mockResolvedValue(page([], false))
 
       await h.paginator.catchUpToTail('w', 'a', 1n)
@@ -175,7 +208,12 @@ describe('chatHistoryPaginator', () => {
       // No server rows remain (the entire history was deleted) yet the recorded tail is
       // still positive: settleToWindow refuses an empty window, so an empty window must
       // route to resetToEmptyIfStale instead.
-      const h = harness({ messages: [], hasMoreNewer: false, caughtUp: () => false, liveGet: () => 5n })
+      const h = harness({
+        messages: [],
+        hasMoreNewer: false,
+        caughtUp: () => false,
+        liveGet: () => 5n,
+      })
       listAgentMessages.mockResolvedValue(page([], false))
 
       await h.paginator.catchUpToTail('w', 'a', 0n)
@@ -185,7 +223,14 @@ describe('chatHistoryPaginator', () => {
     })
 
     it('does NOT settle when the drain caught up (recorded tail reached)', async () => {
-      const h = harness({ messages: [makeMsg(1n)], hasMoreNewer: false, caughtUp: () => true, liveGet: () => 1n })
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+        hasMoreNewer: false,
+        caughtUp: () => true,
+        liveGet: () => 1n,
+      })
       listAgentMessages.mockResolvedValue(page([], false))
 
       await h.paginator.catchUpToTail('w', 'a', 1n)
@@ -197,11 +242,20 @@ describe('chatHistoryPaginator', () => {
 
   describe('catchUpToTail re-anchors an over-limit gap', () => {
     it('stops after one page, records the live tail, and skips the stale-tail clamp', async () => {
-      const h = harness({ messages: [makeMsg(1n)], hasMoreNewer: false })
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+        hasMoreNewer: false,
+      })
       const latestSeq = 2n + CATCH_UP_GAP_LIMIT + 1n
       listAgentMessages
-        .mockResolvedValueOnce(page([makeMsg(2n)], true, latestSeq))
-        .mockResolvedValueOnce(page([makeMsg(3n)], false, latestSeq))
+        .mockResolvedValueOnce(page([
+          makeMsg(2n),
+        ], true, latestSeq))
+        .mockResolvedValueOnce(page([
+          makeMsg(3n),
+        ], false, latestSeq))
 
       await h.paginator.catchUpToTail('w', 'a', 1n)
 
@@ -217,12 +271,18 @@ describe('chatHistoryPaginator', () => {
     it('drains a gap at the inclusive limit and finishes at the recorded tail', async () => {
       const latestSeq = 2n + CATCH_UP_GAP_LIMIT
       const h = harness({
-        messages: [makeMsg(1n)],
+        messages: [
+          makeMsg(1n),
+        ],
         hasMoreNewer: false,
       })
       listAgentMessages
-        .mockResolvedValueOnce(page([makeMsg(2n)], true, latestSeq))
-        .mockResolvedValueOnce(page([makeMsg(latestSeq)], false, latestSeq))
+        .mockResolvedValueOnce(page([
+          makeMsg(2n),
+        ], true, latestSeq))
+        .mockResolvedValueOnce(page([
+          makeMsg(latestSeq),
+        ], false, latestSeq))
 
       await h.paginator.catchUpToTail('w', 'a', 1n)
 
@@ -235,10 +295,19 @@ describe('chatHistoryPaginator', () => {
     })
 
     it('drains by hasMore when latestSeq is absent', async () => {
-      const h = harness({ messages: [makeMsg(1n)], hasMoreNewer: false })
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+        hasMoreNewer: false,
+      })
       listAgentMessages
-        .mockResolvedValueOnce(page([makeMsg(2n)], true))
-        .mockResolvedValueOnce(page([makeMsg(3n)], false))
+        .mockResolvedValueOnce(page([
+          makeMsg(2n),
+        ], true))
+        .mockResolvedValueOnce(page([
+          makeMsg(3n),
+        ], false))
 
       await h.paginator.catchUpToTail('w', 'a', 1n)
 
@@ -247,9 +316,16 @@ describe('chatHistoryPaginator', () => {
     })
 
     it('does not lower a live tail that a broadcast raised above the page tail', async () => {
-      const h = harness({ messages: [makeMsg(1n)], hasMoreNewer: false })
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+        hasMoreNewer: false,
+      })
       h.bumpLiveTail('a', 300n)
-      listAgentMessages.mockResolvedValue(page([makeMsg(2n)], false, 200n))
+      listAgentMessages.mockResolvedValue(page([
+        makeMsg(2n),
+      ], false, 200n))
 
       await h.paginator.catchUpToTail('w', 'a', 1n)
 
@@ -264,11 +340,18 @@ describe('chatHistoryPaginator', () => {
       // workspaces mid-fetch, aborting the WatchEvents subscription. The fetch must
       // discard its result rather than write a LATEST page into the navigated-away
       // agent's window (the leak this signal threading closes).
-      const h = harness({ messages: [], hasMoreNewer: false, caughtUp: () => false, liveGet: () => 5n })
+      const h = harness({
+        messages: [],
+        hasMoreNewer: false,
+        caughtUp: () => false,
+        liveGet: () => 5n,
+      })
       const watch = new AbortController()
       listAgentMessages.mockImplementation(async () => {
         watch.abort() // the subscription tore down while the request was in flight
-        return page([makeMsg(10n)], false)
+        return page([
+          makeMsg(10n),
+        ], false)
       })
 
       await h.paginator.jumpToLatestMessages('w', 'a', watch.signal)
@@ -277,12 +360,21 @@ describe('chatHistoryPaginator', () => {
     })
 
     it('applies the latest page on a normal re-anchor (no watch abort)', async () => {
-      const h = harness({ messages: [], hasMoreNewer: false, caughtUp: () => true, liveGet: () => 0n })
-      listAgentMessages.mockResolvedValue(page([makeMsg(10n)], false))
+      const h = harness({
+        messages: [],
+        hasMoreNewer: false,
+        caughtUp: () => true,
+        liveGet: () => 0n,
+      })
+      listAgentMessages.mockResolvedValue(page([
+        makeMsg(10n),
+      ], false))
 
       await h.paginator.jumpToLatestMessages('w', 'a', new AbortController().signal)
 
-      expect(h.applyMessages).toHaveBeenCalledWith('a', [makeMsg(10n)], false)
+      expect(h.applyMessages).toHaveBeenCalledWith('a', [
+        makeMsg(10n),
+      ], false)
     })
   })
 
@@ -291,14 +383,27 @@ describe('chatHistoryPaginator', () => {
     // before/after pages and assert the cursor values.
     function routeByAnchor(before: ReturnType<typeof page>, after: ReturnType<typeof page>) {
       listAgentMessages.mockImplementation(async (_w: string, req: { anchor: number }) =>
-        req.anchor === MessagePageAnchor.BEFORE ? before : after)
+        req.anchor === MessagePageAnchor.BEFORE
+          ? before
+          : after)
     }
 
     it('fetches BEFORE seq+1 and AFTER seq, applies the concatenated window, and sets flags', async () => {
-      const h = harness({ messages: [makeMsg(1n)], caughtUp: () => true })
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+        caughtUp: () => true,
+      })
       routeByAnchor(
-        page([makeMsg(4n), makeMsg(5n)], true), // more older history exists
-        page([makeMsg(6n), makeMsg(7n)], false),
+        page([
+          makeMsg(4n),
+          makeMsg(5n),
+        ], true), // more older history exists
+        page([
+          makeMsg(6n),
+          makeMsg(7n),
+        ], false),
       )
 
       await h.paginator.jumpToMessagesAroundSeq('w', 'a', 5n)
@@ -307,17 +412,29 @@ describe('chatHistoryPaginator', () => {
       expect(listAgentMessages).toHaveBeenCalledWith('w', expect.objectContaining({ anchor: MessagePageAnchor.BEFORE, cursorSeq: 6n }), expect.anything())
       expect(listAgentMessages).toHaveBeenCalledWith('w', expect.objectContaining({ anchor: MessagePageAnchor.AFTER, cursorSeq: 5n }), expect.anything())
       // One window swap with the disjoint, ascending concatenation; hasMoreOlder from before.
-      expect(h.applyMessages).toHaveBeenCalledWith('a', [makeMsg(4n), makeMsg(5n), makeMsg(6n), makeMsg(7n)], true)
+      expect(h.applyMessages).toHaveBeenCalledWith('a', [
+        makeMsg(4n),
+        makeMsg(5n),
+        makeMsg(6n),
+        makeMsg(7n),
+      ], true)
       // after.hasMore=false and caughtUp -> no newer.
       expect(h.state.hasMoreNewer.a).toBe(false)
     })
 
     it('does not overflow the BEFORE cursor when seeking the maximum int64 seq', async () => {
-      const h = harness({ messages: [makeMsg(1n)], caughtUp: () => true })
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+        caughtUp: () => true,
+      })
       const maxInt64Seq = 9223372036854775807n
       listAgentMessages.mockImplementation(async (_w: string, req: { anchor: number }) =>
         req.anchor === MessagePageAnchor.LATEST
-          ? page([makeMsg(maxInt64Seq)], true)
+          ? page([
+              makeMsg(maxInt64Seq),
+            ], true)
           : page([], false))
 
       await h.paginator.jumpToMessagesAroundSeq('w', 'a', maxInt64Seq)
@@ -334,13 +451,24 @@ describe('chatHistoryPaginator', () => {
       expect(listAgentMessages).not.toHaveBeenCalledWith('w', expect.objectContaining({
         cursorSeq: maxInt64Seq + 1n,
       }), expect.anything())
-      expect(h.applyMessages).toHaveBeenCalledWith('a', [makeMsg(maxInt64Seq)], true)
+      expect(h.applyMessages).toHaveBeenCalledWith('a', [
+        makeMsg(maxInt64Seq),
+      ], true)
       expect(h.state.hasMoreNewer.a).toBe(false)
     })
 
     it('keeps hasMoreNewer set when a live message bumped the tail during the fetch (!caughtUp)', async () => {
-      const h = harness({ messages: [makeMsg(1n)], caughtUp: () => false })
-      routeByAnchor(page([makeMsg(5n)], false), page([makeMsg(6n)], false))
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+        caughtUp: () => false,
+      })
+      routeByAnchor(page([
+        makeMsg(5n),
+      ], false), page([
+        makeMsg(6n),
+      ], false))
 
       await h.paginator.jumpToMessagesAroundSeq('w', 'a', 5n)
 
@@ -349,14 +477,25 @@ describe('chatHistoryPaginator', () => {
     })
 
     it('lands on the surviving newest rows when the target seq is in a deleted prefix', async () => {
-      const h = harness({ messages: [makeMsg(1n)], caughtUp: () => true })
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+        caughtUp: () => true,
+      })
       // BEFORE empty (nothing at-or-below the deleted target), AFTER has survivors.
-      routeByAnchor(page([], false), page([makeMsg(8n), makeMsg(9n)], false))
+      routeByAnchor(page([], false), page([
+        makeMsg(8n),
+        makeMsg(9n),
+      ], false))
 
       await h.paginator.jumpToMessagesAroundSeq('w', 'a', 3n)
 
       // hasMoreOlder from before.hasMore=false (nothing older survives).
-      expect(h.applyMessages).toHaveBeenCalledWith('a', [makeMsg(8n), makeMsg(9n)], false)
+      expect(h.applyMessages).toHaveBeenCalledWith('a', [
+        makeMsg(8n),
+        makeMsg(9n),
+      ], false)
     })
 
     it('carries the watch signal to BOTH page requests, so a caller can abort the round trip', async () => {
@@ -364,7 +503,12 @@ describe('chatHistoryPaginator', () => {
       // Suppressing its landing is not enough: the fetch would still arrive and SWAP THE
       // WINDOW, leaving the reader's own scroll position over a window centred somewhere they
       // abandoned. The signal has to reach the transport.
-      const h = harness({ messages: [makeMsg(1n)], caughtUp: () => true })
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+        caughtUp: () => true,
+      })
       const watch = new AbortController()
       // Hold both pages in flight, so the abort lands while the requests are still open --
       // which is the only moment aborting them means anything.
@@ -372,9 +516,13 @@ describe('chatHistoryPaginator', () => {
       listAgentMessages.mockImplementation((_w: string, req: { anchor: number }) =>
         req.anchor === MessagePageAnchor.BEFORE
           ? new Promise((resolve) => {
-              releaseBefore = () => resolve(page([makeMsg(5n)], false))
+              releaseBefore = () => resolve(page([
+                makeMsg(5n),
+              ], false))
             })
-          : Promise.resolve(page([makeMsg(6n)], false)))
+          : Promise.resolve(page([
+              makeMsg(6n),
+            ], false)))
 
       const jump = h.paginator.jumpToMessagesAroundSeq('w', 'a', 5n, watch.signal)
       await Promise.resolve()
@@ -396,7 +544,12 @@ describe('chatHistoryPaginator', () => {
     it('leaves the window untouched when the fetch rejects because it was aborted', async () => {
       // An abort is how this fetch is designed to end early, so it must not read as a failure
       // and must not disturb the window the reader is looking at.
-      const h = harness({ messages: [makeMsg(1n)], caughtUp: () => true })
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+        caughtUp: () => true,
+      })
       const watch = new AbortController()
       listAgentMessages.mockImplementation(async () => {
         watch.abort()
@@ -408,7 +561,12 @@ describe('chatHistoryPaginator', () => {
     })
 
     it('empties the window and resets a stale tail when the history vanished around the seq', async () => {
-      const h = harness({ messages: [makeMsg(1n)], caughtUp: () => true })
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+        caughtUp: () => true,
+      })
       routeByAnchor(page([], false), page([], false))
 
       await h.paginator.jumpToMessagesAroundSeq('w', 'a', 5n)
@@ -420,7 +578,12 @@ describe('chatHistoryPaginator', () => {
 
   describe('catchUpToTail is idempotent under the continuous reconcile effect', () => {
     it('skips a re-kick while a catch-up is already draining the agent (no RPC thrash)', async () => {
-      const h = harness({ messages: [makeMsg(1n)], hasMoreNewer: false })
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+        hasMoreNewer: false,
+      })
       // The first page hangs so the catch-up stays in flight; the second kick (what the
       // reconcile effect fires on every window/live-tail mutation) must no-op rather than
       // abort and re-issue the in-flight page.
@@ -436,9 +599,13 @@ describe('chatHistoryPaginator', () => {
 
       // Let the first drain (one page, no more) and confirm the slot is released so a
       // LATER kick (a genuinely new lag) can run again.
-      resolveFirst(page([makeMsg(2n)], false))
+      resolveFirst(page([
+        makeMsg(2n),
+      ], false))
       await first
-      listAgentMessages.mockResolvedValue(page([makeMsg(3n)], false))
+      listAgentMessages.mockResolvedValue(page([
+        makeMsg(3n),
+      ], false))
       await h.paginator.catchUpToTail('w', 'a', 2n)
       expect(listAgentMessages).toHaveBeenCalledTimes(2)
     })
@@ -450,7 +617,13 @@ describe('chatHistoryPaginator', () => {
       // still advances the window, so the bounded fill runs out of attempts and PARKS:
       // hasMoreNewer is re-flagged AND the gap is tagged exhaustion-forced so the
       // reconcile resumes it (rather than stranding a following reader behind the affordance).
-      const h = harness({ messages: [makeMsg(1n)], hasMoreNewer: false, caughtUp: () => false })
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+        hasMoreNewer: false,
+        caughtUp: () => false,
+      })
       let next = 2n
       listAgentMessages.mockImplementation(() => {
         const m = makeMsg(next)
@@ -463,13 +636,23 @@ describe('chatHistoryPaginator', () => {
     })
 
     it('resumeDeferredTailFill no-ops when no deferral is armed', async () => {
-      const h = harness({ messages: [makeMsg(1n)], hasMoreNewer: false })
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+        hasMoreNewer: false,
+      })
       await h.paginator.resumeDeferredTailFill('w', 'a')
       expect(listAgentMessages).not.toHaveBeenCalled()
     })
 
     it('a fresh fill that is already caught up clears a prior deferral', async () => {
-      const h = harness({ messages: [makeMsg(1n)], hasMoreNewer: true }) // caughtUp default true
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+        hasMoreNewer: true,
+      }) // caughtUp default true
       h.setState('tailFillDeferred', 'a', true)
       await h.paginator.forwardFillToLiveTail('w', 'a', new AbortController().signal, 0n)
       // Entry clears it; caught up so the exhaustion branch never re-arms it.
@@ -478,7 +661,13 @@ describe('chatHistoryPaginator', () => {
 
     it('resumeDeferredTailFill resumes a parked fill and clears the deferral once the storm subsides', async () => {
       let caught = false
-      const h = harness({ messages: [makeMsg(1n)], hasMoreNewer: false, caughtUp: () => caught })
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+        hasMoreNewer: false,
+        caughtUp: () => caught,
+      })
       let next = 2n
       listAgentMessages.mockImplementation(() => {
         const m = makeMsg(next)
@@ -497,7 +686,14 @@ describe('chatHistoryPaginator', () => {
 
   describe('catchUpToTail frees the single-flight slot at abort time', () => {
     it('lets a re-kick run instead of dropping it when a prior loop was aborted mid-await', async () => {
-      const h = harness({ messages: [makeMsg(1n)], hasMoreNewer: false, caughtUp: () => false, liveGet: () => 9n })
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+        hasMoreNewer: false,
+        caughtUp: () => false,
+        liveGet: () => 9n,
+      })
       const watch = new AbortController()
       let resolveFirst: (v: ReturnType<typeof page>) => void = () => {}
       listAgentMessages.mockReturnValueOnce(new Promise((r) => {
@@ -506,7 +702,9 @@ describe('chatHistoryPaginator', () => {
       const first = h.paginator.catchUpToTail('w', 'a', 1n, watch.signal)
       await Promise.resolve() // let the first loop reach its hung await
       watch.abort() // teardown aborts it; the slot must free NOW, not at resume
-      listAgentMessages.mockResolvedValue(page([makeMsg(2n)], false))
+      listAgentMessages.mockResolvedValue(page([
+        makeMsg(2n),
+      ], false))
       await h.paginator.catchUpToTail('w', 'a', 1n) // re-kick
       expect(listAgentMessages).toHaveBeenCalledTimes(2) // would be 1 if the slot were still held
       resolveFirst(page([], false))
@@ -519,7 +717,14 @@ describe('chatHistoryPaginator', () => {
       // When that aborted loop finally resumes into its `finally`, it must NOT delete the
       // superseding loop's slot -- else the next reconcile tick passes the single-flight guard,
       // starts a THIRD loop, and aborts the superseding loop's in-flight page (RPC thrash).
-      const h = harness({ messages: [makeMsg(1n)], hasMoreNewer: false, caughtUp: () => false, liveGet: () => 9n })
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+        hasMoreNewer: false,
+        caughtUp: () => false,
+        liveGet: () => 9n,
+      })
       const watch = new AbortController()
       let resolveFirst: (v: ReturnType<typeof page>) => void = () => {}
       let resolveSecond: (v: ReturnType<typeof page>) => void = () => {}
@@ -600,7 +805,12 @@ describe('linkWatchSignal', () => {
   it('cleans up the watch listener when catchuptotail completes normally', async () => {
     const watch = new AbortController()
     const remove = vi.spyOn(watch.signal, 'removeEventListener')
-    const h = harness({ messages: [makeMsg(1n)], hasMoreNewer: false })
+    const h = harness({
+      messages: [
+        makeMsg(1n),
+      ],
+      hasMoreNewer: false,
+    })
     listAgentMessages.mockResolvedValue(page([], false))
 
     await h.paginator.catchUpToTail('w', 'a', 1n, watch.signal)

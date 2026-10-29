@@ -119,8 +119,11 @@ export function createLiveTailTracker() {
       }
       // Above it: lower ONLY a stale phantom in the reconciled (seq, ceiling] band. A
       // recorded tail above the ceiling is a live arrival and stays put.
-      if (recorded > seq && (reapCeilingSeq === undefined || recorded <= reapCeilingSeq))
-        setByAgent(agentId, seq > 0n ? seq : 0n)
+      if (recorded > seq && (reapCeilingSeq === undefined || recorded <= reapCeilingSeq)) {
+        setByAgent(agentId, seq > 0n
+          ? seq
+          : 0n)
+      }
     },
     /**
      * Drop an agent's recorded live tail entirely when the agent is closed.

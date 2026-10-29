@@ -27,14 +27,29 @@ import '../goose/plugin'
  * payloads would assert that rule rather than the classification this test is about.
  */
 const PAYLOAD: Record<string, Record<string, unknown>> = {
-  [ACP_SESSION_UPDATE.TOOL_CALL]: { toolCallId: 'c1', title: 'read', kind: 'read', status: 'pending' },
+  [ACP_SESSION_UPDATE.TOOL_CALL]: {
+    toolCallId: 'c1',
+    title: 'read',
+    kind: 'read',
+    status: 'pending',
+  },
   [ACP_SESSION_UPDATE.TOOL_CALL_UPDATE]: { toolCallId: 'c1', status: 'completed' },
-  [ACP_SESSION_UPDATE.PLAN]: { entries: [{ content: 'Do the thing', status: 'pending' }] },
-  [ACP_SESSION_UPDATE.USER_MESSAGE_CHUNK]: { content: { type: 'text', text: 'hello' } },
+  [ACP_SESSION_UPDATE.PLAN]: {
+    entries: [
+      { content: 'Do the thing', status: 'pending' },
+    ],
+  },
+  [ACP_SESSION_UPDATE.USER_MESSAGE_CHUNK]: {
+    content: { type: 'text', text: 'hello' },
+  },
   [ACP_SESSION_UPDATE.USAGE_UPDATE]: { used: 100, contextLimit: 1000 },
   [ACP_SESSION_UPDATE.SESSION_INFO_UPDATE]: { title: 'a session' },
   [ACP_SESSION_UPDATE.CONFIG_OPTION_UPDATE]: { configId: 'model', value: 'glm-5.3' },
-  [ACP_SESSION_UPDATE.AVAILABLE_COMMANDS_UPDATE]: { availableCommands: [{ name: 'review' }] },
+  [ACP_SESSION_UPDATE.AVAILABLE_COMMANDS_UPDATE]: {
+    availableCommands: [
+      { name: 'review' },
+    ],
+  },
 }
 
 function classify(sessionUpdate: string): string {

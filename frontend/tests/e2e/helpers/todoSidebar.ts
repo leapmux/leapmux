@@ -37,7 +37,14 @@ export function initialTodoList(steps: readonly string[]): TodoStep[] {
     throw new Error('Each to-do step needs text.')
   if (new Set(steps).size !== steps.length)
     throw new Error('Each to-do step needs its own text, because the sidebar check finds a step by its text.')
-  return steps.map((step, index) => ({ step, status: index === 0 ? 'completed' : index === steps.length - 1 ? 'pending' : 'in_progress' }))
+  return steps.map((step, index) => ({
+    step,
+    status: index === 0
+      ? 'completed'
+      : index === steps.length - 1
+        ? 'pending'
+        : 'in_progress',
+  }))
 }
 
 /** Build the second list of the scenario: the same steps, each completed. */
@@ -107,7 +114,13 @@ export async function exerciseTodoListReplacement(context: NativeScenarioContext
   const steps = options.steps ?? TODO_LIST_STEPS
   const first = initialTodoList(steps)
   const done = completedTodoList(steps)
-  await writeTodoList(context, options, { callId: 'todos-first', items: first, changedStep: firstChangedTodoStep([], first), prompt: `Write a ${steps.length}-step to-do list.`, answer: 'The plan is written.' })
+  await writeTodoList(context, options, {
+    callId: 'todos-first',
+    items: first,
+    changedStep: firstChangedTodoStep([], first),
+    prompt: `Write a ${steps.length}-step to-do list.`,
+    answer: 'The plan is written.',
+  })
 
   await expect(goalsAndTodosSection(context.page)).toBeVisible()
   await expandGoalsAndTodosSection(context.page)
@@ -117,7 +130,13 @@ export async function exerciseTodoListReplacement(context: NativeScenarioContext
   await expectTodoStatuses(list, first)
   await options.afterFirstList?.()
 
-  await writeTodoList(context, options, { callId: 'todos-second', items: done, changedStep: firstChangedTodoStep(first, done), prompt: 'Mark every step done.', answer: 'Every step is done.' })
+  await writeTodoList(context, options, {
+    callId: 'todos-second',
+    items: done,
+    changedStep: firstChangedTodoStep(first, done),
+    prompt: 'Mark every step done.',
+    answer: 'Every step is done.',
+  })
   await expectTodoStatuses(list, done)
 
   await context.page.reload()

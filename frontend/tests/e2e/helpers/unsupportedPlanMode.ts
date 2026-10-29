@@ -41,7 +41,11 @@ export async function exerciseMissingNativePlanMode(context: ManagedNativeScenar
   const callId = `no-plan-${marker}`
   const output = `NOPLAN${marker}42`
   const start = await context.modelScript.queue(
-    { toolCalls: [bashToolCall(context.provider, callId, `printf 'NOPLAN${marker}%s\\n' "$((40 + 2))"`)] },
+    {
+      toolCalls: [
+        bashToolCall(context.provider, callId, `printf 'NOPLAN${marker}%s\\n' "$((40 + 2))"`),
+      ],
+    },
     nativeTextStep(context, 'The literal plan command reached a working native tool turn.'),
   )
   await sendMessage(context.page, '/plan')
@@ -52,7 +56,9 @@ export async function exerciseMissingNativePlanMode(context: ManagedNativeScenar
   const resultRequest = await context.modelScript.requestAt(start + 1)
   expect((await nativeToolOutcome(context, resultRequest, callId)).text).toContain(output)
   await expect(messageContents(context.page).filter({ hasText: output }).first()).toBeVisible()
-  for (const reload of options.reload === false ? [false] : [false, true]) {
+  for (const reload of options.reload === false
+    ? [false]
+    : [false, true]) {
     if (reload) {
       await context.page.reload()
       await waitForNativeSettingsHydrated(context.page)

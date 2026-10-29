@@ -53,11 +53,15 @@ export interface SpanLineGapBridgesProps {
 export const SpanLineGapBridges: Component<SpanLineGapBridgesProps> = props => (
   <For each={props.entries}>
     {(entry, index) => {
-      const previous = createMemo(() => (index() > 0 ? props.entries[index() - 1] : props.precedingEntry))
+      const previous = createMemo(() => (index() > 0
+        ? props.entries[index() - 1]
+        : props.precedingEntry))
       const previousLines = createMemo(() => previous()?.parsedSpanLines ?? [])
       const previousBodyKey = createMemo(() => {
         const p = previous()
-        return p?.category.kind === 'tool_use' ? bodySpanKey(p.message.spanId, p.message.spanColor) : undefined
+        return p?.category.kind === 'tool_use'
+          ? bodySpanKey(p.message.spanId, p.message.spanColor)
+          : undefined
       })
       // Per column: does its vertical rail continue from the row above? Memoized
       // because both the <Show> gate and the <Index> below read it each render.
@@ -70,7 +74,9 @@ export const SpanLineGapBridges: Component<SpanLineGapBridgesProps> = props => (
             class={spanGapBridgeRow}
             style={{
               transform: `translateY(${props.topOf(entry.message.id)}px)`,
-              visibility: props.hiddenOf(entry.message.id) ? 'hidden' : undefined,
+              visibility: props.hiddenOf(entry.message.id)
+                ? 'hidden'
+                : undefined,
               // Published once per ROW, not per column: every segment in this
               // anchor spans the same gap.
               [SPAN_BRIDGE_GAP_VAR]: `${props.gapAboveOf(entry.message.id)}px`,

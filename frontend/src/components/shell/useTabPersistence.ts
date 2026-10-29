@@ -113,7 +113,10 @@ export function createDedupedSessionWriter() {
       if (previous?.value === value && Date.now() - previous.at < DEDUP_REFRESH_INTERVAL_MS)
         return
       sessionStorageSet(key, value)
-      lastWritten.set(key, { value, at: Date.now() })
+      lastWritten.set(key, {
+        value,
+        at: Date.now(),
+      })
     },
     clear(key: string) {
       if (!lastWritten.has(key) && !sessionStorageHas(key))

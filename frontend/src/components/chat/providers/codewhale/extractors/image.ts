@@ -7,7 +7,12 @@ import { isObject } from '~/lib/jsonPick'
 import { parseMcpContentItem } from '../../../model/mcpToolCall'
 import { codewhaleToolOutputFiles } from '../toolSupplement'
 
-const IMAGE_MIME_TYPES: ReadonlySet<string> = new Set([CODEWHALE_MEDIA_TYPE.PNG, CODEWHALE_MEDIA_TYPE.JPEG, CODEWHALE_MEDIA_TYPE.GIF, CODEWHALE_MEDIA_TYPE.WebP])
+const IMAGE_MIME_TYPES: ReadonlySet<string> = new Set([
+  CODEWHALE_MEDIA_TYPE.PNG,
+  CODEWHALE_MEDIA_TYPE.JPEG,
+  CODEWHALE_MEDIA_TYPE.GIF,
+  CODEWHALE_MEDIA_TYPE.WebP,
+])
 const SESSION_ID = /^[\w-]+$/
 const DIGEST = /^[a-f0-9]{64}$/
 const OUTPUT_FILE_ID = /^art_image_[a-f0-9]{64}$/
@@ -20,7 +25,11 @@ function positiveInteger(value: unknown, maximum: number): value is number {
 function encodedSize(base64: string): number | null {
   if (base64.length === 0 || base64.length % 4 !== 0)
     return null
-  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0
+  const padding = base64.endsWith('==')
+    ? 2
+    : base64.endsWith('=')
+      ? 1
+      : 0
   for (let index = 0; index < base64.length - padding; index++) {
     const char = base64.charCodeAt(index)
     if (!((char >= 65 && char <= 90) || (char >= 97 && char <= 122) || (char >= 48 && char <= 57) || char === 43 || char === 47))
@@ -59,7 +68,10 @@ export function codewhaleToolMediaImages(frame: CodewhaleToolFrame | null, suppl
     || width * height > CODEWHALE_MEDIA_RULE.MaxPixels) {
     return []
   }
-  const source: ImageResultSource = { mimeType: mime, dimensions: { width, height } }
+  const source: ImageResultSource = {
+    mimeType: mime,
+    dimensions: { width, height },
+  }
   const body = codewhaleToolOutputFiles(supplemental)?.[outputFile]
   if (typeof body === 'string' && body.length <= Math.ceil(CODEWHALE_MEDIA_RULE.MaxImageBytes / 3) * 4 + 64) {
     const parsed = parseDataImageUrl(body)
@@ -78,8 +90,16 @@ export function codewhaleToolContent(text: string, images: readonly ImageResultS
   catch {
     parsed = null
   }
-  if (!isObject(parsed) || !Array.isArray(parsed.content))
-    return [...(text ? [{ type: 'text' as const, text }] : []), ...images.map(source => ({ type: 'image' as const, source }))]
+  if (!isObject(parsed) || !Array.isArray(parsed.content)) {
+    return [
+      ...(text
+        ? [
+            { type: 'text' as const, text },
+          ]
+        : []),
+      ...images.map(source => ({ type: 'image' as const, source })),
+    ]
+  }
   let imageIndex = 0
   const content = parsed.content.map((raw: unknown): McpContentItem => {
     const item = parseMcpContentItem(raw)
@@ -90,10 +110,17 @@ export function codewhaleToolContent(text: string, images: readonly ImageResultS
     if (source)
       return { type: 'image', source }
     const nativeData = item.source.data
-    const nativeSize = nativeData ? encodedSize(nativeData) : null
+    const nativeSize = nativeData
+      ? encodedSize(nativeData)
+      : null
     if (nativeSize !== null && nativeSize > 0 && nativeSize <= CODEWHALE_MEDIA_RULE.MaxImageBytes && item.source.mimeType && IMAGE_MIME_TYPES.has(item.source.mimeType))
       return item
-    return { type: 'image', source: item.source.mimeType === undefined ? {} : { mimeType: item.source.mimeType } }
+    return {
+      type: 'image',
+      source: item.source.mimeType === undefined
+        ? {}
+        : { mimeType: item.source.mimeType },
+    }
   })
   const extra = Object.fromEntries(Object.entries(parsed).filter(([key]) => key !== 'content'))
   if (Object.keys(extra).length > 0)

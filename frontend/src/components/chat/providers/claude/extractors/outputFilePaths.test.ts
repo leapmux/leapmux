@@ -62,7 +62,14 @@ describe('native path ownership and preview preservation', () => {
     expect(pathsFor(frame, { role })).toEqual([])
   })
 
-  it.each(['file:///native/opaque', 'https://example.com/result', 'zcode-artifact://session/id', ' ', 'relative/output', '/native/zero\0byte'])('refuses a non-filesystem pointer: %j', (invalid) => {
+  it.each([
+    'file:///native/opaque',
+    'https://example.com/result',
+    'zcode-artifact://session/id',
+    ' ',
+    'relative/output',
+    '/native/zero\0byte',
+  ])('refuses a non-filesystem pointer: %j', (invalid) => {
     const payload: unknown = JSON.parse(JSON.stringify(frame).replaceAll(JSON.stringify(path).slice(1, -1), JSON.stringify(invalid).slice(1, -1)))
     const pathsFor = outputFilePathFixture(AgentProvider.CLAUDE_CODE, frame, options)
     expect(pathsFor(payload)).toEqual([])
@@ -75,7 +82,12 @@ describe('native path ownership and preview preservation', () => {
       toolCallId: 'native-call',
       toolName: options.spanType,
       outputFile: { path, text: forged, output: forged },
-      completeOutput: { path, text: forged, sessionId: options.agentSessionId, toolCallId: 'native-call' },
+      completeOutput: {
+        path,
+        text: forged,
+        sessionId: options.agentSessionId,
+        toolCallId: 'native-call',
+      },
     }
     const before = JSON.stringify(frame)
     const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, frame, { ...options, supplementalContent })
@@ -98,24 +110,57 @@ describe('native session ownership', () => {
 describe('native structured and text pointers', () => {
   it('reads explicit metadata without requiring a text wrapper', () => {
     const pathsFor = outputFilePathFixture(AgentProvider.CLAUDE_CODE, frame, options)
-    const native = { ...frame, message: { content: [{ ...frame.message.content[0], content: 'native inline preview' }] } }
+    const native = {
+      ...frame,
+      message: {
+        content: [
+          { ...frame.message.content[0], content: 'native inline preview' },
+        ],
+      },
+    }
     expect(pathsFor(native)).toEqual([path])
   })
 
   it('does not apply a frame-wide metadata path to several native tool results', () => {
     const pathsFor = outputFilePathFixture(AgentProvider.CLAUDE_CODE, frame, options)
-    const native = { ...frame, message: { content: [...frame.message.content, { type: 'tool_result', tool_use_id: 'other', content: 'native result' }] } }
+    const native = {
+      ...frame,
+      message: {
+        content: [
+          ...frame.message.content,
+          { type: 'tool_result', tool_use_id: 'other', content: 'native result' },
+        ],
+      },
+    }
     expect(pathsFor(native)).toEqual([])
   })
 
   it('reads the anchored generic wrapper when structured metadata is absent', () => {
     const pathsFor = outputFilePathFixture(AgentProvider.CLAUDE_CODE, frame, options)
     expect(pathsFor({ ...frame, tool_use_result: undefined })).toEqual([path])
-    expect(pathsFor({ ...frame, tool_use_result: undefined, message: { content: [frame.message.content[0], frame.message.content[0]] } })).toEqual([])
+    expect(pathsFor({
+      ...frame,
+      tool_use_result: undefined,
+      message: {
+        content: [frame.message.content[0], frame.message.content[0]],
+      },
+    })).toEqual([])
   })
 
-  it.each([null, false, 0, -1, '', ' ', 'file:///native/result', '/native/result\0'])('refuses malformed explicit metadata: %j', (persistedOutputPath) => {
+  it.each([
+    null,
+    false,
+    0,
+    -1,
+    '',
+    ' ',
+    'file:///native/result',
+    '/native/result\0',
+  ])('refuses malformed explicit metadata: %j', (persistedOutputPath) => {
     const pathsFor = outputFilePathFixture(AgentProvider.CLAUDE_CODE, frame, options)
-    expect(pathsFor({ ...frame, tool_use_result: { ...frame.tool_use_result, persistedOutputPath } })).toEqual([])
+    expect(pathsFor({
+      ...frame,
+      tool_use_result: { ...frame.tool_use_result, persistedOutputPath },
+    })).toEqual([])
   })
 })

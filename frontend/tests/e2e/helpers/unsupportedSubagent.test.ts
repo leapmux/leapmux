@@ -49,7 +49,10 @@ vi.mock('@playwright/test', async (importOriginal) => {
       toHaveAttribute: async (name: string, expected: string) => actual.expect(value.attributes[name], message).toBe(expected),
     }
   }
-  return { ...actual, expect: Object.assign(check, actual.expect) }
+  return {
+    ...actual,
+    expect: Object.assign(check, actual.expect),
+  }
 })
 
 vi.mock('./api', async importOriginal => ({
@@ -57,8 +60,11 @@ vi.mock('./api', async importOriginal => ({
   getTestChannel: async () => ({
     callWorker: async (_workerId: string, method: string, _request: unknown, _response: unknown, payload: { agentId: string, text?: string }) => {
       fake.log.push(method)
-      if (method === 'ListAgentInputQueue')
-        return { snapshot: { agentId: payload.agentId, items: [] } }
+      if (method === 'ListAgentInputQueue') {
+        return {
+          snapshot: { agentId: payload.agentId, items: [] },
+        }
+      }
       if (method === 'EnqueueAgentInput') {
         const text = payload.text ?? ''
         fake.refused.push(text)
@@ -76,8 +82,20 @@ vi.mock('./api', async importOriginal => ({
 vi.mock('./nativeScenario', async importOriginal => ({
   ...await importOriginal<typeof import('./nativeScenario')>(),
   nativeAgentsByIds: async (): Promise<Partial<AgentInfo>[]> => [
-    { id: 'native-child', parentAgentId: 'native-parent', rootAgentId: 'native-root', acceptsMessages: false, acceptsInterrupt: false },
-    { id: 'native-parent', parentAgentId: '', rootAgentId: 'native-root', acceptsMessages: true, acceptsInterrupt: true },
+    {
+      id: 'native-child',
+      parentAgentId: 'native-parent',
+      rootAgentId: 'native-root',
+      acceptsMessages: false,
+      acceptsInterrupt: false,
+    },
+    {
+      id: 'native-parent',
+      parentAgentId: '',
+      rootAgentId: 'native-root',
+      acceptsMessages: true,
+      acceptsInterrupt: true,
+    },
   ],
 }))
 
@@ -96,11 +114,28 @@ vi.mock('./ui', async importOriginal => ({
 
 /** One recorded model request that `rule` answered, with `text` in its body. */
 function request(rule: string, text: string): MockModelRequestRecord {
-  return { protocol: 'openai-chat-completions', path: '/v1/chat/completions', rule, body: { messages: [{ role: 'user', content: text }] } }
+  return {
+    protocol: 'openai-chat-completions',
+    path: '/v1/chat/completions',
+    rule,
+    body: {
+      messages: [
+        { role: 'user', content: text },
+      ],
+    },
+  }
 }
 
 function status(): MockModelScenarioStatus {
-  return { complete: true, nextStep: 0, stepCount: 0, ruleMatches: {}, pendingGates: [], requests: fake.requests as MockModelRequestRecord[], unexpectedRequests: [] }
+  return {
+    complete: true,
+    nextStep: 0,
+    stepCount: 0,
+    ruleMatches: {},
+    pendingGates: [],
+    requests: fake.requests as MockModelRequestRecord[],
+    unexpectedRequests: [],
+  }
 }
 
 /** A context whose page and model script are the fakes of this file. */
@@ -116,7 +151,9 @@ function fakeContext(): ManagedNativeScenarioContext {
     getByText: (text: string) => {
       if (text !== READ_ONLY_SUBAGENT_REASON)
         throw new Error(`The fake page has no text locator for ${text}.`)
-      return { filter: () => probe(fake.visibleReasons) }
+      return {
+        filter: () => probe(fake.visibleReasons),
+      }
     },
   })
   const modelScript = Object.assign({} as ModelScript, {
@@ -125,7 +162,14 @@ function fakeContext(): ManagedNativeScenarioContext {
       return status()
     },
   })
-  return { page, modelScript, provider: AgentProvider.KILO, providerAgent: { provider: AgentProvider.KILO, prefix: 'native-e2e' }, workspaceId: 'unsupported-route', leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' } }
+  return {
+    page,
+    modelScript,
+    provider: AgentProvider.KILO,
+    providerAgent: { provider: AgentProvider.KILO, prefix: 'native-e2e' },
+    workspaceId: 'unsupported-route',
+    leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' },
+  }
 }
 
 /** A running child whose finish logs itself, and can make the parent report carry the refused message. */
@@ -207,15 +251,29 @@ describe('expectUnsupportedSubagent', () => {
   })
 
   it('refuses a send, finishes the child, and checks the model requests again after the finish', async () => {
-    await expectUnsupportedSubagent(fakeContext(), { operation: 'send', openChild: async () => runningChild() })
+    await expectUnsupportedSubagent(fakeContext(), {
+      operation: 'send',
+      openChild: async () => runningChild(),
+    })
     expect(fake.refused).toHaveLength(1)
     expect(fake.refused[0]).toMatch(/^REFUSEDCHILDMESSAGE[0-9a-f]{32}$/)
-    expect(fake.log).toEqual(['open child tab', 'ListAgentInputQueue', 'EnqueueAgentInput', 'ListAgentInputQueue', 'status', 'finish', 'status'])
+    expect(fake.log).toEqual([
+      'open child tab',
+      'ListAgentInputQueue',
+      'EnqueueAgentInput',
+      'ListAgentInputQueue',
+      'status',
+      'finish',
+      'status',
+    ])
   })
 
   it('fails when a model request after the finish carries the refused message', async () => {
     fake.leak = 'after-finish'
-    await expect(expectUnsupportedSubagent(fakeContext(), { operation: 'send', openChild: async () => runningChild() }))
+    await expect(expectUnsupportedSubagent(fakeContext(), {
+      operation: 'send',
+      openChild: async () => runningChild(),
+    }))
       .rejects
       .toThrow('no model request carries')
     expect(fake.log.filter(entry => entry === 'finish')).toHaveLength(1)
@@ -223,7 +281,10 @@ describe('expectUnsupportedSubagent', () => {
 
   it('fails and finishes the child when the refused message reaches the model before the finish', async () => {
     fake.leak = 'at-refusal'
-    await expect(expectUnsupportedSubagent(fakeContext(), { operation: 'send', openChild: async () => runningChild() }))
+    await expect(expectUnsupportedSubagent(fakeContext(), {
+      operation: 'send',
+      openChild: async () => runningChild(),
+    }))
       .rejects
       .toThrow('no model request carries')
     expect(fake.log.at(-1)).toBe('finish')
@@ -232,9 +293,14 @@ describe('expectUnsupportedSubagent', () => {
   it('requires the composer placeholder to state the read-only reason', async () => {
     fake.placeholders = 0
     // Playwright's `expect` fails with the result of the matcher: the fake checks the visible placeholder with `toBeGreaterThan`.
-    await expect(expectUnsupportedSubagent(fakeContext(), { operation: 'send', openChild: async () => runningChild() }))
+    await expect(expectUnsupportedSubagent(fakeContext(), {
+      operation: 'send',
+      openChild: async () => runningChild(),
+    }))
       .rejects
-      .toMatchObject({ matcherResult: { name: 'toBeGreaterThan', pass: false } })
+      .toMatchObject({
+        matcherResult: { name: 'toBeGreaterThan', pass: false },
+      })
     expect(fake.refused).toEqual([])
     expect(fake.log.at(-1)).toBe('finish')
   })
@@ -242,21 +308,35 @@ describe('expectUnsupportedSubagent', () => {
   it('refuses a second visible copy of the read-only reason', async () => {
     fake.visibleReasons = 1
     // The count of visible copies of the reason fails: one where the page may hold none.
-    await expect(expectUnsupportedSubagent(fakeContext(), { operation: 'send', openChild: async () => runningChild() }))
+    await expect(expectUnsupportedSubagent(fakeContext(), {
+      operation: 'send',
+      openChild: async () => runningChild(),
+    }))
       .rejects
-      .toMatchObject({ matcherResult: { actual: 1, expected: 0 } })
+      .toMatchObject({
+        matcherResult: { actual: 1, expected: 0 },
+      })
     expect(fake.refused).toEqual([])
   })
 
   it('refuses a new message text in each call', async () => {
-    await expectUnsupportedSubagent(fakeContext(), { operation: 'send', openChild: async () => runningChild() })
-    await expectUnsupportedSubagent(fakeContext(), { operation: 'send', openChild: async () => runningChild() })
+    await expectUnsupportedSubagent(fakeContext(), {
+      operation: 'send',
+      openChild: async () => runningChild(),
+    })
+    await expectUnsupportedSubagent(fakeContext(), {
+      operation: 'send',
+      openChild: async () => runningChild(),
+    })
     expect(fake.refused).toHaveLength(2)
     expect(fake.refused[0]).not.toBe(fake.refused[1])
   })
 
   it('proves a refused interrupt without a model request check', async () => {
-    await expectUnsupportedSubagent(fakeContext(), { operation: 'interrupt', openChild: async () => runningChild() })
+    await expectUnsupportedSubagent(fakeContext(), {
+      operation: 'interrupt',
+      openChild: async () => runningChild(),
+    })
     expect(fake.log).toEqual(['open child tab', 'InterruptAgent', 'finish'])
   })
 })
@@ -266,20 +346,44 @@ describe('expectNoModelRequestCarries', () => {
     fake.requests = []
   })
 
-  const script = { status: async () => status() }
+  const script = {
+    status: async () => status(),
+  }
 
   it('accepts requests that do not carry the text', async () => {
-    fake.requests = [request('the child task', 'another text')]
+    fake.requests = [
+      request('the child task', 'another text'),
+    ]
     await expectNoModelRequestCarries(script, 'REFUSED')
   })
 
   it('states the answer of each request that carries the text', async () => {
-    fake.requests = [request('the parent report', 'carries REFUSED'), { protocol: 'openai-chat-completions', path: '/v1/chat/completions', stepIndex: 3, body: 'REFUSED' }]
+    fake.requests = [
+      request('the parent report', 'carries REFUSED'),
+      {
+        protocol: 'openai-chat-completions',
+        path: '/v1/chat/completions',
+        stepIndex: 3,
+        body: 'REFUSED',
+      },
+    ]
     await expect(expectNoModelRequestCarries(script, 'REFUSED')).rejects.toThrow(/the parent report[\s\S]*step 3/)
   })
 
   it('checks a request that no rule or step answered', async () => {
-    const unexpected = { status: async () => ({ ...status(), unexpectedRequests: [{ protocol: 'openai-chat-completions' as const, path: '/v1/chat/completions', reason: 'no answer', body: { text: 'REFUSED' } }] }) }
+    const unexpected = {
+      status: async () => ({
+        ...status(),
+        unexpectedRequests: [
+          {
+            protocol: 'openai-chat-completions' as const,
+            path: '/v1/chat/completions',
+            reason: 'no answer',
+            body: { text: 'REFUSED' },
+          },
+        ],
+      }),
+    }
     await expect(expectNoModelRequestCarries(unexpected, 'REFUSED')).rejects.toThrow('an unexpected request: no answer')
   })
 

@@ -227,25 +227,28 @@ export const bottomSection = style({
  * Drag handle for section headers: the shared grip base, staged as a
  * full-height strip down the header's left edge and revealed on hover.
  */
-export const sectionDragHandle = style([dragHandleBase, {
-  'position': 'absolute',
-  'left': 0,
-  'top': 0,
-  'bottom': 0,
-  'width': 'var(--space-4)',
-  'height': 'auto',
-  'opacity': 0,
-  'transition': 'opacity var(--transition)',
-  'color': 'var(--muted-foreground)',
-  'zIndex': 1,
-  '@media': {
+export const sectionDragHandle = style([
+  dragHandleBase,
+  {
+    'position': 'absolute',
+    'left': 0,
+    'top': 0,
+    'bottom': 0,
+    'width': 'var(--space-4)',
+    'height': 'auto',
+    'opacity': 0,
+    'transition': 'opacity var(--transition)',
+    'color': 'var(--muted-foreground)',
+    'zIndex': 1,
+    '@media': {
     // Touch-only device: no hover exists to reveal the grip, and it is the
     // only way to drag the section — show it standing.
-    'not all and (any-pointer: fine)': {
-      opacity: 0.6,
+      'not all and (any-pointer: fine)': {
+        opacity: 0.6,
+      },
     },
   },
-}])
+])
 
 /** Show drag handle on trigger hover. */
 globalStyle(`${collapsibleTrigger}:hover ${sectionDragHandle}`, {

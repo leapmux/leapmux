@@ -24,7 +24,9 @@ export function mimoShellOutcome(snapshot: NativeMessageSnapshot, callId: string
     if (message.agentSessionId !== snapshot.agentSessionId)
       continue
     const frame = nativeMessageBody(message)
-    const part = isObject(frame) && frame.type === MIMO_EVENT.MessagePartUpdated ? pickObject(pickObject(frame, 'properties'), 'part') : undefined
+    const part = isObject(frame) && frame.type === MIMO_EVENT.MessagePartUpdated
+      ? pickObject(pickObject(frame, 'properties'), 'part')
+      : undefined
     const state = pickObject(part, 'state')
     if (typeof part?.id !== 'string' || part.id === '' || message.spanId !== part.id || part.sessionID !== snapshot.agentSessionId
       || part.type !== MIMO_PART_TYPE.Tool || part.tool !== MIMO_TOOL.Bash || part.callID !== callId || state?.status !== MIMO_TOOL_STATUS.Completed) {
@@ -33,7 +35,7 @@ export function mimoShellOutcome(snapshot: NativeMessageSnapshot, callId: string
     const metadata = pickObject(state, 'metadata')
     const exitCode = metadata?.exit
     if (typeof exitCode !== 'number' || !Number.isSafeInteger(exitCode))
-      throw new Error('The completed native MiMo shell part states no safe integer exit code.')
+      throw new TypeError('The completed native MiMo shell part states no safe integer exit code.')
     if (metadata?.output !== modelText)
       throw new Error('The native MiMo shell part and the model request state different output bytes.')
     outcomes.push({ text: modelText, exitCode, failed: exitCode !== 0 })
@@ -66,5 +68,8 @@ export function exerciseMiMoShellToolExecution(
   context: ManagedNativeScenarioContext,
   options: Omit<ShellToolExecutionOptions, 'outputGate'> = {},
 ): Promise<void> {
-  return exerciseShellToolExecution({ ...context, readToolResult: (request, callId) => readMiMoShellOutcome(context, request, callId) }, { ...options, outputGate: true })
+  return exerciseShellToolExecution({
+    ...context,
+    readToolResult: (request, callId) => readMiMoShellOutcome(context, request, callId),
+  }, { ...options, outputGate: true })
 }

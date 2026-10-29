@@ -37,12 +37,26 @@ function flushRaf() {
 
 function prepOf(seqs: bigint[], rowPx = 100): PreparedGeometry {
   const items: VirtualItem[] = seqs.map((seq, i) => ({ id: `m${i}`, hasSpanLines: false, seq }))
-  return prepareGeometry({ items, offsetOfIndex: i => i * rowPx, totalHeight: seqs.length * rowPx })
+  return prepareGeometry({
+    items,
+    offsetOfIndex: i => i * rowPx,
+    totalHeight: seqs.length * rowPx,
+  })
 }
 
 /** A rail-relative rect: top 0, height 400 (so clientY maps 1:1 to a [0,1] fraction /400). */
 function makeRect(): DOMRect {
-  return { top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) } as DOMRect
+  return {
+    top: 0,
+    left: 0,
+    height: 400,
+    width: 10,
+    right: 10,
+    bottom: 400,
+    x: 0,
+    y: 0,
+    toJSON: () => ({}),
+  } as DOMRect
 }
 
 function setup(opts: { engageSlopPx?: number } = {}) {
@@ -91,7 +105,18 @@ function setup(opts: { engageSlopPx?: number } = {}) {
     onEnd,
   }
   const handle = createThumbDrag(deps)
-  return { el, handle, state, setDrag, previewScrollTo, scrubSeek, abandonSeeks, onEngage, onRelease, onEnd }
+  return {
+    el,
+    handle,
+    state,
+    setDrag,
+    previewScrollTo,
+    scrubSeek,
+    abandonSeeks,
+    onEngage,
+    onRelease,
+    onEnd,
+  }
 }
 
 function move(el: HTMLElement, clientY: number) {
@@ -183,7 +208,13 @@ describe('createThumbDrag', () => {
     state.maxSeq = unsafeBase + 4n
     state.windowFirstSeq = unsafeBase
     state.windowLastSeq = unsafeBase + 4n
-    state.prepared = prepOf([unsafeBase, unsafeBase + 1n, unsafeBase + 2n, unsafeBase + 3n, unsafeBase + 4n])
+    state.prepared = prepOf([
+      unsafeBase,
+      unsafeBase + 1n,
+      unsafeBase + 2n,
+      unsafeBase + 3n,
+      unsafeBase + 4n,
+    ])
 
     handle.start(1, 100)
 
@@ -393,7 +424,9 @@ describe('createThumbDrag', () => {
   describe('out-of-window settle seek', () => {
     // Only setTimeout/clearTimeout are faked: rAF stays the hand-driven stub above, which the
     // move coalescer needs.
-    beforeEach(() => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }))
+    beforeEach(() => vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout'],
+    }))
     afterEach(() => vi.useRealTimers())
 
     /** Move the thumb to an out-of-window position and flush the frame it schedules. */
@@ -479,8 +512,14 @@ describe('createThumbDrag', () => {
     })
 
     it.each([
-      ['pointerup', (el: HTMLElement) => up(el, 100)],
-      ['pointercancel', (el: HTMLElement) => el.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, clientY: 100 }))],
+      [
+        'pointerup',
+        (el: HTMLElement) => up(el, 100),
+      ],
+      [
+        'pointercancel',
+        (el: HTMLElement) => el.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, clientY: 100 })),
+      ],
     ])('cancels a pending seek on %s', (_name, end) => {
       const { el, handle, state, scrubSeek } = setup()
       state.windowFirstSeq = 4n
@@ -618,8 +657,14 @@ describe('createThumbDrag', () => {
       })
 
       it.each([
-        ['pointercancel', (el: HTMLElement) => el.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, clientY: 100 }))],
-        ['lostpointercapture', (el: HTMLElement) => el.dispatchEvent(new PointerEvent('lostpointercapture', { bubbles: true, clientY: 100 }))],
+        [
+          'pointercancel',
+          (el: HTMLElement) => el.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, clientY: 100 })),
+        ],
+        [
+          'lostpointercapture',
+          (el: HTMLElement) => el.dispatchEvent(new PointerEvent('lostpointercapture', { bubbles: true, clientY: 100 })),
+        ],
       ])('abandons EVERY seek of an aborted gesture on %s, press jump included', (_name, abort) => {
         // No settle seek has fired here, so the only thing outstanding is the press's own jump --
         // which the owner issued and only it can drop. An aborted gesture lands nothing, so the

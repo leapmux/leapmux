@@ -36,10 +36,21 @@ async function receiptRun() {
     attach: async (name, options) => {
       if (!options?.path)
         throw new Error('The model receipt requires its completed artifact path.')
-      attachments.push({ name, path: options.path, contentType: options.contentType, text: await readFile(options.path, 'utf8') })
+      attachments.push({
+        name,
+        path: options.path,
+        contentType: options.contentType,
+        text: await readFile(options.path, 'utf8'),
+      })
     },
   }
-  return { directory, server, lifecycle, attachments, report }
+  return {
+    directory,
+    server,
+    lifecycle,
+    attachments,
+    report,
+  }
 }
 
 async function completeResponse(server: MockModelServer, lifecycle: ModelScriptLifecycle, text: string, toolResult?: string): Promise<void> {
@@ -47,10 +58,21 @@ async function completeResponse(server: MockModelServer, lifecycle: ModelScriptL
   const response = await fetch(`${server.url}/v1/responses`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'authorization': `Bearer ${MODEL_KEY}` },
-    body: JSON.stringify({ model: MOCK_MODEL_IDS[0], stream: false, input: [
-      { role: 'user', content: lifecycle.script.prompt(text) },
-      ...(toolResult === undefined ? [] : [{ type: 'function_call_output', call_id: 'receipt-call', output: toolResult }]),
-    ] }),
+    body: JSON.stringify({
+      model: MOCK_MODEL_IDS[0],
+      stream: false,
+      input: [
+        {
+          role: 'user',
+          content: lifecycle.script.prompt(text),
+        },
+        ...(toolResult === undefined
+          ? []
+          : [
+              { type: 'function_call_output', call_id: 'receipt-call', output: toolResult },
+            ]),
+      ],
+    }),
   })
   expect(response.status).toBe(200)
   await response.text()
@@ -120,9 +142,11 @@ describe('withModelReceipt', () => {
     const saved = JSON.parse(attachments[0]!.text) as MockModelScenarioStatus
     const original = await lifecycle.script.requestAt(0)
     expect(saved.requests[0]?.body).toEqual(original.body)
-    expect(saved.requests[0]?.body).toMatchObject({ input: expect.arrayContaining([
-      { type: 'function_call_output', call_id: 'receipt-call', output: result },
-    ]) })
+    expect(saved.requests[0]?.body).toMatchObject({
+      input: expect.arrayContaining([
+        { type: 'function_call_output', call_id: 'receipt-call', output: result },
+      ]),
+    })
     expect(saved.requests[0]?.response).toEqual(original.response)
     expect(attachments[0]!.text).not.toContain(MODEL_KEY)
   })
@@ -145,7 +169,16 @@ describe('withModelReceipt', () => {
     const response = fetch(`${server.url}/v1/responses`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'authorization': `Bearer ${MODEL_KEY}` },
-      body: JSON.stringify({ model: MOCK_MODEL_IDS[0], stream: false, input: [{ role: 'user', content: lifecycle.script.prompt('Hold the receipt request.') }] }),
+      body: JSON.stringify({
+        model: MOCK_MODEL_IDS[0],
+        stream: false,
+        input: [
+          {
+            role: 'user',
+            content: lifecycle.script.prompt('Hold the receipt request.'),
+          },
+        ],
+      }),
     }).then(async value => ({ status: value.status, text: await value.text() }))
     try {
       await lifecycle.script.waitForGate('receipt-gate')
@@ -178,9 +211,11 @@ describe('withModelReceipt', () => {
   it('keeps a status error and writes no empty artifact', async () => {
     const { directory, report, attachments } = await receiptRun()
     const failure = new Error('The script status could not be read.')
-    await expect(withModelReceipt({ status: async () => {
-      throw failure
-    } }, report, async () => {})).rejects.toBe(failure)
+    await expect(withModelReceipt({
+      status: async () => {
+        throw failure
+      },
+    }, report, async () => {})).rejects.toBe(failure)
     expect(attachments).toEqual([])
     await expect(readFile(join(directory, 'model-script.json'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
@@ -189,7 +224,9 @@ describe('withModelReceipt', () => {
     const { directory, lifecycle, report, attachments } = await receiptRun()
     const original = await lifecycle.script.status()
     const circular = Object.assign(original, { circular: original })
-    await expect(withModelReceipt({ status: async () => circular }, report, async () => {})).rejects.toBeInstanceOf(TypeError)
+    await expect(withModelReceipt({
+      status: async () => circular,
+    }, report, async () => {})).rejects.toBeInstanceOf(TypeError)
     expect(attachments).toEqual([])
     await expect(readFile(join(directory, 'model-script.json'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
@@ -197,7 +234,10 @@ describe('withModelReceipt', () => {
   it('keeps an actual file write failure and sends no attachment', async () => {
     const { directory, lifecycle, report, attachments } = await receiptRun()
     const path = join(directory, 'absent-parent', 'model-script.json')
-    await expect(withModelReceipt(lifecycle.script, { ...report, outputPath: () => path }, async () => {})).rejects.toMatchObject({ code: 'ENOENT', path })
+    await expect(withModelReceipt(lifecycle.script, {
+      ...report,
+      outputPath: () => path,
+    }, async () => {})).rejects.toMatchObject({ code: 'ENOENT', path })
     expect(attachments).toEqual([])
     await expect(readFile(path)).rejects.toMatchObject({ code: 'ENOENT' })
   })
@@ -205,9 +245,12 @@ describe('withModelReceipt', () => {
   it('keeps the completed file and the exact attachment failure', async () => {
     const { directory, lifecycle, report, attachments } = await receiptRun()
     const failure = new Error('The receipt attachment failed.')
-    await expect(withModelReceipt(lifecycle.script, { ...report, attach: async () => {
-      throw failure
-    } }, async () => {})).rejects.toBe(failure)
+    await expect(withModelReceipt(lifecycle.script, {
+      ...report,
+      attach: async () => {
+        throw failure
+      },
+    }, async () => {})).rejects.toBe(failure)
     expect(attachments).toEqual([])
     expect(JSON.parse(await readFile(join(directory, 'model-script.json'), 'utf8'))).toEqual(await lifecycle.script.status())
   })
@@ -216,9 +259,11 @@ describe('withModelReceipt', () => {
     const { report } = await receiptRun()
     const operationFailure = new Error('The operation failed.')
     const receiptFailure = new Error('The status read failed.')
-    const outcome = await withModelReceipt({ status: async () => {
-      throw receiptFailure
-    } }, report, async () => {
+    const outcome = await withModelReceipt({
+      status: async () => {
+        throw receiptFailure
+      },
+    }, report, async () => {
       throw operationFailure
     }).catch(error => error)
     expect(outcome).toBeInstanceOf(AggregateError)

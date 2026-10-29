@@ -16,7 +16,12 @@ claudeTest.describe('Claude subagent background tasks', () => {
     // Claude can start more root turns when it reports a stopped background
     // task. Their count depends on when the stop reaches its pending turn.
     await modelScript.fallback({ text: 'Notification noted.' })
-    await exerciseChildInterrupt(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedWorkspace.workspaceId }), {
+    await exerciseChildInterrupt(await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedWorkspace.workspaceId,
+    }), {
       childTurn: { user: HELD_CHILD_TASK },
     })
   })

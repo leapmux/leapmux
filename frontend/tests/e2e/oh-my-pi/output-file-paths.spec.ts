@@ -11,7 +11,12 @@ import { ohMyPiNativeOutput } from './nativeToolOutput'
 import { nativeContext, OH_MY_PI_AGENT } from './scenarios'
 
 ohMyPiTest('keeps the native Bash preview and opaque ID without deriving an output file path after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   await openProviderAgent(leapmuxServer, context.workspaceId, OH_MY_PI_AGENT, { directoryPrefix: 'native-preview-omp-', ...OH_MY_PI_YOLO })
   await openWorkspace(page, context.workspaceId)
   await captureNativeToolOutput(context, testInfo, {
@@ -22,7 +27,18 @@ ohMyPiTest('keeps the native Bash preview and opaque ID without deriving an outp
       const receipt = readReceipt(capture.snapshot)
       expect(receipt.previewText).not.toContain(capture.output.omittedMarker)
       expect(receipt.previewText).toContain(capture.output.lastMarker)
-      await testInfo.attach('oh-my-pi-native-preview-receipt', { body: JSON.stringify({ agentId: capture.agent.id, sessionId: capture.agent.agentSessionId, callId: capture.nativeCallId, opaqueId: receipt.artifactId, paths: [], previewText: receipt.previewText, frame: receipt.frame }), contentType: 'application/json' })
+      await testInfo.attach('oh-my-pi-native-preview-receipt', {
+        body: JSON.stringify({
+          agentId: capture.agent.id,
+          sessionId: capture.agent.agentSessionId,
+          callId: capture.nativeCallId,
+          opaqueId: receipt.artifactId,
+          paths: [],
+          previewText: receipt.previewText,
+          frame: receipt.frame,
+        }),
+        contentType: 'application/json',
+      })
       await proveNativeToolOutputFilePaths({
         context,
         callId: capture.nativeCallId,

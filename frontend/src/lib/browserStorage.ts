@@ -287,17 +287,42 @@ export const LOCAL_KEY_SPECS = {
   // `sync`: read inside the synchronous `onStorageAccountChange` callback (see
   // PreferencesContext.reseedBrowserTier), and by `~/lib/terminal` while it
   // constructs an xterm instance.
-  [KEY_BROWSER_PREFS]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS, access: 'sync' },
+  [KEY_BROWSER_PREFS]: {
+    match: 'exact',
+    scope: 'account',
+    ttlMs: YEAR_MS,
+    access: 'sync',
+  },
   // `sync`: read from `useMruProviders.mruProviders()`, a plain accessor the
   // render path calls, and from the synchronous `pickDefaultProvider`.
-  [KEY_MRU_AGENT_PROVIDERS]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS, access: 'sync' },
+  [KEY_MRU_AGENT_PROVIDERS]: {
+    match: 'exact',
+    scope: 'account',
+    ttlMs: YEAR_MS,
+    access: 'sync',
+  },
   // `sync`: `KeyPinStore.resolve` hands back a `commit` closure that re-reads
   // and rewrites the map with NO await between, which is what closes the
   // intra-tab pin-clobber race.
-  [KEY_KEY_PINS]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS, access: 'sync' },
+  [KEY_KEY_PINS]: {
+    match: 'exact',
+    scope: 'account',
+    ttlMs: YEAR_MS,
+    access: 'sync',
+  },
   // `sync`: seeded eagerly from the synchronous account-change callback.
-  [KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS, access: 'sync' },
-  [KEY_PREFERRED_EXTERNAL_APP]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS, access: 'sync' },
+  [KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN]: {
+    match: 'exact',
+    scope: 'account',
+    ttlMs: YEAR_MS,
+    access: 'sync',
+  },
+  [KEY_PREFERRED_EXTERNAL_APP]: {
+    match: 'exact',
+    scope: 'account',
+    ttlMs: YEAR_MS,
+    access: 'sync',
+  },
   // The workspace this account was last on. A year rather than the days its
   // templated table-mates get: this is a preference, not a cache -- it is the
   // only record of where the app should reopen, since the URL no longer carries
@@ -306,48 +331,120 @@ export const LOCAL_KEY_SPECS = {
   // `sync` is the one judgement call in this table. Its reader is a tracked
   // effect that COULD await, but only by hoisting five reactive reads above the
   // first await and adding a re-entrancy guard, for one short string.
-  [KEY_ACTIVE_WORKSPACE]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS, access: 'sync' },
+  [KEY_ACTIVE_WORKSPACE]: {
+    match: 'exact',
+    scope: 'account',
+    ttlMs: YEAR_MS,
+    access: 'sync',
+  },
   // How the sidebar orders every workspace section. A preference the user set
   // once, like the browser preferences above -- so a year, not the seven days a
   // per-directory cache takes. `sync`: `createAccountScopedSignal` seeds it from
   // a synchronous `get()`.
-  [KEY_WORKSPACE_SORT]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS, access: 'sync' },
+  [KEY_WORKSPACE_SORT]: {
+    match: 'exact',
+    scope: 'account',
+    ttlMs: YEAR_MS,
+    access: 'sync',
+  },
   // High-water mark for the desktop userevents relay ids (see useUserEvents).
   // Device-scoped: see the note above the table. `sync` because the allocator is
   // a synchronous `() => number`, and `monotonic` because a smaller mark must
   // never overwrite a larger one.
-  [KEY_USER_EVENTS_RELAY_SEQ]: { match: 'exact', scope: 'device', ttlMs: YEAR_MS, access: 'sync', monotonic: true },
+  [KEY_USER_EVENTS_RELAY_SEQ]: {
+    match: 'exact',
+    scope: 'device',
+    ttlMs: YEAR_MS,
+    access: 'sync',
+    monotonic: true,
+  },
   // High-water mark for the desktop channel relay ids (see relayClaim). Same
   // reason, same sidecar fence.
-  [KEY_CHANNEL_RELAY_SEQ]: { match: 'exact', scope: 'device', ttlMs: YEAR_MS, access: 'sync', monotonic: true },
+  [KEY_CHANNEL_RELAY_SEQ]: {
+    match: 'exact',
+    scope: 'device',
+    ttlMs: YEAR_MS,
+    access: 'sync',
+    monotonic: true,
+  },
 
   // Every `async` entry below is an unbounded family whose reader already sits
   // inside an effect or an async function. They are the reason the tier split
   // exists: mirroring them would read a user's whole draft and row-height
   // history into every tab on the sign-in path, which is exactly the cost the
   // move off localStorage was meant to stop paying.
-  [PREFIX_EDITOR_DRAFT]: { match: 'prefix', scope: 'account', ttlMs: EDITOR_DRAFT_TTL_MS, access: 'async' },
-  [PREFIX_COMPOSER_SCHEDULE_DRAFT]: { match: 'prefix', scope: 'account', ttlMs: EDITOR_DRAFT_TTL_MS, access: 'async' },
-  [PREFIX_EDITOR_MIN_HEIGHT]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS, access: 'async' },
-  [PREFIX_AGENT_SESSION]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS, access: 'async' },
-  [PREFIX_CONTROL_STATE]: { match: 'prefix', scope: 'account', ttlMs: 1 * DAY_MS, access: 'async' },
-  [PREFIX_WORKER_INFO]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS, access: 'async' },
+  [PREFIX_EDITOR_DRAFT]: {
+    match: 'prefix',
+    scope: 'account',
+    ttlMs: EDITOR_DRAFT_TTL_MS,
+    access: 'async',
+  },
+  [PREFIX_COMPOSER_SCHEDULE_DRAFT]: {
+    match: 'prefix',
+    scope: 'account',
+    ttlMs: EDITOR_DRAFT_TTL_MS,
+    access: 'async',
+  },
+  [PREFIX_EDITOR_MIN_HEIGHT]: {
+    match: 'prefix',
+    scope: 'account',
+    ttlMs: 7 * DAY_MS,
+    access: 'async',
+  },
+  [PREFIX_AGENT_SESSION]: {
+    match: 'prefix',
+    scope: 'account',
+    ttlMs: 7 * DAY_MS,
+    access: 'async',
+  },
+  [PREFIX_CONTROL_STATE]: {
+    match: 'prefix',
+    scope: 'account',
+    ttlMs: 1 * DAY_MS,
+    access: 'async',
+  },
+  [PREFIX_WORKER_INFO]: {
+    match: 'prefix',
+    scope: 'account',
+    ttlMs: 7 * DAY_MS,
+    access: 'async',
+  },
   // `sync`: both are read inside a `createSignal` initializer (see
   // `createPersistedSignal`), so the file list would paint with the wrong
   // hidden-file state and then flip.
-  [PREFIX_FILES_SHOW_HIDDEN]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS, access: 'sync' },
-  [PREFIX_FILES_SORT_ORDER]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS, access: 'sync' },
+  [PREFIX_FILES_SHOW_HIDDEN]: {
+    match: 'prefix',
+    scope: 'account',
+    ttlMs: 7 * DAY_MS,
+    access: 'sync',
+  },
+  [PREFIX_FILES_SORT_ORDER]: {
+    match: 'prefix',
+    scope: 'account',
+    ttlMs: 7 * DAY_MS,
+    access: 'sync',
+  },
   // The git mode a repository was last started with, keyed by
   // `<workerId>:<gitToplevel>` (see `gitModeStickyKey`). The TTL is the only
   // thing limiting growth -- there is one entry per repository the user ever
   // starts a workspace in -- and a read refreshes it, so a repository in weekly
   // use never expires while an abandoned one does. `sync`: read from a
   // `createMemo` in WorkspaceSectionMenu, which cannot await.
-  [PREFIX_WORKSPACE_GIT_MODE]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS, access: 'sync' },
+  [PREFIX_WORKSPACE_GIT_MODE]: {
+    match: 'prefix',
+    scope: 'account',
+    ttlMs: 7 * DAY_MS,
+    access: 'sync',
+  },
   // Measured chat-row heights (see chatRowHeightPersistence). A warm-start
   // cache: stale entries are harmless (each row's key digest must match its
   // live heightKey to hydrate), so the TTL only limits storage growth.
-  [PREFIX_CHAT_ROW_HEIGHTS]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS, access: 'async' },
+  [PREFIX_CHAT_ROW_HEIGHTS]: {
+    match: 'prefix',
+    scope: 'account',
+    ttlMs: 7 * DAY_MS,
+    access: 'async',
+  },
 } as const satisfies Record<string, LocalKeySpec>
 
 /**
@@ -673,7 +770,9 @@ export function setStorageAccountForTests(userId: string): void {
 function composeKey(name: string, spec: KeySpec): string | null {
   if (spec.scope === 'device')
     return deviceStorageKey(name)
-  return storageAccount === null ? null : accountStorageKey(storageAccount, name)
+  return storageAccount === null
+    ? null
+    : accountStorageKey(storageAccount, name)
 }
 
 /**
@@ -777,7 +876,10 @@ function parseStoredKey(stored: string): { scope: StorageScope, name: string } |
     // A malformed escape ("%ZZ") is not something this module wrote.
     return null
   }
-  return { scope: 'account', name: body.slice(separator + 1) }
+  return {
+    scope: 'account',
+    name: body.slice(separator + 1),
+  }
 }
 
 /**
@@ -1011,7 +1113,10 @@ async function readSyncRows(userId: string): Promise<KvRow[]> {
     readKvRows(exactKeys),
     ...SYNC_PREFIX_NAMES.map(prefix => readKvPrefix(accountPrefix + prefix)),
   ])
-  return [...exact, ...families.flat()]
+  return [
+    ...exact,
+    ...families.flat(),
+  ]
 }
 
 /**
@@ -1071,7 +1176,12 @@ function readMirror(key: string, spec: LocalKeySpec): unknown | undefined {
     // the same row `localStorageSet` writes, so it must carry the same merge
     // policy: without it a refresh of a high-water mark whose mirror sits below
     // disk would write the smaller value back and un-fence the relay.
-    enqueueKvPut({ k: key, v: entry.v, e: entry.e }, { publish: false, ...(spec.monotonic === true ? { monotonic: true } : {}) })
+    enqueueKvPut({ k: key, v: entry.v, e: entry.e }, {
+      publish: false,
+      ...(spec.monotonic === true
+        ? { monotonic: true }
+        : {}),
+    })
   }
   return cloneForRead(entry.v)
 }
@@ -1090,7 +1200,9 @@ function readMirror(key: string, spec: LocalKeySpec): unknown | undefined {
  * already structured-cloneable, because `snapshotValue` cloned it on the way in.
  */
 function cloneForRead(value: unknown): unknown {
-  return typeof value === 'object' && value !== null ? structuredClone(value) : value
+  return typeof value === 'object' && value !== null
+    ? structuredClone(value)
+    : value
 }
 
 /**
@@ -1127,14 +1239,20 @@ function cloneForRead(value: unknown): unknown {
  */
 function snapshotValue(name: string, value: unknown): { ok: true, value: unknown } | { ok: false } {
   try {
-    return { ok: true, value: structuredClone(value) }
+    return {
+      ok: true,
+      value: structuredClone(value),
+    }
   }
   catch {
     // Fall through to the serializer that reads properties rather than
     // inspecting the object's internals.
   }
   try {
-    const serialized = { ok: true, value: JSON.parse(JSON.stringify(value)) as unknown } as const
+    const serialized = {
+      ok: true,
+      value: JSON.parse(JSON.stringify(value)) as unknown,
+    } as const
     log.debug(
       `browser storage value for "${name}" is not structured-cloneable; stored through JSON, `
       + 'which drops a function or a DOM node and narrows NaN, Map, Set, Date and a typed array',
@@ -1186,7 +1304,12 @@ export function localStorageSet(name: SyncLocalKey, value: unknown): StorageWrit
   if (spec.monotonic === true && typeof existing?.v === 'number' && typeof entry.v === 'number' && existing.v >= entry.v)
     entry.v = existing.v
   mirror.set(key, entry)
-  return enqueueKvPut({ k: key, v: entry.v, e: entry.e }, { publish: true, ...(spec.monotonic === true ? { monotonic: true } : {}) })
+  return enqueueKvPut({ k: key, v: entry.v, e: entry.e }, {
+    publish: true,
+    ...(spec.monotonic === true
+      ? { monotonic: true }
+      : {}),
+  })
 }
 
 /**
@@ -1252,7 +1375,9 @@ export async function localStorageLoad<T>(name: AsyncLocalKey): Promise<T | unde
         return undefined
       return structuredClone(raced.row.v) as T
     }
-    return row === undefined || row.e <= now ? undefined : structuredClone(row.v) as T
+    return row === undefined || row.e <= now
+      ? undefined
+      : structuredClone(row.v) as T
   }
   if (row === undefined)
     return undefined
@@ -1302,7 +1427,9 @@ export function localStorageStoreMany(entries: readonly StorageEntryWrite[]): St
     throw new Error('Cannot store related values after the storage account changes.')
   const now = Date.now()
   const writes = rows.map(({ key, ttl, value }) => enqueueKvPut({ k: key, v: value, e: now + ttl }, { publish: false }))
-  return { durable: Promise.all(writes.map(write => write.durable)).then(results => results.every(Boolean)) }
+  return {
+    durable: Promise.all(writes.map(write => write.durable)).then(results => results.every(Boolean)),
+  }
 }
 
 /** Remove an unmirrored value. See {@link localStorageRemove}. */

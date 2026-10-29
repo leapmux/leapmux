@@ -8,9 +8,19 @@ import { cursorSearchKind, cursorToolCallAdapter } from './toolCall'
 const CALL = 'cursor-tool'
 
 function call(tool: Record<string, unknown>, supplemental?: Record<string, unknown>): ToolCall {
-  const frame = { sessionUpdate: 'tool_call_update', toolCallId: CALL, status: 'completed', ...tool }
+  const frame = {
+    sessionUpdate: 'tool_call_update',
+    toolCallId: CALL,
+    status: 'completed',
+    ...tool,
+  }
   const extra = supplemental
-    ? { sessionUpdate: frame.sessionUpdate, toolCallId: frame.toolCallId, status: frame.status, ...supplemental }
+    ? {
+        sessionUpdate: frame.sessionUpdate,
+        toolCallId: frame.toolCallId,
+        status: frame.status,
+        ...supplemental,
+      }
     : undefined
   return acpToolCall(frame, cursorToolCallAdapter, extra)
 }
@@ -20,20 +30,53 @@ describe('cursor search kind', () => {
   // disagree for a file search whose result also states a match total. The title is
   // the stronger statement, so the counters no longer overrule it.
   it.each([
-    ['Find', { totalMatches: 4 }],
-    ['Find `*.ts`', { totalMatches: 4 }],
-    ['Find', { resultCount: 4 }],
+    [
+      'Find',
+      { totalMatches: 4 },
+    ],
+    [
+      'Find `*.ts`',
+      { totalMatches: 4 },
+    ],
+    [
+      'Find',
+      { resultCount: 4 },
+    ],
   ])('keeps a file search a file search when the title states one (%s)', (title, raw) => {
-    const frame = { sessionUpdate: 'tool_call_update', toolCallId: CALL, status: 'completed', kind: 'search', title, rawInput: { pattern: '*.ts' }, rawOutput: raw }
+    const frame = {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: CALL,
+      status: 'completed',
+      kind: 'search',
+      title,
+      rawInput: { pattern: '*.ts' },
+      rawOutput: raw,
+    }
     expect(cursorSearchKind(frame, raw)).toBe('glob')
-    expect(call({ kind: 'search', title, rawInput: { pattern: '*.ts' }, rawOutput: raw }).kind).toBe('glob')
+    expect(call({
+      kind: 'search',
+      title,
+      rawInput: { pattern: '*.ts' },
+      rawOutput: raw,
+    }).kind).toBe('glob')
   })
 
   it.each([
-    ['grep', { totalFiles: 3 }],
-    ['grep "needle"', { totalFiles: 3, totalMatches: 9 }],
+    [
+      'grep',
+      { totalFiles: 3 },
+    ],
+    [
+      'grep "needle"',
+      { totalFiles: 3, totalMatches: 9 },
+    ],
   ])('keeps a content search a content search when the title states one (%s)', (title, raw) => {
-    expect(call({ kind: 'search', title, rawInput: { pattern: 'needle' }, rawOutput: raw }).kind).toBe('grep')
+    expect(call({
+      kind: 'search',
+      title,
+      rawInput: { pattern: 'needle' },
+      rawOutput: raw,
+    }).kind).toBe('grep')
   })
 
   // Cursor builds the grep title from the arguments: `grep`, then one flag for each
@@ -47,20 +90,37 @@ describe('cursor search kind', () => {
     'grep --include="*.ts" "needle"',
     'grep | head -20 "needle"',
   ])('reads a content search from a grep title that carries a flag (%s)', (title) => {
-    expect(call({ kind: 'search', title, rawInput: { pattern: 'needle' }, rawOutput: { totalFiles: 3 } }).kind).toBe('grep')
+    expect(call({
+      kind: 'search',
+      title,
+      rawInput: { pattern: 'needle' },
+      rawOutput: { totalFiles: 3 },
+    }).kind).toBe('grep')
   })
 
   // A call that has not finished carries no counter, and a failed one reports its error
   // alone. The title is the only statement left in both states.
   it('reads a content search from a flagged grep title before the call finishes', () => {
-    expect(call({ sessionUpdate: 'tool_call', status: 'pending', kind: 'search', title: 'grep -l "needle"', rawInput: { pattern: 'needle' } }).kind).toBe('grep')
+    expect(call({
+      sessionUpdate: 'tool_call',
+      status: 'pending',
+      kind: 'search',
+      title: 'grep -l "needle"',
+      rawInput: { pattern: 'needle' },
+    }).kind).toBe('grep')
   })
 
   // The reason is the RESULT of a call that failed, which is what a `ToolFailureResult`
   // states: the call ended without its payload and said only these words. The shared
   // ladder answers it for every kind, so the repaired kind answers it too.
   it('reads a content search from a flagged grep title when the call failed', () => {
-    const failed = call({ kind: 'search', status: 'failed', title: 'grep -i "needle"', rawInput: { pattern: 'needle' }, rawOutput: { error: 'no such path' } })
+    const failed = call({
+      kind: 'search',
+      status: 'failed',
+      title: 'grep -i "needle"',
+      rawInput: { pattern: 'needle' },
+      rawOutput: { error: 'no such path' },
+    })
     expect(failed.kind).toBe('grep')
     expect(isToolFailureResult(failed.result) && failed.result.text).toBe('no such path')
   })
@@ -72,12 +132,27 @@ describe('cursor search kind', () => {
     'Find `*.ts`',
     'Find `src` `*.ts`',
   ])('reads a file search from every title the runtime composes (%s)', (title) => {
-    expect(call({ kind: 'search', title, rawInput: { pattern: '*.ts' }, rawOutput: { totalMatches: 9 } }).kind).toBe('glob')
+    expect(call({
+      kind: 'search',
+      title,
+      rawInput: { pattern: '*.ts' },
+      rawOutput: { totalMatches: 9 },
+    }).kind).toBe('glob')
   })
 
   it('falls back to the counters when the title states neither shape', () => {
-    expect(call({ kind: 'search', title: 'Search', rawInput: { pattern: '*.ts' }, rawOutput: { totalFiles: 3 } }).kind).toBe('glob')
-    expect(call({ kind: 'search', title: 'Search', rawInput: { pattern: 'needle' }, rawOutput: { totalMatches: 9 } }).kind).toBe('grep')
+    expect(call({
+      kind: 'search',
+      title: 'Search',
+      rawInput: { pattern: '*.ts' },
+      rawOutput: { totalFiles: 3 },
+    }).kind).toBe('glob')
+    expect(call({
+      kind: 'search',
+      title: 'Search',
+      rawInput: { pattern: 'needle' },
+      rawOutput: { totalMatches: 9 },
+    }).kind).toBe('grep')
   })
 
   // The frame states the words the search printed, because a completed call answers
@@ -89,13 +164,25 @@ describe('cursor search kind', () => {
       title: 'Search',
       rawInput: { pattern: 'needle' },
       rawOutput: {},
-      content: [{ type: 'content', content: { type: 'text', text: 'one hit' } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'one hit' },
+        },
+      ],
     })
     expect(searched.kind).toBe('search')
   })
 
   it('reads no counter from a call that has not finished', () => {
-    expect(call({ sessionUpdate: 'tool_call', status: 'pending', kind: 'search', title: 'Search', rawInput: { pattern: 'needle' }, rawOutput: { totalFiles: 3 } }).kind).toBe('search')
+    expect(call({
+      sessionUpdate: 'tool_call',
+      status: 'pending',
+      kind: 'search',
+      title: 'Search',
+      rawInput: { pattern: 'needle' },
+      rawOutput: { totalFiles: 3 },
+    }).kind).toBe('search')
   })
 })
 
@@ -109,7 +196,16 @@ describe('cursor protocol errors', () => {
       rawInput: { toolName: 'lookup', providerIdentifier: 'server' },
       rawOutput: { error: 'server unavailable' },
     }, {
-      rawOutput: { content: [{ type: 'tool-result', toolCallId: CALL, toolName: 'mcp_server_lookup', result: saved }] },
+      rawOutput: {
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: CALL,
+            toolName: 'mcp_server_lookup',
+            result: saved,
+          },
+        ],
+      },
     })
   }
 
@@ -142,11 +238,24 @@ describe('cursor protocol errors', () => {
       title: 'mcp_server_lookup',
       rawInput: { toolName: 'lookup', providerIdentifier: 'server' },
     }, {
-      rawOutput: { content: [{ type: 'tool-result', toolCallId: CALL, toolName: 'mcp_server_lookup', result: 'one hit so far' }] },
+      rawOutput: {
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: CALL,
+            toolName: 'mcp_server_lookup',
+            result: 'one hit so far',
+          },
+        ],
+      },
     })
     expect(stopped.kind).toBe('mcp')
     expect(isToolFailureResult(stopped.result)).toBe(false)
-    expect(stopped.result).toMatchObject({ content: [{ type: 'text', text: 'one hit so far' }] })
+    expect(stopped.result).toMatchObject({
+      content: [
+        { type: 'text', text: 'one hit so far' },
+      ],
+    })
   })
 
   // A call that ANSWERED keeps its saved content as the card, which is the whole
@@ -158,10 +267,23 @@ describe('cursor protocol errors', () => {
       title: 'mcp_server_lookup',
       rawInput: { toolName: 'lookup', providerIdentifier: 'server' },
     }, {
-      rawOutput: { content: [{ type: 'tool-result', toolCallId: CALL, toolName: 'mcp_server_lookup', result: 'the server answered' }] },
+      rawOutput: {
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: CALL,
+            toolName: 'mcp_server_lookup',
+            result: 'the server answered',
+          },
+        ],
+      },
     })
     expect(answered.kind).toBe('mcp')
-    expect(answered.result).toMatchObject({ content: [{ type: 'text', text: 'the server answered' }] })
+    expect(answered.result).toMatchObject({
+      content: [
+        { type: 'text', text: 'the server answered' },
+      ],
+    })
   })
 
   /*
@@ -183,10 +305,23 @@ describe('cursor protocol errors', () => {
       sessionUpdate: 'tool_call_update',
       toolCallId: CALL,
       status: 'in_progress',
-      rawOutput: { content: [{ type: 'tool-result', toolCallId: CALL, toolName: 'mcp_server_lookup', result: 'the server answered' }] },
+      rawOutput: {
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: CALL,
+            toolName: 'mcp_server_lookup',
+            result: 'the server answered',
+          },
+        ],
+      },
     }, MessageCompletion.COMPLETE)
     expect(retained.kind).toBe('mcp')
-    expect(retained.result).toMatchObject({ content: [{ type: 'text', text: 'the server answered' }] })
+    expect(retained.result).toMatchObject({
+      content: [
+        { type: 'text', text: 'the server answered' },
+      ],
+    })
   })
 
   // A launch reports its own outcome, so it stays ABOVE the guard that stops the
@@ -200,10 +335,21 @@ describe('cursor protocol errors', () => {
       rawInput: {},
       rawOutput: { error: 'the subagent could not start' },
     }, {
-      rawOutput: { content: [{ type: 'tool-result', toolCallId: CALL, toolName: 'Task', result: '' }] },
+      rawOutput: {
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: CALL,
+            toolName: 'Task',
+            result: '',
+          },
+        ],
+      },
     })
     expect(launch.kind).toBe('agent')
-    const run = launch.kind === 'agent' ? typedResult(launch)?.agents[0] : undefined
+    const run = launch.kind === 'agent'
+      ? typedResult(launch)?.agents[0]
+      : undefined
     expect(run?.outcome).toBe('failed')
     expect(run?.body).toBe('the subagent could not start')
   })
@@ -223,10 +369,19 @@ describe('cursor protocol errors', () => {
       kind: 'other',
       title: 'mcp_server_lookup',
       rawInput: { toolName: 'lookup', providerIdentifier: 'server' },
-      content: [{ type: 'content', content: { type: 'text', text: 'the server answered' } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'the server answered' },
+        },
+      ],
     })
     expect(drawn.kind).toBe('mcp')
-    expect(drawn.result).toMatchObject({ content: [{ type: 'text', text: 'the server answered' }] })
+    expect(drawn.result).toMatchObject({
+      content: [
+        { type: 'text', text: 'the server answered' },
+      ],
+    })
     // The call states its server and its tool, which the wire kind cannot.
     expect(drawn.request).toMatchObject({ server: 'server', tool: 'lookup' })
   })
@@ -237,8 +392,25 @@ describe('cursor stored tool records', () => {
   function saved(toolName: string, result: unknown, success?: Record<string, unknown>) {
     return {
       rawOutput: {
-        content: [{ type: 'tool-result', toolCallId: CALL, toolName, result }],
-        ...(success ? { providerOptions: { cursor: { highLevelToolCallResult: { output: { success } } } } } : {}),
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: CALL,
+            toolName,
+            result,
+          },
+        ],
+        ...(success
+          ? {
+              providerOptions: {
+                cursor: {
+                  highLevelToolCallResult: {
+                    output: { success },
+                  },
+                },
+              },
+            }
+          : {}),
       },
     }
   }
@@ -248,7 +420,10 @@ describe('cursor stored tool records', () => {
   // same pair the edit family uses.
   it('reads a removed file as a delete', () => {
     const removed = call(
-      { kind: 'other', rawInput: { path: '/p/gone.ts' } },
+      {
+        kind: 'other',
+        rawInput: { path: '/p/gone.ts' },
+      },
       saved('Delete', 'Deleted', { path: '/p/gone.ts', diffString: '--- a/p/gone.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n' }),
     )
     expect(removed.kind).toBe('delete')
@@ -259,7 +434,11 @@ describe('cursor stored tool records', () => {
   // recognize had nothing at all to state.
   it('states the full tool output of a record it does not recognize', () => {
     const unknown = call({ kind: 'other', rawInput: {} }, saved('SomethingNew', 'the tool said this'))
-    expect(unknown.result).toMatchObject({ content: [{ type: 'text', text: 'the tool said this' }] })
+    expect(unknown.result).toMatchObject({
+      content: [
+        { type: 'text', text: 'the tool said this' },
+      ],
+    })
   })
 })
 
@@ -287,27 +466,71 @@ describe('cursor plans', () => {
  */
 describe('cursorToolCallAdapter question rows', () => {
   const questionsOf = (questions: unknown) => {
-    const built = call({ kind: 'other', rawInput: { _toolName: 'askQuestion', questions } })
-    return built.kind === 'question' ? built.request.questions : []
+    const built = call({
+      kind: 'other',
+      rawInput: { _toolName: 'askQuestion', questions },
+    })
+    return built.kind === 'question'
+      ? built.request.questions
+      : []
   }
 
   it('reads the prompt and the options one question offered', () => {
-    expect(questionsOf([{ header: 'Layout', prompt: 'Choose a layout', options: [{ id: 'compact', label: 'Compact', description: 'Small' }] }]))
-      .toStrictEqual([{ header: 'Layout', question: 'Choose a layout', options: [{ label: 'Compact', description: 'Small' }] }])
+    expect(questionsOf([
+      {
+        header: 'Layout',
+        prompt: 'Choose a layout',
+        options: [
+          { id: 'compact', label: 'Compact', description: 'Small' },
+        ],
+      },
+    ]))
+      .toStrictEqual([
+        {
+          header: 'Layout',
+          question: 'Choose a layout',
+          options: [
+            { label: 'Compact', description: 'Small' },
+          ],
+        },
+      ])
   })
 
   // Cursor sends an option with an id and no label, and the id is the word the runtime
   // itself shows there.
   it('labels an option with its id when it states no label', () => {
-    expect(questionsOf([{ prompt: 'Choose a layout', options: [{ id: 'compact' }] }])[0]?.options)
-      .toStrictEqual([{ label: 'compact' }])
+    expect(questionsOf([
+      {
+        prompt: 'Choose a layout',
+        options: [
+          { id: 'compact' },
+        ],
+      },
+    ])[0]?.options)
+      .toStrictEqual([
+        { label: 'compact' },
+      ])
   })
 
   it('drops a question that states no prompt', () => {
-    expect(questionsOf([{ header: 'Layout', options: [{ id: 'compact' }] }])).toStrictEqual([])
+    expect(questionsOf([
+      {
+        header: 'Layout',
+        options: [
+          { id: 'compact' },
+        ],
+      },
+    ])).toStrictEqual([])
   })
 
   it('drops an option that states neither a label nor an id', () => {
-    expect(questionsOf([{ prompt: 'Choose a layout', options: [{ description: 'Small' }] }])[0]?.options).toStrictEqual([])
+    expect(questionsOf([
+      {
+        prompt: 'Choose a layout',
+        options: [
+          { description: 'Small' },
+        ],
+      },
+    ])[0]?.options).toStrictEqual([])
   })
 })

@@ -90,7 +90,10 @@ function normalizeBackgroundTaskKind(kind: BackgroundTaskKind): Pick<BackgroundT
     case BackgroundTaskKind.WORKFLOW:
       return { kind: 'workflow' }
     default:
-      return { kind: 'unknown', rawKind: Number(kind) }
+      return {
+        kind: 'unknown',
+        rawKind: Number(kind),
+      }
   }
 }
 
@@ -161,7 +164,9 @@ export function filterBackgroundTasksByKind(
   items: BackgroundTaskItem[],
   filter: BackgroundTaskKindFilter,
 ): BackgroundTaskItem[] {
-  return filter === 'all' ? items : items.filter(it => it.kind === filter)
+  return filter === 'all'
+    ? items
+    : items.filter(it => it.kind === filter)
 }
 
 // countActiveBackgroundTasks returns the number of pending/running rows -- the
@@ -190,7 +195,9 @@ export function chipTasksFor(
   rootTasks: BackgroundTaskItem[],
   isChild: boolean,
 ): BackgroundTaskItem[] {
-  return isChild ? rootTasks.filter(t => t.parentAgentId === agentId) : rootTasks
+  return isChild
+    ? rootTasks.filter(t => t.parentAgentId === agentId)
+    : rootTasks
 }
 
 /**
@@ -312,7 +319,10 @@ export function sortBackgroundTasks(items: BackgroundTaskItem[]): BackgroundTask
     const br = order[b.status]
     return ar - br
   })
-  return [...open, ...finished]
+  return [
+    ...open,
+    ...finished,
+  ]
 }
 
 // groupBackgroundTasks splits sorted items into an ungrouped block first, then

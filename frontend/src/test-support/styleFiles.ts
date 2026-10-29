@@ -17,5 +17,7 @@ import { collectFiles } from '~/test-support/sourceTree'
  * NOT a `.test.ts`, so vitest does not collect it as a suite of its own.
  */
 export function collectStyleFiles(dir: string): string[] {
-  return collectFiles(dir, { matches: name => name.endsWith('.css.ts') })
+  return collectFiles(dir, {
+    matches: name => name.endsWith('.css.ts'),
+  })
 }

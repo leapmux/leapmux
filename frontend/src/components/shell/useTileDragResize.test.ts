@@ -48,7 +48,12 @@ function start(
     onDone,
     ...overrides,
   })
-  return { commit, setDragRatios, onDone, teardown }
+  return {
+    commit,
+    setDragRatios,
+    onDone,
+    teardown,
+  }
 }
 
 describe('startPairRebalanceDrag', () => {
@@ -166,7 +171,9 @@ describe('startPairRebalanceDrag', () => {
 
   it('returns null when the container has zero width', () => {
     stubBoundingRect(scaffold.container, 0, 600)
-    const { teardown } = start(scaffold, { startRatios: [0.5, 0.5] })
+    const { teardown } = start(scaffold, {
+      startRatios: [0.5, 0.5],
+    })
     expect(teardown).toBeNull()
   })
 
@@ -180,12 +187,16 @@ describe('startPairRebalanceDrag', () => {
     dispatchPointerUp({ x: 50 })
     expect(scaffold.handle.dataset.dragging).toBeUndefined()
     // Restart and verify external teardown also clears the attribute.
-    const second = start(scaffold, { startRatios: [0.5, 0.5] })
+    const second = start(scaffold, {
+      startRatios: [0.5, 0.5],
+    })
     expect(scaffold.handle.dataset.dragging).toBe('')
     second.teardown!()
     expect(scaffold.handle.dataset.dragging).toBeUndefined()
     // pointercancel clears the attribute too.
-    start(scaffold, { startRatios: [0.5, 0.5] })
+    start(scaffold, {
+      startRatios: [0.5, 0.5],
+    })
     expect(scaffold.handle.dataset.dragging).toBe('')
     dispatchPointerCancel()
     expect(scaffold.handle.dataset.dragging).toBeUndefined()

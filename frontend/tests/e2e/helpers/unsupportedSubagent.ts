@@ -39,7 +39,9 @@ export async function expectNoModelRequestCarries(modelScript: Pick<ModelScript,
   if (text.trim() === '')
     throw new Error('A request text check needs a text that is not empty, because every request holds an empty text.')
   const status = await modelScript.status()
-  const answerOf = (request: MockModelRequestRecord) => request.rule ?? (request.stepIndex === undefined ? 'the fallback' : `step ${request.stepIndex}`)
+  const answerOf = (request: MockModelRequestRecord) => request.rule ?? (request.stepIndex === undefined
+    ? 'the fallback'
+    : `step ${request.stepIndex}`)
   const carriers = [
     ...status.requests.filter(request => JSON.stringify(request.body).includes(text)).map(answerOf),
     ...status.unexpectedRequests.filter(request => JSON.stringify(request.body).includes(text)).map(request => `an unexpected request: ${request.reason}`),

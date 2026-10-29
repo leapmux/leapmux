@@ -4,7 +4,21 @@ import { deepseekHarnessChildReportRule } from './childReports'
 
 describe('deepseekHarnessChildReportRule', () => {
   function request(text: string, role = 'user') {
-    return { protocol: 'anthropic-messages' as const, systemText: '', userText: text, body: { messages: [{ role, content: [{ type: 'text', text }] }] } }
+    return {
+      protocol: 'anthropic-messages' as const,
+      systemText: '',
+      userText: text,
+      body: {
+        messages: [
+          {
+            role,
+            content: [
+              { type: 'text', text },
+            ],
+          },
+        ],
+      },
+    }
   }
 
   it.each(['finished and will do no further work unless you send it more.', 'was stopped before it finished.'])('matches the exact native report: %s', (ending) => {

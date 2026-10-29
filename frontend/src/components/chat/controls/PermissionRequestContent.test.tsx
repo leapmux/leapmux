@@ -45,12 +45,19 @@ describe('PermissionRequestContent', () => {
   })
 
   it('uses Fractured JSON for the remaining tool arguments', () => {
-    const { container } = renderBody({ title: 'Bash', input: { timeout: 0, quiet: false } })
+    const { container } = renderBody({
+      title: 'Bash',
+      input: { timeout: 0, quiet: false },
+    })
     expect(container.querySelector('pre')?.textContent).toBe(prettifyJson({ timeout: 0, quiet: false }))
   })
 
   it('renders the tool name and a short command without a toggle', () => {
-    renderBody({ title: 'Bash', command: 'ls', input: { command: 'ls' } })
+    renderBody({
+      title: 'Bash',
+      command: 'ls',
+      input: { command: 'ls' },
+    })
 
     expect(screen.getByText(PERMISSION_REQUIRED_RE)).toBeInTheDocument()
     expect(screen.getByText(BASH_RE)).toBeInTheDocument()
@@ -61,26 +68,40 @@ describe('PermissionRequestContent', () => {
   // One command, shown once: the code block above the arguments is the whole ask, so
   // the key it repeats is dropped from the JSON below it.
   it('drops the command key the code block already states', () => {
-    const { container } = renderBody({ title: 'Bash', command: 'ls', input: { command: 'ls', timeout: 5 } })
+    const { container } = renderBody({
+      title: 'Bash',
+      command: 'ls',
+      input: { command: 'ls', timeout: 5 },
+    })
     expect(argumentsText(container)).toBe(prettifyJson({ timeout: 5 }))
   })
 
   // A DIFFERENT command is not the same ask, so both stay: dropping the key would
   // hide the argument the call actually runs with.
   it('keeps a command argument that differs from the one it draws', () => {
-    const { container } = renderBody({ title: 'Bash', command: 'ls -al', input: { command: 'ls', timeout: 5 } })
+    const { container } = renderBody({
+      title: 'Bash',
+      command: 'ls -al',
+      input: { command: 'ls', timeout: 5 },
+    })
     expect(argumentsText(container)).toBe(prettifyJson({ command: 'ls', timeout: 5 }))
   })
 
   it('truncates long JSON and shows toggle', () => {
-    renderBody({ title: 'Bash', input: longInput() })
+    renderBody({
+      title: 'Bash',
+      input: longInput(),
+    })
 
     const toggle = screen.getByRole('button')
     expect(toggle).toHaveTextContent('more line')
   })
 
   it('expands long JSON when toggle is clicked', () => {
-    renderBody({ title: 'Bash', input: longInput() })
+    renderBody({
+      title: 'Bash',
+      input: longInput(),
+    })
 
     fireEvent.click(screen.getByRole('button'))
 

@@ -4,13 +4,18 @@ import { createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { AgentStartupOptions } from './AgentStartupOptions'
 
-const groups: StartupOptionGroup[] = [{
-  id: 'trust',
-  label: 'Workspace trust',
-  defaultValue: 'native',
-  readOnlyReason: 'Choose before creation',
-  options: [{ value: 'native', label: 'Use native trust' }, { value: 'agent', label: 'Trust for this agent' }],
-}]
+const groups: StartupOptionGroup[] = [
+  {
+    id: 'trust',
+    label: 'Workspace trust',
+    defaultValue: 'native',
+    readOnlyReason: 'Choose before creation',
+    options: [
+      { value: 'native', label: 'Use native trust' },
+      { value: 'agent', label: 'Trust for this agent' },
+    ],
+  },
+]
 
 function mount(disabled = false) {
   const [selected, setSelected] = createSignal<Record<string, string>>({})

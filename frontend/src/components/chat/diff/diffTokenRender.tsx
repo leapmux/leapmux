@@ -48,7 +48,12 @@ function renderTokenizedWordDiff(
     return (
       <For each={filteredParts}>
         {p => (
-          <span class={(p.added || p.removed) ? highlightClass : undefined}>{p.value}</span>
+          <span class={(p.added || p.removed)
+            ? highlightClass
+            : undefined}
+          >
+            {p.value}
+          </span>
         )}
       </For>
     ) as JSX.Element
@@ -61,7 +66,9 @@ function renderTokenizedWordDiff(
   let tokenOffset = 0 // char offset within current token
 
   for (const part of filteredParts) {
-    const diffClass = (part.added || part.removed) ? highlightClass : undefined
+    const diffClass = (part.added || part.removed)
+      ? highlightClass
+      : undefined
     let remaining = part.value.length
     let partPos = 0
 
@@ -300,8 +307,16 @@ export function buildUnifiedLines(
   // pending '+' rows and flush on `blockEnd`.
   const pendingAdded: Array<{ newNum: number, content: JSX.Element, hunkIndex: number }> = []
   const flushPending = () => {
-    for (const a of pendingAdded)
-      result.push({ oldNum: null, newNum: a.newNum, prefix: '+', content: a.content, type: 'added', hunkIndex: a.hunkIndex })
+    for (const a of pendingAdded) {
+      result.push({
+        oldNum: null,
+        newNum: a.newNum,
+        prefix: '+',
+        content: a.content,
+        type: 'added',
+        hunkIndex: a.hunkIndex,
+      })
+    }
     pendingAdded.length = 0
   }
 
@@ -311,20 +326,49 @@ export function buildUnifiedLines(
       return
     }
     if (e.kind === 'context') {
-      result.push({ oldNum: e.oldNum, newNum: e.newNum, prefix: ' ', content: renderTokenizedLine(e.content, e.oldTokens), type: 'context', hunkIndex: e.hunkIndex })
+      result.push({
+        oldNum: e.oldNum,
+        newNum: e.newNum,
+        prefix: ' ',
+        content: renderTokenizedLine(e.content, e.oldTokens),
+        type: 'context',
+        hunkIndex: e.hunkIndex,
+      })
       return
     }
     if (e.kind === 'paired') {
-      result.push({ oldNum: e.oldNum, newNum: null, prefix: '-', content: renderRemovedInline(e.removedContent, e.addedContent, e.oldTokens), type: 'removed', hunkIndex: e.hunkIndex })
-      pendingAdded.push({ newNum: e.newNum, content: renderAddedInline(e.removedContent, e.addedContent, e.newTokens), hunkIndex: e.hunkIndex })
+      result.push({
+        oldNum: e.oldNum,
+        newNum: null,
+        prefix: '-',
+        content: renderRemovedInline(e.removedContent, e.addedContent, e.oldTokens),
+        type: 'removed',
+        hunkIndex: e.hunkIndex,
+      })
+      pendingAdded.push({
+        newNum: e.newNum,
+        content: renderAddedInline(e.removedContent, e.addedContent, e.newTokens),
+        hunkIndex: e.hunkIndex,
+      })
       return
     }
     if (e.kind === 'removed') {
-      result.push({ oldNum: e.oldNum, newNum: null, prefix: '-', content: renderTokenizedLine(e.content, e.tokens), type: 'removed', hunkIndex: e.hunkIndex })
+      result.push({
+        oldNum: e.oldNum,
+        newNum: null,
+        prefix: '-',
+        content: renderTokenizedLine(e.content, e.tokens),
+        type: 'removed',
+        hunkIndex: e.hunkIndex,
+      })
       return
     }
     // Bare '+' (without preceding '-') queues so it follows any pending '-' rows in the same block.
-    pendingAdded.push({ newNum: e.newNum, content: renderTokenizedLine(e.content, e.tokens), hunkIndex: e.hunkIndex })
+    pendingAdded.push({
+      newNum: e.newNum,
+      content: renderTokenizedLine(e.content, e.tokens),
+      hunkIndex: e.hunkIndex,
+    })
   })
   flushPending()
   return result
@@ -343,22 +387,62 @@ export function buildSplitLines(
     if (e.kind === 'blockEnd')
       return
     if (e.kind === 'context') {
-      left.push({ content: renderTokenizedLine(e.content, e.oldTokens), type: 'context', num: e.oldNum, hunkIndex: e.hunkIndex })
-      right.push({ content: renderTokenizedLine(e.content, e.newTokens), type: 'context', num: e.newNum, hunkIndex: e.hunkIndex })
+      left.push({
+        content: renderTokenizedLine(e.content, e.oldTokens),
+        type: 'context',
+        num: e.oldNum,
+        hunkIndex: e.hunkIndex,
+      })
+      right.push({
+        content: renderTokenizedLine(e.content, e.newTokens),
+        type: 'context',
+        num: e.newNum,
+        hunkIndex: e.hunkIndex,
+      })
       return
     }
     if (e.kind === 'paired') {
-      left.push({ content: renderRemovedInline(e.removedContent, e.addedContent, e.oldTokens), type: 'removed', num: e.oldNum, hunkIndex: e.hunkIndex })
-      right.push({ content: renderAddedInline(e.removedContent, e.addedContent, e.newTokens), type: 'added', num: e.newNum, hunkIndex: e.hunkIndex })
+      left.push({
+        content: renderRemovedInline(e.removedContent, e.addedContent, e.oldTokens),
+        type: 'removed',
+        num: e.oldNum,
+        hunkIndex: e.hunkIndex,
+      })
+      right.push({
+        content: renderAddedInline(e.removedContent, e.addedContent, e.newTokens),
+        type: 'added',
+        num: e.newNum,
+        hunkIndex: e.hunkIndex,
+      })
       return
     }
     if (e.kind === 'removed') {
-      left.push({ content: renderTokenizedLine(e.content, e.tokens), type: 'removed', num: e.oldNum, hunkIndex: e.hunkIndex })
-      right.push({ content: '', type: 'empty', num: null, hunkIndex: e.hunkIndex })
+      left.push({
+        content: renderTokenizedLine(e.content, e.tokens),
+        type: 'removed',
+        num: e.oldNum,
+        hunkIndex: e.hunkIndex,
+      })
+      right.push({
+        content: '',
+        type: 'empty',
+        num: null,
+        hunkIndex: e.hunkIndex,
+      })
       return
     }
-    left.push({ content: '', type: 'empty', num: null, hunkIndex: e.hunkIndex })
-    right.push({ content: renderTokenizedLine(e.content, e.tokens), type: 'added', num: e.newNum, hunkIndex: e.hunkIndex })
+    left.push({
+      content: '',
+      type: 'empty',
+      num: null,
+      hunkIndex: e.hunkIndex,
+    })
+    right.push({
+      content: renderTokenizedLine(e.content, e.tokens),
+      type: 'added',
+      num: e.newNum,
+      hunkIndex: e.hunkIndex,
+    })
   })
 
   return { left, right }

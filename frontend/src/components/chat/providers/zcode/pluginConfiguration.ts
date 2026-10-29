@@ -7,7 +7,13 @@ export const zcodeConfiguration: ProviderConfigurationCapability = {
   // The worker refuses an image or a PDF that the current model declares no input
   // for. The app-server has no kind that keeps a binary file's bytes, so LeapMux
   // refuses a binary file.
-  attachments: { text: true, image: true, pdf: true, audio: false, binary: false },
+  attachments: {
+    text: true,
+    image: true,
+    pdf: true,
+    audio: false,
+    binary: false,
+  },
   triggerModeGroupKey: 'permissionMode',
   planMode: {
     groupKey: 'permissionMode',

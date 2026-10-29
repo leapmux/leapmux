@@ -15,20 +15,29 @@ function decodeError(status: number, message: string): { reply: ConnectErrorRepl
   expect(error).toEqual({ code: reply.error.code, message: reply.error.message })
   expect(reply.error.details).toHaveLength(1)
   expect(reply.error.details[0]?.type).toBe('aiserver.v1.ErrorDetails')
-  return { reply, details: Buffer.from(reply.error.details[0]!.value, 'base64') }
+  return {
+    reply,
+    details: Buffer.from(reply.error.details[0]!.value, 'base64'),
+  }
 }
 
 describe('cursorErrorResponse', () => {
   it('uses a native nonretryable quota error on the Connect end response', () => {
     const { reply, details } = decodeError(429, 'CURSOR_NATIVE_QUOTA')
     expect(reply.error).toMatchObject({ code: 'resource_exhausted', message: 'CURSOR_NATIVE_QUOTA' })
-    expect([...details.subarray(0, 2)]).toEqual([0x08, 10])
+    expect([
+      ...details.subarray(0, 2),
+    ]).toEqual([0x08, 10])
     const custom = descend(details, [2])!
     const fields = readCursorProtobufFields(custom).strings
     expect(new TextDecoder().decode(fields.get(1)?.[0])).toBe('Usage limit reached')
     expect(new TextDecoder().decode(fields.get(2)?.[0])).toBe('CURSOR_NATIVE_QUOTA')
-    expect([...custom.subarray(-2)]).toEqual([0x20, 0])
-    expect([...details.subarray(-2)]).toEqual([0x18, 1])
+    expect([
+      ...custom.subarray(-2),
+    ]).toEqual([0x20, 0])
+    expect([
+      ...details.subarray(-2),
+    ]).toEqual([0x18, 1])
   })
 
   it.each([
@@ -47,8 +56,12 @@ describe('cursorErrorResponse', () => {
   ])('maps HTTP %i to native Connect %s', (status, code) => {
     const { reply, details } = decodeError(status, 'Native model failure.')
     expect(reply.error.code).toBe(code)
-    expect([...details.subarray(0, 2)]).toEqual([0x08, 29])
-    expect([...descend(details, [2])!.subarray(-2)]).toEqual([0x20, 0])
+    expect([
+      ...details.subarray(0, 2),
+    ]).toEqual([0x08, 29])
+    expect([
+      ...descend(details, [2])!.subarray(-2),
+    ]).toEqual([0x20, 0])
   })
 
   it.each(['', 'Native quota: 零 🔒'])('preserves the exact UTF-8 message %s', (message) => {
@@ -57,7 +70,14 @@ describe('cursorErrorResponse', () => {
     expect(new TextDecoder().decode(descend(details, [2, 2]))).toBe(message)
   })
 
-  it.each([0, -1, 399, 600, 429.5, Number.POSITIVE_INFINITY])('refuses an invalid HTTP error status %s', (status) => {
+  it.each([
+    0,
+    -1,
+    399,
+    600,
+    429.5,
+    Number.POSITIVE_INFINITY,
+  ])('refuses an invalid HTTP error status %s', (status) => {
     expect(() => cursorErrorResponse({ status, message: 'Native error.' })).toThrow('HTTP error status')
   })
 })

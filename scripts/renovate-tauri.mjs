@@ -4,40 +4,70 @@ import { planTauriTargets } from './renovate-tauri-graph.mjs'
 import { matchesCargoRequirement, tauriMajorMinor } from './renovate-tauri-releases.mjs'
 
 function cargoCompanion(name) {
-  return name === '@tauri-apps/api' ? 'tauri' : name.startsWith('@tauri-apps/plugin-') ? name.replace('@tauri-apps/', 'tauri-') : null
+  return name === '@tauri-apps/api'
+    ? 'tauri'
+    : name.startsWith('@tauri-apps/plugin-')
+      ? name.replace('@tauri-apps/', 'tauri-')
+      : null
 }
 
 function cargoDeclaration(manifest, name) {
   const entry = Object.entries(manifest?.dependencies ?? {}).find(([key, declaration]) => key === name || declaration?.package === name)
   if (!entry)
     return null
-  return { key: entry[0], requirement: typeof entry[1] === 'string' ? entry[1] : entry[1]?.version }
+  return {
+    key: entry[0],
+    requirement: typeof entry[1] === 'string'
+      ? entry[1]
+      : entry[1]?.version,
+  }
 }
 
 export function tauriVersions(bunText, cargoText, cargoManifestText) {
   const bun = Bun.JSON5.parse(bunText)
   const cargo = Bun.TOML.parse(cargoText)
-  const npm = Object.fromEntries(Object.entries(bun.packages).filter(([name]) => /^@tauri-apps\/[^/]+$/.test(name)).map(([name, value]) => [name, value[0].slice(value[0].lastIndexOf('@') + 1)]))
+  const npm = Object.fromEntries(Object.entries(bun.packages).filter(([name]) => /^@tauri-apps\/[^/]+$/.test(name)).map(([name, value]) => [
+    name,
+    value[0].slice(value[0].lastIndexOf('@') + 1),
+  ]))
   const resolved = Object.fromEntries(cargo.package.filter(pkg => pkg.name.startsWith('tauri')).map(pkg => [pkg.name, pkg.version]))
   const occurrences = { npm: {}, cargo: {} }
   for (const value of Object.values(bun.packages)) {
     const identity = value[0]
     const split = identity.lastIndexOf('@')
     const name = identity.slice(0, split)
-    if (name.startsWith('@tauri-apps/'))
-      occurrences.npm[name] = [...new Set([...(occurrences.npm[name] ?? []), identity.slice(split + 1)])].sort(Bun.semver.order)
+    if (name.startsWith('@tauri-apps/')) {
+      occurrences.npm[name] = [
+        ...new Set([
+          ...(occurrences.npm[name] ?? []),
+          identity.slice(split + 1),
+        ]),
+      ].sort(Bun.semver.order)
+    }
   }
   for (const pkg of cargo.package) {
-    if (pkg.name.startsWith('tauri'))
-      occurrences.cargo[pkg.name] = [...new Set([...(occurrences.cargo[pkg.name] ?? []), pkg.version])].sort(Bun.semver.order)
+    if (pkg.name.startsWith('tauri')) {
+      occurrences.cargo[pkg.name] = [
+        ...new Set([
+          ...(occurrences.cargo[pkg.name] ?? []),
+          pkg.version,
+        ]),
+      ].sort(Bun.semver.order)
+    }
   }
-  const manifest = cargoManifestText ? Bun.TOML.parse(cargoManifestText) : null
+  const manifest = cargoManifestText
+    ? Bun.TOML.parse(cargoManifestText)
+    : null
   for (const name of Object.keys(npm).map(cargoCompanion).filter(Boolean)) {
-    const versions = [...new Set(cargo.package.filter(pkg => pkg.name === name).map(pkg => pkg.version))]
+    const versions = [
+      ...new Set(cargo.package.filter(pkg => pkg.name === name).map(pkg => pkg.version)),
+    ]
     if (versions.length <= 1 && !manifest)
       continue
     const requirement = cargoDeclaration(manifest, name)?.requirement
-    const matching = requirement ? versions.filter(version => matchesCargoRequirement(version, requirement)) : []
+    const matching = requirement
+      ? versions.filter(version => matchesCargoRequirement(version, requirement))
+      : []
     if (matching.length !== 1)
       throw new Error(`Cannot identify the direct locked Tauri version for ${name}.`)
     resolved[name] = matching[0]
@@ -52,7 +82,16 @@ export function readTauriVersions(root) {
 export function tauriPairs(versions) {
   return Object.entries(versions.npm).flatMap(([npm, npmVersion]) => {
     const cargo = cargoCompanion(npm)
-    return cargo && versions.cargo[cargo] ? [{ npm, cargo, npmVersion, cargoVersion: versions.cargo[cargo] }] : []
+    return cargo && versions.cargo[cargo]
+      ? [
+          {
+            npm,
+            cargo,
+            npmVersion,
+            cargoVersion: versions.cargo[cargo],
+          },
+        ]
+      : []
   })
 }
 
@@ -71,15 +110,21 @@ export function reconcileCargoRequirement(text, name, target, { exact = false } 
   if (!exact && matchesCargoRequirement(target, requirement))
     return text
   const pattern = new RegExp(`^(\\s*${RegExp.escape(declaration.key)}\\s*=\\s*)(.+)$`, 'gm')
-  const matches = [...text.matchAll(pattern)]
+  const matches = [
+    ...text.matchAll(pattern),
+  ]
   if (matches.length !== 1)
     throw new Error(`Expected one Tauri manifest entry for ${name}.`)
   return text.replace(pattern, (_line, prefix, value) => {
-    const versionPattern = value.startsWith('"') ? /^"[^"]+"/ : /\bversion\s*=\s*"[^"]+"/
+    const versionPattern = value.startsWith('"')
+      ? /^"[^"]+"/
+      : /\bversion\s*=\s*"[^"]+"/
     if (!versionPattern.test(value))
       throw new Error(`Cannot locate the Tauri requirement for ${name}.`)
     const version = `${exact ? '=' : ''}${target}`
-    return prefix + value.replace(versionPattern, value.startsWith('"') ? `"${version}"` : `version = "${version}"`)
+    return prefix + value.replace(versionPattern, value.startsWith('"')
+      ? `"${version}"`
+      : `version = "${version}"`)
   })
 }
 
@@ -93,7 +138,16 @@ export async function reconcileTauri({ root, trusted, run, security = false, upg
       throw new Error(`Cannot find trusted Tauri baseline for ${pair.npm}.`)
     return { ...pair, npmVersion: baseline.npm[pair.npm], cargoVersion: baseline.cargo[pair.cargo] }
   })
-  const targets = await planTauriTargets(pairs, { policy, alerts: prepared.alerts, upgrades, baseline, proposed, security, preparedTargets: security ? prepared.securityTargets : null, request })
+  const targets = await planTauriTargets(pairs, {
+    policy,
+    alerts: prepared.alerts,
+    upgrades,
+    baseline,
+    proposed,
+    security,
+    preparedTargets: security ? prepared.securityTargets : null,
+    request,
+  })
   if (!targets)
     throw new Error('No compatible Tauri graph satisfies the release age and required versions.')
   if (targets.length === 0) {
@@ -108,7 +162,9 @@ export async function reconcileTauri({ root, trusted, run, security = false, upg
   let bunChanged = false
   let cargoChanged = false
   for (const { pair, target } of targets) {
-    const group = Object.hasOwn(manifest.dependencies ?? {}, pair.npm) ? 'dependencies' : 'devDependencies'
+    const group = Object.hasOwn(manifest.dependencies ?? {}, pair.npm)
+      ? 'dependencies'
+      : 'devDependencies'
     if (!manifest[group]?.[pair.npm])
       throw new Error(`Missing Tauri companion manifest entry: ${pair.npm}`)
     // Exact requirements prevent either resolver from moving an already planned companion.

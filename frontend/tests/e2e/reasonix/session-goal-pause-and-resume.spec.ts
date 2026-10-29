@@ -22,7 +22,10 @@ reasonixTest('accepts a goal whose native status redacts its objective', async (
     await submitGoal(page, objective.input)
     await modelScript.waitForGate(gate)
     await expect(page.getByTestId('set-goal-dialog')).toHaveCount(0)
-    await expectGoalObjective(page, { ...objective, text: objective.text.replace('sk-real-secret-value-123456', 'sk-rea*****************3456') })
+    await expectGoalObjective(page, {
+      ...objective,
+      text: objective.text.replace('sk-real-secret-value-123456', 'sk-rea*****************3456'),
+    })
     await expectGoalStatus(page, 'active')
     await clearGoal(page)
     await modelScript.releaseGateIfHeld(gate)

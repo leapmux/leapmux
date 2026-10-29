@@ -29,10 +29,15 @@ export const TabTypeIcon: Component<TabTypeIconProps> = (props) => {
   const tokenSize = (): IconSizeName => props.size ?? 'sm'
   // Spread as a getter so the class stays ABSENT when unset, and the read
   // stays reactive, rather than freezing the decision at mount.
-  const classProps = () => (props.class !== undefined ? { class: props.class } : {})
+  const classProps = () => (props.class !== undefined
+    ? { class: props.class }
+    : {})
   return (
     <Switch>
-      <Match when={isAgentTab(props.tab) ? props.tab : false}>
+      <Match when={isAgentTab(props.tab)
+        ? props.tab
+        : false}
+      >
         {(tab) => {
           // Spread-ready provider, as a GETTER like `classProps` below: the
           // row updates in place (the tree's fingerprint skips provider
@@ -42,7 +47,9 @@ export const TabTypeIcon: Component<TabTypeIconProps> = (props) => {
           // could not be narrowed.
           const providerProps = () => {
             const provider = tab().agentProvider
-            return provider !== undefined ? { provider } : {}
+            return provider !== undefined
+              ? { provider }
+              : {}
           }
           return (
             <span class={styles.wrapper}>

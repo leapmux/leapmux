@@ -83,12 +83,17 @@ export function qwenQuestionReply(payload: Record<string, unknown>, questions: C
   questions.forEach((_, index) => {
     const selected = answerState.selections()[index] ?? []
     const typed = answerState.customTexts()[index]?.trim() ?? ''
-    const answer = selected.length > 0 ? selected.join(QWEN_MULTI_SELECT_SEPARATOR) : typed
+    const answer = selected.length > 0
+      ? selected.join(QWEN_MULTI_SELECT_SEPARATOR)
+      : typed
     if (answer)
       answers[String(index)] = answer
   })
   return {
-    outcome: { outcome: ACP_PERMISSION_OUTCOME.Selected, optionId: qwenOptionOfKind(payload, ACP_PERMISSION_KIND.AllowOnce, QWEN_PERMISSION_OPTION.ProceedOnce) },
+    outcome: {
+      outcome: ACP_PERMISSION_OUTCOME.Selected,
+      optionId: qwenOptionOfKind(payload, ACP_PERMISSION_KIND.AllowOnce, QWEN_PERMISSION_OPTION.ProceedOnce),
+    },
     [QWEN_ANSWERS_FIELD]: answers,
   }
 }
@@ -106,7 +111,10 @@ export function sendQwenQuestionResponse(
 /** The reply that dismisses the dialog: Qwen's own cancel option. */
 export function sendQwenQuestionRejectResponse(onRespond: ControlResponseSender, requestId: string, payload: Record<string, unknown>): Promise<void> {
   return sendJsonRpcResult(onRespond, requestId, {
-    outcome: { outcome: ACP_PERMISSION_OUTCOME.Selected, optionId: qwenOptionOfKind(payload, KIND_REJECT_ONCE, QWEN_PERMISSION_OPTION.Cancel) },
+    outcome: {
+      outcome: ACP_PERMISSION_OUTCOME.Selected,
+      optionId: qwenOptionOfKind(payload, KIND_REJECT_ONCE, QWEN_PERMISSION_OPTION.Cancel),
+    },
   })
 }
 
@@ -119,13 +127,21 @@ export function qwenQuestionAnswerLines(request: Record<string, unknown> | undef
   const answers = result[QWEN_ANSWERS_FIELD]
   if (!isObject(answers))
     return null
-  const questions = request ? qwenQuestions(request) : []
-  const indexes = questions.length > 0 ? questions.map((_, index) => String(index)) : Object.keys(answers)
+  const questions = request
+    ? qwenQuestions(request)
+    : []
+  const indexes = questions.length > 0
+    ? questions.map((_, index) => String(index))
+    : Object.keys(answers)
   const lines = indexes.flatMap((index) => {
     const question = questions[Number(index)]
     const label = question?.header || question?.question || `Question ${Number(index) + 1}`
-    const line = labeledAnswerLine(label, Object.hasOwn(answers, index) ? [answers[index]] : [])
-    return line !== null ? [line] : []
+    const line = labeledAnswerLine(label, Object.hasOwn(answers, index)
+      ? [answers[index]]
+      : [])
+    return line !== null
+      ? [line]
+      : []
   })
   return joinAnswerLines(lines)
 }

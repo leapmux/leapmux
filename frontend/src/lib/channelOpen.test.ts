@@ -22,7 +22,9 @@ function makeOpen(opts?: {
       },
       closeChannel: async () => {},
     },
-    keyPins: new KeyPinStore({ confirmKeyPin: async () => 'accept' }),
+    keyPins: new KeyPinStore({
+      confirmKeyPin: async () => 'accept',
+    }),
     session: new ChannelSession({
       sendToWire: () => {},
       closeChannel: async () => {},
@@ -40,8 +42,12 @@ function makeOpen(opts?: {
     pool: new ChannelPool(),
     expectedUserId: () => undefined,
     // Optional knobs: omit rather than pass an explicit undefined.
-    ...(opts?.testPayloadBudget === undefined ? {} : { testPayloadBudget: opts.testPayloadBudget }),
-    ...(opts?.testReassembledCeiling === undefined ? {} : { testReassembledCeiling: opts.testReassembledCeiling }),
+    ...(opts?.testPayloadBudget === undefined
+      ? {}
+      : { testPayloadBudget: opts.testPayloadBudget }),
+    ...(opts?.testReassembledCeiling === undefined
+      ? {}
+      : { testReassembledCeiling: opts.testReassembledCeiling }),
     verifySession: async () => {},
     evictGhost: () => {},
     notifyStateChange: () => {},

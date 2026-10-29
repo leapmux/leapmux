@@ -8,14 +8,20 @@ interface Row { id: string, title: string }
 describe('createKeyedRows', () => {
   it('keeps the key list identical when only a field changed', () => {
     createRoot((dispose) => {
-      const [items, setItems] = createSignal<Row[]>([{ id: 'a', title: 'A' }, { id: 'b', title: 'B' }])
+      const [items, setItems] = createSignal<Row[]>([
+        { id: 'a', title: 'A' },
+        { id: 'b', title: 'B' },
+      ])
       const { keys } = createKeyedRows(items, r => r.id)
 
       const first = keys()
       // A join result is REBUILT on any field change, so the whole array arrives
       // with fresh object identities. That is exactly the churn the guard exists
       // to absorb: same keys, so no `<For>` reconciliation.
-      setItems([{ id: 'a', title: 'renamed' }, { id: 'b', title: 'B' }])
+      setItems([
+        { id: 'a', title: 'renamed' },
+        { id: 'b', title: 'B' },
+      ])
       expect(keys(), 'a field change must not re-key the rows').toBe(first)
       dispose()
     })
@@ -23,16 +29,24 @@ describe('createKeyedRows', () => {
 
   it('emits a new key list when a row is added, removed, or reordered', () => {
     createRoot((dispose) => {
-      const [items, setItems] = createSignal<Row[]>([{ id: 'a', title: 'A' }, { id: 'b', title: 'B' }])
+      const [items, setItems] = createSignal<Row[]>([
+        { id: 'a', title: 'A' },
+        { id: 'b', title: 'B' },
+      ])
       const { keys } = createKeyedRows(items, r => r.id)
 
       const first = keys()
-      setItems([{ id: 'b', title: 'B' }, { id: 'a', title: 'A' }])
+      setItems([
+        { id: 'b', title: 'B' },
+        { id: 'a', title: 'A' },
+      ])
       expect(keys(), 'a reorder is a real change').not.toBe(first)
       expect(keys()).toEqual(['b', 'a'])
 
       const reordered = keys()
-      setItems([{ id: 'b', title: 'B' }])
+      setItems([
+        { id: 'b', title: 'B' },
+      ])
       expect(keys()).not.toBe(reordered)
       expect(keys()).toEqual(['b'])
       dispose()
@@ -41,13 +55,17 @@ describe('createKeyedRows', () => {
 
   it('resolves the CURRENT item for a key after a field change', () => {
     createRoot((dispose) => {
-      const [items, setItems] = createSignal<Row[]>([{ id: 'a', title: 'A' }])
+      const [items, setItems] = createSignal<Row[]>([
+        { id: 'a', title: 'A' },
+      ])
       const { byKey } = createKeyedRows(items, r => r.id)
 
       expect(byKey().get('a')?.title).toBe('A')
       // The lookup is deliberately unguarded: it is how a changed item reaches
       // the row that renders it, so it must NOT hold the previous object.
-      setItems([{ id: 'a', title: 'renamed' }])
+      setItems([
+        { id: 'a', title: 'renamed' },
+      ])
       expect(byKey().get('a')?.title).toBe('renamed')
       dispose()
     })
@@ -71,11 +89,15 @@ describe('createKeyedRows', () => {
 describe('createKeyLookup', () => {
   it('resolves the CURRENT item for a key after a field change', () => {
     createRoot((dispose) => {
-      const [items, setItems] = createSignal<Row[]>([{ id: 'a', title: 'A' }])
+      const [items, setItems] = createSignal<Row[]>([
+        { id: 'a', title: 'A' },
+      ])
       const byKey = createKeyLookup(items, r => r.id)
 
       expect(byKey().get('a')?.title).toBe('A')
-      setItems([{ id: 'a', title: 'renamed' }])
+      setItems([
+        { id: 'a', title: 'renamed' },
+      ])
       expect(byKey().get('a')?.title).toBe('renamed')
       dispose()
     })
@@ -83,11 +105,16 @@ describe('createKeyLookup', () => {
 
   it('answers undefined for a key its source no longer holds', () => {
     createRoot((dispose) => {
-      const [items, setItems] = createSignal<Row[]>([{ id: 'a', title: 'A' }, { id: 'b', title: 'B' }])
+      const [items, setItems] = createSignal<Row[]>([
+        { id: 'a', title: 'A' },
+        { id: 'b', title: 'B' },
+      ])
       const byKey = createKeyLookup(items, r => r.id)
 
       expect(byKey().get('b')?.title).toBe('B')
-      setItems([{ id: 'a', title: 'A' }])
+      setItems([
+        { id: 'a', title: 'A' },
+      ])
       expect(byKey().get('b')).toBeUndefined()
       dispose()
     })
@@ -104,13 +131,17 @@ describe('createKeyLookup', () => {
       // `cached` stands in for a structure computed upstream and held across
       // changes the structure's own gate ignores; it is deliberately never
       // refreshed, which is why the keys come from it and not from the signal.
-      const cached: Row[] = [{ id: 'a', title: 'A' }]
+      const cached: Row[] = [
+        { id: 'a', title: 'A' },
+      ]
       const [live, setLive] = createSignal<Row[]>(cached)
       const keys = createStableKeys(() => cached, r => r.id)
       const byKey = createKeyLookup(live, r => r.id)
 
       const firstKeys = keys()
-      setLive([{ id: 'a', title: 'renamed' }])
+      setLive([
+        { id: 'a', title: 'renamed' },
+      ])
       expect(keys(), 'the cached key list is unmoved').toBe(firstKeys)
       expect(byKey().get('a')?.title, 'the item is still resolved live').toBe('renamed')
       dispose()
@@ -124,7 +155,11 @@ describe('KeyedFor', () => {
     render(() => (
       <KeyedFor
         each={['a', 'b']}
-        lookup={key => (key === 'b' && !present() ? undefined : { label: key.toUpperCase() })}
+        lookup={key => (key === 'b' && !present()
+          ? undefined
+          : {
+              label: key.toUpperCase(),
+            })}
       >
         {item => <span data-testid="row">{item().label}</span>}
       </KeyedFor>
@@ -149,7 +184,9 @@ describe('KeyedFor', () => {
     render(() => (
       <KeyedFor
         each={['a']}
-        lookup={() => (present() ? { label: 'A' } : undefined)}
+        lookup={() => (present()
+          ? { label: 'A' }
+          : undefined)}
         rowSetup={(key) => {
           setups.push(key)
           return { handle: key }

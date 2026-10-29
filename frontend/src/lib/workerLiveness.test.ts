@@ -8,15 +8,22 @@ function worker(id: string, online: boolean): Worker {
 
 describe('workerLiveness', () => {
   it('reports a listed online worker as online', () => {
-    expect(isWorkerKnownOnline([worker('w1', true)], 'w1')).toBe(true)
+    expect(isWorkerKnownOnline([
+      worker('w1', true),
+    ], 'w1')).toBe(true)
   })
 
   it('reports a listed offline worker as offline', () => {
-    expect(isWorkerKnownOnline([worker('w1', false)], 'w1')).toBe(false)
+    expect(isWorkerKnownOnline([
+      worker('w1', false),
+    ], 'w1')).toBe(false)
   })
 
   it('answers per worker rather than for the list as a whole', () => {
-    const workers = [worker('w1', true), worker('w2', false)]
+    const workers = [
+      worker('w1', true),
+      worker('w2', false),
+    ]
     expect(isWorkerKnownOnline(workers, 'w1')).toBe(true)
     expect(isWorkerKnownOnline(workers, 'w2')).toBe(false)
   })
@@ -33,7 +40,9 @@ describe('workerLiveness', () => {
    */
   it('treats an unlisted worker as online', () => {
     expect(isWorkerKnownOnline([], 'w1')).toBe(true)
-    expect(isWorkerKnownOnline([worker('w2', false)], 'w1')).toBe(true)
+    expect(isWorkerKnownOnline([
+      worker('w2', false),
+    ], 'w1')).toBe(true)
   })
 
   /**
@@ -45,7 +54,10 @@ describe('workerLiveness', () => {
    * retired without the prompt.
    */
   it('distinguishes unknown from offline', () => {
-    const workers = [worker('w1', true), worker('w2', false)]
+    const workers = [
+      worker('w1', true),
+      worker('w2', false),
+    ]
     expect(workerOnlineState(workers, 'w1')).toBe(true)
     expect(workerOnlineState(workers, 'w2')).toBe(false)
     expect(workerOnlineState(workers, 'w3')).toBeUndefined()
@@ -59,7 +71,10 @@ describe('isWorkerKnownOffline', () => {
   // not arrived" at least as often as "the machine is gone". Only a positive
   // offline report may unlock a path that retires a tab.
   it('is true only for a worker the list positively reports offline', () => {
-    const workers = [worker('w-on', true), worker('w-off', false)]
+    const workers = [
+      worker('w-on', true),
+      worker('w-off', false),
+    ]
     expect(isWorkerKnownOffline(workers, 'w-off')).toBe(true)
     expect(isWorkerKnownOffline(workers, 'w-on')).toBe(false)
     expect(isWorkerKnownOffline(workers, 'w-absent')).toBe(false)
@@ -76,7 +91,11 @@ describe('isWorkerKnownOffline', () => {
 
 describe('onlineWorkerIdSet', () => {
   it('contains exactly the ids reported online', () => {
-    const set = onlineWorkerIdSet([worker('w-on', true), worker('w-off', false), worker('w-on2', true)])
+    const set = onlineWorkerIdSet([
+      worker('w-on', true),
+      worker('w-off', false),
+      worker('w-on2', true),
+    ])
     expect([...set].sort()).toEqual(['w-on', 'w-on2'])
     // Absence conflates "known offline" with "not in the list" -- documented, and
     // why a caller needing that distinction must use workerOnlineState.

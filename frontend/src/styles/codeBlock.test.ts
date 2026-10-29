@@ -7,7 +7,7 @@ import { codeBlockPre } from '~/styles/codeBlock'
 // declares its own `pre` rule inside its `base` layer -- so every value stated
 // here wins over Oat's unconditionally, whatever the specificity. That makes a
 // restated value a silent override rather than a redundancy, and the radius was
-// one: `--radius-small` is what Oat gives INLINE `code`, a third of the
+// one: `--radius-small` is what Oat gives INLINE `code`, half of the
 // `--radius-medium` it gives a `<pre>`, so a fenced block was rounded at the
 // inline corner.
 //

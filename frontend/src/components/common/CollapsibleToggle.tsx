@@ -45,6 +45,8 @@ export const CollapsibleToggle: Component<CollapsibleToggleProps> = props => (
     data-testid={props['data-testid']}
     onClick={() => props.onToggle()}
   >
-    {props.expanded ? (props.lessLabel ?? 'Show less') : props.moreLabel}
+    {props.expanded
+      ? (props.lessLabel ?? 'Show less')
+      : props.moreLabel}
   </button>
 )

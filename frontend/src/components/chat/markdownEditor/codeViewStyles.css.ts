@@ -37,4 +37,6 @@ export const codeViewContent = style({
 // too, and a `span[style]` rule -- higher specificity than the codeViewLineNumber class --
 // would override its `--faint-foreground` with `var(--shiki-light)`, which resolves to
 // nothing on a non-token span (so the numbers fall back to full foreground color).
-codeSurface(codeViewContainer, 'page', [{ suffix: ' span[data-shiki-token]', bg: true }])
+codeSurface(codeViewContainer, 'page', [
+  { suffix: ' span[data-shiki-token]', bg: true },
+])

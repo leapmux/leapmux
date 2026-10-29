@@ -11,7 +11,12 @@ claudeTest.describe('Attachment Support', () => {
   // test; manual paste in the desktop build is the only true end-to-end.
 
   claudeTest('unsupported file type stays out of the next model request', async ({ page, modelScript, leapmuxServer, authenticatedWorkspace }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedWorkspace.workspaceId,
+    })
     // The composer of the default provider refuses a binary file with no pill and a toast.
     await exerciseAttachmentRefusal(context, 'binary')
   })

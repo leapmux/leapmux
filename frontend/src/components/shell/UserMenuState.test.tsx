@@ -69,7 +69,9 @@ describe('preferences address', () => {
     await waitFor(() => expect(showPreferencesDialog()).toBe(DEFAULT_NAV_GROUP_ID))
     expect(history.get()).toBe(`/?prefs=${DEFAULT_NAV_GROUP_ID}`)
     // PUSHED, which is what gives the Back button something to close.
-    expect(writes).toEqual([{ value: `/?prefs=${DEFAULT_NAV_GROUP_ID}`, replace: false }])
+    expect(writes).toEqual([
+      { value: `/?prefs=${DEFAULT_NAV_GROUP_ID}`, replace: false },
+    ])
   })
 
   it('closes when the browser goes back', async () => {
@@ -123,7 +125,9 @@ describe('preferences address', () => {
 
     await waitFor(() => expect(showPreferencesDialog()).toBeNull())
     expect(history.get()).toBe('/')
-    expect(writes).toEqual([{ value: '/', replace: true }])
+    expect(writes).toEqual([
+      { value: '/', replace: true },
+    ])
   })
 
   // The claim on a pushed entry belongs to the tree that made it. This
@@ -147,7 +151,9 @@ describe('preferences address', () => {
 
     await waitFor(() => expect(showPreferencesDialog()).toBeNull())
     expect(history.get()).toBe('/')
-    expect(writes).toEqual([{ value: '/', replace: true }])
+    expect(writes).toEqual([
+      { value: '/', replace: true },
+    ])
   })
 
   it('keeps the other search parameters', async () => {

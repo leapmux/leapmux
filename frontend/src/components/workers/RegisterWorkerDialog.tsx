@@ -162,7 +162,10 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
               permanently-disabled button would mislead users — drop it
               entirely. */}
           <Show when={!isSoloMode() && isEmailEnabled()}>
-            <Tooltip text={canEmail() ? 'Email this command to your verified address' : 'Verify your email to enable this'}>
+            <Tooltip text={canEmail()
+              ? 'Email this command to your verified address'
+              : 'Verify your email to enable this'}
+            >
               <button
                 type="button"
                 data-testid="email-registration-instructions"
@@ -171,7 +174,12 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
               >
                 <Icon icon={Mail} size="sm" />
                 {' '}
-                <Show when={emailSent()} fallback={emailing() ? 'Sending…' : 'Send email'}>
+                <Show
+                  when={emailSent()}
+                  fallback={emailing()
+                    ? 'Sending…'
+                    : 'Send email'}
+                >
                   <span>{`Sent to ${auth.user()?.email ?? ''}`}</span>
                 </Show>
               </button>
@@ -183,9 +191,16 @@ export const RegisterWorkerDialog: Component<RegisterWorkerDialogProps> = (props
             data-testid="copy-registration-command"
             onClick={() => void copy()}
           >
-            <Icon icon={copied() ? Check : Copy} size="sm" />
+            <Icon
+              icon={copied()
+                ? Check
+                : Copy}
+              size="sm"
+            />
             {' '}
-            {copied() ? 'Copied' : 'Copy command'}
+            {copied()
+              ? 'Copied'
+              : 'Copy command'}
           </button>
         </Show>
       </footer>

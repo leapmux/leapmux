@@ -210,7 +210,12 @@ describe('browserSettings registry', () => {
       const d = descriptorsOf(makeFakePrefs() as unknown as PreferencesState).find(x => x.id === id)
       return d?.hidden?.() ?? false
     }
-    const neighbours = ['account.profile', 'account.email', 'account.passkeys', 'account.linkedProviders']
+    const neighbours = [
+      'account.profile',
+      'account.email',
+      'account.passkeys',
+      'account.linkedProviders',
+    ]
 
     expect(hiddenOf('account.password')).toBe(false)
 
@@ -298,7 +303,10 @@ describe('createBrowserRows without a loaded account schema', () => {
   // of its two fields must lose exactly that row.
   it('drops one row when the hub stops declaring one field of a key', () => {
     const withoutStack = wire.map(d => (d.key === 'mono_fonts'
-      ? { ...d, fields: d.fields.filter(f => f.name !== 'fonts') }
+      ? {
+          ...d,
+          fields: d.fields.filter(f => f.name !== 'fonts'),
+        }
       : d)) as ProtoSettingDescriptor[]
     const ids = descriptorsOf(prefs(), withoutStack).map(d => d.id)
     expect(ids).toContain('appearance.monoFonts')
@@ -365,7 +373,11 @@ describe('createBrowserRows without a loaded account schema', () => {
       ...base,
       dual: {
         ...base.dual,
-        turnEndSound: { ...base.dual.turnEndSound, resolved: () => 'none', account: () => 'none' },
+        turnEndSound: {
+          ...base.dual.turnEndSound,
+          resolved: () => 'none',
+          account: () => 'none',
+        },
       },
     } as unknown as PreferencesState
     const row = descriptorsOf(silent, marked).find(d => d.id === 'notifications.turnEndSoundVolume')
@@ -397,7 +409,12 @@ describe('createBrowserRows bindings', () => {
         },
       },
     } as unknown as PreferencesState
-    return { prefs, setBrowserTheme, setAccountTheme, resetTheme }
+    return {
+      prefs,
+      setBrowserTheme,
+      setAccountTheme,
+      resetTheme,
+    }
   }
 
   it('dual bindings expose overridden/clearOverride and edit the selected tier', () => {
@@ -489,16 +506,25 @@ describe('createBrowserRows bindings', () => {
     const setAccountMonoFonts = vi.fn()
     const setBrowserMonoFont = vi.fn()
     const monoTier = (browser: () => { enabled: boolean, fonts: string[] } | null) => ({
-      resolved: () => browser() ?? { enabled: true, fonts: ['A'] },
+      resolved: () => browser() ?? {
+        enabled: true,
+        fonts: ['A'],
+      },
       browser,
       setBrowser: setBrowserMonoFont,
-      account: () => ({ enabled: true, fonts: ['A'] }),
+      account: () => ({
+        enabled: true,
+        fonts: ['A'],
+      }),
       setAccount: setAccountMonoFonts,
     })
     const base = makeFakePrefs()
     const prefs = {
       ...base,
-      dual: { ...base.dual, monoFonts: monoTier(() => null) },
+      dual: {
+        ...base.dual,
+        monoFonts: monoTier(() => null),
+      },
       accountCustomized: () => ({}),
       resetUserSetting: vi.fn(async () => true),
     } as unknown as PreferencesState
@@ -509,21 +535,36 @@ describe('createBrowserRows bindings', () => {
     if (monoFontStack === undefined || monoFonts === undefined)
       throw new Error('missing a mono font binding')
     monoFontStack.set(['B', 'C'])
-    expect(setAccountMonoFonts).toHaveBeenCalledWith({ enabled: true, fonts: ['B', 'C'] })
+    expect(setAccountMonoFonts).toHaveBeenCalledWith({
+      enabled: true,
+      fonts: ['B', 'C'],
+    })
     monoFonts.set(false)
-    expect(setAccountMonoFonts).toHaveBeenLastCalledWith({ enabled: false, fonts: ['A'] })
+    expect(setAccountMonoFonts).toHaveBeenLastCalledWith({
+      enabled: false,
+      fonts: ['A'],
+    })
 
     // Override tier merges into the whole browser object, never half of it.
     const overridden = {
       ...prefs,
-      dual: { ...base.dual, monoFonts: monoTier(() => ({ enabled: true, fonts: ['A'] })) },
+      dual: {
+        ...base.dual,
+        monoFonts: monoTier(() => ({
+          enabled: true,
+          fonts: ['A'],
+        })),
+      },
     } as unknown as PreferencesState
     const over = bindingsOf(overridden)
     const overriddenStack = over['appearance.monoFontStack']
     if (overriddenStack === undefined)
       throw new Error('no appearance.monoFontStack binding')
     overriddenStack.set(['Z'])
-    expect(setBrowserMonoFont).toHaveBeenCalledWith({ enabled: true, fonts: ['Z'] })
+    expect(setBrowserMonoFont).toHaveBeenCalledWith({
+      enabled: true,
+      fonts: ['Z'],
+    })
   })
 })
 
@@ -616,7 +657,9 @@ describe('buildBrowserReset', () => {
   it('addresses every desktop shell refusal to a row that exists', () => {
     const ids = descriptorsOf(makeFakePrefs() as unknown as PreferencesState).map(d => d.id)
     for (const setting of ['trayEnabled', 'startOnLogin'] as const) {
-      reportDesktopShellRefusals([{ setting, message: 'refused' }])
+      reportDesktopShellRefusals([
+        { setting, message: 'refused' },
+      ])
       expect(ids).toContain(desktopShellRefusals()[0]!.key)
     }
     reportDesktopShellRefusals([])
@@ -663,7 +706,9 @@ describe('account schema parity with the Go declarations', () => {
   it('claims exactly the fields the hub declares', () => {
     const declared = golden.flatMap(k => k.fields.map(f => `${k.key}/${f.name}`)).sort()
     const claimed = browserSettings
-      .flatMap(d => (d.protoKey === undefined ? [] : [`${d.protoKey}/${d.protoField ?? ''}`]))
+      .flatMap(d => (d.protoKey === undefined
+        ? []
+        : [`${d.protoKey}/${d.protoField ?? ''}`]))
       .sort()
     expect(claimed).toEqual(declared)
   })
@@ -818,7 +863,12 @@ describe('account schema parity with the Go declarations', () => {
   // what makes the id a fact the golden has to hold.
   it('drops a custom field whose editor this client does not carry', () => {
     const renamed = wire.map(d => (d.key === 'keybindings'
-      ? { ...d, fields: [{ ...d.fields[0], customId: 'from-a-newer-hub' }] }
+      ? {
+          ...d,
+          fields: [
+            { ...d.fields[0], customId: 'from-a-newer-hub' },
+          ],
+        }
       : d)) as ProtoSettingDescriptor[]
     const ids = descriptorsOf(makeFakePrefs() as unknown as PreferencesState, renamed).map(d => d.id)
     expect(ids).not.toContain('shortcuts.keybindings')
@@ -836,7 +886,10 @@ describe('account schema parity with the Go declarations', () => {
       for (const field of key.fields) {
         const row = rowFor(key.key, field.name)
         expect(row?.label, `${key.key}.${field.name} renders no row`).toBeTruthy()
-        labels.set(key.key, [...(labels.get(key.key) ?? []), row!.label])
+        labels.set(key.key, [
+          ...(labels.get(key.key) ?? []),
+          row!.label,
+        ])
       }
     }
     const objectShaped = [...labels].filter(([, names]) => names.length > 1)
@@ -862,13 +915,23 @@ describe('createBrowserRows enum option names', () => {
   /** The wire, with the enum row carrying the given values instead. */
   function enumValues(...values: string[]): ProtoSettingDescriptor[] {
     return wire.map(d => (d.key === ENUM_KEY
-      ? { ...d, fields: [{ ...d.fields[0], enumValues: values.map(v => ({ value: v, label: '', help: '' })) }] }
+      ? {
+          ...d,
+          fields: [
+            {
+              ...d.fields[0],
+              enumValues: values.map(v => ({ value: v, label: '', help: '' })),
+            },
+          ],
+        }
       : d)) as ProtoSettingDescriptor[]
   }
 
   function enumOptions(descriptors: ProtoSettingDescriptor[]) {
     const control = descriptorsOf(prefs(), descriptors).find(d => d.id === ENUM_ROW)?.control
-    return control?.kind === 'enum' ? control.options : undefined
+    return control?.kind === 'enum'
+      ? control.options
+      : undefined
   }
 
   it('names each declared value and keeps the wire order', () => {
@@ -898,9 +961,21 @@ describe('createBrowserRows enum option names', () => {
   // starts: the wire wins, with no edit to the declarations.
   it('prefers the hub label over the declared one', () => {
     const labelled = wire.map(d => (d.key === ENUM_KEY
-      ? { ...d, fields: [{ ...d.fields[0], enumValues: [{ value: 'unified', label: 'One column', help: '' }] }] }
+      ? {
+          ...d,
+          fields: [
+            {
+              ...d.fields[0],
+              enumValues: [
+                { value: 'unified', label: 'One column', help: '' },
+              ],
+            },
+          ],
+        }
       : d)) as ProtoSettingDescriptor[]
-    expect(enumOptions(labelled)).toEqual([{ value: 'unified', label: 'One column' }])
+    expect(enumOptions(labelled)).toEqual([
+      { value: 'unified', label: 'One column' },
+    ])
   })
 
   // No theme row is an enum row: each renders the whole-value custom editor the
@@ -967,7 +1042,12 @@ describe('createBrowserRows visibility', () => {
     )
     return {
       ...base,
-      dual: { ...base.dual, turnEndSound, trayEnabled, startOnLogin },
+      dual: {
+        ...base.dual,
+        turnEndSound,
+        trayEnabled,
+        startOnLogin,
+      },
       uiFonts: () => ({ enabled: opts.uiFontsEnabled ?? true, fonts: [] }),
       monoFonts: () => ({ enabled: opts.monoFontsEnabled ?? true, fonts: [] }),
       // The context publishes the resolved reader as a top-level accessor

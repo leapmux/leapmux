@@ -44,24 +44,44 @@ describe('pi result divider', () => {
   const plugin = providerFor(AgentProvider.PI)!
 
   it('maps agent_end (stop) to a "Turn ended" divider model', () => {
-    expect(plugin!.transcript.extractDivider({ type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'stop' }] }))
+    expect(plugin!.transcript.extractDivider({
+      type: 'agent_end',
+      messages: [
+        { role: 'assistant', stopReason: 'stop' },
+      ],
+    }))
       .toEqual({ label: 'Turn ended' })
   })
 
   it('keeps the native length limit qualifier after a normal completion', () => {
-    expect(plugin.transcript.extractDivider({ type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'length' }] }))
+    expect(plugin.transcript.extractDivider({
+      type: 'agent_end',
+      messages: [
+        { role: 'assistant', stopReason: 'length' },
+      ],
+    }))
       .toEqual({ label: 'Turn ended (length limit)' })
   })
 
   // An aborted turn is not an error: the reader asked for it, and every provider
   // states an interruption in the same words.
   it('maps an aborted stopReason to the shared interruption label', () => {
-    expect(plugin!.transcript.extractDivider({ type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'aborted' }] }))
+    expect(plugin!.transcript.extractDivider({
+      type: 'agent_end',
+      messages: [
+        { role: 'assistant', stopReason: 'aborted' },
+      ],
+    }))
       .toEqual({ label: 'Turn interrupted' })
   })
 
   it('maps an error stopReason to a danger "Turn failed — <msg>" model', () => {
-    expect(plugin!.transcript.extractDivider({ type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'rate limit' }] }))
+    expect(plugin!.transcript.extractDivider({
+      type: 'agent_end',
+      messages: [
+        { role: 'assistant', stopReason: 'error', errorMessage: 'rate limit' },
+      ],
+    }))
       .toEqual({ label: 'Turn failed — rate limit', isError: true })
   })
 
@@ -77,7 +97,9 @@ describe('pi result divider', () => {
       {
         type: 'agent_end',
         duration_ms: 15_000,
-        messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'This operation was aborted' }],
+        messages: [
+          { role: 'assistant', stopReason: 'error', errorMessage: 'This operation was aborted' },
+        ],
       },
       MessageCompletion.INTERRUPTED,
     )).toEqual({ label: 'Turn interrupted (15s)' })
@@ -87,7 +109,12 @@ describe('pi result divider', () => {
   // own words and its danger color.
   it('keeps a genuine failure when no interruption was recorded', () => {
     expect(plugin!.transcript.extractDivider(
-      { type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'rate limit' }] },
+      {
+        type: 'agent_end',
+        messages: [
+          { role: 'assistant', stopReason: 'error', errorMessage: 'rate limit' },
+        ],
+      },
       MessageCompletion.ERROR,
     )).toEqual({ label: 'Turn failed — rate limit', isError: true })
   })
@@ -102,7 +129,9 @@ describe('pi result divider', () => {
     const ended = (extra: Record<string, unknown>, stopReason = 'stop'): string =>
       plugin!.transcript.extractDivider({
         type: 'agent_end',
-        messages: [{ role: 'assistant', stopReason, errorMessage: 'WebSocket error' }],
+        messages: [
+          { role: 'assistant', stopReason, errorMessage: 'WebSocket error' },
+        ],
         ...extra,
       })!.label
 
@@ -140,7 +169,9 @@ describe('pi result divider', () => {
       type: 'agent_end',
       willRetry: true,
       duration_ms: 2100,
-      messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'overloaded' }],
+      messages: [
+        { role: 'assistant', stopReason: 'error', errorMessage: 'overloaded' },
+      ],
     })!
 
     it('uses no retry qualifier on a stored final divider', () => {
@@ -151,7 +182,9 @@ describe('pi result divider', () => {
       const model = plugin!.transcript.extractDivider({
         type: 'agent_end',
         duration_ms: 2100,
-        messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'overloaded' }],
+        messages: [
+          { role: 'assistant', stopReason: 'error', errorMessage: 'overloaded' },
+        ],
       })!
       expect(model.label).toBe('Turn failed (2.1s) — overloaded')
     })
@@ -162,13 +195,23 @@ describe('pi result divider', () => {
     // the shared ResultDivider. A FAILED turn takes the inline danger color; an
     // interrupted one does not, because the reader asked for it.
     const { text, isError } = renderDivider(
-      { type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'rate limit' }] },
+      {
+        type: 'agent_end',
+        messages: [
+          { role: 'assistant', stopReason: 'error', errorMessage: 'rate limit' },
+        ],
+      },
       AgentProvider.PI,
     )
     expect(text).toBe('Turn failed — rate limit')
     expect(isError).toBe(true)
     expect(renderDivider(
-      { type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'aborted' }] },
+      {
+        type: 'agent_end',
+        messages: [
+          { role: 'assistant', stopReason: 'aborted' },
+        ],
+      },
       AgentProvider.PI,
     )).toEqual({ text: 'Turn interrupted', isError: false })
   })
@@ -181,9 +224,16 @@ describe('pi tool row toolbar metadata', () => {
       type: 'tool_execution_end',
       toolCallId: 'call-1',
       toolName: 'bash',
-      result: { content: [{ type: 'text', text: resultText }] },
+      result: {
+        content: [
+          { type: 'text', text: resultText },
+        ],
+      },
     }
-    const meta = providerToolMeta(AgentProvider.PI, end, { category: { kind: 'tool_result' }, spanType: 'bash' })
+    const meta = providerToolMeta(AgentProvider.PI, end, {
+      category: { kind: 'tool_result' },
+      spanType: 'bash',
+    })
     expect(meta).toMatchObject({ collapsible: true, hasDiff: false, hasCopyable: true })
     expect(meta?.copyableContent()).toBe(resultText)
   })
@@ -194,7 +244,11 @@ describe('pi tool row toolbar metadata', () => {
       type: 'tool_execution_end',
       toolCallId: 'call-1',
       toolName: 'read',
-      result: { content: [{ type: 'text', text: resultText }] },
+      result: {
+        content: [
+          { type: 'text', text: resultText },
+        ],
+      },
     }
     const start = {
       type: 'tool_execution_start',
@@ -202,7 +256,11 @@ describe('pi tool row toolbar metadata', () => {
       toolName: 'read',
       args: { path: '/tmp/a.ts', offset: 10 },
     }
-    const meta = providerToolMeta(AgentProvider.PI, end, { category: { kind: 'tool_result' }, spanType: 'read', request: input(start) })
+    const meta = providerToolMeta(AgentProvider.PI, end, {
+      category: { kind: 'tool_result' },
+      spanType: 'read',
+      request: input(start),
+    })
     expect(meta).toMatchObject({ collapsible: true, hasDiff: false, hasCopyable: true })
     expect(meta?.copyableContent()).toBe(resultText)
   })
@@ -212,7 +270,11 @@ describe('pi tool row toolbar metadata', () => {
       type: 'tool_execution_end',
       toolCallId: 'call-1',
       toolName: 'write',
-      result: { content: [{ type: 'text', text: 'Created.' }] },
+      result: {
+        content: [
+          { type: 'text', text: 'Created.' },
+        ],
+      },
     }
     const start = {
       type: 'tool_execution_start',
@@ -220,7 +282,11 @@ describe('pi tool row toolbar metadata', () => {
       toolName: 'write',
       args: { path: '/tmp/new.ts', content: 'piMetaWriteBody\n' },
     }
-    const meta = providerToolMeta(AgentProvider.PI, end, { category: { kind: 'tool_result' }, spanType: 'write', request: input(start) })
+    const meta = providerToolMeta(AgentProvider.PI, end, {
+      category: { kind: 'tool_result' },
+      spanType: 'write',
+      request: input(start),
+    })
     expect(meta).toMatchObject({ collapsible: false, hasDiff: true, hasCopyable: true })
     expect(meta?.copyableContent()).toContain('piMetaWriteBody')
   })
@@ -230,16 +296,29 @@ describe('pi tool row toolbar metadata', () => {
       type: 'tool_execution_end',
       toolCallId: 'call-1',
       toolName: 'edit',
-      result: { content: [{ type: 'text', text: 'Found 2 occurrences.' }] },
+      result: {
+        content: [
+          { type: 'text', text: 'Found 2 occurrences.' },
+        ],
+      },
       isError: true,
     }
     const start = {
       type: 'tool_execution_start',
       toolCallId: 'call-1',
       toolName: 'edit',
-      args: { path: '/tmp/a.ts', edits: [{ oldText: 'oldMetaMarker', newText: 'newMetaMarker' }] },
+      args: {
+        path: '/tmp/a.ts',
+        edits: [
+          { oldText: 'oldMetaMarker', newText: 'newMetaMarker' },
+        ],
+      },
     }
-    const meta = providerToolMeta(AgentProvider.PI, end, { category: { kind: 'tool_result' }, spanType: 'edit', request: input(start) })
+    const meta = providerToolMeta(AgentProvider.PI, end, {
+      category: { kind: 'tool_result' },
+      spanType: 'edit',
+      request: input(start),
+    })
     expect(meta).toMatchObject({ collapsible: false, hasDiff: false, hasCopyable: true })
     expect(meta?.copyableContent()).toBe('Found 2 occurrences.')
   })
@@ -271,7 +350,12 @@ describe('pi tool row toolbar metadata', () => {
       type: 'tool_execution_end',
       toolCallId: 'call-1',
       toolName: 'plan_mode_complete',
-      result: { content: [{ type: 'text', text: `**Proposed Plan**\n\n${planText}` }], details: { plan: planText } },
+      result: {
+        content: [
+          { type: 'text', text: `**Proposed Plan**\n\n${planText}` },
+        ],
+        details: { plan: planText },
+      },
     }
     expect(providerRow(AgentProvider.PI, end, { spanType: 'plan_mode_complete' }))
       .toEqual({ kind: 'assistant-text', text: 'Plan ready for review.' })
@@ -285,11 +369,21 @@ describe('pi tool row toolbar metadata', () => {
       type: 'tool_execution_end',
       toolCallId: 'call-1',
       toolName: 'plan_mode_complete',
-      result: { content: [{ type: 'text', text: 'Plan ready.' }], details: { plan: '# Plan' } },
+      result: {
+        content: [
+          { type: 'text', text: 'Plan ready.' },
+        ],
+        details: { plan: '# Plan' },
+      },
     }
     const withRequest = providerRow(AgentProvider.PI, end, {
       spanType: 'plan_mode_complete',
-      request: input({ type: 'tool_execution_start', toolCallId: 'call-1', toolName: 'plan_mode_complete', args: { plan: '# Plan' } }, undefined, AgentProvider.PI),
+      request: input({
+        type: 'tool_execution_start',
+        toolCallId: 'call-1',
+        toolName: 'plan_mode_complete',
+        args: { plan: '# Plan' },
+      }, undefined, AgentProvider.PI),
     })
     const alone = providerRow(AgentProvider.PI, end, { spanType: 'plan_mode_complete' })
     expect(withRequest).toEqual(alone)
@@ -301,7 +395,11 @@ describe('pi tool row toolbar metadata', () => {
       type: 'tool_execution_end',
       toolCallId: 'call-1',
       toolName: 'plan_mode_complete',
-      result: { content: [{ type: 'text', text: 'Plan ready for review.' }] },
+      result: {
+        content: [
+          { type: 'text', text: 'Plan ready for review.' },
+        ],
+      },
     }
     expect(providerRow(AgentProvider.PI, end, { spanType: 'plan_mode_complete' }))
       .toEqual({ kind: 'assistant-text', text: 'Plan ready for review.' })
@@ -313,7 +411,12 @@ describe('pi tool row toolbar metadata', () => {
       toolCallId: 'call-1',
       toolName: 'plan_mode_complete',
       isError: true,
-      result: { content: [{ type: 'text', text: 'The plan tool refused.' }], details: { plan: '# Ignored' } },
+      result: {
+        content: [
+          { type: 'text', text: 'The plan tool refused.' },
+        ],
+        details: { plan: '# Ignored' },
+      },
     }
     expect(providerRow(AgentProvider.PI, end, { spanType: 'plan_mode_complete' }))
       .toEqual({ kind: 'assistant-text', text: 'The plan tool refused.' })
@@ -325,13 +428,23 @@ describe('pi tool row toolbar metadata', () => {
 // and a message that holds no text draws nothing.
 describe('pi message rows', () => {
   it('extracts the text of a displayed custom session entry', () => {
-    const parent = { type: 'entry_appended', entry: { type: 'custom_message', display: true, content: 'A stored extension note.' } }
+    const parent = {
+      type: 'entry_appended',
+      entry: { type: 'custom_message', display: true, content: 'A stored extension note.' },
+    }
     expect(providerRow(AgentProvider.PI, parent)).toEqual({ kind: 'assistant-text', text: 'A stored extension note.' })
   })
   it('draws the text of a message and leaves its thinking out', () => {
     const parent = {
       type: 'message_end',
-      message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'reasoning' }, { type: 'text', text: 'Hello' }, { type: 'text', text: 'world' }] },
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'reasoning' },
+          { type: 'text', text: 'Hello' },
+          { type: 'text', text: 'world' },
+        ],
+      },
     }
     expect(providerRow(AgentProvider.PI, parent)).toEqual({ kind: 'assistant-text', text: 'Hello\n\nworld' })
   })
@@ -339,7 +452,12 @@ describe('pi message rows', () => {
   it('draws nothing for a message that holds thinking alone', () => {
     const parent = {
       type: 'message_end',
-      message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'reasoning' }] },
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'reasoning' },
+        ],
+      },
     }
     expect(providerRow(AgentProvider.PI, parent)).toEqual({ kind: 'hidden' })
   })
@@ -347,19 +465,43 @@ describe('pi message rows', () => {
   it('draws nothing for a message whose text blocks are blank', () => {
     const parent = {
       type: 'message_end',
-      message: { role: 'assistant', content: [{ type: 'text', text: '   ' }] },
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: '   ' },
+        ],
+      },
     }
     expect(providerRow(AgentProvider.PI, parent)).toEqual({ kind: 'hidden' })
   })
 
   // A custom message states its content as one string rather than as blocks.
   it('draws the string content of a visible custom message', () => {
-    const parent = { type: 'message_end', message: { role: 'custom', customType: 'note', display: true, content: 'A note from an extension.' } }
+    const parent = {
+      type: 'message_end',
+      message: {
+        role: 'custom',
+        customType: 'note',
+        display: true,
+        content: 'A note from an extension.',
+      },
+    }
     expect(providerRow(AgentProvider.PI, parent)).toEqual({ kind: 'assistant-text', text: 'A note from an extension.' })
   })
 
   it('draws the text blocks of a custom message and leaves its thinking out', () => {
-    const parent = { type: 'message_end', message: { role: 'custom', customType: 'note', display: true, content: [{ type: 'thinking', thinking: 'reasoning' }, { type: 'text', text: 'Shown' }] } }
+    const parent = {
+      type: 'message_end',
+      message: {
+        role: 'custom',
+        customType: 'note',
+        display: true,
+        content: [
+          { type: 'thinking', thinking: 'reasoning' },
+          { type: 'text', text: 'Shown' },
+        ],
+      },
+    }
     expect(providerRow(AgentProvider.PI, parent)).toEqual({ kind: 'assistant-text', text: 'Shown' })
   })
 })
@@ -368,29 +510,46 @@ describe('pi quotable text', () => {
   it('joins assistant text content blocks as paragraphs (≥2 newlines between blocks)', () => {
     const parent = {
       type: 'message_end',
-      message: { role: 'assistant', content: [
-        { type: 'text', text: 'Hello' },
-        { type: 'text', text: 'world' },
-      ] },
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Hello' },
+          { type: 'text', text: 'world' },
+        ],
+      },
     }
-    expect(providerQuotableText(AgentProvider.PI, parent, { category: { kind: 'assistant_text' } })).toBe('Hello\n\nworld')
+    expect(providerQuotableText(AgentProvider.PI, parent, {
+      category: { kind: 'assistant_text' },
+    })).toBe('Hello\n\nworld')
   })
 
   // The thinking is a row of its own, so the message's row quotes its text alone.
   it('quotes only the text of a message that also holds thinking', () => {
     const parent = {
       type: 'message_end',
-      message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'reasoning' }, { type: 'text', text: 'Hello' }] },
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'reasoning' },
+          { type: 'text', text: 'Hello' },
+        ],
+      },
     }
-    expect(providerQuotableText(AgentProvider.PI, parent, { category: { kind: 'assistant_text' } })).toBe('Hello')
+    expect(providerQuotableText(AgentProvider.PI, parent, {
+      category: { kind: 'assistant_text' },
+    })).toBe('Hello')
   })
 
   it('returns user content string', () => {
-    expect(providerQuotableText(AgentProvider.PI, { role: 'user', content: ' hi ' }, { category: { kind: 'user_content' } })).toBe('hi')
+    expect(providerQuotableText(AgentProvider.PI, { role: 'user', content: ' hi ' }, {
+      category: { kind: 'user_content' },
+    })).toBe('hi')
   })
 
   it('returns null for unrelated categories', () => {
-    expect(providerQuotableText(AgentProvider.PI, { type: 'message_end' }, { category: { kind: 'hidden' } })).toBeNull()
+    expect(providerQuotableText(AgentProvider.PI, { type: 'message_end' }, {
+      category: { kind: 'hidden' },
+    })).toBeNull()
   })
 })
 
@@ -414,16 +573,42 @@ describe('pi extension UI integration', () => {
       method: 'select',
       title: 'Pick one',
       options: ['Allow', 'Block'],
-    })).toEqual([{ id: 'req-1', question: 'Pick one', options: [{ label: 'Allow' }, { label: 'Block' }] }])
+    })).toEqual([
+      {
+        id: 'req-1',
+        question: 'Pick one',
+        options: [
+          { label: 'Allow' },
+          { label: 'Block' },
+        ],
+      },
+    ])
   })
 
   it('sends Pi select AskUserQuestion responses as extension_ui_response values', async () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
     await plugin?.controls?.askUserQuestion!.sendAnswer(
-      { requestId: 'req-1', agentId: 'agent-1', payload: { type: 'extension_ui_request', method: 'select' } },
+      {
+        requestId: 'req-1',
+        agentId: 'agent-1',
+        payload: { type: 'extension_ui_request', method: 'select' },
+      },
       onRespond,
-      [{ id: 'req-1', question: 'Pick one', options: [{ label: 'Allow' }, { label: 'Block' }] }],
-      createControlAnswerState({ selections: { 0: ['Block'] } }),
+      [
+        {
+          id: 'req-1',
+          question: 'Pick one',
+          options: [
+            { label: 'Allow' },
+            { label: 'Block' },
+          ],
+        },
+      ],
+      createControlAnswerState({
+        selections: {
+          0: ['Block'],
+        },
+      }),
     )
 
     expect(onRespond).toHaveBeenCalledOnce()
@@ -448,7 +633,11 @@ describe('pi extension UI integration', () => {
   })
 
   it('builds select responses with the typed value', () => {
-    const resp = plugin?.controls?.buildControlResponse!({ type: 'extension_ui_request', method: 'select', options: ['Allow', 'Block'] }, 'Allow', 'req-1')
+    const resp = plugin?.controls?.buildControlResponse!({
+      type: 'extension_ui_request',
+      method: 'select',
+      options: ['Allow', 'Block'],
+    }, 'Allow', 'req-1')
     expect(resp).toMatchObject({ type: 'extension_ui_response', id: 'req-1', value: 'Allow' })
   })
 
@@ -482,7 +671,12 @@ describe('pi spanRole', () => {
   const plugin = providerFor(AgentProvider.PI)!
 
   function parsedWithType(type: string): ResolvedMessageContent {
-    return resolveMessageForRendering({ rawText: '', topLevel: null, parentObject: { type }, wrapper: null }, AgentProvider.PI)
+    return resolveMessageForRendering({
+      rawText: '',
+      topLevel: null,
+      parentObject: { type },
+      wrapper: null,
+    }, AgentProvider.PI)
   }
 
   it('routes tool_execution_start to request and _end to result by envelope type', () => {
@@ -500,15 +694,40 @@ describe('pi contextUsageFromMessage', () => {
 
   // Pi reads message.usage off the parsed message (getInnerMessage(parsed).message.usage).
   const withUsage = (usage: Record<string, unknown>): ParsedMessageContent =>
-    ({ rawText: '', topLevel: null, parentObject: { message: { usage } }, wrapper: null })
+    ({
+      rawText: '',
+      topLevel: null,
+      parentObject: {
+        message: { usage },
+      },
+      wrapper: null,
+    })
 
   it('extracts raw Pi usage (input/output/cacheRead/cacheWrite/totalTokens)', () => {
-    expect(plugin?.session?.contextUsageFromMessage!(withUsage({ input: 100, output: 10, cacheRead: 20, cacheWrite: 5, totalTokens: 130 })))
-      .toEqual({ inputTokens: 100, cacheCreationInputTokens: 5, cacheReadInputTokens: 20, outputTokens: 10, contextTokens: 130 })
+    expect(plugin?.session?.contextUsageFromMessage!(withUsage({
+      input: 100,
+      output: 10,
+      cacheRead: 20,
+      cacheWrite: 5,
+      totalTokens: 130,
+    })))
+      .toEqual({
+        inputTokens: 100,
+        cacheCreationInputTokens: 5,
+        cacheReadInputTokens: 20,
+        outputTokens: 10,
+        contextTokens: 130,
+      })
   })
 
   it('returns null when there is no token data', () => {
-    expect(plugin?.session?.contextUsageFromMessage!(withUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 }))).toBeNull()
+    expect(plugin?.session?.contextUsageFromMessage!(withUsage({
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+    }))).toBeNull()
   })
 
   it('returns null for a non-Pi usage shape (no input field)', () => {
@@ -516,7 +735,12 @@ describe('pi contextUsageFromMessage', () => {
   })
 
   it('returns null when the message carries no message.usage', () => {
-    expect(plugin?.session?.contextUsageFromMessage!({ rawText: '', topLevel: null, parentObject: { type: 'message_end', message: {} }, wrapper: null })).toBeNull()
+    expect(plugin?.session?.contextUsageFromMessage!({
+      rawText: '',
+      topLevel: null,
+      parentObject: { type: 'message_end', message: {} },
+      wrapper: null,
+    })).toBeNull()
   })
 })
 
@@ -543,7 +767,18 @@ describe('pi relatedMessages', () => {
   const plugin = providerFor(AgentProvider.PI)!
 
   it('each half of a tool call wants the other', () => {
-    expect(plugin?.transcript.relatedMessages!(input({ type: 'tool_execution_start', toolCallId: 'call', toolName: 'bash', args: { command: 'ls' } }))).toEqual(['result'])
-    expect(plugin?.transcript.relatedMessages!(input({ type: 'tool_execution_end', toolCallId: 'call', toolName: 'bash', result: { content: [] }, isError: false }))).toEqual(['request'])
+    expect(plugin?.transcript.relatedMessages!(input({
+      type: 'tool_execution_start',
+      toolCallId: 'call',
+      toolName: 'bash',
+      args: { command: 'ls' },
+    }))).toEqual(['result'])
+    expect(plugin?.transcript.relatedMessages!(input({
+      type: 'tool_execution_end',
+      toolCallId: 'call',
+      toolName: 'bash',
+      result: { content: [] },
+      isError: false,
+    }))).toEqual(['request'])
   })
 })

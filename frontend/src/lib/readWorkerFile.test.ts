@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFile } from '~/api/workerRpc'
 import { readWorkerFile } from './readWorkerFile'
 
-vi.mock('~/api/workerRpc', () => ({ readFile: vi.fn() }))
+vi.mock('~/api/workerRpc', () => ({
+  readFile: vi.fn(),
+}))
 const read = vi.mocked(readFile)
 
 /** The page size the reader asks for, and the window it keeps in flight. */
@@ -34,7 +36,9 @@ function readAll(bytes: Uint8Array, signal?: AbortSignal) {
     path: '/file.bin',
     maxBytes: bytes.length,
     // The option rejects an explicit undefined; omit when no signal was given.
-    ...(signal === undefined ? {} : { signal }),
+    ...(signal === undefined
+      ? {}
+      : { signal }),
   })
 }
 
@@ -44,7 +48,13 @@ beforeEach(() => {
 
 describe('readWorkerFile', () => {
   it('rejects a preview limit that is not a positive safe integer', async () => {
-    for (const maxBytes of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    for (const maxBytes of [
+      0,
+      -1,
+      1.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+    ]) {
       await expect(readWorkerFile({ workerId: 'worker', path: '/file.bin', maxBytes })).rejects.toThrow('preview limit is invalid')
     }
     expect(read).not.toHaveBeenCalled()
@@ -96,7 +106,10 @@ describe('readWorkerFile', () => {
   })
 
   it('stops when a page reports a different size or modification time', async () => {
-    for (const changed of [response(fileBytes(8), 999n), response(fileBytes(8), 128n, '2026-09-11T00:00:01Z')]) {
+    for (const changed of [
+      response(fileBytes(8), 999n),
+      response(fileBytes(8), 128n, '2026-09-11T00:00:01Z'),
+    ]) {
       read.mockReset()
       read.mockResolvedValueOnce(response(new Uint8Array(), 128n)).mockResolvedValue(changed)
       await expect(readAll(fileBytes(128))).rejects.toThrow('changed while it was read')

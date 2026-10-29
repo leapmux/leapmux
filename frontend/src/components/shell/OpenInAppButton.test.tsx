@@ -34,7 +34,10 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
 // reaches them through modules this file never names.
 vi.mock('~/components/common/Toast', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/components/common/Toast')>()
-  return { ...actual, showWarnToastWithLoggedCause: (...args: unknown[]) => showWarnToastMock(...args) }
+  return {
+    ...actual,
+    showWarnToastWithLoggedCause: (...args: unknown[]) => showWarnToastMock(...args),
+  }
 })
 
 function soloRuntimeState(localSolo: boolean) {
@@ -98,7 +101,9 @@ function appLabels(container: HTMLElement): string[] {
 
 describe('open in app button', () => {
   it('renders nothing when workingDir is empty', async () => {
-    listAppsMock.mockResolvedValue([editorApp('vscode', 'VS Code')])
+    listAppsMock.mockResolvedValue([
+      editorApp('vscode', 'VS Code'),
+    ])
     const { container } = renderButtonNoDir()
     // Wait a tick for the resource to settle; nothing should render.
     await new Promise(r => setTimeout(r, 0))
@@ -107,7 +112,9 @@ describe('open in app button', () => {
 
   it('renders nothing when not in solo Tauri', async () => {
     runtimeStateMock.mockResolvedValue(soloRuntimeState(false))
-    listAppsMock.mockResolvedValue([editorApp('vscode', 'VS Code')])
+    listAppsMock.mockResolvedValue([
+      editorApp('vscode', 'VS Code'),
+    ])
     const { container } = renderButton()
     await new Promise(r => setTimeout(r, 0))
     expect(container.querySelector('[data-testid="open-in-app"]')).toBeNull()
@@ -121,14 +128,18 @@ describe('open in app button', () => {
   })
 
   it('shows "Open in …" when no MRU is set', async () => {
-    listAppsMock.mockResolvedValue([editorApp('vscode', 'VS Code')])
+    listAppsMock.mockResolvedValue([
+      editorApp('vscode', 'VS Code'),
+    ])
     renderButton()
     const main = await screen.findByTestId('open-in-app-main')
     expect(main.textContent).toContain('Open in …')
   })
 
   it('clicking main with no MRU does NOT launch (opens menu instead)', async () => {
-    listAppsMock.mockResolvedValue([editorApp('vscode', 'VS Code')])
+    listAppsMock.mockResolvedValue([
+      editorApp('vscode', 'VS Code'),
+    ])
     renderButton()
     const main = await screen.findByTestId('open-in-app-main')
     fireEvent.click(main)
@@ -242,7 +253,9 @@ describe('open in app button', () => {
   })
 
   it('falls back to "Open in …" when MRU points at an application that is no longer detected', async () => {
-    listAppsMock.mockResolvedValue([editorApp('vscode', 'VS Code')])
+    listAppsMock.mockResolvedValue([
+      editorApp('vscode', 'VS Code'),
+    ])
     localStorageSet(KEY_PREFERRED_EXTERNAL_APP, 'zed')
     renderButton()
     const main = await screen.findByTestId('open-in-app-main')
@@ -250,7 +263,9 @@ describe('open in app button', () => {
   })
 
   it('chevron button has aria-haspopup=menu', async () => {
-    listAppsMock.mockResolvedValue([editorApp('vscode', 'VS Code')])
+    listAppsMock.mockResolvedValue([
+      editorApp('vscode', 'VS Code'),
+    ])
     renderButton()
     const chevron = await screen.findByTestId('open-in-app-chevron')
     expect(chevron.getAttribute('aria-haspopup')).toBe('menu')
@@ -275,7 +290,9 @@ describe('open in app button', () => {
   describe('refresh app list', () => {
     it('asks the bridge to re-probe and updates the menu', async () => {
       listAppsMock
-        .mockResolvedValueOnce([editorApp('vscode', 'VS Code')])
+        .mockResolvedValueOnce([
+          editorApp('vscode', 'VS Code'),
+        ])
         .mockResolvedValueOnce([
           editorApp('vscode', 'VS Code'),
           editorApp('zed', 'Zed'),
@@ -295,7 +312,9 @@ describe('open in app button', () => {
           editorApp('vscode', 'VS Code'),
           editorApp('zed', 'Zed'),
         ])
-        .mockResolvedValueOnce([editorApp('vscode', 'VS Code')])
+        .mockResolvedValueOnce([
+          editorApp('vscode', 'VS Code'),
+        ])
       localStorageSet(KEY_PREFERRED_EXTERNAL_APP, 'zed')
       renderButton('/p')
       // MRU is `zed` initially.
@@ -320,7 +339,9 @@ describe('open in app button', () => {
     // refreshing, so the empty-list path is genuinely exercised.
     it('leaves the MRU alone when refresh returns no applications', async () => {
       listAppsMock
-        .mockResolvedValueOnce([editorApp('vscode', 'VS Code')])
+        .mockResolvedValueOnce([
+          editorApp('vscode', 'VS Code'),
+        ])
         .mockResolvedValueOnce([])
       localStorageSet(KEY_PREFERRED_EXTERNAL_APP, 'vscode')
       renderButton('/p')
@@ -343,7 +364,9 @@ describe('open in app button', () => {
     it('disables the chevron and shows a spinner there while the refresh is in flight', async () => {
       let resolveRefresh: (v: ExternalApp[]) => void = () => {}
       listAppsMock
-        .mockResolvedValueOnce([editorApp('vscode', 'VS Code')])
+        .mockResolvedValueOnce([
+          editorApp('vscode', 'VS Code'),
+        ])
         .mockImplementationOnce(() => new Promise((r) => {
           resolveRefresh = r
         }))
@@ -354,7 +377,9 @@ describe('open in app button', () => {
       fireEvent.click(refreshBtn)
       await waitFor(() => expect(chevron.disabled).toBe(true))
       // Resolve the in-flight refresh; the chevron flips back to enabled.
-      resolveRefresh([editorApp('vscode', 'VS Code')])
+      resolveRefresh([
+        editorApp('vscode', 'VS Code'),
+      ])
       await waitFor(() => expect(chevron.disabled).toBe(false))
     })
   })

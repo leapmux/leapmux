@@ -74,7 +74,9 @@ async function openUserEventsSubscription(
 ): Promise<UserEventsSubscription> {
   const wsUrl = `${hubUrl.replace(HTTP_TO_WS_RE, 'ws')}/ws/userevents`
   const transportUrl = hubTransportUrl(wsUrl)
-  const ws = new WebSocket(transportUrl, { headers: { Cookie: cookie } } as any)
+  const ws = new WebSocket(transportUrl, {
+    headers: { Cookie: cookie },
+  } as any)
   ws.binaryType = 'arraybuffer'
 
   // workspaceId -> rootNodeId once observed.
@@ -123,7 +125,9 @@ async function openUserEventsSubscription(
     })
 
     ws.addEventListener('message', (ev) => {
-      const buf = ev.data instanceof ArrayBuffer ? new Uint8Array(ev.data) : null
+      const buf = ev.data instanceof ArrayBuffer
+        ? new Uint8Array(ev.data)
+        : null
       if (!buf || buf.length < 4)
         return
       let len: number
@@ -279,7 +283,9 @@ export function getUserEventsSubscription(
 
 /** Close every cached subscription. Called from the global afterAll hook. */
 export async function closeAllUserEventsSubscriptions(): Promise<void> {
-  const entries = [...userEventsSubs.values()]
+  const entries = [
+    ...userEventsSubs.values(),
+  ]
   userEventsSubs.clear()
   for (const p of entries) {
     try {
@@ -327,10 +333,12 @@ async function submitSetTabRegisterBatch(args: {
 
   const reqBody = {
     epoch: args.epoch.toString(),
-    batches: [{
-      batchId: nanoid48(),
-      ops,
-    }],
+    batches: [
+      {
+        batchId: nanoid48(),
+        ops,
+      },
+    ],
   }
   // The operation states the batch, because a refusal is about its ops and its epoch.
   const data = await callHub<{ results?: Array<{ rejected?: unknown, committed?: unknown }> }>(
@@ -398,11 +406,15 @@ export async function seedTabIntoWorkspace(args: {
   // batch committed but ListTabs returns empty, projection-repair
   // dropped the tab or the rendered index wasn't written.
   await pollHub(
-    () => callHub<{ tabs?: Array<{ tabId: string }> }>(args.hubUrl, 'WorkspaceService/ListTabs', { workspaceIds: [args.workspaceId] }, {
+    () => callHub<{ tabs?: Array<{ tabId: string }> }>(args.hubUrl, 'WorkspaceService/ListTabs', {
+      workspaceIds: [args.workspaceId],
+    }, {
       cookie: args.cookie,
       operation: `seedTabIntoWorkspace(${args.tabId})`,
     }),
-    data => data.tabs?.some(tab => tab.tabId === args.tabId) ? true : undefined,
+    data => data.tabs?.some(tab => tab.tabId === args.tabId)
+      ? true
+      : undefined,
     {
       timeoutMs: SEEDED_TAB_TIMEOUT_MS,
       intervalMs: SEEDED_TAB_POLL_MS,

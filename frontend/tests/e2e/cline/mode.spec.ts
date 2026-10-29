@@ -29,7 +29,9 @@ async function chooseSettledMode(context: ManagedNativeScenarioContext, value: s
   const before = (await modelScript.status()).requests.length
   const watch = await watchAgentEvents(context.leapmuxServer, ownerBefore.id, {
     label: 'Cline mode settling',
-    select: event => !event.replay && (event.event.case === 'inputQueueChanged' || event.event.case === 'activityChanged') ? event : undefined,
+    select: event => !event.replay && (event.event.case === 'inputQueueChanged' || event.event.case === 'activityChanged')
+      ? event
+      : undefined,
   })
   return withCleanup(async () => {
     await chooseSettingsOption(page, `permissionMode-${value}`)
@@ -58,7 +60,9 @@ async function chooseSettledMode(context: ManagedNativeScenarioContext, value: s
     expect({ paused: busy.paused, itemCount: busy.items.length }).toEqual({ paused: false, itemCount: 0 })
     expect(changedQueues.slice(busyIndex + 1).some(snapshot => !snapshot.activeTurn && snapshot.revision > busy.revision)).toBe(true)
 
-    const activity = () => watch.items().flatMap(event => event.event.case === 'activityChanged' ? [event.event.value.state] : [])
+    const activity = () => watch.items().flatMap(event => event.event.case === 'activityChanged'
+      ? [event.event.value.state]
+      : [])
     await expect.poll(activity).toEqual(expect.arrayContaining([AgentActivityState.WORKING, AgentActivityState.IDLE]))
     const workingIndex = activity().indexOf(AgentActivityState.WORKING)
     expect(activity().slice(workingIndex + 1)).toContain(AgentActivityState.IDLE)
@@ -85,7 +89,14 @@ async function chooseSettledMode(context: ManagedNativeScenarioContext, value: s
     await expect(page.locator('[data-testid="thinking-indicator"]:visible')).toHaveCount(0)
     const notice = visibleOnly(page.getByText(`Mode (${previousLabel} → ${label})`, { exact: true }))
     await expect(notice).toHaveCount(1)
-    return captureStoredNativeModeNotice(context, ownerBefore, { groupId: 'permissionMode', oldValue, value, label, previousLabel, noticeLabel: 'Mode' }, notice)
+    return captureStoredNativeModeNotice(context, ownerBefore, {
+      groupId: 'permissionMode',
+      oldValue,
+      value,
+      label,
+      previousLabel,
+      noticeLabel: 'Mode',
+    }, notice)
   }, async () => {
     watch.cancel()
   })
@@ -100,7 +111,12 @@ async function chooseSettledMode(context: ManagedNativeScenarioContext, value: s
  */
 clineTest.describe('Cline settings', () => {
   clineTest('moves the session between Act and Plan, and keeps the conversation', async ({ askingClineWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingClineWorkspace.workspaceId,
+    })
     await waitForSettingsHydrated(page)
     await expectSettingsOptionsOffered(page, 'permissionMode', Object.values(CLINE_PERMISSION_MODE))
     const actStep = await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
@@ -155,7 +171,12 @@ clineTest.describe('Cline settings', () => {
   })
 
   clineTest('keeps queued input until the native mode change settles', async ({ askingClineWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingClineWorkspace.workspaceId,
+    })
     await waitForSettingsHydrated(page)
     const { id } = await currentNativeAgent(context)
     const gate = 'cline-mode-first-answer'

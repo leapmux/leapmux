@@ -19,7 +19,12 @@ for (const scenario of [
   { label: 'whitespace', text: '  first line\n\tsecond line\n  ', cancel: false },
   { label: 'empty text', text: '', cancel: false },
   { label: 'cancellation', text: '  unsent text\n', cancel: true },
-  { label: 'interruption', text: '  interrupted draft\n', cancel: true, interrupt: true },
+  {
+    label: 'interruption',
+    text: '  interrupted draft\n',
+    cancel: true,
+    interrupt: true,
+  },
 ]) {
   piTest(`delivers a native Pi editor answer after reload with ${scenario.label}`, async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const errors: string[] = []
@@ -51,8 +56,16 @@ export default function (pi) {
       await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
       await expectSettingsChip(page, 'Protocol test')
       const start = await modelScript.queue(
-        { toolCalls: [piEditorProbeToolCall('editor-call')] },
-        ...('interrupt' in scenario ? [] : [{ text: 'Protocol test complete.' }]),
+        {
+          toolCalls: [
+            piEditorProbeToolCall('editor-call'),
+          ],
+        },
+        ...('interrupt' in scenario
+          ? []
+          : [
+              { text: 'Protocol test complete.' },
+            ]),
       )
       await sendMessage(page, modelScript.prompt('Run the configured editor probe.'))
       const banner = controlBanner(page)
@@ -89,7 +102,9 @@ export default function (pi) {
       else
         await action.click()
       await expectNoControlBanner(page)
-      const completedSteps = start + ('interrupt' in scenario ? 1 : 2)
+      const completedSteps = start + ('interrupt' in scenario
+        ? 1
+        : 2)
       await modelScript.waitForSteps(completedSteps)
       await waitForAgentIdle(page)
       await expect.poll(() => {
@@ -101,7 +116,9 @@ export default function (pi) {
             return null
           throw error
         }
-      }).toEqual(scenario.cancel ? { cancelled: true } : { value: scenario.text, cancelled: false })
+      }).toEqual(scenario.cancel
+        ? { cancelled: true }
+        : { value: scenario.text, cancelled: false })
       await expectTurnEndedAfter(modelScript, completedSteps)
       await expect(composerEditor(page)).toHaveAttribute('contenteditable', 'true')
       if ('interrupt' in scenario) {

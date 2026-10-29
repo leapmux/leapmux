@@ -24,7 +24,9 @@ function presentEntries(entries: Array<[string, string]>): ToolMetadataEntry[] {
 /** A count as text, or empty when the record states none. */
 function countText(record: Record<string, unknown> | undefined | null, key: string): string {
   const value = pickNumber(record, key)
-  return value !== null ? String(value) : ''
+  return value !== null
+    ? String(value)
+    : ''
 }
 
 /**
@@ -52,15 +54,28 @@ function qwenRunStatus(status: string): AgentRunStatus {
 /** The launch of one `agent` call. */
 export function qwenAgentRequest(input: Record<string, unknown>, toolCallId: string, agentSessionId: string | undefined): AgentRequest {
   const agentType = pickString(input, 'subagent_type')
-  const metadata = presentEntries([['Background', pickBoolean(input, 'run_in_background') === true ? 'Yes' : '']])
+  const metadata = presentEntries([
+    [
+      'Background',
+      pickBoolean(input, 'run_in_background') === true
+        ? 'Yes'
+        : '',
+    ],
+  ])
   const registryKey = qwenRegistryRowKey(QWEN_TOOL.Agent, agentSessionId, toolCallId)
   return {
     description: pickString(input, 'description') || 'Subagent',
     prompt: pickString(input, 'prompt'),
-    ...(agentType ? { agentType } : {}),
-    ...(metadata.length > 0 ? { metadata } : {}),
+    ...(agentType
+      ? { agentType }
+      : {}),
+    ...(metadata.length > 0
+      ? { metadata }
+      : {}),
     // The stored native root owns the call, including on a child transcript.
-    ...(registryKey === undefined ? {} : { registryKey }),
+    ...(registryKey === undefined
+      ? {}
+      : { registryKey }),
   }
 }
 
@@ -73,12 +88,33 @@ export function qwenAgentRequest(input: Record<string, unknown>, toolCallId: str
  * own outcome, whatever the record says.
  */
 export function qwenAgentRun(facts: ACPToolFacts, request: AgentRequest): AgentRun {
-  const base = { description: request.description, ...(request.registryKey !== undefined ? { registryKey: request.registryKey } : {}) }
-  if (facts.status === 'failed' || facts.status === 'cancelled')
-    return { ...base, agentId: '', outcome: facts.status === 'failed' ? 'failed' : 'stopped', metadata: [], body: facts.text }
+  const base = {
+    description: request.description,
+    ...(request.registryKey !== undefined
+      ? { registryKey: request.registryKey }
+      : {}),
+  }
+  if (facts.status === 'failed' || facts.status === 'cancelled') {
+    return {
+      ...base,
+      agentId: '',
+      outcome: facts.status === 'failed'
+        ? 'failed'
+        : 'stopped',
+      metadata: [],
+      body: facts.text,
+    }
+  }
   const raw = pickObject(facts.tool, 'rawOutput')
-  if (!raw || pickString(raw, 'type') !== QWEN_TASK_EXECUTION)
-    return { ...base, agentId: '', outcome: 'unknown', metadata: [], body: facts.text }
+  if (!raw || pickString(raw, 'type') !== QWEN_TASK_EXECUTION) {
+    return {
+      ...base,
+      agentId: '',
+      outcome: 'unknown',
+      metadata: [],
+      body: facts.text,
+    }
+  }
   const outcome = qwenRunStatus(pickString(raw, 'status'))
   if (outcome === 'running') {
     const taskId = BACKGROUND_TASK_ID.exec(facts.text)?.[1] ?? ''
@@ -87,7 +123,13 @@ export function qwenAgentRun(facts: ACPToolFacts, request: AgentRequest): AgentR
       agentId: taskId,
       outcome,
       statusLabel: 'running in the background',
-      metadata: presentEntries([['Task ID', taskId], ['Type', pickString(raw, 'subagentName')]]),
+      metadata: presentEntries([
+        ['Task ID', taskId],
+        [
+          'Type',
+          pickString(raw, 'subagentName'),
+        ],
+      ]),
       body: '',
     }
   }
@@ -99,13 +141,35 @@ export function qwenAgentRun(facts: ACPToolFacts, request: AgentRequest): AgentR
     agentId: '',
     outcome,
     metadata: presentEntries([
-      ['Type', pickString(raw, 'subagentName')],
-      ['Rounds', countText(summary, 'rounds')],
-      ['Tool calls', countText(summary, 'totalToolCalls')],
-      ['Tokens', countText(summary, 'totalTokens')],
-      ['Duration', duration !== null ? `${(duration / 1000).toFixed(1)}s` : ''],
+      [
+        'Type',
+        pickString(raw, 'subagentName'),
+      ],
+      [
+        'Rounds',
+        countText(summary, 'rounds'),
+      ],
+      [
+        'Tool calls',
+        countText(summary, 'totalToolCalls'),
+      ],
+      [
+        'Tokens',
+        countText(summary, 'totalTokens'),
+      ],
+      [
+        'Duration',
+        duration !== null
+          ? `${(duration / 1000).toFixed(1)}s`
+          : '',
+      ],
       // `GOAL` is the ordinary end of a run, which the outcome already states.
-      ['Ended by', terminateReason && terminateReason !== 'GOAL' ? terminateReason : ''],
+      [
+        'Ended by',
+        terminateReason && terminateReason !== 'GOAL'
+          ? terminateReason
+          : '',
+      ],
     ]),
     body: pickString(raw, 'result') || facts.text,
   }
@@ -115,17 +179,35 @@ export function qwenAgentRun(facts: ACPToolFacts, request: AgentRequest): AgentR
 export function qwenWorkflowRequest(input: Record<string, unknown>): AgentRequest {
   const args = input.args
   const metadata = presentEntries([
-    ['Script', pickString(input, 'scriptPath')],
-    ['Saved workflow', pickString(input, 'name')],
-    ['Previous run', pickString(input, 'resumeFromRunId')],
-    ['Arguments', args === undefined || args === null ? '' : typeof args === 'string' ? args : JSON.stringify(args)],
+    [
+      'Script',
+      pickString(input, 'scriptPath'),
+    ],
+    [
+      'Saved workflow',
+      pickString(input, 'name'),
+    ],
+    [
+      'Previous run',
+      pickString(input, 'resumeFromRunId'),
+    ],
+    [
+      'Arguments',
+      args === undefined || args === null
+        ? ''
+        : typeof args === 'string'
+          ? args
+          : JSON.stringify(args),
+    ],
   ])
   return {
     description: pickString(input, 'name') || pickString(input, 'scriptPath') || 'Run workflow',
     prompt: pickString(input, 'script'),
     promptLabel: 'Script',
     promptFormat: 'pre',
-    ...(metadata.length > 0 ? { metadata } : {}),
+    ...(metadata.length > 0
+      ? { metadata }
+      : {}),
   }
 }
 
@@ -136,7 +218,9 @@ function qwenWorkflowRecord(rawOutput: unknown): Record<string, unknown> | undef
   const fenced = /^```(?:json)?\n([\s\S]*)\n```\s*$/.exec(rawOutput.trim())
   try {
     const parsed: unknown = JSON.parse(fenced?.[1] ?? rawOutput)
-    return isObject(parsed) ? parsed : undefined
+    return isObject(parsed)
+      ? parsed
+      : undefined
   }
   catch {
     return undefined
@@ -150,17 +234,45 @@ function qwenWorkflowRecord(rawOutput: unknown): Record<string, unknown> | undef
  * its id, and the result the script returned.
  */
 export function qwenWorkflowRun(facts: ACPToolFacts, request: AgentRequest): AgentRun {
-  if (facts.status === 'failed' || facts.status === 'cancelled')
-    return { description: request.description, agentId: '', outcome: facts.status === 'failed' ? 'failed' : 'stopped', metadata: [], body: facts.text }
+  if (facts.status === 'failed' || facts.status === 'cancelled') {
+    return {
+      description: request.description,
+      agentId: '',
+      outcome: facts.status === 'failed'
+        ? 'failed'
+        : 'stopped',
+      metadata: [],
+      body: facts.text,
+    }
+  }
   const record = qwenWorkflowRecord(facts.tool.rawOutput)
   const result = record?.result
-  const body = typeof result === 'string' ? result : result !== undefined && result !== null ? JSON.stringify(result, null, 2) : facts.text
-  const phases = Array.isArray(record?.phases) ? record.phases.filter((phase): phase is string => typeof phase === 'string') : []
+  const body = typeof result === 'string'
+    ? result
+    : result !== undefined && result !== null
+      ? JSON.stringify(result, null, 2)
+      : facts.text
+  const phases = Array.isArray(record?.phases)
+    ? record.phases.filter((phase): phase is string => typeof phase === 'string')
+    : []
   return {
     description: request.description,
     agentId: pickString(record, 'runId'),
     outcome: 'completed',
-    metadata: presentEntries([['Run ID', pickString(record, 'runId')], ['Phases', phases.join(', ')], ['Tokens', countText(pickObject(record, 'tokens'), 'spent')]]),
+    metadata: presentEntries([
+      [
+        'Run ID',
+        pickString(record, 'runId'),
+      ],
+      [
+        'Phases',
+        phases.join(', '),
+      ],
+      [
+        'Tokens',
+        countText(pickObject(record, 'tokens'), 'spent'),
+      ],
+    ]),
     body,
   }
 }

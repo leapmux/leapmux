@@ -25,14 +25,29 @@ const MINIMAL_INPUT: Readonly<Record<string, Record<string, unknown>>> = {
  */
 function kindOf(name: string) {
   return acpToolCall(
-    { sessionUpdate: 'tool_call', toolCallId: 'grok-vocab', status: 'pending', title: name, rawInput: MINIMAL_INPUT[name] ?? {}, _meta: { 'x.ai/tool': { version: 1, name } } },
+    {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'grok-vocab',
+      status: 'pending',
+      title: name,
+      rawInput: MINIMAL_INPUT[name] ?? {},
+      _meta: {
+        'x.ai/tool': { version: 1, name },
+      },
+    },
     grokToolCallAdapter,
     undefined,
   ).kind
 }
 
 const CHECK: ToolVocabularyCheck = {
-  names: [...Object.keys(GROK_TOOL_KINDS), GROK_TOOL.SpawnSubagent, GROK_TOOL_NAME.TodoWrite, GROK_TOOL_NAME.UseTool, GROK_TOOL_NAME.Workflow],
+  names: [
+    ...Object.keys(GROK_TOOL_KINDS),
+    GROK_TOOL.SpawnSubagent,
+    GROK_TOOL_NAME.TodoWrite,
+    GROK_TOOL_NAME.UseTool,
+    GROK_TOOL_NAME.Workflow,
+  ],
   kindOf,
   generic: {
     [GROK_TOOL_NAME.UseTool]: 'It calls a Model Context Protocol tool by name, and the row draws the call it wraps on the MCP card.',
@@ -75,7 +90,17 @@ describe('grok tool vocabulary', () => {
   // prose, and the kind must not change with it.
   it('reads the identity when the title is prose', () => {
     const call = acpToolCall(
-      { sessionUpdate: 'tool_call_update', toolCallId: 'c', status: 'pending', kind: 'other', title: 'List `/w`', rawInput: { variant: 'ListDir', target_directory: '/w' }, _meta: { 'x.ai/tool': { name: 'list_dir' } } },
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'c',
+        status: 'pending',
+        kind: 'other',
+        title: 'List `/w`',
+        rawInput: { variant: 'ListDir', target_directory: '/w' },
+        _meta: {
+          'x.ai/tool': { name: 'list_dir' },
+        },
+      },
       grokToolCallAdapter,
       undefined,
     )
@@ -84,6 +109,12 @@ describe('grok tool vocabulary', () => {
   })
 
   it('takes the title as the name when the frame states no identity', () => {
-    expect(acpToolCall({ sessionUpdate: 'tool_call', toolCallId: 'c', status: 'pending', title: 'grep', rawInput: { pattern: 'x' } }, grokToolCallAdapter, undefined).kind).toBe('grep')
+    expect(acpToolCall({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'c',
+      status: 'pending',
+      title: 'grep',
+      rawInput: { pattern: 'x' },
+    }, grokToolCallAdapter, undefined).kind).toBe('grep')
   })
 })

@@ -37,7 +37,9 @@ codexTest.describe('steering during a Codex goal turn', () => {
         match: 'Stop now',
       })
     }, async () => {
-      await finishCleanup([modelScript.releaseGateIfHeld('codex-steer-mid-turn-hold-1')])
+      await finishCleanup([
+        modelScript.releaseGateIfHeld('codex-steer-mid-turn-hold-1'),
+      ])
     })
   })
 })

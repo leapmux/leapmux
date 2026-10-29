@@ -3,7 +3,9 @@ import { concatBytes } from './bytes'
 
 describe('concatBytes', () => {
   it('joins arrays in order', () => {
-    expect([...concatBytes(new Uint8Array([1, 2]), new Uint8Array([3]))]).toEqual([1, 2, 3])
+    expect([
+      ...concatBytes(new Uint8Array([1, 2]), new Uint8Array([3])),
+    ]).toEqual([1, 2, 3])
   })
 
   it('returns an empty array when given none', () => {

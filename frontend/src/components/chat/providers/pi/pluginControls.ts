@@ -27,7 +27,9 @@ export const piControls: ProviderControlCapability = {
       const method = pickString(request.payload, 'method')
       if (method === PI_DIALOG_METHOD.Select) {
         const value = piAskAnswerValue(answerState, questions, request.payload)
-        const response = value.trim() ? piValueResponse(request.requestId, value) : piCancelResponse(request.requestId)
+        const response = value.trim()
+          ? piValueResponse(request.requestId, value)
+          : piCancelResponse(request.requestId)
         await sendPiExtensionResponse(sendControlResponse, response)
         return
       }
@@ -38,7 +40,9 @@ export const piControls: ProviderControlCapability = {
       sendPiExtensionResponse(sendControlResponse, piCancelResponse(request.requestId)),
   },
   controlFeedbackAsFollowUpMessage: isPiPlanApproval,
-  controlEditorPurpose: payload => isPiPlanApproval(payload) ? 'feedback' : 'none',
+  controlEditorPurpose: payload => isPiPlanApproval(payload)
+    ? 'feedback'
+    : 'none',
   buildControlResponse(payload, content, requestId) {
     if (isPiPlanApproval(payload))
       return piValueResponse(requestId, PI_PLAN_ACTION.Stay)
@@ -57,7 +61,9 @@ export const piControls: ProviderControlCapability = {
         break
       case PI_DIALOG_METHOD.Select:
         // Without a typed reply, treat the response as cancellation.
-        response = content.trim() ? piValueResponse(requestId, content) : piCancelResponse(requestId)
+        response = content.trim()
+          ? piValueResponse(requestId, content)
+          : piCancelResponse(requestId)
         break
       default:
         response = piCancelResponse(requestId)
@@ -72,5 +78,7 @@ export const piControls: ProviderControlCapability = {
     cancel: piCancelResponse,
   },
   // Pi's plan menu answers with its own action words, which no shared row states.
-  controlActionsFor: payload => isPiPlanApproval(payload) ? PiPlanApprovalActions : undefined,
+  controlActionsFor: payload => isPiPlanApproval(payload)
+    ? PiPlanApprovalActions
+    : undefined,
 }

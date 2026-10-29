@@ -124,7 +124,9 @@ export function listRepoStartPoints(
       existing.isWorktree = git.isWorktree
   }
 
-  let entries = [...checkouts.values()]
+  let entries = [
+    ...checkouts.values(),
+  ]
 
   if (opts.isWorkerOnline)
     entries = entries.filter(c => opts.isWorkerOnline!(c.workerId))
@@ -170,11 +172,19 @@ function dropRedundantWorktrees(entries: Checkout[]): Checkout[] {
 function compareCheckouts(a: Checkout, b: Checkout): number {
   if (a.mru !== b.mru)
     return b.mru - a.mru
-  if (a.createdAt !== b.createdAt)
-    return a.createdAt < b.createdAt ? 1 : -1
-  if (a.repoLabel !== b.repoLabel)
-    return a.repoLabel < b.repoLabel ? -1 : 1
-  return a.gitToplevel < b.gitToplevel ? -1 : 1
+  if (a.createdAt !== b.createdAt) {
+    return a.createdAt < b.createdAt
+      ? 1
+      : -1
+  }
+  if (a.repoLabel !== b.repoLabel) {
+    return a.repoLabel < b.repoLabel
+      ? -1
+      : 1
+  }
+  return a.gitToplevel < b.gitToplevel
+    ? -1
+    : 1
 }
 
 /** Build each row's label, adding context only where it disambiguates. */
@@ -215,7 +225,9 @@ function labelCheckouts(
         workerId: c.workerId,
         gitToplevel: c.gitToplevel,
         isWorktree: c.isWorktree,
-        ...(c.currentBranch ? { currentBranch: c.currentBranch } : {}),
+        ...(c.currentBranch
+          ? { currentBranch: c.currentBranch }
+          : {}),
       },
     }
   })

@@ -32,7 +32,12 @@ geminiTest('sends the exact native refusal after a Deny decision and keeps the f
   const initialContent = `KEEP_THE_NATIVE_FILE_${randomUUID()}\n`
   const callId = 'gemini-denied-write'
   const refusal = `Tool "${GEMINI_TOOL.RunShellCommand}" was canceled by the user.`
-  const operation = await createNativePermissionFileWrite(native, { fileName, callId, outputPrefix: 'UNAPPROVED_WRITE', initialContent })
+  const operation = await createNativePermissionFileWrite(native, {
+    fileName,
+    callId,
+    outputPrefix: 'UNAPPROVED_WRITE',
+    initialContent,
+  })
   await exerciseNativePermissionDecision(native, {
     toolCall: operation.toolCall,
     decision: 'deny',
@@ -88,7 +93,9 @@ geminiTest('reads a denied file write as declined, with its file and no proposed
         }
         await expectDeclinedToolRow(page, renderedCallId, refusal)
         await expect(toolCallRow(page, renderedCallId, 'request')).toContainText(fileName)
-        await expect(callRows.filter({ hasText: proposed.trim() })).toHaveCount(0)
+        await expect(callRows.filter({
+          hasText: proposed.trim(),
+        })).toHaveCount(0)
       }
     },
   })

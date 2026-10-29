@@ -15,7 +15,12 @@ import { nativeContext } from './scenarios'
  */
 clineTest.describe('Cline settings', () => {
   clineTest('switches to a model from the native provider catalog', async ({ askingClineWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingClineWorkspace.workspaceId,
+    })
     await exerciseNativeOption(context, {
       groupId: 'model',
       value: 'deepseek-v4-pro',
@@ -25,7 +30,12 @@ clineTest.describe('Cline settings', () => {
   })
 
   clineTest('offers the configured model, the three modes, and no effort for a model without a ladder', async ({ askingClineWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingClineWorkspace.workspaceId,
+    })
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, MOCK_MODELS.cline)
     await expectSettingsChip(page, 'Act')

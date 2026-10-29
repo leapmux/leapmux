@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { decidePasteHandling } from './pasteDecision'
 
 function makeFile(name = 'test.png', type = 'image/png'): File {
-  return new File([new Uint8Array([0x89, 0x50, 0x4E, 0x47])], name, { type })
+  return new File([
+    new Uint8Array([0x89, 0x50, 0x4E, 0x47]),
+  ], name, { type })
 }
 
 interface FakeClipboard {
@@ -22,26 +24,47 @@ function fakeDataTransfer(c: FakeClipboard): DataTransfer {
 describe('decidePasteHandling', () => {
   it('forwards files when DataTransfer.files is populated', () => {
     const file = makeFile()
-    const dt = fakeDataTransfer({ files: [file], types: ['Files'] })
+    const dt = fakeDataTransfer({
+      files: [file],
+      types: ['Files'],
+    })
     const action = decidePasteHandling(dt, false)
-    expect(action).toEqual({ kind: 'forward', files: [file] })
+    expect(action).toEqual({
+      kind: 'forward',
+      files: [file],
+    })
   })
 
   it('forwards files extracted from items when DataTransfer.files is empty', () => {
     const file = makeFile()
     const dt = fakeDataTransfer({
       files: [],
-      items: [{ kind: 'file', type: 'image/png', getAsFile: () => file }],
+      items: [
+        {
+          kind: 'file',
+          type: 'image/png',
+          getAsFile: () => file,
+        },
+      ],
       types: ['Files'],
     })
     const action = decidePasteHandling(dt, false)
-    expect(action).toEqual({ kind: 'forward', files: [file] })
+    expect(action).toEqual({
+      kind: 'forward',
+      files: [file],
+    })
   })
 
   it('ignores non-file items', () => {
     const dt = fakeDataTransfer({
       files: [],
-      items: [{ kind: 'string', type: 'text/plain', getAsFile: () => null }],
+      items: [
+        {
+          kind: 'string',
+          type: 'text/plain',
+          getAsFile: () => null,
+        },
+      ],
       types: ['text/plain'],
     })
     const action = decidePasteHandling(dt, false)
@@ -66,7 +89,13 @@ describe('decidePasteHandling', () => {
   it('defers when DataTransfer carries text — even in Tauri — so ProseMirror handles plain-text pastes', () => {
     const dt = fakeDataTransfer({
       files: [],
-      items: [{ kind: 'string', type: 'text/plain', getAsFile: () => null }],
+      items: [
+        {
+          kind: 'string',
+          type: 'text/plain',
+          getAsFile: () => null,
+        },
+      ],
       types: ['text/plain'],
     })
     const action = decidePasteHandling(dt, true)
@@ -78,17 +107,30 @@ describe('decidePasteHandling', () => {
     const fromItems = makeFile('from-items.png')
     const dt = fakeDataTransfer({
       files: [fromFiles],
-      items: [{ kind: 'file', type: 'image/png', getAsFile: () => fromItems }],
+      items: [
+        {
+          kind: 'file',
+          type: 'image/png',
+          getAsFile: () => fromItems,
+        },
+      ],
       types: ['Files'],
     })
     const action = decidePasteHandling(dt, true)
-    expect(action).toEqual({ kind: 'forward', files: [fromFiles] })
+    expect(action).toEqual({
+      kind: 'forward',
+      files: [fromFiles],
+    })
   })
 
   it('defers in Tauri when types is non-empty but files and items are empty', () => {
     // Real text pastes carry types like ['Files'] or ['text/plain'] — only
     // the all-empty shape signals the WebKitGTK image-paste case.
-    const dt = fakeDataTransfer({ files: [], items: [], types: ['Files'] })
+    const dt = fakeDataTransfer({
+      files: [],
+      items: [],
+      types: ['Files'],
+    })
     const action = decidePasteHandling(dt, true)
     expect(action).toEqual({ kind: 'defer' })
   })

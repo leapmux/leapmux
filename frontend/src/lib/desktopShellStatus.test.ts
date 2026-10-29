@@ -13,17 +13,25 @@ describe('desktopShellStatus', () => {
   // The row ids are what the Preferences panel matches against, so a wrong one
   // hides the message entirely rather than showing it in the wrong place.
   it('addresses each refusable choice to the row that owns it', () => {
-    reportDesktopShellRefusals([{ setting: 'trayEnabled', message: 'no status-icon library' }])
-    expect(desktopShellRefusals()).toEqual([{
-      key: 'desktop.trayEnabled',
-      message: 'no status-icon library',
-    }])
+    reportDesktopShellRefusals([
+      { setting: 'trayEnabled', message: 'no status-icon library' },
+    ])
+    expect(desktopShellRefusals()).toEqual([
+      {
+        key: 'desktop.trayEnabled',
+        message: 'no status-icon library',
+      },
+    ])
 
-    reportDesktopShellRefusals([{ setting: 'startOnLogin', message: 'the system declined' }])
-    expect(desktopShellRefusals()).toEqual([{
-      key: 'desktop.startOnLogin',
-      message: 'the system declined',
-    }])
+    reportDesktopShellRefusals([
+      { setting: 'startOnLogin', message: 'the system declined' },
+    ])
+    expect(desktopShellRefusals()).toEqual([
+      {
+        key: 'desktop.startOnLogin',
+        message: 'the system declined',
+      },
+    ])
   })
 
   // The two choices fail INDEPENDENTLY: a Linux desktop with no status-icon
@@ -43,7 +51,9 @@ describe('desktopShellStatus', () => {
   // A message left over from a failure the user has since repaired reads as
   // the repair having failed too.
   it('clears on the push that succeeds', () => {
-    reportDesktopShellRefusals([{ setting: 'trayEnabled', message: 'no status-icon library' }])
+    reportDesktopShellRefusals([
+      { setting: 'trayEnabled', message: 'no status-icon library' },
+    ])
     reportDesktopShellRefusals([])
     expect(desktopShellRefusals()).toEqual([])
   })
@@ -56,10 +66,14 @@ describe('desktopShellStatus', () => {
       { setting: 'trayEnabled', message: 'no status-icon library' },
       { setting: 'startOnLogin', message: 'the system declined' },
     ])
-    reportDesktopShellRefusals([{ setting: 'startOnLogin', message: 'the system declined' }])
-    expect(desktopShellRefusals()).toEqual([{
-      key: 'desktop.startOnLogin',
-      message: 'the system declined',
-    }])
+    reportDesktopShellRefusals([
+      { setting: 'startOnLogin', message: 'the system declined' },
+    ])
+    expect(desktopShellRefusals()).toEqual([
+      {
+        key: 'desktop.startOnLogin',
+        message: 'the system declined',
+      },
+    ])
   })
 })

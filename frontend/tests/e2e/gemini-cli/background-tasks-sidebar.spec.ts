@@ -14,7 +14,12 @@ geminiTest('stores the actual native child row and its final state after reload'
     await expect(child.row).toHaveAttribute('data-status', 'running')
     const running = (await readNativeSidebarSnapshot(native, child.parentId)).backgroundTasks.filter(task => task.childAgentId === child.childId)
     expect(running).toHaveLength(1)
-    expect(running[0]).toMatchObject({ id: child.nativeChildId, kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.RUNNING, endedAt: '' })
+    expect(running[0]).toMatchObject({
+      id: child.nativeChildId,
+      kind: BackgroundTaskKind.SUBAGENT,
+      status: BackgroundTaskStatus.RUNNING,
+      endedAt: '',
+    })
     await finishGeminiChildWithReload(native, child)
     const completed = (await readNativeSidebarSnapshot(native, child.parentId)).backgroundTasks.filter(task => task.childAgentId === child.childId)
     expect(completed).toHaveLength(1)

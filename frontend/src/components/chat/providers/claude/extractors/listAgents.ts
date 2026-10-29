@@ -46,15 +46,30 @@ export function claudeAgentsSpec(request: AgentsRequest, args: ClaudeToolRow, re
   // team's own name appeared nowhere on the row.
   const teamName = request.team?.name
   const filters = [request.channel && `channel: ${request.channel}`, request.query && `matching: ${request.query}`].filter(Boolean).join(' · ')
-  const teamAction = args.toolName === CLAUDE_TOOL_NAMES.TEAM_DELETE ? 'Delete' : 'Create'
+  const teamAction = args.toolName === CLAUDE_TOOL_NAMES.TEAM_DELETE
+    ? 'Delete'
+    : 'Create'
   const title = teamName
     ? `${teamAction} team ${teamName}`
-    : filters ? `List agents (${filters})` : 'List agents'
+    : filters
+      ? `List agents (${filters})`
+      : 'List agents'
   if (!result)
     return { kind: 'agents', request, title }
   const failure = claudeToolFailureResult(result)
-  if (failure)
-    return { kind: 'agents', request, title, result: failure }
+  if (failure) {
+    return {
+      kind: 'agents',
+      request,
+      title,
+      result: failure,
+    }
+  }
   const listing = claudeListAgentsListing(result.toolUseResult, result.resultContent)
-  return { kind: 'agents', request, title, result: proseResult(listing, 'markdown') }
+  return {
+    kind: 'agents',
+    request,
+    title,
+    result: proseResult(listing, 'markdown'),
+  }
 }

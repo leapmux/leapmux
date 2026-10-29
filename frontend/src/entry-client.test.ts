@@ -39,10 +39,18 @@ describe('entry-client boot handoff', () => {
       mount,
       StartClient: () => null,
     }))
-    vi.doMock('~/components/common/Toast', () => ({ showWarnToast: vi.fn() }))
-    vi.doMock('~/lib/ignorableErrorEvents', () => ({ installIgnorableErrorSuppressor: vi.fn() }))
-    vi.doMock('~/lib/installGlobalErrorSink', () => ({ installGlobalErrorSink: vi.fn() }))
-    vi.doMock('~/lib/renderPipelineWarmup', () => ({ scheduleRenderPipelineWarmup: vi.fn() }))
+    vi.doMock('~/components/common/Toast', () => ({
+      showWarnToast: vi.fn(),
+    }))
+    vi.doMock('~/lib/ignorableErrorEvents', () => ({
+      installIgnorableErrorSuppressor: vi.fn(),
+    }))
+    vi.doMock('~/lib/installGlobalErrorSink', () => ({
+      installGlobalErrorSink: vi.fn(),
+    }))
+    vi.doMock('~/lib/renderPipelineWarmup', () => ({
+      scheduleRenderPipelineWarmup: vi.fn(),
+    }))
   })
 
   afterEach(() => {

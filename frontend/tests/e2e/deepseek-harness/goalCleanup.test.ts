@@ -87,11 +87,16 @@ describe('cleanupDeepseekHarnessGoal', () => {
       },
       releaseReplies: release,
     })
-    await expect(cleanup).rejects.toMatchObject({ errors: [clearError, closeError, releaseError] })
+    await expect(cleanup).rejects.toMatchObject({
+      errors: [clearError, closeError, releaseError],
+    })
     expect(release).toHaveBeenCalledOnce()
   })
 
-  it.each([{ agentId: '', workerId: 'owned-worker' }, { agentId: 'owned-root', workerId: '' }])('refuses an absent owner while releasing all held replies: %j', async (owner) => {
+  it.each([
+    { agentId: '', workerId: 'owned-worker' },
+    { agentId: 'owned-root', workerId: '' },
+  ])('refuses an absent owner while releasing all held replies: %j', async (owner) => {
     const clearGoal = vi.fn(async () => {})
     const closeAgent = vi.fn(async () => {})
     const releaseReplies = vi.fn(async () => {})
@@ -112,6 +117,8 @@ describe('cleanupDeepseekHarnessGoal', () => {
       releaseReplies: async () => {
         throw releaseError
       },
-    }))).rejects.toMatchObject({ errors: [operationError, releaseError] })
+    }))).rejects.toMatchObject({
+      errors: [operationError, releaseError],
+    })
   })
 })

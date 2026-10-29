@@ -21,8 +21,12 @@ describe('sameKeys', () => {
   })
 
   it('compares a Map on its keys, not its values', () => {
-    const a = new Map([['k', 1]])
-    const b = new Map([['k', 2]])
+    const a = new Map([
+      ['k', 1],
+    ])
+    const b = new Map([
+      ['k', 2],
+    ])
     expect(sameKeys(a, b), 'membership is the question; values are not').toBe(true)
   })
 

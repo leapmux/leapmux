@@ -3,5 +3,8 @@ import { qwenTest } from '../qwen-fixtures'
 import { relatedNativeProof } from './scenarios'
 
 qwenTest('proves the missing extended-thinking setting against the live catalog and a native tool', async ({ native }) => {
-  await expectMissingSetting(native, { feature: 'extended-thinking', relatedProof: () => relatedNativeProof(native) })
+  await expectMissingSetting(native, {
+    feature: 'extended-thinking',
+    relatedProof: () => relatedNativeProof(native),
+  })
 })

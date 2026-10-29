@@ -25,24 +25,33 @@ mimoTest.describe('MiMo Code subagent registry', () => {
         {
           name: 'the child runs its first tool',
           when: mimoChildTurn(childTask),
-          respond: { gate, toolCalls: [bashToolCall(native.provider, 'child-shell', 'printf mimo-child-ready')] },
+          respond: {
+            gate,
+            toolCalls: [
+              bashToolCall(native.provider, 'child-shell', 'printf mimo-child-ready'),
+            ],
+          },
           once: true,
         },
         {
           name: 'the child reads the queued message',
           // MiMo's continuation reuses the main system prompt. The child prompt,
           // shell result, and steered message still share this request body.
-          when: { body: ['mimo-child-ready', 'Also say'] },
+          when: {
+            body: ['mimo-child-ready', 'Also say'],
+          },
           respond: { text: '**Status**: success\n**Summary**: replied\n\nCHILD_STEERED' },
           once: true,
         },
       )
       const queued = await modelScript.queue(
         {
-          toolCalls: [spawnSubagentToolCall(native.provider, 'spawn-mimo-send', {
-            description: 'Answer the queued message',
-            prompt: modelScript.prompt(childTask),
-          })],
+          toolCalls: [
+            spawnSubagentToolCall(native.provider, 'spawn-mimo-send', {
+              description: 'Answer the queued message',
+              prompt: modelScript.prompt(childTask),
+            }),
+          ],
         },
         { text: 'The child received the queued message.' },
       )

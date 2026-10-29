@@ -42,5 +42,7 @@ export function classifyDroidMessage(input: ClassificationInput): MessageCategor
       break
   }
   const category = notification([parent])
-  return category.kind === 'notification' && category.entries.length > 0 ? category : { kind: 'unknown' }
+  return category.kind === 'notification' && category.entries.length > 0
+    ? category
+    : { kind: 'unknown' }
 }

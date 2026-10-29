@@ -9,7 +9,12 @@ const fixture = JSON.parse(readFileSync('../testdata/pi_question_source_conforma
 
 describe('pi question source conformance', () => {
   it.each(fixture.cases)('$name', (item) => {
-    const source = input({ type: 'tool_execution_start', toolName: 'ask_user_question', toolCallId: 'question', args: item.args })
+    const source = input({
+      type: 'tool_execution_start',
+      toolName: 'ask_user_question',
+      toolCallId: 'question',
+      args: item.args,
+    })
     const before = JSON.stringify(source)
     expect(piQuestionFromSource(item.dialog, source)?.index ?? null).toBe(item.expectedIndex)
     expect(JSON.stringify(source)).toBe(before)

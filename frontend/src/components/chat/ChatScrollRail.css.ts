@@ -300,31 +300,34 @@ globalStyle(`${dotPreviewMarkdown} > * > :last-child`, { marginBottom: 0 })
  * card filled `var(--background)` while every other floating surface filled `var(--card)`, so the
  * one card that lay OVER the reader's work was the one painted the page's own colour.
  */
-export const previewCard = style([floatingCardSurface, {
-  'position': 'absolute',
-  // Flush against the rail's left edge. The rail is a wide hit column whose
-  // visuals sit centred in it, so any gap here is added to the ~10px the column
-  // already puts between its left edge and the dot the card describes -- and the
-  // card drifts away from the thing it points at.
-  'right': '100%',
-  'transform': 'translateY(-50%)',
-  'width': 'max-content',
-  'maxWidth': '280px',
-  'maxHeight': `${PREVIEW_CARD_MAX_H_PX}px`,
-  'overflowY': 'auto',
-  // On Oat's type scale, and on the same step as the app's other floating surface. The 0.8125rem
-  // this used to specify sat between two steps of that scale and matched nothing else.
-  'fontSize': 'var(--text-8)',
-  'zIndex': 20,
-  'pointerEvents': 'auto',
-  // The rail sets user-select:none (so a thumb drag never selects text) and cursor:pointer, and
-  // both inherit into this card. Undo them here: the card's text is meant to be read, selected,
-  // and copied, and the card itself is not a control.
-  'userSelect': 'text',
-  'cursor': 'auto',
-  '@media': {
-    '(pointer: coarse)': {
-      pointerEvents: 'none',
+export const previewCard = style([
+  floatingCardSurface,
+  {
+    'position': 'absolute',
+    // Flush against the rail's left edge. The rail is a wide hit column whose
+    // visuals sit centred in it, so any gap here is added to the ~10px the column
+    // already puts between its left edge and the dot the card describes -- and the
+    // card drifts away from the thing it points at.
+    'right': '100%',
+    'transform': 'translateY(-50%)',
+    'width': 'max-content',
+    'maxWidth': '280px',
+    'maxHeight': `${PREVIEW_CARD_MAX_H_PX}px`,
+    'overflowY': 'auto',
+    // On Oat's type scale, and on the same step as the app's other floating surface. The 0.8125rem
+    // this used to specify sat between two steps of that scale and matched nothing else.
+    'fontSize': 'var(--text-8)',
+    'zIndex': 20,
+    'pointerEvents': 'auto',
+    // The rail sets user-select:none (so a thumb drag never selects text) and cursor:pointer, and
+    // both inherit into this card. Undo them here: the card's text is meant to be read, selected,
+    // and copied, and the card itself is not a control.
+    'userSelect': 'text',
+    'cursor': 'auto',
+    '@media': {
+      '(pointer: coarse)': {
+        pointerEvents: 'none',
+      },
     },
   },
-}])
+])

@@ -59,7 +59,9 @@ function pick(menu: 'name' | 'variant', label: string) {
 /** The nine pip colours of the one chip inside `scope`, in token order. */
 function swatchFills(scope: HTMLElement): (string | null)[] {
   const chips = scope.querySelectorAll('svg')
-  const pips = [...scope.querySelectorAll('rect')]
+  const pips = [
+    ...scope.querySelectorAll('rect'),
+  ]
   if (pips.length !== SWATCH_TOKENS.length)
     throw new Error(`expected one chip of ${SWATCH_TOKENS.length} pips, found ${pips.length} in ${chips.length} svg`)
   return pips.map(r => r.getAttribute('fill'))
@@ -124,11 +126,21 @@ describe('the appearance picker (ThemeChooser)', () => {
     // away, unreachable.
     const { unmount } = renderChooser({ name: 'catppuccin', mode: 'light' })
     expect(variantTrigger()).not.toBeNull()
-    expect(optionsOf('variant')).toEqual(['Latte', 'Frappé', 'Macchiato', 'Mocha'])
+    expect(optionsOf('variant')).toEqual([
+      'Latte',
+      'Frappé',
+      'Macchiato',
+      'Mocha',
+    ])
     unmount()
 
     renderChooser({ name: 'catppuccin', mode: 'dark' })
-    expect(optionsOf('variant')).toEqual(['Latte', 'Frappé', 'Macchiato', 'Mocha'])
+    expect(optionsOf('variant')).toEqual([
+      'Latte',
+      'Frappé',
+      'Macchiato',
+      'Mocha',
+    ])
   })
 
   // `systemMode` is what resolves mode `system` to a polarity, and EVERY other
@@ -233,7 +245,11 @@ describe('the appearance picker (ThemeChooser)', () => {
     // A variant id names a variant of ONE theme. Carrying it to another would
     // name something that theme does not have, which resolveVariant discards
     // anyway -- storing it would just be a stale id in the document.
-    const { onChange } = renderChooser({ name: 'catppuccin', mode: 'dark', variant: { dark: 'catppuccin-frappe' } })
+    const { onChange } = renderChooser({
+      name: 'catppuccin',
+      mode: 'dark',
+      variant: { dark: 'catppuccin-frappe' },
+    })
     pick('name', 'Nord')
     expect(onChange).toHaveBeenCalledWith({ name: 'nord', mode: 'dark', variant: undefined })
   })
@@ -244,7 +260,10 @@ describe('the appearance picker (ThemeChooser)', () => {
     // The complaint this design answers: `match-ui` used to be the first
     // palette AND the first mode pill -- two controls for one idea.
     renderTerminal(MATCH_BOTH)
-    expect(optionsOf('name')).toEqual(['Match UI', ...THEMES.map(t => themeLabel(t, 'terminal'))])
+    expect(optionsOf('name')).toEqual([
+      'Match UI',
+      ...THEMES.map(t => themeLabel(t, 'terminal')),
+    ])
     expect(modeRadios().map(r => r.textContent)).toEqual(['System', 'Light', 'Dark'])
   })
 
@@ -267,7 +286,11 @@ describe('the appearance picker (ThemeChooser)', () => {
   it('keeps the governed controls reporting what the app resolved to', () => {
     // "Match UI" alone does not say which flavour the terminal is wearing, and
     // that is what the user opened the row to read.
-    renderTerminal(MATCH_BOTH, { name: 'catppuccin', mode: 'dark', variant: { dark: 'catppuccin-frappe' } })
+    renderTerminal(MATCH_BOTH, {
+      name: 'catppuccin',
+      mode: 'dark',
+      variant: { dark: 'catppuccin-frappe' },
+    })
     expect(screen.getByRole('radio', { name: 'Dark' })).toHaveAttribute('aria-checked', 'true')
     expect(variantTrigger()).toHaveAttribute('data-value', 'catppuccin-frappe')
   })

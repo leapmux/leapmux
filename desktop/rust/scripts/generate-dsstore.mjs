@@ -67,7 +67,11 @@ for (let i = 1; i < args.length; i++) {
       break
     case '--icon': {
       const parts = args[++i].split(',')
-      icons.push({ name: parts[0], x: Number(parts[1]), y: Number(parts[2]) })
+      icons.push({
+        name: parts[0],
+        x: Number(parts[1]),
+        y: Number(parts[2]),
+      })
       break
     }
     default:

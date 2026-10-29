@@ -39,7 +39,10 @@ export function indexSearchEntry(entry: SearchEntry): IndexedSearchEntry {
     ...(entry.keywords ?? []),
     ...(entry.optionLabels ?? []),
   ]
-  return { entry, haystack: parts.join(' ').toLowerCase() }
+  return {
+    entry,
+    haystack: parts.join(' ').toLowerCase(),
+  }
 }
 
 /** Build the match index for a whole entry list. */

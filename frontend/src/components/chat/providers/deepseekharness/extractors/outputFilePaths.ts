@@ -48,7 +48,9 @@ const NOTICES: readonly NativeNotice[] = [
 
 /** Read each native pointer of one text block, in the order that the native text states them. */
 function textPaths(text: string): readonly string[] {
-  const found = NOTICES.flatMap(notice => [...text.matchAll(notice.pattern)].flatMap(match =>
+  const found = NOTICES.flatMap(notice => [
+    ...text.matchAll(notice.pattern),
+  ].flatMap(match =>
     // Every pattern holds capture group 1, so `?? ''` is the type-level guard alone.
     notice.listed(match[1] ?? '')
       .filter(path => isFilesystemPath(path) && notice.layout.test(path))
@@ -69,5 +71,7 @@ export function deepseekHarnessOutputFilePaths(input: RowExtractionInput, call: 
       continue
     paths.push(...textPaths(block.text))
   }
-  return [...new Set(paths)]
+  return [
+    ...new Set(paths),
+  ]
 }

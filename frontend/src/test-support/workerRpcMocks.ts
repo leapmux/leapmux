@@ -23,5 +23,9 @@ export function readResp(content: Uint8Array, totalSize?: number) {
  * `info.size` field as a BigInt, matching the protobuf wire shape.
  */
 export function statResp(size: number) {
-  return { info: { size: BigInt(size) } }
+  return {
+    info: {
+      size: BigInt(size),
+    },
+  }
 }

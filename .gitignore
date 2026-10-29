@@ -29,7 +29,6 @@ go.work.sum
 
 # Frontend
 node_modules/
-.vinxi/
 .output/
 frontend/dist/
 frontend/public/leapmux-icon.ico
@@ -37,7 +36,6 @@ frontend/public/leapmux-icon.svg
 frontend/public/icons/
 frontend/public/NOTICE.html
 frontend/public/leapmux-service-worker-*
-frontend/app.config.timestamp_*
 frontend/src/spinners/
 
 # Backend

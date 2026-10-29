@@ -3,7 +3,12 @@ import { opencodeTest } from '../opencode-fixtures'
 import { nativeContext, nativeLaunch, opencodeInstructionSource } from './scenarios'
 
 opencodeTest('starts and reads a private project without a workspace trust request', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   await exerciseNativeWorkspaceTrustLimit(context, {
     worker: projectConfigurationWorker(leapmuxServer.agentEnv, nativeLaunch(context), 'OPENCODE_DISABLE_PROJECT_CONFIG'),
     // OpenCode reads AGENTS.md from the working directory up to the root of its git repository.

@@ -73,6 +73,8 @@ export function copilotToolKind(toolName: string): ToolKind {
   // and `constructor` or `toString` answers from `Object.prototype` -- a truthy
   // value, so the `mcp` fallback below would never run for it. The `??` on the OWN
   // read alone is for the type system; every own value in the table is a `ToolKind`.
-  const own = Object.hasOwn(COPILOT_TOOL_KINDS, toolName) ? COPILOT_TOOL_KINDS[toolName] : undefined
+  const own = Object.hasOwn(COPILOT_TOOL_KINDS, toolName)
+    ? COPILOT_TOOL_KINDS[toolName]
+    : undefined
   return own ?? 'mcp'
 }

@@ -53,14 +53,18 @@ export function codexExtractRow(input: RowExtractionInput): ChatRow | null {
       // The same reader the classifier used, so the two layers state one answer:
       // Codex persists an item under three envelopes and `extractItem` knows all three.
       const text = pickString(extractItem(parsed.parentObject), 'text')
-      return text ? { kind: 'assistant-text', text } : { kind: 'hidden' }
+      return text
+        ? { kind: 'assistant-text', text }
+        : { kind: 'hidden' }
     }
     case 'assistant_thinking':
       return codexReasoningRow(extractItem(parsed.parentObject) ?? undefined)
     case 'assistant_plan': {
       // The same reader the classifier used, so the two layers state one answer.
       const plan = codexPlanItemMarkdown(extractItem(parsed.parentObject))
-      return plan === null ? { kind: 'hidden' } : { kind: 'assistant-plan', text: plan }
+      return plan === null
+        ? { kind: 'hidden' }
+        : { kind: 'assistant-plan', text: plan }
     }
     case 'user_content':
       return codexQuestionAnswerRow(parsed.parentObject, parsed.supplementalContent)
@@ -83,7 +87,9 @@ export function codexExtractRow(input: RowExtractionInput): ChatRow | null {
  */
 function codexReasoningRow(item: Record<string, unknown> | undefined): ChatRow {
   const text = codexReasoningText(item)
-  return text ? { kind: 'assistant-thinking', text } : { kind: 'hidden' }
+  return text
+    ? { kind: 'assistant-thinking', text }
+    : { kind: 'hidden' }
 }
 
 /**
@@ -98,7 +104,11 @@ export function codexReasoningText(item: Record<string, unknown> | undefined): s
   const summary = stringArray(item?.summary).filter(entry => entry.trim().length > 0)
   const content = stringArray(item?.content).filter(entry => entry.trim().length > 0).join('\n')
   const text = pickString(item, 'text')
-  return summary.length > 0 ? markdownBulletList(summary) : content || (text.trim() ? text : '')
+  return summary.length > 0
+    ? markdownBulletList(summary)
+    : content || (text.trim()
+      ? text
+      : '')
 }
 
 /** Whether one reasoning item contains visible text, without building Markdown. */
@@ -136,7 +146,9 @@ function codexTurnPlanRow(notification: Record<string, unknown>): ChatRow | null
   const explanation = pickString(params, 'explanation').trim()
   // The explanation says WHY the plan moved, which the list itself does not.
   const title = todos.length > 0
-    ? (explanation ? `${pluralize(todos.length, 'task')} - ${explanation}` : pluralize(todos.length, 'task'))
+    ? (explanation
+        ? `${pluralize(todos.length, 'task')} - ${explanation}`
+        : pluralize(todos.length, 'task'))
     : ''
   const call = createToolCall(
     { id: '', name: CODEX_INTERNAL_TOOL.TURN_PLAN, lifecycle: SYNTHETIC_TOOL_LIFECYCLE },
@@ -176,7 +188,9 @@ export function codexItemKind(item: Record<string, unknown>, fileChanges?: FileC
     case CODEX_ITEM.ImageView: return 'read'
     case CODEX_ITEM.ImageGeneration: return 'image'
     case CODEX_ITEM.WebSearch:
-      return codexWebSearchActionFromItem(item)?.type === 'openPage' ? 'fetch' : 'web_search'
+      return codexWebSearchActionFromItem(item)?.type === 'openPage'
+        ? 'fetch'
+        : 'web_search'
     // A call that reaches a server or a dynamic namespace, and the output of one.
     // All three draw the shared Model Context Protocol card.
     case CODEX_ITEM.McpToolCall:
@@ -219,7 +233,9 @@ function codexFileChangeKind(entries: FileChangeEntry[]): ToolKind {
  * neither can draw a change the reader cannot identify.
  */
 function codexChangeEntries(item: Record<string, unknown>): FileChangeEntry[] {
-  return (Array.isArray(item.changes) ? item.changes : [])
+  return (Array.isArray(item.changes)
+    ? item.changes
+    : [])
     .filter(isObject)
     .map((change) => {
       const kind = codexChangeKind(change)
@@ -228,12 +244,24 @@ function codexChangeEntries(item: Record<string, unknown>): FileChangeEntry[] {
       return {
         // A move states its DESTINATION in `kind.movePath` and its source in `path`.
         filePath: movePath || pickString(change, 'path'),
-        ...(movePath ? { previousPath: pickString(change, 'path') } : {}),
-        operation: kind === 'add' ? 'add' as const : kind === 'delete' ? 'delete' as const : movePath ? 'move' as const : 'edit' as const,
+        ...(movePath
+          ? {
+              previousPath: pickString(change, 'path'),
+            }
+          : {}),
+        operation: kind === 'add'
+          ? 'add' as const
+          : kind === 'delete'
+            ? 'delete' as const
+            : movePath ? 'move' as const : 'edit' as const,
         // Codex sends a UNIFIED patch for an update and the whole file body for an add
         // or a delete, both under `diff`.
-        ...(kind !== 'add' && kind !== 'delete' ? { patch: patchOrBody } : {}),
-        ...(kind === 'add' || kind === 'delete' ? { content: patchOrBody } : {}),
+        ...(kind !== 'add' && kind !== 'delete'
+          ? { patch: patchOrBody }
+          : {}),
+        ...(kind === 'add' || kind === 'delete'
+          ? { content: patchOrBody }
+          : {}),
       }
     })
     .filter(entry => entry.filePath !== '')
@@ -255,7 +283,9 @@ function codexRequestedChanges(entries: FileChangeEntry[]): FileEditDiff[] {
     return drawn ?? {
       ...fileEditDiffFromOldNew(entry.filePath, '', ''),
       operation: entry.operation,
-      ...(entry.previousPath !== undefined ? { previousPath: entry.previousPath } : {}),
+      ...(entry.previousPath !== undefined
+        ? { previousPath: entry.previousPath }
+        : {}),
     }
   })
 }
@@ -273,7 +303,9 @@ function codexStatusItemTitle(type: string): string | undefined {
   // that spells an `Object.prototype` member answers with a function -- which the
   // header would then draw as that function's own source text. The facts read this
   // ONCE, so no reader can reach the raw table and re-open that hole.
-  return Object.hasOwn(CODEX_STATUS_ITEM_TITLES, type) ? CODEX_STATUS_ITEM_TITLES[type] : undefined
+  return Object.hasOwn(CODEX_STATUS_ITEM_TITLES, type)
+    ? CODEX_STATUS_ITEM_TITLES[type]
+    : undefined
 }
 
 /**
@@ -293,7 +325,9 @@ function codexStatusDetail(item: Record<string, unknown>): string {
   if (reviewText)
     return reviewText
   const durationMs = pickNumber(item, 'durationMs', undefined)
-  return durationMs === undefined ? '' : formatDuration(durationMs)
+  return durationMs === undefined
+    ? ''
+    : formatDuration(durationMs)
 }
 
 /**
@@ -305,7 +339,9 @@ function codexStatusDetail(item: Record<string, unknown>): string {
  */
 function codexItemImages(item: Record<string, unknown>): ImageResultSource[] {
   const image = codexGeneratedImage(item) ?? codexViewedImage(item)
-  return image ? [image] : []
+  return image
+    ? [image]
+    : []
 }
 
 /**
@@ -367,7 +403,9 @@ export interface CodexToolFacts {
 /** Read one item into the facts every specification reader shares. */
 export function codexToolFacts(item: Record<string, unknown>, finished: boolean, sides: ToolSpanContext): CodexToolFacts {
   const type = pickString(item, 'type')
-  const fileChanges = type === CODEX_ITEM.FileChange ? codexChangeEntries(item) : []
+  const fileChanges = type === CODEX_ITEM.FileChange
+    ? codexChangeEntries(item)
+    : []
   return {
     item,
     type,
@@ -404,7 +442,10 @@ const CODEX_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<CodexToolFacts> = {}
  * or `request.changes[0]` throws the whole message into the ErrorBoundary.
  */
 function codexDeclaredOnly<P extends ToolKind>(kind: P): ToolCallSpecReader<CodexToolFacts, P> {
-  return (facts): ToolCallSpecVariant<P> => ({ kind, request: toolRequestFor(kind, facts.item, facts, CODEX_TOOL_REQUEST_OVERRIDES) })
+  return (facts): ToolCallSpecVariant<P> => ({
+    kind,
+    request: toolRequestFor(kind, facts.item, facts, CODEX_TOOL_REQUEST_OVERRIDES),
+  })
 }
 
 /**
@@ -432,35 +473,84 @@ export const CODEX_TOOL_READERS: ToolCallSpecReaderTable<CodexToolFacts> = {
     const actions = codexCommandActionsFromItem(facts.item)
     const request: ExecuteRequest = {
       command,
-      ...(cwd !== undefined ? { cwd } : {}),
-      ...(processId !== undefined ? { processId } : {}),
-      ...(actions.length > 0 ? { actions } : {}),
+      ...(cwd !== undefined
+        ? { cwd }
+        : {}),
+      ...(processId !== undefined
+        ? { processId }
+        : {}),
+      ...(actions.length > 0
+        ? { actions }
+        : {}),
     }
     // Only a call that ENDED has an output stream to state. Codex sends the exit code
     // and the aggregated output on the same item, so the result is the item itself.
-    const source = facts.finished ? codexCommandFromItem(facts.item) : null
+    const source = facts.finished
+      ? codexCommandFromItem(facts.item)
+      : null
     return source
-      ? { kind: 'execute', request, result: { commands: [source], unresolvedTerminals: [] } }
+      ? {
+          kind: 'execute',
+          request,
+          result: {
+            commands: [source],
+            unresolvedTerminals: [],
+          },
+        }
       : { kind: 'execute', request }
   },
   // The four file kinds declare the same request and the same result, and one item
   // builds all four the same way -- but each entry states its OWN kind, because a
   // shared generic would put the pair beyond the checker again.
-  edit: (facts): ToolCallSpecVariant<'edit'> => ({ kind: 'edit', ...codexFileChangeParts(facts) }),
-  write: (facts): ToolCallSpecVariant<'write'> => ({ kind: 'write', ...codexFileChangeParts(facts) }),
-  delete: (facts): ToolCallSpecVariant<'delete'> => ({ kind: 'delete', ...codexFileChangeParts(facts) }),
-  move: (facts): ToolCallSpecVariant<'move'> => ({ kind: 'move', ...codexFileChangeParts(facts) }),
+  edit: (facts): ToolCallSpecVariant<'edit'> => ({
+    kind: 'edit',
+    ...codexFileChangeParts(facts),
+  }),
+  write: (facts): ToolCallSpecVariant<'write'> => ({
+    kind: 'write',
+    ...codexFileChangeParts(facts),
+  }),
+  delete: (facts): ToolCallSpecVariant<'delete'> => ({
+    kind: 'delete',
+    ...codexFileChangeParts(facts),
+  }),
+  move: (facts): ToolCallSpecVariant<'move'> => ({
+    kind: 'move',
+    ...codexFileChangeParts(facts),
+  }),
   image: (facts): ToolCallSpecVariant<'image'> => {
     const failure = pickString(pickObject(facts.item, 'failure'), 'type')
     // The prompt the model actually rendered from often differs from the one the
     // reader asked for, so it belongs on the REQUEST: the result lands only when
     // the picture does, and the row states nothing else while it generates.
     const prompt = pickString(facts.item, 'revisedPrompt') || undefined
-    const request: ImageRequest = { ...(prompt !== undefined ? { prompt } : {}) }
-    if (failure)
-      return { kind: 'image', request, title: `Generate image ${failure}`, result: failedResult(failure), statusOverride: 'failed' }
-    if (facts.images.length > 0)
-      return { kind: 'image', request, title: 'Generate image', images: facts.images, result: { ...(prompt !== undefined ? { revisedPrompt: prompt } : {}) } }
+    const request: ImageRequest = {
+      ...(prompt !== undefined
+        ? { prompt }
+        : {}),
+    }
+    if (failure) {
+      return {
+        kind: 'image',
+        request,
+        title: `Generate image ${failure}`,
+        result: failedResult(failure),
+        statusOverride: 'failed',
+      }
+    }
+    if (facts.images.length > 0) {
+      return {
+        kind: 'image',
+        request,
+        title: 'Generate image',
+        images: facts.images,
+        result: {
+          ...(prompt !== undefined
+            ? { revisedPrompt: prompt }
+            : {}),
+        },
+      }
+    }
     return { kind: 'image', request, title: 'Generate image' }
   },
   read: (facts): ToolCallSpecVariant<'read'> => {
@@ -469,8 +559,16 @@ export const CODEX_TOOL_READERS: ToolCallSpecReaderTable<CodexToolFacts> = {
     const raw = pickString(facts.item, 'path')
     const path = codexItemPath(raw) ?? raw
     return facts.finished && facts.images.length > 0
-      ? { kind: 'read', request: { path }, images: facts.images, result: { lines: null, fallbackContent: '' } }
-      : { kind: 'read', request: { path } }
+      ? {
+          kind: 'read',
+          request: { path },
+          images: facts.images,
+          result: { lines: null, fallbackContent: '' },
+        }
+      : {
+          kind: 'read',
+          request: { path },
+        }
   },
   fetch: (facts): ToolCallSpecVariant<'fetch'> => {
     // `codexItemKind` answers `fetch` for exactly the `openPage` action, reading the
@@ -478,23 +576,67 @@ export const CODEX_TOOL_READERS: ToolCallSpecReaderTable<CodexToolFacts> = {
     // Its url is empty only for a frame the classifier already hid, which is why the
     // fall-back states the empty string rather than a second reading of the item.
     const action = codexWebSearchActionFromItem(facts.item)
-    const url = action?.type === 'openPage' ? action.url : ''
+    const url = action?.type === 'openPage'
+      ? action.url
+      : ''
     return facts.finished
-      ? { kind: 'fetch', request: { url }, title: url, result: { result: '' } }
-      : { kind: 'fetch', request: { url }, title: url }
+      ? {
+          kind: 'fetch',
+          request: { url },
+          title: url,
+          result: { result: '' },
+        }
+      : {
+          kind: 'fetch',
+          request: { url },
+          title: url,
+        }
   },
   web_search: (facts): ToolCallSpecVariant<'web_search'> => {
     const action = codexWebSearchActionFromItem(facts.item)
     // A finished search states its (empty) result: the item carries no links of its
     // own, and the row keeps the queries an expand control reveals.
-    const result: WebSearchResult | undefined = facts.finished ? { links: [], summary: '' } : undefined
-    if (action?.type === 'findInPage')
-      return { kind: 'web_search', request: { query: action.pattern, inPage: { pattern: action.pattern, ...(action.url !== undefined ? { url: action.url } : {}) } }, ...(result !== undefined ? { result } : {}) }
-    if (action?.type === 'search')
-      return { kind: 'web_search', request: { query: action.query, queries: action.queries }, ...(result !== undefined ? { result } : {}) }
+    const result: WebSearchResult | undefined = facts.finished
+      ? { links: [], summary: '' }
+      : undefined
+    if (action?.type === 'findInPage') {
+      return {
+        kind: 'web_search',
+        request: {
+          query: action.pattern,
+          inPage: {
+            pattern: action.pattern,
+            ...(action.url !== undefined
+              ? { url: action.url }
+              : {}),
+          },
+        },
+        ...(result !== undefined
+          ? { result }
+          : {}),
+      }
+    }
+    if (action?.type === 'search') {
+      return {
+        kind: 'web_search',
+        request: { query: action.query, queries: action.queries },
+        ...(result !== undefined
+          ? { result }
+          : {}),
+      }
+    }
     // An action with no fields states what it does rather than nothing.
-    const query = action?.type === 'other' ? action.query : ''
-    return { kind: 'web_search', request: { query }, title: query || 'Searching the web', ...(result !== undefined ? { result } : {}) }
+    const query = action?.type === 'other'
+      ? action.query
+      : ''
+    return {
+      kind: 'web_search',
+      request: { query },
+      title: query || 'Searching the web',
+      ...(result !== undefined
+        ? { result }
+        : {}),
+    }
   },
   agent: (facts): ToolCallSpecVariant<'agent'> => {
     const counterpart = codexAgentCounterpart(facts.item, facts.finished ? facts.sides.request : facts.sides.result, facts.finished ? 'request' : 'result')
@@ -506,8 +648,16 @@ export const CODEX_TOOL_READERS: ToolCallSpecReaderTable<CodexToolFacts> = {
       title: request.description,
       // The call's completion does not establish that any child agent completed, so
       // the runs are read from the item and each states its own outcome.
-      ...(facts.finished ? { result: { agents: codexAgentResults(resolved) } } : {}),
-      ...(facts.status === 'interrupted' ? { statusOverride: 'cancelled' as const } : {}),
+      ...(facts.finished
+        ? {
+            result: {
+              agents: codexAgentResults(resolved),
+            },
+          }
+        : {}),
+      ...(facts.status === 'interrupted'
+        ? { statusOverride: 'cancelled' as const }
+        : {}),
     }
   },
   mcp: codexMcpSpec,
@@ -515,8 +665,14 @@ export const CODEX_TOOL_READERS: ToolCallSpecReaderTable<CodexToolFacts> = {
     const durationMs = pickNumber(facts.item, 'durationMs', undefined)
     return {
       kind: 'wait',
-      request: { ...(durationMs !== undefined ? { durationMs } : {}) },
-      ...(facts.statusTitle !== undefined ? { title: facts.statusTitle } : {}),
+      request: {
+        ...(durationMs !== undefined
+          ? { durationMs }
+          : {}),
+      },
+      ...(facts.statusTitle !== undefined
+        ? { title: facts.statusTitle }
+        : {}),
       result: proseResult(facts.detail),
     }
   },
@@ -526,7 +682,9 @@ export const CODEX_TOOL_READERS: ToolCallSpecReaderTable<CodexToolFacts> = {
     // so stating one here would draw the bare word "review" for BOTH the entry
     // and the exit marker and hide the sentence composed below.
     request: {},
-    ...(facts.statusTitle !== undefined ? { title: facts.statusTitle } : {}),
+    ...(facts.statusTitle !== undefined
+      ? { title: facts.statusTitle }
+      : {}),
     result: proseResult(facts.detail),
   }),
   skill: codexHookPromptSpec,
@@ -537,12 +695,22 @@ export const CODEX_TOOL_READERS: ToolCallSpecReaderTable<CodexToolFacts> = {
    * Classification and extraction must agree so the measured row contains visible content.
    */
   other: (facts): ToolCallSpecVariant<'other'> => {
-    const title = facts.statusTitle ?? (facts.type ? humanizeWireWord(facts.type) : undefined)
+    const title = facts.statusTitle ?? (facts.type
+      ? humanizeWireWord(facts.type)
+      : undefined)
     return {
       kind: 'other',
-      ...(title !== undefined ? { title } : {}),
+      ...(title !== undefined
+        ? { title }
+        : {}),
       request: { args: facts.item },
-      result: { content: facts.detail ? [{ type: 'text', text: facts.detail }] : [] },
+      result: {
+        content: facts.detail
+          ? [
+              { type: 'text', text: facts.detail },
+            ]
+          : [],
+      },
     }
   },
   // The kinds no Codex ITEM takes. Each states the shared declared request, so the
@@ -600,13 +768,24 @@ function codexFileChangeParts(facts: CodexToolFacts): { request: FileChangeReque
   // reads this one -- which is the only place the file name survives.
   const title = changes.length === 1
     ? changes[0]?.filePath
-    : changes.length > 1 ? pluralize(changes.length, 'file') : undefined
-  const headed = title !== undefined ? { title } : {}
+    : changes.length > 1
+      ? pluralize(changes.length, 'file')
+      : undefined
+  const headed = title !== undefined
+    ? { title }
+    : {}
   // Only a COMPLETED change landed. A running one states what it asks for, and
   // a failed or declined one never happened -- drawing its diff as a result
   // would report an edit the file never received.
-  if (facts.status === CODEX_STATUS.COMPLETED)
-    return { request, ...headed, result: { changes: fileEditDiffsFromChanges(entries) } }
+  if (facts.status === CODEX_STATUS.COMPLETED) {
+    return {
+      request,
+      ...headed,
+      result: {
+        changes: fileEditDiffsFromChanges(entries),
+      },
+    }
+  }
   // `finished`, not the item's own word, for the reason `execute` gives: LeapMux's
   // reading of how the turn ended wins, and a retained row leaves the last
   // `inProgress` frame stored. Keying on the wire word alone dropped the
@@ -615,7 +794,13 @@ function codexFileChangeParts(facts: CodexToolFacts): { request: FileChangeReque
   if (!facts.finished)
     return { request, ...headed }
   const failure = facts.aggregatedOutput.trim()
-  return failure ? { request, ...headed, result: failedResult(failure) } : { request, ...headed }
+  return failure
+    ? {
+        request,
+        ...headed,
+        result: failedResult(failure),
+      }
+    : { request, ...headed }
 }
 
 /**
@@ -633,22 +818,48 @@ function codexMcpSpec(facts: CodexToolFacts): ToolCallSpecVariant<'mcp'> {
       kind: 'mcp',
       title: mcpToolCallDisplayName({ server: namespace, tool: callId || 'Function call' }),
       request: { server: namespace, tool: callId || 'Function call', args: {} },
-      result: { content: output ? [{ type: 'text', text: output }] : [] },
+      result: {
+        content: output
+          ? [
+              { type: 'text', text: output },
+            ]
+          : [],
+      },
     }
   }
   const source = codexMcpFromItem(facts.item)
-  if (!source)
-    return { kind: 'mcp', request: { server: '', tool: pickString(facts.item, 'id'), args: {} } }
+  if (!source) {
+    return {
+      kind: 'mcp',
+      request: {
+        server: '',
+        tool: pickString(facts.item, 'id'),
+        args: {},
+      },
+    }
+  }
   return {
     kind: 'mcp',
-    request: { server: source.server, tool: source.tool, args: safeJson(source.argsJson ?? '') },
+    request: {
+      server: source.server,
+      tool: source.tool,
+      args: safeJson(source.argsJson ?? ''),
+    },
     result: {
       content: source.content,
-      ...(source.structuredJson !== undefined ? { structuredJson: source.structuredJson } : {}),
-      ...(source.error !== undefined ? { error: source.error } : {}),
-      ...(source.durationMs !== undefined ? { durationMs: source.durationMs } : {}),
+      ...(source.structuredJson !== undefined
+        ? { structuredJson: source.structuredJson }
+        : {}),
+      ...(source.error !== undefined
+        ? { error: source.error }
+        : {}),
+      ...(source.durationMs !== undefined
+        ? { durationMs: source.durationMs }
+        : {}),
     },
-    ...(source.failed ? { statusOverride: 'failed' as const } : {}),
+    ...(source.failed
+      ? { statusOverride: 'failed' as const }
+      : {}),
   }
 }
 
@@ -656,7 +867,9 @@ function codexMcpSpec(facts: CodexToolFacts): ToolCallSpecVariant<'mcp'> {
 function safeJson(text: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(text) as unknown
-    return isObject(parsed) ? parsed : {}
+    return isObject(parsed)
+      ? parsed
+      : {}
   }
   catch {
     return {}
@@ -671,17 +884,31 @@ function safeJson(text: string): Record<string, unknown> {
  * This gives the row a body and a title instead of an empty measured row.
  */
 function codexHookPromptSpec(facts: CodexToolFacts): ToolCallSpecVariant<'skill'> {
-  const raw: unknown[] = Array.isArray(facts.item.fragments) ? facts.item.fragments : []
+  const raw: unknown[] = Array.isArray(facts.item.fragments)
+    ? facts.item.fragments
+    : []
   const fragments = raw
-    .map(fragment => typeof fragment === 'string' ? fragment : pickString(isObject(fragment) ? fragment : undefined, 'text'))
+    .map(fragment => typeof fragment === 'string'
+      ? fragment
+      : pickString(isObject(fragment)
+          ? fragment
+          : undefined, 'text'))
     .filter(Boolean)
   const text = fragments.join('\n\n') || pickString(facts.item, 'text')
   const first = raw[0]
-  const runId = pickString(isObject(first) ? first : undefined, 'hookRunId')
+  const runId = pickString(isObject(first)
+    ? first
+    : undefined, 'hookRunId')
   return {
     kind: 'skill',
-    title: runId ? `Hook prompt (${runId})` : 'Hook prompt',
-    request: { ...(runId ? { name: runId } : {}) },
+    title: runId
+      ? `Hook prompt (${runId})`
+      : 'Hook prompt',
+    request: {
+      ...(runId
+        ? { name: runId }
+        : {}),
+    },
     result: proseResult(text, 'markdown'),
   }
 }
@@ -702,7 +929,12 @@ function codexToolCall(facts: CodexToolFacts, lifecycle: ToolCallLifecycleFacts)
       name: facts.type,
       lifecycle,
     },
-    { ...spec, ...(label !== undefined ? { label } : {}) },
+    {
+      ...spec,
+      ...(label !== undefined
+        ? { label }
+        : {}),
+    },
   )
 }
 
@@ -716,11 +948,15 @@ function codexItemLabel(facts: CodexToolFacts): string | undefined {
     case CODEX_ITEM.WebSearch:
       // From the kind, not a third parse of the same action: `codexItemKind` answers
       // `fetch` for exactly the `openPage` case this label separates.
-      return facts.kind === 'fetch' ? 'WebFetch' : 'WebSearch'
+      return facts.kind === 'fetch'
+        ? 'WebFetch'
+        : 'WebSearch'
     case CODEX_ITEM.HookPrompt: return 'Hook'
     case CODEX_ITEM.FunctionCallOutput: return 'Function call output'
     default:
-      return facts.statusTitle ?? (facts.kind === 'other' && facts.type ? humanizeWireWord(facts.type) : undefined)
+      return facts.statusTitle ?? (facts.kind === 'other' && facts.type
+        ? humanizeWireWord(facts.type)
+        : undefined)
   }
 }
 
@@ -752,7 +988,9 @@ function codexToolSpanRow(parsed: ParsedMessageContent, sides: RowExtractionInpu
     ? 'result'
     : sides.role === 'request'
       ? 'request'
-      : (isCodexFinishedStatus(statusWord) || !!parsed.completion ? 'result' : 'request')
+      : (isCodexFinishedStatus(statusWord) || !!parsed.completion
+          ? 'result'
+          : 'request')
   const rowFinal = role === 'result' || isCodexFinishedStatus(statusWord) || !!parsed.completion
   // LeapMux's own reading of how the turn ended wins over the item word, as
   // `ToolCallBase.status` states for every provider. A turn the reader stopped
@@ -765,7 +1003,9 @@ function codexToolSpanRow(parsed: ParsedMessageContent, sides: RowExtractionInpu
   // pairs that word with a finished span's pictures is a draft the validating
   // builder refuses: the row degraded to the generic card and lost the picture.
   // The role's answer states the outcome the frame's own words cannot.
-  const candidateResultItem = sides.result ? extractItem(sides.result.parentObject) : null
+  const candidateResultItem = sides.result
+    ? extractItem(sides.result.parentObject)
+    : null
   // A result frame belongs to this call only when both identity fields match. A
   // corrupt span must not mark this call as answered or project another call's data.
   const matchingResultItem = candidateResultItem
@@ -776,7 +1016,9 @@ function codexToolSpanRow(parsed: ParsedMessageContent, sides: RowExtractionInpu
   // A closing fileChange is the authoritative full item: it carries the original
   // change list and states which changes landed. Other Codex item kinds keep their
   // existing per-frame projections even though the lifecycle sees their result.
-  const projectedResultItem = item.type === CODEX_ITEM.FileChange ? matchingResultItem : null
+  const projectedResultItem = item.type === CODEX_ITEM.FileChange
+    ? matchingResultItem
+    : null
   // Read every resolved span side.
   // A request row includes its landed result, so its prompt uses the same compact expansion control.
   const answered = atomicResult || sides.role === 'result' || isCodexFinishedStatus(statusWord) || !!matchingResultItem
@@ -789,7 +1031,9 @@ function codexToolSpanRow(parsed: ParsedMessageContent, sides: RowExtractionInpu
   // - The landed result.
   const lifecycle: ToolCallLifecycleFacts = {
     frameStatus: codexFrameStatus(statusWord),
-    providerOutcome: statusWord === 'interrupted' ? 'interrupted' : null,
+    providerOutcome: statusWord === 'interrupted'
+      ? 'interrupted'
+      : null,
     retainedOutcome: outcome,
     rowFinal,
     resultFrameLanded: answered,
@@ -808,5 +1052,7 @@ function codexToolSpanRow(parsed: ParsedMessageContent, sides: RowExtractionInpu
 function codexFrameStatus(statusWord: string): ToolCallStatus {
   if (statusWord === CODEX_STATUS.IN_PROGRESS)
     return 'in_progress'
-  return statusWord === 'interrupted' ? 'unstated' : toolCallStatus(statusWord)
+  return statusWord === 'interrupted'
+    ? 'unstated'
+    : toolCallStatus(statusWord)
 }

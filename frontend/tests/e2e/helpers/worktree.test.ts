@@ -7,7 +7,9 @@ import { addWorktree, branchExists, commitFile, createGitRepo, createGitRepoWith
 
 // The run directory of these tests is the scratch directory of the current test.
 const runDirectory = vi.hoisted(() => ({ root: '' }))
-vi.mock('./runDirectory', () => ({ createTestDirectory: (prefix: string) => mkdtempSync(join(runDirectory.root, prefix)) }))
+vi.mock('./runDirectory', () => ({
+  createTestDirectory: (prefix: string) => mkdtempSync(join(runDirectory.root, prefix)),
+}))
 
 /** Run git in `cwd` and return its trimmed output. */
 function gitOutput(cwd: string, args: string[]): string {
@@ -90,7 +92,12 @@ describe('git repository helpers', () => {
     commitFile(dir, 'pkg/deep/tracked.txt', 'hello\n', 'add pkg')
     expect(readFileSync(join(dir, 'pkg/deep/tracked.txt'), 'utf8')).toBe('hello\n')
     expect(gitOutput(dir, ['log', '-1', '--pretty=%s'])).toBe('add pkg')
-    expect(gitOutput(dir, ['show', '--name-only', '--pretty=', 'HEAD'])).toBe('pkg/deep/tracked.txt')
+    expect(gitOutput(dir, [
+      'show',
+      '--name-only',
+      '--pretty=',
+      'HEAD',
+    ])).toBe('pkg/deep/tracked.txt')
   })
 
   it('addWorktree adds a linked worktree on a new branch and returns its real path', () => {

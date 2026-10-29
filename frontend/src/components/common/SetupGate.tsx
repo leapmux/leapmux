@@ -116,11 +116,19 @@ export const SetupGate: ParentComponent = (props) => {
     // A session outranks the snapshot: it proves an account exists.
     if (auth.isAuthenticated())
       return { kind: 'render' }
-    if (auth.loading() || !isSystemInfoLoaded())
-      return onSetupPage ? { kind: 'wait' } : { kind: 'render' }
-    if (isSetupRequired())
-      return onSetupPage ? { kind: 'render' } : { kind: 'redirect', to: SETUP_PATH }
-    return onSetupPage ? { kind: 'redirect', to: AFTER_SETUP_PATH } : { kind: 'render' }
+    if (auth.loading() || !isSystemInfoLoaded()) {
+      return onSetupPage
+        ? { kind: 'wait' }
+        : { kind: 'render' }
+    }
+    if (isSetupRequired()) {
+      return onSetupPage
+        ? { kind: 'render' }
+        : { kind: 'redirect', to: SETUP_PATH }
+    }
+    return onSetupPage
+      ? { kind: 'redirect', to: AFTER_SETUP_PATH }
+      : { kind: 'render' }
   }, { kind: 'render' }, { equals: shallowEqual })
 
   createEffect(() => {

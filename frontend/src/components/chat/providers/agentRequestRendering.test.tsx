@@ -10,37 +10,101 @@ import { input } from './testUtils'
 import './index'
 import './testMocks'
 
-describe.each([AgentProvider.CLAUDE_CODE, AgentProvider.ZCODE, AgentProvider.OPENCODE, AgentProvider.KILO, AgentProvider.MIMO_CODE])('shared agent request (%s)', (provider) => {
+describe.each([
+  AgentProvider.CLAUDE_CODE,
+  AgentProvider.ZCODE,
+  AgentProvider.OPENCODE,
+  AgentProvider.KILO,
+  AgentProvider.MIMO_CODE,
+])('shared agent request (%s)', (provider) => {
   function renderRequest(completed: boolean) {
     const args = { description: 'Inspect project structure', subagent_type: 'explore', prompt: '**Instruction**\n\n1. Read the entry points.' }
     // MiMo's `actor` tool states the launch as one operation, and `run` waits for the
     // subagent's report.
-    const mimoArgs = { operation: { action: MIMO_ACTOR_ACTION.Run, ...args } }
+    const mimoArgs = {
+      operation: { action: MIMO_ACTOR_ACTION.Run, ...args },
+    }
     const request = provider === AgentProvider.CLAUDE_CODE
-      ? { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'call', name: 'Agent', input: args }] } }
+      ? {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: 'call',
+                name: 'Agent',
+                input: args,
+              },
+            ],
+          },
+        }
       : provider === AgentProvider.ZCODE
-        ? { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'call', toolName: 'Agent', input: args } }
+        ? {
+            type: 'tool.updated',
+            payload: {
+              kind: 'scheduled',
+              toolCallId: 'call',
+              toolName: 'Agent',
+              input: args,
+            },
+          }
         : provider === AgentProvider.MIMO_CODE
           ? openingFrame(MIMO_TOOL.Actor, mimoArgs, 'call')
-          : { sessionUpdate: 'tool_call', toolCallId: 'call', title: 'task', kind: 'think', status: 'pending', rawInput: args }
+          : {
+              sessionUpdate: 'tool_call',
+              toolCallId: 'call',
+              title: 'task',
+              kind: 'think',
+              status: 'pending',
+              rawInput: args,
+            }
     // Each dialect states the SAME completion: the call ended and it reported "Done".
     // The Agent Client Protocol frame carries that word in its content blocks, and it
     // has to carry it -- a completed call states a result (invariant I2), so a frame
     // that reports nothing at all describes no answered call.
     const result = provider === AgentProvider.CLAUDE_CODE
-      ? { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'call', content: 'Done' }] } }
+      ? {
+          type: 'user',
+          message: {
+            content: [
+              { type: 'tool_result', tool_use_id: 'call', content: 'Done' },
+            ],
+          },
+        }
       : provider === AgentProvider.ZCODE
-        ? { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'call', result: { success: true, content: 'Done' } } }
+        ? {
+            type: 'tool.updated',
+            payload: {
+              kind: 'result',
+              toolCallId: 'call',
+              result: { success: true, content: 'Done' },
+            },
+          }
         : provider === AgentProvider.MIMO_CODE
           ? toolFrame(MIMO_TOOL.Actor, { input: mimoArgs, output: 'Done' }, 'call')
-          : { sessionUpdate: 'tool_call_update', toolCallId: 'call', status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'Done' } }] }
+          : {
+              sessionUpdate: 'tool_call_update',
+              toolCallId: 'call',
+              status: 'completed',
+              content: [
+                {
+                  type: 'content',
+                  content: { type: 'text', text: 'Done' },
+                },
+              ],
+            }
     const sources = testMessageSources({
       current: () => input(request),
-      result: () => completed ? input(result) : undefined,
+      result: () => completed
+        ? input(result)
+        : undefined,
       role: () => 'request',
       visibleRows: () => ({ request: true, result: completed }),
     })
-    return { ...render(() => renderMessageContent(request, { premeasureMode: true, sources }, providerFor(provider)!.transcript.classify(input(request)), provider)), request }
+    return {
+      ...render(() => renderMessageContent(request, { premeasureMode: true, sources }, providerFor(provider)!.transcript.classify(input(request)), provider)),
+      request,
+    }
   }
 
   it('shows the pending prompt as formatted Markdown', () => {

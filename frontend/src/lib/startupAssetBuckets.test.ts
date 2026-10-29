@@ -9,7 +9,7 @@ import { classifyStartupUrl, STARTUP_BUCKETS } from './startupAssetBuckets'
 describe('classifyStartupUrl', () => {
   it('classifies fonts, entry, route, workers, rpc, and modules', () => {
     expect(classifyStartupUrl('http://localhost/fonts/HackNerdFont-3.003-Regular.woff2')).toBe('fonts')
-    expect(classifyStartupUrl('http://localhost/_build/assets/client-CNz4oySH.js')).toBe('entry_js')
+    expect(classifyStartupUrl('http://localhost/_build/assets/entry-client-CNz4oySH.js')).toBe('entry_js')
     expect(classifyStartupUrl('http://localhost/_build/assets/rolldown-runtime-hePW80VL.js')).toBe('entry_js')
     expect(classifyStartupUrl('http://localhost/_build/assets/(app)-BltZ6tvo.js')).toBe('route_app')
     expect(classifyStartupUrl('http://localhost/_build/assets/%28app%29-BltZ6tvo.js')).toBe('route_app')
@@ -19,7 +19,7 @@ describe('classifyStartupUrl', () => {
     expect(classifyStartupUrl('http://localhost/leapmux.v1.AuthService/GetSystemInfo')).toBe('rpc')
     expect(classifyStartupUrl('http://localhost/_build/assets/AuthContext-YaQM1q0h.js')).toBe('critical_modules')
     expect(classifyStartupUrl('http://localhost/_build/assets/shikiWorkerClient-BPYyHIt_.js')).toBe('critical_modules')
-    expect(classifyStartupUrl('http://localhost/_build/assets/client-BQG5vqNI.css')).toBe('other')
+    expect(classifyStartupUrl('http://localhost/_build/assets/entry-client-BQG5vqNI.css')).toBe('other')
   })
 
   it('exposes the seven buckets the report requires', () => {

@@ -11,7 +11,9 @@ test.describe('Agent Settings', () => {
     await exerciseNativeOption(native, {
       groupId: 'effort',
       value: 'high',
-      nativeProof: request => expect(request.body).toMatchObject({ output_config: { effort: 'high' } }),
+      nativeProof: request => expect(request.body).toMatchObject({
+        output_config: { effort: 'high' },
+      }),
     })
   })
 
@@ -43,7 +45,9 @@ test.describe('Agent Settings', () => {
     }
 
     const request = await sendNativeAnswer(native, 'Reply once after the model tour.', 'Claude answered after the tour.')
-    expect(request.body).toMatchObject({ output_config: { effort: 'xhigh' } })
+    expect(request.body).toMatchObject({
+      output_config: { effort: 'xhigh' },
+    })
   })
 
   test('the effort menu is the same before and after a model round trip', async ({ authenticatedWorkspace, page }) => {
@@ -87,7 +91,10 @@ test.describe('Agent Settings', () => {
       },
       nativeProof: (request) => {
         expect(request.protocol).toBe('anthropic-messages')
-        expect(request.body).toMatchObject({ model: expect.stringMatching(/^claude-sonnet-/), output_config: { effort: 'xhigh' } })
+        expect(request.body).toMatchObject({
+          model: expect.stringMatching(/^claude-sonnet-/),
+          output_config: { effort: 'xhigh' },
+        })
         expect(claudeUltracodeEnabled(request)).toBe(true)
       },
     })
@@ -137,7 +144,9 @@ test.describe('Agent Settings', () => {
     await expectSettingsOptionChosen(page, 'effort-xhigh')
 
     const request = await sendNativeAnswer(native, 'Reply once after the round trip through Haiku.', 'Claude answered after the round trip.')
-    expect(request.body).toMatchObject({ output_config: { effort: 'xhigh' } })
+    expect(request.body).toMatchObject({
+      output_config: { effort: 'xhigh' },
+    })
   })
 
   // A new session pins no effort: the CLI chooses the level of its model. The menu shows that level, and a

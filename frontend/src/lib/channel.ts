@@ -283,7 +283,9 @@ export class ChannelManager {
     this.rpcTimeoutFn = opts?.rpcTimeoutFn ?? (() => FALLBACK_RPC_TIMEOUT_MS)
     this.expectedUserIdFn = opts?.expectedUserId ?? (() => undefined)
     this.idleRekeyIntervalMs = opts?.idleRekeyIntervalMs ?? IDLE_REKEY_INTERVAL_MS
-    this.keyPins = opts?.keyPins ?? new KeyPinStore({ confirmKeyPin: async () => 'reject' })
+    this.keyPins = opts?.keyPins ?? new KeyPinStore({
+      confirmKeyPin: async () => 'reject',
+    })
 
     this.relay = new ChannelRelay({
       createWebSocket: () => this.transport.createWebSocket(),
@@ -327,8 +329,12 @@ export class ChannelManager {
       relay: this.relay,
       pool: this.pool,
       expectedUserId: () => this.expectedUserIdFn(),
-      ...(this.testPayloadBudget !== undefined ? { testPayloadBudget: this.testPayloadBudget } : {}),
-      ...(this.testReassembledCeiling !== undefined ? { testReassembledCeiling: this.testReassembledCeiling } : {}),
+      ...(this.testPayloadBudget !== undefined
+        ? { testPayloadBudget: this.testPayloadBudget }
+        : {}),
+      ...(this.testReassembledCeiling !== undefined
+        ? { testReassembledCeiling: this.testReassembledCeiling }
+        : {}),
       verifySession: ch => this.verifySession(ch),
       evictGhost: (channelId, reason) => this.evictGhost(channelId, reason),
       notifyStateChange: () => this.notifyStateChange(),
@@ -432,7 +438,9 @@ export class ChannelManager {
         void this.session.ensureRekeyed(ch).catch((err) => {
           log.warn('wake/idle rekey failed', {
             channel_id: ch.channelId,
-            error: err instanceof Error ? err.message : formatErrorMessage(err),
+            error: err instanceof Error
+              ? err.message
+              : formatErrorMessage(err),
           })
         })
       }
@@ -661,7 +669,9 @@ export class ChannelManager {
           })
         }
       }).catch((err) => {
-        const e = err instanceof Error ? err : new ChannelError('client', formatErrorMessage(err))
+        const e = err instanceof Error
+          ? err
+          : new ChannelError('client', formatErrorMessage(err))
         queueMicrotask(() => {
           handle.deliverDeferredError(e, 'stream rekey failed with no onError listener')
         })
@@ -713,7 +723,9 @@ export class ChannelManager {
         }).catch((err) => {
           if (cancel)
             return
-          const e = err instanceof Error ? err : new ChannelError('client', formatErrorMessage(err))
+          const e = err instanceof Error
+            ? err
+            : new ChannelError('client', formatErrorMessage(err))
           queueMicrotask(() => {
             handle.deliverDeferredError(e, 'stream update rekey failed with no onError listener')
           })
@@ -779,7 +791,9 @@ export class ChannelManager {
     // and a listener it notifies could in principle open a channel mid-loop. ES
     // makes deleting the current entry safe, but a newly-added entry would be
     // visited by a live iterator; iterating a snapshot makes the intent explicit.
-    for (const channelId of [...this.pool.keys()])
+    for (const channelId of [
+      ...this.pool.keys(),
+    ])
       void this.closeChannel(channelId)
     this.relay.closeWebSocket()
   }
@@ -811,20 +825,31 @@ export class ChannelManager {
       throw abortError(opts.signal, method)
     }
     const msg = create(reqSchema, req)
-    if (log.isDebug())
-      log.debug('callWorker request', { method, request: toJsonString(reqSchema, msg) })
+    if (log.isDebug()) {
+      log.debug('callWorker request', {
+        method,
+        request: toJsonString(reqSchema, msg),
+      })
+    }
     const payload = toBinary(reqSchema, msg)
     let resp
     try {
       resp = await this.call(channelId, method, payload, opts?.timeoutMs, opts?.signal)
     }
     catch (err) {
-      log.debug('callWorker error', { method, error: formatErrorMessage(err) })
+      log.debug('callWorker error', {
+        method,
+        error: formatErrorMessage(err),
+      })
       throw err
     }
     const result = fromBinary(respSchema, resp.payload)
-    if (log.isDebug())
-      log.debug('callWorker response', { method, response: toJsonString(respSchema, result) })
+    if (log.isDebug()) {
+      log.debug('callWorker response', {
+        method,
+        response: toJsonString(respSchema, result),
+      })
+    }
     return result
   }
 
@@ -899,7 +924,9 @@ export class ChannelManager {
     const reason = fatal
       ? fatalCloseError(fatal)
       : new ChannelError('transport', 'channel disconnected')
-    for (const channelId of [...this.pool.keys()]) {
+    for (const channelId of [
+      ...this.pool.keys(),
+    ]) {
       const ch = this.pool.get(channelId)
       if (!ch)
         continue

@@ -7,7 +7,15 @@ import { workspaceInfoJson, workspaceInfoRows } from './workspaceMenuInfo'
  * is the point of extracting it from `WorkspaceContextMenu`.
  */
 function repo(label: string, workerId = 'w1', gitToplevel = '/home/me/repo'): RepoStartPoint {
-  return { label, startPoint: { kind: 'repo', workerId, gitToplevel, isWorktree: false } }
+  return {
+    label,
+    startPoint: {
+      kind: 'repo',
+      workerId,
+      gitToplevel,
+      isWorktree: false,
+    },
+  }
 }
 
 const base = {
@@ -28,14 +36,25 @@ describe('workspaceInfoRows', () => {
   })
 
   it('adds the repository row only when there is exactly one', () => {
-    const one = workspaceInfoRows({ ...base, repos: [repo('leapmux')] })
+    const one = workspaceInfoRows({
+      ...base,
+      repos: [
+        repo('leapmux'),
+      ],
+    })
     expect(one.at(-1)).toEqual({ label: 'Repository:', value: 'leapmux' })
   })
 
   // Two repositories cannot share one row, and the Repository submenu lists
   // them all anyway.
   it('omits the repository row for two or more', () => {
-    const two = workspaceInfoRows({ ...base, repos: [repo('alpha'), repo('beta', 'w2')] })
+    const two = workspaceInfoRows({
+      ...base,
+      repos: [
+        repo('alpha'),
+        repo('beta', 'w2'),
+      ],
+    })
     expect(two.map(r => r.label)).not.toContain('Repository:')
   })
 
@@ -55,7 +74,10 @@ describe('workspaceInfoJson', () => {
   it('lists every repository with its worker and path, however many there are', () => {
     const parsed = JSON.parse(workspaceInfoJson({
       ...base,
-      repos: [repo('alpha', 'w1', '/a'), repo('beta', 'w2', '/b')],
+      repos: [
+        repo('alpha', 'w1', '/a'),
+        repo('beta', 'w2', '/b'),
+      ],
     }))
     expect(parsed.repositories).toEqual([
       { label: 'alpha', workerId: 'w1', path: '/a' },

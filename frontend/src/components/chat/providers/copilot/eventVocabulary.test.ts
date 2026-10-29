@@ -25,7 +25,9 @@ const PAYLOAD: Record<string, Record<string, unknown>> = {
   [COPILOT_EVENT.SessionInfo]: { message: 'Information.' },
   [COPILOT_EVENT.SystemNotification]: { content: 'A system notice.' },
   [COPILOT_EVENT.SessionCustomNotification]: { name: 'An extension notice.' },
-  [COPILOT_EVENT.PermissionCompleted]: { result: { kind: 'denied-by-rules' } },
+  [COPILOT_EVENT.PermissionCompleted]: {
+    result: { kind: 'denied-by-rules' },
+  },
   [COPILOT_EVENT.SkillInvoked]: { skill: 'review' },
   [COPILOT_EVENT.SkillInvokedRef]: { skill: 'review' },
 }
@@ -35,7 +37,15 @@ function classify(type: string): string {
   const frame = {
     jsonrpc: '2.0',
     method: 'session.event',
-    params: { sessionId: 's1', event: { id: 'e1', type, agentId: '', data: PAYLOAD[type] ?? {} } },
+    params: {
+      sessionId: 's1',
+      event: {
+        id: 'e1',
+        type,
+        agentId: '',
+        data: PAYLOAD[type] ?? {},
+      },
+    },
   }
   return plugin.transcript.classify(input(frame, undefined, AgentProvider.GITHUB_COPILOT)).kind
 }

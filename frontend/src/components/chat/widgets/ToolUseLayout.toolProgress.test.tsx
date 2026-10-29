@@ -17,7 +17,10 @@ const SPAN = { spanId: 'toolu_A', agentSessionId: 'sess-1' }
 function renderCard(initial?: ToolProgressEntry) {
   const [progress, setProgress] = createSignal<ToolProgressEntry | undefined>(initial)
   const [selecting, setSelecting] = createSignal(false)
-  const context: ToolLayoutContext = { textSelectionActive: selecting, toolProgress: { liveTail: progress } }
+  const context: ToolLayoutContext = {
+    textSelectionActive: selecting,
+    toolProgress: { liveTail: progress },
+  }
   const result = render(() => (
     <ToolUseLayout
       icon={SquareTerminal}
@@ -105,7 +108,12 @@ describe('ToolUseLayout running-tool badge', () => {
     const store = createToolProgressStore()
     store.apply('a1', { ...SPAN, elapsedSeconds: 30 })
     const [selecting, setSelecting] = createSignal(false)
-    const context: ToolLayoutContext = { textSelectionActive: selecting, toolProgress: { liveTail: () => store.get('a1', SPAN) } }
+    const context: ToolLayoutContext = {
+      textSelectionActive: selecting,
+      toolProgress: {
+        liveTail: () => store.get('a1', SPAN),
+      },
+    }
     const { getByText, getByTestId } = render(() => (
       <ToolUseLayout
         icon={SquareTerminal}

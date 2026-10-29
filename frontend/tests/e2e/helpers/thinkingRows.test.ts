@@ -78,7 +78,12 @@ function fakeContext(start: number, textStep?: NativeScenarioContext['textStep']
     },
     requestAt: async (stepIndex: number): Promise<MockModelRequestRecord> => {
       recorded.events.push(`request ${stepIndex}`)
-      return { protocol: 'openai-chat-completions', path: '/v1/chat/completions', stepIndex, body: {} }
+      return {
+        protocol: 'openai-chat-completions',
+        path: '/v1/chat/completions',
+        stepIndex,
+        body: {},
+      }
     },
   } as unknown as ModelScript
   const page = {
@@ -87,7 +92,15 @@ function fakeContext(start: number, textStep?: NativeScenarioContext['textStep']
       return null
     },
   } as unknown as Page
-  return { page, modelScript, provider: AgentProvider.OPENCODE, queued, ...(textStep ? { textStep } : {}) }
+  return {
+    page,
+    modelScript,
+    provider: AgentProvider.OPENCODE,
+    queued,
+    ...(textStep
+      ? { textStep }
+      : {}),
+  }
 }
 
 beforeEach(() => {
@@ -103,8 +116,13 @@ describe('thinkingTurn', () => {
 
   it('keeps the answer tool of a provider text step and adds the reasoning to that step', () => {
     const respond = { id: 'respond', name: 'respond', arguments: {} }
-    const turn = thinkingTurn(fakeContext(0, () => ({ toolCalls: [respond] })), 'MARK')
-    expect(turn.step).toEqual({ toolCalls: [respond], reasoning: turn.reasoning })
+    const turn = thinkingTurn(fakeContext(0, () => ({
+      toolCalls: [respond],
+    })), 'MARK')
+    expect(turn.step).toEqual({
+      toolCalls: [respond],
+      reasoning: turn.reasoning,
+    })
   })
 
   it('gives each text the marker, and no text holds another', () => {
@@ -151,7 +169,9 @@ describe('exerciseThinkingRows', () => {
   it('scripts the turn from the queue index and checks the rows live and after reload', async () => {
     const context = fakeContext(3)
     const result = await exerciseThinkingRows(context)
-    expect(context.queued).toEqual([{ text: result.answer, reasoning: result.reasoning }])
+    expect(context.queued).toEqual([
+      { text: result.answer, reasoning: result.reasoning },
+    ])
     const checks = rowChecks(result, [result.reasoning, result.answer])
     expect(recorded.events).toEqual([
       'queue 1',
@@ -174,9 +194,16 @@ describe('exerciseThinkingRows', () => {
 
   it('scripts the answer through the text step of the provider', async () => {
     const respond = { id: 'respond', name: 'respond', arguments: {} }
-    const context = fakeContext(0, () => ({ toolCalls: [respond] }))
+    const context = fakeContext(0, () => ({
+      toolCalls: [respond],
+    }))
     const result = await exerciseThinkingRows(context)
-    expect(context.queued).toEqual([{ toolCalls: [respond], reasoning: result.reasoning }])
+    expect(context.queued).toEqual([
+      {
+        toolCalls: [respond],
+        reasoning: result.reasoning,
+      },
+    ])
   })
 
   it('stops at a live text row that holds the reasoning, before the reload', async () => {

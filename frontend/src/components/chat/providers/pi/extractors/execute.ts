@@ -60,7 +60,9 @@ function parsePiCommandMarker(text: string, isError: boolean): PiCommandMarker {
   const head = m[1] ?? ''
   return {
     output: text.slice(0, m.index),
-    exitCode: m[2] != null ? Number(m[2]) : null,
+    exitCode: m[2] != null
+      ? Number(m[2])
+      : null,
     cancelled: head.startsWith('Command aborted') || head.startsWith('Command timed out'),
   }
 }
@@ -85,7 +87,9 @@ export function extractPiCommand(payload: Record<string, unknown> | null | undef
   // Pi's BashToolDetails wraps the truncation flag inside a nested object
   // (`details.truncation.truncated`), unlike most other providers that put
   // it on the top-level details.
-  const truncation = isObject(details.truncation) ? details.truncation : null
+  const truncation = isObject(details.truncation)
+    ? details.truncation
+    : null
 
   return {
     command,
@@ -93,7 +97,9 @@ export function extractPiCommand(payload: Record<string, unknown> | null | undef
     exitCode: marker.exitCode,
     cancelled: marker.cancelled,
     truncated: truncation?.truncated === true,
-    fullOutputPath: typeof details.fullOutputPath === 'string' ? details.fullOutputPath : null,
+    fullOutputPath: typeof details.fullOutputPath === 'string'
+      ? details.fullOutputPath
+      : null,
     isError,
   }
 }

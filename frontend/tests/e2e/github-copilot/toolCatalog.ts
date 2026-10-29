@@ -102,7 +102,11 @@ function validateCatalogEnvelope(frame: Record<string, unknown>): void {
 
 /** Query one native process. Controlled tests supply real subprocess I/O through the runtime seam. */
 export async function queryCopilotBuiltinCatalog(launch: CopilotCatalogLaunch, runtime: CopilotCatalogRuntime = {}): Promise<string[]> {
-  const child = runtime.start?.(launch) ?? spawn(launch.executable, [...launch.args], { cwd: launch.cwd, env: launch.env, stdio: ['pipe', 'pipe', 'pipe'] })
+  const child = runtime.start?.(launch) ?? spawn(launch.executable, [...launch.args], {
+    cwd: launch.cwd,
+    env: launch.env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
   let endedWithoutReply: Error | undefined
   return withCleanup(async () => {
     const frames = new CopilotCatalogFrames()
@@ -115,7 +119,9 @@ export async function queryCopilotBuiltinCatalog(launch: CopilotCatalogLaunch, r
           if (settled)
             return
           settled = true
-          reject(cause instanceof Error ? cause : new Error(String(cause)))
+          reject(cause instanceof Error
+            ? cause
+            : new Error(String(cause)))
         }
         const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
           try {
@@ -182,8 +188,18 @@ export async function queryCopilotBuiltinCatalog(launch: CopilotCatalogLaunch, r
           const timer = setTimeout(deadline, CATALOG_REQUEST_DEADLINE_MS)
           cancelDeadline = () => clearTimeout(timer)
         }
-        const body = Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools.list', params: launch.model ? { model: launch.model } : {} }))
-        child.stdin.write(Buffer.concat([Buffer.from(`Content-Length: ${body.byteLength}\r\n\r\n`), body]), (error) => {
+        const body = Buffer.from(JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools.list',
+          params: launch.model
+            ? { model: launch.model }
+            : {},
+        }))
+        child.stdin.write(Buffer.concat([
+          Buffer.from(`Content-Length: ${body.byteLength}\r\n\r\n`),
+          body,
+        ]), (error) => {
           if (error)
             fail(error)
         })
@@ -215,5 +231,13 @@ export async function readCopilotBuiltinCatalog(context: ManagedNativeScenarioCo
   const binary = requireBinary('copilot', 'The native Copilot catalog requires its installed CLI', env)
   const agent = await currentNativeAgent(context)
   const model = nativeOptionValue(agent, 'model')
-  return queryCopilotBuiltinCatalog({ executable: binary, args: ['--server', '--stdio', '--sync-session=off'], cwd: agent.workingDir, env, ...(model === undefined ? {} : { model }) })
+  return queryCopilotBuiltinCatalog({
+    executable: binary,
+    args: ['--server', '--stdio', '--sync-session=off'],
+    cwd: agent.workingDir,
+    env,
+    ...(model === undefined
+      ? {}
+      : { model }),
+  })
 }

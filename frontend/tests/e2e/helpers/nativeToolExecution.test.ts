@@ -18,7 +18,17 @@ import { createNativeToolDirectory } from './nativeToolDirectory'
 import { approveNativeToolsUntil, clickNativeToolApproval, exerciseFileEditSequence, exerciseNativeFileEdit, exerciseNativeFileRead, exerciseNativeFileWrite, exerciseShellToolExecution, expectFileDiff, expectShellToolRows, NATIVE_APPROVAL_LIMIT, nativeFileEditSequence, nativeFileReadResult, nativeFileWriteSequence, nativeToolResultAt, PARITY_AFTER, PARITY_BEFORE, processNativeToolApproval, runNativeToolSteps, runNativeToolTurn, waitForNativeToolSteps } from './nativeToolExecution'
 import { quotePosixShellArgument } from './shellArguments'
 
-const calls = vi.hoisted(() => ({ shell: vi.fn(), read: vi.fn(), edit: vi.fn(), write: vi.fn(), idle: vi.fn(), send: vi.fn(), agent: vi.fn(), noBanner: vi.fn(), chat: vi.fn() }))
+const calls = vi.hoisted(() => ({
+  shell: vi.fn(),
+  read: vi.fn(),
+  edit: vi.fn(),
+  write: vi.fn(),
+  idle: vi.fn(),
+  send: vi.fn(),
+  agent: vi.fn(),
+  noBanner: vi.fn(),
+  chat: vi.fn(),
+}))
 vi.mock('./ui', async importOriginal => ({
   ...await importOriginal<typeof import('./ui')>(),
   waitForAgentIdle: calls.idle,
@@ -43,7 +53,12 @@ beforeEach(() => {
   vi.resetAllMocks()
   mkdirSync(scratchRoot, { recursive: true })
   directory = mkdtempSync(join(scratchRoot, 'native-file-sequence-unit-'))
-  for (const [call, name] of [[calls.shell, 'unit-shell'], [calls.read, 'unit-read'], [calls.edit, 'unit-edit'], [calls.write, 'unit-write']] as const)
+  for (const [call, name] of [
+    [calls.shell, 'unit-shell'],
+    [calls.read, 'unit-read'],
+    [calls.edit, 'unit-edit'],
+    [calls.write, 'unit-write'],
+  ] as const)
     call.mockImplementation((_provider, id) => ({ id, name }))
 })
 afterEach(() => rmSync(directory, { recursive: true, force: true }))
@@ -63,21 +78,35 @@ function guardedBrowserHandle<T extends object>(methods: Partial<T>): T {
 
 /** A page whose visible Allow buttons are `allow`. Any other button or scope fails the test. */
 function allowButtonPage(allow: Locator): Page {
-  return guardedBrowserHandle<Page>({ getByTestId: (testId: string | RegExp) => {
-    expect(testId).toBe('control-allow-btn')
-    return guardedBrowserHandle<Locator>({ filter: (options?: Parameters<Locator['filter']>[0]) => {
-      expect(options).toEqual({ visible: true })
-      return allow
-    } })
-  } })
+  return guardedBrowserHandle<Page>({
+    getByTestId: (testId: string | RegExp) => {
+      expect(testId).toBe('control-allow-btn')
+      return guardedBrowserHandle<Locator>({
+        filter: (options?: Parameters<Locator['filter']>[0]) => {
+          expect(options).toEqual({ visible: true })
+          return allow
+        },
+      })
+    },
+  })
 }
 
 describe('waitForNativeToolSteps', () => {
   function fixture() {
     const events: string[] = []
-    const status: MockModelScenarioStatus = { complete: true, nextStep: 2, stepCount: 2, requests: [], unexpectedRequests: [], ruleMatches: {}, pendingGates: [] }
+    const status: MockModelScenarioStatus = {
+      complete: true,
+      nextStep: 2,
+      stepCount: 2,
+      requests: [],
+      unexpectedRequests: [],
+      ruleMatches: {},
+      pendingGates: [],
+    }
     const first = guardedBrowserHandle<Locator>({})
-    const locator = guardedBrowserHandle<Locator>({ first: () => first })
+    const locator = guardedBrowserHandle<Locator>({
+      first: () => first,
+    })
     const page = allowButtonPage(locator)
     const context: NativeScenarioContext = {
       page,
@@ -113,18 +142,22 @@ describe('waitForNativeToolSteps', () => {
 
   it('captures native evidence after the exact model receipt and before the idle wait', async () => {
     const current = fixture()
-    await current.observeWait(current.context, 2, { beforeIdle: async () => {
-      current.events.push('capture')
-    } })
+    await current.observeWait(current.context, 2, {
+      beforeIdle: async () => {
+        current.events.push('capture')
+      },
+    })
     expect(current.events).toEqual(['model-completed', 'capture', 'idle'])
   })
 
   it('preserves a capture failure and does not start the idle wait', async () => {
     const current = fixture()
     const cause = new Error('The native Worker evidence read failed.')
-    await expect(current.observeWait(current.context, 2, { beforeIdle: async () => {
-      throw cause
-    } })).rejects.toBe(cause)
+    await expect(current.observeWait(current.context, 2, {
+      beforeIdle: async () => {
+        throw cause
+      },
+    })).rejects.toBe(cause)
     expect(calls.idle).not.toHaveBeenCalled()
   })
 
@@ -135,9 +168,11 @@ describe('waitForNativeToolSteps', () => {
       current.events.push('idle')
       throw cause
     })
-    await expect(current.observeWait(current.context, 2, { beforeIdle: async () => {
-      current.events.push('capture')
-    } })).rejects.toBe(cause)
+    await expect(current.observeWait(current.context, 2, {
+      beforeIdle: async () => {
+        current.events.push('capture')
+      },
+    })).rejects.toBe(cause)
     expect(current.events).toEqual(['model-completed', 'capture', 'idle'])
   })
 })
@@ -153,9 +188,18 @@ describe('runNativeToolTurn', () => {
     const server = await createMockModelServer({ models: MOCK_MODEL_IDS })
     servers.push(server)
     const lifecycle = await startModelScript(server.url)
-    const allow = guardedBrowserHandle<Locator>({ evaluateAll: (async () => false) as unknown as Locator['evaluateAll'] })
-    const page = allowButtonPage(guardedBrowserHandle<Locator>({ first: () => allow }))
-    const context: NativeScenarioContext = { page, provider: AgentProvider.CODEX, modelScript: lifecycle.script, ...options }
+    const allow = guardedBrowserHandle<Locator>({
+      evaluateAll: (async () => false) as unknown as Locator['evaluateAll'],
+    })
+    const page = allowButtonPage(guardedBrowserHandle<Locator>({
+      first: () => allow,
+    }))
+    const context: NativeScenarioContext = {
+      page,
+      provider: AgentProvider.CODEX,
+      modelScript: lifecycle.script,
+      ...options,
+    }
     /** Answer one native turn: each request repeats the marked prompt, as a native client does. */
     const nativeTurn = async (text: string, requests = 2) => {
       const replies: unknown[] = []
@@ -163,7 +207,12 @@ describe('runNativeToolTurn', () => {
         const response = await fetch(`${server.url}/v1/chat/completions`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ stream: false, messages: [{ role: 'user', content: text }] }),
+          body: JSON.stringify({
+            stream: false,
+            messages: [
+              { role: 'user', content: text },
+            ],
+          }),
         })
         expect(response.status).toBe(200)
         replies.push(await response.json())
@@ -182,7 +231,13 @@ describe('runNativeToolTurn', () => {
       replies.push(...await nativeTurn(text))
     })
     const turn = await runNativeToolTurn(context, {
-      toolCalls: [{ id: 'unit-call', name: 'Bash', arguments: { command: 'printf unit' } }],
+      toolCalls: [
+        {
+          id: 'unit-call',
+          name: 'Bash',
+          arguments: { command: 'printf unit' },
+        },
+      ],
       prompt: 'Run the unit tool.',
       answer: 'The unit tool ended.',
     })
@@ -198,14 +253,30 @@ describe('runNativeToolTurn', () => {
   })
 
   it('answers through the provider text step and captures from the tool request', async () => {
-    const { context, lifecycle, nativeTurn } = await turnContext({ textStep: text => ({ toolCalls: [{ id: 'unit-answer', name: 'answer', arguments: { text } }] }) })
+    const { context, lifecycle, nativeTurn } = await turnContext({
+      textStep: text => ({
+        toolCalls: [
+          {
+            id: 'unit-answer',
+            name: 'answer',
+            arguments: { text },
+          },
+        ],
+      }),
+    })
     const replies: unknown[] = []
     calls.send.mockImplementation(async (_page: Page, text: string) => {
       replies.push(...await nativeTurn(text))
     })
     const send = vi.fn(async (page: Page, text: string) => calls.send(page, text))
     await runNativeToolTurn(context, {
-      toolCalls: [{ id: 'unit-read', name: 'Read', arguments: { file_path: '{{target}}' } }],
+      toolCalls: [
+        {
+          id: 'unit-read',
+          name: 'Read',
+          arguments: { file_path: '{{target}}' },
+        },
+      ],
       captures: { target: 'Read (\\S+) now' },
       prompt: 'Read /unit/target.txt now.',
       answer: 'The provider answer.',
@@ -219,8 +290,25 @@ describe('runNativeToolTurn', () => {
   })
 
   it('fails with the step of a request that the script does not hold', async () => {
-    const status: MockModelScenarioStatus = { complete: true, nextStep: 2, stepCount: 2, ruleMatches: {}, pendingGates: [], unexpectedRequests: [], requests: [{ protocol: 'openai-chat-completions', path: '/v1/chat/completions', stepIndex: 0, body: {} }] }
-    const page = allowButtonPage(guardedBrowserHandle<Locator>({ first: () => guardedBrowserHandle<Locator>({}) }))
+    const status: MockModelScenarioStatus = {
+      complete: true,
+      nextStep: 2,
+      stepCount: 2,
+      ruleMatches: {},
+      pendingGates: [],
+      unexpectedRequests: [],
+      requests: [
+        {
+          protocol: 'openai-chat-completions',
+          path: '/v1/chat/completions',
+          stepIndex: 0,
+          body: {},
+        },
+      ],
+    }
+    const page = allowButtonPage(guardedBrowserHandle<Locator>({
+      first: () => guardedBrowserHandle<Locator>({}),
+    }))
     const context: NativeScenarioContext = {
       page,
       provider: AgentProvider.CODEX,
@@ -240,14 +328,24 @@ describe('runNativeToolTurn', () => {
         allowUnconsumed: () => {},
       },
     }
-    await expect(runNativeToolTurn(context, { toolCalls: [{ id: 'unit-call', name: 'Bash' }], prompt: 'Run.', answer: 'Done.' }))
+    await expect(runNativeToolTurn(context, {
+      toolCalls: [
+        { id: 'unit-call', name: 'Bash' },
+      ],
+      prompt: 'Run.',
+      answer: 'Done.',
+    }))
       .rejects
       .toThrow('The model script holds no request for step 1')
   })
 
   it('refuses a turn without a tool call before it queues a step', async () => {
     const queue = vi.fn(async () => 0)
-    const context = { page: guardedBrowserHandle<Page>({}), provider: AgentProvider.CODEX, modelScript: guardedBrowserHandle<NativeScenarioContext['modelScript']>({ queue }) }
+    const context = {
+      page: guardedBrowserHandle<Page>({}),
+      provider: AgentProvider.CODEX,
+      modelScript: guardedBrowserHandle<NativeScenarioContext['modelScript']>({ queue }),
+    }
     await expect(runNativeToolTurn(context, { toolCalls: [], prompt: 'Run.', answer: 'Done.' })).rejects.toThrow('at least one tool call')
     expect(queue).not.toHaveBeenCalled()
   })
@@ -255,12 +353,21 @@ describe('runNativeToolTurn', () => {
   it('clicks nothing and requires no banner after the turn when the turn expects no permission request', async () => {
     const { context: allowContext, lifecycle, nativeTurn } = await turnContext()
     // Each page access fails, so the turn can read no Allow button.
-    const context: NativeScenarioContext = { ...allowContext, page: guardedBrowserHandle<Page>({}) }
+    const context: NativeScenarioContext = {
+      ...allowContext,
+      page: guardedBrowserHandle<Page>({}),
+    }
     calls.send.mockImplementation(async (_page: Page, text: string) => {
       await nativeTurn(text)
     })
     const turn = await runNativeToolTurn(context, {
-      toolCalls: [{ id: 'unit-call', name: 'Bash', arguments: { command: 'printf unit' } }],
+      toolCalls: [
+        {
+          id: 'unit-call',
+          name: 'Bash',
+          arguments: { command: 'printf unit' },
+        },
+      ],
       prompt: 'Run the unit tool.',
       answer: 'The unit tool ended.',
       permissions: 'none',
@@ -278,17 +385,55 @@ describe('runNativeToolSteps', () => {
   })
 
   const threeSteps: NativeToolStep[] = [
-    { toolCalls: [{ id: 'unit-shell', name: 'Bash', arguments: { command: 'printf unit' } }] },
-    { toolCalls: [{ id: 'unit-read', name: 'Read', arguments: { file_path: '{{target}}' } }], captures: { target: 'on (\\S+) now' } },
-    { toolCalls: [{ id: 'unit-edit-a', name: 'Edit', arguments: { file_path: 'a' } }, { id: 'unit-edit-b', name: 'Edit', arguments: { file_path: 'b' } }] },
+    {
+      toolCalls: [
+        {
+          id: 'unit-shell',
+          name: 'Bash',
+          arguments: { command: 'printf unit' },
+        },
+      ],
+    },
+    {
+      toolCalls: [
+        {
+          id: 'unit-read',
+          name: 'Read',
+          arguments: { file_path: '{{target}}' },
+        },
+      ],
+      captures: { target: 'on (\\S+) now' },
+    },
+    {
+      toolCalls: [
+        {
+          id: 'unit-edit-a',
+          name: 'Edit',
+          arguments: { file_path: 'a' },
+        },
+        {
+          id: 'unit-edit-b',
+          name: 'Edit',
+          arguments: { file_path: 'b' },
+        },
+      ],
+    },
   ]
 
   it('queues each tool step in order after earlier steps, answers last, and returns the index of the first tool step', async () => {
     const server = await createMockModelServer({ models: MOCK_MODEL_IDS })
     servers.push(server)
     const lifecycle = await startModelScript(server.url)
-    const allow = guardedBrowserHandle<Locator>({ evaluateAll: (async () => false) as unknown as Locator['evaluateAll'] })
-    const context: NativeScenarioContext = { page: allowButtonPage(guardedBrowserHandle<Locator>({ first: () => allow })), provider: AgentProvider.CODEX, modelScript: lifecycle.script }
+    const allow = guardedBrowserHandle<Locator>({
+      evaluateAll: (async () => false) as unknown as Locator['evaluateAll'],
+    })
+    const context: NativeScenarioContext = {
+      page: allowButtonPage(guardedBrowserHandle<Locator>({
+        first: () => allow,
+      })),
+      provider: AgentProvider.CODEX,
+      modelScript: lifecycle.script,
+    }
     /** Send `count` requests, each with the marked prompt, as a native client does. */
     const nativeRequests = async (text: string, count: number) => {
       const replies: string[] = []
@@ -296,7 +441,12 @@ describe('runNativeToolSteps', () => {
         const response = await fetch(`${server.url}/v1/chat/completions`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ stream: false, messages: [{ role: 'user', content: text }] }),
+          body: JSON.stringify({
+            stream: false,
+            messages: [
+              { role: 'user', content: text },
+            ],
+          }),
         })
         expect(response.status).toBe(200)
         replies.push(JSON.stringify(await response.json()))
@@ -337,7 +487,15 @@ describe('runNativeToolSteps', () => {
         if (count === undefined)
           throw new Error('The turn waits for a stated step count.')
         events.push(`steps ${count}`)
-        return { complete: true, nextStep: count, stepCount: count, requests: [], unexpectedRequests: [], ruleMatches: {}, pendingGates: [] }
+        return {
+          complete: true,
+          nextStep: count,
+          stepCount: count,
+          requests: [],
+          unexpectedRequests: [],
+          ruleMatches: {},
+          pendingGates: [],
+        }
       },
     })
     calls.send.mockImplementation(async (_page: Page, text: string) => {
@@ -349,21 +507,64 @@ describe('runNativeToolSteps', () => {
     calls.noBanner.mockImplementation(async () => {
       events.push('no banner')
     })
-    const context: NativeScenarioContext = { page: guardedBrowserHandle<Page>({}), provider: AgentProvider.CODEX, modelScript, ...options }
+    const context: NativeScenarioContext = {
+      page: guardedBrowserHandle<Page>({}),
+      provider: AgentProvider.CODEX,
+      modelScript,
+      ...options,
+    }
     return { context, events, queued }
   }
 
   it('waits for every step with no click, then for the idle agent, then requires no banner', async () => {
-    const { context, events, queued } = recordingContext({ textStep: text => ({ toolCalls: [{ id: 'unit-answer', name: 'answer', arguments: { text } }] }) })
-    expect(await runNativeToolSteps(context, { steps: threeSteps, prompt: 'Run.', answer: 'Done.', permissions: 'none' })).toBe(5)
-    expect(events).toEqual(['send marked Run.', 'steps 9', 'idle', 'no banner'])
+    const { context, events, queued } = recordingContext({
+      textStep: text => ({
+        toolCalls: [
+          {
+            id: 'unit-answer',
+            name: 'answer',
+            arguments: { text },
+          },
+        ],
+      }),
+    })
+    expect(await runNativeToolSteps(context, {
+      steps: threeSteps,
+      prompt: 'Run.',
+      answer: 'Done.',
+      permissions: 'none',
+    })).toBe(5)
+    expect(events).toEqual([
+      'send marked Run.',
+      'steps 9',
+      'idle',
+      'no banner',
+    ])
     expect(calls.noBanner).toHaveBeenCalledExactlyOnceWith(context.page)
-    expect(queued).toEqual([[...threeSteps, { toolCalls: [{ id: 'unit-answer', name: 'answer', arguments: { text: 'Done.' } }] }]])
+    expect(queued).toEqual([
+      [
+        ...threeSteps,
+        {
+          toolCalls: [
+            {
+              id: 'unit-answer',
+              name: 'answer',
+              arguments: { text: 'Done.' },
+            },
+          ],
+        },
+      ],
+    ])
   })
 
   it('queues copies, so a later change to the caller\'s steps cannot reach the script', async () => {
     const { context, queued } = recordingContext()
-    await runNativeToolSteps(context, { steps: threeSteps, prompt: 'Run.', answer: 'Done.', permissions: 'none' })
+    await runNativeToolSteps(context, {
+      steps: threeSteps,
+      prompt: 'Run.',
+      answer: 'Done.',
+      permissions: 'none',
+    })
     const [shell, read] = queued[0] ?? []
     expect(shell?.toolCalls).not.toBe(threeSteps[0]?.toolCalls)
     expect(read?.captures).not.toBe(threeSteps[1]?.captures)
@@ -372,25 +573,65 @@ describe('runNativeToolSteps', () => {
 
   it('passes the thinking of a step to the model step, and states none for a step without it', async () => {
     const { context, queued } = recordingContext()
-    const thinking: NativeToolStep = { toolCalls: [{ id: 'unit-shell', name: 'Bash' }], reasoning: 'Run the shell first.' }
-    await runNativeToolSteps(context, { steps: [thinking, threeSteps[1]!], prompt: 'Run.', answer: 'Done.', permissions: 'none' })
+    const thinking: NativeToolStep = {
+      toolCalls: [
+        { id: 'unit-shell', name: 'Bash' },
+      ],
+      reasoning: 'Run the shell first.',
+    }
+    await runNativeToolSteps(context, {
+      steps: [thinking, threeSteps[1]!],
+      prompt: 'Run.',
+      answer: 'Done.',
+      permissions: 'none',
+    })
     const [first, second] = queued[0] ?? []
-    expect(first).toEqual({ reasoning: 'Run the shell first.', toolCalls: [{ id: 'unit-shell', name: 'Bash' }] })
+    expect(first).toEqual({
+      reasoning: 'Run the shell first.',
+      toolCalls: [
+        { id: 'unit-shell', name: 'Bash' },
+      ],
+    })
     expect(second).not.toHaveProperty('reasoning')
   })
 
   it('passes the thinking of a one-step turn to its tool step', async () => {
     const { context, queued } = recordingContext()
     // The recording script holds no request, so the turn stops when it reads the two requests back.
-    await expect(runNativeToolTurn(context, { toolCalls: [{ id: 'unit-shell', name: 'Bash' }], reasoning: 'Think first.', prompt: 'Run.', answer: 'Done.', permissions: 'none' }))
+    await expect(runNativeToolTurn(context, {
+      toolCalls: [
+        { id: 'unit-shell', name: 'Bash' },
+      ],
+      reasoning: 'Think first.',
+      prompt: 'Run.',
+      answer: 'Done.',
+      permissions: 'none',
+    }))
       .rejects
       .toThrow('lacks requestAt')
-    expect(queued[0]?.[0]).toEqual({ reasoning: 'Think first.', toolCalls: [{ id: 'unit-shell', name: 'Bash' }] })
+    expect(queued[0]?.[0]).toEqual({
+      reasoning: 'Think first.',
+      toolCalls: [
+        { id: 'unit-shell', name: 'Bash' },
+      ],
+    })
   })
 
   it('passes an empty thinking through, because the step states it', async () => {
     const { context, queued } = recordingContext()
-    await runNativeToolSteps(context, { steps: [{ toolCalls: [{ id: 'unit-shell', name: 'Bash' }], reasoning: '' }], prompt: 'Run.', answer: 'Done.', permissions: 'none' })
+    await runNativeToolSteps(context, {
+      steps: [
+        {
+          toolCalls: [
+            { id: 'unit-shell', name: 'Bash' },
+          ],
+          reasoning: '',
+        },
+      ],
+      prompt: 'Run.',
+      answer: 'Done.',
+      permissions: 'none',
+    })
     expect(queued[0]?.[0]).toHaveProperty('reasoning', '')
   })
 
@@ -398,7 +639,12 @@ describe('runNativeToolSteps', () => {
     const { context } = recordingContext()
     const cause = new Error('the page holds no control request banner')
     calls.noBanner.mockRejectedValue(cause)
-    await expect(runNativeToolSteps(context, { steps: threeSteps, prompt: 'Run.', answer: 'Done.', permissions: 'none' })).rejects.toBe(cause)
+    await expect(runNativeToolSteps(context, {
+      steps: threeSteps,
+      prompt: 'Run.',
+      answer: 'Done.',
+      permissions: 'none',
+    })).rejects.toBe(cause)
   })
 
   it('refuses a turn without a tool step before it queues a step', async () => {
@@ -409,7 +655,14 @@ describe('runNativeToolSteps', () => {
 
   it('refuses a later tool step without a tool call before it queues a step', async () => {
     const { context, queued } = recordingContext()
-    await expect(runNativeToolSteps(context, { steps: [threeSteps[0]!, { toolCalls: [] }], prompt: 'Run.', answer: 'Done.' })).rejects.toThrow('Each tool step of a native turn needs at least one tool call.')
+    await expect(runNativeToolSteps(context, {
+      steps: [
+        threeSteps[0]!,
+        { toolCalls: [] },
+      ],
+      prompt: 'Run.',
+      answer: 'Done.',
+    })).rejects.toThrow('Each tool step of a native turn needs at least one tool call.')
     expect(queued).toEqual([])
   })
 })
@@ -427,25 +680,34 @@ describe('approveNativeToolsUntil', () => {
 
   it('reads no button when the operation already completed', async () => {
     const flags: boolean[] = []
-    await approveNativeToolsUntil(guardedBrowserHandle<Page>({}), async () => true, { allow: allowButton(flags, () => true) })
+    await approveNativeToolsUntil(guardedBrowserHandle<Page>({}), async () => true, {
+      allow: allowButton(flags, () => true),
+    })
     expect(flags).toEqual([])
   })
 
   it('allows each approval until the operation completes', async () => {
     const flags: boolean[] = []
     let clicks = 0
-    await approveNativeToolsUntil(guardedBrowserHandle<Page>({}), async () => clicks >= 3, { allow: allowButton(flags, () => {
-      clicks++
-      return true
-    }) })
+    await approveNativeToolsUntil(guardedBrowserHandle<Page>({}), async () => clicks >= 3, {
+      allow: allowButton(flags, () => {
+        clicks++
+        return true
+      }),
+    })
     expect(clicks).toBe(3)
     expect(flags).toEqual([true, true, true])
   })
 
   it(`passes the limit flag after ${NATIVE_APPROVAL_LIMIT} approvals, so a further ready button fails the click`, async () => {
     const flags: boolean[] = []
-    await approveNativeToolsUntil(guardedBrowserHandle<Page>({}), async () => flags.length > NATIVE_APPROVAL_LIMIT, { allow: allowButton(flags, () => true) })
-    expect(flags).toEqual([...Array.from({ length: NATIVE_APPROVAL_LIMIT }).fill(true), false])
+    await approveNativeToolsUntil(guardedBrowserHandle<Page>({}), async () => flags.length > NATIVE_APPROVAL_LIMIT, {
+      allow: allowButton(flags, () => true),
+    })
+    expect(flags).toEqual([
+      ...Array.from({ length: NATIVE_APPROVAL_LIMIT }).fill(true),
+      false,
+    ])
   })
 
   it('reads the first visible Allow button of the page by default', async () => {
@@ -455,7 +717,9 @@ describe('approveNativeToolsUntil', () => {
       clicks++
       return true
     })
-    const page = allowButtonPage(guardedBrowserHandle<Locator>({ first: () => first }))
+    const page = allowButtonPage(guardedBrowserHandle<Locator>({
+      first: () => first,
+    }))
     await approveNativeToolsUntil(page, async () => clicks >= 1)
     expect(flags).toEqual([true])
   })
@@ -497,7 +761,9 @@ describe('approveNativeToolsUntil', () => {
       if (approvals === 0)
         throw new Error('The tool started before its approval.')
       return true
-    }, { allow: allowButton(flags, () => true) })).rejects.toThrow('The tool started before its approval.')
+    }, {
+      allow: allowButton(flags, () => true),
+    })).rejects.toThrow('The tool started before its approval.')
     expect(flags).toEqual([])
   })
 })
@@ -520,10 +786,12 @@ function diffPage(visible: boolean) {
     },
     first: () => first,
   })
-  const page = guardedBrowserHandle<Page>({ locator: (selector: string) => {
-    log.push(selector)
-    return diff
-  } })
+  const page = guardedBrowserHandle<Page>({
+    locator: (selector: string) => {
+      log.push(selector)
+      return diff
+    },
+  })
   return { page, log }
 }
 
@@ -531,7 +799,13 @@ describe('expectFileDiff', () => {
   it('requires one visible diff that holds both lines', async () => {
     const { page, log } = diffPage(true)
     await expectFileDiff(page, { before: PARITY_BEFORE, after: PARITY_AFTER })
-    expect(log).toEqual(['[data-testid="message-bubble"]:visible', '[data-file-diff]:visible', `filter ${PARITY_AFTER}`, `filter ${PARITY_BEFORE}`, 'to.be.visible'])
+    expect(log).toEqual([
+      '[data-testid="message-bubble"]:visible',
+      '[data-file-diff]:visible',
+      `filter ${PARITY_AFTER}`,
+      `filter ${PARITY_BEFORE}`,
+      'to.be.visible',
+    ])
   })
 
   it('fails when no visible diff holds both lines', async () => {
@@ -591,7 +865,15 @@ describe('exerciseFileEditSequence', () => {
 describe('native file read, edit, and write scenarios', () => {
   /** A model script whose turn runs `effect`, as the native tool does, and a page that answers each check as passed. */
   function fileTurn(effect: () => void) {
-    const status: MockModelScenarioStatus = { complete: true, nextStep: 1_000, stepCount: 1_000, requests: [], unexpectedRequests: [], ruleMatches: {}, pendingGates: [] }
+    const status: MockModelScenarioStatus = {
+      complete: true,
+      nextStep: 1_000,
+      stepCount: 1_000,
+      requests: [],
+      unexpectedRequests: [],
+      ruleMatches: {},
+      pendingGates: [],
+    }
     const log: string[] = []
     const { page } = fakeLocatorTree({ log })
     const queued: MockModelStep[][] = []
@@ -609,7 +891,12 @@ describe('native file read, edit, and write scenarios', () => {
         },
         status: async () => status,
         waitForSteps: async () => status,
-        requestAt: async stepIndex => ({ protocol: 'openai-chat-completions', path: '/v1/chat/completions', stepIndex, body: {} }),
+        requestAt: async stepIndex => ({
+          protocol: 'openai-chat-completions',
+          path: '/v1/chat/completions',
+          stepIndex,
+          body: {},
+        }),
       }),
     } satisfies NativeScenarioContext
     return { context, queued, log }
@@ -619,16 +906,28 @@ describe('native file read, edit, and write scenarios', () => {
     it('seeds three lines, reads them through the native tool, and requires the lines without their numbered form', async () => {
       const { context, queued } = fileTurn(() => {})
       calls.chat.mockResolvedValue('unit-read-1 unit-read-2 unit-read-3')
-      await exerciseNativeFileRead(context, { directory, linePrefix: 'unit-read', numberedLine: (line, text) => `${line} | ${text}` })
+      await exerciseNativeFileRead(context, {
+        directory,
+        linePrefix: 'unit-read',
+        numberedLine: (line, text) => `${line} | ${text}`,
+      })
       expect(readFileSync(join(directory, 'notes.txt'), 'utf8')).toBe('unit-read-1\nunit-read-2\nunit-read-3\n')
       expect(calls.read).toHaveBeenCalledExactlyOnceWith(AgentProvider.CLINE, 'read-notes', join(directory, 'notes.txt'))
-      expect(queued[0]?.[0]).toEqual({ toolCalls: [{ id: 'read-notes', name: 'unit-read' }] })
+      expect(queued[0]?.[0]).toEqual({
+        toolCalls: [
+          { id: 'read-notes', name: 'unit-read' },
+        ],
+      })
     })
 
     it('fails when the row draws the numbered form of the native tool', async () => {
       const { context } = fileTurn(() => {})
       calls.chat.mockResolvedValue('3 | unit-read-3')
-      await expect(exerciseNativeFileRead(context, { directory, linePrefix: 'unit-read', numberedLine: (line, text) => `${line} | ${text}` }))
+      await expect(exerciseNativeFileRead(context, {
+        directory,
+        linePrefix: 'unit-read',
+        numberedLine: (line, text) => `${line} | ${text}`,
+      }))
         .rejects
         .toThrow('not their numbered form')
     })
@@ -657,7 +956,10 @@ describe('native file read, edit, and write scenarios', () => {
       const { context } = fileTurn(() => writeFileSync(path(), 'unit was here\n'))
       calls.chat.mockResolvedValue('Wrote note.txt')
       await exerciseNativeFileWrite(context, { directory, content: 'unit was here\n' })
-      expect(calls.write).toHaveBeenCalledExactlyOnceWith(AgentProvider.CLINE, 'write-call', { path: path(), content: 'unit was here\n' })
+      expect(calls.write).toHaveBeenCalledExactlyOnceWith(AgentProvider.CLINE, 'write-call', {
+        path: path(),
+        content: 'unit was here\n',
+      })
     })
 
     it('requires exactly the stated other bytes of a provider that changes the content', async () => {
@@ -713,7 +1015,12 @@ describe('processNativeToolApproval', () => {
       const forbiddenEnabledRead = vi.fn(async () => {
         throw new Error('The removed control cannot receive a separate enabled read.')
       })
-      const control = { completed: async () => nextStep >= target, clickIfReady, isVisible: forbiddenVisibilityRead, isEnabled: forbiddenEnabledRead }
+      const control = {
+        completed: async () => nextStep >= target,
+        clickIfReady,
+        isVisible: forbiddenVisibilityRead,
+        isEnabled: forbiddenEnabledRead,
+      }
       await expect(processNativeToolApproval(control)).resolves.toBe('completed')
       expect(forbiddenVisibilityRead).not.toHaveBeenCalled()
       expect(forbiddenEnabledRead).not.toHaveBeenCalled()
@@ -727,17 +1034,26 @@ describe('processNativeToolApproval', () => {
   })
   it('keeps the exact model target pending when no native approval exists', async () => {
     const clickIfReady = vi.fn(async () => false)
-    expect(await processNativeToolApproval({ completed: async () => false, clickIfReady })).toBe('waiting')
+    expect(await processNativeToolApproval({
+      completed: async () => false,
+      clickIfReady,
+    })).toBe('waiting')
     expect(clickIfReady).toHaveBeenCalledTimes(1)
   })
   it('does not click after the exact native model target completes', async () => {
     const clickIfReady = vi.fn(async () => true)
-    expect(await processNativeToolApproval({ completed: async () => true, clickIfReady })).toBe('completed')
+    expect(await processNativeToolApproval({
+      completed: async () => true,
+      clickIfReady,
+    })).toBe('completed')
     expect(clickIfReady).not.toHaveBeenCalled()
   })
   it('counts an actual approval while the exact model target remains pending', async () => {
     const clickIfReady = vi.fn(async () => true)
-    expect(await processNativeToolApproval({ completed: async () => false, clickIfReady })).toBe('approval')
+    expect(await processNativeToolApproval({
+      completed: async () => false,
+      clickIfReady,
+    })).toBe('approval')
     expect(clickIfReady).toHaveBeenCalledTimes(1)
   })
   it('propagates an unrelated native approval operation failure', async () => {
@@ -756,7 +1072,11 @@ describe('clickNativeToolApproval', () => {
     const button = document.createElement('button')
     document.body.append(button)
     const rectangle = new DOMRect(0, 0, 100, 20)
-    const rectangles = Object.assign([rectangle], { item: (index: number) => index === 0 ? rectangle : null })
+    const rectangles = Object.assign([rectangle], {
+      item: (index: number) => index === 0
+        ? rectangle
+        : null,
+    })
     vi.spyOn(button, 'getClientRects').mockReturnValue(rectangles)
     return button
   }
@@ -797,7 +1117,13 @@ describe('clickNativeToolApproval', () => {
       fieldset.remove()
     }
   })
-  it.each(['disabled', 'hidden', 'detached', 'display-none', 'visibility-hidden'])('does not click a %s native control', (state) => {
+  it.each([
+    'disabled',
+    'hidden',
+    'detached',
+    'display-none',
+    'visibility-hidden',
+  ])('does not click a %s native control', (state) => {
     const button = visibleButton()
     const click = vi.spyOn(button, 'click')
     if (state === 'disabled')
@@ -856,21 +1182,70 @@ describe('clickNativeToolApproval', () => {
 describe('nativeToolResultAt', () => {
   /** A script whose `requestAt` reads a fixed status through the real step lookup. */
   function modelScript(requests: MockModelRequestRecord[]) {
-    const status: MockModelScenarioStatus = { complete: true, nextStep: 2, stepCount: 2, ruleMatches: {}, pendingGates: [], requests, unexpectedRequests: [] }
-    return { requestAt: vi.fn(async (stepIndex: number) => stepRequest(status, stepIndex)) }
+    const status: MockModelScenarioStatus = {
+      complete: true,
+      nextStep: 2,
+      stepCount: 2,
+      ruleMatches: {},
+      pendingGates: [],
+      requests,
+      unexpectedRequests: [],
+    }
+    return {
+      requestAt: vi.fn(async (stepIndex: number) => stepRequest(status, stepIndex)),
+    }
   }
 
   it('waits for the exact queued step and reads only its exact call result', async () => {
     const script = modelScript([
-      { protocol: 'openai-chat-completions', path: '/chat/completions', stepIndex: 0, body: { messages: [{ role: 'tool', tool_call_id: 'selected', content: 'WRONG_EARLIER_RESULT' }] } },
-      { protocol: 'openai-chat-completions', path: '/chat/completions', stepIndex: 1, body: { messages: [{ role: 'assistant', tool_calls: [{ id: 'selected', function: { arguments: 'ARGUMENT_ONLY_RESULT' } }] }, { role: 'tool', tool_call_id: 'other', content: 'WRONG_CALL_RESULT' }, { role: 'tool', tool_call_id: 'selected', content: 'ACTUAL_SELECTED_RESULT' }] } },
+      {
+        protocol: 'openai-chat-completions',
+        path: '/chat/completions',
+        stepIndex: 0,
+        body: {
+          messages: [
+            { role: 'tool', tool_call_id: 'selected', content: 'WRONG_EARLIER_RESULT' },
+          ],
+        },
+      },
+      {
+        protocol: 'openai-chat-completions',
+        path: '/chat/completions',
+        stepIndex: 1,
+        body: {
+          messages: [
+            {
+              role: 'assistant',
+              tool_calls: [
+                {
+                  id: 'selected',
+                  function: { arguments: 'ARGUMENT_ONLY_RESULT' },
+                },
+              ],
+            },
+            { role: 'tool', tool_call_id: 'other', content: 'WRONG_CALL_RESULT' },
+            { role: 'tool', tool_call_id: 'selected', content: 'ACTUAL_SELECTED_RESULT' },
+          ],
+        },
+      },
     ])
     expect(await nativeToolResultAt(script, 1, 'selected')).toBe('ACTUAL_SELECTED_RESULT')
     expect(script.requestAt).toHaveBeenCalledExactlyOnceWith(1)
   })
 
   it('retains queued step zero', async () => {
-    const script = modelScript([{ protocol: 'openai-responses', path: '/responses', stepIndex: 0, body: { input: [{ type: 'function_call_output', call_id: 'zero', output: 'STEP_ZERO_RESULT' }] } }])
+    const script = modelScript([
+      {
+        protocol: 'openai-responses',
+        path: '/responses',
+        stepIndex: 0,
+        body: {
+          input: [
+            { type: 'function_call_output', call_id: 'zero', output: 'STEP_ZERO_RESULT' },
+          ],
+        },
+      },
+    ])
     expect(await nativeToolResultAt(script, 0, 'zero')).toBe('STEP_ZERO_RESULT')
     expect(script.requestAt).toHaveBeenCalledExactlyOnceWith(0)
   })
@@ -880,12 +1255,40 @@ describe('nativeToolResultAt', () => {
   })
 
   it('rejects the wrong call ID even when its text resembles the requested result', async () => {
-    const script = modelScript([{ protocol: 'anthropic-messages', path: '/v1/messages', stepIndex: 1, body: { messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'other', content: 'EXPECTED_LOOKING_RESULT' }] }] } }])
+    const script = modelScript([
+      {
+        protocol: 'anthropic-messages',
+        path: '/v1/messages',
+        stepIndex: 1,
+        body: {
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'tool_result', tool_use_id: 'other', content: 'EXPECTED_LOOKING_RESULT' },
+              ],
+            },
+          ],
+        },
+      },
+    ])
     await expect(nativeToolResultAt(script, 1, 'selected')).rejects.toThrow(/result|call/)
   })
 
   it('rejects duplicate results for the exact call', async () => {
-    const script = modelScript([{ protocol: 'openai-chat-completions', path: '/chat/completions', stepIndex: 1, body: { messages: [{ role: 'tool', tool_call_id: 'selected', content: 'FIRST' }, { role: 'tool', tool_call_id: 'selected', content: 'SECOND' }] } }])
+    const script = modelScript([
+      {
+        protocol: 'openai-chat-completions',
+        path: '/chat/completions',
+        stepIndex: 1,
+        body: {
+          messages: [
+            { role: 'tool', tool_call_id: 'selected', content: 'FIRST' },
+            { role: 'tool', tool_call_id: 'selected', content: 'SECOND' },
+          ],
+        },
+      },
+    ])
     await expect(nativeToolResultAt(script, 1, 'selected')).rejects.toThrow(/2 results|received 2/)
   })
 
@@ -903,17 +1306,37 @@ describe('nativeToolResultAt', () => {
 
 describe('nativeFileReadResult', () => {
   it('rejects a stale exact Read even when the model context carries scripted NEW edit arguments', async () => {
-    const request: MockModelRequestRecord = { protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { messages: [
-      { role: 'assistant', tool_calls: [{ id: 'native-edit', function: { arguments: '{"old_string":"OLD42","new_string":"NEW42"}' } }] },
-      { role: 'tool', tool_call_id: 'native-read-after', content: 'OLD42\n' },
-    ] } }
+    const request: MockModelRequestRecord = {
+      protocol: 'openai-chat-completions',
+      path: '/v1/chat/completions',
+      body: {
+        messages: [
+          {
+            role: 'assistant',
+            tool_calls: [
+              {
+                id: 'native-edit',
+                function: { arguments: '{"old_string":"OLD42","new_string":"NEW42"}' },
+              },
+            ],
+          },
+          { role: 'tool', tool_call_id: 'native-read-after', content: 'OLD42\n' },
+        ],
+      },
+    }
     await expect(nativeFileReadResult(request, 'native-read-after', 'NEW42', 'OLD42')).rejects.toThrow('expected current bytes')
   })
   it('reads the exact current call while excluding old results from another call', async () => {
-    const request: MockModelRequestRecord = { protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { messages: [
-      { role: 'tool', tool_call_id: 'native-read-before', content: 'OLD42\n' },
-      { role: 'tool', tool_call_id: 'native-read-after', content: 'NEW42\n' },
-    ] } }
+    const request: MockModelRequestRecord = {
+      protocol: 'openai-chat-completions',
+      path: '/v1/chat/completions',
+      body: {
+        messages: [
+          { role: 'tool', tool_call_id: 'native-read-before', content: 'OLD42\n' },
+          { role: 'tool', tool_call_id: 'native-read-after', content: 'NEW42\n' },
+        ],
+      },
+    }
     expect(await nativeFileReadResult(request, 'native-read-after', 'NEW42', 'OLD42')).toBe('NEW42\n')
   })
   it('rejects an actual failed provider result even when its output contains the expected marker', async () => {
@@ -928,7 +1351,7 @@ describe('nativeFileEditSequence', () => {
     const sequence = nativeFileEditSequence(AgentProvider.CODEBUDDY, { workingDir: directory, fileName })
     const command: unknown = calls.shell.mock.calls[0]?.[2]
     if (typeof command !== 'string')
-      throw new Error('The native file seed supplied no shell command.')
+      throw new TypeError('The native file seed supplied no shell command.')
     execFileSync('/bin/sh', ['-c', command], { cwd: directory })
     expect(readFileSync(sequence.filePath, 'utf8')).toBe('const parityBefore = 1\n')
     expect(existsSync(join(directory, 'command-expanded-marker'))).toBe(false)
@@ -966,7 +1389,7 @@ describe('native file sequence paths', () => {
     const sequence = nativeFileEditSequence(AgentProvider.CODEBUDDY, { workingDir, fileName: 'parity.ts' })
     const command: unknown = calls.shell.mock.calls[0]?.[2]
     if (typeof command !== 'string')
-      throw new Error('The native file seed supplied no shell command.')
+      throw new TypeError('The native file seed supplied no shell command.')
     // A native shell starts in the agent directory, before the supplied child directory.
     execFileSync('/bin/sh', ['-c', command], { cwd: directory })
     expect(sequence.filePath).toBe(join(workingDir, 'parity.ts'))
@@ -984,10 +1407,23 @@ describe('native file sequence paths', () => {
     for (const build of [nativeFileEditSequence, nativeFileWriteSequence]) {
       for (const workingDir of ['', '.', 'relative/path'])
         expect(() => build(AgentProvider.CODEBUDDY, { workingDir, fileName: 'file.txt' })).toThrow('absolute private working directory')
-      for (const fileName of ['', '.', '..', '../escape', 'nested/file', 'nested\\file', '\0'])
+      for (const fileName of [
+        '',
+        '.',
+        '..',
+        '../escape',
+        'nested/file',
+        'nested\\file',
+        '\0',
+      ])
         expect(() => build(AgentProvider.CODEBUDDY, { workingDir: directory, fileName })).toThrow('one filename component')
     }
-    for (const call of [calls.shell, calls.read, calls.edit, calls.write])
+    for (const call of [
+      calls.shell,
+      calls.read,
+      calls.edit,
+      calls.write,
+    ])
       expect(call).not.toHaveBeenCalled()
   })
 })
@@ -997,7 +1433,15 @@ describe('exerciseShellToolExecution', () => {
 
   /** Run the scenario until it sends its prompt, and return the shell commands of the one step that it queued. */
   async function queuedCommands(options: Parameters<typeof exerciseShellToolExecution>[1], provider = AgentProvider.MIMO_CODE): Promise<{ commands: string[], steps: MockModelStep[][] }> {
-    const status: MockModelScenarioStatus = { complete: false, nextStep: 0, stepCount: 0, requests: [], unexpectedRequests: [], ruleMatches: {}, pendingGates: [] }
+    const status: MockModelScenarioStatus = {
+      complete: false,
+      nextStep: 0,
+      stepCount: 0,
+      requests: [],
+      unexpectedRequests: [],
+      ruleMatches: {},
+      pendingGates: [],
+    }
     const steps: MockModelStep[][] = []
     const context: ManagedNativeScenarioContext = {
       page: guardedBrowserHandle<Page>({}),
@@ -1031,7 +1475,7 @@ describe('exerciseShellToolExecution', () => {
     await expect(exerciseShellToolExecution(context, options)).rejects.toBe(stop)
     const commands = calls.shell.mock.calls.map(([, , command]: unknown[]) => {
       if (typeof command !== 'string')
-        throw new Error('The shell scenario queued no shell command.')
+        throw new TypeError('The shell scenario queued no shell command.')
       return command
     })
     return { commands, steps }
@@ -1044,7 +1488,10 @@ describe('exerciseShellToolExecution', () => {
     expect(commands[1]).toMatch(/^printf 'SHELLERR[0-9a-f]{32}%s\\n' 77 >&2; exit 7$/)
     expect(steps).toHaveLength(1)
     expect(steps[0]).toHaveLength(2)
-    expect(steps[0]?.[0]?.toolCalls?.map(call => call.id)).toEqual([expect.stringMatching(/^shell-[0-9a-f]{32}-0$/), expect.stringMatching(/^shell-[0-9a-f]{32}-1$/)])
+    expect(steps[0]?.[0]?.toolCalls?.map(call => call.id)).toEqual([
+      expect.stringMatching(/^shell-[0-9a-f]{32}-0$/),
+      expect.stringMatching(/^shell-[0-9a-f]{32}-1$/),
+    ])
   })
 
   it('gives each command a model answer of its own for a provider that runs one call of an answer', async () => {
@@ -1052,7 +1499,14 @@ describe('exerciseShellToolExecution', () => {
     expect(commands).toHaveLength(2)
     expect(steps).toHaveLength(1)
     expect(steps[0]).toHaveLength(3)
-    expect(steps[0]?.slice(0, 2).map(step => step.toolCalls?.map(call => call.id))).toEqual([[expect.stringMatching(/-0$/)], [expect.stringMatching(/-1$/)]])
+    expect(steps[0]?.slice(0, 2).map(step => step.toolCalls?.map(call => call.id))).toEqual([
+      [
+        expect.stringMatching(/-0$/),
+      ],
+      [
+        expect.stringMatching(/-1$/),
+      ],
+    ])
   })
 
   it('queues the successful command alone when the failure is left out', async () => {
@@ -1093,15 +1547,32 @@ describe('exerciseShellToolExecution', () => {
     setup: { log?: string[], provider?: AgentProvider, outcome?: (stdout: string, stderr: string, status: number) => { text: string, exitCode?: number }, evidence?: (outcome: { text: string, exitCode?: number }, command: Readonly<ShellCommand>) => ShellResultEvidence } = {},
   ) {
     const log = setup.log ?? []
-    const { page } = fakeLocatorTree({ log, page: { reload: async () => {
-      log.push('reload')
-    } } })
-    const status: MockModelScenarioStatus = { complete: true, nextStep: 1_000, stepCount: 1_000, requests: [], unexpectedRequests: [], ruleMatches: {}, pendingGates: [] }
+    const { page } = fakeLocatorTree({
+      log,
+      page: {
+        reload: async () => {
+          log.push('reload')
+        },
+      },
+    })
+    const status: MockModelScenarioStatus = {
+      complete: true,
+      nextStep: 1_000,
+      stepCount: 1_000,
+      requests: [],
+      unexpectedRequests: [],
+      ruleMatches: {},
+      pendingGates: [],
+    }
     const queued: Array<{ callId: string, command: string }> = []
     const requested: number[] = []
     const outcomes = new Map<string, { text: string, exitCode?: number }>()
     const outcome = setup.outcome ?? ((stdout, stderr, code) => ({ text: `${stdout}${stderr}`, exitCode: code }))
-    calls.shell.mockImplementation((_provider: AgentProvider, id: string, command: string) => ({ id, name: 'unit-shell', arguments: { command } }))
+    calls.shell.mockImplementation((_provider: AgentProvider, id: string, command: string) => ({
+      id,
+      name: 'unit-shell',
+      arguments: { command },
+    }))
     calls.agent.mockResolvedValue({ workingDir: directory })
     calls.send.mockImplementation(async () => {
       if (queued.length === 0)
@@ -1133,7 +1604,7 @@ describe('exerciseShellToolExecution', () => {
         queue: async (...steps: MockModelStep[]) => {
           for (const call of steps.flatMap(step => step.toolCalls ?? [])) {
             if (typeof call.arguments?.command !== 'string')
-              throw new Error('The scenario queued a shell call without a command.')
+              throw new TypeError('The scenario queued a shell call without a command.')
             queued.push({ callId: call.id, command: call.arguments.command })
           }
           return 0
@@ -1142,19 +1613,26 @@ describe('exerciseShellToolExecution', () => {
         waitForSteps: async () => status,
         requestAt: async (stepIndex) => {
           requested.push(stepIndex)
-          return { protocol: 'openai-chat-completions', path: '/v1/chat/completions', stepIndex, body: {} }
+          return {
+            protocol: 'openai-chat-completions',
+            path: '/v1/chat/completions',
+            stepIndex,
+            body: {},
+          }
         },
       }),
     }
     await exerciseShellToolExecution(context, {
       ...options,
       ...(setup.evidence
-        ? { readResult: (_request: MockModelRequestRecord, command: Readonly<ShellCommand>) => {
-            const outcome = outcomes.get(command.callId)
-            if (!outcome)
-              throw new Error('The executed command has no captured native result.')
-            return setup.evidence!(outcome, command)
-          } }
+        ? {
+            readResult: (_request: MockModelRequestRecord, command: Readonly<ShellCommand>) => {
+              const outcome = outcomes.get(command.callId)
+              if (!outcome)
+                throw new Error('The executed command has no captured native result.')
+              return setup.evidence!(outcome, command)
+            },
+          }
         : {}),
     })
     return { log, queued, requested }
@@ -1189,48 +1667,86 @@ describe('exerciseShellToolExecution', () => {
   })
 
   it.runIf(existsSync('/bin/sh'))('fails when the native exit code of the failed command is another code', async () => {
-    await expect(runScenario({}, { outcome: (stdout, stderr, code) => ({ text: `${stdout}${stderr}`, exitCode: code === 7 ? 3 : code }) }))
+    await expect(runScenario({}, {
+      outcome: (stdout, stderr, code) => ({
+        text: `${stdout}${stderr}`,
+        exitCode: code === 7
+          ? 3
+          : code,
+      }),
+    }))
       .rejects
       .toThrow('the native exit code reaches LeapMux')
   })
 
   it.runIf(existsSync('/bin/sh'))('reads the exit code from the model text when the reader states none', async () => {
-    await runScenario({}, { outcome: (stdout, stderr, code) => ({ text: `${stdout}${stderr}${code ? `\nCommand exited with code ${code}` : ''}` }) })
-    await expect(runScenario({}, { outcome: (stdout, stderr) => ({ text: `${stdout}${stderr}` }) }))
+    await runScenario({}, {
+      outcome: (stdout, stderr, code) => ({ text: `${stdout}${stderr}${code
+        ? `\nCommand exited with code ${code}`
+        : ''}` }),
+    })
+    await expect(runScenario({}, {
+      outcome: (stdout, stderr) => ({ text: `${stdout}${stderr}` }),
+    }))
       .rejects
       .toThrow('the next model request states the native exit code')
   })
 
   it.runIf(existsSync('/bin/sh'))('fails when the next model request lacks the output of a command', async () => {
-    await expect(runScenario({ includeFailure: false }, { outcome: () => ({ text: 'other words', exitCode: 0 }) }))
+    await expect(runScenario({ includeFailure: false }, {
+      outcome: () => ({ text: 'other words', exitCode: 0 }),
+    }))
       .rejects
       .toThrow('the next model request holds the output of the command')
   })
 
   it.runIf(existsSync('/bin/sh'))('keeps the full marker assertion for a provider result hook', async () => {
-    await expect(runScenario({}, { evidence: () => ({ kind: 'output', outcome: { text: 'no captured marker', exitCode: 0 } }) }))
+    await expect(runScenario({}, {
+      evidence: () => ({
+        kind: 'output',
+        outcome: { text: 'no captured marker', exitCode: 0 },
+      }),
+    }))
       .rejects
       .toThrow('the next model request holds the output of the command')
   })
 
   it.runIf(existsSync('/bin/sh'))('refuses an exact record exception for a successful command', async () => {
-    await expect(runScenario({}, { evidence: outcome => ({ kind: 'record', record: outcome.text, outcome: { ...outcome, exitCode: 7, failed: true } }) }))
+    await expect(runScenario({}, {
+      evidence: outcome => ({
+        kind: 'record',
+        record: outcome.text,
+        outcome: { ...outcome, exitCode: 7, failed: true },
+      }),
+    }))
       .rejects
       .toThrow('exact nonempty failed result')
   })
 
   it.runIf(existsSync('/bin/sh'))('refuses a failure record that differs from the native result', async () => {
-    await expect(runScenario({}, { evidence: (outcome, command) => command.exitCode === 0
-      ? { kind: 'output', outcome }
-      : { kind: 'record', record: 'another record', outcome: { ...outcome, exitCode: 7, failed: true } } }))
+    await expect(runScenario({}, {
+      evidence: (outcome, command) => command.exitCode === 0
+        ? { kind: 'output', outcome }
+        : {
+            kind: 'record',
+            record: 'another record',
+            outcome: { ...outcome, exitCode: 7, failed: true },
+          },
+    }))
       .rejects
       .toThrow('exact nonempty failed result')
   })
 
   it.runIf(existsSync('/bin/sh'))('refuses a blank failure record', async () => {
-    await expect(runScenario({}, { evidence: (outcome, command) => command.exitCode === 0
-      ? { kind: 'output', outcome }
-      : { kind: 'record', record: '', outcome: { text: '', exitCode: 7, failed: true } } }))
+    await expect(runScenario({}, {
+      evidence: (outcome, command) => command.exitCode === 0
+        ? { kind: 'output', outcome }
+        : {
+            kind: 'record',
+            record: '',
+            outcome: { text: '', exitCode: 7, failed: true },
+          },
+    }))
       .rejects
       .toThrow('exact nonempty failed result')
   })
@@ -1287,10 +1803,14 @@ describe('expectShellToolRows', () => {
       first: () => node(`${path}.first`),
       getByTestId: (testId: string) => node(`${path} >> testid=${testId}`),
       getByRole: (role: string, options: { name?: string | RegExp }) => node(`${path} >> role=${role}[${String(options.name)}]`),
-      all: async () => [node(`${path}#0`)],
+      all: async () => [
+        node(`${path}#0`),
+      ],
       textContent: async () => text,
       allTextContents: async () => [text],
-      count: async () => collapsed && path.endsWith('role=button[/^Expand(?: output)?$/]') ? 1 : 0,
+      count: async () => collapsed && path.endsWith('role=button[/^Expand(?: output)?$/]')
+        ? 1
+        : 0,
       hover: async () => {
         log.push(`hover ${path}`)
       },
@@ -1298,13 +1818,18 @@ describe('expectShellToolRows', () => {
         log.push(`click ${path}`)
       },
     })
-    return { page: node('page') as unknown as Page, log }
+    return {
+      page: node('page') as unknown as Page,
+      log,
+    }
   }
 
   it('expands a collapsed output row before it reads the text of the chat', async () => {
     const { page, log } = expandablePage(true)
     calls.chat.mockResolvedValue('SHELL1a42 Error (exit 7) SHELLERR1a77')
-    await expectShellToolRows({ page, provider: AgentProvider.CODEX }, commands, { absentRowText: ['Command exited with code'] })
+    await expectShellToolRows({ page, provider: AgentProvider.CODEX }, commands, {
+      absentRowText: ['Command exited with code'],
+    })
     expect(log.filter(entry => entry.startsWith('click'))).toHaveLength(2)
     expect(calls.chat).toHaveBeenCalledOnce()
   })
@@ -1312,14 +1837,18 @@ describe('expectShellToolRows', () => {
   it('clicks nothing on a row that shows all of its text', async () => {
     const { page, log } = expandablePage(false)
     calls.chat.mockResolvedValue('SHELL1a42')
-    await expectShellToolRows({ page, provider: AgentProvider.CODEX }, [commands[0]], { absentRowText: ['Exit code'] })
+    await expectShellToolRows({ page, provider: AgentProvider.CODEX }, [commands[0]], {
+      absentRowText: ['Exit code'],
+    })
     expect(log.filter(entry => entry.startsWith('click'))).toEqual([])
   })
 
   it('fails when a row draws a text that the provider adds for its model', async () => {
     const { page } = expandablePage(false)
     calls.chat.mockResolvedValue('SHELLERR1a77\n\nCommand exited with code 7')
-    await expect(expectShellToolRows({ page, provider: AgentProvider.CODEX }, commands, { absentRowText: ['Command exited with code'] }))
+    await expect(expectShellToolRows({ page, provider: AgentProvider.CODEX }, commands, {
+      absentRowText: ['Command exited with code'],
+    }))
       .rejects
       .toThrow('no row draws the native text "Command exited with code"')
   })
@@ -1327,7 +1856,9 @@ describe('expectShellToolRows', () => {
   it('refuses a blank absent text, which every chat holds', async () => {
     const { page } = expandablePage(false)
     calls.chat.mockResolvedValue('SHELL1a42')
-    await expect(expectShellToolRows({ page, provider: AgentProvider.CODEX }, [commands[0]], { absentRowText: [' '] }))
+    await expect(expectShellToolRows({ page, provider: AgentProvider.CODEX }, [commands[0]], {
+      absentRowText: [' '],
+    }))
       .rejects
       .toThrow('nonblank fixed part')
   })
@@ -1341,7 +1872,14 @@ describe('expectShellToolRows', () => {
   it('expands the row and preserves an exact native record without a missing marker', async () => {
     const record = 'Command: printf MARK%s 77 >&2; exit 7\nStdout: (empty)\nStderr: (empty)\nExit Code: 7\nSignal: (none)'
     const { page, log } = expandablePage(true, record)
-    await expectShellToolRows({ page, provider: AgentProvider.CODEBUDDY }, [{ ...commands[1], printedPrefix: 'MARK', output: record, exactOutput: record }])
+    await expectShellToolRows({ page, provider: AgentProvider.CODEBUDDY }, [
+      {
+        ...commands[1],
+        printedPrefix: 'MARK',
+        output: record,
+        exactOutput: record,
+      },
+    ])
     expect(log.filter(entry => entry.startsWith('click'))).toHaveLength(1)
     expect(record).not.toContain(commands[1].output)
   })
@@ -1349,16 +1887,28 @@ describe('expectShellToolRows', () => {
   it('fails when the displayed native record loses any contents', async () => {
     const record = 'Command: printf SHELLERR1a%s 77 >&2; exit 7\nStdout: (empty)\nStderr: (empty)\nExit Code: 7\nSignal: (none)'
     const { page } = expandablePage(false, record.replace('\nSignal: (none)', ''))
-    await expect(expectShellToolRows({ page, provider: AgentProvider.CODEBUDDY }, [{ ...commands[1], output: record, exactOutput: record }]))
+    await expect(expectShellToolRows({ page, provider: AgentProvider.CODEBUDDY }, [
+      { ...commands[1], output: record, exactOutput: record },
+    ]))
       .rejects
       .toThrow('the row preserves the exact native record')
   })
 
   it('checks native notice fragments on one result without refusing another preserved record', async () => {
     const { page } = expandablePage(false, 'actual output')
-    await expectShellToolRows({ page, provider: AgentProvider.CODEBUDDY }, [{ ...commands[0], absentRowText: ['Stdout:', 'Stderr:'] }])
+    await expectShellToolRows({ page, provider: AgentProvider.CODEBUDDY }, [
+      {
+        ...commands[0],
+        absentRowText: ['Stdout:', 'Stderr:'],
+      },
+    ])
     const wrong = expandablePage(false, 'Stdout: actual output')
-    await expect(expectShellToolRows({ page: wrong.page, provider: AgentProvider.CODEBUDDY }, [{ ...commands[0], absentRowText: ['Stdout:'] }]))
+    await expect(expectShellToolRows({ page: wrong.page, provider: AgentProvider.CODEBUDDY }, [
+      {
+        ...commands[0],
+        absentRowText: ['Stdout:'],
+      },
+    ]))
       .rejects
       .toThrow('the result body omits its native notice')
   })

@@ -56,14 +56,25 @@ export function useControlRequestSource(
     const seq = current?.sourceSeq
     const resolver = context()
     return {
-      key: current ? `${current.agentId}:${requestInstanceId(current)}` : '',
+      key: current
+        ? `${current.agentId}:${requestInstanceId(current)}`
+        : '',
       seq,
       context: resolver,
       provider: provider(),
       agentSessionId: current?.agentSessionId ?? '',
-      loaded: seq && seq > 0n ? resolver?.peek(seq) : undefined,
+      loaded: seq && seq > 0n
+        ? resolver?.peek(seq)
+        : undefined,
     }
-  }, { key: '', seq: undefined, context: undefined, provider: undefined, loaded: undefined, agentSessionId: '' }, { equals: sameQuery })
+  }, {
+    key: '',
+    seq: undefined,
+    context: undefined,
+    provider: undefined,
+    loaded: undefined,
+    agentSessionId: '',
+  }, { equals: sameQuery })
 
   // A failed load retries a limited number of times. Without the retry, one
   // transport failure leaves the card without its details for as long as the card
@@ -101,7 +112,11 @@ export function useControlRequestSource(
       void resolver.message(seq).catch((error) => {
         if (!active)
           return
-        log.warn('Could not load control details', { sequence: seq.toString(), attempt: attempts.failures + 1, error })
+        log.warn('Could not load control details', {
+          sequence: seq.toString(),
+          attempt: attempts.failures + 1,
+          error,
+        })
         // An abort states that this query ended, not that the load failed, so it
         // spends no attempt. The resolver aborts when it leaves its scope.
         if (isAbortError(error))

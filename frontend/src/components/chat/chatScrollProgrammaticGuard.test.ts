@@ -143,7 +143,12 @@ describe('createProgrammaticScrollGuard', () => {
     g.write(120, 'anchor-repin')
     clock.advance(25)
     expect(g.debugMarkers()).toEqual([
-      { top: 120, ageMs: 25, gen: 1, source: 'anchor-repin' },
+      {
+        top: 120,
+        ageMs: 25,
+        gen: 1,
+        source: 'anchor-repin',
+      },
     ])
   })
 })

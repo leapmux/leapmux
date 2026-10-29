@@ -76,8 +76,12 @@ function AsyncHighlightedCode(props: {
   // Repeated token-key reads then reuse the same result.
   // useDiffTokens applies this same cache rule.
   const eligible = createMemo(() => canHighlightBySize(props.code, {
-    ...(props.maxHighlightChars !== undefined ? { maxChars: props.maxHighlightChars } : {}),
-    ...(props.maxHighlightLines !== undefined ? { maxLines: props.maxHighlightLines } : {}),
+    ...(props.maxHighlightChars !== undefined
+      ? { maxChars: props.maxHighlightChars }
+      : {}),
+    ...(props.maxHighlightLines !== undefined
+      ? { maxLines: props.maxHighlightLines }
+      : {}),
   }))
   const tokens = useAsyncCodeTokens({
     lang: () => props.lang,
@@ -89,11 +93,21 @@ function AsyncHighlightedCode(props: {
   return (
     <TokenizedCode
       code={props.code}
-      {...(props.class !== undefined ? { class: props.class } : {})}
-      {...(props.dataCommandInputCollapsed !== undefined ? { dataCommandInputCollapsed: props.dataCommandInputCollapsed } : {})}
-      {...(props.dataCommandInputOverflowing !== undefined ? { dataCommandInputOverflowing: props.dataCommandInputOverflowing } : {})}
-      {...(props.elementRef !== undefined ? { elementRef: props.elementRef } : {})}
-      {...(props.dataToolOutputPreview !== undefined ? { dataToolOutputPreview: props.dataToolOutputPreview } : {})}
+      {...(props.class !== undefined
+        ? { class: props.class }
+        : {})}
+      {...(props.dataCommandInputCollapsed !== undefined
+        ? { dataCommandInputCollapsed: props.dataCommandInputCollapsed }
+        : {})}
+      {...(props.dataCommandInputOverflowing !== undefined
+        ? { dataCommandInputOverflowing: props.dataCommandInputOverflowing }
+        : {})}
+      {...(props.elementRef !== undefined
+        ? { elementRef: props.elementRef }
+        : {})}
+      {...(props.dataToolOutputPreview !== undefined
+        ? { dataToolOutputPreview: props.dataToolOutputPreview }
+        : {})}
       tokens={tokens()}
     />
   )
@@ -114,13 +128,27 @@ export function CommandHighlightHtml(props: {
     <AsyncHighlightedCode
       lang={props.language ?? 'bash'}
       code={props.code}
-      {...(props.context !== undefined ? { context: props.context } : {})}
-      {...(props.class !== undefined ? { class: props.class } : {})}
-      {...(props.maxHighlightChars !== undefined ? { maxHighlightChars: props.maxHighlightChars } : {})}
-      {...(props.maxHighlightLines !== undefined ? { maxHighlightLines: props.maxHighlightLines } : {})}
-      {...(props.dataCommandInputCollapsed !== undefined ? { dataCommandInputCollapsed: props.dataCommandInputCollapsed } : {})}
-      {...(props.dataCommandInputOverflowing !== undefined ? { dataCommandInputOverflowing: props.dataCommandInputOverflowing } : {})}
-      {...(props.elementRef !== undefined ? { elementRef: props.elementRef } : {})}
+      {...(props.context !== undefined
+        ? { context: props.context }
+        : {})}
+      {...(props.class !== undefined
+        ? { class: props.class }
+        : {})}
+      {...(props.maxHighlightChars !== undefined
+        ? { maxHighlightChars: props.maxHighlightChars }
+        : {})}
+      {...(props.maxHighlightLines !== undefined
+        ? { maxHighlightLines: props.maxHighlightLines }
+        : {})}
+      {...(props.dataCommandInputCollapsed !== undefined
+        ? { dataCommandInputCollapsed: props.dataCommandInputCollapsed }
+        : {})}
+      {...(props.dataCommandInputOverflowing !== undefined
+        ? { dataCommandInputOverflowing: props.dataCommandInputOverflowing }
+        : {})}
+      {...(props.elementRef !== undefined
+        ? { elementRef: props.elementRef }
+        : {})}
     />
   )
 }
@@ -136,12 +164,22 @@ export function JsonHighlightHtml(props: {
   return (
     <AsyncHighlightedCode
       lang="json"
-      {...(props.dataToolOutputPreview !== undefined ? { dataToolOutputPreview: props.dataToolOutputPreview } : {})}
+      {...(props.dataToolOutputPreview !== undefined
+        ? { dataToolOutputPreview: props.dataToolOutputPreview }
+        : {})}
       code={props.code}
-      {...(props.context !== undefined ? { context: props.context } : {})}
-      {...(props.class !== undefined ? { class: props.class } : {})}
-      {...(props.maxHighlightChars !== undefined ? { maxHighlightChars: props.maxHighlightChars } : {})}
-      {...(props.maxHighlightLines !== undefined ? { maxHighlightLines: props.maxHighlightLines } : {})}
+      {...(props.context !== undefined
+        ? { context: props.context }
+        : {})}
+      {...(props.class !== undefined
+        ? { class: props.class }
+        : {})}
+      {...(props.maxHighlightChars !== undefined
+        ? { maxHighlightChars: props.maxHighlightChars }
+        : {})}
+      {...(props.maxHighlightLines !== undefined
+        ? { maxHighlightLines: props.maxHighlightLines }
+        : {})}
     />
   )
 }

@@ -37,7 +37,9 @@ export function piGenericToolSource(payload: Record<string, unknown>, request?: 
   const details = pickObject(result, PI_TOOL_RESULT_FIELD.Details)
   const args = pickObject(piPairedRequest(payload, request)?.parentObject, 'args') ?? tool.args
   const identity = piMcpIdentity(payload, pairedResult)
-  const native = identity ? pickObject(result, PI_MCP_RESULT_FIELD.StructuredContent) : undefined
+  const native = identity
+    ? pickObject(result, PI_MCP_RESULT_FIELD.StructuredContent)
+    : undefined
   const nativeContent = piNativeMcpContent(tool.toolName, result)
   let structured: unknown
   if (!identity) {
@@ -50,7 +52,9 @@ export function piGenericToolSource(payload: Record<string, unknown>, request?: 
   else if (tool.toolName !== PI_MCP_RESOURCE_TOOL.Read) {
     structured = native?.[PI_MCP_RESULT_FIELD.StructuredContent]
   }
-  const structuredJson = structured !== undefined && structured !== null ? prettifyJson(JSON.stringify(structured)) : undefined
+  const structuredJson = structured !== undefined && structured !== null
+    ? prettifyJson(JSON.stringify(structured))
+    : undefined
   const structuredJsonRole: McpCallFacts['structuredJsonRole'] = structuredJson !== undefined && !identity && tool.toolName === PI_TOOL.Codemode
     ? 'metadata'
     : undefined
@@ -59,8 +63,12 @@ export function piGenericToolSource(payload: Record<string, unknown>, request?: 
     tool: identity?.tool ?? tool.toolName,
     argsJson: prettifyArgsJson(args),
     content: (nativeContent ?? asContentArray(result?.content) ?? []).map(parseMcpContentItem),
-    ...(structuredJson !== undefined ? { structuredJson } : {}),
-    ...(structuredJsonRole !== undefined ? { structuredJsonRole } : {}),
+    ...(structuredJson !== undefined
+      ? { structuredJson }
+      : {}),
+    ...(structuredJsonRole !== undefined
+      ? { structuredJsonRole }
+      : {}),
     ...(payload.type !== PI_EVENT.ToolExecutionStart && payload.type !== PI_EVENT.ToolExecutionUpdate
       && (tool.isError || (identity && (result?.isError === true || native?.isError === true)))
       ? { failed: true }

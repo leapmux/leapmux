@@ -67,20 +67,26 @@ describe('UnsupportedFileView', () => {
   })
 
   it('disables Download and shows a spinner while op.kind is "download"', () => {
-    renderView({ op: { kind: 'download', progress: null } })
+    renderView({
+      op: { kind: 'download', progress: null },
+    })
     const btn = screen.getByTestId('unsupported-download-button') as HTMLButtonElement
     expect(btn.disabled).toBe(true)
     expect(btn.textContent).toMatch(/Downloading/i)
   })
 
   it('appends a percent to the busy label when op.progress is non-null', () => {
-    renderView({ op: { kind: 'download', progress: 45 } })
+    renderView({
+      op: { kind: 'download', progress: 45 },
+    })
     const btn = screen.getByTestId('unsupported-download-button') as HTMLButtonElement
     expect(btn.textContent).toMatch(/Downloading\.\.\. 45%/)
   })
 
   it('omits the percent when op.progress is null', () => {
-    renderView({ op: { kind: 'download', progress: null } })
+    renderView({
+      op: { kind: 'download', progress: null },
+    })
     const btn = screen.getByTestId('unsupported-download-button') as HTMLButtonElement
     expect(btn.textContent).toMatch(/Downloading\.\.\./)
     expect(btn.textContent).not.toMatch(/%/)
@@ -161,7 +167,9 @@ describe('UnsupportedFileView', () => {
     })
 
     it('disables both save buttons while a save is in flight', () => {
-      renderDesktopView({ op: { kind: 'save-as', progress: null } })
+      renderDesktopView({
+        op: { kind: 'save-as', progress: null },
+      })
       const saveAs = screen.getByTestId('unsupported-save-as-button') as HTMLButtonElement
       const toDownloads = screen.getByTestId('unsupported-save-to-downloads-button') as HTMLButtonElement
       expect(saveAs.disabled).toBe(true)
@@ -169,7 +177,9 @@ describe('UnsupportedFileView', () => {
     })
 
     it('shows the spinner on the Save-as button when op.kind is "save-as"', () => {
-      renderDesktopView({ op: { kind: 'save-as', progress: null } })
+      renderDesktopView({
+        op: { kind: 'save-as', progress: null },
+      })
       const saveAs = screen.getByTestId('unsupported-save-as-button') as HTMLButtonElement
       const toDownloads = screen.getByTestId('unsupported-save-to-downloads-button') as HTMLButtonElement
       expect(saveAs.textContent).toMatch(/Saving/i)
@@ -178,19 +188,25 @@ describe('UnsupportedFileView', () => {
     })
 
     it('shows percent progress alongside the spinner during a Save as...', () => {
-      renderDesktopView({ op: { kind: 'save-as', progress: 25 } })
+      renderDesktopView({
+        op: { kind: 'save-as', progress: 25 },
+      })
       const saveAs = screen.getByTestId('unsupported-save-as-button') as HTMLButtonElement
       expect(saveAs.textContent).toMatch(/Saving\.\.\. 25%/)
     })
 
     it('shows percent progress during a Save to Downloads', () => {
-      renderDesktopView({ op: { kind: 'save-to-downloads', progress: 90 } })
+      renderDesktopView({
+        op: { kind: 'save-to-downloads', progress: 90 },
+      })
       const toDownloads = screen.getByTestId('unsupported-save-to-downloads-button') as HTMLButtonElement
       expect(toDownloads.textContent).toMatch(/Saving\.\.\. 90%/)
     })
 
     it('shows the spinner on the Save-to-Downloads button when op.kind is "save-to-downloads"', () => {
-      renderDesktopView({ op: { kind: 'save-to-downloads', progress: null } })
+      renderDesktopView({
+        op: { kind: 'save-to-downloads', progress: null },
+      })
       const saveAs = screen.getByTestId('unsupported-save-as-button') as HTMLButtonElement
       const toDownloads = screen.getByTestId('unsupported-save-to-downloads-button') as HTMLButtonElement
       expect(toDownloads.textContent).toMatch(/Saving/i)

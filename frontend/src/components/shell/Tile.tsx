@@ -172,7 +172,9 @@ export const Tile: Component<TileProps> = (props) => {
             onMakeGridClick={() => queueMicrotask(() => requestOpenGridPopover(tinyGridAnchorRef))}
             makeGridLabel="Make a grid…"
             // Omitted when the tile cannot pop: the prop takes no explicit undefined.
-            {...(props.pop !== undefined ? { pop: props.pop } : {})}
+            {...(props.pop !== undefined
+              ? { pop: props.pop }
+              : {})}
           />
         </DropdownMenu>
       </Show>

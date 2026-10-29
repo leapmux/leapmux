@@ -48,7 +48,12 @@ export async function exerciseDeepseekHarnessFileAttachment(
   else {
     // The native Bash result adds a status marker only for a nonzero exit, a signal, a timeout, or a stop.
     // Exact text with no marker therefore proves the complete bytes and a clean exit.
-    expect(nativeToolResultContent(next, callId)).toEqual([{ type: 'text', text: source.toString('base64') }])
+    expect(nativeToolResultContent(next, callId)).toEqual([
+      {
+        type: 'text',
+        text: source.toString('base64'),
+      },
+    ])
   }
   await expectUserMessage(context.page, fileName)
   await expect(assistantBubbles(context.page).filter({ hasText: 'The actual uploaded file bytes reached the model.' }).first()).toBeVisible()

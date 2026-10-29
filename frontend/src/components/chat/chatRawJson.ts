@@ -60,10 +60,15 @@ export function buildRawJsonEnvelope(
 
   const fields = Object.entries(envelope).flatMap(([key, value]) => {
     const encoded = JSON.stringify(value)
-    return encoded === undefined ? [] : [`${JSON.stringify(key)}:${encoded}`]
+    return encoded === undefined
+      ? []
+      : [`${JSON.stringify(key)}:${encoded}`]
   })
   const content = parsed.contentDecodeFailed
-    ? JSON.stringify({ compression: message.contentCompression, base64: uint8ArrayToBase64(message.content) })
+    ? JSON.stringify({
+        compression: message.contentCompression,
+        base64: uint8ArrayToBase64(message.content),
+      })
     : rawJsonValue(parsed.rawText)
   fields.push(`"content":${content}`)
   // The supplement is LeapMux's envelope, so it is an object, or null when
@@ -82,10 +87,15 @@ export function buildRawJsonEnvelope(
         // A damaged supplement shows as its bytes below.
       }
     }
-    if (isObject(value) && parsed.supplementalRawText !== undefined)
+    if (isObject(value) && parsed.supplementalRawText !== undefined) {
       supplemental = parsed.supplementalRawText
-    else if (value !== null)
-      supplemental = JSON.stringify({ compression: message.supplementalContentCompression, base64: uint8ArrayToBase64(message.supplementalContent) })
+    }
+    else if (value !== null) {
+      supplemental = JSON.stringify({
+        compression: message.supplementalContentCompression,
+        base64: uint8ArrayToBase64(message.supplementalContent),
+      })
+    }
   }
   fields.push(`"supplemental_content":${supplemental ?? 'null'}`)
   return `{${fields.join(',')}}`

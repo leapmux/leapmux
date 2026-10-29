@@ -44,7 +44,9 @@ export function mid(a: string, b: string): string {
  */
 export function appendPosition(items: readonly { position: string }[]): string {
   const lastItem = items.at(-1)
-  return lastItem ? mid(lastItem.position, '') : mid('', '')
+  return lastItem
+    ? mid(lastItem.position, '')
+    : mid('', '')
 }
 
 /**
@@ -61,8 +63,12 @@ export function positionAtInsertIdx(
   items: readonly { position?: string }[],
   insertIdx: number,
 ): string {
-  const prevPos = insertIdx > 0 ? items[insertIdx - 1]?.position ?? '' : ''
-  const nextPos = insertIdx < items.length ? items[insertIdx]?.position ?? '' : ''
+  const prevPos = insertIdx > 0
+    ? items[insertIdx - 1]?.position ?? ''
+    : ''
+  const nextPos = insertIdx < items.length
+    ? items[insertIdx]?.position ?? ''
+    : ''
   return mid(prevPos, nextPos)
 }
 

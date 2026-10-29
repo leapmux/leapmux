@@ -12,7 +12,9 @@ const BACKGROUND_SOURCES: ReadonlySet<string> = new Set([
 ])
 
 function qwenMetadata(message: Record<string, unknown>): Record<string, unknown> | null {
-  return message.sessionUpdate === ACP_UPDATE.AgentMessageChunk ? pickObject(message, '_meta') : null
+  return message.sessionUpdate === ACP_UPDATE.AgentMessageChunk
+    ? pickObject(message, '_meta')
+    : null
 }
 
 export function qwenCompactionBoundary(message: Record<string, unknown>): CompactionDetails | null {
@@ -22,8 +24,12 @@ export function qwenCompactionBoundary(message: Record<string, unknown>): Compac
   const pre = tokenCount(compression?.originalTokenCount)
   const post = tokenCount(compression?.newTokenCount)
   return {
-    ...(pre !== undefined ? { pre } : {}),
-    ...(post !== undefined ? { post } : {}),
+    ...(pre !== undefined
+      ? { pre }
+      : {}),
+    ...(post !== undefined
+      ? { post }
+      : {}),
   }
 }
 
@@ -40,7 +46,9 @@ export function qwenNotificationEntry(message: Record<string, unknown>): Notific
     const detail = qwenCompactionBoundary(message)
     if (!detail)
       return []
-    const entries: NotificationEntry[] = [{ kind: 'compaction', phase: 'end', detail }]
+    const entries: NotificationEntry[] = [
+      { kind: 'compaction', phase: 'end', detail },
+    ]
     const warning = pickString(pickObject(meta, QWEN_META.ContextCompression), 'warning').trim()
     if (warning)
       entries.push({ kind: 'text', text: warning })
@@ -51,12 +59,25 @@ export function qwenNotificationEntry(message: Record<string, unknown>): Notific
     const detail = Array.isArray(hook.reasons)
       ? hook.reasons.filter((reason): reason is string => typeof reason === 'string').map(reason => reason.trim()).filter(Boolean).join('; ')
       : ''
-    return [{ kind: 'hook', outcome: 'continued', event: 'Stop', ...(detail ? { detail } : {}) }]
+    return [
+      {
+        kind: 'hook',
+        outcome: 'continued',
+        event: 'Stop',
+        ...(detail
+          ? { detail }
+          : {}),
+      },
+    ]
   }
   if (meta[QWEN_META.DiscreteMessage] !== true || BACKGROUND_SOURCES.has(pickString(meta, QWEN_META.Source)))
     return []
   const text = pickString(pickObject(message, 'content'), 'text')
-  return text.trim() ? [{ kind: 'text', text }] : []
+  return text.trim()
+    ? [
+        { kind: 'text', text },
+      ]
+    : []
 }
 
 export const qwenNativeNotifications: ACPNativeNotifications = {

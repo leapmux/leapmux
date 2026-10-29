@@ -115,7 +115,9 @@ function renderToast(message: string, type: ToastType, durationMs = 3000) {
       return
     liveSticky.delete(message)
   }
-  const variant = type === 'success' ? 'success' : 'danger'
+  const variant = type === 'success'
+    ? 'success'
+    : 'danger'
 
   const toast = document.createElement('output')
   toast.setAttribute('data-variant', variant)
@@ -169,8 +171,8 @@ function renderToast(message: string, type: ToastType, durationMs = 3000) {
  * oat's `_remove` is module-private, so this repeats it: mark the toast
  * exiting, let the transition play, then drop it and hide the shared container
  * once it holds nothing. A bare `remove()` also cleared the screen -- an empty
- * container is invisible either way, being pointer-events: none, transparent
- * and backdrop-less -- but it skipped the fade every other toast gets and left
+ * container is invisible either way, being zero-sized, transparent and
+ * backdrop-less -- but it skipped the fade every other toast gets and left
  * a `popover="manual"` element in the top layer with zero children until some
  * later toast's timer happened to tidy up. A sticky toast has no timer of its
  * own, so the one toast a user MUST dismiss by hand was the only one that left
@@ -196,5 +198,9 @@ function dismissToast(el: HTMLElement) {
   // the same custom property oat reads, in whichever unit it was written.
   const declared = getComputedStyle(el).getPropertyValue('--transition').trim()
   const value = Number.parseFloat(declared)
-  setTimeout(cleanup, Number.isNaN(value) ? 0 : declared.endsWith('ms') ? value : value * 1000)
+  setTimeout(cleanup, Number.isNaN(value)
+    ? 0
+    : declared.endsWith('ms')
+      ? value
+      : value * 1000)
 }

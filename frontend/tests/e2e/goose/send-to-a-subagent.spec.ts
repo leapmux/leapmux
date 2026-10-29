@@ -9,5 +9,8 @@ gooseTest('send-to-a-subagent: delegate spawn creates a clickable row with a too
 })
 
 gooseTest('refuses native child send while the actual child task runs', async ({ native }) => {
-  await expectUnsupportedSubagent(native, { operation: 'send', openChild: () => openProfiledNativeChild(native, GOOSE_CHILD) })
+  await expectUnsupportedSubagent(native, {
+    operation: 'send',
+    openChild: () => openProfiledNativeChild(native, GOOSE_CHILD),
+  })
 })

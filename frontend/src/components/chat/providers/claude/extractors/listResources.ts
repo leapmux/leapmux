@@ -19,7 +19,9 @@ export function claudeListResourcesSpec(request: ListRequest, result: ClaudeTool
   const failure = claudeToolFailureResult(result)
   if (failure)
     return { kind: 'list', request, result: failure }
-  const resources = Array.isArray(result.toolUseResult?.resources) ? result.toolUseResult.resources : []
+  const resources = Array.isArray(result.toolUseResult?.resources)
+    ? result.toolUseResult.resources
+    : []
   const entries = resources.flatMap((resource) => {
     if (!isObject(resource))
       return []
@@ -27,11 +29,29 @@ export function claudeListResourcesSpec(request: ListRequest, result: ClaudeTool
     const detail = pickString(resource, 'name')
     // The detail rides only when the server named the resource; a blank name
     // states nothing a reader could draw.
-    return uri ? [{ path: uri, ...(detail ? { detail } : {}) }] : []
+    return uri
+      ? [
+          {
+            path: uri,
+            ...(detail
+              ? { detail }
+              : {}),
+          },
+        ]
+      : []
   })
   // A server that answered with no readable resource list stated something this
   // build cannot read as files; the raw text keeps it.
-  if (entries.length === 0 && resources.length === 0)
-    return { kind: 'list', request, result: unparsedResult(result.resultContent) }
-  return { kind: 'list', request, result: { entries } }
+  if (entries.length === 0 && resources.length === 0) {
+    return {
+      kind: 'list',
+      request,
+      result: unparsedResult(result.resultContent),
+    }
+  }
+  return {
+    kind: 'list',
+    request,
+    result: { entries },
+  }
 }

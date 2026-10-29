@@ -66,5 +66,7 @@ export const PROVIDER_PERMISSION_PRESETS = {
 
 /** Read canonical preset data without importing a rendering plugin. */
 export function permissionPresetsFor(provider: AgentProvider | undefined): ProviderPermissionPresets | undefined {
-  return provider === undefined ? undefined : PROVIDER_PERMISSION_PRESETS[provider]
+  return provider === undefined
+    ? undefined
+    : PROVIDER_PERMISSION_PRESETS[provider]
 }

@@ -37,7 +37,10 @@ export interface KimiPlanWindows {
 
 /** The usage answer of the mocked plan, with `windows`. */
 export function kimiPlanUsage(windows: KimiPlanWindows): MockQuotaHTTPResponse {
-  return { status: 200, body: { usages: windows } }
+  return {
+    status: 200,
+    body: { usages: windows },
+  }
 }
 
 /**

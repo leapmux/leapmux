@@ -55,17 +55,32 @@ function buildErrorResult(
   const errors = stringArray(parsed.errors)
 
   if (subtype && subtype !== 'success') {
-    const errorDetail = errors.length > 0 ? errors.join('\n') : resultText
+    const errorDetail = errors.length > 0
+      ? errors.join('\n')
+      : resultText
     return {
-      label: turnEndLabel('failed', { durationMs, reason: humanizeWireWord(subtype) }),
+      label: turnEndLabel('failed', {
+        durationMs,
+        reason: humanizeWireWord(subtype),
+      }),
       isError: true,
       // `detail` must be absent (never '') so the shared renderer skips the <pre>.
-      ...(errorDetail ? { detail: errorDetail } : {}),
+      ...(errorDetail
+        ? { detail: errorDetail }
+        : {}),
     }
   }
 
-  const errorMsg = errors.length > 0 ? errors.join('; ') : resultText || 'Unknown error'
-  return { label: turnEndLabel('failed', { durationMs, reason: cleanAPIErrorMessage(errorMsg) }), isError: true }
+  const errorMsg = errors.length > 0
+    ? errors.join('; ')
+    : resultText || 'Unknown error'
+  return {
+    label: turnEndLabel('failed', {
+      durationMs,
+      reason: cleanAPIErrorMessage(errorMsg),
+    }),
+    isError: true,
+  }
 }
 
 /**
@@ -88,10 +103,17 @@ function buildPlainResult(
   durationMs: number | null,
   subtype: string,
 ): TurnEnd {
-  const displayText = subtype && subtype !== 'success' ? resultText : ''
+  const displayText = subtype && subtype !== 'success'
+    ? resultText
+    : ''
   // Any other non-success subtype's own text qualifies the turn end rather than
   // replacing it, so the row still opens with the words every other provider uses.
-  return { label: turnEndLabel('ended', { durationMs, qualifiers: [displayText] }) }
+  return {
+    label: turnEndLabel('ended', {
+      durationMs,
+      qualifiers: [displayText],
+    }),
+  }
 }
 
 /**
@@ -124,8 +146,11 @@ export function claudeResultDivider(parsed: unknown, completion?: MessageComplet
   const durationMs = pickNumber(parsed, 'duration_ms')
   const subtype = pickString(parsed, 'subtype')
 
-  if (completion === MessageCompletion.INTERRUPTED || subtype === CLAUDE_SUBTYPE_CANCELLED)
-    return { label: turnEndLabel('interrupted', { durationMs }) }
+  if (completion === MessageCompletion.INTERRUPTED || subtype === CLAUDE_SUBTYPE_CANCELLED) {
+    return {
+      label: turnEndLabel('interrupted', { durationMs }),
+    }
+  }
 
   return parsed.is_error === true
     ? buildErrorResult(parsed, resultText, durationMs, subtype)

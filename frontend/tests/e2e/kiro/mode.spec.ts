@@ -31,7 +31,14 @@ kiroTest.describe('settings for Kiro', () => {
     await expectSettingsChip(page, 'Default')
     await retryUntilPass(async () => {
       const modes = nativeOptionGroup(await currentNativeAgent(native), 'permissionMode')?.options.map(option => option.id) ?? []
-      expect(modes).toEqual(expect.arrayContaining(['vibe', 'spec', 'quick-spec', 'bug-fix', 'plan', 'autonomous']))
+      expect(modes).toEqual(expect.arrayContaining([
+        'vibe',
+        'spec',
+        'quick-spec',
+        'bug-fix',
+        'plan',
+        'autonomous',
+      ]))
       await expectSettingsOptionsOffered(page, 'permissionMode', modes)
     })
     // The open request stated the effort, which differs from the model's own default.
@@ -53,7 +60,9 @@ kiroTest.describe('settings for Kiro', () => {
 
     const planned = requestBody((await sendNativeAnswer(native, 'Describe the plan in one word.', 'SETTINGS_APPLIED')).body)
     expect(planned.agentMode).toBe('plan')
-    expect(planned.additionalModelRequestFields).toEqual({ output_config: { effort: 'high' } })
+    expect(planned.additionalModelRequestFields).toEqual({
+      output_config: { effort: 'high' },
+    })
     expect(requestModel(planned)).toBe(EFFORT_MODEL!.modelId)
 
     // A model with no effort axis drops the axis, and its turns state no effort.

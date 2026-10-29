@@ -16,22 +16,51 @@ qoderTest.describe('Qoder CLI live child transcript', () => {
       childWhen: qoderChildTurn('Read the assigned file for the live Qoder child'),
       childTask: 'Read the assigned file for the live Qoder child, then report its marker.',
       parentTask: 'Spawn one subagent to read the child note.',
-      toolProof: { read: { workingDir: authenticatedQoderWorkspace.workingDir } },
+      toolProof: {
+        read: { workingDir: authenticatedQoderWorkspace.workingDir },
+      },
     })
     await expectRowBecomesFinal(native.page, child.row)
   })
 
   qoderTest('answers a child permission in the parent tab', async ({ askingQoderWorkspace, page, modelScript, leapmuxServer }) => {
-    const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingQoderWorkspace.workspaceId })
+    const native = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingQoderWorkspace.workspaceId,
+    })
     const parentId = await selectedAgentTabId(page)
     const task = 'Write the Qoder child permission marker.'
     const path = join(askingQoderWorkspace.workingDir, 'child-permission.txt')
     await modelScript.rule(
-      { name: 'qoder child permission tool', when: qoderChildTurn(task), once: true, respond: { toolCalls: [bashToolCall(native.provider, 'child-permission-call', 'printf QODERCHILDPERMISSION > child-permission.txt')] } },
-      { name: 'qoder child permission answer', when: qoderChildTurn(task), once: true, respond: { text: 'The child wrote the marker.' } },
+      {
+        name: 'qoder child permission tool',
+        when: qoderChildTurn(task),
+        once: true,
+        respond: {
+          toolCalls: [
+            bashToolCall(native.provider, 'child-permission-call', 'printf QODERCHILDPERMISSION > child-permission.txt'),
+          ],
+        },
+      },
+      {
+        name: 'qoder child permission answer',
+        when: qoderChildTurn(task),
+        once: true,
+        respond: { text: 'The child wrote the marker.' },
+      },
     )
     const start = await modelScript.queue(
-      { toolCalls: [spawnSubagentToolCall(native.provider, 'permission-spawn', { description: 'Check child tool permission', prompt: modelScript.prompt(task), background: false })] },
+      {
+        toolCalls: [
+          spawnSubagentToolCall(native.provider, 'permission-spawn', {
+            description: 'Check child tool permission',
+            prompt: modelScript.prompt(task),
+            background: false,
+          }),
+        ],
+      },
       { text: 'The parent received the child result.' },
     )
     await sendMessage(page, modelScript.prompt('Spawn the scripted permission child.'))

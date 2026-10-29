@@ -6,8 +6,12 @@ import { chooseSettingsOption, sendMessage, waitForAgentIdle, waitForSettingsIdl
 
 function nativeSystemInstructions(request: MockModelRequestRecord): string {
   expect(request.protocol).toBe('anthropic-messages')
-  const body = isObject(request.body) ? request.body : null
-  const messages = Array.isArray(body?.messages) ? body.messages : []
+  const body = isObject(request.body)
+    ? request.body
+    : null
+  const messages = Array.isArray(body?.messages)
+    ? body.messages
+    : []
   return JSON.stringify(messages.filter(message => isObject(message) && message.role === 'system'))
 }
 

@@ -7,21 +7,31 @@ import { computedNativeToolOutput, copyNativeToolOutputPreview } from './nativeT
 // The observer polls for a successful write. Keep deliberate no-copy failures fast.
 vi.mock('@playwright/test', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@playwright/test')>()
-  return { ...actual, expect: actual.expect.configure({ timeout: 200 }) }
+  return {
+    ...actual,
+    expect: actual.expect.configure({ timeout: 200 }),
+  }
 })
 
 /** A page that copies the supplied text and records each browser operation. */
 function copyFixture(clipboard: () => string, overwrite?: string) {
   const fixture = createClipboardPageFixture()
   const { events, page } = fixture
-  const copy = { click: async () => {
-    events.push('click')
-    await fixture.copy(clipboard())
-    if (overwrite !== undefined)
-      await fixture.overwriteFromAnotherPage(overwrite)
-  } }
-  const view = { hover: async () => events.push('hover'), getByRole: () => copy }
-  const result = { locator: () => view } as unknown as Locator
+  const copy = {
+    click: async () => {
+      events.push('click')
+      await fixture.copy(clipboard())
+      if (overwrite !== undefined)
+        await fixture.overwriteFromAnotherPage(overwrite)
+    },
+  }
+  const view = {
+    hover: async () => events.push('hover'),
+    getByRole: () => copy,
+  }
+  const result = {
+    locator: () => view,
+  } as unknown as Locator
   return { ...fixture, events, page, result }
 }
 
@@ -84,15 +94,36 @@ describe('computedNativeToolOutput', () => {
     expect(output.source).not.toContain(output.omittedMarker)
   })
 
-  it.each(['', '1prefix', 'a-b', 'a b', 'a\0b', 'a'.repeat(81)])('rejects an invalid prefix %j', (prefix) => {
+  it.each([
+    '',
+    '1prefix',
+    'a-b',
+    'a b',
+    'a\0b',
+    'a'.repeat(81),
+  ])('rejects an invalid prefix %j', (prefix) => {
     expect(() => computedNativeToolOutput({ prefix })).toThrow('prefix')
   })
 
-  it.each([0, -1, 2, 20_001, 3.5, Number.NaN, Number.POSITIVE_INFINITY])('rejects an invalid line count %j', (lineCount) => {
+  it.each([
+    0,
+    -1,
+    2,
+    20_001,
+    3.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+  ])('rejects an invalid line count %j', (lineCount) => {
     expect(() => computedNativeToolOutput({ lineCount })).toThrow('lines')
   })
 
-  it.each([-1, 101, 1.5, Number.NaN, Number.POSITIVE_INFINITY])('rejects invalid padding %j', (padding) => {
+  it.each([
+    -1,
+    101,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+  ])('rejects invalid padding %j', (padding) => {
     expect(() => computedNativeToolOutput({ padding })).toThrow('padding')
   })
 

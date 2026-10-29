@@ -17,7 +17,12 @@ function extract(payload: Record<string, unknown>, category: MessageCategory, sp
   return codewhaleExtractRow({
     resolved: input(payload, undefined, AgentProvider.CODEWHALE),
     category,
-    span: { request: span.request, result: span.result, role: 'other', visibleRows: { request: true, result: true } },
+    span: {
+      request: span.request,
+      result: span.result,
+      role: 'other',
+      visibleRows: { request: true, result: true },
+    },
     completion,
   } as never)
 }
@@ -25,7 +30,13 @@ function extract(payload: Record<string, unknown>, category: MessageCategory, sp
 /** The final event of an answered question, which the runtime sends with its answers redacted. */
 function redactedQuestionResult(): Record<string, unknown> {
   return codewhaleEvent(CODEWHALE_EVENT.ItemCompleted, {
-    item: { kind: CODEWHALE_ITEM_KIND.ToolCall, status: 'completed', summary: 'User input submitted', detail: 'User input submitted', metadata: { tool_call_id: 'call-1', tool_name: CODEWHALE_TOOL.RequestUserInput, response_redacted: true } },
+    item: {
+      kind: CODEWHALE_ITEM_KIND.ToolCall,
+      status: 'completed',
+      summary: 'User input submitted',
+      detail: 'User input submitted',
+      metadata: { tool_call_id: 'call-1', tool_name: CODEWHALE_TOOL.RequestUserInput, response_redacted: true },
+    },
   })
 }
 
@@ -72,10 +83,14 @@ describe('codewhaleExtractRow', () => {
     const args = { command: 'ls' }
     const start = toolStarted(CODEWHALE_TOOL.Bash, args)
     const end = toolCompleted(CODEWHALE_TOOL.Bash, args, 'a.ts')
-    const request = toolRow(extract(start, { kind: 'tool_use' }, { result: requestSide(end) }))
+    const request = toolRow(extract(start, { kind: 'tool_use' }, {
+      result: requestSide(end),
+    }))
     expect(request.role).toBe('request')
     expect(request.call.status).toBe('completed')
-    const result = toolRow(extract(end, { kind: 'tool_result' }, { request: requestSide(start) }))
+    const result = toolRow(extract(end, { kind: 'tool_result' }, {
+      request: requestSide(start),
+    }))
     expect(result.role).toBe('result')
   })
 
@@ -86,7 +101,9 @@ describe('codewhaleExtractRow', () => {
     const args = { patch: 'x' }
     const start = toolStarted(CODEWHALE_TOOL.ApplyPatch, args)
     const loaded = toolCompleted(CODEWHALE_TOOL.ApplyPatch, args, 'Tool `apply_patch` was deferred and has now been loaded.', { deferred_tool_loaded: true })
-    const row = toolRow(extract(start, { kind: 'tool_use' }, { result: requestSide(loaded) }))
+    const row = toolRow(extract(start, { kind: 'tool_use' }, {
+      result: requestSide(loaded),
+    }))
     expect(row.role).toBe('request')
     expect(row.call.status).toBe('completed')
     expect(row.call.result).toStrictEqual({ unparsed: true, text: 'Tool `apply_patch` was deferred and has now been loaded.' })
@@ -95,9 +112,22 @@ describe('codewhaleExtractRow', () => {
   // The runtime redacts a question's answers from the call's own result. The
   // classifier hides that result row, and the request row states the question.
   it('states an answered question on its request row', () => {
-    const args = { questions: [{ id: 'q1', header: 'Drink', question: 'Tea or coffee?', options: [{ label: 'Tea', description: 'Tea' }] }] }
+    const args = {
+      questions: [
+        {
+          id: 'q1',
+          header: 'Drink',
+          question: 'Tea or coffee?',
+          options: [
+            { label: 'Tea', description: 'Tea' },
+          ],
+        },
+      ],
+    }
     const start = toolStarted(CODEWHALE_TOOL.RequestUserInput, args)
-    const request = toolRow(extract(start, { kind: 'tool_use' }, { result: requestSide(redactedQuestionResult()) }))
+    const request = toolRow(extract(start, { kind: 'tool_use' }, {
+      result: requestSide(redactedQuestionResult()),
+    }))
     expect(request.call.kind).toBe('question')
     expect(request.call.status).toBe('completed')
     expect(request.call.result).toStrictEqual({ answers: [] })
@@ -107,14 +137,23 @@ describe('codewhaleExtractRow', () => {
     const args = { questions: [] }
     const start = toolStarted(CODEWHALE_TOOL.RequestUserInput, args)
     const failed = toolFailed(CODEWHALE_TOOL.RequestUserInput, args, 'questions must not be empty')
-    expect(toolRow(extract(failed, { kind: 'tool_result' }, { request: requestSide(start) })).call.status).toBe('failed')
+    expect(toolRow(extract(failed, { kind: 'tool_result' }, {
+      request: requestSide(start),
+    })).call.status).toBe('failed')
   })
 
   it('states a subagent\'s deferred first call on its request row', () => {
     const words = 'Tool `apply_patch` was deferred and has now been loaded. Retry the call with the newly available schema.'
-    const use = childBlock(CODEWHALE_TRANSCRIPT_ROLE.Assistant, { type: CODEWHALE_BLOCK_TYPE.ToolUse, id: 'b1', name: CODEWHALE_TOOL.ApplyPatch, input: { patch: 'x' } })
+    const use = childBlock(CODEWHALE_TRANSCRIPT_ROLE.Assistant, {
+      type: CODEWHALE_BLOCK_TYPE.ToolUse,
+      id: 'b1',
+      name: CODEWHALE_TOOL.ApplyPatch,
+      input: { patch: 'x' },
+    })
     const loaded = childBlock(CODEWHALE_TRANSCRIPT_ROLE.User, { type: CODEWHALE_BLOCK_TYPE.ToolResult, tool_use_id: 'b1', content: words }, 2)
-    expect(toolRow(extract(use, { kind: 'tool_use' }, { result: requestSide(loaded) })).call.result).toStrictEqual({ unparsed: true, text: words })
+    expect(toolRow(extract(use, { kind: 'tool_use' }, {
+      result: requestSide(loaded),
+    })).call.result).toStrictEqual({ unparsed: true, text: words })
   })
 
   // LeapMux's own reading of how the row ended wins: a turn the reader stopped

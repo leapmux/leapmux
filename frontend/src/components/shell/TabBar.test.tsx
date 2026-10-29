@@ -131,14 +131,18 @@ vi.mock('~/components/common/DropdownMenu', async () => {
       return (
         <span>
           <span>{props.label}</span>
-          {props.detail ? <span>{props.detail}</span> : null}
+          {props.detail
+            ? <span>{props.detail}</span>
+            : null}
         </span>
       )
     },
     DropdownMenuCheckableItem(props: any) {
       return (
         <button
-          role={props.kind === 'checkbox' ? 'menuitemcheckbox' : 'menuitemradio'}
+          role={props.kind === 'checkbox'
+            ? 'menuitemcheckbox'
+            : 'menuitemradio'}
           aria-checked={props.checked}
           disabled={props.disabled}
           onClick={() => props.onSelect()}
@@ -211,7 +215,13 @@ const defaultProps = {
 }
 
 function makeTab(type: Tab['type'], id: string, title?: string): Tab {
-  return { type, id, title, workspaceId: 'ws-1', position: '0|' } as Tab
+  return {
+    type,
+    id,
+    title,
+    workspaceId: 'ws-1',
+    position: '0|',
+  } as Tab
 }
 
 function getBrowserPrefs() {
@@ -277,7 +287,11 @@ describe('tabBar archived prop', () => {
       <PreferencesProvider>
         <TabBar
           {...defaultProps}
-          newTab={{ ...defaultProps.newTab, availableProviders: [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX], onNewAgent }}
+          newTab={{
+            ...defaultProps.newTab,
+            availableProviders: [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX],
+            onNewAgent,
+          }}
         />
       </PreferencesProvider>
     ))
@@ -373,7 +387,9 @@ describe('tabBar archived prop', () => {
       <PreferencesProvider>
         <TabBar
           {...defaultProps}
-          tabs={[makeTab(TabType.AGENT, 'a1', 'Agent')]}
+          tabs={[
+            makeTab(TabType.AGENT, 'a1', 'Agent'),
+          ]}
           archived={true}
           newTab={{ ...defaultProps.newTab, showAddButton: false }}
         />
@@ -628,7 +644,9 @@ describe('tabBar row identity', () => {
     fireEvent.dblClick(nthOf(screen.getAllByTestId('tab'), 0))
     const input = document.querySelector('input.tabEditInput') as HTMLInputElement
     expect(input, 'double-click must open the rename input').toBeTruthy()
-    fireEvent.input(input, { target: { value: 'half-typed name' } })
+    fireEvent.input(input, {
+      target: { value: 'half-typed name' },
+    })
 
     // A sibling's status flips while the user is mid-rename.
     setTabs([
@@ -662,7 +680,13 @@ describe('tabBar tooltip mode', () => {
   function renderTabs(tabs: Tab[]) {
     render(() => (
       <PreferencesProvider>
-        <TabBar {...defaultProps} tabs={tabs} activeTabKey={tabs[0] ? tabKey(tabs[0]) : null} />
+        <TabBar
+          {...defaultProps}
+          tabs={tabs}
+          activeTabKey={tabs[0]
+            ? tabKey(tabs[0])
+            : null}
+        />
       </PreferencesProvider>
     ))
   }
@@ -675,7 +699,10 @@ describe('tabBar tooltip mode', () => {
   }
 
   it('shows a terminal tooltip carrying the live PTY title even when nothing is clipped', () => {
-    const tab = { ...makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'), ptyTitle: 'vim src/app.ts' } as Tab
+    const tab = {
+      ...makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'),
+      ptyTitle: 'vim src/app.ts',
+    } as Tab
     renderTabs([tab])
 
     hoverLabel('Terminal Liam')
@@ -684,7 +711,9 @@ describe('tabBar tooltip mode', () => {
   })
 
   it('keeps the clipped-only mode when the tooltip merely repeats the label', () => {
-    renderTabs([makeTab(TabType.AGENT, 'a1', 'Agent Olivia')])
+    renderTabs([
+      makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
+    ])
 
     hoverLabel('Agent Olivia')
 
@@ -692,7 +721,9 @@ describe('tabBar tooltip mode', () => {
   })
 
   it('keeps the clipped-only mode for a terminal with no PTY title', () => {
-    renderTabs([makeTab(TabType.TERMINAL, 't1', 'Terminal Liam')])
+    renderTabs([
+      makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'),
+    ])
 
     hoverLabel('Terminal Liam')
 
@@ -726,14 +757,18 @@ describe('tabBar mobile variant', () => {
       <PreferencesProvider>
         <TabBar
           {...defaultProps}
-          tabs={typeof tabs === 'function' ? tabs() : tabs}
+          tabs={typeof tabs === 'function'
+            ? tabs()
+            : tabs}
           activeTabKey={activeTabKey}
           onSelect={opts.onSelect ?? noop}
           onClose={opts.onClose ?? noop}
           onRename={opts.onRename ?? noop}
           newTab={{
             ...defaultProps.newTab,
-            ...(opts.onNewAgentAdvanced !== undefined ? { onNewAgentAdvanced: opts.onNewAgentAdvanced } : {}),
+            ...(opts.onNewAgentAdvanced !== undefined
+              ? { onNewAgentAdvanced: opts.onNewAgentAdvanced }
+              : {}),
           }}
           mobile={{
             sheetOpen,
@@ -761,7 +796,9 @@ describe('tabBar mobile variant', () => {
     expect(screen.getByTestId('tab-sheet-title')).toHaveTextContent('2 Tabs')
     two.view.unmount()
 
-    renderMobileTabBar([makeTab(TabType.AGENT, 'a1', 'Agent Olivia')], `${TabType.AGENT}:a1`)
+    renderMobileTabBar([
+      makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
+    ], `${TabType.AGENT}:a1`)
     fireEvent.click(screen.getByTestId('tab-chip'))
     expect(screen.getByTestId('tab-sheet-title')).toHaveTextContent('1 Tab')
   })
@@ -879,14 +916,21 @@ describe('tabBar mobile variant', () => {
     // holds that flex role — without it the trailing chrome collapses against
     // the head of the bar.
     const barChromeLabels = () =>
-      [...screen.getByTestId('tab-bar').querySelectorAll('button')]
+      [
+        ...screen.getByTestId('tab-bar').querySelectorAll('button'),
+      ]
         .map(b => b.getAttribute('aria-label') ?? b.dataset.testid ?? '')
         // The "+" dropdown's menu items render inline with no label — they are
         // not bar chrome; only the labelled controls carry the layout.
         .filter(label => label !== '')
 
     const rendered = renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`)
-    expect(barChromeLabels()).toEqual(['Toggle workspaces', 'tab-chip', 'collapsed-new-tab-button', 'Toggle files'])
+    expect(barChromeLabels()).toEqual([
+      'Toggle workspaces',
+      'tab-chip',
+      'collapsed-new-tab-button',
+      'Toggle files',
+    ])
     expect(screen.queryByTestId('tab-bar-spacer')).toBeNull()
     rendered.view.unmount()
 
@@ -937,12 +981,16 @@ describe('tabBar mobile variant', () => {
   })
 
   it('closing the last tab closes the sheet, whose only bar toggle (the chip) is gone', () => {
-    const [tabs, setTabs] = createSignal<Tab[]>([makeTab(TabType.AGENT, 'a1', 'Agent Olivia')])
+    const [tabs, setTabs] = createSignal<Tab[]>([
+      makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
+    ])
     // The close handler drops the row the way the real store does, so the
     // prop shrinks from inside the event. Passing the ACCESSOR (not a read)
     // lets the harness prop re-derive per tick; the rule cannot see that.
     // eslint-disable-next-line solid/reactivity -- accessor passed, never read here
-    renderMobileTabBar(tabs, `${TabType.AGENT}:a1`, { onClose: () => setTabs([]) })
+    renderMobileTabBar(tabs, `${TabType.AGENT}:a1`, {
+      onClose: () => setTabs([]),
+    })
 
     fireEvent.click(screen.getByTestId('tab-chip'))
     expect(screen.getByTestId('tab-sheet')).toHaveClass('sheetPanelOpen')
@@ -997,7 +1045,9 @@ describe('tabBar mobile variant', () => {
 
     const input = within(row).getByTestId('tab-rename-input') as HTMLInputElement
     expect(input.value).toBe('Terminal Liam')
-    fireEvent.input(input, { target: { value: 'Terminal Liam II' } })
+    fireEvent.input(input, {
+      target: { value: 'Terminal Liam II' },
+    })
     fireEvent.keyDown(input, { key: 'Enter' })
 
     expect(onRename).toHaveBeenCalledOnce()
@@ -1019,7 +1069,9 @@ describe('tabBar mobile variant', () => {
     const row = nthOf(screen.getAllByTestId('tab-sheet-row'), 1)
     fireEvent.click(within(row).getByTestId('tab-menu-rename'))
     const input = within(row).getByTestId('tab-rename-input') as HTMLInputElement
-    fireEvent.input(input, { target: { value: 'half-typed' } })
+    fireEvent.input(input, {
+      target: { value: 'half-typed' },
+    })
 
     // Exactly what an automatic focus does: the input blurs, and nothing else.
     fireEvent.blur(input)
@@ -1038,7 +1090,9 @@ describe('tabBar mobile variant', () => {
     const row = nthOf(screen.getAllByTestId('tab-sheet-row'), 1)
     fireEvent.click(within(row).getByTestId('tab-menu-rename'))
     const input = within(row).getByTestId('tab-rename-input') as HTMLInputElement
-    fireEvent.input(input, { target: { value: 'Terminal Liam III' } })
+    fireEvent.input(input, {
+      target: { value: 'Terminal Liam III' },
+    })
 
     fireEvent.pointerDown(document.body)
 
@@ -1077,7 +1131,9 @@ describe('tabBar mobile variant', () => {
     const row = nthOf(screen.getAllByTestId('tab-sheet-row'), 1)
     fireEvent.click(within(row).getByTestId('tab-menu-rename'))
     const input = within(row).getByTestId('tab-rename-input') as HTMLInputElement
-    fireEvent.input(input, { target: { value: 'Terminal Liam IV' } })
+    fireEvent.input(input, {
+      target: { value: 'Terminal Liam IV' },
+    })
 
     // The caret arrives, so from here a focus change IS the user leaving.
     fireEvent.focus(input)
@@ -1097,7 +1153,9 @@ describe('tabBar mobile variant', () => {
     const row = nthOf(screen.getAllByTestId('tab-sheet-row'), 1)
     fireEvent.click(within(row).getByTestId('tab-menu-rename'))
     const input = within(row).getByTestId('tab-rename-input') as HTMLInputElement
-    fireEvent.input(input, { target: { value: 'still typing' } })
+    fireEvent.input(input, {
+      target: { value: 'still typing' },
+    })
 
     fireEvent.pointerDown(input)
 

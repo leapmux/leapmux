@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { CORE_KEYBINDINGS, WORKSPACE_KEYBINDINGS } from './defaults'
 
-const ALL_DEFAULTS = [...CORE_KEYBINDINGS, ...WORKSPACE_KEYBINDINGS]
+const ALL_DEFAULTS = [
+  ...CORE_KEYBINDINGS,
+  ...WORKSPACE_KEYBINDINGS,
+]
 
 describe('default keybindings', () => {
   it('leaves Escape unbound, so the innermost layer keeps it', () => {

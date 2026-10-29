@@ -61,7 +61,9 @@ describe('lexorank', () => {
     })
 
     it('should produce valid mid for sequential insertions', () => {
-      const ranks: string[] = [first()]
+      const ranks: string[] = [
+        first(),
+      ]
       for (let i = 0; i < 20; i++) {
         const prev = ranks[ranks.length - 1]!
         const next = mid(prev, '')
@@ -98,27 +100,40 @@ describe('lexorank', () => {
     })
 
     it('returns rank before head when inserting at index 0', () => {
-      const items = [{ position: 'n' }, { position: 'p' }]
+      const items = [
+        { position: 'n' },
+        { position: 'p' },
+      ]
       const result = positionAtInsertIdx(items, 0)
       expect(result < 'n').toBe(true)
     })
 
     it('returns rank between neighbours for an interior index', () => {
-      const items = [{ position: 'a' }, { position: 'm' }, { position: 'z' }]
+      const items = [
+        { position: 'a' },
+        { position: 'm' },
+        { position: 'z' },
+      ]
       const result = positionAtInsertIdx(items, 1)
       expect(result > 'a').toBe(true)
       expect(result < 'm').toBe(true)
     })
 
     it('returns rank after tail when inserting at length', () => {
-      const items = [{ position: 'b' }, { position: 'n' }]
+      const items = [
+        { position: 'b' },
+        { position: 'n' },
+      ]
       const result = positionAtInsertIdx(items, items.length)
       expect(result > 'n').toBe(true)
     })
 
     it('treats missing positions as empty (head/tail edges)', () => {
       // The head item carries no `position` key at all: missing, not undefined.
-      const itemsHead = [{}, { position: 'n' }]
+      const itemsHead = [
+        {},
+        { position: 'n' },
+      ]
       const headResult = positionAtInsertIdx(itemsHead, 1)
       // prevPos is empty (missing → ''), nextPos is 'n', so this is mid('', 'n').
       expect(headResult < 'n').toBe(true)
@@ -129,7 +144,10 @@ describe('lexorank', () => {
 
 describe('appendPosition', () => {
   it('sorts after the last item', () => {
-    expect(appendPosition([{ position: 'n' }, { position: 'u' }]) > 'u').toBe(true)
+    expect(appendPosition([
+      { position: 'n' },
+      { position: 'u' },
+    ]) > 'u').toBe(true)
   })
 
   it('returns the first rank for an empty list', () => {
@@ -141,8 +159,11 @@ describe('appendPosition', () => {
     // rank by hand, and a hardcoded constant would have landed every new item
     // on the same position, leaving the SQL planner to shuffle the tied rows.
     const items: { position: string }[] = []
-    for (let i = 0; i < 8; i++)
-      items.push({ position: appendPosition(items) })
+    for (let i = 0; i < 8; i++) {
+      items.push({
+        position: appendPosition(items),
+      })
+    }
     const ranks = items.map(i => i.position)
     expect(new Set(ranks).size).toBe(ranks.length)
     expect([...ranks].sort()).toEqual(ranks)

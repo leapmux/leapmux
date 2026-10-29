@@ -13,13 +13,20 @@ import { waitForAgentStartupViaAPI } from '../helpers/workerTabs'
 export function expectCursorNativeSettings(request: MockModelRequestRecord, options: { model?: boolean, plan?: boolean, effort?: 'low' | 'xhigh' }): void {
   expect(request.nativeRequest).toMatchObject({
     ...(options.model
-      ? { requestedModel: {
-          modelId: 'mock-grok',
-          maxMode: false,
-          parameters: [{ id: 'context', value: '256k' }, { id: 'reasoning_effort', value: options.effort ?? 'low' }],
-        } }
+      ? {
+          requestedModel: {
+            modelId: 'mock-grok',
+            maxMode: false,
+            parameters: [
+              { id: 'context', value: '256k' },
+              { id: 'reasoning_effort', value: options.effort ?? 'low' },
+            ],
+          },
+        }
       : {}),
-    ...(options.plan ? { mode: 3 } : {}),
+    ...(options.plan
+      ? { mode: 3 }
+      : {}),
   })
 }
 
@@ -52,7 +59,9 @@ export async function exerciseCursorSelectedPlanSettings(context: ManagedNativeS
   expectCursorNativeSettings(request, { model: true, plan: true })
   await exerciseRestoredNativeOption(context, {
     groupId: restoreGroup,
-    value: restoreGroup === 'model' ? value : 'plan',
+    value: restoreGroup === 'model'
+      ? value
+      : 'plan',
     nativeProof(restored) {
       expectCursorNativeSettings(restored, { model: true, plan: true })
     },
@@ -84,7 +93,9 @@ export async function exerciseCursorNativePlanRPC(context: ManagedNativeScenario
   const channel = await getTestChannel(server.hubUrl, server.adminToken)
   const response = await channel.callWorker(server.workerId, 'UpdateAgentSettings', UpdateAgentSettingsRequestSchema, UpdateAgentSettingsResponseSchema, {
     agentId: agent.id,
-    settings: { options: { permissionMode: 'plan' } },
+    settings: {
+      options: { permissionMode: 'plan' },
+    },
   })
   expect(response.optionSettlements.permissionMode?.state).toBe(AgentOptionSettlementState.CONFIRMED)
   expect(response.optionSettlements.permissionMode?.value).toBe('plan')

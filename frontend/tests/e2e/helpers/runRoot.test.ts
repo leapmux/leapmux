@@ -91,7 +91,10 @@ describe('isInsideDirectory', () => {
     symlinkSync(join(outside, 'child'), join(root, 'outside-link'), 'junction')
     symlinkSync(join(root, 'child'), join(outside, 'inside-link'), 'junction')
 
-    for (const link of [join(root, 'outside-link'), join(outside, 'inside-link')]) {
+    for (const link of [
+      join(root, 'outside-link'),
+      join(outside, 'inside-link'),
+    ]) {
       const path = `${link}${sep}..${sep}AGENTS.md`
       expect(isInsideDirectory(path, root)).toBe(readFileSync(path, 'utf8') === 'Inside')
     }

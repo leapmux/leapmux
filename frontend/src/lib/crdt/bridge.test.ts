@@ -15,7 +15,9 @@ import { ctxFromBridge, HLCClock, withBridgeAndState } from '~/lib/crdt'
  */
 describe('withBridgeAndState', () => {
   function makeBridge(overrides: { state?: UserCrdtState | null } = {}): CRDTBridge {
-    const state = overrides.state === undefined ? create(UserCrdtStateSchema, { userId: 'user-1' }) : overrides.state
+    const state = overrides.state === undefined
+      ? create(UserCrdtStateSchema, { userId: 'user-1' })
+      : overrides.state
     const clock = new HLCClock('client-1')
     return {
       workspaceId: () => 'ws-1',

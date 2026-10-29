@@ -22,7 +22,9 @@ kiroTest.describe('Kiro subagent registry', () => {
     leapmuxServer,
     modelScript,
   }) => {
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, { optionValues: { policyPreset: 'allow-all' } })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, {
+      optionValues: { policyPreset: 'allow-all' },
+    })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectNoRegistryRows(page, leapmuxServer)
 
@@ -36,10 +38,12 @@ kiroTest.describe('Kiro subagent registry', () => {
     })
     const start = await modelScript.queue(
       {
-        toolCalls: [spawnSubagentToolCall(AgentProvider.KIRO, 'spawn-kiro', {
-          description: 'Ask for one word',
-          prompt: modelScript.prompt('Reply with the single word PONG.'),
-        })],
+        toolCalls: [
+          spawnSubagentToolCall(AgentProvider.KIRO, 'spawn-kiro', {
+            description: 'Ask for one word',
+            prompt: modelScript.prompt('Reply with the single word PONG.'),
+          }),
+        ],
       },
       { text: 'The subagent reported PONG.' },
     )

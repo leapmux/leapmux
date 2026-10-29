@@ -20,9 +20,13 @@ import { deepseekHarnessMcpTextDisplay, deepseekHarnessRenderedMcpContent } from
 
 /** Read a compact actual MCP value projection from native run_code inline text. */
 export function deepseekHarnessCanonicalMcpProjection(frame: unknown, callId: string): Record<string, unknown> {
-  const message = isObject(frame) && frame.type === 'tool/result' ? pickObject(pickObject(frame, 'data'), 'message') : undefined
+  const message = isObject(frame) && frame.type === 'tool/result'
+    ? pickObject(pickObject(frame, 'data'), 'message')
+    : undefined
   const content = message?.content
-  const block = Array.isArray(content) && content.length === 1 ? content[0] : undefined
+  const block = Array.isArray(content) && content.length === 1
+    ? content[0]
+    : undefined
   if (!callId || message?.toolCallId !== callId || message.isError !== false || !isObject(block) || block.type !== 'text' || typeof block.text !== 'string')
     throw new Error('The native MCP projection requires an exact successful code result.')
   const [line, ...notices] = block.text.split('\n')
@@ -49,7 +53,9 @@ export function deepseekHarnessMcpResultMessage(snapshot: NativeMessageSnapshot,
 /** Read image-only occurrences. Keep every native preview text block unchanged. */
 function nativeMcpDisplay(snapshot: NativeMessageSnapshot, callId: string): { display: DeepseekHarnessRenderedMcpBlock[], previewText: string } {
   const result = readDeepseekHarnessNativeOutput(snapshot, callId)
-  const provider = isObject(result.supplement) ? pickObject(result.supplement, MESSAGE_SUPPLEMENT_FIELD.Provider) : undefined
+  const provider = isObject(result.supplement)
+    ? pickObject(result.supplement, MESSAGE_SUPPLEMENT_FIELD.Provider)
+    : undefined
   const receipt = pickObject(provider, 'imageAttachments')
   const originals = receipt?.originalImages
   const retained = receipt?.retainedImages
@@ -59,12 +65,22 @@ function nativeMcpDisplay(snapshot: NativeMessageSnapshot, callId: string): { di
     throw new Error('The native MCP image occurrence receipt lacks its exact owner.')
   }
   const originalRefs = originals.map((position) => {
-    const attachment = isObject(position) ? pickObject(position, 'attachment') : undefined
+    const attachment = isObject(position)
+      ? pickObject(position, 'attachment')
+      : undefined
     const id = attachment?.attachmentId
-    const value = typeof id === 'string' ? pickObject(images, id) : undefined
+    const value = typeof id === 'string'
+      ? pickObject(images, id)
+      : undefined
     const savedReference = pickObject(value, 'attachment')
     if (!attachment || !value || !savedReference || typeof value.data !== 'string'
-      || ['attachmentId', 'mediaType', 'bytes', 'width', 'height'].some(field => savedReference[field] !== attachment[field])) {
+      || [
+        'attachmentId',
+        'mediaType',
+        'bytes',
+        'width',
+        'height',
+      ].some(field => savedReference[field] !== attachment[field])) {
       throw new Error('The native MCP image occurrence has another saved image reference.')
     }
     return attachment
@@ -114,15 +130,36 @@ export async function proveDeepseekHarnessMixedMcpOutput(context: ManagedNativeS
   expect(receipt.paths.length).toBeGreaterThan(0)
   const orderMarkers = [options.firstMarker, spillNotice]
   expect(orderMarkers.map(marker => nativeDisplay.previewText.includes(marker))).toEqual([true, true])
-  const expectedContent = options.expected.map(block => block.type === 'text' ? block : { type: 'image', mimeType: 'image/png', data: readFileSync(block.path).toString('base64') })
+  const expectedContent = options.expected.map(block => block.type === 'text'
+    ? block
+    : {
+        type: 'image',
+        mimeType: 'image/png',
+        data: readFileSync(block.path).toString('base64'),
+      })
   const expectedStructured = { nextCount: options.input.count + 1, enabled: options.input.enabled, text: options.input.text }
   const call = readMcpCallExchange(options.receiptLog)
   expect({ name: call.name, arguments: call.arguments }).toEqual({ name: 'inspect', arguments: options.input })
-  expect(call.result).toEqual({ content: expectedContent, structuredContent: expectedStructured, _meta: { privateFixture: true } })
+  expect(call.result).toEqual({
+    content: expectedContent,
+    structuredContent: expectedStructured,
+    _meta: { privateFixture: true },
+  })
   expect(receipt.blocks.filter(block => block.type === 'image')).toHaveLength(options.retainedImages)
   expect(nativeDisplay.display.filter(block => block.type === 'image')).toHaveLength(options.expected.filter(block => block.type === 'image').length)
   expect(receipt.frame).not.toHaveProperty('_meta')
-  await options.testInfo?.attach('deepseek-native-mcp-path-receipt', { body: JSON.stringify({ agentId: agent.id, sessionId: agent.agentSessionId, callId: options.callId, paths: receipt.paths, previewText: nativeDisplay.previewText, frame: receipt.frame, supplement: receipt.supplement }), contentType: 'application/json' })
+  await options.testInfo?.attach('deepseek-native-mcp-path-receipt', {
+    body: JSON.stringify({
+      agentId: agent.id,
+      sessionId: agent.agentSessionId,
+      callId: options.callId,
+      paths: receipt.paths,
+      previewText: nativeDisplay.previewText,
+      frame: receipt.frame,
+      supplement: receipt.supplement,
+    }),
+    contentType: 'application/json',
+  })
   await proveNativeToolOutputFilePaths({
     context,
     callId: options.callId,
@@ -134,7 +171,11 @@ export async function proveDeepseekHarnessMixedMcpOutput(context: ManagedNativeS
     // The Worker record holds the native frame, the stored content, and the display that the row draws from them.
     workerProof: () => expectUnchangedNativeRecord(context, agent, (snapshot) => {
       const result = readDeepseekHarnessNativeOutput(snapshot, options.callId)
-      return { frame: result.frame, content: result.message.content, display: nativeMcpDisplay(snapshot, options.callId) }
+      return {
+        frame: result.frame,
+        content: result.message.content,
+        display: nativeMcpDisplay(snapshot, options.callId),
+      }
     }, { frame: receipt.frame, content: receipt.message.content, display: nativeDisplay }),
     rowProof: bubble => proveMixedMcpRow(bubble, options.expected, nativeDisplay.display, options.testInfo),
   })
@@ -159,10 +200,17 @@ async function proveMixedMcpRow(
     }).toBe(true)
   }
   catch (error) {
-    await testInfo?.attach('deepseek-native-mcp-order-mismatch', { body: JSON.stringify({ expected: display, rendered: last.rendered }), contentType: 'application/json' })
+    await testInfo?.attach('deepseek-native-mcp-order-mismatch', {
+      body: JSON.stringify({ expected: display, rendered: last.rendered }),
+      contentType: 'application/json',
+    })
     throw error
   }
-  const expectedImages = expected.flatMap(block => block.type === 'image' ? [readFileSync(block.path).toString('base64')] : [])
+  const expectedImages = expected.flatMap(block => block.type === 'image'
+    ? [
+        readFileSync(block.path).toString('base64'),
+      ]
+    : [])
   for (let index = 0; index < expectedImages.length; index++) {
     const bytes = expectedImages[index]
     if (bytes === undefined)

@@ -184,8 +184,12 @@ export function createSettingsStore(ports: SettingsStorePorts): SettingsStore {
     }
     catch (err) {
       // The store keeps the server's truth and the row shows the failure.
-      if (newest())
-        setState('writeError', { key, message: formatErrorMessage(err, 'Failed to save setting') })
+      if (newest()) {
+        setState('writeError', {
+          key,
+          message: formatErrorMessage(err, 'Failed to save setting'),
+        })
+      }
       throw err
     }
   }

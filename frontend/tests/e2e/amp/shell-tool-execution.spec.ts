@@ -12,10 +12,15 @@ ampTest.describe('Amp tool execution', () => {
     // The shared scenario proves the computed output on the page and in the next model request, and the exit code of
     // the failed command in its row header. Amp states each result as a JSON record with `output` and `exitCode`. The
     // row draws the output, not the record.
-    await exerciseShellToolExecution(native, { absentRowText: ['"exitCode"', '"output"'] })
+    await exerciseShellToolExecution(native, {
+      absentRowText: ['"exitCode"', '"output"'],
+    })
   })
 })
 
 ampTest('preserves a literal private shell path with spaces and metacharacters', async ({ native }) => {
-  await exerciseShellToolExecution(native, { includeFailure: false, prepare: () => applyPermissionPreset(native.page, 'bypass') })
+  await exerciseShellToolExecution(native, {
+    includeFailure: false,
+    prepare: () => applyPermissionPreset(native.page, 'bypass'),
+  })
 })

@@ -19,7 +19,11 @@ grokTest('runs routine work and blocks a risky native command under Smart before
     when: { system: '^You review a command that a coding agent wants to run' },
     respond: { text: '{"thinking":"The command removes the fixture file.","shouldBlock":true,"reason":"Ask before the fixture removal."}' },
   })
-  const routine = await modelScript.queue({ toolCalls: [bashToolCall(native.provider, 'native-smart-routine', `touch ${quotePosixShellArgument(file)}`)] }, nativeTextStep(native, 'The routine native command ran.'))
+  const routine = await modelScript.queue({
+    toolCalls: [
+      bashToolCall(native.provider, 'native-smart-routine', `touch ${quotePosixShellArgument(file)}`),
+    ],
+  }, nativeTextStep(native, 'The routine native command ran.'))
   await sendMessage(page, modelScript.prompt('Run the scripted routine command under Smart permissions.'))
   await modelScript.waitForSteps(routine + 2)
   await waitForAgentIdle(page)
@@ -29,17 +33,24 @@ grokTest('runs routine work and blocks a risky native command under Smart before
       await page.reload()
       await waitForSettingsHydrated(page)
     }
-    await expectNoNativeControl(native, { testId: 'control-banner', relatedProof: async () => {
-      const reviewedBefore = (await modelScript.status()).ruleMatches['native-grok-smart-block'] ?? 0
-      // One agent session runs both passes, so each pass gives its tool call its own ID.
-      const id = `native-smart-block-${Number(reload)}`
-      const start = await modelScript.queue({ toolCalls: [bashToolCall(native.provider, id, `rm -rf ${quotePosixShellArgument(file)}`)] }, nativeTextStep(native, 'The native Smart reviewer blocked the removal.'))
-      await sendMessage(page, modelScript.prompt('Attempt the scripted risky removal under Smart permissions.'))
-      const status = await modelScript.waitForSteps(start + 2)
-      await waitForAgentIdle(page)
-      expect(existsSync(file)).toBe(true)
-      expect(nativeToolResult(await modelScript.requestAt(start + 1), id)).toContain('Auto mode blocked this action')
-      expect(status.ruleMatches['native-grok-smart-block']).toBeGreaterThan(reviewedBefore)
-    } })
+    await expectNoNativeControl(native, {
+      testId: 'control-banner',
+      relatedProof: async () => {
+        const reviewedBefore = (await modelScript.status()).ruleMatches['native-grok-smart-block'] ?? 0
+        // One agent session runs both passes, so each pass gives its tool call its own ID.
+        const id = `native-smart-block-${Number(reload)}`
+        const start = await modelScript.queue({
+          toolCalls: [
+            bashToolCall(native.provider, id, `rm -rf ${quotePosixShellArgument(file)}`),
+          ],
+        }, nativeTextStep(native, 'The native Smart reviewer blocked the removal.'))
+        await sendMessage(page, modelScript.prompt('Attempt the scripted risky removal under Smart permissions.'))
+        const status = await modelScript.waitForSteps(start + 2)
+        await waitForAgentIdle(page)
+        expect(existsSync(file)).toBe(true)
+        expect(nativeToolResult(await modelScript.requestAt(start + 1), id)).toContain('Auto mode blocked this action')
+        expect(status.ruleMatches['native-grok-smart-block']).toBeGreaterThan(reviewedBefore)
+      },
+    })
   }
 })

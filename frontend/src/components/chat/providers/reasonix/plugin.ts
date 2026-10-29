@@ -17,6 +17,12 @@ registerACPProvider({
   controlResponseDisplay: reasonixControlResponseSummary,
   permissionPresets: reasonixPermissionPresets,
   nativeNotifications: reasonixNativeNotifications,
-  attachments: { text: true, image: true, pdf: true, audio: false, binary: true },
+  attachments: {
+    text: true,
+    image: true,
+    pdf: true,
+    audio: false,
+    binary: true,
+  },
   outputFilePaths: reasonixOutputFilePaths,
 })

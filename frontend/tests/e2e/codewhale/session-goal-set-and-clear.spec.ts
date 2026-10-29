@@ -26,7 +26,11 @@ codewhaleTest.describe('Codewhale session goal', () => {
     // The kickoff turn. The model marks the goal blocked through the runtime's
     // own goal tool, which ends the continuation passes, and then answers.
     await modelScript.queue(
-      { toolCalls: [blockGoalToolCall(AgentProvider.CODEWHALE, 'goal-blocked', 'The scripted test stops here.')] },
+      {
+        toolCalls: [
+          blockGoalToolCall(AgentProvider.CODEWHALE, 'goal-blocked', 'The scripted test stops here.'),
+        ],
+      },
       { text: 'The goal is blocked.' },
     )
     // The objective carries the marker, because the kickoff turn takes the

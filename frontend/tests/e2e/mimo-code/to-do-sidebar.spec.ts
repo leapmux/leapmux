@@ -11,10 +11,26 @@ mimoTest.describe('MiMo Code to-do list', () => {
   mimoTest('folds each task call into the sidebar list', async ({ native }) => {
     const { page, modelScript } = native
     await modelScript.queue(
-      { toolCalls: [mimoTaskToolCall('create-inspect', { action: 'create', summary: 'Inspect the parser' })] },
-      { toolCalls: [mimoTaskToolCall('create-report', { action: 'create', summary: 'Write the report' })] },
-      { toolCalls: [mimoTaskToolCall('start-inspect', { action: 'start', id: 'T1' })] },
-      { toolCalls: [mimoTaskToolCall('finish-inspect', { action: 'done', id: 'T1' })] },
+      {
+        toolCalls: [
+          mimoTaskToolCall('create-inspect', { action: 'create', summary: 'Inspect the parser' }),
+        ],
+      },
+      {
+        toolCalls: [
+          mimoTaskToolCall('create-report', { action: 'create', summary: 'Write the report' }),
+        ],
+      },
+      {
+        toolCalls: [
+          mimoTaskToolCall('start-inspect', { action: 'start', id: 'T1' }),
+        ],
+      },
+      {
+        toolCalls: [
+          mimoTaskToolCall('finish-inspect', { action: 'done', id: 'T1' }),
+        ],
+      },
       { text: 'The parser is inspected, and the report remains.' },
     )
     await sendMessage(page, modelScript.prompt('Track two tasks and finish the first one.'))

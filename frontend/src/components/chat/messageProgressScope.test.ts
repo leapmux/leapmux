@@ -19,7 +19,12 @@ function renderSources(context: MessageContextResolver, message: AgentChatMessag
 function runningToolContext(spanId: string, elapsedSeconds: number, agentSessionId: string = SESSION) {
   const progress = createToolProgressStore()
   progress.apply('agent', { spanId, agentSessionId, elapsedSeconds })
-  return { progress, context: testMessageContext({ progress: identity => progress.get('agent', identity) }) }
+  return {
+    progress,
+    context: testMessageContext({
+      progress: identity => progress.get('agent', identity),
+    }),
+  }
 }
 
 describe('message progress scope', () => {

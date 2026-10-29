@@ -25,7 +25,12 @@ describe('createFloatingWindowStore (projection-driven)', () => {
       const store = createTestFloatingWindowStore()
       const before = harness.pending.state.pendingBatches.length
 
-      const created = store.addWindow({ x: 0.1, y: 0.2, width: 0.4, height: 0.5 })
+      const created = store.addWindow({
+        x: 0.1,
+        y: 0.2,
+        width: 0.4,
+        height: 0.5,
+      })
       expect(created).not.toBeNull()
       const { windowId, tileId } = created!
       expect(windowId).not.toBe('')
@@ -93,7 +98,12 @@ describe('createFloatingWindowStore (projection-driven)', () => {
   it('a committed MOVE emits a 2-op batch (x + y) and reflects in the projection', () => {
     withTestBridge((harness) => {
       const store = createTestFloatingWindowStore()
-      const { windowId } = store.addWindow({ x: 0.1, y: 0.1, width: 0.3, height: 0.3 })!
+      const { windowId } = store.addWindow({
+        x: 0.1,
+        y: 0.1,
+        width: 0.3,
+        height: 0.3,
+      })!
       const before = harness.pending.state.pendingBatches.length
 
       store.updateDragMove(windowId, 0.5, 0.6)
@@ -111,7 +121,12 @@ describe('createFloatingWindowStore (projection-driven)', () => {
   it('a committed MOVE back to the starting position is a no-op', () => {
     withTestBridge((harness) => {
       const store = createTestFloatingWindowStore()
-      const { windowId } = store.addWindow({ x: 0.1, y: 0.2, width: 0.3, height: 0.3 })!
+      const { windowId } = store.addWindow({
+        x: 0.1,
+        y: 0.2,
+        width: 0.3,
+        height: 0.3,
+      })!
       const before = harness.pending.state.pendingBatches.length
 
       store.updateDragMove(windowId, 0.1, 0.2)
@@ -129,7 +144,12 @@ describe('createFloatingWindowStore (projection-driven)', () => {
   it('a committed MOVE does not emit width/height, so a concurrent resize survives', () => {
     withTestBridge((harness) => {
       const store = createTestFloatingWindowStore()
-      const { windowId } = store.addWindow({ x: 0.1, y: 0.1, width: 0.3, height: 0.3 })!
+      const { windowId } = store.addWindow({
+        x: 0.1,
+        y: 0.1,
+        width: 0.3,
+        height: 0.3,
+      })!
 
       // Pointer-down captures 0.3 x 0.3, then a "peer" resizes to 0.5 x 0.5
       // mid-drag (a resize gesture standing in for the remote op).
@@ -153,7 +173,12 @@ describe('createFloatingWindowStore (projection-driven)', () => {
   it('a committed RESIZE emits a 4-op batch and clamps below MIN_WINDOW_DIMENSION', () => {
     withTestBridge((harness) => {
       const store = createTestFloatingWindowStore()
-      const { windowId } = store.addWindow({ x: 0.1, y: 0.1, width: 0.4, height: 0.4 })!
+      const { windowId } = store.addWindow({
+        x: 0.1,
+        y: 0.1,
+        width: 0.4,
+        height: 0.4,
+      })!
       const before = harness.pending.state.pendingBatches.length
 
       // Pass a width below the floor; the store must clamp before emitting.
@@ -213,7 +238,12 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     it('updateDragResize moves the projected window WITHOUT emitting a batch', () => {
       withTestBridge((harness) => {
         const store = createTestFloatingWindowStore()
-        const { windowId } = store.addWindow({ x: 0.1, y: 0.1, width: 0.4, height: 0.4 })!
+        const { windowId } = store.addWindow({
+          x: 0.1,
+          y: 0.1,
+          width: 0.4,
+          height: 0.4,
+        })!
         const before = harness.pending.state.pendingBatches.length
 
         store.updateDragResize(windowId, 0.5, 0.6, 0.4, 0.4)
@@ -228,7 +258,12 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     it('commitDragGeometry emits a single batch on drop and clears the override', () => {
       withTestBridge((harness) => {
         const store = createTestFloatingWindowStore()
-        const { windowId } = store.addWindow({ x: 0.1, y: 0.1, width: 0.4, height: 0.4 })!
+        const { windowId } = store.addWindow({
+          x: 0.1,
+          y: 0.1,
+          width: 0.4,
+          height: 0.4,
+        })!
         const before = harness.pending.state.pendingBatches.length
 
         // A drag: several override updates, then one commit.
@@ -249,7 +284,12 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     it('commitDragGeometry is a no-op when no drag is in flight (bare click)', () => {
       withTestBridge((harness) => {
         const store = createTestFloatingWindowStore()
-        const { windowId } = store.addWindow({ x: 0.1, y: 0.1, width: 0.4, height: 0.4 })!
+        const { windowId } = store.addWindow({
+          x: 0.1,
+          y: 0.1,
+          width: 0.4,
+          height: 0.4,
+        })!
         const before = harness.pending.state.pendingBatches.length
 
         store.commitDragGeometry(windowId)
@@ -260,7 +300,12 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     it('commitDragGeometry is a no-op when the override matches the CRDT geometry (drag returned to start)', () => {
       withTestBridge((harness) => {
         const store = createTestFloatingWindowStore()
-        const { windowId } = store.addWindow({ x: 0.1, y: 0.1, width: 0.4, height: 0.4 })!
+        const { windowId } = store.addWindow({
+          x: 0.1,
+          y: 0.1,
+          width: 0.4,
+          height: 0.4,
+        })!
         const before = harness.pending.state.pendingBatches.length
 
         // Drag back to the same geometry, then commit — should emit nothing.
@@ -273,7 +318,12 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     it('cancelDragGeometry snaps the projection back to CRDT geometry without committing', () => {
       withTestBridge((harness) => {
         const store = createTestFloatingWindowStore()
-        const { windowId } = store.addWindow({ x: 0.1, y: 0.1, width: 0.4, height: 0.4 })!
+        const { windowId } = store.addWindow({
+          x: 0.1,
+          y: 0.1,
+          width: 0.4,
+          height: 0.4,
+        })!
         const before = harness.pending.state.pendingBatches.length
 
         store.updateDragResize(windowId, 0.5, 0.6, 0.4, 0.4)
@@ -302,8 +352,18 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     it('keeps a per-window override so two simultaneous drags both commit', () => {
       withTestBridge((harness) => {
         const store = createTestFloatingWindowStore()
-        const w1 = store.addWindow({ x: 0.1, y: 0.1, width: 0.3, height: 0.3 })!.windowId
-        const w2 = store.addWindow({ x: 0.5, y: 0.5, width: 0.3, height: 0.3 })!.windowId
+        const w1 = store.addWindow({
+          x: 0.1,
+          y: 0.1,
+          width: 0.3,
+          height: 0.3,
+        })!.windowId
+        const w2 = store.addWindow({
+          x: 0.5,
+          y: 0.5,
+          width: 0.3,
+          height: 0.3,
+        })!.windowId
 
         // Both pointers move before either lifts.
         store.updateDragResize(w1, 0.2, 0.2, 0.3, 0.3)
@@ -328,8 +388,18 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     it('cancelDragGeometry clears only the named window', () => {
       withTestBridge((_harness) => {
         const store = createTestFloatingWindowStore()
-        const w1 = store.addWindow({ x: 0.1, y: 0.1, width: 0.3, height: 0.3 })!.windowId
-        const w2 = store.addWindow({ x: 0.5, y: 0.5, width: 0.3, height: 0.3 })!.windowId
+        const w1 = store.addWindow({
+          x: 0.1,
+          y: 0.1,
+          width: 0.3,
+          height: 0.3,
+        })!.windowId
+        const w2 = store.addWindow({
+          x: 0.5,
+          y: 0.5,
+          width: 0.3,
+          height: 0.3,
+        })!.windowId
 
         store.updateDragResize(w1, 0.2, 0.2, 0.3, 0.3)
         store.updateDragResize(w2, 0.6, 0.6, 0.3, 0.3)
@@ -529,7 +599,12 @@ describe('createFloatingWindowStore (projection-driven)', () => {
           getWorkspaceId: () => harness.workspaceId,
           projection,
         })
-        const created = store.addWindow({ x: 0.1, y: 0.2, width: 0.4, height: 0.5 })!
+        const created = store.addWindow({
+          x: 0.1,
+          y: 0.2,
+          width: 0.4,
+          height: 0.5,
+        })!
         await new Promise<void>(queueMicrotask)
         const rendered = projection()!.workspaces.get(harness.workspaceId)!.floatingWindows[0]!
         // The SHARED conversion -- what any other consumer of this subtree gets.
@@ -550,7 +625,12 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     it('preserves FloatingWindowState refs across CRDT ticks that don\'t change any window field', async () => {
       await withTestBridge(async (harness) => {
         const store = createTestFloatingWindowStore()
-        store.addWindow({ x: 0.1, y: 0.2, width: 0.4, height: 0.5 })
+        store.addWindow({
+          x: 0.1,
+          y: 0.2,
+          width: 0.4,
+          height: 0.5,
+        })
         await new Promise<void>(queueMicrotask)
         const before = store.state.windows[0]!
         // Simulate a passive CRDT tick: submit a no-op-shaped batch on
@@ -648,7 +728,12 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     it('keeps getWindowTileIdSet stable across a drag-handle scrub (geometry-only)', async () => {
       await withTestBridge(async (_harness) => {
         const store = createTestFloatingWindowStore()
-        const { windowId } = store.addWindow({ x: 0.1, y: 0.1, width: 0.3, height: 0.3 })!
+        const { windowId } = store.addWindow({
+          x: 0.1,
+          y: 0.1,
+          width: 0.3,
+          height: 0.3,
+        })!
         await new Promise<void>(queueMicrotask)
         const before = store.getWindowTileIdSet(windowId)
         expect(before).not.toBeNull()
@@ -672,7 +757,12 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     it('keeps getWindowTileIdSet stable across a resize-handle scrub', async () => {
       await withTestBridge(async (_harness) => {
         const store = createTestFloatingWindowStore()
-        const { windowId } = store.addWindow({ x: 0.1, y: 0.1, width: 0.3, height: 0.3 })!
+        const { windowId } = store.addWindow({
+          x: 0.1,
+          y: 0.1,
+          width: 0.3,
+          height: 0.3,
+        })!
         await new Promise<void>(queueMicrotask)
         const before = store.getWindowTileIdSet(windowId)
         // 20-frame resize scrub: width + height change every frame,
@@ -726,8 +816,19 @@ describe('createFloatingWindowStore (projection-driven)', () => {
         const { emitAddTab } = await import('~/stores/tabOps')
         const { createTestTabStores } = await import('~/test-support/tabStores')
         const { view } = createTestTabStores(harness.workspaceId)
-        const { windowId, tileId } = store.addWindow({ x: 0.1, y: 0.1, width: 0.3, height: 0.3 })!
-        emitAddTab({ type: TabType.AGENT, id: 'agent-1', tileId, position: 'a', workerId: 'w-1' })
+        const { windowId, tileId } = store.addWindow({
+          x: 0.1,
+          y: 0.1,
+          width: 0.3,
+          height: 0.3,
+        })!
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'agent-1',
+          tileId,
+          position: 'a',
+          workerId: 'w-1',
+        })
         await new Promise<void>(queueMicrotask)
 
         let effectRuns = 0
@@ -764,9 +865,24 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     it('keeps tile-id sets stable across a geometry-only batch on N windows', async () => {
       await withTestBridge(async (_harness) => {
         const store = createTestFloatingWindowStore()
-        const a = store.addWindow({ x: 0.1, y: 0.1, width: 0.2, height: 0.2 })!
-        const b = store.addWindow({ x: 0.3, y: 0.3, width: 0.2, height: 0.2 })!
-        const c = store.addWindow({ x: 0.5, y: 0.5, width: 0.2, height: 0.2 })!
+        const a = store.addWindow({
+          x: 0.1,
+          y: 0.1,
+          width: 0.2,
+          height: 0.2,
+        })!
+        const b = store.addWindow({
+          x: 0.3,
+          y: 0.3,
+          width: 0.2,
+          height: 0.2,
+        })!
+        const c = store.addWindow({
+          x: 0.5,
+          y: 0.5,
+          width: 0.2,
+          height: 0.2,
+        })!
         await new Promise<void>(queueMicrotask)
         expect(store.getWindowTileIdSet(a.windowId)?.size).toBe(1)
         expect(store.getWindowTileIdSet(b.windowId)?.size).toBe(1)
@@ -824,12 +940,24 @@ describe('createFloatingWindowStore (projection-driven)', () => {
         seedWorkspace(harness, 'ws-bg', 'bg-root')
         const store = createTestFloatingWindowStore('ws-active')
         const bgStore = createTestFloatingWindowStore('ws-bg')
-        const active = store.addWindow({ x: 0.1, y: 0.1, width: 0.2, height: 0.2 })!
+        const active = store.addWindow({
+          x: 0.1,
+          y: 0.1,
+          width: 0.2,
+          height: 0.2,
+        })!
         // `addWindow` attributes the window to the BRIDGE's workspace, so hand it
         // to the background one the way a cross-workspace move does.
-        const background = store.addWindow({ x: 0.6, y: 0.6, width: 0.2, height: 0.2 })!
+        const background = store.addWindow({
+          x: 0.6,
+          y: 0.6,
+          width: 0.2,
+          height: 0.2,
+        })!
         const bridge = getCRDTBridge()!
-        bridge.enqueue(newBatch([setFloatingWorkspaceId(ctxFromBridge(bridge), background.windowId, 'ws-bg')]))
+        bridge.enqueue(newBatch([
+          setFloatingWorkspaceId(ctxFromBridge(bridge), background.windowId, 'ws-bg'),
+        ]))
         await new Promise<void>(queueMicrotask)
         const bgBefore = bgStore.state.windows[0]!
         const bgTilesBefore = bgStore.getWindowTileIdSet(background.windowId)
@@ -870,7 +998,12 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     it('preserves the entry ref across a field change but updates the field value', async () => {
       await withTestBridge(async (_harness) => {
         const store = createTestFloatingWindowStore()
-        const created = store.addWindow({ x: 0.1, y: 0.2, width: 0.4, height: 0.5 })!
+        const created = store.addWindow({
+          x: 0.1,
+          y: 0.2,
+          width: 0.4,
+          height: 0.5,
+        })!
         await new Promise<void>(queueMicrotask)
         const before = store.state.windows[0]!
         const beforeId = before.id
@@ -912,7 +1045,9 @@ describe('cross-workspace floating tile lookups', () => {
    */
   function moveWindowToWorkspace(windowId: string, workspaceId: string) {
     const bridge = getCRDTBridge()!
-    bridge.enqueue(newBatch([setFloatingWorkspaceId(ctxFromBridge(bridge), windowId, workspaceId)]))
+    bridge.enqueue(newBatch([
+      setFloatingWorkspaceId(ctxFromBridge(bridge), windowId, workspaceId),
+    ]))
   }
 
   /**
@@ -942,7 +1077,12 @@ describe('cross-workspace floating tile lookups', () => {
   it('resolves a tile owned by a window in a NON-active workspace', () => {
     withWorkspaces(() => {
       const store = createTestFloatingWindowStore()
-      const created = store.addWindow({ x: 0.1, y: 0.1, width: 0.3, height: 0.3 })!
+      const created = store.addWindow({
+        x: 0.1,
+        y: 0.1,
+        width: 0.3,
+        height: 0.3,
+      })!
       expect(store.getWindowForTile(created.tileId)).toBe(created.windowId)
 
       moveWindowToWorkspace(created.windowId, 'ws-elsewhere')
@@ -958,7 +1098,12 @@ describe('cross-workspace floating tile lookups', () => {
   it('reports a non-active workspace own floating tiles', () => {
     withWorkspaces(() => {
       const store = createTestFloatingWindowStore()
-      const created = store.addWindow({ x: 0.1, y: 0.1, width: 0.3, height: 0.3 })!
+      const created = store.addWindow({
+        x: 0.1,
+        y: 0.1,
+        width: 0.3,
+        height: 0.3,
+      })!
       expect(store.getAllTileIdsFor('ws-active')).toEqual([created.tileId])
 
       moveWindowToWorkspace(created.windowId, 'ws-elsewhere')
@@ -983,14 +1128,24 @@ describe('cross-workspace floating tile lookups', () => {
   it('stops resolving a window whose workspace record is gone', () => {
     withWorkspaces((harness) => {
       const store = createTestFloatingWindowStore()
-      const created = store.addWindow({ x: 0.1, y: 0.1, width: 0.3, height: 0.3 })!
+      const created = store.addWindow({
+        x: 0.1,
+        y: 0.1,
+        width: 0.3,
+        height: 0.3,
+      })!
       moveWindowToWorkspace(created.windowId, 'ws-elsewhere')
       expect(store.getWindowForTile(created.tileId)).toBe(created.windowId)
 
       delete harness.pending.state.confirmedState.workspaces['ws-elsewhere']
       harness.pending.recomputeSpeculative()
       // Any real op re-derives the projection, as a live client would.
-      store.addWindow({ x: 0.5, y: 0.5, width: 0.2, height: 0.2 })
+      store.addWindow({
+        x: 0.5,
+        y: 0.5,
+        width: 0.2,
+        height: 0.2,
+      })
 
       expect(
         store.getWindowForTile(created.tileId),
@@ -1017,7 +1172,12 @@ describe('cross-workspace floating tile lookups', () => {
   it('records inner focus for a window in a NON-active workspace', () => {
     withWorkspaces(() => {
       const store = createTestFloatingWindowStore()
-      const created = store.addWindow({ x: 0.1, y: 0.1, width: 0.3, height: 0.3 })!
+      const created = store.addWindow({
+        x: 0.1,
+        y: 0.1,
+        width: 0.3,
+        height: 0.3,
+      })!
       const second = store.splitTile(created.windowId, created.tileId, 'horizontal')!
       moveWindowToWorkspace(created.windowId, 'ws-elsewhere')
       expect(store.state.windows, 'it has left the rendered slice').toEqual([])
@@ -1034,7 +1194,12 @@ describe('cross-workspace floating tile lookups', () => {
   it('disposes an emptied single-tile window in a NON-active workspace', () => {
     withWorkspaces(() => {
       const store = createTestFloatingWindowStore()
-      const created = store.addWindow({ x: 0.1, y: 0.1, width: 0.3, height: 0.3 })!
+      const created = store.addWindow({
+        x: 0.1,
+        y: 0.1,
+        width: 0.3,
+        height: 0.3,
+      })!
       moveWindowToWorkspace(created.windowId, 'ws-elsewhere')
       expect(store.state.windows, 'it has left the rendered slice').toEqual([])
 
@@ -1051,10 +1216,17 @@ describe('cross-workspace floating tile lookups', () => {
   it('keeps a background window alive while its tile still holds tabs', () => {
     withWorkspaces(() => {
       const store = createTestFloatingWindowStore()
-      const created = store.addWindow({ x: 0.1, y: 0.1, width: 0.3, height: 0.3 })!
+      const created = store.addWindow({
+        x: 0.1,
+        y: 0.1,
+        width: 0.3,
+        height: 0.3,
+      })!
       moveWindowToWorkspace(created.windowId, 'ws-elsewhere')
 
-      const removed = store.removeIfEmpty(created.windowId, () => [{ id: 'a-tab' }])
+      const removed = store.removeIfEmpty(created.windowId, () => [
+        { id: 'a-tab' },
+      ])
 
       expect(removed).toBe(false)
       expect(store.getWindowForTile(created.tileId)).toBe(created.windowId)
@@ -1069,13 +1241,23 @@ describe('cross-workspace floating tile lookups', () => {
   it('does not evict a background window focus entry when another window churns', async () => {
     await withWorkspacesAsync(async () => {
       const store = createTestFloatingWindowStore()
-      const background = store.addWindow({ x: 0.1, y: 0.1, width: 0.3, height: 0.3 })!
+      const background = store.addWindow({
+        x: 0.1,
+        y: 0.1,
+        width: 0.3,
+        height: 0.3,
+      })!
       const second = store.splitTile(background.windowId, background.tileId, 'horizontal')!
       moveWindowToWorkspace(background.windowId, 'ws-elsewhere')
       store.setFocusedTile(background.windowId, second)
 
       // Churn membership so the GC effect actually runs.
-      const onscreen = store.addWindow({ x: 0.5, y: 0.5, width: 0.2, height: 0.2 })!
+      const onscreen = store.addWindow({
+        x: 0.5,
+        y: 0.5,
+        width: 0.2,
+        height: 0.2,
+      })!
       await new Promise<void>(queueMicrotask)
       store.removeWindow(onscreen.windowId)
       await new Promise<void>(queueMicrotask)
@@ -1154,7 +1336,9 @@ describe('createFloatingWindowStore — debounced opacity (title-bar wheel)', ()
       // Move the window to another workspace, so it leaves the projected slice
       // exactly as it does on a workspace switch mid-gesture.
       const bridge = getCRDTBridge()!
-      bridge.enqueue(newBatch([setFloatingWorkspaceId(ctxFromBridge(bridge), windowId, 'ws-elsewhere')]))
+      bridge.enqueue(newBatch([
+        setFloatingWorkspaceId(ctxFromBridge(bridge), windowId, 'ws-elsewhere'),
+      ]))
       expect(store.state.windows.some(w => w.id === windowId)).toBe(false)
 
       // Count from AFTER the move, so only the flush's own op is measured.
@@ -1207,8 +1391,18 @@ describe('createFloatingWindowStore — debounced opacity (title-bar wheel)', ()
   it('scrolling a second window does not discard the first window\'s pending opacity', () => {
     withTestBridge((harness) => {
       const store = createTestFloatingWindowStore()
-      const a = store.addWindow({ x: 0.1, y: 0.1, width: 0.2, height: 0.2 })!
-      const b = store.addWindow({ x: 0.4, y: 0.4, width: 0.2, height: 0.2 })!
+      const a = store.addWindow({
+        x: 0.1,
+        y: 0.1,
+        width: 0.2,
+        height: 0.2,
+      })!
+      const b = store.addWindow({
+        x: 0.4,
+        y: 0.4,
+        width: 0.2,
+        height: 0.2,
+      })!
       const before = harness.pending.state.pendingBatches.length
 
       // Scroll A, then B within the debounce window. A single slot cleared A's
@@ -1230,8 +1424,18 @@ describe('createFloatingWindowStore — debounced opacity (title-bar wheel)', ()
   it('flushOpacity(id) flushes only that window, leaving another gesture armed', () => {
     withTestBridge((harness) => {
       const store = createTestFloatingWindowStore()
-      const a = store.addWindow({ x: 0.1, y: 0.1, width: 0.2, height: 0.2 })!
-      const b = store.addWindow({ x: 0.4, y: 0.4, width: 0.2, height: 0.2 })!
+      const a = store.addWindow({
+        x: 0.1,
+        y: 0.1,
+        width: 0.2,
+        height: 0.2,
+      })!
+      const b = store.addWindow({
+        x: 0.4,
+        y: 0.4,
+        width: 0.2,
+        height: 0.2,
+      })!
       const before = harness.pending.state.pendingBatches.length
 
       store.updateOpacityDebounced(a.windowId, 0.7)
@@ -1290,9 +1494,24 @@ describe('createFloatingWindowStore — debounced opacity (title-bar wheel)', ()
   it('an unscoped flush emits one op per window with a real change', () => {
     withTestBridge((harness) => {
       const store = createTestFloatingWindowStore()
-      const a = store.addWindow({ x: 0.1, y: 0.1, width: 0.2, height: 0.2 })!
-      const b = store.addWindow({ x: 0.4, y: 0.4, width: 0.2, height: 0.2 })!
-      const c = store.addWindow({ x: 0.7, y: 0.7, width: 0.2, height: 0.2 })!
+      const a = store.addWindow({
+        x: 0.1,
+        y: 0.1,
+        width: 0.2,
+        height: 0.2,
+      })!
+      const b = store.addWindow({
+        x: 0.4,
+        y: 0.4,
+        width: 0.2,
+        height: 0.2,
+      })!
+      const c = store.addWindow({
+        x: 0.7,
+        y: 0.7,
+        width: 0.2,
+        height: 0.2,
+      })!
       store.updateOpacityDebounced(a.windowId, 0.7)
       store.updateOpacityDebounced(b.windowId, 0.5)
       // C's gesture ends back where it started, so it must emit nothing even
@@ -1397,9 +1616,24 @@ describe('createFloatingWindowStore — debounced opacity (title-bar wheel)', ()
         },
       })
       const ids = [
-        store.addWindow({ x: 0.1, y: 0.1, width: 0.2, height: 0.2 })!.windowId,
-        store.addWindow({ x: 0.4, y: 0.4, width: 0.2, height: 0.2 })!.windowId,
-        store.addWindow({ x: 0.7, y: 0.7, width: 0.2, height: 0.2 })!.windowId,
+        store.addWindow({
+          x: 0.1,
+          y: 0.1,
+          width: 0.2,
+          height: 0.2,
+        })!.windowId,
+        store.addWindow({
+          x: 0.4,
+          y: 0.4,
+          width: 0.2,
+          height: 0.2,
+        })!.windowId,
+        store.addWindow({
+          x: 0.7,
+          y: 0.7,
+          width: 0.2,
+          height: 0.2,
+        })!.windowId,
       ]
       // Park every gesture back at its CRDT baseline, so the flush emits NO ops
       // and the map rebuild is the only thing it can cost.
@@ -1442,7 +1676,12 @@ describe('createKeyedOverrides', () => {
       overrides.set('b', 2)
       expect(overrides.snapshot()).not.toBe(afterFirst)
       expect(afterFirst.has('b')).toBe(false)
-      expect([...overrides.snapshot()]).toEqual([['a', 1], ['b', 2]])
+      expect([
+        ...overrides.snapshot(),
+      ]).toEqual([
+        ['a', 1],
+        ['b', 2],
+      ])
       expect(overrides.get('a')).toBe(1)
       expect(overrides.get('missing')).toBeUndefined()
       dispose()
@@ -1461,7 +1700,9 @@ describe('createKeyedOverrides', () => {
 
       overrides.clear('a')
       expect(overrides.snapshot()).not.toBe(before)
-      expect([...overrides.snapshot().keys()]).toEqual(['b'])
+      expect([
+        ...overrides.snapshot().keys(),
+      ]).toEqual(['b'])
       expect(before.has('a')).toBe(true)
       dispose()
     })
@@ -1504,7 +1745,9 @@ describe('createKeyedOverrides', () => {
       overrides.retain(key => key !== 'dead')
       const after = overrides.snapshot()
       expect(after).not.toBe(before)
-      expect([...after.keys()]).toEqual(['live-1', 'live-2'])
+      expect([
+        ...after.keys(),
+      ]).toEqual(['live-1', 'live-2'])
       expect(before.has('dead')).toBe(true)
 
       // Rejecting everything empties it in one pass.

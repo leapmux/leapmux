@@ -13,7 +13,11 @@ import './providers'
 // and that the other one does not.
 
 function parse(content: unknown, provider: AgentProvider = AgentProvider.CLAUDE_CODE) {
-  return parseMessageContent(makeMessage({ source: MessageSource.AGENT, content: rawContent(content), agentProvider: provider }))
+  return parseMessageContent(makeMessage({
+    source: MessageSource.AGENT,
+    content: rawContent(content),
+    agentProvider: provider,
+  }))
 }
 
 /** Wrap compaction metadata in the Claude `compact_boundary` system shape. */
@@ -37,7 +41,9 @@ describe('claudeCompactionBoundary', () => {
   // The two shapes belong to different providers. Claude reading Codex's item would
   // be the cross-provider leak this refactor removes.
   it('refuses a Codex contextCompaction item', () => {
-    expect(claudeCompactionBoundary(parse({ item: { type: 'contextCompaction', id: 'compact-1' } }))).toBeNull()
+    expect(claudeCompactionBoundary(parse({
+      item: { type: 'contextCompaction', id: 'compact-1' },
+    }))).toBeNull()
   })
 
   it('refuses an ordinary system message', () => {
@@ -51,25 +57,39 @@ describe('codexCompactionBoundary', () => {
   it('refuses a bare top-level contextCompaction item', () => {
     // B26 removed the top-level item shape: the worker stores the raw
     // item/completed notification only, so a bare item recognizes nothing.
-    expect(codexCompactionBoundary(codex({ item: { type: 'contextCompaction', id: 'compact-1' }, threadId: 't1' }))).toBeNull()
+    expect(codexCompactionBoundary(codex({
+      item: { type: 'contextCompaction', id: 'compact-1' },
+      threadId: 't1',
+    }))).toBeNull()
   })
 
   it('recognizes a completed contextCompaction item inside an item/completed notification', () => {
     expect(codexCompactionBoundary(codex({
       method: 'item/completed',
-      params: { item: { type: 'contextCompaction', id: 'compact-1' }, threadId: 't1', turnId: 'turn1' },
+      params: {
+        item: { type: 'contextCompaction', id: 'compact-1' },
+        threadId: 't1',
+        turnId: 'turn1',
+      },
     }))).not.toBeNull()
   })
 
   it('refuses an item/completed notification for any other item type', () => {
-    expect(codexCompactionBoundary(codex({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'msg-1' } } }))).toBeNull()
+    expect(codexCompactionBoundary(codex({
+      method: 'item/completed',
+      params: {
+        item: { type: 'agentMessage', id: 'msg-1' },
+      },
+    }))).toBeNull()
   })
 
   // `item/started` OPENS the compaction; the grid must not read a post count from it.
   it('refuses the item/started notification that only opens the compaction', () => {
     expect(codexCompactionBoundary(codex({
       method: 'item/started',
-      params: { item: { type: 'contextCompaction', id: 'compact-1' } },
+      params: {
+        item: { type: 'contextCompaction', id: 'compact-1' },
+      },
     }))).toBeNull()
   })
 
@@ -78,7 +98,10 @@ describe('codexCompactionBoundary', () => {
   })
 
   it('refuses the thread/compacted notification, which carries no boundary', () => {
-    expect(codexCompactionBoundary(codex({ method: 'thread/compacted', params: { threadId: 't1', turnId: 'turn1' } }))).toBeNull()
+    expect(codexCompactionBoundary(codex({
+      method: 'thread/compacted',
+      params: { threadId: 't1', turnId: 'turn1' },
+    }))).toBeNull()
   })
 })
 
@@ -98,11 +121,19 @@ describe('compactionContextTokens', () => {
   })
 
   it('reads camelCase keys', () => {
-    expect(post({ type: 'system', subtype: 'compact_boundary', compactMetadata: { preTokens: 100000, postTokens: 8000 } })).toBe(8000)
+    expect(post({
+      type: 'system',
+      subtype: 'compact_boundary',
+      compactMetadata: { preTokens: 100000, postTokens: 8000 },
+    })).toBe(8000)
   })
 
   it('derives from camelCase preTokens minus tokensSaved', () => {
-    expect(post({ type: 'system', subtype: 'compact_boundary', compactMetadata: { preTokens: 100000, tokensSaved: 25000 } })).toBe(75000)
+    expect(post({
+      type: 'system',
+      subtype: 'compact_boundary',
+      compactMetadata: { preTokens: 100000, tokensSaved: 25000 },
+    })).toBe(75000)
   })
 
   it('states nothing for a message that carries no boundary', () => {

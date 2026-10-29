@@ -16,17 +16,31 @@ import './plugin'
 const STARTED = {
   threadId: 'main-thread',
   turnId: 'turn-1',
-  item: { type: 'commandExecution', id: 'command-1', status: 'inProgress', command: 'printf partial' },
+  item: {
+    type: 'commandExecution',
+    id: 'command-1',
+    status: 'inProgress',
+    command: 'printf partial',
+  },
 }
 
 function row(supplement?: unknown): ParsedMessageContent {
-  return { rawText: '', topLevel: STARTED, parentObject: STARTED, wrapper: null, supplementalContent: supplement }
+  return {
+    rawText: '',
+    topLevel: STARTED,
+    parentObject: STARTED,
+    wrapper: null,
+    supplementalContent: supplement,
+  }
 }
 
 describe('resolveCodexMessage', () => {
   it('puts the joined output back on the item it names', () => {
     expect(resolveCodexMessage(row({ itemId: 'command-1', itemType: 'commandExecution', aggregatedOutput: 'partial output' })))
-      .toEqual({ ...STARTED, item: { ...STARTED.item, aggregatedOutput: 'partial output' } })
+      .toEqual({
+        ...STARTED,
+        item: { ...STARTED.item, aggregatedOutput: 'partial output' },
+      })
   })
 
   it('leaves the original object untouched', () => {
@@ -37,9 +51,18 @@ describe('resolveCodexMessage', () => {
   it.each([
     ['no supplement', undefined],
     ['a non-object supplement', 'partial output'],
-    ['an empty output', { itemId: 'command-1', itemType: 'commandExecution', aggregatedOutput: '' }],
-    ['another item id', { itemId: 'command-2', itemType: 'commandExecution', aggregatedOutput: 'other' }],
-    ['another item type', { itemId: 'command-1', itemType: 'fileChange', aggregatedOutput: 'other' }],
+    [
+      'an empty output',
+      { itemId: 'command-1', itemType: 'commandExecution', aggregatedOutput: '' },
+    ],
+    [
+      'another item id',
+      { itemId: 'command-2', itemType: 'commandExecution', aggregatedOutput: 'other' },
+    ],
+    [
+      'another item type',
+      { itemId: 'command-1', itemType: 'fileChange', aggregatedOutput: 'other' },
+    ],
   ])('returns the original for %s', (_label, supplement) => {
     expect(resolveCodexMessage(row(supplement))).toBe(STARTED)
   })
@@ -76,7 +99,12 @@ describe('a codex tool row whose output the worker recovered', () => {
     const category = classifyMessage({ ...parsed, agentProvider: AgentProvider.CODEX })
     const { container } = render(() => renderMessageContent(
       parsed.parentObject,
-      { premeasureMode: true, sources: testMessageSources({ current: () => parsed }) },
+      {
+        premeasureMode: true,
+        sources: testMessageSources({
+          current: () => parsed,
+        }),
+      },
       category,
       AgentProvider.CODEX,
       message.completion,

@@ -8,11 +8,16 @@ qwenTest.describe('control requests for Qwen Code', () => {
   qwenTest('answers a question through its own reply field', async ({ native }) => {
     const { page } = native
     const { result } = await exerciseQuestionAnswer(native, {
-      questions: [{
-        question: 'Which color do you want?',
-        header: 'Color',
-        options: [{ label: 'Red', description: 'The red one' }, { label: 'Blue', description: 'The blue one' }],
-      }],
+      questions: [
+        {
+          question: 'Which color do you want?',
+          header: 'Color',
+          options: [
+            { label: 'Red', description: 'The red one' },
+            { label: 'Blue', description: 'The blue one' },
+          ],
+        },
+      ],
       callId: 'qwen-question',
       prompt: 'Ask me for a color.',
       answer: 'You chose Blue.',

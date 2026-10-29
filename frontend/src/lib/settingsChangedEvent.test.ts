@@ -16,7 +16,9 @@ describe('settingsChangedEvent', () => {
       c => c.permissionMode?.old === 'plan',
       5000,
     )
-    emitSettingsChanged({ permissionMode: { old: 'plan', new: 'default' } })
+    emitSettingsChanged({
+      permissionMode: { old: 'plan', new: 'default' },
+    })
     await expect(promise).resolves.toBeUndefined()
   })
 
@@ -27,7 +29,9 @@ describe('settingsChangedEvent', () => {
       5000,
     ).then(() => { resolved = true })
 
-    emitSettingsChanged({ permissionMode: { old: 'default', new: 'bypassPermissions' } })
+    emitSettingsChanged({
+      permissionMode: { old: 'default', new: 'bypassPermissions' },
+    })
 
     await Promise.resolve()
     expect(resolved).toBe(false)
@@ -52,7 +56,9 @@ describe('settingsChangedEvent', () => {
       c => c.permissionMode?.old === 'plan',
       5000,
     ).catch(rejectSpy)
-    emitSettingsChanged({ permissionMode: { old: 'plan', new: 'default' } })
+    emitSettingsChanged({
+      permissionMode: { old: 'plan', new: 'default' },
+    })
     await promise
 
     // If the resolve path didn't clear the timer, advancing past the deadline
@@ -72,11 +78,15 @@ describe('settingsChangedEvent', () => {
       5000,
     )
 
-    emitSettingsChanged({ permissionMode: { old: 'plan', new: 'default' } })
+    emitSettingsChanged({
+      permissionMode: { old: 'plan', new: 'default' },
+    })
     await expect(p1).resolves.toBeUndefined()
 
     // p2 should still be pending — resolve it with a matching event
-    emitSettingsChanged({ permissionMode: { old: 'default', new: 'bypassPermissions' } })
+    emitSettingsChanged({
+      permissionMode: { old: 'default', new: 'bypassPermissions' },
+    })
     await expect(p2).resolves.toBeUndefined()
   })
 
@@ -87,7 +97,9 @@ describe('settingsChangedEvent', () => {
       5000,
     )
     expect(_getListenerCount()).toBe(1)
-    emitSettingsChanged({ permissionMode: { old: 'plan', new: 'default' } })
+    emitSettingsChanged({
+      permissionMode: { old: 'plan', new: 'default' },
+    })
     await promise
     expect(_getListenerCount()).toBe(0)
   })

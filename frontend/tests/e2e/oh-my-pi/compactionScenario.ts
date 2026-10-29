@@ -26,7 +26,10 @@ export async function exerciseOhMyPiCompaction(context: NativeScenarioContext, h
     when: { system: 'Summarize user.AI coding-assistant conversations', user: 'Summarize conversation changes as a pull request description' },
     respond: { text: 'I recorded the older context, a newer note, and the current note.' },
   })
-  const result = await exerciseNativeCompaction(context, { ...OH_MY_PI_COMPACTION, ...hold })
+  const result = await exerciseNativeCompaction(context, {
+    ...OH_MY_PI_COMPACTION,
+    ...hold,
+  })
   expect((await context.modelScript.status()).ruleMatches[shortSummary], 'omp asks for one short summary for each compaction').toBe(1)
   return result
 }

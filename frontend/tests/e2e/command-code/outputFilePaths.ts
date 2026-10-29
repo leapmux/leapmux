@@ -17,9 +17,18 @@ export function readCommandCodeNativeOutput(snapshot: NativeMessageSnapshot, cal
   if (!Array.isArray(result) || result.some(block => !isObject(block) || block.type !== 'text' || typeof block.text !== 'string'))
     throw new Error('The native Command Code result has no exact text blocks.')
   const previewText = result.filter(isObject).map(block => block.text).join('')
-  const matches = [...previewText.matchAll(/^\[full output saved to: ([^\r\n]+) — read it with read_file \(offset\/limit\) or grep\]$/gmu)]
-  const path = matches.length === 1 ? matches[0]?.[1] : undefined
+  const matches = [
+    ...previewText.matchAll(/^\[full output saved to: ([^\r\n]+) — read it with read_file \(offset\/limit\) or grep\]$/gmu),
+  ]
+  const path = matches.length === 1
+    ? matches[0]?.[1]
+    : undefined
   if (!isFilesystemPath(path))
     throw new Error('The native Command Code result has no unique filesystem pointer.')
-  return { paths: [path], previewText, frame: record.frame, content: record.message.content }
+  return {
+    paths: [path],
+    previewText,
+    frame: record.frame,
+    content: record.message.content,
+  }
 }

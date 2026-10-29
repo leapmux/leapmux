@@ -42,7 +42,10 @@ export default async function globalSetup(): Promise<(() => Promise<void>) | und
     runRoot,
   }
   const server = await startSuiteServer(baseState)
-  const state: E2EGlobalState = { ...baseState, ...server.state }
+  const state: E2EGlobalState = {
+    ...baseState,
+    ...server.state,
+  }
   const statePath = join(tmpDir, 'e2e-state.json')
   try {
     writeFileSync(statePath, JSON.stringify(state))

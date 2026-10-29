@@ -9,7 +9,12 @@ import { ensureGitRepositoryRoot } from '../helpers/worktree'
 import { nativeContext } from './scenarios'
 
 codebuddyTest('starts with a real project configuration and no native workspace trust barrier', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   await exerciseNativeWorkspaceTrustLimit(context, {
     projectConfiguration: {
       prepare: ({ directory }) => {
@@ -20,7 +25,17 @@ codebuddyTest('starts with a real project configuration and no native workspace 
         writeFileSync(program, `require('node:fs').writeFileSync(${JSON.stringify(executed)},'WORKSPACE_CONFIG_EXECUTED');process.stdout.write(JSON.stringify({continue:true}))`)
         const settings = join(directory, '.codebuddy', 'settings.json')
         mkdirSync(dirname(settings), { recursive: true })
-        writeFileSync(settings, JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `${JSON.stringify(process.execPath)} ${JSON.stringify(program)}` }] }] } }))
+        writeFileSync(settings, JSON.stringify({
+          hooks: {
+            SessionStart: [
+              {
+                hooks: [
+                  { type: 'command', command: `${JSON.stringify(process.execPath)} ${JSON.stringify(program)}` },
+                ],
+              },
+            ],
+          },
+        }))
       },
       prove: async (privateContext, { directory }) => {
         await sendNativeAnswer(privateContext, 'Return one native response from this scratch project.', 'The native project configuration probe completed.')

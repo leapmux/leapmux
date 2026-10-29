@@ -18,11 +18,21 @@ function u16le(v: number): number[] {
 }
 
 function u32le(v: number): number[] {
-  return [v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF]
+  return [
+    v & 0xFF,
+    (v >>> 8) & 0xFF,
+    (v >>> 16) & 0xFF,
+    (v >>> 24) & 0xFF,
+  ]
 }
 
 function u32be(v: number): number[] {
-  return [(v >>> 24) & 0xFF, (v >>> 16) & 0xFF, (v >>> 8) & 0xFF, v & 0xFF]
+  return [
+    (v >>> 24) & 0xFF,
+    (v >>> 16) & 0xFF,
+    (v >>> 8) & 0xFF,
+    v & 0xFF,
+  ]
 }
 
 // --- fixture builders ---
@@ -45,7 +55,13 @@ function pngBytes(width: number, height: number): number[] {
 }
 
 function gifBytes(width: number, height: number): number[] {
-  return [...chars('GIF89a'), ...u16le(width), ...u16le(height), 0, 0]
+  return [
+    ...chars('GIF89a'),
+    ...u16le(width),
+    ...u16le(height),
+    0,
+    0,
+  ]
 }
 
 function webpLossyBytes(width: number, height: number): number[] {
@@ -169,16 +185,30 @@ function exifApp1Segment(orientation: number): number[] {
     0x00,
     0x00,
   ]
-  return [0xFF, 0xE1, ...u16be(payload.length + 2), ...payload]
+  return [
+    0xFF,
+    0xE1,
+    ...u16be(payload.length + 2),
+    ...payload,
+  ]
 }
 
 function box(type: string, ...contents: number[][]): number[] {
   const payload = contents.flat()
-  return [...u32be(8 + payload.length), ...chars(type), ...payload]
+  return [
+    ...u32be(8 + payload.length),
+    ...chars(type),
+    ...payload,
+  ]
 }
 
 function fullBox(type: string, version: number, flags: number, ...contents: number[][]): number[] {
-  return box(type, [version, (flags >>> 16) & 0xFF, (flags >>> 8) & 0xFF, flags & 0xFF], ...contents)
+  return box(type, [
+    version,
+    (flags >>> 16) & 0xFF,
+    (flags >>> 8) & 0xFF,
+    flags & 0xFF,
+  ], ...contents)
 }
 
 function ispeBox(width: number, height: number): number[] {
@@ -201,7 +231,9 @@ function avifBytes(opts: {
       ? fullBox('pitm', 1, 0, u32be(opts.pitm))
       : fullBox('pitm', 0, 0, u16be(opts.pitm)))
   }
-  const iprpChildren: number[][] = [box('ipco', ...opts.ipco)]
+  const iprpChildren: number[][] = [
+    box('ipco', ...opts.ipco),
+  ]
   if (opts.associations && opts.pitm !== undefined) {
     // The essential bit (top bit) is set on wide entries to prove the parser
     // masks it off rather than treating it as part of the index.
@@ -253,7 +285,13 @@ describe('sniffimagedimensions', () => {
   })
 
   it('parses baseline JPEG SOF dimensions, skipping leading segments', () => {
-    const dqt = [0xFF, 0xDB, ...u16be(4), 0x00, 0x00]
+    const dqt = [
+      0xFF,
+      0xDB,
+      ...u16be(4),
+      0x00,
+      0x00,
+    ]
     expect(sniffImageDimensionsFromBase64(b64(jpegBytes(320, 240, dqt)))).toEqual({ width: 320, height: 240 })
   })
 
@@ -272,7 +310,16 @@ describe('sniffimagedimensions', () => {
   })
 
   it('returns null for a JPEG whose scan hits SOS without a SOF', () => {
-    expect(sniffImageDimensionsFromBase64(b64([0xFF, 0xD8, 0xFF, 0xDA, 0x00, 0x04, 0x00, 0x00]))).toBeNull()
+    expect(sniffImageDimensionsFromBase64(b64([
+      0xFF,
+      0xD8,
+      0xFF,
+      0xDA,
+      0x00,
+      0x04,
+      0x00,
+      0x00,
+    ]))).toBeNull()
   })
 
   it('skips JPEG fill bytes (0xFF padding runs) before a marker', () => {
@@ -284,7 +331,10 @@ describe('sniffimagedimensions', () => {
     // ipco: [1] thumbnail ispe 100x100, [2] primary ispe 800x600.
     const bytes = avifBytes({
       pitm: 1,
-      ipco: [ispeBox(100, 100), ispeBox(800, 600)],
+      ipco: [
+        ispeBox(100, 100),
+        ispeBox(800, 600),
+      ],
       associations: [2],
     })
     expect(sniffImageDimensionsFromBase64(b64(bytes))).toEqual({ width: 800, height: 600 })
@@ -294,21 +344,31 @@ describe('sniffimagedimensions', () => {
     const irot90 = box('irot', [0x01])
     const bytes = avifBytes({
       pitm: 1,
-      ipco: [ispeBox(800, 600), irot90],
+      ipco: [
+        ispeBox(800, 600),
+        irot90,
+      ],
       associations: [1, 2],
     })
     expect(sniffImageDimensionsFromBase64(b64(bytes))).toEqual({ width: 600, height: 800 })
   })
 
   it('falls back to a sole ispe when pitm/ipma are absent', () => {
-    const bytes = avifBytes({ ipco: [ispeBox(512, 256)] })
+    const bytes = avifBytes({
+      ipco: [
+        ispeBox(512, 256),
+      ],
+    })
     expect(sniffImageDimensionsFromBase64(b64(bytes))).toEqual({ width: 512, height: 256 })
   })
 
   it('reads 16-bit ipma associations (flags & 1), masking the essential bit', () => {
     const bytes = avifBytes({
       pitm: 1,
-      ipco: [ispeBox(100, 100), ispeBox(800, 600)],
+      ipco: [
+        ispeBox(100, 100),
+        ispeBox(800, 600),
+      ],
       associations: [2],
       wideAssociations: true,
     })
@@ -319,7 +379,9 @@ describe('sniffimagedimensions', () => {
     const bytes = avifBytes({
       pitm: 7,
       pitmVersion: 1,
-      ipco: [ispeBox(160, 90)],
+      ipco: [
+        ispeBox(160, 90),
+      ],
       associations: [1],
     })
     expect(sniffImageDimensionsFromBase64(b64(bytes))).toEqual({ width: 160, height: 90 })
@@ -327,29 +389,52 @@ describe('sniffimagedimensions', () => {
 
   it('rejects AVIF properties whose declared boxes do not cover the reads', () => {
     const truncatedIspe = fullBox('ispe', 0, 0, u32be(160))
-    expect(sniffImageDimensionsFromBase64(b64(avifBytes({ ipco: [truncatedIspe] })))).toBeNull()
+    expect(sniffImageDimensionsFromBase64(b64(avifBytes({
+      ipco: [truncatedIspe],
+    })))).toBeNull()
 
     const truncatedIrot = box('irot')
     expect(sniffImageDimensionsFromBase64(b64(avifBytes({
       pitm: 1,
-      ipco: [ispeBox(160, 90), truncatedIrot],
+      ipco: [
+        ispeBox(160, 90),
+        truncatedIrot,
+      ],
       associations: [1, 2],
     })))).toBeNull()
   })
 
   it('refuses ambiguous AVIF shapes: multiple ispes without associations, or an associated clap crop', () => {
-    const twoIspes = avifBytes({ ipco: [ispeBox(100, 100), ispeBox(800, 600)] })
+    const twoIspes = avifBytes({
+      ipco: [
+        ispeBox(100, 100),
+        ispeBox(800, 600),
+      ],
+    })
     expect(sniffImageDimensionsFromBase64(b64(twoIspes))).toBeNull()
 
     const clap = box('clap', u32be(1), u32be(1), u32be(1), u32be(1), u32be(0), u32be(1), u32be(0), u32be(1))
-    const cropped = avifBytes({ pitm: 1, ipco: [ispeBox(800, 600), clap], associations: [1, 2] })
+    const cropped = avifBytes({
+      pitm: 1,
+      ipco: [
+        ispeBox(800, 600),
+        clap,
+      ],
+      associations: [1, 2],
+    })
     expect(sniffImageDimensionsFromBase64(b64(cropped))).toBeNull()
   })
 
   it('returns null for unknown formats, corrupt headers, and truncation', () => {
     expect(sniffImageDimensionsFromBase64(b64(chars('BM12345678')))).toBeNull() // BMP: unsupported
     expect(sniffImageDimensionsFromBase64(b64(pngBytes(640, 480).slice(0, 20)))).toBeNull() // truncated PNG
-    expect(sniffImageDimensionsFromBase64(b64([...chars('GIF88a'), ...u16le(1), ...u16le(1), 0, 0]))).toBeNull() // bad GIF version
+    expect(sniffImageDimensionsFromBase64(b64([
+      ...chars('GIF88a'),
+      ...u16le(1),
+      ...u16le(1),
+      0,
+      0,
+    ]))).toBeNull() // bad GIF version
     expect(sniffImageDimensionsFromBase64(b64(pngBytes(0, 480)))).toBeNull() // zero dimension
     expect(sniffImageDimensionsFromBase64('!!!not-base64!!!')).toBeNull()
     expect(sniffImageDimensionsFromBase64('')).toBeNull()

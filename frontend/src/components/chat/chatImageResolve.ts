@@ -53,13 +53,22 @@ export function messageToolResultImages(message: AgentChatMessage, sources: Imag
     // ones, so an ACP result wrapped in a native envelope was extracted as a row its
     // own category contradicted and its pictures were lost.
     const resolved = sources.resolved?.resolved
-    const prepared = prepareMessage(message, ...(resolved === undefined ? [{}] : [{ resolved }]))
+    const prepared = prepareMessage(message, ...(resolved === undefined
+      ? [{}]
+      : [
+          { resolved },
+        ]))
     // `role: 'result'` is deliberate and not the row's own place in its span: a
     // resolver that runs outside the render tree must read the FINISHED side, or a
     // provider that requires a completed call before it states its picture (Codex
     // states no status on an `imageView` item) resolves every image tab to nothing.
     const extraction = extractPreparedRow(prepared, {
-      span: { request: sources.request?.resolved, result: prepared.resolved, role: 'result', visibleRows: { request: false, result: true } },
+      span: {
+        request: sources.request?.resolved,
+        result: prepared.resolved,
+        role: 'result',
+        visibleRows: { request: false, result: true },
+      },
     })
     return imagesForRow(extractedRow(extraction))
   }
@@ -116,6 +125,11 @@ export async function resolveChatImage(
     }
   }
   catch (err) {
-    return { status: 'error', message: err instanceof Error ? err.message : String(err) }
+    return {
+      status: 'error',
+      message: err instanceof Error
+        ? err.message
+        : String(err),
+    }
   }
 }

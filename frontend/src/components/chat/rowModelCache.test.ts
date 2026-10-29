@@ -9,7 +9,12 @@ import { cachedChatRow } from './rowModelCache'
 import './providers'
 
 function parsed(parentObject: Record<string, unknown>): ParsedMessageContent {
-  return { rawText: JSON.stringify(parentObject), topLevel: parentObject, parentObject, wrapper: null }
+  return {
+    rawText: JSON.stringify(parentObject),
+    topLevel: parentObject,
+    parentObject,
+    wrapper: null,
+  }
 }
 
 describe('rowModelCache', () => {
@@ -26,7 +31,12 @@ describe('rowModelCache', () => {
       sessionUpdate: 'tool_call_update',
       toolCallId: 'call',
       status: 'completed',
-      content: [{ type: 'content', content: { type: 'text', text: 'passed' } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'passed' },
+        },
+      ],
     }), AgentProvider.OPENCODE)
     let requestVisible = false
     const context = {
@@ -41,11 +51,15 @@ describe('rowModelCache', () => {
     } as unknown as RowExtractionContext
 
     const first = extractedRow(cachedChatRow(context, AgentProvider.OPENCODE, result, { kind: 'tool_use' }, undefined))
-    expect(first?.kind === 'tool' ? first.hasRequestRow : undefined).toBe(false)
+    expect(first?.kind === 'tool'
+      ? first.hasRequestRow
+      : undefined).toBe(false)
 
     requestVisible = true
     const second = extractedRow(cachedChatRow(context, AgentProvider.OPENCODE, result, { kind: 'tool_use' }, undefined))
-    expect(second?.kind === 'tool' ? second.hasRequestRow : undefined).toBe(true)
+    expect(second?.kind === 'tool'
+      ? second.hasRequestRow
+      : undefined).toBe(true)
     expect(second).not.toBe(first)
   })
 })

@@ -105,7 +105,9 @@ function scheduleLabel(item: QueuedAgentInput): string {
   if (!item.scheduledAt)
     return ''
   const at = new Date(item.scheduledAt)
-  return Number.isNaN(at.getTime()) ? '' : formatLocalDateTime(at)
+  return Number.isNaN(at.getTime())
+    ? ''
+    : formatLocalDateTime(at)
 }
 
 /**
@@ -287,8 +289,15 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
     // swipe still scrolls the queue. The grip carries the raw activators, which
     // is the only route a touch drag takes.
     // eslint-disable-next-line solid/reactivity -- attachDragActivators reads this inside its own createEffect
-    attachDragActivators(() => (canDragKey(key) ? rowEl() : undefined), dragRow.bodyActivators, { touch: 'block' })
-    return { dragRow, rowEl, setRowEl, canDrag: () => canDragKey(key) }
+    attachDragActivators(() => (canDragKey(key)
+      ? rowEl()
+      : undefined), dragRow.bodyActivators, { touch: 'block' })
+    return {
+      dragRow,
+      rowEl,
+      setRowEl,
+      canDrag: () => canDragKey(key),
+    }
   }
 
   const renderRow = (item: Accessor<QueuedAgentInput>, key: string, dnd: ReturnType<typeof setupRowDnd>) => {
@@ -305,8 +314,14 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
     // which. A memo keeps the four cases in one place, so the icon,
     // the name and the handler of a case cannot drift apart.
     const editAction = createMemo(() => {
-      if (requiresTakeover())
-        return { icon: UserPen, label: 'Take Over', disabled: isLocked(), onClick: () => props.onEdit(item(), true) }
+      if (requiresTakeover()) {
+        return {
+          icon: UserPen,
+          label: 'Take Over',
+          disabled: isLocked(),
+          onClick: () => props.onEdit(item(), true),
+        }
+      }
       if (!editedByMe()) {
         return {
           icon: Pencil,
@@ -316,8 +331,18 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
         }
       }
       return props.activeEditInputId === item().id
-        ? { icon: PencilOff, label: 'Cancel Edit', disabled: isLocked(), onClick: () => props.onCancelEdit(item()) }
-        : { icon: SquarePen, label: 'Resume Edit', disabled: isLocked(), onClick: () => props.onEdit(item(), false) }
+        ? {
+            icon: PencilOff,
+            label: 'Cancel Edit',
+            disabled: isLocked(),
+            onClick: () => props.onCancelEdit(item()),
+          }
+        : {
+            icon: SquarePen,
+            label: 'Resume Edit',
+            disabled: isLocked(),
+            onClick: () => props.onEdit(item(), false),
+          }
     })
 
     return (
@@ -344,9 +369,13 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
           affordance that cannot drag must not look like one.
         */}
         <DragHandle
-          activators={() => (dnd.canDrag() ? dnd.dragRow.gripActivators() : undefined)}
+          activators={() => (dnd.canDrag()
+            ? dnd.dragRow.gripActivators()
+            : undefined)}
           testId={`queue-drag-handle-${item().id}`}
-          {...(dnd.canDrag() ? {} : { class: styles.dragHandleInert })}
+          {...(dnd.canDrag()
+            ? {}
+            : { class: styles.dragHandleInert })}
         />
         <div class={styles.body}>
           <div class={styles.preview}>{item().text || '(attachments only)'}</div>

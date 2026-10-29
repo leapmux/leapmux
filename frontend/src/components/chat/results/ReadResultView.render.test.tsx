@@ -6,7 +6,11 @@ import { EXPANDED_TEXT_DISPLAY_CHAR_LIMIT, EXPANDED_TEXT_DISPLAY_LINE_LIMIT } fr
 import { ReadResultView } from './ReadResultView'
 
 vi.mock('~/lib/shikiWorkerClient', () => ({
-  tokenizeAsync: vi.fn().mockResolvedValue([[{ content: 'const x = 1', className: 'sk-read-test' }]]),
+  tokenizeAsync: vi.fn().mockResolvedValue([
+    [
+      { content: 'const x = 1', className: 'sk-read-test' },
+    ],
+  ]),
 }))
 
 describe('ReadResultView', () => {
@@ -18,7 +22,12 @@ describe('ReadResultView', () => {
   it('draws an elision row with no number and sizes the gutter from the largest number', () => {
     const { container } = render(() => (
       <ReadResultView
-        lines={[{ num: 9, text: 'function f() {' }, { num: null, text: '…' }, { num: 120, text: '}' }, { num: null, text: '…' }]}
+        lines={[
+          { num: 9, text: 'function f() {' },
+          { num: null, text: '…' },
+          { num: 120, text: '}' },
+          { num: null, text: '…' },
+        ]}
         premeasureMode
       />
     ))
@@ -33,9 +42,14 @@ describe('ReadResultView', () => {
   })
 
   it('marks line text only when the caller states returned output', () => {
-    const lines = [{ num: 1, text: 'first' }, { num: 2, text: 'second' }]
+    const lines = [
+      { num: 1, text: 'first' },
+      { num: 2, text: 'second' },
+    ]
     const output = render(() => <ReadResultView lines={lines} premeasureMode outputPreview />)
-    expect([...output.container.querySelectorAll('[data-tool-output-preview]')].map(element => element.textContent)).toEqual(['first', 'second'])
+    expect([
+      ...output.container.querySelectorAll('[data-tool-output-preview]'),
+    ].map(element => element.textContent)).toEqual(['first', 'second'])
     const viewer = render(() => <ReadResultView lines={lines} premeasureMode />)
     expect(viewer.container.textContent).toContain('first')
     expect(viewer.container.querySelector('[data-tool-output-preview]')).toBeNull()
@@ -43,7 +57,13 @@ describe('ReadResultView', () => {
 
   it('sizes the gutter to one column when no row has a number', () => {
     const { container } = render(() => (
-      <ReadResultView lines={[{ num: null, text: '…' }, { num: null, text: '…' }]} premeasureMode />
+      <ReadResultView
+        lines={[
+          { num: null, text: '…' },
+          { num: null, text: '…' },
+        ]}
+        premeasureMode
+      />
     ))
     const rows = [...container.firstElementChild!.children] as HTMLElement[]
     expect(rows.map(row => row.dataset.lineNum ?? null)).toEqual([null, null])
@@ -54,7 +74,13 @@ describe('ReadResultView', () => {
     // Zero is falsy, so a truthiness test in place of the null test would take the
     // number off the row and off the quote that starts on it.
     const { container } = render(() => (
-      <ReadResultView lines={[{ num: 0, text: 'first' }, { num: null, text: '…' }]} premeasureMode />
+      <ReadResultView
+        lines={[
+          { num: 0, text: 'first' },
+          { num: null, text: '…' },
+        ]}
+        premeasureMode
+      />
     ))
     const rows = [...container.firstElementChild!.children] as HTMLElement[]
     expect(rows.map(row => row.dataset.lineNum ?? null)).toEqual(['0', null])
@@ -66,7 +92,9 @@ describe('ReadResultView', () => {
 
     render(() => (
       <ReadResultView
-        lines={[{ num: 1, text: 'const x = 1' }]}
+        lines={[
+          { num: 1, text: 'const x = 1' },
+        ]}
         filePath="example.ts"
         syntaxHighlightingPaused
       />
@@ -80,7 +108,9 @@ describe('ReadResultView', () => {
 
     render(() => (
       <ReadResultView
-        lines={[{ num: 1, text: 'const x = 1' }]}
+        lines={[
+          { num: 1, text: 'const x = 1' },
+        ]}
         filePath="example.ts"
         textSelectionActive={() => true}
       />
@@ -95,7 +125,9 @@ describe('ReadResultView', () => {
 
     render(() => (
       <ReadResultView
-        lines={[{ num: 1, text: 'const x = 1' }]}
+        lines={[
+          { num: 1, text: 'const x = 1' },
+        ]}
         filePath="example.ts"
         textSelectionActive={selectionActive}
       />
@@ -113,7 +145,9 @@ describe('ReadResultView', () => {
 
     render(() => (
       <ReadResultView
-        lines={[{ num: 1, text: 'const x = 1' }]}
+        lines={[
+          { num: 1, text: 'const x = 1' },
+        ]}
         filePath="example.ts"
       />
     ))
@@ -127,7 +161,9 @@ describe('ReadResultView', () => {
 
     const { container } = render(() => (
       <ReadResultView
-        lines={[{ num: 1, text: 'const x = 1' }]}
+        lines={[
+          { num: 1, text: 'const x = 1' },
+        ]}
         filePath="example.ts"
       />
     ))
@@ -145,7 +181,12 @@ describe('ReadResultView', () => {
     const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
     const text = `READ_HEAD${'x'.repeat(100_000)}READ_TAIL`
     const { container } = render(() => (
-      <ReadResultView lines={[{ num: 1, text }]} filePath="example.ts" />
+      <ReadResultView
+        lines={[
+          { num: 1, text },
+        ]}
+        filePath="example.ts"
+      />
     ))
 
     expect(container.textContent!.length).toBeLessThan(text.length)
@@ -179,8 +220,14 @@ describe('ReadResultView', () => {
 
   it('keeps a final short line that fits the remaining character budget', () => {
     const lines = [
-      ...Array.from({ length: 15 }, (_, index) => ({ num: index + 1, text: 'x'.repeat(4_096) })),
-      { num: 16, text: 'y'.repeat(4_025) },
+      ...Array.from({ length: 15 }, (_, index) => ({
+        num: index + 1,
+        text: 'x'.repeat(4_096),
+      })),
+      {
+        num: 16,
+        text: 'y'.repeat(4_025),
+      },
       { num: 17, text: 'z' },
     ]
     const { container } = render(() => <ReadResultView lines={lines} />)
@@ -193,7 +240,9 @@ describe('ReadResultView', () => {
     const [paused, setPaused] = createSignal(false)
     const { container } = render(() => (
       <ReadResultView
-        lines={[{ num: 1, text: 'const x = 1' }]}
+        lines={[
+          { num: 1, text: 'const x = 1' },
+        ]}
         filePath="example.ts"
         syntaxHighlightingPaused={paused()}
       />
@@ -214,7 +263,9 @@ describe('ReadResultView', () => {
     const [selectionActive, setSelectionActive] = createSignal(false)
     const { container } = render(() => (
       <ReadResultView
-        lines={[{ num: 1, text: 'const x = 1' }]}
+        lines={[
+          { num: 1, text: 'const x = 1' },
+        ]}
         filePath="example.ts"
         textSelectionActive={selectionActive}
       />
@@ -244,7 +295,9 @@ describe('ReadResultView', () => {
     const [paused, setPaused] = createSignal(false)
     const { container } = render(() => (
       <ReadResultView
-        lines={[{ num: 1, text: 'const x = 1' }]}
+        lines={[
+          { num: 1, text: 'const x = 1' },
+        ]}
         filePath="example.ts"
         syntaxHighlightingPaused={paused()}
       />
@@ -255,7 +308,11 @@ describe('ReadResultView', () => {
     // Pause, then the in-flight worker resolves WHILE paused: stashed, not yet applied
     // (replacing text nodes mid-scroll is what the pause guards against).
     setPaused(true)
-    resolveTokens?.([[{ content: 'const x = 1', className: 'sk-read-stash' }]])
+    resolveTokens?.([
+      [
+        { content: 'const x = 1', className: 'sk-read-stash' },
+      ],
+    ])
     await Promise.resolve()
 
     expect(container.querySelector('.sk-read-stash')).toBeNull()
@@ -276,7 +333,9 @@ describe('ReadResultView', () => {
     // nothing on a non-token span). Assert the marker distinguishes the two.
     const { container } = render(() => (
       <ReadResultView
-        lines={[{ num: 1, text: 'const x = 1' }]}
+        lines={[
+          { num: 1, text: 'const x = 1' },
+        ]}
         filePath="example.ts"
       />
     ))
@@ -292,7 +351,9 @@ describe('ReadResultView', () => {
 
     // The line-number span (inline width style, but NOT a syntax token) must not, or the
     // color rule would strip its faint styling.
-    const lineNumberSpan = [...container.querySelectorAll('span')].find(
+    const lineNumberSpan = [
+      ...container.querySelectorAll('span'),
+    ].find(
       s => s.textContent === '1' && (s.getAttribute('style') ?? '').includes('width'),
     )
     expect(lineNumberSpan).toBeDefined()
@@ -308,7 +369,9 @@ describe('ReadResultView', () => {
 
     const { container } = render(() => (
       <ReadResultView
-        lines={[{ num: 1, text: '[31mred[0m plain' }]}
+        lines={[
+          { num: 1, text: '[31mred[0m plain' },
+        ]}
         filePath="server.log"
       />
     ))

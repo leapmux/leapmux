@@ -139,7 +139,10 @@ export interface PreparedGeometry {
  * type's note) to keep the row-seq scan off the streaming-commit path.
  */
 export function prepareGeometry(geo: SeqSpaceGeometry): PreparedGeometry {
-  return { geo, rowSeqs: rowStartSeqs(geo.items) }
+  return {
+    geo,
+    rowSeqs: rowStartSeqs(geo.items),
+  }
 }
 
 /**
@@ -168,12 +171,16 @@ export function seqAtContentY(prep: PreparedGeometry, y: number): number | null 
     return null
   const n = geo.items.length
   const cy = clamp(y, 0, geo.totalHeight)
-  const offAt = (i: number) => (i >= n ? geo.totalHeight : geo.offsetOfIndex(i))
+  const offAt = (i: number) => (i >= n
+    ? geo.totalHeight
+    : geo.offsetOfIndex(i))
   const i = largestIndexWhere(n, k => offAt(k) <= cy)
   const top = offAt(i)
   const bot = offAt(i + 1)
   const span = bot - top
-  const t = span > 0 ? clamp((cy - top) / span, 0, 1) : 0
+  const t = span > 0
+    ? clamp((cy - top) / span, 0, 1)
+    : 0
   const rowTopSeq = rowSeqs[i]
   const rowBotSeq = rowSeqs[i + 1]
   if (rowTopSeq === undefined || rowBotSeq === undefined)
@@ -204,9 +211,13 @@ export function contentYForSeq(prep: PreparedGeometry, seqF: number): number | n
   // that name would shadow it -- a future `seqSpan(range)` call added here would resolve
   // to this number and throw "seqSpan is not a function".
   const rowSpan = rowBotSeq - rowTopSeq
-  const t = rowSpan > 0 ? clamp((seqF - rowTopSeq) / rowSpan, 0, 1) : 0
+  const t = rowSpan > 0
+    ? clamp((seqF - rowTopSeq) / rowSpan, 0, 1)
+    : 0
   const top = geo.offsetOfIndex(i)
-  const bot = i + 1 >= n ? geo.totalHeight : geo.offsetOfIndex(i + 1)
+  const bot = i + 1 >= n
+    ? geo.totalHeight
+    : geo.offsetOfIndex(i + 1)
   return top + t * (bot - top)
 }
 
@@ -241,7 +252,10 @@ export function computeSeqThumb(prep: PreparedGeometry, inp: SeqThumbInputs): Se
     topFraction = 0
   if (!inp.hasMoreNewer && inp.distFromBottomPx <= EDGE_INTENT_TOLERANCE_PX)
     bottomFraction = 1
-  return { topFraction, visibleFraction: Math.max(bottomFraction - topFraction, 0) }
+  return {
+    topFraction,
+    visibleFraction: Math.max(bottomFraction - topFraction, 0),
+  }
 }
 
 /**
@@ -279,7 +293,9 @@ export function seqNumberAtFraction(f: number, minSeq: bigint, maxSeq: bigint): 
   const span = safeSeqDeltaNumber(maxSeq - minSeq)
   if (min === null || span === null)
     return null
-  const frac = Number.isFinite(f) ? clamp(f, 0, 1) : 0
+  const frac = Number.isFinite(f)
+    ? clamp(f, 0, 1)
+    : 0
   return min + frac * span
 }
 
@@ -325,7 +341,9 @@ export function projectThumbPx(thumb: SeqThumb, railHeightPx: number, fixedThumb
   const heightPx = fixedThumbHeightPx(railHeightPx, fixedThumbPx)
   const travel = railHeightPx - heightPx
   const denom = 1 - thumb.visibleFraction
-  const progress = denom > 0 ? clamp(thumb.topFraction / denom, 0, 1) : 0
+  const progress = denom > 0
+    ? clamp(thumb.topFraction / denom, 0, 1)
+    : 0
   return { topPx: travel * progress, heightPx }
 }
 

@@ -4,7 +4,11 @@ import { clineOperations, clineSideCallId, clineToolFinish, clineToolStart, erro
 
 describe('clineToolStart', () => {
   it('reads the call a start row states', () => {
-    expect(clineToolStart(clineToolStartRow('read_files', { files: [] }, 'c1'))).toEqual({ id: 'c1', name: 'read_files', input: { files: [] } })
+    expect(clineToolStart(clineToolStartRow('read_files', { files: [] }, 'c1'))).toEqual({
+      id: 'c1',
+      name: 'read_files',
+      input: { files: [] },
+    })
   })
 
   it('reads arguments that are not an object as none', () => {
@@ -14,8 +18,14 @@ describe('clineToolStart', () => {
   })
 
   it('reads no call from a row that states no id or no tool, or another row', () => {
-    expect(clineToolStart({ event: 'tool.started', payload: { toolName: 'read_files' } })).toBeNull()
-    expect(clineToolStart({ event: 'tool.started', payload: { toolCallId: 'c1' } })).toBeNull()
+    expect(clineToolStart({
+      event: 'tool.started',
+      payload: { toolName: 'read_files' },
+    })).toBeNull()
+    expect(clineToolStart({
+      event: 'tool.started',
+      payload: { toolCallId: 'c1' },
+    })).toBeNull()
     expect(clineToolStart(clineToolFinishRow('read_files', []))).toBeNull()
     expect(clineToolStart(null)).toBeNull()
   })
@@ -23,7 +33,12 @@ describe('clineToolStart', () => {
 
 describe('clineToolFinish', () => {
   it('reads the end a finish row states', () => {
-    expect(clineToolFinish(clineToolFinishRow('read_files', ['x'], undefined, 'c1'))).toEqual({ id: 'c1', name: 'read_files', output: ['x'], error: '' })
+    expect(clineToolFinish(clineToolFinishRow('read_files', ['x'], undefined, 'c1'))).toEqual({
+      id: 'c1',
+      name: 'read_files',
+      output: ['x'],
+      error: '',
+    })
   })
 
   it('reads the words of a refusal out of Cline\'s JSON error', () => {
@@ -31,13 +46,21 @@ describe('clineToolFinish', () => {
   })
 
   it('reads no end from a row with no id', () => {
-    expect(clineToolFinish({ event: 'tool.finished', payload: { toolName: 'editor' } })).toBeNull()
+    expect(clineToolFinish({
+      event: 'tool.finished',
+      payload: { toolName: 'editor' },
+    })).toBeNull()
   })
 
   // The editor and the patch tool state a failure inside their one record, and Cline
   // states no error for the call. That record is the whole call.
   it('reads the error of a call whose one record states a failure', () => {
-    const record = { query: 'edit:/w/a.ts', result: '', error: 'Editor operation failed: no match', success: false }
+    const record = {
+      query: 'edit:/w/a.ts',
+      result: '',
+      error: 'Editor operation failed: no match',
+      success: false,
+    }
     expect(clineToolFinish(clineToolFinishRow('editor', record))?.error).toBe('Editor operation failed: no match')
     expect(clineToolFinish(clineToolFinishRow('editor', JSON.stringify(record)))?.error).toBe('Editor operation failed: no match')
     // A failure with no words still fails the call.
@@ -45,14 +68,26 @@ describe('clineToolFinish', () => {
   })
 
   it('reads the error Cline states for the call before the error of its record', () => {
-    const record = { query: 'edit:/w/a.ts', result: '', error: 'inner', success: false }
+    const record = {
+      query: 'edit:/w/a.ts',
+      result: '',
+      error: 'inner',
+      success: false,
+    }
     expect(clineToolFinish(clineToolFinishRow('editor', record, 'outer'))?.error).toBe('outer')
   })
 
   // A list states one record for each operation, so one failed operation is not the
   // failure of the call: its error stays in its own record.
   it('reads no error from a list whose operation failed, or from a record that succeeded', () => {
-    expect(clineToolFinish(clineToolFinishRow('read_files', [{ query: '/w/a.ts', result: '', error: 'Not found', success: false }]))?.error).toBe('')
+    expect(clineToolFinish(clineToolFinishRow('read_files', [
+      {
+        query: '/w/a.ts',
+        result: '',
+        error: 'Not found',
+        success: false,
+      },
+    ]))?.error).toBe('')
     expect(clineToolFinish(clineToolFinishRow('editor', { query: 'edit:/w/a.ts', result: 'Edited', success: true }))?.error).toBe('')
     expect(clineToolFinish(clineToolFinishRow('spawn_agent', { text: 'x', success: false }))?.error).toBe('')
   })
@@ -80,7 +115,12 @@ describe('errorText', () => {
 })
 
 describe('clineSideCallId', () => {
-  const side = (parentObject: Record<string, unknown>) => ({ rawText: '', topLevel: parentObject, parentObject, wrapper: null })
+  const side = (parentObject: Record<string, unknown>) => ({
+    rawText: '',
+    topLevel: parentObject,
+    parentObject,
+    wrapper: null,
+  })
 
   it('reads the id of either side', () => {
     expect(clineSideCallId(side(clineToolStartRow('x', {}, 'c1')))).toBe('c1')
@@ -93,13 +133,48 @@ describe('clineSideCallId', () => {
 describe('clineOperations', () => {
   it('reads a list, one record, and the JSON text of either', () => {
     const record = { query: 'q', result: 'r', success: true }
-    expect(clineOperations([record])).toEqual([{ query: 'q', result: 'r', error: '', success: true }])
-    expect(clineOperations(record)).toEqual([{ query: 'q', result: 'r', error: '', success: true }])
-    expect(clineOperations(JSON.stringify([record]))).toEqual([{ query: 'q', result: 'r', error: '', success: true }])
+    expect(clineOperations([record])).toEqual([
+      {
+        query: 'q',
+        result: 'r',
+        error: '',
+        success: true,
+      },
+    ])
+    expect(clineOperations(record)).toEqual([
+      {
+        query: 'q',
+        result: 'r',
+        error: '',
+        success: true,
+      },
+    ])
+    expect(clineOperations(JSON.stringify([record]))).toEqual([
+      {
+        query: 'q',
+        result: 'r',
+        error: '',
+        success: true,
+      },
+    ])
   })
 
   it('reads a failed record, and nothing from a value that is none', () => {
-    expect(clineOperations([{ query: 'q', result: '', error: 'e', success: false }])).toEqual([{ query: 'q', result: '', error: 'e', success: false }])
+    expect(clineOperations([
+      {
+        query: 'q',
+        result: '',
+        error: 'e',
+        success: false,
+      },
+    ])).toEqual([
+      {
+        query: 'q',
+        result: '',
+        error: 'e',
+        success: false,
+      },
+    ])
     expect(clineOperations('plain words')).toEqual([])
     expect(clineOperations({ text: 'x' })).toEqual([])
     expect(clineOperations(undefined)).toEqual([])
@@ -107,16 +182,53 @@ describe('clineOperations', () => {
 
   // Cline states `success: false` on a failure alone, so only that value fails a record.
   it('reads a record that states no success flag as a success', () => {
-    expect(clineOperations([{ query: 'q', result: 'r' }, { query: 'q2', result: 'r2', success: 'no' }]).map(operation => operation.success)).toEqual([true, true])
+    expect(clineOperations([
+      { query: 'q', result: 'r' },
+      { query: 'q2', result: 'r2', success: 'no' },
+    ]).map(operation => operation.success)).toEqual([true, true])
   })
 
   it('skips an entry of the list that is not a record, and reads a field of the wrong type as empty', () => {
-    expect(clineOperations(['text', null, { query: 3, result: { invalid: true }, error: {} }])).toEqual([{ query: '', result: '', error: '', success: true }])
+    expect(clineOperations([
+      'text',
+      null,
+      {
+        query: 3,
+        result: { invalid: true },
+        error: {},
+      },
+    ])).toEqual([
+      {
+        query: '',
+        result: '',
+        error: '',
+        success: true,
+      },
+    ])
   })
 
   it('preserves text parts from native result arrays without serializing image bytes', () => {
-    expect(clineOperations([{ query: '/w/a.png', result: ['First', { type: 'image', data: 'YQ==', mediaType: 'image/png' }, null, 0, 'Second'], success: true }]))
-      .toEqual([{ query: '/w/a.png', result: 'First\nSecond', error: '', success: true }])
+    expect(clineOperations([
+      {
+        query: '/w/a.png',
+        result: [
+          'First',
+          { type: 'image', data: 'YQ==', mediaType: 'image/png' },
+          null,
+          0,
+          'Second',
+        ],
+        success: true,
+      },
+    ]))
+      .toEqual([
+        {
+          query: '/w/a.png',
+          result: 'First\nSecond',
+          error: '',
+          success: true,
+        },
+      ])
   })
 })
 

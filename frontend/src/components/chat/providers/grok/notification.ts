@@ -19,11 +19,21 @@ export function grokNotificationEntry(message: Record<string, unknown>): Notific
   if (pickString(update, 'sessionUpdate') === GROK_NOTIFICATION.RetryState && pickString(update, 'type') === 'retrying') {
     const attempt = tokenCount(update.attempt)
     const maxAttempts = tokenCount(update.max_retries)
-    return [retryEntry('api', {
-      ...(attempt !== undefined ? { attempt } : {}),
-      ...(maxAttempts !== undefined ? { maxAttempts } : {}),
-      ...(pickString(update, 'reason').trim() ? { error: pickString(update, 'reason') } : {}),
-    })]
+    return [
+      retryEntry('api', {
+        ...(attempt !== undefined
+          ? { attempt }
+          : {}),
+        ...(maxAttempts !== undefined
+          ? { maxAttempts }
+          : {}),
+        ...(pickString(update, 'reason').trim()
+          ? {
+              error: pickString(update, 'reason'),
+            }
+          : {}),
+      }),
+    ]
   }
   return grokCompactionEntries(update)
 }
@@ -32,22 +42,34 @@ function grokCompactionEntries(update: Record<string, unknown>): NotificationEnt
   switch (pickString(update, 'sessionUpdate')) {
     case GROK_NOTIFICATION.AutoCompactCompleted: {
       const detail = grokCompactionDetails(update)
-      return [{
-        kind: 'compaction',
-        phase: 'end',
-        outcome: 'completed',
-        ...(detail !== null ? { detail } : {}),
-      }]
+      return [
+        {
+          kind: 'compaction',
+          phase: 'end',
+          outcome: 'completed',
+          ...(detail !== null
+            ? { detail }
+            : {}),
+        },
+      ]
     }
     case GROK_NOTIFICATION.AutoCompactFailed:
-      return [{
-        kind: 'compaction',
-        phase: 'end',
-        outcome: 'failed',
-        ...(pickString(update, 'error').trim() ? { error: pickString(update, 'error').trim() } : {}),
-      }]
+      return [
+        {
+          kind: 'compaction',
+          phase: 'end',
+          outcome: 'failed',
+          ...(pickString(update, 'error').trim()
+            ? {
+                error: pickString(update, 'error').trim(),
+              }
+            : {}),
+        },
+      ]
     case GROK_NOTIFICATION.AutoCompactCancelled:
-      return [{ kind: 'compaction', phase: 'end', outcome: 'aborted' }]
+      return [
+        { kind: 'compaction', phase: 'end', outcome: 'aborted' },
+      ]
     default:
       return []
   }
@@ -59,8 +81,12 @@ function grokCompactionDetails(update: Record<string, unknown>): CompactionDetai
   if (pre === undefined && post === undefined)
     return null
   return {
-    ...(pre !== undefined ? { pre } : {}),
-    ...(post !== undefined ? { post } : {}),
+    ...(pre !== undefined
+      ? { pre }
+      : {}),
+    ...(post !== undefined
+      ? { post }
+      : {}),
   }
 }
 

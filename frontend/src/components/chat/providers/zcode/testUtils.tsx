@@ -22,11 +22,15 @@ import './plugin'
  */
 export function ZCodeRowView(props: { parsed: unknown, context?: MessageContentRenderContext }): JSX.Element {
   const category = () => {
-    const parsed = isObject(props.parsed) ? props.parsed : undefined
+    const parsed = isObject(props.parsed)
+      ? props.parsed
+      : undefined
     return providerFor(AgentProvider.ZCODE)!.transcript.classify({
       ...input(parsed),
       agentProvider: AgentProvider.ZCODE,
-      ...(props.context?.spanType !== undefined ? { spanType: props.context.spanType } : {}),
+      ...(props.context?.spanType !== undefined
+        ? { spanType: props.context.spanType }
+        : {}),
     })
   }
   return <>{renderMessageContent(props.parsed, props.context, category(), AgentProvider.ZCODE)}</>
@@ -34,5 +38,12 @@ export function ZCodeRowView(props: { parsed: unknown, context?: MessageContentR
 
 /** Render one ZCode row and return the testing-library handle. */
 export function renderZCodeRow(parsed: unknown, context?: MessageContentRenderContext): ReturnType<typeof render> {
-  return render(() => <ZCodeRowView parsed={parsed} {...(context !== undefined ? { context } : {})} />)
+  return render(() => (
+    <ZCodeRowView
+      parsed={parsed}
+      {...(context !== undefined
+        ? { context }
+        : {})}
+    />
+  ))
 }

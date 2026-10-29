@@ -3,8 +3,21 @@ import { describe, expect, it } from 'vitest'
 import { matchesRequest } from '../helpers/mockModelScript'
 import { lettaChildLaunch, lettaChildNoticeRule } from './childNoticeRule'
 
-const options = { name: 'the actual Letta task completed', spawnCallId: 'native-letta-spawn', description: 'Read "A&B<file>"', report: 'REPORT & <native>\nThe report ends here.', reply: 'The actual Letta report arrived.' }
-const launch = { spawnCallId: options.spawnCallId, description: options.description, taskId: 'task_42', outputFile: '/private/A&B/task_42.output', agentId: 'agent-native', conversationId: 'conversation-native' }
+const options = {
+  name: 'the actual Letta task completed',
+  spawnCallId: 'native-letta-spawn',
+  description: 'Read "A&B<file>"',
+  report: 'REPORT & <native>\nThe report ends here.',
+  reply: 'The actual Letta report arrived.',
+}
+const launch = {
+  spawnCallId: options.spawnCallId,
+  description: options.description,
+  taskId: 'task_42',
+  outputFile: '/private/A&B/task_42.output',
+  agentId: 'agent-native',
+  conversationId: 'conversation-native',
+}
 const childId = 'subagent-1234567890-1'
 const xml = (text: string) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 
@@ -12,7 +25,23 @@ function receipt(text = `Task running in background with task ID: ${launch.taskI
   return {
     protocol: 'openai-chat-completions',
     path: '/v1/chat/completions',
-    body: { messages: [{ role: 'assistant', tool_calls: [{ id: options.spawnCallId, function: { name: callName, arguments: JSON.stringify({ description: options.description, prompt: 'Perform the actual child task.', subagent_type: 'general-purpose' }) } }] }, { role: 'tool', tool_call_id: options.spawnCallId, content: text }] },
+    body: {
+      messages: [
+        {
+          role: 'assistant',
+          tool_calls: [
+            {
+              id: options.spawnCallId,
+              function: {
+                name: callName,
+                arguments: JSON.stringify({ description: options.description, prompt: 'Perform the actual child task.', subagent_type: 'general-purpose' }),
+              },
+            },
+          ],
+        },
+        { role: 'tool', tool_call_id: options.spawnCallId, content: text },
+      ],
+    },
   }
 }
 
@@ -22,7 +51,21 @@ function notice() {
 }
 
 function accepts(rule: MockModelRule, text: string, lastRole = 'user') {
-  return matchesRequest(rule.when, { protocol: 'openai-chat-completions', systemText: '', userText: text, body: { messages: [{ role: 'user', content: text }, ...(lastRole === 'user' ? [] : [{ role: lastRole, content: 'A later native message.' }])] } })
+  return matchesRequest(rule.when, {
+    protocol: 'openai-chat-completions',
+    systemText: '',
+    userText: text,
+    body: {
+      messages: [
+        { role: 'user', content: text },
+        ...(lastRole === 'user'
+          ? []
+          : [
+              { role: lastRole, content: 'A later native message.' },
+            ]),
+      ],
+    },
+  })
 }
 
 describe('lettaChildLaunch', () => {
@@ -33,11 +76,24 @@ describe('lettaChildLaunch', () => {
   })
 
   it('retains a receipt without optional backend identities', () => {
-    expect(lettaChildLaunch(receipt(`Task running in background with task ID: ${launch.taskId}\nOutput file: ${launch.outputFile}\n`), options.spawnCallId)).toEqual({ spawnCallId: options.spawnCallId, description: options.description, taskId: launch.taskId, outputFile: launch.outputFile })
+    expect(lettaChildLaunch(receipt(`Task running in background with task ID: ${launch.taskId}\nOutput file: ${launch.outputFile}\n`), options.spawnCallId)).toEqual({
+      spawnCallId: options.spawnCallId,
+      description: options.description,
+      taskId: launch.taskId,
+      outputFile: launch.outputFile,
+    })
   })
 
   it('ignores request text and arguments without an actual matched result', () => {
-    expect(lettaChildLaunch({ protocol: 'openai-chat-completions', path: '/', body: { messages: [{ role: 'user', content: 'Task running in background with task ID: task_999' }] } }, options.spawnCallId)).toBeNull()
+    expect(lettaChildLaunch({
+      protocol: 'openai-chat-completions',
+      path: '/',
+      body: {
+        messages: [
+          { role: 'user', content: 'Task running in background with task ID: task_999' },
+        ],
+      },
+    }, options.spawnCallId)).toBeNull()
     expect(lettaChildLaunch(receipt(), 'foreign-call')).toBeNull()
   })
 
@@ -80,8 +136,16 @@ describe('lettaChildNoticeRule', () => {
     ['the native subagent ID', childId, 'subagent-1234567890-2'],
     ['the backend agent ID', launch.agentId, 'agent-foreign'],
     ['the backend conversation ID', launch.conversationId, 'conversation-foreign'],
-    ['the summary', xml(options.description), 'A foreign task'],
-    ['the actual report', xml(options.report), 'A foreign report'],
+    [
+      'the summary',
+      xml(options.description),
+      'A foreign task',
+    ],
+    [
+      'the actual report',
+      xml(options.report),
+      'A foreign report',
+    ],
     ['the completion status', '<status>completed</status>', '<status>failed</status>'],
     ['the native result status', 'subagent_status=success', 'subagent_status=error'],
     ['the output footer', `Full transcript available at: ${launch.outputFile}`, 'Full transcript available at: /foreign/output'],
@@ -89,7 +153,13 @@ describe('lettaChildNoticeRule', () => {
     expect(accepts(lettaChildNoticeRule(launch, childId, options), notice().replaceAll(from, to))).toBe(false)
   })
 
-  it.each(['prefix', 'quoted', 'nested', 'duplicated', 'monitor'])('rejects an unrelated or malformed %s envelope', (kind) => {
+  it.each([
+    'prefix',
+    'quoted',
+    'nested',
+    'duplicated',
+    'monitor',
+  ])('rejects an unrelated or malformed %s envelope', (kind) => {
     const text = kind === 'prefix'
       ? `An unrelated user message.\n${notice()}`
       : kind === 'quoted'

@@ -9,7 +9,13 @@ import { copilotCompactionBoundary, copilotNotificationEntry, describeCopilotNot
 import '~/components/chat/providers'
 
 function row(type: string, data: Record<string, unknown> = {}): Record<string, unknown> {
-  return { method: COPILOT_METHOD.SessionEvent, params: { sessionId: 's', event: { id: 'e', type, agentId: '', data } } }
+  return {
+    method: COPILOT_METHOD.SessionEvent,
+    params: {
+      sessionId: 's',
+      event: { id: 'e', type, agentId: '', data },
+    },
+  }
 }
 
 /**
@@ -21,7 +27,13 @@ function row(type: string, data: Record<string, unknown> = {}): Record<string, u
  * same mistake, and neither would match the wire.
  */
 function completed(result: Record<string, unknown>, decisionSource?: string): Record<string, unknown> {
-  return row(COPILOT_EVENT.PermissionCompleted, { requestId: 'r', result, ...(decisionSource ? { decisionSource } : {}) })
+  return row(COPILOT_EVENT.PermissionCompleted, {
+    requestId: 'r',
+    result,
+    ...(decisionSource
+      ? { decisionSource }
+      : {}),
+  })
 }
 
 /**
@@ -38,7 +50,9 @@ describe('a permission the reader never saw', () => {
     [COPILOT_PERMISSION_OUTCOME.DeniedByPermissionRequestHook, 'Denied by a permission hook'],
   ])('states the %s refusal', (kind, sentence) => {
     expect(describeCopilotNotification(completed({ kind }))).toBe(sentence)
-    expect(classifyCopilotMessage({ parentObject: completed({ kind }) } as never).kind).toBe('notification')
+    expect(classifyCopilotMessage({
+      parentObject: completed({ kind }),
+    } as never).kind).toBe('notification')
   })
 
   // The rules are the useful half of a rule refusal: the kind and the argument
@@ -46,7 +60,10 @@ describe('a permission the reader never saw', () => {
   it('names the rules that refused', () => {
     const result = {
       kind: COPILOT_PERMISSION_OUTCOME.DeniedByRules,
-      rules: [{ kind: 'Shell', argument: 'rm' }, { kind: 'read', argument: null }],
+      rules: [
+        { kind: 'Shell', argument: 'rm' },
+        { kind: 'read', argument: null },
+      ],
     }
     expect(describeCopilotNotification(completed(result))).toBe('Denied by the permission rules: Shell: rm, read')
   })
@@ -55,8 +72,19 @@ describe('a permission the reader never saw', () => {
   // refusal worth stating -- so the sentence stands on its own.
   it.each([
     ['omits the rules', {}],
-    ['states an empty list', { rules: [] }],
-    ['states rules with no kind', { rules: [{ argument: 'rm' }, 'not an object'] }],
+    [
+      'states an empty list',
+      { rules: [] },
+    ],
+    [
+      'states rules with no kind',
+      {
+        rules: [
+          { argument: 'rm' },
+          'not an object',
+        ],
+      },
+    ],
   ])('states the bare refusal when the runtime %s', (_name, extra) => {
     expect(describeCopilotNotification(completed({ kind: COPILOT_PERMISSION_OUTCOME.DeniedByRules, ...extra })))
       .toBe('Denied by the permission rules')
@@ -77,16 +105,27 @@ describe('a permission the reader answered', () => {
     COPILOT_PERMISSION_OUTCOME.DeniedInteractivelyByUser,
   ])('hides the %s outcome', (kind) => {
     expect(describeCopilotNotification(completed({ kind }))).toBeNull()
-    expect(classifyCopilotMessage({ parentObject: completed({ kind }) } as never).kind).toBe('hidden')
+    expect(classifyCopilotMessage({
+      parentObject: completed({ kind }),
+    } as never).kind).toBe('hidden')
   })
 
   // An outcome this build cannot read states nothing a reader can act on, so it hides
   // rather than drawing a raw-JSON bubble. The middle case is the one that used to
   // pass for a whole outcome vocabulary: `result` as a bare word matches nothing.
   it.each([
-    ['an outcome word it does not know', completed({ kind: 'something-newer' })],
-    ['a result that is a word rather than an object', row(COPILOT_EVENT.PermissionCompleted, { result: 'denied-by-rules' })],
-    ['a completion with no result at all', row(COPILOT_EVENT.PermissionCompleted)],
+    [
+      'an outcome word it does not know',
+      completed({ kind: 'something-newer' }),
+    ],
+    [
+      'a result that is a word rather than an object',
+      row(COPILOT_EVENT.PermissionCompleted, { result: 'denied-by-rules' }),
+    ],
+    [
+      'a completion with no result at all',
+      row(COPILOT_EVENT.PermissionCompleted),
+    ],
   ])('hides %s', (_name, payload) => {
     expect(describeCopilotNotification(payload)).toBeNull()
   })
@@ -150,7 +189,12 @@ describe('a permission nobody was asked about', () => {
   // source does. The source must not replace that sentence.
   it('keeps the rule refusal sentence whatever the source says', () => {
     const payload = completed(
-      { kind: COPILOT_PERMISSION_OUTCOME.DeniedByRules, rules: [{ kind: 'Shell', argument: 'rm' }] },
+      {
+        kind: COPILOT_PERMISSION_OUTCOME.DeniedByRules,
+        rules: [
+          { kind: 'Shell', argument: 'rm' },
+        ],
+      },
       COPILOT_PERMISSION_DECISION_SOURCE.HostPolicy,
     )
     expect(describeCopilotNotification(payload)).toBe('Denied by the permission rules: Shell: rm')
@@ -185,7 +229,9 @@ describe('a tool an earlier approval admitted', () => {
  */
 describe('a thread of permission completions', () => {
   const thread = (...messages: Record<string, unknown>[]) =>
-    classifyCopilotMessage({ wrapper: { old_seqs: [], messages } } as never)
+    classifyCopilotMessage({
+      wrapper: { old_seqs: [], messages },
+    } as never)
 
   it('hides a thread whose completions the reader all answered', () => {
     expect(thread(
@@ -297,7 +343,9 @@ describe('copilotNotificationEntry', () => {
       preCompactionTokens: 1035024,
       postCompactionTokens: 34193,
       trigger: 'threshold',
-    }))).toStrictEqual([{ kind: 'divider', text: 'Context compacted (threshold, 1.0M → 34.2k)' }])
+    }))).toStrictEqual([
+      { kind: 'divider', text: 'Context compacted (threshold, 1.0M → 34.2k)' },
+    ])
   })
 
   it('leaves stored compaction starts without a normal reader', () => {
@@ -309,7 +357,14 @@ describe('copilotNotificationEntry', () => {
   // the reason the runtime gave instead.
   it('reads a failed compaction as the failed outcome', () => {
     expect(copilotNotificationEntry(row(COPILOT_EVENT.SessionCompactionComplete, { success: false, error: 'Failed.' })))
-      .toEqual([{ kind: 'compaction', phase: 'end', outcome: 'failed', error: 'Failed.' }])
+      .toEqual([
+        {
+          kind: 'compaction',
+          phase: 'end',
+          outcome: 'failed',
+          error: 'Failed.',
+        },
+      ])
   })
 
   it('preserves the ordinary session info message', () => {
@@ -319,29 +374,56 @@ describe('copilotNotificationEntry', () => {
 
   it('states the reason a pass that did not succeed gave', () => {
     expect(blocks(row(COPILOT_EVENT.SessionCompactionComplete, { success: false, error: 'the model returned an empty response' })))
-      .toStrictEqual([{ kind: 'text', text: 'Compaction failed (the model returned an empty response)' }])
+      .toStrictEqual([
+        { kind: 'text', text: 'Compaction failed (the model returned an empty response)' },
+      ])
   })
 
   // The runtime states `statusCode` for a failure that carried an HTTP status and no
   // message. An empty reason would fall through to the boundary rule.
   it('falls back to the status a failure carried when it stated no message', () => {
     expect(blocks(row(COPILOT_EVENT.SessionCompactionComplete, { success: false, statusCode: 413 })))
-      .toStrictEqual([{ kind: 'text', text: 'Compaction failed (HTTP 413)' }])
+      .toStrictEqual([
+        { kind: 'text', text: 'Compaction failed (HTTP 413)' },
+      ])
     expect(blocks(row(COPILOT_EVENT.SessionCompactionComplete, { success: false })))
-      .toStrictEqual([{ kind: 'text', text: 'Compaction failed (unknown reason)' }])
+      .toStrictEqual([
+        { kind: 'text', text: 'Compaction failed (unknown reason)' },
+      ])
   })
 })
 
 describe('describeCopilotNotification system notices', () => {
   // The idle, shell, and instruction frames come from .tmp/verify-c29/copilot/round2/bg-*.
   it.each([
-    [{ type: 'agent_completed', displayName: 'worker', status: 'completed' }, 'Background agent worker completed'],
-    [{ type: 'agent_completed', displayName: 'worker', status: 'failed' }, 'Background agent worker failed'],
-    [{ type: 'agent_idle', displayName: 'gp-child' }, 'Background agent gp-child is idle'],
-    [{ type: 'shell_completed', description: 'Background probe', exitCode: 0 }, 'Shell Background probe exited (code 0)'],
-    [{ type: 'shell_detached_completed', description: 'Detached probe' }, 'Detached shell Detached probe exited'],
-    [{ type: 'instruction_discovered', sourcePath: 'sub/AGENTS.md' }, 'Read the instructions in sub/AGENTS.md'],
-    [{ type: 'factory_completed', factoryName: 'build', status: 'completed' }, 'Factory build completed'],
+    [
+      { type: 'agent_completed', displayName: 'worker', status: 'completed' },
+      'Background agent worker completed',
+    ],
+    [
+      { type: 'agent_completed', displayName: 'worker', status: 'failed' },
+      'Background agent worker failed',
+    ],
+    [
+      { type: 'agent_idle', displayName: 'gp-child' },
+      'Background agent gp-child is idle',
+    ],
+    [
+      { type: 'shell_completed', description: 'Background probe', exitCode: 0 },
+      'Shell Background probe exited (code 0)',
+    ],
+    [
+      { type: 'shell_detached_completed', description: 'Detached probe' },
+      'Detached shell Detached probe exited',
+    ],
+    [
+      { type: 'instruction_discovered', sourcePath: 'sub/AGENTS.md' },
+      'Read the instructions in sub/AGENTS.md',
+    ],
+    [
+      { type: 'factory_completed', factoryName: 'build', status: 'completed' },
+      'Factory build completed',
+    ],
   ])('reads the structured notice %j', (kind, text) => {
     expect(describeCopilotNotification(row(COPILOT_EVENT.SystemNotification, { kind, content: 'native fallback' }))).toBe(text)
   })
@@ -360,12 +442,24 @@ describe('describeCopilotNotification system notices', () => {
   })
 
   it('does not invent a successful outcome or an invalid exit code', () => {
-    expect(describeCopilotNotification(row(COPILOT_EVENT.SystemNotification, { kind: { type: 'agent_completed' }, content: 'Unknown outcome.' })))
+    expect(describeCopilotNotification(row(COPILOT_EVENT.SystemNotification, {
+      kind: { type: 'agent_completed' },
+      content: 'Unknown outcome.',
+    })))
       .toBe('Unknown outcome.')
-    for (const exitCode of [Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, 0.5]) {
-      expect(describeCopilotNotification(row(COPILOT_EVENT.SystemNotification, { kind: { type: 'shell_completed', exitCode } })))
+    for (const exitCode of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.MAX_SAFE_INTEGER + 1,
+      0.5,
+    ]) {
+      expect(describeCopilotNotification(row(COPILOT_EVENT.SystemNotification, {
+        kind: { type: 'shell_completed', exitCode },
+      })))
         .toBe('Shell exited')
     }
-    expect(describeCopilotNotification(row(COPILOT_EVENT.SystemNotification, { kind: { type: 'agent_idle' } }))).toBe('Background agent is idle')
+    expect(describeCopilotNotification(row(COPILOT_EVENT.SystemNotification, {
+      kind: { type: 'agent_idle' },
+    }))).toBe('Background agent is idle')
   })
 })

@@ -4,11 +4,16 @@ import { exerciseInterruptedPartialAnswer, exerciseInterruptTurn } from '../help
 import { bypassToolRequests } from './scenarios'
 
 copilotTest('stops a native turn and accepts a new prompt after queue resume', async ({ native }) => {
-  await exerciseInterruptTurn(native, { prepare: () => bypassToolRequests(native) })
+  await exerciseInterruptTurn(native, {
+    prepare: () => bypassToolRequests(native),
+  })
 })
 
 copilotTest('stops an actual native tool and accepts a new prompt after queue resume', async ({ native }) => {
-  await exerciseInterruptTurn(native, { kind: 'tool', prepare: () => bypassToolRequests(native) })
+  await exerciseInterruptTurn(native, {
+    kind: 'tool',
+    prepare: () => bypassToolRequests(native),
+  })
 })
 
 copilotTest('keeps the interrupted partial answer and its marker after reload', async ({ native }) => {

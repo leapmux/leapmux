@@ -146,10 +146,28 @@ describe('liveTabsOnTile', () => {
     // insertion order into state.tabs is REVERSED relative to their
     // LexoRank position. Without the sort, liveTabsOnTile returns them
     // in insertion order; with it, position order wins.
-    const stamp = (value: string) => create(LWWStringSchema, { value, hlc: { physical: 0n, logical: 0n, clientId: '' } })
-    const tabA = create(TabRecordSchema, { tabType: 1, tabId: 'tab-A', tileId: stamp('tile-1'), position: stamp('aaa') })
-    const tabB = create(TabRecordSchema, { tabType: 1, tabId: 'tab-B', tileId: stamp('tile-1'), position: stamp('mmm') })
-    const tabC = create(TabRecordSchema, { tabType: 1, tabId: 'tab-C', tileId: stamp('tile-1'), position: stamp('zzz') })
+    const stamp = (value: string) => create(LWWStringSchema, {
+      value,
+      hlc: { physical: 0n, logical: 0n, clientId: '' },
+    })
+    const tabA = create(TabRecordSchema, {
+      tabType: 1,
+      tabId: 'tab-A',
+      tileId: stamp('tile-1'),
+      position: stamp('aaa'),
+    })
+    const tabB = create(TabRecordSchema, {
+      tabType: 1,
+      tabId: 'tab-B',
+      tileId: stamp('tile-1'),
+      position: stamp('mmm'),
+    })
+    const tabC = create(TabRecordSchema, {
+      tabType: 1,
+      tabId: 'tab-C',
+      tileId: stamp('tile-1'),
+      position: stamp('zzz'),
+    })
     const state = create(UserCrdtStateSchema, {
       // Intentionally insert in C, A, B order — Object.values iteration
       // would yield that order; the sort must override it.
@@ -185,7 +203,10 @@ describe('newBatch', () => {
 // op kind added later. These pin the three-valued contract that makes the two
 // callers degrade in their own safe directions.
 describe('opTarget', () => {
-  const ctx = { originClientId: 'c1', clock: new HLCClock('c1') }
+  const ctx = {
+    originClientId: 'c1',
+    clock: new HLCClock('c1'),
+  }
 
   it('names the entity for every op kind that installs one', () => {
     expect(opTarget(setNodePosition(ctx, 'n1', 'p'))).toEqual({ case: 'entity', kind: 'node', id: 'n1' })
@@ -197,13 +218,17 @@ describe('opTarget', () => {
   })
 
   it('reports an empty body as provably targeting nothing', () => {
-    expect(opTarget({ body: { case: undefined } } as never)).toEqual({ case: 'none' })
+    expect(opTarget({
+      body: { case: undefined },
+    } as never)).toEqual({ case: 'none' })
   })
 
   it('reports an unrecognized body as unknown, not as nothing', () => {
     // The distinction the two consumers turn on: `none` means "safe to ignore",
     // `unknown` means "this build cannot enumerate what changed".
-    expect(opTarget({ body: { case: 'someOpFromANewerBuild', value: {} } } as never))
+    expect(opTarget({
+      body: { case: 'someOpFromANewerBuild', value: {} },
+    } as never))
       .toEqual({ case: 'unknown' })
   })
 

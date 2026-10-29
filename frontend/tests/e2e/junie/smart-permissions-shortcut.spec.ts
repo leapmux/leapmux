@@ -25,8 +25,12 @@ junieTest('switches the Brave mode axis between the Smart shortcut and the other
   // A shortcut that is already on disables itself, so each state follows the value the session starts in.
   const initial = nativeOptionValue(agent, JUNIE_CONFIG.BraveMode)
   await expectPermissionShortcuts(page, {
-    smart: initial === JUNIE_BRAVE.Auto ? 'disabled' : 'offered',
-    bypass: initial === JUNIE_BRAVE.On ? 'disabled' : 'offered',
+    smart: initial === JUNIE_BRAVE.Auto
+      ? 'disabled'
+      : 'offered',
+    bypass: initial === JUNIE_BRAVE.On
+      ? 'disabled'
+      : 'offered',
   })
 
   await chooseSettingsOption(page, `${OPTION_ID_PERMISSION_MODE}-${JUNIE_MODE.Plan}`)

@@ -56,7 +56,10 @@ function printedText(text: string): PrintedText {
     return { rows }
   rows.pop()
   trimTrailingBlank(rows)
-  return { rows, notice: last.slice(1, -1) }
+  return {
+    rows,
+    notice: last.slice(1, -1),
+  }
 }
 
 /**
@@ -79,10 +82,15 @@ function numberedRows(rows: readonly string[]): NumberedFileLine[] | null {
     const match = NUMBERED_ROW.exec(row)
     if (match?.[1] === undefined)
       return null
-    lines.push({ num: Number(match[1]), text: match[2] ?? '' })
+    lines.push({
+      num: Number(match[1]),
+      text: match[2] ?? '',
+    })
   }
   // A text of elision rows alone numbers no line, so it is not in this shape.
-  return lines.some(line => line.num !== null) ? lines : null
+  return lines.some(line => line.num !== null)
+    ? lines
+    : null
 }
 
 /**
@@ -162,22 +170,41 @@ function displayLines(rows: readonly string[], numbers: ReadonlyArray<number | n
 export function ohMyPiReadResult(text: string, details: Record<string, unknown>): ReadFileResult {
   const printed = printedText(text)
   const display = pickObject(details, 'displayContent')
-  const displayText = display ? pickString(display, 'text', undefined) : undefined
-  const displayRows = displayText ? rowsOf(displayText) : []
+  const displayText = display
+    ? pickString(display, 'text', undefined)
+    : undefined
+  const displayRows = displayText
+    ? rowsOf(displayText)
+    : []
   // The display text holds no notice, so a last row that it holds too is the file's own line.
   const lastDisplayRow = displayRows.filter(row => row.trim() !== '').at(-1)?.trim()
-  const notice = printed.notice !== undefined && lastDisplayRow !== `[${printed.notice}]` ? printed.notice : undefined
-  const trailing: ReadReminder[] = notice !== undefined ? [{ label: 'Notice', text: notice }] : []
-  const withTrailing = (result: ReadFileResult): ReadFileResult => trailing.length > 0 ? { ...result, trailing } : result
+  const notice = printed.notice !== undefined && lastDisplayRow !== `[${printed.notice}]`
+    ? printed.notice
+    : undefined
+  const trailing: ReadReminder[] = notice !== undefined
+    ? [
+        { label: 'Notice', text: notice },
+      ]
+    : []
+  const withTrailing = (result: ReadFileResult): ReadFileResult => trailing.length > 0
+    ? { ...result, trailing }
+    : result
 
   if (display && displayText !== undefined) {
-    const numbers = isObject(details.summary) ? summaryNumbers(displayRows, printed.rows) : statedNumbers(display, displayRows.length)
+    const numbers = isObject(details.summary)
+      ? summaryNumbers(displayRows, printed.rows)
+      : statedNumbers(display, displayRows.length)
     if (numbers === null)
       return withTrailing({ lines: null, fallbackContent: displayText })
-    return withTrailing({ lines: displayLines(displayRows, numbers), fallbackContent: text })
+    return withTrailing({
+      lines: displayLines(displayRows, numbers),
+      fallbackContent: text,
+    })
   }
   const lines = numberedRows(printed.rows)
-  return lines ? withTrailing({ lines, fallbackContent: text }) : { lines: null, fallbackContent: text }
+  return lines
+    ? withTrailing({ lines, fallbackContent: text })
+    : { lines: null, fallbackContent: text }
 }
 
 /**

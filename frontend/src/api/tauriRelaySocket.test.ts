@@ -13,8 +13,12 @@ vi.mock('~/api/platformBridge', () => ({
   parseRelayClosePayload: (payload: unknown) => {
     const close = payload as { code?: unknown, reason?: unknown, wasClean?: unknown } | null
     return {
-      code: typeof close?.code === 'number' ? close.code : 1006,
-      reason: typeof close?.reason === 'string' ? close.reason : '',
+      code: typeof close?.code === 'number'
+        ? close.code
+        : 1006,
+      reason: typeof close?.reason === 'string'
+        ? close.reason
+        : '',
       wasClean: close?.wasClean === true,
     }
   },

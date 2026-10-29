@@ -7,7 +7,9 @@
 import { posix, win32 } from 'node:path'
 
 function joinFor(platform: NodeJS.Platform, ...parts: string[]): string {
-  return (platform === 'win32' ? win32 : posix).join(...parts)
+  return (platform === 'win32'
+    ? win32
+    : posix).join(...parts)
 }
 
 /**

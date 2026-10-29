@@ -7,7 +7,12 @@ import { input } from '../testUtils'
 import { kimiRelatedMessages, kimiSpanRole } from './spanRole'
 
 function resolved(parent: Record<string, unknown>, completion?: MessageCompletion) {
-  return resolveMessageForRendering({ ...input(parent, undefined, AgentProvider.KIMI_CODE), ...(completion !== undefined ? { completion } : {}) }, AgentProvider.KIMI_CODE)
+  return resolveMessageForRendering({
+    ...input(parent, undefined, AgentProvider.KIMI_CODE),
+    ...(completion !== undefined
+      ? { completion }
+      : {}),
+  }, AgentProvider.KIMI_CODE)
 }
 
 describe('kimiSpanRole', () => {
@@ -42,7 +47,10 @@ describe('kimiRelatedMessages', () => {
   it('reads a start whose arguments are absent or not an object as an empty call', () => {
     const { args: _args, ...noArgs } = kimiToolStart('c', KIMI_TOOL.TaskList, {})
     expect(kimiRelatedMessages(resolved(noArgs))).toStrictEqual(['result'])
-    expect(kimiRelatedMessages(resolved({ ...kimiToolStart('c', KIMI_TOOL.Read, {}), args: 'a.go' }))).toStrictEqual(['result'])
+    expect(kimiRelatedMessages(resolved({
+      ...kimiToolStart('c', KIMI_TOOL.Read, {}),
+      args: 'a.go',
+    }))).toStrictEqual(['result'])
   })
 
   // A retained start closes its call, so it needs the request the way a result does.

@@ -24,7 +24,9 @@ export interface ReasonixEnvironmentOptions {
 
 /** Point Reasonix at the mock through three providers of its own `config.toml`, and bind its key variable. */
 export function createReasonixEnvironment(options: ReasonixEnvironmentOptions): Record<string, string> {
-  const contextWindow = options.contextWindow === undefined ? 128000 : options.contextWindow
+  const contextWindow = options.contextWindow === undefined
+    ? 128000
+    : options.contextWindow
   if (!Number.isSafeInteger(contextWindow) || contextWindow <= 0)
     throw new Error('The Reasonix context window must be a positive safe integer.')
   const reasonixHome = join(options.homeDir, '.reasonix')

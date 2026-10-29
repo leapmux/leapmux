@@ -36,7 +36,12 @@ export function createCodewhaleEnvironment(options: CodewhaleEnvironmentOptions)
   mkdirSync(join(codewhaleHome, 'catalog'), { recursive: true })
   writeFileSync(join(codewhaleHome, 'config.toml'), codewhaleConfig(options), { mode: 0o600 })
   writePrivateJSON(join(codewhaleHome, 'mcp.json'), {
-    servers: { [options.mcpEchoServer.name]: { command: options.mcpEchoServer.command, args: [...options.mcpEchoServer.args] } },
+    servers: {
+      [options.mcpEchoServer.name]: {
+        command: options.mcpEchoServer.command,
+        args: [...options.mcpEchoServer.args],
+      },
+    },
   })
   writePrivateJSON(join(codewhaleHome, 'catalog', 'provider-catalogs.json'), codewhaleCatalog(options))
   // Each of the three switches below has a twin in the configuration file. The
@@ -110,7 +115,12 @@ function codewhaleCatalog(options: CodewhaleEnvironmentOptions): Record<string, 
     wire_model_id: model,
     endpoint_key: endpoint,
     default_for_provider: isDefault,
-    modalities: { input: image ? ['text', 'image'] : ['text'], output: ['text'] },
+    modalities: {
+      input: image
+        ? ['text', 'image']
+        : ['text'],
+      output: ['text'],
+    },
     source: { kind: 'live', base_url_fingerprint: fingerprint, fetched_at: fetchedAt },
   })
   return {

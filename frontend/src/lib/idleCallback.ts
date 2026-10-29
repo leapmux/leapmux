@@ -27,8 +27,11 @@ function hasIdleCallback(): boolean {
 export function requestIdle(callback: () => void, options?: IdleRequestOptions): number {
   // `options` is forwarded only when a caller gave one, so the ordinary call
   // stays a one-argument call rather than passing an explicit `undefined`.
-  if (hasIdleCallback())
-    return options === undefined ? requestIdleCallback(callback) : requestIdleCallback(callback, options)
+  if (hasIdleCallback()) {
+    return options === undefined
+      ? requestIdleCallback(callback)
+      : requestIdleCallback(callback, options)
+  }
   return setTimeout(callback, 1) as unknown as number
 }
 

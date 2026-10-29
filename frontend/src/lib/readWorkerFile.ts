@@ -27,20 +27,35 @@ export async function readWorkerFile(options: {
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0)
     throw new Error('The file preview limit is invalid')
   signal?.throwIfAborted()
-  const response = await readFile(workerId, { workerId, path, limit: BigInt(maxBytes), metaOnlyIfTruncated: true }, signal ? { signal } : undefined)
+  const response = await readFile(workerId, {
+    workerId,
+    path,
+    limit: BigInt(maxBytes),
+    metaOnlyIfTruncated: true,
+  }, signal
+    ? { signal }
+    : undefined)
   signal?.throwIfAborted()
   if (response.totalSize < 0n || BigInt(response.content.length) > response.totalSize)
     throw new Error('The file has an invalid size')
-  if (response.totalSize > BigInt(maxBytes))
-    return { ...response, content: new Uint8Array() }
+  if (response.totalSize > BigInt(maxBytes)) {
+    return {
+      ...response,
+      content: new Uint8Array(),
+    }
+  }
   if (BigInt(response.content.length) === response.totalSize)
     return response
 
   const complete = new Uint8Array(Number(response.totalSize))
   complete.set(response.content)
   const ranges: Array<{ start: number, end: number }> = []
-  for (let start = response.content.length; start < complete.length; start += PAGE_BYTES)
-    ranges.push({ start, end: Math.min(start + PAGE_BYTES, complete.length) })
+  for (let start = response.content.length; start < complete.length; start += PAGE_BYTES) {
+    ranges.push({
+      start,
+      end: Math.min(start + PAGE_BYTES, complete.length),
+    })
+  }
 
   // The pages share one controller, so the first failure stops the requests that
   // still run. Without it they read on against a file that already changed, and
@@ -61,7 +76,12 @@ export async function readWorkerFile(options: {
     let offset = range.start
     while (offset < range.end) {
       signal?.throwIfAborted()
-      const page = await readFile(workerId, { workerId, path, offset: BigInt(offset), limit: BigInt(range.end - offset) }, { signal: pages.signal })
+      const page = await readFile(workerId, {
+        workerId,
+        path,
+        offset: BigInt(offset),
+        limit: BigInt(range.end - offset),
+      }, { signal: pages.signal })
       signal?.throwIfAborted()
       if (page.totalSize !== response.totalSize || (page.modTime && response.modTime && page.modTime !== response.modTime))
         throw new Error('The file changed while it was read')
@@ -83,7 +103,9 @@ export async function readWorkerFile(options: {
   }
 
   try {
-    await Promise.all(Array.from({ length: Math.min(PAGE_CONCURRENCY, ranges.length) }, () => readRemainingRanges()))
+    await Promise.all(Array.from({
+      length: Math.min(PAGE_CONCURRENCY, ranges.length),
+    }, () => readRemainingRanges()))
   }
   catch (error) {
     if (!pages.signal.aborted)

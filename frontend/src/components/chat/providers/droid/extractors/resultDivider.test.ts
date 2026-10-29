@@ -3,11 +3,31 @@ import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { droidResultDivider } from './resultDivider'
 
 function turnCompleted(reason: string | undefined): Record<string, unknown> {
-  return { type: 'agent_turn_completed', ...(reason === undefined ? {} : { reason }), turnId: 'turn-1' }
+  return {
+    type: 'agent_turn_completed',
+    ...(reason === undefined
+      ? {}
+      : { reason }),
+    turnId: 'turn-1',
+  }
 }
 
 describe('droidResultDivider', () => {
-  it.each(['permission_rejected', 'structured_output_missing', 'structured_output_invalid', 'structured_output_schema_invalid', 'model_usage_exhausted', 'model_authentication_failed', 'model_request_rejected', 'model_provider_unreachable', 'model_provider_unavailable', 'model_rate_limited', 'prompt_rejected', 'completion_persistence_failed', 'no_approver_available'])('reports native reason %s as a failure', (reason) => {
+  it.each([
+    'permission_rejected',
+    'structured_output_missing',
+    'structured_output_invalid',
+    'structured_output_schema_invalid',
+    'model_usage_exhausted',
+    'model_authentication_failed',
+    'model_request_rejected',
+    'model_provider_unreachable',
+    'model_provider_unavailable',
+    'model_rate_limited',
+    'prompt_rejected',
+    'completion_persistence_failed',
+    'no_approver_available',
+  ])('reports native reason %s as a failure', (reason) => {
     expect(droidResultDivider(turnCompleted(reason))).toEqual({ label: 'Turn failed', isError: true })
   })
 

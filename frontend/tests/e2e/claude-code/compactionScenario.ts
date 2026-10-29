@@ -8,5 +8,8 @@ import { CLAUDE_SUMMARIZER_PATTERN } from '../helpers/manualCompaction'
  * directive inside that turn. The notice comes from the `compact_boundary` system message of the CLI.
  */
 export const CLAUDE_COMPACTION: NativeCompactionOptions = {
-  summary: { route: 'rule', when: { user: CLAUDE_SUMMARIZER_PATTERN } },
+  summary: {
+    route: 'rule',
+    when: { user: CLAUDE_SUMMARIZER_PATTERN },
+  },
 }

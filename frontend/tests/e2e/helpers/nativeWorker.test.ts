@@ -36,7 +36,12 @@ vi.mock('./server', () => ({
 }))
 
 const scratchRoot = resolve(process.cwd(), '../.tmp')
-const server = { hubUrl: 'http://localhost:32100', adminToken: 'private-token', workerId: 'suite-worker', agentEnv: { HOME: '/private/native-home', MODEL_TOKEN: 'mock-token' } }
+const server = {
+  hubUrl: 'http://localhost:32100',
+  adminToken: 'private-token',
+  workerId: 'suite-worker',
+  agentEnv: { HOME: '/private/native-home', MODEL_TOKEN: 'mock-token' },
+}
 const options = { dataDirPrefix: 'native-worker-unit', workerName: 'Private unit Worker' }
 let directory: string
 let proc: ChildProcess
@@ -45,7 +50,11 @@ beforeEach(() => {
   vi.resetAllMocks()
   mkdirSync(scratchRoot, { recursive: true })
   directory = mkdtempSync(join(scratchRoot, 'native-worker-unit-'))
-  proc = Object.assign(new ChildProcess(), { stdout: new PassThrough(), stderr: new PassThrough(), pid: 31234 })
+  proc = Object.assign(new ChildProcess(), {
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    pid: 31234,
+  })
   calls.mint.mockResolvedValue('private-registration-key')
   calls.list.mockResolvedValue(['suite-worker'])
   calls.online.mockResolvedValue('private-worker')
@@ -94,14 +103,22 @@ describe('withNativeWorker', () => {
   })
 
   it('uses private native settings and returns the registered Worker identity', async () => {
-    await withNativeWorker(server, { ...options, env: { PRIVATE_MODEL: 'mock', REMOVED_VALUE: undefined } }, async (worker) => {
+    await withNativeWorker(server, {
+      ...options,
+      env: { PRIVATE_MODEL: 'mock', REMOVED_VALUE: undefined },
+    }, async (worker) => {
       expect(worker.server.workerId).toBe('private-worker')
       expect(worker.workerId).toBe('private-worker')
       expect(worker.server.agentEnv).toEqual({ ...server.agentEnv, PRIVATE_MODEL: 'mock' })
       expect(worker.dataDir).toBe(directory)
       expect(existsSync(directory)).toBe(true)
     })
-    expect(calls.environment).toHaveBeenCalledWith({ ...server.agentEnv, PRIVATE_MODEL: 'mock', REMOVED_VALUE: undefined, LEAPMUX_WORKER_NAME: options.workerName })
+    expect(calls.environment).toHaveBeenCalledWith({
+      ...server.agentEnv,
+      PRIVATE_MODEL: 'mock',
+      REMOVED_VALUE: undefined,
+      LEAPMUX_WORKER_NAME: options.workerName,
+    })
     expect(calls.spawn).toHaveBeenCalledWith('/isolated/leapmux', [
       'worker',
       '--hub',
@@ -110,7 +127,9 @@ describe('withNativeWorker', () => {
       directory,
       '--registration-key',
       'private-registration-key',
-    ], expect.objectContaining({ env: expect.objectContaining({ HOME: server.agentEnv.HOME, PRIVATE_ENV_FILTERED: 'true' }) }))
+    ], expect.objectContaining({
+      env: expect.objectContaining({ HOME: server.agentEnv.HOME, PRIVATE_ENV_FILTERED: 'true' }),
+    }))
     expect(calls.online).toHaveBeenCalledWith(server.hubUrl, server.adminToken, new Set(['suite-worker']), undefined, expect.any(AbortSignal))
     expect(onlineSignal().aborted).toBe(true)
     expect(proc.listenerCount('error')).toBe(0)
@@ -125,14 +144,22 @@ describe('withNativeWorker', () => {
     const ends = new Set<string>()
     await expect(withNativeWorker(server, {
       ...options,
-      onStdio: (chunk, stream) => { chunks.push({ text: chunk.toString(), stream }) },
+      onStdio: (chunk, stream) => {
+        chunks.push({
+          text: chunk.toString(),
+          stream,
+        })
+      },
       onStdioEnd: (stream) => { ends.add(stream) },
     }, async () => {
       proc.stdout?.emit('data', Buffer.from('stdout-part'))
       proc.stderr?.emit('data', Buffer.from('stderr-part'))
       throw new Error('The native test failed.')
     })).rejects.toThrow(/stdout-part\n.*stderr-part/)
-    expect(chunks).toEqual([{ text: 'stdout-part', stream: 'stdout' }, { text: 'stderr-part', stream: 'stderr' }])
+    expect(chunks).toEqual([
+      { text: 'stdout-part', stream: 'stdout' },
+      { text: 'stderr-part', stream: 'stderr' },
+    ])
     expect(ends).toEqual(new Set(['stdout', 'stderr']))
     expect(calls.stop).toHaveBeenCalledOnce()
     expect(calls.deregister).toHaveBeenCalledOnce()
@@ -163,7 +190,9 @@ describe('withNativeWorker', () => {
     await entered
     Object.assign(proc, { exitCode: 3 })
     proc.emit('exit', 3, null)
-    await expect(operation).resolves.toMatchObject({ cause: { message: 'The private Worker exited: code 3, signal null.' } })
+    await expect(operation).resolves.toMatchObject({
+      cause: { message: 'The private Worker exited: code 3, signal null.' },
+    })
     expect(calls.deregister).toHaveBeenCalledWith(server.hubUrl, server.adminToken, 'private-worker')
     expect(proc.listenerCount('error')).toBe(0)
     expect(proc.listenerCount('exit')).toBe(0)
@@ -202,7 +231,9 @@ describe('withNativeWorker', () => {
     calls.stop.mockRejectedValue(stopError)
     calls.deregister.mockRejectedValue(deregisterError)
     await expect(withNativeWorker(server, options, async () => {})).rejects.toMatchObject({
-      cause: { errors: [stopError, deregisterError] },
+      cause: {
+        errors: [stopError, deregisterError],
+      },
     })
     expect(calls.stop).toHaveBeenCalledOnce()
     expect(calls.deregister).toHaveBeenCalledOnce()
@@ -221,7 +252,11 @@ describe('withNativeWorker', () => {
     calls.alive.mockClear()
     calls.online.mockRejectedValueOnce(new Error('The next Worker did not reach online state.'))
     mkdirSync(directory)
-    proc = Object.assign(new ChildProcess(), { stdout: new PassThrough(), stderr: new PassThrough(), pid: 31235 })
+    proc = Object.assign(new ChildProcess(), {
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      pid: 31235,
+    })
     calls.spawn.mockReturnValue(proc)
     await expect(withNativeWorker(server, options, async () => {})).rejects.toThrow('The private Worker failed')
     expect(calls.alive).toHaveBeenCalledWith(31235)
@@ -231,9 +266,18 @@ describe('withNativeWorker', () => {
     calls.alive.mockReturnValue(true)
     const privateDirectory = mkdtempSync(join(scratchRoot, 'native-worker-private-'))
     try {
-      await expect(withNativeWorker(server, { ...options, privateDirectories: [privateDirectory] }, async () => {}))
+      await expect(withNativeWorker(server, {
+        ...options,
+        privateDirectories: [privateDirectory],
+      }, async () => {}))
         .rejects
-        .toMatchObject({ cause: { errors: [{ message: 'The private Worker 31234 did not physically exit.' }] } })
+        .toMatchObject({
+          cause: {
+            errors: [
+              { message: 'The private Worker 31234 did not physically exit.' },
+            ],
+          },
+        })
       expect(calls.deregister).toHaveBeenCalledWith(server.hubUrl, server.adminToken, 'private-worker')
       expect(existsSync(directory), 'a Worker that still runs keeps its data directory').toBe(true)
       expect(existsSync(privateDirectory), 'a Worker that still runs keeps its private files').toBe(true)
@@ -252,7 +296,10 @@ describe('withNativeWorker', () => {
 
   it('removes its private directories with its data directory after the Worker exits', async () => {
     const privateDirectory = mkdtempSync(join(scratchRoot, 'native-worker-private-'))
-    await withNativeWorker(server, { ...options, privateDirectories: [privateDirectory] }, async () => {
+    await withNativeWorker(server, {
+      ...options,
+      privateDirectories: [privateDirectory],
+    }, async () => {
       expect(existsSync(privateDirectory)).toBe(true)
     })
     expect(existsSync(directory)).toBe(false)
@@ -262,7 +309,10 @@ describe('withNativeWorker', () => {
   it('removes its private directories when no Worker process started', async () => {
     const privateDirectory = mkdtempSync(join(scratchRoot, 'native-worker-private-'))
     calls.mint.mockRejectedValue(new Error('Registration refused.'))
-    await expect(withNativeWorker(server, { ...options, privateDirectories: [privateDirectory] }, async () => {})).rejects.toThrow('The private Worker failed')
+    await expect(withNativeWorker(server, {
+      ...options,
+      privateDirectories: [privateDirectory],
+    }, async () => {})).rejects.toThrow('The private Worker failed')
     expect(existsSync(privateDirectory)).toBe(false)
   })
 
@@ -270,7 +320,10 @@ describe('withNativeWorker', () => {
     const privateDirectory = mkdtempSync(join(scratchRoot, 'native-worker-private-'))
     try {
       calls.stop.mockRejectedValue(new Error('The private Worker did not stop.'))
-      await expect(withNativeWorker(server, { ...options, privateDirectories: [privateDirectory] }, async () => {})).rejects.toThrow('The private Worker failed')
+      await expect(withNativeWorker(server, {
+        ...options,
+        privateDirectories: [privateDirectory],
+      }, async () => {})).rejects.toThrow('The private Worker failed')
       expect(existsSync(privateDirectory)).toBe(true)
     }
     finally {
@@ -280,17 +333,31 @@ describe('withNativeWorker', () => {
 
   it('removes its private directories when it refuses its options before a Worker starts', async () => {
     const privateDirectory = mkdtempSync(join(scratchRoot, 'native-worker-private-'))
-    await expect(withNativeWorker({ ...server, agentEnv: {} }, { ...options, privateDirectories: [privateDirectory] }, async () => {})).rejects.toThrow('isolated agent environment')
+    await expect(withNativeWorker({ ...server, agentEnv: {} }, {
+      ...options,
+      privateDirectories: [privateDirectory],
+    }, async () => {})).rejects.toThrow('isolated agent environment')
     expect(existsSync(privateDirectory)).toBe(false)
     expect(calls.directory).not.toHaveBeenCalled()
   })
 
   it('rejects absent or empty private homes before registration', async () => {
     const withoutAgentEnv = { hubUrl: server.hubUrl, adminToken: server.adminToken, workerId: server.workerId }
-    for (const value of [withoutAgentEnv, { ...server, agentEnv: {} }, { ...server, agentEnv: { HOME: '' } }])
+    for (const value of [
+      withoutAgentEnv,
+      { ...server, agentEnv: {} },
+      {
+        ...server,
+        agentEnv: { HOME: '' },
+      },
+    ])
       await expect(withNativeWorker(value, options, async () => {})).rejects.toThrow('isolated agent environment')
-    for (const HOME of ['', ' ', undefined])
-      await expect(withNativeWorker(server, { ...options, env: { HOME } }, async () => {})).rejects.toThrow('nonempty isolated HOME')
+    for (const HOME of ['', ' ', undefined]) {
+      await expect(withNativeWorker(server, {
+        ...options,
+        env: { HOME },
+      }, async () => {})).rejects.toThrow('nonempty isolated HOME')
+    }
     expect(calls.mint).not.toHaveBeenCalled()
   })
 })
@@ -298,8 +365,20 @@ describe('withNativeWorker', () => {
 describe('spawnWorkerProcess', () => {
   it('starts the Worker for the hub and the data directory, with the name in the environment and the output label', () => {
     const output = createServerOutput()
-    expect(spawnWorkerProcess({ hubUrl: server.hubUrl, name: 'restart-worker', dataDir: directory, env: { HOME: '/private/home' }, output })).toBe(proc)
-    expect(calls.spawn).toHaveBeenCalledWith('/isolated/leapmux', ['worker', '--hub', server.hubUrl, '--data-dir', directory], {
+    expect(spawnWorkerProcess({
+      hubUrl: server.hubUrl,
+      name: 'restart-worker',
+      dataDir: directory,
+      env: { HOME: '/private/home' },
+      output,
+    })).toBe(proc)
+    expect(calls.spawn).toHaveBeenCalledWith('/isolated/leapmux', [
+      'worker',
+      '--hub',
+      server.hubUrl,
+      '--data-dir',
+      directory,
+    ], {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: false,
       env: { HOME: '/private/home', LEAPMUX_WORKER_NAME: 'restart-worker', PRIVATE_ENV_FILTERED: 'true' },
@@ -310,14 +389,34 @@ describe('spawnWorkerProcess', () => {
 
   it('appends the extra arguments, and unreferences a detached Worker', () => {
     const unref = vi.spyOn(proc, 'unref')
-    spawnWorkerProcess({ hubUrl: server.hubUrl, name: 'detached-worker', dataDir: directory, extraArgs: ['--encryption-mode', 'post-quantum'], output: createServerOutput(), detached: true })
-    expect(calls.spawn).toHaveBeenCalledWith('/isolated/leapmux', ['worker', '--hub', server.hubUrl, '--data-dir', directory, '--encryption-mode', 'post-quantum'], expect.objectContaining({ detached: true }))
+    spawnWorkerProcess({
+      hubUrl: server.hubUrl,
+      name: 'detached-worker',
+      dataDir: directory,
+      extraArgs: ['--encryption-mode', 'post-quantum'],
+      output: createServerOutput(),
+      detached: true,
+    })
+    expect(calls.spawn).toHaveBeenCalledWith('/isolated/leapmux', [
+      'worker',
+      '--hub',
+      server.hubUrl,
+      '--data-dir',
+      directory,
+      '--encryption-mode',
+      'post-quantum',
+    ], expect.objectContaining({ detached: true }))
     expect(unref).toHaveBeenCalledOnce()
   })
 
   it('keeps an attached Worker referenced', () => {
     const unref = vi.spyOn(proc, 'unref')
-    spawnWorkerProcess({ hubUrl: server.hubUrl, name: 'attached-worker', dataDir: directory, output: createServerOutput() })
+    spawnWorkerProcess({
+      hubUrl: server.hubUrl,
+      name: 'attached-worker',
+      dataDir: directory,
+      output: createServerOutput(),
+    })
     expect(unref).not.toHaveBeenCalled()
   })
 })
@@ -327,7 +426,13 @@ describe('spawnRegisteredWorker', () => {
 
   it('registers the Worker with a fresh key, gives the process to onSpawn before the online wait, and returns its ID', async () => {
     const onSpawn = vi.fn()
-    const registered = await spawnRegisteredWorker(hub, { name: 'registered-worker', dataDir: directory, extraArgs: ['--encryption-mode', 'post-quantum'], output: createServerOutput(), onSpawn })
+    const registered = await spawnRegisteredWorker(hub, {
+      name: 'registered-worker',
+      dataDir: directory,
+      extraArgs: ['--encryption-mode', 'post-quantum'],
+      output: createServerOutput(),
+      onSpawn,
+    })
     expect(registered).toEqual({ proc, workerId: 'private-worker' })
     expect(calls.spawn).toHaveBeenCalledWith('/isolated/leapmux', [
       'worker',
@@ -339,7 +444,9 @@ describe('spawnRegisteredWorker', () => {
       'private-registration-key',
       '--encryption-mode',
       'post-quantum',
-    ], expect.objectContaining({ env: expect.objectContaining({ LEAPMUX_WORKER_NAME: 'registered-worker' }) }))
+    ], expect.objectContaining({
+      env: expect.objectContaining({ LEAPMUX_WORKER_NAME: 'registered-worker' }),
+    }))
     expect(onSpawn).toHaveBeenCalledExactlyOnceWith(proc)
     expect(onSpawn.mock.invocationCallOrder[0]).toBeLessThan(calls.online.mock.invocationCallOrder[0]!)
     expect(calls.list.mock.invocationCallOrder[0]).toBeLessThan(calls.spawn.mock.invocationCallOrder[0]!)
@@ -352,7 +459,11 @@ describe('spawnRegisteredWorker', () => {
 
   it('fails at once when the Worker exits during the online wait, and stops it', async () => {
     calls.online.mockImplementation(() => new Promise<string>(() => {}))
-    const registration = spawnRegisteredWorker(hub, { name: 'exiting-worker', dataDir: directory, output: createServerOutput() })
+    const registration = spawnRegisteredWorker(hub, {
+      name: 'exiting-worker',
+      dataDir: directory,
+      output: createServerOutput(),
+    })
     await vi.waitFor(() => expect(calls.online).toHaveBeenCalled())
     Object.assign(proc, { exitCode: 2 })
     proc.emit('exit', 2, null)
@@ -364,7 +475,11 @@ describe('spawnRegisteredWorker', () => {
 
   it('refuses a Worker that exited before the online wait', async () => {
     Object.assign(proc, { exitCode: 1 })
-    await expect(spawnRegisteredWorker(hub, { name: 'finished-worker', dataDir: directory, output: createServerOutput() }))
+    await expect(spawnRegisteredWorker(hub, {
+      name: 'finished-worker',
+      dataDir: directory,
+      output: createServerOutput(),
+    }))
       .rejects
       .toThrow('The Worker finished-worker exited already: code 1, signal null.')
     expect(calls.online).not.toHaveBeenCalled()
@@ -373,9 +488,14 @@ describe('spawnRegisteredWorker', () => {
 
   it('stops the Worker when onSpawn fails', async () => {
     const failure = new Error('The caller could not track the Worker.')
-    await expect(spawnRegisteredWorker(hub, { name: 'untracked-worker', dataDir: directory, output: createServerOutput(), onSpawn: () => {
-      throw failure
-    } })).rejects.toBe(failure)
+    await expect(spawnRegisteredWorker(hub, {
+      name: 'untracked-worker',
+      dataDir: directory,
+      output: createServerOutput(),
+      onSpawn: () => {
+        throw failure
+      },
+    })).rejects.toBe(failure)
     expect(calls.online).not.toHaveBeenCalled()
     expect(calls.stop).toHaveBeenCalledExactlyOnceWith(proc)
   })
@@ -385,14 +505,24 @@ describe('spawnRegisteredWorker', () => {
     const stopFailure = new Error('The Worker did not stop.')
     calls.online.mockRejectedValue(registrationFailure)
     calls.stop.mockRejectedValue(stopFailure)
-    await expect(spawnRegisteredWorker(hub, { name: 'stuck-worker', dataDir: directory, output: createServerOutput() }))
+    await expect(spawnRegisteredWorker(hub, {
+      name: 'stuck-worker',
+      dataDir: directory,
+      output: createServerOutput(),
+    }))
       .rejects
-      .toMatchObject({ errors: [registrationFailure, stopFailure] })
+      .toMatchObject({
+        errors: [registrationFailure, stopFailure],
+      })
   })
 
   it('spawns nothing when the hub refuses the registration key', async () => {
     calls.mint.mockRejectedValue(new Error('Registration refused.'))
-    await expect(spawnRegisteredWorker(hub, { name: 'refused-worker', dataDir: directory, output: createServerOutput() })).rejects.toThrow('Registration refused.')
+    await expect(spawnRegisteredWorker(hub, {
+      name: 'refused-worker',
+      dataDir: directory,
+      output: createServerOutput(),
+    })).rejects.toThrow('Registration refused.')
     expect(calls.spawn).not.toHaveBeenCalled()
     expect(calls.stop).not.toHaveBeenCalled()
   })
@@ -401,6 +531,6 @@ describe('spawnRegisteredWorker', () => {
 function onlineSignal(): AbortSignal {
   const signal: unknown = calls.online.mock.calls[0]?.[4]
   if (!(signal instanceof AbortSignal))
-    throw new Error('The private Worker online wait received no AbortSignal.')
+    throw new TypeError('The private Worker online wait received no AbortSignal.')
   return signal
 }

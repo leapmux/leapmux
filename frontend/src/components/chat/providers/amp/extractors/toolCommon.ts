@@ -20,13 +20,17 @@ import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 /** The content blocks of one assistant or user row, or none for another row. */
 export function ampMessageBlocks(payload: Record<string, unknown> | null | undefined): Record<string, unknown>[] {
   const content = pickObject(payload, 'message')?.content
-  return Array.isArray(content) ? content.filter(isObject) : []
+  return Array.isArray(content)
+    ? content.filter(isObject)
+    : []
 }
 
 /** The row's own `type`, when it is an assistant or a user row. */
 function rowType(payload: Record<string, unknown> | null | undefined): string {
   const type = pickString(payload, 'type')
-  return type === AMP_LINE_TYPE.Assistant || type === AMP_LINE_TYPE.User ? type : ''
+  return type === AMP_LINE_TYPE.Assistant || type === AMP_LINE_TYPE.User
+    ? type
+    : ''
 }
 
 /** The first block of `blockType` in one row of `lineType`, or null. */
@@ -98,7 +102,11 @@ export function ampToolResult(payload: Record<string, unknown> | null | undefine
   const toolUseId = pickString(block, 'tool_use_id')
   if (!toolUseId)
     return null
-  return { toolUseId, content: resultText(block.content), isError: block.is_error === true }
+  return {
+    toolUseId,
+    content: resultText(block.content),
+    isError: block.is_error === true,
+  }
 }
 
 /** The call id that one span side states, whichever side it is. */

@@ -58,7 +58,9 @@ export function unregisterChatPanel(panel: Element): void {
 /** The panel containing `document.activeElement`, if focus is inside one. */
 export function getFocusedChatPanel(): FocusedChatPanel | undefined {
   const panel = document.activeElement?.closest('[data-chat-panel]')
-  return panel ? panelHandles.get(panel) : undefined
+  return panel
+    ? panelHandles.get(panel)
+    : undefined
 }
 
 /**
@@ -66,5 +68,7 @@ export function getFocusedChatPanel(): FocusedChatPanel | undefined {
  * composer -- see the module header for why exactly one can be mounted.
  */
 export function getActiveChatPanel(): FocusedChatPanel | undefined {
-  return activePanel ? panelHandles.get(activePanel) : undefined
+  return activePanel
+    ? panelHandles.get(activePanel)
+    : undefined
 }

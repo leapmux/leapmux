@@ -11,19 +11,32 @@ import './providers/testMocks'
 
 // A one-pixel PNG's first bytes; only the decode matters here, not the image.
 const PNG_BASE64 = 'iVBORw0KGgo='
-const PNG_BYTES = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+const PNG_BYTES = [
+  0x89,
+  0x50,
+  0x4E,
+  0x47,
+  0x0D,
+  0x0A,
+  0x1A,
+  0x0A,
+]
 
 describe('decodeImageBytes', () => {
   it('decodes inline base64 with its stated mime type', () => {
     const decoded = decodeImageBytes({ data: PNG_BASE64, mimeType: 'image/png' })
     expect(decoded?.mimeType).toBe('image/png')
-    expect([...(decoded?.content ?? [])]).toEqual(PNG_BYTES)
+    expect([
+      ...(decoded?.content ?? []),
+    ]).toEqual(PNG_BYTES)
   })
 
   it('decodes a pre-formed data URL, taking the mime from the URL', () => {
     const decoded = decodeImageBytes({ url: `data:image/jpeg;base64,${PNG_BASE64}` })
     expect(decoded?.mimeType).toBe('image/jpeg')
-    expect([...(decoded?.content ?? [])]).toEqual(PNG_BYTES)
+    expect([
+      ...(decoded?.content ?? []),
+    ]).toEqual(PNG_BYTES)
   })
 
   it('refuses base64 with no mime type, which no blob could be built from', () => {
@@ -93,7 +106,9 @@ function claudeImageMessage(blocks: unknown[], seq = 7n): AgentChatMessage {
       type: 'user',
       message: {
         role: 'user',
-        content: [{ type: 'tool_result', tool_use_id: 'r1', content: blocks }],
+        content: [
+          { type: 'tool_result', tool_use_id: 'r1', content: blocks },
+        ],
       },
     }),
   })
@@ -108,7 +123,10 @@ function renderViewer(message: AgentChatMessage | undefined) {
       seq={7n}
       imageIndex={0}
       title="screenshot"
-      messages={testMessageContext({ messageBySeq: () => message, fetchMessage })}
+      messages={testMessageContext({
+        messageBySeq: () => message,
+        fetchMessage,
+      })}
     />
   ))
   return { ...result, fetchMessage }
@@ -117,7 +135,9 @@ function renderViewer(message: AgentChatMessage | undefined) {
 describe('ChatImageViewer', () => {
   it('draws the image the reference points at, resolved from the loaded window', async () => {
     const { container, fetchMessage } = renderViewer(
-      claudeImageMessage([{ type: 'image', data: PNG_BASE64, mimeType: 'image/png' }]),
+      claudeImageMessage([
+        { type: 'image', data: PNG_BASE64, mimeType: 'image/png' },
+      ]),
     )
 
     const img = await waitFor(() => {
@@ -134,7 +154,9 @@ describe('ChatImageViewer', () => {
   })
 
   it('says so when the message no longer holds an image at that index', async () => {
-    const { container } = renderViewer(claudeImageMessage([{ type: 'text', text: 'no image' }]))
+    const { container } = renderViewer(claudeImageMessage([
+      { type: 'text', text: 'no image' },
+    ]))
     await waitFor(() => {
       expect(container.textContent).toContain('no longer in the conversation')
     })
@@ -147,7 +169,9 @@ describe('ChatImageViewer', () => {
   // Without the branch this resolves `ready`, decodes to nothing, and the tab sits
   // on "Loading image…" forever.
   it('says so when the reference resolves to bytes it cannot decode', async () => {
-    const { container } = renderViewer(claudeImageMessage([{ type: 'image', mimeType: 'image/png' }]))
+    const { container } = renderViewer(claudeImageMessage([
+      { type: 'image', mimeType: 'image/png' },
+    ]))
     await waitFor(() => {
       expect(container.textContent).toContain('cannot be displayed')
     })

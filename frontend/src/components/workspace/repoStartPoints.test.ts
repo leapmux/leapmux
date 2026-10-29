@@ -42,8 +42,26 @@ function tab(fields: Partial<Tab> = {}): Tab {
 }
 
 const WORKERS: Record<string, WorkerInfo> = {
-  w1: { name: 'mini', os: 'darwin', arch: 'arm64', homeDir: '/Users/me', version: '', commitHash: '', buildTime: '', updatedAt: 0 },
-  w2: { name: 'devbox', os: 'linux', arch: 'amd64', homeDir: '/home/me', version: '', commitHash: '', buildTime: '', updatedAt: 0 },
+  w1: {
+    name: 'mini',
+    os: 'darwin',
+    arch: 'arm64',
+    homeDir: '/Users/me',
+    version: '',
+    commitHash: '',
+    buildTime: '',
+    updatedAt: 0,
+  },
+  w2: {
+    name: 'devbox',
+    os: 'linux',
+    arch: 'amd64',
+    homeDir: '/home/me',
+    version: '',
+    commitHash: '',
+    buildTime: '',
+    updatedAt: 0,
+  },
 }
 const workerInfoFn = (id: string): WorkerInfo | null => WORKERS[id] ?? null
 
@@ -53,7 +71,9 @@ describe('listRepoStartPoints', () => {
   })
 
   it('collapses every tab of one checkout into a single entry', () => {
-    const store = storeWith([{ gitToplevel: '/repo', branch: 'main' }])
+    const store = storeWith([
+      { gitToplevel: '/repo', branch: 'main' },
+    ])
     const tabs = [
       tab({ gitToplevel: '/repo' }),
       tab({ gitToplevel: '/repo' }),
@@ -72,12 +92,18 @@ describe('listRepoStartPoints', () => {
 
   it('drops a tab with no repository at all', () => {
     const store = createRepoGitStore()
-    expect(listRepoStartPoints([tab({ gitToplevel: undefined })], store)).toEqual([])
+    expect(listRepoStartPoints([
+      tab({ gitToplevel: undefined }),
+    ], store)).toEqual([])
   })
 
   it('drops a tab with no worker', () => {
-    const store = storeWith([{ gitToplevel: '/repo' }])
-    expect(listRepoStartPoints([tab({ workerId: undefined, gitToplevel: '/repo' })], store)).toEqual([])
+    const store = storeWith([
+      { gitToplevel: '/repo' },
+    ])
+    expect(listRepoStartPoints([
+      tab({ workerId: undefined, gitToplevel: '/repo' }),
+    ], store)).toEqual([])
   })
 
   describe('worktrees', () => {
@@ -100,7 +126,9 @@ describe('listRepoStartPoints', () => {
       const store = storeWith([
         { gitToplevel: '/wt/feature', originUrl: 'https://x/o/r.git', isWorktree: true },
       ])
-      const out = listRepoStartPoints([tab({ gitToplevel: '/wt/feature' })], store)
+      const out = listRepoStartPoints([
+        tab({ gitToplevel: '/wt/feature' }),
+      ], store)
       expect(out).toHaveLength(1)
       expect(out[0]?.startPoint.isWorktree).toBe(true)
     })
@@ -110,7 +138,12 @@ describe('listRepoStartPoints', () => {
       // worktrees, and neither can substitute for the other.
       const store = storeWith([
         { workerId: 'w1', gitToplevel: '/repo', originUrl: 'https://x/o/r.git' },
-        { workerId: 'w2', gitToplevel: '/wt/feature', originUrl: 'https://x/o/r.git', isWorktree: true },
+        {
+          workerId: 'w2',
+          gitToplevel: '/wt/feature',
+          originUrl: 'https://x/o/r.git',
+          isWorktree: true,
+        },
       ])
       const out = listRepoStartPoints([
         tab({ workerId: 'w1', gitToplevel: '/repo' }),
@@ -136,7 +169,11 @@ describe('listRepoStartPoints', () => {
 
   describe('order', () => {
     it('puts the most recently activated checkout first', () => {
-      const store = storeWith([{ gitToplevel: '/a' }, { gitToplevel: '/b' }, { gitToplevel: '/c' }])
+      const store = storeWith([
+        { gitToplevel: '/a' },
+        { gitToplevel: '/b' },
+        { gitToplevel: '/c' },
+      ])
       const out = listRepoStartPoints([
         tab({ gitToplevel: '/a', mru: 3 }),
         tab({ gitToplevel: '/b', mru: 9 }),
@@ -146,7 +183,10 @@ describe('listRepoStartPoints', () => {
     })
 
     it('takes a checkout recency from its most recent tab', () => {
-      const store = storeWith([{ gitToplevel: '/a' }, { gitToplevel: '/b' }])
+      const store = storeWith([
+        { gitToplevel: '/a' },
+        { gitToplevel: '/b' },
+      ])
       const out = listRepoStartPoints([
         tab({ gitToplevel: '/a', mru: 1 }),
         tab({ gitToplevel: '/a', mru: 20 }),
@@ -158,7 +198,10 @@ describe('listRepoStartPoints', () => {
     it('breaks a no-activation tie by creation, newest first', () => {
       // `mru` is a session counter, so a workspace nobody touched this session
       // carries none at all.
-      const store = storeWith([{ gitToplevel: '/a' }, { gitToplevel: '/b' }])
+      const store = storeWith([
+        { gitToplevel: '/a' },
+        { gitToplevel: '/b' },
+      ])
       const out = listRepoStartPoints([
         tab({ gitToplevel: '/a', createdAt: '2026-01-01T00:00:00Z' }),
         tab({ gitToplevel: '/b', createdAt: '2026-02-01T00:00:00Z' }),
@@ -167,7 +210,10 @@ describe('listRepoStartPoints', () => {
     })
 
     it('puts an activated checkout ahead of a never-activated one', () => {
-      const store = storeWith([{ gitToplevel: '/a' }, { gitToplevel: '/b' }])
+      const store = storeWith([
+        { gitToplevel: '/a' },
+        { gitToplevel: '/b' },
+      ])
       const out = listRepoStartPoints([
         tab({ gitToplevel: '/a', createdAt: '2099-01-01T00:00:00Z' }),
         tab({ gitToplevel: '/b', mru: 1 }),
@@ -176,7 +222,10 @@ describe('listRepoStartPoints', () => {
     })
 
     it('falls back to the label, so the order is total and stable', () => {
-      const store = storeWith([{ gitToplevel: '/zeta' }, { gitToplevel: '/alpha' }])
+      const store = storeWith([
+        { gitToplevel: '/zeta' },
+        { gitToplevel: '/alpha' },
+      ])
       const out = listRepoStartPoints([
         tab({ gitToplevel: '/zeta' }),
         tab({ gitToplevel: '/alpha' }),
@@ -186,7 +235,11 @@ describe('listRepoStartPoints', () => {
   })
 
   it('keeps at most `limit` entries, most recent first', () => {
-    const store = storeWith([{ gitToplevel: '/a' }, { gitToplevel: '/b' }, { gitToplevel: '/c' }])
+    const store = storeWith([
+      { gitToplevel: '/a' },
+      { gitToplevel: '/b' },
+      { gitToplevel: '/c' },
+    ])
     const out = listRepoStartPoints([
       tab({ gitToplevel: '/a', mru: 1 }),
       tab({ gitToplevel: '/b', mru: 2 }),
@@ -206,13 +259,19 @@ describe('listRepoStartPoints', () => {
       const out = listRepoStartPoints([
         tab({ workerId: 'w1', gitToplevel: '/on' }),
         tab({ workerId: 'w2', gitToplevel: '/off' }),
-      ], store, { isWorkerOnline: id => id === 'w1' })
+      ], store, {
+        isWorkerOnline: id => id === 'w1',
+      })
       expect(out.map(e => e.startPoint.gitToplevel)).toEqual(['/on'])
     })
 
     it('lists every repository when no liveness predicate is supplied', () => {
-      const store = storeWith([{ workerId: 'w2', gitToplevel: '/off' }])
-      const out = listRepoStartPoints([tab({ workerId: 'w2', gitToplevel: '/off' })], store)
+      const store = storeWith([
+        { workerId: 'w2', gitToplevel: '/off' },
+      ])
+      const out = listRepoStartPoints([
+        tab({ workerId: 'w2', gitToplevel: '/off' }),
+      ], store)
       expect(out).toHaveLength(1)
     })
 
@@ -222,33 +281,51 @@ describe('listRepoStartPoints', () => {
       // checkout nobody can reach.
       const store = storeWith([
         { workerId: 'w2', gitToplevel: '/repo', originUrl: 'https://x/o/r.git' },
-        { workerId: 'w2', gitToplevel: '/wt', originUrl: 'https://x/o/r.git', isWorktree: true },
+        {
+          workerId: 'w2',
+          gitToplevel: '/wt',
+          originUrl: 'https://x/o/r.git',
+          isWorktree: true,
+        },
       ])
       const out = listRepoStartPoints([
         tab({ workerId: 'w2', gitToplevel: '/repo' }),
         tab({ workerId: 'w2', gitToplevel: '/wt' }),
-      ], store, { isWorkerOnline: () => true })
+      ], store, {
+        isWorkerOnline: () => true,
+      })
       expect(out.map(e => e.startPoint.gitToplevel)).toEqual(['/repo'])
     })
   })
 
   describe('labels', () => {
     it('labels an origin-backed repository the way the tree does', () => {
-      const store = storeWith([{ gitToplevel: '/x', originUrl: 'git@github.com:org/leapmux.git' }])
-      const out = listRepoStartPoints([tab({ gitToplevel: '/x' })], store)
+      const store = storeWith([
+        { gitToplevel: '/x', originUrl: 'git@github.com:org/leapmux.git' },
+      ])
+      const out = listRepoStartPoints([
+        tab({ gitToplevel: '/x' }),
+      ], store)
       expect(out[0]?.label).toBe('github.com/org/leapmux')
     })
 
     it('labels an origin-less repository by its directory', () => {
-      const store = storeWith([{ gitToplevel: '/home/me/alpha' }])
-      const out = listRepoStartPoints([tab({ gitToplevel: '/home/me/alpha' })], store)
+      const store = storeWith([
+        { gitToplevel: '/home/me/alpha' },
+      ])
+      const out = listRepoStartPoints([
+        tab({ gitToplevel: '/home/me/alpha' }),
+      ], store)
       expect(out[0]?.label).toBe('alpha')
     })
 
     it('omits the worker while every entry is on one worker', () => {
       // On a solo desktop every row would carry the same prefix, which says
       // nothing and eats the width the repository name needs.
-      const store = storeWith([{ gitToplevel: '/a' }, { gitToplevel: '/b' }])
+      const store = storeWith([
+        { gitToplevel: '/a' },
+        { gitToplevel: '/b' },
+      ])
       const out = listRepoStartPoints([
         tab({ gitToplevel: '/a' }),
         tab({ gitToplevel: '/b' }),

@@ -22,7 +22,10 @@ describe('file image resolution', () => {
   it('uses one read for concurrent consumers and later measurement reads', async () => {
     const read = vi.fn(async () => ({ data: 'AAAA', mimeType: 'image/png' }))
     const images = createFileImageResolver(read)
-    const [first, second] = await Promise.all([images.load('/image.png'), images.load('/image.png')])
+    const [first, second] = await Promise.all([
+      images.load('/image.png'),
+      images.load('/image.png'),
+    ])
     expect(first).toBe(second)
     expect(images.peek('/image.png')).toBe(first)
     await images.load('/image.png')

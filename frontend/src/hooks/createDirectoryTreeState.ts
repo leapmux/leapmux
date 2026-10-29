@@ -27,7 +27,12 @@ export function createDirectoryTreeState() {
   const expandTreePath = (path: string) => {
     treeHandle?.expandPath(path)
   }
-  return { treeKey, setTreeRef, refreshTree, expandTreePath }
+  return {
+    treeKey,
+    setTreeRef,
+    refreshTree,
+    expandTreePath,
+  }
 }
 
 export type DirectoryTreeState = ReturnType<typeof createDirectoryTreeState>

@@ -10,9 +10,23 @@ export function museResultDivider(payload: unknown): TurnEnd | null {
   const outcome = pickString(params, 'terminal')
   const durationMs = pickNumber(params, 'durationMs')
   const reason = pickString(pickObject(params, 'error'), 'message') || pickString(params, 'reason')
-  if (outcome === MUSE_TURN_OUTCOME.Cancelled)
-    return { label: turnEndLabel('interrupted', { durationMs, reason }) }
-  if (outcome === MUSE_TURN_OUTCOME.Failed)
-    return { label: turnEndLabel('failed', { durationMs, reason }), isError: true }
-  return { label: turnEndLabel('ended', { durationMs, reason: outcome === MUSE_TURN_OUTCOME.Completed ? reason : `Unknown Muse outcome: ${outcome}` }) }
+  if (outcome === MUSE_TURN_OUTCOME.Cancelled) {
+    return {
+      label: turnEndLabel('interrupted', { durationMs, reason }),
+    }
+  }
+  if (outcome === MUSE_TURN_OUTCOME.Failed) {
+    return {
+      label: turnEndLabel('failed', { durationMs, reason }),
+      isError: true,
+    }
+  }
+  return {
+    label: turnEndLabel('ended', {
+      durationMs,
+      reason: outcome === MUSE_TURN_OUTCOME.Completed
+        ? reason
+        : `Unknown Muse outcome: ${outcome}`,
+    }),
+  }
 }

@@ -22,7 +22,7 @@ export function kimiModelContextText(request: MockModelRequestRecord): string {
     if (message.content === null || message.content === undefined)
       continue
     if (typeof message.content !== 'string' && !Array.isArray(message.content))
-      throw new Error('The Kimi Code model context contains a non-text native message.')
+      throw new TypeError('The Kimi Code model context contains a non-text native message.')
     if (Array.isArray(message.content)) {
       for (const block of message.content) {
         if (!isObject(block) || (!(block.type === 'text' && typeof block.text === 'string')

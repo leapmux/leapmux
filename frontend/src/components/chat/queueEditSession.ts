@@ -157,11 +157,15 @@ export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEdit
 
   const activeEditingInput = () => {
     const editing = editingInput()
-    return editing?.agentId === opts.agentId() ? editing : undefined
+    return editing?.agentId === opts.agentId()
+      ? editing
+      : undefined
   }
   const attachmentDraftKey = () => {
     const editing = activeEditingInput()
-    return editing ? queueEditDraftKey(opts.agentId(), editing.id) : opts.agentId()
+    return editing
+      ? queueEditDraftKey(opts.agentId(), editing.id)
+      : opts.agentId()
   }
 
   const loadQueueEdit = (item: QueuedAgentInput, takeover: boolean, restoreDraft: boolean) => {
@@ -198,7 +202,9 @@ export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEdit
       // a second window in which the panel can move to another agent or the user
       // can start editing another row, and everything after it writes this
       // session's state.
-      const savedDraft = restoreDraft ? await loadDraft(queueDraftKey) : undefined
+      const savedDraft = restoreDraft
+        ? await loadDraft(queueDraftKey)
+        : undefined
       if (loadToken !== queueEditLoadToken || untrack(opts.agentId) !== editAgentId)
         return
       pendingQueueEditText = savedDraft?.content
@@ -212,7 +218,12 @@ export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEdit
         data: attachment.data,
         size: attachment.data.byteLength,
       }))
-      normalAttachmentRestore = { key: editAgentId, attachments: [...untrack(ports.attachments)] }
+      normalAttachmentRestore = {
+        key: editAgentId,
+        attachments: [
+          ...untrack(ports.attachments),
+        ],
+      }
       if (!restoreDraft)
         clearScheduleDraft(queueDraftKey)
       setEditingInput(edited)

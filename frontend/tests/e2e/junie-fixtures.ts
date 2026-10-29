@@ -32,6 +32,9 @@ export const junieTest = createProviderTest({
   authenticatedNativeEffortJunieWorkspace: authenticatedAgentWorkspace({
     ...JUNIE_AGENT,
     prefix: 'junie-e2e-native-effort',
-    openOptions: { model: JUNIE_NATIVE_EFFORT_MODEL, optionValues: { [OPTION_ID_EFFORT]: 'high' } },
+    openOptions: {
+      model: JUNIE_NATIVE_EFFORT_MODEL,
+      optionValues: { [OPTION_ID_EFFORT]: 'high' },
+    },
   }),
 })

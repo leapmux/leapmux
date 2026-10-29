@@ -8,9 +8,21 @@ codebuddyTest.describe('CodeBuddy Code to-do sidebar', () => {
   codebuddyTest('keeps native task updates after reload and clears the completed list', async ({ native }) => {
     const { page, modelScript } = native
     await modelScript.queue(
-      { toolCalls: [codebuddyTaskCreateToolCall('create-inspect', 'Inspect the repository', 'Inspect the files.')] },
-      { toolCalls: [codebuddyTaskCreateToolCall('create-report', 'Report the result', 'Report the findings.')] },
-      { toolCalls: [codebuddyTaskUpdateToolCall('complete-inspect', '1', 'completed')] },
+      {
+        toolCalls: [
+          codebuddyTaskCreateToolCall('create-inspect', 'Inspect the repository', 'Inspect the files.'),
+        ],
+      },
+      {
+        toolCalls: [
+          codebuddyTaskCreateToolCall('create-report', 'Report the result', 'Report the findings.'),
+        ],
+      },
+      {
+        toolCalls: [
+          codebuddyTaskUpdateToolCall('complete-inspect', '1', 'completed'),
+        ],
+      },
       { text: 'The checklist is ready.' },
     )
     await sendMessage(page, modelScript.prompt('Write a two-step checklist.'))
@@ -29,7 +41,11 @@ codebuddyTest.describe('CodeBuddy Code to-do sidebar', () => {
     await expect(list.locator('[data-task-checkbox="pending"]')).toHaveCount(1)
 
     await modelScript.queue(
-      { toolCalls: [codebuddyTaskUpdateToolCall('complete-report', '2', 'completed')] },
+      {
+        toolCalls: [
+          codebuddyTaskUpdateToolCall('complete-report', '2', 'completed'),
+        ],
+      },
       { text: 'The checklist is complete.' },
     )
     await sendMessage(page, modelScript.prompt('Mark the report step complete.'))

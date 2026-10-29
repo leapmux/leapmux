@@ -126,7 +126,9 @@ export function createTabSelectionStore(view: TabView, metadata: TabMetadataStor
 
     activeTabForWorkspace(workspaceId: string): Tab | undefined {
       const key = this.activeKeyForWorkspace(workspaceId)
-      return key ? view.get(key) : undefined
+      return key
+        ? view.get(key)
+        : undefined
     },
 
     activeKeyForTile(tileId: string): string | null {
@@ -139,7 +141,9 @@ export function createTabSelectionStore(view: TabView, metadata: TabMetadataStor
 
     activeTabForTile(tileId: string): Tab | undefined {
       const key = this.activeKeyForTile(tileId)
-      return key ? view.get(key) : undefined
+      return key
+        ? view.get(key)
+        : undefined
     },
 
     /**
@@ -267,13 +271,17 @@ export function createTabSelectionStore(view: TabView, metadata: TabMetadataStor
      * both still wins.
      */
     restore(workspaceId: string, activeKey: string | null, tileActives: Record<string, string | null>) {
-      const stored = activeKey ? view.get(activeKey) : undefined
+      const stored = activeKey
+        ? view.get(activeKey)
+        : undefined
       // `view.get` is a GLOBAL lookup, so a stored key can name a tab that has
       // since moved to another workspace (a cross-workspace move here, or one
       // from another device, outliving the reload in sessionStorage). Writing
       // its tile pointer would make THAT workspace's tile jump to this tab. The
       // same `belongs` discipline `resolve` applies on read.
-      const activeTab = stored?.workspaceId === workspaceId ? stored : undefined
+      const activeTab = stored?.workspaceId === workspaceId
+        ? stored
+        : undefined
       setState(produce((s) => {
         if (activeKey)
           s.activeByWorkspace[workspaceId] = activeKey

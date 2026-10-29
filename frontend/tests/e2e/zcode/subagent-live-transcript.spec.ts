@@ -35,7 +35,11 @@ zcodeTest('shows an automatic plan-mode denial in the child transcript only', as
     {
       name: 'the child attempts an edit',
       when: childWhen,
-      respond: { toolCalls: [editToolCall(AgentProvider.ZCODE, 'denied-edit', { path, before: 'before', after: 'after' })] },
+      respond: {
+        toolCalls: [
+          editToolCall(AgentProvider.ZCODE, 'denied-edit', { path, before: 'before', after: 'after' }),
+        ],
+      },
       once: true,
     },
     {
@@ -45,7 +49,14 @@ zcodeTest('shows an automatic plan-mode denial in the child transcript only', as
     },
   )
   await modelScript.queue(
-    { toolCalls: [spawnSubagentToolCall(AgentProvider.ZCODE, 'denial-child', { description: 'Check the plan restriction', prompt: modelScript.prompt(task) })] },
+    {
+      toolCalls: [
+        spawnSubagentToolCall(AgentProvider.ZCODE, 'denial-child', {
+          description: 'Check the plan restriction',
+          prompt: modelScript.prompt(task),
+        }),
+      ],
+    },
     { text: 'The child restriction check ended.' },
   )
   await withCleanup(async () => {

@@ -4,7 +4,13 @@ import { globalLayer } from '@vanilla-extract/css'
  * Oat's own layers, in the order that the first line of `oat.min.css` declares
  * them: `@layer theme, base, components, animations, utilities;`.
  */
-const OAT_LAYERS = ['theme', 'base', 'components', 'animations', 'utilities'] as const
+const OAT_LAYERS = [
+  'theme',
+  'base',
+  'components',
+  'animations',
+  'utilities',
+] as const
 
 /** The app's cascade layers, by role. */
 export interface AppLayers {

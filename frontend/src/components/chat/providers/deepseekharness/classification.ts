@@ -19,23 +19,35 @@ export function classifyDeepseekHarnessMessage(input: ClassificationInput): Mess
   const payload = input.parentObject
   if (!payload)
     return { kind: 'unknown' }
-  if (!payload.type && typeof payload.content === 'string')
-    return payload.planExecution === true ? { kind: 'plan_execution' } : { kind: 'user_content' }
+  if (!payload.type && typeof payload.content === 'string') {
+    return payload.planExecution === true
+      ? { kind: 'plan_execution' }
+      : { kind: 'user_content' }
+  }
   const type = pickString(payload, 'type')
   if (type === DEEPSEEK_HARNESS_EVENT.TurnEnd)
     return { kind: 'result_divider' }
-  if (type === DEEPSEEK_HARNESS_EVENT.ToolCall && deepseekHarnessCallId(payload))
-    return retainedRowIsFinal(input.completion) ? { kind: 'tool_result' } : { kind: 'tool_use' }
+  if (type === DEEPSEEK_HARNESS_EVENT.ToolCall && deepseekHarnessCallId(payload)) {
+    return retainedRowIsFinal(input.completion)
+      ? { kind: 'tool_result' }
+      : { kind: 'tool_use' }
+  }
   if (type === DEEPSEEK_HARNESS_EVENT.ToolResult && deepseekHarnessCallId(payload))
     return { kind: 'tool_result' }
   if (type === DEEPSEEK_HARNESS_EVENT.AssistantMessage) {
     const block = deepseekHarnessAssistantBlock(payload)
     if (!block)
       return { kind: 'unknown' }
-    if (block.type === DEEPSEEK_HARNESS_CONTENT_TYPE.Reasoning)
-      return pickString(block, 'text') ? { kind: 'assistant_thinking' } : { kind: 'hidden' }
-    if (block.type === DEEPSEEK_HARNESS_CONTENT_TYPE.Text)
-      return pickString(block, 'text') ? { kind: 'assistant_text' } : { kind: 'hidden' }
+    if (block.type === DEEPSEEK_HARNESS_CONTENT_TYPE.Reasoning) {
+      return pickString(block, 'text')
+        ? { kind: 'assistant_thinking' }
+        : { kind: 'hidden' }
+    }
+    if (block.type === DEEPSEEK_HARNESS_CONTENT_TYPE.Text) {
+      return pickString(block, 'text')
+        ? { kind: 'assistant_text' }
+        : { kind: 'hidden' }
+    }
     return { kind: 'unknown' }
   }
   if (type === DEEPSEEK_HARNESS_EVENT.UserMessage && deepseekHarnessEventData(payload))

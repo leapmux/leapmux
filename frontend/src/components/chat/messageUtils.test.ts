@@ -15,7 +15,11 @@ describe('isNotificationThreadWrapper', () => {
   // set and not listed here fails, and so does a type dropped from it.
   it('accepts exactly the notification types a thread can turn on', () => {
     const accepted = Object.values(NOTIFICATION_TYPE)
-      .filter(type => isNotificationThreadWrapper({ messages: [{ type }] }))
+      .filter(type => isNotificationThreadWrapper({
+        messages: [
+          { type },
+        ],
+      }))
       .sort()
     expect(accepted).toStrictEqual([
       NOTIFICATION_TYPE.SettingsChanged,
@@ -35,7 +39,11 @@ describe('isNotificationThreadWrapper', () => {
   // worker-written types are in this set alone.
   it('accepts every type that draws as a plain row', () => {
     const plainOnly = Object.values(NOTIFICATION_TYPE)
-      .filter(type => isPlainNotificationType(type) && !isNotificationThreadWrapper({ messages: [{ type }] }))
+      .filter(type => isPlainNotificationType(type) && !isNotificationThreadWrapper({
+        messages: [
+          { type },
+        ],
+      }))
       .sort()
     expect(plainOnly).toStrictEqual([])
   })
@@ -46,22 +54,52 @@ describe('isNotificationThreadWrapper', () => {
   })
 
   it('refuses a thread whose types no set accepts', () => {
-    expect(isNotificationThreadWrapper({ messages: [{ type: NOTIFICATION_TYPE.RateLimit }, { type: 'tool.updated' }] })).toBe(false)
+    expect(isNotificationThreadWrapper({
+      messages: [
+        { type: NOTIFICATION_TYPE.RateLimit },
+        { type: 'tool.updated' },
+      ],
+    })).toBe(false)
   })
 
   it('skips a member that is not an object and one that states no type', () => {
-    expect(isNotificationThreadWrapper({ messages: [null, 'interrupted', {}, { type: '' }] })).toBe(false)
-    expect(isNotificationThreadWrapper({ messages: [null, {}, { type: NOTIFICATION_TYPE.Interrupted }] })).toBe(true)
+    expect(isNotificationThreadWrapper({
+      messages: [
+        null,
+        'interrupted',
+        {},
+        { type: '' },
+      ],
+    })).toBe(false)
+    expect(isNotificationThreadWrapper({
+      messages: [
+        null,
+        {},
+        { type: NOTIFICATION_TYPE.Interrupted },
+      ],
+    })).toBe(true)
   })
 
   it('accepts a type the caller supplies as an extra', () => {
     const extras = new Set(['session.closed'])
-    expect(isNotificationThreadWrapper({ messages: [{ type: 'session.closed' }] })).toBe(false)
-    expect(isNotificationThreadWrapper({ messages: [{ type: 'session.closed' }] }, extras)).toBe(true)
+    expect(isNotificationThreadWrapper({
+      messages: [
+        { type: 'session.closed' },
+      ],
+    })).toBe(false)
+    expect(isNotificationThreadWrapper({
+      messages: [
+        { type: 'session.closed' },
+      ],
+    }, extras)).toBe(true)
   })
 
   it('accepts a subtype the caller recognizes', () => {
-    const wrapper = { messages: [{ type: 'system', subtype: 'status' }] }
+    const wrapper = {
+      messages: [
+        { type: 'system', subtype: 'status' },
+      ],
+    }
     expect(isNotificationThreadWrapper(wrapper)).toBe(false)
     expect(isNotificationThreadWrapper(wrapper, undefined, (type, subtype) => type === 'system' && subtype === 'status')).toBe(true)
   })
@@ -75,6 +113,9 @@ describe('a stored compacting envelope of an older build', () => {
   it('draws the unrecognized card', () => {
     const classify = classifyACPMessage()
     expect(classify(input(compacting))).toStrictEqual({ kind: 'unknown' })
-    expect(classify(input(compacting, { old_seqs: [], messages: [compacting] }))).toStrictEqual({ kind: 'unknown' })
+    expect(classify(input(compacting, {
+      old_seqs: [],
+      messages: [compacting],
+    }))).toStrictEqual({ kind: 'unknown' })
   })
 })

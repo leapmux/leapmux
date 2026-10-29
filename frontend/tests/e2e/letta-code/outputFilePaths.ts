@@ -4,8 +4,12 @@ import { basename, dirname, isAbsolute, join, normalize } from 'node:path'
 export function lettaOutputFilePath(text: string, home: string, workingDir: string): string {
   if (!isAbsolute(home) || !isAbsolute(workingDir))
     throw new Error('The native Letta native output requires an absolute private HOME and working directory.')
-  const matches = [...text.matchAll(/^\[Full output written to: ([^\r\n]+)\]$/gmu)]
-  const path = matches.length === 1 ? matches[0]?.[1] : undefined
+  const matches = [
+    ...text.matchAll(/^\[Full output written to: ([^\r\n]+)\]$/gmu),
+  ]
+  const path = matches.length === 1
+    ? matches[0]?.[1]
+    : undefined
   if (!path || !/\[Output truncated: showing [\d,]+ of [\d,]+ characters\.\]/u.test(text))
     throw new Error('The native Letta result requires one native overflow-file reference.')
   // A Windows working directory keeps one underscore for its whole drive prefix, the

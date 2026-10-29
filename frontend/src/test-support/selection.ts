@@ -15,5 +15,7 @@ export function selectTextWithRect(el: HTMLElement, rect: { left: number, right:
   selection.addRange(range)
   const live = selection.getRangeAt(0) as Range & { getClientRects: () => DOMRectList }
   live.getClientRects = () =>
-    [{ ...rect, width: rect.right - rect.left, height: rect.bottom - rect.top }] as unknown as DOMRectList
+    [
+      { ...rect, width: rect.right - rect.left, height: rect.bottom - rect.top },
+    ] as unknown as DOMRectList
 }

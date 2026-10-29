@@ -23,10 +23,12 @@ reasonixTest('renders Reasonix read-only reports without interpreting quoted sta
   })
   const start = await modelScript.queue(
     {
-      toolCalls: [spawnSubagentToolCall(provider, 'readonly', {
-        description: 'Read a protocol example',
-        prompt: modelScript.prompt(childTask),
-      })],
+      toolCalls: [
+        spawnSubagentToolCall(provider, 'readonly', {
+          description: 'Read a protocol example',
+          prompt: modelScript.prompt(childTask),
+        }),
+      ],
     },
     { text: 'The subagent reported back.' },
   )

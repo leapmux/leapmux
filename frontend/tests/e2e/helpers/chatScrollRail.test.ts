@@ -6,8 +6,13 @@ import { RAIL, RAIL_FILLER_MESSAGE, RAIL_FILLER_PREVIEW, seedOverflowingConversa
 import { sendScriptedTurn } from './scriptedTurn'
 import { userBubbles, waitForAgentStarted } from './ui'
 
-vi.mock('./scriptedTurn', () => ({ sendScriptedTurn: vi.fn(async () => 0) }))
-vi.mock('./ui', () => ({ userBubbles: vi.fn(), waitForAgentStarted: vi.fn(async () => {}) }))
+vi.mock('./scriptedTurn', () => ({
+  sendScriptedTurn: vi.fn(async () => 0),
+}))
+vi.mock('./ui', () => ({
+  userBubbles: vi.fn(),
+  waitForAgentStarted: vi.fn(async () => {}),
+}))
 
 const script = {} as ModelScript
 
@@ -39,15 +44,29 @@ describe('seedOverflowingConversation', () => {
   it('waits for the startup, sends one filler turn for each message, and requires each user bubble and the rail', async () => {
     const log: string[] = []
     await seedOverflowingConversation(seedingPage(log), script, 2)
-    expect(log).toEqual(['started', 'turn ok', 'turn ok', 'users:to.have.count=2', 'rail:to.be.visible'])
+    expect(log).toEqual([
+      'started',
+      'turn ok',
+      'turn ok',
+      'users:to.have.count=2',
+      'rail:to.be.visible',
+    ])
     expect(vi.mocked(sendScriptedTurn).mock.calls.map(call => call[2]))
-      .toEqual([{ prompt: RAIL_FILLER_MESSAGE, answer: 'ok' }, { prompt: RAIL_FILLER_MESSAGE, answer: 'ok' }])
+      .toEqual([
+        { prompt: RAIL_FILLER_MESSAGE, answer: 'ok' },
+        { prompt: RAIL_FILLER_MESSAGE, answer: 'ok' },
+      ])
   })
 
   it('sends one message by default', async () => {
     const log: string[] = []
     await seedOverflowingConversation(seedingPage(log), script)
-    expect(log).toEqual(['started', 'turn ok', 'users:to.have.count=1', 'rail:to.be.visible'])
+    expect(log).toEqual([
+      'started',
+      'turn ok',
+      'users:to.have.count=1',
+      'rail:to.be.visible',
+    ])
   })
 
   it('fails with the overflow reason when the rail does not show', async () => {

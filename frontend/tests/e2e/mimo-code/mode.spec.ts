@@ -39,7 +39,7 @@ async function nativeMessages(context: ManagedNativeScenarioContext): Promise<Na
     ORDER BY m.time_created, m.id`
   const rows: unknown = JSON.parse(execFileSync('sqlite3', ['-readonly', '-json', database, sql], { encoding: 'utf8' }) || '[]')
   if (!Array.isArray(rows))
-    throw new Error('The native MiMo message query returned no array.')
+    throw new TypeError('The native MiMo message query returned no array.')
   return rows.map((row: unknown) => {
     if (!isObject(row) || typeof row.id !== 'string' || typeof row.data !== 'string' || typeof row.parts !== 'string')
       throw new Error('The native MiMo message query returned an invalid record.')
@@ -52,13 +52,17 @@ async function nativeMessages(context: ManagedNativeScenarioContext): Promise<Na
 }
 
 mimoTest('applies the native primary agent mode before and after reload', async ({ native }) => {
-  await exerciseNativeOption(native, { groupId: 'permissionMode', value: 'plan', nativeProof: (request) => {
-    const instruction = nativeModelInstructionText(request)
-    expect(instruction).toMatch(/Plan mode is (?:still )?active/i)
-    expect(instruction).toMatch(/read-only/i)
-    expect(request.body).toHaveProperty('model', MOCK_MODELS.zai)
-    expect(request.body).toHaveProperty('reasoning_effort', 'high')
-  } })
+  await exerciseNativeOption(native, {
+    groupId: 'permissionMode',
+    value: 'plan',
+    nativeProof: (request) => {
+      const instruction = nativeModelInstructionText(request)
+      expect(instruction).toMatch(/Plan mode is (?:still )?active/i)
+      expect(instruction).toMatch(/read-only/i)
+      expect(request.body).toHaveProperty('model', MOCK_MODELS.zai)
+      expect(request.body).toHaveProperty('reasoning_effort', 'high')
+    },
+  })
 })
 
 mimoTest('returns from Plan to Build and proves each native mode after reload', async ({ native }) => {
@@ -95,7 +99,9 @@ mimoTest('returns from Plan to Build and proves each native mode after reload', 
       expect(reply.info.agent).toBe(mode.value)
       expect(reply.info.mode).toBe(mode.value)
       expect(reply.info.error).toBeUndefined()
-      const completed = isObject(reply.info.time) ? reply.info.time.completed : undefined
+      const completed = isObject(reply.info.time)
+        ? reply.info.time.completed
+        : undefined
       expect(completed).toEqual(expect.any(Number))
       expect(completed).toBeGreaterThan(0)
       const parent = messages.find(message => message.id === reply.info.parentID)
@@ -108,7 +114,7 @@ mimoTest('returns from Plan to Build and proves each native mode after reload', 
       for (const part of promptParts) {
         expect(part.text).toEqual(expect.any(String))
         if (typeof part.text !== 'string')
-          throw new Error('The current MiMo user message contains no text.')
+          throw new TypeError('The current MiMo user message contains no text.')
         expect(nativeModelLastUserText(request)).toContain(part.text)
       }
       observed = new Set(messages.map(message => message.id))

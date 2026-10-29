@@ -56,7 +56,12 @@ export async function exerciseNativeGoalPauseAndResume(
       name: `native-goal-first-${marker}`,
       when: roundWhen,
       once: true,
-      respond: { gate, toolCalls: [writeToolCall(context.provider, 'native-goal-progress', { path: progressFile, content: 'The first native goal iteration changed this file.\n' })] },
+      respond: {
+        gate,
+        toolCalls: [
+          writeToolCall(context.provider, 'native-goal-progress', { path: progressFile, content: 'The first native goal iteration changed this file.\n' }),
+        ],
+      },
     }, {
       name: rule,
       when: roundWhen,

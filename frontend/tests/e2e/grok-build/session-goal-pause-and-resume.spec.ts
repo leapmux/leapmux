@@ -43,27 +43,39 @@ const GOAL_PLAN = [
  *   automatic pause after the resumed round.
  */
 function grokGoalMachineryRules({ marker }: NativeGoalScenario): MockModelRule[] {
-  return [{
-    name: `grok-goal-plan-write-${marker}`,
-    priority: 'high',
-    when: { body: ['You are the Goal Plan Writer', marker], lastMessage: { role: 'user' } },
-    once: true,
-    respond: {
-      captures: { planPath: 'your only write is `([^`]+)`' },
-      toolCalls: [writeToolCall(AgentProvider.GROK_BUILD, 'grok-goal-plan-write', { path: '{{planPath}}', content: GOAL_PLAN })],
+  return [
+    {
+      name: `grok-goal-plan-write-${marker}`,
+      priority: 'high',
+      when: {
+        body: ['You are the Goal Plan Writer', marker],
+        lastMessage: { role: 'user' },
+      },
+      once: true,
+      respond: {
+        captures: { planPath: 'your only write is `([^`]+)`' },
+        toolCalls: [
+          writeToolCall(AgentProvider.GROK_BUILD, 'grok-goal-plan-write', { path: '{{planPath}}', content: GOAL_PLAN }),
+        ],
+      },
     },
-  }, {
-    name: `grok-goal-plan-done-${marker}`,
-    priority: 'high',
-    when: { body: ['You are the Goal Plan Writer', marker], lastMessage: { role: 'tool' } },
-    once: true,
-    respond: { text: 'Done' },
-  }, {
-    name: `grok-goal-evaluator-${marker}`,
-    priority: 'high',
-    when: { system: 'hidden completion evaluator', body: marker },
-    respond: { text: 'The evaluation states no verdict.' },
-  }]
+    {
+      name: `grok-goal-plan-done-${marker}`,
+      priority: 'high',
+      when: {
+        body: ['You are the Goal Plan Writer', marker],
+        lastMessage: { role: 'tool' },
+      },
+      once: true,
+      respond: { text: 'Done' },
+    },
+    {
+      name: `grok-goal-evaluator-${marker}`,
+      priority: 'high',
+      when: { system: 'hidden completion evaluator', body: marker },
+      respond: { text: 'The evaluation states no verdict.' },
+    },
+  ]
 }
 
 // Grok Build runs the whole goal loop inside one turn, queues a prompt that

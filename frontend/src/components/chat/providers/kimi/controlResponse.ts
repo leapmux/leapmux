@@ -42,8 +42,11 @@ function kimiApprovalSummary(request: Record<string, unknown>, native: Record<st
   if (decision === KIMI_DECISION.Cancelled)
     return label('Cancelled')
   if (displayKind === KIMI_DISPLAY.PlanReview) {
-    if (decision === KIMI_DECISION.Approved)
-      return label(selected ? `${CONTROL_DECISION_WORDS.plan.allow}: ${selected}` : CONTROL_DECISION_WORDS.plan.allow)
+    if (decision === KIMI_DECISION.Approved) {
+      return label(selected
+        ? `${CONTROL_DECISION_WORDS.plan.allow}: ${selected}`
+        : CONTROL_DECISION_WORDS.plan.allow)
+    }
     if (decision !== KIMI_DECISION.Rejected)
       return null
     if (selected === KIMI_PLAN_LABEL.RejectAndExit)
@@ -55,16 +58,22 @@ function kimiApprovalSummary(request: Record<string, unknown>, native: Record<st
   if (displayKind === KIMI_DISPLAY.GoalStart) {
     if (decision === KIMI_DECISION.Approved) {
       const mode = KIMI_GOAL_MODE_LABELS.get(selected)
-      return label(mode ? `Started the goal in ${mode}` : 'Started the goal')
+      return label(mode
+        ? `Started the goal in ${mode}`
+        : 'Started the goal')
     }
-    return decision === KIMI_DECISION.Rejected ? feedbackOrLabel(reason, 'Declined') : null
+    return decision === KIMI_DECISION.Rejected
+      ? feedbackOrLabel(reason, 'Declined')
+      : null
   }
   if (decision === KIMI_DECISION.Approved) {
     return label(pickString(native, KIMI_REPLY.Scope) === KIMI_APPROVAL_SCOPE.Session
       ? 'Allow for this session'
       : CONTROL_DECISION_WORDS.permission.allow)
   }
-  return decision === KIMI_DECISION.Rejected ? feedbackOrLabel(reason, CONTROL_DECISION_WORDS.permission.deny) : null
+  return decision === KIMI_DECISION.Rejected
+    ? feedbackOrLabel(reason, CONTROL_DECISION_WORDS.permission.deny)
+    : null
 }
 
 function kimiQuestionSummary(request: Record<string, unknown>, native: Record<string, unknown>): ControlResponseSummary | null {
@@ -76,7 +85,9 @@ function kimiQuestionSummary(request: Record<string, unknown>, native: Record<st
   const lines: string[] = []
   for (const record of kimiQuestionRecords(request)) {
     const id = pickString(record, 'id')
-    const answer = id && Object.hasOwn(answers, id) ? answers[id] : undefined
+    const answer = id && Object.hasOwn(answers, id)
+      ? answers[id]
+      : undefined
     if (!isObject(answer))
       continue
     const text = kimiAnswerText(record, answer)
@@ -89,7 +100,9 @@ function kimiQuestionSummary(request: Record<string, unknown>, native: Record<st
 
 /** The words one answer states: the labels of the options it picked, and the reader's own text. */
 function kimiAnswerText(question: Record<string, unknown>, answer: Record<string, unknown>): string {
-  const options = Array.isArray(question.options) ? question.options.filter(isObject) : []
+  const options = Array.isArray(question.options)
+    ? question.options.filter(isObject)
+    : []
   const labelOf = (id: string) => pickString(options.find(option => pickString(option, 'id') === id), 'label') || id
   switch (pickString(answer, 'kind')) {
     case KIMI_ANSWER_KIND.Single:
@@ -99,7 +112,10 @@ function kimiAnswerText(question: Record<string, unknown>, answer: Record<string
     case KIMI_ANSWER_KIND.Other:
       return pickString(answer, 'text')
     case KIMI_ANSWER_KIND.MultiWithOther:
-      return [...stringArray(answer.option_ids).map(labelOf), pickString(answer, 'other_text')].filter(Boolean).join(', ')
+      return [
+        ...stringArray(answer.option_ids).map(labelOf),
+        pickString(answer, 'other_text'),
+      ].filter(Boolean).join(', ')
     case KIMI_ANSWER_KIND.Skipped:
       return 'Skipped'
     default:

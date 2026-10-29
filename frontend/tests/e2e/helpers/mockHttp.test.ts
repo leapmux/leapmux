@@ -17,14 +17,21 @@ afterEach(() => vi.useRealTimers())
 describe('readMockBody', () => {
   it('preserves binary bytes across chunks and accepts an empty body', async () => {
     const bytes = Buffer.from([0x00, 0xFF, 0xA0, 0xBF, 0xC0, 0xFE])
-    expect(await readMockBody(request([bytes.subarray(0, 1), bytes.subarray(1, 4), bytes.subarray(4)]))).toEqual(bytes)
+    expect(await readMockBody(request([
+      bytes.subarray(0, 1),
+      bytes.subarray(1, 4),
+      bytes.subarray(4),
+    ]))).toEqual(bytes)
     expect(await readMockBody(request([]))).toEqual(Buffer.alloc(0))
   })
 
   it('accepts the exact byte limit and rejects the next byte', async () => {
     const bytes = Buffer.alloc(MAX_MOCK_REQUEST_BYTES)
     expect((await readMockBody(request([bytes]))).byteLength).toBe(MAX_MOCK_REQUEST_BYTES)
-    await expect(readMockBody(request([bytes, Buffer.from([0])]))).rejects.toThrow(`The request body exceeds ${MAX_MOCK_REQUEST_BYTES} bytes.`)
+    await expect(readMockBody(request([
+      bytes,
+      Buffer.from([0]),
+    ]))).rejects.toThrow(`The request body exceeds ${MAX_MOCK_REQUEST_BYTES} bytes.`)
   })
 
   it('preserves a transport read error', async () => {
@@ -38,14 +45,22 @@ describe('readMockBody', () => {
 
 describe('readJSONBody', () => {
   it('decodes UTF-8 characters split across byte chunks without changing JSON values', async () => {
-    const body = { text: '실제 내용 🧪', zero: 0, empty: '', absent: null, list: [false, 1] }
+    const body = {
+      text: '실제 내용 🧪',
+      zero: 0,
+      empty: '',
+      absent: null,
+      list: [false, 1],
+    }
     const bytes = Buffer.from(JSON.stringify(body))
     const chunks = Array.from(bytes, byte => Buffer.from([byte]))
     expect(await readJSONBody(request(chunks))).toEqual(body)
   })
 
   it.each(['null', '0', 'false', '""', '[]'])('retains the JSON boundary %s', async (text) => {
-    expect(await readJSONBody(request([Buffer.from(text)]))).toEqual(JSON.parse(text))
+    expect(await readJSONBody(request([
+      Buffer.from(text),
+    ]))).toEqual(JSON.parse(text))
   })
 
   it('rejects an empty body with the existing error', async () => {
@@ -53,7 +68,9 @@ describe('readJSONBody', () => {
   })
 
   it('retains the JSON parser error as the cause', async () => {
-    const result = readJSONBody(request([Buffer.from('{broken')]))
+    const result = readJSONBody(request([
+      Buffer.from('{broken'),
+    ]))
     await expect(result).rejects.toThrow('The request body is not valid JSON.')
     await expect(result).rejects.toHaveProperty('cause', expect.any(SyntaxError))
   })
@@ -62,7 +79,10 @@ describe('readJSONBody', () => {
     const exact = Buffer.alloc(MAX_MOCK_REQUEST_BYTES, 32)
     exact.write('0')
     expect(await readJSONBody(request([exact]))).toBe(0)
-    await expect(readJSONBody(request([exact, Buffer.from(' ')]))).rejects.toThrow(`The request body exceeds ${MAX_MOCK_REQUEST_BYTES} bytes.`)
+    await expect(readJSONBody(request([
+      exact,
+      Buffer.from(' '),
+    ]))).rejects.toThrow(`The request body exceeds ${MAX_MOCK_REQUEST_BYTES} bytes.`)
   })
 
   it('propagates a transport read failure', async () => {
@@ -75,7 +95,12 @@ describe('readJSONBody', () => {
 })
 
 describe('writeMockJSON', () => {
-  it.each([null, 0, '', { text: '실제 내용 🧪', count: 0 }])('retains the body, status, and explicit response headers: %j', (body) => {
+  it.each([
+    null,
+    0,
+    '',
+    { text: '실제 내용 🧪', count: 0 },
+  ])('retains the body, status, and explicit response headers: %j', (body) => {
     const response = new ServerResponse(request([]))
     const end = vi.spyOn(response, 'end').mockImplementation(() => response)
     writeMockJSON(response, 409, body, { 'x-native-receipt': 'actual-value' })
@@ -89,7 +114,11 @@ describe('writeMockJSON', () => {
 describe('writeResponseHeaders', () => {
   it('keeps each delivered header readable through the response API, and skips an undefined one', () => {
     const response = new ServerResponse(request([]))
-    writeResponseHeaders(response, 429, { 'retry-after': '7', 'x-native-limit': ['first', 'second'], 'x-absent': undefined })
+    writeResponseHeaders(response, 429, {
+      'retry-after': '7',
+      'x-native-limit': ['first', 'second'],
+      'x-absent': undefined,
+    })
     expect(response.statusCode).toBe(429)
     expect(response.getHeader('retry-after')).toBe('7')
     expect(response.getHeader('x-native-limit')).toEqual(['first', 'second'])

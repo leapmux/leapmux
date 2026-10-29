@@ -24,14 +24,27 @@ const MINIMAL_INPUT: Readonly<Record<string, Record<string, unknown>>> = {
  */
 function kindOf(name: string) {
   return acpToolCall(
-    { sessionUpdate: 'tool_call', toolCallId: 'qwen-vocab', status: 'pending', title: 'Display title', kind: 'other', rawInput: MINIMAL_INPUT[name] ?? {}, _meta: { toolName: name } },
+    {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'qwen-vocab',
+      status: 'pending',
+      title: 'Display title',
+      kind: 'other',
+      rawInput: MINIMAL_INPUT[name] ?? {},
+      _meta: { toolName: name },
+    },
     qwenToolCallAdapter,
     undefined,
   ).kind
 }
 
 const CHECK: ToolVocabularyCheck = {
-  names: [...Object.keys(QWEN_TOOL_KINDS), QWEN_TOOL.Agent, QWEN_TOOL.Workflow, QWEN_TOOL.TodoWrite],
+  names: [
+    ...Object.keys(QWEN_TOOL_KINDS),
+    QWEN_TOOL.Agent,
+    QWEN_TOOL.Workflow,
+    QWEN_TOOL.TodoWrite,
+  ],
   kindOf,
   generic: {},
   fallback: 'mcp',
@@ -64,16 +77,40 @@ describe('qwen tool vocabulary', () => {
   })
 
   it('draws a Model Context Protocol tool by its server and tool', () => {
-    const call = acpToolCall({ sessionUpdate: 'tool_call', toolCallId: 'c', status: 'pending', kind: 'other', rawInput: { q: 'x' }, _meta: { toolName: 'mcp__docs__search' } }, qwenToolCallAdapter, undefined)
-    expect(call.kind === 'mcp' && call.request).toMatchObject({ server: 'docs', tool: 'search', args: { q: 'x' } })
+    const call = acpToolCall({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'c',
+      status: 'pending',
+      kind: 'other',
+      rawInput: { q: 'x' },
+      _meta: { toolName: 'mcp__docs__search' },
+    }, qwenToolCallAdapter, undefined)
+    expect(call.kind === 'mcp' && call.request).toMatchObject({
+      server: 'docs',
+      tool: 'search',
+      args: { q: 'x' },
+    })
   })
 
   it('leaves an unknown tool to the kind the wire states', () => {
     expect(kindOf('a_tool_from_a_later_release')).toBe('mcp')
-    expect(acpToolCall({ sessionUpdate: 'tool_call', toolCallId: 'c', status: 'pending', kind: 'read', rawInput: { file_path: '/a' }, _meta: { toolName: 'new_reader' } }, qwenToolCallAdapter, undefined).kind).toBe('read')
+    expect(acpToolCall({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'c',
+      status: 'pending',
+      kind: 'read',
+      rawInput: { file_path: '/a' },
+      _meta: { toolName: 'new_reader' },
+    }, qwenToolCallAdapter, undefined).kind).toBe('read')
   })
 
   it('reads a frame with no tool name through the shared build', () => {
-    expect(acpToolCall({ sessionUpdate: 'tool_call', toolCallId: 'c', status: 'pending', kind: 'execute', rawInput: { command: 'ls' } }, qwenToolCallAdapter, undefined).kind).toBe('execute')
+    expect(acpToolCall({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'c',
+      status: 'pending',
+      kind: 'execute',
+      rawInput: { command: 'ls' },
+    }, qwenToolCallAdapter, undefined).kind).toBe('execute')
   })
 })

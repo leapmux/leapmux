@@ -12,10 +12,12 @@ describe('claudeWebSearchFromToolResult', () => {
       query: 'how to widget',
       durationSeconds: 1.5,
       results: [
-        { content: [
-          { url: 'https://a.example/page', title: 'A' },
-          { url: 'https://b.example/page', title: 'B' },
-        ] },
+        {
+          content: [
+            { url: 'https://a.example/page', title: 'A' },
+            { url: 'https://b.example/page', title: 'B' },
+          ],
+        },
         'Final summary text',
       ],
     })
@@ -35,10 +37,12 @@ describe('claudeWebSearchFromToolResult', () => {
   it('deduplicates links by URL', () => {
     const source = claudeWebSearchFromToolResult({
       results: [
-        { content: [
-          { url: 'https://x.example', title: 'X' },
-          { url: 'https://x.example', title: 'X (dup)' },
-        ] },
+        {
+          content: [
+            { url: 'https://x.example', title: 'X' },
+            { url: 'https://x.example', title: 'X (dup)' },
+          ],
+        },
       ],
     })
     expect(source?.links).toEqual([

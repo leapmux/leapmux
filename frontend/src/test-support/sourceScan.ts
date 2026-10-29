@@ -30,7 +30,9 @@ const COMMENT_LINE = /^\s*(?:\/\/|\/\*|\*)/
 export function stripCommentLines(source: string): string {
   return source
     .split('\n')
-    .map(line => (COMMENT_LINE.test(line) ? '' : line))
+    .map(line => (COMMENT_LINE.test(line)
+      ? ''
+      : line))
     .join('\n')
 }
 

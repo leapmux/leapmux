@@ -19,14 +19,25 @@ grokTest('delivers an exact message to the running native child and preserves it
   const answer = `The native child read ${marker}.`
   const rule = 'the native child reads its exact message'
   let releaseChild: (() => Promise<boolean>) | undefined
-  await modelScript.rule({ name: rule, when: { user: marker }, respond: { text: answer }, once: true })
+  await modelScript.rule({
+    name: rule,
+    when: { user: marker },
+    respond: { text: answer },
+    once: true,
+  })
   await modelScript.fallback({ text: 'The native parent received its child report.' })
   await withCleanup(async () => {
     const child = await openHeldChildTab(native, {
       background: true,
       childTurn: { user: HELD_CHILD_TASK },
-      heldAnswer: { toolCalls: [bashToolCall(native.provider, 'native-child-message-shell', output.command)] },
-      rootTurnsAfterSpawn: [{ text: 'The native background child started.' }],
+      heldAnswer: {
+        toolCalls: [
+          bashToolCall(native.provider, 'native-child-message-shell', output.command),
+        ],
+      },
+      rootTurnsAfterSpawn: [
+        { text: 'The native background child started.' },
+      ],
     })
     releaseChild = child.release
     await child.release()
@@ -48,7 +59,10 @@ grokTest('delivers an exact message to the running native child and preserves it
     expect(await child.heldTurns()).toBe(1)
     await child.finish()
     await expect(child.row).toHaveAttribute('data-status', 'succeeded')
-    await testInfo.attach('grok-native-child-message', { body: JSON.stringify({ childId: child.childId, parentId: child.parentId, request }), contentType: 'application/json' })
+    await testInfo.attach('grok-native-child-message', {
+      body: JSON.stringify({ childId: child.childId, parentId: child.parentId, request }),
+      contentType: 'application/json',
+    })
     for (const reload of [false, true]) {
       if (reload)
         await page.reload()
@@ -61,7 +75,11 @@ grokTest('delivers an exact message to the running native child and preserves it
       await expect(userBubbles(page).filter({ hasText: steering })).toHaveCount(0)
     }
   }, () => finishCleanup([
-    ...(releaseChild ? [releaseChild()] : []),
+    ...(releaseChild
+      ? [
+          releaseChild(),
+        ]
+      : []),
     output.releaseFirstOutput(),
     output.releaseFinalOutput(),
   ]))

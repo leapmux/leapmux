@@ -10,7 +10,9 @@ opencodeTest('shows the child tool result before its final answer', async ({ nat
     childWhen: OPENCODE_CHILD.childTask('Read the assigned file for the live OpenCode child'),
     childTask: 'Read the assigned file for the live OpenCode child, then report its marker.',
     parentTask: 'Spawn one subagent to read the child note.',
-    toolProof: { read: { workingDir: authenticatedOpencodeWorkspace.workingDir } },
+    toolProof: {
+      read: { workingDir: authenticatedOpencodeWorkspace.workingDir },
+    },
   })
   await expectRowBecomesFinal(native.page, child.row)
 })

@@ -8,14 +8,23 @@ describe('useChatVirtualizer geometry', () => {
   describe('scrollTopNearAnchor (trimmed-row recovery)', () => {
     // Five plain rows use offsets 0, 120, 240, 360, and 480.
     function seqItems(): VirtualItem[] {
-      const rows = [10, 20, 30, 40, 50].map(n => ({ id: `m${n}`, hasSpanLines: false, seq: BigInt(n) }))
+      const rows = [10, 20, 30, 40, 50].map(n => ({
+        id: `m${n}`,
+        hasSpanLines: false,
+        seq: BigInt(n),
+      }))
       return rows
     }
 
     it('returns the exact position when the anchored row still resolves', () => {
       createRoot((dispose) => {
         const { virt } = setup(seqItems())
-        expect(virt.scrollTopNearAnchor({ id: 'm30', offsetWithinRow: 0, basisHeight: 100, seq: 30n })).toBe(240)
+        expect(virt.scrollTopNearAnchor({
+          id: 'm30',
+          offsetWithinRow: 0,
+          basisHeight: 100,
+          seq: 30n,
+        })).toBe(240)
         dispose()
       })
     })
@@ -59,7 +68,12 @@ describe('useChatVirtualizer geometry', () => {
       })
       // Anchor at 90% into the over-estimated row 'a' (scrollTop 360 / 400 = 0.9).
       const anchor = virt.anchorAt(360)
-      expect(anchor).toEqual({ id: 'a', offsetWithinRow: 360, basisHeight: 400, gapFraction: 0 })
+      expect(anchor).toEqual({
+        id: 'a',
+        offsetWithinRow: 360,
+        basisHeight: 400,
+        gapFraction: 0,
+      })
       expect(virt.scrollTopForAnchor(anchor!)).toBe(360)
 
       // Row 'a' mounts and measures much SMALLER (120). An ABSOLUTE clamp would yank
@@ -90,7 +104,12 @@ describe('useChatVirtualizer geometry', () => {
       // overscroll at the top. indexAtOffset floors it to row 0, so `within`
       // would go negative and store a negative offset that re-pins above the top.
       const anchor = virt.anchorAt(-40)
-      expect(anchor).toEqual({ id: 'm1', offsetWithinRow: 0, basisHeight: 100, gapFraction: 0 })
+      expect(anchor).toEqual({
+        id: 'm1',
+        offsetWithinRow: 0,
+        basisHeight: 100,
+        gapFraction: 0,
+      })
       expect(virt.scrollTopForAnchor(anchor!)).toBe(0)
       dispose()
     })
@@ -329,7 +348,10 @@ describe('useChatVirtualizer geometry', () => {
       virt.measure('m2', 300)
       expect(virt.heightOfIndex(1)).toBe(300)
       // m2 trimmed out of the window...
-      setList(makeItems([{ seq: 1 }, { seq: 3 }]))
+      setList(makeItems([
+        { seq: 1 },
+        { seq: 3 },
+      ]))
       expect(virt.indexOfId('m2')).toBe(-1)
       // ...then re-fetched. Its cached height is reused (no flash to estimate).
       setList(plainItems(3))

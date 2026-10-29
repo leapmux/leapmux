@@ -81,8 +81,13 @@ describe('createRafResizeObserver', () => {
 
     observer!.observe(targetA)
     observer!.observe(targetB)
-    FakeResizeObserver.last!.emit([entry(targetA, 100)])
-    FakeResizeObserver.last!.emit([entry(targetB, 200), entry(targetA, 150)])
+    FakeResizeObserver.last!.emit([
+      entry(targetA, 100),
+    ])
+    FakeResizeObserver.last!.emit([
+      entry(targetB, 200),
+      entry(targetA, 150),
+    ])
 
     expect(requestAnimationFrame).toHaveBeenCalledTimes(1)
     expect(calls).toEqual([])
@@ -104,7 +109,10 @@ describe('createRafResizeObserver', () => {
 
     observer!.observe(targetA)
     observer!.observe(targetB)
-    FakeResizeObserver.last!.emit([entry(targetA, 100), entry(targetB, 200)])
+    FakeResizeObserver.last!.emit([
+      entry(targetA, 100),
+      entry(targetB, 200),
+    ])
     observer!.unobserve(targetA)
 
     runFrame(1)
@@ -119,7 +127,9 @@ describe('createRafResizeObserver', () => {
     const observer = createRafResizeObserver(callback)
 
     observer!.observe(target)
-    FakeResizeObserver.last!.emit([entry(target, 100)])
+    FakeResizeObserver.last!.emit([
+      entry(target, 100),
+    ])
     observer!.disconnect()
 
     expect(cancelAnimationFrame).toHaveBeenCalledWith(1)
@@ -139,7 +149,9 @@ describe('createRafResizeObserver', () => {
     const observer = createRafResizeObserver(entries => calls.push(entries))
 
     observer!.observe(target)
-    FakeResizeObserver.last!.emit([entry(target, 100)])
+    FakeResizeObserver.last!.emit([
+      entry(target, 100),
+    ])
 
     expect(calls).toHaveLength(1)
     expect(calls[0]?.[0]?.target).toBe(target)
@@ -160,7 +172,9 @@ describe('createRafResizeObserver', () => {
       const observer = createRafResizeObserver(entries => calls.push(entries))
 
       observer!.observe(target)
-      FakeResizeObserver.last!.emit([entry(target, 100)])
+      FakeResizeObserver.last!.emit([
+        entry(target, 100),
+      ])
 
       expect(() => vi.runOnlyPendingTimers()).not.toThrow()
       expect(calls).toHaveLength(1)

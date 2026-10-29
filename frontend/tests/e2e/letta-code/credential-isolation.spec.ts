@@ -11,7 +11,9 @@ lettaTest('runs the actual native turn with private configuration and mock crede
   await exerciseCredentialIsolation(native, {
     privateDirectories: [home],
     expectedCredential: MODEL_KEY,
-    configurationFiles: [join(home, 'providers', 'auth.json')],
+    configurationFiles: [
+      join(home, 'providers', 'auth.json'),
+    ],
     configurationMarkers: ['openai-compatible'],
   })
 })

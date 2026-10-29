@@ -27,7 +27,9 @@ function taskSpecs(args: Record<string, unknown>): OhMyPiTaskSpec[] {
   if (Array.isArray(args.tasks))
     return args.tasks.filter(isObject).map(read).filter(spec => spec.task !== '' || spec.name !== '')
   const single = read(args)
-  return single.task ? [single] : []
+  return single.task
+    ? [single]
+    : []
 }
 
 /** The first non-empty line of a text, trimmed. */
@@ -47,15 +49,21 @@ export function ohMyPiAgentRequest(args: Record<string, unknown>): AgentRequest 
   const first = specs[0]
   const description = specs.length === 1 && first
     ? (first.name || firstLine(first.task) || 'Subagent')
-    : specs.length > 1 ? `${specs.length} subagents` : 'Subagent'
-  const agentTypes = [...new Set(specs.map(spec => spec.agent).filter(Boolean))]
+    : specs.length > 1
+      ? `${specs.length} subagents`
+      : 'Subagent'
+  const agentTypes = [
+    ...new Set(specs.map(spec => spec.agent).filter(Boolean)),
+  ]
   const sections = specs.length === 1 && first
     ? [first.task]
     : specs.map(spec => `### ${spec.name || firstLine(spec.task) || 'Task'}\n\n${spec.task}`)
   const prompt = [context, ...sections].filter(part => part.trim() !== '').join('\n\n')
   return {
     description,
-    ...(agentTypes.length === 1 && agentTypes[0] ? { agentType: agentTypes[0] } : {}),
+    ...(agentTypes.length === 1 && agentTypes[0]
+      ? { agentType: agentTypes[0] }
+      : {}),
     prompt,
     promptFormat: 'markdown',
   }
@@ -71,11 +79,19 @@ function runMetadata(entry: Record<string, unknown>): ToolMetadataEntry[] {
   if (model)
     metadata.push({ label: 'Model', value: model })
   const durationMs = pickNumber(entry, 'durationMs', undefined)
-  if (durationMs !== undefined)
-    metadata.push({ label: 'Duration', value: formatDuration(durationMs) })
+  if (durationMs !== undefined) {
+    metadata.push({
+      label: 'Duration',
+      value: formatDuration(durationMs),
+    })
+  }
   const tokens = pickNumber(entry, 'tokens', undefined)
-  if (tokens !== undefined && tokens > 0)
-    metadata.push({ label: 'Tokens', value: formatNumber(tokens) })
+  if (tokens !== undefined && tokens > 0) {
+    metadata.push({
+      label: 'Tokens',
+      value: formatNumber(tokens),
+    })
+  }
   return metadata
 }
 
@@ -98,7 +114,9 @@ function runBody(entry: Record<string, unknown>): Pick<AgentRun, 'body' | 'bodyL
   if (output.trim())
     return { body: output }
   const stderr = pickString(entry, 'stderr').trim()
-  const abortReason = entry.aborted === true ? pickString(entry, 'abortReason').trim() : ''
+  const abortReason = entry.aborted === true
+    ? pickString(entry, 'abortReason').trim()
+    : ''
   if (abortReason)
     return { body: abortReason, bodyLabel: 'Abort reason' }
   if (stderr)
@@ -116,7 +134,9 @@ function runOutcome(entry: Record<string, unknown>): RunStatus {
   const exitCode = pickNumber(entry, 'exitCode', undefined)
   if (exitCode === undefined)
     return 'unknown'
-  return exitCode === 0 ? 'completed' : 'failed'
+  return exitCode === 0
+    ? 'completed'
+    : 'failed'
 }
 
 /** How one subagent the call left running stands, from omp's progress word. */
@@ -147,7 +167,9 @@ function progressOutcome(status: string): RunStatus {
  * Returns an empty list for a result that states neither.
  */
 export function ohMyPiAgentRuns(details: Record<string, unknown>, text: string): AgentRun[] {
-  const results = Array.isArray(details.results) ? details.results.filter(isObject) : []
+  const results = Array.isArray(details.results)
+    ? details.results.filter(isObject)
+    : []
   if (results.length > 0) {
     return results.map((entry): AgentRun => {
       const assignment = pickString(entry, 'assignment') || pickString(entry, 'task')
@@ -160,15 +182,21 @@ export function ohMyPiAgentRuns(details: Record<string, unknown>, text: string):
       }
     })
   }
-  const progress = Array.isArray(details.progress) ? details.progress.filter(isObject) : []
+  const progress = Array.isArray(details.progress)
+    ? details.progress.filter(isObject)
+    : []
   const background = isObject(details.async) && pickString(details.async, 'state') === OH_MY_PI_ASYNC_JOB_STATE.Running
   return progress.map((entry): AgentRun => {
     const assignment = pickString(entry, 'assignment') || pickString(entry, 'task')
     return {
       description: firstLine(assignment) || pickString(entry, 'id') || 'Subagent',
       agentId: pickString(entry, 'id'),
-      outcome: background ? 'running' : progressOutcome(pickString(entry, 'status')),
-      ...(background ? { statusLabel: 'running in the background' } : {}),
+      outcome: background
+        ? 'running'
+        : progressOutcome(pickString(entry, 'status')),
+      ...(background
+        ? { statusLabel: 'running in the background' }
+        : {}),
       metadata: runMetadata(entry),
       body: background ? '' : text,
     }

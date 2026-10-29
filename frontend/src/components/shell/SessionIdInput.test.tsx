@@ -141,7 +141,9 @@ describe('SessionIdInput', () => {
     const state = createSessionIdState(claude)
     render(() => <SessionIdInput state={state} />)
     const input = screen.getByPlaceholderText('Session ID') as HTMLInputElement
-    fireEvent.input(input, { target: { value: 'session-1' } })
+    fireEvent.input(input, {
+      target: { value: 'session-1' },
+    })
     expect(state.value()).toBe('session-1')
     expect(state.trimmed()).toBe('session-1')
   })
@@ -176,7 +178,9 @@ describe('SessionIdInput accessibility', () => {
     const state = createSessionIdState(claude)
     render(() => <SessionIdInput state={state} />)
     const input = screen.getByLabelText('Resume an existing session')
-    fireEvent.input(input, { target: { value: '--dangerous' } })
+    fireEvent.input(input, {
+      target: { value: '--dangerous' },
+    })
 
     expect(state.error()).not.toBeNull()
     expect(input).toHaveAttribute('aria-invalid', 'true')

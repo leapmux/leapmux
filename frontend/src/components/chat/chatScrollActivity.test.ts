@@ -18,7 +18,9 @@ let disposeRoot: (() => void) | undefined
  * (`useChatScroll.diagnostics.test.ts` uses the same form.)
  */
 function setup(deps: Partial<ScrollActivityDeps> = {}): ScrollActivity {
-  vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+  vi.useFakeTimers({
+    toFake: ['performance', 'setTimeout', 'clearTimeout'],
+  })
   return createRoot((dispose) => {
     disposeRoot = dispose
     return createScrollActivity({ idleMs: IDLE_MS, momentumGraceMs: GRACE_MS, ...deps })
@@ -216,7 +218,9 @@ describe('createScrollActivity', () => {
   it('keeps two instances with different idle windows independent', () => {
     // The shape ChatView actually builds: a short window for the syntax-highlight pause and
     // a long one for the rail. A module-level timer or timestamp would couple them.
-    vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+    vi.useFakeTimers({
+      toFake: ['performance', 'setTimeout', 'clearTimeout'],
+    })
     const { short, long } = createRoot((dispose) => {
       disposeRoot = dispose
       return {

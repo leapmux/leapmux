@@ -133,7 +133,14 @@ describe('tooltip', () => {
 
       const button = screen.getByRole('button', { name: 'Trigger' })
       // Inside viewport, no overflow ancestors, scrollWidth==clientWidth==0.
-      stubRect(button, { left: 10, top: 10, right: 60, bottom: 30, width: 50, height: 20 })
+      stubRect(button, {
+        left: 10,
+        top: 10,
+        right: 60,
+        bottom: 30,
+        width: 50,
+        height: 20,
+      })
 
       fireEvent.mouseEnter(button)
       vi.advanceTimersByTime(700)
@@ -153,7 +160,14 @@ describe('tooltip', () => {
       ))
 
       const button = screen.getByRole('button')
-      stubRect(button, { left: 10, top: 10, right: 60, bottom: 30, width: 50, height: 20 })
+      stubRect(button, {
+        left: 10,
+        top: 10,
+        right: 60,
+        bottom: 30,
+        width: 50,
+        height: 20,
+      })
       Object.defineProperty(button, 'scrollWidth', { value: 200, configurable: true })
       Object.defineProperty(button, 'clientWidth', { value: 50, configurable: true })
 
@@ -174,7 +188,14 @@ describe('tooltip', () => {
       ))
 
       const input = screen.getByRole('textbox')
-      stubRect(input, { left: 0, top: 0, right: 50, bottom: 20, width: 50, height: 20 })
+      stubRect(input, {
+        left: 0,
+        top: 0,
+        right: 50,
+        bottom: 20,
+        width: 50,
+        height: 20,
+      })
       Object.defineProperty(input, 'scrollWidth', { value: 200, configurable: true })
       Object.defineProperty(input, 'clientWidth', { value: 50, configurable: true })
 
@@ -196,8 +217,22 @@ describe('tooltip', () => {
       const button = screen.getByRole('button')
       const container = button.closest('div')!
       // Button rect extends past the container's right edge.
-      stubRect(button, { left: 0, top: 0, right: 200, bottom: 30, width: 200, height: 30 })
-      stubRect(container, { left: 0, top: 0, right: 100, bottom: 30, width: 100, height: 30 })
+      stubRect(button, {
+        left: 0,
+        top: 0,
+        right: 200,
+        bottom: 30,
+        width: 200,
+        height: 30,
+      })
+      stubRect(container, {
+        left: 0,
+        top: 0,
+        right: 100,
+        bottom: 30,
+        width: 100,
+        height: 30,
+      })
 
       fireEvent.mouseEnter(button)
       vi.advanceTimersByTime(700)
@@ -220,8 +255,22 @@ describe('tooltip', () => {
 
       const button = screen.getByRole('button')
       const container = button.closest('div')!
-      stubRect(button, { left: 0, top: 0, right: 95, bottom: 30, width: 95, height: 30 })
-      stubRect(container, { left: 0, top: 0, right: 100, bottom: 30, width: 100, height: 30 })
+      stubRect(button, {
+        left: 0,
+        top: 0,
+        right: 95,
+        bottom: 30,
+        width: 95,
+        height: 30,
+      })
+      stubRect(container, {
+        left: 0,
+        top: 0,
+        right: 100,
+        bottom: 30,
+        width: 100,
+        height: 30,
+      })
       Object.defineProperty(container, 'clientLeft', { value: 0, configurable: true })
       Object.defineProperty(container, 'clientTop', { value: 0, configurable: true })
       Object.defineProperty(container, 'clientWidth', { value: 85, configurable: true })
@@ -248,8 +297,22 @@ describe('tooltip', () => {
       const button = screen.getByRole('button')
       const container = button.closest('div')!
       // The target sits ABOVE the scroller's client box, and fits it sideways.
-      stubRect(button, { left: 10, top: 10, right: 60, bottom: 30, width: 50, height: 20 })
-      stubRect(container, { left: 0, top: 20, right: 100, bottom: 50, width: 100, height: 30 })
+      stubRect(button, {
+        left: 10,
+        top: 10,
+        right: 60,
+        bottom: 30,
+        width: 50,
+        height: 20,
+      })
+      stubRect(container, {
+        left: 0,
+        top: 20,
+        right: 100,
+        bottom: 50,
+        width: 100,
+        height: 30,
+      })
       Object.defineProperty(container, 'clientLeft', { value: 0, configurable: true })
       Object.defineProperty(container, 'clientTop', { value: 0, configurable: true })
       Object.defineProperty(container, 'clientWidth', { value: 100, configurable: true })

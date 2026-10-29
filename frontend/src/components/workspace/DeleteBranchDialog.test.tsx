@@ -73,7 +73,9 @@ function makeCloseWorktreeTabs() {
 }
 
 function renderDialog(props: Partial<Parameters<typeof DeleteBranchDialog>[0]> = {}) {
-  const tabs = props.tabs ?? [makeAgentTab('a1')]
+  const tabs = props.tabs ?? [
+    makeAgentTab('a1'),
+  ]
   const defaults = {
     workerId: 'w1',
     gitToplevel: '/repo',
@@ -88,7 +90,10 @@ function renderDialog(props: Partial<Parameters<typeof DeleteBranchDialog>[0]> =
     probeBusy: async () => [],
     onClose: vi.fn(),
   }
-  const merged = { ...defaults, ...props }
+  const merged = {
+    ...defaults,
+    ...props,
+  }
   render(() => <DeleteBranchDialog {...merged} />)
   return merged
 }
@@ -238,15 +243,19 @@ describe('DeleteBranchDialog', () => {
     const busyTab = makeTerminalTab('t-busy')
     renderDialog({
       tabs: [busyTab],
-      probeBusy: async () => [{
-        tab: busyTab,
-        title: 'dev server',
-        reason: {
-          kind: 'terminal-processes',
-          processes: [create(TerminalProcessSchema, { pid: 51234, name: 'node' })],
-          totalCount: 1,
+      probeBusy: async () => [
+        {
+          tab: busyTab,
+          title: 'dev server',
+          reason: {
+            kind: 'terminal-processes',
+            processes: [
+              create(TerminalProcessSchema, { pid: 51234, name: 'node' }),
+            ],
+            totalCount: 1,
+          },
         },
-      }],
+      ],
     })
 
     await waitFor(() => expect(screen.getByTestId('branch-delete-busy')).toBeInTheDocument())
@@ -264,7 +273,9 @@ describe('DeleteBranchDialog', () => {
     const pending = new Promise<BusyTab[]>((resolve) => {
       release = resolve
     })
-    renderDialog({ probeBusy: () => pending })
+    renderDialog({
+      probeBusy: () => pending,
+    })
 
     await waitFor(() => expect(deleteButton()).toBeInTheDocument())
     expect(deleteButton()).toBeDisabled()
@@ -283,7 +294,11 @@ describe('DeleteBranchDialog', () => {
       makeInspectResp({ isWorktree: true, worktreePath: '/wt', worktreeId: 'wt-1' }),
     )
     const closeWorktreeTabs = makeCloseWorktreeTabs()
-    const tabs = [makeAgentTab('a1'), makeAgentTab('a2'), makeTerminalTab('t1')]
+    const tabs = [
+      makeAgentTab('a1'),
+      makeAgentTab('a2'),
+      makeTerminalTab('t1'),
+    ]
     const props = renderDialog({ tabs, closeWorktreeTabs })
     await waitFor(() => expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument())
 
@@ -430,7 +445,9 @@ describe('DeleteBranchDialog', () => {
       }),
     )
     const closeWorktreeTabs = makeCloseWorktreeTabs()
-    const tabs = [makeAgentTab('a1')]
+    const tabs = [
+      makeAgentTab('a1'),
+    ]
     const props = renderDialog({ tabs, closeWorktreeTabs })
     await waitFor(() => expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument())
 
@@ -533,7 +550,10 @@ describe('DeleteBranchDialog', () => {
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
     const closeWorktreeTabs = makeCloseWorktreeTabs()
-    const tabs = [makeFileTab('f1'), makeFileTab('f2')]
+    const tabs = [
+      makeFileTab('f1'),
+      makeFileTab('f2'),
+    ]
     const props = renderDialog({ tabs, closeWorktreeTabs })
     await waitFor(() => expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument())
 
@@ -713,13 +733,22 @@ describe('DeleteBranchDialog', () => {
     const second = makeInspectResp({
       canPush: false,
       unpushedCommitCount: 0,
-      branchNames: ['main', 'feature', 'doomed', 'origin/doomed'],
+      branchNames: [
+        'main',
+        'feature',
+        'doomed',
+        'origin/doomed',
+      ],
     })
     vi.mocked(workerRpc.inspectBranchDeletion)
       .mockResolvedValueOnce(makeInspectResp({ canPush: true, unpushedCommitCount: 1 }))
       .mockResolvedValueOnce(second)
 
-    renderDialog({ tabs: [makeTerminalTab('t1')] })
+    renderDialog({
+      tabs: [
+        makeTerminalTab('t1'),
+      ],
+    })
     await waitFor(() => expect(workerRpc.inspectBranchDeletion).toHaveBeenCalledTimes(1))
 
     fireEvent.click(screen.getByRole('button', { name: 'Push' }))
@@ -778,7 +807,9 @@ describe('DeleteBranchDialog', () => {
 
   it('non-worktree variant filters out the current branch from the switch-to list', async () => {
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
-      makeInspectResp({ branchNames: ['doomed', 'main', 'feature'] }),
+      makeInspectResp({
+        branchNames: ['doomed', 'main', 'feature'],
+      }),
     )
     renderDialog()
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
@@ -792,7 +823,9 @@ describe('DeleteBranchDialog', () => {
     // Only the doomed branch in the candidate list ⇒ after filtering,
     // the picker has no candidates ⇒ isOnlyBranch ⇒ disabled.
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
-      makeInspectResp({ branchNames: ['doomed'] }),
+      makeInspectResp({
+        branchNames: ['doomed'],
+      }),
     )
     renderDialog()
     await waitFor(() =>
@@ -804,9 +837,16 @@ describe('DeleteBranchDialog', () => {
 
   it('only-branch case hides the affected-tabs line (delete cannot proceed)', async () => {
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
-      makeInspectResp({ branchNames: ['doomed'] }),
+      makeInspectResp({
+        branchNames: ['doomed'],
+      }),
     )
-    renderDialog({ tabs: [makeAgentTab('a1'), makeTerminalTab('t1')] })
+    renderDialog({
+      tabs: [
+        makeAgentTab('a1'),
+        makeTerminalTab('t1'),
+      ],
+    })
     await waitFor(() => expect(screen.getByText(/Cannot delete the only branch/)).toBeInTheDocument())
     // Neither "stopped" nor "kept-running" wording should appear when
     // the delete can't go through.
@@ -899,7 +939,12 @@ describe('DeleteBranchDialog', () => {
     // healthy terminal sat beside it.
     const inspectResp = makeInspectResp({ canPush: true, unpushedCommitCount: 1 })
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(inspectResp)
-    renderDialog({ tabs: [makeFileTab('f1'), makeTerminalTab('t1')] })
+    renderDialog({
+      tabs: [
+        makeFileTab('f1'),
+        makeTerminalTab('t1'),
+      ],
+    })
     await waitFor(() => expect(screen.getByRole('button', { name: 'Push' })).toBeInTheDocument())
 
     fireEvent.click(screen.getByRole('button', { name: 'Push' }))
@@ -915,7 +960,12 @@ describe('DeleteBranchDialog', () => {
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ canPush: true, unpushedCommitCount: 1 }),
     )
-    renderDialog({ tabs: [makeFileTab('f1'), makeFileTab('f2')] })
+    renderDialog({
+      tabs: [
+        makeFileTab('f1'),
+        makeFileTab('f2'),
+      ],
+    })
     await waitFor(() => expect(screen.getByRole('button', { name: 'Push' })).toBeInTheDocument())
 
     fireEvent.click(screen.getByRole('button', { name: 'Push' }))
@@ -946,7 +996,11 @@ describe('DeleteBranchDialog', () => {
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
     const closeWorktreeTabs = makeCloseWorktreeTabs()
-    const tabs = [makeAgentTab('a1'), makeFileTab('f1'), makeTerminalTab('t1')]
+    const tabs = [
+      makeAgentTab('a1'),
+      makeFileTab('f1'),
+      makeTerminalTab('t1'),
+    ]
     renderDialog({ tabs, closeWorktreeTabs })
     await waitFor(() => expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument())
     await clickDelete()
@@ -958,7 +1012,11 @@ describe('DeleteBranchDialog', () => {
   it('push button sends the group\'s working dir to pushBranch', async () => {
     const inspectResp = makeInspectResp({ canPush: true, unpushedCommitCount: 2 })
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(inspectResp)
-    renderDialog({ tabs: [makeTerminalTab('t1')] })
+    renderDialog({
+      tabs: [
+        makeTerminalTab('t1'),
+      ],
+    })
     await waitFor(() => expect(screen.getByRole('button', { name: 'Push' })).toBeInTheDocument())
 
     fireEvent.click(screen.getByRole('button', { name: 'Push' }))
@@ -1007,7 +1065,11 @@ describe('DeleteBranchDialog', () => {
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
     renderDialog({
-      tabs: [makeAgentTab('a1'), makeAgentTab('a2'), makeTerminalTab('t1')],
+      tabs: [
+        makeAgentTab('a1'),
+        makeAgentTab('a2'),
+        makeTerminalTab('t1'),
+      ],
     })
     await waitFor(() =>
       expect(screen.getByText('2 agents and 1 terminal will be stopped.')).toBeInTheDocument(),
@@ -1076,7 +1138,12 @@ describe('DeleteBranchDialog', () => {
 
   it('non-worktree variant says tabs will keep running, not stopped', async () => {
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
-    renderDialog({ tabs: [makeAgentTab('a1'), makeTerminalTab('t1')] })
+    renderDialog({
+      tabs: [
+        makeAgentTab('a1'),
+        makeTerminalTab('t1'),
+      ],
+    })
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
     expect(screen.getByText('1 agent and 1 terminal will keep running.')).toBeInTheDocument()
   })
@@ -1180,7 +1247,11 @@ describe('DeleteBranchDialog', () => {
       .mockResolvedValueOnce(makeInspectResp({ canPush: false, unpushedCommitCount: 0 }))
     vi.mocked(workerRpc.pushBranch).mockResolvedValue({ $typeName: 'leapmux.v1.PushBranchResponse' })
 
-    renderDialog({ tabs: [makeTerminalTab('t1')] })
+    renderDialog({
+      tabs: [
+        makeTerminalTab('t1'),
+      ],
+    })
     // First inspect — push needed, two commits ahead.
     await waitFor(() => expect(screen.getByText(/2 commits not pushed/)).toBeInTheDocument())
     expect(screen.getByRole('button', { name: 'Push' })).toBeInTheDocument()
@@ -1232,7 +1303,11 @@ describe('DeleteBranchDialog', () => {
       .mockReturnValueOnce(new Promise<InspectBranchDeletionResponse>((r) => { resolveSecond = r }))
     vi.mocked(workerRpc.pushBranch).mockResolvedValue({ $typeName: 'leapmux.v1.PushBranchResponse' })
 
-    renderDialog({ tabs: [makeTerminalTab('t1')] })
+    renderDialog({
+      tabs: [
+        makeTerminalTab('t1'),
+      ],
+    })
     await waitFor(() => expect(screen.getByRole('button', { name: 'Push' })).toBeInTheDocument())
 
     fireEvent.click(screen.getByRole('button', { name: 'Push' }))
@@ -1257,7 +1332,11 @@ describe('DeleteBranchDialog', () => {
       .mockRejectedValueOnce(new Error('worker offline'))
     vi.mocked(workerRpc.pushBranch).mockResolvedValue({ $typeName: 'leapmux.v1.PushBranchResponse' })
 
-    renderDialog({ tabs: [makeTerminalTab('t1')] })
+    renderDialog({
+      tabs: [
+        makeTerminalTab('t1'),
+      ],
+    })
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
     // Body rendered: the branch/directory rows and the switch-to picker.
     expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument()

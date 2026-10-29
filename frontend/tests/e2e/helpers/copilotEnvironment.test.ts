@@ -15,7 +15,13 @@ afterEach(() => rmSync(homeDir, { recursive: true, force: true }))
 
 describe('createCopilotEnvironment', () => {
   it('points both Copilot APIs at the given origin, with its state in the isolated home and its updater off', () => {
-    const env = createCopilotEnvironment({ homeDir, origin: 'http://127.0.0.1:4567', modelKey: 'unit-key', githubToken: 'github_pat_unit', runDirectory: '/run/root' })
+    const env = createCopilotEnvironment({
+      homeDir,
+      origin: 'http://127.0.0.1:4567',
+      modelKey: 'unit-key',
+      githubToken: 'github_pat_unit',
+      runDirectory: '/run/root',
+    })
     expect(env).toEqual({
       COPILOT_API_URL: 'http://127.0.0.1:4567',
       COPILOT_DEBUG_GITHUB_API_URL: 'http://127.0.0.1:4567',
@@ -28,7 +34,15 @@ describe('createCopilotEnvironment', () => {
   })
 
   it('trusts the run directory, so a project of the run loads its MCP servers without a trust question', () => {
-    const env = createCopilotEnvironment({ homeDir, origin: 'http://127.0.0.1:4567', modelKey: 'unit-key', githubToken: 'github_pat_unit', runDirectory: '/run/root' })
-    expect(JSON.parse(readFileSync(join(env.COPILOT_HOME!, 'config.json'), 'utf8'))).toEqual({ trustedFolders: ['/run/root'] })
+    const env = createCopilotEnvironment({
+      homeDir,
+      origin: 'http://127.0.0.1:4567',
+      modelKey: 'unit-key',
+      githubToken: 'github_pat_unit',
+      runDirectory: '/run/root',
+    })
+    expect(JSON.parse(readFileSync(join(env.COPILOT_HOME!, 'config.json'), 'utf8'))).toEqual({
+      trustedFolders: ['/run/root'],
+    })
   })
 })

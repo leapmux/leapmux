@@ -12,7 +12,9 @@ codexTest.describe('applies Codex session settings', () => {
     await exerciseNativeOption(native, {
       groupId: 'effort',
       value: 'low',
-      nativeProof: request => expect(request.body).toMatchObject({ reasoning: { effort: 'low' } }),
+      nativeProof: request => expect(request.body).toMatchObject({
+        reasoning: { effort: 'low' },
+      }),
     })
     await expectSettingsChip(native.page, /low/i)
   })
@@ -24,7 +26,10 @@ codexTest('keeps the chosen effort after a model switch and a reload', async ({ 
     kept: { groupId: 'effort', value: 'low' },
     model: 'gpt-5.6-sol',
     nativeProof: (request) => {
-      expect(request.body).toMatchObject({ model: 'gpt-5.6-sol', reasoning: { effort: 'low' } })
+      expect(request.body).toMatchObject({
+        model: 'gpt-5.6-sol',
+        reasoning: { effort: 'low' },
+      })
     },
   })
 })
@@ -39,8 +44,17 @@ codexTest('keeps one effort menu over a round trip through a model without the c
     model: MOCK_MODELS.openai,
     chosen: 'max',
     via: CODEX_MODEL_WITHOUT_MAX,
-    viaEfforts: ['auto', 'xhigh', 'high', 'medium', 'low'],
+    viaEfforts: [
+      'auto',
+      'xhigh',
+      'high',
+      'medium',
+      'low',
+    ],
     settled: 'medium',
-    nativeProof: request => expect(request.body).toMatchObject({ model: MOCK_MODELS.openai, reasoning: { effort: 'medium' } }),
+    nativeProof: request => expect(request.body).toMatchObject({
+      model: MOCK_MODELS.openai,
+      reasoning: { effort: 'medium' },
+    }),
   })
 })

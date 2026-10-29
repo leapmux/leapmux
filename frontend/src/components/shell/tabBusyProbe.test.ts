@@ -13,11 +13,22 @@ vi.mock('~/api/workerRpc', () => ({
 }))
 
 function agentTab(id: string, extra: Partial<Tab> = {}): Tab {
-  return { type: TabType.AGENT, id, workspaceId: 'ws-1', workerId: 'w-1', ...extra } as Tab
+  return {
+    type: TabType.AGENT,
+    id,
+    workspaceId: 'ws-1',
+    workerId: 'w-1',
+    ...extra,
+  } as Tab
 }
 
 function terminalTab(id: string, workerId = 'w-1'): Tab {
-  return { type: TabType.TERMINAL, id, workspaceId: 'ws-1', workerId } as Tab
+  return {
+    type: TabType.TERMINAL,
+    id,
+    workspaceId: 'ws-1',
+    workerId,
+  } as Tab
 }
 
 function task(overrides: Partial<BackgroundTaskItem> = {}): BackgroundTaskItem {
@@ -33,7 +44,13 @@ function task(overrides: Partial<BackgroundTaskItem> = {}): BackgroundTaskItem {
 
 function makeProbe(tasks: BackgroundTaskItem[] = []) {
   const seeded = vi.fn()
-  return { probe: createTabBusyProbe({ tasksFor: () => tasks, seedActivity: seeded }), seeded }
+  return {
+    probe: createTabBusyProbe({
+      tasksFor: () => tasks,
+      seedActivity: seeded,
+    }),
+    seeded,
+  }
 }
 
 /**
@@ -43,7 +60,12 @@ function makeProbe(tasks: BackgroundTaskItem[] = []) {
  * to one value and a case that needs the window states both.
  */
 function agentIs(id: string, activityState: AgentActivityState, publishedActivityState = activityState) {
-  mockListAgents.mockResolvedValue({ agents: [{ id, activityState, publishedActivityState }], verdicts: [] })
+  mockListAgents.mockResolvedValue({
+    agents: [
+      { id, activityState, publishedActivityState },
+    ],
+    verdicts: [],
+  })
 }
 
 describe('createTabBusyProbe', () => {
@@ -56,13 +78,23 @@ describe('createTabBusyProbe', () => {
 
   describe('agent tabs', () => {
     it('reports a working agent, with its active tasks', async () => {
-      const { probe } = makeProbe([task(), task({ rowKey: 'r2', status: 'succeeded' })])
+      const { probe } = makeProbe([
+        task(),
+        task({ rowKey: 'r2', status: 'succeeded' }),
+      ])
       agentIs('a1', AgentActivityState.WORKING)
 
       const reason = await probe.probe(agentTab('a1'))
 
-      expect(reason).toEqual({ kind: 'agent-turn', activeTasks: [task()] })
-      expect(mockListAgents).toHaveBeenCalledWith('w-1', { tabIds: ['a1'] })
+      expect(reason).toEqual({
+        kind: 'agent-turn',
+        activeTasks: [
+          task(),
+        ],
+      })
+      expect(mockListAgents).toHaveBeenCalledWith('w-1', {
+        tabIds: ['a1'],
+      })
       expect(mockInspect).not.toHaveBeenCalled()
     })
 
@@ -72,7 +104,9 @@ describe('createTabBusyProbe', () => {
       // still says WORKING after the work finished. A guard reading it would
       // raise a confirmation dialog over nothing, and would disagree with the
       // CLI guard.
-      const { probe } = makeProbe([task()])
+      const { probe } = makeProbe([
+        task(),
+      ])
       agentIs('a1', AgentActivityState.IDLE)
 
       expect(await probe.probe(agentTab('a1'))).toBeNull()
@@ -80,7 +114,9 @@ describe('createTabBusyProbe', () => {
 
     it('fails open when the worker cannot answer', async () => {
       mockListAgents.mockRejectedValue(new Error('worker unreachable'))
-      const { probe } = makeProbe([task()])
+      const { probe } = makeProbe([
+        task(),
+      ])
 
       // Refusing a close nobody can confirm strands a tab the user has no other
       // way to shut, which is the same rule the terminal branch keeps.
@@ -96,7 +132,9 @@ describe('createTabBusyProbe', () => {
       // work then resumes, the Worker derives what it already published and
       // broadcasts nothing, leaving that tab with no spinner for the rest of the
       // turn.
-      const { probe, seeded } = makeProbe([task()])
+      const { probe, seeded } = makeProbe([
+        task(),
+      ])
       agentIs('a1', AgentActivityState.IDLE, AgentActivityState.WORKING)
 
       expect(await probe.probe(agentTab('a1')), 'the exact level answers the close').toBeNull()
@@ -120,13 +158,20 @@ describe('createTabBusyProbe', () => {
       // the `continue` below it must never skip the repair.
       mockListAgents.mockImplementation((workerId: string) => Promise.resolve({
         agents: workerId === 'w-1'
-          ? [{ id: 'a1', activityState: AgentActivityState.WORKING, publishedActivityState: AgentActivityState.WORKING }]
-          : [{ id: 'a2', activityState: AgentActivityState.IDLE, publishedActivityState: AgentActivityState.IDLE }],
+          ? [
+              { id: 'a1', activityState: AgentActivityState.WORKING, publishedActivityState: AgentActivityState.WORKING },
+            ]
+          : [
+              { id: 'a2', activityState: AgentActivityState.IDLE, publishedActivityState: AgentActivityState.IDLE },
+            ],
         verdicts: [],
       }))
       const { probe, seeded } = makeProbe()
 
-      await probe.probeMany([agentTab('a1'), agentTab('a2', { workerId: 'w-2' })])
+      await probe.probeMany([
+        agentTab('a1'),
+        agentTab('a2', { workerId: 'w-2' }),
+      ])
 
       expect(seeded).toHaveBeenCalledTimes(2)
       expect(seeded, 'a busy agent seeds too').toHaveBeenCalledWith('a1', AgentActivityState.WORKING)
@@ -159,14 +204,23 @@ describe('createTabBusyProbe', () => {
       // The state the indicator deliberately does NOT spin for. Its turn is
       // still in flight, so this close kills it along with every background task
       // under it -- which is why the guard reads activityInterruptsWork.
-      const { probe } = makeProbe([task()])
+      const { probe } = makeProbe([
+        task(),
+      ])
       agentIs('a1', AgentActivityState.WAITING_FOR_USER)
 
-      expect(await probe.probe(agentTab('a1'))).toEqual({ kind: 'agent-turn', activeTasks: [task()] })
+      expect(await probe.probe(agentTab('a1'))).toEqual({
+        kind: 'agent-turn',
+        activeTasks: [
+          task(),
+        ],
+      })
     })
 
     it('never reports a subagent tab, even a busy one', async () => {
-      const { probe, seeded } = makeProbe([task()])
+      const { probe, seeded } = makeProbe([
+        task(),
+      ])
       agentIs('child-1', AgentActivityState.WORKING)
 
       // A child tab closes in the UI only: the worker treats CloseAgent on a
@@ -181,11 +235,15 @@ describe('createTabBusyProbe', () => {
   describe('terminal tabs', () => {
     it('reports the running processes', async () => {
       mockInspect.mockResolvedValue({
-        terminals: [{
-          terminalId: 't1',
-          processes: [{ pid: 51234, name: 'node' }],
-          totalCount: 1,
-        }],
+        terminals: [
+          {
+            terminalId: 't1',
+            processes: [
+              { pid: 51234, name: 'node' },
+            ],
+            totalCount: 1,
+          },
+        ],
       })
       const { probe } = makeProbe()
 
@@ -193,10 +251,14 @@ describe('createTabBusyProbe', () => {
 
       expect(reason).toEqual({
         kind: 'terminal-processes',
-        processes: [{ pid: 51234, name: 'node' }],
+        processes: [
+          { pid: 51234, name: 'node' },
+        ],
         totalCount: 1,
       })
-      expect(mockInspect).toHaveBeenCalledWith('w-1', { terminalIds: ['t1'] })
+      expect(mockInspect).toHaveBeenCalledWith('w-1', {
+        terminalIds: ['t1'],
+      })
     })
 
     it('reports an idle terminal as not busy', async () => {
@@ -208,7 +270,11 @@ describe('createTabBusyProbe', () => {
     it('treats an empty process list as idle', async () => {
       // The worker omits an idle terminal, but a zero-length list means the same
       // thing and must not raise a prompt about nothing.
-      mockInspect.mockResolvedValue({ terminals: [{ terminalId: 't1', processes: [], totalCount: 0 }] })
+      mockInspect.mockResolvedValue({
+        terminals: [
+          { terminalId: 't1', processes: [], totalCount: 0 },
+        ],
+      })
       const { probe } = makeProbe()
 
       expect(await probe.probe(terminalTab('t1'))).toBeNull()
@@ -229,16 +295,32 @@ describe('createTabBusyProbe', () => {
       mockInspect.mockResolvedValue({ terminals: [] })
       const { probe } = makeProbe()
 
-      await probe.probeMany([terminalTab('t1'), terminalTab('t2'), terminalTab('t3', 'w-2')])
+      await probe.probeMany([
+        terminalTab('t1'),
+        terminalTab('t2'),
+        terminalTab('t3', 'w-2'),
+      ])
 
       expect(mockInspect).toHaveBeenCalledTimes(2)
-      expect(mockInspect).toHaveBeenCalledWith('w-1', { terminalIds: ['t1', 't2'] })
-      expect(mockInspect).toHaveBeenCalledWith('w-2', { terminalIds: ['t3'] })
+      expect(mockInspect).toHaveBeenCalledWith('w-1', {
+        terminalIds: ['t1', 't2'],
+      })
+      expect(mockInspect).toHaveBeenCalledWith('w-2', {
+        terminalIds: ['t3'],
+      })
     })
 
     it('returns only the busy tabs, titled', async () => {
       mockInspect.mockResolvedValue({
-        terminals: [{ terminalId: 't1', processes: [{ pid: 7, name: 'sleep' }], totalCount: 1 }],
+        terminals: [
+          {
+            terminalId: 't1',
+            processes: [
+              { pid: 7, name: 'sleep' },
+            ],
+            totalCount: 1,
+          },
+        ],
       })
       const { probe } = makeProbe()
       agentIs('a1', AgentActivityState.WORKING)
@@ -259,10 +341,14 @@ describe('createTabBusyProbe', () => {
     it('makes no request for a kind the set does not hold', async () => {
       const { probe } = makeProbe()
 
-      await probe.probeMany([agentTab('a1')])
+      await probe.probeMany([
+        agentTab('a1'),
+      ])
 
       expect(mockInspect, 'no terminals, so no terminal request').not.toHaveBeenCalled()
-      expect(mockListAgents).toHaveBeenCalledWith('w-1', { tabIds: ['a1'] })
+      expect(mockListAgents).toHaveBeenCalledWith('w-1', {
+        tabIds: ['a1'],
+      })
     })
 
     it('still reports the agents when a terminal worker fails', async () => {
@@ -270,7 +356,10 @@ describe('createTabBusyProbe', () => {
       const { probe } = makeProbe()
       agentIs('a1', AgentActivityState.WORKING)
 
-      const busy = await probe.probeMany([agentTab('a1'), terminalTab('t1')])
+      const busy = await probe.probeMany([
+        agentTab('a1'),
+        terminalTab('t1'),
+      ])
 
       // One unreachable worker must not blind the guard to the tabs it CAN
       // answer for.
@@ -281,7 +370,12 @@ describe('createTabBusyProbe', () => {
       const { probe } = makeProbe()
 
       const busy = await probe.probeMany([
-        { type: TabType.FILE, id: 'f1', workspaceId: 'ws-1', workerId: 'w-1' } as Tab,
+        {
+          type: TabType.FILE,
+          id: 'f1',
+          workspaceId: 'ws-1',
+          workerId: 'w-1',
+        } as Tab,
       ])
 
       expect(busy).toEqual([])

@@ -81,7 +81,9 @@ export function openCodeToolCallAdapterFor(family: OpenCodeFamilyVocabulary): AC
   return (facts) => {
     const spec = openCodeToolCall(facts, family.toolKinds)
     const refusal = openCodeRefusal(facts, family.refusals)
-    return refusal === null ? spec : declinedToolCallSpec(spec, refusal)
+    return refusal === null
+      ? spec
+      : declinedToolCallSpec(spec, refusal)
   }
 }
 
@@ -97,7 +99,9 @@ function openCodeRefusal(facts: ACPToolFacts, refusals: OpenCodeFamilyRefusals):
   const error = pickString(pickObject(facts.tool, ACP_SUPPLEMENT.RawOutput), 'error')
   if (!error)
     return null
-  return refusals.messages.includes(error) || refusals.messagePrefixes.some(prefix => error.startsWith(prefix)) ? error : null
+  return refusals.messages.includes(error) || refusals.messagePrefixes.some(prefix => error.startsWith(prefix))
+    ? error
+    : null
 }
 
 /** A registry id the daemons send as the call title: one lowercase word. */
@@ -109,7 +113,12 @@ function openCodeQuestions(args: Record<string, unknown>): QuestionPrompt[] {
     args.questions,
     (question) => {
       const header = pickString(question, 'header')
-      return { ...(header ? { header } : {}), question: pickString(question, 'question') }
+      return {
+        ...(header
+          ? { header }
+          : {}),
+        question: pickString(question, 'question'),
+      }
     },
     (option) => {
       // The daemons send an option with a description and no label, and the sentence
@@ -119,7 +128,12 @@ function openCodeQuestions(args: Record<string, unknown>): QuestionPrompt[] {
       const description = pickString(option, 'description')
       if (!label && !description)
         return null
-      return { label: label || description, ...(label && description ? { description } : {}) }
+      return {
+        label: label || description,
+        ...(label && description
+          ? { description }
+          : {}),
+      }
     },
   )
 }
@@ -138,25 +152,39 @@ function openCodeToolCall(facts: ACPToolFacts, extraKinds: OpenCodeFamilyToolKin
   const task = openCodeTaskResult(facts.text, metadata, args)
   // The registry id IS the call's name: the protocol itself carries none, and the
   // wire kind identifies nothing the agent ran.
-  const named = toolName ? { name: toolName } : {}
+  const named = toolName
+    ? { name: toolName }
+    : {}
 
   // A task launch is an agent call: the instruction it was asked to run.
   if (toolName === OPENCODE_TOOL_NAMES.TASK || (kind === 'think' && pickString(args, 'subagent_type')) || (task && pickString(metadata, 'sessionId'))) {
     const agentType = pickString(args, 'subagent_type')
-    const request = { description: pickString(args, 'description'), ...(agentType ? { agentType } : {}), prompt: pickString(args, 'prompt') }
+    const request = {
+      description: pickString(args, 'description'),
+      ...(agentType
+        ? { agentType }
+        : {}),
+      prompt: pickString(args, 'prompt'),
+    }
     // The shared ladder answers whenever the run wrote no `<task>` wrapper, which a
     // launch that FAILED never writes: `openCodeTaskResult` reads that exact wrapper
     // and answers null for everything else. Without it the row drew its title and the
     // Error header with nothing at all between them, where every sibling states a
     // reason.
-    const result = facts.finished && task ? { agents: [task] } : acpSpecFor(facts, 'agent').result
+    const result = facts.finished && task
+      ? {
+          agents: [task],
+        }
+      : acpSpecFor(facts, 'agent').result
     return {
       ...named,
       kind: 'agent',
       label: 'Task',
       title: request.description || 'Task',
       request,
-      ...(result !== undefined ? { result } : {}),
+      ...(result !== undefined
+        ? { result }
+        : {}),
     }
   }
 
@@ -166,7 +194,14 @@ function openCodeToolCall(facts: ACPToolFacts, extraKinds: OpenCodeFamilyToolKin
   if (kind === 'chart') {
     const title = pickString(metadata, 'title') || pickString(args, 'title')
     const description = pickString(metadata, 'description') || pickString(args, 'description')
-    const meta = { ...(title ? { title } : {}), ...(description ? { description } : {}) }
+    const meta = {
+      ...(title
+        ? { title }
+        : {}),
+      ...(description
+        ? { description }
+        : {}),
+    }
     const spec = facts.text || pickString(args, 'spec') || '{}'
     // The lifecycle, in the order every other kind takes it. A result attached
     // unconditionally drew the red "not readable JSON" notice for the whole run --
@@ -178,11 +213,21 @@ function openCodeToolCall(facts: ACPToolFacts, extraKinds: OpenCodeFamilyToolKin
     // shared ladder holds for every kind: the configuration that arrived is what they
     // asked to see, and the request's own `spec` stands for a call that printed
     // nothing.
-    const chart = { ...named, kind: 'chart' as const, label: 'Chart', request: { spec, ...meta } }
+    const chart = {
+      ...named,
+      kind: 'chart' as const,
+      label: 'Chart',
+      request: { spec, ...meta },
+    }
     if (!facts.finished)
       return { ...chart, title: meta.title }
-    if (facts.status === 'failed')
-      return { ...chart, title: meta.title, result: failedResult(facts.text) }
+    if (facts.status === 'failed') {
+      return {
+        ...chart,
+        title: meta.title,
+        result: failedResult(facts.text),
+      }
+    }
     const source = chartResultFromSpec(spec, meta)
     return { ...chart, title: source.title || undefined, result: source }
   }
@@ -203,12 +248,29 @@ function openCodeToolCall(facts: ACPToolFacts, extraKinds: OpenCodeFamilyToolKin
     // reason it gave would draw as a choice that somebody made.
     if (!facts.finished)
       return asked
-    if (facts.status === 'failed')
-      return { ...asked, result: failedResult(facts.text) }
-    return { ...asked, ...(facts.text ? { result: { answers: [{ header, answer: facts.text }] } } : {}) }
+    if (facts.status === 'failed') {
+      return {
+        ...asked,
+        result: failedResult(facts.text),
+      }
+    }
+    return {
+      ...asked,
+      ...(facts.text
+        ? {
+            result: {
+              answers: [
+                { header, answer: facts.text },
+              ],
+            },
+          }
+        : {}),
+    }
   }
 
-  const rawTodos = Array.isArray(metadata?.todos) ? metadata.todos : args.todos
+  const rawTodos = Array.isArray(metadata?.todos)
+    ? metadata.todos
+    : args.todos
   if (toolName === OPENCODE_TOOL_NAMES.TODO_WRITE || Array.isArray(metadata?.todos)) {
     // `cancelled` reads as `deleted` inside normalizeTodoStatus, which every
     // provider's list goes through. OpenCode remapped it here first, and the copy
@@ -219,7 +281,12 @@ function openCodeToolCall(facts: ACPToolFacts, extraKinds: OpenCodeFamilyToolKin
     // an EXPLICIT undefined, because `acpToolCall` spreads the adapter's payload
     // over its own frame-title default -- a payload that merely OMITTED the key let
     // that default ('todowrite') stand where every sibling provider composes '1 task'.
-    const todo = { ...named, kind: 'todo' as const, title: undefined, request: { items } }
+    const todo = {
+      ...named,
+      kind: 'todo' as const,
+      title: undefined,
+      request: { items },
+    }
     // The lifecycle, in the order every other kind takes it. A call that has not
     // answered carries no result: `ToolMessage` draws the live output tail only while
     // the result is absent, and `todoRenderer` draws the REQUESTED list only there
@@ -230,23 +297,42 @@ function openCodeToolCall(facts: ACPToolFacts, extraKinds: OpenCodeFamilyToolKin
     // A call that FAILED saved nothing, so the reason it gave is the answer. A call
     // the reader STOPPED keeps the list it collected, which the row marks as partial
     // from its own status.
-    if (facts.status === 'failed')
-      return { ...todo, result: failedResult(facts.text) }
+    if (facts.status === 'failed') {
+      return {
+        ...todo,
+        result: failedResult(facts.text),
+      }
+    }
     // A finished call whose frame carried no list at all: the words it printed are
     // the only answer it stated, and an empty checklist would claim it cleared the
     // list.
-    if (!Array.isArray(rawTodos))
-      return { ...todo, result: unparsedResult(facts.text) }
-    return { ...todo, result: { items } }
+    if (!Array.isArray(rawTodos)) {
+      return {
+        ...todo,
+        result: unparsedResult(facts.text),
+      }
+    }
+    return {
+      ...todo,
+      result: { items },
+    }
   }
 
   // The protocol's own kinds, reading the display metadata the daemons keep
   // beside the output.
   const decorated = baseSpec(facts, callKind, metadata)
-  if (decorated)
-    return { ...named, ...decorated }
-  if (kind === 'unspecified' || kind === 'other')
-    return { ...named, ...genericSpec(facts, toolName) }
+  if (decorated) {
+    return {
+      ...named,
+      ...decorated,
+    }
+  }
+  if (kind === 'unspecified' || kind === 'other') {
+    return {
+      ...named,
+      ...genericSpec(facts, toolName),
+    }
+  }
   // A kind the protocol states and this family decorates none of: the shared
   // build answers it. A command row whose title repeats the registry id states
   // nothing the command below it does not already say.
@@ -257,7 +343,13 @@ function openCodeToolCall(facts: ACPToolFacts, extraKinds: OpenCodeFamilyToolKin
   const command = pickString(args, 'command')
   const frameTitle = pickString(tool, 'title')
   const repeats = command && (frameTitle === command || (frameTitle === toolName && REGISTRY_ID.test(toolName)) || frameTitle === facts.wireKind)
-  return { ...named, ...shared, ...(kind === 'execute' && repeats ? { title: undefined } : {}) }
+  return {
+    ...named,
+    ...shared,
+    ...(kind === 'execute' && repeats
+      ? { title: undefined }
+      : {}),
+  }
 }
 
 /**
@@ -284,8 +376,14 @@ interface OpenCodeCallKind {
 function openCodeCallKind(facts: ACPToolFacts, toolName: string, extraKinds: OpenCodeFamilyToolKinds | undefined): OpenCodeCallKind {
   const args = facts.args
   // A search-kind call whose title spells glob or grep is that search.
-  if (facts.wireKind === 'search' && (toolName === OPENCODE_TOOL_NAMES.GLOB || toolName === OPENCODE_TOOL_NAMES.GREP))
-    return { kind: toolName === OPENCODE_TOOL_NAMES.GLOB ? 'glob' : 'grep', open: false }
+  if (facts.wireKind === 'search' && (toolName === OPENCODE_TOOL_NAMES.GLOB || toolName === OPENCODE_TOOL_NAMES.GREP)) {
+    return {
+      kind: toolName === OPENCODE_TOOL_NAMES.GLOB
+        ? 'glob'
+        : 'grep',
+      open: false,
+    }
+  }
   // An edit frame that carries whole-file content is a write.
   if (facts.wireKind === 'edit' && typeof args.content === 'string' && typeof args.filePath === 'string')
     return { kind: 'write', open: false }
@@ -326,11 +424,24 @@ function baseSpec(facts: ACPToolFacts, callKind: OpenCodeCallKind, metadata: Rec
   if (kind === 'read') {
     const offset = pickNumber(args, 'offset', undefined) ?? undefined
     const limit = pickNumber(args, 'limit', undefined) ?? undefined
-    const request = { path: pickFirstString(args, TOOL_FILE_PATH_KEYS) ?? '', ...(offset !== undefined ? { offset } : {}), ...(limit !== undefined ? { limit } : {}) }
+    const request = {
+      path: pickFirstString(args, TOOL_FILE_PATH_KEYS) ?? '',
+      ...(offset !== undefined
+        ? { offset }
+        : {}),
+      ...(limit !== undefined
+        ? { limit }
+        : {}),
+    }
     if (!facts.finished)
       return { kind, request }
-    if (facts.status === 'failed')
-      return { kind, request, result: failedResult(facts.text) }
+    if (facts.status === 'failed') {
+      return {
+        kind,
+        request,
+        result: failedResult(facts.text),
+      }
+    }
     // The ONE kind this family moves when the answer lands, and the move is not a
     // second reading of a fact the call already stated. OpenCode's `read` runs two
     // operations behind one registry id -- its own description opens "Read a file or
@@ -345,15 +456,23 @@ function baseSpec(facts: ACPToolFacts, callKind: OpenCodeCallKind, metadata: Rec
       const entries = display.entries.filter((entry): entry is string => typeof entry === 'string' && entry !== '')
       const totalEntries = pickNumber(display, 'totalEntries', undefined)
       const offset = pickNumber(display, 'offset', undefined)
-      const total = totalEntries !== undefined && Number.isSafeInteger(totalEntries) && totalEntries >= 0 ? totalEntries : undefined
-      const start = offset !== undefined && Number.isSafeInteger(offset) && offset > 0 ? offset : undefined
+      const total = totalEntries !== undefined && Number.isSafeInteger(totalEntries) && totalEntries >= 0
+        ? totalEntries
+        : undefined
+      const start = offset !== undefined && Number.isSafeInteger(offset) && offset > 0
+        ? offset
+        : undefined
       return {
         kind: 'list',
         request: { path: pickString(display, 'path') || request.path || '.' },
         result: {
           entries: entries.map(path => ({ path })),
-          ...(total !== undefined ? { totalEntries: total } : {}),
-          ...(start !== undefined ? { offset: start } : {}),
+          ...(total !== undefined
+            ? { totalEntries: total }
+            : {}),
+          ...(start !== undefined
+            ? { offset: start }
+            : {}),
           truncated: pickBoolean(display, 'truncated') ?? false,
         },
       }
@@ -363,7 +482,13 @@ function baseSpec(facts: ACPToolFacts, callKind: OpenCodeCallKind, metadata: Rec
       return {
         kind,
         request: { ...request, path: pickString(display, 'path') || request.path },
-        result: readFileResultFromContent({ content: display.text, ...(lineStart !== undefined ? { startLine: lineStart } : {}), fallbackContent: display.text }),
+        result: readFileResultFromContent({
+          content: display.text,
+          ...(lineStart !== undefined
+            ? { startLine: lineStart }
+            : {}),
+          fallbackContent: display.text,
+        }),
       }
     }
     // A content text block is the file body: it parses as cat-n when the daemon
@@ -374,20 +499,36 @@ function baseSpec(facts: ACPToolFacts, callKind: OpenCodeCallKind, metadata: Rec
           // The VALUE, not `pickString`'s answer. `pickString` returns `''` for a
           // key that is absent or holds a number, so the test was true for every
           // block and the join swallowed each one as the empty string.
-          return typeof inner?.text === 'string' ? [inner.text] : []
+          return typeof inner?.text === 'string'
+            ? [inner.text]
+            : []
         }).join('')
       : ''
     if (contentText) {
       const source = acpReadFromToolCall(facts.tool)
       if (source?.lines !== null && source)
         return { kind, request, result: source }
-      return { kind, request, images: facts.images, result: unparsedResult(contentText) }
+      return {
+        kind,
+        request,
+        images: facts.images,
+        result: unparsedResult(contentText),
+      }
     }
     // A COMPLETED read that printed nothing still carries a result (the builder's
     // I2): the unparsed brand states the empty answer while the pictures ride the
     // call. A CANCELLED one may state none, exactly as the shared ladder holds.
     // A CANCELLED read may state none, so the result rides only when one exists.
-    return { kind, request, images: facts.images, ...(facts.text || facts.status === 'completed' ? { result: unparsedResult(facts.text) } : {}) }
+    return {
+      kind,
+      request,
+      images: facts.images,
+      ...(facts.text || facts.status === 'completed'
+        ? {
+            result: unparsedResult(facts.text),
+          }
+        : {}),
+    }
   }
 
   if (kind === 'edit' || kind === 'write') {
@@ -398,19 +539,41 @@ function baseSpec(facts: ACPToolFacts, callKind: OpenCodeCallKind, metadata: Rec
     // "Edit" and nothing else, at every state of the call.
     const filePath = pickFirstString(args, TOOL_FILE_PATH_KEYS) ?? ''
     const patchText = pickString(args, 'patch')
-    const patchSource = patchText ? fileEditDiffFromUnifiedPatch(filePath, patchText) : null
+    const patchSource = patchText
+      ? fileEditDiffFromUnifiedPatch(filePath, patchText)
+      : null
     const changes = patchSource && fileEditHasDiff(patchSource)
       ? [patchSource]
       : filePath
         ? kind === 'write'
-          ? [{ filePath, operation: 'add' as const, oldStr: '', newStr: pickString(args, 'content'), structuredPatch: null }]
-          : [{ filePath, oldStr: pickFirstString(args, TOOL_OLD_TEXT_KEYS) ?? '', newStr: pickFirstString(args, TOOL_NEW_TEXT_KEYS) ?? '', structuredPatch: null }]
+          ? [
+              {
+                filePath,
+                operation: 'add' as const,
+                oldStr: '',
+                newStr: pickString(args, 'content'),
+                structuredPatch: null,
+              },
+            ]
+          : [
+              {
+                filePath,
+                oldStr: pickFirstString(args, TOOL_OLD_TEXT_KEYS) ?? '',
+                newStr: pickFirstString(args, TOOL_NEW_TEXT_KEYS) ?? '',
+                structuredPatch: null,
+              },
+            ]
         : []
     const request: FileChangeRequest = { changes }
     if (!facts.finished)
       return { kind, request }
-    if (facts.status === 'failed')
-      return { kind, request, result: failedResult(facts.text) }
+    if (facts.status === 'failed') {
+      return {
+        kind,
+        request,
+        result: failedResult(facts.text),
+      }
+    }
     if (Array.isArray(metadata?.files)) {
       const sources = fileEditDiffsFromChanges(metadata.files.flatMap((entry) => {
         if (!isObject(entry))
@@ -420,35 +583,67 @@ function baseSpec(facts: ACPToolFacts, callKind: OpenCodeCallKind, metadata: Rec
         const target = movePath || oldPath
         if (!target)
           return []
-        return [{
-          filePath: target,
-          ...(movePath ? { previousPath: oldPath } : {}),
-          operation: entry.type === 'add' ? 'add' as const : entry.type === 'delete' ? 'delete' as const : movePath ? 'move' as const : 'edit' as const,
-          patch: pickString(entry, 'patch'),
-        }]
+        return [
+          {
+            filePath: target,
+            ...(movePath
+              ? { previousPath: oldPath }
+              : {}),
+            operation: entry.type === 'add'
+              ? 'add' as const
+              : entry.type === 'delete'
+                ? 'delete' as const
+                : movePath ? 'move' as const : 'edit' as const,
+            patch: pickString(entry, 'patch'),
+          },
+        ]
       }))
-      if (sources.length > 0)
-        return { kind, request, result: { changes: sources } }
+      if (sources.length > 0) {
+        return {
+          kind,
+          request,
+          result: { changes: sources },
+        }
+      }
     }
     const diffFile = pickString(pickObject(metadata, 'filediff'), 'file') || filePath
     const source = fileEditDiffFromUnifiedPatch(diffFile, pickString(metadata, 'diff'))
-    if (fileEditHasDiff(source))
-      return { kind, request, result: { changes: [source] } }
+    if (fileEditHasDiff(source)) {
+      return {
+        kind,
+        request,
+        result: {
+          changes: [source],
+        },
+      }
+    }
     // Last, a diff the call CONTENT carries: the metadata's own patch and file
     // list both describe the change better than the replacement fragment does.
     const contentDiff = Array.isArray(facts.tool.content)
       ? facts.tool.content.flatMap((entry) => {
           const fromContent = acpFileEditFromToolCallContent([entry])
-          return fileEditHasDiff(fromContent) ? [fromContent] : []
+          return fileEditHasDiff(fromContent)
+            ? [fromContent]
+            : []
         })
       : []
-    if (contentDiff.length > 0)
-      return { kind, request, result: { changes: contentDiff } }
+    if (contentDiff.length > 0) {
+      return {
+        kind,
+        request,
+        result: { changes: contentDiff },
+      }
+    }
     // The daemon said something in words, and those words may be the whole point
     // ("No file changes occurred."): they stay unparsed, and the request body
     // draws beside them.
-    if (facts.text)
-      return { kind, request, result: unparsedResult(facts.text) }
+    if (facts.text) {
+      return {
+        kind,
+        request,
+        result: unparsedResult(facts.text),
+      }
+    }
     // Nothing stated the landed change and the daemon said nothing, so the change
     // the call ASKED for is the best statement of what it applied. It claims
     // nothing beyond the call's own arguments.
@@ -460,20 +655,35 @@ function baseSpec(facts: ACPToolFacts, callKind: OpenCodeCallKind, metadata: Rec
     // the same list drawn as the RESULT states a change that never reached the file
     // -- `FileChangesBody` draws whatever the result holds, where
     // `RequestedChangesBody` refuses the request of an interrupted call.
-    if (facts.status === 'completed' && request.changes.some(fileEditHasDiff))
-      return { kind, request, result: { changes: request.changes } }
+    if (facts.status === 'completed' && request.changes.some(fileEditHasDiff)) {
+      return {
+        kind,
+        request,
+        result: { changes: request.changes },
+      }
+    }
     return { kind, request }
   }
 
   if (kind === 'glob' || kind === 'grep' || kind === 'search') {
-    const request = { pattern: pickString(args, 'pattern') || pickString(args, 'query') || '', paths: toolInputPaths(args) }
+    const request = {
+      pattern: pickString(args, 'pattern') || pickString(args, 'query') || '',
+      paths: toolInputPaths(args),
+    }
     if (!facts.finished)
       return { kind, request }
-    if (facts.status === 'failed')
-      return { kind, request, result: failedResult(facts.text) }
+    if (facts.status === 'failed') {
+      return {
+        kind,
+        request,
+        result: failedResult(facts.text),
+      }
+    }
     const matches = pickNumber(metadata, 'matches', undefined)
     const count = pickNumber(metadata, 'count', undefined)
-    const lines = matches !== undefined ? openCodeSearchLines(facts.text, matches, pickBoolean(metadata, 'truncated') ?? false) : null
+    const lines = matches !== undefined
+      ? openCodeSearchLines(facts.text, matches, pickBoolean(metadata, 'truncated') ?? false)
+      : null
     if (lines) {
       return {
         // The call's own kind, unless it left the question open. Reaching here says
@@ -502,20 +712,30 @@ function baseSpec(facts: ACPToolFacts, callKind: OpenCodeCallKind, metadata: Rec
       // `['']`, so a daemon that reported a positive count and printed no body
       // listed one file with no name at all.
       const listed = facts.text.trim()
-      const filenames = count !== undefined && count > 0 && listed ? listed.split('\n') : []
+      const filenames = count !== undefined && count > 0 && listed
+        ? listed.split('\n')
+        : []
       return {
         // The KIND words the summary: a count is a glob, a match total is the ACP
         // search phrasing. That reading applies to a call that left the kind OPEN and
         // to no other, because the counters are the only evidence there. A call whose
         // registry id spells the tool keeps the kind that id gave it.
-        kind: open ? (count !== undefined ? 'glob' : 'search') : kind,
+        kind: open
+          ? (count !== undefined
+              ? 'glob'
+              : 'search')
+          : kind,
         request,
         result: {
           filenames,
-          content: count !== undefined ? '' : facts.text,
+          content: count !== undefined
+            ? ''
+            : facts.text,
           numFiles: count ?? 0,
           numLines: 0,
-          ...(matches !== undefined ? { matchCount: matches } : {}),
+          ...(matches !== undefined
+            ? { matchCount: matches }
+            : {}),
           truncated: pickBoolean(metadata, 'truncated') ?? false,
           fallbackContent: facts.text,
           // POSITIVE EVIDENCE only. This branch reads a COUNT the daemon stated and
@@ -527,7 +747,15 @@ function baseSpec(facts: ACPToolFacts, callKind: OpenCodeCallKind, metadata: Rec
         },
       }
     }
-    return { kind, request, ...(facts.text ? { result: unparsedResult(facts.text) } : {}) }
+    return {
+      kind,
+      request,
+      ...(facts.text
+        ? {
+            result: unparsedResult(facts.text),
+          }
+        : {}),
+    }
   }
 
   // The kinds the protocol states but this family decorates none of: think, fetch,
@@ -550,5 +778,9 @@ function genericSpec(facts: ACPToolFacts, toolName: string): ToolCallSpec<'mcp'>
   // generic trio -- so for a frame whose wire kind was `read`, spreading `base()` put
   // a file body behind an MCP card's type. Asking for the card directly states what
   // the row draws.
-  return { ...acpSpecFor(facts, 'mcp'), kind: 'mcp', request }
+  return {
+    ...acpSpecFor(facts, 'mcp'),
+    kind: 'mcp',
+    request,
+  }
 }

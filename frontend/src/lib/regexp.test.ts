@@ -1,7 +1,22 @@
 import { describe, expect, it } from 'vitest'
 import { escapeRegExp } from './regexp'
 
-const SYNTAX_CHARACTERS = ['.', '*', '+', '?', '^', '$', '{', '}', '(', ')', '|', '[', ']', '\\']
+const SYNTAX_CHARACTERS = [
+  '.',
+  '*',
+  '+',
+  '?',
+  '^',
+  '$',
+  '{',
+  '}',
+  '(',
+  ')',
+  '|',
+  '[',
+  ']',
+  '\\',
+]
 
 describe('escapeRegExp', () => {
   it.each(SYNTAX_CHARACTERS)('matches the syntax character %j literally', (character) => {

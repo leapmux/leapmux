@@ -13,7 +13,9 @@ export function deepseekHarnessAppliedChanges(meta: Record<string, unknown> | un
     }
     changes.push({
       filePath: diff.path,
-      operation: diff.oldText === null ? 'add' : 'edit',
+      operation: diff.oldText === null
+        ? 'add'
+        : 'edit',
       oldStr: diff.oldText ?? '',
       newStr: diff.newText,
       structuredPatch: null,
@@ -26,6 +28,12 @@ export function deepseekHarnessAppliedChanges(meta: Record<string, unknown> | un
 export function deepseekHarnessCreatedChange(meta: Record<string, unknown> | undefined, args: Record<string, unknown>): FileEditDiff | undefined {
   const filePath = pickString(args, 'file_path')
   return meta?.operation === 'create' && filePath && typeof args.content === 'string'
-    ? { filePath, operation: 'add', oldStr: '', newStr: args.content, structuredPatch: null }
+    ? {
+        filePath,
+        operation: 'add',
+        oldStr: '',
+        newStr: args.content,
+        structuredPatch: null,
+      }
     : undefined
 }

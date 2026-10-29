@@ -67,7 +67,9 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
   // resolves to a scroll position.
   const restoreFromAnchor = (el: HTMLDivElement, savedScroll: ChatScrollState): boolean => {
     const savedAnchor = savedScroll.anchor ?? null
-    const top = savedAnchor ? ctx.virt.scrollTopForAnchor(savedAnchor) : null
+    const top = savedAnchor
+      ? ctx.virt.scrollTopForAnchor(savedAnchor)
+      : null
     if (top == null)
       return false
     ctx.writeScrollTop(top, 'viewport-restore-anchor')
@@ -118,7 +120,9 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
   // a later re-pin tracks real content; arms the near-top older-load suppression.
   const restoreNearAnchor = (el: HTMLDivElement, savedScroll: ChatScrollState): boolean => {
     const savedAnchor = savedScroll.anchor ?? null
-    const top = savedAnchor ? ctx.virt.scrollTopNearAnchor(savedAnchor) : null
+    const top = savedAnchor
+      ? ctx.virt.scrollTopNearAnchor(savedAnchor)
+      : null
     if (top == null)
       return false
     ctx.writeScrollTop(top, 'viewport-restore-near-anchor')
@@ -283,7 +287,9 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
     const rc: ResizeContext = {
       wasHidden,
       savedAtBottom: ctx.atBottom(),
-      savedScroll: wasHidden ? extras.savedViewportScroll() : undefined,
+      savedScroll: wasHidden
+        ? extras.savedViewportScroll()
+        : undefined,
     }
     const flush = () => {
       if (!ctx.getEl())

@@ -57,7 +57,12 @@ export function windowsCommandEnvironment(env: NodeJS.ProcessEnv): Record<string
       system.set(name.toLowerCase(), [name, value])
   }
   const requiredNames = process.platform === 'win32'
-    ? ['systemroot', 'systemdrive', 'comspec', 'pathext']
+    ? [
+        'systemroot',
+        'systemdrive',
+        'comspec',
+        'pathext',
+      ]
     : []
   const keys = new Set(Object.keys(env).map(key => key.toLowerCase()))
   const required = requiredNames
@@ -67,17 +72,27 @@ export function windowsCommandEnvironment(env: NodeJS.ProcessEnv): Record<string
     .map(([name]) => name)
   const result: Record<string, string> = {}
   const seen = new Set<string>()
-  for (const key of [...Object.keys(env).sort(), ...required]) {
+  for (const key of [
+    ...Object.keys(env).sort(),
+    ...required,
+  ]) {
     requireText(key, 'environment key')
     const folded = key.toLowerCase()
     if (seen.has(folded))
       continue
     seen.add(folded)
-    const value = env[key] ?? (required.includes(key) ? system.get(folded)?.[1] : undefined)
+    const value = env[key] ?? (required.includes(key)
+      ? system.get(folded)?.[1]
+      : undefined)
     if (value === undefined)
       continue
     requireText(value, 'environment value', true)
-    Object.defineProperty(result, key, { value, enumerable: true, configurable: true, writable: true })
+    Object.defineProperty(result, key, {
+      value,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    })
   }
   return result
 }
@@ -98,7 +113,13 @@ export function parseWindowsJobState(value: unknown, ownerPid: number): WindowsJ
   })
   if (!pids.has(value.rootPid))
     throw new Error('The Windows job state contains no root process identity.')
-  return { version: 1, ownerPid: value.ownerPid, rootPid: value.rootPid, complete: value.complete, members }
+  return {
+    version: 1,
+    ownerPid: value.ownerPid,
+    rootPid: value.rootPid,
+    complete: value.complete,
+    members,
+  }
 }
 
 function powerShellPath(): string {
@@ -110,7 +131,19 @@ function powerShellPath(): string {
 
 export function windowsJobArguments(mode: 'Run' | 'Stop' | 'Verify' | 'Snapshot', payloadPath?: string): string[] {
   const scriptPath = resolve(import.meta.dirname, 'windows-command-job.ps1')
-  return ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, '-Mode', mode, ...(payloadPath ? ['-PayloadPath', payloadPath] : [])]
+  return [
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    scriptPath,
+    '-Mode',
+    mode,
+    ...(payloadPath
+      ? ['-PayloadPath', payloadPath]
+      : []),
+  ]
 }
 
 interface JobControl {
@@ -121,7 +154,12 @@ interface JobControl {
 
 function runControl(mode: 'Stop' | 'Verify', payloadPath: string, control: JobControl, delay: number): Promise<void> {
   return new Promise((accept, reject) => {
-    execFile(control.executable, windowsJobArguments(mode, payloadPath), { cwd: control.cwd, env: control.environment, windowsHide: true, timeout: delay }, (error) => {
+    execFile(control.executable, windowsJobArguments(mode, payloadPath), {
+      cwd: control.cwd,
+      env: control.environment,
+      windowsHide: true,
+      timeout: delay,
+    }, (error) => {
       if (error)
         reject(error)
       else
@@ -172,14 +210,22 @@ export function spawnWindowsCommandJob(command: string, args: string[], options:
   const argumentsValue = [options.argv0 ?? command, ...args]
   for (const argument of argumentsValue)
     requireText(argument, 'argument', true)
-  const cwd = typeof options.cwd === 'string' ? win32.resolve(options.cwd) : options.cwd ? fileURLToPath(options.cwd) : win32.resolve(process.cwd())
+  const cwd = typeof options.cwd === 'string'
+    ? win32.resolve(options.cwd)
+    : options.cwd
+      ? fileURLToPath(options.cwd)
+      : win32.resolve(process.cwd())
   const environment = windowsCommandEnvironment(options.env ?? process.env)
   const controlEnvironment = { ...process.env }
   for (const [key, value] of Object.entries(options.env ?? {})) {
     if (value !== undefined)
       controlEnvironment[key] = value
   }
-  const control: JobControl = { executable: powerShellPath(), cwd, environment: controlEnvironment }
+  const control: JobControl = {
+    executable: powerShellPath(),
+    cwd,
+    environment: controlEnvironment,
+  }
   const scratch = resolve(import.meta.dirname, '../../.tmp')
   mkdirSync(scratch, { recursive: true })
   const directory = mkdtempSync(join(scratch, 'windows-command-job-'))
@@ -204,11 +250,23 @@ export function spawnWindowsCommandJob(command: string, args: string[], options:
     // The launcher runs with the control environment, never the payload's command environment:
     // options.env describes the COMMAND inside the job (an empty map for an isolated command),
     // and PowerShell with an empty environment cannot even resolve the system directory.
-    child = spawn(control.executable, windowsJobArguments('Run', payloadPath), { ...options, env: controlEnvironment, argv0: undefined, shell: false, windowsVerbatimArguments: false, detached: false })
+    child = spawn(control.executable, windowsJobArguments('Run', payloadPath), {
+      ...options,
+      env: controlEnvironment,
+      argv0: undefined,
+      shell: false,
+      windowsVerbatimArguments: false,
+      detached: false,
+    })
   }
   catch (error) {
     try {
-      rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+      rmSync(directory, {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 100,
+      })
     }
     catch (cleanupError) {
       throw new AggregateError([error, cleanupError], 'The Windows job start and its private file cleanup failed.')
@@ -273,7 +331,12 @@ export function spawnWindowsCommandJob(command: string, args: string[], options:
         await stopProcess(child, delay)
         if (membersVerified) {
           try {
-            rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+            rmSync(directory, {
+              recursive: true,
+              force: true,
+              maxRetries: 10,
+              retryDelay: 100,
+            })
           }
           catch {
             // A Windows handle on the private scratch directory can outlive every verified

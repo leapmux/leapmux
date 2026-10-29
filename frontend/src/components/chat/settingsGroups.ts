@@ -77,7 +77,9 @@ export function optionSideEffectText(
     const value = target.options.find(o => o.id === effect.value)
     return `${target.label || effect.groupId} to ${value?.name || effect.value}`
   }).filter((part): part is string => !!part)
-  return parts.length > 0 ? `Also sets ${parts.join(' and ')}.` : undefined
+  return parts.length > 0
+    ? `Also sets ${parts.join(' and ')}.`
+    : undefined
 }
 
 /** Whether the catalog holds `id` AND that group offers at least one option. */
@@ -149,7 +151,9 @@ export function mergeStableOptionGroupRefs(next: AvailableOptionGroup[], prev: A
   const prevById = new Map(prev.map(g => [g.id, g]))
   const out = next.map((g) => {
     const old = prevById.get(g.id)
-    return old && equals(AvailableOptionGroupSchema, g, old) ? old : g
+    return old && equals(AvailableOptionGroupSchema, g, old)
+      ? old
+      : g
   })
   // Whole-array reuse when every group (and the ordering) is unchanged.
   if (out.length === prev.length && out.every((g, i) => g === prev[i]))

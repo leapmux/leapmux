@@ -47,10 +47,14 @@ export function parseThemeValue(raw: unknown): ThemeValue | undefined {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw))
     return undefined
   const { name, mode, variant } = raw as { name?: unknown, mode?: unknown, variant?: unknown }
-  const themeName = typeof name === 'string' && isThemeId(name) ? name : DEFAULT_THEME_ID
+  const themeName = typeof name === 'string' && isThemeId(name)
+    ? name
+    : DEFAULT_THEME_ID
   return {
     name: themeName,
-    mode: isThemeMode(mode) ? mode : 'system',
+    mode: isThemeMode(mode)
+      ? mode
+      : 'system',
     ...withVariant(themeName, variant),
   }
 }
@@ -79,14 +83,19 @@ function withVariant(themeName: string, raw: unknown): { variant?: ThemeVariantC
   const theme = themeById(themeName)
   const { light, dark } = raw as { light?: unknown, dark?: unknown }
   const kept: ThemeVariantChoice = {}
-  for (const [polarity, id] of [['light', light], ['dark', dark]] as const) {
+  for (const [polarity, id] of [
+    ['light', light],
+    ['dark', dark],
+  ] as const) {
     if (typeof id !== 'string')
       continue
     const found = variantById(id)
     if (found && found.polarity === polarity && theme.variants.includes(found))
       kept[polarity] = id
   }
-  return Object.keys(kept).length > 0 ? { variant: kept } : {}
+  return Object.keys(kept).length > 0
+    ? { variant: kept }
+    : {}
 }
 
 /** The terminal preference's default: both halves follow the UI. */
@@ -120,7 +129,9 @@ export function parseTerminalThemeValue(raw: unknown): TerminalThemeValue | unde
     return DEFAULT_TERMINAL_THEME_VALUE
   return {
     name,
-    mode: isThemeMode(mode) ? mode : 'system',
+    mode: isThemeMode(mode)
+      ? mode
+      : 'system',
     // Same repair the UI theme gets. A row following the app carries no variant
     // of its own -- it reads the app's -- so the sentinel branch above returns
     // before this and never stores one.
@@ -160,7 +171,9 @@ function createThemeStore() {
     const mode = theme().mode
     if (mode === 'light' || mode === 'dark')
       return mode
-    return systemDark() ? 'dark' : 'light'
+    return systemDark()
+      ? 'dark'
+      : 'light'
   }
 
   const resolvedTheme = (): ThemeDefinition => themeById(theme().name)
@@ -256,7 +269,9 @@ function createThemeStore() {
      * Answering them with `resolvedMode` instead would make `system` mean "the
      * app's mode" in two rows out of three.
      */
-    systemMode: (): ResolvedThemeMode => (systemDark() ? 'dark' : 'light'),
+    systemMode: (): ResolvedThemeMode => (systemDark()
+      ? 'dark'
+      : 'light'),
     /** The palette currently painted. Falls back to Default for an unknown name. */
     resolvedTheme,
     /** The variant currently painted: the theme's, for the polarity showing. */

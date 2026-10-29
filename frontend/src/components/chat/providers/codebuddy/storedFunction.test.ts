@@ -26,7 +26,10 @@ describe('storedFunctionArgs', () => {
 describe('storedFunctionOutputText', () => {
   it('keeps a native text object and each array block in order', () => {
     expect(storedFunctionOutputText({ type: 'text', text: 'result' })).toBe('result')
-    expect(storedFunctionOutputText([{ type: 'text', text: 'first' }, { type: 'text', text: 'second' }])).toBe('first\nsecond')
+    expect(storedFunctionOutputText([
+      { type: 'text', text: 'first' },
+      { type: 'text', text: 'second' },
+    ])).toBe('first\nsecond')
     expect(storedFunctionOutputText({ code: 7 })).toBe('{"code":7}')
     expect(storedFunctionOutputText(undefined)).toBe('')
   })

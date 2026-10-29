@@ -26,13 +26,23 @@ zcodeTest('runs native workflow scripts and retains computed output and errors a
     const label = failed ? 'error' : 'output'
     const name = `native-code-${label}-${marker}`
     const expected = `${marker}${failed ? 77 : 42}`
-    const source = failed ? `phase("Fail"); throw new Error(${JSON.stringify(marker)} + (70 + 7));` : `phase("Compute"); return ${JSON.stringify(marker)} + (40 + 2);`
+    const source = failed
+      ? `phase("Fail"); throw new Error(${JSON.stringify(marker)} + (70 + 7));`
+      : `phase("Compute"); return ${JSON.stringify(marker)} + (40 + 2);`
     expect(source).not.toContain(expected)
     const launchCallId = `native-code-${label}`
     const launchAnswer = `The native ${label} launch returned.`
     const start = await modelScript.queue(
-      { toolCalls: [zcodeWorkflowSkillToolCall(`workflow-skill-${label}`)] },
-      { toolCalls: [zcodeCreateWorkflowToolCall(launchCallId, name, source)] },
+      {
+        toolCalls: [
+          zcodeWorkflowSkillToolCall(`workflow-skill-${label}`),
+        ],
+      },
+      {
+        toolCalls: [
+          zcodeCreateWorkflowToolCall(launchCallId, name, source),
+        ],
+      },
       { text: launchAnswer },
     )
     await sendMessage(page, modelScript.prompt(`Run the native ${label} workflow script.`))
@@ -42,13 +52,17 @@ zcodeTest('runs native workflow scripts and retains computed output and errors a
       const snapshot = await readNativeSidebarSnapshot(native, agent.id)
       const tasks = snapshot.backgroundTasks.filter(task => task.id === launchCallId && task.kind === BackgroundTaskKind.WORKFLOW)
       expect(tasks.map(task => task.status), 'the Worker holds one task row of the native ZCode workflow, and the row ended')
-        .toEqual([failed ? BackgroundTaskStatus.FAILED : BackgroundTaskStatus.SUCCEEDED])
+        .toEqual([
+          failed ? BackgroundTaskStatus.FAILED : BackgroundTaskStatus.SUCCEEDED,
+        ])
     })
     await waitForAgentIdle(page)
     const readCallId = `native-workflow-read-${label}`
     const readAnswer = `The native ${label} read returned.`
     const { resultRequest } = await runNativeToolTurn(native, {
-      toolCalls: [zcodeGetWorkflowRunToolCall(readCallId, launch.runId)],
+      toolCalls: [
+        zcodeGetWorkflowRunToolCall(readCallId, launch.runId),
+      ],
       prompt: `Read the exact completed native ${label} workflow once.`,
       answer: readAnswer,
     })
@@ -86,11 +100,22 @@ zcodeTest('runs native workflow scripts and retains computed output and errors a
 })
 
 zcodeTest('restricts the native Node executor to browser and computer use', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   const request = await openNativeCatalogTurn(context, { directoryPrefix: 'native-zcode-code-limit-' })
-  const body = isObject(request.body) ? request.body : undefined
-  const tools = Array.isArray(body?.tools) ? body.tools.filter(isObject) : []
-  const definitions = tools.map(tool => isObject(tool.function) ? tool.function : tool)
+  const body = isObject(request.body)
+    ? request.body
+    : undefined
+  const tools = Array.isArray(body?.tools)
+    ? body.tools.filter(isObject)
+    : []
+  const definitions = tools.map(tool => isObject(tool.function)
+    ? tool.function
+    : tool)
   const node = definitions.filter(tool => tool.name === 'mcp__node_repl__js')
   expect(node).toHaveLength(1)
   expect(node[0]?.description).toContain('Browser Use and Computer Use only')

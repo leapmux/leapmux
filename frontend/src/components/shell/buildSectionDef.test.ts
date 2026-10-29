@@ -9,7 +9,10 @@ import { buildSectionDef, SECTION_DEFAULT_SIZES } from './buildSectionDef'
 function context(over: Partial<SectionDefContext> = {}): SectionDefContext {
   return {
     activeTodos: [],
-    activeGoal: { progress: {}, actions: ['set'] },
+    activeGoal: {
+      progress: {},
+      actions: ['set'],
+    },
     showGoalsAndTodos: true,
     showBackgroundTasks: true,
     activeBackgroundTasks: [],

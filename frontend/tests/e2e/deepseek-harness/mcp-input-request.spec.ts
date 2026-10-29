@@ -11,8 +11,22 @@ deepseekHarnessTest('proves the actual native client refuses MCP input and retur
   const directory = newProviderWorkingDir(DEEPSEEK_HARNESS_AGENT, 'deepseek-mcp-input-')
   const receiptLog = join(directory, 'receipts.json')
   const server = writeMcpFormServer(directory, 'form-server.mjs', { receiptLog })
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   await withDeepseekHarnessMcp(context, { server, workingDir: directory }, async (privateContext) => {
-    await expectUnsupportedMcpInput(privateContext, { receiptLog, callId: 'native-form', invoke: () => invokeNativeMcpTool(privateContext, { server: server.name, tool: 'ask', callId: 'native-form', input: {} }) })
+    await expectUnsupportedMcpInput(privateContext, {
+      receiptLog,
+      callId: 'native-form',
+      invoke: () => invokeNativeMcpTool(privateContext, {
+        server: server.name,
+        tool: 'ask',
+        callId: 'native-form',
+        input: {},
+      }),
+    })
   })
 })

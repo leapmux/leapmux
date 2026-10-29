@@ -6,7 +6,9 @@ import { rowDrawsResult } from '../model/derivations'
 import { isGenericCall, typedResult } from '../model/toolCall'
 
 function contentImages(content: readonly McpContentItem[]): ImageResultSource[] {
-  return content.flatMap(item => item.type === 'image' ? [item.source] : [])
+  return content.flatMap(item => item.type === 'image'
+    ? [item.source]
+    : [])
 }
 
 export function extraImages(call: ToolCall): ImageResultSource[] {
@@ -14,12 +16,20 @@ export function extraImages(call: ToolCall): ImageResultSource[] {
 }
 
 export function resultImages(call: ToolCall): ImageResultSource[] {
-  const result = isGenericCall(call) ? typedResult(call) : undefined
-  return result ? contentImages(result.content) : []
+  const result = isGenericCall(call)
+    ? typedResult(call)
+    : undefined
+  return result
+    ? contentImages(result.content)
+    : []
 }
 
 export function imagesForRow(row: ChatRow | null | undefined): ImageResultSource[] {
   if (row?.kind !== 'tool' || !rowDrawsResult(row))
     return []
-  return [...resultImages(row.call), ...extraImages(row.call), ...row.call.images]
+  return [
+    ...resultImages(row.call),
+    ...extraImages(row.call),
+    ...row.call.images,
+  ]
 }

@@ -20,7 +20,10 @@ describe('pi native and partial result conformance', () => {
 
   it.each(fixture.cases)('$name', ({ original, supplemental, expected }) => {
     const before = JSON.stringify({ original, supplemental })
-    const parsed = { ...input(original), supplementalContent: supplemental }
+    const parsed = {
+      ...input(original),
+      supplementalContent: supplemental,
+    }
     const resolved = resolveMessageForRendering(parsed, AgentProvider.PI)
     expect(resolved.parentObject).toEqual(expected)
     expect(resolveMessageForRendering(resolved, AgentProvider.PI)).toBe(resolved)
@@ -35,16 +38,30 @@ describe('resolvePiMessage', () => {
     toolCallId: 'mcp-call',
     toolName: 'mcp__sample__lookup',
     result: {
-      content: [{ type: 'text', text: 'Short model preview' }, { type: 'image', data: 'image', mimeType: 'image/png' }],
+      content: [
+        { type: 'text', text: 'Short model preview' },
+        { type: 'image', data: 'image', mimeType: 'image/png' },
+      ],
       details: { server: 'sample', tool: 'lookup', fullOutputPath: path },
-      structuredContent: { content: [{ type: 'text', text: 'Complete native output' }] },
+      structuredContent: {
+        content: [
+          { type: 'text', text: 'Complete native output' },
+        ],
+      },
     },
   }
-  const supplement = (text: string) => ({ toolCallId: original.toolCallId, toolName: original.toolName, outputFile: { path, text } })
+  const supplement = (text: string) => ({
+    toolCallId: original.toolCallId,
+    toolName: original.toolName,
+    outputFile: { path, text },
+  })
 
   it.each(['Complete native output', ''])('keeps native text when supplemental output is present: %j', (text) => {
     const before = JSON.stringify(original)
-    const parsed = { ...input(original), supplementalContent: supplement(text) }
+    const parsed = {
+      ...input(original),
+      supplementalContent: supplement(text),
+    }
     const restored = resolvePiMessage(parsed)
     expect(restored).toBe(original)
     expect(resolvePiMessage({ ...parsed, parentObject: restored })).toBe(restored)
@@ -53,30 +70,79 @@ describe('resolvePiMessage', () => {
 
   it('ignores output text from another call or path', () => {
     for (const extra of [
-      { ...supplement('wrong'), toolCallId: 'other' },
-      { ...supplement('wrong'), toolName: 'mcp__sample__other' },
-      { ...supplement('wrong'), outputFile: { path: `${path}.other`, text: 'wrong' } },
-      { ...supplement('wrong'), outputFile: { path, text: null } },
+      {
+        ...supplement('wrong'),
+        toolCallId: 'other',
+      },
+      {
+        ...supplement('wrong'),
+        toolName: 'mcp__sample__other',
+      },
+      {
+        ...supplement('wrong'),
+        outputFile: { path: `${path}.other`, text: 'wrong' },
+      },
+      {
+        ...supplement('wrong'),
+        outputFile: { path, text: null },
+      },
     ]) {
-      expect(resolvePiMessage({ ...input(original), supplementalContent: extra })).toBe(original)
+      expect(resolvePiMessage({
+        ...input(original),
+        supplementalContent: extra,
+      })).toBe(original)
     }
   })
 
   it('keeps frames without a valid first text block or saved path unchanged', () => {
     for (const result of [
       { ...original.result, content: [] },
-      { ...original.result, content: [{ type: 'image', data: 'image', mimeType: 'image/png' }] },
-      { ...original.result, content: [{ type: 'text', text: null }] },
-      { ...original.result, details: { server: 'sample', tool: 'lookup' } },
+      {
+        ...original.result,
+        content: [
+          { type: 'image', data: 'image', mimeType: 'image/png' },
+        ],
+      },
+      {
+        ...original.result,
+        content: [
+          { type: 'text', text: null },
+        ],
+      },
+      {
+        ...original.result,
+        details: { server: 'sample', tool: 'lookup' },
+      },
     ]) {
       const frame = { ...original, result }
-      expect(resolvePiMessage({ ...input(frame), supplementalContent: supplement('Full output') })).toBe(frame)
+      expect(resolvePiMessage({
+        ...input(frame),
+        supplementalContent: supplement('Full output'),
+      })).toBe(frame)
     }
   })
 
   it('preserves native codemode text and adjacent images', () => {
     const codemodePath = '/project/.tmp/pi-codemode-0123456789abcdef.txt'
-    const frame = { ...original, toolName: 'codemode', result: { content: [{ type: 'text', text: 'Script completed\nOutput:' }, { type: 'text', text: 'Clipped script output' }, { type: 'image', data: 'image', mimeType: 'image/png' }], details: { calls: [], fullOutputPath: codemodePath } } }
-    expect(resolvePiMessage({ ...input(frame), supplementalContent: { toolCallId: frame.toolCallId, toolName: frame.toolName, outputFile: { path: codemodePath, text: 'Full script output' } } })).toBe(frame)
+    const frame = {
+      ...original,
+      toolName: 'codemode',
+      result: {
+        content: [
+          { type: 'text', text: 'Script completed\nOutput:' },
+          { type: 'text', text: 'Clipped script output' },
+          { type: 'image', data: 'image', mimeType: 'image/png' },
+        ],
+        details: { calls: [], fullOutputPath: codemodePath },
+      },
+    }
+    expect(resolvePiMessage({
+      ...input(frame),
+      supplementalContent: {
+        toolCallId: frame.toolCallId,
+        toolName: frame.toolName,
+        outputFile: { path: codemodePath, text: 'Full script output' },
+      },
+    })).toBe(frame)
   })
 })

@@ -66,7 +66,9 @@ export const AccountPasskeys: Component = () => {
    */
   const blockedReason = () => {
     const blocker = passkeyBlocker()
-    return blocker ? passkeyBlockerMessage(blocker) : undefined
+    return blocker
+      ? passkeyBlockerMessage(blocker)
+      : undefined
   }
 
   const passwordSet = () => auth.user()?.passwordSet === true
@@ -130,8 +132,12 @@ export const AccountPasskeys: Component = () => {
       setLocalList(list.passkeys)
     }
     catch (e) {
-      if (!preserveSuccess)
-        setMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to load passkeys') })
+      if (!preserveSuccess) {
+        setMessage({
+          type: 'error',
+          text: formatErrorMessage(e, 'Failed to load passkeys'),
+        })
+      }
     }
     finally {
       setLoading(false)
@@ -212,7 +218,10 @@ export const AccountPasskeys: Component = () => {
       // The optimistic row goes in only when the Finish echoed one.
       if (finish.passkey) {
         const added = finish.passkey
-        setLocalList([...passkeys().filter(pk => pk.id !== added.id), added])
+        setLocalList([
+          ...passkeys().filter(pk => pk.id !== added.id),
+          added,
+        ])
       }
       // The cached account follows EVERY successful Finish, so this sits
       // outside that branch. The success message is unconditional, and the
@@ -258,7 +267,9 @@ export const AccountPasskeys: Component = () => {
     try {
       await userClient.deletePasskey({
         id: passkey.id,
-        newPassword: deleteIsDeactivation() ? newPassword() : '',
+        newPassword: deleteIsDeactivation()
+          ? newPassword()
+          : '',
       })
       if (rpId())
         signalPasskeyRemoved(rpId(), passkey.credentialId)
@@ -288,7 +299,9 @@ export const AccountPasskeys: Component = () => {
     setModalMessage(null)
     try {
       await userClient.deactivatePasskeyAuth({
-        newPassword: passwordSet() ? '' : newPassword(),
+        newPassword: passwordSet()
+          ? ''
+          : newPassword(),
       })
       if (rpId()) {
         for (const pk of passkeys())
@@ -332,11 +345,17 @@ export const AccountPasskeys: Component = () => {
       // The response carries the renamed row; a rename changes nothing
       // else -- not the count, not passwordSet -- so it writes the local
       // list alone.
-      if (resp.passkey)
-        setLocalList(passkeys().map(pk => (pk.id === resp.passkey!.id ? resp.passkey! : pk)))
+      if (resp.passkey) {
+        setLocalList(passkeys().map(pk => (pk.id === resp.passkey!.id
+          ? resp.passkey!
+          : pk)))
+      }
     }
     catch (e) {
-      setMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to rename passkey') })
+      setMessage({
+        type: 'error',
+        text: formatErrorMessage(e, 'Failed to rename passkey'),
+      })
     }
     finally {
       setBusy(false)
@@ -389,7 +408,9 @@ export const AccountPasskeys: Component = () => {
                   <span class={listStyles.credentialName}>{passkey.friendlyName || 'Passkey'}</span>
                 </Show>
                 <span class={listStyles.credentialMeta}>
-                  {passkey.lastUsedAt ? `Last used ${formatPasskeyDate(passkey)}` : `Added ${formatPasskeyDate(passkey)}`}
+                  {passkey.lastUsedAt
+                    ? `Last used ${formatPasskeyDate(passkey)}`
+                    : `Added ${formatPasskeyDate(passkey)}`}
                 </span>
               </div>
               <div class={actionsFooter}>
@@ -452,7 +473,9 @@ export const AccountPasskeys: Component = () => {
             <StatusLine message={modalMessage()} />
             <div class={actionsFooter}>
               <button type="button" onClick={() => void handleAddPasskey()} disabled={working()}>
-                {busy() ? 'Adding…' : 'Continue'}
+                {busy()
+                  ? 'Adding…'
+                  : 'Continue'}
               </button>
             </div>
           </div>
@@ -488,7 +511,9 @@ export const AccountPasskeys: Component = () => {
                 onClick={() => void handleDeletePasskey()}
                 disabled={deleteConfirmDisabled()}
               >
-                {busy() ? 'Removing…' : 'Remove passkey'}
+                {busy()
+                  ? 'Removing…'
+                  : 'Remove passkey'}
               </ConfirmButton>
             </div>
           </div>
@@ -511,7 +536,9 @@ export const AccountPasskeys: Component = () => {
             <StatusLine message={modalMessage()} />
             <div class={actionsFooter}>
               <button type="button" onClick={() => void handleDeactivate()} disabled={deactivateConfirmDisabled()}>
-                {busy() ? 'Disabling…' : 'Disable passkey sign-in'}
+                {busy()
+                  ? 'Disabling…'
+                  : 'Disable passkey sign-in'}
               </button>
             </div>
           </div>

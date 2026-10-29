@@ -24,7 +24,10 @@ describe('the finished/unfinished split', () => {
     for (const status of UNFINISHED_TOOL_STATUSES)
       expect(isFinishedToolCallStatus(status), status).toBe(false)
     // The two halves are the whole union, stated once, with nothing shared.
-    expect([...UNFINISHED_TOOL_STATUSES, ...FINISHED_TOOL_STATUSES].sort()).toEqual([...TOOL_CALL_STATUSES].sort())
+    expect([
+      ...UNFINISHED_TOOL_STATUSES,
+      ...FINISHED_TOOL_STATUSES,
+    ].sort()).toEqual([...TOOL_CALL_STATUSES].sort())
   })
 })
 

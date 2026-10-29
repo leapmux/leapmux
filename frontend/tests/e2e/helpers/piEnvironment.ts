@@ -49,7 +49,13 @@ export function createPiEnvironment(options: PiEnvironmentOptions): Record<strin
     packages: piPackagePaths(options.realHomeDir),
   })
   writePrivateJSON(join(piAgentDir, 'mcp.json'), {
-    mcpServers: { [options.mcpEchoServer.name]: { command: options.mcpEchoServer.command, args: [...options.mcpEchoServer.args], exposure: 'direct' } },
+    mcpServers: {
+      [options.mcpEchoServer.name]: {
+        command: options.mcpEchoServer.command,
+        args: [...options.mcpEchoServer.args],
+        exposure: 'direct',
+      },
+    },
   })
   return {
     PI_CODING_AGENT_DIR: piAgentDir,
@@ -87,7 +93,10 @@ function writePiWrapper(shimsDirectory: string): void {
     return
   // The search path of the agents, which puts the install directory of a mise tool before its shim. A mise shim cannot
   // start a tool under the isolated HOME.
-  const installed = findBinary('pi', { ...process.env, ...agentSearchPathEnv() })
+  const installed = findBinary('pi', {
+    ...process.env,
+    ...agentSearchPathEnv(),
+  })
   if (installed === null)
     return
   // The wrapper directory is first on the PATH of each agent. A wrapper that started itself would start itself again.
@@ -105,7 +114,12 @@ function piModels(options: PiEnvironmentOptions): Record<string, unknown> {
     input: ['text', 'image'],
     contextWindow: 128_000,
     maxTokens: 16_000,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    cost: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+    },
   })
   return {
     providers: {
@@ -115,8 +129,14 @@ function piModels(options: PiEnvironmentOptions): Record<string, unknown> {
         apiKey: options.modelKey,
         models: [
           model(options.modelID, 'GLM-5.3'),
-          { ...model(options.flashModelID, 'GLM-5.3 Flash'), compat: { supportsReasoningEffort: true } },
-          { ...model(options.plainModelID, 'GLM-5.3 Plain'), reasoning: false },
+          {
+            ...model(options.flashModelID, 'GLM-5.3 Flash'),
+            compat: { supportsReasoningEffort: true },
+          },
+          {
+            ...model(options.plainModelID, 'GLM-5.3 Plain'),
+            reasoning: false,
+          },
         ],
       },
     },

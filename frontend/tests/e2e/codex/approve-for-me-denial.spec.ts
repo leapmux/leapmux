@@ -30,7 +30,11 @@ codexTest('records the reader\'s approval of an action that Codex auto-review de
     testId: 'control-banner',
     relatedProof: async () => {
       const start = await modelScript.queue(
-        { toolCalls: [codexEscalatedCommandToolCall('auto-review-denied', `printf %s denied-42 > ${quotePosixShellArgument(file)}`)] },
+        {
+          toolCalls: [
+            codexEscalatedCommandToolCall('auto-review-denied', `printf %s denied-42 > ${quotePosixShellArgument(file)}`),
+          ],
+        },
         nativeTextStep(native, 'The reviewer refused the command.'),
       )
       await sendMessage(page, modelScript.prompt('Run the scripted command outside this workspace.'))

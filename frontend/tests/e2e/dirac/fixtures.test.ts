@@ -19,17 +19,21 @@ import { DIRAC_AGENT } from './scenarios'
 
 const fixtures = vi.hoisted(() => new Map<string, unknown>())
 vi.mock('../dirac-fixtures', () => ({
-  diracTest: { extend: (definitions: Record<string, unknown>) => {
-    for (const [name, definition] of Object.entries(definitions))
-      fixtures.set(name, definition)
-    return {}
-  } },
+  diracTest: {
+    extend: (definitions: Record<string, unknown>) => {
+      for (const [name, definition] of Object.entries(definitions))
+        fixtures.set(name, definition)
+      return {}
+    },
+  },
 }))
 vi.mock('../helpers/mockAgentEnvironment', async original => ({
   ...await original<typeof import('../helpers/mockAgentEnvironment')>(),
   createMockAgentEnvironment: vi.fn(),
 }))
-vi.mock('../helpers/privateNativeWorkspace', () => ({ withPrivateNativeWorkspace: vi.fn() }))
+vi.mock('../helpers/privateNativeWorkspace', () => ({
+  withPrivateNativeWorkspace: vi.fn(),
+}))
 vi.mock('../helpers/binaryOnPath', async original => ({
   ...await original<typeof import('../helpers/binaryOnPath')>(),
   requireBinary: vi.fn(),
@@ -46,7 +50,13 @@ vi.mock('./mcpConfiguration', async original => ({
 type AnyOptions = PrivateNativeWorkspaceOptions<PrivateWorkerHub, unknown>
 type AnyWorkspace = PrivateNativeWorkspace<PrivateWorkerHub, unknown>
 
-const leapmuxServer = { hubUrl: 'http://private-hub.test', adminToken: 'private-token', workerId: 'suite-worker', agentEnv: { HOME: '/suite/home' }, mockModelUrl: 'http://127.0.0.1:1' }
+const leapmuxServer = {
+  hubUrl: 'http://private-hub.test',
+  adminToken: 'private-token',
+  workerId: 'suite-worker',
+  agentEnv: { HOME: '/suite/home' },
+  mockModelUrl: 'http://127.0.0.1:1',
+}
 const privateServer = { ...leapmuxServer, workerId: 'private-worker' }
 let directory: ProviderWorkingDir
 
@@ -54,7 +64,7 @@ let directory: ProviderWorkingDir
 function fixture(name: string): (fixtures: object, use: (value: unknown) => Promise<void>) => Promise<void> {
   const definition = fixtures.get(name)
   if (typeof definition !== 'function')
-    throw new Error(`The fixture ${name} is absent.`)
+    throw new TypeError(`The fixture ${name} is absent.`)
   return definition as (fixtures: object, use: (value: unknown) => Promise<void>) => Promise<void>
 }
 
@@ -125,7 +135,12 @@ describe('anthropicDiracWorkspace', () => {
       model: 'claude-opus-5',
       optionValues: { permissionMode: 'act', reasoning_effort: 'medium' },
     })
-    expect(use).toHaveBeenCalledExactlyOnceWith({ workspaceId: 'private-workspace', server: privateServer, agentId: 'dirac-agent', workingDir: directory })
+    expect(use).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: 'private-workspace',
+      server: privateServer,
+      agentId: 'dirac-agent',
+      workingDir: directory,
+    })
   })
 })
 
@@ -145,7 +160,16 @@ describe('prepareMcpDirac', () => {
     expect(prepared.setup).toEqual({
       sessionReceipt: expect.stringContaining(join(directory, 'wrapper')),
       formReceipt: join(directory, 'configured-form-receipt.json'),
-      configuredServers: [{ name: 'form_probe', command: process.execPath, args: [join(directory, 'configured-form.mjs')], env: [] }],
+      configuredServers: [
+        {
+          name: 'form_probe',
+          command: process.execPath,
+          args: [
+            join(directory, 'configured-form.mjs'),
+          ],
+          env: [],
+        },
+      ],
     })
     expect(existsSync(join(directory, 'configured-form.mjs'))).toBe(true)
   })
@@ -162,13 +186,29 @@ describe('configuredMcpDiracWorkspace', () => {
   const setup = {
     sessionReceipt: '/private/wrapper/native-mcp-session.jsonl',
     formReceipt: '/private/configured-form-receipt.json',
-    configuredServers: [{ name: 'form_probe', command: process.execPath, args: ['/private/configured-form.mjs'], env: [] }],
+    configuredServers: [
+      {
+        name: 'form_probe',
+        command: process.execPath,
+        args: ['/private/configured-form.mjs'],
+        env: [],
+      },
+    ],
   }
 
   function observation(cwd: string, sessionId = 'native-session') {
     return {
-      request: { jsonrpc: '2.0' as const, id: 0, method: 'session/new', params: { cwd, mcpServers: setup.configuredServers } },
-      reply: { jsonrpc: '2.0' as const, id: 0, result: { sessionId } },
+      request: {
+        jsonrpc: '2.0' as const,
+        id: 0,
+        method: 'session/new',
+        params: { cwd, mcpServers: setup.configuredServers },
+      },
+      reply: {
+        jsonrpc: '2.0' as const,
+        id: 0,
+        result: { sessionId },
+      },
       sessionId,
     }
   }
@@ -179,7 +219,13 @@ describe('configuredMcpDiracWorkspace', () => {
     const use = vi.fn(async () => {})
     await fixture('configuredMcpDiracWorkspace')({ page: {}, leapmuxServer }, use)
     expect(readDiracMcpSessionObservation).toHaveBeenCalledExactlyOnceWith(setup.sessionReceipt)
-    expect(use).toHaveBeenCalledExactlyOnceWith({ workspaceId: 'private-workspace', server: privateServer, workingDir: directory, agentId: 'dirac-agent', ...setup })
+    expect(use).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: 'private-workspace',
+      server: privateServer,
+      workingDir: directory,
+      agentId: 'dirac-agent',
+      ...setup,
+    })
     expect(run.options()).toMatchObject({ prefix: 'dirac-mcp', workerName: 'Dirac MCP test', providerAgent: DIRAC_AGENT })
     await run.options().openAgent(privateServer, 'private-workspace', directory)
     expect(openAgentViaAPI).toHaveBeenCalledExactlyOnceWith(privateServer, 'private-workspace', directory, agentOpenOptions(AgentProvider.DIRAC))
@@ -187,8 +233,18 @@ describe('configuredMcpDiracWorkspace', () => {
 
   // Playwright's `expect` fails with the values that it compared, which identify the check that refused the receipt.
   it.each([
-    ['another working directory', () => observation('/elsewhere'), { actual: expect.objectContaining({ cwd: '/elsewhere' }) }],
-    ['another native session', () => observation(directory, 'foreign-session'), { actual: 'foreign-session', expected: 'native-session' }],
+    [
+      'another working directory',
+      () => observation('/elsewhere'),
+      {
+        actual: expect.objectContaining({ cwd: '/elsewhere' }),
+      },
+    ],
+    [
+      'another native session',
+      () => observation(directory, 'foreign-session'),
+      { actual: 'foreign-session', expected: 'native-session' },
+    ],
   ])('does not yield the workspace when the session receipt states %s', async (_case, observed, matcherResult) => {
     runWorkspace({ setup })
     vi.mocked(readDiracMcpSessionObservation).mockReturnValue(observed())

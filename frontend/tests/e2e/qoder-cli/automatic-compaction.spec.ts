@@ -11,9 +11,15 @@ qoderTest('ends automatic compaction with one boundary row and no live indicator
     name: 'qoder automatic summary',
     when: { body: CLAUDE_SUMMARIZER_PATTERN },
     // Automatic compaction replaces the current prompt too. Keep the scenario identity inside the retained summary.
-    respond: { text: `<summary>${modelScript.prompt(`${summary} The earlier task is complete.`)}</summary>`, usage: { inputTokens: 8000, outputTokens: 30 } },
+    respond: {
+      text: `<summary>${modelScript.prompt(`${summary} The earlier task is complete.`)}</summary>`,
+      usage: { inputTokens: 8000, outputTokens: 30 },
+    },
   })
-  const first = await modelScript.queue({ text: 'The first task is complete.', usage: { inputTokens: 5_000_000, outputTokens: 20 } })
+  const first = await modelScript.queue({
+    text: 'The first task is complete.',
+    usage: { inputTokens: 5_000_000, outputTokens: 20 },
+  })
   await sendMessage(page, modelScript.prompt('Complete the first scripted task.'))
   await modelScript.waitForSteps(first + 1)
   await waitForAgentIdle(page)

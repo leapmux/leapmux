@@ -92,7 +92,10 @@ export function passedOnExpects(inputs: readonly ExpectSourceFile[]): PassedOnEx
   // Module resolution runs on POSIX shapes: a Windows native path would resolve its
   // backslash separators against the forward slashes that a module specifier spells.
   // The normalized form keys the lookup maps, while each finding keeps its input path.
-  const sources = new Map(inputs.map(input => [posixPath(input.path), input.source]))
+  const sources = new Map(inputs.map(input => [
+    posixPath(input.path),
+    input.source,
+  ]))
   const parsed = new Map<string, TypeScript.SourceFile>()
   const parse = (normalized: string): TypeScript.SourceFile | undefined => {
     const source = sources.get(normalized)
@@ -117,8 +120,13 @@ export function passedOnExpects(inputs: readonly ExpectSourceFile[]): PassedOnEx
       if (isExportDeclaration(statement) && statement.exportClause && isNamedExports(statement.exportClause)) {
         const fromPlaywright = !!statement.moduleSpecifier && isStringLiteral(statement.moduleSpecifier) && statement.moduleSpecifier.text === PLAYWRIGHT_TEST
         const reexports = statement.exportClause.elements.some(element => importedName(element) === 'expect')
-        if (reexports && (fromPlaywright || (!statement.moduleSpecifier && plainImported)))
-          findings.push({ path, line: lineOf(file, statement), kind: 'reexport' })
+        if (reexports && (fromPlaywright || (!statement.moduleSpecifier && plainImported))) {
+          findings.push({
+            path,
+            line: lineOf(file, statement),
+            kind: 'reexport',
+          })
+        }
         continue
       }
       if (!isImportDeclaration(statement) || !isStringLiteral(statement.moduleSpecifier) || !statement.moduleSpecifier.text.startsWith('.'))
@@ -129,8 +137,14 @@ export function passedOnExpects(inputs: readonly ExpectSourceFile[]): PassedOnEx
       const base = posix.resolve(posix.dirname(normalized), statement.moduleSpecifier.text)
       const target = parse(`${base}.ts`) ?? parse(posix.resolve(base, 'index.ts'))
       // A module outside the inputs cannot be judged, so it is not a finding.
-      if (target && !declaresExpect(target))
-        findings.push({ path, line: lineOf(file, statement), kind: 'import', module: statement.moduleSpecifier.text })
+      if (target && !declaresExpect(target)) {
+        findings.push({
+          path,
+          line: lineOf(file, statement),
+          kind: 'import',
+          module: statement.moduleSpecifier.text,
+        })
+      }
     }
   }
   return findings

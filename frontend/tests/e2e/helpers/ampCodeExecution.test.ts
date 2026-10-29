@@ -13,19 +13,42 @@ describe('executeAmpCodeFixture', () => {
   })
 
   it('reports a computed script error in the captured native form', () => {
-    expect(executeAmpCodeFixture('throw new Error("PROBE" + (70 + 7))')).toEqual({ status: 'error', error: { message: 'Error: PROBE77' } })
+    expect(executeAmpCodeFixture('throw new Error("PROBE" + (70 + 7))')).toEqual({
+      status: 'error',
+      error: { message: 'Error: PROBE77' },
+    })
   })
 
   it.each([undefined, null, 0, false, '', '  '])('rejects invalid source: %j', (source) => {
-    expect(executeAmpCodeFixture(source)).toMatchObject({ status: 'error', error: { message: expect.stringContaining('nonempty JavaScript') } })
+    expect(executeAmpCodeFixture(source)).toMatchObject({
+      status: 'error',
+      error: {
+        message: expect.stringContaining('nonempty JavaScript'),
+      },
+    })
   })
 
   it('reports syntax errors and keeps host tool access absent', () => {
-    expect(executeAmpCodeFixture('const =')).toMatchObject({ status: 'error', error: { message: expect.stringContaining('SyntaxError') } })
-    expect(executeAmpCodeFixture('require("node:fs")')).toMatchObject({ status: 'error', error: { message: expect.stringContaining('require is not defined') } })
+    expect(executeAmpCodeFixture('const =')).toMatchObject({
+      status: 'error',
+      error: {
+        message: expect.stringContaining('SyntaxError'),
+      },
+    })
+    expect(executeAmpCodeFixture('require("node:fs")')).toMatchObject({
+      status: 'error',
+      error: {
+        message: expect.stringContaining('require is not defined'),
+      },
+    })
   })
 
   it('stops a script that cannot finish', () => {
-    expect(executeAmpCodeFixture('for (;;) {}')).toMatchObject({ status: 'error', error: { message: expect.stringContaining('Script execution timed out') } })
+    expect(executeAmpCodeFixture('for (;;) {}')).toMatchObject({
+      status: 'error',
+      error: {
+        message: expect.stringContaining('Script execution timed out'),
+      },
+    })
   })
 })

@@ -32,7 +32,10 @@ function chooseManualAdd() {
 
 function chooseProvider(label: string) {
   openAddMenu()
-  fireEvent.click(screen.getByRole('menuitemcheckbox', { name: new RegExp(label), hidden: true }))
+  fireEvent.click(screen.getByRole('menuitemcheckbox', {
+    name: new RegExp(label),
+    hidden: true,
+  }))
 }
 
 describe('TrustedProxiesControl', () => {
@@ -77,7 +80,9 @@ describe('TrustedProxiesControl', () => {
     chooseManualAdd()
 
     const input = screen.getByLabelText('Trusted proxy selector')
-    fireEvent.input(input, { target: { value: '192.0.2.10' } })
+    fireEvent.input(input, {
+      target: { value: '192.0.2.10' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
 
     expect(current.write).toHaveBeenCalledWith(['192.0.2.10'])
@@ -98,8 +103,12 @@ describe('TrustedProxiesControl', () => {
     // The length assertion above keeps both reads in range; this guard is type-level only.
     if (first === undefined || second === undefined)
       throw new Error('missing selector input')
-    fireEvent.input(first, { target: { value: '192.0.2.10' } })
-    fireEvent.input(second, { target: { value: '2001:db8::/64' } })
+    fireEvent.input(first, {
+      target: { value: '192.0.2.10' },
+    })
+    fireEvent.input(second, {
+      target: { value: '2001:db8::/64' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
 
     expect(current.write).toHaveBeenCalledWith(['192.0.2.10', '2001:db8::/64'])
@@ -144,7 +153,9 @@ describe('TrustedProxiesControl', () => {
   it('keeps staged rows and shows a backend refusal', async () => {
     const current = binding(['192.0.2.1'], vi.fn().mockRejectedValue(new Error('selector overlaps an earlier selector')))
     render(() => <TrustedProxiesControl binding={current.model} />)
-    fireEvent.input(screen.getByLabelText('Trusted proxy selector'), { target: { value: '192.0.2.0/24' } })
+    fireEvent.input(screen.getByLabelText('Trusted proxy selector'), {
+      target: { value: '192.0.2.0/24' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
 
     expect(await screen.findByText(/overlaps an earlier selector/)).toBeInTheDocument()

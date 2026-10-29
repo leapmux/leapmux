@@ -4,9 +4,13 @@ import { exerciseEffortModelRoundTrip, exerciseModelSwitchKeepsOption, exerciseN
 import { qwenTest } from '../qwen-fixtures'
 
 qwenTest('sends the chosen effort into native turns before and after reload', async ({ native }) => {
-  await exerciseNativeOption(native, { groupId: 'reasoning_effort', value: 'low', nativeProof: (request) => {
-    expect(request.body).toHaveProperty('reasoning_effort', 'low')
-  } })
+  await exerciseNativeOption(native, {
+    groupId: 'reasoning_effort',
+    value: 'low',
+    nativeProof: (request) => {
+      expect(request.body).toHaveProperty('reasoning_effort', 'low')
+    },
+  })
 })
 
 // Both models offer low, medium, and high. The server keeps the tier across the switch, so the kept

@@ -27,7 +27,11 @@ export function ohMyPiContextUsageFromMessage(parsed: ParsedMessageContent): Con
     inputTokens,
     cacheCreationInputTokens,
     cacheReadInputTokens,
-    ...(outputTokens !== undefined ? { outputTokens } : {}),
-    ...(totalTokens !== undefined && totalTokens > 0 ? { contextTokens: totalTokens } : {}),
+    ...(outputTokens !== undefined
+      ? { outputTokens }
+      : {}),
+    ...(totalTokens !== undefined && totalTokens > 0
+      ? { contextTokens: totalTokens }
+      : {}),
   }
 }

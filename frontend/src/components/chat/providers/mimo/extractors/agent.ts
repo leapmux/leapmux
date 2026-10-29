@@ -14,7 +14,9 @@ import { isObject, pickObject, pickString } from '~/lib/jsonPick'
  */
 export function mimoActorOperation(input: Record<string, unknown>): Record<string, unknown> | undefined {
   const operation = input.operation
-  return isObject(operation) ? operation : undefined
+  return isObject(operation)
+    ? operation
+    : undefined
 }
 
 /** The action of an `actor` call: `spawn`, `run`, `send` and the rest. */
@@ -34,7 +36,9 @@ export function mimoActorRequest(input: Record<string, unknown>): AgentRequest {
   const agentType = pickString(operation, 'subagent_type')
   return {
     description: pickString(operation, 'description'),
-    ...(agentType ? { agentType } : {}),
+    ...(agentType
+      ? { agentType }
+      : {}),
     prompt: pickString(operation, 'prompt'),
   }
 }
@@ -87,7 +91,9 @@ export function mimoActorRun(part: MiMoToolPart): AgentRun | null {
   }
 
   const action = mimoActorAction(part.input)
-  const started = action === MIMO_ACTOR_ACTION.Spawn ? BACKGROUND_STARTED.exec(part.output) : null
+  const started = action === MIMO_ACTOR_ACTION.Spawn
+    ? BACKGROUND_STARTED.exec(part.output)
+    : null
   if (started) {
     const agentId = actorId || started[1] || ''
     withIdentity(agentId, leadingNote(part.output, started.index))
@@ -118,7 +124,9 @@ export function mimoActorRun(part: MiMoToolPart): AgentRun | null {
       agentId,
       // MiMo's own word: the subagent's reported status, or `timeout` and
       // `cancelled` for a run that did not report.
-      ...(status ? { statusLabel: status } : {}),
+      ...(status
+        ? { statusLabel: status }
+        : {}),
       outcome: runOutcome(status),
       metadata,
       body: result[3] ?? '',
@@ -174,7 +182,9 @@ function idleActorOutcome(part: MiMoToolPart): TaskStatus {
     case MIMO_ACTOR_OUTCOME.Success:
       return 'completed'
     default:
-      return pickString(snapshot, 'error') ? 'failed' : 'completed'
+      return pickString(snapshot, 'error')
+        ? 'failed'
+        : 'completed'
   }
 }
 
@@ -182,7 +192,9 @@ function idleActorOutcome(part: MiMoToolPart): TaskStatus {
 function parseSnapshot(output: string): Record<string, unknown> | undefined {
   try {
     const parsed: unknown = JSON.parse(output)
-    return isObject(parsed) ? parsed : undefined
+    return isObject(parsed)
+      ? parsed
+      : undefined
   }
   catch {
     return undefined

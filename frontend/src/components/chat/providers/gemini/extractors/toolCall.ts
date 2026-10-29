@@ -12,15 +12,21 @@ import { geminiAgentRequest } from './agent'
 import { geminiStoredToolSpec, geminiTodoItems } from './storedToolCall'
 
 function geminiRecord(tool: Record<string, unknown>, extra: unknown): Record<string, unknown> | null {
-  const record = pickObject(acpSupplementRawOutput(isObject(extra) ? extra : undefined), GEMINI_SUPPLEMENT.StoredToolRecord)
-  return record && pickString(record, 'id') === pickString(tool, 'toolCallId') && pickString(record, 'name') !== '' ? record : null
+  const record = pickObject(acpSupplementRawOutput(isObject(extra)
+    ? extra
+    : undefined), GEMINI_SUPPLEMENT.StoredToolRecord)
+  return record && pickString(record, 'id') === pickString(tool, 'toolCallId') && pickString(record, 'name') !== ''
+    ? record
+    : null
 }
 
 /** Native tool IDs identify the name even before the JSONL record appears. */
 function geminiLiveName(tool: Record<string, unknown>): string {
   const id = pickString(tool, 'toolCallId')
   const separator = id.indexOf('__')
-  return separator > 0 ? id.slice(0, separator) : ''
+  return separator > 0
+    ? id.slice(0, separator)
+    : ''
 }
 
 /**
@@ -37,7 +43,9 @@ function geminiLiveName(tool: Record<string, unknown>): string {
  */
 export const geminiToolCallAdapter: ACPToolCallAdapter = (facts, base): ToolCallSpec => {
   const spec = geminiToolCall(facts, base)
-  return geminiRefused(facts) ? declinedToolCallSpec(spec, facts.text) : spec
+  return geminiRefused(facts)
+    ? declinedToolCallSpec(spec, facts.text)
+    : spec
 }
 
 /**
@@ -61,21 +69,51 @@ function geminiRefused(facts: ACPToolFacts): boolean {
  */
 function geminiToolCall(facts: ACPToolFacts, base: () => ToolCallSpec): ToolCallSpec {
   const record = geminiRecord(facts.tool, facts.extra)
-  const name = record ? pickString(record, 'name') : geminiLiveName(facts.tool)
-  const args = record ? pickObject(record, 'args') ?? facts.args : facts.args
+  const name = record
+    ? pickString(record, 'name')
+    : geminiLiveName(facts.tool)
+  const args = record
+    ? pickObject(record, 'args') ?? facts.args
+    : facts.args
   if (!name)
     return base()
   if (record && facts.finished)
     return geminiStoredToolSpec(record, facts.retained === 'interrupted' || facts.status === 'cancelled' || facts.status === 'declined')
-  if (name === GEMINI_TOOL.TodoWrite && Array.isArray(args.todos))
-    return { kind: 'todo', name, request: { items: geminiTodoItems(args.todos) } }
-  if (name === GEMINI_TOOL.InvokeAgent)
-    return { kind: 'agent', name, request: geminiAgentRequest(args) }
+  if (name === GEMINI_TOOL.TodoWrite && Array.isArray(args.todos)) {
+    return {
+      kind: 'todo',
+      name,
+      request: {
+        items: geminiTodoItems(args.todos),
+      },
+    }
+  }
+  if (name === GEMINI_TOOL.InvokeAgent) {
+    return {
+      kind: 'agent',
+      name,
+      request: geminiAgentRequest(args),
+    }
+  }
   if (isGeminiTool(name)) {
     const kind = GEMINI_TOOL_KINDS[name]
-    return { ...acpSpecFor(acpRemapFacts(facts, { kind, tool: { ...facts.tool, [ACP_SUPPLEMENT_REQUEST.RawInput]: args } }), kind), name }
+    return {
+      ...acpSpecFor(acpRemapFacts(facts, {
+        kind,
+        tool: { ...facts.tool, [ACP_SUPPLEMENT_REQUEST.RawInput]: args },
+      }), kind),
+      name,
+    }
   }
-  if (record)
-    return { kind: 'mcp', name, request: { server: '', tool: name, args } }
-  return { ...base(), name }
+  if (record) {
+    return {
+      kind: 'mcp',
+      name,
+      request: { server: '', tool: name, args },
+    }
+  }
+  return {
+    ...base(),
+    name,
+  }
 }

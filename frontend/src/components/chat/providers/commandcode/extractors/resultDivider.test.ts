@@ -13,13 +13,18 @@ function turnCompleted(params: Record<string, unknown>, durationMs?: unknown): R
     jsonrpc: '2.0',
     method: 'turn/completed',
     params: { turnId: 'turn_1', ...params },
-    ...(durationMs === undefined ? {} : { [MESSAGE_METADATA_FIELD.DurationMs]: durationMs }),
+    ...(durationMs === undefined
+      ? {}
+      : { [MESSAGE_METADATA_FIELD.DurationMs]: durationMs }),
   }
 }
 
 describe('commandCodeResultDivider', () => {
   it('returns null for a frame that is not a completed turn', () => {
-    expect(commandCodeResultDivider({ method: 'turn/started', params: { turnId: 'turn_1' } })).toBeNull()
+    expect(commandCodeResultDivider({
+      method: 'turn/started',
+      params: { turnId: 'turn_1' },
+    })).toBeNull()
     expect(commandCodeResultDivider('turn/completed')).toBeNull()
     expect(commandCodeResultDivider(null)).toBeNull()
   })
@@ -43,7 +48,10 @@ describe('commandCodeResultDivider', () => {
   })
 
   it('states the duration and the native error of a failed turn', () => {
-    expect(commandCodeResultDivider(turnCompleted({ stopReason: 'run_error', error: { message: 'Native connection failed.' } }, 900)))
+    expect(commandCodeResultDivider(turnCompleted({
+      stopReason: 'run_error',
+      error: { message: 'Native connection failed.' },
+    }, 900)))
       .toEqual({ label: 'Turn failed (900ms) — Native connection failed.', isError: true })
   })
 
@@ -65,6 +73,8 @@ describe('commandCodeResultDivider', () => {
       messageMetadata: { [MESSAGE_METADATA_FIELD.DurationMs]: 2300, [MESSAGE_METADATA_FIELD.ToolUses]: 0 },
     }, AgentProvider.COMMAND_CODE)
     const row = extractedRow(extractChatRow(AgentProvider.COMMAND_CODE, resolved, { kind: 'result_divider' }))
-    expect(row?.kind === 'divider' ? row.divider.label : null).toBe('Turn ended (2.3s)')
+    expect(row?.kind === 'divider'
+      ? row.divider.label
+      : null).toBe('Turn ended (2.3s)')
   })
 })

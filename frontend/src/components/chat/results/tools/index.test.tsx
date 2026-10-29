@@ -30,8 +30,15 @@ describe('the tool kind renderer table', () => {
     for (const call of [
       toolCallFixture(kind, { status: 'in_progress' }),
       toolCallFixture(kind, { result: MINIMAL_RESULT[kind] }),
-      toolCallFixture(kind, { result: unparsedResult('raw'), title: 'RAW TITLE' }),
-      toolCallFixture(kind, { result: failedResult('boom'), status: 'failed', title: 'RAW TITLE' }),
+      toolCallFixture(kind, {
+        result: unparsedResult('raw'),
+        title: 'RAW TITLE',
+      }),
+      toolCallFixture(kind, {
+        result: failedResult('boom'),
+        status: 'failed',
+        title: 'RAW TITLE',
+      }),
     ] as ToolCall[]) {
       const { container } = render(() => <ToolMessage row={toolRow(call)} />)
       expect(container.querySelector('[data-tool-message]')).not.toBeNull()
@@ -39,18 +46,26 @@ describe('the tool kind renderer table', () => {
   })
 
   it.each(TOOL_KINDS)('states the unparsed payload for %j', (kind) => {
-    const call = toolCallFixture(kind, { result: unparsedResult('raw'), title: 'RAW TITLE' }) as ToolCall
+    const call = toolCallFixture(kind, {
+      result: unparsedResult('raw'),
+      title: 'RAW TITLE',
+    }) as ToolCall
     const { container } = render(() => <ToolMessage row={toolRow(call)} />)
     expect(container.textContent).toContain('raw')
   })
 
   it.each(TOOL_KINDS)('answers hasCopyable truthfully and titles the row for %j', (kind) => {
-    const call = toolCallFixture(kind, { result: unparsedResult('raw'), title: 'RAW TITLE' }) as ToolCall
+    const call = toolCallFixture(kind, {
+      result: unparsedResult('raw'),
+      title: 'RAW TITLE',
+    }) as ToolCall
     const meta = toolCallMeta(toolRow(call))
     expect(meta.hasCopyable).toBe(meta.copyableContent() !== null)
     const renderer = rendererFor(call)
     const title = renderer.title(parsedCall(call), undefined)
-    expect(typeof title === 'string' ? title.trim() : title).toBeTruthy()
+    expect(typeof title === 'string'
+      ? title.trim()
+      : title).toBeTruthy()
   })
 
   it('lets the tool name lead for the nameless kinds alone', () => {

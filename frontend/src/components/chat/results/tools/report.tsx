@@ -18,7 +18,9 @@ export const reportRenderer = proseRenderer<'report'>({
     // provider's bytes (see `results/README.md`). Reaching into the untyped payload
     // for a key one provider happens to send put a Cursor parser in the shared
     // renderer, where no other provider could reach it.
-    const proposal = view.drawsResult && call.result === undefined ? call.request.proposal : undefined
+    const proposal = view.drawsResult && call.result === undefined
+      ? call.request.proposal
+      : undefined
     return <Show when={proposal}>{text => <ProseResultBody result={proseResult(text(), 'markdown')} view={view} />}</Show>
   },
 })

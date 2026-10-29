@@ -15,8 +15,12 @@ import {
 } from './permissionPresets'
 import { createControlAnswerState } from './types'
 
-const SMART = { sets: { permissionMode: 'auto' } }
-const BYPASS = { sets: { permissionMode: 'bypassPermissions' } }
+const SMART = {
+  sets: { permissionMode: 'auto' },
+}
+const BYPASS = {
+  sets: { permissionMode: 'bypassPermissions' },
+}
 
 /**
  * The controller double. An override KEY that is PRESENT with `undefined` drops
@@ -31,7 +35,11 @@ function controller(overrides: {
   apply?: PermissionPresetController['apply']
   active?: PermissionPresetController['active']
 } = {}): PermissionPresetController {
-  const controller: PermissionPresetController = { smart: SMART, bypass: BYPASS, apply: vi.fn() }
+  const controller: PermissionPresetController = {
+    smart: SMART,
+    bypass: BYPASS,
+    apply: vi.fn(),
+  }
   if (Object.hasOwn(overrides, 'smart')) {
     if (overrides.smart === undefined)
       delete controller.smart
@@ -57,7 +65,9 @@ function controller(overrides: {
 
 /** A choice state with nothing stored, so it reports the opening choice alone. */
 function openingChoice(opening: PermissionPresetChoice) {
-  return createPermissionPresetChoice({ answerState: createControlAnswerState() }, () => opening)
+  return createPermissionPresetChoice({
+    answerState: createControlAnswerState(),
+  }, () => opening)
 }
 
 describe('permissionPillOptions', () => {
@@ -112,7 +122,9 @@ describe('buildPermissionPill', () => {
   it('follows a moving opening choice until the user picks a pill', () => {
     // The session can switch mode under an open banner, and an untouched group
     // must move with it. The first click pins the choice.
-    const props: Pick<ActionsProps, 'answerState'> = { answerState: createControlAnswerState() }
+    const props: Pick<ActionsProps, 'answerState'> = {
+      answerState: createControlAnswerState(),
+    }
     const [opening, setOpening] = createSignal<PermissionPresetChoice>('unspecified')
     const choice = createPermissionPresetChoice(props, opening)
 
@@ -134,7 +146,11 @@ describe('buildPermissionPill', () => {
     // The catalog withdrew smart while the stored choice still says it: the
     // group must report Unchanged, not a selection with no radio to check it.
     const choice = createPermissionPresetChoice(
-      { answerState: createControlAnswerState({ choices: { 'control-permissions-pill': 'smart' } }) },
+      {
+        answerState: createControlAnswerState({
+          choices: { 'control-permissions-pill': 'smart' },
+        }),
+      },
       () => 'unspecified',
     )
 
@@ -149,10 +165,14 @@ describe('applyPermissionPreset', () => {
   it('applies the chosen preset as one complete settings change', async () => {
     const apply = vi.fn()
     await applyPermissionPreset(controller({ apply }), 'bypass')
-    expect(apply).toHaveBeenCalledWith({ sets: { permissionMode: 'bypassPermissions' } })
+    expect(apply).toHaveBeenCalledWith({
+      sets: { permissionMode: 'bypassPermissions' },
+    })
 
     await applyPermissionPreset(controller({ apply }), 'smart')
-    expect(apply).toHaveBeenCalledWith({ sets: { permissionMode: 'auto' } })
+    expect(apply).toHaveBeenCalledWith({
+      sets: { permissionMode: 'auto' },
+    })
   })
 
   it('applies nothing for Unchanged, a missing handler, a missing controller, or a withdrawn preset', async () => {
@@ -180,7 +200,9 @@ describe('respondThenApplyPermissionPreset', () => {
 
     finishResponse()
     await result
-    expect(apply).toHaveBeenCalledWith({ sets: { permissionMode: 'bypassPermissions' } })
+    expect(apply).toHaveBeenCalledWith({
+      sets: { permissionMode: 'bypassPermissions' },
+    })
   })
 
   it('does not apply the preset when the response fails', async () => {

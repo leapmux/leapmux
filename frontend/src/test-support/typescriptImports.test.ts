@@ -8,10 +8,19 @@ import { importEdgesIntoLayer, importedNames, moduleImportEdges } from './typesc
 describe('moduleImportEdges', () => {
   it('reads a static import, in either quote style', () => {
     const single = moduleImportEdges(`import { createToolCall } from './model/createToolCall'`)
-    expect(single).toEqual([expect.objectContaining({ specifier: './model/createToolCall', kind: 'static', typeOnly: false, doubleQuoted: false })])
+    expect(single).toEqual([
+      expect.objectContaining({
+        specifier: './model/createToolCall',
+        kind: 'static',
+        typeOnly: false,
+        doubleQuoted: false,
+      }),
+    ])
 
     const double = moduleImportEdges(`import { createToolCall } from "./model/createToolCall"`)
-    expect(double).toEqual([expect.objectContaining({ specifier: './model/createToolCall', kind: 'static', doubleQuoted: true })])
+    expect(double).toEqual([
+      expect.objectContaining({ specifier: './model/createToolCall', kind: 'static', doubleQuoted: true }),
+    ])
   })
 
   it('reads a type-only import as an erased edge', () => {
@@ -39,17 +48,23 @@ export type { ChatRow } from './model/row'
 
   it('reads a side-effect import', () => {
     const edges = moduleImportEdges(`import './providers/claude/plugin'`)
-    expect(edges).toEqual([expect.objectContaining({ specifier: './providers/claude/plugin', kind: 'static', typeOnly: false })])
+    expect(edges).toEqual([
+      expect.objectContaining({ specifier: './providers/claude/plugin', kind: 'static', typeOnly: false }),
+    ])
   })
 
   it('reads a dynamic import, which no textual guard saw', () => {
     const edges = moduleImportEdges(`const plugin = import('./providers/claude/plugin')`)
-    expect(edges).toEqual([expect.objectContaining({ specifier: './providers/claude/plugin', kind: 'dynamic', typeOnly: false })])
+    expect(edges).toEqual([
+      expect.objectContaining({ specifier: './providers/claude/plugin', kind: 'dynamic', typeOnly: false }),
+    ])
   })
 
   it('reads a CommonJS require', () => {
     const edges = moduleImportEdges(`const ts = require('typescript')`)
-    expect(edges).toEqual([expect.objectContaining({ specifier: 'typescript', kind: 'require', typeOnly: false })])
+    expect(edges).toEqual([
+      expect.objectContaining({ specifier: 'typescript', kind: 'require', typeOnly: false }),
+    ])
   })
 
   it('reports the line the STATEMENT begins on, not the line the specifier sits on', () => {
@@ -59,7 +74,9 @@ export type { ChatRow } from './model/row'
       '  buildToolCall,',
       '} from \'./model/createToolCall\'',
     ].join('\n'))
-    expect(edges).toEqual([expect.objectContaining({ line: 1 })])
+    expect(edges).toEqual([
+      expect.objectContaining({ line: 1 }),
+    ])
   })
 
   it('reads no import out of a comment, however lifelike the example', () => {
@@ -112,7 +129,9 @@ describe('importedNames', () => {
 
   it('reads a type-only named binding, which still names a local', () => {
     const names = importedNames(`import { type ChatRow } from './model/row'`)
-    expect(names).toEqual([{ name: 'ChatRow', specifier: './model/row' }])
+    expect(names).toEqual([
+      { name: 'ChatRow', specifier: './model/row' },
+    ])
   })
 
   it('names nothing for the re-export, side-effect, dynamic and require forms', () => {

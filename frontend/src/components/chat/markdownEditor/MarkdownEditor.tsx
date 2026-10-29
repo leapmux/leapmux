@@ -609,7 +609,9 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       const suppressed = props.suppressAutoFocus?.() === true
       editor.action((ctx: Ctx) => {
         const view = ctx.get(editorViewCtx)
-        view.setProps({ editable: () => !disabled })
+        view.setProps({
+          editable: () => !disabled,
+        })
         if (!disabled && !suppressed) {
           view.focus()
         }
@@ -648,18 +650,24 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     // Awaited here, ahead of `buildEditor`, so the editor is still constructed
     // with its content in hand. The draft read is asynchronous now, and this
     // `onMount` already awaits `buildEditor`, so it costs no extra round trip.
-    const initialDraft = initialDraftKey ? await loadPreparedDraft(initialDraftKey) : { content: '', cursor: -1 }
+    const initialDraft = initialDraftKey
+      ? await loadPreparedDraft(initialDraftKey)
+      : { content: '', cursor: -1 }
     // `initialMarkdown` WINS over a stored draft -- see the prop. A host that
     // states the starting text is editing a specific document, and a draft is
     // the text it abandoned last time; showing the draft would silently edit
     // the wrong thing.
     const seed = props.initialMarkdown ?? initialDraft.content
-    const seedCursor = props.initialMarkdown != null ? -1 : initialDraft.cursor
+    const seedCursor = props.initialMarkdown != null
+      ? -1
+      : initialDraft.cursor
 
     const editor = await buildEditor({
       editorRoot: editorRef,
       initialContent: seed,
-      ...(props.ariaLabelledBy === undefined ? {} : { ariaLabelledBy: props.ariaLabelledBy }),
+      ...(props.ariaLabelledBy === undefined
+        ? {}
+        : { ariaLabelledBy: props.ariaLabelledBy }),
       pluginRefs: {
         getDisabled: () => disabledRef,
         getEnterMode: () => enterModeRef,
@@ -784,7 +792,9 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     // `markdownUpdated` listener never fires for `defaultValueCtx`, so a host
     // with `onMarkdownChange` would otherwise learn nothing until the reader
     // typed.
-    if (props.initialMarkdown != null ? seed !== '' : Boolean(prevDraftKey && readyDraft.content)) {
+    if (props.initialMarkdown != null
+      ? seed !== ''
+      : Boolean(prevDraftKey && readyDraft.content)) {
       // Both halves. Milkdown's `markdownUpdated` listener never fires for a
       // document seeded this way, so this is the only announcement a host with
       // `onMarkdownChange` gets for a loaded draft.
@@ -808,7 +818,9 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         // `-1` for a seed, which `restoreCursor` reads as the document END --
         // a reader who opens Replace continues the objective rather than
         // typing in front of it.
-        restoreCursor(editor, props.initialMarkdown != null ? seedCursor : readyDraft.cursor)
+        restoreCursor(editor, props.initialMarkdown != null
+          ? seedCursor
+          : readyDraft.cursor)
       }
       catch { /* editor may not be ready */ }
     }
@@ -816,12 +828,16 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     setupEditorRefHandlers({
       editor,
       onDocument: emitDocument,
-      ...(props.imperative?.sendRef === undefined ? {} : { sendRef: props.imperative.sendRef }),
+      ...(props.imperative?.sendRef === undefined
+        ? {}
+        : { sendRef: props.imperative.sendRef }),
       focusRef: focus => props.imperative?.focusRef?.(() => {
         if (!disabledRef)
           focus()
       }),
-      ...(props.imperative?.contentRef === undefined ? {} : { contentRef: props.imperative.contentRef }),
+      ...(props.imperative?.contentRef === undefined
+        ? {}
+        : { contentRef: props.imperative.contentRef }),
       insertRef: insert => props.imperative?.insertRef?.((text) => {
         if (!disabledRef)
           insert(text)
@@ -1029,7 +1045,9 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         try {
           editorInstance.action((ctx: Ctx) => {
             const view = ctx.get(editorViewCtx)
-            view.setProps({ editable: () => !disabled })
+            view.setProps({
+              editable: () => !disabled,
+            })
           })
         }
         catch {
@@ -1079,16 +1097,22 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       // the collapsed-versus-expanded decision has to address this element, and
       // the class name is a build-mode-dependent hash.
       data-testid={ids().box}
-      data-expanded={isExpanded() ? '' : undefined}
+      data-expanded={isExpanded()
+        ? ''
+        : undefined}
       data-input-hidden={props.hideInput ? '' : undefined}
       // Whether a `[+]` button is rendered at all. The stylesheet reserves the
       // left column for it, and a box without one starts its text 40px in for
       // no reason -- see `--editor-left-pad` in the stylesheet.
-      data-plus={hasPlus() ? '' : undefined}
+      data-plus={hasPlus()
+        ? ''
+        : undefined}
       style={{
         '--editor-right-pad': `${layout.rightPad()}px`,
         // Omitted until measured, so the stylesheet's own fallback applies.
-        ...(layout.actionsHeight() > 0 ? { '--editor-actions-h': `${layout.actionsHeight()}px` } : {}),
+        ...(layout.actionsHeight() > 0
+          ? { '--editor-actions-h': `${layout.actionsHeight()}px` }
+          : {}),
       }}
     >
       {props.banner}
@@ -1111,7 +1135,9 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
           // `chatInputFocused` context, and `$mod+j` sends the chat message
           // there -- so a goal editor carrying it would send a message from
           // inside a dialog. See `MarkdownEditorSurface`.
-          data-chat-input={markers().chatInput ? '' : undefined}
+          data-chat-input={markers().chatInput
+            ? ''
+            : undefined}
           style={editorWrapperStyle()}
         />
         {/* Separator between text area and button row in expanded mode. Positioned
@@ -1122,7 +1148,16 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
             or the full-width control-request actions (footer) when a request is
             active. `data-full-width` distinguishes the two so the expanded
             layout can stretch the control-request footer across the box. */}
-        <div class={styles.footerSlot} ref={footerSlotEl} data-testid={ids().footerSlot} data-full-width={props.actions?.layout === 'fullWidth' ? '' : undefined}>{props.actions?.node()}</div>
+        <div
+          class={styles.footerSlot}
+          ref={footerSlotEl}
+          data-testid={ids().footerSlot}
+          data-full-width={props.actions?.layout === 'fullWidth'
+            ? ''
+            : undefined}
+        >
+          {props.actions?.node()}
+        </div>
       </div>
       <CodeLanguagePopover
         open={codeLangPopoverOpen}

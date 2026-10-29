@@ -8,7 +8,9 @@ export function droidScriptConfiguration(settings: unknown): {
   if (!isObject(settings))
     throw new Error('The native Droid Script profile requires a settings object.')
   const models = Array.isArray(settings.customModels)
-    ? settings.customModels.map(model => isObject(model) ? model.id : undefined)
+    ? settings.customModels.map(model => isObject(model)
+        ? model.id
+        : undefined)
     : []
   if (models.length === 0 || models.some(id => typeof id !== 'string' || !id.trim())
     || new Set(models).size !== models.length) {
@@ -17,6 +19,11 @@ export function droidScriptConfiguration(settings: unknown): {
   const modelIds = models.filter((id): id is string => typeof id === 'string')
   return {
     settings: { ...settings, toolExecutionMode: 'script_only' },
-    snapshot: { flags: {}, configs: { script_tool_models: { models: modelIds } } },
+    snapshot: {
+      flags: {},
+      configs: {
+        script_tool_models: { models: modelIds },
+      },
+    },
   }
 }

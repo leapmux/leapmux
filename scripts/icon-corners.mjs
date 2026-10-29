@@ -13,9 +13,16 @@
 // renders the wrong source produces an icon that looks correct everywhere else,
 // so each generator states which source it expects and this check enforces it.
 export function assertCornerAlpha(pixels, width, height, shouldBeOpaque) {
-  for (const [x, y] of [[0, 0], [width - 1, 0], [0, height - 1], [width - 1, height - 1]]) {
+  for (const [x, y] of [
+    [0, 0],
+    [width - 1, 0],
+    [0, height - 1],
+    [width - 1, height - 1],
+  ]) {
     const alpha = pixels[(y * width + x) * 4 + 3]
-    const ok = shouldBeOpaque ? alpha === 255 : alpha === 0
+    const ok = shouldBeOpaque
+      ? alpha === 255
+      : alpha === 0
     if (!ok) {
       const expected = shouldBeOpaque ? 'opaque' : 'transparent'
       throw new Error(`Icon ${width}x${height} has alpha=${alpha} at (${x},${y}); expected ${expected} corners`)

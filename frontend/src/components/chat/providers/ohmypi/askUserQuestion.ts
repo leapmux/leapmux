@@ -29,11 +29,20 @@ export function isOhMyPiDialogQuestion(payload: Record<string, unknown>): boolea
 
 /** The options of a `select` dialog, with the descriptions omp sends beside them. */
 function selectOptions(payload: Record<string, unknown>): ControlQuestion['options'] {
-  const details = Array.isArray(payload.optionDetails) ? payload.optionDetails : []
+  const details = Array.isArray(payload.optionDetails)
+    ? payload.optionDetails
+    : []
   return stringArray(payload.options).map((label, index) => {
     const detail = details[index]
-    const description = isObject(detail) ? pickString(detail, 'description') : ''
-    return { label, ...(description ? { description } : {}) }
+    const description = isObject(detail)
+      ? pickString(detail, 'description')
+      : ''
+    return {
+      label,
+      ...(description
+        ? { description }
+        : {}),
+    }
   })
 }
 
@@ -49,14 +58,23 @@ export function ohMyPiQuestionsFromPayload(payload: Record<string, unknown>): Co
     return ohMyPiQuestionPrompts(payload[OH_MY_PI_ASK_ENVELOPE.Questions]).map(prompt => ({
       id: prompt.id,
       question: prompt.question,
-      ...(prompt.header ? { header: prompt.header } : {}),
+      ...(prompt.header
+        ? { header: prompt.header }
+        : {}),
       options: prompt.options,
-      ...(prompt.multiSelect ? { multiSelect: true } : {}),
+      ...(prompt.multiSelect
+        ? { multiSelect: true }
+        : {}),
     }))
   }
   if (payload.method !== OH_MY_PI_DIALOG_METHOD.Select)
     return []
-  return [{ question: pickString(payload, 'title') || 'Choose an option', options: selectOptions(payload) }]
+  return [
+    {
+      question: pickString(payload, 'title') || 'Choose an option',
+      options: selectOptions(payload),
+    },
+  ]
 }
 
 /** The bridge's answers, one per question, from the shared form's state. */

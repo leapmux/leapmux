@@ -37,7 +37,10 @@ describe('disambiguateLabels', () => {
 
   it('keeps a label that no other item shares', () => {
     expect(disambiguateLabels(
-      [{ label: 'Once', detail: 'a' }, { label: 'Session', detail: 'b' }],
+      [
+        { label: 'Once', detail: 'a' },
+        { label: 'Session', detail: 'b' },
+      ],
       label,
       distinct,
     )).toEqual(['Once', 'Session'])
@@ -45,7 +48,10 @@ describe('disambiguateLabels', () => {
 
   it('replaces every member of a collision, not the later ones alone', () => {
     expect(disambiguateLabels(
-      [{ label: 'Host rule', detail: 'Host: a' }, { label: 'Host rule', detail: 'Host: b' }],
+      [
+        { label: 'Host rule', detail: 'Host: a' },
+        { label: 'Host rule', detail: 'Host: b' },
+      ],
       label,
       distinct,
     )).toEqual(['Host: a', 'Host: b'])

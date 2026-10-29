@@ -236,5 +236,7 @@ export function guessLanguage(filePath: string): string | undefined {
   // file whose extension shadows an `Object.prototype` member (`x.constructor`,
   // `x.toString`) would otherwise return the inherited function -- a non-string
   // "language" that breaks structured-clone when posted to the tokenize worker.
-  return ext && Object.hasOwn(EXT_TO_LANG, ext) ? EXT_TO_LANG[ext] : undefined
+  return ext && Object.hasOwn(EXT_TO_LANG, ext)
+    ? EXT_TO_LANG[ext]
+    : undefined
 }

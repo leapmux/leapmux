@@ -8,6 +8,8 @@ import { zcodeDisplayImages } from './toolContent'
 export function zcodeToolResultImages(row: ZCodeRow): ImageResultSource[] {
   const display = zcodeResultDisplay(row)
   return display?.kind === 'mcp'
-    ? display.source.content.flatMap(item => item.type === 'image' ? [item.source] : [])
+    ? display.source.content.flatMap(item => item.type === 'image'
+        ? [item.source]
+        : [])
     : zcodeDisplayImages(zcodeExtractTool(row.parsed)?.result?.display)
 }

@@ -12,15 +12,21 @@ function elicitationQuestion(entry: Record<string, unknown> = {}): Record<string
     properties: {
       id: 'que_1',
       sessionID: 'ses_1',
-      questions: [{
-        key: 'mcp_elicitation',
-        header: 'docs',
-        question: 'docs\n\nProceed with the lookup?\n\nThe server reads the public index.',
-        options: [{ label: 'Accept', description: '' }, { label: 'Decline', description: '' }, { label: 'Cancel', description: '' }],
-        multiple: false,
-        custom: false,
-        ...entry,
-      }],
+      questions: [
+        {
+          key: 'mcp_elicitation',
+          header: 'docs',
+          question: 'docs\n\nProceed with the lookup?\n\nThe server reads the public index.',
+          options: [
+            { label: 'Accept', description: '' },
+            { label: 'Decline', description: '' },
+            { label: 'Cancel', description: '' },
+          ],
+          multiple: false,
+          custom: false,
+          ...entry,
+        },
+      ],
     },
     request: { tool_name: 'question' },
   }
@@ -71,13 +77,59 @@ describe('mimoElicitation', () => {
   })
 
   it.each([
-    ['a question with another key', elicitationQuestion({ key: 'plan_exit' })],
-    ['a question with no key', elicitationQuestion({ key: undefined })],
-    ['a permission', { type: 'permission.asked', properties: { questions: [{ key: 'mcp_elicitation' }] } }],
-    ['two questions', { type: 'question.asked', properties: { questions: [{ key: 'mcp_elicitation' }, { key: 'mcp_elicitation' }] } }],
-    ['a questions field that is not a list', { type: 'question.asked', properties: { questions: { key: 'mcp_elicitation' } } }],
-    ['a question that is not an object', { type: 'question.asked', properties: { questions: ['mcp_elicitation'] } }],
-    ['no properties', { type: 'question.asked' }],
+    [
+      'a question with another key',
+      elicitationQuestion({ key: 'plan_exit' }),
+    ],
+    [
+      'a question with no key',
+      elicitationQuestion({ key: undefined }),
+    ],
+    [
+      'a permission',
+      {
+        type: 'permission.asked',
+        properties: {
+          questions: [
+            { key: 'mcp_elicitation' },
+          ],
+        },
+      },
+    ],
+    [
+      'two questions',
+      {
+        type: 'question.asked',
+        properties: {
+          questions: [
+            { key: 'mcp_elicitation' },
+            { key: 'mcp_elicitation' },
+          ],
+        },
+      },
+    ],
+    [
+      'a questions field that is not a list',
+      {
+        type: 'question.asked',
+        properties: {
+          questions: { key: 'mcp_elicitation' },
+        },
+      },
+    ],
+    [
+      'a question that is not an object',
+      {
+        type: 'question.asked',
+        properties: {
+          questions: ['mcp_elicitation'],
+        },
+      },
+    ],
+    [
+      'no properties',
+      { type: 'question.asked' },
+    ],
   ])('reads no elicitation from %s', (_name, payload) => {
     expect(mimoElicitation(payload)).toBeUndefined()
   })

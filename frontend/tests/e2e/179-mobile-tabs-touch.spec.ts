@@ -187,7 +187,9 @@ test.describe('mobile tab sheet (phone)', () => {
     const scrimBox = (await scrim.boundingBox())!
     const barBox = (await page.getByTestId('tab-bar').boundingBox())!
     expect(scrimBox.y).toBeGreaterThanOrEqual(barBox.y + barBox.height - 1)
-    await scrim.tap({ position: { x: 10, y: scrimBox.height - 30 } })
+    await scrim.tap({
+      position: { x: 10, y: scrimBox.height - 30 },
+    })
     await expect(chip).toHaveAttribute('aria-expanded', 'false')
   })
 })
@@ -262,7 +264,9 @@ test.describe('mobile drawers (phone)', () => {
       let el = document.querySelector('[data-testid="files-refresh"]') as HTMLElement | null
       while (el && getComputedStyle(el).position !== 'fixed' && getComputedStyle(el).position !== 'absolute')
         el = el.parentElement
-      return el ? el.getBoundingClientRect().width : 0
+      return el
+        ? el.getBoundingClientRect().width
+        : 0
     })
     expect(drawerWidth).toBeGreaterThanOrEqual(page.viewportSize()!.width - 1)
 
@@ -392,7 +396,12 @@ test.describe('soft-keyboard viewport contract (phone)', () => {
      */
     const tapTranscript = async (dx = 0) => {
       await transcript.evaluate((el, moveX) => {
-        const shared = { bubbles: true, isPrimary: true, pointerId: 1, clientY: 100 }
+        const shared = {
+          bubbles: true,
+          isPrimary: true,
+          pointerId: 1,
+          clientY: 100,
+        }
         el.dispatchEvent(new PointerEvent('pointerdown', { ...shared, clientX: 100 }))
         el.dispatchEvent(new PointerEvent('pointerup', { ...shared, clientX: 100 + moveX }))
       }, dx)

@@ -4,7 +4,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createKiroEnvironment } from './kiroEnvironment'
 
 let runDirectory: string
-const options = () => ({ runDirectory, homeDir: join(runDirectory, 'home'), origin: 'http://127.0.0.1:4567', apiKey: 'ksk_unit' })
+function options() {
+  return {
+    runDirectory,
+    homeDir: join(runDirectory, 'home'),
+    origin: 'http://127.0.0.1:4567',
+    apiKey: 'ksk_unit',
+  }
+}
 
 beforeEach(() => {
   const scratch = resolve(import.meta.dirname, '../../../../.tmp')

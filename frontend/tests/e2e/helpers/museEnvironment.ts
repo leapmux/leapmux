@@ -57,15 +57,31 @@ function museSettings(options: MuseEnvironmentOptions): Record<string, unknown> 
     model: options.modelID,
     model_catalog: [
       catalogRow(options.modelID, true),
-      ...(options.alternateModelID ? [catalogRow(options.alternateModelID, false)] : []),
+      ...(options.alternateModelID
+        ? [
+            catalogRow(options.alternateModelID, false),
+          ]
+        : []),
     ],
     context_compaction: { strategy: 'summary-preserved-suffix/v1', soft_threshold: 0.5, hard_threshold: 0.8 },
-    endpoint_transport: { base_url: endpoint.href.replace(/\/$/, ''), auth: 'bearer' },
+    endpoint_transport: {
+      base_url: endpoint.href.replace(/\/$/, ''),
+      auth: 'bearer',
+    },
     context: { foreign_personal_rules: false, foreign_personal_skills: false },
     telemetry: { enabled: false },
     provider_retry: { max_retries: 0 },
-    run: { subagent_delegation_mode: 'auto', reminder_roster: { agents: [] } },
-    mcpServers: Object.fromEntries(servers.map(server => [server.name, { command: server.command, args: [...server.args] }])),
+    run: {
+      subagent_delegation_mode: 'auto',
+      reminder_roster: { agents: [] },
+    },
+    mcpServers: Object.fromEntries(servers.map(server => [
+      server.name,
+      {
+        command: server.command,
+        args: [...server.args],
+      },
+    ])),
   }
 }
 

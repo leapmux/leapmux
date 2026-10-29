@@ -9,7 +9,13 @@ import { cursorControlActionsFor, cursorQuestionHandling } from './pluginControl
 registerACPProvider({
   provider: AgentProvider.CURSOR,
   toolCallAdapter: cursorToolCallAdapter,
-  attachments: { text: true, image: true, pdf: false, audio: false, binary: false },
+  attachments: {
+    text: true,
+    image: true,
+    pdf: false,
+    audio: false,
+    binary: false,
+  },
   defaultPermissionMode: 'agent',
   permissionPresets: cursorPermissionPresets,
   controlResponseDisplay: cursorControlResponseSummary,

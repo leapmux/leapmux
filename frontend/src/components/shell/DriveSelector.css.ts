@@ -1,13 +1,16 @@
 import { style } from '@vanilla-extract/css'
 import { fieldTrigger } from '~/styles/shared.css'
 
-export const trigger = style([fieldTrigger, {
-  gap: 'var(--space-1)',
-  // Never shrinks: the input beside it takes the slack instead, so a long path
-  // cannot push the drive off the row.
-  flexShrink: 0,
-  padding: 'var(--space-1) var(--space-2)',
-}])
+export const trigger = style([
+  fieldTrigger,
+  {
+    gap: 'var(--space-1)',
+    // Never shrinks: the input beside it takes the slack instead, so a long path
+    // cannot push the drive off the row.
+    flexShrink: 0,
+    padding: 'var(--space-1) var(--space-2)',
+  },
+])
 
 export const triggerValue = style({
   whiteSpace: 'nowrap',

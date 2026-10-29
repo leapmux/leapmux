@@ -79,7 +79,14 @@ export function planNativeSoundCase(
 ): NativeSoundPlan {
   if (options.tool !== undefined && options.steps !== undefined)
     throw new Error('A native sound case gives its tool or its custom script, not both.')
-  const steps = options.steps ?? (options.tool === undefined ? [answer] : [{ toolCalls: [options.tool] }, answer])
+  const steps = options.steps ?? (options.tool === undefined
+    ? [answer]
+    : [
+        {
+          toolCalls: [options.tool],
+        },
+        answer,
+      ])
   if (steps.length === 0)
     throw new Error('The native sound scenario needs a model step.')
   const toolActivity = nativeSoundActivity(steps, answerToolNames)
@@ -135,5 +142,7 @@ export async function exerciseTurnEndSound(context: ManagedNativeScenarioContext
   else if (receipt.numToolUses !== undefined)
     expect(receipt.numToolUses, 'a native turn with tools must retain its activity count').toBeGreaterThan(0)
   await waitForAgentIdle(context.page)
-  expect(await doorbellCount(context.page)).toBe(sound === 'ding-dong' && toolActivity ? 1 : 0)
+  expect(await doorbellCount(context.page)).toBe(sound === 'ding-dong' && toolActivity
+    ? 1
+    : 0)
 }

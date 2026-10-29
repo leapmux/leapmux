@@ -16,10 +16,14 @@ function formatRow(bytes: Uint8Array, offset: number): { offsetStr: string, hex:
   for (let i = 0; i < 16; i++) {
     if (i === 8)
       hexParts.push('')
-    const b = i < bytes.length ? bytes[i] : undefined
+    const b = i < bytes.length
+      ? bytes[i]
+      : undefined
     if (b !== undefined) {
       hexParts.push(b.toString(16).padStart(2, '0'))
-      asciiParts.push(b >= 0x20 && b <= 0x7E ? String.fromCharCode(b) : '.')
+      asciiParts.push(b >= 0x20 && b <= 0x7E
+        ? String.fromCharCode(b)
+        : '.')
     }
     else {
       hexParts.push('  ')
@@ -103,7 +107,10 @@ export function HexView(props: {
     >
       <div
         class={styles.hexContainer}
-        style={{ 'padding-top': topPad(), 'padding-bottom': bottomPad() }}
+        style={{
+          'padding-top': topPad(),
+          'padding-bottom': bottomPad(),
+        }}
       >
         <For each={visibleRows()}>
           {(row) => {

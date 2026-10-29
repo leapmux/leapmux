@@ -66,7 +66,9 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
    * selectable prose.
    */
   const updateSelectionActive = (): Selection | null => {
-    const selection = wrapperRef ? selectionInside(wrapperRef) : null
+    const selection = wrapperRef
+      ? selectionInside(wrapperRef)
+      : null
     setSelectionActive(Boolean(selection))
     return selection
   }
@@ -100,7 +102,9 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
 
       // Position the popover above the end of the selection
       const range = selection.getRangeAt(0)
-      const rects = [...range.getClientRects()]
+      const rects = [
+        ...range.getClientRects(),
+      ]
       if (rects.length === 0) {
         setSelectionActive(false)
         return
@@ -141,7 +145,9 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
       return
 
     const lineRange = extractLineRange(selection)
-    const text = lineRange ? selection.toString() : extractSelectionMarkdown(selection)
+    const text = lineRange
+      ? selection.toString()
+      : extractSelectionMarkdown(selection)
     // AWAITED, and the three statements below run only on a write that landed.
     // Clearing the highlight and closing the popover is what tells the user
     // "copied"; doing it after a failed write reported a copy that never
@@ -163,7 +169,9 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
 
     const lineRange = extractLineRange(selection)
     // Use plain text for file view quotes (with line ranges), markdown for chat quotes
-    const text = lineRange ? selection.toString() : extractSelectionMarkdown(selection)
+    const text = lineRange
+      ? selection.toString()
+      : extractSelectionMarkdown(selection)
     props.onQuote(text, lineRange?.startLine, lineRange?.endLine)
     selection.removeAllRanges()
     setSelectionActive(false)

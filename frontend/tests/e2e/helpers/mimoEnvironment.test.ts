@@ -12,7 +12,10 @@ const provider = {
   baseURL: 'http://127.0.0.1:4567/v1',
   modelKey: 'unit-key',
   providerID: 'unit-provider',
-  models: [{ id: 'first-model', name: 'First' }, { id: 'second-model', name: 'Second' }],
+  models: [
+    { id: 'first-model', name: 'First' },
+    { id: 'second-model', name: 'Second' },
+  ],
 }
 
 beforeEach(() => {
@@ -34,18 +37,33 @@ describe('createMimoEnvironment', () => {
     expect(config.enabled_providers).toEqual(['unit-provider'])
     const confirmationServer = join(env.MIMOCODE_HOME!, 'mcp-confirmation.mjs')
     expect(config.mcp).toEqual({
-      form_probe: { type: 'local', command: [process.execPath, confirmationServer] },
-      echo_probe: { type: 'local', command: [echoServer.command, '/srv/echo.mjs'] },
+      form_probe: {
+        type: 'local',
+        command: [process.execPath, confirmationServer],
+      },
+      echo_probe: {
+        type: 'local',
+        command: [echoServer.command, '/srv/echo.mjs'],
+      },
     })
     expect(readFileSync(confirmationServer, 'utf8')).toContain('elicitation/create')
   })
 
   it('makes each failed request fail once, and stops the title request', () => {
     const config = JSON.parse(createMimoEnvironment({ ...provider, runDirectory, mcpEchoServer: echoServer }).MIMOCODE_CONFIG_CONTENT!)
-    expect(Object.keys(config.retry)).toEqual(['request', 'stream', 'network', 'server', 'rateLimit', 'unknown'])
+    expect(Object.keys(config.retry)).toEqual([
+      'request',
+      'stream',
+      'network',
+      'server',
+      'rateLimit',
+      'unknown',
+    ])
     for (const retry of Object.values(config.retry))
       expect(retry).toEqual({ mode: 'bounded', maxRetries: 0 })
-    expect(config.agent).toEqual({ title: { disable: true } })
+    expect(config.agent).toEqual({
+      title: { disable: true },
+    })
     expect(config).toMatchObject({ share: 'disabled', snapshot: false })
   })
 

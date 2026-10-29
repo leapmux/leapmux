@@ -17,7 +17,9 @@ kimiTest.describe('runs Kimi Code subagents and background tasks', () => {
       childWhen: kimiChildTurn('CHILD_LIVE_READ_TASK'),
       childTask: 'Read the assigned file for CHILD_LIVE_READ_TASK.',
       parentTask: 'Delegate the live child file read.',
-      toolProof: { read: { workingDir: authenticatedKimiWorkspace.workingDir } },
+      toolProof: {
+        read: { workingDir: authenticatedKimiWorkspace.workingDir },
+      },
     })
   })
 

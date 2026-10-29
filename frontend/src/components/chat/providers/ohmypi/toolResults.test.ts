@@ -18,15 +18,21 @@ const KINDS: ToolVocabularyCheck = {
 // Each name comes from the fixture table's own keys, so the lookup misses for the type alone.
 function callOf(name: string) {
   const fixture = OH_MY_PI_TOOL_RESULTS.fixtures[name]
-  return fixture === undefined ? null : providerToolCall(AgentProvider.OH_MY_PI, fixture.payload, fixture.options)
+  return fixture === undefined
+    ? null
+    : providerToolCall(AgentProvider.OH_MY_PI, fixture.payload, fixture.options)
 }
 const failureCallOf = (fixture: ToolFailureFixture) => providerToolCall(AgentProvider.OH_MY_PI, fixture.payload, fixture.options)
 
 /** The `tool_execution_start` each fixture pairs with, read alone as a call still running. */
 function requestCallOf(name: string) {
   const fixture = OH_MY_PI_TOOL_RESULTS.fixtures[name]
-  const frame = fixture === undefined ? null : openingFrameOf(fixture)
-  return frame === null ? null : providerToolCall(AgentProvider.OH_MY_PI, frame)
+  const frame = fixture === undefined
+    ? null
+    : openingFrameOf(fixture)
+  return frame === null
+    ? null
+    : providerToolCall(AgentProvider.OH_MY_PI, frame)
 }
 
 describe('ohmypi tool results', () => {

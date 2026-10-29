@@ -4,13 +4,30 @@ import { codewhaleChecklistItems, codewhalePlanNote, codewhaleTodoItems } from '
 
 describe('codewhaleTodoItems', () => {
   it('reads the list every to-do alias sends', () => {
-    expect(codewhaleTodoItems(CODEWHALE_TOOL.ChecklistWrite, { todos: [{ content: 'A', status: 'cancelled' }] })).toMatchObject([{ content: 'A', status: 'deleted' }])
+    expect(codewhaleTodoItems(CODEWHALE_TOOL.ChecklistWrite, {
+      todos: [
+        { content: 'A', status: 'cancelled' },
+      ],
+    })).toMatchObject([
+      { content: 'A', status: 'deleted' },
+    ])
     expect(codewhaleTodoItems(CODEWHALE_TOOL.TodoWrite, { todos: [] })).toStrictEqual([])
   })
 
   it('reads a plan\'s steps, and only for the plan tool', () => {
-    expect(codewhaleTodoItems(CODEWHALE_TOOL.UpdatePlan, { plan: [{ step: 'Look', status: 'in_progress' }, 'x'] })).toMatchObject([{ content: 'Look', status: 'in_progress' }])
-    expect(codewhaleTodoItems(CODEWHALE_TOOL.TodoWrite, { plan: [{ step: 'Look' }] })).toBeNull()
+    expect(codewhaleTodoItems(CODEWHALE_TOOL.UpdatePlan, {
+      plan: [
+        { step: 'Look', status: 'in_progress' },
+        'x',
+      ],
+    })).toMatchObject([
+      { content: 'Look', status: 'in_progress' },
+    ])
+    expect(codewhaleTodoItems(CODEWHALE_TOOL.TodoWrite, {
+      plan: [
+        { step: 'Look' },
+      ],
+    })).toBeNull()
   })
 
   it('answers null for arguments that carry no list', () => {
@@ -28,8 +45,20 @@ describe('codewhalePlanNote', () => {
 
 describe('codewhaleChecklistItems', () => {
   it('reads the runtime\'s kept checklist', () => {
-    expect(codewhaleChecklistItems({ task_updates: { checklist: { items: [{ id: 1, content: 'A', status: 'completed' }] } } })).toMatchObject([{ content: 'A', status: 'completed' }])
+    expect(codewhaleChecklistItems({
+      task_updates: {
+        checklist: {
+          items: [
+            { id: 1, content: 'A', status: 'completed' },
+          ],
+        },
+      },
+    })).toMatchObject([
+      { content: 'A', status: 'completed' },
+    ])
     expect(codewhaleChecklistItems({})).toBeNull()
-    expect(codewhaleChecklistItems({ task_updates: { checklist: {} } })).toBeNull()
+    expect(codewhaleChecklistItems({
+      task_updates: { checklist: {} },
+    })).toBeNull()
   })
 })

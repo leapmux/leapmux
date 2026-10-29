@@ -74,7 +74,9 @@ export function workspaceTrustPermission(
   return {
     kind: 'permission',
     permission: {
-      title: question.path ? `Trust the folder ${question.path}` : 'Trust this folder',
+      title: question.path
+        ? `Trust the folder ${question.path}`
+        : 'Trust this folder',
       reason: `${agentName} loads ${configurationPhrase(question.configuration)} of a project only from a folder that you trust, and it keeps your answer for the folder.`,
       options: [...options],
     },
@@ -88,7 +90,9 @@ export function withWorkspaceTrustControl(
 ): (input: ControlExtractionInput) => ExtractedControlRequest | null {
   return (input) => {
     const question = workspaceTrustQuestion(input.payload)
-    return question ? workspaceTrustPermission(question, agentName) : extract(input)
+    return question
+      ? workspaceTrustPermission(question, agentName)
+      : extract(input)
   }
 }
 

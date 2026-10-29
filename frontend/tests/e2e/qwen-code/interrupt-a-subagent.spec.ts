@@ -19,8 +19,17 @@ qwenTest.describe('Qwen Code subagent registry', () => {
     leapmuxServer,
     modelScript,
   }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    await openNativeAgent(context, { overrides: { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } } })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
+    await openNativeAgent(context, {
+      overrides: {
+        optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' },
+      },
+    })
     // Qwen asks no session title for a child, so the task alone selects the
     // child's own turn.
     await exerciseChildInterrupt(context, {

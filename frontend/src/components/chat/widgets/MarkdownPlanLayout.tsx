@@ -24,7 +24,9 @@ export interface MarkdownPlanLayoutProps {
  * `ExitPlanMode` tool_use blocks — they differ only in title/toolName/source.
  */
 export function MarkdownPlanLayout(props: MarkdownPlanLayoutProps): JSX.Element {
-  const { copied, copy } = useCopyButton(() => props.context?.premeasureMode ? undefined : props.planText || undefined)
+  const { copied, copy } = useCopyButton(() => props.context?.premeasureMode
+    ? undefined
+    : props.planText || undefined)
   const handleReply = () => {
     if (!props.context?.premeasureMode)
       props.context?.onReply?.(props.planText)
@@ -38,13 +40,19 @@ export function MarkdownPlanLayout(props: MarkdownPlanLayoutProps): JSX.Element 
       title={props.title}
       alwaysVisible={true}
       bordered={false}
-      {...(props.context === undefined ? {} : { context: props.context })}
+      {...(props.context === undefined
+        ? {}
+        : { context: props.context })}
       headerActions={{
         // Set only when the plan draws them: an explicit `undefined` is not
         // assignable to an optional prop, and the actions row reads absent
         // the same.
-        ...(props.planText && props.context?.onReply ? { onReply: handleReply } : {}),
-        ...(props.planText ? { onCopyMarkdown: copy } : {}),
+        ...(props.planText && props.context?.onReply
+          ? { onReply: handleReply }
+          : {}),
+        ...(props.planText
+          ? { onCopyMarkdown: copy }
+          : {}),
         markdownCopied: copied(),
       }}
     >

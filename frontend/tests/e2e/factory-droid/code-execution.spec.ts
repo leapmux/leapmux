@@ -29,14 +29,22 @@ droidTest('runs native code and retains computed output and script errors after 
     workerName: 'Droid native Script test',
     env: { FACTORY_HOME_OVERRIDE: home, FACTORY_FEATURE_FLAGS_SNAPSHOT_PATH: snapshot },
   }, async ({ server }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer: server, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer: server,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     const request = await openNativeCatalogTurn(context, { directoryPrefix: 'native-code-execution-' })
     expect(request.mockCredential?.accepted).toBe(true)
     expect(droidScriptExecutors(droidCompleteToolCatalog(request).current).map(tool => tool.name)).toContain('Script')
     const schema = nativeCodeExecutionSchema(request, 'Script', DROID_SCRIPT_ARGUMENTS)
     expect(schema.required).toEqual(['script'])
 
-    await exerciseNativeCodeExecution({ ...context, readToolResult: (request, callId) => readDroidToolResult(request, callId, 'Script') }, {
+    await exerciseNativeCodeExecution({
+      ...context,
+      readToolResult: (request, callId) => readDroidToolResult(request, callId, 'Script'),
+    }, {
       catalogProof: (request) => {
         expect(request.mockCredential?.accepted).toBe(true)
         nativeCodeExecutionSchema(request, 'Script', DROID_SCRIPT_ARGUMENTS)

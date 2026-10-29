@@ -29,7 +29,12 @@ const MANUAL_COMPACTION_TRIGGER = 'manual'
 /** What one compaction states about the context it rewrote: the trigger and the size before it. omp states no size after. */
 function compactionDetail(trigger: string, result: Record<string, unknown> | null | undefined): CompactionDetails {
   const pre = toTokenCount(pickNumber(result, 'tokensBefore') ?? undefined)
-  return { trigger, ...(pre !== undefined ? { pre } : {}) }
+  return {
+    trigger,
+    ...(pre !== undefined
+      ? { pre }
+      : {}),
+  }
 }
 
 /**
@@ -59,10 +64,16 @@ export function ohMyPiCompactionBoundary(parsed: ParsedMessageContent): Compacti
   const inner = getInnerMessage(parsed)
   if (!isObject(inner))
     return null
-  if (pickString(inner, 'type') === OH_MY_PI_EVENT.AutoCompactionEnd)
-    return autoCompactionRewrote(inner) ? compactionDetail(AUTO_COMPACTION_TRIGGER, pickObject(inner, 'result')) : null
-  if (isCompactResponse(inner))
-    return inner.success === true ? compactionDetail(MANUAL_COMPACTION_TRIGGER, pickObject(inner, 'data')) : null
+  if (pickString(inner, 'type') === OH_MY_PI_EVENT.AutoCompactionEnd) {
+    return autoCompactionRewrote(inner)
+      ? compactionDetail(AUTO_COMPACTION_TRIGGER, pickObject(inner, 'result'))
+      : null
+  }
+  if (isCompactResponse(inner)) {
+    return inner.success === true
+      ? compactionDetail(MANUAL_COMPACTION_TRIGGER, pickObject(inner, 'data'))
+      : null
+  }
   return null
 }
 
@@ -73,11 +84,27 @@ function autoCompactionEndEntry(msg: Record<string, unknown>): NotificationEntry
   if (msg.skipped === true)
     return { kind: 'compaction', phase: 'end', outcome: 'skipped' }
   const error = pickString(msg, 'errorMessage').trim()
-  if (error)
-    return { kind: 'compaction', phase: 'end', outcome: 'failed', error }
-  if (!isObject(msg.result))
-    return { kind: 'compaction', phase: 'end', outcome: 'failed', error: 'omp stated no result' }
-  return { kind: 'compaction', phase: 'end', detail: compactionDetail(AUTO_COMPACTION_TRIGGER, pickObject(msg, 'result')) }
+  if (error) {
+    return {
+      kind: 'compaction',
+      phase: 'end',
+      outcome: 'failed',
+      error,
+    }
+  }
+  if (!isObject(msg.result)) {
+    return {
+      kind: 'compaction',
+      phase: 'end',
+      outcome: 'failed',
+      error: 'omp stated no result',
+    }
+  }
+  return {
+    kind: 'compaction',
+    phase: 'end',
+    detail: compactionDetail(AUTO_COMPACTION_TRIGGER, pickObject(msg, 'result')),
+  }
 }
 
 /** One retry frame read into the shared retry entry. */
@@ -87,16 +114,29 @@ function ohMyPiRetryEntry(msg: Record<string, unknown>, ended: boolean): Notific
     const maxAttempts = pickNumber(msg, 'maxAttempts', undefined)
     const delayMs = pickNumber(msg, 'delayMs', undefined)
     return retryEntry('api', {
-      ...(attempt !== undefined ? { attempt } : {}),
-      ...(maxAttempts !== undefined ? { maxAttempts } : {}),
-      ...(delayMs !== undefined ? { delayMs } : {}),
+      ...(attempt !== undefined
+        ? { attempt }
+        : {}),
+      ...(maxAttempts !== undefined
+        ? { maxAttempts }
+        : {}),
+      ...(delayMs !== undefined
+        ? { delayMs }
+        : {}),
       error: pickString(msg, 'errorMessage'),
     })
   }
   const succeeded = msg.success === true
   return retryEntry('api', {
-    ...(attempt !== undefined ? { attempt } : {}),
-    ...(succeeded ? { succeeded: true } : { willRetry: false, error: pickString(msg, 'finalError') }),
+    ...(attempt !== undefined
+      ? { attempt }
+      : {}),
+    ...(succeeded
+      ? { succeeded: true }
+      : {
+          willRetry: false,
+          error: pickString(msg, 'finalError'),
+        }),
   })
 }
 
@@ -134,27 +174,39 @@ function ircLine(message: Record<string, unknown>): string {
   switch (pickString(message, 'customType')) {
     case OH_MY_PI_IRC_CUSTOM_TYPE.Incoming: {
       const body = pickString(details, 'message').trim()
-      if (body)
-        return from ? `Message from ${from}: ${body}` : body
+      if (body) {
+        return from
+          ? `Message from ${from}: ${body}`
+          : body
+      }
       break
     }
     case OH_MY_PI_IRC_CUSTOM_TYPE.AutoReply: {
       const body = pickString(details, 'body').trim()
-      if (body)
-        return to ? `Automatic reply to ${to}: ${body}` : body
+      if (body) {
+        return to
+          ? `Automatic reply to ${to}: ${body}`
+          : body
+      }
       break
     }
     case OH_MY_PI_IRC_CUSTOM_TYPE.Relay: {
       const body = pickString(details, 'body').trim()
-      if (body)
-        return from && to ? `Message from ${from} to ${to}: ${body}` : body
+      if (body) {
+        return from && to
+          ? `Message from ${from} to ${to}: ${body}`
+          : body
+      }
       break
     }
     case OH_MY_PI_IRC_CUSTOM_TYPE.WorkPool: {
       const body = pickString(details, 'body').trim()
       const pool = pickString(details, 'pool')
-      if (body)
-        return pool && to ? `Pool ${pool} to ${to}: ${body}` : body
+      if (body) {
+        return pool && to
+          ? `Pool ${pool} to ${to}: ${body}`
+          : body
+      }
       break
     }
   }
@@ -232,17 +284,32 @@ function fenced(text: string): string {
  */
 function backgroundDeliveryEntries(message: Record<string, unknown>): NotificationEntry[] {
   const jobs = pickObject(message, 'details')?.jobs
-  const records = Array.isArray(jobs) ? jobs.filter(isObject) : []
-  if (records.length === 0)
-    return [{ kind: 'text', text: 'A background job finished' }]
+  const records = Array.isArray(jobs)
+    ? jobs.filter(isObject)
+    : []
+  if (records.length === 0) {
+    return [
+      { kind: 'text', text: 'A background job finished' },
+    ]
+  }
   const results = deliveredResults(customText(message), records.map(job => pickString(job, 'jobId')))
   return records.map((job): NotificationEntry => {
     const jobId = pickString(job, 'jobId')
     const label = pickString(job, 'label') || jobId || 'job'
     const result = results.get(jobId)
-    if (result === undefined || pickString(job, 'type') === OH_MY_PI_ASYNC_JOB_TYPE_TASK)
-      return { kind: 'group', groupKey: 'omp-background-job', prefix: 'Background job finished', entry: label }
-    return { kind: 'subagent-report', label, text: fenced(result) }
+    if (result === undefined || pickString(job, 'type') === OH_MY_PI_ASYNC_JOB_TYPE_TASK) {
+      return {
+        kind: 'group',
+        groupKey: 'omp-background-job',
+        prefix: 'Background job finished',
+        entry: label,
+      }
+    }
+    return {
+      kind: 'subagent-report',
+      label,
+      text: fenced(result),
+    }
   })
 }
 
@@ -267,11 +334,18 @@ function customMessageEntries(message: Record<string, unknown>): NotificationEnt
     return []
   if (customType === OH_MY_PI_SKILL_PROMPT_CUSTOM_TYPE) {
     const name = pickString(pickObject(message, 'details'), 'name')
-    if (name)
-      return [{ kind: 'text', text: `Loaded the skill ${name}` }]
+    if (name) {
+      return [
+        { kind: 'text', text: `Loaded the skill ${name}` },
+      ]
+    }
   }
   const text = withoutSystemNotice(customText(message))
-  return text ? [{ kind: 'text', text }] : []
+  return text
+    ? [
+        { kind: 'text', text },
+      ]
+    : []
 }
 
 /** The words that open an extension notice of one severity, or '' for plain information. */
@@ -298,80 +372,177 @@ export function ohMyPiNotificationEntry(msg: Record<string, unknown>): Notificat
   switch (pickString(msg, 'type')) {
     case OH_MY_PI_EVENT.MessageEnd: {
       const message = pickObject(msg, 'message')
-      return message && pickString(message, 'role') === OH_MY_PI_ROLE.Custom ? customMessageEntries(message) : []
+      return message && pickString(message, 'role') === OH_MY_PI_ROLE.Custom
+        ? customMessageEntries(message)
+        : []
     }
     case OH_MY_PI_EVENT.AutoCompactionEnd:
-      return [autoCompactionEndEntry(msg)]
+      return [
+        autoCompactionEndEntry(msg),
+      ]
     case OH_MY_PI_EVENT.AutoRetryStart:
-      return [ohMyPiRetryEntry(msg, false)]
+      return [
+        ohMyPiRetryEntry(msg, false),
+      ]
     case OH_MY_PI_EVENT.AutoRetryEnd:
-      return [ohMyPiRetryEntry(msg, true)]
+      return [
+        ohMyPiRetryEntry(msg, true),
+      ]
     case OH_MY_PI_EVENT.RetryFallbackApplied: {
       const from = pickString(msg, 'from')
       const to = pickString(msg, 'to')
       const reason = pickString(msg, 'reason')
-      return [{ kind: 'text', text: `Switched the model${from ? ` from ${from}` : ''}${to ? ` to ${to}` : ''}${reason ? ` (${reason})` : ''}` }]
+      return [
+        { kind: 'text', text: `Switched the model${from
+          ? ` from ${from}`
+          : ''}${to
+          ? ` to ${to}`
+          : ''}${reason
+          ? ` (${reason})`
+          : ''}` },
+      ]
     }
     case OH_MY_PI_EVENT.RetryFallbackSucceeded: {
       const model = pickString(msg, 'model')
-      return [{ kind: 'text', text: model ? `The fallback model ${model} answered` : 'The fallback model answered' }]
+      return [
+        {
+          kind: 'text',
+          text: model
+            ? `The fallback model ${model} answered`
+            : 'The fallback model answered',
+        },
+      ]
     }
     case OH_MY_PI_EVENT.TtsrTriggered: {
-      const rules = Array.isArray(msg.rules) ? msg.rules.filter(isObject).map(rule => pickString(rule, 'name').trim()).filter(Boolean) : []
-      return [{ kind: 'text', text: `A rule stopped the reply${rules.length ? `: ${rules.join(', ')}` : ''}. omp retries it.` }]
+      const rules = Array.isArray(msg.rules)
+        ? msg.rules.filter(isObject).map(rule => pickString(rule, 'name').trim()).filter(Boolean)
+        : []
+      return [
+        { kind: 'text', text: `A rule stopped the reply${rules.length
+          ? `: ${rules.join(', ')}`
+          : ''}. omp retries it.` },
+      ]
     }
     case OH_MY_PI_EVENT.Notice: {
       const message = pickString(msg, 'message').trim()
       const source = pickString(msg, 'source').trim()
       const level = pickString(msg, 'level')
-      const prefix = level === OH_MY_PI_NOTICE_LEVEL.Warning ? 'Warning: ' : level === OH_MY_PI_NOTICE_LEVEL.Error ? 'Error: ' : ''
-      return message ? [{ kind: 'text', text: `${source ? `[${source}] ` : ''}${prefix}${message}` }] : []
+      const prefix = level === OH_MY_PI_NOTICE_LEVEL.Warning
+        ? 'Warning: '
+        : level === OH_MY_PI_NOTICE_LEVEL.Error
+          ? 'Error: '
+          : ''
+      return message
+        ? [
+            { kind: 'text', text: `${source
+              ? `[${source}] `
+              : ''}${prefix}${message}` },
+          ]
+        : []
     }
     case OH_MY_PI_EVENT.ExtensionError: {
       const extension = pickString(msg, 'extensionPath')
       const event = pickString(msg, 'event')
       const error = pickString(msg, 'error')
-      return [{ kind: 'text', text: `Extension error${extension ? ` in ${extension}` : ''}${event ? ` (${event})` : ''}${error ? `: ${error}` : ''}` }]
+      return [
+        { kind: 'text', text: `Extension error${extension
+          ? ` in ${extension}`
+          : ''}${event
+          ? ` (${event})`
+          : ''}${error
+          ? `: ${error}`
+          : ''}` },
+      ]
     }
     case OH_MY_PI_EVENT.CommandOutput: {
       const text = pickString(msg, 'text').trim()
-      return text ? [{ kind: 'text', text }] : []
+      return text
+        ? [
+            { kind: 'text', text },
+          ]
+        : []
     }
     case OH_MY_PI_EVENT.TodoReminder: {
-      const open = Array.isArray(msg.todos) ? msg.todos.length : 0
+      const open = Array.isArray(msg.todos)
+        ? msg.todos.length
+        : 0
       const attempt = pickNumber(msg, 'attempt', undefined)
       const maxAttempts = pickNumber(msg, 'maxAttempts', undefined)
-      const tries = attempt !== undefined && maxAttempts !== undefined ? ` (reminder ${attempt} of ${maxAttempts})` : ''
-      return [{ kind: 'status', text: `${open} to-do ${open === 1 ? 'item is' : 'items are'} open; the agent continues${tries}` }]
+      const tries = attempt !== undefined && maxAttempts !== undefined
+        ? ` (reminder ${attempt} of ${maxAttempts})`
+        : ''
+      return [
+        { kind: 'status', text: `${open} to-do ${open === 1
+          ? 'item is'
+          : 'items are'} open; the agent continues${tries}` },
+      ]
     }
     case OH_MY_PI_EVENT.IrcMessage: {
       const message = pickObject(msg, 'message')
-      const text = message ? ircLine(message) : ''
-      return text ? [{ kind: 'text', text }] : []
+      const text = message
+        ? ircLine(message)
+        : ''
+      return text
+        ? [
+            { kind: 'text', text },
+          ]
+        : []
     }
     case OH_MY_PI_EVENT.RpcFrameError: {
       const error = pickString(msg, 'error')
-      return [{ kind: 'text', text: `omp could not send a frame${error ? `: ${error}` : ''}` }]
+      return [
+        { kind: 'text', text: `omp could not send a frame${error
+          ? `: ${error}`
+          : ''}` },
+      ]
     }
     case OH_MY_PI_EVENT.Response: {
       if (!isCompactResponse(msg))
         return []
-      if (msg.success === true)
-        return [{ kind: 'compaction', phase: 'end', detail: compactionDetail(MANUAL_COMPACTION_TRIGGER, pickObject(msg, 'data')) }]
+      if (msg.success === true) {
+        return [
+          {
+            kind: 'compaction',
+            phase: 'end',
+            detail: compactionDetail(MANUAL_COMPACTION_TRIGGER, pickObject(msg, 'data')),
+          },
+        ]
+      }
       const error = pickString(msg, 'error').trim()
-      return [{ kind: 'compaction', phase: 'end', outcome: 'failed', ...(error ? { error } : {}) }]
+      return [
+        {
+          kind: 'compaction',
+          phase: 'end',
+          outcome: 'failed',
+          ...(error
+            ? { error }
+            : {}),
+        },
+      ]
     }
     case OH_MY_PI_EVENT.ExtensionUIRequest: {
       const method = pickString(msg, 'method')
       if (method === OH_MY_PI_EXTENSION_METHOD.Notify) {
         const message = pickString(msg, 'message').trim()
-        return message ? [{ kind: 'text', text: `${notifyPrefix(pickString(msg, 'notifyType'))}${message}` }] : []
+        return message
+          ? [
+              { kind: 'text', text: `${notifyPrefix(pickString(msg, 'notifyType'))}${message}` },
+            ]
+          : []
       }
       if (method === OH_MY_PI_EXTENSION_METHOD.OpenURL) {
         const url = pickString(msg, 'url')
-        return url ? [{ kind: 'text', text: `Open ${url}` }] : []
+        return url
+          ? [
+              { kind: 'text', text: `Open ${url}` },
+            ]
+          : []
       }
-      return method ? [{ kind: 'text', text: `Extension request: ${method}` }] : []
+      return method
+        ? [
+            { kind: 'text', text: `Extension request: ${method}` },
+          ]
+        : []
     }
     default:
       return []

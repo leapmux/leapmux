@@ -58,7 +58,9 @@ export function RelativeTime(props: RelativeTimeProps) {
   const hour12 = () => parsed().getHours() % 12
   const relative = () => {
     sharedTick.tick()
-    return isValid() ? formatCompactAge(parsed()) : ''
+    return isValid()
+      ? formatCompactAge(parsed())
+      : ''
   }
 
   sharedTick.subscribe()

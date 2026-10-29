@@ -1,8 +1,34 @@
 import ts from 'typescript'
 
-const CHAT_HELPERS = new Set(['userBubbles', 'assistantBubbles', 'messageBubbles', 'messageContents', 'bandRows', 'firstAssistantBubble', 'lastAssistantBubble'])
-const CHAT_SELECTORS = ['message-bubble', 'message-content', 'data-seq', 'data-band']
-const LOCATOR_METHODS = new Set(['locator', 'first', 'last', 'nth', 'filter', 'and', 'or', 'describe', 'contentFrame', 'elementHandle', 'elementHandles', 'all'])
+const CHAT_HELPERS = new Set([
+  'userBubbles',
+  'assistantBubbles',
+  'messageBubbles',
+  'messageContents',
+  'bandRows',
+  'firstAssistantBubble',
+  'lastAssistantBubble',
+])
+const CHAT_SELECTORS = [
+  'message-bubble',
+  'message-content',
+  'data-seq',
+  'data-band',
+]
+const LOCATOR_METHODS = new Set([
+  'locator',
+  'first',
+  'last',
+  'nth',
+  'filter',
+  'and',
+  'or',
+  'describe',
+  'contentFrame',
+  'elementHandle',
+  'elementHandles',
+  'all',
+])
 
 interface Scope {
   parent?: Scope
@@ -19,7 +45,9 @@ interface Binding {
 function bindingNames(name: ts.BindingName): string[] {
   if (ts.isIdentifier(name))
     return [name.text]
-  return name.elements.flatMap(element => ts.isBindingElement(element) ? bindingNames(element.name) : [])
+  return name.elements.flatMap(element => ts.isBindingElement(element)
+    ? bindingNames(element.name)
+    : [])
 }
 
 function member(expression: ts.Expression): { receiver: ts.Expression, name: string } | undefined {
@@ -42,13 +70,26 @@ function lookup(name: string, scope: Scope): Binding | undefined {
 /** Find unsafe chat reads without confusing browser DOM nodes or variables from separate scopes. */
 export function racyChatReads(source: string, fileName = 'e2e.ts'): Array<{ index: number, text: string }> {
   const file = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true)
-  const root: Scope = { functionScope: true, bindings: new Map() }
+  const root: Scope = {
+    functionScope: true,
+    bindings: new Map(),
+  }
   const scopes = new WeakMap<ts.Node, Scope>()
   const collect = (node: ts.Node, parent: Scope) => {
-    if (ts.isFunctionDeclaration(node) && node.name)
-      parent.bindings.set(node.name.text, { scope: parent, helper: CHAT_HELPERS.has(node.name.text) })
+    if (ts.isFunctionDeclaration(node) && node.name) {
+      parent.bindings.set(node.name.text, {
+        scope: parent,
+        helper: CHAT_HELPERS.has(node.name.text),
+      })
+    }
     const newScope = ts.isFunctionLike(node) || ts.isBlock(node) || ts.isForStatement(node) || ts.isForOfStatement(node) || ts.isForInStatement(node) || ts.isCatchClause(node)
-    const scope: Scope = newScope ? { parent, functionScope: ts.isFunctionLike(node), bindings: new Map() } : parent
+    const scope: Scope = newScope
+      ? {
+          parent,
+          functionScope: ts.isFunctionLike(node),
+          bindings: new Map(),
+        }
+      : parent
     scopes.set(node, scope)
     if (ts.isFunctionLike(node)) {
       for (const parameter of node.parameters) {
@@ -58,7 +99,10 @@ export function racyChatReads(source: string, fileName = 'e2e.ts'): Array<{ inde
     }
     if (ts.isImportSpecifier(node)) {
       const imported = (node.propertyName ?? node.name).text
-      scope.bindings.set(node.name.text, { scope, helper: CHAT_HELPERS.has(imported) })
+      scope.bindings.set(node.name.text, {
+        scope,
+        helper: CHAT_HELPERS.has(imported),
+      })
     }
     if (ts.isVariableDeclaration(node)) {
       let owner = scope
@@ -67,7 +111,12 @@ export function racyChatReads(source: string, fileName = 'e2e.ts'): Array<{ inde
           owner = owner.parent
       }
       for (const name of bindingNames(node.name)) {
-        owner.bindings.set(name, { scope, ...(ts.isIdentifier(node.name) && node.initializer ? { expression: node.initializer } : {}) })
+        owner.bindings.set(name, {
+          scope,
+          ...(ts.isIdentifier(node.name) && node.initializer
+            ? { expression: node.initializer }
+            : {}),
+        })
       }
     }
     ts.forEachChild(node, child => collect(child, scope))
@@ -106,8 +155,11 @@ export function racyChatReads(source: string, fileName = 'e2e.ts'): Array<{ inde
       return locator(node.expression, scope, seen)
     if (ts.isConditionalExpression(node))
       return locator(node.whenTrue, scope, seen) || locator(node.whenFalse, scope, seen)
-    if (ts.isObjectLiteralExpression(node))
-      return node.properties.some(property => ts.isPropertyAssignment(property) ? locator(property.initializer, scope, seen) : ts.isShorthandPropertyAssignment(property) && locator(property.name, scope, seen))
+    if (ts.isObjectLiteralExpression(node)) {
+      return node.properties.some(property => ts.isPropertyAssignment(property)
+        ? locator(property.initializer, scope, seen)
+        : ts.isShorthandPropertyAssignment(property) && locator(property.name, scope, seen))
+    }
     if (ts.isArrayLiteralExpression(node))
       return node.elements.some(element => locator(element, scope, seen))
     if (ts.isElementAccessExpression(node))
@@ -132,8 +184,12 @@ export function racyChatReads(source: string, fileName = 'e2e.ts'): Array<{ inde
     if (ts.isCallExpression(node)) {
       const method = member(node.expression)
       if (method && ['evaluate', 'evaluateAll'].includes(method.name)) {
-        if (locator(method.receiver, scopes.get(node) ?? root))
-          found.push({ index: node.getStart(file), text: `${node.expression.getText(file)}(` })
+        if (locator(method.receiver, scopes.get(node) ?? root)) {
+          found.push({
+            index: node.getStart(file),
+            text: `${node.expression.getText(file)}(`,
+          })
+        }
         // These callbacks run in the browser. Their DOM objects are not Playwright locators.
         visit(node.expression)
         for (const argument of node.arguments) {

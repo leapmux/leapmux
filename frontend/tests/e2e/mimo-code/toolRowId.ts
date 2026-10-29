@@ -51,7 +51,9 @@ export function readMiMoNativeToolRowId(snapshot: NativeMessageSnapshot, callId:
       throw new Error('The MiMo tool part belongs to conflicting native messages.')
     parts.set(part.partId, part.messageId)
   }
-  const ids = [...parts.keys()]
+  const ids = [
+    ...parts.keys(),
+  ]
   if (ids.length !== 1 || ids[0] === undefined)
     throw new Error(`The MiMo model call matches ${ids.length} distinct native tool parts in its Worker owner.`)
   return ids[0]

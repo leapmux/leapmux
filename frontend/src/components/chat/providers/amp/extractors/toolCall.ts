@@ -104,7 +104,9 @@ export function ampToolRow(
     const paired = ampToolResult(result?.parentObject)
     return {
       call: ownCall,
-      result: paired?.toolUseId === ownCall.id ? paired : undefined,
+      result: paired?.toolUseId === ownCall.id
+        ? paired
+        : undefined,
       // A retained request row is the call's END: the turn stopped before the result.
       finished: retainedRowIsFinal(completion),
     }
@@ -113,7 +115,9 @@ export function ampToolRow(
     return null
   const paired = ampToolUse(request?.parentObject)
   return {
-    call: paired?.id === ownResult.toolUseId ? paired : { id: ownResult.toolUseId, name: '', input: {} },
+    call: paired?.id === ownResult.toolUseId
+      ? paired
+      : { id: ownResult.toolUseId, name: '', input: {} },
     result: ownResult,
     finished: true,
   }
@@ -169,7 +173,9 @@ export function ampToolFacts(row: AmpToolRow, completion: MessageCompletion | un
  */
 export function ampToolCallKind(facts: AmpToolFacts): ToolKind {
   const declared = ampToolKind(facts.toolName)
-  return declared === 'unspecified' ? 'mcp' : declared
+  return declared === 'unspecified'
+    ? 'mcp'
+    : declared
 }
 
 /**
@@ -189,28 +195,52 @@ export const AMP_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<AmpToolFacts> = {
     if (facts.toolName === AMP_TOOL_NAME.ApplyPatch)
       return { changes: ampPatchRequestChanges(args) ?? [] }
     const change = ampEditFileChange(args)
-    return { changes: change ? [change] : [], ...(args.replace_all === true ? { replaceAll: true } : {}) }
+    return {
+      changes: change
+        ? [change]
+        : [],
+      ...(args.replace_all === true
+        ? { replaceAll: true }
+        : {}),
+    }
   },
   // `create_file` states the written text as `content`, which is none of the shared spellings.
   write: (args): ToolRequestByKind['write'] => {
     const change = ampCreateFileChange(args)
-    return { changes: change ? [change] : [] }
+    return {
+      changes: change
+        ? [change]
+        : [],
+    }
   },
   // `Read` states its lines as an inclusive `read_range` pair.
   read: (args): ToolRequestByKind['read'] => ampReadRequest(args),
   // A shell call states its directory as `workdir`.
   execute: (args): ToolRequestByKind['execute'] => {
     const cwd = pickString(args, 'workdir')
-    return { command: ampShellCommand(args), ...(cwd ? { cwd } : {}) }
+    return {
+      command: ampShellCommand(args),
+      ...(cwd
+        ? { cwd }
+        : {}),
+    }
   },
   // The status and the kill of a background command state its process id.
   task: (args, facts): ToolRequestByKind['task'] => {
     const pid = pickNumber(args, 'pid', undefined)
     const timeoutMs = pickNumber(args, 'timeout_ms', undefined)
     return {
-      action: facts.toolName === AMP_SHELL_TOOL.ShellCommandKill ? 'stop' : 'output',
-      ...(pid !== undefined ? { taskId: String(pid) } : {}),
-      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      action: facts.toolName === AMP_SHELL_TOOL.ShellCommandKill
+        ? 'stop'
+        : 'output',
+      ...(pid !== undefined
+        ? {
+            taskId: String(pid),
+          }
+        : {}),
+      ...(timeoutMs !== undefined
+        ? { timeoutMs }
+        : {}),
     }
   },
   // `glob` states its pattern as `filePattern`.
@@ -218,7 +248,12 @@ export const AMP_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<AmpToolFacts> = {
   // A web search states its goal as `objective`, and the keyword queries beside it.
   web_search: (args): ToolRequestByKind['web_search'] => {
     const queries = stringArray(args.search_queries)
-    return { query: pickString(args, 'objective') || queries[0] || '', ...(queries.length > 0 ? { queries } : {}) }
+    return {
+      query: pickString(args, 'objective') || queries[0] || '',
+      ...(queries.length > 0
+        ? { queries }
+        : {}),
+    }
   },
   // A tool of a Model Context Protocol server spells its server and tool in its name.
   mcp: (args, facts): ToolRequestByKind['mcp'] => {
@@ -240,7 +275,12 @@ interface AmpRowHeader {
 
 /** The tool's display name and the words above it. */
 function header(facts: AmpToolFacts): AmpRowHeader {
-  return { ...(facts.label !== undefined ? { label: facts.label } : {}), title: facts.label ?? 'Tool' }
+  return {
+    ...(facts.label !== undefined
+      ? { label: facts.label }
+      : {}),
+    title: facts.label ?? 'Tool',
+  }
 }
 
 /**
@@ -255,8 +295,14 @@ function unfinished<K extends ToolKind>(
 ): ToolCallSpecVariant<K> | null {
   if (!facts.resultAvailable)
     return { kind, ...head, request }
-  if (facts.failed)
-    return { kind, ...head, request, result: failedResult(facts.text) }
+  if (facts.failed) {
+    return {
+      kind,
+      ...head,
+      request,
+      result: failedResult(facts.text),
+    }
+  }
   return null
 }
 
@@ -265,12 +311,18 @@ function unfinished<K extends ToolKind>(
  * words state no result at all.
  */
 function unreadResult(facts: AmpToolFacts): UnparsedToolResult | undefined {
-  return facts.text ? unparsedResult(facts.text) : undefined
+  return facts.text
+    ? unparsedResult(facts.text)
+    : undefined
 }
 
 /** The declared payload of a kind Amp never produces: its request, and no result. */
 function declaredOnly<K extends ToolKind>(kind: K): (facts: AmpToolFacts) => ToolCallSpecVariant<K> {
-  return (facts): ToolCallSpecVariant<K> => ({ kind, ...header(facts), request: requestFor(kind, facts) })
+  return (facts): ToolCallSpecVariant<K> => ({
+    kind,
+    ...header(facts),
+    request: requestFor(kind, facts),
+  })
 }
 
 /** The links one `web_search` result lists, or none for a result that is not a list. */
@@ -282,10 +334,18 @@ function webSearchLinks(text: string): WebSearchLink[] {
   catch {
     return []
   }
-  const entries = Array.isArray(parsed) ? parsed : isObject(parsed) && Array.isArray(parsed.results) ? parsed.results : []
+  const entries = Array.isArray(parsed)
+    ? parsed
+    : isObject(parsed) && Array.isArray(parsed.results)
+      ? parsed.results
+      : []
   return entries.filter(isObject).flatMap((entry) => {
     const url = pickString(entry, 'url')
-    return url ? [{ title: pickString(entry, 'title') || url, url }] : []
+    return url
+      ? [
+          { title: pickString(entry, 'title') || url, url },
+        ]
+      : []
   })
 }
 
@@ -300,23 +360,48 @@ export const AMP_TOOL_READERS: ToolCallSpecReaderTable<AmpToolFacts> = {
     const request = requestFor('agent', facts)
     // The subagent's task heads the row, because the tool name says only that a
     // subagent ran.
-    const head: AmpRowHeader = { ...header(facts), title: request.description }
+    const head: AmpRowHeader = {
+      ...header(facts),
+      title: request.description,
+    }
     return unfinished('agent', facts, request, head)
-      ?? { kind: 'agent', ...head, request, result: ampAgentResult(request, facts.text, false) }
+      ?? {
+        kind: 'agent',
+        ...head,
+        request,
+        result: ampAgentResult(request, facts.text, false),
+      }
   },
   execute: (facts): ToolCallSpecVariant<'execute'> => {
     const request = requestFor('execute', facts)
     // No title: the command is the header on every surface, and a title would put the
     // tool's name above the very command it ran.
-    const head: AmpRowHeader = facts.label !== undefined ? { label: facts.label } : {}
+    const head: AmpRowHeader = facts.label !== undefined
+      ? { label: facts.label }
+      : {}
     return unfinished('execute', facts, request, head)
-      ?? { kind: 'execute', ...head, request, result: { commands: [ampCommandResult(facts.text)], unresolvedTerminals: [] } }
+      ?? {
+        kind: 'execute',
+        ...head,
+        request,
+        result: {
+          commands: [
+            ampCommandResult(facts.text),
+          ],
+          unresolvedTerminals: [],
+        },
+      }
   },
   task: (facts): ToolCallSpecVariant<'task'> => {
     const request = requestFor('task', facts)
     const head = header(facts)
     return unfinished('task', facts, request, head)
-      ?? { kind: 'task', ...head, request, result: ampShellTaskResult(facts.text, facts.toolName === AMP_SHELL_TOOL.ShellCommandKill) }
+      ?? {
+        kind: 'task',
+        ...head,
+        request,
+        result: ampShellTaskResult(facts.text, facts.toolName === AMP_SHELL_TOOL.ShellCommandKill),
+      }
   },
   read: (facts): ToolCallSpecVariant<'read'> => {
     const request = requestFor('read', facts)
@@ -325,15 +410,34 @@ export const AMP_TOOL_READERS: ToolCallSpecReaderTable<AmpToolFacts> = {
     if (early)
       return early
     const outcome = ampReadResult(facts.text)
-    if (outcome)
-      return { kind: 'read', ...head, request, result: outcome.result, images: outcome.images }
+    if (outcome) {
+      return {
+        kind: 'read',
+        ...head,
+        request,
+        result: outcome.result,
+        images: outcome.images,
+      }
+    }
     const unread = unreadResult(facts)
-    return { kind: 'read', ...head, request, ...(unread !== undefined ? { result: unread } : {}) }
+    return {
+      kind: 'read',
+      ...head,
+      request,
+      ...(unread !== undefined
+        ? { result: unread }
+        : {}),
+    }
   },
   fetch: (facts): ToolCallSpecVariant<'fetch'> => {
     const request = requestFor('fetch', facts)
     const head = header(facts)
-    return unfinished('fetch', facts, request, head) ?? { kind: 'fetch', ...head, request, result: { result: facts.text } }
+    return unfinished('fetch', facts, request, head) ?? {
+      kind: 'fetch',
+      ...head,
+      request,
+      result: { result: facts.text },
+    }
   },
   edit: (facts): ToolCallSpecVariant<'edit'> => {
     const request = requestFor('edit', facts)
@@ -343,11 +447,26 @@ export const AMP_TOOL_READERS: ToolCallSpecReaderTable<AmpToolFacts> = {
       return early
     const landed = facts.toolName === AMP_TOOL_NAME.ApplyPatch
       ? ampPatchResultChanges(facts.text)
-      : [ampEditFileResultChange(facts.text, request.changes[0] ?? null)].filter(change => change !== null)
-    if (landed && landed.length > 0)
-      return { kind: 'edit', ...head, request, result: { changes: landed } }
+      : [
+          ampEditFileResultChange(facts.text, request.changes[0] ?? null),
+        ].filter(change => change !== null)
+    if (landed && landed.length > 0) {
+      return {
+        kind: 'edit',
+        ...head,
+        request,
+        result: { changes: landed },
+      }
+    }
     const unread = unreadResult(facts)
-    return { kind: 'edit', ...head, request, ...(unread !== undefined ? { result: unread } : {}) }
+    return {
+      kind: 'edit',
+      ...head,
+      request,
+      ...(unread !== undefined
+        ? { result: unread }
+        : {}),
+    }
   },
   write: (facts): ToolCallSpecVariant<'write'> => {
     const request = requestFor('write', facts)
@@ -356,10 +475,23 @@ export const AMP_TOOL_READERS: ToolCallSpecReaderTable<AmpToolFacts> = {
     if (early)
       return early
     // Amp confirms the write in words, and the file it wrote is the one the call stated.
-    if (request.changes.length > 0)
-      return { kind: 'write', ...head, request, result: { changes: request.changes } }
+    if (request.changes.length > 0) {
+      return {
+        kind: 'write',
+        ...head,
+        request,
+        result: { changes: request.changes },
+      }
+    }
     const unread = unreadResult(facts)
-    return { kind: 'write', ...head, request, ...(unread !== undefined ? { result: unread } : {}) }
+    return {
+      kind: 'write',
+      ...head,
+      request,
+      ...(unread !== undefined
+        ? { result: unread }
+        : {}),
+    }
   },
   delete: (facts): ToolCallSpecVariant<'delete'> => {
     const request = requestFor('delete', facts)
@@ -367,20 +499,43 @@ export const AMP_TOOL_READERS: ToolCallSpecReaderTable<AmpToolFacts> = {
     const early = unfinished('delete', facts, request, head)
     if (early)
       return early
-    if (request.changes.length > 0)
-      return { kind: 'delete', ...head, request, result: { changes: request.changes } }
+    if (request.changes.length > 0) {
+      return {
+        kind: 'delete',
+        ...head,
+        request,
+        result: { changes: request.changes },
+      }
+    }
     const unread = unreadResult(facts)
-    return { kind: 'delete', ...head, request, ...(unread !== undefined ? { result: unread } : {}) }
+    return {
+      kind: 'delete',
+      ...head,
+      request,
+      ...(unread !== undefined
+        ? { result: unread }
+        : {}),
+    }
   },
   grep: (facts): ToolCallSpecVariant<'grep'> => {
     const request = requestFor('grep', facts)
     const head = header(facts)
-    return unfinished('grep', facts, request, head) ?? { kind: 'grep', ...head, request, result: ampGrepResult(facts.text) }
+    return unfinished('grep', facts, request, head) ?? {
+      kind: 'grep',
+      ...head,
+      request,
+      result: ampGrepResult(facts.text),
+    }
   },
   glob: (facts): ToolCallSpecVariant<'glob'> => {
     const request = requestFor('glob', facts)
     const head = header(facts)
-    return unfinished('glob', facts, request, head) ?? { kind: 'glob', ...head, request, result: ampGlobResult(facts.text) }
+    return unfinished('glob', facts, request, head) ?? {
+      kind: 'glob',
+      ...head,
+      request,
+      result: ampGlobResult(facts.text),
+    }
   },
   web_search: (facts): ToolCallSpecVariant<'web_search'> => {
     const request = requestFor('web_search', facts)
@@ -389,7 +544,17 @@ export const AMP_TOOL_READERS: ToolCallSpecReaderTable<AmpToolFacts> = {
     if (early)
       return early
     const links = webSearchLinks(facts.text)
-    return { kind: 'web_search', ...head, request, result: { links, summary: links.length > 0 ? '' : facts.text } }
+    return {
+      kind: 'web_search',
+      ...head,
+      request,
+      result: {
+        links,
+        summary: links.length > 0
+          ? ''
+          : facts.text,
+      },
+    }
   },
   image: (facts): ToolCallSpecVariant<'image'> => {
     const request = requestFor('image', facts)
@@ -398,17 +563,32 @@ export const AMP_TOOL_READERS: ToolCallSpecReaderTable<AmpToolFacts> = {
     if (early)
       return early
     const unread = unreadResult(facts)
-    return { kind: 'image', ...head, request, result: unread ?? {} }
+    return {
+      kind: 'image',
+      ...head,
+      request,
+      result: unread ?? {},
+    }
   },
   skill: (facts): ToolCallSpecVariant<'skill'> => {
     const request = requestFor('skill', facts)
     const head = header(facts)
-    return unfinished('skill', facts, request, head) ?? { kind: 'skill', ...head, request, result: proseResult(facts.text, 'markdown') }
+    return unfinished('skill', facts, request, head) ?? {
+      kind: 'skill',
+      ...head,
+      request,
+      result: proseResult(facts.text, 'markdown'),
+    }
   },
   wait: (facts): ToolCallSpecVariant<'wait'> => {
     const request = requestFor('wait', facts)
     const head = header(facts)
-    return unfinished('wait', facts, request, head) ?? { kind: 'wait', ...head, request, result: proseResult(facts.text) }
+    return unfinished('wait', facts, request, head) ?? {
+      kind: 'wait',
+      ...head,
+      request,
+      result: proseResult(facts.text),
+    }
   },
   mcp: (facts): ToolCallSpecVariant<'mcp'> => {
     const request = requestFor('mcp', facts)
@@ -420,8 +600,12 @@ export const AMP_TOOL_READERS: ToolCallSpecReaderTable<AmpToolFacts> = {
       ...head,
       request,
       result: {
-        content: [parseMcpContentItem({ type: 'text', text: facts.text })],
-        ...(facts.failed ? { error: facts.text } : {}),
+        content: [
+          parseMcpContentItem({ type: 'text', text: facts.text }),
+        ],
+        ...(facts.failed
+          ? { error: facts.text }
+          : {}),
       },
     }
   },

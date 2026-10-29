@@ -14,8 +14,12 @@ export function lettaOutputFilePaths(input: RowExtractionInput, call: ToolCall):
   const returned = lettaReturnedData(source)
   if (returned.kind !== 'present' || typeof returned.value !== 'string')
     return []
-  const pointers = [...returned.value.matchAll(/^\[Full output written to: ([^\r\n]+)\]$/gmu)]
-  const path = pointers.length === 1 ? pointers[0]?.[1] : undefined
+  const pointers = [
+    ...returned.value.matchAll(/^\[Full output written to: ([^\r\n]+)\]$/gmu),
+  ]
+  const path = pointers.length === 1
+    ? pointers[0]?.[1]
+    : undefined
   if (!isFilesystemPath(path) || !/\[Output truncated: showing [\d,]+ of [\d,]+ characters\.\]/u.test(returned.value))
     return []
   const parts = path.split(/[\\/]/u)

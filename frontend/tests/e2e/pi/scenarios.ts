@@ -17,7 +17,10 @@ export async function nativeContext(fixtures: NativeContextFixtures): Promise<Ma
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */
 export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStartupLaunch {
-  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: 'pi', holdWhen: ['--mode', 'rpc'] })
+  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, {
+    binaryName: 'pi',
+    holdWhen: ['--mode', 'rpc'],
+  })
 }
 
 /**
@@ -25,5 +28,7 @@ export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStart
  * Pi's vocabulary has no update-todos call, so the proof gives Pi's own to-do call for the default item.
  */
 export async function relatedNativeProof(context: ManagedNativeScenarioContext): Promise<void> {
-  await exerciseRelatedTodo(context, { toolCall: piTodoToolCall(RELATED_TODO_CALL_ID, { action: 'create', subject: RELATED_TODO_ITEM }) })
+  await exerciseRelatedTodo(context, {
+    toolCall: piTodoToolCall(RELATED_TODO_CALL_ID, { action: 'create', subject: RELATED_TODO_ITEM }),
+  })
 }

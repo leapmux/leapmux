@@ -283,13 +283,20 @@ describe('renderMarkdown persisted render artifacts (indexeddb warm-start)', () 
 
   it('persists a clean worker render (HTML + style dictionary) for the next session', async () => {
     const text = 'persist this body'
-    mockWorker.mockResolvedValue({ html: '<pre class="shiki">CLEAN</pre>', retryable: false, styles: { 'sk-a-3': '--shiki-light:#111' } })
+    mockWorker.mockResolvedValue({
+      html: '<pre class="shiki">CLEAN</pre>',
+      retryable: false,
+      styles: { 'sk-a-3': '--shiki-light:#111' },
+    })
     renderMarkdown(text)
 
     await vi.waitFor(async () => {
       await expect(artifactStore.getArtifact(markdownArtifactNs(), text))
         .resolves
-        .toEqual({ h: '<pre class="shiki">CLEAN</pre>', s: { 'sk-a-3': '--shiki-light:#111' } })
+        .toEqual({
+          h: '<pre class="shiki">CLEAN</pre>',
+          s: { 'sk-a-3': '--shiki-light:#111' },
+        })
     })
   })
 

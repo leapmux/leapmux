@@ -297,7 +297,9 @@ class BrowserChannelTransport implements ChannelTransport {
       return new TauriRelayWebSocket()
     }
 
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const wsProtocol = window.location.protocol === 'https:'
+      ? 'wss:'
+      : 'ws:'
     const wsUrl = `${wsProtocol}//${window.location.host}${WS_CHANNEL_ROUTE}`
     const ws = new WebSocket(wsUrl, [WS_SUBPROTOCOL_CHANNEL_RELAY])
     ws.binaryType = 'arraybuffer'
@@ -365,14 +367,25 @@ async function callWorker<
   opts?: { timeoutMs?: number, signal?: AbortSignal },
 ): Promise<MessageShape<RespSchema>> {
   for (let attempt = 0; ; attempt++) {
-    emitDevEvent('leapmux:rpc-send', () => ({ method, at: performance.now() }))
+    emitDevEvent('leapmux:rpc-send', () => ({
+      method,
+      at: performance.now(),
+    }))
     try {
       const resp = await channelManager.callWorker(workerId, method, reqSchema, respSchema, req, opts)
-      emitDevEvent('leapmux:rpc-recv', () => ({ method, at: performance.now(), ok: true }))
+      emitDevEvent('leapmux:rpc-recv', () => ({
+        method,
+        at: performance.now(),
+        ok: true,
+      }))
       return resp
     }
     catch (err) {
-      emitDevEvent('leapmux:rpc-recv', () => ({ method, at: performance.now(), ok: false }))
+      emitDevEvent('leapmux:rpc-recv', () => ({
+        method,
+        at: performance.now(),
+        ok: false,
+      }))
       if (attempt >= UNAVAILABLE_MAX_RETRIES || !isWorkerUnavailable(err) || opts?.signal?.aborted)
         throw err
       await sleep(UNAVAILABLE_RETRY_BASE_MS * (2 ** attempt), opts?.signal)
@@ -751,7 +764,9 @@ export async function watchEventsViaChannel(
   // See streamBuffer.ts for the full rationale.
   const buffered = bufferStreamHandle<InnerStreamMessage, WatchEventsResponse>(streamHandle, (msg) => {
     const resp = fromBinary(WatchEventsResponseSchema, msg.payload)
-    log.debug('WatchEvents stream message', { response: toJsonString(WatchEventsResponseSchema, resp) })
+    log.debug('WatchEvents stream message', {
+      response: toJsonString(WatchEventsResponseSchema, resp),
+    })
     return resp
   })
 

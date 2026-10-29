@@ -32,9 +32,13 @@ function makeReadResult(toolUseResult: Record<string, unknown> | undefined, cont
     type: 'user',
     message: {
       role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: 'r1', content }],
+      content: [
+        { type: 'tool_result', tool_use_id: 'r1', content },
+      ],
     },
-    ...(toolUseResult ? { tool_use_result: toolUseResult } : {}),
+    ...(toolUseResult
+      ? { tool_use_result: toolUseResult }
+      : {}),
   }
 }
 
@@ -58,7 +62,11 @@ function renderPiReadResult(content: string, startArgs: Record<string, unknown> 
     type: 'tool_execution_end',
     toolCallId: 'call-1',
     toolName: 'read',
-    result: { content: [{ type: 'text', text: content }] },
+    result: {
+      content: [
+        { type: 'text', text: content },
+      ],
+    },
   }
   const start = {
     type: 'tool_execution_start',
@@ -67,7 +75,12 @@ function renderPiReadResult(content: string, startArgs: Record<string, unknown> 
     args: startArgs,
   }
   const category: MessageCategory = { kind: 'tool_result' }
-  const result = renderMessageContent(payload, { spanType: 'read', sources: testMessageSources({ request: () => (parsed(start)) }) }, category, AgentProvider.PI)
+  const result = renderMessageContent(payload, {
+    spanType: 'read',
+    sources: testMessageSources({
+      request: () => (parsed(start)),
+    }),
+  }, category, AgentProvider.PI)
   return render(() => result)
 }
 
@@ -131,7 +144,10 @@ describe('claude Read tool_result rendering', () => {
     const content
       = '<system-reminder>[Truncated: PARTIAL view]</system-reminder>\n\n1\tfoo\n2\tbar\n\n<read-error>disk full</read-error>\n'
     const parsed = makeReadResult(undefined, content)
-    const { container } = renderClaudeToolResult(parsed, { spanType: 'Read', getMessageUiState: () => true })
+    const { container } = renderClaudeToolResult(parsed, {
+      spanType: 'Read',
+      getMessageUiState: () => true,
+    })
     const alerts = container.querySelectorAll('[role="alert"]')
     expect(alerts.length).toBe(2)
     // The length check above pins both indices; `?.` is the type-level guard alone.
@@ -149,7 +165,10 @@ describe('claude Read tool_result rendering', () => {
   it('escapes HTML in reminder text so markup cannot be injected', () => {
     const content = '<system-reminder>danger <script>alert(1)</script></system-reminder>\n\n1\tfoo'
     const parsed = makeReadResult(undefined, content)
-    const { container } = renderClaudeToolResult(parsed, { spanType: 'Read', getMessageUiState: () => true })
+    const { container } = renderClaudeToolResult(parsed, {
+      spanType: 'Read',
+      getMessageUiState: () => true,
+    })
     expect(container.querySelector('script')).toBeNull()
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('<script>alert(1)</script>')
   })
@@ -173,7 +192,12 @@ describe('claude Write/create tool_result rendering', () => {
     // success, which was the previous rendering bug.
     const parsed = {
       type: 'user',
-      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'w1', content: 'File created successfully at: /tmp/new.ts' }] },
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'w1', content: 'File created successfully at: /tmp/new.ts' },
+        ],
+      },
       tool_use_result: { type: 'create', filePath: '/tmp/new.ts', content: 'const a = 1\nconst b = 2\nconst c = 3' },
     }
     const { container } = renderClaudeToolResult(parsed, { spanType: 'Write' })
@@ -204,7 +228,10 @@ describe('opencode Read tool_call_update rendering', () => {
       title: 'Read /tmp/a.ts',
       rawInput: { filePath: '/tmp/a.ts' },
       content: [
-        { type: 'content', content: { text: '1\tacpReadLineA\n2\tacpReadLineB\n' } },
+        {
+          type: 'content',
+          content: { text: '1\tacpReadLineA\n2\tacpReadLineB\n' },
+        },
       ],
     })
     expect(container.querySelector('[class*="codeView"]')).not.toBeNull()
@@ -221,7 +248,10 @@ describe('opencode Read tool_call_update rendering', () => {
       title: 'Read /tmp/a.ts',
       rawInput: { filePath: '/tmp/a.ts' },
       content: [
-        { type: 'content', content: { text: 'plain non-cat-n text' } },
+        {
+          type: 'content',
+          content: { text: 'plain non-cat-n text' },
+        },
       ],
     })
     expect(container.querySelector('[class*="codeView"]')).toBeNull()

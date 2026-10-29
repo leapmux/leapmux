@@ -77,7 +77,13 @@ describe('chatScrollRailGeometry', () => {
     const base = { hasMoreOlder: false, hasMoreNewer: false, distFromBottomPx: 999 }
 
     it('computes the viewport share when the whole conversation is loaded', () => {
-      const thumb = computeSeqThumb(prepOf([1n, 2n, 3n, 4n, 5n]), { ...base, scrollTop: 0, clientHeight: 200, minSeq: 1n, maxSeq: 5n })!
+      const thumb = computeSeqThumb(prepOf([1n, 2n, 3n, 4n, 5n]), {
+        ...base,
+        scrollTop: 0,
+        clientHeight: 200,
+        minSeq: 1n,
+        maxSeq: 5n,
+      })!
       expect(thumb.topFraction).toBeCloseTo(0, 5)
       expect(thumb.visibleFraction).toBeCloseTo(0.4, 5) // viewing seqs 1..3 of 5
     })
@@ -112,8 +118,20 @@ describe('chatScrollRailGeometry', () => {
     })
 
     it('returns null for an empty conversation and a full thumb for a single seq', () => {
-      expect(computeSeqThumb(prepOf([1n]), { ...base, scrollTop: 0, clientHeight: 100, minSeq: 0n, maxSeq: 0n })).toBeNull()
-      const single = computeSeqThumb(prepOf([7n]), { ...base, scrollTop: 0, clientHeight: 100, minSeq: 7n, maxSeq: 7n })!
+      expect(computeSeqThumb(prepOf([1n]), {
+        ...base,
+        scrollTop: 0,
+        clientHeight: 100,
+        minSeq: 0n,
+        maxSeq: 0n,
+      })).toBeNull()
+      const single = computeSeqThumb(prepOf([7n]), {
+        ...base,
+        scrollTop: 0,
+        clientHeight: 100,
+        minSeq: 7n,
+        maxSeq: 7n,
+      })!
       expect(single.topFraction).toBe(0)
       expect(single.visibleFraction).toBeCloseTo(1, 5)
     })
@@ -121,7 +139,13 @@ describe('chatScrollRailGeometry', () => {
     it('returns null (never a NaN thumb) for an inverted range where maxSeq < minSeq', () => {
       // A stale minSeq stranded above a delete-lowered maxSeq makes span <= 0, which without
       // the guard yields NaN fractions -> the thumb/track render at `NaNpx`. Hide instead.
-      const thumb = computeSeqThumb(prepOf([3n, 4n]), { ...base, scrollTop: 0, clientHeight: 100, minSeq: 9n, maxSeq: 4n })
+      const thumb = computeSeqThumb(prepOf([3n, 4n]), {
+        ...base,
+        scrollTop: 0,
+        clientHeight: 100,
+        minSeq: 9n,
+        maxSeq: 4n,
+      })
       expect(thumb).toBeNull()
     })
   })
@@ -312,7 +336,9 @@ describe('chatScrollRailGeometry', () => {
       const unsafe = BigInt(Number.MAX_SAFE_INTEGER) + 1n
       expect(prepareGeometry(geoOf([unsafe])).rowSeqs).toBeNull()
       expect(seqAtContentY(prepOf([unsafe]), 0)).toBeNull()
-      expect(prepareGeometry(geoOf([BigInt(Number.MAX_SAFE_INTEGER)])).rowSeqs).toBeNull()
+      expect(prepareGeometry(geoOf([
+        BigInt(Number.MAX_SAFE_INTEGER),
+      ])).rowSeqs).toBeNull()
     })
   })
 })

@@ -14,11 +14,15 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
 import {
   collectRustSpdxTexts,
   compareCrateVersions,
+  createOverrideTracker,
   createRustSpdxResolver,
   depHeading,
   headingText,
+  listOverrideNames,
   normalizeLicenseText,
+  resolveJsLicenseSource,
   RUST_SPDX_LICENSE_SOURCES,
+  staleSpdxTextErrors,
   toAnchor,
 } from './generate-notice.mjs'
 
@@ -112,7 +116,11 @@ describe('createRustSpdxResolver', () => {
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, 'Cargo.toml'), '')
     for (const [file, body] of Object.entries(files)) writeFileSync(join(dir, file), body)
-    return { name, version, manifest_path: join(dir, 'Cargo.toml') }
+    return {
+      name,
+      version,
+      manifest_path: join(dir, 'Cargo.toml'),
+    }
   }
 
   beforeAll(() => {
@@ -159,7 +167,14 @@ describe('createRustSpdxResolver', () => {
 
   it('reports a term whose source crate stopped shipping the file', () => {
     // rustix is present, but pointed at a directory without the LLVM file.
-    const withoutFile = [...packages, { name: 'rustix', version: '1.1.4', manifest_path: join(root, 'anyhow-1.0.104', 'Cargo.toml') }]
+    const withoutFile = [
+      ...packages,
+      {
+        name: 'rustix',
+        version: '1.1.4',
+        manifest_path: join(root, 'anyhow-1.0.104', 'Cargo.toml'),
+      },
+    ]
     const resolved = createRustSpdxResolver(withoutFile)('Apache-2.0 WITH LLVM-exception')
     expect(resolved.error).toContain('is missing')
   })
@@ -168,9 +183,12 @@ describe('createRustSpdxResolver', () => {
     // This is the zerocopy regression: LICENSE-BSD existed, so an
     // existence-only check shipped a two-clause text under BSD-3-Clause for
     // years. This fixture's BSD file is missing the third clause.
-    const twoClause = [...packages.filter(p => p.name !== 'alloc-no-stdlib'), crate('alloc-no-stdlib', '2.0.4', {
-      LICENSE: 'Copyright (c) 2016\nRedistribution and use … are permitted provided that the following two conditions are met.',
-    })]
+    const twoClause = [
+      ...packages.filter(p => p.name !== 'alloc-no-stdlib'),
+      crate('alloc-no-stdlib', '2.0.4', {
+        LICENSE: 'Copyright (c) 2016\nRedistribution and use … are permitted provided that the following two conditions are met.',
+      }),
+    ]
     const resolved = createRustSpdxResolver(twoClause)('BSD-3-Clause')
     expect(resolved.text).toBeUndefined()
     expect(resolved.error).toContain('does not read like BSD-3-Clause')
@@ -259,7 +277,9 @@ describe('collectRustSpdxTexts', () => {
   it('surfaces a resolver failure with the term that caused it', () => {
     const { text, failures } = collectRustSpdxTexts('Zlib', resolve)
     expect(text).toBeNull()
-    expect(failures).toEqual([{ term: 'Zlib', message: 'zlib is broken' }])
+    expect(failures).toEqual([
+      { term: 'Zlib', message: 'zlib is broken' },
+    ])
   })
 
   it('does not let a broken term satisfy a choice on its own', () => {
@@ -328,7 +348,12 @@ describe('toAnchor', () => {
 
 describe('headingText', () => {
   it('reads a plain text node', () => {
-    expect(headingText({ type: 'element', children: [{ type: 'text', value: 'serde 1.0.229' }] }))
+    expect(headingText({
+      type: 'element',
+      children: [
+        { type: 'text', value: 'serde 1.0.229' },
+      ],
+    }))
       .toBe('serde 1.0.229')
   })
 
@@ -340,7 +365,13 @@ describe('headingText', () => {
       type: 'element',
       children: [
         { type: 'text', value: 'a' },
-        { type: 'element', tagName: 'em', children: [{ type: 'text', value: 'b' }] },
+        {
+          type: 'element',
+          tagName: 'em',
+          children: [
+            { type: 'text', value: 'b' },
+          ],
+        },
         { type: 'text', value: 'c' },
       ],
     })).toBe('abc')
@@ -348,5 +379,200 @@ describe('headingText', () => {
 
   it('returns an empty string for an element with no children', () => {
     expect(headingText({ type: 'element', tagName: 'h3' })).toBe('')
+  })
+})
+
+describe('createOverrideTracker', () => {
+  const goOverrides = names => ({
+    label: 'Go',
+    kind: 'go',
+    unit: 'runtime module',
+    names,
+  })
+
+  it('reports an override that no dependency of its name reads', () => {
+    // vinxi left the frontend graph while its override stayed behind, and
+    // nothing said so: an override is read only for a package that needs it.
+    expect(createOverrideTracker().staleErrors(goOverrides(['github.com-gone-module']))).toEqual([
+      'Go: scripts/license-overrides/go/github.com-gone-module/ is stale: no runtime module of that name in the dependency graph reads it. Delete it.',
+    ])
+  })
+
+  it('reports an override whose dependency ships its own license file, with that reason', () => {
+    const overrides = createOverrideTracker()
+    overrides.redundant('clipboard-win', 'clipboard-win@5.4.1 ships its own license file')
+
+    expect(overrides.staleErrors({
+      label: 'Rust',
+      kind: 'rust',
+      unit: 'crate',
+      names: ['clipboard-win'],
+    })).toEqual([
+      'Rust: scripts/license-overrides/rust/clipboard-win/ is stale: clipboard-win@5.4.1 ships its own license file. Delete it.',
+    ])
+  })
+
+  it('keeps an override that one version of a dependency still needs, in either order', () => {
+    // Two versions of one crate share one override directory. The version that
+    // still lacks a license file keeps the override alive.
+    const neededFirst = createOverrideTracker()
+    neededFirst.needed('clipboard-win')
+    neededFirst.redundant('clipboard-win', 'clipboard-win@5.4.1 ships its own license file')
+    const redundantFirst = createOverrideTracker()
+    redundantFirst.redundant('clipboard-win', 'clipboard-win@5.4.1 ships its own license file')
+    redundantFirst.needed('clipboard-win')
+
+    const rust = {
+      label: 'Rust',
+      kind: 'rust',
+      unit: 'crate',
+      names: ['clipboard-win'],
+    }
+    expect(neededFirst.staleErrors(rust)).toEqual([])
+    expect(redundantFirst.staleErrors(rust)).toEqual([])
+  })
+
+  it('states the first reason when several versions ignore the override', () => {
+    const overrides = createOverrideTracker()
+    overrides.redundant('a', 'a@1.0.0 ships its own license file')
+    overrides.redundant('a', 'a@2.0.0 ships its own license file')
+
+    expect(overrides.staleErrors(goOverrides(['a']))).toEqual([
+      'Go: scripts/license-overrides/go/a/ is stale: a@1.0.0 ships its own license file. Delete it.',
+    ])
+  })
+
+  it('reports nothing when there are no overrides, and only the overrides on disk', () => {
+    const overrides = createOverrideTracker()
+    overrides.needed('a')
+    overrides.redundant('b', 'b@1.0.0 ships its own license file')
+
+    expect(overrides.staleErrors(goOverrides([]))).toEqual([])
+    expect(overrides.staleErrors(goOverrides(['a']))).toEqual([])
+  })
+})
+
+describe('listOverrideNames', () => {
+  let root
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'license-overrides-'))
+    for (const dir of [
+      'js/@bufbuild/protobuf',
+      'js/@xterm/addon-serialize',
+      'js/plain-package',
+      'go/github.com-a-b',
+    ])
+      mkdirSync(join(root, dir), { recursive: true })
+    mkdirSync(join(root, 'empty'))
+    writeFileSync(join(root, 'js/README.md'), 'not an override')
+    writeFileSync(join(root, 'js/@xterm/README.md'), 'not an override either')
+  })
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('lists a scoped override as scope/package, beside a plain one, sorted', () => {
+    expect(listOverrideNames(join(root, 'js'))).toEqual(['@bufbuild/protobuf', '@xterm/addon-serialize', 'plain-package'])
+  })
+
+  it('lists a Go override under its dashed module path', () => {
+    expect(listOverrideNames(join(root, 'go'))).toEqual(['github.com-a-b'])
+  })
+
+  it('lists nothing for an empty or a missing directory', () => {
+    expect(listOverrideNames(join(root, 'empty'))).toEqual([])
+    expect(listOverrideNames(join(root, 'absent'))).toEqual([])
+  })
+})
+
+describe('staleSpdxTextErrors', () => {
+  it('accepts every vendored text that the table reads', () => {
+    expect(staleSpdxTextErrors(['Zlib.txt'])).toEqual([])
+    expect(staleSpdxTextErrors([])).toEqual([])
+  })
+
+  it('reports a text that no entry vendors', () => {
+    expect(staleSpdxTextErrors(['Zlib.txt', 'GPL-2.0.txt'])).toEqual([
+      'Rust: scripts/license-overrides/spdx/GPL-2.0.txt is stale: no RUST_SPDX_LICENSE_SOURCES entry vendors it. Delete it.',
+    ])
+  })
+
+  it('does not count a borrowed text as vendored', () => {
+    // A `{ crate, file }` entry reads from the crate, never from the directory.
+    expect(staleSpdxTextErrors(['LICENSE-MIT'], {
+      MIT: { crate: 'anyhow', file: 'LICENSE-MIT', signature: 'Permission' },
+    })).toEqual([
+      'Rust: scripts/license-overrides/spdx/LICENSE-MIT is stale: no RUST_SPDX_LICENSE_SOURCES entry vendors it. Delete it.',
+    ])
+  })
+})
+
+describe('resolveJsLicenseSource', () => {
+  const dep = fields => ({
+    name: '@scope/pkg',
+    version: '2.1.0',
+    declared: 'MIT',
+    hasLicenseFile: true,
+    override: undefined,
+    ...fields,
+  })
+
+  it('takes the name and the text from a package that declares and ships its license', () => {
+    expect(resolveJsLicenseSource(dep({}))).toEqual({ license: 'MIT', text: 'package', override: 'none' })
+  })
+
+  it('calls an override redundant when the package declares and ships its license', () => {
+    expect(resolveJsLicenseSource(dep({
+      override: { license: 'MIT' },
+    }))).toEqual({ license: 'MIT', text: 'package', override: 'redundant' })
+  })
+
+  it('refuses a license file whose package declares no license, rather than heading it "unknown"', () => {
+    expect(resolveJsLicenseSource(dep({ declared: undefined }))).toEqual({
+      error: 'JS: @scope/pkg@2.1.0 — package.json declares no license; add scripts/license-overrides/js/@scope/pkg/expected.json with the license that its license file grants',
+      override: 'none',
+    })
+  })
+
+  it('names the override\'s license over the package\'s own text when the package declares none', () => {
+    expect(resolveJsLicenseSource(dep({
+      declared: undefined,
+      override: { license: 'MIT' },
+    }))).toEqual({ license: 'MIT', text: 'package', override: 'needed' })
+  })
+
+  it('takes the text from the override when the package ships no license file', () => {
+    expect(resolveJsLicenseSource(dep({
+      hasLicenseFile: false,
+      override: { license: 'MIT' },
+    }))).toEqual({ license: 'MIT', text: 'override', override: 'needed' })
+  })
+
+  it('asks for an override when the package ships no license file and has none', () => {
+    expect(resolveJsLicenseSource(dep({ hasLicenseFile: false }))).toEqual({
+      error: 'JS: @scope/pkg@2.1.0 — no license file found; add an override in scripts/license-overrides/js/@scope/pkg/',
+      override: 'none',
+    })
+  })
+
+  it('asks for a review when the declared license no longer matches the override, and keeps the override needed', () => {
+    expect(resolveJsLicenseSource(dep({
+      hasLicenseFile: false,
+      declared: 'Apache-2.0',
+      override: { license: 'MIT' },
+    }))).toEqual({
+      error: 'JS: @scope/pkg@2.1.0 — license field changed from "MIT" to "Apache-2.0"; review and update the override in scripts/license-overrides/js/@scope/pkg/',
+      override: 'needed',
+    })
+    expect(resolveJsLicenseSource(dep({
+      hasLicenseFile: false,
+      declared: undefined,
+      override: { license: 'MIT' },
+    }))).toEqual({
+      error: 'JS: @scope/pkg@2.1.0 — license field changed from "MIT" to "unknown"; review and update the override in scripts/license-overrides/js/@scope/pkg/',
+      override: 'needed',
+    })
   })
 })

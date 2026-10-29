@@ -22,7 +22,12 @@ codebuddyTest.describe('CodeBuddy Code steering', () => {
     void authenticatedCodebuddyWorkspace
     const gate = 'codebuddy-image-steer'
     const start = await modelScript.queue(
-      { gate, toolCalls: [bashToolCall(AgentProvider.CODEBUDDY, 'image-steer-shell', 'printf codebuddy-steer-ready')] },
+      {
+        gate,
+        toolCalls: [
+          bashToolCall(AgentProvider.CODEBUDDY, 'image-steer-shell', 'printf codebuddy-steer-ready'),
+        ],
+      },
       { text: 'I saw the queued text.' },
       { text: 'I saw the queued image.' },
     )

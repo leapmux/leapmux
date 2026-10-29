@@ -40,7 +40,9 @@ vi.mock('~/api/workerRpc', () => ({
   restartTerminal: vi.fn(async () => ({})),
   listAvailableShells: vi.fn(async () => ({ shells: [], defaultShell: '' })),
   openTerminal: vi.fn(async () => ({ terminalId: 'new-tid', title: '' })),
-  closeTerminal: vi.fn(async () => ({ result: { worktreeId: '', failureMessage: '' } })),
+  closeTerminal: vi.fn(async () => ({
+    result: { worktreeId: '', failureMessage: '' },
+  })),
   resizeTerminal: vi.fn(async () => ({})),
 }))
 
@@ -87,7 +89,9 @@ beforeEach(() => {
   restartTerminalMock.mockImplementation(async () => ({}))
   sendInputMock.mockImplementation(async () => ({}))
   openTerminalMock.mockImplementation(async () => ({ terminalId: 'new-tid', title: '' }))
-  closeTerminalMock.mockImplementation(async () => ({ result: { worktreeId: '', failureMessage: '' } }))
+  closeTerminalMock.mockImplementation(async () => ({
+    result: { worktreeId: '', failureMessage: '' },
+  }))
   listAvailableShellsMock.mockImplementation(async () => ({ shells: [], defaultShell: '' }))
 })
 
@@ -159,7 +163,11 @@ function setup(status: TerminalStatus | undefined = undefined, tabOverrides: Tab
       activeWorkspace,
       isActiveWorkspaceMutatable: () => isMutatable,
       getCurrentTabContext: () => ({ workerId: 'worker-1', workingDir: '/tmp' }),
-      newTerminalDialog: { open: () => {}, close: () => {}, value: () => null },
+      newTerminalDialog: {
+        open: () => {},
+        close: () => {},
+        value: () => null,
+      },
       setNewTerminalLoading: () => {},
       setNewShellLoading: () => {},
       repoGitStore: createRepoGitStore(),
@@ -200,7 +208,9 @@ function setupForOpen(opts: OpenSetupOpts = {}) {
   const harness = installTestBridge({ workspaceId: 'ws-1' })
   let stores!: ReturnType<typeof createTestTabStores>
   const [activeWorkspace] = createSignal<Workspace | null>(
-    opts.workspace === undefined ? ({ id: 'ws-1' } as Workspace) : opts.workspace,
+    opts.workspace === undefined
+      ? ({ id: 'ws-1' } as Workspace)
+      : opts.workspace,
   )
   let ops!: ReturnType<typeof useTerminalOperations>
   const dispose = createRoot((d) => {
@@ -213,7 +223,11 @@ function setupForOpen(opts: OpenSetupOpts = {}) {
       activeWorkspace,
       isActiveWorkspaceMutatable: () => opts.isMutatable ?? true,
       getCurrentTabContext: () => opts.ctx ?? { workerId: 'worker-1', workingDir: '/tmp' },
-      newTerminalDialog: { open: opts.dialogOpen ?? (() => {}), close: () => {}, value: () => null },
+      newTerminalDialog: {
+        open: opts.dialogOpen ?? (() => {}),
+        close: () => {},
+        value: () => null,
+      },
       setNewTerminalLoading: opts.setNewTerminalLoading ?? (() => {}),
       setNewShellLoading: opts.setNewShellLoading ?? (() => {}),
       repoGitStore: createRepoGitStore(),
@@ -428,7 +442,10 @@ describe('useTerminalOperations.handleopenterminalwithshell', () => {
   // Worker and a path the branch row already stated.
   it('opens the dialog on the target when the pair is incomplete', async () => {
     const dialogOpen = vi.fn()
-    const { ops } = setupForOpen({ ctx: { workerId: '', workingDir: '' }, dialogOpen })
+    const { ops } = setupForOpen({
+      ctx: { workerId: '', workingDir: '' },
+      dialogOpen,
+    })
 
     await ops.handleOpenTerminalWithShell('/bin/zsh', { workingDir: '/other/worktree' })
 
@@ -757,7 +774,11 @@ describe('terminal bell via watch events', () => {
     const { view, selection, metadata, add } = setup()
     add('term-1')
     selection.setActiveById(TabType.TERMINAL, 'term-1')
-    handleTerminalBell('term-1', { metadata, selection, getActiveWorkspaceId: () => 'ws-1' })
+    handleTerminalBell('term-1', {
+      metadata,
+      selection,
+      getActiveWorkspaceId: () => 'ws-1',
+    })
     expect(view.getTerminalTab('term-1')?.hasNotification).not.toBe(true)
   })
 
@@ -766,7 +787,11 @@ describe('terminal bell via watch events', () => {
     add('term-1')
     add('term-2')
     selection.setActiveById(TabType.TERMINAL, 'term-2')
-    handleTerminalBell('term-1', { metadata, selection, getActiveWorkspaceId: () => 'ws-1' })
+    handleTerminalBell('term-1', {
+      metadata,
+      selection,
+      getActiveWorkspaceId: () => 'ws-1',
+    })
     expect(view.getTerminalTab('term-1')?.hasNotification).toBe(true)
     expect(view.getTerminalTab('term-2')?.hasNotification).not.toBe(true)
   })

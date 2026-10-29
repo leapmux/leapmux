@@ -7,27 +7,44 @@ import { runNativeToolTurn } from './nativeToolExecution'
 vi.mock('./nativeControlObservation', () => ({
   expectNoNativeControl: vi.fn(async (_context, options) => options.relatedProof()),
 }))
-vi.mock('./nativeToolExecution', () => ({ runNativeToolTurn: vi.fn() }))
+vi.mock('./nativeToolExecution', () => ({
+  runNativeToolTurn: vi.fn(),
+}))
 
 beforeEach(() => vi.clearAllMocks())
 
 function fixture(before: number, after: number | undefined) {
   const status = vi.fn()
-    .mockResolvedValueOnce({ ruleMatches: { reviewer: before } })
-    .mockResolvedValueOnce({ ruleMatches: { reviewer: after } })
-  const context = { modelScript: { status } } as unknown as ManagedNativeScenarioContext
+    .mockResolvedValueOnce({
+      ruleMatches: { reviewer: before },
+    })
+    .mockResolvedValueOnce({
+      ruleMatches: { reviewer: after },
+    })
+  const context = {
+    modelScript: { status },
+  } as unknown as ManagedNativeScenarioContext
   const requests = { start: 2, toolRequest: {}, resultRequest: {} } as Awaited<ReturnType<typeof runNativeToolTurn>>
   vi.mocked(runNativeToolTurn).mockResolvedValue(requests)
   return { context, status, requests }
 }
 
-const turn = { toolCalls: [{ id: 'tool', name: 'write', arguments: {} }], prompt: 'Write the fixture.', answer: 'The write ended.' }
+const turn = {
+  toolCalls: [
+    { id: 'tool', name: 'write', arguments: {} },
+  ],
+  prompt: 'Write the fixture.',
+  answer: 'The write ended.',
+}
 
 describe('runReviewedNativeToolTurn', () => {
   it.each([0, 3])('requires one new review after %s previous reviews and refuses manual approvals', async (before) => {
     const { context, status, requests } = fixture(before, before + 1)
     const result = await runReviewedNativeToolTurn(context, 'reviewer', turn)
-    expect(expectNoNativeControl).toHaveBeenCalledWith(context, { testId: 'control-banner', relatedProof: expect.any(Function) })
+    expect(expectNoNativeControl).toHaveBeenCalledWith(context, {
+      testId: 'control-banner',
+      relatedProof: expect.any(Function),
+    })
     expect(runNativeToolTurn).toHaveBeenCalledExactlyOnceWith(context, { ...turn, permissions: 'none' })
     expect(status).toHaveBeenCalledTimes(2)
     expect(result.start).toBe(requests.start)

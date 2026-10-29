@@ -26,16 +26,27 @@ export function openCodeShellOutcome(snapshot: NativeMessageSnapshot, callId: st
     if (original.status !== 'completed' && original.status !== 'failed')
       continue
     const decoded = nativeMessageSupplement(message)
-    const supplemental = isObject(decoded) ? decoded.provider : undefined
+    const supplemental = isObject(decoded)
+      ? decoded.provider
+      : undefined
     const extra = acpToolSupplement(original, supplemental)
-    const resolved = { ...acpSupplementProtocol(extra), ...original }
-    const raw = isObject(resolved.rawOutput) ? resolved.rawOutput : acpSupplementRawOutput(extra)
+    const resolved = {
+      ...acpSupplementProtocol(extra),
+      ...original,
+    }
+    const raw = isObject(resolved.rawOutput)
+      ? resolved.rawOutput
+      : acpSupplementRawOutput(extra)
     if (!isObject(raw) || !isObject(raw.metadata) || !Number.isSafeInteger(raw.metadata.exit))
       throw new Error('The paired native shell result contains no safe integer exit code.')
     const exitCode = raw.metadata.exit
     if (typeof exitCode !== 'number')
-      throw new Error('The paired native shell exit code must be a number.')
-    const output = typeof raw.output === 'string' ? raw.output : typeof raw.error === 'string' ? raw.error : undefined
+      throw new TypeError('The paired native shell exit code must be a number.')
+    const output = typeof raw.output === 'string'
+      ? raw.output
+      : typeof raw.error === 'string'
+        ? raw.error
+        : undefined
     if (output === undefined || output !== modelText)
       throw new Error('The native shell frame and model result contain different output bytes.')
     outcomes.push({ text: modelText, exitCode, failed: original.status === 'failed' || exitCode !== 0 })

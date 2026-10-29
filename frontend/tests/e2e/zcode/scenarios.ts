@@ -31,5 +31,7 @@ export async function bypassToolRequests(context: Pick<ManagedNativeScenarioCont
 
 /** The related proof of a missing-setting cell: a native to-do call fills the sidebar. */
 export async function relatedNativeProof(context: ManagedNativeScenarioContext): Promise<void> {
-  await exerciseRelatedTodo(context, { prepare: () => bypassToolRequests(context) })
+  await exerciseRelatedTodo(context, {
+    prepare: () => bypassToolRequests(context),
+  })
 }

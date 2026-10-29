@@ -22,7 +22,10 @@ declare global {
 export function installThinkingIndicatorWatch(): void {
   window.__thinkingIndicatorWatch?.stop()
   const observer = new MutationObserver(() => inspect())
-  const watch = { shown: false, stop: () => observer.disconnect() }
+  const watch = {
+    shown: false,
+    stop: () => observer.disconnect(),
+  }
   function inspect(): void {
     for (const element of document.querySelectorAll<HTMLElement>('[data-testid="thinking-indicator"]')) {
       if (element.style.display !== 'none' && element.style.gridTemplateRows === '1fr') {
@@ -33,7 +36,12 @@ export function installThinkingIndicatorWatch(): void {
     }
   }
   window.__thinkingIndicatorWatch = watch
-  observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['style'] })
+  observer.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['style'],
+  })
   inspect()
 }
 

@@ -37,7 +37,9 @@ describe('waitForMinuteAfter', () => {
         now: () => now,
         sleep: vi.fn(async (milliseconds: number) => {
           slept.push(milliseconds)
-          now += step ? step(milliseconds) : milliseconds
+          now += step
+            ? step(milliseconds)
+            : milliseconds
         }),
       },
     }
@@ -58,7 +60,9 @@ describe('waitForMinuteAfter', () => {
 
   it('sleeps again when a sleep ends early', async () => {
     // The first sleep ends one millisecond early. The next one sleeps in full.
-    const fake = clockAt('2026-10-04T12:10:59.000Z', milliseconds => milliseconds > 1 ? milliseconds - 1 : milliseconds)
+    const fake = clockAt('2026-10-04T12:10:59.000Z', milliseconds => milliseconds > 1
+      ? milliseconds - 1
+      : milliseconds)
     await waitForMinuteAfter('2026-10-04T12-10', fake.clock)
     expect(fake.slept).toEqual([1000, 1])
     expect(fake.current()).toBe(Date.parse('2026-10-04T12:11:00.000Z'))
@@ -70,7 +74,13 @@ describe('waitForMinuteAfter', () => {
     expect(fake.clock.sleep).not.toHaveBeenCalled()
   })
 
-  it.each(['', '2026-10-04T12:10', '2026-10-04T12-10-00', '2026-13-40T99-99', 'session-2026-10-04T12-10'])('refuses the minute %j', async (minute) => {
+  it.each([
+    '',
+    '2026-10-04T12:10',
+    '2026-10-04T12-10-00',
+    '2026-13-40T99-99',
+    'session-2026-10-04T12-10',
+  ])('refuses the minute %j', async (minute) => {
     const fake = clockAt('2026-10-04T12:10:00.000Z')
     await expect(waitForMinuteAfter(minute, fake.clock)).rejects.toThrow('is not a UTC minute')
     expect(fake.clock.sleep).not.toHaveBeenCalled()

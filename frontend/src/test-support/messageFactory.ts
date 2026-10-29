@@ -95,10 +95,18 @@ export function makeTranscriptMessage(frame: TranscriptFrame, defaultSeq: bigint
     id: frame.id,
     agentProvider: frame.provider,
     seq: frame.seq ?? defaultSeq,
-    ...(frame.source !== undefined ? { source: frame.source } : {}),
-    ...(frame.spanId !== undefined ? { spanId: frame.spanId } : {}),
-    ...(frame.spanType !== undefined ? { spanType: frame.spanType } : {}),
-    ...(frame.agentSessionId !== undefined ? { agentSessionId: frame.agentSessionId } : {}),
+    ...(frame.source !== undefined
+      ? { source: frame.source }
+      : {}),
+    ...(frame.spanId !== undefined
+      ? { spanId: frame.spanId }
+      : {}),
+    ...(frame.spanType !== undefined
+      ? { spanType: frame.spanType }
+      : {}),
+    ...(frame.agentSessionId !== undefined
+      ? { agentSessionId: frame.agentSessionId }
+      : {}),
     content: frame.rawContent ?? rawContent(frame.content),
     ...(supplemental
       ? {
@@ -106,6 +114,8 @@ export function makeTranscriptMessage(frame: TranscriptFrame, defaultSeq: bigint
           supplementalRevision: frame.supplementalRevision ?? 1n,
         }
       : {}),
-    ...(frame.completion !== undefined ? { completion: frame.completion } : {}),
+    ...(frame.completion !== undefined
+      ? { completion: frame.completion }
+      : {}),
   })
 }

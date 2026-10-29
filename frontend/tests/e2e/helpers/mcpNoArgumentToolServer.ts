@@ -92,5 +92,8 @@ export function writeMcpNoArgumentToolServer(directory: string, options: McpNoAr
   const script = join(directory, `${fileBase}.mjs`)
   const ready = join(directory, `${fileBase}-ready`)
   writeFileSync(script, scriptSource(writeMcpStdioRuntime(directory), ready, options))
-  return { ...mcpProbeServer(options.name, script), ready }
+  return {
+    ...mcpProbeServer(options.name, script),
+    ready,
+  }
 }

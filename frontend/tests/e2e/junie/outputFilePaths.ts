@@ -18,9 +18,15 @@ export interface JunieNativeOutputPaths extends NativeToolOutputRecord {
 
 /** Read the exact native notice. The path alone does not prove file existence. */
 export function junieNativeNoticePath(text: string, sessionId?: string): string {
-  const matches = [...text.matchAll(/\[Command output exceeded the display limit and has been (?:truncated|summarized)\. See full log at: ([^\r\n]+?)\. Important information/gu)]
-  const path = matches.length === 1 ? matches[0]?.[1] : undefined
-  const owner = typeof path === 'string' ? /[\\/]sessions[\\/](session-[A-Za-z0-9-]+)[\\/]task-[A-Za-z0-9-]+[\\/]terminal-output[\\/]terminal-output-\d+\.txt$/u.exec(path) : null
+  const matches = [
+    ...text.matchAll(/\[Command output exceeded the display limit and has been (?:truncated|summarized)\. See full log at: ([^\r\n]+?)\. Important information/gu),
+  ]
+  const path = matches.length === 1
+    ? matches[0]?.[1]
+    : undefined
+  const owner = typeof path === 'string'
+    ? /[\\/]sessions[\\/](session-[A-Za-z0-9-]+)[\\/]task-[A-Za-z0-9-]+[\\/]terminal-output[\\/]terminal-output-\d+\.txt$/u.exec(path)
+    : null
   if (!isFilesystemPath(path) || (!path.endsWith('/.output.txt') && !owner))
     throw new Error('The Junie output notice has no unique native log path.')
   if (sessionId !== undefined && (!sessionId || (owner && owner[1] !== sessionId)))
@@ -49,7 +55,9 @@ export function junieHostTerminalPreview(snapshot: NativeMessageSnapshot, callId
     // `signal` field whose value is empty or is not a string. This check refuses both: an absent `truncated`, and any
     // `signal` field.
     const terminals = pickObject(provider, ACP_SUPPLEMENT.Terminals)
-    const ids = Array.isArray(frame.content) ? frame.content.filter(isObject).filter(block => block.type === 'terminal').map(block => block.terminalId) : []
+    const ids = Array.isArray(frame.content)
+      ? frame.content.filter(isObject).filter(block => block.type === 'terminal').map(block => block.terminalId)
+      : []
     if (ids.length !== 1 || ids[0] !== callId)
       throw new Error('The Junie host preview refers to a different native terminal.')
     const terminal = pickObject(terminals, callId)
@@ -72,7 +80,9 @@ export function readJunieNativeOutputPaths(snapshot: NativeMessageSnapshot, call
     spanId: callId,
     accepts: frame => acpClosedToolCall(frame, callId, ['completed']) && frame.kind === 'execute',
   })
-  const supplemental = isObject(record.supplement) ? pickObject(record.supplement, MESSAGE_SUPPLEMENT_FIELD.Provider) : undefined
+  const supplemental = isObject(record.supplement)
+    ? pickObject(record.supplement, MESSAGE_SUPPLEMENT_FIELD.Provider)
+    : undefined
   if (!supplemental)
     throw new Error('The Junie pointer receipt has no retained provider record.')
   const provider = requireAcpToolSupplement(record.frame, supplemental, 'Junie pointer receipt')
@@ -97,7 +107,12 @@ export function readJunieNativeOutputPaths(snapshot: NativeMessageSnapshot, call
     || !new RegExp(JUNIE_OUTPUT_REFERENCE.FileNamePattern).test(tail[4] ?? '')) {
     throw new Error('The Junie path receipt belongs to another native task or filename.')
   }
-  return { ...record, paths: [path], previewText: output.output, status: 'completed' }
+  return {
+    ...record,
+    paths: [path],
+    previewText: output.output,
+    status: 'completed',
+  }
 }
 
 /** The receipt of {@link readJunieNativeOutputPaths} in the shape that `proveNativeOutputReceipt` reads. */
@@ -113,5 +128,11 @@ export interface JunieNativeOutputReceipt extends NativeOutputReceipt {
  */
 export function readJunieNativeOutputReceipt(snapshot: NativeMessageSnapshot, callId: string): JunieNativeOutputReceipt {
   const receipt = readJunieNativeOutputPaths(snapshot, callId)
-  return { paths: receipt.paths, previewText: receipt.previewText, frame: receipt.frame, supplement: receipt.supplement, content: receipt.message.content }
+  return {
+    paths: receipt.paths,
+    previewText: receipt.previewText,
+    frame: receipt.frame,
+    supplement: receipt.supplement,
+    content: receipt.message.content,
+  }
 }

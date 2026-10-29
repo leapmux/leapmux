@@ -264,7 +264,10 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
       props,
       { type: TabType.AGENT, id: agent.id, workerId: agent.workerId },
       // The seed first, so the worker's own answer wins wherever it has one.
-      { ...seed.fields, ...openedAgentTabFields(props.repoGitStore, agent) },
+      {
+        ...seed.fields,
+        ...openedAgentTabFields(props.repoGitStore, agent),
+      },
     )
     // Placement can be refused, and a store entry written before it would be
     // an orphan that no tab reads and nothing reclaims. Say so: the agent
@@ -300,7 +303,10 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
     const placedTileId = openTabInFocusedTile(
       props,
       { type: TabType.TERMINAL, id: terminalId, workerId },
-      { ...seed.fields, ...openedTerminalMetadata({ title, workingDir }) },
+      {
+        ...seed.fields,
+        ...openedTerminalMetadata({ title, workingDir }),
+      },
     )
     // See `addAgentTabToFocusedTile`: the pty is already running by now, so a
     // refused placement has to be reported rather than swallowed.
@@ -356,8 +362,12 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             // have to fall through to the tab context.
             defaultWorkerId={target.workerId || props.getCurrentTabContext().workerId}
             defaultWorkingDir={target.workingDir || props.getCurrentTabContext().workingDir}
-            {...(props.availableProviders !== undefined ? { availableProviders: props.availableProviders } : {})}
-            {...(props.onRefreshProviders !== undefined ? { onRefreshProviders: props.onRefreshProviders } : {})}
+            {...(props.availableProviders !== undefined
+              ? { availableProviders: props.availableProviders }
+              : {})}
+            {...(props.onRefreshProviders !== undefined
+              ? { onRefreshProviders: props.onRefreshProviders }
+              : {})}
             blockedReason={newTabBlockedReason}
             repoGitStore={props.repoGitStore}
             onCreated={(agent, opts) => {
@@ -410,8 +420,12 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             metadata={props.metadata}
             repoGitStore={props.repoGitStore}
             startPoint={payload.startPoint ?? { kind: 'directory' }}
-            {...(props.availableProviders !== undefined ? { availableProviders: props.availableProviders } : {})}
-            {...(props.onRefreshProviders !== undefined ? { onRefreshProviders: props.onRefreshProviders } : {})}
+            {...(props.availableProviders !== undefined
+              ? { availableProviders: props.availableProviders }
+              : {})}
+            {...(props.onRefreshProviders !== undefined
+              ? { onRefreshProviders: props.onRefreshProviders }
+              : {})}
             onCreated={(workspaceId) => {
               props.dialogs.newWorkspace.close()
               placeWorkspaceInSection(
@@ -466,7 +480,9 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
                 transaction: each workspace is its own RPC, so a failure part
                 way through leaves the archive partly emptied. */}
             <p>
-              {`Delete ${state.count} archived workspace${state.count === 1 ? '' : 's'}? This cannot be undone, and a failure part way through leaves the rest in the archive.`}
+              {`Delete ${state.count} archived workspace${state.count === 1
+                ? ''
+                : 's'}? This cannot be undone, and a failure part way through leaves the rest in the archive.`}
             </p>
           </ConfirmDialog>
         )}
@@ -596,8 +612,12 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             branchName={state.branchName}
             isWorktree={state.isWorktree}
             initialMode={state.initialMode}
-            {...(props.availableProviders !== undefined ? { availableProviders: props.availableProviders } : {})}
-            {...(props.onRefreshProviders !== undefined ? { onRefreshProviders: props.onRefreshProviders } : {})}
+            {...(props.availableProviders !== undefined
+              ? { availableProviders: props.availableProviders }
+              : {})}
+            {...(props.onRefreshProviders !== undefined
+              ? { onRefreshProviders: props.onRefreshProviders }
+              : {})}
             onBranchChanged={newBranch => props.onBranchChanged?.(state, newBranch)}
             // The reason answers for the workspace this dialog PLACES into, which
             // is the branch row's own and not necessarily the active one.

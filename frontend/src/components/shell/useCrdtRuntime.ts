@@ -194,7 +194,9 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
   function disposeRecorderAndClear(uid: string | null): void {
     const dying = recorder
     recorder = null
-    const settled = dying ? dying.dispose() : Promise.resolve()
+    const settled = dying
+      ? dying.dispose()
+      : Promise.resolve()
     if (uid)
       void settled.then(() => clearCheckpointAndOpLog(uid))
   }
@@ -335,7 +337,9 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
         // frames advance the resume cursor straight past it. `superseded` is
         // what makes the late read drop its write instead of just its result.
         payload = await withTimeout(
-          loadHydrationState(uid, clientId, { superseded: () => cancelled || deadlineMissed }),
+          loadHydrationState(uid, clientId, {
+            superseded: () => cancelled || deadlineMissed,
+          }),
           HYDRATION_TIMEOUT_MS,
           () => { deadlineMissed = true },
         )
@@ -490,9 +494,13 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
     // out to be: spelling the recorder's base shape separately per arm is how
     // the two would drift on which fields it carries.
     const toBase = (settled: PersistedBase | null): HydratedBase | undefined =>
-      settled ? { frames: payload.frames, nextOrdinal: settled.nextOpLogOrdinal } : undefined
+      settled
+        ? { frames: payload.frames, nextOrdinal: settled.nextOpLogOrdinal }
+        : undefined
     const base = payload.persistedBase
-    installObserverAndManager(mgr, uid, clientId, base instanceof Promise ? base.then(toBase) : toBase(base))
+    installObserverAndManager(mgr, uid, clientId, base instanceof Promise
+      ? base.then(toBase)
+      : toBase(base))
     // Compact now when the persisted log was truncated, or is already at/over
     // the threshold. The truncated case is the important one: whatever cut the
     // replay short -- an undecodable frame on our own path, or the source's
@@ -537,7 +545,9 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
       userId: uid,
       clientId,
       mgr,
-      ...(hydratedFrom === undefined ? {} : { hydratedFrom }),
+      ...(hydratedFrom === undefined
+        ? {}
+        : { hydratedFrom }),
     })
     const active = recorder
     // Both hooks in ONE call, so recording cannot be enabled without them or
@@ -647,5 +657,11 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
       },
     })
   })
-  return { crdtState, projection, userEvents, effectiveClientId, ownClientId }
+  return {
+    crdtState,
+    projection,
+    userEvents,
+    effectiveClientId,
+    ownClientId,
+  }
 }

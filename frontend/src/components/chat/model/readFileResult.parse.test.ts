@@ -135,7 +135,9 @@ describe('parseCatNContent', () => {
 
   it('strips a LEADING reminder even with no blank line before the body', () => {
     const result = parseCatNContent('<system-reminder>[Truncated: PARTIAL view]</system-reminder>\n1\tfoo')
-    expect(result).toEqual([{ num: 1, text: 'foo' }])
+    expect(result).toEqual([
+      { num: 1, text: 'foo' },
+    ])
   })
 
   it('strips BOTH a leading partial-view reminder and a trailing reminder', () => {
@@ -161,14 +163,21 @@ describe('parseReadContent', () => {
     expect(r.leading).toEqual([
       { label: 'System Reminder', text: '[Truncated: PARTIAL view -- lines 1-2 of 9]', variant: undefined },
     ])
-    expect(r.lines).toEqual([{ num: 1, text: 'foo' }, { num: 2, text: 'bar' }])
+    expect(r.lines).toEqual([
+      { num: 1, text: 'foo' },
+      { num: 2, text: 'bar' },
+    ])
     expect(r.trailing).toEqual([])
   })
 
   it('captures a multi-line reminder, joining its body lines', () => {
     const r = parseReadContent('1\tfoo\n<system-reminder>\nline one\nline two\n</system-reminder>')
-    expect(r.lines).toEqual([{ num: 1, text: 'foo' }])
-    expect(r.trailing).toEqual([{ label: 'System Reminder', text: 'line one\nline two', variant: undefined }])
+    expect(r.lines).toEqual([
+      { num: 1, text: 'foo' },
+    ])
+    expect(r.trailing).toEqual([
+      { label: 'System Reminder', text: 'line one\nline two', variant: undefined },
+    ])
   })
 
   it('captures multiple leading and multiple trailing reminders in document order', () => {
@@ -176,7 +185,9 @@ describe('parseReadContent', () => {
       '<a-note>first</a-note>\n<b-note>second</b-note>\n\n1\tfoo\n\n<c-note>third</c-note>\n<d-note>fourth</d-note>\n',
     )
     expect(r.leading.map(x => x.text)).toEqual(['first', 'second'])
-    expect(r.lines).toEqual([{ num: 1, text: 'foo' }])
+    expect(r.lines).toEqual([
+      { num: 1, text: 'foo' },
+    ])
     expect(r.trailing.map(x => x.text)).toEqual(['third', 'fourth'])
   })
 
@@ -196,7 +207,9 @@ describe('parseReadContent', () => {
 
   it('discards trailing [result-id: ...] metadata (not a tag, not a reminder)', () => {
     const r = parseReadContent('1\tfoo\n\n[result-id: r7]\n')
-    expect(r.lines).toEqual([{ num: 1, text: 'foo' }])
+    expect(r.lines).toEqual([
+      { num: 1, text: 'foo' },
+    ])
     expect(r.trailing).toEqual([])
   })
 
@@ -206,7 +219,10 @@ describe('parseReadContent', () => {
     const r = parseReadContent('1\t<div>\n2\t</div>')
     expect(r.leading).toEqual([])
     expect(r.trailing).toEqual([])
-    expect(r.lines).toEqual([{ num: 1, text: '<div>' }, { num: 2, text: '</div>' }])
+    expect(r.lines).toEqual([
+      { num: 1, text: '<div>' },
+      { num: 2, text: '</div>' },
+    ])
   })
 })
 
@@ -256,7 +272,10 @@ describe('parseReadContent over a raw file body', () => {
   it('still peels the blocks around a cat-n body whose own lines carry tags', () => {
     const r = parseReadContent('<system-reminder>a notice</system-reminder>\n1\t<html>\n2\t</html>')
     expect(r.leading.map(x => x.text)).toEqual(['a notice'])
-    expect(r.lines).toEqual([{ num: 1, text: '<html>' }, { num: 2, text: '</html>' }])
+    expect(r.lines).toEqual([
+      { num: 1, text: '<html>' },
+      { num: 2, text: '</html>' },
+    ])
   })
 })
 
@@ -277,8 +296,15 @@ describe('readFileLines', () => {
   })
 
   it('answers the list when the read produced lines', () => {
-    expect(readFileLines({ lines: [{ num: 1, text: 'alpha' }], fallbackContent: 'raw' }))
-      .toEqual([{ num: 1, text: 'alpha' }])
+    expect(readFileLines({
+      lines: [
+        { num: 1, text: 'alpha' },
+      ],
+      fallbackContent: 'raw',
+    }))
+      .toEqual([
+        { num: 1, text: 'alpha' },
+      ])
   })
 })
 
@@ -289,7 +315,13 @@ describe('readFileBodyText', () => {
   })
 
   it('strips the wire line numbers by drawing the parsed lines', () => {
-    expect(readFileBodyText({ lines: [{ num: 4, text: 'alpha' }, { num: 5, text: 'beta' }], fallbackContent: '4\talpha\n5\tbeta' }))
+    expect(readFileBodyText({
+      lines: [
+        { num: 4, text: 'alpha' },
+        { num: 5, text: 'beta' },
+      ],
+      fallbackContent: '4\talpha\n5\tbeta',
+    }))
       .toBe('alpha\nbeta')
   })
 })

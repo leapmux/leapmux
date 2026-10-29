@@ -23,7 +23,9 @@ export function readCommandCodeNativeImage(snapshot: NativeMessageSnapshot, call
     accepts: commandCodeToolCompleted('read_file', callId),
   })
   const result = pickObject(record.frame, 'event')?.result
-  const images = Array.isArray(result) ? result.filter(isObject).filter(block => block.type === 'image') : []
+  const images = Array.isArray(result)
+    ? result.filter(isObject).filter(block => block.type === 'image')
+    : []
   if (images.length !== 1)
     throw new Error('The native Command Code result requires exactly one image block.')
   const source = pickObject(images[0], 'source')

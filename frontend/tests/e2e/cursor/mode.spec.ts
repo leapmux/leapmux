@@ -23,11 +23,31 @@ cursorTest('returns from Plan and Ask to Agent with one notice per native mode c
 
   const notices: NativeModeNotice[] = []
   for (const change of [
-    { value: 'plan', label: 'Plan', previous: 'Agent', mode: 3 },
-    { value: 'ask', label: 'Ask', previous: 'Plan', mode: 2 },
-    { value: 'agent', label: 'Agent', previous: 'Ask', mode: 1 },
+    {
+      value: 'plan',
+      label: 'Plan',
+      previous: 'Agent',
+      mode: 3,
+    },
+    {
+      value: 'ask',
+      label: 'Ask',
+      previous: 'Plan',
+      mode: 2,
+    },
+    {
+      value: 'agent',
+      label: 'Agent',
+      previous: 'Ask',
+      mode: 1,
+    },
   ]) {
-    const notice = await chooseNativeModeWithNotice(native, { groupId: 'permissionMode', ...change, previousLabel: change.previous, noticeLabel: 'Mode' })
+    const notice = await chooseNativeModeWithNotice(native, {
+      groupId: 'permissionMode',
+      ...change,
+      previousLabel: change.previous,
+      noticeLabel: 'Mode',
+    })
     notices.push(notice)
     const request = await sendNativeAnswer(native, `Reply in ${change.label} mode.`, `The ${change.label} mode reached the native turn.`)
     expect(request.nativeRequest).toMatchObject({ mode: change.mode })

@@ -60,14 +60,26 @@ function cursorQuestions(input: Record<string, unknown>): QuestionPrompt[] {
     input.questions,
     (question) => {
       const header = pickString(question, 'header')
-      return { ...(header ? { header } : {}), question: pickString(question, 'prompt') }
+      return {
+        ...(header
+          ? { header }
+          : {}),
+        question: pickString(question, 'prompt'),
+      }
     },
     (option) => {
       // Cursor sends an option with an id and no label, and the id is the word the
       // runtime itself shows there.
       const label = pickString(option, 'label') || pickString(option, 'id')
       const description = pickString(option, 'description')
-      return label ? { label, ...(description ? { description } : {}) } : null
+      return label
+        ? {
+            label,
+            ...(description
+              ? { description }
+              : {}),
+          }
+        : null
     },
   )
 }
@@ -104,7 +116,9 @@ export function cursorSearchKind(tool: Record<string, unknown>, raw: Record<stri
   const matches = pickNumber(raw, 'totalMatches', undefined) ?? pickNumber(raw, 'resultCount', undefined)
   if (totalFiles === undefined && matches === undefined)
     return 'search'
-  return totalFiles !== undefined ? 'glob' : 'grep'
+  return totalFiles !== undefined
+    ? 'glob'
+    : 'grep'
 }
 
 /**
@@ -121,7 +135,9 @@ function cursorToolCall(source: ACPToolFacts): ToolCallSpec {
   // Agent Client Protocol content block, so the frame's text is empty for most rows --
   // and a record this build does not recognize, or a call that failed, then had
   // nothing at all to state.
-  const facts = stored?.output && stored.output !== source.text ? { ...source, text: stored.output } : source
+  const facts = stored?.output && stored.output !== source.text
+    ? { ...source, text: stored.output }
+    : source
   const base = () => acpBaseSpec(facts)
   const tool = facts.tool
   const raw = pickObject(tool, ACP_SUPPLEMENT.RawOutput)
@@ -133,11 +149,16 @@ function cursorToolCall(source: ACPToolFacts): ToolCallSpec {
   const name = named || stored?.name
   // `createToolCall` folds an absent name onto the envelope's own, so the key rides only
   // when one was read.
-  const nameSlot = name !== undefined ? { name } : {}
+  const nameSlot = name !== undefined
+    ? { name }
+    : {}
   const extension = cursorExtension(facts.extra)
 
-  if (stored?.payload)
-    return stored.payload.name === undefined && name !== undefined ? { ...stored.payload, name } : stored.payload
+  if (stored?.payload) {
+    return stored.payload.name === undefined && name !== undefined
+      ? { ...stored.payload, name }
+      : stored.payload
+  }
 
   if (named === CURSOR_TOOL_UPDATE_TODOS) {
     const items = cursorTodoItems(extension, input)
@@ -154,7 +175,11 @@ function cursorToolCall(source: ACPToolFacts): ToolCallSpec {
       // (`role !== 'result' && !hasResultRow`) is what stops a double draw, so an empty
       // list here only hid the to-dos while the call was still running.
       request: { items },
-      ...(facts.finished ? { result: { items } } : {}),
+      ...(facts.finished
+        ? {
+            result: { items },
+          }
+        : {}),
     }
   }
   if (named === CURSOR_TOOL_GENERATE_IMAGE) {
@@ -169,8 +194,14 @@ function cursorToolCall(source: ACPToolFacts): ToolCallSpec {
       // key, `ImageRequest.prompt` is optional, and `'' ?? x` is `''` -- so
       // `imageRenderer`'s `call.request.prompt ?? call.title` stopped at the empty
       // string and the header drew `Generate Image` above an empty title.
-      request: { ...(prompt !== undefined ? { prompt } : {}) },
-      ...(facts.finished ? { result: {} } : {}),
+      request: {
+        ...(prompt !== undefined
+          ? { prompt }
+          : {}),
+      },
+      ...(facts.finished
+        ? { result: {} }
+        : {}),
       // The picture is the answer, and it rides the call's own image list rather
       // than a result payload: the shared list draws it beside the prompt.
       images: cursorGeneratedImages(extension),
@@ -182,14 +213,23 @@ function cursorToolCall(source: ACPToolFacts): ToolCallSpec {
       ...nameSlot,
       label: 'Ask Question',
       title: pickString(input, 'title') || pickString(tool, 'title') || undefined,
-      request: { questions: cursorQuestions(input) },
-      ...(facts.finished ? { result: { answers: [] } } : {}),
+      request: {
+        questions: cursorQuestions(input),
+      },
+      ...(facts.finished
+        ? {
+            result: { answers: [] },
+          }
+        : {}),
     }
   }
   // A plan arrives in two halves: the stored call carries the tool name alone, and the
   // plan body reaches the transcript as supplemental content the worker recovered from
   // the approval request. A full plan belongs in the transcript, so read both halves.
-  const planInput = { ...pickObject(facts.extra, ACP_SUPPLEMENT_REQUEST.RawInput), ...input }
+  const planInput = {
+    ...pickObject(facts.extra, ACP_SUPPLEMENT_REQUEST.RawInput),
+    ...input,
+  }
   if (planInput._toolName === CURSOR_TOOL_CREATE_PLAN) {
     const plan = pickString(planInput, 'plan')
     return {
@@ -202,8 +242,16 @@ function cursorToolCall(source: ACPToolFacts): ToolCallSpec {
       // A dump of the JSON that carried it is what a reader saw instead, never here.
       // `proposal` is the TYPED field for it, so the shared renderer reads a name
       // the model declares rather than a key Cursor happens to spell.
-      request: { ...(plan ? { proposal: plan } : {}) },
-      ...(facts.finished ? { result: proseResult(plan || facts.text, 'markdown') } : {}),
+      request: {
+        ...(plan
+          ? { proposal: plan }
+          : {}),
+      },
+      ...(facts.finished
+        ? {
+            result: proseResult(plan || facts.text, 'markdown'),
+          }
+        : {}),
     }
   }
   if (named === CURSOR_TOOL.Task) {
@@ -211,7 +259,10 @@ function cursorToolCall(source: ACPToolFacts): ToolCallSpec {
     // measured duration. The call itself carries the prompt, the description and the
     // requested type, so the two halves together report the run and not the request.
     const details = cursorTaskDetails(extension)
-    return cursorAgentCall(facts, { ...input, ...details }, undefined, undefined)
+    return cursorAgentCall(facts, {
+      ...input,
+      ...details,
+    }, undefined, undefined)
   }
   // The WIRE KIND is the precondition, not the two argument keys alone. This branch
   // sits above the execute, read and search branches, so testing the arguments by
@@ -227,23 +278,36 @@ function cursorToolCall(source: ACPToolFacts): ToolCallSpec {
     // its TYPE is the whole payload union, and narrowing on the kind is what lets the
     // checker see the two halves belong together.
     const shared = base()
-    const result = shared.kind === 'mcp' ? shared.result : undefined
+    const result = shared.kind === 'mcp'
+      ? shared.result
+      : undefined
     return {
       ...mcpToolCallRequest(server, toolName, args),
       ...nameSlot,
-      ...(result !== undefined ? { result } : {}),
+      ...(result !== undefined
+        ? { result }
+        : {}),
     }
   }
   // The search shape the title and counters state, before any body reads the kind.
-  const kind = facts.wireKind === 'search' ? cursorSearchKind(tool, raw) : facts.wireKind
+  const kind = facts.wireKind === 'search'
+    ? cursorSearchKind(tool, raw)
+    : facts.wireKind
   if (kind === 'execute') {
     const description = pickString(input, 'description')
     const title = description || undefined
-    const request = { command: pickString(input, 'command') || '', ...(description ? { description } : {}) }
+    const request = {
+      command: pickString(input, 'command') || '',
+      ...(description
+        ? { description }
+        : {}),
+    }
     if (facts.finished && raw) {
       const stdout = pickString(raw, 'stdout')
       const stderr = pickString(raw, 'stderr')
-      const output = [stdout, stderr].filter(Boolean).join(stdout.endsWith('\n') ? '' : '\n') || facts.text
+      const output = [stdout, stderr].filter(Boolean).join(stdout.endsWith('\n')
+        ? ''
+        : '\n') || facts.text
       const exitCode = pickNumber(raw, 'exitCode', undefined)
       return {
         kind,
@@ -251,10 +315,14 @@ function cursorToolCall(source: ACPToolFacts): ToolCallSpec {
         title,
         request,
         result: {
-          commands: [{
-            output,
-            ...(exitCode !== undefined ? { exitCode } : {}),
-          }],
+          commands: [
+            {
+              output,
+              ...(exitCode !== undefined
+                ? { exitCode }
+                : {}),
+            },
+          ],
           unresolvedTerminals: [],
         },
       }
@@ -264,12 +332,20 @@ function cursorToolCall(source: ACPToolFacts): ToolCallSpec {
     // Finished with no protocol record: an interrupted call keeps its partial output
     // in the frame's own content, which the shared command build reads.
     const shared = base()
-    return { ...shared, ...nameSlot, title: description || shared.title }
+    return {
+      ...shared,
+      ...nameSlot,
+      title: description || shared.title,
+    }
   }
   if (kind === 'read' && tool.status === 'completed' && typeof raw?.content === 'string') {
-    const location = Array.isArray(tool.locations) ? tool.locations.find(isObject) : undefined
+    const location = Array.isArray(tool.locations)
+      ? tool.locations.find(isObject)
+      : undefined
     const reportedLine = pickNumber(location, 'line', undefined)
-    const startLine = reportedLine !== undefined && Number.isSafeInteger(reportedLine) && reportedLine > 0 ? reportedLine : 1
+    const startLine = reportedLine !== undefined && Number.isSafeInteger(reportedLine) && reportedLine > 0
+      ? reportedLine
+      : 1
     return {
       kind,
       ...nameSlot,
@@ -285,13 +361,20 @@ function cursorToolCall(source: ACPToolFacts): ToolCallSpec {
       return {
         kind,
         ...nameSlot,
-        request: { pattern: pickString(input, 'pattern') || '', paths: path ? [path] : [] },
+        request: {
+          pattern: pickString(input, 'pattern') || '',
+          paths: path
+            ? [path]
+            : [],
+        },
         result: {
           filenames: [],
           content: facts.text,
           numFiles: totalFiles ?? 0,
           numLines: 0,
-          ...(matches !== undefined ? { matchCount: matches } : {}),
+          ...(matches !== undefined
+            ? { matchCount: matches }
+            : {}),
           truncated: pickBoolean(raw, 'truncated') ?? false,
           fallbackContent: facts.text,
           // POSITIVE EVIDENCE only, for the reason `cursorSearchSource` states: no
@@ -314,10 +397,17 @@ function cursorToolCall(source: ACPToolFacts): ToolCallSpec {
       const changes = shared.result.changes.map((source) => {
         const header = `++ b/${source.filePath}\n`
         return source.oldStr === '-- /dev/null' && source.newStr?.startsWith(header)
-          ? { ...source, oldStr: '', newStr: source.newStr.slice(header.length) }
+          ? {
+              ...source,
+              oldStr: '',
+              newStr: source.newStr.slice(header.length),
+            }
           : source
       })
-      return { ...shared, result: { changes } }
+      return {
+        ...shared,
+        result: { changes },
+      }
     }
     return shared
   }
@@ -330,8 +420,12 @@ function cursorToolCall(source: ACPToolFacts): ToolCallSpec {
   // The facts are REMAPPED rather than passed on: `input` merges the saved record's
   // arguments over the frame's, and the shared request reads `facts.args`, so a
   // pattern that only the record carried was lost on this path.
-  if (kind !== facts.wireKind)
-    return acpSpecFor(acpRemapFacts(facts, { tool: { ...tool, [ACP_SUPPLEMENT_REQUEST.RawInput]: input }, kind }), kind)
+  if (kind !== facts.wireKind) {
+    return acpSpecFor(acpRemapFacts(facts, {
+      tool: { ...tool, [ACP_SUPPLEMENT_REQUEST.RawInput]: input },
+      kind,
+    }), kind)
+  }
   return base()
 }
 
@@ -367,7 +461,14 @@ export const cursorToolCallAdapter: ACPToolCallAdapter = (facts) => {
   const error = pickString(raw, 'error')
   // `'content' in card` is the narrowing, not an assertion. An MCP result slot also
   // holds a failure and an unparsed answer, and neither of those carries a block list.
-  const card = payload.kind === 'mcp' ? payload.result : undefined
+  const card = payload.kind === 'mcp'
+    ? payload.result
+    : undefined
   const emptyCard = card !== undefined && 'content' in card && card.content.length === 0
-  return error && facts.finished && (payload.result === undefined || emptyCard) ? { ...payload, result: unparsedResult(error) } : payload
+  return error && facts.finished && (payload.result === undefined || emptyCard)
+    ? {
+        ...payload,
+        result: unparsedResult(error),
+      }
+    : payload
 }

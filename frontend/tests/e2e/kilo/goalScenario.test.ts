@@ -6,11 +6,21 @@ import { WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode } from '
 import { AGENT_WATCH_UPDATE_ID } from '../helpers/agentEventWatch'
 import { waitForKiloPromptEnd } from './goalScenario'
 
-const { stream, cancel, selectedAgentTabId } = vi.hoisted(() => ({ stream: vi.fn(), cancel: vi.fn(), selectedAgentTabId: vi.fn() }))
+const { stream, cancel, selectedAgentTabId } = vi.hoisted(() => ({
+  stream: vi.fn(),
+  cancel: vi.fn(),
+  selectedAgentTabId: vi.fn(),
+}))
 
 vi.mock('../helpers/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../helpers/api')>()
-  return { ...actual, getTestChannel: async () => ({ getOrOpenChannel: async () => 'kilo-native-channel', stream }) }
+  return {
+    ...actual,
+    getTestChannel: async () => ({
+      getOrOpenChannel: async () => 'kilo-native-channel',
+      stream,
+    }),
+  }
 })
 
 vi.mock('../helpers/nativeScenario', async (importOriginal) => {
@@ -25,13 +35,28 @@ describe('waitForKiloPromptEnd', () => {
     stream.mockReturnValue({
       onMessage: (listener: (message: { payload: Uint8Array }) => void) => queueMicrotask(() => {
         listener(create(InnerStreamMessageSchema, {
-          payload: toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, { event: { case: 'updateAck', value: {
-            updateId: AGENT_WATCH_UPDATE_ID,
-            agentStates: [{ agentId, mode: WatchMode.FULL, replayId: AGENT_WATCH_UPDATE_ID }],
-          } } })),
+          payload: toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, {
+            event: {
+              case: 'updateAck',
+              value: {
+                updateId: AGENT_WATCH_UPDATE_ID,
+                agentStates: [
+                  { agentId, mode: WatchMode.FULL, replayId: AGENT_WATCH_UPDATE_ID },
+                ],
+              },
+            },
+          })),
         }))
         listener(create(InnerStreamMessageSchema, {
-          payload: toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, { event: { case: 'agentEvent', value: { agentId, event: { case: 'inputQueueChanged', value: {} } } } })),
+          payload: toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, {
+            event: {
+              case: 'agentEvent',
+              value: {
+                agentId,
+                event: { case: 'inputQueueChanged', value: {} },
+              },
+            },
+          })),
         }))
       }),
       onError: () => {},
@@ -40,14 +65,18 @@ describe('waitForKiloPromptEnd', () => {
     })
     const page = {} as unknown as Page
     const leapmuxServer = { hubUrl: 'http://mock.invalid', adminToken: 'mock-admin', workerId: 'mock-worker' }
-    const modelScript = { testDeadline: () => Date.now() + 240_000 }
+    const modelScript = {
+      testDeadline: () => Date.now() + 240_000,
+    }
     const outcome = await waitForKiloPromptEnd({ page, leapmuxServer, modelScript }).then(
       () => undefined,
       (error: unknown) => error,
     )
 
     expect(outcome).toBeInstanceOf(Error)
-    expect(outcome).toMatchObject({ message: expect.stringContaining('queue snapshot') })
+    expect(outcome).toMatchObject({
+      message: expect.stringContaining('queue snapshot'),
+    })
     expect(selectedAgentTabId).toHaveBeenCalledExactlyOnceWith(page)
     expect(stream).toHaveBeenCalledOnce()
     const request = stream.mock.calls[0]
@@ -56,7 +85,11 @@ describe('waitForKiloPromptEnd', () => {
       throw new Error('The Kilo completion wait did not create its native stream.')
     expect(request[0]).toBe('kilo-native-channel')
     expect(request[1]).toBe('WatchEvents')
-    expect(fromBinary(WatchEventsRequestSchema, request[2])).toMatchObject({ agents: [{ agentId }] })
+    expect(fromBinary(WatchEventsRequestSchema, request[2])).toMatchObject({
+      agents: [
+        { agentId },
+      ],
+    })
     expect(cancel).toHaveBeenCalledExactlyOnceWith()
   })
 
@@ -66,7 +99,9 @@ describe('waitForKiloPromptEnd', () => {
     stream.mockClear()
     const page = {} as unknown as Page
     const leapmuxServer = { hubUrl: 'http://mock.invalid', adminToken: 'mock-admin', workerId: 'mock-worker' }
-    const modelScript = { testDeadline: () => Date.now() + 240_000 }
+    const modelScript = {
+      testDeadline: () => Date.now() + 240_000,
+    }
 
     await expect(waitForKiloPromptEnd({ page, leapmuxServer, modelScript })).rejects.toBe(failure)
     expect(stream).not.toHaveBeenCalled()

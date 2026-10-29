@@ -98,7 +98,9 @@ export const BranchContextMenu: Component<BranchContextMenuProps> = (props) => {
   // -- a second `providers()` call beside the first could not be narrowed.
   const providerProps = () => {
     const list = providers()
-    return list !== undefined ? { availableProviders: list } : {}
+    return list !== undefined
+      ? { availableProviders: list }
+      : {}
   }
 
   /** One change item. The three differ only in their mode. */
@@ -114,9 +116,13 @@ export const BranchContextMenu: Component<BranchContextMenuProps> = (props) => {
   return (
     <DropdownMenu
       trigger={props.trigger ?? rowContextMenuTrigger()}
-      {...(props.contextMenuFor !== undefined ? { contextMenuFor: props.contextMenuFor } : {})}
+      {...(props.contextMenuFor !== undefined
+        ? { contextMenuFor: props.contextMenuFor }
+        : {})}
       onToggle={setMenuOpen}
-      {...(props['data-testid'] !== undefined ? { 'data-testid': props['data-testid'] } : {})}
+      {...(props['data-testid'] !== undefined
+        ? { 'data-testid': props['data-testid'] }
+        : {})}
     >
       {/* These children mount eagerly, which is safe even while this menu
           serves as a SUBMENU (the composer's `[+]` branch item):
@@ -152,7 +158,9 @@ export const BranchContextMenu: Component<BranchContextMenuProps> = (props) => {
         {...providerProps()}
         availableShells={shells()}
         defaultShell={defaultShell()}
-        {...(props.disabledReason !== undefined ? { disabledReason: props.disabledReason } : {})}
+        {...(props.disabledReason !== undefined
+          ? { disabledReason: props.disabledReason }
+          : {})}
         onNewAgent={provider => props.actions.onNewAgent(provider)}
         onNewAgentAdvanced={() => props.actions.onNewAgentAdvanced()}
         onNewTerminalWithShell={shell => props.actions.onNewTerminalWithShell(shell)}
@@ -166,7 +174,10 @@ export const BranchContextMenu: Component<BranchContextMenuProps> = (props) => {
           exists per branch row of every workspace, and this block builds a
           resource of its own -- so an eager mount pays for a probe context
           on every row in the sidebar to serve the one menu a user opens. */}
-      <Show when={menuOpen() ? props.repository : undefined}>
+      <Show when={menuOpen()
+        ? props.repository
+        : undefined}
+      >
         {repository => (
           <>
             <hr />

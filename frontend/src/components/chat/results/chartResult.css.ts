@@ -118,6 +118,10 @@ globalStyle(`${chartTable} th:first-child, ${chartTable} td:first-child`, {
 })
 
 export const chartNotice = styleVariants({
-  plain: [{ color: 'var(--muted-foreground)', fontSize: '0.85em' }],
-  error: [{ color: 'var(--danger)', fontSize: '0.85em' }],
+  plain: [
+    { color: 'var(--muted-foreground)', fontSize: '0.85em' },
+  ],
+  error: [
+    { color: 'var(--danger)', fontSize: '0.85em' },
+  ],
 })

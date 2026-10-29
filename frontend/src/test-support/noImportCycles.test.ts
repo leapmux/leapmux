@@ -204,11 +204,15 @@ function findCycles(graph: Map<string, string[]>): string[][] {
     finished.add(node)
   }
 
-  for (const node of [...graph.keys()].sort()) {
+  for (const node of [
+    ...graph.keys(),
+  ].sort()) {
     if (!finished.has(node))
       visit(node)
   }
-  return [...cycles.values()]
+  return [
+    ...cycles.values(),
+  ]
 }
 
 describe('module graph', () => {

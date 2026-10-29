@@ -32,7 +32,9 @@ export interface PreferencesNavProps {
 
 /** Option label: append the same warning mark the sidebar tabs show. */
 function optionLabel(group: NavGroup, restart: boolean): string {
-  return restart ? `${group.title} \u26A0` : group.title
+  return restart
+    ? `${group.title} \u26A0`
+    : group.title
 }
 
 /**
@@ -138,7 +140,9 @@ export const PreferencesNav: Component<PreferencesNavProps> = (props) => {
                 classList={{ [styles.navButtonActive]: props.active.id === group.id }}
                 aria-selected={props.active.id === group.id}
                 aria-controls="preferences-panel"
-                tabIndex={props.active.id === group.id ? 0 : -1}
+                tabIndex={props.active.id === group.id
+                  ? 0
+                  : -1}
                 data-testid={`preferences-nav-${group.id}`}
                 ref={el => tabEls.register(group.id, el)}
                 onClick={() => select(group.id)}

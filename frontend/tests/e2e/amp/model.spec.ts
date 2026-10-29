@@ -3,5 +3,8 @@ import { expectMissingSetting } from '../helpers/unsupportedConfiguration'
 import { relatedNativeProof } from './scenarios'
 
 ampTest('proves the missing model setting against the live catalog and a native tool', async ({ native }) => {
-  await expectMissingSetting(native, { feature: 'model', relatedProof: () => relatedNativeProof(native) })
+  await expectMissingSetting(native, {
+    feature: 'model',
+    relatedProof: () => relatedNativeProof(native),
+  })
 })

@@ -88,7 +88,9 @@ kimiTest('returns from Plan to Always Ask and keeps each native mode after reloa
     const nativeProof = async (request: MockModelRequestRecord) => {
       // Kimi keeps earlier Plan reminders in its history. The latest reminder states the current native mode.
       const latest = nativeModelInstructionText(request).match(/Plan mode is (?:no longer )?active\./g)?.at(-1)
-      expect(latest).toBe(mode.value === KIMI_MODE.Plan ? 'Plan mode is active.' : 'Plan mode is no longer active.')
+      expect(latest).toBe(mode.value === KIMI_MODE.Plan
+        ? 'Plan mode is active.'
+        : 'Plan mode is no longer active.')
       if (mode.value === KIMI_MODE.Manual) {
         const callId = `kimi-return-always-ask-${approvalProbe++}`
         const command = 'echo "kimi-mode-safe-$((40 + 2))"'

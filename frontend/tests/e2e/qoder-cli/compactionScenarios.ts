@@ -25,8 +25,15 @@ export async function exerciseCompletedManualCompaction(context: NativeScenarioC
     // Qoder compares the new history with reported input tokens. The mock's
     // default one-token count makes a real summary look larger than its source.
     const step = await modelScript.queue({
-      text: turn === 0 ? olderAnswer : `Recent task answer ${turn}.`,
-      usage: { inputTokens: 6000 + turn * 500, outputTokens: turn === 0 ? 5000 : 50 },
+      text: turn === 0
+        ? olderAnswer
+        : `Recent task answer ${turn}.`,
+      usage: {
+        inputTokens: 6000 + turn * 500,
+        outputTokens: turn === 0
+          ? 5000
+          : 50,
+      },
     })
     await sendMessage(page, modelScript.prompt(`Record Qoder task turn ${turn}.`))
     await modelScript.waitForSteps(step + 1)

@@ -5,12 +5,17 @@ import { chooseSettingsOption, waitForSettingsIdle } from '../helpers/ui'
 import { mimoTest } from '../mimo-fixtures'
 
 mimoTest('sends the chosen effort into native turns before and after reload', async ({ native, page }) => {
-  await exerciseNativeOption(native, { groupId: 'effort', value: 'low', prepare: async () => {
-    await chooseSettingsOption(page, `model-${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.pi}`)
-    await waitForSettingsIdle(page)
-  }, nativeProof: (request) => {
-    expect(request.body).toHaveProperty('reasoning_effort', 'low')
-  } })
+  await exerciseNativeOption(native, {
+    groupId: 'effort',
+    value: 'low',
+    prepare: async () => {
+      await chooseSettingsOption(page, `model-${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.pi}`)
+      await waitForSettingsIdle(page)
+    },
+    nativeProof: (request) => {
+      expect(request.body).toHaveProperty('reasoning_effort', 'low')
+    },
+  })
 })
 
 // MiMo keeps the model, the effort, and the mode as LeapMux state, so the next prompt must state both after a switch.

@@ -71,7 +71,9 @@ class FakeTransition {
 }
 
 /** An animation that is not a transition, and never finishes, as a spinner does not. */
-const endlessAnimation = { finished: new Promise<never>(() => {}) }
+const endlessAnimation = {
+  finished: new Promise<never>(() => {}),
+}
 
 /** A promise that the test settles from outside. */
 function deferred(): { promise: Promise<void>, resolve: () => void, reject: (reason: unknown) => void } {
@@ -101,7 +103,10 @@ describe('settleTransitions', () => {
     const frames = stubFrames()
     const first = deferred()
     const second = deferred()
-    const { scope, getAnimations } = transitionScope([new FakeTransition(first.promise), new FakeTransition(second.promise)])
+    const { scope, getAnimations } = transitionScope([
+      new FakeTransition(first.promise),
+      new FakeTransition(second.promise),
+    ])
     let settled = false
     const done = settleTransitions(scope).then(() => {
       settled = true
@@ -128,7 +133,9 @@ describe('settleTransitions', () => {
     vi.stubGlobal('CSSTransition', FakeTransition)
     const frames = stubFrames()
     const cancelled = deferred()
-    const { scope } = transitionScope([new FakeTransition(cancelled.promise)])
+    const { scope } = transitionScope([
+      new FakeTransition(cancelled.promise),
+    ])
     const done = settleTransitions(scope)
     cancelled.reject(new DOMException('The transition was cancelled.', 'AbortError'))
     await flushMicrotasks()

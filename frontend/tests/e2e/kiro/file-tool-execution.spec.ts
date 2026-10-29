@@ -12,25 +12,46 @@ import { KIRO_AGENT, nativeContext } from './scenarios'
 
 kiroTest.describe('Kiro tool execution', () => {
   kiroTest('reads, edits and writes a file, and keeps a to-do list', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, { optionValues: { policyPreset: 'allow-all' } })
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, {
+      optionValues: { policyPreset: 'allow-all' },
+    })
     const directory = createNativeToolDirectory(workingDir)
     const note = join(directory, 'note.txt')
     const created = join(directory, 'created.txt')
     writeFileSync(note, 'kiro-before\n')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsOptionChosen(page, 'policyPreset-allow-all')
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
 
     const start = await runNativeToolSteps(context, {
       steps: [
-        { toolCalls: [readToolCall(context.provider, 'kiro-read', note)] },
-        { toolCalls: [editToolCall(context.provider, 'kiro-edit', { path: note, before: 'kiro-before', after: 'kiro-after' })] },
-        { toolCalls: [writeToolCall(context.provider, 'kiro-write', { path: created, content: 'kiro-created\n' })] },
         {
-          toolCalls: [updateTodosToolCall(context.provider, 'kiro-todos', [
-            { step: 'Edit the note', status: 'pending' },
-            { step: 'Report the result', status: 'pending' },
-          ])],
+          toolCalls: [
+            readToolCall(context.provider, 'kiro-read', note),
+          ],
+        },
+        {
+          toolCalls: [
+            editToolCall(context.provider, 'kiro-edit', { path: note, before: 'kiro-before', after: 'kiro-after' }),
+          ],
+        },
+        {
+          toolCalls: [
+            writeToolCall(context.provider, 'kiro-write', { path: created, content: 'kiro-created\n' }),
+          ],
+        },
+        {
+          toolCalls: [
+            updateTodosToolCall(context.provider, 'kiro-todos', [
+              { step: 'Edit the note', status: 'pending' },
+              { step: 'Report the result', status: 'pending' },
+            ]),
+          ],
         },
       ],
       prompt: 'Run the four scripted tools, then report.',

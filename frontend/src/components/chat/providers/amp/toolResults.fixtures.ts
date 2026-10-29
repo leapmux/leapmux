@@ -14,9 +14,16 @@ export function ampToolUseRow(name: string, input: Record<string, unknown>, id =
     message: {
       type: 'message',
       role: 'assistant',
-      content: [{ type: 'tool_use', id, name, input }],
+      content: [
+        { type: 'tool_use', id, name, input },
+      ],
       stop_reason: 'tool_use',
-      usage: { input_tokens: 0, cache_creation_input_tokens: 100, cache_read_input_tokens: 200, output_tokens: 7 },
+      usage: {
+        input_tokens: 0,
+        cache_creation_input_tokens: 100,
+        cache_read_input_tokens: 200,
+        output_tokens: 7,
+      },
     },
     parent_tool_use_id: null,
     session_id: 'T-01a0d1c3-e51a-756b-9279-34c1cd441c35',
@@ -27,7 +34,17 @@ export function ampToolUseRow(name: string, input: Record<string, unknown>, id =
 export function ampToolResultRow(content: string, isError = false, id = AMP_FIXTURE_CALL_ID): Record<string, unknown> {
   return {
     type: 'user',
-    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content, is_error: isError }] },
+    message: {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: id,
+          content,
+          is_error: isError,
+        },
+      ],
+    },
     parent_tool_use_id: null,
     session_id: 'T-01a0d1c3-e51a-756b-9279-34c1cd441c35',
   }
@@ -69,12 +86,26 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
   [AMP_SHELL_TOOL.ShellCommandKill]: answered(AMP_SHELL_TOOL.ShellCommandKill, '{"output":"","exitCode":143,"running":false,"pid":4242}', { pid: 4242 }),
   [AMP_TOOL_NAME.ApplyPatch]: answered(
     AMP_TOOL_NAME.ApplyPatch,
-    JSON.stringify({ summary: 'update: /work/a.ts (+1/-1)', files: [{ uri: 'file:///work/a.ts', type: 'update', additions: 1, deletions: 1, diff: UNIFIED }] }),
+    JSON.stringify({
+      summary: 'update: /work/a.ts (+1/-1)',
+      files: [
+        {
+          uri: 'file:///work/a.ts',
+          type: 'update',
+          additions: 1,
+          deletions: 1,
+          diff: UNIFIED,
+        },
+      ],
+    }),
     { patchText: PATCH },
   ),
   [AMP_TOOL_NAME.EditFile]: answered(
     AMP_TOOL_NAME.EditFile,
-    JSON.stringify({ diff: `\`\`\`diff\n${UNIFIED}\`\`\``, lineRange: [1, 1] }),
+    JSON.stringify({
+      diff: `\`\`\`diff\n${UNIFIED}\`\`\``,
+      lineRange: [1, 1],
+    }),
     { path: '/work/a.ts', old_str: 'old', new_str: 'new' },
   ),
   [AMP_TOOL_NAME.CreateFile]: answered(AMP_TOOL_NAME.CreateFile, 'Successfully created file /work/new.txt', { path: '/work/new.txt', content: 'fresh line\n' }),
@@ -82,13 +113,20 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
   [AMP_TOOL_NAME.Read]: answered(AMP_TOOL_NAME.Read, JSON.stringify({ absolutePath: '/work/notes.txt', content: '1: alpha one\n2: beta two' }), { path: '/work/notes.txt' }),
   [AMP_TOOL_NAME.ViewMedia]: answered(
     AMP_TOOL_NAME.ViewMedia,
-    JSON.stringify({ absolutePath: '/work/shot.png', content: 'iVBORw0KGgo=', isImage: true, imageInfo: { mimeType: 'image/png', size: 8 } }),
+    JSON.stringify({
+      absolutePath: '/work/shot.png',
+      content: 'iVBORw0KGgo=',
+      isImage: true,
+      imageInfo: { mimeType: 'image/png', size: 8 },
+    }),
     { path: '/work/shot.png' },
   ),
   [AMP_TOOL_NAME.Grep]: answered(AMP_TOOL_NAME.Grep, JSON.stringify(['/work/a.ts:3:const alpha = 1']), { pattern: 'alpha', path: '/work' }),
   [AMP_TOOL_NAME.Glob]: answered(AMP_TOOL_NAME.Glob, JSON.stringify(['/work/a.ts', '/work/b.ts']), { filePattern: '**/*.ts' }),
   [AMP_TOOL_NAME.GlobAlias]: answered(AMP_TOOL_NAME.GlobAlias, JSON.stringify(['/work/a.ts']), { filePattern: '*.ts' }),
-  [AMP_TOOL_NAME.WebSearch]: answered(AMP_TOOL_NAME.WebSearch, JSON.stringify([{ title: 'Doc', url: 'https://example.com/doc' }]), { objective: 'leapmux docs' }),
+  [AMP_TOOL_NAME.WebSearch]: answered(AMP_TOOL_NAME.WebSearch, JSON.stringify([
+    { title: 'Doc', url: 'https://example.com/doc' },
+  ]), { objective: 'leapmux docs' }),
   [AMP_TOOL_NAME.ReadWebPage]: answered(AMP_TOOL_NAME.ReadWebPage, '# Example\n\nThe page.', { url: 'https://example.com' }),
   [AMP_TOOL_NAME.Painter]: answered(AMP_TOOL_NAME.Painter, 'Generated one image.', { prompt: 'A blue paper airplane' }),
   [AMP_TOOL_NAME.Skill]: answered(AMP_TOOL_NAME.Skill, 'Loaded the skill.', { name: 'release' }),
@@ -111,7 +149,9 @@ function failed(kind: ToolKind, name: string, content = ERROR_TEXT, status: Tool
   const fixture = FIXTURES[name]
   return {
     payload: ampToolResultRow(content, isError),
-    ...(fixture?.options !== undefined ? { options: fixture.options } : {}),
+    ...(fixture?.options !== undefined
+      ? { options: fixture.options }
+      : {}),
     kind,
     name,
     status,

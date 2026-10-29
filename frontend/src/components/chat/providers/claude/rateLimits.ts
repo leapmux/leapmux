@@ -53,5 +53,10 @@ export function claudeRateLimitsFromMessage(parsed: ParsedMessageContent): RateL
   if (!isObject(info))
     return { mode: 'merge', values: {} }
   const key = pickString(info, 'rateLimitType') || 'unknown'
-  return { mode: 'merge', values: { [key]: claudeRateLimitInfo(info) } }
+  return {
+    mode: 'merge',
+    values: {
+      [key]: claudeRateLimitInfo(info),
+    },
+  }
 }

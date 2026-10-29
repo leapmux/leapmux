@@ -1,7 +1,9 @@
 import type { NativeCompactionOptions } from '../helpers/manualCompaction'
 
 /** The native compaction of ZCode. Its summarizer takes the next ordered step. */
-export const ZCODE_COMPACTION: NativeCompactionOptions = { summary: { route: 'queued' } }
+export const ZCODE_COMPACTION: NativeCompactionOptions = {
+  summary: { route: 'queued' },
+}
 
 /**
  * The trigger that the compaction lifecycle event reports for a user `/compact`.

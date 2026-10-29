@@ -152,7 +152,12 @@ export function parseEntityKey(key: string): EntityRef | undefined {
   if (sep < 0)
     return undefined
   const kind = key.slice(0, sep)
-  return isChunkKind(kind) ? { kind, entityId: key.slice(sep + 1) } : undefined
+  return isChunkKind(kind)
+    ? {
+        kind,
+        entityId: key.slice(sep + 1),
+      }
+    : undefined
 }
 
 /**
@@ -181,7 +186,9 @@ export function serializeHeader(state: UserCrdtState): Uint8Array {
 export function serializeEntity(state: UserCrdtState, ref: EntityRef): Uint8Array | undefined {
   const spec = SHARDS[ref.kind]
   const record = (state[spec.field] as Record<string, Message>)[ref.entityId]
-  return record === undefined ? undefined : toBinary(spec.schema, record)
+  return record === undefined
+    ? undefined
+    : toBinary(spec.schema, record)
 }
 
 /** Every entity in `state`, as chunks — the payload of a FULL rewrite. */
@@ -189,8 +196,13 @@ function serializeAllEntities(state: UserCrdtState): EntityChunk[] {
   const chunks: EntityChunk[] = []
   for (const kind of CHUNK_KINDS) {
     const spec = SHARDS[kind]
-    for (const [entityId, record] of Object.entries(state[spec.field] as Record<string, Message>))
-      chunks.push({ kind, entityId, bytes: toBinary(spec.schema, record) })
+    for (const [entityId, record] of Object.entries(state[spec.field] as Record<string, Message>)) {
+      chunks.push({
+        kind,
+        entityId,
+        bytes: toBinary(spec.schema, record),
+      })
+    }
   }
   return chunks
 }
@@ -204,7 +216,12 @@ function serializeAllEntities(state: UserCrdtState): EntityChunk[] {
  * be given -- an incremental delta is meaningless without a base.
  */
 export function fullCheckpointDelta(state: UserCrdtState): CheckpointDelta {
-  return { headerBytes: serializeHeader(state), upserts: serializeAllEntities(state), deletes: [], full: true }
+  return {
+    headerBytes: serializeHeader(state),
+    upserts: serializeAllEntities(state),
+    deletes: [],
+    full: true,
+  }
 }
 
 /** Parse a header blob back into a `UserCrdtState` with empty entity maps. */
@@ -297,7 +314,9 @@ export function framedEntityKeys(frame: WatchUserEvent): Set<string> | null {
     case 'entityMaterialized':
     case 'entityRemoved': {
       const keys = entityRefKeys(event.value.entity)
-      return keys === null ? null : new Set(keys)
+      return keys === null
+        ? null
+        : new Set(keys)
     }
     case 'batchEnd':
       // Advances the resume watermark only; the watermark rides in the header,
@@ -325,7 +344,9 @@ function opEntityKeys(op: CrdtOp): readonly string[] | null {
   const target = opTarget(op)
   switch (target.case) {
     case 'entity':
-      return [entityKey(target.kind, target.id)]
+      return [
+        entityKey(target.kind, target.id),
+      ]
     case 'none':
       return []
     default:
@@ -352,15 +373,25 @@ void _everyOpKindIsSharded
 function entityRefKeys(entity: EntityMaterialized['entity'] | EntityRemoved['entity']): readonly string[] | null {
   switch (entity.case) {
     case 'tab':
-      return [entityKey('tab', entity.value.tabId)]
+      return [
+        entityKey('tab', entity.value.tabId),
+      ]
     case 'node':
-      return [entityKey('node', entity.value.nodeId)]
+      return [
+        entityKey('node', entity.value.nodeId),
+      ]
     case 'floatingWindow':
-      return [entityKey('fw', entity.value.windowId)]
+      return [
+        entityKey('fw', entity.value.windowId),
+      ]
     case 'nodeId':
-      return [entityKey('node', entity.value)]
+      return [
+        entityKey('node', entity.value),
+      ]
     case 'windowId':
-      return [entityKey('fw', entity.value)]
+      return [
+        entityKey('fw', entity.value),
+      ]
     case undefined:
       // Empty oneof: `applyMaterializedCore` / `applyRemovedCore` install and
       // evict nothing, so nothing is dirtied.

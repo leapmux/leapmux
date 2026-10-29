@@ -28,10 +28,20 @@ export function museCompactionBoundary(parsed: ParsedMessageContent): Compaction
     return null
   // A token count is a whole number of tokens; a fraction or a float beyond the
   // safe range is a corrupt native value, not a count to render.
-  const count = (n: number | undefined) => n !== undefined && Number.isSafeInteger(n) && n >= 0 ? n : undefined
+  const count = (n: number | undefined) => n !== undefined && Number.isSafeInteger(n) && n >= 0
+    ? n
+    : undefined
   const before = count(pickNumber(item, 'tokensBefore', undefined))
   const after = count(pickNumber(item, 'tokensAfter', undefined))
-  return { trigger: pickString(item, 'trigger'), ...(before !== undefined ? { pre: before } : {}), ...(after !== undefined ? { post: after } : {}) }
+  return {
+    trigger: pickString(item, 'trigger'),
+    ...(before !== undefined
+      ? { pre: before }
+      : {}),
+    ...(after !== undefined
+      ? { post: after }
+      : {}),
+  }
 }
 export function museNotificationEntry(payload: Record<string, unknown>): NotificationEntry[] {
   if (payload.method === MUSE_METHOD.SessionModelRouteUnserved) {
@@ -40,14 +50,18 @@ export function museNotificationEntry(payload: Record<string, unknown>): Notific
     const model = pickString(params, 'modelId').trim()
     if (!provider || !model)
       return []
-    return [{ kind: 'text', text: `The Muse login installed provider ${provider}, which cannot serve this session's model ${model}. Choose another model.` }]
+    return [
+      { kind: 'text', text: `The Muse login installed provider ${provider}, which cannot serve this session's model ${model}. Choose another model.` },
+    ]
   }
   if (payload.method === MUSE_METHOD.UserInputSettled) {
     const params = museParams(payload)
     const outcome = pickString(params, 'outcome')
     if (!pickString(params, 'sessionId').trim() || !pickString(params, 'userInputId').trim() || !outcome.trim())
       return []
-    return [{ kind: 'text', text: QUESTION_OUTCOME_TEXT.get(outcome) ?? `Muse question settled: ${outcome}` }]
+    return [
+      { kind: 'text', text: QUESTION_OUTCOME_TEXT.get(outcome) ?? `Muse question settled: ${outcome}` },
+    ]
   }
   if (payload.method === MUSE_METHOD.TodoListChanged) {
     const items = museParams(payload)?.items
@@ -56,7 +70,9 @@ export function museNotificationEntry(payload: Record<string, unknown>): Notific
     return items.flatMap((item): NotificationEntry[] => {
       if (!isObject(item) || typeof item.status !== 'string' || !item.status.trim() || NATIVE_TODO_STATUSES.has(item.status))
         return []
-      return [{ kind: 'text', text: `Unknown Muse to-do status: ${item.status}` }]
+      return [
+        { kind: 'text', text: `Unknown Muse to-do status: ${item.status}` },
+      ]
     })
   }
   const item = museItem(payload)
@@ -79,32 +95,56 @@ export function museNotificationEntry(payload: Record<string, unknown>): Notific
     const entry: Extract<NotificationEntry, { kind: 'hook' }> = { kind: 'hook', outcome }
     assignDefined(entry, 'event', pickString(item, 'event').trim() || undefined)
     assignDefined(entry, 'name', pickString(item, 'label').trim() || undefined)
-    assignDefined(entry, 'detail', pickString(item, 'reason').trim() || (item.status === MUSE_ITEM_STATUS.Cancelled ? 'cancelled' : undefined))
+    assignDefined(entry, 'detail', pickString(item, 'reason').trim() || (item.status === MUSE_ITEM_STATUS.Cancelled
+      ? 'cancelled'
+      : undefined))
     return [entry]
   }
   if (item?.kind === MUSE_ITEM_KIND.Compaction) {
-    if (item.outcome === MUSE_COMPACTION_OUTCOME.Compacted)
-      return [{ kind: 'compaction', phase: 'end', detail: { trigger: pickString(item, 'trigger') } }]
+    if (item.outcome === MUSE_COMPACTION_OUTCOME.Compacted) {
+      return [
+        {
+          kind: 'compaction',
+          phase: 'end',
+          detail: {
+            trigger: pickString(item, 'trigger'),
+          },
+        },
+      ]
+    }
     const reason = pickString(item, 'reason')
     const outcome = pickString(item, 'outcome')
     const knownOutcome = COMPACTION_OUTCOMES.get(outcome)
     if (knownOutcome) {
       const entry: Extract<NotificationEntry, { kind: 'compaction' }> = { kind: 'compaction', phase: 'end', outcome: knownOutcome }
-      assignDefined(entry, 'error', reason.trim() ? reason : undefined)
+      assignDefined(entry, 'error', reason.trim()
+        ? reason
+        : undefined)
       return [entry]
     }
     // A future outcome keeps its reason or native word without an invented result.
-    if (reason.trim())
-      return [{ kind: 'text', text: reason }]
-    return outcome.trim() ? [{ kind: 'text', text: `Muse compaction: ${outcome}` }] : []
+    if (reason.trim()) {
+      return [
+        { kind: 'text', text: reason },
+      ]
+    }
+    return outcome.trim()
+      ? [
+          { kind: 'text', text: `Muse compaction: ${outcome}` },
+        ]
+      : []
   }
   if (payload.method === MUSE_METHOD.TurnRetryScheduled) {
     const params = museParams(payload)
-    const facts: RetryFacts = { error: pickString(params, 'reason') }
+    const facts: RetryFacts = {
+      error: pickString(params, 'reason'),
+    }
     assignDefined(facts, 'attempt', pickNumber(params, 'nextAttempt', undefined))
     assignDefined(facts, 'maxAttempts', pickNumber(params, 'maxAttempts', undefined))
     assignDefined(facts, 'delayMs', pickNumber(params, 'retryDelayMs', undefined))
-    return [retryEntry('api', facts)]
+    return [
+      retryEntry('api', facts),
+    ]
   }
   return []
 }

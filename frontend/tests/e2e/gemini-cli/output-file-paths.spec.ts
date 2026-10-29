@@ -38,13 +38,28 @@ geminiTest('keeps the native inline record after model-only masking without a Wo
   // The stored rows of the call and the Gemini tool records that they hold.
   const readStored = (snapshot: NativeMessageSnapshot) => {
     const rows = snapshot.messages.filter(message => message.spanId === capture.nativeCallId)
-    return { frames: rows.map(message => nativeMessageBody(message)), records: rows.map(readGeminiStoredToolRecord).filter(isObject) }
+    return {
+      frames: rows.map(message => nativeMessageBody(message)),
+      records: rows.map(readGeminiStoredToolRecord).filter(isObject),
+    }
   }
   const stored = readStored(capture.snapshot)
   expect(stored.records).toHaveLength(1)
   expect(pickString(stored.records[0], 'id')).toBe(capture.nativeCallId)
   expect(pickString(stored.records[0], 'resultDisplay')).toBe(output.text)
-  await testInfo.attach('gemini-native-model-mask', { body: JSON.stringify({ agentId: agent.id, sessionId: agent.agentSessionId, nativeCallId: capture.nativeCallId, modelOnlyPath: path, masked, previewText: output.text, paths: [], originalFrames: stored.frames }), contentType: 'application/json' })
+  await testInfo.attach('gemini-native-model-mask', {
+    body: JSON.stringify({
+      agentId: agent.id,
+      sessionId: agent.agentSessionId,
+      nativeCallId: capture.nativeCallId,
+      modelOnlyPath: path,
+      masked,
+      previewText: output.text,
+      paths: [],
+      originalFrames: stored.frames,
+    }),
+    contentType: 'application/json',
+  })
   await proveNativeToolOutputFilePaths({
     context: native,
     callId: capture.nativeCallId,

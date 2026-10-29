@@ -25,8 +25,14 @@ droidTest.describe('Factory Droid MCP input form', () => {
         testId: 'elicitation-form',
         relatedProof: async () => {
           const start = await modelScript.queue(
-            { toolCalls: [droidToolSearchToolCall('search-form', `${server.name} ask`)] },
-            { toolCalls: [call] },
+            {
+              toolCalls: [
+                droidToolSearchToolCall('search-form', `${server.name} ask`),
+              ],
+            },
+            {
+              toolCalls: [call],
+            },
             { text: 'The form request failed.' },
           )
           await sendMessage(page, modelScript.prompt(`Load ${server.name} ask, then call it once.`))

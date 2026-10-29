@@ -19,11 +19,19 @@ import { zcodePermissionPresets } from './permissionPresets'
  * fail-safe set: an id outside it answers deny, because granting a choice the
  * backend never offered is the one outcome a permission answer must not have.
  */
-const ZCODE_ALLOW_OPTION_IDS = new Set(['allow', 'allow_once', 'allow_always', 'allow_project', 'allowSession'])
+const ZCODE_ALLOW_OPTION_IDS = new Set([
+  'allow',
+  'allow_once',
+  'allow_always',
+  'allow_project',
+  'allowSession',
+])
 
 /** Send one offered option as the answer, with its id as the choice the worker echoes. */
 export function sendZCodePermissionOption(onRespond: ControlResponseSender, requestId: string, optionId: string): Promise<void> {
-  const behavior = ZCODE_ALLOW_OPTION_IDS.has(optionId) ? 'allow' : 'deny'
+  const behavior = ZCODE_ALLOW_OPTION_IDS.has(optionId)
+    ? 'allow'
+    : 'deny'
   return sendResponse(onRespond, withControlChoice(
     buildControlResponseEnvelope(requestId, { behavior }),
     optionId,

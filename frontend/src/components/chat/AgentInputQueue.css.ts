@@ -82,7 +82,12 @@ export const error = style({ color: 'var(--danger)', fontSize: compactTextSize }
  * (`compactAction` in `~/styles/tokens.ts`), so they wrap at full size rather
  * than squeezing.
  */
-export const actions = style({ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-1)', justifyContent: 'flex-end' })
+export const actions = style({
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 'var(--space-1)',
+  justifyContent: 'flex-end',
+})
 
 /**
  * One action in a queue row: an outline square holding a single icon.

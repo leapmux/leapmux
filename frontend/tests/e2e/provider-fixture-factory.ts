@@ -53,7 +53,12 @@ export function createProviderTest<K extends `authenticated${string}Workspace`>(
       ...options.agent,
     }),
     native: async ({ page, modelScript, leapmuxServer, providerWorkspace }: Omit<NativeContextFixtures, 'workspaceId'> & ProviderWorkspaceFixture, use: (context: ManagedNativeScenarioContext) => Promise<void>) => {
-      const fixtures = { page, modelScript, leapmuxServer, workspaceId: providerWorkspace.workspaceId }
+      const fixtures = {
+        page,
+        modelScript,
+        leapmuxServer,
+        workspaceId: providerWorkspace.workspaceId,
+      }
       const context = await options.nativeContext(fixtures)
       if (context.provider !== options.agent.provider || context.providerAgent !== options.agent)
         throw new Error('The native context must use the provider that its workspace opened.')
@@ -85,11 +90,14 @@ export function cliSkipFixture(reason: string | null): [TestFixture<void, object
   if (reason !== null && reason.trim() === '')
     throw new Error('A provider skip needs the reason that its CLI is missing.')
   // Playwright reads the fixture names from the first parameter, which must be an object pattern.
-  // eslint-disable-next-line no-empty-pattern
-  return [async ({}, use, testInfo) => {
-    testInfo.skip(reason !== null, reason ?? '')
-    await use()
-  }, { auto: true }]
+  return [
+    // eslint-disable-next-line no-empty-pattern
+    async ({}, use, testInfo) => {
+      testInfo.skip(reason !== null, reason ?? '')
+      await use()
+    },
+    { auto: true },
+  ]
 }
 
 /** Register provider housekeeping before a scenario can consume an ordered model answer. */
@@ -127,7 +135,12 @@ export function createProviderProcessTest(options: ProviderTestOptions & {
       })
     },
     native: async ({ page, modelScript, separateHubWorker, authenticatedWorkspace }, use) => {
-      const context = await options.nativeContext({ page, modelScript, leapmuxServer: separateHubWorker, workspaceId: authenticatedWorkspace.workspaceId })
+      const context = await options.nativeContext({
+        page,
+        modelScript,
+        leapmuxServer: separateHubWorker,
+        workspaceId: authenticatedWorkspace.workspaceId,
+      })
       if (context.provider !== options.agent.provider || context.providerAgent !== options.agent)
         throw new Error('The process fixture context must use the provider that its workspace opened.')
       await use(context)

@@ -17,7 +17,9 @@ export const MUSE_COMPACTION_REPORTED_INPUT_TOKENS = 70000
  * arrives as a developer row, which the joined system text of the generic
  * protocols does not always carry, so the matcher reads the whole body.
  */
-export const museSummarizerMatcher: MockModelMatcher = { body: [MUSE_SUMMARIZER_SYSTEM] }
+export const museSummarizerMatcher: MockModelMatcher = {
+  body: [MUSE_SUMMARIZER_SYSTEM],
+}
 
 /** The generate_summary fields the host requires, each carrying the marker. */
 export function museCompactionSummaryStep(): MockModelStep {
@@ -32,5 +34,14 @@ export function museCompactionSummaryStep(): MockModelStep {
     pending_tasks_and_next_step: MANUAL_COMPACTION_SUMMARY,
     user_message_timeline: MANUAL_COMPACTION_SUMMARY,
   }
-  return { toolCalls: [{ id: 'muse-generate-summary', name: 'generate_summary', namespace: 'muse', arguments: fields }] }
+  return {
+    toolCalls: [
+      {
+        id: 'muse-generate-summary',
+        name: 'generate_summary',
+        namespace: 'muse',
+        arguments: fields,
+      },
+    ],
+  }
 }

@@ -12,10 +12,25 @@ const MARKERS = ['FIRST', 'SECOND'] as const
 ohMyPiTest('keeps two actual native task children as separate ungrouped rows', async ({ native }) => {
   const { page, modelScript } = native
   await applyPermissionPreset(page, 'bypass')
-  for (const marker of MARKERS)
-    await modelScript.rule({ name: `omp ungrouped ${marker}`, when: ohMyPiChildTurn(`OMPGROUP${marker}`), respond: { toolCalls: [ohMyPiYieldToolCall(`omp-yield-${marker}`, `OMP_NATIVE_GROUP_REPORT_${marker}`)] }, once: true })
+  for (const marker of MARKERS) {
+    await modelScript.rule({
+      name: `omp ungrouped ${marker}`,
+      when: ohMyPiChildTurn(`OMPGROUP${marker}`),
+      respond: {
+        toolCalls: [
+          ohMyPiYieldToolCall(`omp-yield-${marker}`, `OMP_NATIVE_GROUP_REPORT_${marker}`),
+        ],
+      },
+      once: true,
+    })
+  }
   const start = await modelScript.queue(
-    { toolCalls: MARKERS.map(marker => spawnSubagentToolCall(AgentProvider.OH_MY_PI, `omp-task-${marker}`, { description: `Run the ${marker.toLowerCase()} group task`, prompt: modelScript.prompt(`OMPGROUP${marker} Report the requested result.`) })) },
+    {
+      toolCalls: MARKERS.map(marker => spawnSubagentToolCall(AgentProvider.OH_MY_PI, `omp-task-${marker}`, {
+        description: `Run the ${marker.toLowerCase()} group task`,
+        prompt: modelScript.prompt(`OMPGROUP${marker} Report the requested result.`),
+      })),
+    },
     { text: 'The parent consumed both actual native task reports.' },
   )
   await sendMessage(page, modelScript.prompt('Run both native task children and collect both reports.'))

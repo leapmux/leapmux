@@ -17,7 +17,13 @@ export function copilotContextUsage(parsed: ParsedMessageContent): ContextUsageI
   const current = pickNumber(event.data, 'currentTokens')
   if (current == null || current <= 0)
     return null
-  const info: ContextUsageInfo = { inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, outputTokens: 0, contextTokens: current }
+  const info: ContextUsageInfo = {
+    inputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+    outputTokens: 0,
+    contextTokens: current,
+  }
   const limit = pickNumber(event.data, 'tokenLimit')
   if (limit != null && limit > 0)
     info.contextWindow = limit

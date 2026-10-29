@@ -48,7 +48,11 @@ qwenTest.describe('Qwen Code settings and goal', () => {
     // Auto Edit writes the file without a banner, so the scenario answers no control.
     const written = join(workingDir, 'auto-edit-proof.txt')
     const autoEditStep = await modelScript.queue(
-      { toolCalls: [writeToolCall(AgentProvider.QWEN_CODE, 'auto-edit-proof', { path: written, content: 'QWEN_AUTO_EDIT_42\n' })] },
+      {
+        toolCalls: [
+          writeToolCall(AgentProvider.QWEN_CODE, 'auto-edit-proof', { path: written, content: 'QWEN_AUTO_EDIT_42\n' }),
+        ],
+      },
       { text: 'The Auto Edit turn ended.' },
     )
     await sendMessage(page, modelScript.prompt('Create the scripted file in Auto Edit mode.'))
@@ -82,7 +86,11 @@ qwenTest.describe('Qwen Code settings and goal', () => {
     await expectSettingsChip(page, 'YOLO')
 
     const bypassStep = await modelScript.queue(
-      { toolCalls: [writeToolCall(AgentProvider.QWEN_CODE, 'bypass-protected-write', { path: protectedFile, content: '{"proof":"QWEN_BYPASS_42"}\n' })] },
+      {
+        toolCalls: [
+          writeToolCall(AgentProvider.QWEN_CODE, 'bypass-protected-write', { path: protectedFile, content: '{"proof":"QWEN_BYPASS_42"}\n' }),
+        ],
+      },
       { text: 'The protected write ran in YOLO.' },
     )
     await sendMessage(page, modelScript.prompt('Run the scripted protected write under Bypass permissions.'))
@@ -98,7 +106,11 @@ qwenTest.describe('Qwen Code settings and goal', () => {
     await expectSettingsOptionChosen(page, 'reasoning_effort-low')
 
     const restoredStep = await modelScript.queue(
-      { toolCalls: [writeToolCall(AgentProvider.QWEN_CODE, 'restored-protected-write', { path: protectedFile, content: '{"proof":"QWEN_RESTORED_43"}\n' })] },
+      {
+        toolCalls: [
+          writeToolCall(AgentProvider.QWEN_CODE, 'restored-protected-write', { path: protectedFile, content: '{"proof":"QWEN_RESTORED_43"}\n' }),
+        ],
+      },
       { text: 'The restored protected write ran in YOLO.' },
     )
     await sendMessage(page, modelScript.prompt('Write the new protected file value under the restored permissions.'))

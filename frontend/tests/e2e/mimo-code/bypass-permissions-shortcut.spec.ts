@@ -19,7 +19,12 @@ mimoTest.describe('MiMo Code settings', () => {
     await waitForSettingsHydrated(page)
     await expectPermissionShortcuts(page, { smart: 'absent', bypass: 'offered' })
 
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     await exerciseBypassPermissions(context, {
       settingsProof: agent => expect(nativeOptionValue(agent, MIMO_OPTION.PermissionPolicy)).toBe(MIMO_PERMISSION_POLICY.Bypass),
     })
@@ -29,6 +34,9 @@ mimoTest.describe('MiMo Code settings', () => {
 })
 
 mimoTest('approves a pending tool and the next tool when Bypass changes during a turn', async ({ native }) => {
-  const operations = await Promise.all([createNativePermissionRemoval(native), createNativePermissionRemoval(native)])
+  const operations = await Promise.all([
+    createNativePermissionRemoval(native),
+    createNativePermissionRemoval(native),
+  ])
   await exerciseMidTurnBypass(native, operations)
 })

@@ -8,7 +8,10 @@ codebuddyTest('reports advancing tokens during native text output and preserves 
 })
 
 codebuddyTest('reports advancing tokens during native reasoning and preserves the final answer', async ({ native }) => {
-  await exerciseTokenProgress(native, { supported: true, step: { reasoning: 'The native reasoning stream supplies enough characters for two held chunks before the completed answer.' } })
+  await exerciseTokenProgress(native, {
+    supported: true,
+    step: { reasoning: 'The native reasoning stream supplies enough characters for two held chunks before the completed answer.' },
+  })
 })
 
 codebuddyTest('reports no byte count throughout an actual native shell output stream', async ({ native }) => {

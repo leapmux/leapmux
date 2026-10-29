@@ -33,11 +33,17 @@ export function moreHorizontalTrigger(
     <IconButton
       icon={MoreHorizontal}
       size="md"
-      {...(opts.class !== undefined ? { class: opts.class } : {})}
-      {...(opts.title !== undefined ? { title: opts.title } : {})}
+      {...(opts.class !== undefined
+        ? { class: opts.class }
+        : {})}
+      {...(opts.title !== undefined
+        ? { title: opts.title }
+        : {})}
       ref={triggerProps.ref}
       aria-expanded={triggerProps['aria-expanded']}
-      {...(opts['data-testid'] !== undefined ? { 'data-testid': opts['data-testid'] } : {})}
+      {...(opts['data-testid'] !== undefined
+        ? { 'data-testid': opts['data-testid'] }
+        : {})}
       onPointerDown={(e: PointerEvent) => {
         e.stopPropagation()
         triggerProps.onPointerDown()
@@ -62,5 +68,10 @@ export function moreHorizontalTrigger(
 export function rowContextMenuTrigger(
   opts: { 'data-testid'?: string } = {},
 ): (triggerProps: DropdownTriggerProps) => JSX.Element {
-  return moreHorizontalTrigger({ class: menuTrigger, ...(opts['data-testid'] !== undefined ? { 'data-testid': opts['data-testid'] } : {}) })
+  return moreHorizontalTrigger({
+    class: menuTrigger,
+    ...(opts['data-testid'] !== undefined
+      ? { 'data-testid': opts['data-testid'] }
+      : {}),
+  })
 }

@@ -54,7 +54,9 @@ export function layoutPermissionOptions(options: PermissionOption[]): Permission
   // Require distinct option IDs because the native reply carries that ID.
   const allOnces = options.filter(option => option.kind === ACP_PERMISSION_KIND.AllowOnce)
   const allAlways = options.filter(option => option.kind === KIND_ALLOW_ALWAYS)
-  const once = allOnces.length === 1 ? allOnces[0] : undefined
+  const once = allOnces.length === 1
+    ? allOnces[0]
+    : undefined
   const scopeAlways: PermissionOption[] = []
   if (once) {
     for (const option of allAlways) {
@@ -72,8 +74,12 @@ export function layoutPermissionOptions(options: PermissionOption[]): Permission
   // A refusal that no scope can select also stays additional.
   const positive = allowOnce ?? allowAlways
   const negative = rejectOnce ?? rejectAlways
-  const reachable = allowScope && rejectOnce ? reachableRejects(options, allowScope) : []
-  const rememberRejects = reachable.length > 0 ? reachable : undefined
+  const reachable = allowScope && rejectOnce
+    ? reachableRejects(options, allowScope)
+    : []
+  const rememberRejects = reachable.length > 0
+    ? reachable
+    : undefined
   const consumed = new Set<PermissionOption | undefined>(allowScope ?? [positive, negative])
   if (allowScope) {
     consumed.add(negative)
@@ -134,7 +140,9 @@ function rememberingScope(
   selectedAllowScopeId?: string,
 ): PermissionOption | undefined {
   const selected = layout.allowScope?.find(option => option.optionId === selectedAllowScopeId)
-  return selected?.kind === KIND_ALLOW_ALWAYS ? selected : undefined
+  return selected?.kind === KIND_ALLOW_ALWAYS
+    ? selected
+    : undefined
 }
 
 /**
@@ -144,8 +152,10 @@ function rememberingScope(
  * If neither matches, the decision button keeps its once refusal.
  */
 function rememberRejectFor(rejects: readonly PermissionOption[], pill: PermissionOption): PermissionOption | undefined {
-  return (pill.scope !== undefined ? rejects.find(option => option.scope === pill.scope) : undefined)
-    ?? rejects.find(option => option.scope === undefined)
+  return (pill.scope !== undefined
+    ? rejects.find(option => option.scope === pill.scope)
+    : undefined)
+  ?? rejects.find(option => option.scope === undefined)
 }
 
 /**
@@ -169,7 +179,9 @@ export function resolvePermissionOption(
     return layout.positive
   }
   const pill = rememberingScope(layout, selectedAllowScopeId)
-  const remember = pill && layout.rememberRejects ? rememberRejectFor(layout.rememberRejects, pill) : undefined
+  const remember = pill && layout.rememberRejects
+    ? rememberRejectFor(layout.rememberRejects, pill)
+    : undefined
   return remember ?? layout.negative
 }
 
@@ -181,9 +193,17 @@ export function resolvePermissionOption(
  * A plain label on a remembered slot would conceal the lasting rule.
  */
 export function decisionLabel(layout: PermissionOptionLayout, polarity: 'allow' | 'reject'): string {
-  const slot = polarity === 'allow' ? layout.positive : layout.negative
-  const rememberKind = polarity === 'allow' ? KIND_ALLOW_ALWAYS : KIND_REJECT_ALWAYS
-  return slot?.kind === rememberKind ? permissionOptionLabel(slot) : polarity === 'allow' ? 'Allow' : 'Deny'
+  const slot = polarity === 'allow'
+    ? layout.positive
+    : layout.negative
+  const rememberKind = polarity === 'allow'
+    ? KIND_ALLOW_ALWAYS
+    : KIND_REJECT_ALWAYS
+  return slot?.kind === rememberKind
+    ? permissionOptionLabel(slot)
+    : polarity === 'allow'
+      ? 'Allow'
+      : 'Deny'
 }
 
 /** The pill label of each scope that a plugin states. The widest scope reads Always. */
@@ -228,5 +248,7 @@ export function allowScopeLabel(option: PermissionOption): string {
 export function allowScopePillOptions(scope: readonly PermissionOption[]): PillOptions<string> | undefined {
   const labels = disambiguateLabels(scope, allowScopeLabel, permissionOptionLabel)
   const pills = scope.map((option, index) => ({ key: option.optionId, label: labels[index]! }))
-  return isPillOptions(pills) ? pills : undefined
+  return isPillOptions(pills)
+    ? pills
+    : undefined
 }

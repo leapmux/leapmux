@@ -37,7 +37,11 @@ claudeTest('shows the permission-check badge while the Auto Mode classifier hold
   // A command that the local fast path allows never reaches the classifier. A network command skips that fast path,
   // so Auto Mode gives its permission decision to the classifier.
   await modelScript.queue(
-    { toolCalls: [bashToolCall(AgentProvider.CLAUDE_CODE, 'permission-check-badge', 'curl -s http://example.invalid')] },
+    {
+      toolCalls: [
+        bashToolCall(AgentProvider.CLAUDE_CODE, 'permission-check-badge', 'curl -s http://example.invalid'),
+      ],
+    },
     { text: finalAnswer },
   )
   try {

@@ -30,7 +30,9 @@ export function stampBranchOnRepo(
     branch: newBranch,
     branchPinnedUntilRefresh: true,
     errorHint: '',
-    ...(fromNonRepo ? { gitStatusSeen: false } : {}),
+    ...(fromNonRepo
+      ? { gitStatusSeen: false }
+      : {}),
   })
   return true
 }

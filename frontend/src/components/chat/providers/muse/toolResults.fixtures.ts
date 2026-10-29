@@ -3,10 +3,66 @@
 /** Build one exact tool origin and result while keeping every native identity explicit. */
 export function museToolResultSources(text: string, args: Record<string, unknown> = {}) {
   const encodedArgs = JSON.stringify(args)
-  const payload = { method: 'item/completed', params: { sessionId: 'session', sourceRange: { stream: { kind: 'session', id: 'session' }, first: { id: 'origin', sequence: 1 } }, item: { itemId: 'item', kind: 'toolCall', turnId: 'turn', callId: 'call', tool: 'bash', args: encodedArgs, status: 'completed', visibleOutput: text } } }
-  const origin = { id: 'origin', sequence: 1, stream: { kind: 'session', id: 'session' }, payload: { kind: 'run', run_id: 'turn', event: { kind: 'assistant_tool_calls_committed', message_id: 'batch', tool_calls: [{ call_id: 'call', name: 'bash', args: encodedArgs }] } } }
-  const result = { id: 'result', sequence: 2, stream: { kind: 'session', id: 'session' }, payload: { kind: 'run', run_id: 'turn', event: { kind: 'tool_result_batch_committed', batch_id: 'batch', results: [{ tool_call_id: 'call', tool_call_index: 0, text }] } } }
-  return { payload, origin, result, supplement: { nativeRecords: [origin, result] } }
+  const payload = {
+    method: 'item/completed',
+    params: {
+      sessionId: 'session',
+      sourceRange: {
+        stream: { kind: 'session', id: 'session' },
+        first: { id: 'origin', sequence: 1 },
+      },
+      item: {
+        itemId: 'item',
+        kind: 'toolCall',
+        turnId: 'turn',
+        callId: 'call',
+        tool: 'bash',
+        args: encodedArgs,
+        status: 'completed',
+        visibleOutput: text,
+      },
+    },
+  }
+  const origin = {
+    id: 'origin',
+    sequence: 1,
+    stream: { kind: 'session', id: 'session' },
+    payload: {
+      kind: 'run',
+      run_id: 'turn',
+      event: {
+        kind: 'assistant_tool_calls_committed',
+        message_id: 'batch',
+        tool_calls: [
+          { call_id: 'call', name: 'bash', args: encodedArgs },
+        ],
+      },
+    },
+  }
+  const result = {
+    id: 'result',
+    sequence: 2,
+    stream: { kind: 'session', id: 'session' },
+    payload: {
+      kind: 'run',
+      run_id: 'turn',
+      event: {
+        kind: 'tool_result_batch_committed',
+        batch_id: 'batch',
+        results: [
+          { tool_call_id: 'call', tool_call_index: 0, text },
+        ],
+      },
+    },
+  }
+  return {
+    payload,
+    origin,
+    result,
+    supplement: {
+      nativeRecords: [origin, result],
+    },
+  }
 }
 
 export const MUSE_NATIVE_WORKFLOW_COMPLETE_FRAME = '{"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"01a118ed-d078-72f0-bd3a-015c4e3c00f7","viewCursor":"v:01a118ed-d078-72f0-bd3a-015c4e3c00f7:16","sourceRange":{"stream":{"kind":"session","id":"01a118ed-d078-72f0-bd3a-015c4e3c00f7"},"first":{"id":"972e72d9-d5ce-4f8d-a423-48c4882e0da3","sequence":54},"last":{"id":"5f56395b-82df-47ba-a9ab-f54c18d52c4c","sequence":86}},"item":{"itemId":"972e72d9-d5ce-4f8d-a423-48c4882e0da3","kind":"workflow","turnId":"01a118ed-d1ac-7146-b690-1c5f5a59e06a","revision":7,"status":"completed","recordedAt":"2026-10-08T00:33:22.355889Z","fallbackText":"Workflow: model-chosen generated workflow","durationMs":589,"workflowRunId":"workflow-run-model-tool-workflow-compute","entryId":"Native compute","scriptId":"generated.workflow.Native_compute","triggerSource":"guidanceAuto","children":[{"childId":"01a118ed-d40d-7b02-a0d0-a77296ec9498","attempt":1,"status":"terminal","durationMs":178,"terminal":"completed","resultRef":"subagent-result://01a118ed-d40d-7b02-a0d0-a77296ec9498/task/75fe018f-5349-5e7d-9827-cef85612ea92#5"}],"message":"<workflow-launch-reconciled>{\\"type\\":\\"workflow_launch_reconciled\\",\\"call_id\\":\\"workflow-compute\\",\\"launch_command_id\\":\\"3392a5a1-e86a-4622-a803-d6c9e03a8d48\\",\\"route\\":\\"runtime command admission -> production owner loop\\",\\"deferred_to_background\\":false,\\"launch_admitted\\":true,\\"production_owner_loop_started\\":true,\\"child_work_started\\":true,\\"provider_or_tool_io_started\\":true,\\"final_summary_instruction\\":\\"Use final_summary.summary as the completed workflow output.\\",\\"final_summary\\":{\\"status\\":\\"completed\\",\\"summary\\":\\"{\\\\\\"marker\\\\\\":\\\\\\"MUSE_WORKFLOW_42\\\\\\"}\\"},\\"latest_failure\\":null,\\"agents_activity\\":[{\\"agent\\":\\"01a118ed-d40d-7b02-a0d0-a77296ec9498\\",\\"tool_calls\\":0,\\"duration_ms\\":178}],\\"workspace_handoffs\\":[{\\"agent\\":\\"01a118ed-d40d-7b02-a0d0-a77296ec9498\\",\\"description\\":\\"Subagent workspace: shared\\"}]}</workflow-launch-reconciled>"}},"emittedAtMs":1791419602360}'

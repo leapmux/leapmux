@@ -13,8 +13,12 @@ import { expectSettingsChip, waitForNativeSettingsHydrated } from '../helpers/ui
 function expectNativeCollaborationMode(request: MockModelRequestRecord, mode: 'plan' | 'default'): void {
   expect(request.protocol).toBe('openai-responses')
   const instructions = systemText(request.protocol, request.body)
-  const headers = [...instructions.matchAll(/<collaboration_mode>\s*(#[^\n]+)/g)].map(match => match[1])
-  expect(headers.at(-1)).toBe(mode === 'plan' ? '# Plan Mode (Conversational)' : '# Collaboration Mode: Default')
+  const headers = [
+    ...instructions.matchAll(/<collaboration_mode>\s*(#[^\n]+)/g),
+  ].map(match => match[1])
+  expect(headers.at(-1)).toBe(mode === 'plan'
+    ? '# Plan Mode (Conversational)'
+    : '# Collaboration Mode: Default')
 }
 
 codexTest('applies and restores the selected native collaboration mode', async ({ native }) => {
@@ -43,7 +47,12 @@ codexTest('returns from Plan to Default with one notice for each native mode cha
     { value: 'plan', label: 'Plan Mode', previous: 'Default' },
     { value: 'default', label: 'Default', previous: 'Plan Mode' },
   ] as const) {
-    const notice = await chooseNativeModeWithNotice(native, { groupId, ...change, previousLabel: change.previous, noticeLabel: 'Workflow' })
+    const notice = await chooseNativeModeWithNotice(native, {
+      groupId,
+      ...change,
+      previousLabel: change.previous,
+      noticeLabel: 'Workflow',
+    })
     notices.push(notice)
     const nativeProof = (request: MockModelRequestRecord) => {
       expectNativeCollaborationMode(request, change.value)

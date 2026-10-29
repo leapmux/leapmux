@@ -15,5 +15,7 @@ export function openCodeOutputFilePaths(input: RowExtractionInput, call: ToolCal
   const output = pickObject(native, 'rawOutput')
   const metadata = pickObject(output, OPENCODE_TOOL_OUTPUT_FIELD.Metadata)
   const path = metadata?.[OPENCODE_TOOL_OUTPUT_FIELD.OutputPath]
-  return isFilesystemPath(path) && /[\\/]tool-output[\\/]tool_[A-Za-z0-9]+$/u.test(path) ? [path] : []
+  return isFilesystemPath(path) && /[\\/]tool-output[\\/]tool_[A-Za-z0-9]+$/u.test(path)
+    ? [path]
+    : []
 }

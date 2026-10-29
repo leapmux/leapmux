@@ -14,7 +14,9 @@ clineTest.describe('Cline subagent registry', () => {
       childWhen: { user: 'Reply with CHILD_LIVE_DONE' },
       childTask: 'Reply with CHILD_LIVE_DONE.',
       parentTask: 'Delegate the live child task.',
-      toolProof: { read: { workingDir: authenticatedClineWorkspace.workingDir } },
+      toolProof: {
+        read: { workingDir: authenticatedClineWorkspace.workingDir },
+      },
     })
   })
 })

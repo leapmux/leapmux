@@ -32,20 +32,32 @@ export function codexExtractControl(input: ControlExtractionInput): ExtractedCon
   // `Object.hasOwn`, not a bare read: `method` comes straight off the wire, and a
   // value that spells an `Object.prototype` member answers with a function the
   // permission card would then draw as its own title.
-  const title = Object.hasOwn(CODEX_APPROVAL_TITLES, method) ? CODEX_APPROVAL_TITLES[method] : undefined
+  const title = Object.hasOwn(CODEX_APPROVAL_TITLES, method)
+    ? CODEX_APPROVAL_TITLES[method]
+    : undefined
   const reason = pickString(params, 'reason', undefined)
   const command = pickString(params, 'command', undefined)
   const workingDirectory = pickString(params, 'cwd', undefined)
   return {
     kind: 'permission',
     permission: {
-      ...(title !== undefined ? { title } : {}),
-      ...(reason !== undefined ? { reason } : {}),
-      ...(command !== undefined ? { command } : {}),
-      ...(workingDirectory !== undefined ? { workingDirectory } : {}),
+      ...(title !== undefined
+        ? { title }
+        : {}),
+      ...(reason !== undefined
+        ? { reason }
+        : {}),
+      ...(command !== undefined
+        ? { command }
+        : {}),
+      ...(workingDirectory !== undefined
+        ? { workingDirectory }
+        : {}),
       // A permissions approval draws the SET it asks for; every other method draws
       // nothing here, because its command and its reason already state the ask.
-      input: method === CODEX_PERMISSIONS_APPROVAL ? codexRequestedPermissions(payload) : undefined,
+      input: method === CODEX_PERMISSIONS_APPROVAL
+        ? codexRequestedPermissions(payload)
+        : undefined,
       options: [],
     },
   }

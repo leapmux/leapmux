@@ -169,10 +169,16 @@ describe('createPerAgentStore', () => {
   it('setReconciled keeps the identity of an entry that did not change', () => {
     createRoot((dispose) => {
       const store = createPerAgentListStore<{ id: string, n: number }>('id')
-      store.set('a', [{ id: 'x', n: 1 }, { id: 'y', n: 1 }])
+      store.set('a', [
+        { id: 'x', n: 1 },
+        { id: 'y', n: 1 },
+      ])
       const [x, y] = store.get('a')
 
-      store.setReconciled('a', [{ id: 'x', n: 1 }, { id: 'y', n: 2 }])
+      store.setReconciled('a', [
+        { id: 'x', n: 1 },
+        { id: 'y', n: 2 },
+      ])
 
       expect(store.get('a')[0]).toBe(x)
       expect(store.get('a')[1]).toBe(y)
@@ -184,9 +190,15 @@ describe('createPerAgentStore', () => {
   it('setReconciled adds, drops and reorders entries by key', () => {
     createRoot((dispose) => {
       const store = createPerAgentListStore<{ id: string, n: number }>('id')
-      store.set('a', [{ id: 'x', n: 1 }, { id: 'y', n: 2 }])
+      store.set('a', [
+        { id: 'x', n: 1 },
+        { id: 'y', n: 2 },
+      ])
 
-      store.setReconciled('a', [{ id: 'y', n: 2 }, { id: 'z', n: 3 }])
+      store.setReconciled('a', [
+        { id: 'y', n: 2 },
+        { id: 'z', n: 3 },
+      ])
 
       expect(store.get('a').map(e => e.id)).toEqual(['y', 'z'])
       expect(store.get('a').map(e => e.n)).toEqual([2, 3])
@@ -202,7 +214,9 @@ describe('createPerAgentStore', () => {
       const store = createPerAgentListStore<{ id: string }>('id')
       const empty = store.get('untouched')
 
-      store.setReconciled('a', [{ id: 'x' }])
+      store.setReconciled('a', [
+        { id: 'x' },
+      ])
       expect(store.get('a').map(e => e.id)).toEqual(['x'])
       expect(empty).toEqual([])
       expect(store.get('b')).toEqual([])
@@ -210,7 +224,9 @@ describe('createPerAgentStore', () => {
       // The same hazard through the other door: a CLEARED agent holds the
       // shared empty as its value, not undefined.
       store.clear('a')
-      store.setReconciled('a', [{ id: 'z' }])
+      store.setReconciled('a', [
+        { id: 'z' },
+      ])
       expect(store.get('a').map(e => e.id)).toEqual(['z'])
       expect(empty).toEqual([])
       dispose()
@@ -224,12 +240,18 @@ describe('createPerAgentStore', () => {
   it('setReconciled reconciles every write under the one key the store declares', () => {
     createRoot((dispose) => {
       const store = createPerAgentListStore<{ id: string, n: number }>('id')
-      store.set('a', [{ id: 'x', n: 1 }, { id: 'y', n: 2 }])
+      store.set('a', [
+        { id: 'x', n: 1 },
+        { id: 'y', n: 2 },
+      ])
       const [x] = store.get('a')
 
       // Reordered AND changed: a positional merge would rewrite entry 0 in
       // place and the identity below would follow the wrong row.
-      store.setReconciled('a', [{ id: 'y', n: 9 }, { id: 'x', n: 1 }])
+      store.setReconciled('a', [
+        { id: 'y', n: 9 },
+        { id: 'x', n: 1 },
+      ])
 
       expect(store.get('a').map(e => e.id)).toEqual(['y', 'x'])
       expect(store.get('a')[1]).toBe(x)

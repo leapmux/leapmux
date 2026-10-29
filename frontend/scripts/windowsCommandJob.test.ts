@@ -8,16 +8,30 @@ import { createProcessStub } from '~/test-support/childProcess'
 import { isObject } from '../src/lib/jsonPick'
 import { parseWindowsJobState, spawnWindowsCommandJob, windowsCommandEnvironment, windowsJobArguments } from './windowsCommandJob'
 
-const control = vi.hoisted(() => ({ errors: [] as Error[], effect: (_args: string[]) => {}, directories: new Set<string>() }))
+const control = vi.hoisted(() => ({
+  errors: [] as Error[],
+  effect: (_args: string[]) => {},
+  directories: new Set<string>(),
+}))
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>()
-  return { ...actual, rmSync: vi.fn(actual.rmSync) }
+  return {
+    ...actual,
+    rmSync: vi.fn(actual.rmSync),
+  }
 })
 
 vi.mock('node:process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:process')>()
-  return { ...actual, default: { ...actual, cwd: () => 'C:\\private', env: { ...actual.env, SystemRoot: 'C:\\Windows' } } }
+  return {
+    ...actual,
+    default: {
+      ...actual,
+      cwd: () => 'C:\\private',
+      env: { ...actual.env, SystemRoot: 'C:\\Windows' },
+    },
+  }
 })
 
 vi.mock('node:child_process', async (importOriginal) => {
@@ -70,11 +84,26 @@ function startedJob(options: SpawnOptions = { cwd: 'C:\\private', stdio: 'inheri
   const payload: unknown = JSON.parse(readFileSync(payloadPath, 'utf8'))
   if (!isObject(payload) || typeof payload.statePath !== 'string')
     throw new Error('The controlled job payload has no state path.')
-  return { ...stub, resource, payloadPath, payload, statePath: payload.statePath, directory: dirname(payloadPath) }
+  return {
+    ...stub,
+    resource,
+    payloadPath,
+    payload,
+    statePath: payload.statePath,
+    directory: dirname(payloadPath),
+  }
 }
 
 function writeState(job: ReturnType<typeof startedJob>) {
-  writeFileSync(job.statePath, JSON.stringify({ version: 1, ownerPid: 123, rootPid: 456, complete: true, members: [{ pid: 456, creationTime: '134000000000000001' }] }))
+  writeFileSync(job.statePath, JSON.stringify({
+    version: 1,
+    ownerPid: 123,
+    rootPid: 456,
+    complete: true,
+    members: [
+      { pid: 456, creationTime: '134000000000000001' },
+    ],
+  }))
 }
 
 function mode(args: string[]): string | undefined {
@@ -84,15 +113,30 @@ function mode(args: string[]): string | undefined {
 describe('windowsCommandEnvironment', () => {
   /** The system boot variables Windows adds to a replacement environment, under this process's spelling. */
   const bootVariables = process.platform === 'win32'
-    ? Object.fromEntries(['systemroot', 'systemdrive', 'comspec', 'pathext']
+    ? Object.fromEntries([
+        'systemroot',
+        'systemdrive',
+        'comspec',
+        'pathext',
+      ]
         .map(name => Object.entries(process.env).find(([key]) => key.toLowerCase() === name))
         .filter((entry): entry is [string, string] => entry !== undefined))
     : {}
 
   it('keeps empty values and the first case-insensitive key without mutating the source', () => {
-    const source = { Path: 'second', PATH: 'first', EMPTY: '', OMIT: undefined }
+    const source = {
+      Path: 'second',
+      PATH: 'first',
+      EMPTY: '',
+      OMIT: undefined,
+    }
     expect(windowsCommandEnvironment(source)).toEqual({ EMPTY: '', PATH: 'first', ...bootVariables })
-    expect(source).toEqual({ Path: 'second', PATH: 'first', EMPTY: '', OMIT: undefined })
+    expect(source).toEqual({
+      Path: 'second',
+      PATH: 'first',
+      EMPTY: '',
+      OMIT: undefined,
+    })
   })
 
   it('omits a first undefined key without selecting a later duplicate', () => {
@@ -102,16 +146,31 @@ describe('windowsCommandEnvironment', () => {
   it('keeps an environment key that matches an object prototype property', () => {
     const source = Object.create(null)
     Object.defineProperty(source, '__proto__', { value: 'literal', enumerable: true })
-    expect(Object.entries(windowsCommandEnvironment(source))).toEqual([['__proto__', 'literal'], ...Object.entries(bootVariables)])
+    expect(Object.entries(windowsCommandEnvironment(source))).toEqual([
+      ['__proto__', 'literal'],
+      ...Object.entries(bootVariables),
+    ])
   })
 
-  it.each([{ '': 'value' }, { 'A\0B': 'value' }, { A: 'a\0b' }])('rejects a malformed environment entry: %j', (source) => {
+  it.each([
+    { '': 'value' },
+    { 'A\0B': 'value' },
+    { A: 'a\0b' },
+  ])('rejects a malformed environment entry: %j', (source) => {
     expect(() => windowsCommandEnvironment(source)).toThrow('Windows command')
   })
 })
 
 describe('parseWindowsJobState', () => {
-  const state = { version: 1, ownerPid: 123, rootPid: 456, complete: true, members: [{ pid: 456, creationTime: '134000000000000001' }] }
+  const state = {
+    version: 1,
+    ownerPid: 123,
+    rootPid: 456,
+    complete: true,
+    members: [
+      { pid: 456, creationTime: '134000000000000001' },
+    ],
+  }
 
   it('preserves the full creation identity without numeric coercion', () => {
     expect(parseWindowsJobState(state, 123)).toEqual(state)
@@ -124,12 +183,43 @@ describe('parseWindowsJobState', () => {
     { ...state, rootPid: 0 },
     { ...state, complete: 1 },
     { ...state, members: [] },
-    { ...state, members: [{ pid: 456, creationTime: 134 }] },
-    { ...state, members: [{ pid: 456, creationTime: '0' }] },
-    { ...state, members: [{ pid: 456, creationTime: '9223372036854775808' }] },
-    { ...state, members: [{ pid: 1, creationTime: '134000000000000001' }] },
-    { ...state, members: [{ pid: 123, creationTime: '134000000000000001' }] },
-    { ...state, members: [...state.members, ...state.members] },
+    {
+      ...state,
+      members: [
+        { pid: 456, creationTime: 134 },
+      ],
+    },
+    {
+      ...state,
+      members: [
+        { pid: 456, creationTime: '0' },
+      ],
+    },
+    {
+      ...state,
+      members: [
+        { pid: 456, creationTime: '9223372036854775808' },
+      ],
+    },
+    {
+      ...state,
+      members: [
+        { pid: 1, creationTime: '134000000000000001' },
+      ],
+    },
+    {
+      ...state,
+      members: [
+        { pid: 123, creationTime: '134000000000000001' },
+      ],
+    },
+    {
+      ...state,
+      members: [
+        ...state.members,
+        ...state.members,
+      ],
+    },
   ])('rejects an incomplete or foreign job state: %j', (value) => {
     expect(() => parseWindowsJobState(value, 123)).toThrow('Windows job state')
   })
@@ -141,9 +231,22 @@ describe('spawnWindowsCommandJob', () => {
     const job = startedJob({ cwd: 'C:\\private', stdio: 'inherit', env: environment })
     try {
       expect(job.resource.child).toBe(job.proc)
-      expect(job.payload).toMatchObject({ version: 1, command: 'task', args: ['build-backend'], argv0: 'task', verbatimArguments: false, cwd: 'C:\\private', environment })
+      expect(job.payload).toMatchObject({
+        version: 1,
+        command: 'task',
+        args: ['build-backend'],
+        argv0: 'task',
+        verbatimArguments: false,
+        cwd: 'C:\\private',
+        environment,
+      })
       expect(job.payload.stopEventName).toMatch(/^Local\\LeapMuxE2EJob-/u)
-      expect(vi.mocked(spawn).mock.calls[0]?.[2]).toMatchObject({ stdio: 'inherit', env: environment, shell: false, detached: false })
+      expect(vi.mocked(spawn).mock.calls[0]?.[2]).toMatchObject({
+        stdio: 'inherit',
+        env: environment,
+        shell: false,
+        detached: false,
+      })
     }
     finally {
       job.emitter.exitCode = 0
@@ -163,7 +266,9 @@ describe('spawnWindowsCommandJob', () => {
     }
     await job.resource.stop()
     expect(execFile).toHaveBeenCalledTimes(2)
-    expect(vi.mocked(execFile).mock.calls.map(call => mode(Array.isArray(call[1]) ? call[1] : []))).toEqual(['Stop', 'Verify'])
+    expect(vi.mocked(execFile).mock.calls.map(call => mode(Array.isArray(call[1])
+      ? call[1]
+      : []))).toEqual(['Stop', 'Verify'])
     expect(job.emitter.kill).not.toHaveBeenCalled()
     expect(existsSync(job.directory)).toBe(false)
   })
@@ -240,7 +345,9 @@ describe('spawnWindowsCommandJob', () => {
       throw new Error('The Windows cleanup did not preserve both failures.')
     const original = failure.errors[0]
     expect(original).toBeInstanceOf(AggregateError)
-    expect(original).toMatchObject({ errors: [controlError, stopError] })
+    expect(original).toMatchObject({
+      errors: [controlError, stopError],
+    })
     expect(failure.errors[1]).toBe(stopError)
     expect(existsSync(job.directory)).toBe(true)
   })
@@ -273,7 +380,15 @@ describe('spawnWindowsCommandJob', () => {
   it('rejects foreign state before the verification helper can receive it', async () => {
     const job = startedJob()
     job.emitter.exitCode = 0
-    writeFileSync(job.statePath, JSON.stringify({ version: 1, ownerPid: 900, rootPid: 456, complete: true, members: [{ pid: 456, creationTime: '134000000000000001' }] }))
+    writeFileSync(job.statePath, JSON.stringify({
+      version: 1,
+      ownerPid: 900,
+      rootPid: 456,
+      complete: true,
+      members: [
+        { pid: 456, creationTime: '134000000000000001' },
+      ],
+    }))
     await expect(job.resource.stop()).rejects.toThrow('owning launcher')
     expect(execFile).not.toHaveBeenCalled()
     expect(existsSync(job.directory)).toBe(true)
@@ -285,16 +400,33 @@ describe('spawnWindowsCommandJob', () => {
     job.emitter.kill.mockImplementation(() => {
       throw stopError
     })
-    writeFileSync(job.statePath, JSON.stringify({ version: 1, ownerPid: 900, rootPid: 456, complete: true, members: [{ pid: 456, creationTime: '134000000000000001' }] }))
+    writeFileSync(job.statePath, JSON.stringify({
+      version: 1,
+      ownerPid: 900,
+      rootPid: 456,
+      complete: true,
+      members: [
+        { pid: 456, creationTime: '134000000000000001' },
+      ],
+    }))
     const result = job.resource.stop().then(() => null, error => error)
     await vi.advanceTimersByTimeAsync(50)
     const failure = await result
     expect(failure).toBeInstanceOf(AggregateError)
     if (!(failure instanceof AggregateError))
       throw new Error('The Windows cleanup did not preserve the ownership and shutdown failures.')
-    expect(failure.errors[0]).toMatchObject({ errors: [stopError, { message: expect.stringContaining('owning launcher') }] })
+    expect(failure.errors[0]).toMatchObject({
+      errors: [
+        stopError,
+        {
+          message: expect.stringContaining('owning launcher'),
+        },
+      ],
+    })
     expect(failure.errors[1]).toBe(stopError)
-    expect(vi.mocked(execFile).mock.calls.map(call => mode(Array.isArray(call[1]) ? call[1] : []))).toEqual(['Stop'])
+    expect(vi.mocked(execFile).mock.calls.map(call => mode(Array.isArray(call[1])
+      ? call[1]
+      : []))).toEqual(['Stop'])
     expect(existsSync(job.directory)).toBe(true)
   })
 
@@ -337,7 +469,9 @@ describe('spawnWindowsCommandJob', () => {
       failure = error
     }
     expect(failure).toBeInstanceOf(AggregateError)
-    expect(failure).toMatchObject({ errors: [spawnError, cleanupError] })
+    expect(failure).toMatchObject({
+      errors: [spawnError, cleanupError],
+    })
   })
 
   it('keeps its control executable, environment, and cwd after the caller changes their sources', async () => {
@@ -361,7 +495,10 @@ describe('spawnWindowsCommandJob', () => {
       await job.resource.stop()
       for (const call of vi.mocked(execFile).mock.calls) {
         expect(call[0]).toBe(originalExecutable)
-        expect(call[2]).toMatchObject({ cwd: 'C:\\original-project', env: { PRIVATE: 'original', PATH: 'C:\\original-bin' } })
+        expect(call[2]).toMatchObject({
+          cwd: 'C:\\original-project',
+          env: { PRIVATE: 'original', PATH: 'C:\\original-bin' },
+        })
       }
       expect(execFile).toHaveBeenCalledTimes(2)
     }

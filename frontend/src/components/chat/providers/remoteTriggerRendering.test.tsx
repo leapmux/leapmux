@@ -13,12 +13,14 @@ function makeRemoteTriggerToolUse(input: Record<string, unknown>) {
   return {
     type: 'assistant',
     message: {
-      content: [{
-        type: 'tool_use',
-        id: 'test-remotetrigger',
-        name: 'RemoteTrigger',
-        input,
-      }],
+      content: [
+        {
+          type: 'tool_use',
+          id: 'test-remotetrigger',
+          name: 'RemoteTrigger',
+          input,
+        },
+      ],
     },
   }
 }
@@ -32,13 +34,17 @@ function makeRemoteTriggerToolResult(
     type: 'user',
     message: {
       role: 'user',
-      content: [{
-        tool_use_id: 'test-remotetrigger',
-        type: 'tool_result',
-        content: resultContent,
-      }],
+      content: [
+        {
+          tool_use_id: 'test-remotetrigger',
+          type: 'tool_result',
+          content: resultContent,
+        },
+      ],
     },
-    ...(toolUseResult ? { tool_use_result: toolUseResult } : {}),
+    ...(toolUseResult
+      ? { tool_use_result: toolUseResult }
+      : {}),
   }
 }
 
@@ -178,7 +184,12 @@ describe('claude toolbar actions for RemoteTrigger', () => {
   it('offers no expand for a response the collapsed row already shows whole', () => {
     const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, {
       type: 'user',
-      message: { role: 'user', content: [{ type: 'tool_result', content: 'HTTP 200\n{}' }] },
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', content: 'HTTP 200\n{}' },
+        ],
+      },
       tool_use_result: { status: 200, json: '{}' },
     }, { spanType: 'RemoteTrigger' })
     expect(meta?.collapsible).toBe(false)
@@ -188,7 +199,12 @@ describe('claude toolbar actions for RemoteTrigger', () => {
     const compact = '{"trigger":{"id":"trig_1","name":"hello","enabled":true}}'
     const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, {
       type: 'user',
-      message: { role: 'user', content: [{ type: 'tool_result', content: `HTTP 200\n${compact}` }] },
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', content: `HTTP 200\n${compact}` },
+        ],
+      },
       tool_use_result: { status: 200, json: compact },
     }, { spanType: 'RemoteTrigger' })
     expect(meta?.collapsible).toBe(true)
@@ -198,7 +214,12 @@ describe('claude toolbar actions for RemoteTrigger', () => {
     const compact = '{"trigger":{"id":"trig_2","name":"hello","enabled":true}}'
     const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, {
       type: 'user',
-      message: { role: 'user', content: [{ type: 'tool_result', content: `HTTP 200\n${compact}` }] },
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', content: `HTTP 200\n${compact}` },
+        ],
+      },
     }, { spanType: 'RemoteTrigger' })
     expect(meta?.collapsible).toBe(true)
   })
@@ -206,7 +227,12 @@ describe('claude toolbar actions for RemoteTrigger', () => {
   it('does not mark non-HTTP plain text as collapsible', () => {
     const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, {
       type: 'user',
-      message: { role: 'user', content: [{ type: 'tool_result', content: 'opaque' }] },
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', content: 'opaque' },
+        ],
+      },
     }, { spanType: 'RemoteTrigger' })
     expect(meta?.collapsible).toBe(false)
   })
@@ -215,7 +241,12 @@ describe('claude toolbar actions for RemoteTrigger', () => {
     const compact = '{"trigger":{"id":"trig_1","name":"hello","enabled":true}}'
     const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, {
       type: 'user',
-      message: { role: 'user', content: [{ type: 'tool_result', content: `HTTP 200\n${compact}` }] },
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', content: `HTTP 200\n${compact}` },
+        ],
+      },
       tool_use_result: { status: 200, json: compact },
     }, { spanType: 'RemoteTrigger' })
     const copied = meta?.copyableContent()
@@ -230,7 +261,12 @@ describe('claude toolbar actions for RemoteTrigger', () => {
     const compact = '{"trigger":{"id":"trig_2"}}'
     const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, {
       type: 'user',
-      message: { role: 'user', content: [{ type: 'tool_result', content: `HTTP 201\n${compact}` }] },
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', content: `HTTP 201\n${compact}` },
+        ],
+      },
     }, { spanType: 'RemoteTrigger' })
     const copied = meta?.copyableContent()
     expect(copied).not.toBeNull()

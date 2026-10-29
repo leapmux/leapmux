@@ -44,7 +44,9 @@ vi.mock('@playwright/test', async (importOriginal) => {
 function usageContext(fields: Partial<NativeScenarioContext> = {}): NativeScenarioContext & { queued: MockModelStep[] } {
   const queued: MockModelStep[] = []
   const page = Object.assign({} as Page, {
-    keyboard: { press: async (key: string) => { card.events.push(`key:${key}`) } },
+    keyboard: {
+      press: async (key: string) => { card.events.push(`key:${key}`) },
+    },
     reload: async () => { card.events.push('reload') },
   })
   const modelScript = {
@@ -58,7 +60,13 @@ function usageContext(fields: Partial<NativeScenarioContext> = {}): NativeScenar
       card.events.push(`steps:${count}`)
     },
   } as unknown as ModelScript
-  return { page, modelScript, provider: AgentProvider.CODEX, queued, ...fields }
+  return {
+    page,
+    modelScript,
+    provider: AgentProvider.CODEX,
+    queued,
+    ...fields,
+  }
 }
 
 beforeEach(() => {
@@ -70,11 +78,21 @@ describe('usageMarkers', () => {
   // The marker block every context-usage spec scripts. A default of 1/1 would
   // print one repeated figure and prove nothing about which count moved.
   it('marks the combined figure the card prints', () => {
-    expect(usageMarkers({ inputTokens: 12000, outputTokens: 40 })).toEqual([formatTokenCount(12040)])
+    expect(usageMarkers({ inputTokens: 12000, outputTokens: 40 })).toEqual([
+      formatTokenCount(12040),
+    ])
   })
 
   it('keeps the marker a substring of the card abbreviation of the total', () => {
-    for (const [input, output] of [[0, 0], [1, 1], [40, 0], [999, 1], [1000, 0], [12000, 40], [250_000, 0]] as const) {
+    for (const [input, output] of [
+      [0, 0],
+      [1, 1],
+      [40, 0],
+      [999, 1],
+      [1000, 0],
+      [12000, 40],
+      [250_000, 0],
+    ] as const) {
       const [marker] = usageMarkers({ inputTokens: input, outputTokens: output })
       expect(formatTokenCount(input + output), `marker for ${input}+${output}`).toContain(marker!)
     }
@@ -86,8 +104,12 @@ describe('usageMarkers', () => {
   })
 
   it('still marks when only one count is scripted', () => {
-    expect(usageMarkers({ inputTokens: 12000 })).toEqual([formatTokenCount(12000)])
-    expect(usageMarkers({ outputTokens: 40 })).toEqual([formatTokenCount(40)])
+    expect(usageMarkers({ inputTokens: 12000 })).toEqual([
+      formatTokenCount(12000),
+    ])
+    expect(usageMarkers({ outputTokens: 40 })).toEqual([
+      formatTokenCount(40),
+    ])
   })
 })
 
@@ -110,9 +132,22 @@ describe('parseContextRow', () => {
   })
 
   it('round-trips the output of formatTokenCount to within its rounding', () => {
-    for (const total of [0, 1, 999, 1_000, 12_040, 999_949, 1_000_000, 12_500_000]) {
+    for (const total of [
+      0,
+      1,
+      999,
+      1_000,
+      12_040,
+      999_949,
+      1_000_000,
+      12_500_000,
+    ]) {
       const reading = parseContextRow(`Context${formatTokenCount(total)} / ${formatTokenCount(1_000_000)}`)
-      const unit = total >= 999_950 ? 50_000 : total >= 1_000 ? 50 : 0
+      const unit = total >= 999_950
+        ? 50_000
+        : total >= 1_000
+          ? 50
+          : 0
       expect(Math.abs((reading?.tokens ?? Number.NaN) - total), `total ${total}`).toBeLessThanOrEqual(unit)
     }
   })
@@ -132,7 +167,9 @@ describe('exerciseContextUsage', () => {
     const context = usageContext()
     const usage = await exerciseContextUsage(context)
     expect(usage).toEqual(SCRIPTED_CONTEXT_USAGE)
-    expect(context.queued).toEqual([{ text: 'Usage recorded.', usage: SCRIPTED_CONTEXT_USAGE }])
+    expect(context.queued).toEqual([
+      { text: 'Usage recorded.', usage: SCRIPTED_CONTEXT_USAGE },
+    ])
     expect(card.events).toEqual([
       'queue:0',
       'send:marked:Reply once.',
@@ -156,14 +193,40 @@ describe('exerciseContextUsage', () => {
   })
 
   it('answers through the text step of the provider, with the usage on the same step', async () => {
-    const context = usageContext({ textStep: text => ({ toolCalls: [{ id: 'answer', name: 'answer', arguments: { text } }] }) })
+    const context = usageContext({
+      textStep: text => ({
+        toolCalls: [
+          {
+            id: 'answer',
+            name: 'answer',
+            arguments: { text },
+          },
+        ],
+      }),
+    })
     await exerciseContextUsage(context)
-    expect(context.queued).toEqual([{ toolCalls: [{ id: 'answer', name: 'answer', arguments: { text: 'Usage recorded.' } }], usage: SCRIPTED_CONTEXT_USAGE }])
+    expect(context.queued).toEqual([
+      {
+        toolCalls: [
+          {
+            id: 'answer',
+            name: 'answer',
+            arguments: { text: 'Usage recorded.' },
+          },
+        ],
+        usage: SCRIPTED_CONTEXT_USAGE,
+      },
+    ])
   })
 
   it('requires the stored usage after reload for every caller', async () => {
     await exerciseContextUsage(usageContext())
-    expect(card.events.slice(-4)).toEqual(['reload', 'open-card', `card-contains:${formatTokenCount(12_040)}`, 'key:Escape'])
+    expect(card.events.slice(-4)).toEqual([
+      'reload',
+      'open-card',
+      `card-contains:${formatTokenCount(12_040)}`,
+      'key:Escape',
+    ])
   })
 
   it('uses a distinct later usage block without mutating either input', async () => {
@@ -171,7 +234,9 @@ describe('exerciseContextUsage', () => {
     const context = usageContext()
     const input = { inputTokens: 24_000, outputTokens: 80, contextWindow: 128_000 }
     const usage = await exerciseContextUsage(context, { usage: input })
-    expect(context.queued).toEqual([{ text: 'Usage recorded.', usage: input }])
+    expect(context.queued).toEqual([
+      { text: 'Usage recorded.', usage: input },
+    ])
     expect(usage).not.toBe(input)
     expect(usage).not.toBe(SCRIPTED_CONTEXT_USAGE)
     expect(card.events.filter(event => event === 'card-contains:24.1k')).toHaveLength(2)

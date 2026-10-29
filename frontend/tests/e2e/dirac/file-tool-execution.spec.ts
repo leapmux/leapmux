@@ -14,16 +14,31 @@ diracTest.describe('Dirac tool execution', () => {
     const note = join(workingDir, 'note.txt')
     writeFileSync(note, 'dirac-before\n')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
 
     // Dirac completes a turn through its respond tool, which the provider's text step builds.
     // The tools run with no permission request, so the turn clicks nothing and requires that no banner shows.
     await runNativeToolSteps(context, {
       steps: [
-        { toolCalls: [bashToolCall(context.provider, 'dirac-shell', 'echo "dirac-$((40 + 2))"')] },
-        { toolCalls: [readToolCall(context.provider, 'dirac-read', note)] },
         {
-          toolCalls: [editToolCall(context.provider, 'dirac-edit', { path: note, before: 'dirac-before', after: 'dirac-after' })],
+          toolCalls: [
+            bashToolCall(context.provider, 'dirac-shell', 'echo "dirac-$((40 + 2))"'),
+          ],
+        },
+        {
+          toolCalls: [
+            readToolCall(context.provider, 'dirac-read', note),
+          ],
+        },
+        {
+          toolCalls: [
+            editToolCall(context.provider, 'dirac-edit', { path: note, before: 'dirac-before', after: 'dirac-after' }),
+          ],
           captures: diracEditAnchorCapture('dirac-before'),
         },
       ],
@@ -42,7 +57,9 @@ diracTest.describe('Dirac tool execution', () => {
 diracTest('uses a prior native read anchor to edit the file and keeps its diff after reload', async ({ native }) => {
   await exerciseFileToolExecution(native, {
     editStep: (callId, path, before, after) => ({
-      toolCalls: [editToolCall(native.provider, callId, { path, before, after })],
+      toolCalls: [
+        editToolCall(native.provider, callId, { path, before, after }),
+      ],
       captures: diracEditAnchorCapture(before),
     }),
   })

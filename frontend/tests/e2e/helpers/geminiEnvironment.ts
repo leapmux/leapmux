@@ -23,21 +23,33 @@ export function createGeminiEnvironment(options: GeminiEnvironmentOptions): Reco
   const directory = join(home, '.gemini')
   const systemSettings = join(options.runDirectory, 'gemini-system-settings.json')
   const mcpServers = Object.fromEntries(validatedMcpServers(options.mcpServers, 'Gemini', 64)
-    .map(server => [server.name, { command: server.command, args: server.args }]))
+    .map(server => [
+      server.name,
+      { command: server.command, args: server.args },
+    ]))
   mkdirSync(directory, { recursive: true, mode: 0o700 })
   writeFileSync(systemSettings, '{}\n', { mode: 0o600 })
   writeFileSync(join(directory, 'settings.json'), `${JSON.stringify({
-    security: { auth: { selectedType: 'gemini-api-key' }, folderTrust: { enabled: false } },
+    security: {
+      auth: { selectedType: 'gemini-api-key' },
+      folderTrust: { enabled: false },
+    },
     privacy: { usageStatisticsEnabled: false },
     telemetry: { enabled: false },
     // Gemini CLI installs a release with `npm install -g` from its interactive UI unless
     // enableAutoUpdate is false, and checks for one unless enableAutoUpdateNotification is
     // false. `--acp` never reaches that UI. The deprecated disableAutoUpdate and
     // disableUpdateNag keys work only through a migration that rewrites this file.
-    general: { enableAutoUpdate: false, enableAutoUpdateNotification: false, plan: { enabled: true, modelRouting: false } },
+    general: {
+      enableAutoUpdate: false,
+      enableAutoUpdateNotification: false,
+      plan: { enabled: true, modelRouting: false },
+    },
     advanced: { autoConfigureMemory: false },
     model: { name: options.modelID, skipNextSpeakerCheck: true },
-    tools: { shell: { enableInteractiveShell: false } },
+    tools: {
+      shell: { enableInteractiveShell: false },
+    },
     mcpServers,
   }, null, 2)}\n`, { mode: 0o600 })
   return {

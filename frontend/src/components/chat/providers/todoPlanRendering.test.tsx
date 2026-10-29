@@ -32,7 +32,14 @@ function makeClaudeToolUseMessage(name: string, input: Record<string, unknown>):
     type: 'assistant',
     message: {
       role: 'assistant',
-      content: [{ type: 'tool_use', id: `toolu_${name}_1`, name, input }],
+      content: [
+        {
+          type: 'tool_use',
+          id: `toolu_${name}_1`,
+          name,
+          input,
+        },
+      ],
     },
   }
 }
@@ -54,9 +61,15 @@ function taskUpdateContext(
     topLevel: parentObject,
     parentObject,
     wrapper: null,
-    messageMetadata: snapshot === undefined ? {} : { [MESSAGE_METADATA_FIELD.TodoSnapshot]: snapshot },
+    messageMetadata: snapshot === undefined
+      ? {}
+      : { [MESSAGE_METADATA_FIELD.TodoSnapshot]: snapshot },
   }, AgentProvider.CLAUDE_CODE)
-  return { sources: testMessageSources({ current: () => resolved }) }
+  return {
+    sources: testMessageSources({
+      current: () => resolved,
+    }),
+  }
 }
 
 /**
@@ -70,7 +83,12 @@ function taskUpdateContext(
 function renderCodexItem(item: Record<string, unknown>, context?: MessageContentRenderContext) {
   const parsed = { item, threadId: 't1', turnId: 'r1' }
   const category = classifyMessage({
-    ...resolveMessageForRendering({ rawText: '', topLevel: parsed, parentObject: parsed, wrapper: null }, AgentProvider.CODEX),
+    ...resolveMessageForRendering({
+      rawText: '',
+      topLevel: parsed,
+      parentObject: parsed,
+      wrapper: null,
+    }, AgentProvider.CODEX),
     agentProvider: AgentProvider.CODEX,
   })
   const result = renderMessageContent(parsed, context, category, AgentProvider.CODEX)
@@ -97,8 +115,18 @@ describe('claude TodoWrite renders via the shared TodoListBody', () => {
   it('renders the pluralized title and todo content', () => {
     const { container } = renderClaudeToolUse('TodoWrite', {
       todos: [
-        { rowKey: 'first task', content: 'first task', status: 'pending', activeForm: 'doing first' },
-        { rowKey: 'second task', content: 'second task', status: 'in_progress', activeForm: 'doing second' },
+        {
+          rowKey: 'first task',
+          content: 'first task',
+          status: 'pending',
+          activeForm: 'doing first',
+        },
+        {
+          rowKey: 'second task',
+          content: 'second task',
+          status: 'in_progress',
+          activeForm: 'doing second',
+        },
       ],
     })
     const text = container.textContent ?? ''
@@ -206,15 +234,29 @@ describe('claude TaskGet renders a single-row card from the paired tool_result',
     return {
       parentObject: {
         type: 'user',
-        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `toolu_${name}_1`, content: 'ok' }] },
+        message: {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: `toolu_${name}_1`, content: 'ok' },
+          ],
+        },
         tool_use_result: { task },
       },
     }
   }
 
   it('renders subject + description from tool_use_result.task', () => {
-    const result = taskResult('TaskGet', { id: '9', subject: 'Get me', description: 'A long task', status: 'completed' })
-    const { container } = renderClaudeToolUse('TaskGet', {}, { sources: testMessageSources({ result: () => (result as never) }) })
+    const result = taskResult('TaskGet', {
+      id: '9',
+      subject: 'Get me',
+      description: 'A long task',
+      status: 'completed',
+    })
+    const { container } = renderClaudeToolUse('TaskGet', {}, {
+      sources: testMessageSources({
+        result: () => (result as never),
+      }),
+    })
     const text = container.textContent ?? ''
     expect(text).toContain('Get me')
     expect(text).toContain('A long task')
@@ -223,7 +265,11 @@ describe('claude TaskGet renders a single-row card from the paired tool_result',
 
   it('renders the deleted checkbox when the looked-up task is a tombstone', () => {
     const result = taskResult('TaskGet', { id: '11', subject: 'Already gone', status: 'deleted' })
-    const { container } = renderClaudeToolUse('TaskGet', {}, { sources: testMessageSources({ result: () => (result as never) }) })
+    const { container } = renderClaudeToolUse('TaskGet', {}, {
+      sources: testMessageSources({
+        result: () => (result as never),
+      }),
+    })
     expect(container.textContent ?? '').toContain('Already gone')
     expect(container.querySelector('[data-task-checkbox="deleted"]')).toBeTruthy()
   })
@@ -246,7 +292,14 @@ describe('claude classifies TaskList tool_use as hidden', () => {
         parentObject: {
           type: 'assistant',
           message: {
-            content: [{ type: 'tool_use', id: 'toolu_x', name: 'TaskList', input: {} }],
+            content: [
+              {
+                type: 'tool_use',
+                id: 'toolu_x',
+                name: 'TaskList',
+                input: {},
+              },
+            ],
           },
         },
         wrapper: null,
@@ -323,7 +376,12 @@ describe('codex plan item renders proposed plan markdown', () => {
 // ---------------------------------------------------------------------------
 
 describe('claude classifies Task* tool_result messages as hidden', () => {
-  const taskTools = ['TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList'] as const
+  const taskTools = [
+    'TaskCreate',
+    'TaskUpdate',
+    'TaskGet',
+    'TaskList',
+  ] as const
   for (const tool of taskTools) {
     it(`hides the ${tool} tool_result`, () => {
       const category = classifyMessage({
@@ -332,7 +390,11 @@ describe('claude classifies Task* tool_result messages as hidden', () => {
           topLevel: null,
           parentObject: {
             type: 'user',
-            message: { content: [{ type: 'tool_result', tool_use_id: 'x', content: '' }] },
+            message: {
+              content: [
+                { type: 'tool_result', tool_use_id: 'x', content: '' },
+              ],
+            },
           },
           wrapper: null,
         }, AgentProvider.CLAUDE_CODE),

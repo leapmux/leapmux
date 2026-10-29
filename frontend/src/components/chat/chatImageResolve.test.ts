@@ -24,17 +24,24 @@ function claudeImageMessage(datas: string[], seq = 7n): AgentChatMessage {
       type: 'user',
       message: {
         role: 'user',
-        content: [{
-          type: 'tool_result',
-          tool_use_id: 'r1',
-          content: datas.map(data => ({ type: 'image', data, mimeType: 'image/png' })),
-        }],
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'r1',
+            content: datas.map(data => ({ type: 'image', data, mimeType: 'image/png' })),
+          },
+        ],
       },
     }),
   })
 }
 
-const ref = { workerId: 'w1', agentId: 'a1', seq: 7n, imageIndex: 0 }
+const ref = {
+  workerId: 'w1',
+  agentId: 'a1',
+  seq: 7n,
+  imageIndex: 0,
+}
 
 describe('messageToolResultImages indexing', () => {
   it('routes through the message provider plugin, keeping wire order', () => {
@@ -43,12 +50,16 @@ describe('messageToolResultImages indexing', () => {
   })
 
   it('returns an empty list for a message with no images', () => {
-    expect(messageToolResultImages(makeMessage({ content: rawContent({ type: 'user' }) }))).toEqual([])
+    expect(messageToolResultImages(makeMessage({
+      content: rawContent({ type: 'user' }),
+    }))).toEqual([])
   })
 
   it('returns an empty list rather than throwing on unparseable content', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    expect(messageToolResultImages(makeMessage({ content: new Uint8Array([0xFF, 0xFE]) }))).toEqual([])
+    expect(messageToolResultImages(makeMessage({
+      content: new Uint8Array([0xFF, 0xFE]),
+    }))).toEqual([])
     warn.mockRestore()
   })
 })
@@ -70,18 +81,32 @@ describe('messageToolResultImages over a resolved payload', () => {
     status: 'completed',
     kind: 'read',
     rawInput: { filePath: '/p/shot.png' },
-    content: [{ type: 'content', content: { type: 'image', mimeType: 'image/png', data: PNG } }],
+    content: [
+      {
+        type: 'content',
+        content: { type: 'image', mimeType: 'image/png', data: PNG },
+      },
+    ],
   }
 
   function openCodeMessage(content: unknown): AgentChatMessage {
-    return makeMessage({ agentProvider: AgentProvider.OPENCODE, spanId: 'c1', content: rawContent(content) })
+    return makeMessage({
+      agentProvider: AgentProvider.OPENCODE,
+      spanId: 'c1',
+      content: rawContent(content),
+    })
   }
 
   it('reads a wrapped result into the same images as the unwrapped one', () => {
     // The two messages state ONE call. `unwrapACPResult` is the single reader of the
     // native envelope, so the row and its pictures cannot depend on which form the
     // daemon sent.
-    const wrapped = messageToolResultImages(openCodeMessage({ id: 'n1', role: 'result', seq: 3, content: inner }))
+    const wrapped = messageToolResultImages(openCodeMessage({
+      id: 'n1',
+      role: 'result',
+      seq: 3,
+      content: inner,
+    }))
     // The picture itself, before the two readings are compared: two readings that
     // each lost it agree on an empty list, and the comparison alone pins nothing.
     expect(wrapped.map(source => source.data)).toEqual([PNG])
@@ -89,7 +114,12 @@ describe('messageToolResultImages over a resolved payload', () => {
   })
 
   it('reads a wrapped result into the row the transcript classified', () => {
-    const message = openCodeMessage({ id: 'n1', role: 'result', seq: 3, content: inner })
+    const message = openCodeMessage({
+      id: 'n1',
+      role: 'result',
+      seq: 3,
+      content: inner,
+    })
     const resolved = resolveMessageForRendering(parseMessageContent(message), AgentProvider.OPENCODE)
     // The transcript classifies the RESOLVED payload, which is the row the reader
     // clicked. The resolver must reach the same one.
@@ -114,25 +144,52 @@ describe('resolveChatImage', () => {
       sessionUpdate: 'tool_call_update',
       toolCallId: 'image-call',
       status: 'completed',
-      content: [{ type: 'content', content: { type: 'image', mimeType: 'image/png', data: 'old-image' } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'image', mimeType: 'image/png', data: 'old-image' },
+        },
+      ],
     }
-    const message = makeMessage({ id: 'image-result', seq: 7n, spanId: 'image-call', agentProvider: AgentProvider.CURSOR, content: rawContent(original) })
+    const message = makeMessage({
+      id: 'image-result',
+      seq: 7n,
+      spanId: 'image-call',
+      agentProvider: AgentProvider.CURSOR,
+      content: rawContent(original),
+    })
     const updated = makeMessage({
       ...message,
       supplementalRevision: 1n,
-      supplementalContent: rawContent({ provider: {
-        sessionUpdate: original.sessionUpdate,
-        toolCallId: original.toolCallId,
-        status: original.status,
-        rawOutput: { content: [{ type: 'tool-result', toolCallId: 'image-call', toolName: 'mcp_probe_image', experimental_content: [{ type: 'image', mimeType: 'image/png', data: PNG }] }] },
-      } }),
+      supplementalContent: rawContent({
+        provider: {
+          sessionUpdate: original.sessionUpdate,
+          toolCallId: original.toolCallId,
+          status: original.status,
+          rawOutput: {
+            content: [
+              {
+                type: 'tool-result',
+                toolCallId: 'image-call',
+                toolName: 'mcp_probe_image',
+                experimental_content: [
+                  { type: 'image', mimeType: 'image/png', data: PNG },
+                ],
+              },
+            ],
+          },
+        },
+      }),
     })
     const context = testMessageContext({
       fetchMessage: async () => message,
       fetchSpan: async () => [updated],
     })
     const result = await resolveChatImage(ref, context)
-    expect(result).toEqual({ status: 'ready', source: { data: PNG, mimeType: 'image/png' } })
+    expect(result).toEqual({
+      status: 'ready',
+      source: { data: PNG, mimeType: 'image/png' },
+    })
     expect(message.supplementalRevision).toBe(0n)
   })
 
@@ -142,7 +199,10 @@ describe('resolveChatImage', () => {
       messageBySeq: () => claudeImageMessage([PNG]),
       fetchMessage,
     }))
-    expect(result).toEqual({ status: 'ready', source: { data: PNG, mimeType: 'image/png' } })
+    expect(result).toEqual({
+      status: 'ready',
+      source: { data: PNG, mimeType: 'image/png' },
+    })
     expect(fetchMessage).not.toHaveBeenCalled()
   })
 

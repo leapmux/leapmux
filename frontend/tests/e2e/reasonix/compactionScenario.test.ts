@@ -30,7 +30,11 @@ describe('prepareCompactionReasonix', () => {
       env: { HOME: homeDir, PATH: 'private-tools', LEAPMUX_E2E_MODEL_API_KEY: MODEL_KEY },
     })
     const result = await prepareCompactionReasonix(directory, 'http://127.0.0.1:4567')
-    expect(result.agentEnv).toMatchObject({ HOME: homeDir, PATH: 'private-tools', REASONIX_HOME: join(homeDir, '.reasonix') })
+    expect(result.agentEnv).toMatchObject({
+      HOME: homeDir,
+      PATH: 'private-tools',
+      REASONIX_HOME: join(homeDir, '.reasonix'),
+    })
     const config = readFileSync(join(homeDir, '.reasonix', 'config.toml'), 'utf8')
     const tables = config.split('[[providers]]').slice(1)
     expect(tables).toHaveLength(3)
@@ -54,13 +58,31 @@ describe('reasonixCompactionUserInput', () => {
   const workingDir = '/private/native/project'
   const prefix = `<workspace>\nCurrent workspace: "${workingDir}". Shell commands start there and every tool resolves relative paths from it.\nVersion control: none (not a repository).\n</workspace>\n\n`
   const suffix = '\n\n<execution-policy preset="balanced" version="3">\nverify=targeted\n</execution-policy>'
-  const request = (input: string) => ({ protocol: 'openai-chat-completions' as const, path: '/v1/chat/completions', body: { messages: [{ role: 'user', content: input }] } })
+  const request = (input: string) => ({
+    protocol: 'openai-chat-completions' as const,
+    path: '/v1/chat/completions',
+    body: {
+      messages: [
+        { role: 'user', content: input },
+      ],
+    },
+  })
 
-  it.each(['', ' ', '/compact', 'Quoted command:\n/compact'])('preserves the complete actual user input: %j', (input) => {
+  it.each([
+    '',
+    ' ',
+    '/compact',
+    'Quoted command:\n/compact',
+  ])('preserves the complete actual user input: %j', (input) => {
     expect(reasonixCompactionUserInput(request(`${prefix}${input}${suffix}`), workingDir)).toBe(input)
   })
 
-  it.each(['/compact', `${prefix}/compact`, `/compact${suffix}`, `${prefix}/compact${suffix}`.replace('verify=targeted', 'verify=other')])('rejects missing or changed native wrappers: %j', (input) => {
+  it.each([
+    '/compact',
+    `${prefix}/compact`,
+    `/compact${suffix}`,
+    `${prefix}/compact${suffix}`.replace('verify=targeted', 'verify=other'),
+  ])('rejects missing or changed native wrappers: %j', (input) => {
     expect(() => reasonixCompactionUserInput(request(input), workingDir)).toThrow('audited host wrappers')
   })
 

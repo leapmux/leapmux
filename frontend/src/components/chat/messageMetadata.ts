@@ -15,5 +15,10 @@ export function applyMessageMetadata(original: Record<string, unknown>, suppleme
     fields[SESSION_INFO_KEY.TotalCostUsd] = cost
   if (isObject(supplemental[SESSION_INFO_KEY.ContextUsage]))
     fields[SESSION_INFO_KEY.ContextUsage] = supplemental[SESSION_INFO_KEY.ContextUsage]
-  return Object.keys(fields).length ? { ...original, ...fields } : original
+  return Object.keys(fields).length
+    ? {
+        ...original,
+        ...fields,
+      }
+    : original
 }

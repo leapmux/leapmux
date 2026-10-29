@@ -70,10 +70,14 @@ describe('pickBool', () => {
 
 describe('pickObject', () => {
   it('returns the nested object when present', () => {
-    expect(pickObject({ o: { a: 1 } }, 'o')).toEqual({ a: 1 })
+    expect(pickObject({
+      o: { a: 1 },
+    }, 'o')).toEqual({ a: 1 })
   })
   it('rejects arrays', () => {
-    expect(pickObject({ o: [1, 2] }, 'o')).toBeNull()
+    expect(pickObject({
+      o: [1, 2],
+    }, 'o')).toBeNull()
   })
   it('returns null by default when missing or wrong type', () => {
     expect(pickObject({}, 'o')).toBeNull()
@@ -110,12 +114,23 @@ describe('pickFirstNumber', () => {
 
 describe('pickFirstObject', () => {
   it('returns the first matching object from key candidates', () => {
-    expect(pickFirstObject({ b: { v: 2 }, a: { v: 1 } }, ['a', 'b'])).toEqual({ v: 1 })
-    expect(pickFirstObject({ b: { v: 2 } }, ['a', 'b'])).toEqual({ v: 2 })
+    expect(pickFirstObject({
+      b: { v: 2 },
+      a: { v: 1 },
+    }, ['a', 'b'])).toEqual({ v: 1 })
+    expect(pickFirstObject({
+      b: { v: 2 },
+    }, ['a', 'b'])).toEqual({ v: 2 })
   })
   it('skips non-object candidates and falls through', () => {
-    expect(pickFirstObject({ a: 'x', b: { v: 2 } }, ['a', 'b'])).toEqual({ v: 2 })
-    expect(pickFirstObject({ a: [1], b: { v: 2 } }, ['a', 'b'])).toEqual({ v: 2 })
+    expect(pickFirstObject({
+      a: 'x',
+      b: { v: 2 },
+    }, ['a', 'b'])).toEqual({ v: 2 })
+    expect(pickFirstObject({
+      a: [1],
+      b: { v: 2 },
+    }, ['a', 'b'])).toEqual({ v: 2 })
   })
   it('returns undefined when no candidate matches', () => {
     expect(pickFirstObject({ a: 'x' }, ['a', 'b'])).toBeUndefined()

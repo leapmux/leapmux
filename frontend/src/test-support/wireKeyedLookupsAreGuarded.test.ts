@@ -226,7 +226,11 @@ function unguardedReads(relative: string, text: string): Offence[] {
       && !isFixedKey(node.argumentExpression)
       && !guardsTable(enclosingBody(node), node.expression.text)) {
       const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1
-      offences.push({ table: node.expression.text, at: `${relative}:${line}`, text: node.getText(source).replace(/\s+/g, ' ') })
+      offences.push({
+        table: node.expression.text,
+        at: `${relative}:${line}`,
+        text: node.getText(source).replace(/\s+/g, ' '),
+      })
     }
     ts.forEachChild(node, visit)
   }

@@ -30,7 +30,12 @@ reasonixTest('selects native Auto while retaining explicit ask and deny rules af
     prepare: runDirectory => prepareReasonixPermissionRules(runDirectory, leapmuxServer.mockModelUrl),
     openAgent: (server, workspaceId, workingDir) => openAgentViaAPI(server, workspaceId, workingDir, agentOpenOptions(REASONIX_AGENT.provider)),
   }, async ({ server, workspaceId, workingDir }) => {
-    const native = await nativeContext({ page, leapmuxServer: server, workspaceId, modelScript })
+    const native = await nativeContext({
+      page,
+      leapmuxServer: server,
+      workspaceId,
+      modelScript,
+    })
     await waitForNativeSettingsHydrated(page)
     const before = await currentNativeAgent(native)
     await expectPermissionShortcuts(page, { smart: 'offered', bypass: 'offered' })
@@ -86,14 +91,19 @@ reasonixTest('selects native Auto while retaining explicit ask and deny rules af
 
 async function runWithoutPermission(context: ManagedNativeScenarioContext, callId: string, command: string): Promise<string> {
   let output = ''
-  await expectNoNativeControl(context, { testId: 'control-banner', relatedProof: async () => {
-    const { resultRequest } = await runNativeToolTurn(context, {
-      toolCalls: [bashToolCall(context.provider, callId, command)],
-      prompt: 'Run the scripted command under native Auto approval.',
-      answer: `The native Auto command ended: ${callId}.`,
-      permissions: 'none',
-    })
-    output = (await nativeToolOutcome(context, resultRequest, callId)).text
-  } })
+  await expectNoNativeControl(context, {
+    testId: 'control-banner',
+    relatedProof: async () => {
+      const { resultRequest } = await runNativeToolTurn(context, {
+        toolCalls: [
+          bashToolCall(context.provider, callId, command),
+        ],
+        prompt: 'Run the scripted command under native Auto approval.',
+        answer: `The native Auto command ended: ${callId}.`,
+        permissions: 'none',
+      })
+      output = (await nativeToolOutcome(context, resultRequest, callId)).text
+    },
+  })
   return output
 }

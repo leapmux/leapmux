@@ -25,7 +25,11 @@ copilotTest('keeps the native shell file path, creator owner, and exact preview 
       const readCall = (snapshot: NativeMessageSnapshot) => {
         const rows = snapshot.messages.filter(message => message.agentSessionId === capture.agent.agentSessionId && message.spanId === capture.nativeCallId)
         const frames = rows.map(nativeMessageBody)
-        return { frames, contents: rows.map(row => row.content), receipt: copilotNativeOutputPaths(frames, capture.nativeCallId, capture.agent.agentSessionId) }
+        return {
+          frames,
+          contents: rows.map(row => row.content),
+          receipt: copilotNativeOutputPaths(frames, capture.nativeCallId, capture.agent.agentSessionId),
+        }
       }
       const original = readCall(capture.snapshot)
       const { frames, receipt } = original
@@ -60,7 +64,18 @@ copilotTest('keeps the native shell file path, creator owner, and exact preview 
         expect(receipt.preview).not.toContain(output.omittedMarker)
       expect(excerpt).not.toContain(output.omittedMarker)
       const previewText = copilotNativePreview(receipt)
-      await testInfo.attach('copilot-native-path-preview-receipt', { body: JSON.stringify({ agentId: capture.agent.id, sessionId: capture.agent.agentSessionId, callId: capture.nativeCallId, path, previewText, receipt, frames }), contentType: 'application/json' })
+      await testInfo.attach('copilot-native-path-preview-receipt', {
+        body: JSON.stringify({
+          agentId: capture.agent.id,
+          sessionId: capture.agent.agentSessionId,
+          callId: capture.nativeCallId,
+          path,
+          previewText,
+          receipt,
+          frames,
+        }),
+        contentType: 'application/json',
+      })
       expect(previewText).toContain(output.firstMarker)
       expect(previewText).not.toContain(output.lastMarker)
       await proveNativeToolOutputFilePaths({

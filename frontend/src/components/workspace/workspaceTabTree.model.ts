@@ -71,7 +71,9 @@ export function tabBuildKey(t: Tab, store: RepoGitStore): string {
     // Structure: a subagent tab renders UNDER its parent, so the link decides
     // where the row sits. It is written once (undefined -> id, at hydration),
     // so including it costs one rebuild per subagent rather than churn.
-    isAgentTab(t) ? t.parentAgentId ?? '' : '',
+    isAgentTab(t)
+      ? t.parentAgentId ?? ''
+      : '',
     t.workerId ?? '',
     git.branchLabel ?? '',
     // The same resolution the tree itself uses, so the fingerprint matches
@@ -173,7 +175,9 @@ function parentAgentIdOf(tab: Tab): string | undefined {
   // The VALUE, not the boolean: the nesting walk needs the id it points at.
   // `isSubagentTab` answers the same question one bit narrower, so ask it first
   // and keep the two spellings of "this tab has a parent" in agreement.
-  return isSubagentTab(tab) && isAgentTab(tab) ? tab.parentAgentId : undefined
+  return isSubagentTab(tab) && isAgentTab(tab)
+    ? tab.parentAgentId
+    : undefined
 }
 
 /**
@@ -216,7 +220,9 @@ export function nestSubagentTabs(tabs: readonly Tab[]): TabNode[] {
         return true
       seen.add(id)
       const next = nodeByKey.get(agentNodeKey(id))
-      id = next ? parentAgentIdOf(next.tab) : undefined
+      id = next
+        ? parentAgentIdOf(next.tab)
+        : undefined
     }
     return false
   }
@@ -225,7 +231,9 @@ export function nestSubagentTabs(tabs: readonly Tab[]): TabNode[] {
   for (const tab of tabs) {
     const node = nodeByKey.get(tabKey(tab)) ?? { tab, children: [] }
     const parentId = parentAgentIdOf(tab)
-    const parent = parentId ? nodeByKey.get(agentNodeKey(parentId)) : undefined
+    const parent = parentId
+      ? nodeByKey.get(agentNodeKey(parentId))
+      : undefined
     if (parent && parent !== node && !reaches(parent, tab.id))
       parent.children.push(node)
     else
@@ -432,7 +440,10 @@ export function buildTree(
     }
     let entry = repoMap.get(rk.key)
     if (!entry) {
-      entry = { label: rk.label, branches: new Map() }
+      entry = {
+        label: rk.label,
+        branches: new Map(),
+      }
       repoMap.set(rk.key, entry)
     }
     const git = repoGitView(tab, store)
@@ -454,7 +465,13 @@ export function buildTree(
       // from the first tab; later tabs that happen to disagree (e.g.
       // a stale broadcast races a probe refresh) leave the seed as-is
       // rather than flickering the group's worktree flag.
-      bucket = { branchName, workerId, gitToplevel, isWorktree: git.isWorktree ?? false, tabs: [] }
+      bucket = {
+        branchName,
+        workerId,
+        gitToplevel,
+        isWorktree: git.isWorktree ?? false,
+        tabs: [],
+      }
       entry.branches.set(key, bucket)
     }
     bucket.tabs.push(tab)
@@ -462,9 +479,13 @@ export function buildTree(
 
   // Sort rule: real remotes first (alphabetical by formatted label), then
   // per-toplevel local repos (alphabetical by basename).
-  const localRank = (key: string): number => isLocalRepoKey(key) ? 1 : 0
+  const localRank = (key: string): number => isLocalRepoKey(key)
+    ? 1
+    : 0
 
-  const groups: RepoGroup[] = [...repoMap.entries()].toSorted(([aKey, a], [bKey, b]) => {
+  const groups: RepoGroup[] = [
+    ...repoMap.entries(),
+  ].toSorted(([aKey, a], [bKey, b]) => {
     const aRank = localRank(aKey)
     const bRank = localRank(bKey)
     if (aRank !== bRank)
@@ -494,7 +515,10 @@ export function buildTree(
         continue
       let stats = byBranchKey.get(k)
       if (!stats) {
-        stats = { workerIds: new Set(), toplevels: new Set() }
+        stats = {
+          workerIds: new Set(),
+          toplevels: new Set(),
+        }
         byBranchKey.set(k, stats)
       }
       stats.workerIds.add(b.workerId)
@@ -503,7 +527,9 @@ export function buildTree(
 
     // Sort: null (no branch) last, then alphabetical by branch name.
     // Within ties: worker name then toplevel path.
-    const branches = [...entry.branches.values()].toSorted((a, b) => {
+    const branches = [
+      ...entry.branches.values(),
+    ].toSorted((a, b) => {
       if (a.branchName === null && b.branchName !== null)
         return 1
       if (a.branchName !== null && b.branchName === null)
@@ -559,7 +585,9 @@ export function buildTree(
         displayLabel,
         homeDir: info?.homeDir ?? '',
         flavor: workerPathFlavor(info),
-        workerLabel: workerCount > 1 ? (info?.name || workerId) : '',
+        workerLabel: workerCount > 1
+          ? (info?.name || workerId)
+          : '',
         tabs: sort(branchTabs),
         diffAdded,
         diffDeleted,
@@ -587,7 +615,10 @@ export function buildTree(
     }
   })
 
-  return { groups, ungrouped: sort(ungrouped) }
+  return {
+    groups,
+    ungrouped: sort(ungrouped),
+  }
 }
 
 /**
@@ -605,13 +636,17 @@ function computeBranchDisplayLabel(
   toplevelCount: number,
   info: WorkerInfo | null | undefined,
 ): string {
-  const labelBase = branchName === null ? NO_BRANCH_LABEL : branchName
+  const labelBase = branchName === null
+    ? NO_BRANCH_LABEL
+    : branchName
   if (workerCount <= 1 && toplevelCount <= 1)
     return labelBase
   const parts: string[] = []
   if (workerCount > 1) {
     const name = info?.name
-    parts.push(name && name.length > 0 ? name : workerId)
+    parts.push(name && name.length > 0
+      ? name
+      : workerId)
   }
   if (toplevelCount > 1)
     parts.push(tildifyForWorker(gitToplevel, info))
@@ -640,7 +675,9 @@ function sortTabs(tabs: Tab[], tileIndex: Map<string, number>): Tab[] {
     if (!tileId)
       return Number.POSITIVE_INFINITY
     const idx = tileIndex.get(tileId)
-    return idx === undefined ? Number.POSITIVE_INFINITY : idx
+    return idx === undefined
+      ? Number.POSITIVE_INFINITY
+      : idx
   }
   return tabs.toSorted((a, b) => {
     const ra = rank(a.tileId)
@@ -649,8 +686,11 @@ function sortTabs(tabs: Tab[], tileIndex: Map<string, number>): Tab[] {
       return ra - rb
     const pa = a.position ?? ''
     const pb = b.position ?? ''
-    if (pa !== pb)
-      return pa < pb ? -1 : 1
+    if (pa !== pb) {
+      return pa < pb
+        ? -1
+        : 1
+    }
     return a.id.localeCompare(b.id)
   })
 }

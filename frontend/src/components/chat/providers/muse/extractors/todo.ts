@@ -28,7 +28,12 @@ function requestedTodos(value: unknown): TodoItem[] | null {
     const status = MODEL_TODO_STATUSES.get(entry.status)
     if (status === undefined)
       return null
-    items.push({ rowKey: todoRowKey(undefined, index, entry.text), content: entry.text, status, activeForm: '' })
+    items.push({
+      rowKey: todoRowKey(undefined, index, entry.text),
+      content: entry.text,
+      status,
+      activeForm: '',
+    })
   }
   return items
 }
@@ -40,13 +45,27 @@ export function museTodoSpec(facts: MuseTodoFacts): ToolCallSpecVariant<'todo'> 
     return {
       kind: 'other',
       request: { args: facts.args },
-      metadata: [{ label: 'Native to-do request', value: 'This build could not read its task list.' }],
-      ...(facts.hasResult ? { result: facts.failed ? failedResult(facts.output) : unparsedResult(facts.output) } : {}),
+      metadata: [
+        { label: 'Native to-do request', value: 'This build could not read its task list.' },
+      ],
+      ...(facts.hasResult
+        ? {
+            result: facts.failed
+              ? failedResult(facts.output)
+              : unparsedResult(facts.output),
+          }
+        : {}),
     }
   }
   return {
     kind: 'todo',
     request: { items },
-    ...(facts.hasResult ? { result: facts.failed ? failedResult(facts.output) : { items, note: facts.output } } : {}),
+    ...(facts.hasResult
+      ? {
+          result: facts.failed
+            ? failedResult(facts.output)
+            : { items, note: facts.output },
+        }
+      : {}),
   }
 }

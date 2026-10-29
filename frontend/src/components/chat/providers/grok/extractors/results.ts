@@ -11,7 +11,9 @@ import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
  */
 export function grokRawOutput(tool: Record<string, unknown>, type: string): Record<string, unknown> | undefined {
   const raw = pickObject(tool, 'rawOutput')
-  return raw && pickString(raw, 'type') === type ? raw : undefined
+  return raw && pickString(raw, 'type') === type
+    ? raw
+    : undefined
 }
 
 /**
@@ -44,7 +46,9 @@ export function grokCommandExit(tool: Record<string, unknown>): CommandExit | un
   const code = pickNumber(raw, 'exit_code')
   if (signal)
     return { signal }
-  return code !== null ? { exitCode: code } : undefined
+  return code !== null
+    ? { exitCode: code }
+    : undefined
 }
 
 /** The prefix of one entry in Grok's directory tree: its indent, then `- `. */
@@ -84,8 +88,12 @@ export function grokDirectoryEntries(text: string): FileListEntry[] | null {
 /** The directory listing one completed `list_dir` states, or null when it states none. */
 export function grokListResult(tool: Record<string, unknown>): ListResult | null {
   const content = pickString(pickObject(grokRawOutput(tool, 'ListDir'), 'Content'), 'content')
-  const entries = content ? grokDirectoryEntries(content) : null
-  return entries ? { entries } : null
+  const entries = content
+    ? grokDirectoryEntries(content)
+    : null
+  return entries
+    ? { entries }
+    : null
 }
 
 /**
@@ -101,13 +109,23 @@ export function grokGrepResult(tool: Record<string, unknown>): SearchResult | nu
     return null
   const lines: SearchMatch[] = raw.file_matches.filter(isObject).flatMap((file) => {
     const filePath = pickString(file, 'path')
-    const matches = Array.isArray(file.matches) ? file.matches.filter(isObject) : []
+    const matches = Array.isArray(file.matches)
+      ? file.matches.filter(isObject)
+      : []
     return matches.map((match) => {
       const lineNumber = pickNumber(match, 'line_number')
-      return { filePath, ...(lineNumber !== null ? { lineNumber } : {}), text: pickString(match, 'content') }
+      return {
+        filePath,
+        ...(lineNumber !== null
+          ? { lineNumber }
+          : {}),
+        text: pickString(match, 'content'),
+      }
     })
   })
-  const filenames = [...new Set(lines.map(line => line.filePath).filter(Boolean))]
+  const filenames = [
+    ...new Set(lines.map(line => line.filePath).filter(Boolean)),
+  ]
   const matchCount = pickNumber(raw, 'match_count') ?? lines.length
   return {
     filenames,

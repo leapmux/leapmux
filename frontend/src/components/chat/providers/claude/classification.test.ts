@@ -135,25 +135,72 @@ describe('classifyClaudeCodeMessage', () => {
   })
 
   it('reads a stored informational row without an obsolete level filter', () => {
-    expect(classifyClaudeCodeMessage(input({ type: 'system', subtype: 'informational', content: 'verbose only', level: 'info' })))
-      .toEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'verbose only' }] })
+    expect(classifyClaudeCodeMessage(input({
+      type: 'system',
+      subtype: 'informational',
+      content: 'verbose only',
+      level: 'info',
+    })))
+      .toEqual({
+        kind: 'notification',
+        entries: [
+          { kind: 'text', text: 'verbose only' },
+        ],
+      })
     for (const level of ['notice', 'suggestion', 'warning']) {
-      expect(classifyClaudeCodeMessage(input({ type: 'system', subtype: 'informational', content: 'Stop hook failed: boom', level })), level)
-        .toEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Stop hook failed: boom' }] })
+      expect(classifyClaudeCodeMessage(input({
+        type: 'system',
+        subtype: 'informational',
+        content: 'Stop hook failed: boom',
+        level,
+      })), level)
+        .toEqual({
+          kind: 'notification',
+          entries: [
+            { kind: 'text', text: 'Stop hook failed: boom' },
+          ],
+        })
     }
     // A frame that states no level draws its content.
     expect(classifyClaudeCodeMessage(input({ type: 'system', subtype: 'informational', content: 'Stop hook failed: boom' })))
-      .toEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Stop hook failed: boom' }] })
+      .toEqual({
+        kind: 'notification',
+        entries: [
+          { kind: 'text', text: 'Stop hook failed: boom' },
+        ],
+      })
   })
 
   it('hides a row of a known subtype whose reader finds no words', () => {
     // A known frame that states nothing draws nothing. The no-display card is
     // for a frame that no reader knows.
     for (const frame of [
-      { type: 'system', subtype: 'notification', key: 'compact-error', text: '', priority: 'high', color: 'error' },
-      { type: 'system', subtype: 'memory_recall', mode: 'select', memories: [] },
-      { type: 'system', subtype: 'informational', content: '', level: 'warning' },
-      { type: 'system', subtype: 'ui_log', plugin: 'my-plugin', text: '' },
+      {
+        type: 'system',
+        subtype: 'notification',
+        key: 'compact-error',
+        text: '',
+        priority: 'high',
+        color: 'error',
+      },
+      {
+        type: 'system',
+        subtype: 'memory_recall',
+        mode: 'select',
+        memories: [],
+      },
+      {
+        type: 'system',
+        subtype: 'informational',
+        content: '',
+        level: 'warning',
+      },
+      {
+        type: 'system',
+        subtype: 'ui_log',
+        plugin: 'my-plugin',
+        text: '',
+      },
       { type: 'system', subtype: 'model_fallback', content: '' },
     ]) {
       expect(classifyClaudeCodeMessage(input(frame)), frame.subtype).toEqual({ kind: 'hidden' })
@@ -169,23 +216,80 @@ describe('classifyClaudeCodeMessage', () => {
 
   it('hides a hook_response row unless the hook failed', () => {
     // The neutral reader has no outcome for a successful hook.
-    expect(classifyClaudeCodeMessage(input({ type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'setup.sh', hook_event: 'SessionStart', outcome: 'success', exit_code: 0 })))
+    expect(classifyClaudeCodeMessage(input({
+      type: 'system',
+      subtype: 'hook_response',
+      hook_id: 'h1',
+      hook_name: 'setup.sh',
+      hook_event: 'SessionStart',
+      outcome: 'success',
+      exit_code: 0,
+    })))
       .toEqual({ kind: 'hidden' })
-    expect(classifyClaudeCodeMessage(input({ type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'setup.sh', hook_event: 'SessionStart', outcome: 'error', exit_code: 2 })))
-      .toEqual({ kind: 'notification', entries: [{ kind: 'hook', outcome: 'failed', event: 'SessionStart', name: 'setup.sh', exitCode: 2 }] })
+    expect(classifyClaudeCodeMessage(input({
+      type: 'system',
+      subtype: 'hook_response',
+      hook_id: 'h1',
+      hook_name: 'setup.sh',
+      hook_event: 'SessionStart',
+      outcome: 'error',
+      exit_code: 2,
+    })))
+      .toEqual({
+        kind: 'notification',
+        entries: [
+          {
+            kind: 'hook',
+            outcome: 'failed',
+            event: 'SessionStart',
+            name: 'setup.sh',
+            exitCode: 2,
+          },
+        ],
+      })
   })
 
   it('reads a stored informational row in a consolidated thread', () => {
-    const info = { type: 'system', subtype: 'informational', content: 'verbose only', level: 'info' }
-    const warning = { type: 'system', subtype: 'informational', content: 'Stop hook failed: boom', level: 'warning' }
-    const wrapper = { old_seqs: [301, 302], messages: [info, warning] }
+    const info = {
+      type: 'system',
+      subtype: 'informational',
+      content: 'verbose only',
+      level: 'info',
+    }
+    const warning = {
+      type: 'system',
+      subtype: 'informational',
+      content: 'Stop hook failed: boom',
+      level: 'warning',
+    }
+    const wrapper = {
+      old_seqs: [301, 302],
+      messages: [info, warning],
+    }
     expect(classifyClaudeCodeMessage(input(warning, wrapper)))
-      .toEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'verbose only' }, { kind: 'text', text: 'Stop hook failed: boom' }] })
+      .toEqual({
+        kind: 'notification',
+        entries: [
+          { kind: 'text', text: 'verbose only' },
+          { kind: 'text', text: 'Stop hook failed: boom' },
+        ],
+      })
   })
 
   it('keeps the default empty policy for a stored thread of non-error hook responses', () => {
-    const passed = { type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'setup.sh', hook_event: 'SessionStart', outcome: 'success', exit_code: 0 }
-    const wrapper = { old_seqs: [301], messages: [passed] }
+    const passed = {
+      type: 'system',
+      subtype: 'hook_response',
+      hook_id: 'h1',
+      hook_name: 'setup.sh',
+      hook_event: 'SessionStart',
+      outcome: 'success',
+      exit_code: 0,
+    }
+    const wrapper = {
+      old_seqs: [301],
+      messages: [passed],
+    }
     expect(classifyClaudeCodeMessage(input(passed, wrapper))).toEqual({ kind: 'notification', entries: [] })
   })
 
@@ -208,11 +312,19 @@ describe('classifyClaudeCodeMessage', () => {
       message: {
         role: 'assistant',
         content: [
-          { type: 'tool_use', id: 'toolu_tasklist_1', name: 'TaskList', input: {} },
+          {
+            type: 'tool_use',
+            id: 'toolu_tasklist_1',
+            name: 'TaskList',
+            input: {},
+          },
         ],
       },
     }
-    expect(classifyClaudeCodeMessage({ ...input(parent), spanType: 'TaskList' }))
+    expect(classifyClaudeCodeMessage({
+      ...input(parent),
+      spanType: 'TaskList',
+    }))
       .toEqual({ kind: 'hidden' })
   })
 
@@ -235,33 +347,73 @@ describe('classifyClaudeCodeMessage', () => {
       status: null,
       compact_result: 'success',
     }
-    const wrapper = { old_seqs: [305], messages: [statusMsg] }
+    const wrapper = {
+      old_seqs: [305],
+      messages: [statusMsg],
+    }
     expect(classifyClaudeCodeMessage(input(statusMsg, wrapper))).toEqual({ kind: 'notification', entries: [] })
   })
 
   it('drops a hidden status from a consolidated thread but keeps the visible notification', () => {
     const settingsMsg = {
       type: 'settings_changed',
-      changes: { model: { old: 'a', new: 'b' } },
+      changes: {
+        model: { old: 'a', new: 'b' },
+      },
     }
     const statusMsg = { type: 'system', subtype: 'status', status: null }
-    const wrapper = { old_seqs: [301, 302], messages: [settingsMsg, statusMsg] }
+    const wrapper = {
+      old_seqs: [301, 302],
+      messages: [settingsMsg, statusMsg],
+    }
     expect(classifyClaudeCodeMessage(input(settingsMsg, wrapper)))
-      .toEqual({ kind: 'notification', entries: [{ kind: 'settings-changed', changes: [{ label: 'Model', old: 'a', new: 'b' }] }] })
+      .toEqual({
+        kind: 'notification',
+        entries: [
+          {
+            kind: 'settings-changed',
+            changes: [
+              { label: 'Model', old: 'a', new: 'b' },
+            ],
+          },
+        ],
+      })
   })
 
   it('reads no compaction start from a stored status in a thread', () => {
     const compactingMsg = { type: 'system', subtype: 'status', status: 'compacting' }
-    const wrapper = { old_seqs: [305], messages: [compactingMsg] }
+    const wrapper = {
+      old_seqs: [305],
+      messages: [compactingMsg],
+    }
     expect(classifyClaudeCodeMessage(input(compactingMsg, wrapper)))
       .toEqual({ kind: 'notification', entries: [] })
   })
 
   it('draws a failed final compaction status as a failed compaction end', () => {
-    const frame = { type: 'system', subtype: 'status', status: null, compact_result: 'failed', compact_error: 'too_few_groups' }
-    const expected = { kind: 'notification', entries: [{ kind: 'compaction', phase: 'end', outcome: 'failed', error: 'too_few_groups' }] }
+    const frame = {
+      type: 'system',
+      subtype: 'status',
+      status: null,
+      compact_result: 'failed',
+      compact_error: 'too_few_groups',
+    }
+    const expected = {
+      kind: 'notification',
+      entries: [
+        {
+          kind: 'compaction',
+          phase: 'end',
+          outcome: 'failed',
+          error: 'too_few_groups',
+        },
+      ],
+    }
     expect(classifyClaudeCodeMessage(input(frame))).toEqual(expected)
-    expect(classifyClaudeCodeMessage(input(frame, { old_seqs: [1], messages: [frame] }))).toEqual(expected)
+    expect(classifyClaudeCodeMessage(input(frame, {
+      old_seqs: [1],
+      messages: [frame],
+    }))).toEqual(expected)
   })
 
   it('leaves a stored conversation_reset row unknown', () => {
@@ -269,9 +421,18 @@ describe('classifyClaudeCodeMessage', () => {
   })
 
   it('drops an allowed rate_limit_event from a consolidated thread (regression guard)', () => {
-    const allowed = { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } }
-    const throttled = { type: 'rate_limit_event', rate_limit_info: { status: 'throttled', rateLimitType: 'primary' } }
-    const wrapper = { old_seqs: [310, 311], messages: [throttled, allowed] }
+    const allowed = {
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'allowed' },
+    }
+    const throttled = {
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'throttled', rateLimitType: 'primary' },
+    }
+    const wrapper = {
+      old_seqs: [310, 311],
+      messages: [throttled, allowed],
+    }
     const result = classifyClaudeCodeMessage(input(throttled, wrapper))
     expect(result.kind).toBe('notification')
     if (result.kind === 'notification')
@@ -281,14 +442,29 @@ describe('classifyClaudeCodeMessage', () => {
   // The envelope `type` comes straight off the wire, and the two classifier tables are
   // plain objects. A value that identifies an `Object.prototype` member answered with a
   // FUNCTION, which the dispatch below then called.
-  it.each(['constructor', 'toString', 'valueOf', 'hasOwnProperty'])('classifies an envelope typed %s as unknown', (type) => {
+  it.each([
+    'constructor',
+    'toString',
+    'valueOf',
+    'hasOwnProperty',
+  ])('classifies an envelope typed %s as unknown', (type) => {
     expect(classifyClaudeCodeMessage(input({ type }))).toEqual({ kind: 'unknown' })
   })
 
   it('still classifies each type the tables do hold', () => {
-    expect(classifyClaudeCodeMessage(input({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } })))
+    expect(classifyClaudeCodeMessage(input({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'text', text: 'hi' },
+        ],
+      },
+    })))
       .toEqual({ kind: 'assistant_text' })
-    expect(classifyClaudeCodeMessage(input({ type: 'user', message: { content: 'hi' } })))
+    expect(classifyClaudeCodeMessage(input({
+      type: 'user',
+      message: { content: 'hi' },
+    })))
       .toEqual({ kind: 'unknown' })
   })
 })
@@ -300,7 +476,9 @@ describe('classifyClaudeCodeMessage on a user message carrying parent_tool_use_i
     type: 'user',
     message: {
       role: 'user',
-      content: [{ type: 'text', text: '[Request interrupted by user]' }],
+      content: [
+        { type: 'text', text: '[Request interrupted by user]' },
+      ],
     },
     parent_tool_use_id: 'toolu_017mp825HZEDTn7h565GkKr1',
     session_id: '54b79798-6a44-45b1-9bb9-27364aaf83e4',
@@ -323,11 +501,22 @@ describe('classifyClaudeCodeMessage on a user message carrying parent_tool_use_i
   })
 
   it('leaves a stored user frame with string content unknown', () => {
-    expect(classifyClaudeCodeMessage(input({ type: 'user', message: { role: 'user', content: 'old echo' } }))).toEqual({ kind: 'unknown' })
+    expect(classifyClaudeCodeMessage(input({
+      type: 'user',
+      message: { role: 'user', content: 'old echo' },
+    }))).toEqual({ kind: 'unknown' })
   })
 
   it('leaves a stored compact summary unknown', () => {
-    expect(classifyClaudeCodeMessage(input({ type: 'user', isCompactSummary: true, message: { content: [{ type: 'text', text: 'old summary' }] } }))).toEqual({ kind: 'unknown' })
+    expect(classifyClaudeCodeMessage(input({
+      type: 'user',
+      isCompactSummary: true,
+      message: {
+        content: [
+          { type: 'text', text: 'old summary' },
+        ],
+      },
+    }))).toEqual({ kind: 'unknown' })
   })
 
   // A subagent's tool RESULTS carry the same id and must stay tool results on
@@ -335,7 +524,12 @@ describe('classifyClaudeCodeMessage on a user message carrying parent_tool_use_i
   it('stays a tool result on both sides', () => {
     const toolResult = {
       type: 'user',
-      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_9', content: 'ok' }] },
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'toolu_9', content: 'ok' },
+        ],
+      },
       parent_tool_use_id: 'toolu_017mp825HZEDTn7h565GkKr1',
     }
     expect(classifyClaudeCodeMessage(input(toolResult), { isChildTranscript: true })).toEqual({ kind: 'tool_result' })

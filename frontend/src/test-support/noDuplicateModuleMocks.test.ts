@@ -74,7 +74,9 @@ const UNIT_TEST_FILE = /\.test\.tsx?$/
 
 /** Every co-located unit test under `src/`, as an absolute path. */
 function collectSrcTestFiles(): string[] {
-  return collectFiles(srcRoot, { matches: name => UNIT_TEST_FILE.test(name) })
+  return collectFiles(srcRoot, {
+    matches: name => UNIT_TEST_FILE.test(name),
+  })
 }
 
 /**
@@ -124,26 +126,50 @@ describe('unit-test module mocks', () => {
       mockCall('mock', '~/lib/a'),
     ].join('\n')
 
-    expect(findDuplicateMocks(source)).toEqual([{ path: '~/lib/a', lines: [1, 3] }])
+    expect(findDuplicateMocks(source)).toEqual([
+      {
+        path: '~/lib/a',
+        lines: [1, 3],
+      },
+    ])
   })
 
   it('reports a path that vi.mock and vi.doMock register once each', () => {
     // The shape that started this: a hoisted mock of the path, plus a second
     // one installed for a single case.
-    const source = [mockCall('mock', '~/lib/a'), mockCall('doMock', '~/lib/a')].join('\n')
-    expect(findDuplicateMocks(source)).toEqual([{ path: '~/lib/a', lines: [1, 2] }])
+    const source = [
+      mockCall('mock', '~/lib/a'),
+      mockCall('doMock', '~/lib/a'),
+    ].join('\n')
+    expect(findDuplicateMocks(source)).toEqual([
+      {
+        path: '~/lib/a',
+        lines: [1, 2],
+      },
+    ])
   })
 
   it('accepts one registration for each path', () => {
-    const source = [mockCall('doMock', '~/lib/a'), mockCall('mock', '~/lib/b')].join('\n')
+    const source = [
+      mockCall('doMock', '~/lib/a'),
+      mockCall('mock', '~/lib/b'),
+    ].join('\n')
     expect(findDuplicateMocks(source)).toEqual([])
   })
 
   it('counts a call that the formatter wrapped across lines', () => {
     // The scan reads the whole file, so the break after the paren does not
     // hide the second registration.
-    const source = [mockCall('doMock', '~/lib/a'), mockCall('doMock', '~/lib/a', true)].join('\n')
-    expect(findDuplicateMocks(source)).toEqual([{ path: '~/lib/a', lines: [1, 2] }])
+    const source = [
+      mockCall('doMock', '~/lib/a'),
+      mockCall('doMock', '~/lib/a', true),
+    ].join('\n')
+    expect(findDuplicateMocks(source)).toEqual([
+      {
+        path: '~/lib/a',
+        lines: [1, 2],
+      },
+    ])
   })
 
   it('ignores a call that a comment quotes', () => {
@@ -170,7 +196,10 @@ describe('unit-test module mocks', () => {
   it('keeps no regex state between calls', () => {
     // MOCK_CALL is a /g/ literal shared by every call. `matchAll` clones it
     // rather than advancing its `lastIndex`, and this pins that.
-    const source = [mockCall('doMock', '~/lib/a'), mockCall('mock', '~/lib/a')].join('\n')
+    const source = [
+      mockCall('doMock', '~/lib/a'),
+      mockCall('mock', '~/lib/a'),
+    ].join('\n')
     expect(findDuplicateMocks(source)).toHaveLength(1)
     expect(findDuplicateMocks(source)).toHaveLength(1)
   })

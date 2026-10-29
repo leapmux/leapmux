@@ -42,16 +42,18 @@ test.describe('Git File Status', () => {
   // Each case that uses the workspace fixture gets a fresh repository with the
   // controlled file states, and the repository goes after the test. A case that
   // reads another directory creates its workspace with `showWorkspaceWithAgents`.
-  // eslint-disable-next-line no-empty-pattern -- Playwright requires a destructuring pattern for the fixture argument
-  test.use({ agentWorkingDir: async ({}, use) => {
-    const dir = createTempGitRepo()
-    try {
-      await use(dir)
-    }
-    finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
-  } })
+  test.use({
+    // eslint-disable-next-line no-empty-pattern -- Playwright requires a destructuring pattern for the fixture argument
+    agentWorkingDir: async ({}, use) => {
+      const dir = createTempGitRepo()
+      try {
+        await use(dir)
+      }
+      finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    },
+  })
 
   test('git filter tab bar is visible for git repo workspace', async ({ page, leapmuxServer }) => {
     await showWorkspaceWithAgents(page, leapmuxServer, 'Git TabBar Test', { workingDir: frontendRoot })

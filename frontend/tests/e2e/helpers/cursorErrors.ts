@@ -16,7 +16,9 @@ function connectErrorCode(status: number): string {
     case 501: return 'unimplemented'
     case 502:
     case 503: return 'unavailable'
-    default: return status >= 500 ? 'internal' : 'invalid_argument'
+    default: return status >= 500
+      ? 'internal'
+      : 'invalid_argument'
   }
 }
 
@@ -25,7 +27,7 @@ export function cursorErrorResponse(error: MockModelError): { frame: Uint8Array,
   if (!Number.isInteger(error.status) || error.status < 400 || error.status > 599)
     throw new Error('The Cursor error requires an HTTP error status from 400 to 599.')
   if (typeof error.message !== 'string')
-    throw new Error('The Cursor error requires a string message.')
+    throw new TypeError('The Cursor error requires a string message.')
   const quota = error.status === 429
   // ErrorDetails uses PRO_USER_USAGE_LIMIT=10 and CUSTOM_MESSAGE=29.
   const details = concatBytes([
@@ -37,9 +39,22 @@ export function cursorErrorResponse(error: MockModelError): { frame: Uint8Array,
     ])),
     encodeVarintField(3, 1),
   ])
-  const deliveredError = { code: connectErrorCode(error.status), message: error.message }
+  const deliveredError = {
+    code: connectErrorCode(error.status),
+    message: error.message,
+  }
   return {
-    frame: connectEndOfStream({ error: { ...deliveredError, details: [{ type: 'aiserver.v1.ErrorDetails', value: Buffer.from(details).toString('base64') }] } }),
+    frame: connectEndOfStream({
+      error: {
+        ...deliveredError,
+        details: [
+          {
+            type: 'aiserver.v1.ErrorDetails',
+            value: Buffer.from(details).toString('base64'),
+          },
+        ],
+      },
+    }),
     error: deliveredError,
   }
 }

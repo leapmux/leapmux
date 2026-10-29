@@ -68,7 +68,9 @@ export const CLAUDE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ClaudeToolFacts
     const agentType = pickString(input, 'subagent_type')
     return {
       ...DEFAULT_TOOL_REQUESTS.agent(input),
-      ...(agentType ? { agentType } : {}),
+      ...(agentType
+        ? { agentType }
+        : {}),
     }
   },
 
@@ -78,13 +80,20 @@ export const CLAUDE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ClaudeToolFacts
   // here, which the shared entry does not do, because a filter of spaces is no filter.
   agents: (input): ToolRequestByKind['agents'] => {
     const team = pickString(input, 'team_name').trim()
-    if (team)
-      return { team: { name: team } }
+    if (team) {
+      return {
+        team: { name: team },
+      }
+    }
     const channel = pickString(input, 'channel').trim()
     const query = pickString(input, 'q').trim()
     return {
-      ...(channel ? { channel } : {}),
-      ...(query ? { query } : {}),
+      ...(channel
+        ? { channel }
+        : {}),
+      ...(query
+        ? { query }
+        : {}),
     }
   },
 
@@ -93,11 +102,15 @@ export const CLAUDE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ClaudeToolFacts
   // diff.
   edit: (input, facts): ToolRequestByKind['edit'] => ({
     changes: claudeFileEditChanges(input, facts.toolName, facts.result),
-    ...(input.replace_all === true ? { replaceAll: true } : {}),
+    ...(input.replace_all === true
+      ? { replaceAll: true }
+      : {}),
   }),
   write: (input, facts): ToolRequestByKind['write'] => ({
     changes: claudeFileEditChanges(input, facts.toolName, facts.result),
-    ...(input.replace_all === true ? { replaceAll: true } : {}),
+    ...(input.replace_all === true
+      ? { replaceAll: true }
+      : {}),
   }),
 
   // The LANGUAGE, which the tool NAME states: `PowerShell` runs its command through a
@@ -131,15 +144,23 @@ export const CLAUDE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ClaudeToolFacts
     const to = pickString(input, 'to').trim()
     const summary = pickString(input, 'summary')
     return {
-      ...(to ? { to } : {}),
-      text: typeof message === 'string' ? message : clipFirstLine(summary, MESSAGE_PREVIEW_LIMIT),
-      ...(summary ? { summary } : {}),
+      ...(to
+        ? { to }
+        : {}),
+      text: typeof message === 'string'
+        ? message
+        : clipFirstLine(summary, MESSAGE_PREVIEW_LIMIT),
+      ...(summary
+        ? { summary }
+        : {}),
     }
   },
 
   // The parsed QUESTIONS. The shared entry states an empty list, because the shape of a
   // question is each provider's own.
-  question: (input): ToolRequestByKind['question'] => ({ questions: claudeQuestions(input) }),
+  question: (input): ToolRequestByKind['question'] => ({
+    questions: claudeQuestions(input),
+  }),
 
   // The free-text ARGUMENT STRING a `Skill` call takes beside the name. The shared entry
   // prettifies the whole arguments record as JSON, which draws the skill's own name back
@@ -148,8 +169,12 @@ export const CLAUDE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ClaudeToolFacts
     const name = pickString(input, 'skill')
     const args = pickString(input, 'args')
     return {
-      ...(name ? { name } : {}),
-      ...(args ? { args } : {}),
+      ...(name
+        ? { name }
+        : {}),
+      ...(args
+        ? { args }
+        : {}),
     }
   },
 
@@ -160,10 +185,22 @@ export const CLAUDE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ClaudeToolFacts
     // a worktree from leaving one: both used to state `worktree`, so the two rows drew
     // the identical title.
     const target = pickString(input, 'name')
-    if (facts.toolName === CLAUDE_TOOL_NAMES.ENTER_WORKTREE)
-      return { mode: 'worktree', ...(target ? { target } : {}) }
-    if (facts.toolName === CLAUDE_TOOL_NAMES.EXIT_WORKTREE)
-      return { mode: 'default', ...(target ? { target } : {}) }
+    if (facts.toolName === CLAUDE_TOOL_NAMES.ENTER_WORKTREE) {
+      return {
+        mode: 'worktree',
+        ...(target
+          ? { target }
+          : {}),
+      }
+    }
+    if (facts.toolName === CLAUDE_TOOL_NAMES.EXIT_WORKTREE) {
+      return {
+        mode: 'default',
+        ...(target
+          ? { target }
+          : {}),
+      }
+    }
     // The two plan brackets word their own row TITLE instead. `switchModeRenderer` titles
     // the row from `request.mode` FIRST and reads that title only when the request states
     // no mode, so they must state none.
@@ -179,11 +216,19 @@ export const CLAUDE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ClaudeToolFacts
     const timeoutMs = pickNumber(input, 'timeout', undefined)
     const block = pickBoolean(input, 'block', undefined)
     return {
-      action: facts.toolName === CLAUDE_TOOL_NAMES.TASK_OUTPUT ? 'output' : 'stop',
+      action: facts.toolName === CLAUDE_TOOL_NAMES.TASK_OUTPUT
+        ? 'output'
+        : 'stop',
       // Each optional half rides only when the call sent it.
-      ...(taskId ? { taskId } : {}),
-      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-      ...(block !== undefined ? { block } : {}),
+      ...(taskId
+        ? { taskId }
+        : {}),
+      ...(timeoutMs !== undefined
+        ? { timeoutMs }
+        : {}),
+      ...(block !== undefined
+        ? { block }
+        : {}),
     }
   },
 
@@ -201,7 +246,11 @@ export const CLAUDE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ClaudeToolFacts
   // arguments.
   wait: (input): ToolRequestByKind['wait'] => {
     const durationMs = pickNumber(input, 'durationMs', undefined)
-    return { ...(durationMs !== undefined ? { durationMs } : {}) }
+    return {
+      ...(durationMs !== undefined
+        ? { durationMs }
+        : {}),
+    }
   },
 }
 

@@ -14,13 +14,20 @@ describe('parsePiNumberedDiff', () => {
       '+2 new text',
       ' 3 third line',
     ].join('\n')
-    expect(parsePiNumberedDiff(diff)).toEqual([{
-      oldStart: 1,
-      oldLines: 3,
-      newStart: 1,
-      newLines: 3,
-      lines: [' first line', '-old text', '+new text', ' third line'],
-    }])
+    expect(parsePiNumberedDiff(diff)).toEqual([
+      {
+        oldStart: 1,
+        oldLines: 3,
+        newStart: 1,
+        newLines: 3,
+        lines: [
+          ' first line',
+          '-old text',
+          '+new text',
+          ' third line',
+        ],
+      },
+    ])
   })
 
   it('handles asymmetric substitution (1 line removed, 3 added) and tracks divergence', () => {
@@ -42,7 +49,16 @@ describe('parsePiNumberedDiff', () => {
       oldLines: 5, // a, b, old, c, d
       newStart: 1,
       newLines: 7, // a, b, X, Y, Z, c, d
-      lines: [' a', ' b', '-old', '+X', '+Y', '+Z', ' c', ' d'],
+      lines: [
+        ' a',
+        ' b',
+        '-old',
+        '+X',
+        '+Y',
+        '+Z',
+        ' c',
+        ' d',
+      ],
     })
   })
 
@@ -59,7 +75,12 @@ describe('parsePiNumberedDiff', () => {
       oldLines: 4,
       newStart: 1,
       newLines: 2,
-      lines: [' keep', '-drop me', '-drop me too', ' keep too'],
+      lines: [
+        ' keep',
+        '-drop me',
+        '-drop me too',
+        ' keep too',
+      ],
     })
   })
 
@@ -76,7 +97,12 @@ describe('parsePiNumberedDiff', () => {
       oldLines: 2,
       newStart: 1,
       newLines: 4,
-      lines: [' keep', '+inserted A', '+inserted B', ' keep too'],
+      lines: [
+        ' keep',
+        '+inserted A',
+        '+inserted B',
+        ' keep too',
+      ],
     })
   })
 

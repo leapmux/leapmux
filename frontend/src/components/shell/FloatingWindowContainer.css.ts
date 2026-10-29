@@ -58,69 +58,93 @@ const resizeHandleBase = style({
   zIndex: 1,
 })
 
-export const resizeN = style([resizeHandleBase, {
-  top: '-3px',
-  left: '8px',
-  right: '8px',
-  height: '6px',
-  cursor: 'n-resize',
-}])
+export const resizeN = style([
+  resizeHandleBase,
+  {
+    top: '-3px',
+    left: '8px',
+    right: '8px',
+    height: '6px',
+    cursor: 'n-resize',
+  },
+])
 
-export const resizeS = style([resizeHandleBase, {
-  bottom: '-3px',
-  left: '8px',
-  right: '8px',
-  height: '6px',
-  cursor: 's-resize',
-}])
+export const resizeS = style([
+  resizeHandleBase,
+  {
+    bottom: '-3px',
+    left: '8px',
+    right: '8px',
+    height: '6px',
+    cursor: 's-resize',
+  },
+])
 
-export const resizeE = style([resizeHandleBase, {
-  top: '8px',
-  right: '-3px',
-  bottom: '8px',
-  width: '6px',
-  cursor: 'e-resize',
-}])
+export const resizeE = style([
+  resizeHandleBase,
+  {
+    top: '8px',
+    right: '-3px',
+    bottom: '8px',
+    width: '6px',
+    cursor: 'e-resize',
+  },
+])
 
-export const resizeW = style([resizeHandleBase, {
-  top: '8px',
-  left: '-3px',
-  bottom: '8px',
-  width: '6px',
-  cursor: 'w-resize',
-}])
+export const resizeW = style([
+  resizeHandleBase,
+  {
+    top: '8px',
+    left: '-3px',
+    bottom: '8px',
+    width: '6px',
+    cursor: 'w-resize',
+  },
+])
 
-export const resizeNE = style([resizeHandleBase, {
-  top: '-3px',
-  right: '-3px',
-  width: '12px',
-  height: '12px',
-  cursor: 'ne-resize',
-}])
+export const resizeNE = style([
+  resizeHandleBase,
+  {
+    top: '-3px',
+    right: '-3px',
+    width: '12px',
+    height: '12px',
+    cursor: 'ne-resize',
+  },
+])
 
-export const resizeNW = style([resizeHandleBase, {
-  top: '-3px',
-  left: '-3px',
-  width: '12px',
-  height: '12px',
-  cursor: 'nw-resize',
-}])
+export const resizeNW = style([
+  resizeHandleBase,
+  {
+    top: '-3px',
+    left: '-3px',
+    width: '12px',
+    height: '12px',
+    cursor: 'nw-resize',
+  },
+])
 
-export const resizeSE = style([resizeHandleBase, {
-  bottom: '-3px',
-  right: '-3px',
-  width: '12px',
-  height: '12px',
-  cursor: 'se-resize',
-}])
+export const resizeSE = style([
+  resizeHandleBase,
+  {
+    bottom: '-3px',
+    right: '-3px',
+    width: '12px',
+    height: '12px',
+    cursor: 'se-resize',
+  },
+])
 
-export const resizeSW = style([resizeHandleBase, {
-  bottom: '-3px',
-  left: '-3px',
-  width: '12px',
-  height: '12px',
-  cursor: 'sw-resize',
-}])
+export const resizeSW = style([
+  resizeHandleBase,
+  {
+    bottom: '-3px',
+    left: '-3px',
+    width: '12px',
+    height: '12px',
+    cursor: 'sw-resize',
+  },
+])
 
 // Layer
 export const floatingLayer = style({

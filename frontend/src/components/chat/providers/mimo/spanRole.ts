@@ -9,7 +9,9 @@ import { mimoToolPart, mimoToolSpanRole } from './extractors/toolCommon'
  */
 export function mimoSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
   const part = mimoToolPart(parsed.parentObject)
-  return part ? mimoToolSpanRole(part, parsed.completion) : 'other'
+  return part
+    ? mimoToolSpanRole(part, parsed.completion)
+    : 'other'
 }
 
 /** The request pairs with its result, which states the call's final status. */

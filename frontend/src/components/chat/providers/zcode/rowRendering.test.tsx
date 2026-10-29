@@ -9,7 +9,10 @@ import { ZCODE_DISPLAY } from './protocol'
 import { ZCodeRowView } from './testUtils'
 
 function toolEvent(kind: string, payload: Record<string, unknown> = {}): Record<string, unknown> {
-  return { type: ZCODE_EVENT.ToolUpdated, payload: { kind, toolCallId: 'call-1', ...payload } }
+  return {
+    type: ZCODE_EVENT.ToolUpdated,
+    payload: { kind, toolCallId: 'call-1', ...payload },
+  }
 }
 
 function scheduled(toolName: string, input: Record<string, unknown> = {}) {
@@ -17,7 +20,12 @@ function scheduled(toolName: string, input: Record<string, unknown> = {}) {
 }
 
 function parsedOf(parent: Record<string, unknown>) {
-  return resolveMessageForRendering({ rawText: '', topLevel: parent, parentObject: parent, wrapper: null }, AgentProvider.ZCODE)
+  return resolveMessageForRendering({
+    rawText: '',
+    topLevel: parent,
+    parentObject: parent,
+    wrapper: null,
+  }, AgentProvider.ZCODE)
 }
 
 describe('zcode assistant renderer', () => {
@@ -125,7 +133,15 @@ describe('zcode tool result renderer', () => {
     const { container } = render(() => (
       <ZCodeRowView
         parsed={toolEvent(ZCODE_TOOL_KIND.Result, {
-          result: { content: 'total 48\nfile1', perf: { detail: { kind: 'command', command: { exitCode: 0 } } } },
+          result: {
+            content: 'total 48\nfile1',
+            perf: {
+              detail: {
+                kind: 'command',
+                command: { exitCode: 0 },
+              },
+            },
+          },
         })}
         context={{ spanType: ZCODE_TOOL.Bash }}
       />
@@ -136,7 +152,9 @@ describe('zcode tool result renderer', () => {
   it('renders a numbered Read result as numbered lines', () => {
     const { container } = render(() => (
       <ZCodeRowView
-        parsed={toolEvent(ZCODE_TOOL_KIND.Result, { result: { content: '1\talpha\n2\tbeta' } })}
+        parsed={toolEvent(ZCODE_TOOL_KIND.Result, {
+          result: { content: '1\talpha\n2\tbeta' },
+        })}
         context={{ spanType: ZCODE_TOOL.Read }}
       />
     ))
@@ -152,13 +170,15 @@ describe('zcode tool result renderer', () => {
             display: {
               kind: ZCODE_DISPLAY.FileDiff,
               filePath: '/tmp/a.ts',
-              structuredPatch: [{
-                oldStart: 1,
-                oldLines: 1,
-                newStart: 1,
-                newLines: 1,
-                lines: ['-oldMarker', '+newMarker'],
-              }],
+              structuredPatch: [
+                {
+                  oldStart: 1,
+                  oldLines: 1,
+                  newStart: 1,
+                  newLines: 1,
+                  lines: ['-oldMarker', '+newMarker'],
+                },
+              ],
             },
           },
         })}
@@ -178,21 +198,28 @@ describe('zcode tool result renderer', () => {
             display: {
               kind: ZCODE_DISPLAY.FileDiff,
               filePath: '/tmp/a.ts',
-              structuredPatch: [{
-                oldStart: 1,
-                oldLines: 1,
-                newStart: 1,
-                newLines: 1,
-                lines: ['-wouldHaveBeenOld', '+wouldHaveBeenNew'],
-              }],
+              structuredPatch: [
+                {
+                  oldStart: 1,
+                  oldLines: 1,
+                  newStart: 1,
+                  newLines: 1,
+                  lines: ['-wouldHaveBeenOld', '+wouldHaveBeenNew'],
+                },
+              ],
             },
           },
         })}
-        context={{ spanType: ZCODE_TOOL.Edit, sources: testMessageSources({ request: () => (parsedOf(scheduled(ZCODE_TOOL.Edit, {
-          file_path: '/tmp/a.ts',
-          old_string: 'wouldHaveBeenOld',
-          new_string: 'wouldHaveBeenNew',
-        }))) }) }}
+        context={{
+          spanType: ZCODE_TOOL.Edit,
+          sources: testMessageSources({
+            request: () => (parsedOf(scheduled(ZCODE_TOOL.Edit, {
+              file_path: '/tmp/a.ts',
+              old_string: 'wouldHaveBeenOld',
+              new_string: 'wouldHaveBeenNew',
+            }))),
+          }),
+        }}
       />
     ))
     expect(container.textContent).toContain('old_string not found')
@@ -202,7 +229,9 @@ describe('zcode tool result renderer', () => {
   it('renders an unknown-tool result as the result content', () => {
     const { container } = render(() => (
       <ZCodeRowView
-        parsed={toolEvent(ZCODE_TOOL_KIND.Result, { result: { content: 'a/b.ts' } })}
+        parsed={toolEvent(ZCODE_TOOL_KIND.Result, {
+          result: { content: 'a/b.ts' },
+        })}
         context={{ spanType: 'SomeToolAddedLater' }}
       />
     ))

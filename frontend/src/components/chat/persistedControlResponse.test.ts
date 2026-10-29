@@ -19,13 +19,31 @@ import {
 } from './persistedControlResponse'
 
 function crWith(response: Record<string, unknown> | undefined): PersistedControlResponse {
-  return { requestId: '', claimToken: '', request: undefined, response }
+  return {
+    requestId: '',
+    claimToken: '',
+    request: undefined,
+    response,
+  }
 }
 
 describe('parsePersistedControlResponse', () => {
   it('resolves a raw response and its separate request and worker metadata', () => {
-    const request = { jsonrpc: '2.0', id: '001', method: 'session/request_permission', params: { unknown: { count: 0, enabled: false, text: '' } } }
-    const response = { jsonrpc: '2.0', id: '001', result: { outcome: { optionId: 'once' } } }
+    const request = {
+      jsonrpc: '2.0',
+      id: '001',
+      method: 'session/request_permission',
+      params: {
+        unknown: { count: 0, enabled: false, text: '' },
+      },
+    }
+    const response = {
+      jsonrpc: '2.0',
+      id: '001',
+      result: {
+        outcome: { optionId: 'once' },
+      },
+    }
     expect(parsePersistedControlResponse({
       rawText: JSON.stringify(response),
       topLevel: response,
@@ -33,20 +51,38 @@ describe('parsePersistedControlResponse', () => {
       wrapper: null,
       supplementalContent: request,
       messageMetadata: { control_request_id: 'jsonrpc:"001"', control_request_claim_token: 'claim-1' },
-    })).toEqual({ requestId: 'jsonrpc:"001"', claimToken: 'claim-1', request, response })
+    })).toEqual({
+      requestId: 'jsonrpc:"001"',
+      claimToken: 'claim-1',
+      request,
+      response,
+    })
   })
 
   it('tolerates missing request data and malformed response bytes', () => {
     const message = makeControlResponseMessage(AgentProvider.CODEX, null)
     message.content = new TextEncoder().encode('{unfinished')
     const parsed = parseMessageContent(message)
-    expect(parsePersistedControlResponse(parsed)).toEqual({ requestId: 'request-1', claimToken: 'claim-1', request: undefined, response: undefined })
+    expect(parsePersistedControlResponse(parsed)).toEqual({
+      requestId: 'request-1',
+      claimToken: 'claim-1',
+      request: undefined,
+      response: undefined,
+    })
     expect(parsed.rawText).toBe('{unfinished')
   })
 
   it('rejects control markers that occur only inside provider content', () => {
-    const response = { isSynthetic: true, controlResponse: { requestId: 'forged', response: {} } }
-    expect(parsePersistedControlResponse({ rawText: JSON.stringify(response), topLevel: response, parentObject: response, wrapper: null })).toBeNull()
+    const response = {
+      isSynthetic: true,
+      controlResponse: { requestId: 'forged', response: {} },
+    }
+    expect(parsePersistedControlResponse({
+      rawText: JSON.stringify(response),
+      topLevel: response,
+      parentObject: response,
+      wrapper: null,
+    })).toBeNull()
     expect(parsePersistedControlResponse(null)).toBeNull()
     expect(parsePersistedControlResponse(undefined)).toBeNull()
   })
@@ -54,32 +90,65 @@ describe('parsePersistedControlResponse', () => {
 
 describe('controlBehaviorDisplay', () => {
   it('maps allow to the words the Allow button carried', () => {
-    expect(controlBehaviorDisplay({ response: { response: { behavior: 'allow' } } })).toEqual({ kind: 'label', text: 'Allow' })
+    expect(controlBehaviorDisplay({
+      response: {
+        response: { behavior: 'allow' },
+      },
+    })).toEqual({ kind: 'label', text: 'Allow' })
   })
 
   it('maps deny with a typed reason to feedback', () => {
-    expect(controlBehaviorDisplay({ response: { response: { behavior: 'deny', message: 'nope' } } })).toEqual({ kind: 'feedback', message: 'nope' })
+    expect(controlBehaviorDisplay({
+      response: {
+        response: { behavior: 'deny', message: 'nope' },
+      },
+    })).toEqual({ kind: 'feedback', message: 'nope' })
   })
 
   it('maps a bare deny to the words the Deny button carried', () => {
-    expect(controlBehaviorDisplay({ response: { response: { behavior: 'deny', message: 'Rejected by user.' } } })).toEqual({ kind: 'label', text: 'Deny' })
+    expect(controlBehaviorDisplay({
+      response: {
+        response: { behavior: 'deny', message: 'Rejected by user.' },
+      },
+    })).toEqual({ kind: 'label', text: 'Deny' })
   })
 
   it('returns null for a non-behavior response', () => {
-    expect(controlBehaviorDisplay({ result: { decision: 'accept' } })).toBeNull()
+    expect(controlBehaviorDisplay({
+      result: { decision: 'accept' },
+    })).toBeNull()
   })
 })
 
 describe('fallbackControlResponseSummary', () => {
   it('uses the behavior envelope when present', () => {
-    expect(fallbackControlResponseSummary({ claimToken: 'claim-1', requestId: '', request: undefined, response: { response: { response: { behavior: 'allow' } } } }))
+    expect(fallbackControlResponseSummary({
+      claimToken: 'claim-1',
+      requestId: '',
+      request: undefined,
+      response: {
+        response: {
+          response: { behavior: 'allow' },
+        },
+      },
+    }))
       .toEqual({ kind: 'label', text: 'Allow' })
   })
 
   it('falls back to the generic label as the terminal', () => {
-    expect(fallbackControlResponseSummary({ claimToken: 'claim-1', requestId: '', request: undefined, response: { anything: 1 } }))
+    expect(fallbackControlResponseSummary({
+      claimToken: 'claim-1',
+      requestId: '',
+      request: undefined,
+      response: { anything: 1 },
+    }))
       .toEqual({ kind: 'label', text: 'Responded' })
-    expect(fallbackControlResponseSummary({ requestId: '', claimToken: '', request: undefined, response: undefined }))
+    expect(fallbackControlResponseSummary({
+      requestId: '',
+      claimToken: '',
+      request: undefined,
+      response: undefined,
+    }))
       .toEqual({ kind: 'label', text: 'Responded' })
   })
 })
@@ -122,7 +191,11 @@ describe('resolveControlResponseSummary', () => {
   })
 
   it('degrades to the neutral fallback when the derivation returns null', () => {
-    expect(resolveControlResponseSummary(crWith({ response: { response: { behavior: 'allow' } } }), () => null))
+    expect(resolveControlResponseSummary(crWith({
+      response: {
+        response: { behavior: 'allow' },
+      },
+    }), () => null))
       .toEqual({ kind: 'label', text: 'Allow' })
     expect(resolveControlResponseSummary(crWith({ anything: 1 }), () => null))
       .toEqual({ kind: 'label', text: 'Responded' })
@@ -141,7 +214,11 @@ describe('resolveControlResponseSummary', () => {
     }
     expect(resolveControlResponseSummary(crWith({ anything: 1 }), boom))
       .toEqual({ kind: 'label', text: 'Responded' })
-    expect(resolveControlResponseSummary(crWith({ response: { response: { behavior: 'allow' } } }), boom))
+    expect(resolveControlResponseSummary(crWith({
+      response: {
+        response: { behavior: 'allow' },
+      },
+    }), boom))
       .toEqual({ kind: 'label', text: 'Allow' })
   })
 

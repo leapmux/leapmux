@@ -56,7 +56,13 @@ export function nativeUserStrings(body: unknown): string[] {
     parts.push(body.input)
   const kiroUser = kiroCurrentUserInput(body)
   if (kiroUser) {
-    for (const field of ['content', 'images', 'attachments', 'documents', 'documentAttachments']) {
+    for (const field of [
+      'content',
+      'images',
+      'attachments',
+      'documents',
+      'documentAttachments',
+    ]) {
       if (kiroUser[field] !== undefined)
         parts.push(kiroUser[field])
     }
@@ -118,7 +124,9 @@ const KIRO_FORMAT_MEDIA_TYPES: ReadonlyMap<unknown, string> = new Map([
 
 /** Return a declared media type, or undefined when the field holds no string. */
 function mediaTypeOf(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined
+  return typeof value === 'string'
+    ? value
+    : undefined
 }
 
 /** Roles that carry instructions, not a turn. A native agent can place such a row after the user rows. */
@@ -141,7 +149,9 @@ function currentUserTurn(rows: unknown): Array<[number, Record<string, unknown>]
   const turn: Array<[number, Record<string, unknown>]> = []
   for (let index = rows.length - 1; index >= 0; index--) {
     const row: unknown = rows[index]
-    const role = isObject(row) ? row.role : undefined
+    const role = isObject(row)
+      ? row.role
+      : undefined
     if (INSTRUCTION_ROLES.has(role))
       continue
     if (!isObject(row) || role !== 'user') {
@@ -163,8 +173,12 @@ function currentUserTextParts(request: MockModelRequestRecord): string[] {
 function cursorCurrentUserTextParts({ body }: MockModelRequestRecord): string[] {
   if (!isObject(body))
     return []
-  const text = typeof body.prompt === 'string' ? [body.prompt] : []
-  for (const attachment of Array.isArray(body.attachments) ? body.attachments : []) {
+  const text = typeof body.prompt === 'string'
+    ? [body.prompt]
+    : []
+  for (const attachment of Array.isArray(body.attachments)
+    ? body.attachments
+    : []) {
     if (isObject(attachment) && attachment.kind === 'file' && typeof attachment.data === 'string')
       text.push(attachment.data)
   }
@@ -176,7 +190,9 @@ function kiroCurrentUserTextParts({ body }: MockModelRequestRecord): string[] {
     return []
   const input = kiroCurrentUserInput(body)
   const results = pickObject(input, 'userInputMessageContext')?.toolResults
-  return Array.isArray(results) && results.length > 0 ? [] : nativeTextBlocks(input?.content)
+  return Array.isArray(results) && results.length > 0
+    ? []
+    : nativeTextBlocks(input?.content)
 }
 
 function modelCurrentUserTextParts({ protocol, body }: MockModelRequestRecord): string[] {
@@ -201,7 +217,9 @@ function describeValue(value: unknown): string {
     return 'null'
   if (Array.isArray(value))
     return 'an array'
-  return typeof value === 'object' ? 'an object' : `a ${typeof value}`
+  return typeof value === 'object'
+    ? 'an object'
+    : `a ${typeof value}`
 }
 
 const BASE64_DATA_URI = /^data:([^;,]+);base64,(.*)$/s
@@ -222,7 +240,12 @@ function dataURIPart(location: string, field: string, value: unknown): TypedFile
   if (!match)
     return { location, defect: `has a ${field} that is not of the form data:<type>;base64,<data>` }
   const mime = match[1] ?? ''
-  return { location, declaredType: `${field}=data:${mime}`, mediaType: mime, data: match[2] ?? '' }
+  return {
+    location,
+    declaredType: `${field}=data:${mime}`,
+    mediaType: mime,
+    data: match[2] ?? '',
+  }
 }
 
 /**
@@ -235,7 +258,12 @@ function anthropicSourcePart(location: string, value: unknown, mediaTypeField: '
   if (value.type !== 'base64')
     return { location, defect: `has a source of type ${String(value.type)}, not base64 bytes` }
   const mediaType = value[mediaTypeField]
-  return { location, declaredType: `${mediaTypeField}=${String(mediaType)}`, mediaType: mediaTypeOf(mediaType), data: value.data }
+  return {
+    location,
+    declaredType: `${mediaTypeField}=${String(mediaType)}`,
+    mediaType: mediaTypeOf(mediaType),
+    data: value.data,
+  }
 }
 
 /** Return the typed part that one content element declares, or undefined for an element of another kind. */
@@ -259,12 +287,16 @@ function currentTurnContentParts(
   answersToolCall: ToolResultRow = () => false,
 ): TypedFilePart[] {
   const parts: TypedFilePart[] = []
-  for (const [index, row] of currentUserTurn(isObject(body) ? body[rowsField] : undefined)) {
+  for (const [index, row] of currentUserTurn(isObject(body)
+    ? body[rowsField]
+    : undefined)) {
     const content = row[contentField]
     if (!Array.isArray(content) || answersToolCall(content))
       continue
     content.forEach((value: unknown, position) => {
-      const part = isObject(value) ? read(value, `${rowsField}[${index}].${contentField}[${position}]`) : undefined
+      const part = isObject(value)
+        ? read(value, `${rowsField}[${index}].${contentField}[${position}]`)
+        : undefined
       if (part)
         parts.push(part)
     })
@@ -275,21 +307,47 @@ function currentTurnContentParts(
 /** Anthropic Messages: a `document` block with a base64 source in a user message that answers no tool call. */
 function anthropicFileParts(body: unknown): TypedFilePart[] {
   return currentTurnContentParts(body, 'messages', 'content', (block, location) =>
-    block.type === 'document' ? anthropicSourcePart(location, block.source, 'media_type') : undefined, holdsAnthropicToolResult)
+    block.type === 'document'
+      ? anthropicSourcePart(location, block.source, 'media_type')
+      : undefined, holdsAnthropicToolResult)
 }
 
 /** Native Chat audio serializers emit these format tokens and MIME aliases. */
 const CHAT_AUDIO_MIME_ALIASES = new Map<string, readonly [string, ...string[]]>([
-  ['wav', [ATTACHMENT_MEDIA_AUDIO_MIME.Wav, ATTACHMENT_MEDIA_AUDIO_MIME.XWav, ATTACHMENT_MEDIA_AUDIO_MIME.Wave, ATTACHMENT_MEDIA_AUDIO_MIME.VndWave]],
-  ['mp3', [ATTACHMENT_MEDIA_AUDIO_MIME.Mpeg, ATTACHMENT_MEDIA_AUDIO_MIME.Mp3]],
-  ['flac', [ATTACHMENT_MEDIA_AUDIO_MIME.Flac, ATTACHMENT_MEDIA_AUDIO_MIME.XFlac]],
-  ['m4a', [ATTACHMENT_MEDIA_AUDIO_MIME.Mp4, ATTACHMENT_MEDIA_AUDIO_MIME.M4a, ATTACHMENT_MEDIA_AUDIO_MIME.XM4a]],
-  ['ogg', [ATTACHMENT_MEDIA_AUDIO_MIME.Ogg]],
+  [
+    'wav',
+    [
+      ATTACHMENT_MEDIA_AUDIO_MIME.Wav,
+      ATTACHMENT_MEDIA_AUDIO_MIME.XWav,
+      ATTACHMENT_MEDIA_AUDIO_MIME.Wave,
+      ATTACHMENT_MEDIA_AUDIO_MIME.VndWave,
+    ],
+  ],
+  [
+    'mp3',
+    [ATTACHMENT_MEDIA_AUDIO_MIME.Mpeg, ATTACHMENT_MEDIA_AUDIO_MIME.Mp3],
+  ],
+  [
+    'flac',
+    [ATTACHMENT_MEDIA_AUDIO_MIME.Flac, ATTACHMENT_MEDIA_AUDIO_MIME.XFlac],
+  ],
+  [
+    'm4a',
+    [ATTACHMENT_MEDIA_AUDIO_MIME.Mp4, ATTACHMENT_MEDIA_AUDIO_MIME.M4a, ATTACHMENT_MEDIA_AUDIO_MIME.XM4a],
+  ],
+  [
+    'ogg',
+    [ATTACHMENT_MEDIA_AUDIO_MIME.Ogg],
+  ],
 ])
 
 function chatInputAudioPart(value: unknown, location: string): TypedFilePart {
-  const audio = isObject(value) ? value : {}
-  const aliases = typeof audio.format === 'string' ? CHAT_AUDIO_MIME_ALIASES.get(audio.format) : undefined
+  const audio = isObject(value)
+    ? value
+    : {}
+  const aliases = typeof audio.format === 'string'
+    ? CHAT_AUDIO_MIME_ALIASES.get(audio.format)
+    : undefined
   if (!aliases)
     return { location, defect: `declares unsupported input_audio.format=${String(audio.format)}` }
   if (typeof audio.data === 'string' && audio.data.startsWith('data:')) {
@@ -300,7 +358,12 @@ function chatInputAudioPart(value: unknown, location: string): TypedFilePart {
       return { location, defect: `declares ${part.declaredType}, inconsistent with input_audio.format=${String(audio.format)}` }
     return part
   }
-  return { location, declaredType: `input_audio.format=${String(audio.format)}`, mediaType: aliases[0], data: audio.data }
+  return {
+    location,
+    declaredType: `input_audio.format=${String(audio.format)}`,
+    mediaType: aliases[0],
+    data: audio.data,
+  }
 }
 
 /** Chat Completions: typed file data or input_audio in a user message. */
@@ -308,14 +371,18 @@ function chatCompletionFileParts(body: unknown): TypedFilePart[] {
   return currentTurnContentParts(body, 'messages', 'content', (part, location) => {
     if (part.type === 'input_audio')
       return chatInputAudioPart(part.input_audio, location)
-    return part.type === 'file' ? dataURIPart(location, 'file.file_data', pickObject(part, 'file')?.file_data) : undefined
+    return part.type === 'file'
+      ? dataURIPart(location, 'file.file_data', pickObject(part, 'file')?.file_data)
+      : undefined
   })
 }
 
 /** OpenAI Responses: an input_file part with inline file_data in the current user turn. */
 function responsesFileParts(body: unknown): TypedFilePart[] {
   return currentTurnContentParts(body, 'input', 'content', (part, location) =>
-    part.type === 'input_file' ? dataURIPart(location, 'file_data', part.file_data) : undefined)
+    part.type === 'input_file'
+      ? dataURIPart(location, 'file_data', part.file_data)
+      : undefined)
 }
 
 /** Read the entries of one file list of Kiro's current user input message. */
@@ -324,7 +391,9 @@ function kiroFileParts(user: Record<string, unknown> | undefined, field: 'docume
   if (!Array.isArray(entries))
     return []
   return entries.map((entry: unknown, position) => {
-    const fields: Record<string, unknown> = isObject(entry) ? entry : {}
+    const fields: Record<string, unknown> = isObject(entry)
+      ? entry
+      : {}
     return {
       location: `conversationState.currentMessage.userInputMessage.${field}[${position}]`,
       declaredType: `format=${String(fields.format)}`,
@@ -353,8 +422,16 @@ function googleInlinePart(part: Record<string, unknown>, location: string): Type
     return undefined
   if (inline.mimeType !== undefined && inline.mime_type !== undefined && inline.mimeType !== inline.mime_type)
     return { location, defect: 'carries conflicting mimeType and mime_type aliases' }
-  const field = inline.mimeType === undefined && inline.mime_type !== undefined ? 'mime_type' : 'mimeType'
-  return { location, declaredType: `${field}=${String(inline[field])}`, mediaType: mediaTypeOf(inline[field]), data: inline.data, allowsURLSafeBase64: true }
+  const field = inline.mimeType === undefined && inline.mime_type !== undefined
+    ? 'mime_type'
+    : 'mimeType'
+  return {
+    location,
+    declaredType: `${field}=${String(inline[field])}`,
+    mediaType: mediaTypeOf(inline[field]),
+    data: inline.data,
+    allowsURLSafeBase64: true,
+  }
 }
 
 /**
@@ -379,7 +456,9 @@ function typedAudioParts(request: MockModelRequestRecord): TypedFilePart[] {
       return googleInlineParts(request.body)
     case 'openai-responses':
       return currentTurnContentParts(request.body, 'input', 'content', (part, location) =>
-        part.type === 'input_audio' ? dataURIPart(location, 'audio_url', part.audio_url) : undefined)
+        part.type === 'input_audio'
+          ? dataURIPart(location, 'audio_url', part.audio_url)
+          : undefined)
     default:
       return []
   }
@@ -400,7 +479,9 @@ function decodeCanonicalBase64(data: unknown, allowsURLSafeBase64 = false): { by
   // parts permit the URL-safe padded spelling their native clients emit.
   const bytes = Buffer.from(data, 'base64')
   const canonical = bytes.toString('base64')
-  const canonicalURLSafe = allowsURLSafeBase64 ? canonical.replaceAll('+', '-').replaceAll('/', '_') : undefined
+  const canonicalURLSafe = allowsURLSafeBase64
+    ? canonical.replaceAll('+', '-').replaceAll('/', '_')
+    : undefined
   if (canonical !== data && canonicalURLSafe !== data)
     return { defect: 'has data that is not canonical base64' }
   return { bytes }
@@ -440,7 +521,9 @@ function expectTypedFilePart(request: MockModelRequestRecord, source: Buffer, ex
       return
     defects.push(`${part.location} ${defect}`)
   }
-  const detail = defects.length > 0 ? `: ${defects.join('; ')}` : ''
+  const detail = defects.length > 0
+    ? `: ${defects.join('; ')}`
+    : ''
   throw new Error(`the current user turn of the scripted ${request.protocol} request carries no typed ${expected.label} part with the exact source bytes${detail}`)
 }
 
@@ -453,7 +536,10 @@ function expectTypedFilePart(request: MockModelRequestRecord, source: Buffer, ex
  * can produce the same sample. Base64 inside text does not give the model a PDF.
  */
 export function expectNativePdfPart(request: MockModelRequestRecord, source: Buffer): void {
-  expectTypedFilePart(request, source, { label: 'PDF', accepts: mediaType => mediaType === PDF_MEDIA_TYPE })
+  expectTypedFilePart(request, source, {
+    label: 'PDF',
+    accepts: mediaType => mediaType === PDF_MEDIA_TYPE,
+  })
 }
 
 /**
@@ -489,16 +575,31 @@ function fileTypeExpectation(mediaType: DeclaredMediaType): FileTypeExpectation 
   if (typeof mediaType === 'string') {
     if (mediaType === '')
       throw new Error('a file part proof needs the media type that the part declares')
-    return { label: mediaType, accepts: declared => declared === mediaType }
+    return {
+      label: mediaType,
+      accepts: declared => declared === mediaType,
+    }
   }
   // A global or sticky pattern keeps its last match position between calls, so one part could change the result
   // for the next part.
   if (mediaType.global || mediaType.sticky)
     throw new Error('a file part proof needs a media type pattern without the g or y flag')
-  return { label: String(mediaType), accepts: declared => declared !== undefined && mediaType.test(declared) }
+  return {
+    label: String(mediaType),
+    accepts: declared => declared !== undefined && mediaType.test(declared),
+  }
 }
 
-const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+const PNG_SIGNATURE = Buffer.from([
+  0x89,
+  0x50,
+  0x4E,
+  0x47,
+  0x0D,
+  0x0A,
+  0x1A,
+  0x0A,
+])
 
 /** Identify the image format of encoded bytes by the signature at their start. */
 function encodedImageType(bytes: Buffer): ImageMediaType | undefined {
@@ -533,7 +634,9 @@ function holdsGoogleFunctionResponse(content: unknown[]): boolean {
  */
 function anthropicImageParts(body: unknown): TypedFilePart[] {
   return currentTurnContentParts(body, 'messages', 'content', (block, location) =>
-    block.type === 'image' ? anthropicSourcePart(location, block.source, 'media_type') : undefined, holdsAnthropicToolResult)
+    block.type === 'image'
+      ? anthropicSourcePart(location, block.source, 'media_type')
+      : undefined, holdsAnthropicToolResult)
 }
 
 /**
@@ -545,19 +648,25 @@ function anthropicImageParts(body: unknown): TypedFilePart[] {
  */
 function ampImageParts(body: unknown): TypedFilePart[] {
   return currentTurnContentParts(body, 'messages', 'content', (block, location) =>
-    block.type === 'image' ? anthropicSourcePart(location, block.source, 'mediaType') : undefined, holdsAnthropicToolResult)
+    block.type === 'image'
+      ? anthropicSourcePart(location, block.source, 'mediaType')
+      : undefined, holdsAnthropicToolResult)
 }
 
 /** Chat Completions: an `image_url` part with a base64 data URI in a user message. A tool result is a `tool` row, which ends the turn. */
 function chatCompletionImageParts(body: unknown): TypedFilePart[] {
   return currentTurnContentParts(body, 'messages', 'content', (part, location) =>
-    part.type === 'image_url' ? dataURIPart(location, 'image_url.url', pickObject(part, 'image_url')?.url) : undefined)
+    part.type === 'image_url'
+      ? dataURIPart(location, 'image_url.url', pickObject(part, 'image_url')?.url)
+      : undefined)
 }
 
 /** OpenAI Responses: an `input_image` part in a user message. A tool result is a `function_call_output` item, which ends the turn. */
 function responsesImageParts(body: unknown): TypedFilePart[] {
   return currentTurnContentParts(body, 'input', 'content', (part, location) =>
-    part.type === 'input_image' ? dataURIPart(location, 'image_url', part.image_url) : undefined)
+    part.type === 'input_image'
+      ? dataURIPart(location, 'image_url', part.image_url)
+      : undefined)
 }
 
 /**
@@ -569,13 +678,21 @@ function responsesImageParts(body: unknown): TypedFilePart[] {
  * its raw bytes in base64 and the media type field that Cursor declares.
  */
 function cursorImageParts(body: unknown): TypedFilePart[] {
-  const attachments = isObject(body) ? body.attachments : undefined
+  const attachments = isObject(body)
+    ? body.attachments
+    : undefined
   if (!Array.isArray(attachments))
     return []
   const parts: TypedFilePart[] = []
   attachments.forEach((attachment: unknown, position) => {
-    if (isObject(attachment) && attachment.kind === 'image')
-      parts.push({ location: `attachments[${position}]`, declaredType: `mimeType=${String(attachment.mimeType)}`, mediaType: mediaTypeOf(attachment.mimeType), data: attachment.data })
+    if (isObject(attachment) && attachment.kind === 'image') {
+      parts.push({
+        location: `attachments[${position}]`,
+        declaredType: `mimeType=${String(attachment.mimeType)}`,
+        mediaType: mediaTypeOf(attachment.mimeType),
+        data: attachment.data,
+      })
+    }
   })
   return parts
 }
@@ -628,7 +745,9 @@ const ROUTE_ATTACHMENT_READERS: readonly {
     resolve: (request, protocol) => ({
       ...protocol,
       textParts: cursorCurrentUserTextParts,
-      imageParts: request.protocol === 'openai-responses' ? cursorImageParts : protocol.imageParts,
+      imageParts: request.protocol === 'openai-responses'
+        ? cursorImageParts
+        : protocol.imageParts,
     }),
   },
   {
@@ -647,7 +766,10 @@ export type QuadrantDecoder = (dataURI: string) => Promise<number[][]>
 
 /** Return why a typed part does not carry the exact source image, or undefined when it does. */
 function exactImagePartDefect(part: TypedFilePart, source: Buffer, sourceType: ImageMediaType): string | undefined {
-  return filePartDefect(part, source, { label: sourceType, accepts: mediaType => mediaType === sourceType })
+  return filePartDefect(part, source, {
+    label: sourceType,
+    accepts: mediaType => mediaType === sourceType,
+  })
 }
 
 /** Return why a typed part does not carry the source image transcoded into `mediaType`, or undefined when it does. */
@@ -660,14 +782,19 @@ async function transcodedImagePartDefect(part: TypedFilePart, mediaType: ImageMe
   if ('defect' in decoded)
     return decoded.defect
   const encodedType = encodedImageType(decoded.bytes)
-  if (encodedType !== mediaType)
-    return `holds ${encodedType === undefined ? 'bytes with no known image signature' : `${encodedType} bytes`}, not the ${mediaType} that it declares`
+  if (encodedType !== mediaType) {
+    return `holds ${encodedType === undefined
+      ? 'bytes with no known image signature'
+      : `${encodedType} bytes`}, not the ${mediaType} that it declares`
+  }
   let pixels: number[][]
   try {
     pixels = await decodeQuadrants(`data:${mediaType};base64,${decoded.bytes.toString('base64')}`)
   }
   catch (error) {
-    return `fails to decode: ${error instanceof Error ? error.message : String(error)}`
+    return `fails to decode: ${error instanceof Error
+      ? error.message
+      : String(error)}`
   }
   if (!hasQuadrantColors(pixels))
     return `decodes to the quadrant pixels ${JSON.stringify(pixels)}, not the four source colors`
@@ -712,7 +839,9 @@ export async function expectNativeImagePart(
   const form = transcodedImageType === undefined
     ? 'a typed image part with the exact source bytes'
     : `a typed ${transcodedImageType} part that decodes to the four source colors`
-  const detail = defects.length > 0 ? `: ${defects.join('; ')}` : ''
+  const detail = defects.length > 0
+    ? `: ${defects.join('; ')}`
+    : ''
   throw new Error(`the current user turn of the scripted ${request.protocol} request does not carry the complete image file in ${form}${detail}`)
 }
 
@@ -757,7 +886,9 @@ async function imageQuadrants(page: Pick<Page, 'evaluate'>, dataURI: string): Pr
       return positions.map(([fractionX, fractionY]) => {
         const x = Math.min(image.width - 1, Math.floor(image.width * fractionX))
         const y = Math.min(image.height - 1, Math.floor(image.height * fractionY))
-        return [...context.getImageData(x, y, 1, 1).data]
+        return [
+          ...context.getImageData(x, y, 1, 1).data,
+        ]
       })
     }
     finally {
@@ -919,7 +1050,13 @@ export async function exerciseAttachmentDelivery(
   // test queued other steps first.
   const answer = attachmentOnly ? 'Attachment without a prompt received.' : DELIVERY_ANSWER
   const stepIndex = await modelScript.queue(nativeTextStep(context, answer))
-  const sourcePath = await expectAttachmentOutcome(page, kind, { supported: true, fileName, ...(fixturePath === undefined ? {} : { fixturePath }) })
+  const sourcePath = await expectAttachmentOutcome(page, kind, {
+    supported: true,
+    fileName,
+    ...(fixturePath === undefined
+      ? {}
+      : { fixturePath }),
+  })
   if (attachmentOnly) {
     await expect(composerEditor(page)).toHaveText('')
     const send = page.getByTestId('send-button').filter({ visible: true })
@@ -976,8 +1113,15 @@ export async function exerciseAttachmentRefusal(
 ): Promise<MockModelRequestRecord> {
   const rejectedPaths: string[] = []
   for (const attachment of refused) {
-    const { kind, fileName } = typeof attachment === 'string' ? { kind: attachment, fileName: undefined } : attachment
-    rejectedPaths.push(await expectAttachmentOutcome(context.page, kind, { supported: false, ...(fileName === undefined ? {} : { fileName }) }))
+    const { kind, fileName } = typeof attachment === 'string'
+      ? { kind: attachment, fileName: undefined }
+      : attachment
+    rejectedPaths.push(await expectAttachmentOutcome(context.page, kind, {
+      supported: false,
+      ...(fileName === undefined
+        ? {}
+        : { fileName }),
+    }))
   }
   return expectRefusedAttachmentsAbsent(context, rejectedPaths)
 }

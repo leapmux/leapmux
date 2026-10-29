@@ -66,7 +66,11 @@ ampTest.describe('Amp subagent registry', () => {
     const gate = 'amp-background-interrupt-response'
     try {
       await modelScript.queue(
-        { toolCalls: [backgroundBashToolCall(AgentProvider.AMP, 'bg-shell', command)] },
+        {
+          toolCalls: [
+            backgroundBashToolCall(AgentProvider.AMP, 'bg-shell', command),
+          ],
+        },
         { text: 'The command runs in the background.' },
       )
       await sendMessage(page, modelScript.prompt('Start the long command in the background.'))
@@ -93,7 +97,11 @@ ampTest.describe('Amp subagent registry', () => {
       await expect.poll(() => isAlive(commandPid)).toBe(false)
     }
     finally {
-      await finishCleanup([control.releaseFirstOutput(), control.releaseFinalOutput(), modelScript.releaseGateIfHeld(gate)])
+      await finishCleanup([
+        control.releaseFirstOutput(),
+        control.releaseFinalOutput(),
+        modelScript.releaseGateIfHeld(gate),
+      ])
     }
   })
 })

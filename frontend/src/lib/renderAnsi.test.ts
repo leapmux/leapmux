@@ -179,7 +179,9 @@ describe('renderAnsi shared token-style classes', () => {
     // Every referenced class has an injected dual-theme rule (this path runs on
     // the main thread, so the transformer injects directly -- see shikiStyleClass).
     const rules = readInjectedShikiRules()
-    const classes = [...html.matchAll(/class="(sk-[0-9a-z-]+)"/g)].map(m => m[1])
+    const classes = [
+      ...html.matchAll(/class="(sk-[0-9a-z-]+)"/g),
+    ].map(m => m[1])
     expect(classes.length).toBeGreaterThan(0)
     for (const className of new Set(classes))
       expect(rules).toContain(`.${className}{`)

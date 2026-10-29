@@ -39,7 +39,9 @@ function parseJsonLine(line: string): Record<string, unknown> | null {
     return null
   try {
     const value: unknown = JSON.parse(trimmed)
-    return isObject(value) ? value : null
+    return isObject(value)
+      ? value
+      : null
   }
   catch {
     return null
@@ -56,8 +58,13 @@ export function createTimingLogReceiver(clock: () => number = () => performance.
   const streamReceiver = () => {
     let receivedAt = 0
     const decoder = createProcessOutputLineDecoder((line) => {
-      if (line)
-        logLines.push({ raw: line, json: parseJsonLine(line), rxAt: receivedAt })
+      if (line) {
+        logLines.push({
+          raw: line,
+          json: parseJsonLine(line),
+          rxAt: receivedAt,
+        })
+      }
     })
     return {
       receive: (chunk: Buffer) => {
@@ -67,7 +74,10 @@ export function createTimingLogReceiver(clock: () => number = () => performance.
       end: decoder.end,
     }
   }
-  const streams = { stdout: streamReceiver(), stderr: streamReceiver() }
+  const streams = {
+    stdout: streamReceiver(),
+    stderr: streamReceiver(),
+  }
   return {
     logLines,
     receive: (chunk, stream = 'stderr') => streams[stream].receive(chunk),
@@ -99,7 +109,9 @@ export async function withTimingWorker(
   await withNativeWorker(server, {
     dataDirPrefix: options.dataDirPrefix,
     workerName: 'Timing Worker',
-    ...(options.env ? { env: options.env } : {}),
+    ...(options.env
+      ? { env: options.env }
+      : {}),
     onStdio: receiver.receive,
     onStdioEnd: receiver.end,
   }, worker => use({ server: worker.server, logLines: receiver.logLines, dataDir: worker.dataDir }))
@@ -131,7 +143,12 @@ export async function installRpcListeners(page: Page): Promise<void> {
     })
     window.addEventListener('leapmux:rpc-recv', (ev) => {
       const d = (ev as CustomEvent<{ method: string, at: number, ok: boolean }>).detail
-      w.__rpcMarks!.push({ type: 'rpc-recv', method: d.method, at: d.at, ok: d.ok })
+      w.__rpcMarks!.push({
+        type: 'rpc-recv',
+        method: d.method,
+        at: d.at,
+        ok: d.ok,
+      })
     })
   })
 }
@@ -204,7 +221,9 @@ export function renderTimeline(marks: PhaseMark[]): string {
   for (let i = 0; i < marks.length; i++) {
     const m = marks[i]!
     const abs = m.tMs - t0
-    const delta = i === 0 ? 0 : m.tMs - marks[i - 1]!.tMs
+    const delta = i === 0
+      ? 0
+      : m.tMs - marks[i - 1]!.tMs
     lines.push(`${m.name.padEnd(nameWidth)}  ${abs.toFixed(1).padStart(8)}   ${delta.toFixed(1).padStart(8)}`)
   }
   return lines.join('\n')

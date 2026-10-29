@@ -122,7 +122,12 @@ describe('hasHealthyRepoForProbe', () => {
   it('matches hasPreservableRepoGitState for hint and canonical keys', () => {
     const store = createRepoGitStore()
     const key = repoKey('w1', '/repo')
-    store.upsert(key, { workerId: 'w1', toplevel: '/repo', branch: 'main', gitStatusSeen: true })
+    store.upsert(key, {
+      workerId: 'w1',
+      toplevel: '/repo',
+      branch: 'main',
+      gitStatusSeen: true,
+    })
     expect(hasHealthyRepoForProbe(store, 'w1', '/repo/pkg', key)).toBe(true)
 
     store.clear(key)
@@ -149,7 +154,12 @@ describe('applyFullGitStatusUpsert', () => {
 
     applyFullGitStatusUpsert(store, {
       key,
-      patch: { workerId: 'w1', toplevel: '/repo', branch: 'main', diffAdded: 3 },
+      patch: {
+        workerId: 'w1',
+        toplevel: '/repo',
+        branch: 'main',
+        diffAdded: 3,
+      },
     })
 
     expect(store.get(key)?.branch).toBe('feature')
@@ -266,7 +276,9 @@ describe('upsertRepoGitFromProtoStatus', () => {
   it('preserves files when branch and toplevel are unchanged', () => {
     const store = createRepoGitStore()
     const key = repoKey('w1', '/repo')
-    const files = [{ path: 'a.txt' } as never]
+    const files = [
+      { path: 'a.txt' } as never,
+    ]
     store.upsert(key, {
       workerId: 'w1',
       toplevel: '/repo',
@@ -289,7 +301,9 @@ describe('upsertRepoGitFromProtoStatus', () => {
   it('keeps file-derived fields when branch changes on metadata upsert', () => {
     const store = createRepoGitStore()
     const key = repoKey('w1', '/repo')
-    const files = [{ path: 'a.txt' } as never]
+    const files = [
+      { path: 'a.txt' } as never,
+    ]
     store.upsert(key, {
       workerId: 'w1',
       toplevel: '/repo',
@@ -427,7 +441,9 @@ describe('upsertRepoGitFromProtoStatus', () => {
   it('keeps pinned branch and files when a stale broadcast arrives', () => {
     const store = createRepoGitStore()
     const key = repoKey('w1', '/repo')
-    const files = [{ path: 'a.txt' } as never]
+    const files = [
+      { path: 'a.txt' } as never,
+    ]
     store.upsert(key, {
       workerId: 'w1',
       toplevel: '/repo',

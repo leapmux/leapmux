@@ -25,7 +25,12 @@ lettaTest('offers no project MCP input route in the actual native tool catalog',
   const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, LETTA_AGENT, { workingDir })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
   await tabById(page, agentId).click()
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   const answer = 'The native project capability probe completed.'
   await expectNoNativeControl(context, {
     testId: 'elicitation-form',
@@ -44,24 +49,35 @@ lettaTest('offers no project MCP input route in the actual native tool catalog',
 
 mcpLettaTest('returns the actual registered native MCP form refusal without an input control', async ({ privateMcpLettaWorkspace, page, modelScript }) => {
   const workspace = privateMcpLettaWorkspace
-  const context = await nativeContext({ page, modelScript, leapmuxServer: workspace.server, workspaceId: workspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer: workspace.server,
+    workspaceId: workspace.workspaceId,
+  })
   await sendNativeAnswer(context, 'Create one actual native conversation before form registration.', 'The native form conversation exists.')
   const receiptLog = join(workspace.runDirectory, 'form-receipt.json')
   const server = writeMcpFormServer(workspace.runDirectory, 'form-server.mjs', { receiptLog })
   await withRegisteredLettaMcp(context, workspace, [server], async (identity) => {
     const catalog = await exerciseLettaMcpCatalog(context, workspace, identity.agentId, server.name)
     const tool = catalog.find(tool => tool.name === `mcp__${server.name}__ask`)
-    expect(tool).toMatchObject({ inputSchema: { type: 'object', properties: {}, additionalProperties: false } })
+    expect(tool).toMatchObject({
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    })
     const toolId = tool?.name
     if (typeof toolId !== 'string')
-      throw new Error('The actual form catalog contains no native ask tool ID.')
+      throw new TypeError('The actual form catalog contains no native ask tool ID.')
     await expectNoNativeControl(context, {
       testId: 'elicitation-form',
       additionalTestIds: ['control-banner'],
       relatedProof: async () => {
         const callId = 'letta-registered-native-form'
         const answer = 'The native form refusal reached its agent.'
-        const start = await modelScript.queue({ toolCalls: [lettaMcpCliToolCall(callId, identity.agentId, toolId, {})] }, nativeTextStep(context, answer))
+        const start = await modelScript.queue({
+          toolCalls: [
+            lettaMcpCliToolCall(callId, identity.agentId, toolId, {}),
+          ],
+        }, nativeTextStep(context, answer))
         await sendMessage(page, modelScript.prompt('Invoke the actual registered form tool once.'))
         await modelScript.waitForSteps(start + 2)
         const receipt = readMcpServerReceipt(receiptLog)

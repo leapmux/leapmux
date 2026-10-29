@@ -17,7 +17,12 @@ function row(display: ControlResponseSummary) {
   return render(() => <>{renderControlResponseRow(display, undefined)}</>)
 }
 
-const RESPONSE: PersistedControlResponse = { requestId: 'request-1', claimToken: 'claim-1', request: undefined, response: {} }
+const RESPONSE: PersistedControlResponse = {
+  requestId: 'request-1',
+  claimToken: 'claim-1',
+  request: undefined,
+  response: {},
+}
 
 describe('renderControlResponseRow', () => {
   it('renders a label as line-broken plain text', () => {
@@ -57,7 +62,14 @@ describe('resolveControlResponseSummary', () => {
   })
 
   it('uses the coarse behavior envelope as the fallback when no deriver is given', () => {
-    const parsed = { ...RESPONSE, response: { response: { response: { behavior: 'allow' } } } }
+    const parsed = {
+      ...RESPONSE,
+      response: {
+        response: {
+          response: { behavior: 'allow' },
+        },
+      },
+    }
     expect(resolveControlResponseSummary(parsed, undefined)).toEqual({ kind: 'label', text: 'Allow' })
   })
 })
@@ -68,12 +80,27 @@ describe('renderMessageContent control_response dispatch', () => {
   }
 
   it('renders a Codex decision through the provider plugin', () => {
-    const response = { ...RESPONSE, request: { method: 'item/commandExecution/requestApproval' }, response: { result: { decision: 'accept' } } }
+    const response = {
+      ...RESPONSE,
+      request: { method: 'item/commandExecution/requestApproval' },
+      response: {
+        result: { decision: 'accept' },
+      },
+    }
     expect(renderRow(response, AgentProvider.CODEX).container.textContent).toBe('Allow')
   })
 
   it('renders Claude rejection feedback through the provider plugin', () => {
-    const response = { ...RESPONSE, response: { type: 'control_response', response: { request_id: 'r', response: { behavior: 'deny', message: 'add tests' } } } }
+    const response = {
+      ...RESPONSE,
+      response: {
+        type: 'control_response',
+        response: {
+          request_id: 'r',
+          response: { behavior: 'deny', message: 'add tests' },
+        },
+      },
+    }
     const text = renderRow(response, AgentProvider.CLAUDE_CODE).container.textContent ?? ''
     expect(text).toContain('Sent feedback:')
     expect(text).toContain('add tests')

@@ -16,15 +16,25 @@ import { exerciseNativeFileEdit, exerciseNativeFileRead, exerciseNativeFileWrite
 ampTest.describe('Amp tool execution', () => {
   ampTest('draws the lines a read returns', async ({ authenticatedAmpWorkspace, native }) => {
     // Amp numbers each line `<n>: ` for the model.
-    await exerciseNativeFileRead(native, { directory: createNativeToolDirectory(authenticatedAmpWorkspace.workingDir), linePrefix: 'amp-read', numberedLine: (line, text) => `${line}: ${text}` })
+    await exerciseNativeFileRead(native, {
+      directory: createNativeToolDirectory(authenticatedAmpWorkspace.workingDir),
+      linePrefix: 'amp-read',
+      numberedLine: (line, text) => `${line}: ${text}`,
+    })
   })
 
   ampTest('draws the diff of an edit', async ({ authenticatedAmpWorkspace, native }) => {
-    await exerciseNativeFileEdit(native, { directory: createNativeToolDirectory(authenticatedAmpWorkspace.workingDir) })
+    await exerciseNativeFileEdit(native, {
+      directory: createNativeToolDirectory(authenticatedAmpWorkspace.workingDir),
+    })
   })
 
   ampTest('writes the file that a write call states', async ({ authenticatedAmpWorkspace, native }) => {
     // Amp ends the file with a newline.
-    await exerciseNativeFileWrite(native, { directory: createNativeToolDirectory(authenticatedAmpWorkspace.workingDir), content: 'amp was here', stored: 'amp was here\n' })
+    await exerciseNativeFileWrite(native, {
+      directory: createNativeToolDirectory(authenticatedAmpWorkspace.workingDir),
+      content: 'amp was here',
+      stored: 'amp was here\n',
+    })
   })
 })

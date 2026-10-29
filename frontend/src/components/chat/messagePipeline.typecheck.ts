@@ -26,14 +26,24 @@ declare const privateRenderContext: RenderContext
 void privateRenderContext
 
 /** A raw parse, as the parser hands it to the resolver. */
-const RAW: ParsedMessageContent = { wrapper: null, topLevel: null, parentObject: undefined, rawText: '', supplementalContent: undefined, messageMetadata: undefined }
+const RAW: ParsedMessageContent = {
+  wrapper: null,
+  topLevel: null,
+  parentObject: undefined,
+  rawText: '',
+  supplementalContent: undefined,
+  messageMetadata: undefined,
+}
 
 /** The envelope fields a classification input adds over the parse. */
 const ENVELOPE = { agentProvider: AgentProvider.CLAUDE_CODE }
 
 // A raw parse cannot reach `classify`.
 // @ts-expect-error The classifier reads the MERGED payload; a raw parse would classify bytes no row displays.
-const rawToClassify: ClassificationInput = { ...RAW, ...ENVELOPE }
+const rawToClassify: ClassificationInput = {
+  ...RAW,
+  ...ENVELOPE,
+}
 void rawToClassify
 
 // A raw parse cannot reach a provider's `spanRole` hook. The shared helper takes
@@ -78,12 +88,20 @@ void [rawParsedSlot, rawSideSlot]
 
 // A value the constructor returned reaches all three.
 const RESOLVED: ResolvedMessageContent = resolveMessageForRendering(RAW, AgentProvider.CLAUDE_CODE)
-const resolvedToClassify: ClassificationInput = { ...RESOLVED, ...ENVELOPE }
+const resolvedToClassify: ClassificationInput = {
+  ...RESOLVED,
+  ...ENVELOPE,
+}
 const resolvedToSpanRole: string = spanRoleHook(RESOLVED)
 const resolvedToExtractRow: RowExtractionInput = {
   resolved: RESOLVED,
   category: { kind: 'unknown' },
-  span: { request: undefined, result: undefined, role: 'other', visibleRows: { request: false, result: false } },
+  span: {
+    request: undefined,
+    result: undefined,
+    role: 'other',
+    visibleRows: { request: false, result: false },
+  },
 }
 void [resolvedToClassify, resolvedToSpanRole, resolvedToExtractRow]
 

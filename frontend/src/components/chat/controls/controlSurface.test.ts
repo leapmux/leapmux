@@ -10,7 +10,21 @@ function request(payload: Record<string, unknown>): ControlRequest {
 }
 
 function questionRequest(): ControlRequest {
-  return request({ request: { tool_name: 'AskUserQuestion', input: { questions: [{ question: 'Which one?', options: [{ label: 'A' }] }] } } })
+  return request({
+    request: {
+      tool_name: 'AskUserQuestion',
+      input: {
+        questions: [
+          {
+            question: 'Which one?',
+            options: [
+              { label: 'A' },
+            ],
+          },
+        ],
+      },
+    },
+  })
 }
 
 describe('controlSurface', () => {
@@ -21,7 +35,19 @@ describe('controlSurface', () => {
 
   it('reports the elicitation form for an elicitation payload', () => {
     const surface = controlSurface(
-      request({ method: 'elicitation/create', params: { mode: 'form', message: 'Choose.', requestedSchema: { type: 'object', properties: { count: { type: 'integer' } } } } }),
+      request({
+        method: 'elicitation/create',
+        params: {
+          mode: 'form',
+          message: 'Choose.',
+          requestedSchema: {
+            type: 'object',
+            properties: {
+              count: { type: 'integer' },
+            },
+          },
+        },
+      }),
       AgentProvider.GOOSE,
       undefined,
     )
@@ -32,7 +58,12 @@ describe('controlSurface', () => {
   // The old plugin kind left that decision to each provider's component.
   it('reads everything else as a permission the provider extracted', () => {
     const surface = controlSurface(
-      request({ request: { tool_name: 'Bash', input: { command: 'pwd' } } }),
+      request({
+        request: {
+          tool_name: 'Bash',
+          input: { command: 'pwd' },
+        },
+      }),
       AgentProvider.CLAUDE_CODE,
       undefined,
     )
@@ -59,13 +90,23 @@ describe('controlSurface', () => {
    */
   it('states no arguments for a payload no provider reads', () => {
     // A provider whose plugin recognizes nothing in this envelope.
-    const surface = controlSurface(request({ unknown_envelope: { nothing: 'here' } }), AgentProvider.GOOSE, undefined)
-    expect(surface).toEqual({ kind: 'permission', permission: { options: [] } })
+    const surface = controlSurface(request({
+      unknown_envelope: { nothing: 'here' },
+    }), AgentProvider.GOOSE, undefined)
+    expect(surface).toEqual({
+      kind: 'permission',
+      permission: { options: [] },
+    })
   })
 
   it('states no arguments for a provider with no plugin at all', () => {
-    const surface = controlSurface(request({ request: { tool_name: 'Bash' } }), undefined, undefined)
-    expect(surface).toEqual({ kind: 'permission', permission: { options: [] } })
+    const surface = controlSurface(request({
+      request: { tool_name: 'Bash' },
+    }), undefined, undefined)
+    expect(surface).toEqual({
+      kind: 'permission',
+      permission: { options: [] },
+    })
   })
 
   it('reports nothing for a request the store already removed', () => {
@@ -77,7 +118,14 @@ describe('controlSurface', () => {
   // composer classify a queued request from another provider the same way.
   it('prefers the provider the request carries', () => {
     const goose: ControlRequest = {
-      ...request({ method: 'elicitation/create', params: { mode: 'form', message: 'Choose.', requestedSchema: { type: 'object', properties: {} } } }),
+      ...request({
+        method: 'elicitation/create',
+        params: {
+          mode: 'form',
+          message: 'Choose.',
+          requestedSchema: { type: 'object', properties: {} },
+        },
+      }),
       agentProvider: AgentProvider.GOOSE,
     }
     expect(controlSurface(goose, AgentProvider.CLAUDE_CODE, undefined)?.kind).toBe('elicitation')
@@ -106,7 +154,12 @@ describe('createControlSurface', () => {
     expect(surface.provider()).toBe(AgentProvider.CLAUDE_CODE)
     expect(surface.surface()?.kind).toBe('question')
 
-    setCurrent(request({ request: { tool_name: 'Bash', input: { command: 'pwd' } } }))
+    setCurrent(request({
+      request: {
+        tool_name: 'Bash',
+        input: { command: 'pwd' },
+      },
+    }))
     expect(surface.surface()?.kind).toBe('permission')
 
     setCurrent(null)
@@ -121,7 +174,10 @@ describe('createControlSurface', () => {
   })
 
   it('prefers the provider the request carries', () => {
-    const goose = { ...questionRequest(), agentProvider: AgentProvider.GOOSE }
+    const goose = {
+      ...questionRequest(),
+      agentProvider: AgentProvider.GOOSE,
+    }
     const surface = live(AgentProvider.CLAUDE_CODE, () => goose)
     expect(surface.provider()).toBe(AgentProvider.GOOSE)
   })

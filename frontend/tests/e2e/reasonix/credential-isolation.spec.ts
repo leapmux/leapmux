@@ -12,7 +12,10 @@ reasonixTest('uses private provider configuration and the actual mock credential
     // file, $REASONIX_HOME/.env, and never from the process environment
     // (internal/config/config.go ProviderEntry.APIKey). The key must therefore
     // come from that private file.
-    configurationFiles: [join(environment.REASONIX_HOME!, 'config.toml'), join(environment.REASONIX_HOME!, '.env')],
+    configurationFiles: [
+      join(environment.REASONIX_HOME!, 'config.toml'),
+      join(environment.REASONIX_HOME!, '.env'),
+    ],
     configurationMarkers: ['api_key_env = "LEAPMUX_E2E_MODEL_API_KEY"', `LEAPMUX_E2E_MODEL_API_KEY=${MODEL_KEY}`],
   })
 })

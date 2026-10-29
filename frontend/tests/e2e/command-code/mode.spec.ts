@@ -15,10 +15,14 @@ import { expectSettingsChip, waitForNativeSettingsHydrated } from '../helpers/ui
 
 commandCodeTest('applies the native planning mode and preserves context across its process restart', async ({ native: context }) => {
   await sendNativeAnswer(context, 'Keep COMMANDCODE_MODE_CONTEXT before the native process restarts.', 'COMMANDCODE_MODE_ANSWER')
-  await exerciseNativeOption(context, { groupId: 'permissionMode', value: 'plan', nativeProof: (request) => {
-    expect(nativeModelInstructionText(request)).toMatch(/plan[\s\S]*(?:read-only|read only)/i)
-    expect(nativeModelContextText(request)).toContain('COMMANDCODE_MODE_ANSWER')
-  } })
+  await exerciseNativeOption(context, {
+    groupId: 'permissionMode',
+    value: 'plan',
+    nativeProof: (request) => {
+      expect(nativeModelInstructionText(request)).toMatch(/plan[\s\S]*(?:read-only|read only)/i)
+      expect(nativeModelContextText(request)).toContain('COMMANDCODE_MODE_ANSWER')
+    },
+  })
 })
 
 commandCodeTest('returns from Plan to Default and proves both native modes after reload', async ({ native }) => {
@@ -48,7 +52,9 @@ commandCodeTest('returns from Plan to Default and proves both native modes after
           testId: 'control-banner',
           relatedProof: async () => {
             const { resultRequest } = await runNativeToolTurn(native, {
-              toolCalls: [writeToolCall(native.provider, callId, { path, content: 'The Default write must not run.\n' })],
+              toolCalls: [
+                writeToolCall(native.provider, callId, { path, content: 'The Default write must not run.\n' }),
+              ],
               prompt: 'Run the supplied file write in the selected setting.',
               answer: `The native Default write ${defaultProbe} was refused.`,
               permissions: 'none',

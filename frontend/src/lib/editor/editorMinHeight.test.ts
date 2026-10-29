@@ -25,7 +25,9 @@ const AGENT = 'agent-xyz'
  */
 async function readStored(agentId: string): Promise<string | null> {
   const stored = await localStorageLoad<number>(`${PREFIX_EDITOR_MIN_HEIGHT}${agentId}`)
-  return stored === undefined ? null : String(stored)
+  return stored === undefined
+    ? null
+    : String(stored)
 }
 
 describe('editorMinHeightKey', () => {

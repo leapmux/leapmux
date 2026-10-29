@@ -155,9 +155,15 @@ export function buildCommonSidebarProps(opts: SidebarElementsOpts, display?: Sid
   const commonProps = mergeProps(opts, {
     get isCollapsed() { return display?.isCollapsed() ?? false },
     onExpand: display?.onExpand ?? (() => {}),
-    ...(display?.initialOpenSections !== undefined ? { initialOpenSections: display.initialOpenSections } : {}),
-    ...(display?.initialSectionSizes !== undefined ? { initialSectionSizes: display.initialSectionSizes } : {}),
-    ...(display?.onStateChange !== undefined ? { onSectionStateChange: display.onStateChange } : {}),
+    ...(display?.initialOpenSections !== undefined
+      ? { initialOpenSections: display.initialOpenSections }
+      : {}),
+    ...(display?.initialSectionSizes !== undefined
+      ? { initialSectionSizes: display.initialSectionSizes }
+      : {}),
+    ...(display?.onStateChange !== undefined
+      ? { onSectionStateChange: display.onStateChange }
+      : {}),
     get workerId() { return opts.getCurrentTabContext().workerId },
     get workingDir() { return opts.getCurrentTabContext().workingDir },
     get gitToplevel() { return opts.getCurrentTabContext().gitToplevel },

@@ -27,20 +27,44 @@ export function piAgentRequest(payload: Record<string, unknown>, request?: Parse
   const details = tool?.result?.details ?? {}
   const metadata: NonNullable<AgentRequest['metadata']> = []
   if (tool?.toolName === PI_AGENT_TOOL.GetResult || tool?.toolName === PI_AGENT_TOOL.Steer) {
-    const operation = tool.toolName === PI_AGENT_TOOL.GetResult ? 'Get agent result' : 'Send message'
-    for (const [key, label] of [['wait', 'Wait'], ['verbose', 'Full conversation']] as const) {
-      if (typeof args[key] === 'boolean')
-        metadata.push({ label, value: args[key] ? 'Yes' : 'No' })
+    const operation = tool.toolName === PI_AGENT_TOOL.GetResult
+      ? 'Get agent result'
+      : 'Send message'
+    for (const [key, label] of [
+      ['wait', 'Wait'],
+      ['verbose', 'Full conversation'],
+    ] as const) {
+      if (typeof args[key] === 'boolean') {
+        metadata.push({
+          label,
+          value: args[key] ? 'Yes' : 'No',
+        })
+      }
     }
-    return { description: `${operation}${pickString(args, 'agent_id') ? `: ${pickString(args, 'agent_id')}` : ''}`, prompt: pickString(args, 'message'), metadata }
+    return {
+      description: `${operation}${pickString(args, 'agent_id')
+        ? `: ${pickString(args, 'agent_id')}`
+        : ''}`,
+      prompt: pickString(args, 'message'),
+      metadata,
+    }
   }
-  for (const [key, label] of [['model', 'Model'], ['thinking', 'Thinking'], ['resume', 'Resume'], ['isolation', 'Isolation']] as const) {
+  for (const [key, label] of [
+    ['model', 'Model'],
+    ['thinking', 'Thinking'],
+    ['resume', 'Resume'],
+    ['isolation', 'Isolation'],
+  ] as const) {
     const value = pickString(args, key)
     if (value)
       metadata.push({ label, value })
   }
-  if (counter(args.max_turns))
-    metadata.push({ label: 'Maximum turns', value: formatNumber(args.max_turns) })
+  if (counter(args.max_turns)) {
+    metadata.push({
+      label: 'Maximum turns',
+      value: formatNumber(args.max_turns),
+    })
+  }
   return {
     description: pickString(args, 'description') || pickString(details, 'description'),
     agentType: pickString(args, 'subagent_type') || pickString(details, 'displayName') || pickString(details, 'subagentType'),
@@ -52,14 +76,23 @@ export function piAgentRequest(payload: Record<string, unknown>, request?: Parse
 /** Remove a native summary only when its counters agree with the structured details. */
 function agentReport(text: string, details: Record<string, unknown>): string {
   const separator = text.indexOf('\n\n')
-  const header = separator >= 0 ? /^Agent completed in \d+\.\ds /.exec(text.slice(0, separator)) : null
+  const header = separator >= 0
+    ? /^Agent completed in \d+\.\ds /.exec(text.slice(0, separator))
+    : null
   if (!header || !counter(details.toolUses))
     return text
   const tokens = pickString(details, 'tokens')
-  const stats = `${details.toolUses} tool uses${tokens ? `, ${tokens}` : ''}`
+  const stats = `${details.toolUses} tool uses${tokens
+    ? `, ${tokens}`
+    : ''}`
   const status = pickString(details, 'status')
   const note = pickString(STATUS_NOTES, status)
-  return text.slice(header[0].length, separator) === `(${stats})${note}.` && ['completed', 'stopped', 'aborted', 'steered'].includes(status)
+  return text.slice(header[0].length, separator) === `(${stats})${note}.` && [
+    'completed',
+    'stopped',
+    'aborted',
+    'steered',
+  ].includes(status)
     ? text.slice(separator + 2)
     : text
 }
@@ -82,33 +115,64 @@ export function piAgentResult(payload: Record<string, unknown>, request?: Parsed
       ? 'completed'
       : state === 'stopped'
         ? 'stopped'
-        : ['running', 'background', 'queued'].includes(state) ? 'running' : 'unknown'
+        : ['running', 'background', 'queued'].includes(state)
+            ? 'running'
+            : 'unknown'
   const status = state === 'background'
     ? 'running'
     : state === 'aborted' || state === 'steered'
       ? 'partial'
       : state || 'returned a result'
   const metadata: AgentRun['metadata'] = []
-  for (const [key, label] of [['agentId', 'Agent ID'], ['displayName', 'Agent type'], ['modelName', 'Model'], ['tokens', 'Tokens'], ['error', 'Error']] as const) {
+  for (const [key, label] of [
+    ['agentId', 'Agent ID'],
+    ['displayName', 'Agent type'],
+    ['modelName', 'Model'],
+    ['tokens', 'Tokens'],
+    ['error', 'Error'],
+  ] as const) {
     const value = pickString(details, key)
     if (value)
       metadata.push({ label, value })
   }
-  if (!pickString(details, 'displayName') && pickString(details, 'subagentType'))
-    metadata.push({ label: 'Agent type', value: pickString(details, 'subagentType') })
-  for (const [key, label] of [['toolUses', 'Tool uses'], ['turnCount', 'Turns'], ['maxTurns', 'Maximum turns'], ['durationMs', 'Duration']] as const) {
+  if (!pickString(details, 'displayName') && pickString(details, 'subagentType')) {
+    metadata.push({
+      label: 'Agent type',
+      value: pickString(details, 'subagentType'),
+    })
+  }
+  for (const [key, label] of [
+    ['toolUses', 'Tool uses'],
+    ['turnCount', 'Turns'],
+    ['maxTurns', 'Maximum turns'],
+    ['durationMs', 'Duration'],
+  ] as const) {
     const value = details[key]
-    if (counter(value))
-      metadata.push({ label, value: key === 'durationMs' ? formatDuration(value) : formatNumber(value) })
+    if (counter(value)) {
+      metadata.push({
+        label,
+        value: key === 'durationMs'
+          ? formatDuration(value)
+          : formatNumber(value),
+      })
+    }
   }
   if (Array.isArray(details.tags)) {
     const tags = details.tags.filter((value): value is string => typeof value === 'string' && value.trim() !== '')
-    if (tags.length)
-      metadata.push({ label: 'Options', value: tags.join(', ') })
+    if (tags.length) {
+      metadata.push({
+        label: 'Options',
+        value: tags.join(', '),
+      })
+    }
   }
   const note = pickString(STATUS_NOTES, state)
-  if (note)
-    metadata.push({ label: 'Notice', value: note.trim().slice(1, -1) })
+  if (note) {
+    metadata.push({
+      label: 'Notice',
+      value: note.trim().slice(1, -1),
+    })
+  }
   const source = piAgentRequest(payload, request)
   if (!metadata.some(item => item.label === 'Agent type') && source.agentType)
     metadata.push({ label: 'Agent type', value: source.agentType })
@@ -117,7 +181,14 @@ export function piAgentResult(payload: Record<string, unknown>, request?: Parsed
       metadata.push(item)
   }
   const body = agentReport(result?.text ?? '', details)
-  return { description: source.description, agentId: pickString(details, 'agentId'), statusLabel: status, outcome, metadata, body }
+  return {
+    description: source.description,
+    agentId: pickString(details, 'agentId'),
+    statusLabel: status,
+    outcome,
+    metadata,
+    body,
+  }
 }
 
 /** The result tool omits structured details. Validate its complete header before extracting them. */
@@ -145,26 +216,58 @@ function retrievedAgentReport(text: string, expectedId: string): AgentRun | null
   const stateText = statusField.slice('Status: '.length)
   // `split` always answers at least one part, so the empty fallback is a type-level guard alone.
   const state = stateText.split(' ', 1)[0] ?? ''
-  if (!['queued', 'running', 'completed', 'error', 'aborted', 'stopped', 'steered'].includes(state)
-    || stateText !== state + pickString(STATUS_NOTES, state)) {
+  if (![
+    'queued',
+    'running',
+    'completed',
+    'error',
+    'aborted',
+    'stopped',
+    'steered',
+  ].includes(state)
+  || stateText !== state + pickString(STATUS_NOTES, state)) {
     return null
   }
   const metadata: AgentRun['metadata'] = [
     { label: 'Agent ID', value: id },
-    { label: 'Agent type', value: fields[0].slice('Type: '.length) },
+    {
+      label: 'Agent type',
+      value: fields[0].slice('Type: '.length),
+    },
   ]
   for (const field of fields.slice(2)) {
     const divider = field.indexOf(': ')
-    metadata.push(divider < 0 ? { label: 'Tokens', value: field } : { label: field.slice(0, divider), value: field.slice(divider + 2) })
+    metadata.push(divider < 0
+      ? { label: 'Tokens', value: field }
+      : {
+          label: field.slice(0, divider),
+          value: field.slice(divider + 2),
+        })
   }
   const note = pickString(STATUS_NOTES, state)
-  if (note)
-    metadata.push({ label: 'Notice', value: note.trim().slice(1, -1) })
+  if (note) {
+    metadata.push({
+      label: 'Notice',
+      value: note.trim().slice(1, -1),
+    })
+  }
   return {
     description: descriptionLine.slice('Description: '.length),
     agentId: id,
-    statusLabel: state === 'error' ? 'failed' : state === 'aborted' || state === 'steered' ? 'partial' : state,
-    outcome: state === 'completed' ? 'completed' : state === 'error' ? 'failed' : state === 'stopped' ? 'stopped' : state === 'queued' || state === 'running' ? 'running' : 'unknown',
+    statusLabel: state === 'error'
+      ? 'failed'
+      : state === 'aborted' || state === 'steered'
+        ? 'partial'
+        : state,
+    outcome: state === 'completed'
+      ? 'completed'
+      : state === 'error'
+        ? 'failed'
+        : state === 'stopped'
+          ? 'stopped'
+          : state === 'queued' || state === 'running'
+            ? 'running'
+            : 'unknown',
     metadata,
     body: text.slice(separator + 2),
   }
@@ -173,9 +276,14 @@ function retrievedAgentReport(text: string, expectedId: string): AgentRun | null
 function piAgentControlResult(toolName: string, args: Record<string, unknown>, text: string, isError: boolean): AgentRun {
   const missing = /^Agent not found: "([^"\r\n]+)"\. It may have been cleaned up\.$/.exec(text)
   const id = pickString(args, 'agent_id') || missing?.[1] || ''
-  const report = toolName === PI_AGENT_TOOL.GetResult ? retrievedAgentReport(text, id) : null
-  if (report)
-    return isError ? { ...report, outcome: 'failed', statusLabel: 'failed' } : report
+  const report = toolName === PI_AGENT_TOOL.GetResult
+    ? retrievedAgentReport(text, id)
+    : null
+  if (report) {
+    return isError
+      ? { ...report, outcome: 'failed', statusLabel: 'failed' }
+      : report
+  }
   const unavailable = id && (text === `Agent not found: "${id}". It may have been cleaned up.`
     || (text.startsWith(`Agent "${id}" is not running (status: `) && text.endsWith('). Cannot steer a non-running agent.')))
   const failed = isError || !!unavailable || (toolName === PI_AGENT_TOOL.Steer && text.startsWith('Failed to steer agent: '))
@@ -184,9 +292,21 @@ function piAgentControlResult(toolName: string, args: Record<string, unknown>, t
   return {
     description: '',
     agentId: id,
-    statusLabel: failed ? 'failed' : sent ? 'received a message' : queued ? 'queued a message' : 'returned a result',
-    outcome: failed ? 'failed' : sent || queued ? 'running' : 'unknown',
-    metadata: id ? [{ label: 'Agent ID', value: id }] : [],
+    statusLabel: failed
+      ? 'failed'
+      : sent
+        ? 'received a message'
+        : queued ? 'queued a message' : 'returned a result',
+    outcome: failed
+      ? 'failed'
+      : sent || queued
+        ? 'running'
+        : 'unknown',
+    metadata: id
+      ? [
+          { label: 'Agent ID', value: id },
+        ]
+      : [],
     body: text,
   }
 }

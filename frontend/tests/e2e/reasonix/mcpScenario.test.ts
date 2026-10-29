@@ -3,7 +3,9 @@ import { elicitationFieldKey } from '../../../src/components/chat/controls/elici
 import { reasonixMcpFormDraftSaved } from './mcpScenario'
 
 function draft() {
-  return { choices: { [elicitationFieldKey('count')]: '0', [elicitationFieldKey('enabled')]: '"No"', [elicitationFieldKey('color')]: '"Blue"' } }
+  return {
+    choices: { [elicitationFieldKey('count')]: '0', [elicitationFieldKey('enabled')]: '"No"', [elicitationFieldKey('color')]: '"Blue"' },
+  }
 }
 
 describe('reasonixMcpFormDraftSaved', () => {
@@ -11,7 +13,14 @@ describe('reasonixMcpFormDraftSaved', () => {
     expect(reasonixMcpFormDraftSaved(draft())).toBe(true)
   })
 
-  it.each([null, undefined, {}, [], { choices: null }, { choices: {} }])('rejects a missing or malformed draft: %j', (value) => {
+  it.each([
+    null,
+    undefined,
+    {},
+    [],
+    { choices: null },
+    { choices: {} },
+  ])('rejects a missing or malformed draft: %j', (value) => {
     expect(reasonixMcpFormDraftSaved(value)).toBe(false)
   })
 
@@ -30,6 +39,8 @@ describe('reasonixMcpFormDraftSaved', () => {
   })
 
   it('rejects the original MCP types that the native transport does not send', () => {
-    expect(reasonixMcpFormDraftSaved({ choices: { [elicitationFieldKey('count')]: '0', [elicitationFieldKey('enabled')]: 'false', [elicitationFieldKey('color')]: '"b"' } })).toBe(false)
+    expect(reasonixMcpFormDraftSaved({
+      choices: { [elicitationFieldKey('count')]: '0', [elicitationFieldKey('enabled')]: 'false', [elicitationFieldKey('color')]: '"b"' },
+    })).toBe(false)
   })
 })

@@ -43,7 +43,12 @@ import { enclosingFunctionName, lineOf } from '~/test-support/syntaxSite'
  * The functions whose call reaches the Hub, or the Worker through the Hub. Each throws when its request fails.
  * `runHubSql` reads the database of the Hub, which the Hub can hold locked longer than the function retries.
  */
-export const TRANSPORT_FUNCTIONS: ReadonlySet<string> = new Set(['getTestChannel', 'callHub', 'hubRequest', 'runHubSql'])
+export const TRANSPORT_FUNCTIONS: ReadonlySet<string> = new Set([
+  'getTestChannel',
+  'callHub',
+  'hubRequest',
+  'runHubSql',
+])
 
 /** The methods whose call reaches the Worker through an encrypted channel. Each throws when the channel fails. */
 export const TRANSPORT_METHODS: ReadonlySet<string> = new Set(['callWorker'])
@@ -90,8 +95,12 @@ function parse(input: PollSourceFile, known: ReadonlySet<string>): ParsedFile {
   const functions = new Map<string, TypeScript.Node[]>()
   const imports = new Map<string, { path: string, name: string }>()
   const addFunction = (name: string, body: TypeScript.Node | undefined) => {
-    if (body)
-      functions.set(name, [...(functions.get(name) ?? []), body])
+    if (body) {
+      functions.set(name, [
+        ...(functions.get(name) ?? []),
+        body,
+      ])
+    }
   }
   const visit = (node: TypeScript.Node): void => {
     if (isFunctionDeclaration(node) && node.name) {
@@ -112,7 +121,12 @@ function parse(input: PollSourceFile, known: ReadonlySet<string>): ParsedFile {
     forEachChild(node, visit)
   }
   visit(file)
-  return { path: input.path, file, functions, imports }
+  return {
+    path: input.path,
+    file,
+    functions,
+    imports,
+  }
 }
 
 /** Whether a `catch` clause holds a `throw` statement of its own, outside a nested function. */
@@ -154,7 +168,10 @@ function caughtByPromise(call: TypeScript.CallExpression): boolean {
 export function throwingPollReads(inputs: readonly PollSourceFile[]): ThrowingPoll[] {
   const known = new Set(inputs.map(input => input.path.replaceAll('\\', '/')))
   // Keyed by the same POSIX form resolveImport answers with, so a Windows native path still resolves.
-  const files = new Map(inputs.map(input => [input.path.replaceAll('\\', '/'), parse(input, known)]))
+  const files = new Map(inputs.map(input => [
+    input.path.replaceAll('\\', '/'),
+    parse(input, known),
+  ]))
   // The chain from a named function to a transport call, or null when the function reaches none.
   const memo = new Map<string, string[] | null>()
   // The functions on the stack of the current search. A call back into one of them reads as no chain, and the search
@@ -168,8 +185,12 @@ export function throwingPollReads(inputs: readonly PollSourceFile[]): ThrowingPo
     const local = file.functions.get(name)
     if (!local) {
       const imported = file.imports.get(name)
-      const target = imported ? files.get(imported.path) : undefined
-      return imported && target ? nameChain(target, imported.name) : null
+      const target = imported
+        ? files.get(imported.path)
+        : undefined
+      return imported && target
+        ? nameChain(target, imported.name)
+        : null
     }
     const key = `${file.path}#${name}`
     const known = memo.get(key)
@@ -223,9 +244,19 @@ export function throwingPollReads(inputs: readonly PollSourceFile[]): ThrowingPo
       if (isCallExpression(node) && isPropertyAccessExpression(node.expression) && node.expression.name.text === 'poll'
         && isIdentifier(node.expression.expression) && node.expression.expression.text === 'expect') {
         const poll = node.arguments[0]
-        const chain = poll === undefined ? null : isIdentifier(poll) ? nameChain(file, poll.text) : bodyChain(file, poll)
-        if (chain)
-          findings.push({ path: file.path, line: lineOf(file.file, node), enclosingFunction: enclosingFunctionName(node), chain })
+        const chain = poll === undefined
+          ? null
+          : isIdentifier(poll)
+            ? nameChain(file, poll.text)
+            : bodyChain(file, poll)
+        if (chain) {
+          findings.push({
+            path: file.path,
+            line: lineOf(file.file, node),
+            enclosingFunction: enclosingFunctionName(node),
+            chain,
+          })
+        }
       }
       forEachChild(node, visit)
     }

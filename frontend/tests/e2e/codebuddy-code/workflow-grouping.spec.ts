@@ -23,7 +23,11 @@ codebuddyTest.describe('CodeBuddy Code workflow grouping', () => {
     await modelScript.rule({
       name: 'workflow child reads its marker',
       when: { user: 'Read .*workflow-child-marker.txt' },
-      respond: { toolCalls: [readToolCall(native.provider, 'child-workflow-read', markerPath)] },
+      respond: {
+        toolCalls: [
+          readToolCall(native.provider, 'child-workflow-read', markerPath),
+        ],
+      },
       once: true,
     }, {
       name: 'workflow child answers after its tool result',
@@ -32,8 +36,16 @@ codebuddyTest.describe('CodeBuddy Code workflow grouping', () => {
       once: true,
     })
     const start = await modelScript.queue(
-      { toolCalls: [codebuddyFindWorkflowToolCall('find-workflow')] },
-      { toolCalls: [codebuddyWorkflowToolCall('run-workflow', script)] },
+      {
+        toolCalls: [
+          codebuddyFindWorkflowToolCall('find-workflow'),
+        ],
+      },
+      {
+        toolCalls: [
+          codebuddyWorkflowToolCall('run-workflow', script),
+        ],
+      },
     )
     await modelScript.fallback({ text: 'Workflow dispatched.' })
 
@@ -70,8 +82,20 @@ codebuddyTest.describe('CodeBuddy Code workflow grouping', () => {
       }
     }).filter(row => row.type === 'function_call' || row.type === 'function_call_result' || row.type === 'function_call_output')
     expect(nativeTools).toEqual([
-      { type: 'function_call', callID: undefined, nativeCallID: 'child-workflow-read', name: 'Read', status: undefined },
-      { type: 'function_call_result', callID: undefined, nativeCallID: 'child-workflow-read', name: 'Read', status: 'completed' },
+      {
+        type: 'function_call',
+        callID: undefined,
+        nativeCallID: 'child-workflow-read',
+        name: 'Read',
+        status: undefined,
+      },
+      {
+        type: 'function_call_result',
+        callID: undefined,
+        nativeCallID: 'child-workflow-read',
+        name: 'Read',
+        status: 'completed',
+      },
     ])
     // `openChildTabFromRow` waits until the row links a child agent.
     await openChildTabFromRow(page, child)

@@ -24,10 +24,16 @@ describe('codex supplement resolve conformance', () => {
 
   it.each(fixture.cases)('$name', ({ original, supplemental, expected }) => {
     const before = JSON.stringify({ original, supplemental })
-    const resolved = resolveCodexMessage({ ...input(original), supplementalContent: supplemental })
+    const resolved = resolveCodexMessage({
+      ...input(original),
+      supplementalContent: supplemental,
+    })
     expect(resolved).toEqual(expected)
     // A row the store resolves twice must not grow a second copy of the join.
-    expect(resolveCodexMessage({ ...input(resolved ?? {}), supplementalContent: supplemental })).toEqual(expected)
+    expect(resolveCodexMessage({
+      ...input(resolved ?? {}),
+      supplementalContent: supplemental,
+    })).toEqual(expected)
     expect(JSON.stringify({ original, supplemental })).toBe(before)
   })
 })

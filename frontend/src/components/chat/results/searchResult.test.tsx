@@ -6,12 +6,31 @@ import { toolResultContentPre, toolResultPrompt } from '../toolStyles.css'
 import { SearchResultBody } from './searchResult'
 
 function source(overrides: Partial<SearchResult> = {}): SearchResult {
-  return { filenames: [], content: '', numFiles: 0, numLines: 0, truncated: false, fallbackContent: '', empty: false, ...overrides }
+  return {
+    filenames: [],
+    content: '',
+    numFiles: 0,
+    numLines: 0,
+    truncated: false,
+    fallbackContent: '',
+    empty: false,
+    ...overrides,
+  }
 }
 
 describe('search result display', () => {
   it('shortens a structured file path without changing punctuation in matching text', () => {
-    const { container } = render(() => <SearchResultBody kind="search" source={source({ lines: [{ filePath: '/project/a:2.ts', lineNumber: 7, text: '/project/../literal:3:value' }] })} context={{ workingDir: '/project' }} />)
+    const { container } = render(() => (
+      <SearchResultBody
+        kind="search"
+        source={source({
+          lines: [
+            { filePath: '/project/a:2.ts', lineNumber: 7, text: '/project/../literal:3:value' },
+          ],
+        })}
+        context={{ workingDir: '/project' }}
+      />
+    ))
     expect(container.textContent).toBe('a:2.ts:7:/project/../literal:3:value')
   })
   it('preserves fallback text when a positive count has no structured matches', () => {
@@ -49,7 +68,9 @@ describe('search result display', () => {
       <SearchResultBody
         kind="search"
         source={source({ content })}
-        context={{ getMessageUiState: () => true }}
+        context={{
+          getMessageUiState: () => true,
+        }}
       />
     ))
 
@@ -152,7 +173,13 @@ describe('search result display', () => {
   it('follows a file list that grows, shrinks and grows again', () => {
     const [filenames, setFilenames] = createSignal(['src/a.ts'])
     const { container } = render(() => (
-      <SearchResultBody kind="glob" source={source({ filenames: filenames(), numFiles: filenames().length })} />
+      <SearchResultBody
+        kind="glob"
+        source={source({
+          filenames: filenames(),
+          numFiles: filenames().length,
+        })}
+      />
     ))
     const listText = () => {
       const list = container.getElementsByClassName(toolResultContentPre)[0]

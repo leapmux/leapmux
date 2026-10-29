@@ -5,7 +5,9 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { runningChild } from './scenarios'
 
-const calls = vi.hoisted(() => ({ open: vi.fn() }))
+const calls = vi.hoisted(() => ({
+  open: vi.fn(),
+}))
 vi.mock('../helpers/runningChildProof', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../helpers/runningChildProof')>()
   return { ...actual, openRunningNativeChild: calls.open }

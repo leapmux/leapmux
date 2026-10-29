@@ -14,11 +14,15 @@ import { answerControl, sendMessage, waitForAgentIdle, waitForControlBanner } fr
  * ZCode hands the picture of a tool to its model as an `image_url` part of a user message, not inside the tool result.
  */
 export function zcodeUserImageUrls(request: Pick<MockModelRequestRecord, 'body'>): string[] {
-  const messages = isObject(request.body) && Array.isArray(request.body.messages) ? request.body.messages : []
+  const messages = isObject(request.body) && Array.isArray(request.body.messages)
+    ? request.body.messages
+    : []
   return messages.flatMap((message) => {
     if (!isObject(message) || message.role !== 'user' || !Array.isArray(message.content))
       return []
-    return message.content.flatMap(item => isObject(item) && item.type === 'image_url' && isObject(item.image_url) && typeof item.image_url.url === 'string' ? [item.image_url.url] : [])
+    return message.content.flatMap(item => isObject(item) && item.type === 'image_url' && isObject(item.image_url) && typeof item.image_url.url === 'string'
+      ? [item.image_url.url]
+      : [])
   })
 }
 
@@ -32,7 +36,9 @@ export async function exerciseZCodeNodeImage(context: ManagedNativeScenarioConte
   const fileName = writeToolImage(workingDir, 'zcode-native')
   const base64 = readFileSync(join(workingDir, fileName)).toString('base64')
   const call = zcodeNodeImageToolCall('zcode-node-image', base64, fileName)
-  const start = await modelScript.queue({ toolCalls: [call] }, nativeTextStep(context, `I inspected ${fileName}.`))
+  const start = await modelScript.queue({
+    toolCalls: [call],
+  }, nativeTextStep(context, `I inspected ${fileName}.`))
   await sendMessage(page, modelScript.prompt(`Show the image result for ${fileName}.`))
   await modelScript.waitForSteps(start + 1)
   await expect(await waitForControlBanner(page)).toContainText(call.name)

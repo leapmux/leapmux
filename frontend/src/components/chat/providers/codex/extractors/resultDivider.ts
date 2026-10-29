@@ -36,14 +36,28 @@ export function codexResultDivider(parsed: unknown): TurnEnd | null {
     const details = pickString(error, 'additionalDetails')
     // `additionalDetails` goes in the detail block rather than the label: the label
     // already carries one em dash, and a second one reads as a list of two reasons.
-    const model: TurnEnd = { label: turnEndLabel('failed', { reason: message }), isError: true }
+    const model: TurnEnd = {
+      label: turnEndLabel('failed', { reason: message }),
+      isError: true,
+    }
     if (details)
       model.detail = details
     return model
   }
-  if (status === CODEX_STATUS.FAILED)
-    return { label: turnEndLabel('failed'), isError: true }
-  if (CODEX_TURN_INTERRUPTED.has(status))
-    return { label: turnEndLabel('interrupted') }
-  return { label: turnEndLabel('ended', { qualifiers: [status !== CODEX_STATUS.COMPLETED && status] }) }
+  if (status === CODEX_STATUS.FAILED) {
+    return {
+      label: turnEndLabel('failed'),
+      isError: true,
+    }
+  }
+  if (CODEX_TURN_INTERRUPTED.has(status)) {
+    return {
+      label: turnEndLabel('interrupted'),
+    }
+  }
+  return {
+    label: turnEndLabel('ended', {
+      qualifiers: [status !== CODEX_STATUS.COMPLETED && status],
+    }),
+  }
 }

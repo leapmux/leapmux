@@ -55,13 +55,22 @@ export function grokQuestionReply(questions: ControlQuestion[], answerState: Con
     const notes = answerState.customTexts()[index]?.trim() ?? ''
     if (selected.length === 0 && !notes)
       return
-    answers.push([question.question, selected.length > 0 ? selected : [GROK_FREE_TEXT_LABEL]])
+    answers.push([
+      question.question,
+      selected.length > 0
+        ? selected
+        : [GROK_FREE_TEXT_LABEL],
+    ])
     const chosen = !question.multiSelect && selected.length === 1
       ? question.options.find(option => questionOptionValue(option) === selected[0])
       : undefined
     const annotation: GrokAnnotation = {
-      ...(chosen?.preview ? { preview: chosen.preview } : {}),
-      ...(notes ? { notes } : {}),
+      ...(chosen?.preview
+        ? { preview: chosen.preview }
+        : {}),
+      ...(notes
+        ? { notes }
+        : {}),
     }
     if (Object.keys(annotation).length > 0)
       annotations.push([question.question, annotation])
@@ -69,7 +78,11 @@ export function grokQuestionReply(questions: ControlQuestion[], answerState: Con
   return {
     [GROK_REPLY_FIELD.Outcome]: GROK_QUESTION_OUTCOME.Accepted,
     answers: Object.fromEntries(answers),
-    ...(annotations.length > 0 ? { annotations: Object.fromEntries(annotations) } : {}),
+    ...(annotations.length > 0
+      ? {
+          annotations: Object.fromEntries(annotations),
+        }
+      : {}),
   }
 }
 
@@ -102,16 +115,30 @@ export function grokQuestionAnswerLines(request: Record<string, unknown> | undef
   if (!answers)
     return null
   const annotations = pickObject(result, 'annotations')
-  const questions = request ? grokQuestions(request) : []
-  const order = questions.length > 0 ? questions.map(question => question.question) : Object.keys(answers)
+  const questions = request
+    ? grokQuestions(request)
+    : []
+  const order = questions.length > 0
+    ? questions.map(question => question.question)
+    : Object.keys(answers)
   const lines = order.flatMap((text) => {
     const question = questions.find(candidate => candidate.question === text)
     const offersFreeTextLabel = question?.options.some(option => questionOptionValue(option) === GROK_FREE_TEXT_LABEL) ?? false
-    const annotation = annotations && Object.hasOwn(annotations, text) ? annotations[text] : undefined
-    const notes = pickString(isObject(annotation) ? annotation : undefined, 'notes').trim()
-    const labels = stringArray(Object.hasOwn(answers, text) ? answers[text] : undefined).filter(label => offersFreeTextLabel || label !== GROK_FREE_TEXT_LABEL)
-    const line = labeledAnswerLine(text, notes ? [...labels, notes] : labels)
-    return line !== null ? [line] : []
+    const annotation = annotations && Object.hasOwn(annotations, text)
+      ? annotations[text]
+      : undefined
+    const notes = pickString(isObject(annotation)
+      ? annotation
+      : undefined, 'notes').trim()
+    const labels = stringArray(Object.hasOwn(answers, text)
+      ? answers[text]
+      : undefined).filter(label => offersFreeTextLabel || label !== GROK_FREE_TEXT_LABEL)
+    const line = labeledAnswerLine(text, notes
+      ? [...labels, notes]
+      : labels)
+    return line !== null
+      ? [line]
+      : []
   })
   return joinAnswerLines(lines)
 }

@@ -88,7 +88,9 @@ export function sessionOptionLabel(session: AgentSessionSummary): string {
 export function sessionOptionDetail(
   session: AgentSessionSummary,
 ): LoadingMenuOptionDetail | undefined {
-  const updated = session.updatedAt ? new Date(session.updatedAt) : null
+  const updated = session.updatedAt
+    ? new Date(session.updatedAt)
+    : null
   if (updated === null || Number.isNaN(updated.getTime()))
     return undefined
   return {
@@ -130,14 +132,20 @@ export const SessionSelect: Component<SessionSelectProps> = (props) => {
       // here". It is needed exactly because the list holds only what this worker
       // can enumerate — a handle from another machine, one already open in a
       // tab, and one past the cap are all missing from it.
-      { value: TYPE_A_HANDLE_VALUE, label: typeAHandleLabel(props.isFilePath), pinned: true },
+      {
+        value: TYPE_A_HANDLE_VALUE,
+        label: typeAHandleLabel(props.isFilePath),
+        pinned: true,
+      },
       ...props.sessions.map((session) => {
         const detail = sessionOptionDetail(session)
         return {
           value: session.sessionId,
           label: sessionOptionLabel(session),
           // Omitted when absent: the option type takes no explicit undefined.
-          ...(detail === undefined ? {} : { detail }),
+          ...(detail === undefined
+            ? {}
+            : { detail }),
         }
       }),
     ]
@@ -149,10 +157,14 @@ export const SessionSelect: Component<SessionSelectProps> = (props) => {
       ariaInvalid={props.invalid}
       // The error id is omitted when the field is valid: the attribute target
       // takes no explicit undefined.
-      {...(props.invalid ? { ariaDescribedBy: RESUME_SESSION_ERROR_ID } : {})}
+      {...(props.invalid
+        ? { ariaDescribedBy: RESUME_SESSION_ERROR_ID }
+        : {})}
       value={props.value}
       onChange={props.onChange}
-      {...(props.loading ? { loadingLabel: 'Loading sessions...' } : {})}
+      {...(props.loading
+        ? { loadingLabel: 'Loading sessions...' }
+        : {})}
       // Unreachable, and required, so it is stated rather than left to puzzle a
       // reader: `options` always holds the "start a new session" row, so
       // `LoadingMenu`'s empty state -- which tests `options.length === 0` --

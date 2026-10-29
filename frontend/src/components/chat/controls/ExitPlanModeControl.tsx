@@ -16,7 +16,12 @@ export const ExitPlanModeActions: Component<ActionsProps & {
   choices?: readonly PlanChoice[] | undefined
 }> = (props) => {
   const planApproval = createPlanApprovalState(props)
-  const planApprovalSettings = () => ({ planApproval: { permissionMode: planApproval.permissionMode() ?? '', clearContext: planApproval.clearContext() } })
+  const planApprovalSettings = () => ({
+    planApproval: {
+      permissionMode: planApproval.permissionMode() ?? '',
+      clearContext: planApproval.clearContext(),
+    },
+  })
 
   const handleReject = () => {
     // The send handler uses the editor text as rejection feedback.
@@ -36,7 +41,9 @@ export const ExitPlanModeActions: Component<ActionsProps & {
     label: choice.label,
     testId: `plan-choice-${index}`,
     destructive: !choice.approves,
-    ...(choice.description ? { description: choice.description } : {}),
+    ...(choice.description
+      ? { description: choice.description }
+      : {}),
     onSelect: () => choice.approves
       ? sendResponse(
           props.onRespond,

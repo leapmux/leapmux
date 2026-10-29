@@ -10,7 +10,14 @@ export const listRenderer: ToolKindRenderer<'list'> = {
     return renderReadTitle(call.request.path || '.', undefined, undefined, context?.workingDir, context?.homeDir) ?? call.title ?? 'List'
   },
   result(call, view) {
-    return <ListResultBody source={call.result} {...(view.context !== undefined ? { context: view.context } : {})} />
+    return (
+      <ListResultBody
+        source={call.result}
+        {...(view.context !== undefined
+          ? { context: view.context }
+          : {})}
+      />
+    )
   },
   resultMeta(call) {
     return {

@@ -46,7 +46,10 @@ export function droidPermissionOptions(payload: Record<string, unknown>): Permis
   for (const value of offered) {
     if (typeof value !== 'string' || value === '')
       continue
-    options.push({ optionId: value, kind: droidOptionKind(value) })
+    options.push({
+      optionId: value,
+      kind: droidOptionKind(value),
+    })
   }
   return options
 }
@@ -71,12 +74,18 @@ export function droidExtractControl(input: ControlExtractionInput): ExtractedCon
     const document = confirmationType === DROID_CONFIRMATION_TYPE.ProposeMission
       ? pickString(details, 'proposal')
       : pickString(details, 'plan')
-    const text = document.trim() === '' ? '' : document
-    return text ? { kind: 'plan', text } : { kind: 'plan' }
+    const text = document.trim() === ''
+      ? ''
+      : document
+    return text
+      ? { kind: 'plan', text }
+      : { kind: 'plan' }
   }
 
   const shell = droidToolKind(toolName) === 'execute'
-  const command = shell ? pickString(toolInput, 'command') || pickString(toolInput, 'cmd') : ''
+  const command = shell
+    ? pickString(toolInput, 'command') || pickString(toolInput, 'cmd')
+    : ''
   // A Droid Shield refusal states why the call was blocked in `details.reason`;
   // the generic card would draw only the command.
   const reason = confirmationType === DROID_CONFIRMATION_TYPE.DroidShieldViolation
@@ -87,8 +96,12 @@ export function droidExtractControl(input: ControlExtractionInput): ExtractedCon
     permission: {
       title: toolName,
       input: toolInput,
-      ...(command !== '' ? { command } : {}),
-      ...(reason !== '' ? { reason } : {}),
+      ...(command !== ''
+        ? { command }
+        : {}),
+      ...(reason !== ''
+        ? { reason }
+        : {}),
       options: droidPermissionOptions(payload),
     },
   }

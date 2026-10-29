@@ -22,7 +22,10 @@ gooseTest('keeps the chosen effort after a model switch and a reload', async ({ 
     model: MOCK_MODELS.openai,
     nativeProof: (request) => {
       expect(request.protocol).toBe('openai-responses')
-      expect(request.body).toMatchObject({ model: MOCK_MODELS.openai, reasoning: { effort: 'low' } })
+      expect(request.body).toMatchObject({
+        model: MOCK_MODELS.openai,
+        reasoning: { effort: 'low' },
+      })
     },
   })
 })

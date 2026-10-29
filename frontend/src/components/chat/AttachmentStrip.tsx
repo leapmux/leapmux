@@ -38,7 +38,9 @@ export const AttachmentStrip: Component<AttachmentStripProps> = (props) => {
             <div class={styles.pill} data-testid="attachment-pill">
               <span class={styles.pillIcon}>
                 <Icon
-                  icon={isImageMimeType(attachment.mimeType) ? FileImageIcon : FileIcon}
+                  icon={isImageMimeType(attachment.mimeType)
+                    ? FileImageIcon
+                    : FileIcon}
                   size="xs"
                 />
               </span>

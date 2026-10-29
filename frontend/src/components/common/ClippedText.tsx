@@ -54,7 +54,9 @@ export interface ClippedTextProps {
  * single direct element child of its wrapper and disables itself otherwise.
  */
 export function ClippedText(props: ClippedTextProps) {
-  const spanClass = () => (props.class ? `${clippedText} ${props.class}` : clippedText)
+  const spanClass = () => (props.class
+    ? `${clippedText} ${props.class}`
+    : clippedText)
   // An EMPTY explanation is no explanation. It must not force the tooltip open
   // on a label that fits, and it must not render a blank second line.
   const detail = () => props.detail || undefined
@@ -73,7 +75,9 @@ export function ClippedText(props: ClippedTextProps) {
     <Tooltip
       text={props.text}
       content={content()}
-      showWhen={props.showWhen ?? (detail() ? 'always' : 'clipped')}
+      showWhen={props.showWhen ?? (detail()
+        ? 'always'
+        : 'clipped')}
     >
       <span class={spanClass()} data-testid={props.testId}>
         {props.text}

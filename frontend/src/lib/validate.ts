@@ -367,7 +367,9 @@ export function isValidBranchName(name: string): boolean {
  */
 export function stripRemotePrefix(ref: string): string {
   const slash = ref.indexOf('/')
-  return slash === -1 ? ref : ref.slice(slash + 1)
+  return slash === -1
+    ? ref
+    : ref.slice(slash + 1)
 }
 
 /**

@@ -86,7 +86,9 @@ describe('useDialogSubmit', () => {
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
         const { error, run } = useDialogSubmit({
-          formatError: err => err instanceof Error ? `delete: ${err.message}` : 'Delete failed',
+          formatError: err => err instanceof Error
+            ? `delete: ${err.message}`
+            : 'Delete failed',
         })
         await run(() => Promise.reject(new Error('inner')))
         expect(error()).toBe('delete: inner')
@@ -218,7 +220,9 @@ describe('useDialogSubmit', () => {
     // leave the button disabled forever.
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
-        const { submitting, run } = useDialogSubmit({ onError: () => {} })
+        const { submitting, run } = useDialogSubmit({
+          onError: () => {},
+        })
         await run(() => Promise.reject(new Error('boom')))
         await vi.advanceTimersByTimeAsync(1100)
         expect(submitting.loading()).toBe(false)

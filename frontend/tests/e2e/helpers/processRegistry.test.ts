@@ -8,11 +8,17 @@ import { spawnTestProcess, stopTrackedProcesses, trackProcess } from './processR
 
 let root: string
 
-vi.mock('./server', () => ({ getGlobalState: () => ({ tmpDir: root }) }))
+vi.mock('./server', () => ({
+  getGlobalState: () => ({ tmpDir: root }),
+}))
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
   const spawn = vi.fn()
-  return { ...actual, spawn, default: { ...actual, spawn } }
+  return {
+    ...actual,
+    spawn,
+    default: { ...actual, spawn },
+  }
 })
 
 beforeEach(() => {

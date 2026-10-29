@@ -14,11 +14,25 @@ import { stopProcess } from '../helpers/process'
 import { assertKimiCatalogOwnership, assertKimiShellCatalog, createKimiCatalogCapture, parseKimiCatalogReadyLine, parseKimiCatalogReceipt, parseKimiCompleteCatalog, queryKimiCompleteCatalog, readKimiNativeHeader } from './toolCatalog'
 
 function tool(change: Partial<KimiCatalogTool> = {}): KimiCatalogTool {
-  return { name: 'Bash', description: 'Run a shell command.', input_schema: null, source: 'builtin', active: true, ...change }
+  return {
+    name: 'Bash',
+    description: 'Run a shell command.',
+    input_schema: null,
+    source: 'builtin',
+    active: true,
+    ...change,
+  }
 }
 
-function envelope(tools: unknown[] = [tool()]) {
-  return { code: 0, msg: '', data: { tools }, request_id: 'actual-request' }
+function envelope(tools: unknown[] = [
+  tool(),
+]) {
+  return {
+    code: 0,
+    msg: '',
+    data: { tools },
+    request_id: 'actual-request',
+  }
 }
 
 describe('readKimiNativeHeader', () => {
@@ -37,16 +51,24 @@ describe('readKimiNativeHeader', () => {
 
   it('preserves an empty header and still closes its descriptor', () => {
     const close = vi.fn()
-    expect(readKimiNativeHeader('/actual/native/kimi', { open: () => 7, read: () => 0, close })).toBe('')
+    expect(readKimiNativeHeader('/actual/native/kimi', {
+      open: () => 7,
+      read: () => 0,
+      close,
+    })).toBe('')
     expect(close).toHaveBeenCalledExactlyOnceWith(7)
   })
 
   it('retains a read failure and closes the actual descriptor', () => {
     const cause = new Error('The native header read failed.')
     const close = vi.fn()
-    expect(() => readKimiNativeHeader('/actual/native/kimi', { open: () => 7, read: () => {
-      throw cause
-    }, close })).toThrow(cause)
+    expect(() => readKimiNativeHeader('/actual/native/kimi', {
+      open: () => 7,
+      read: () => {
+        throw cause
+      },
+      close,
+    })).toThrow(cause)
     expect(close).toHaveBeenCalledExactlyOnceWith(7)
   })
 
@@ -67,7 +89,9 @@ describe('readKimiNativeHeader', () => {
     }
     catch (error) {
       expect(error).toBeInstanceOf(AggregateError)
-      expect(error instanceof AggregateError ? error.errors : null).toEqual([readCause, closeCause])
+      expect(error instanceof AggregateError
+        ? error.errors
+        : null).toEqual([readCause, closeCause])
     }
   })
 
@@ -88,7 +112,12 @@ describe('parseKimiCompleteCatalog', () => {
   const NO_BUILTIN_INVENTORY = 'The native Kimi registry has no builtin inventory or repeats a tool identity.'
 
   it('keeps every active and inactive registration, its null schema, and its exact source', () => {
-    const input = [tool(), tool({ name: 'Read', active: false }), tool({ name: 'native_출력', source: 'mcp', mcp_server_id: 'server-한글' }), tool({ name: 'SkillTool', source: 'skill' })]
+    const input = [
+      tool(),
+      tool({ name: 'Read', active: false }),
+      tool({ name: 'native_출력', source: 'mcp', mcp_server_id: 'server-한글' }),
+      tool({ name: 'SkillTool', source: 'skill' }),
+    ]
     expect(parseKimiCompleteCatalog(envelope(input))).toEqual(input)
     expect(parseKimiCompleteCatalog(envelope(input))[1]?.active).toBe(false)
   })
@@ -96,12 +125,44 @@ describe('parseKimiCompleteCatalog', () => {
   it.each([
     [null, NO_ENVELOPE],
     [{}, NO_ENVELOPE],
-    [{ ...envelope(), code: 7 }, NO_ENVELOPE],
-    [{ ...envelope(), request_id: '' }, NO_ENVELOPE],
-    [{ ...envelope(), data: {} }, NO_ENVELOPE],
-    [envelope([]), NO_BUILTIN_INVENTORY],
-    [envelope([tool({ source: 'skill' })]), NO_BUILTIN_INVENTORY],
-    [envelope([tool(), tool()]), NO_BUILTIN_INVENTORY],
+    [
+      {
+        ...envelope(),
+        code: 7,
+      },
+      NO_ENVELOPE,
+    ],
+    [
+      {
+        ...envelope(),
+        request_id: '',
+      },
+      NO_ENVELOPE,
+    ],
+    [
+      {
+        ...envelope(),
+        data: {},
+      },
+      NO_ENVELOPE,
+    ],
+    [
+      envelope([]),
+      NO_BUILTIN_INVENTORY,
+    ],
+    [
+      envelope([
+        tool({ source: 'skill' }),
+      ]),
+      NO_BUILTIN_INVENTORY,
+    ],
+    [
+      envelope([
+        tool(),
+        tool(),
+      ]),
+      NO_BUILTIN_INVENTORY,
+    ],
   ])('rejects an incomplete or failed native registry reply: %j', (input, error) => {
     expect(() => parseKimiCompleteCatalog(input)).toThrow(error)
   })
@@ -117,7 +178,12 @@ describe('parseKimiCompleteCatalog', () => {
     { mcp_server_id: '' },
     { mcp_server_id: null },
   ])('rejects a malformed native descriptor: %j', (change) => {
-    expect(() => parseKimiCompleteCatalog(envelope([{ ...tool(), ...change }]))).toThrow('incomplete')
+    expect(() => parseKimiCompleteCatalog(envelope([
+      {
+        ...tool(),
+        ...change,
+      },
+    ]))).toThrow('incomplete')
   })
 })
 
@@ -147,16 +213,38 @@ describe('parseKimiCatalogReadyLine', () => {
     }
     catch (error) {
       expect(error).toBeInstanceOf(Error)
-      expect(error instanceof Error ? error.message : '').not.toContain('secret')
+      expect(error instanceof Error
+        ? error.message
+        : '').not.toContain('secret')
     }
   })
 })
 
 const launch = { nonce: 'actual-nonce', executable: '/native/kimi', launchArgs: [] }
-const runtimeArgs = ['web', '--no-open', '--host', '127.0.0.1', '--port', '0', '--log-level', 'warn']
+const runtimeArgs = [
+  'web',
+  '--no-open',
+  '--host',
+  '127.0.0.1',
+  '--port',
+  '0',
+  '--log-level',
+  'warn',
+]
 
 function receipt(change: Partial<KimiCatalogReceipt> = {}): KimiCatalogReceipt {
-  return { nonce: launch.nonce, executable: launch.executable, nativePid: 30, wrapperPid: 20, argv: [...runtimeArgs], workingDir: '/project/private-agent', home: '/project/private-home', origin: 'http://127.0.0.1:43125', token: 'opaque-native-token', ...change }
+  return {
+    nonce: launch.nonce,
+    executable: launch.executable,
+    nativePid: 30,
+    wrapperPid: 20,
+    argv: [...runtimeArgs],
+    workingDir: '/project/private-agent',
+    home: '/project/private-home',
+    origin: 'http://127.0.0.1:43125',
+    token: 'opaque-native-token',
+    ...change,
+  }
 }
 
 describe('parseKimiCatalogReceipt', () => {
@@ -167,20 +255,64 @@ describe('parseKimiCatalogReceipt', () => {
   const INVALID_IDENTITY = 'The Kimi native catalog receipt has an invalid process or capture identity.'
 
   it.each([
-    [{ nonce: 'wrong-nonce' }, INVALID_IDENTITY],
-    [{ executable: '/other/kimi' }, INVALID_IDENTITY],
-    [{ nativePid: 0 }, INVALID_IDENTITY],
-    [{ nativePid: -1 }, INVALID_IDENTITY],
-    [{ nativePid: 1.5 }, INVALID_IDENTITY],
-    [{ nativePid: Number.MAX_SAFE_INTEGER + 1 }, INVALID_IDENTITY],
-    [{ nativePid: 20 }, INVALID_IDENTITY],
-    [{ wrapperPid: 0 }, INVALID_IDENTITY],
-    [{ workingDir: '' }, INVALID_IDENTITY],
-    [{ home: '' }, INVALID_IDENTITY],
-    [{ token: '' }, INVALID_IDENTITY],
-    [{ token: 'invalid token' }, INVALID_READY_LINE],
-    [{ origin: 'http://external.example:43125' }, NOT_LOOPBACK],
-    [{ argv: ['web', '--host', '127.0.0.1'] }, 'The Kimi native catalog receipt does not identify the actual Worker server invocation.'],
+    [
+      { nonce: 'wrong-nonce' },
+      INVALID_IDENTITY,
+    ],
+    [
+      { executable: '/other/kimi' },
+      INVALID_IDENTITY,
+    ],
+    [
+      { nativePid: 0 },
+      INVALID_IDENTITY,
+    ],
+    [
+      { nativePid: -1 },
+      INVALID_IDENTITY,
+    ],
+    [
+      { nativePid: 1.5 },
+      INVALID_IDENTITY,
+    ],
+    [
+      { nativePid: Number.MAX_SAFE_INTEGER + 1 },
+      INVALID_IDENTITY,
+    ],
+    [
+      { nativePid: 20 },
+      INVALID_IDENTITY,
+    ],
+    [
+      { wrapperPid: 0 },
+      INVALID_IDENTITY,
+    ],
+    [
+      { workingDir: '' },
+      INVALID_IDENTITY,
+    ],
+    [
+      { home: '' },
+      INVALID_IDENTITY,
+    ],
+    [
+      { token: '' },
+      INVALID_IDENTITY,
+    ],
+    [
+      { token: 'invalid token' },
+      INVALID_READY_LINE,
+    ],
+    [
+      { origin: 'http://external.example:43125' },
+      NOT_LOOPBACK,
+    ],
+    [
+      {
+        argv: ['web', '--host', '127.0.0.1'],
+      },
+      'The Kimi native catalog receipt does not identify the actual Worker server invocation.',
+    ],
   ])('rejects an incomplete or changed native capture identity: %j', (change, reason) => {
     expect(() => parseKimiCatalogReceipt(receipt(change), launch)).toThrow(reason)
   })
@@ -216,13 +348,17 @@ describe('assertKimiCatalogOwnership', () => {
   })
 
   it('reads the private Worker directory when arguments follow it, as spawnRegisteredWorker orders them', async () => {
-    const rows = processRows.map(row => row.pid === 10 ? { ...row, command: `${row.command} --registration-key private-key --encryption-mode post-quantum` } : row)
+    const rows = processRows.map(row => row.pid === 10
+      ? { ...row, command: `${row.command} --registration-key private-key --encryption-mode post-quantum` }
+      : row)
     await expect(checkOwnership(receipt(), rows, workerExecutable, workerDataDir)).resolves.toBeUndefined()
     await expect(checkOwnership(receipt(), rows, workerExecutable, `${workerDataDir}-other`)).rejects.toThrow('exact private Worker')
   })
 
   it('rejects a different native child parent and a missing wrapper', async () => {
-    await expect(checkOwnership(receipt(), processRows.map(row => row.pid === 30 ? { ...row, ppid: 40 } : row), workerExecutable, workerDataDir)).rejects.toThrow('wrapper')
+    await expect(checkOwnership(receipt(), processRows.map(row => row.pid === 30
+      ? { ...row, ppid: 40 }
+      : row), workerExecutable, workerDataDir)).rejects.toThrow('wrapper')
     await expect(checkOwnership(receipt(), processRows.filter(row => row.pid !== 20), workerExecutable, workerDataDir)).rejects.toThrow('wrapper')
   })
 
@@ -234,28 +370,40 @@ describe('assertKimiCatalogOwnership', () => {
 
   it('rejects an absent Worker boundary and a process cycle', async () => {
     await expect(checkOwnership(receipt(), processRows.filter(row => row.pid !== 10), workerExecutable, workerDataDir)).rejects.toThrow('boundary')
-    await expect(checkOwnership(receipt(), processRows.map(row => row.pid === 20 ? { ...row, ppid: 30 } : row), workerExecutable, workerDataDir)).rejects.toThrow('cycle')
+    await expect(checkOwnership(receipt(), processRows.map(row => row.pid === 20
+      ? { ...row, ppid: 30 }
+      : row), workerExecutable, workerDataDir)).rejects.toThrow('cycle')
   })
 
   it('rejects another native executable at the captured PID', async () => {
-    const rows = processRows.map(row => row.pid === 30 ? { ...row, executable: '/native/unrelated-runtime', command: '/native/unrelated-runtime web' } : row)
+    const rows = processRows.map(row => row.pid === 30
+      ? { ...row, executable: '/native/unrelated-runtime', command: '/native/unrelated-runtime web' }
+      : row)
     await expect(checkOwnership(receipt(), rows, workerExecutable, workerDataDir)).rejects.toThrow('The captured Kimi native child or wrapper has another physical executable.')
   })
 
   it('rejects a native process command that omits the exact captured CLI script', async () => {
-    const rows = processRows.map(row => row.pid === 30 ? { ...row, command: 'node /native/unrelated-kimi.mjs web' } : row)
+    const rows = processRows.map(row => row.pid === 30
+      ? { ...row, command: 'node /native/unrelated-kimi.mjs web' }
+      : row)
     await expect(checkOwnership(receipt(), rows, workerExecutable, workerDataDir)).rejects.toThrow('The captured Kimi native CLI has another process title or exact command.')
   })
 
   it('rejects another wrapper command under the same private Worker', async () => {
-    const rows = processRows.map(row => row.pid === 20 ? { ...row, command: 'node unrelated-capture.cjs' } : row)
+    const rows = processRows.map(row => row.pid === 20
+      ? { ...row, command: 'node unrelated-capture.cjs' }
+      : row)
     await expect(checkOwnership(receipt(), rows, workerExecutable, workerDataDir)).rejects.toThrow('The captured Kimi ready wrapper has another exact process command.')
   })
 
   it('rejects another physical executable even when both process commands match', async () => {
     const owner = { workerExecutable, workerDataDir, capture: ownershipCapture }
-    await expect(assertKimiCatalogOwnership(receipt(), processRows, owner, async pid => pid === 30 ? '/native/unrelated-runtime' : '/native/node')).rejects.toThrow('physical executable')
-    await expect(assertKimiCatalogOwnership(receipt(), processRows, owner, async pid => pid === 20 ? '/native/unrelated-wrapper' : '/native/node')).rejects.toThrow('physical executable')
+    await expect(assertKimiCatalogOwnership(receipt(), processRows, owner, async pid => pid === 30
+      ? '/native/unrelated-runtime'
+      : '/native/node')).rejects.toThrow('physical executable')
+    await expect(assertKimiCatalogOwnership(receipt(), processRows, owner, async pid => pid === 20
+      ? '/native/unrelated-wrapper'
+      : '/native/node')).rejects.toThrow('physical executable')
   })
 
   it('retains an actual physical executable query failure', async () => {
@@ -267,21 +415,35 @@ describe('assertKimiCatalogOwnership', () => {
   })
 
   it('accepts an exact interpreter alias only when its physical executable matches', async () => {
-    const rows = processRows.map(row => row.pid === 30 ? { ...row, command: `/native/alias/node /native/kimi ${runtimeArgs.join(' ')}` } : row)
-    const owner = { workerExecutable, workerDataDir, capture: { ...ownershipCapture, runtimeInvocation: '/native/alias/node' } }
+    const rows = processRows.map(row => row.pid === 30
+      ? { ...row, command: `/native/alias/node /native/kimi ${runtimeArgs.join(' ')}` }
+      : row)
+    const owner = {
+      workerExecutable,
+      workerDataDir,
+      capture: { ...ownershipCapture, runtimeInvocation: '/native/alias/node' },
+    }
     await expect(assertKimiCatalogOwnership(receipt(), rows, owner, async () => '/native/node')).resolves.toBeUndefined()
-    await expect(assertKimiCatalogOwnership(receipt(), rows, owner, async pid => pid === 30 ? '/native/other-node' : '/native/node')).rejects.toThrow('physical executable')
+    await expect(assertKimiCatalogOwnership(receipt(), rows, owner, async pid => pid === 30
+      ? '/native/other-node'
+      : '/native/node')).rejects.toThrow('physical executable')
   })
 
   it('accepts the actual native process title after physical executable and wrapper ownership checks', async () => {
-    const rows = processRows.map(row => row.pid === 30 ? { ...row, command: 'kimi-code' } : row)
+    const rows = processRows.map(row => row.pid === 30
+      ? { ...row, command: 'kimi-code' }
+      : row)
     await expect(checkOwnership(receipt(), rows)).resolves.toBeUndefined()
   })
 
   it('rejects another process title and a forged native title with another physical executable', async () => {
-    const wrongTitle = processRows.map(row => row.pid === 30 ? { ...row, command: 'kimi-code-other' } : row)
+    const wrongTitle = processRows.map(row => row.pid === 30
+      ? { ...row, command: 'kimi-code-other' }
+      : row)
     await expect(checkOwnership(receipt(), wrongTitle)).rejects.toThrow('process title')
-    const forged = processRows.map(row => row.pid === 30 ? { ...row, command: 'kimi-code', executable: '/native/unrelated-node' } : row)
+    const forged = processRows.map(row => row.pid === 30
+      ? { ...row, command: 'kimi-code', executable: '/native/unrelated-node' }
+      : row)
     await expect(checkOwnership(receipt(), forged)).rejects.toThrow('physical executable')
   })
 })
@@ -291,28 +453,59 @@ describe('assertKimiShellCatalog', () => {
     expect(() => assertKimiShellCatalog([
       tool(),
       tool({ name: 'ReadMediaFile', description: 'Read a media file.' }),
-      tool({ name: 'mcp__echo_probe__echo', source: 'mcp', mcp_server_id: 'echo_probe', description: 'Return a text message.' }),
+      tool({
+        name: 'mcp__echo_probe__echo',
+        source: 'mcp',
+        mcp_server_id: 'echo_probe',
+        description: 'Return a text message.',
+      }),
     ])).not.toThrow()
   })
 
   it('rejects another MCP capability or a changed echo server identity', () => {
-    expect(() => assertKimiShellCatalog([tool(), tool({ name: 'mcp__native_runner__execute', source: 'mcp', mcp_server_id: 'native_runner' })])).toThrow('unaudited')
-    expect(() => assertKimiShellCatalog([tool(), tool({ name: 'mcp__echo_probe__echo', source: 'mcp', mcp_server_id: 'another-server' })])).toThrow('unaudited')
+    expect(() => assertKimiShellCatalog([
+      tool(),
+      tool({ name: 'mcp__native_runner__execute', source: 'mcp', mcp_server_id: 'native_runner' }),
+    ])).toThrow('unaudited')
+    expect(() => assertKimiShellCatalog([
+      tool(),
+      tool({ name: 'mcp__echo_probe__echo', source: 'mcp', mcp_server_id: 'another-server' }),
+    ])).toThrow('unaudited')
   })
 
   it('includes inactive audited registrations and requires the actual active shell tool', () => {
-    expect(() => assertKimiShellCatalog([tool(), tool({ name: 'Read', active: false }), tool({ name: 'EnterPlanMode', active: false })])).not.toThrow()
+    expect(() => assertKimiShellCatalog([
+      tool(),
+      tool({ name: 'Read', active: false }),
+      tool({ name: 'EnterPlanMode', active: false }),
+    ])).not.toThrow()
   })
 
   it('rejects a new executor even when the model omits its inactive descriptor', () => {
-    expect(() => assertKimiShellCatalog([tool(), tool({ name: 'native-script-runtime', description: 'Run JavaScript source.', active: false })])).toThrow('unaudited')
+    expect(() => assertKimiShellCatalog([
+      tool(),
+      tool({ name: 'native-script-runtime', description: 'Run JavaScript source.', active: false }),
+    ])).toThrow('unaudited')
   })
 
   it.each([
     { tools: [] },
-    { tools: [tool({ active: false })] },
-    { tools: [tool({ source: 'mcp' })] },
-    { tools: [tool(), tool({ name: 'unknown', source: 'skill' })] },
+    {
+      tools: [
+        tool({ active: false }),
+      ],
+    },
+    {
+      tools: [
+        tool({ source: 'mcp' }),
+      ],
+    },
+    {
+      tools: [
+        tool(),
+        tool({ name: 'unknown', source: 'skill' }),
+      ],
+    },
   ])('rejects an empty, inactive-shell, or external tool inventory: %j', ({ tools }) => {
     expect(() => assertKimiShellCatalog(tools)).toThrow('The full native Kimi registry contains an unaudited capability or lacks its actual active shell tool.')
   })
@@ -330,22 +523,37 @@ beforeEach(() => {
 
 afterEach(async () => {
   await Promise.all(children.splice(0).map(child => stopProcess(child)))
-  await Promise.all(servers.splice(0).map(server => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))))
+  await Promise.all(servers.splice(0).map(server => new Promise<void>((resolve, reject) => server.close(error => error
+    ? reject(error)
+    : resolve()))))
   rmSync(directory, { recursive: true, force: true })
 })
 
 function fixture(nativeSource: string, beforeStart?: (capture: KimiCatalogCapture) => void): { capture: KimiCatalogCapture, child: ChildProcessWithoutNullStreams, output: () => string, errors: () => string } {
   const native = join(directory, 'native.cjs')
   writeFileSync(native, nativeSource)
-  const capture = createKimiCatalogCapture(join(directory, 'wrapper'), { binaryName: 'kimi', executable: process.execPath, args: [native] })
+  const capture = createKimiCatalogCapture(join(directory, 'wrapper'), {
+    binaryName: 'kimi',
+    executable: process.execPath,
+    args: [native],
+  })
   beforeStart?.(capture)
-  const child = spawn(process.execPath, [capture.scriptPath, ...runtimeArgs], { cwd: directory, env: { PATH: process.env.PATH, HOME: directory }, stdio: ['pipe', 'pipe', 'pipe'] })
+  const child = spawn(process.execPath, [capture.scriptPath, ...runtimeArgs], {
+    cwd: directory,
+    env: { PATH: process.env.PATH, HOME: directory },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
   children.push(child)
   const output: Buffer[] = []
   let errors = ''
   child.stdout.on('data', (data: Buffer) => output.push(data))
   child.stderr.on('data', data => errors += data.toString('utf8'))
-  return { capture, child, output: () => Buffer.concat(output).toString('utf8'), errors: () => errors }
+  return {
+    capture,
+    child,
+    output: () => Buffer.concat(output).toString('utf8'),
+    errors: () => errors,
+  }
 }
 
 describe('createKimiCatalogCapture', () => {
@@ -380,7 +588,12 @@ describe('createKimiCatalogCapture', () => {
       .toThrow('The Kimi catalog capture requires the Node interpreter of its private environment')
   })
 
-  it.each(['#!/usr/bin/env python', '#!node', '#!./node', '#!/absolute/unsupported-interpreter'])('rejects an unsupported or relative script interpreter: %s', (header) => {
+  it.each([
+    '#!/usr/bin/env python',
+    '#!node',
+    '#!./node',
+    '#!/absolute/unsupported-interpreter',
+  ])('rejects an unsupported or relative script interpreter: %s', (header) => {
     const script = join(directory, 'unsupported-native-cli.mjs')
     writeFileSync(script, `${header}\nNative script body.\n`, { mode: 0o700 })
     expect(() => createKimiCatalogCapture(join(directory, 'unsupported-wrapper'), { binaryName: 'kimi', executable: script })).toThrow('unsupported or relative')
@@ -419,7 +632,10 @@ process.stdin.once('data', data => {
     expect(actual.wrapperPid).toBe(current.child.pid)
     expect(actual.nativePid).not.toBe(current.child.pid)
     expect(actual.token).toBe('native_한글')
-    expect(actual.argv).toEqual([...current.capture.launchArgs, ...runtimeArgs])
+    expect(actual.argv).toEqual([
+      ...current.capture.launchArgs,
+      ...runtimeArgs,
+    ])
     if (process.platform !== 'win32')
       expect(statSync(current.capture.receiptPath).mode & 0o777).toBe(0o600)
   })
@@ -447,7 +663,11 @@ process.stdin.once('data', data => {
     writeFileSync(executable, `#!${realpathSync(process.execPath)}\n`, { mode: 0o700 })
     const capture = createKimiCatalogCapture(join(directory, 'missing-wrapper'), { binaryName: 'kimi', executable })
     rmSync(executable)
-    const child = spawn(process.execPath, [capture.scriptPath, ...runtimeArgs], { cwd: directory, env: { PATH: process.env.PATH, HOME: directory }, stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = spawn(process.execPath, [capture.scriptPath, ...runtimeArgs], {
+      cwd: directory,
+      env: { PATH: process.env.PATH, HOME: directory },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
     children.push(child)
     let diagnostics = ''
     child.stderr.on('data', data => diagnostics += data.toString('utf8'))
@@ -490,12 +710,17 @@ async function catalogServer(payload: unknown, statusCode = 200) {
 
 describe('queryKimiCompleteCatalog', () => {
   it('sends the exact native session query and bearer header to the actual loopback route', async () => {
-    const native = await catalogServer(envelope([tool(), tool({ name: 'Read', active: false })]))
+    const native = await catalogServer(envelope([
+      tool(),
+      tool({ name: 'Read', active: false }),
+    ]))
     await queryKimiCompleteCatalog({ origin: native.origin, token: 'opaque-native-token', sessionId: 'actual/session+한글' })
     expect(native.requests).toHaveLength(1)
     const requested = new URL(native.requests[0]!.path, native.origin)
     expect(requested.pathname).toBe('/api/v1/tools')
-    expect([...requested.searchParams]).toEqual([['session_id', 'actual/session+한글']])
+    expect([...requested.searchParams]).toEqual([
+      ['session_id', 'actual/session+한글'],
+    ])
     expect(native.requests[0]!.authorization).toBe('Bearer opaque-native-token')
   })
 
@@ -521,7 +746,10 @@ describe('queryKimiCompleteCatalog', () => {
   it('rejects native HTTP and envelope errors without exposing its bearer token', async () => {
     const failedHTTP = await catalogServer(envelope(), 503)
     await expect(queryKimiCompleteCatalog({ origin: failedHTTP.origin, token: 'opaque-native-token', sessionId: 'native-session' })).rejects.toThrow('HTTP 503')
-    const failedEnvelope = await catalogServer({ ...envelope(), code: 7 })
+    const failedEnvelope = await catalogServer({
+      ...envelope(),
+      code: 7,
+    })
     await expect(queryKimiCompleteCatalog({ origin: failedEnvelope.origin, token: 'opaque-native-token', sessionId: 'native-session' })).rejects.toThrow('successful complete registry')
   })
 })

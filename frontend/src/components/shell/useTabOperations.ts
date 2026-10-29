@@ -83,7 +83,9 @@ interface UseTabOperationsOpts {
  * wire omitted the field; `awaitCloseResult` takes the key absent, so strip it.
  */
 function closeResultView<T extends { result?: CloseTabResult | undefined }>(resp: T): { result?: CloseTabResult } {
-  return resp.result === undefined ? {} : { result: resp.result }
+  return resp.result === undefined
+    ? {}
+    : { result: resp.result }
 }
 
 export function useTabOperations(opts: UseTabOperationsOpts) {
@@ -151,8 +153,12 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     // is now derived: if the previously-active tab was an AGENT, use
     // its id.
     const prevTab = activeTab()
-    const prevAgentId = prevTab?.type === TabType.AGENT ? prevTab.id : null
-    const scrollState = prevAgentId ? getScrollState() : undefined
+    const prevAgentId = prevTab?.type === TabType.AGENT
+      ? prevTab.id
+      : null
+    const scrollState = prevAgentId
+      ? getScrollState()
+      : undefined
 
     // Batch the scroll-save and tab-switch store updates so that
     // SolidJS defers effects until both are applied.  Without this,
@@ -227,13 +233,24 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     busyReason: TabBusyReason | null,
   ): Promise<LastTabCloseChoice> => {
     return new Promise((resolve) => {
-      lastTabConfirmDialog.open({ ...status, workerId, tabId, tabType, busyReason, resolve })
+      lastTabConfirmDialog.open({
+        ...status,
+        workerId,
+        tabId,
+        tabType,
+        busyReason,
+        resolve,
+      })
     })
   }
 
   const askBusyTabConfirmation = (tab: Tab, reason: TabBusyReason): Promise<boolean> => {
     return new Promise((resolve) => {
-      busyTabConfirmDialog.open({ tabTitle: tabDisplayLabel(tab), reason, resolve })
+      busyTabConfirmDialog.open({
+        tabTitle: tabDisplayLabel(tab),
+        reason,
+        resolve,
+      })
     })
   }
 
@@ -274,7 +291,9 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
    * store could not answer for it.
    */
   const ownerWorkspaceFor = (tab: Tab): string | null => {
-    return tab.workspaceId && tab.workspaceId !== getActiveWorkspaceId() ? tab.workspaceId : null
+    return tab.workspaceId && tab.workspaceId !== getActiveWorkspaceId()
+      ? tab.workspaceId
+      : null
   }
 
   /**
@@ -552,7 +571,9 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       // branch in the catch below.
       const [status, busyReason] = await Promise.all([
         workerRpc.inspectLastTabClose(workerId, { tabType: tab.type, tabId: tab.id }),
-        closeOpts?.skipBusyConfirm ? Promise.resolve(null) : opts.busyProbe.probe(tab),
+        closeOpts?.skipBusyConfirm
+          ? Promise.resolve(null)
+          : opts.busyProbe.probe(tab),
       ])
       trackedAtInspect = Boolean(status.worktreeId)
       // The two prompts are mutually exclusive, and the worktree one wins: a
@@ -707,7 +728,12 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       workingDir: ctx.workingDir,
     })
     const placedTileId = openTabInFocusedTile(
-      { view, layoutStore, selection, metadata },
+      {
+        view,
+        layoutStore,
+        selection,
+        metadata,
+      },
       { type: TabType.FILE, id: tabId, workerId: ctx.workerId },
       {
         ...gitSeed.fields,
@@ -811,7 +837,12 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       workingDir: ctx.workingDir,
     })
     const placedTileId = openTabInFocusedTile(
-      { view, layoutStore, selection, metadata },
+      {
+        view,
+        layoutStore,
+        selection,
+        metadata,
+      },
       { type: TabType.IMAGE, id: tabId, workerId: ctx.workerId },
       {
         ...gitSeed.fields,

@@ -37,7 +37,11 @@ export async function exerciseCopilotPlanApproval(context: ManagedNativeScenario
   const watch = await watchNativeControls(leapmuxServer, agent.id)
   await withCleanup(async () => {
     const start = await modelScript.queue(
-      { toolCalls: [exitPlanModeToolCall(context.provider, callId, 'Review the Copilot change.')] },
+      {
+        toolCalls: [
+          exitPlanModeToolCall(context.provider, callId, 'Review the Copilot change.'),
+        ],
+      },
       { text: resumed },
     )
     await sendMessage(page, modelScript.prompt('Present the plan for approval.'))
@@ -55,7 +59,10 @@ export async function exerciseCopilotPlanApproval(context: ManagedNativeScenario
     await expect(assistantBubbles(page).filter({ hasText: resumed })).toBeVisible()
 
     const { decision, snapshot } = await readObservedNativeDecision(context, agent, watch, observed)
-    expect(decision.response).toMatchObject({ type: 'control_response', response: { subtype: 'success', request_id: observed.requestId } })
+    expect(decision.response).toMatchObject({
+      type: 'control_response',
+      response: { subtype: 'success', request_id: observed.requestId },
+    })
     const answer = pickObject(pickObject(decision.response, 'response'), 'response')
     expect(answer, 'the Worker delivered an approval').toMatchObject({ approved: true })
     // An answer with feedback asks Copilot for changes to the plan, so an approval carries none.

@@ -57,7 +57,9 @@ export const SectionNameDialog: Component<SectionNameDialogProps> = (props) => {
   /* eslint-disable solid/reactivity -- one-time initial values; see above */
   const payload = props.payload
   const creating = payload.mode === 'create'
-  const name = createTitleState(() => (payload.mode === 'rename' ? payload.initialName : ''))
+  const name = createTitleState(() => (payload.mode === 'rename'
+    ? payload.initialName
+    : ''))
   /* eslint-enable solid/reactivity */
   const { submitting, error, formHandler } = useDialogSubmit({
     fallback: creating ? 'Failed to create section' : 'Failed to rename section',

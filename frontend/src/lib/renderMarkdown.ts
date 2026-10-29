@@ -71,7 +71,10 @@ const shikiLangs = [
 // lazily -- `setSyntaxTheme` registers it here before pointing the shared
 // options at it, so a synchronous call site never names an unregistered theme.
 export const shikiHighlighter = createHighlighterCoreSync({
-  themes: [withTransparentBg(themeGithubLight), withTransparentBg(themeGithubDark)],
+  themes: [
+    withTransparentBg(themeGithubLight),
+    withTransparentBg(themeGithubDark),
+  ],
   langs: shikiLangs,
   engine: createJavaScriptRegexEngine(),
 })
@@ -317,8 +320,11 @@ function renderHighlightedSync(text: string): string {
  * band pass it so viewport rows upgrade first (see createWorkerPriorityGate).
  */
 export function renderMarkdown(text: string, skipCache = false, isLowPriority?: () => boolean): string {
-  if (skipCache)
-    return canUseWorker() ? plainRender(text) : renderHighlightedSync(text)
+  if (skipCache) {
+    return canUseWorker()
+      ? plainRender(text)
+      : renderHighlightedSync(text)
+  }
 
   // Subscribe to the version signal so an async worker completion re-renders this
   // (reactive) caller. Read BEFORE the cache lookup so the dependency is always
@@ -433,5 +439,7 @@ export function renderMarkdown(text: string, skipCache = false, isLowPriority?: 
       })
     }
   }
-  return completedSynchronously ? markdownCache.get(text)! : renderPlain(text)
+  return completedSynchronously
+    ? markdownCache.get(text)!
+    : renderPlain(text)
 }

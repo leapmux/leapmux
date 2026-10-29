@@ -29,7 +29,9 @@ export function withElicitationResponse(
       for (const [key, value] of Object.entries(result.content)) {
         const field = fields.get(key)
         const option = field?.options.find(option => option.value === JSON.stringify(value))
-        const text = option?.label ?? (typeof value === 'string' ? value : prettifyJson(value).trimEnd())
+        const text = option?.label ?? (typeof value === 'string'
+          ? value
+          : prettifyJson(value).trimEnd())
         lines.push(`${field?.label || key}: ${text}`)
       }
     }

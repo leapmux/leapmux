@@ -3,7 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { readTabLabels, TAB_CHROME_SELECTOR, tabbarLabels } from './tabLabels'
 import { agentTabs, terminalTabs } from './ui'
 
-vi.mock('./ui', () => ({ agentTabs: vi.fn(), terminalTabs: vi.fn() }))
+vi.mock('./ui', () => ({
+  agentTabs: vi.fn(),
+  terminalTabs: vi.fn(),
+}))
 
 afterEach(() => {
   document.body.replaceChildren()
@@ -27,7 +30,10 @@ function tabWithChrome(label: string): Element {
 
 describe('readTabLabels', () => {
   it('reads each label without the close button, the badges, the progress ring, or a closed menu', () => {
-    const tabs = [tabWithChrome('Terminal Orca'), tabWithChrome('Agent Heron')]
+    const tabs = [
+      tabWithChrome('Terminal Orca'),
+      tabWithChrome('Agent Heron'),
+    ]
     expect(readTabLabels(tabs, TAB_CHROME_SELECTOR)).toEqual(['Terminal Orca', 'Agent Heron'])
   })
 
@@ -39,7 +45,9 @@ describe('readTabLabels', () => {
   })
 
   it('reads a tab with no label as the empty string', () => {
-    expect(readTabLabels([tabWithChrome('')], TAB_CHROME_SELECTOR)).toEqual([''])
+    expect(readTabLabels([
+      tabWithChrome(''),
+    ], TAB_CHROME_SELECTOR)).toEqual([''])
   })
 
   it('reads no tab as no label', () => {

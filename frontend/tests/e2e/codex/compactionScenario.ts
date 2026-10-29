@@ -10,7 +10,12 @@ import { nativeScenarioModelContextText } from '../helpers/nativeScenario'
  * native summary request. The context-compaction item of the CLI supplies the notice.
  */
 export const CODEX_COMPACTION: NativeCompactionOptions = {
-  summary: { route: 'rule', when: { user: ['compact', 'summary'] } },
+  summary: {
+    route: 'rule',
+    when: {
+      user: ['compact', 'summary'],
+    },
+  },
 }
 
 /**

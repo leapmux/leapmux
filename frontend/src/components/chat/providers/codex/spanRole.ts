@@ -20,21 +20,29 @@ const CODEX_TOOL_SPANS = new Set<string>([
 
 export function codexSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
   const executionRole = codexRawExecRole(parsed.parentObject)
-  if (executionRole)
-    return retainedRowIsFinal(parsed.completion) ? 'result' : executionRole
+  if (executionRole) {
+    return retainedRowIsFinal(parsed.completion)
+      ? 'result'
+      : executionRole
+  }
   const item = extractItem(parsed.parentObject)
   if (!item || !CODEX_TOOL_SPANS.has(pickString(item, 'type')))
     return 'other'
   const parent = parsed.parentObject
   if (retainedRowIsFinal(parsed.completion) || Number.isFinite(parent?.completedAtMs) || isCodexFinishedStatus(pickString(item, 'status')) || (item.type === CODEX_ITEM.CollabAgentToolCall && item.status === 'interrupted'))
     return 'result'
-  return Number.isFinite(parent?.startedAtMs) || item.status === CODEX_STATUS.IN_PROGRESS ? 'request' : 'other'
+  return Number.isFinite(parent?.startedAtMs) || item.status === CODEX_STATUS.IN_PROGRESS
+    ? 'request'
+    : 'other'
 }
 
 export function codexRelatedMessages(parsed: ResolvedMessageContent) {
   const executionRole = codexRawExecRole(parsed.parentObject)
-  if (executionRole)
-    return executionRole === 'result' ? ['request'] as const : ['result'] as const
+  if (executionRole) {
+    return executionRole === 'result'
+      ? ['request'] as const
+      : ['result'] as const
+  }
   const item = extractItem(parsed.parentObject)
   if (item?.type === CODEX_ITEM.ImageView || item?.type === CODEX_ITEM.CollabAgentToolCall)
     return ['request', 'result'] as const

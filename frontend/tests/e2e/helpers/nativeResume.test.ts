@@ -61,7 +61,10 @@ function bubbles(texts: () => readonly string[], filters: readonly string[] = []
     bubbleProbe: true,
     count: () => matching().length,
     filter: ({ hasText }: { hasText: string }) => bubbles(texts, [...filters, hasText]),
-    first: () => ({ bubbleProbe: true, count: () => Math.min(1, matching().length) }),
+    first: () => ({
+      bubbleProbe: true,
+      count: () => Math.min(1, matching().length),
+    }),
   }
 }
 
@@ -105,18 +108,30 @@ function sessionMenuRow(index: () => number): Locator {
 function newAgentDialog(): Locator {
   const menu = {
     pickerProbe: 'menu',
-    getByRole: () => ({ pickerProbe: 'rows', first: () => sessionMenuRow(() => 0), nth: (index: number) => sessionMenuRow(() => index) }),
+    getByRole: () => ({
+      pickerProbe: 'rows',
+      first: () => sessionMenuRow(() => 0),
+      nth: (index: number) => sessionMenuRow(() => index),
+    }),
     getByTestId: (id: string) => sessionMenuRow(() => dialogState.rows.findIndex(row => row.testId === id)),
   }
   return Object.assign({} as Locator, {
     pickerProbe: 'dialog',
-    getByTestId: (id: string) => id === 'session-select-menu-trigger' ? { pickerProbe: 'trigger' } : id === 'session-select-menu' ? menu : dialogControl(id),
-    getByRole: (role: string, options?: { name?: string }) => role === 'heading' ? { pickerProbe: 'heading' } : dialogControl(options?.name ?? role),
+    getByTestId: (id: string) => id === 'session-select-menu-trigger'
+      ? { pickerProbe: 'trigger' }
+      : id === 'session-select-menu'
+        ? menu
+        : dialogControl(id),
+    getByRole: (role: string, options?: { name?: string }) => role === 'heading'
+      ? { pickerProbe: 'heading' }
+      : dialogControl(options?.name ?? role),
   })
 }
 
 const pickerPage = Object.assign({} as Page, {
-  getByRole: (role: string) => role === 'dialog' ? newAgentDialog() : dialogControl(role),
+  getByRole: (role: string) => role === 'dialog'
+    ? newAgentDialog()
+    : dialogControl(role),
   getByTestId: (id: string) => dialogControl(id),
 })
 
@@ -124,7 +139,9 @@ const pickerPage = Object.assign({} as Page, {
 function pickerAssertions(value: { pickerProbe: unknown }, message?: string) {
   const kind = value.pickerProbe
   const row = () => {
-    const index = 'index' in value && typeof value.index === 'function' ? value.index() as number : -1
+    const index = 'index' in value && typeof value.index === 'function'
+      ? value.index() as number
+      : -1
     return dialogState.rows[index]
   }
   return {
@@ -187,10 +204,15 @@ vi.mock('@playwright/test', async (importOriginal) => {
     }
     return {
       toBe: (expected: unknown) => settle(value => Object.is(value, expected)),
-      not: { toBe: (expected: unknown) => settle(value => !Object.is(value, expected)) },
+      not: {
+        toBe: (expected: unknown) => settle(value => !Object.is(value, expected)),
+      },
     }
   }
-  return { ...actual, expect: Object.assign(check, { poll }) }
+  return {
+    ...actual,
+    expect: Object.assign(check, { poll }),
+  }
 })
 
 const MARKER = '0123456789abcdef0123456789abcdef'
@@ -205,7 +227,12 @@ function row(id: string, seq: bigint, body: unknown, supplement?: unknown): Agen
     agentSessionId: 'native-session',
     content: encoder.encode(JSON.stringify(body)),
     contentCompression: ContentCompression.NONE,
-    ...(supplement === undefined ? {} : { supplementalContent: encoder.encode(JSON.stringify(supplement)), supplementalContentCompression: ContentCompression.NONE }),
+    ...(supplement === undefined
+      ? {}
+      : {
+          supplementalContent: encoder.encode(JSON.stringify(supplement)),
+          supplementalContentCompression: ContentCompression.NONE,
+        }),
   })
 }
 
@@ -214,7 +241,13 @@ function snapshot(agentId: string, messages: AgentChatMessage[]): NativeMessageS
 }
 
 function agent(fields: Partial<Pick<AgentInfo, 'id' | 'status' | 'agentProvider' | 'agentSessionId' | 'startupError'>>): AgentInfo {
-  return create(AgentInfoSchema, { id: 'reopened', status: AgentStatus.ACTIVE, agentProvider: AgentProvider.GEMINI_CLI, agentSessionId: 'stored-session', ...fields })
+  return create(AgentInfoSchema, {
+    id: 'reopened',
+    status: AgentStatus.ACTIVE,
+    agentProvider: AgentProvider.GEMINI_CLI,
+    agentSessionId: 'stored-session',
+    ...fields,
+  })
 }
 
 const stored = { agentProvider: AgentProvider.GEMINI_CLI, agentSessionId: 'stored-session' }
@@ -241,7 +274,11 @@ function selectedTabPage(ids: readonly (readonly string[])[]) {
       return {
         first: () => ({
           evaluateAll: async (read: (tabs: { getAttribute: (name: string) => string | null }[]) => string[]) =>
-            read(next().map(id => ({ getAttribute: (name: string) => name === 'data-tab-id' ? id : null }))),
+            read(next().map(id => ({
+              getAttribute: (name: string) => name === 'data-tab-id'
+                ? id
+                : null,
+            }))),
         }),
       }
     },
@@ -261,7 +298,10 @@ beforeEach(() => {
 })
 
 const NEW_SESSION = { testId: 'loading-menu-option-', text: 'Start a new session' }
-const TYPE_A_HANDLE = { testId: 'loading-menu-option-\u0000type-a-handle', text: typeAHandleLabel(false) }
+const TYPE_A_HANDLE = {
+  testId: 'loading-menu-option-\u0000type-a-handle',
+  text: typeAHandleLabel(false),
+}
 
 function sessionOption(id: string) {
   return { testId: `loading-menu-option-${id}`, text: `Session ${id}` }
@@ -280,7 +320,12 @@ describe('nativeResumeTexts', () => {
 
   it.each([MARKER, undefined])('builds texts where no text contains another for the marker %s', (marker) => {
     const built = nativeResumeTexts(marker)
-    const values = [built.originalPrompt, built.originalAnswer, built.resumedPrompt, built.resumedAnswer]
+    const values = [
+      built.originalPrompt,
+      built.originalAnswer,
+      built.resumedPrompt,
+      built.resumedAnswer,
+    ]
     for (const [index, value] of values.entries()) {
       expect(value).toContain(built.marker)
       for (const [other, otherValue] of values.entries()) {
@@ -298,7 +343,15 @@ describe('nativeResumeTexts', () => {
     expect(first).not.toBe(second)
   })
 
-  it.each(['', MARKER.slice(1), `${MARKER}0`, MARKER.toUpperCase(), `${MARKER.slice(1)}g`, '01234567-89ab-cdef-0123-456789abcdef', ` ${MARKER.slice(1)}`])('rejects the invalid marker "%s"', (marker) => {
+  it.each([
+    '',
+    MARKER.slice(1),
+    `${MARKER}0`,
+    MARKER.toUpperCase(),
+    `${MARKER.slice(1)}g`,
+    '01234567-89ab-cdef-0123-456789abcdef',
+    ` ${MARKER.slice(1)}`,
+  ])('rejects the invalid marker "%s"', (marker) => {
     expect(() => nativeResumeTexts(marker)).toThrow('32 lowercase hexadecimal digits')
   })
 })
@@ -408,7 +461,12 @@ describe('reopenedNativeAgentVerdict', () => {
 
 describe('expectReopenedNativeAgent', () => {
   it('waits past an earlier tab and STARTING, then returns the active stored session', async () => {
-    const { page, selectors } = selectedTabPage([['keeper'], [], ['original'], ['reopened']])
+    const { page, selectors } = selectedTabPage([
+      ['keeper'],
+      [],
+      ['original'],
+      ['reopened'],
+    ])
     const reopened = agent({})
     calls.agent.mockResolvedValueOnce(null)
       .mockResolvedValueOnce(agent({ status: AgentStatus.STARTING, agentSessionId: '' }))
@@ -416,11 +474,17 @@ describe('expectReopenedNativeAgent', () => {
     const context = { page, leapmuxServer: server }
     expect(await expectReopenedNativeAgent(context, stored, ['keeper', 'original'])).toBe(reopened)
     expect(selectors).toEqual(['[data-testid="tab"][data-tab-type="agent"][aria-selected="true"]:visible'])
-    expect(calls.agent.mock.calls).toEqual([[context, 'reopened'], [context, 'reopened'], [context, 'reopened']])
+    expect(calls.agent.mock.calls).toEqual([
+      [context, 'reopened'],
+      [context, 'reopened'],
+      [context, 'reopened'],
+    ])
   })
 
   it('throws the Worker startup error once the startup ends', async () => {
-    const { page } = selectedTabPage([['reopened']])
+    const { page } = selectedTabPage([
+      ['reopened'],
+    ])
     calls.agent.mockResolvedValueOnce(agent({ status: AgentStatus.STARTING, agentSessionId: '' }))
       .mockResolvedValueOnce(agent({ status: AgentStatus.STARTUP_FAILED, agentSessionId: '', startupError: 'session/load: -32603 No previous sessions found' }))
       .mockResolvedValue(agent({}))
@@ -431,7 +495,9 @@ describe('expectReopenedNativeAgent', () => {
   })
 
   it('keeps the first verdict after STARTING', async () => {
-    const { page } = selectedTabPage([['reopened']])
+    const { page } = selectedTabPage([
+      ['reopened'],
+    ])
     calls.agent.mockResolvedValueOnce(agent({ status: AgentStatus.INACTIVE }))
       .mockResolvedValue(agent({}))
     await expect(expectReopenedNativeAgent({ page, leapmuxServer: server }, stored, [])).rejects.toThrow('status INACTIVE, not ACTIVE')
@@ -439,13 +505,17 @@ describe('expectReopenedNativeAgent', () => {
   })
 
   it('refuses an active agent in another native session', async () => {
-    const { page } = selectedTabPage([['reopened']])
+    const { page } = selectedTabPage([
+      ['reopened'],
+    ])
     calls.agent.mockResolvedValue(agent({ agentSessionId: 'new-native-session' }))
     await expect(expectReopenedNativeAgent({ page, leapmuxServer: server }, stored, [])).rejects.toThrow('confirmed the session "new-native-session"')
   })
 
   it('reads no Worker state while the picker selects only an earlier tab', async () => {
-    const { page } = selectedTabPage([['keeper']])
+    const { page } = selectedTabPage([
+      ['keeper'],
+    ])
     await expect(expectReopenedNativeAgent({ page, leapmuxServer: server }, stored, ['keeper'])).rejects.toThrow('The picker must select the agent tab that it opened.')
     expect(calls.agent).not.toHaveBeenCalled()
   })
@@ -453,7 +523,9 @@ describe('expectReopenedNativeAgent', () => {
   it('fails when the Worker never ends the startup', async () => {
     const end = startWaitLimitForTests(300)
     try {
-      const { page } = selectedTabPage([['reopened']])
+      const { page } = selectedTabPage([
+        ['reopened'],
+      ])
       calls.agent.mockResolvedValue(agent({ status: AgentStatus.STARTING, agentSessionId: '' }))
       await expect(expectReopenedNativeAgent({ page, leapmuxServer: server }, stored, [])).rejects.toThrow('The Worker must end the startup of the reopened agent.')
       expect(calls.agent.mock.calls.length).toBeGreaterThan(1)
@@ -464,7 +536,9 @@ describe('expectReopenedNativeAgent', () => {
   })
 
   it('reads again after a Worker read that throws while the Worker reconnects', async () => {
-    const { page } = selectedTabPage([['reopened']])
+    const { page } = selectedTabPage([
+      ['reopened'],
+    ])
     const reopened = agent({})
     calls.agent.mockRejectedValueOnce(new Error('The Worker channel closed.')).mockResolvedValue(reopened)
     expect(await expectReopenedNativeAgent({ page, leapmuxServer: server }, stored, [])).toBe(reopened)
@@ -476,7 +550,13 @@ describe('countOriginalAnswerRows', () => {
   it('counts each row that holds the original answer in its content or supplement', async () => {
     calls.snapshot.mockResolvedValue(snapshot('original', [
       row('prompt', 1n, { role: 'user', text: texts.originalPrompt }),
-      row('answer', 2n, { message: { content: [{ type: 'text', text: texts.originalAnswer }] } }),
+      row('answer', 2n, {
+        message: {
+          content: [
+            { type: 'text', text: texts.originalAnswer },
+          ],
+        },
+      }),
       row('result', 3n, { type: 'result' }, { plain: `Final: ${texts.originalAnswer}` }),
       row('turn-end', 4n, { type: 'turn_end', tokens: 0 }),
     ]))
@@ -486,7 +566,9 @@ describe('countOriginalAnswerRows', () => {
   })
 
   it('refuses an original agent that stored no answer row', async () => {
-    calls.snapshot.mockResolvedValue(snapshot('original', [row('prompt', 1n, { text: texts.originalPrompt })]))
+    calls.snapshot.mockResolvedValue(snapshot('original', [
+      row('prompt', 1n, { text: texts.originalPrompt }),
+    ]))
     await expect(countOriginalAnswerRows({ leapmuxServer: server }, 'original', texts)).rejects.toThrow('stored no Worker row that holds the original answer')
   })
 
@@ -510,7 +592,11 @@ describe('expectResumedConversation', () => {
 
   it('accepts one copy of each original row and a separate resumed answer', async () => {
     settledPage()
-    calls.snapshot.mockResolvedValue(snapshot('reopened', [originalRow, row('resumed-prompt', 6n, { text: texts.resumedPrompt }), resumedRow]))
+    calls.snapshot.mockResolvedValue(snapshot('reopened', [
+      originalRow,
+      row('resumed-prompt', 6n, { text: texts.resumedPrompt }),
+      resumedRow,
+    ]))
     await expect(expectResumedConversation(context, 'reopened', texts, 1)).resolves.toBeUndefined()
     expect(calls.snapshot).toHaveBeenCalledExactlyOnceWith(context, 'reopened')
   })
@@ -518,13 +604,25 @@ describe('expectResumedConversation', () => {
   it('accepts an original answer that the original agent stored in two rows and drew twice', async () => {
     settledPage()
     calls.assistant.push(texts.originalAnswer)
-    calls.snapshot.mockResolvedValue(snapshot('reopened', [originalRow, row('reopened:3', 3n, { tool: { input: texts.originalAnswer } }), resumedRow]))
+    calls.snapshot.mockResolvedValue(snapshot('reopened', [
+      originalRow,
+      row('reopened:3', 3n, {
+        tool: { input: texts.originalAnswer },
+      }),
+      resumedRow,
+    ]))
     await expect(expectResumedConversation(context, 'reopened', texts, 2, 2)).resolves.toBeUndefined()
   })
 
   it('accepts an original answer that two stored rows drew as one bubble', async () => {
     settledPage()
-    calls.snapshot.mockResolvedValue(snapshot('reopened', [originalRow, row('reopened:3', 3n, { tool: { input: texts.originalAnswer } }), resumedRow]))
+    calls.snapshot.mockResolvedValue(snapshot('reopened', [
+      originalRow,
+      row('reopened:3', 3n, {
+        tool: { input: texts.originalAnswer },
+      }),
+      resumedRow,
+    ]))
     await expect(expectResumedConversation(context, 'reopened', texts, 2)).resolves.toBeUndefined()
   })
 
@@ -538,13 +636,20 @@ describe('expectResumedConversation', () => {
 
   it('refuses a resumed answer row that holds the replayed original answer', async () => {
     settledPage()
-    calls.snapshot.mockResolvedValue(snapshot('reopened', [originalRow, row('merged', 7n, { text: `${texts.originalAnswer}${texts.resumedAnswer}` })]))
+    calls.snapshot.mockResolvedValue(snapshot('reopened', [
+      originalRow,
+      row('merged', 7n, { text: `${texts.originalAnswer}${texts.resumedAnswer}` }),
+    ]))
     await expect(expectResumedConversation(context, 'reopened', texts, 1)).rejects.toThrow('A Worker row of the resumed answer must not hold the original answer.')
   })
 
   it('refuses a replayed original answer that the resumed agent stored as a new row', async () => {
     settledPage()
-    calls.snapshot.mockResolvedValue(snapshot('reopened', [originalRow, row('replayed', 5n, { text: texts.originalAnswer }), resumedRow]))
+    calls.snapshot.mockResolvedValue(snapshot('reopened', [
+      originalRow,
+      row('replayed', 5n, { text: texts.originalAnswer }),
+      resumedRow,
+    ]))
     await expect(expectResumedConversation(context, 'reopened', texts, 1)).rejects.toThrow('must store no new Worker row that holds the original answer')
   })
 
@@ -575,7 +680,13 @@ describe('expectResumedConversation', () => {
     await expect(expectResumedConversation(context, 'reopened', texts, 1)).rejects.toThrow('must store a Worker row that holds the resumed answer')
   })
 
-  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])('rejects the original row count %s before any read', async (count) => {
+  it.each([
+    0,
+    -1,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+  ])('rejects the original row count %s before any read', async (count) => {
     settledPage()
     await expect(expectResumedConversation(context, 'reopened', texts, count)).rejects.toThrow('positive count of original answer rows')
     expect(calls.snapshot).not.toHaveBeenCalled()
@@ -588,7 +699,9 @@ describe('expectResumedAnswerUnmerged', () => {
 
   it('accepts an external session that shows and stores no original answer', async () => {
     calls.assistant.push(texts.resumedAnswer)
-    calls.snapshot.mockResolvedValue(snapshot('reopened', [row('resumed-answer', 1n, { text: texts.resumedAnswer })]))
+    calls.snapshot.mockResolvedValue(snapshot('reopened', [
+      row('resumed-answer', 1n, { text: texts.resumedAnswer }),
+    ]))
     await expect(expectResumedAnswerUnmerged(context, 'reopened', texts)).resolves.toBeUndefined()
   })
 
@@ -619,53 +732,94 @@ describe('openNewAgentFor', () => {
 
 describe('openSoleSessionRow', () => {
   it('waits for the session list, then returns the one session below the two pinned rows', async () => {
-    dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('stored')]
+    dialogState.rows = [
+      NEW_SESSION,
+      TYPE_A_HANDLE,
+      sessionOption('stored'),
+    ]
     const row = await openSoleSessionRow(newAgentDialog())
     await row.click()
     expect(dialogState.events).toEqual(['enabled:session-select-menu-trigger', 'menu:session-select-menu', 'click:loading-menu-option-stored'])
   })
 
   it('accepts the pinned row that also offers a file path, as Pi states it', async () => {
-    dialogState.rows = [NEW_SESSION, { ...TYPE_A_HANDLE, text: typeAHandleLabel(true) }, sessionOption('stored')]
+    dialogState.rows = [
+      NEW_SESSION,
+      {
+        ...TYPE_A_HANDLE,
+        text: typeAHandleLabel(true),
+      },
+      sessionOption('stored'),
+    ]
     await expect(openSoleSessionRow(newAgentDialog())).resolves.toMatchObject({ pickerProbe: 'row' })
   })
 
   it('refuses a menu that offers a second session', async () => {
-    dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('stored'), sessionOption('other')]
+    dialogState.rows = [
+      NEW_SESSION,
+      TYPE_A_HANDLE,
+      sessionOption('stored'),
+      sessionOption('other'),
+    ]
     // The row count fails: the two pinned rows and two sessions, where the menu may hold one session.
     await expect(openSoleSessionRow(newAgentDialog())).rejects.toThrow('expected 4 to be 3')
   })
 
   it('refuses a menu whose first row is not the row that starts a new session', async () => {
-    dialogState.rows = [sessionOption('stored'), TYPE_A_HANDLE, NEW_SESSION]
+    dialogState.rows = [
+      sessionOption('stored'),
+      TYPE_A_HANDLE,
+      NEW_SESSION,
+    ]
     await expect(openSoleSessionRow(newAgentDialog())).rejects.toThrow('expected \'Session stored\' to be \'Start a new session\'')
   })
 
   it('refuses a menu whose second row is not the row that opens the text box', async () => {
-    dialogState.rows = [NEW_SESSION, sessionOption('other'), sessionOption('stored')]
+    dialogState.rows = [
+      NEW_SESSION,
+      sessionOption('other'),
+      sessionOption('stored'),
+    ]
     await expect(openSoleSessionRow(newAgentDialog())).rejects.toThrow('expected \'Session other\' to match')
   })
 })
 
 describe('openStoredSessionRow', () => {
   it('finds the stored session by its test ID among other sessions by default', async () => {
-    dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('other'), sessionOption('stored')]
+    dialogState.rows = [
+      NEW_SESSION,
+      TYPE_A_HANDLE,
+      sessionOption('other'),
+      sessionOption('stored'),
+    ]
     await (await openStoredSessionRow(newAgentDialog(), 'stored')).click()
     expect(dialogState.events.at(-1)).toBe('click:loading-menu-option-stored')
   })
 
   it('refuses a menu that does not offer the stored session', async () => {
-    dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('other')]
+    dialogState.rows = [
+      NEW_SESSION,
+      TYPE_A_HANDLE,
+      sessionOption('other'),
+    ]
     await expect(openStoredSessionRow(newAgentDialog(), 'stored')).rejects.toThrow('expected undefined to be defined')
   })
 
   it('refuses a sole session that is not the stored session', async () => {
-    dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('other')]
+    dialogState.rows = [
+      NEW_SESSION,
+      TYPE_A_HANDLE,
+      sessionOption('other'),
+    ]
     await expect(openStoredSessionRow(newAgentDialog(), 'stored', 'sole-session')).rejects.toThrow('expected \'loading-menu-option-other\' to be \'loading-menu-option-stored\'')
   })
 
   it('accepts the stored session as the sole session', async () => {
-    dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('stored')]
+    dialogState.rows = [
+      NEW_SESSION,
+      TYPE_A_HANDLE,
+      sessionOption('stored'),
+    ]
     await expect(openStoredSessionRow(newAgentDialog(), 'stored', 'sole-session')).resolves.toMatchObject({ pickerProbe: 'row' })
   })
 
@@ -677,7 +831,11 @@ describe('openStoredSessionRow', () => {
 
 describe('createFromSessionRow', () => {
   it('chooses the row, requires its session in the menu, creates the agent, and waits for the dialog to close', async () => {
-    dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('stored')]
+    dialogState.rows = [
+      NEW_SESSION,
+      TYPE_A_HANDLE,
+      sessionOption('stored'),
+    ]
     const dialog = newAgentDialog()
     await createFromSessionRow(dialog, await openSoleSessionRow(dialog), 'stored')
     expect(dialogState.events.slice(-2)).toEqual(['click:loading-menu-option-stored', 'click:Create'])
@@ -685,7 +843,11 @@ describe('createFromSessionRow', () => {
   })
 
   it('refuses a row whose click chooses another session, before it creates the agent', async () => {
-    dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('stored')]
+    dialogState.rows = [
+      NEW_SESSION,
+      TYPE_A_HANDLE,
+      sessionOption('stored'),
+    ]
     dialogState.clickChooses = 'other'
     const dialog = newAgentDialog()
     await expect(createFromSessionRow(dialog, await openSoleSessionRow(dialog), 'stored')).rejects.toThrow('expected \'other\' to be \'stored\'')
@@ -695,8 +857,17 @@ describe('createFromSessionRow', () => {
 
 describe('reopenFromSessionPicker', () => {
   it('opens the dialog for the stored session and creates the agent from its row', async () => {
-    dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('other'), sessionOption('stored')]
-    await reopenFromSessionPicker(pickerPage, { provider: AgentProvider.GEMINI_CLI, workingDir: unitWorkingDir('/project'), sessionId: 'stored' })
+    dialogState.rows = [
+      NEW_SESSION,
+      TYPE_A_HANDLE,
+      sessionOption('other'),
+      sessionOption('stored'),
+    ]
+    await reopenFromSessionPicker(pickerPage, {
+      provider: AgentProvider.GEMINI_CLI,
+      workingDir: unitWorkingDir('/project'),
+      sessionId: 'stored',
+    })
     expect(dialogState.events).toEqual([
       'dialog',
       'worker',
@@ -711,9 +882,19 @@ describe('reopenFromSessionPicker', () => {
   })
 
   it('requires the sole session when the list states it', async () => {
-    dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('other'), sessionOption('stored')]
+    dialogState.rows = [
+      NEW_SESSION,
+      TYPE_A_HANDLE,
+      sessionOption('other'),
+      sessionOption('stored'),
+    ]
     // The row count fails: the two pinned rows and two sessions, where the sole-session list holds one session.
-    await expect(reopenFromSessionPicker(pickerPage, { provider: AgentProvider.GEMINI_CLI, workingDir: unitWorkingDir('/project'), sessionId: 'stored', list: 'sole-session' })).rejects.toThrow('expected 4 to be 3')
+    await expect(reopenFromSessionPicker(pickerPage, {
+      provider: AgentProvider.GEMINI_CLI,
+      workingDir: unitWorkingDir('/project'),
+      sessionId: 'stored',
+      list: 'sole-session',
+    })).rejects.toThrow('expected 4 to be 3')
     expect(dialogState.events).not.toContain('click:Create')
   })
 })

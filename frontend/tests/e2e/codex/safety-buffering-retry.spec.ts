@@ -35,8 +35,20 @@ const PROMPT = 'Explain the safety review process.'
  * the `initialize` opt-out hides from the transcript.
  */
 const BUFFERED_METADATA: Record<string, unknown>[] = [
-  { type: 'safety_buffering', use_cases: ['cyber'], reasons: ['probes'], retry_model: FASTER_MODEL },
-  { openai_chatgpt_moderation_metadata: { generation: {}, prompt: {}, tool_call: {}, tool_response: {} } },
+  {
+    type: 'safety_buffering',
+    use_cases: ['cyber'],
+    reasons: ['probes'],
+    retry_model: FASTER_MODEL,
+  },
+  {
+    openai_chatgpt_moderation_metadata: {
+      generation: {},
+      prompt: {},
+      tool_call: {},
+      tool_response: {},
+    },
+  },
 ]
 
 codexTest.describe('offers a faster retry while a request buffers', () => {
@@ -85,7 +97,9 @@ codexTest.describe('offers a faster retry while a request buffers', () => {
     const after = await currentNativeAgent(native)
     expect(after.agentSessionId).toBe(before.agentSessionId)
     await exerciseLiveChildTranscript(native, {
-      childWhen: { body: ['NEW_TASK', 'answer_the_live_child_task'] },
+      childWhen: {
+        body: ['NEW_TASK', 'answer_the_live_child_task'],
+      },
       childTask: 'Report the child prompt after the retry.',
       parentTask: 'Spawn a child after the retry.',
     })
@@ -109,7 +123,9 @@ codexTest.describe('offers a faster retry while a request buffers', () => {
 
   codexTest('keeps an existing child route through the parent retry', async ({ native }) => {
     const child = await exerciseLiveChildTranscript(native, {
-      childWhen: { body: ['NEW_TASK', 'answer_the_live_child_task'] },
+      childWhen: {
+        body: ['NEW_TASK', 'answer_the_live_child_task'],
+      },
       childTask: 'Finish the existing child after the parent retries.',
       parentTask: 'Start a child before the parent retries.',
       beforeRelease: async () => { await retryBufferedTurn(native) },
@@ -130,7 +146,9 @@ async function retryBufferedTurn(native: ManagedNativeScenarioContext, hooks: {
   await modelScript.rule({
     name: 'retry-model-compaction',
     priority: 'high',
-    when: { user: ['CONTEXT CHECKPOINT COMPACTION', 'Create a handoff summary'] },
+    when: {
+      user: ['CONTEXT CHECKPOINT COMPACTION', 'Create a handoff summary'],
+    },
     respond: { text: 'The earlier work is complete. Continue with the next user request.' },
   })
   const start = await modelScript.queue(
@@ -146,7 +164,10 @@ async function retryBufferedTurn(native: ManagedNativeScenarioContext, hooks: {
     await page.getByTestId('turn-retry-confirm-dialog').getByRole('button', { name: 'Stop and retry' }).click()
     await modelScript.waitForGate(fastGate)
     const retried = await modelScript.requestAt(start + 1)
-    expect(retried.body).toMatchObject({ model: FASTER_MODEL, reasoning: { effort: 'low' } })
+    expect(retried.body).toMatchObject({
+      model: FASTER_MODEL,
+      reasoning: { effort: 'low' },
+    })
     expect(lastUserText(retried.protocol, retried.body)).toContain(PROMPT)
     expect(scenarioUserTexts(retried.protocol, retried.body).filter(text => text.includes(PROMPT))).toHaveLength(1)
     await hooks.afterRetryStarts?.()
@@ -172,7 +193,9 @@ for (const model of [FASTER_MODEL, 'a-model-with-a-long-unbroken-identifier-that
     await page.setViewportSize({ width: 1200, height: 800 })
     await page.addStyleTag({ content: '[data-testid="agent-editor-panel"] { max-width: 260px; }' })
     const step = await modelScript.queue({
-      responseMetadata: [{ ...BUFFERED_METADATA[0], retry_model: model }],
+      responseMetadata: [
+        { ...BUFFERED_METADATA[0], retry_model: model },
+      ],
       gate: BUFFERED_GATE,
       text: 'The answer after the wait.',
     })

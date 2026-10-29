@@ -46,14 +46,23 @@ export function classifyQoderMessage(input: ClassificationInput): MessageCategor
 
 /** Read tool results. An empty provisional result precedes native image bytes. */
 function classifyUser(parent: Record<string, unknown>): MessageCategory {
-  const message = isObject(parent.message) ? parent.message : undefined
-  const content = message && Array.isArray(message.content) ? message.content : []
+  const message = isObject(parent.message)
+    ? parent.message
+    : undefined
+  const content = message && Array.isArray(message.content)
+    ? message.content
+    : []
   const result = content.find(block => isObject(block) && pickString(block, 'type') === 'tool_result')
   if (!isObject(result))
     return { kind: 'unknown' }
   const body = result.content
-  if (typeof body === 'string')
-    return { kind: body.trim() ? 'tool_result' : 'hidden' }
+  if (typeof body === 'string') {
+    return {
+      kind: body.trim()
+        ? 'tool_result'
+        : 'hidden',
+    }
+  }
   if (!Array.isArray(body))
     return { kind: 'unknown' }
   let opaque = false
@@ -72,12 +81,18 @@ function classifyUser(parent: Record<string, unknown>): MessageCategory {
     }
     opaque = true
   }
-  return { kind: opaque ? 'unknown' : 'hidden' }
+  return {
+    kind: opaque ? 'unknown' : 'hidden',
+  }
 }
 
 function classifyAssistant(parent: Record<string, unknown>): MessageCategory {
-  const message = isObject(parent.message) ? parent.message : undefined
-  const content = message && Array.isArray(message.content) ? message.content : []
+  const message = isObject(parent.message)
+    ? parent.message
+    : undefined
+  const content = message && Array.isArray(message.content)
+    ? message.content
+    : []
   const hasToolUse = content.some(
     block => isObject(block) && pickString(block, 'type') === 'tool_use',
   )

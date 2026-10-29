@@ -37,7 +37,14 @@ function todoItems(tasks: unknown): TodoItem[] | null {
     seen.add(task.id)
     const id = String(task.id)
     const content = pickString(task, 'subject')
-    items.push({ id, rowKey: todoRowKey(id, items.length, content), content, status, description: pickString(task, 'description'), activeForm: pickString(task, 'activeForm') })
+    items.push({
+      id,
+      rowKey: todoRowKey(id, items.length, content),
+      content,
+      status,
+      description: pickString(task, 'description'),
+      activeForm: pickString(task, 'activeForm'),
+    })
   }
   return items
 }
@@ -54,10 +61,20 @@ export function piTodoSource(payload: Record<string, unknown>, request?: ParsedM
   const action = pickString(args, 'action') || pickString(details, 'action')
   const tasks = todoItems(details?.tasks)
   const nextId = details?.nextId
-  const id = taskId(args.id) ? args.id : action === 'create' && taskId(nextId) ? nextId - 1 : undefined
-  const task = id !== undefined ? tasks?.find(task => task.id === String(id)) : undefined
-  const subject = task?.content || pickString(args, 'subject') || (id !== undefined ? `Task #${id}` : 'task')
-  const error = pickString(details, 'error') || (tool.isError || paired?.isError ? output?.text || 'The to-do operation failed.' : '')
+  const id = taskId(args.id)
+    ? args.id
+    : action === 'create' && taskId(nextId)
+      ? nextId - 1
+      : undefined
+  const task = id !== undefined
+    ? tasks?.find(task => task.id === String(id))
+    : undefined
+  const subject = task?.content || pickString(args, 'subject') || (id !== undefined
+    ? `Task #${id}`
+    : 'task')
+  const error = pickString(details, 'error') || (tool.isError || paired?.isError
+    ? output?.text || 'The to-do operation failed.'
+    : '')
   let title: string
   switch (action) {
     case 'create':
@@ -76,7 +93,9 @@ export function piTodoSource(payload: Record<string, unknown>, request?: ParsedM
       title = 'Clear to-do list'
       break
     case 'list':
-      title = tasks ? pluralize(tasks.length, 'task') : 'To-do list'
+      title = tasks
+        ? pluralize(tasks.length, 'task')
+        : 'To-do list'
       break
     default: return null
   }
@@ -84,27 +103,51 @@ export function piTodoSource(payload: Record<string, unknown>, request?: ParsedM
     return null
   const visible = action === 'list'
     ? tasks?.filter(task => (args.includeDeleted === true || task.status !== 'deleted') && (!args.status || task.status === args.status)) ?? []
-    : action === 'clear' ? [] : task ? [task] : tasks ?? []
+    : action === 'clear'
+      ? []
+      : task
+        ? [task]
+        : tasks ?? []
   if (action === 'list' && tasks)
     title = pluralize(visible.length, 'task')
   const metadata: ToolMetadataEntry[] = []
   if (task) {
-    const raw = Array.isArray(details?.tasks) ? details.tasks.find(value => isObject(value) && String(value.id) === task.id) : undefined
+    const raw = Array.isArray(details?.tasks)
+      ? details.tasks.find(value => isObject(value) && String(value.id) === task.id)
+      : undefined
     if (isObject(raw)) {
       metadata.push({ label: 'Task ID', value: task.id! })
-      if (pickString(raw, 'owner'))
-        metadata.push({ label: 'Owner', value: pickString(raw, 'owner') })
-      if (Array.isArray(raw.blockedBy) && raw.blockedBy.every(taskId) && raw.blockedBy.length)
-        metadata.push({ label: 'Blocked by', value: raw.blockedBy.map(id => `#${id}`).join(', ') })
+      if (pickString(raw, 'owner')) {
+        metadata.push({
+          label: 'Owner',
+          value: pickString(raw, 'owner'),
+        })
+      }
+      if (Array.isArray(raw.blockedBy) && raw.blockedBy.every(taskId) && raw.blockedBy.length) {
+        metadata.push({
+          label: 'Blocked by',
+          value: raw.blockedBy.map(id => `#${id}`).join(', '),
+        })
+      }
       const extra = prettifyStructuredJson(raw.metadata)
       if (extra)
         metadata.push({ label: 'Metadata', value: extra })
     }
   }
   return {
-    list: { title, todos: visible, emptyText: action === 'clear' ? 'To-do list cleared' : action === 'list' ? 'No matching tasks' : 'The provider did not supply the task.' },
+    list: {
+      title,
+      todos: visible,
+      emptyText: action === 'clear'
+        ? 'To-do list cleared'
+        : action === 'list'
+          ? 'No matching tasks'
+          : 'The provider did not supply the task.',
+    },
     description: task?.description || pickString(args, 'description'),
     metadata,
-    ...(error ? { error } : {}),
+    ...(error
+      ? { error }
+      : {}),
   }
 }

@@ -51,9 +51,14 @@ export function piPlanStatement(
   if (argsPlan)
     return { kind: 'plan', text: argsPlan }
   const resultText = (tool.result?.text ?? tool.partialResult?.text ?? '').trim()
-  if (tool.isError)
-    return resultText ? { kind: 'text', text: resultText } : null
+  if (tool.isError) {
+    return resultText
+      ? { kind: 'text', text: resultText }
+      : null
+  }
   if (pickString(tool.result?.details, 'plan').trim())
     return { kind: 'text', text: PLAN_READY_NOTICE }
-  return resultText ? { kind: 'text', text: resultText } : null
+  return resultText
+    ? { kind: 'text', text: resultText }
+    : null
 }

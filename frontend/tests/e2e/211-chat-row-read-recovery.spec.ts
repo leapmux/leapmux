@@ -18,12 +18,15 @@ test.describe('readAttached', () => {
         if (row.getAttribute('data-message-seq') === '1') {
           const replacement = row.cloneNode(true)
           if (!(replacement instanceof HTMLElement))
-            throw new Error('The replacement chat row must be an HTML element.')
+            throw new TypeError('The replacement chat row must be an HTML element.')
           replacement.setAttribute('data-message-seq', '2')
           row.replaceWith(replacement)
           return null
         }
-        return { sequence: row.getAttribute('data-message-seq'), argument: value }
+        return {
+          sequence: row.getAttribute('data-message-seq'),
+          argument: value,
+        }
       }, argument)
       expect(result).toEqual({ sequence: '2', argument })
     })

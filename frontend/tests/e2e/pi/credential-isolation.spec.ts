@@ -8,6 +8,10 @@ piTest('uses private provider configuration and the actual mock credential', asy
   await exerciseCredentialIsolation(native, {
     expectedCredential: MODEL_KEY,
     privateDirectories: [environment.HOME!, environment.PI_CODING_AGENT_DIR!],
-    configurationFiles: [join(environment.PI_CODING_AGENT_DIR!, 'models.json'), join(environment.PI_CODING_AGENT_DIR!, 'settings.json'), join(environment.PI_CODING_AGENT_DIR!, 'mcp.json')],
+    configurationFiles: [
+      join(environment.PI_CODING_AGENT_DIR!, 'models.json'),
+      join(environment.PI_CODING_AGENT_DIR!, 'settings.json'),
+      join(environment.PI_CODING_AGENT_DIR!, 'mcp.json'),
+    ],
   })
 })

@@ -1,9 +1,33 @@
 import { describe, expect, it } from 'vitest'
 import { deepseekHarnessCanonicalMcpProjection } from './mcpToolResult'
 
-const value = { contentMatches: true, echoedCount: 0, nextCount: 1, enabled: false, textMatches: true, textCharacters: 70000, nullable: null, hasNullable: true, hasPrivateMeta: false }
+const value = {
+  contentMatches: true,
+  echoedCount: 0,
+  nextCount: 1,
+  enabled: false,
+  textMatches: true,
+  textCharacters: 70000,
+  nullable: null,
+  hasNullable: true,
+  hasPrivateMeta: false,
+}
 function result(projection: unknown = value, callId = 'call') {
-  return { type: 'tool/result', data: { message: { toolCallId: callId, isError: false, content: [{ type: 'text', text: JSON.stringify(projection) }] } } }
+  return {
+    type: 'tool/result',
+    data: {
+      message: {
+        toolCallId: callId,
+        isError: false,
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(projection),
+          },
+        ],
+      },
+    },
+  }
 }
 
 describe('deepseekHarnessCanonicalMcpProjection', () => {
@@ -16,7 +40,14 @@ describe('deepseekHarnessCanonicalMcpProjection', () => {
 
   it('refuses another call and absent or malformed canonical fields', () => {
     expect(() => deepseekHarnessCanonicalMcpProjection(result(), 'foreign')).toThrow('exact successful')
-    for (const projection of [null, false, {}, { ...value, nullable: 0 }, { ...value, nextCount: '1' }, { ...value, textCharacters: -1 }])
+    for (const projection of [
+      null,
+      false,
+      {},
+      { ...value, nullable: 0 },
+      { ...value, nextCount: '1' },
+      { ...value, textCharacters: -1 },
+    ])
       expect(() => deepseekHarnessCanonicalMcpProjection(result(projection), 'call')).toThrow('structured fields')
   })
 

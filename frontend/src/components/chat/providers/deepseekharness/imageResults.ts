@@ -21,8 +21,12 @@ function imagePositions(value: unknown): ImagePosition[] | undefined {
   const positions: ImagePosition[] = []
   let previous = -1
   for (const item of value) {
-    const position = isObject(item) ? item[DEEPSEEK_HARNESS_IMAGE_POSITION_FIELD.Position] : undefined
-    const attachment = pickObject(isObject(item) ? item : undefined, DEEPSEEK_HARNESS_IMAGE_POSITION_FIELD.Attachment)
+    const position = isObject(item)
+      ? item[DEEPSEEK_HARNESS_IMAGE_POSITION_FIELD.Position]
+      : undefined
+    const attachment = pickObject(isObject(item)
+      ? item
+      : undefined, DEEPSEEK_HARNESS_IMAGE_POSITION_FIELD.Attachment)
     if (!attachment || typeof position !== 'number' || !Number.isSafeInteger(position) || position <= previous)
       return undefined
     previous = position
@@ -37,7 +41,9 @@ function displayImage(reference: Record<string, unknown>, images: Record<string,
   const width = reference[DEEPSEEK_HARNESS_IMAGE_REFERENCE_FIELD.Width]
   const height = reference[DEEPSEEK_HARNESS_IMAGE_REFERENCE_FIELD.Height]
   const mimeType = reference[DEEPSEEK_HARNESS_IMAGE_REFERENCE_FIELD.MediaType]
-  const value = typeof id === 'string' && Object.hasOwn(images, id) ? pickObject(images, id) : undefined
+  const value = typeof id === 'string' && Object.hasOwn(images, id)
+    ? pickObject(images, id)
+    : undefined
   const attachment = pickObject(value, DEEPSEEK_HARNESS_IMAGE_VALUE_FIELD.Attachment)
   const data = value?.[DEEPSEEK_HARNESS_IMAGE_VALUE_FIELD.Data]
   if (!attachment || !sameReference(reference, attachment) || typeof id !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(id)
@@ -50,7 +56,14 @@ function displayImage(reference: Record<string, unknown>, images: Record<string,
   const decoded = base64ToUint8Array(data)
   if (decoded.byteLength !== bytes || uint8ArrayToBase64(decoded) !== data)
     return undefined
-  return { type: 'image', attachment: reference, mimeType, data, width, height }
+  return {
+    type: 'image',
+    attachment: reference,
+    mimeType,
+    data,
+    width,
+    height,
+  }
 }
 
 /** Keep the native preview and restore only authenticated image occurrences. */
@@ -58,7 +71,9 @@ export function deepseekHarnessImageResults(parsed: ParsedMessageContent): Recor
   const payload = parsed.parentObject
   const data = deepseekHarnessEventData(payload, DEEPSEEK_HARNESS_EVENT.ToolResult)
   const message = pickObject(data, 'message')
-  const receipt = pickObject(isObject(parsed.supplementalContent) ? parsed.supplementalContent : undefined, DEEPSEEK_HARNESS_SUPPLEMENT.ImageAttachments)
+  const receipt = pickObject(isObject(parsed.supplementalContent)
+    ? parsed.supplementalContent
+    : undefined, DEEPSEEK_HARNESS_SUPPLEMENT.ImageAttachments)
   const images = pickObject(receipt, DEEPSEEK_HARNESS_IMAGE_RECEIPT_FIELD.Images)
   const originals = imagePositions(receipt?.[DEEPSEEK_HARNESS_IMAGE_RECEIPT_FIELD.OriginalImages])
   const retained = imagePositions(receipt?.[DEEPSEEK_HARNESS_IMAGE_RECEIPT_FIELD.RetainedImages])
@@ -83,8 +98,14 @@ export function deepseekHarnessImageResults(parsed: ParsedMessageContent): Recor
     displays.push(image)
   }
   const nativeImages = message.content.flatMap((block, position) => {
-    const attachment = isObject(block) && block.type === 'image' ? pickObject(block, 'attachment') : null
-    return attachment ? [{ position, attachment }] : []
+    const attachment = isObject(block) && block.type === 'image'
+      ? pickObject(block, 'attachment')
+      : null
+    return attachment
+      ? [
+          { position, attachment },
+        ]
+      : []
   })
   if (nativeImages.length !== retained.length || retained.some((image, index) => image.position !== nativeImages[index]?.position
     || !sameReference(image.attachment, nativeImages[index]!.attachment))) {
@@ -93,7 +114,9 @@ export function deepseekHarnessImageResults(parsed: ParsedMessageContent): Recor
   const content: unknown[] = []
   let next = 0
   for (const block of message.content) {
-    const attachment = isObject(block) && block.type === 'image' ? pickObject(block, 'attachment') : null
+    const attachment = isObject(block) && block.type === 'image'
+      ? pickObject(block, 'attachment')
+      : null
     if (!attachment) {
       content.push(block)
       continue
@@ -105,9 +128,19 @@ export function deepseekHarnessImageResults(parsed: ParsedMessageContent): Recor
       return undefined
     while (next < match)
       content.push(displays[next++])
-    content.push({ ...block, ...displays[next++], attachment })
+    content.push({
+      ...block,
+      ...displays[next++],
+      attachment,
+    })
   }
   while (next < displays.length)
     content.push(displays[next++])
-  return { ...payload, data: { ...data, message: { ...message, content } } }
+  return {
+    ...payload,
+    data: {
+      ...data,
+      message: { ...message, content },
+    },
+  }
 }

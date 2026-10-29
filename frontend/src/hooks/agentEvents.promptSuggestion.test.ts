@@ -14,7 +14,10 @@ type Stores = Pick<AgentMessageStores, 'agentSessionStore' | 'chatStore'>
 function withStores(run: (stores: Stores) => void) {
   createRoot((dispose) => {
     try {
-      run({ agentSessionStore: createAgentSessionStore(), chatStore: createChatStore() })
+      run({
+        agentSessionStore: createAgentSessionStore(),
+        chatStore: createChatStore(),
+      })
     }
     finally {
       dispose()
@@ -36,7 +39,9 @@ function receive(stores: Stores, info: unknown, transcriptOnly = false) {
 describe('handleAgentSessionInfo prompt_suggestion', () => {
   it('sets a suggestion and withdraws it on null', () => {
     withStores((stores) => {
-      expect(receive(stores, { prompt_suggestion: { text: 'run the tests', extra: 'ignore' } })).toBe(true)
+      expect(receive(stores, {
+        prompt_suggestion: { text: 'run the tests', extra: 'ignore' },
+      })).toBe(true)
       expect(stores.chatStore.getPromptSuggestion('a')).toEqual({ text: 'run the tests' })
       receive(stores, { prompt_suggestion: null })
       expect(stores.chatStore.getPromptSuggestion('a')).toBeUndefined()
@@ -46,7 +51,17 @@ describe('handleAgentSessionInfo prompt_suggestion', () => {
   it('ignores malformed suggestion values', () => {
     withStores((stores) => {
       stores.chatStore.setPromptSuggestion('a', { text: 'keep' })
-      for (const value of [undefined, false, 0, 'text', [], {}, { text: 1 }, { text: '' }, { text: '  ' }]) {
+      for (const value of [
+        undefined,
+        false,
+        0,
+        'text',
+        [],
+        {},
+        { text: 1 },
+        { text: '' },
+        { text: '  ' },
+      ]) {
         receive(stores, { prompt_suggestion: value })
         expect(stores.chatStore.getPromptSuggestion('a')).toEqual({ text: 'keep' })
       }
@@ -65,7 +80,9 @@ describe('handleAgentSessionInfo prompt_suggestion', () => {
 
   it('ignores transcript-only live state', () => {
     withStores((stores) => {
-      receive(stores, { prompt_suggestion: { text: 'old' } }, true)
+      receive(stores, {
+        prompt_suggestion: { text: 'old' },
+      }, true)
       expect(stores.chatStore.getPromptSuggestion('a')).toBeUndefined()
     })
   })

@@ -41,8 +41,18 @@ describe('mruAgentEditorDeps', () => {
   it('offers the workspace agent tabs in MRU order', () => {
     createRoot((dispose) => {
       const s = setup()
-      emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: s.harness.rootTileId, position: 'a' })
-      emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: s.harness.rootTileId, position: 'b' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: s.harness.rootTileId,
+        position: 'a',
+      })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a2',
+        tileId: s.harness.rootTileId,
+        position: 'b',
+      })
       s.selection.setActiveById(TabType.AGENT, 'a1')
       s.selection.setActiveById(TabType.AGENT, 'a2')
 
@@ -72,7 +82,12 @@ describe('mruAgentEditorDeps', () => {
     createRoot((dispose) => {
       const s = setup()
       const split = emitSplitTile(getCRDTBridge()!, s.harness.rootTileId, 'horizontal')!
-      emitAddTab({ type: TabType.AGENT, id: 'far', tileId: split.childB, position: 'a' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'far',
+        tileId: split.childB,
+        position: 'a',
+      })
       s.layoutStore.setFocusedTile(split.childA)
 
       s.deps.activate(s.view.getById(TabType.AGENT, 'far')!)
@@ -114,8 +129,18 @@ describe('mruAgentEditorDeps', () => {
     sessionStorageSet(KEY_TAB_MRU, { a1: 2, a2: 1 })
     createRoot((dispose) => {
       const s = setup()
-      emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: s.harness.rootTileId, position: 'a' })
-      emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: s.harness.rootTileId, position: 'b' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: s.harness.rootTileId,
+        position: 'a',
+      })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a2',
+        tileId: s.harness.rootTileId,
+        position: 'b',
+      })
 
       // 'a1' leads — the persisted stamp wins, not the add order.
       expect(s.deps.mruTabs()[0]?.id).toBe('a1')

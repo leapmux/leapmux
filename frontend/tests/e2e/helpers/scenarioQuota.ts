@@ -24,7 +24,13 @@ export function parseQuotaResponse(value: unknown): MockQuotaHTTPResponse {
     throw new Error('A quota response requires an HTTP status from 200 to 599 and a JSON body.')
   if (value.retryAfterSeconds !== undefined && (typeof value.retryAfterSeconds !== 'number' || !Number.isFinite(value.retryAfterSeconds) || value.retryAfterSeconds < 0))
     throw new Error('The quota retry delay must be a non-negative number.')
-  return { status: value.status, body: value.body, ...(value.retryAfterSeconds === undefined ? {} : { retryAfterSeconds: value.retryAfterSeconds as number }) }
+  return {
+    status: value.status,
+    body: value.body,
+    ...(value.retryAfterSeconds === undefined
+      ? {}
+      : { retryAfterSeconds: value.retryAfterSeconds as number }),
+  }
 }
 
 /** The quota answer of one native service, and the control that sets it. See {@link createScenarioQuota}. */
@@ -85,10 +91,17 @@ export function createScenarioQuota<Extra extends object>(
             writeMockJSON(response, 409, { error: `Another scenario owns the mock ${accountLabel}.` })
             return true
           }
-          if (profile?.scenarioId === scenarioId)
+          if (profile?.scenarioId === scenarioId) {
             profile.response = next
-          else
-            profile = { scenarioId, response: next, receipts: [], count: 0 }
+          }
+          else {
+            profile = {
+              scenarioId,
+              response: next,
+              receipts: [],
+              count: 0,
+            }
+          }
         }
         else if (request.method !== 'GET') {
           writeMockJSON(response, 405, { error: 'Use GET or POST for quota control.' })
@@ -100,25 +113,43 @@ export function createScenarioQuota<Extra extends object>(
           writeMockJSON(response, 200, { scenarioId, receipts: profile.receipts, totalRequests: profile.count })
       }
       catch (error) {
-        writeMockJSON(response, 400, { error: error instanceof Error ? error.message : 'Invalid quota control request.' })
+        writeMockJSON(response, 400, {
+          error: error instanceof Error
+            ? error.message
+            : 'Invalid quota control request.',
+        })
       }
       return true
     },
     answer(response, authorized, extra, unauthorizedMessage) {
       const current = profile
       const active = current !== undefined && host.hasScenario(current.scenarioId)
-      const status = !authorized ? 401 : active ? current.response.status : 404
+      const status = !authorized
+        ? 401
+        : active ? current.response.status : 404
       if (active) {
-        current.receipts.push({ sequence: ++current.count, status, authorized, ...extra })
+        current.receipts.push({
+          sequence: ++current.count,
+          status,
+          authorized,
+          ...extra,
+        })
         if (current.receipts.length > 256)
           current.receipts.splice(0, current.receipts.length - 256)
       }
-      if (!authorized)
+      if (!authorized) {
         writeMockJSON(response, 401, { error: unauthorizedMessage })
-      else if (!active)
+      }
+      else if (!active) {
         writeMockJSON(response, 404, { error: 'No quota response is configured.' })
-      else
-        writeMockJSON(response, status, current.response.body, current.response.retryAfterSeconds === undefined ? {} : { 'retry-after': String(current.response.retryAfterSeconds) })
+      }
+      else {
+        writeMockJSON(response, status, current.response.body, current.response.retryAfterSeconds === undefined
+          ? {}
+          : {
+              'retry-after': String(current.response.retryAfterSeconds),
+            })
+      }
     },
     clearScenario(scenarioId) {
       scenarioGenerations.set(scenarioId, (scenarioGenerations.get(scenarioId) ?? 0) + 1)

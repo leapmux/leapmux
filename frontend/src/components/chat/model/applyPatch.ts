@@ -75,7 +75,11 @@ export function applyPatchFileChanges(patch: string): FileEditDiff[] | null {
     // filled, so the source is built once, at the end.
     const facts: FileEditBase = {
       filePath: path,
-      operation: action === 'Add' ? 'add' : action === 'Delete' ? 'delete' : 'edit',
+      operation: action === 'Add'
+        ? 'add'
+        : action === 'Delete'
+          ? 'delete'
+          : 'edit',
       showLineNumbers: false,
     }
     let newStr = ''
@@ -108,7 +112,13 @@ export function applyPatchFileChanges(patch: string): FileEditDiff[] | null {
       while (index < lines.length - 1 && /^@@(?: .*)?$/.test(lines[index] ?? '')) {
         index++
         // Text patches identify context without line numbers. Request titles use only the counts.
-        const hunk: StructuredPatchHunk = { oldStart: 0, newStart: 0, oldLines: 0, newLines: 0, lines: [] }
+        const hunk: StructuredPatchHunk = {
+          oldStart: 0,
+          newStart: 0,
+          oldLines: 0,
+          newLines: 0,
+          lines: [],
+        }
         while (index < lines.length - 1 && (hunkBodyLine(lines, index) || /^[ +\-]/.test(lines[index] ?? ''))) {
           // A blank context line reaches the patch as the EMPTY string, because a
           // trailing space does not survive every producer. The hunk still owns that
@@ -135,8 +145,13 @@ export function applyPatchFileChanges(patch: string): FileEditDiff[] | null {
         return null
       patchHunks = hunks
     }
-    files.push({ ...facts, ...fileEditContent(patchHunks, '', newStr) })
+    files.push({
+      ...facts,
+      ...fileEditContent(patchHunks, '', newStr),
+    })
     skipBlankLines()
   }
-  return files.length > 0 ? files : null
+  return files.length > 0
+    ? files
+    : null
 }

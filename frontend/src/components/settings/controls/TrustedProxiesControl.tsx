@@ -46,7 +46,9 @@ export const TrustedProxiesControl: CustomEditorComponent = (props) => {
 
   const storedSelectors = (): string[] => {
     const value = props.binding.value()
-    return Array.isArray(value) ? value.filter(item => typeof item === 'string') : []
+    return Array.isArray(value)
+      ? value.filter(item => typeof item === 'string')
+      : []
   }
 
   createEffect(() => {
@@ -191,7 +193,9 @@ export const TrustedProxiesControl: CustomEditorComponent = (props) => {
       <div class={actionsFooter}>
         <button type="button" class="outline" disabled={action.running()} onClick={cancel}>Cancel</button>
         <button type="button" disabled={!dirty() || action.running()} onClick={() => void apply()}>
-          {action.running() ? 'Applying...' : 'Apply'}
+          {action.running()
+            ? 'Applying...'
+            : 'Apply'}
         </button>
       </div>
     </div>

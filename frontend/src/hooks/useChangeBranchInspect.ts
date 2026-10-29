@@ -99,7 +99,9 @@ export function useChangeBranchInspect(args: UseChangeBranchInspectArgs): Change
     isRepoRoot: !seedIsWorktree,
     isWorktreeRoot: seedIsWorktree,
     repoRoot: seedIsWorktree ? '' : args.gitToplevel,
-    repoDirName: seedIsWorktree ? '' : basename(args.gitToplevel),
+    repoDirName: seedIsWorktree
+      ? ''
+      : basename(args.gitToplevel),
     currentBranch: args.branchName ?? '',
   })
   const [info, setInfo] = createSignal<GitInfoFields>(seedInfo)

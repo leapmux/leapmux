@@ -9,10 +9,18 @@ import { CommandResultBody } from './commandResult'
 function source(over: Partial<CommandResult> = {}): CommandResult {
   const base: CommandResult = {
     output: over.output ?? 'ok\n',
-    ...(over.outputUnavailable !== undefined ? { outputUnavailable: over.outputUnavailable } : {}),
-    ...(over.durationMs !== undefined ? { durationMs: over.durationMs } : {}),
-    ...(over.truncated !== undefined ? { truncated: over.truncated } : {}),
-    ...(over.label !== undefined ? { label: over.label } : {}),
+    ...(over.outputUnavailable !== undefined
+      ? { outputUnavailable: over.outputUnavailable }
+      : {}),
+    ...(over.durationMs !== undefined
+      ? { durationMs: over.durationMs }
+      : {}),
+    ...(over.truncated !== undefined
+      ? { truncated: over.truncated }
+      : {}),
+    ...(over.label !== undefined
+      ? { label: over.label }
+      : {}),
   }
   if (over.exitCode !== undefined && over.exitCode !== null)
     return withCommandExit(base, { exitCode: over.exitCode })
@@ -20,7 +28,9 @@ function source(over: Partial<CommandResult> = {}): CommandResult {
     return withCommandExit(base, { signal: over.signal })
   if (over.failed === true)
     return withCommandExit(base, { failed: true })
-  return over.exitCode === null ? withCommandExit(base, { exitCode: null }) : base
+  return over.exitCode === null
+    ? withCommandExit(base, { exitCode: null })
+    : base
 }
 
 /** The alert glyph, by the class lucide stamps on it. */
@@ -105,8 +115,20 @@ describe('CommandResultBody', () => {
 
 describe('CommandResultBody output ownership', () => {
   it.each([false, true])('marks returned output and excludes the status header when expanded is %s', (expanded) => {
-    const output = ['native first', ...Array.from({ length: 8 }, (_, index) => `line ${index}`), 'native last'].join('\n')
-    const { container } = render(() => <CommandResultBody source={source({ output, exitCode: 7 })} status="failed" context={{ getMessageUiState: () => expanded }} />)
+    const output = [
+      'native first',
+      ...Array.from({ length: 8 }, (_, index) => `line ${index}`),
+      'native last',
+    ].join('\n')
+    const { container } = render(() => (
+      <CommandResultBody
+        source={source({ output, exitCode: 7 })}
+        status="failed"
+        context={{
+          getMessageUiState: () => expanded,
+        }}
+      />
+    ))
     const marked = container.querySelectorAll('[data-tool-output-preview]')
     expect(marked).toHaveLength(1)
     expect(marked[0]?.textContent).toContain('native first')

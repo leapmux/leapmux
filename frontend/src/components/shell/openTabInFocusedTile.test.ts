@@ -15,13 +15,19 @@ const WS = 'ws-test'
 
 function setup() {
   const harness = installTestBridge({ workspaceId: WS })
-  return { harness, ...createTestTabStores(WS) }
+  return {
+    harness,
+    ...createTestTabStores(WS),
+  }
 }
 
 /** Stores pointed at a workspace the bootstrap never delivered. */
 function setupUnbootstrapped() {
   const harness = installTestBridge({ workspaceId: WS })
-  return { harness, ...createTestTabStores('ws-never-bootstrapped') }
+  return {
+    harness,
+    ...createTestTabStores('ws-never-bootstrapped'),
+  }
 }
 
 /**
@@ -68,8 +74,18 @@ describe('openTabInFocusedTile', () => {
       const s = setup()
       const tile = s.harness.rootTileId
       s.layoutStore.setFocusedTile(tile)
-      emitAddTab({ type: TabType.AGENT, id: 'first', tileId: tile, position: 'a' })
-      emitAddTab({ type: TabType.AGENT, id: 'last', tileId: tile, position: 'z' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'first',
+        tileId: tile,
+        position: 'a',
+      })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'last',
+        tileId: tile,
+        position: 'z',
+      })
       // The user is on `first`, so the new tab belongs next to it -- not at the
       // end of the strip.
       s.selection.setActiveById(TabType.AGENT, 'first')
@@ -86,7 +102,12 @@ describe('openTabInFocusedTile', () => {
       const s = setup()
       const tile = s.harness.rootTileId
       s.layoutStore.setFocusedTile(tile)
-      emitAddTab({ type: TabType.AGENT, id: 'first', tileId: tile, position: 'a' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'first',
+        tileId: tile,
+        position: 'a',
+      })
 
       openTabInFocusedTile(s, { type: TabType.AGENT, id: 'fresh' }, {})
 

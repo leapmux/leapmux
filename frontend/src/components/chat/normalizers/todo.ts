@@ -29,11 +29,13 @@ export function rawTodosToItems(raw: unknown): TodoItem[] {
     if (!isObject(entry))
       return []
     const content = todoText(entry.content)
-    return [{
-      rowKey: todoRowKey(undefined, index, content),
-      content,
-      status: normalizeTodoStatus(entry.status),
-      activeForm: todoText(entry.activeForm),
-    }]
+    return [
+      {
+        rowKey: todoRowKey(undefined, index, content),
+        content,
+        status: normalizeTodoStatus(entry.status),
+        activeForm: todoText(entry.activeForm),
+      },
+    ]
   })
 }

@@ -92,7 +92,14 @@ describe('context window resolution', () => {
     expect(contextBufferPct(AgentProvider.CLAUDE_CODE)).toBe(16.5)
     expect(contextBufferPct(AgentProvider.CODEX)).toBe(0)
     const claudePct = computePercentage(
-      { inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, outputTokens: 0, contextTokens: 50, contextWindow: 200 },
+      {
+        inputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        outputTokens: 0,
+        contextTokens: 50,
+        contextWindow: 200,
+      },
       undefined,
       AgentProvider.CLAUDE_CODE,
     )
@@ -128,14 +135,24 @@ describe('a reading that states the fill alone', () => {
   })
 
   it('lets a token count win over the percentage', () => {
-    const usage = { ...noTokens, contextTokens: 50, contextWindow: 200, usagePercent: 90 }
+    const usage = {
+      ...noTokens,
+      contextTokens: 50,
+      contextWindow: 200,
+      usagePercent: 90,
+    }
     expect(isPercentOnlyUsage(usage)).toBe(false)
     expect(computePercentage(usage)).toBe(25)
   })
 
   it('takes the percentage when the stated token count is zero', () => {
     // A count of zero is no count to draw, so the percentage is the whole reading.
-    const usage = { ...noTokens, contextTokens: 0, contextWindow: 200, usagePercent: 30 }
+    const usage = {
+      ...noTokens,
+      contextTokens: 0,
+      contextWindow: 200,
+      usagePercent: 30,
+    }
     expect(isPercentOnlyUsage(usage)).toBe(true)
     expect(computePercentage(usage)).toBe(30)
   })
@@ -175,14 +192,20 @@ function usageAt(pct: number): ContextUsageInfo {
  */
 function meterOf(container: HTMLElement): string {
   const glyphs: Record<string, string> = { [INACTIVE]: '.', [ACTIVE]: '#', [WARNING]: '!' }
-  const rows = [...container.querySelectorAll('rect')].map((rect) => {
+  const rows = [
+    ...container.querySelectorAll('rect'),
+  ].map((rect) => {
     const fill = rect.getAttribute('fill') ?? ''
     const glyph = glyphs[fill]
     if (!glyph)
       throw new Error(`unexpected pip fill ${fill}`)
     return glyph
   })
-  return [rows.slice(0, 3), rows.slice(3, 6), rows.slice(6, 9)].map(r => r.join('')).join('/')
+  return [
+    rows.slice(0, 3),
+    rows.slice(3, 6),
+    rows.slice(6, 9),
+  ].map(r => r.join('')).join('/')
 }
 
 describe('ContextUsageGrid rendering', () => {
@@ -199,7 +222,15 @@ describe('ContextUsageGrid rendering', () => {
 
   it('draws a reading that states the fill alone', () => {
     const { container } = render(() => (
-      <ContextUsageGrid size={12} contextUsage={{ inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, usagePercent: 35 }} />
+      <ContextUsageGrid
+        size={12}
+        contextUsage={{
+          inputTokens: 0,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+          usagePercent: 35,
+        }}
+      />
     ))
     expect(meterOf(container)).toBe('.../#../###')
   })
@@ -208,7 +239,15 @@ describe('ContextUsageGrid rendering', () => {
     // A zero token count is no reading, but a stated 0% is a real reading of an
     // empty context, so the meter shows and states it.
     const { container, getByLabelText } = render(() => (
-      <ContextUsageGrid size={12} contextUsage={{ inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, usagePercent: 0 }} />
+      <ContextUsageGrid
+        size={12}
+        contextUsage={{
+          inputTokens: 0,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+          usagePercent: 0,
+        }}
+      />
     ))
     expect(meterOf(container)).toBe('.../.../...')
     expect(container.querySelector('svg.lucide-info')).toBeNull()

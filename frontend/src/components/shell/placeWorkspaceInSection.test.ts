@@ -5,7 +5,9 @@ import { showWarnToast } from '~/components/common/Toast'
 import { placeWorkspaceInSection } from './placeWorkspaceInSection'
 
 vi.mock('~/api/clients', () => ({
-  sectionClient: { moveWorkspace: vi.fn() },
+  sectionClient: {
+    moveWorkspace: vi.fn(),
+  },
 }))
 
 vi.mock('~/components/common/Toast', () => ({
@@ -16,7 +18,9 @@ vi.mock('~/components/common/Toast', () => ({
 
 function makeDeps(items: { position: string }[] = []) {
   return {
-    sectionStore: { getItemsForSection: vi.fn(() => items) },
+    sectionStore: {
+      getItemsForSection: vi.fn(() => items),
+    },
     loadWorkspaces: vi.fn().mockResolvedValue(undefined),
   }
 }
@@ -26,7 +30,9 @@ function deferredMove() {
   let settle!: (err?: Error) => void
   vi.mocked(sectionClient.moveWorkspace).mockReturnValue(
     new Promise((resolve, reject) => {
-      settle = err => (err ? reject(err) : resolve({} as never))
+      settle = err => (err
+        ? reject(err)
+        : resolve({} as never))
     }) as never,
   )
   return () => settle
@@ -49,7 +55,10 @@ describe('placeWorkspaceInSection', () => {
   })
 
   it('appends past the section\'s last item so the rank cannot collide', async () => {
-    const deps = makeDeps([{ position: 'n' }, { position: 'u' }])
+    const deps = makeDeps([
+      { position: 'n' },
+      { position: 'u' },
+    ])
     placeWorkspaceInSection(deps, 'ws-1', 'sec-1')
 
     await vi.waitFor(() => expect(deps.loadWorkspaces).toHaveBeenCalled())

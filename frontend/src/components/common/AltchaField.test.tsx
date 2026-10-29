@@ -38,7 +38,10 @@ if (!customElements.get('altcha-widget')) {
   customElements.define('altcha-widget', FakeAltchaWidget)
 }
 
-const challenge = { parameters: { algorithm: 'PBKDF2/SHA-256', salt: 'abc', cost: 10000 }, signature: 'sig' }
+const challenge = {
+  parameters: { algorithm: 'PBKDF2/SHA-256', salt: 'abc', cost: 10000 },
+  signature: 'sig',
+}
 
 function widgetEls(container: HTMLElement): FakeAltchaWidget[] {
   return Array.from(container.querySelectorAll('altcha-widget')) as unknown as FakeAltchaWidget[]
@@ -109,7 +112,9 @@ describe('AltchaField', () => {
     }))
     expect(onPayload).toHaveBeenCalledWith('cGF5bG9hZA==')
 
-    widget.dispatchEvent(new CustomEvent('statechange', { detail: { state: 'unverified' } }))
+    widget.dispatchEvent(new CustomEvent('statechange', {
+      detail: { state: 'unverified' },
+    }))
     expect(onPayload).toHaveBeenLastCalledWith(null)
   })
 
@@ -120,7 +125,9 @@ describe('AltchaField', () => {
     })
     const widget = firstWidget(container)
 
-    widget.dispatchEvent(new CustomEvent('statechange', { detail: { state: 'expired' } }))
+    widget.dispatchEvent(new CustomEvent('statechange', {
+      detail: { state: 'expired' },
+    }))
     await vi.waitFor(() => {
       expect(mockFetchAltchaChallenge).toHaveBeenCalledTimes(2)
     })
@@ -154,7 +161,9 @@ describe('AltchaField', () => {
     let call = 0
     mockFetchAltchaChallenge.mockImplementation(() => {
       call++
-      return call === 1 ? first : Promise.resolve(challenge)
+      return call === 1
+        ? first
+        : Promise.resolve(challenge)
     })
     let handle: CaptchaFieldHandle | undefined
     const { container } = render(() => (

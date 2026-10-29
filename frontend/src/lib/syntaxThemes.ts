@@ -160,7 +160,13 @@ const loaded = new Map<string, Promise<ThemeRegistrationRaw>>()
  * paints and win.
  */
 export function withTransparentBg(doc: unknown, name?: string): ThemeRegistrationRaw {
-  return { ...(doc as object), ...(name === undefined ? {} : { name }), bg: 'transparent' } as ThemeRegistrationRaw
+  return {
+    ...(doc as object),
+    ...(name === undefined
+      ? {}
+      : { name }),
+    bg: 'transparent',
+  } as ThemeRegistrationRaw
 }
 
 /**
@@ -205,7 +211,10 @@ export function loadSyntaxTheme(name: string): Promise<ThemeRegistrationRaw> {
 
 /** Load both halves of a pair. */
 export function loadSyntaxPair(pair: SyntaxThemePair): Promise<ThemeRegistrationRaw[]> {
-  return Promise.all([loadSyntaxTheme(pair.light), loadSyntaxTheme(pair.dark)])
+  return Promise.all([
+    loadSyntaxTheme(pair.light),
+    loadSyntaxTheme(pair.dark),
+  ])
 }
 
 /**
@@ -233,7 +242,9 @@ export async function ensureThemesRegistered(hl: ThemeRegistrar, pair: SyntaxThe
   // carries both halves in every token and CSS picks between them. A plain
   // filter loaded and re-registered one document twice, on every highlighter,
   // on every switch, for exactly the configuration pinning exists to serve.
-  const missing = [...new Set([pair.light, pair.dark])].filter(name => !have.has(name))
+  const missing = [
+    ...new Set([pair.light, pair.dark]),
+  ].filter(name => !have.has(name))
   if (missing.length === 0)
     return
   const themes = await Promise.all(missing.map(loadSyntaxTheme))

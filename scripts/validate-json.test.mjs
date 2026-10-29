@@ -56,7 +56,7 @@ describe('discoverJsonFiles', () => {
       'frontend/tests/e2e/feature-matrix/features.json',
       'frontend/tests/e2e/feature-matrix/checklist.json',
       'scripts/license-overrides/extra/pi-mono/metadata.json',
-      'scripts/license-overrides/go/github.com-bmizerany-assert/expected.json',
+      'scripts/license-overrides/go/github.com-altcha-org-altcha-lib-go-v2/expected.json',
     ]) {
       expect(files).toContain(must)
     }
@@ -120,7 +120,9 @@ describe('validateAll', () => {
     // A JSON file at this isolated root matches neither contracts/ nor testdata/.
     // The validator must exclude it.
     writeFileSync(join(dir, 'wire.json'), '{}')
-    const { failures } = validateAll(dir, { ajv: buildAjv() })
+    const { failures } = validateAll(dir, {
+      ajv: buildAjv(),
+    })
     expect(failures).toEqual([])
   })
 
@@ -133,10 +135,14 @@ describe('validateAll', () => {
       type: 'object',
       additionalProperties: false,
       required: ['policies'],
-      properties: { policies: { type: 'object' } },
+      properties: {
+        policies: { type: 'object' },
+      },
     }))
     writeFileSync(join(dir, 'testdata', 'lonely.json'), '[]')
-    const { failures } = validateAll(dir, { ajv: buildAjv() })
+    const { failures } = validateAll(dir, {
+      ajv: buildAjv(),
+    })
     const reasons = Object.fromEntries(failures.map(f => [f.file, f.reason]))
     expect(reasons['contracts/retry.json']).toBe('invalid')
     expect(reasons['testdata/lonely.json']).toBe('no-schema')
@@ -154,15 +160,25 @@ describe('validateAll', () => {
       type: 'object',
       additionalProperties: false,
     }))
-    const { failures } = validateAll(dir, { ajv: buildAjv() })
+    const { failures } = validateAll(dir, {
+      ajv: buildAjv(),
+    })
     const reasons = Object.fromEntries(failures.map(f => [f.file, f.reason]))
     expect(reasons['contracts/broken.json']).toBe('bad-schema')
     expect(reasons['contracts/fine.json']).toBe('invalid')
   })
 
   it.each([
-    ['unsupported draft', { $schema: 'http://json-schema.org/draft-07/schema#', type: 'object' }, 'draft-07'],
-    ['unknown keyword', { type: 'object', unsupportedKeyword: true }, 'unsupportedKeyword'],
+    [
+      'unsupported draft',
+      { $schema: 'http://json-schema.org/draft-07/schema#', type: 'object' },
+      'draft-07',
+    ],
+    [
+      'unknown keyword',
+      { type: 'object', unsupportedKeyword: true },
+      'unsupportedKeyword',
+    ],
   ])('reports a schema compilation failure for %s and continues with later files', (_name, schema, detail) => {
     const dir = scratchDirectory('validate-json-compile-')
     mkdirSync(join(dir, 'contracts'))
@@ -173,7 +189,9 @@ describe('validateAll', () => {
       type: 'object',
       additionalProperties: false,
       required: ['value'],
-      properties: { value: { type: 'integer' } },
+      properties: {
+        value: { type: 'integer' },
+      },
     }))
 
     const result = validateAll(dir)
@@ -193,19 +211,28 @@ describe('findDuplicateKeys', () => {
   })
 
   it('reports a repeated key with the JSON Pointer of its object', () => {
-    expect(findDuplicateKeys('{"methods":{"Warning":"w","Error":"e","Warning":"w"}}')).toEqual([{ path: '/methods', key: 'Warning' }])
+    expect(findDuplicateKeys('{"methods":{"Warning":"w","Error":"e","Warning":"w"}}')).toEqual([
+      { path: '/methods', key: 'Warning' },
+    ])
   })
 
   it('reports a repeated key of the root object with the root pointer', () => {
-    expect(findDuplicateKeys('{"a":1,"a":2}')).toEqual([{ path: '', key: 'a' }])
+    expect(findDuplicateKeys('{"a":1,"a":2}')).toEqual([
+      { path: '', key: 'a' },
+    ])
   })
 
   it('reports each extra occurrence of a key', () => {
-    expect(findDuplicateKeys('{"a":1,"a":2,"a":3}')).toEqual([{ path: '', key: 'a' }, { path: '', key: 'a' }])
+    expect(findDuplicateKeys('{"a":1,"a":2,"a":3}')).toEqual([
+      { path: '', key: 'a' },
+      { path: '', key: 'a' },
+    ])
   })
 
   it('compares the decoded keys, so an escaped spelling is the same key', () => {
-    expect(findDuplicateKeys('{"a":1,"\\u0061":2}')).toEqual([{ path: '', key: 'a' }])
+    expect(findDuplicateKeys('{"a":1,"\\u0061":2}')).toEqual([
+      { path: '', key: 'a' },
+    ])
   })
 
   it('reads strings that hold JSON punctuation, quotes and backslashes as one token', () => {
@@ -213,25 +240,38 @@ describe('findDuplicateKeys', () => {
   })
 
   it('counts array elements of every type in the pointer', () => {
-    expect(findDuplicateKeys('[1,"s",true,null,[],{"b":1,"b":2}]')).toEqual([{ path: '/5', key: 'b' }])
+    expect(findDuplicateKeys('[1,"s",true,null,[],{"b":1,"b":2}]')).toEqual([
+      { path: '/5', key: 'b' },
+    ])
   })
 
   it('escapes a tilde and a slash in the pointer', () => {
-    expect(findDuplicateKeys('{"a/b~c":{"x":1,"x":2}}')).toEqual([{ path: '/a~1b~0c', key: 'x' }])
+    expect(findDuplicateKeys('{"a/b~c":{"x":1,"x":2}}')).toEqual([
+      { path: '/a~1b~0c', key: 'x' },
+    ])
   })
 
   it('reads a key again after a nested value closes', () => {
-    expect(findDuplicateKeys('{"a":{"b":[1,{"c":2}]},"a":3}')).toEqual([{ path: '', key: 'a' }])
+    expect(findDuplicateKeys('{"a":{"b":[1,{"c":2}]},"a":3}')).toEqual([
+      { path: '', key: 'a' },
+    ])
   })
 
   it('accepts whitespace between every token', () => {
-    expect(findDuplicateKeys(' {\n  "a" : 1 ,\n  "a" : [ 1 , { "b" : 2 } ]\n}\n')).toEqual([{ path: '', key: 'a' }])
+    expect(findDuplicateKeys(' {\n  "a" : 1 ,\n  "a" : [ 1 , { "b" : 2 } ]\n}\n')).toEqual([
+      { path: '', key: 'a' },
+    ])
   })
 
   it('walks a deep nesting without recursion', () => {
     const depth = 20000
     const text = `${'['.repeat(depth)}{"a":1,"a":2}${']'.repeat(depth)}`
-    expect(findDuplicateKeys(text)).toEqual([{ path: '/0'.repeat(depth), key: 'a' }])
+    expect(findDuplicateKeys(text)).toEqual([
+      {
+        path: '/0'.repeat(depth),
+        key: 'a',
+      },
+    ])
   })
 
   it('reports nothing for a top-level scalar', () => {
@@ -249,9 +289,13 @@ describe('validateAll duplicate keys', () => {
       type: 'object',
       additionalProperties: false,
       required: ['value'],
-      properties: { value: { type: 'integer' } },
+      properties: {
+        value: { type: 'integer' },
+      },
     }))
-    const { failures } = validateAll(dir, { ajv: buildAjv() })
+    const { failures } = validateAll(dir, {
+      ajv: buildAjv(),
+    })
     expect(failures).toHaveLength(1)
     expect(failures[0]?.reason).toBe('invalid')
     expect(formatFailureLines(failures)).toEqual([
@@ -265,9 +309,13 @@ describe('validateAll duplicate keys', () => {
     writeFileSync(join(dir, 'contracts', 'dup.json'), '{"nested":{"a":1,"a":2},"value":"text"}')
     writeFileSync(join(dir, 'contracts', 'dup.schema.json'), JSON.stringify({
       type: 'object',
-      properties: { value: { type: 'integer' } },
+      properties: {
+        value: { type: 'integer' },
+      },
     }))
-    const { failures } = validateAll(dir, { ajv: buildAjv() })
+    const { failures } = validateAll(dir, {
+      ajv: buildAjv(),
+    })
     const lines = formatFailureLines(failures)
     expect(lines).toHaveLength(2)
     expect(lines[0]).toBe('contracts/dup.json/nested: the key "a" appears more than once in this object. JSON.parse keeps only the last value.')
@@ -279,7 +327,9 @@ describe('validateAll duplicate keys', () => {
     mkdirSync(join(dir, 'contracts'))
     writeFileSync(join(dir, 'contracts', 'dup.json'), '[]')
     writeFileSync(join(dir, 'contracts', 'dup.schema.json'), '{"type":"object","type":"array"}')
-    const { failures } = validateAll(dir, { ajv: buildAjv() })
+    const { failures } = validateAll(dir, {
+      ajv: buildAjv(),
+    })
     expect(failures).toHaveLength(1)
     expect(failures[0]?.reason).toBe('bad-schema')
     expect(failures[0]?.reasonText).toBe('schema states a key more than once: the key "type" at /. JSON.parse keeps only the last value.')
@@ -289,7 +339,9 @@ describe('validateAll duplicate keys', () => {
     const dir = scratchDirectory('validate-json-duplicate-')
     writeFileSync(join(dir, 'dup.json'), '{"a":1,"a":1}')
     writeFileSync(join(dir, 'dup.schema.json'), JSON.stringify({ type: 'object' }))
-    const { failures } = validateSchemalessDir(dir, { ajv: buildAjv() })
+    const { failures } = validateSchemalessDir(dir, {
+      ajv: buildAjv(),
+    })
     expect(failures.map(f => f.reason)).toEqual(['invalid'])
   })
 })
@@ -297,7 +349,14 @@ describe('validateAll duplicate keys', () => {
 describe('formatFailureLines', () => {
   it('renders each invalid error with its instance path and every other reason as one line', () => {
     const lines = formatFailureLines([
-      { file: 'a.json', reason: 'invalid', errors: [{ path: '/policies', message: 'must be object' }, { path: '/', message: 'bad' }] },
+      {
+        file: 'a.json',
+        reason: 'invalid',
+        errors: [
+          { path: '/policies', message: 'must be object' },
+          { path: '/', message: 'bad' },
+        ],
+      },
       { file: 'b.json', reason: 'no-schema', reasonText: 'no sibling schema' },
     ])
     expect(lines).toEqual([
@@ -310,7 +369,9 @@ describe('formatFailureLines', () => {
   it('prefixes each file path so both CLIs report one failure identically', () => {
     // The contracts generator adds contracts/ to each reported file path.
     // Keep the message and reason order unchanged.
-    const lines = formatFailureLines([{ file: 'wire.json', reason: 'no-schema', reasonText: 'x' }], 'contracts/')
+    const lines = formatFailureLines([
+      { file: 'wire.json', reason: 'no-schema', reasonText: 'x' },
+    ], 'contracts/')
     expect(lines).toEqual(['contracts/wire.json: x'])
   })
 })
@@ -324,7 +385,9 @@ describe('validateSchemalessDir', () => {
       type: 'object',
       additionalProperties: false,
     }))
-    const { files, failures } = validateSchemalessDir(dir, { ajv: buildAjv() })
+    const { files, failures } = validateSchemalessDir(dir, {
+      ajv: buildAjv(),
+    })
     expect(files).toBe(2)
     const reasons = Object.fromEntries(failures.map(f => [f.file, f.reason]))
     expect(reasons['schemaless.json']).toBe('no-schema')
@@ -342,9 +405,13 @@ describe('validateSchemalessDir', () => {
       type: 'object',
       additionalProperties: false,
       required: ['ok'],
-      properties: { ok: { type: 'boolean' } },
+      properties: {
+        ok: { type: 'boolean' },
+      },
     }))
-    const { files, failures } = validateSchemalessDir(dir, { ajv: buildAjv() })
+    const { files, failures } = validateSchemalessDir(dir, {
+      ajv: buildAjv(),
+    })
     expect(files).toBe(1)
     expect(failures).toEqual([])
   })

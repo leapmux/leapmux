@@ -6,7 +6,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { getEditorRef, insertIntoAgentEditor } from '~/stores/editorRef.store'
 import { PromptSuggestionChip } from './PromptSuggestionChip'
 
-vi.mock('~/stores/editorRef.store', () => ({ getEditorRef: vi.fn(), insertIntoAgentEditor: vi.fn() }))
+vi.mock('~/stores/editorRef.store', () => ({
+  getEditorRef: vi.fn(),
+  insertIntoAgentEditor: vi.fn(),
+}))
 
 beforeEach(() => {
   vi.mocked(insertIntoAgentEditor).mockReset().mockReturnValue('inserted')
@@ -21,13 +24,37 @@ beforeEach(() => {
 
 describe('PromptSuggestionChip', () => {
   it.each([
-    ['the agent works', { idle: false }],
-    ['the editor holds text', { editorEmpty: false }],
-    ['the suggestion is absent', { suggestion: undefined }],
-    ['the suggestion is blank', { suggestion: { text: '  ' } }],
-    ['the agent is absent', { agentId: '' }],
+    [
+      'the agent works',
+      { idle: false },
+    ],
+    [
+      'the editor holds text',
+      { editorEmpty: false },
+    ],
+    [
+      'the suggestion is absent',
+      { suggestion: undefined },
+    ],
+    [
+      'the suggestion is blank',
+      {
+        suggestion: { text: '  ' },
+      },
+    ],
+    [
+      'the agent is absent',
+      { agentId: '' },
+    ],
   ] satisfies [string, Partial<PromptSuggestionChipProps>][])('hides when %s', (_name, override) => {
-    const props: PromptSuggestionChipProps = { agentId: 'a', suggestion: { text: 'run the tests' }, idle: true, editorEmpty: true, onDismiss: vi.fn(), ...override }
+    const props: PromptSuggestionChipProps = {
+      agentId: 'a',
+      suggestion: { text: 'run the tests' },
+      idle: true,
+      editorEmpty: true,
+      onDismiss: vi.fn(),
+      ...override,
+    }
     render(() => <PromptSuggestionChip {...props} />)
     expect(screen.queryByTestId('prompt-suggestion-chip')).not.toBeInTheDocument()
   })
@@ -59,7 +86,10 @@ describe('PromptSuggestionChip', () => {
 
   it('does not append to text typed before the empty-state signal updates', async () => {
     const editor = getEditorRef('a')!
-    vi.mocked(getEditorRef).mockReturnValue({ ...editor, get: () => 'typed now' })
+    vi.mocked(getEditorRef).mockReturnValue({
+      ...editor,
+      get: () => 'typed now',
+    })
     const dismiss = vi.fn()
     render(() => <PromptSuggestionChip agentId="a" suggestion={{ text: 'run the tests' }} idle editorEmpty onDismiss={dismiss} />)
     await fireEvent.click(screen.getByRole('button', { name: 'Use' }))

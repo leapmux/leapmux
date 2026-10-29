@@ -18,7 +18,9 @@ import { assertCornerAlpha } from './icon-corners.mjs'
 // for an icon whose rounded corners must stay transparent. Omit it to skip the
 // check.
 export function renderPng(svgData, size, { opaqueCorners } = {}) {
-  const resvg = new Resvg(svgData, { fitTo: { mode: 'width', value: size } })
+  const resvg = new Resvg(svgData, {
+    fitTo: { mode: 'width', value: size },
+  })
   const rendered = resvg.render()
   if (opaqueCorners !== undefined) {
     assertCornerAlpha(rendered.pixels, rendered.width, rendered.height, opaqueCorners)

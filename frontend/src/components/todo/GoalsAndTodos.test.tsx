@@ -21,7 +21,11 @@ const todo: TodoItem = {
 // Use an untyped record for the explicit current: undefined fixture.
 // exactOptionalPropertyTypes excludes that present key from Partial<GoalSurface>.
 function surface(over: Record<string, unknown> = {}): GoalSurface {
-  const base: GoalSurface = { current: { objective: 'Ship the release', status: 'active' }, progress: {}, actions: ['set', 'clear'] }
+  const base: GoalSurface = {
+    current: { objective: 'Ship the release', status: 'active' },
+    progress: {},
+    actions: ['set', 'clear'],
+  }
   return Object.assign(base, over)
 }
 
@@ -65,7 +69,11 @@ describe('GoalsAndTodos', () => {
     const { getByTestId } = render(() => (
       <GoalsAndTodos
         variant="sidebar"
-        goal={surface({ current: undefined, actions: ['set'], onAction })}
+        goal={surface({
+          current: undefined,
+          actions: ['set'],
+          onAction,
+        })}
         todos={[]}
       />
     ))

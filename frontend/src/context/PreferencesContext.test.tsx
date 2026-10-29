@@ -44,7 +44,13 @@ function flushMicrotasks(): Promise<void> {
 
 /** A SettingValue-shaped object for seeding listUserSettings responses. */
 function settingValue(key: string, effectiveJson: string, customized = false) {
-  return { key, effectiveJson, customized, valueJson: effectiveJson, secretSet: {} }
+  return {
+    key,
+    effectiveJson,
+    customized,
+    valueJson: effectiveJson,
+    secretSet: {},
+  }
 }
 
 type Prefs = ReturnType<typeof usePreferences>
@@ -135,7 +141,9 @@ describe('PreferencesContext — browser-level theme override', () => {
 
   it('hydrates the browser theme from storage on provider mount (simulated reload)', () => {
     // Pre-seed the store with a preference and mount fresh.
-    localStorageSet(KEY_BROWSER_PREFS, { theme: { ...DARK_NORD } })
+    localStorageSet(KEY_BROWSER_PREFS, {
+      theme: { ...DARK_NORD },
+    })
     const ctx = captureContext()
     expect(ctx.get().dual.theme.browser()).toEqual(DARK_NORD)
     expect(ctx.get().theme()).toEqual(DARK_NORD)
@@ -145,7 +153,9 @@ describe('PreferencesContext — browser-level theme override', () => {
     // A palette written by a NEWER build is the ordinary way this happens. The
     // mode beside it is untouched and must survive, or downgrading costs the
     // user their dark mode as well as their palette.
-    localStorageSet(KEY_BROWSER_PREFS, { theme: { name: 'not-a-theme-in-this-build', mode: 'dark' } })
+    localStorageSet(KEY_BROWSER_PREFS, {
+      theme: { name: 'not-a-theme-in-this-build', mode: 'dark' },
+    })
     const ctx = captureContext()
     expect(ctx.get().theme()).toEqual({ name: 'default', mode: 'dark' })
   })
@@ -199,15 +209,21 @@ describe('PreferencesContext — terminal theme override', () => {
     // The two halves are ONE choice -- one entry in one palette list -- so a
     // document carrying the sentinel in one half only is repaired on the way
     // in. The name decides, because it is the half a user picks deliberately.
-    localStorageSet(KEY_BROWSER_PREFS, { terminalTheme: { name: 'gruvbox', mode: 'match-ui' } })
+    localStorageSet(KEY_BROWSER_PREFS, {
+      terminalTheme: { name: 'gruvbox', mode: 'match-ui' },
+    })
     expect(captureContext().get().terminalTheme()).toEqual({ name: 'gruvbox', mode: 'system' })
 
-    localStorageSet(KEY_BROWSER_PREFS, { terminalTheme: { name: 'match-ui', mode: 'dark' } })
+    localStorageSet(KEY_BROWSER_PREFS, {
+      terminalTheme: { name: 'match-ui', mode: 'dark' },
+    })
     expect(captureContext().get().terminalTheme()).toEqual(MATCH_BOTH)
   })
 
   it('degrades an unresolvable palette to match-ui, not to one nobody chose', () => {
-    localStorageSet(KEY_BROWSER_PREFS, { terminalTheme: { name: 'from-the-future', mode: 'sepia' } })
+    localStorageSet(KEY_BROWSER_PREFS, {
+      terminalTheme: { name: 'from-the-future', mode: 'sepia' },
+    })
     const ctx = captureContext()
     expect(ctx.get().terminalTheme()).toEqual(MATCH_BOTH)
   })
@@ -395,13 +411,18 @@ describe('PreferencesContext — reload from API', () => {
       expect(ctx.get().dual.theme.account()).toEqual({ name: 'nord', mode: 'dark' })
     })
     expect(ctx.get().dual.turnEndSound.account()).toBe('none')
-    expect(ctx.get().dual.uiFonts.account()).toEqual({ enabled: true, fonts: ['Inter'] })
+    expect(ctx.get().dual.uiFonts.account()).toEqual({
+      enabled: true,
+      fonts: ['Inter'],
+    })
     expect(ctx.get().dual.monoFonts.account()).toEqual({ enabled: false, fonts: [] })
     expect(ctx.get().dual.diffView.account()).toBe('split')
     expect(ctx.get().dual.turnEndSound.account()).toBe('none')
     expect(ctx.get().dual.turnEndSoundVolume.account()).toBe(42)
     expect(ctx.get().dual.debugLogging.account()).toBe(true)
-    expect(ctx.get().customKeybindings()).toEqual([{ key: '$mod+k', command: 'chat.sendMessage' }])
+    expect(ctx.get().customKeybindings()).toEqual([
+      { key: '$mod+k', command: 'chat.sendMessage' },
+    ])
     expect(ctx.get().accountCustomized().keybindings).toBe(true)
     expect(ctx.get().accountCustomized().turn_end_sound).toBe(false)
   })
@@ -409,7 +430,10 @@ describe('PreferencesContext — reload from API', () => {
   it('keeps defaults for values whose effectiveJson is empty or malformed', async () => {
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('turn_end_sound', ''), settingValue('debug_logging', 'not-json{')],
+      values: [
+        settingValue('turn_end_sound', ''),
+        settingValue('debug_logging', 'not-json{'),
+      ],
     })
     const ctx = captureContext()
     await waitFor(() => {
@@ -421,7 +445,9 @@ describe('PreferencesContext — reload from API', () => {
 
 describe('PreferencesContext — per-key account writes', () => {
   it('writes the partial as JSON and applies the server effective value on success', async () => {
-    updateUserSetting.mockResolvedValue({ value: settingValue('turn_end_sound', '"none"', true) })
+    updateUserSetting.mockResolvedValue({
+      value: settingValue('turn_end_sound', '"none"', true),
+    })
     const ctx = captureContext()
 
     await expect(ctx.get().updateUserSetting('turn_end_sound', 'none')).resolves.toBeUndefined()
@@ -449,7 +475,9 @@ describe('PreferencesContext — per-key account writes', () => {
     await ctx.get().updateUserSetting('ui_fonts', { enabled: true })
     expect(updateUserSetting).toHaveBeenLastCalledWith({ key: 'ui_fonts', partialJson: '{"enabled":true}' })
 
-    await ctx.get().updateUserSetting('keybindings', [{ key: '$mod+k', command: 'chat.sendMessage' }])
+    await ctx.get().updateUserSetting('keybindings', [
+      { key: '$mod+k', command: 'chat.sendMessage' },
+    ])
     expect(updateUserSetting).toHaveBeenLastCalledWith({
       key: 'keybindings',
       partialJson: '[{"key":"$mod+k","command":"chat.sendMessage"}]',
@@ -461,9 +489,13 @@ describe('PreferencesContext — per-key account writes', () => {
       value: settingValue('keybindings', '[{"key":"F9","command":"app.newAgent"}]', true),
     })
     const ctx = captureContext()
-    ctx.get().setCustomKeybindings([{ key: 'F9', command: 'app.newAgent' }])
+    ctx.get().setCustomKeybindings([
+      { key: 'F9', command: 'app.newAgent' },
+    ])
     await waitFor(() => {
-      expect(ctx.get().customKeybindings()).toEqual([{ key: 'F9', command: 'app.newAgent' }])
+      expect(ctx.get().customKeybindings()).toEqual([
+        { key: 'F9', command: 'app.newAgent' },
+      ])
     })
     expect(updateUserSetting).toHaveBeenCalledWith({
       key: 'keybindings',
@@ -474,9 +506,13 @@ describe('PreferencesContext — per-key account writes', () => {
   it('resetUserSetting applies the returned default and rejects without changing the value', async () => {
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('turn_end_sound', '"none"', true)],
+      values: [
+        settingValue('turn_end_sound', '"none"', true),
+      ],
     })
-    resetUserSetting.mockResolvedValue({ value: settingValue('turn_end_sound', '"ding-dong"', false) })
+    resetUserSetting.mockResolvedValue({
+      value: settingValue('turn_end_sound', '"ding-dong"', false),
+    })
     const ctx = captureContext()
     await waitFor(() => expect(ctx.get().dual.turnEndSound.account()).toBe('none'))
 
@@ -485,7 +521,9 @@ describe('PreferencesContext — per-key account writes', () => {
 
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('turn_end_sound', '"none"', true)],
+      values: [
+        settingValue('turn_end_sound', '"none"', true),
+      ],
     })
     resetUserSetting.mockRejectedValue(new Error('reset refused'))
     const failing = captureContext()
@@ -499,22 +537,42 @@ describe('PreferencesContext — font tiers', () => {
   it('resolves fonts from the browser whole-object override before the account value', async () => {
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('mono_fonts', '{"enabled":true,"fonts":["Account Mono"]}')],
+      values: [
+        settingValue('mono_fonts', '{"enabled":true,"fonts":["Account Mono"]}'),
+      ],
     })
     const ctx = captureContext()
-    await waitFor(() => expect(ctx.get().dual.monoFonts.account()).toEqual({ enabled: true, fonts: ['Account Mono'] }))
+    await waitFor(() => expect(ctx.get().dual.monoFonts.account()).toEqual({
+      enabled: true,
+      fonts: ['Account Mono'],
+    }))
 
     // No override: account value resolves through.
-    expect(ctx.get().monoFonts()).toEqual({ enabled: true, fonts: ['Account Mono'] })
+    expect(ctx.get().monoFonts()).toEqual({
+      enabled: true,
+      fonts: ['Account Mono'],
+    })
     expect(ctx.get().monoFonts().enabled).toBe(true)
 
     // Whole-object override wins; null restores the account value.
-    ctx.get().dual.monoFonts.setBrowser({ enabled: true, fonts: ['Browser Mono'] })
-    expect(ctx.get().monoFonts()).toEqual({ enabled: true, fonts: ['Browser Mono'] })
-    expect(loadBrowserPrefs().monoFontOverride).toEqual({ enabled: true, fonts: ['Browser Mono'] })
+    ctx.get().dual.monoFonts.setBrowser({
+      enabled: true,
+      fonts: ['Browser Mono'],
+    })
+    expect(ctx.get().monoFonts()).toEqual({
+      enabled: true,
+      fonts: ['Browser Mono'],
+    })
+    expect(loadBrowserPrefs().monoFontOverride).toEqual({
+      enabled: true,
+      fonts: ['Browser Mono'],
+    })
 
     ctx.get().dual.monoFonts.setBrowser(null)
-    expect(ctx.get().monoFonts()).toEqual({ enabled: true, fonts: ['Account Mono'] })
+    expect(ctx.get().monoFonts()).toEqual({
+      enabled: true,
+      fonts: ['Account Mono'],
+    })
     expect('monoFontOverride' in loadBrowserPrefs()).toBe(false)
   })
 
@@ -525,13 +583,19 @@ describe('PreferencesContext — font tiers', () => {
     const ctx = captureContext()
     await waitFor(() => expect(ctx.get().uiFontFamily()).toBeUndefined())
 
-    ctx.get().dual.uiFonts.setBrowser({ enabled: false, fonts: ['Inter'] })
+    ctx.get().dual.uiFonts.setBrowser({
+      enabled: false,
+      fonts: ['Inter'],
+    })
     expect(ctx.get().uiFontFamily()).toBeUndefined()
 
     ctx.get().dual.uiFonts.setBrowser({ enabled: true, fonts: [] })
     expect(ctx.get().uiFontFamily()).toBeUndefined()
 
-    ctx.get().dual.uiFonts.setBrowser({ enabled: true, fonts: ['Inter'] })
+    ctx.get().dual.uiFonts.setBrowser({
+      enabled: true,
+      fonts: ['Inter'],
+    })
     expect(ctx.get().uiFontFamily()).toBe('"Inter"')
   })
 
@@ -539,7 +603,10 @@ describe('PreferencesContext — font tiers', () => {
     const ctx = captureContext()
     await waitFor(() => expect(ctx.get().monoFontFamily()).toContain('monospace'))
 
-    ctx.get().dual.monoFonts.setBrowser({ enabled: true, fonts: ['Custom Mono'] })
+    ctx.get().dual.monoFonts.setBrowser({
+      enabled: true,
+      fonts: ['Custom Mono'],
+    })
     expect(ctx.get().monoFontFamily()).toContain('"Custom Mono"')
 
     // An enabled tier with an empty stack falls back to the default family.
@@ -557,7 +624,9 @@ describe('PreferencesContext — a stored browser value passes the same parse', 
     localStorageSet(KEY_BROWSER_PREFS, { turnEndSound: 'chartreuse' })
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('turn_end_sound', '"none"')],
+      values: [
+        settingValue('turn_end_sound', '"none"'),
+      ],
     })
     const ctx = captureContext()
     await waitFor(() => expect(ctx.get().dual.turnEndSound.account()).toBe('none'))
@@ -567,7 +636,12 @@ describe('PreferencesContext — a stored browser value passes the same parse', 
   })
 
   it('refuses a browser font tier whose enabled flag is not a boolean', async () => {
-    localStorageSet(KEY_BROWSER_PREFS, { monoFontOverride: { enabled: 'yes', fonts: ['Bad'] } })
+    localStorageSet(KEY_BROWSER_PREFS, {
+      monoFontOverride: {
+        enabled: 'yes',
+        fonts: ['Bad'],
+      },
+    })
     const ctx = captureContext()
     await waitFor(() => expect(ctx.get().monoFonts()).toEqual({ enabled: false, fonts: [] }))
 
@@ -577,12 +651,19 @@ describe('PreferencesContext — a stored browser value passes the same parse', 
 
   it('keeps only the two declared fields of a font tier', async () => {
     localStorageSet(KEY_BROWSER_PREFS, {
-      uiFontOverride: { enabled: true, fonts: ['Inter'], stale: 'dropped' },
+      uiFontOverride: {
+        enabled: true,
+        fonts: ['Inter'],
+        stale: 'dropped',
+      },
     })
     const ctx = captureContext()
     await waitFor(() => expect(ctx.get().uiFonts().enabled).toBe(true))
 
-    expect(ctx.get().dual.uiFonts.browser()).toEqual({ enabled: true, fonts: ['Inter'] })
+    expect(ctx.get().dual.uiFonts.browser()).toEqual({
+      enabled: true,
+      fonts: ['Inter'],
+    })
   })
 
   it('refuses a browser turn-end sound outside the allowed set', async () => {
@@ -603,7 +684,9 @@ describe('PreferencesContext — the Desktop device tier', () => {
     localStorageSet(KEY_BROWSER_PREFS, { trayOnClose: TRAY_ON_CLOSE_QUIT, trayEnabled: true })
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('tray_on_close', `"${TRAY_ON_CLOSE_TRAY}"`, true)],
+      values: [
+        settingValue('tray_on_close', `"${TRAY_ON_CLOSE_TRAY}"`, true),
+      ],
     })
     const ctx = captureContext()
     await waitFor(() => expect(ctx.get().dual.trayOnClose.account()).toBe(TRAY_ON_CLOSE_TRAY))
@@ -633,7 +716,13 @@ describe('PreferencesContext — the Desktop device tier', () => {
     const ctx = captureContext()
     await flushMicrotasks()
 
-    for (const key of ['trayEnabled', 'trayOnClose', 'trayOnMinimize', 'startOnLogin', 'startMinimized'] as const)
+    for (const key of [
+      'trayEnabled',
+      'trayOnClose',
+      'trayOnMinimize',
+      'startOnLogin',
+      'startMinimized',
+    ] as const)
       expect(ctx.get().dual[key].browser(), key).toBeNull()
     expect(ctx.get().trayOnClose()).toBe(TRAY_ON_CLOSE_TRAY)
     expect(ctx.get().trayOnMinimize()).toBe(TRAY_ON_MINIMIZE_TASKBAR)
@@ -655,7 +744,9 @@ describe('PreferencesContext — the Desktop device tier', () => {
     })
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('start_minimized', `"${START_MINIMIZED_MINIMIZED}"`, true)],
+      values: [
+        settingValue('start_minimized', `"${START_MINIMIZED_MINIMIZED}"`, true),
+      ],
     })
     const ctx = captureContext()
     await waitFor(() => expect(ctx.get().dual.startMinimized.account()).toBe(START_MINIMIZED_MINIMIZED))
@@ -676,7 +767,9 @@ describe('PreferencesContext — the Desktop device tier', () => {
 // the same path records it, which is what makes the drop observable.
 describe('PreferencesContext — an undeclared account key', () => {
   it('is not recorded as customized when a write returns it', async () => {
-    updateUserSetting.mockResolvedValue({ value: settingValue('a_key_from_a_newer_hub', '"x"', true) })
+    updateUserSetting.mockResolvedValue({
+      value: settingValue('a_key_from_a_newer_hub', '"x"', true),
+    })
     const ctx = captureContext()
 
     await ctx.get().updateUserSetting('a_key_from_a_newer_hub', 'x')
@@ -689,14 +782,18 @@ describe('PreferencesContext — an undeclared account key', () => {
   it('clears the keybindings when the stored document is unreadable', async () => {
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('keybindings', '[{"key":"F9","command":"app.newAgent"}]')],
+      values: [
+        settingValue('keybindings', '[{"key":"F9","command":"app.newAgent"}]'),
+      ],
     })
     const ctx = captureContext()
     await waitFor(() => expect(ctx.get().customKeybindings()).toHaveLength(1))
 
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('keybindings', 'not-json{')],
+      values: [
+        settingValue('keybindings', 'not-json{'),
+      ],
     })
     await ctx.get().reload()
     expect(ctx.get().customKeybindings()).toEqual([])
@@ -746,7 +843,10 @@ describe('PreferencesContext — an undeclared account key', () => {
   it('leaves every declared key at its value', async () => {
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('turn_end_sound', '"none"'), settingValue('a_key_from_a_newer_hub', '"x"', true)],
+      values: [
+        settingValue('turn_end_sound', '"none"'),
+        settingValue('a_key_from_a_newer_hub', '"x"', true),
+      ],
     })
     const ctx = captureContext()
     await waitFor(() => expect(ctx.get().dual.turnEndSound.account()).toBe('none'))
@@ -813,13 +913,17 @@ describe('PreferencesContext — superseded account write replies', () => {
     const a = ctx.get().updateUserSetting('turn_end_sound', 'none')
     const b = ctx.get().updateUserSetting('turn_end_sound', 'ding-dong')
 
-    first.resolve({ value: settingValue('turn_end_sound', '"none"', true) })
+    first.resolve({
+      value: settingValue('turn_end_sound', '"none"', true),
+    })
     await a
     // The stale reply must not put its value on screen even for the time
     // the newer write is still in flight.
     expect(ctx.get().dual.turnEndSound.account()).toBe('ding-dong')
 
-    second.resolve({ value: settingValue('turn_end_sound', '"ding-dong"', true) })
+    second.resolve({
+      value: settingValue('turn_end_sound', '"ding-dong"', true),
+    })
     await b
     expect(ctx.get().dual.turnEndSound.account()).toBe('ding-dong')
   })
@@ -846,7 +950,9 @@ describe('PreferencesContext — superseded account write replies', () => {
     // since.
     expect(ctx.get().dual.turnEndSound.account()).toBe('ding-dong')
 
-    second.resolve({ value: settingValue('turn_end_sound', '"ding-dong"', true) })
+    second.resolve({
+      value: settingValue('turn_end_sound', '"ding-dong"', true),
+    })
     await later
   })
 
@@ -887,15 +993,33 @@ describe('PreferencesContext — parses exactly what the hub declares', () => {
     // `terminal_theme` is absent for the same reason `theme` is: it is an
     // object key with a custom editor, not an enum. Its parse is covered by
     // the terminal-theme describe block below.
-    diff_view: { read: p => p.dual.diffView.account(), fallback: SETTING_DIFF_VIEW_DEFAULT },
-    turn_end_sound: { read: p => p.dual.turnEndSound.account(), fallback: SETTING_TURN_END_SOUND_DEFAULT },
-    quake_orientation: { read: p => p.dual.quakeOrientation.account(), fallback: SETTING_QUAKE_ORIENTATION_DEFAULT },
+    diff_view: {
+      read: p => p.dual.diffView.account(),
+      fallback: SETTING_DIFF_VIEW_DEFAULT,
+    },
+    turn_end_sound: {
+      read: p => p.dual.turnEndSound.account(),
+      fallback: SETTING_TURN_END_SOUND_DEFAULT,
+    },
+    quake_orientation: {
+      read: p => p.dual.quakeOrientation.account(),
+      fallback: SETTING_QUAKE_ORIENTATION_DEFAULT,
+    },
     // The three Desktop enums. Their tokens come from contracts/desktop.json,
     // which the hub's catalogue also reads, so the golden file and these
     // fallbacks are two views of one source.
-    tray_on_close: { read: p => p.dual.trayOnClose.account(), fallback: TRAY_ON_CLOSE_TRAY },
-    tray_on_minimize: { read: p => p.dual.trayOnMinimize.account(), fallback: TRAY_ON_MINIMIZE_TASKBAR },
-    start_minimized: { read: p => p.dual.startMinimized.account(), fallback: START_MINIMIZED_WINDOW },
+    tray_on_close: {
+      read: p => p.dual.trayOnClose.account(),
+      fallback: TRAY_ON_CLOSE_TRAY,
+    },
+    tray_on_minimize: {
+      read: p => p.dual.trayOnMinimize.account(),
+      fallback: TRAY_ON_MINIMIZE_TASKBAR,
+    },
+    start_minimized: {
+      read: p => p.dual.startMinimized.account(),
+      fallback: START_MINIMIZED_WINDOW,
+    },
   }
 
   const enumKeys = golden.filter(k => k.fields.some(f => (f.enumValues?.length ?? 0) > 0))
@@ -921,10 +1045,22 @@ describe('PreferencesContext — parses exactly what the hub declares', () => {
    * Reset.
    */
   const numericReaders: Record<string, { read: (p: Prefs) => unknown, fallback: number }> = {
-    turn_end_sound_volume: { read: p => p.dual.turnEndSoundVolume.account(), fallback: SETTING_TURN_END_SOUND_VOLUME_DEFAULT },
-    quake_size_percent: { read: p => p.dual.quakeSizePercent.account(), fallback: SETTING_QUAKE_SIZE_PERCENT_DEFAULT },
-    quake_animation_ms: { read: p => p.dual.quakeAnimationMs.account(), fallback: SETTING_QUAKE_ANIMATION_MS_DEFAULT },
-    quake_background_opacity: { read: p => p.dual.quakeBackgroundOpacity.account(), fallback: SETTING_QUAKE_BACKGROUND_OPACITY_DEFAULT },
+    turn_end_sound_volume: {
+      read: p => p.dual.turnEndSoundVolume.account(),
+      fallback: SETTING_TURN_END_SOUND_VOLUME_DEFAULT,
+    },
+    quake_size_percent: {
+      read: p => p.dual.quakeSizePercent.account(),
+      fallback: SETTING_QUAKE_SIZE_PERCENT_DEFAULT,
+    },
+    quake_animation_ms: {
+      read: p => p.dual.quakeAnimationMs.account(),
+      fallback: SETTING_QUAKE_ANIMATION_MS_DEFAULT,
+    },
+    quake_background_opacity: {
+      read: p => p.dual.quakeBackgroundOpacity.account(),
+      fallback: SETTING_QUAKE_BACKGROUND_OPACITY_DEFAULT,
+    },
   }
 
   /** The golden's limits for one numeric key, whichever pair its kind uses. */
@@ -953,7 +1089,9 @@ describe('PreferencesContext — parses exactly what the hub declares', () => {
       const { min, max } = boundsOf(key)
       // A step that is small enough to land outside a 0.05-wide float limit
       // and large enough to be a different integer.
-      const step = Number.isInteger(min) && Number.isInteger(max) ? 1 : 0.01
+      const step = Number.isInteger(min) && Number.isInteger(max)
+        ? 1
+        : 0.01
       const accepted: number[] = [min, max]
       const refused: number[] = [min - step, max + step]
 
@@ -961,7 +1099,9 @@ describe('PreferencesContext — parses exactly what the hub declares', () => {
         localStorageClearForTests()
         listUserSettings.mockResolvedValue({
           descriptors: [],
-          values: [settingValue(key.key, JSON.stringify(value), true)],
+          values: [
+            settingValue(key.key, JSON.stringify(value), true),
+          ],
         })
         const ctx = captureContext()
         await waitFor(() => expect(reader.read(ctx.get()), `${key.key} = ${value}`).toBe(value))
@@ -995,7 +1135,9 @@ describe('PreferencesContext — parses exactly what the hub declares', () => {
         localStorageClearForTests()
         listUserSettings.mockResolvedValue({
           descriptors: [],
-          values: [settingValue(key.key, JSON.stringify(option.value), true)],
+          values: [
+            settingValue(key.key, JSON.stringify(option.value), true),
+          ],
         })
         const ctx = captureContext()
         await waitFor(() => expect(reader.read(ctx.get()), `${key.key} = ${option.value}`).toBe(option.value))
@@ -1030,7 +1172,13 @@ describe('PreferencesContext — parses exactly what the hub declares', () => {
   // synchronously for anything outside 0..1 -- no sound, and no turn-end
   // event either, because the rate limiter already recorded the play.
   it('accepts the turn-end volume bounds and refuses outside them', async () => {
-    for (const [stored, expected] of [[0, 0], [100, 100], [-1, 100], [101, 100], [42, 42]] as const) {
+    for (const [stored, expected] of [
+      [0, 0],
+      [100, 100],
+      [-1, 100],
+      [101, 100],
+      [42, 42],
+    ] as const) {
       localStorageClearForTests()
       localStorageSet(KEY_BROWSER_PREFS, { turnEndSoundVolume: stored })
       const ctx = captureContext()
@@ -1070,7 +1218,9 @@ describe('PreferencesContext — font tier parse', () => {
   it('accepts the hub document for an enabled tier whose fonts key is absent', async () => {
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('ui_fonts', '{"enabled":true}', true)],
+      values: [
+        settingValue('ui_fonts', '{"enabled":true}', true),
+      ],
     })
     const ctx = captureContext()
     await waitFor(() => expect(ctx.get().uiFonts()).toEqual({ enabled: true, fonts: [] }))
@@ -1080,7 +1230,9 @@ describe('PreferencesContext — font tier parse', () => {
   it('accepts an explicit empty list the same way', async () => {
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('mono_fonts', '{"enabled":true,"fonts":[]}', true)],
+      values: [
+        settingValue('mono_fonts', '{"enabled":true,"fonts":[]}', true),
+      ],
     })
     const ctx = captureContext()
     await waitFor(() => expect(ctx.get().monoFonts()).toEqual({ enabled: true, fonts: [] }))
@@ -1100,7 +1252,10 @@ describe('PreferencesContext — font tier parse', () => {
   ])('refuses a font name carrying %s', async (_label, effectiveJson) => {
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('turn_end_sound', '"none"'), settingValue('ui_fonts', effectiveJson, true)],
+      values: [
+        settingValue('turn_end_sound', '"none"'),
+        settingValue('ui_fonts', effectiveJson, true),
+      ],
     })
     const ctx = captureContext()
     await waitFor(() => expect(ctx.get().dual.turnEndSound.account()).toBe('none'))
@@ -1123,17 +1278,42 @@ describe('PreferencesContext — font tier parse', () => {
   // that escape the ONLY guard on a quote and a backslash, so the expected CSS
   // has to be spelled out.
   it.each([
-    ['a quote', '{"enabled":true,"fonts":["Ev\\"il"]}', 'Ev"il', '"Ev\\"il"'],
-    ['a backslash', '{"enabled":true,"fonts":["back\\\\slash"]}', 'back\\slash', '"back\\\\slash"'],
-    ['a dollar', '{"enabled":true,"fonts":["Fira$Code"]}', 'Fira$Code', '"Fira$Code"'],
-    ['a percent', '{"enabled":true,"fonts":["Fira%Code"]}', 'Fira%Code', '"Fira%Code"'],
+    [
+      'a quote',
+      '{"enabled":true,"fonts":["Ev\\"il"]}',
+      'Ev"il',
+      '"Ev\\"il"',
+    ],
+    [
+      'a backslash',
+      '{"enabled":true,"fonts":["back\\\\slash"]}',
+      'back\\slash',
+      '"back\\\\slash"',
+    ],
+    [
+      'a dollar',
+      '{"enabled":true,"fonts":["Fira$Code"]}',
+      'Fira$Code',
+      '"Fira$Code"',
+    ],
+    [
+      'a percent',
+      '{"enabled":true,"fonts":["Fira%Code"]}',
+      'Fira%Code',
+      '"Fira%Code"',
+    ],
   ])('keeps a font name carrying %s, and escapes it at the emitter', async (_label, effectiveJson, name, family) => {
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('ui_fonts', effectiveJson, true)],
+      values: [
+        settingValue('ui_fonts', effectiveJson, true),
+      ],
     })
     const ctx = captureContext()
-    await waitFor(() => expect(ctx.get().uiFonts()).toEqual({ enabled: true, fonts: [name] }))
+    await waitFor(() => expect(ctx.get().uiFonts()).toEqual({
+      enabled: true,
+      fonts: [name],
+    }))
     expect(ctx.get().uiFontFamily()).toBe(family)
     // …and the same string is what the emitter produces on its own, so the two
     // stay one rule rather than two.
@@ -1143,7 +1323,9 @@ describe('PreferencesContext — font tier parse', () => {
   it('keeps a font name the hub would store', async () => {
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('ui_fonts', '{"enabled":true,"fonts":["Noto Sans KR","Inter"]}', true)],
+      values: [
+        settingValue('ui_fonts', '{"enabled":true,"fonts":["Noto Sans KR","Inter"]}', true),
+      ],
     })
     const ctx = captureContext()
     await waitFor(() => expect(ctx.get().uiFonts().fonts).toEqual(['Noto Sans KR', 'Inter']))
@@ -1161,16 +1343,30 @@ describe('PreferencesContext — font tier parse', () => {
     ['surrounding whitespace', '  Fira Code  '],
     ['an invisible format character', 'Fira\u200BCode'],
     ['a control character', 'Fira\u0000Code'],
-    ['a name over the byte limit', 'a'.repeat(129)],
-    ['a CJK name over the BYTE limit but under a character count', '\u4E00'.repeat(43)],
+    [
+      'a name over the byte limit',
+      'a'.repeat(129),
+    ],
+    [
+      'a CJK name over the BYTE limit but under a character count',
+      '\u4E00'.repeat(43),
+    ],
     // The length guard in `isStorableFontName` runs BEFORE `sanitizeName`, so
     // a hand-edited document cannot make every page load run three regex
     // passes over a megabyte. It must not change the ANSWER, only the work.
-    ['a name of a megabyte', 'x'.repeat(1_000_000)],
+    [
+      'a name of a megabyte',
+      'x'.repeat(1_000_000),
+    ],
   ])('refuses the whole tier when one name carries %s', async (_label, bad) => {
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('ui_fonts', JSON.stringify({ enabled: true, fonts: [bad, 'Inter'] }), true)],
+      values: [
+        settingValue('ui_fonts', JSON.stringify({
+          enabled: true,
+          fonts: [bad, 'Inter'],
+        }), true),
+      ],
     })
     const ctx = captureContext()
     await waitFor(() => expect(ctx.get().uiFonts()).toEqual({ enabled: false, fonts: [] }))
@@ -1279,12 +1475,18 @@ describe('PreferencesContext — per-key request ordering', () => {
       sent.push(partialJson)
       if (sent.length === 1)
         return first.promise
-      return Promise.resolve({ value: settingValue('ui_fonts', '{"enabled":true,"fonts":["A","B"]}', true) })
+      return Promise.resolve({
+        value: settingValue('ui_fonts', '{"enabled":true,"fonts":["A","B"]}', true),
+      })
     })
     const ctx = captureContext()
 
-    const a = ctx.get().updateUserSetting('ui_fonts', { fonts: ['A'] })
-    const b = ctx.get().updateUserSetting('ui_fonts', { fonts: ['A', 'B'] })
+    const a = ctx.get().updateUserSetting('ui_fonts', {
+      fonts: ['A'],
+    })
+    const b = ctx.get().updateUserSetting('ui_fonts', {
+      fonts: ['A', 'B'],
+    })
 
     // Two fast clicks on "+" in a font stack. The hub must not receive the
     // second document while it is still committing the first: it would
@@ -1293,11 +1495,16 @@ describe('PreferencesContext — per-key request ordering', () => {
     await Promise.resolve()
     expect(sent).toEqual(['{"fonts":["A"]}'])
 
-    first.resolve({ value: settingValue('ui_fonts', '{"enabled":true,"fonts":["A"]}', true) })
+    first.resolve({
+      value: settingValue('ui_fonts', '{"enabled":true,"fonts":["A"]}', true),
+    })
     await a
     await b
     expect(sent).toEqual(['{"fonts":["A"]}', '{"fonts":["A","B"]}'])
-    expect(ctx.get().dual.uiFonts.account()).toEqual({ enabled: true, fonts: ['A', 'B'] })
+    expect(ctx.get().dual.uiFonts.account()).toEqual({
+      enabled: true,
+      fonts: ['A', 'B'],
+    })
   })
 
   // A refused write must not stall its key: the user's next edit is the one
@@ -1309,7 +1516,9 @@ describe('PreferencesContext — per-key request ordering', () => {
       sent.push(partialJson)
       if (sent.length === 1)
         return first.promise
-      return Promise.resolve({ value: settingValue('turn_end_sound', '"ding-dong"', true) })
+      return Promise.resolve({
+        value: settingValue('turn_end_sound', '"ding-dong"', true),
+      })
     })
     const ctx = captureContext()
 
@@ -1332,7 +1541,9 @@ describe('PreferencesContext — per-key request ordering', () => {
       sent.push(key)
       if (key === 'turn_end_sound')
         return held.promise
-      return Promise.resolve({ value: settingValue('diff_view', '"split"', true) })
+      return Promise.resolve({
+        value: settingValue('diff_view', '"split"', true),
+      })
     })
     const ctx = captureContext()
 
@@ -1340,7 +1551,9 @@ describe('PreferencesContext — per-key request ordering', () => {
     await ctx.get().updateUserSetting('diff_view', 'split')
     expect(sent).toEqual(['turn_end_sound', 'diff_view'])
 
-    held.resolve({ value: settingValue('turn_end_sound', '"none"', true) })
+    held.resolve({
+      value: settingValue('turn_end_sound', '"none"', true),
+    })
     await a
   })
 })
@@ -1354,13 +1567,20 @@ describe('PreferencesContext — superseded reloads', () => {
     listUserSettings.mockReturnValueOnce(stale.promise)
     listUserSettings.mockResolvedValue({
       descriptors: [],
-      values: [settingValue('turn_end_sound', '"none"')],
+      values: [
+        settingValue('turn_end_sound', '"none"'),
+      ],
     })
     const ctx = captureContext()
     await ctx.get().reload()
     expect(ctx.get().dual.turnEndSound.account()).toBe('none')
 
-    stale.resolve({ descriptors: [], values: [settingValue('turn_end_sound', '"none"')] })
+    stale.resolve({
+      descriptors: [],
+      values: [
+        settingValue('turn_end_sound', '"none"'),
+      ],
+    })
     await flushMicrotasks()
     expect(ctx.get().dual.turnEndSound.account()).toBe('none')
   })
@@ -1417,14 +1637,18 @@ describe('PreferencesContext — cross-tab sync', () => {
    * `browserStorage.test.ts`. A `null` set is the whole-store case.
    */
   function announceWrite(key: string | null = storedKeyFor(KEY_BROWSER_PREFS)) {
-    deliverStorageChangeForTests(key === null ? null : new Set([key]))
+    deliverStorageChangeForTests(key === null
+      ? null
+      : new Set([key]))
   }
 
   it('re-reads the stored value when another tab rewrites the prefs document', async () => {
     const ctx = captureContext()
     await flushMicrotasks()
 
-    localStorageSet(KEY_BROWSER_PREFS, { theme: { name: 'tokyo-night', mode: 'dark' } })
+    localStorageSet(KEY_BROWSER_PREFS, {
+      theme: { name: 'tokyo-night', mode: 'dark' },
+    })
     announceWrite()
 
     expect(ctx.get().theme()).toEqual({ name: 'tokyo-night', mode: 'dark' })
@@ -1437,7 +1661,9 @@ describe('PreferencesContext — cross-tab sync', () => {
     const ctx = captureContext()
     await flushMicrotasks()
 
-    localStorageSet(KEY_BROWSER_PREFS, { theme: { name: 'ayu', mode: 'light' } })
+    localStorageSet(KEY_BROWSER_PREFS, {
+      theme: { name: 'ayu', mode: 'light' },
+    })
     announceWrite('leapmux:something-else')
 
     expect(ctx.get().theme()).toEqual(DEFAULT_THEME_VALUE)
@@ -1455,7 +1681,9 @@ describe('PreferencesContext — cross-tab sync', () => {
     // leaves it in place and merely out of reach, which is what the disk does
     // too.
     setStorageAccountForTests('someoneelse')
-    localStorageSet(KEY_BROWSER_PREFS, { theme: { name: 'nord', mode: 'dark' } })
+    localStorageSet(KEY_BROWSER_PREFS, {
+      theme: { name: 'nord', mode: 'dark' },
+    })
     setStorageAccountForTests(TEST_USER_ID)
     announceWrite(accountStorageKey('someoneelse', KEY_BROWSER_PREFS))
 
@@ -1469,7 +1697,9 @@ describe('PreferencesContext — cross-tab sync', () => {
   it('leaves an account-tier value alone when another tab writes an unrelated preference', async () => {
     listUserSettings.mockResolvedValue({
       descriptors: goldenAccountSchema(),
-      values: [settingValue('theme', JSON.stringify({ name: 'nord', mode: 'dark' }))],
+      values: [
+        settingValue('theme', JSON.stringify({ name: 'nord', mode: 'dark' })),
+      ],
     })
     const ctx = captureContext()
     await waitFor(() => expect(ctx.get().theme()).toEqual({ name: 'nord', mode: 'dark' }))
@@ -1485,7 +1715,9 @@ describe('PreferencesContext — cross-tab sync', () => {
     const ctx = captureContext()
     await flushMicrotasks()
 
-    localStorageSet(KEY_BROWSER_PREFS, { theme: { name: 'github', mode: 'light' } })
+    localStorageSet(KEY_BROWSER_PREFS, {
+      theme: { name: 'github', mode: 'light' },
+    })
 
     // The MIRROR ENTRY's identity, not a `Storage.prototype.setItem` spy. The
     // document lives in IndexedDB now, so no write on this path calls `setItem`
@@ -1557,7 +1789,10 @@ describe('PreferencesContext — cross-tab sync', () => {
     const ctx = captureContext()
     await flushMicrotasks()
 
-    localStorageSet(KEY_BROWSER_PREFS, { theme: { name: 'nord', mode: 'dark' }, enterKeyMode: 'enter-sends' })
+    localStorageSet(KEY_BROWSER_PREFS, {
+      theme: { name: 'nord', mode: 'dark' },
+      enterKeyMode: 'enter-sends',
+    })
     announceWrite()
     expect(ctx.get().theme()).toEqual({ name: 'nord', mode: 'dark' })
 
@@ -1653,7 +1888,9 @@ describe('PreferencesContext — the device tier follows the account', () => {
   })
 
   it('writes under the new account and leaves the previous one intact', async () => {
-    localStorageSet(KEY_BROWSER_PREFS, { theme: { name: 'nord', mode: 'dark' } })
+    localStorageSet(KEY_BROWSER_PREFS, {
+      theme: { name: 'nord', mode: 'dark' },
+    })
     const ctx = captureContext()
     await flushMicrotasks()
 

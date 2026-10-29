@@ -52,7 +52,9 @@ function installRaf() {
   }
   return {
     flush() {
-      const batch = [...queue.values()]
+      const batch = [
+        ...queue.values(),
+      ]
       queue.clear()
       for (const cb of batch)
         cb(0)
@@ -88,7 +90,12 @@ function harness() {
   const setSuppressOlder = vi.fn()
   const onGeometrySettled = vi.fn()
   const restore = createViewportRestore(
-    makeScrollContext({ getEl: () => el, virt, writeScrollTop, isAnimating: () => state.animating }),
+    makeScrollContext({
+      getEl: () => el,
+      virt,
+      writeScrollTop,
+      isAnimating: () => state.animating,
+    }),
     {
       checkAtBottom: vi.fn(),
       repinToAnchor: vi.fn(),
@@ -102,7 +109,14 @@ function harness() {
     },
   )
   // prevClientHeight defaults to 0 (hidden); el.clientHeight is 500 -> wasHidden.
-  return { restore, state, writeScrollTop, setSuppressOlder, onGeometrySettled, el }
+  return {
+    restore,
+    state,
+    writeScrollTop,
+    setSuppressOlder,
+    onGeometrySettled,
+    el,
+  }
 }
 
 describe('chatScrollViewportRestore handleResize', () => {
@@ -166,10 +180,14 @@ describe('chatScrollViewportRestore restore priority', () => {
     // The exact anchor never resolves (scrollTopForAnchor returns null); a provided
     // `anchor` exercises the nearest-survivor recovery via scrollTopNearAnchor.
     const saved: ChatScrollState = {
-      ...(opts.anchor !== undefined ? { anchor: opts.anchor } : {}),
+      ...(opts.anchor !== undefined
+        ? { anchor: opts.anchor }
+        : {}),
       atBottom: false,
       hasMoreNewer: opts.hasMoreNewer,
-      ...(opts.rawScrollTop !== undefined ? { rawScrollTop: opts.rawScrollTop } : {}),
+      ...(opts.rawScrollTop !== undefined
+        ? { rawScrollTop: opts.rawScrollTop }
+        : {}),
     }
     const writeScrollTop = vi.fn()
     const forceScrollToBottom = vi.fn()
@@ -182,7 +200,11 @@ describe('chatScrollViewportRestore restore priority', () => {
       geometryVersion: () => 0,
     } as unknown as ChatScrollVirtualizer
     const restore = createViewportRestore(
-      makeScrollContext({ getEl: () => el, virt, writeScrollTop }),
+      makeScrollContext({
+        getEl: () => el,
+        virt,
+        writeScrollTop,
+      }),
       {
         checkAtBottom: vi.fn(),
         repinToAnchor: vi.fn(),
@@ -288,7 +310,10 @@ describe('chatScrollViewportRestore geometry-settle + suppression', () => {
     const setSuppressOlder = vi.fn()
     const onGeometrySettled = vi.fn()
     const restore = createViewportRestore(
-      makeScrollContext({ getEl: () => el, isAnimating: () => false }),
+      makeScrollContext({
+        getEl: () => el,
+        isAnimating: () => false,
+      }),
       {
         checkAtBottom: vi.fn(),
         repinToAnchor: vi.fn(),

@@ -13,7 +13,9 @@ function fakeGeo(rows: AnchorRow[], rowHeight = 100, gap = 20): AnchorOffsetGeom
     indexOfId: id => rows.findIndex(r => r.id === id),
     offsetOfIndex: i => Math.max(0, Math.min(i, rows.length)) * stride,
     heightOfIndex: () => rowHeight,
-    gapAfter: i => (i >= rows.length - 1 ? 0 : gap),
+    gapAfter: i => (i >= rows.length - 1
+      ? 0
+      : gap),
     indexAtOffset: (y) => {
       // Largest index whose top offset <= y, clamped to [0, n-1].
       let idx = Math.floor(y / stride)
@@ -27,7 +29,10 @@ function fakeGeo(rows: AnchorRow[], rowHeight = 100, gap = 20): AnchorOffsetGeom
 }
 
 function rows(seqs: number[]): AnchorRow[] {
-  return seqs.map(s => ({ id: `m${s}`, seq: BigInt(s) }))
+  return seqs.map(s => ({
+    id: `m${s}`,
+    seq: BigInt(s),
+  }))
 }
 
 describe('chatScrollAnchor', () => {
@@ -35,7 +40,13 @@ describe('chatScrollAnchor', () => {
     const geo = fakeGeo(rows([10, 20, 30]))
     // scrollTop 250 -> row index 2 (stride 120 -> [240, 360)), 10px into the body.
     const anchor = anchorAtOffset(geo, 250)
-    expect(anchor).toEqual({ id: 'm30', offsetWithinRow: 10, basisHeight: 100, gapFraction: 0, seq: 30n })
+    expect(anchor).toEqual({
+      id: 'm30',
+      offsetWithinRow: 10,
+      basisHeight: 100,
+      gapFraction: 0,
+      seq: 30n,
+    })
     expect(resolveAnchorScrollTop(geo, anchor!)).toBe(250)
   })
 
@@ -43,7 +54,13 @@ describe('chatScrollAnchor', () => {
     const geo = fakeGeo(rows([10, 20, 30]))
     // scrollTop 110 -> row 0 body is [0,100), the 20px gap is [100,120); 110 is halfway.
     const anchor = anchorAtOffset(geo, 110)
-    expect(anchor).toEqual({ id: 'm10', offsetWithinRow: 100, basisHeight: 100, gapFraction: 0.5, seq: 10n })
+    expect(anchor).toEqual({
+      id: 'm10',
+      offsetWithinRow: 100,
+      basisHeight: 100,
+      gapFraction: 0.5,
+      seq: 10n,
+    })
     expect(resolveAnchorScrollTop(geo, anchor!)).toBe(110)
   })
 
@@ -55,7 +72,12 @@ describe('chatScrollAnchor', () => {
   it('resolves proportionally when the row height changed since capture', () => {
     const geo = fakeGeo(rows([10, 20]), 100)
     // Anchor captured at the middle of a 200px-basis row; current height is 100.
-    const top = resolveAnchorScrollTop(geo, { id: 'm20', offsetWithinRow: 100, basisHeight: 200, seq: 20n })
+    const top = resolveAnchorScrollTop(geo, {
+      id: 'm20',
+      offsetWithinRow: 100,
+      basisHeight: 200,
+      seq: 20n,
+    })
     // offsetOfIndex(1)=120, within = 100 * (100/200) = 50 -> 170.
     expect(top).toBe(170)
   })
@@ -69,7 +91,10 @@ describe('chatScrollAnchor', () => {
       const offs = [0]
       for (const h of heights)
         offs.push((offs[offs.length - 1] ?? 0) + h)
-      const list: AnchorRow[] = heights.map((_, i) => ({ id: `m${i}`, seq: BigInt(i) }))
+      const list: AnchorRow[] = heights.map((_, i) => ({
+        id: `m${i}`,
+        seq: BigInt(i),
+      }))
       return {
         list,
         indexOfId: id => list.findIndex(r => r.id === id),

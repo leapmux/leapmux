@@ -72,11 +72,15 @@ function diracEchoSuppressedFacts(facts: ACPToolFacts): ACPToolFacts | undefined
  * Return undefined when the input contains no file.
  */
 function diracFileChangeArgs(args: Record<string, unknown>): Record<string, unknown> | undefined {
-  const files = Array.isArray(args.files) ? args.files : undefined
+  const files = Array.isArray(args.files)
+    ? args.files
+    : undefined
   const file = files?.find((entry: unknown) => isObject(entry) && typeof entry.path === 'string' && entry.path !== '')
   if (file === undefined)
     return undefined
-  const edits = Array.isArray(file.edits) ? file.edits : []
+  const edits = Array.isArray(file.edits)
+    ? file.edits
+    : []
   return {
     path: file.path,
     edits: edits.flatMap((entry: unknown) => {
@@ -86,7 +90,11 @@ function diracFileChangeArgs(args: Record<string, unknown>): Record<string, unkn
       // Use the anchor's content half when that field is empty.
       const oldStr = pickString(entry, 'old_string') || diracAnchorContent(pickString(entry, 'anchor'))
       const newStr = pickString(entry, 'text') || pickString(entry, 'new_string') || ''
-      return oldStr === undefined || oldStr === '' ? [] : [{ old_string: oldStr, new_string: newStr }]
+      return oldStr === undefined || oldStr === ''
+        ? []
+        : [
+            { old_string: oldStr, new_string: newStr },
+          ]
     }),
   }
 }
@@ -94,5 +102,7 @@ function diracFileChangeArgs(args: Record<string, unknown>): Record<string, unkn
 /** The content half of an ANCHOR§CONTENT coordinate, or undefined. */
 function diracAnchorContent(anchor: string | undefined): string | undefined {
   const split = anchor?.indexOf('§') ?? -1
-  return split >= 0 ? anchor!.slice(split + 1) : undefined
+  return split >= 0
+    ? anchor!.slice(split + 1)
+    : undefined
 }

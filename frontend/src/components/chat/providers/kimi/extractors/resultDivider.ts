@@ -19,11 +19,18 @@ export function kimiResultDivider(parsed: unknown): TurnEnd | null {
   const durationMs = pickNumber(data, 'durationMs')
   switch (pickString(data, 'reason')) {
     case KIMI_TURN_END.Completed:
-      return { label: turnEndLabel('ended', { durationMs }) }
+      return {
+        label: turnEndLabel('ended', { durationMs }),
+      }
     case KIMI_TURN_END.Cancelled:
-      return { label: turnEndLabel('interrupted', { durationMs }) }
+      return {
+        label: turnEndLabel('interrupted', { durationMs }),
+      }
     case KIMI_TURN_END.Blocked:
-      return { label: turnEndLabel('failed', { durationMs, reason: 'blocked by a hook or a policy' }), isError: true }
+      return {
+        label: turnEndLabel('failed', { durationMs, reason: 'blocked by a hook or a policy' }),
+        isError: true,
+      }
     case KIMI_TURN_END.Failed:
     default: {
       // A reason this build does not know reads as a failure: the turn did not state
@@ -31,7 +38,11 @@ export function kimiResultDivider(parsed: unknown): TurnEnd | null {
       const error = pickObject(data, 'error')
       const code = pickString(error, 'code')
       return {
-        label: turnEndLabel('failed', { durationMs, qualifiers: [code], reason: pickString(error, 'message') }),
+        label: turnEndLabel('failed', {
+          durationMs,
+          qualifiers: [code],
+          reason: pickString(error, 'message'),
+        }),
         isError: true,
       }
     }

@@ -67,8 +67,12 @@ export const NewTabMenuItems: Component<NewTabMenuItemsProps> = (props) => {
   // `detail` absent then -- the row carries no empty trailing note. A second
   // call beside the first could not be narrowed.
   const detailProps = (commandId: string) => {
-    const hints = props.shortcuts ? getShortcutHintsText(commandId) : undefined
-    return hints !== undefined ? { detail: hints } : {}
+    const hints = props.shortcuts
+      ? getShortcutHintsText(commandId)
+      : undefined
+    return hints !== undefined
+      ? { detail: hints }
+      : {}
   }
 
   return (

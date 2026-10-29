@@ -6,14 +6,26 @@ import { proseRenderer, typedRequestLine } from './proseResult'
 function triggerTitle(request: TriggerRequest): string {
   switch (request.action) {
     case 'list': return 'List triggers'
-    case 'get': return request.triggerId ? `Get trigger ${request.triggerId}` : 'Get trigger'
-    case 'create': return request.name ? `Create trigger: ${request.name}` : 'Create trigger'
+    case 'get': return request.triggerId
+      ? `Get trigger ${request.triggerId}`
+      : 'Get trigger'
+    case 'create': return request.name
+      ? `Create trigger: ${request.name}`
+      : 'Create trigger'
     case 'update': {
-      const head = request.triggerId ? `Update trigger ${request.triggerId}` : 'Update trigger'
-      return request.name ? `${head}: ${request.name}` : head
+      const head = request.triggerId
+        ? `Update trigger ${request.triggerId}`
+        : 'Update trigger'
+      return request.name
+        ? `${head}: ${request.name}`
+        : head
     }
-    case 'run': return request.triggerId ? `Run trigger ${request.triggerId}` : 'Run trigger'
-    case 'delete': return request.triggerId ? `Delete trigger ${request.triggerId}` : 'Delete trigger'
+    case 'run': return request.triggerId
+      ? `Run trigger ${request.triggerId}`
+      : 'Run trigger'
+    case 'delete': return request.triggerId
+      ? `Delete trigger ${request.triggerId}`
+      : 'Delete trigger'
     default: return ''
   }
 }

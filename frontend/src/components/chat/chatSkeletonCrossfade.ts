@@ -259,7 +259,9 @@ export function createFlingSkeletonRegistry(
   // Toggle membership without churning the signal when it wouldn't change (most rows are
   // never skeletons, so their one effect run is a no-op).
   const setMembership = (id: string, present: boolean): void => {
-    setSkeletonIds(prev => (present ? setWith(prev, id) : setWithout(prev, id)))
+    setSkeletonIds(prev => (present
+      ? setWith(prev, id)
+      : setWithout(prev, id)))
   }
   const trackRow = (id: string): Accessor<RowUpgradePhase> => {
     const phase = createRowUpgradePhase(virt, id, crossfadeMs)

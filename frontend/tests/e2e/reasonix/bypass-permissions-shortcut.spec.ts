@@ -53,7 +53,9 @@ for (const posture of ['ask', 'bypass'] as const) {
       testId: 'control-banner',
       relatedProof: async () => {
         const { resultRequest } = await runNativeToolTurn(native, {
-          toolCalls: [writeToolCall(native.provider, callId, { path: target, content: 'The native workspace scope must protect this file.' })],
+          toolCalls: [
+            writeToolCall(native.provider, callId, { path: target, content: 'The native workspace scope must protect this file.' }),
+          ],
           prompt: 'Try the scripted write outside the workspace.',
           answer: 'The native workspace refused the write.',
         })
@@ -61,7 +63,9 @@ for (const posture of ['ask', 'bypass'] as const) {
       },
     })
     expect(existsSync(target)).toBe(false)
-    await expectNativeOptionValue(native, REASONIX_CONFIG.ToolApproval, posture === 'bypass' ? REASONIX_APPROVAL.Yolo : REASONIX_APPROVAL.Ask)
+    await expectNativeOptionValue(native, REASONIX_CONFIG.ToolApproval, posture === 'bypass'
+      ? REASONIX_APPROVAL.Yolo
+      : REASONIX_APPROVAL.Ask)
     await page.reload()
     expect(existsSync(target)).toBe(false)
   })

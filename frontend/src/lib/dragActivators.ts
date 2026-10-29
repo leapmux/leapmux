@@ -109,7 +109,9 @@ export function attachDragActivators(
     if (!el)
       return
     const raw = activators() ?? {}
-    const handlers = opts.touch === 'block' ? rowBodyActivators(raw) : raw
+    const handlers = opts.touch === 'block'
+      ? rowBodyActivators(raw)
+      : raw
     const bound: Array<[string, EventListener]> = []
     for (const [handlerKey, handler] of Object.entries(handlers)) {
       const eventName = eventNameOf(handlerKey)

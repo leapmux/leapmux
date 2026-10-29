@@ -21,7 +21,9 @@ export function junieCommandExit(tool: Record<string, unknown>): CommandExit | u
   if (typeof signal === 'string' && signal.trim() !== '')
     return { signal }
   const outputCode = pickObject(tool, 'rawOutput')?.exitCode
-  return typeof outputCode === 'number' && Number.isSafeInteger(outputCode) ? { exitCode: outputCode } : undefined
+  return typeof outputCode === 'number' && Number.isSafeInteger(outputCode)
+    ? { exitCode: outputCode }
+    : undefined
 }
 
 /** Keep the shared result and add Junie's exit to its one inline command. */
@@ -36,8 +38,18 @@ export function junieExecuteSpec(facts: ACPToolFacts, base: () => ToolCallSpec):
   const command = spec.result.commands[0]
   if (exit === undefined || command === undefined)
     return spec
-  return { ...spec, result: { ...spec.result, commands: [withCommandExit(command, exit)] } }
+  return {
+    ...spec,
+    result: {
+      ...spec.result,
+      commands: [
+        withCommandExit(command, exit),
+      ],
+    },
+  }
 }
 
 /** Junie's own reading of one call: the shared build, with the exit of a command. */
-export const junieToolCallAdapter: ACPToolCallAdapter = (facts, base) => facts.wireKind === 'execute' ? junieExecuteSpec(facts, base) : base()
+export const junieToolCallAdapter: ACPToolCallAdapter = (facts, base) => facts.wireKind === 'execute'
+  ? junieExecuteSpec(facts, base)
+  : base()

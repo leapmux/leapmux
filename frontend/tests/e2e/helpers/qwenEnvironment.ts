@@ -63,22 +63,49 @@ function qwenSettings(options: QwenEnvironmentOptions): Record<string, unknown> 
     name: 'Qwen E2E',
     baseUrl: options.baseURL,
     envKey: 'LEAPMUX_E2E_MODEL_API_KEY',
-    capabilities: { vision: true, reasoning: { thinking: true, efforts: ['low', 'medium', 'high'], defaultEffort: 'high', disableField: 'reasoning_effort' } },
-    generationConfig: { contextWindowSize: 128_000, modalities: { image: true, pdf: true } },
+    capabilities: {
+      vision: true,
+      reasoning: {
+        thinking: true,
+        efforts: ['low', 'medium', 'high'],
+        defaultEffort: 'high',
+        disableField: 'reasoning_effort',
+      },
+    },
+    generationConfig: {
+      contextWindowSize: 128_000,
+      modalities: { image: true, pdf: true },
+    },
   }
   return {
     $version: 4,
-    security: { auth: { selectedType: QWEN_AUTH_TYPE } },
+    security: {
+      auth: { selectedType: QWEN_AUTH_TYPE },
+    },
     model: { name: options.modelID },
-    mcpServers: { [options.mcpEchoServer.name]: { command: options.mcpEchoServer.command, args: [...options.mcpEchoServer.args] } },
+    mcpServers: {
+      [options.mcpEchoServer.name]: {
+        command: options.mcpEchoServer.command,
+        args: [...options.mcpEchoServer.args],
+      },
+    },
     modelProviders: {
       [QWEN_AUTH_TYPE]: [
         primary,
         { ...primary, id: options.alternateModelID, name: 'Qwen E2E Alternate' },
-        { ...primary, id: options.plainModelID, name: 'Qwen E2E Plain', capabilities: { vision: true } },
+        {
+          ...primary,
+          id: options.plainModelID,
+          name: 'Qwen E2E Plain',
+          capabilities: { vision: true },
+        },
       ],
     },
-    tools: { approvalMode: 'default', todoWrite: { enabled: true }, workflowsEnabled: true },
+    tools: {
+      approvalMode: 'default',
+      todoWrite: { enabled: true },
+      workflowsEnabled: true,
+    },
     memory: { enableManagedAutoMemory: false, enableManagedAutoDream: false },
     ui: { enableFollowupSuggestions: false },
     privacy: { usageStatisticsEnabled: false },

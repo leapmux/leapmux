@@ -13,8 +13,16 @@ droidTest.describe('Factory Droid tool execution', () => {
     const notes = join(authenticatedDroidWorkspace.workingDir, 'notes.txt')
     await runNativeToolSteps(native, {
       steps: [
-        { toolCalls: [writeToolCall(native.provider, 'write-notes', { path: notes, content: 'droid-write-1\n' })] },
-        { toolCalls: [readToolCall(native.provider, 'read-notes', notes)] },
+        {
+          toolCalls: [
+            writeToolCall(native.provider, 'write-notes', { path: notes, content: 'droid-write-1\n' }),
+          ],
+        },
+        {
+          toolCalls: [
+            readToolCall(native.provider, 'read-notes', notes),
+          ],
+        },
       ],
       prompt: 'Write the notes and read them back.',
       answer: 'I wrote and read the notes.',
@@ -28,5 +36,8 @@ droidTest.describe('Factory Droid tool execution', () => {
 })
 
 droidTest('reads and changes native files and keeps the applied diff after reload', async ({ native }) => {
-  await exerciseFileToolExecution({ ...native, readToolResult: (request, callId) => readDroidToolResult(request, callId, DROID_TOOL.Read) })
+  await exerciseFileToolExecution({
+    ...native,
+    readToolResult: (request, callId) => readDroidToolResult(request, callId, DROID_TOOL.Read),
+  })
 })

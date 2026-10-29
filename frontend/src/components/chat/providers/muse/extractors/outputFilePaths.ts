@@ -8,5 +8,7 @@ export function museOutputFilePaths(input: RowExtractionInput): readonly string[
   const result = museSiblingItem(input.resolved.parentObject, input.span.result?.parentObject)
   const item = result ?? own
   const path = pickString(pickObject(item, 'outputRef'), 'path')
-  return path ? [path] : []
+  return path
+    ? [path]
+    : []
 }

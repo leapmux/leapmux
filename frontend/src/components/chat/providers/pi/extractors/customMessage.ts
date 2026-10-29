@@ -7,7 +7,9 @@ import { piContentText } from '../messageContent'
 /** Pi custom messages can carry plain text or content blocks. */
 export function piVisibleCustomMessage(payload: Record<string, unknown>): Record<string, unknown> | null {
   const message = pickObject(payload, 'message')
-  return payload.type === PI_EVENT.MessageEnd && message?.role === PI_ROLE.Custom && message.display !== false ? message : null
+  return payload.type === PI_EVENT.MessageEnd && message?.role === PI_ROLE.Custom && message.display !== false
+    ? message
+    : null
 }
 
 /** Match each XML report to its structured child ID. Invalid or duplicate records cannot replace the preview. */
@@ -48,7 +50,12 @@ function extractSubagentNotificationSources(payload: Record<string, unknown>): A
   if (!details)
     return null
   const reports = notificationReports(piContentText(payload))
-  const entries = [details, ...(Array.isArray(details.others) ? details.others : [])]
+  const entries = [
+    details,
+    ...(Array.isArray(details.others)
+      ? details.others
+      : []),
+  ]
   const sources: AgentRun[] = []
   for (const entry of entries) {
     if (!isObject(entry))
@@ -57,13 +64,30 @@ function extractSubagentNotificationSources(payload: Record<string, unknown>): A
     const status = pickString(entry, 'status')
     if (!id || !status)
       continue
-    const metadata: AgentRun['metadata'] = [{ label: 'Agent ID', value: id }]
-    for (const [key, label] of [['toolUses', 'Tool uses'], ['turnCount', 'Turns'], ['maxTurns', 'Maximum turns'], ['totalTokens', 'Tokens'], ['durationMs', 'Duration']] as const) {
+    const metadata: AgentRun['metadata'] = [
+      { label: 'Agent ID', value: id },
+    ]
+    for (const [key, label] of [
+      ['toolUses', 'Tool uses'],
+      ['turnCount', 'Turns'],
+      ['maxTurns', 'Maximum turns'],
+      ['totalTokens', 'Tokens'],
+      ['durationMs', 'Duration'],
+    ] as const) {
       const value = entry[key]
-      if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0)
-        metadata.push({ label, value: key === 'durationMs' ? formatDuration(value) : formatNumber(value) })
+      if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
+        metadata.push({
+          label,
+          value: key === 'durationMs'
+            ? formatDuration(value)
+            : formatNumber(value),
+        })
+      }
     }
-    for (const [key, label] of [['outputFile', 'Transcript'], ['error', 'Error']] as const) {
+    for (const [key, label] of [
+      ['outputFile', 'Transcript'],
+      ['error', 'Error'],
+    ] as const) {
       const value = pickString(entry, key)
       if (value)
         metadata.push({ label, value })
@@ -72,8 +96,20 @@ function extractSubagentNotificationSources(payload: Record<string, unknown>): A
       description: pickString(entry, 'description').trim(),
       agentId: id,
       registryKey: id,
-      statusLabel: status === 'error' ? 'failed' : status === 'aborted' || status === 'steered' ? 'partial' : status,
-      outcome: status === 'completed' ? 'completed' : status === 'error' ? 'failed' : status === 'stopped' ? 'stopped' : status === 'running' || status === 'queued' ? 'running' : 'unknown',
+      statusLabel: status === 'error'
+        ? 'failed'
+        : status === 'aborted' || status === 'steered'
+          ? 'partial'
+          : status,
+      outcome: status === 'completed'
+        ? 'completed'
+        : status === 'error'
+          ? 'failed'
+          : status === 'stopped'
+            ? 'stopped'
+            : status === 'running' || status === 'queued'
+              ? 'running'
+              : 'unknown',
       metadata,
       body: reports.get(id) ?? pickString(entry, 'resultPreview'),
     })

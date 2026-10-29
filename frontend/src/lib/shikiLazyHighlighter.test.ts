@@ -26,7 +26,14 @@ describe('resolveBundledLang', () => {
     // check would match inherited prototype members -- then loadLanguage(bundledLanguages[key])
     // gets the Object constructor / prototype and throws. These keys reach the resolver from
     // user input (fence languages, code-block attrs, file extensions), so they must be rejected.
-    for (const key of ['constructor', '__proto__', 'toString', 'valueOf', 'hasOwnProperty', 'isPrototypeOf'])
+    for (const key of [
+      'constructor',
+      '__proto__',
+      'toString',
+      'valueOf',
+      'hasOwnProperty',
+      'isPrototypeOf',
+    ])
       expect(resolveBundledLang(key), key).toBeUndefined()
   })
 

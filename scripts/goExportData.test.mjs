@@ -13,7 +13,13 @@ describe('go export data', () => {
     const directory = mkdtempSync(join(scratch, 'go-export-data-'))
     try {
       // The linter uses this importer. Compile a real standard package to detect format drift.
-      const archive = execFileSync('go', ['list', '-export', '-f', '{{.Export}}', 'time'], {
+      const archive = execFileSync('go', [
+        'list',
+        '-export',
+        '-f',
+        '{{.Export}}',
+        'time',
+      ], {
         cwd: backend,
         encoding: 'utf8',
         timeout: 75_000,

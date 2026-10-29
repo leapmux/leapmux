@@ -44,7 +44,9 @@ vi.mock('node:module', async (importOriginal) => {
     ...actual,
     createRequire: (...args: Parameters<typeof actual.createRequire>) => new Proxy(actual.createRequire(...args), {
       apply: (target, receiver, argumentsList) => argumentsList[0] === 'playwright-core/lib/coreBundle' && boundary.archive.factory
-        ? { utils: { ZipFile: boundary.archive.factory } }
+        ? {
+            utils: { ZipFile: boundary.archive.factory },
+          }
         : Reflect.apply(target, receiver, argumentsList),
     }),
   }
@@ -82,7 +84,10 @@ async function projectWaitForFile(): Promise<{ root: string, waitForFile: Projec
   if (!isObject(loaded) || typeof loaded.waitForFile !== 'function')
     throw new Error('The fixture project holds no file wait.')
   const waitForFile = loaded.waitForFile
-  return { root, waitForFile: (path, watchDirectory) => Reflect.apply(waitForFile, undefined, [path, watchDirectory]) }
+  return {
+    root,
+    waitForFile: (path, watchDirectory) => Reflect.apply(waitForFile, undefined, [path, watchDirectory]),
+  }
 }
 
 /**
@@ -93,7 +98,11 @@ function silentWatch(): { watchDirectory: () => EventEmitter, watcher: EventEmit
   const watcher = new EventEmitter()
   const close = vi.fn()
   Object.assign(watcher, { close })
-  return { watchDirectory: () => watcher, watcher, close }
+  return {
+    watchDirectory: () => watcher,
+    watcher,
+    close,
+  }
 }
 
 describe('cleanupLauncherFixtureProject', () => {
@@ -127,11 +136,51 @@ describe('cleanupLauncherFixtureProject', () => {
 describe('launcherFixtureDiagnostics', () => {
   it('keeps the exact error text of Playwright\'s own run and the report and console paths', () => {
     const root = directory()
-    const result = { status: 'timedOut', errors: [{ message: 'The fixture alpha case waits for beta.\nFixture detail42', stack: 'fixture.mjs:55' }], attachments: [{ name: 'fixture-record', path: join(root, 'record.txt') }] }
-    const cases = [{ id: 'fixture-alpha', title: 'executes alpha', file: 'alpha.spec.ts', status: 'unexpected', results: [result] }]
-    const details = launcherFixtureDiagnostics({ root, records: join(root, 'records'), report: { errors: [{ message: 'fixture global error77' }] }, cases, code: 1, parallelRelease: false, reportPath: join(root, 'combined.json'), consolePath: join(root, 'console.log') })
+    const result = {
+      status: 'timedOut',
+      errors: [
+        { message: 'The fixture alpha case waits for beta.\nFixture detail42', stack: 'fixture.mjs:55' },
+      ],
+      attachments: [
+        {
+          name: 'fixture-record',
+          path: join(root, 'record.txt'),
+        },
+      ],
+    }
+    const cases = [
+      {
+        id: 'fixture-alpha',
+        title: 'executes alpha',
+        file: 'alpha.spec.ts',
+        status: 'unexpected',
+        results: [result],
+      },
+    ]
+    const details = launcherFixtureDiagnostics({
+      root,
+      records: join(root, 'records'),
+      report: {
+        errors: [
+          { message: 'fixture global error77' },
+        ],
+      },
+      cases,
+      code: 1,
+      parallelRelease: false,
+      reportPath: join(root, 'combined.json'),
+      consolePath: join(root, 'console.log'),
+    })
 
-    expect(JSON.parse(details)).toEqual({ root, reportPath: join(root, 'combined.json'), consolePath: join(root, 'console.log'), errors: [{ message: 'fixture global error77' }], cases })
+    expect(JSON.parse(details)).toEqual({
+      root,
+      reportPath: join(root, 'combined.json'),
+      consolePath: join(root, 'console.log'),
+      errors: [
+        { message: 'fixture global error77' },
+      ],
+      cases,
+    })
     expect(details).toContain('Fixture detail42')
   })
 })
@@ -239,10 +288,31 @@ describe('fixtureStringField', () => {
 })
 
 describe('fixtureCases', () => {
-  const spec = { id: 'fixture-id', title: 'fixture case', file: 'fixture.spec.ts', tests: [{ status: 'expected', results: [] }] }
+  const spec = {
+    id: 'fixture-id',
+    title: 'fixture case',
+    file: 'fixture.spec.ts',
+    tests: [
+      { status: 'expected', results: [] },
+    ],
+  }
 
   it('reads the leaf suites of Playwright\'s own report that omit the child suite array', () => {
-    expect(fixtureCases({ suites: [{ specs: [spec] }] })).toEqual([{ id: 'fixture-id', title: 'fixture case', file: 'fixture.spec.ts', status: 'expected', results: [] }])
+    expect(fixtureCases({
+      suites: [
+        {
+          specs: [spec],
+        },
+      ],
+    })).toEqual([
+      {
+        id: 'fixture-id',
+        title: 'fixture case',
+        file: 'fixture.spec.ts',
+        status: 'expected',
+        results: [],
+      },
+    ])
   })
 
   it('accepts an empty report of Playwright\'s own run', () => {
@@ -252,11 +322,49 @@ describe('fixtureCases', () => {
   it.each([
     {},
     { suites: null },
-    { suites: [null] },
-    { suites: [{ specs: [spec], suites: null }] },
-    { suites: [{ specs: [{ ...spec, tests: [] }] }] },
-    { suites: [{ specs: [{ ...spec, tests: [{ status: 'expected', results: null }] }] }] },
-    { suites: [{ specs: [{ ...spec, id: '' }] }] },
+    {
+      suites: [null],
+    },
+    {
+      suites: [
+        {
+          specs: [spec],
+          suites: null,
+        },
+      ],
+    },
+    {
+      suites: [
+        {
+          specs: [
+            { ...spec, tests: [] },
+          ],
+        },
+      ],
+    },
+    {
+      suites: [
+        {
+          specs: [
+            {
+              ...spec,
+              tests: [
+                { status: 'expected', results: null },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    {
+      suites: [
+        {
+          specs: [
+            { ...spec, id: '' },
+          ],
+        },
+      ],
+    },
   ])('rejects incomplete case records of Playwright\'s own report: %j', (report) => {
     expect(() => fixtureCases(report)).toThrow('fixture')
   })
@@ -266,15 +374,26 @@ describe('createLauncherFixtureProject', () => {
   it.each([false, true])('enables trace retention only for the explicit browser fixture: %s', (browserTrace) => {
     const root = createLauncherFixtureProject({ browserTrace })
     roots.add(root)
-    const output = execFileSync(process.execPath, ['--input-type=module', '-e', 'import config from "./playwright.config.mjs"; process.stdout.write(JSON.stringify({ use: config.use, workers: config.workers, fullyParallel: config.fullyParallel }));'], { cwd: join(root, 'frontend'), encoding: 'utf8' })
+    const output = execFileSync(process.execPath, ['--input-type=module', '-e', 'import config from "./playwright.config.mjs"; process.stdout.write(JSON.stringify({ use: config.use, workers: config.workers, fullyParallel: config.fullyParallel }));'], {
+      cwd: join(root, 'frontend'),
+      encoding: 'utf8',
+    })
     const config: unknown = JSON.parse(output)
 
-    expect(config).toEqual({ use: browserTrace ? { browserName: 'chromium', headless: true, trace: 'retain-on-failure' } : {}, workers: 1, fullyParallel: false })
+    expect(config).toEqual({
+      use: browserTrace
+        ? { browserName: 'chromium', headless: true, trace: 'retain-on-failure' }
+        : {},
+      workers: 1,
+      fullyParallel: false,
+    })
     expect(JSON.parse(readFileSync(join(root, 'records', 'policy.json'), 'utf8'))).toEqual({ browserTrace })
   })
 
   it('writes a file wait that ends at once for a file that exists, and stops watching', async () => {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    vi.useFakeTimers({
+      toFake: ['setInterval', 'clearInterval'],
+    })
     const { root, waitForFile } = await projectWaitForFile()
     const path = join(root, 'records', 'release-alpha')
     writeFileSync(path, 'release')
@@ -287,7 +406,9 @@ describe('createLauncherFixtureProject', () => {
   })
 
   it('writes a file wait that finds a file that appears with no watch event', async () => {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    vi.useFakeTimers({
+      toFake: ['setInterval', 'clearInterval'],
+    })
     const { root, waitForFile } = await projectWaitForFile()
     const path = join(root, 'records', 'release-beta')
     const watch = silentWatch()
@@ -309,7 +430,9 @@ describe('createLauncherFixtureProject', () => {
   })
 
   it('writes a file wait that fails with the error of its watcher, and stops checking', async () => {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    vi.useFakeTimers({
+      toFake: ['setInterval', 'clearInterval'],
+    })
     const { root, waitForFile } = await projectWaitForFile()
     const watch = silentWatch()
     const failure = new Error('The controlled directory watch failed.')

@@ -26,12 +26,21 @@ export type UnframeFailure
  */
 export function unframeBytes(buf: Uint8Array): { ok: true, payload: Uint8Array } | { ok: false, failure: UnframeFailure } {
   if (buf.length < LENGTH_PREFIX_BYTES) {
-    return { ok: false, failure: { kind: 'short', length: buf.length } }
+    return {
+      ok: false,
+      failure: { kind: 'short', length: buf.length },
+    }
   }
   const declared = new DataView(buf.buffer, buf.byteOffset).getUint32(0)
   const actual = buf.length - LENGTH_PREFIX_BYTES
   if (declared !== actual) {
-    return { ok: false, failure: { kind: 'mismatch', declared, actual } }
+    return {
+      ok: false,
+      failure: { kind: 'mismatch', declared, actual },
+    }
   }
-  return { ok: true, payload: buf.subarray(LENGTH_PREFIX_BYTES) }
+  return {
+    ok: true,
+    payload: buf.subarray(LENGTH_PREFIX_BYTES),
+  }
 }

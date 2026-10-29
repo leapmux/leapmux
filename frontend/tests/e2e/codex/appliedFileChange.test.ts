@@ -6,7 +6,14 @@ import { AgentProvider, MessageCompletion, MessageSource } from '../../../src/ge
 import { codexAppliedFileChange, requireCodexPatchResult } from './appliedFileChange'
 
 const sessionId = 'native-thread'
-const item = { id: 'actual-file-item', type: 'fileChange', status: 'completed', changes: [{ path: '/private/file.txt', kind: 'add', diff: 'ACTUAL_FILE42\n' }] }
+const item = {
+  id: 'actual-file-item',
+  type: 'fileChange',
+  status: 'completed',
+  changes: [
+    { path: '/private/file.txt', kind: 'add', diff: 'ACTUAL_FILE42\n' },
+  ],
+}
 const payload = (nativeItem: unknown) => ({ threadId: sessionId, turnId: 'native-turn', item: nativeItem })
 function storedMessage(id: string, seq: bigint, body: unknown): AgentChatMessage {
   return makeMessage({
@@ -41,18 +48,71 @@ describe('codexAppliedFileChange', () => {
     expect(codexAppliedFileChange([started, completed], sessionId, item.id, '/private/file.txt')).toEqual(item.changes[0])
   })
   it('reads the current native tagged add operation through the provider parser', () => {
-    const tagged = storedMessage('native-completed', 42n, payload({ ...item, changes: [{ ...item.changes[0], kind: { type: 'add' } }] }))
+    const tagged = storedMessage('native-completed', 42n, payload({
+      ...item,
+      changes: [
+        {
+          ...item.changes[0],
+          kind: { type: 'add' },
+        },
+      ],
+    }))
     expect(codexAppliedFileChange([started, tagged], sessionId, item.id, '/private/file.txt')).toMatchObject({ path: '/private/file.txt', diff: 'ACTUAL_FILE42\n' })
   })
   it.each([
     { label: 'empty span', error: NOT_ONE_START_AND_COMPLETION, messages: [] },
-    { label: 'start only', error: NOT_ONE_START_AND_COMPLETION, messages: [started] },
-    { label: 'completion only', error: NOT_ONE_START_AND_COMPLETION, messages: [completed] },
-    { label: 'duplicate completion', error: NOT_ONE_START_AND_COMPLETION, messages: [started, completed, completed] },
-    { label: 'wrong item ID', error: UNRELATED_ITEM, messages: [started, storedMessage('native-completed', 42n, payload({ ...item, id: 'another-item' }))] },
-    { label: 'failed item', error: NOT_ONE_START_AND_COMPLETION, messages: [started, storedMessage('native-completed', 42n, payload({ ...item, status: 'failed' }))] },
-    { label: 'wrong item type', error: UNRELATED_ITEM, messages: [started, storedMessage('native-completed', 42n, payload({ ...item, type: 'commandExecution' }))] },
-    { label: 'wrong diff path', error: 'The native Codex completion contains no unique added-file diff for the exact path.', messages: [started, storedMessage('native-completed', 42n, payload({ ...item, changes: [{ path: '/another/file.txt', kind: 'add', diff: 'ACTUAL_FILE42\n' }] }))] },
+    {
+      label: 'start only',
+      error: NOT_ONE_START_AND_COMPLETION,
+      messages: [started],
+    },
+    {
+      label: 'completion only',
+      error: NOT_ONE_START_AND_COMPLETION,
+      messages: [completed],
+    },
+    {
+      label: 'duplicate completion',
+      error: NOT_ONE_START_AND_COMPLETION,
+      messages: [started, completed, completed],
+    },
+    {
+      label: 'wrong item ID',
+      error: UNRELATED_ITEM,
+      messages: [
+        started,
+        storedMessage('native-completed', 42n, payload({ ...item, id: 'another-item' })),
+      ],
+    },
+    {
+      label: 'failed item',
+      error: NOT_ONE_START_AND_COMPLETION,
+      messages: [
+        started,
+        storedMessage('native-completed', 42n, payload({ ...item, status: 'failed' })),
+      ],
+    },
+    {
+      label: 'wrong item type',
+      error: UNRELATED_ITEM,
+      messages: [
+        started,
+        storedMessage('native-completed', 42n, payload({ ...item, type: 'commandExecution' })),
+      ],
+    },
+    {
+      label: 'wrong diff path',
+      error: 'The native Codex completion contains no unique added-file diff for the exact path.',
+      messages: [
+        started,
+        storedMessage('native-completed', 42n, payload({
+          ...item,
+          changes: [
+            { path: '/another/file.txt', kind: 'add', diff: 'ACTUAL_FILE42\n' },
+          ],
+        })),
+      ],
+    },
   ])('refuses an absent, duplicated, failed, or unrelated applied native item: $label', ({ messages, error }) => {
     expect(() => codexAppliedFileChange(messages, sessionId, item.id, '/private/file.txt')).toThrow(error)
   })
@@ -70,27 +130,112 @@ describe('codexAppliedFileChange', () => {
     expect(() => codexAppliedFileChange([earlyCompleted, started], sessionId, item.id, '/private/file.txt')).toThrow('before its actual start')
   })
   it.each([
-    { label: 'empty message ID', error: INVALID_METADATA, fields: { id: '' } },
-    { label: 'negative sequence', error: INVALID_METADATA, fields: { seq: -1n } },
-    { label: 'sequence 0, which the Worker never allocates', error: INVALID_METADATA, fields: { seq: 0n } },
-    { label: 'equal sequence', error: COMPLETED_BEFORE_START, fields: { seq: 41n } },
-    { label: 'duplicate message ID', error: COMPLETED_BEFORE_START, fields: { id: started.id } },
-    { label: 'user message source', error: INVALID_METADATA, fields: { source: MessageSource.USER } },
-    { label: 'wrong provider', error: INVALID_METADATA, fields: { agentProvider: AgentProvider.DROID } },
-    { label: 'wrong span ID', error: NOT_ONE_START_AND_COMPLETION, fields: { spanId: 'another-span' } },
-    { label: 'wrong span type', error: INVALID_METADATA, fields: { spanType: 'commandExecution' } },
-    { label: 'error completion', error: NOT_APPLIED, fields: { completion: MessageCompletion.ERROR } },
-    { label: 'interrupted completion', error: NOT_APPLIED, fields: { completion: MessageCompletion.INTERRUPTED } },
+    {
+      label: 'empty message ID',
+      error: INVALID_METADATA,
+      fields: { id: '' },
+    },
+    {
+      label: 'negative sequence',
+      error: INVALID_METADATA,
+      fields: { seq: -1n },
+    },
+    {
+      label: 'sequence 0, which the Worker never allocates',
+      error: INVALID_METADATA,
+      fields: { seq: 0n },
+    },
+    {
+      label: 'equal sequence',
+      error: COMPLETED_BEFORE_START,
+      fields: { seq: 41n },
+    },
+    {
+      label: 'duplicate message ID',
+      error: COMPLETED_BEFORE_START,
+      fields: { id: started.id },
+    },
+    {
+      label: 'user message source',
+      error: INVALID_METADATA,
+      fields: { source: MessageSource.USER },
+    },
+    {
+      label: 'wrong provider',
+      error: INVALID_METADATA,
+      fields: { agentProvider: AgentProvider.DROID },
+    },
+    {
+      label: 'wrong span ID',
+      error: NOT_ONE_START_AND_COMPLETION,
+      fields: { spanId: 'another-span' },
+    },
+    {
+      label: 'wrong span type',
+      error: INVALID_METADATA,
+      fields: { spanType: 'commandExecution' },
+    },
+    {
+      label: 'error completion',
+      error: NOT_APPLIED,
+      fields: { completion: MessageCompletion.ERROR },
+    },
+    {
+      label: 'interrupted completion',
+      error: NOT_APPLIED,
+      fields: { completion: MessageCompletion.INTERRUPTED },
+    },
   ])('refuses invalid Worker metadata on the exact native file result: $label', ({ fields, error }) => {
-    expect(() => codexAppliedFileChange([started, makeMessage({ ...completed, ...fields })], sessionId, item.id, '/private/file.txt')).toThrow(error)
+    expect(() => codexAppliedFileChange([
+      started,
+      makeMessage({
+        ...completed,
+        ...fields,
+      }),
+    ], sessionId, item.id, '/private/file.txt')).toThrow(error)
   })
   it.each([
-    [{ body: { ...payload(item), threadId: 'another-thread' } }, UNRELATED_ITEM],
-    [{ body: { ...payload(item), turnId: '' } }, UNRELATED_ITEM],
-    [{ body: { ...payload(item), turnId: 'another-turn' } }, NOT_APPLIED],
-    [{ body: { method: 'item/completed', params: payload(item) } }, UNRELATED_ITEM],
+    [
+      {
+        body: {
+          ...payload(item),
+          threadId: 'another-thread',
+        },
+      },
+      UNRELATED_ITEM,
+    ],
+    [
+      {
+        body: {
+          ...payload(item),
+          turnId: '',
+        },
+      },
+      UNRELATED_ITEM,
+    ],
+    [
+      {
+        body: {
+          ...payload(item),
+          turnId: 'another-turn',
+        },
+      },
+      NOT_APPLIED,
+    ],
+    [
+      {
+        body: {
+          method: 'item/completed',
+          params: payload(item),
+        },
+      },
+      UNRELATED_ITEM,
+    ],
   ])('refuses unrelated thread, turn, or envelope data inside the stored params: %j', ({ body }, error) => {
-    expect(() => codexAppliedFileChange([started, storedMessage('native-completed', 42n, body)], sessionId, item.id, '/private/file.txt')).toThrow(error)
+    expect(() => codexAppliedFileChange([
+      started,
+      storedMessage('native-completed', 42n, body),
+    ], sessionId, item.id, '/private/file.txt')).toThrow(error)
   })
   it('excludes old-session spans while preserving the exact current session and full sequence values', () => {
     const old = [started, completed].map(message => makeMessage({ ...message, agentSessionId: 'old-session' }))
@@ -100,27 +245,69 @@ describe('codexAppliedFileChange', () => {
   })
   it('preserves the first allocated sequence and an explicitly empty native diff', () => {
     const currentStart = makeMessage({ ...started, seq: 1n })
-    const currentEnd = storedMessage('native-completed', 2n, payload({ ...item, changes: [{ path: '/private/file.txt', kind: 'add', diff: '' }] }))
+    const currentEnd = storedMessage('native-completed', 2n, payload({
+      ...item,
+      changes: [
+        { path: '/private/file.txt', kind: 'add', diff: '' },
+      ],
+    }))
     expect(codexAppliedFileChange([currentStart, currentEnd], sessionId, item.id, '/private/file.txt')).toEqual({ path: '/private/file.txt', kind: 'add', diff: '' })
   })
 })
 
 describe('requireCodexPatchResult', () => {
   function request(output: unknown, callId = 'actual-patch'): MockModelRequestRecord {
-    return { protocol: 'openai-responses', path: '/v1/responses', body: { input: [{ type: 'custom_tool_call_output', call_id: callId, output }] } }
+    return {
+      protocol: 'openai-responses',
+      path: '/v1/responses',
+      body: {
+        input: [
+          { type: 'custom_tool_call_output', call_id: callId, output },
+        ],
+      },
+    }
   }
-  const blocks = [{ type: 'input_text', text: 'Script completed\nWall time 0.0 seconds\nOutput:\n' }, { type: 'input_text', text: '{}' }]
+  const blocks = [
+    { type: 'input_text', text: 'Script completed\nWall time 0.0 seconds\nOutput:\n' },
+    { type: 'input_text', text: '{}' },
+  ]
   it('accepts the actual empty return from the exact successful native code cell', () => {
     expect(() => requireCodexPatchResult(request(blocks), 'actual-patch')).not.toThrow()
   })
   const UNFINISHED = 'The exact native Codex patch code cell did not finish successfully.'
   const NO_EMPTY_OBJECT = 'The exact native Codex patch call did not return its successful empty object.'
   it.each([
-    [{ output: [] }, UNFINISHED],
-    [{ output: [blocks[0]] }, NO_EMPTY_OBJECT],
-    [{ output: [blocks[1]] }, UNFINISHED],
-    [{ output: [...blocks, blocks[1]] }, NO_EMPTY_OBJECT],
-    [{ output: [{ type: 'input_text', text: 'Script failed\n' }, blocks[1]] }, UNFINISHED],
+    [
+      { output: [] },
+      UNFINISHED,
+    ],
+    [
+      {
+        output: [blocks[0]],
+      },
+      NO_EMPTY_OBJECT,
+    ],
+    [
+      {
+        output: [blocks[1]],
+      },
+      UNFINISHED,
+    ],
+    [
+      {
+        output: [...blocks, blocks[1]],
+      },
+      NO_EMPTY_OBJECT,
+    ],
+    [
+      {
+        output: [
+          { type: 'input_text', text: 'Script failed\n' },
+          blocks[1],
+        ],
+      },
+      UNFINISHED,
+    ],
   ])('refuses missing or unsuccessful native patch completion: %j', ({ output }, error) => {
     expect(() => requireCodexPatchResult(request(output), 'actual-patch')).toThrow(error)
   })

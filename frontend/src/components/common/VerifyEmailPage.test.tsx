@@ -229,7 +229,9 @@ describe('VerifyEmailPage', () => {
   // The refresh STAYS: the response carries the user and nothing else, while
   // the resend cooldown and the elevation deadline come from GetCurrentUser.
   it('keeps the account re-read for the signals the response does not carry', async () => {
-    mockVerify.mockResolvedValueOnce({ user: { username: 'alice', emailVerified: true } })
+    mockVerify.mockResolvedValueOnce({
+      user: { username: 'alice', emailVerified: true },
+    })
 
     renderPage('/verify-email?code=AB2-CDE')
 
@@ -259,7 +261,9 @@ describe('VerifyEmailPage', () => {
     renderPage('/verify-email')
 
     const input = await screen.findByTestId('verify-email-code-input') as HTMLInputElement
-    fireEvent.input(input, { target: { value: '7xc-8dz' } })
+    fireEvent.input(input, {
+      target: { value: '7xc-8dz' },
+    })
     fireEvent.click(screen.getByTestId('verify-email-submit'))
 
     await waitFor(() => {
@@ -277,7 +281,9 @@ describe('VerifyEmailPage', () => {
     renderPage('/verify-email')
 
     const input = await screen.findByTestId('verify-email-code-input') as HTMLInputElement
-    fireEvent.input(input, { target: { value: 'O0O0O0' } })
+    fireEvent.input(input, {
+      target: { value: 'O0O0O0' },
+    })
     fireEvent.click(screen.getByTestId('verify-email-submit'))
 
     await waitFor(() => {
@@ -293,7 +299,9 @@ describe('VerifyEmailPage', () => {
     renderPage('/verify-email')
 
     const input = await screen.findByTestId('verify-email-code-input') as HTMLInputElement
-    fireEvent.input(input, { target: { value: '7XC-8DZ' } })
+    fireEvent.input(input, {
+      target: { value: '7XC-8DZ' },
+    })
     fireEvent.click(screen.getByTestId('verify-email-submit'))
 
     await waitFor(() => {
@@ -417,7 +425,9 @@ describe('VerifyEmailPage', () => {
     renderPage('/verify-email')
 
     const input = await screen.findByTestId('verify-email-code-input') as HTMLInputElement
-    fireEvent.input(input, { target: { value: '7XC-8DZ' } })
+    fireEvent.input(input, {
+      target: { value: '7XC-8DZ' },
+    })
     fireEvent.click(screen.getByTestId('verify-email-submit'))
     expect(await screen.findByText(/invalid or expired/i)).toBeInTheDocument()
 

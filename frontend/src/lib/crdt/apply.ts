@@ -90,7 +90,9 @@ export function applyOp(state: UserCrdtState, op: CrdtOp, canonOverride?: HLC): 
 
 /** -0.0 → +0.0 normalization. Object.is distinguishes -0/+0. */
 function canonicalizeZero(v: number): number {
-  return Object.is(v, -0) ? 0 : v
+  return Object.is(v, -0)
+    ? 0
+    : v
 }
 
 function canonicalizeZeros(values: number[]): number[] {
@@ -102,32 +104,55 @@ function shouldWrite(currentHLC: HLC | undefined, opHLC: HLC): boolean {
 }
 
 function lwwString(value: string, hlc: HLC): LWWString {
-  return create(LWWStringSchema, { value, hlc: hlcClone(hlc) })
+  return create(LWWStringSchema, {
+    value,
+    hlc: hlcClone(hlc),
+  })
 }
 
 function lwwInt32(value: number, hlc: HLC): LWWInt32 {
-  return create(LWWInt32Schema, { value, hlc: hlcClone(hlc) })
+  return create(LWWInt32Schema, {
+    value,
+    hlc: hlcClone(hlc),
+  })
 }
 
 function lwwUint32(value: number, hlc: HLC): LWWUint32 {
-  return create(LWWUint32Schema, { value, hlc: hlcClone(hlc) })
+  return create(LWWUint32Schema, {
+    value,
+    hlc: hlcClone(hlc),
+  })
 }
 
 function lwwDouble(value: number, hlc: HLC): LWWDouble {
-  return create(LWWDoubleSchema, { value: canonicalizeZero(value), hlc: hlcClone(hlc) })
+  return create(LWWDoubleSchema, {
+    value: canonicalizeZero(value),
+    hlc: hlcClone(hlc),
+  })
 }
 
 function lwwDoubles(values: number[], hlc: HLC): LWWDoubles {
-  const list = create(DoubleListSchema, { values: canonicalizeZeros(values) })
-  return create(LWWDoublesSchema, { value: list, hlc: hlcClone(hlc) })
+  const list = create(DoubleListSchema, {
+    values: canonicalizeZeros(values),
+  })
+  return create(LWWDoublesSchema, {
+    value: list,
+    hlc: hlcClone(hlc),
+  })
 }
 
 function lwwDirection(value: number, hlc: HLC): LWWDirection {
-  return create(LWWDirectionSchema, { value, hlc: hlcClone(hlc) })
+  return create(LWWDirectionSchema, {
+    value,
+    hlc: hlcClone(hlc),
+  })
 }
 
 function lwwNodeKind(value: number, hlc: HLC): LWWNodeKind {
-  return create(LWWNodeKindSchema, { value, hlc: hlcClone(hlc) })
+  return create(LWWNodeKindSchema, {
+    value,
+    hlc: hlcClone(hlc),
+  })
 }
 
 function ensureNode(state: UserCrdtState, id: string): NodeRecord {
@@ -218,7 +243,10 @@ function applyTombstoneNode(state: UserCrdtState, nodeId: string, hlc: HLC): voi
     state.nodes,
     nodeId,
     hlc,
-    () => create(NodeRecordSchema, { nodeId, tombstoneAt: hlcClone(hlc) }),
+    () => create(NodeRecordSchema, {
+      nodeId,
+      tombstoneAt: hlcClone(hlc),
+    }),
   )
 }
 
@@ -293,7 +321,11 @@ function applyReviveTab(state: UserCrdtState, tabType: number, tabId: string, hl
     return
   const existing = state.tabs[tabId]
   if (!existing) {
-    state.tabs[tabId] = create(TabRecordSchema, { tabType, tabId, revivedAt: hlcClone(hlc) })
+    state.tabs[tabId] = create(TabRecordSchema, {
+      tabType,
+      tabId,
+      revivedAt: hlcClone(hlc),
+    })
     return
   }
   if (hlcCmp(hlc, existing.tombstoneAt) > 0) {
@@ -352,7 +384,10 @@ function applyTombstoneFloatingWindow(state: UserCrdtState, windowId: string, hl
     state.floatingWindows,
     windowId,
     hlc,
-    () => create(FloatingWindowRecordSchema, { windowId, tombstoneAt: hlcClone(hlc) }),
+    () => create(FloatingWindowRecordSchema, {
+      windowId,
+      tombstoneAt: hlcClone(hlc),
+    }),
   )
 }
 

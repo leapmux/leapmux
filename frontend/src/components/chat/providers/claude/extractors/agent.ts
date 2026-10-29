@@ -84,7 +84,9 @@ export function claudeAgentFromToolResult(
   // Trim before the test: `pickString` preserves whitespace, and a blank
   // description is not a real one.
   const resultDescription = pickString(toolUseResult, 'description').trim()
-  const inputDescription = toolInput ? pickString(toolInput, 'description').trim() : ''
+  const inputDescription = toolInput
+    ? pickString(toolInput, 'description').trim()
+    : ''
   const source: ClaudeAgentResult = {
     status,
     description: resultDescription || inputDescription,
@@ -140,10 +142,15 @@ export function claudeAgentRun(source: ClaudeAgentResult): AgentRun {
   if (source.sessionUrl)
     metadata.push({ label: 'Session', value: source.sessionUrl })
   // Keep every model when a run changes models before its launch result.
-  if (source.modelsUsed.length > 1)
-    metadata.push({ label: 'Models', value: source.modelsUsed.join(' → ') })
-  else if (source.resolvedModel)
+  if (source.modelsUsed.length > 1) {
+    metadata.push({
+      label: 'Models',
+      value: source.modelsUsed.join(' → '),
+    })
+  }
+  else if (source.resolvedModel) {
     metadata.push({ label: 'Model', value: source.resolvedModel })
+  }
   if (source.worktreeBranch)
     metadata.push({ label: 'Branch', value: source.worktreeBranch })
   if (source.worktreePath)
@@ -153,12 +160,22 @@ export function claudeAgentRun(source: ClaudeAgentResult): AgentRun {
   return {
     description: source.description,
     agentId: source.agentId || source.taskId,
-    statusLabel: source.status === 'async_launched' ? 'launched asynchronously' : source.status === 'remote_launched' ? 'launched remotely' : source.status,
-    outcome: source.status === 'completed' ? 'completed' : source.status === 'failed' || source.status === 'error' ? 'failed' : launch ? 'running' : 'unknown',
+    statusLabel: source.status === 'async_launched'
+      ? 'launched asynchronously'
+      : source.status === 'remote_launched'
+        ? 'launched remotely'
+        : source.status,
+    outcome: source.status === 'completed'
+      ? 'completed'
+      : source.status === 'failed' || source.status === 'error'
+        ? 'failed'
+        : launch ? 'running' : 'unknown',
     metadata,
     body: claudeAgentResultBody(source),
     // A launch has no report; the prompt is the only thing it can say about the work.
-    ...(launch ? { bodyLabel: 'Prompt' } : {}),
+    ...(launch
+      ? { bodyLabel: 'Prompt' }
+      : {}),
   }
 }
 
@@ -167,8 +184,17 @@ export function claudeAgentSpec(request: AgentRequest, args: ClaudeToolRow, resu
   if (!result)
     return { kind: 'agent', request }
   const source = claudeAgentFromToolResult(result.toolUseResult, result.resultContent, args.input)
-  if (source)
-    return { kind: 'agent', request, result: { agents: [claudeAgentRun(source)] } }
+  if (source) {
+    return {
+      kind: 'agent',
+      request,
+      result: {
+        agents: [
+          claudeAgentRun(source),
+        ],
+      },
+    }
+  }
   // A report this build cannot structure still states its words: the subagent's
   // answer is prose, and the row draws it as the run it finished. The OUTCOME
   // comes from the row, not from the fact that the parse fell through -- a refused
@@ -178,6 +204,17 @@ export function claudeAgentSpec(request: AgentRequest, args: ClaudeToolRow, resu
   return {
     kind: 'agent',
     request,
-    result: { agents: [{ description: request.description, agentId: '', statusLabel: failed ? 'failed' : 'completed', outcome: failed ? 'failed' : 'completed', metadata: [], body: result.resultContent }] },
+    result: {
+      agents: [
+        {
+          description: request.description,
+          agentId: '',
+          statusLabel: failed ? 'failed' : 'completed',
+          outcome: failed ? 'failed' : 'completed',
+          metadata: [],
+          body: result.resultContent,
+        },
+      ],
+    },
   }
 }

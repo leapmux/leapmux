@@ -227,7 +227,9 @@ describe('buildCommonSidebarProps', () => {
       onExpand: () => {},
     })
 
-    const unexpected = [...new Set(touched)].filter(p => !STATIC_PASSTHROUGHS.has(p))
+    const unexpected = [
+      ...new Set(touched),
+    ].filter(p => !STATIC_PASSTHROUGHS.has(p))
     expect(unexpected).toEqual([])
   })
 

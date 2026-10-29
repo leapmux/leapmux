@@ -109,5 +109,8 @@ export function createWorkerPriorityGate(maxInFlight = 2): WorkerPriorityGate {
     })
   }
 
-  return { enqueue, queuedCount: () => queue.length }
+  return {
+    enqueue,
+    queuedCount: () => queue.length,
+  }
 }

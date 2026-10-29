@@ -10,15 +10,44 @@ const root = resolve(import.meta.dirname, '..')
 const scratch = join(root, '.tmp')
 const fixtures = []
 const hostPlatform = {
-  os: process.platform === 'win32' ? 'windows' : process.platform,
-  arch: process.arch === 'x64' ? 'amd64' : process.arch,
+  os: process.platform === 'win32'
+    ? 'windows'
+    : process.platform,
+  arch: process.arch === 'x64'
+    ? 'amd64'
+    : process.arch,
 }
 const platforms = [
-  { os: 'darwin', arch: 'arm64', triple: 'aarch64-apple-darwin', bundleArch: 'arm64' },
-  { os: 'darwin', arch: 'amd64', triple: 'x86_64-apple-darwin', bundleArch: 'x86_64' },
-  { os: 'linux', arch: 'arm64', triple: 'aarch64-unknown-linux-gnu', bundleArch: 'aarch64' },
-  { os: 'linux', arch: 'amd64', triple: 'x86_64-unknown-linux-gnu', bundleArch: 'x86_64' },
-  { os: 'windows', arch: 'amd64', triple: 'x86_64-pc-windows-msvc', bundleArch: 'x64' },
+  {
+    os: 'darwin',
+    arch: 'arm64',
+    triple: 'aarch64-apple-darwin',
+    bundleArch: 'arm64',
+  },
+  {
+    os: 'darwin',
+    arch: 'amd64',
+    triple: 'x86_64-apple-darwin',
+    bundleArch: 'x86_64',
+  },
+  {
+    os: 'linux',
+    arch: 'arm64',
+    triple: 'aarch64-unknown-linux-gnu',
+    bundleArch: 'aarch64',
+  },
+  {
+    os: 'linux',
+    arch: 'amd64',
+    triple: 'x86_64-unknown-linux-gnu',
+    bundleArch: 'x86_64',
+  },
+  {
+    os: 'windows',
+    arch: 'amd64',
+    triple: 'x86_64-pc-windows-msvc',
+    bundleArch: 'x64',
+  },
 ]
 
 // Substitute only Task's platform functions. Task still evaluates its templates and file patterns.
@@ -31,13 +60,19 @@ function platformTemplates(value, platform) {
   }
   if (Array.isArray(value))
     return value.map(item => platformTemplates(item, platform))
-  if (value && typeof value === 'object')
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, platformTemplates(item, platform)]))
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+      key,
+      platformTemplates(item, platform),
+    ]))
+  }
   return value
 }
 
 function platformOutputs(platform) {
-  const executable = platform.os === 'windows' ? '.exe' : ''
+  const executable = platform.os === 'windows'
+    ? '.exe'
+    : ''
   const sidecar = `leapmux-desktop-service-${platform.triple}${executable}`
   switch (platform.os) {
     case 'darwin': return {
@@ -46,7 +81,12 @@ function platformOutputs(platform) {
     }
     case 'linux': return {
       sidecar,
-      bundle: ['leapmux-desktop', sidecar, `leapmux-desktop_1.0.0_${platform.arch}.deb`, `leapmux-desktop_1.0.0_${platform.bundleArch}.AppImage`],
+      bundle: [
+        'leapmux-desktop',
+        sidecar,
+        `leapmux-desktop_1.0.0_${platform.arch}.deb`,
+        `leapmux-desktop_1.0.0_${platform.bundleArch}.AppImage`,
+      ],
     }
     case 'windows': return {
       sidecar,
@@ -70,7 +110,17 @@ function fixture(platform = hostPlatform) {
   fixtures.push(dir)
   const config = platformTemplates(Bun.YAML.parse(readFileSync(join(root, 'Taskfile.yaml'), 'utf8')), platform)
   // Keep the baseline independent of the parent task's development environment.
-  config.vars = { ...config.vars, VERSION: '1.0.0', COMMIT_HASH: 'abc123', COMMIT_TIME: 'commit-time', BUILD_TIME: '', BRANCH: 'main', LEAPMUX_DEV: '', NODE_ENV: '', SPINNERS_CACHE_DIR: join(dir, 'spinner-cache') }
+  config.vars = {
+    ...config.vars,
+    VERSION: '1.0.0',
+    COMMIT_HASH: 'abc123',
+    COMMIT_TIME: 'commit-time',
+    BUILD_TIME: '',
+    BRANCH: 'main',
+    LEAPMUX_DEV: '',
+    NODE_ENV: '',
+    SPINNERS_CACHE_DIR: join(dir, 'spinner-cache'),
+  }
   delete config.dotenv
   const outputs = {
     'install-frontend-deps': ['frontend/node_modules/package/index.js'],
@@ -78,14 +128,26 @@ function fixture(platform = hostPlatform) {
     'generate-contracts': ['backend/generated/contracts/wire.go', 'frontend/src/generated/contracts/wire.ts', 'desktop/rust/src/generated/contracts.rs'],
     'fetch-spinners': ['spinner-cache/spinners/default.json'],
     'generate-spinners': ['frontend/src/spinners/default.json'],
-    'generate-frontend-icons': ['frontend/public/icons/leapmux-icon.ico', 'frontend/public/icons/leapmux-icon.svg', 'frontend/public/icons/leapmux-icon-192.png', 'frontend/public/icons/leapmux-icon-512.png', 'frontend/public/icons/leapmux-icon-maskable-512.png', 'frontend/public/icons/leapmux-icon-square-apple-touch.png'],
+    'generate-frontend-icons': [
+      'frontend/public/icons/leapmux-icon.ico',
+      'frontend/public/icons/leapmux-icon.svg',
+      'frontend/public/icons/leapmux-icon-192.png',
+      'frontend/public/icons/leapmux-icon-512.png',
+      'frontend/public/icons/leapmux-icon-maskable-512.png',
+      'frontend/public/icons/leapmux-icon-square-apple-touch.png',
+    ],
     'copy-frontend-notice': ['frontend/public/NOTICE.html'],
     'generate-sqlc-hub': ['backend/internal/hub/store/sqlite/generated/db/querier.go', 'backend/internal/hub/store/postgres/generated/db/querier.go', 'backend/internal/hub/store/mysql/generated/db/querier.go'],
     'generate-sqlc-worker': ['backend/internal/worker/generated/db/querier.go'],
     'embed-frontend': ['backend/internal/hub/generated/frontend/embed.go', 'backend/internal/hub/generated/frontend/public/index.html', 'backend/internal/hub/generated/frontend/public/app.js'],
-    'build-backend': [platform.os === 'windows' ? 'leapmux.exe' : 'leapmux'],
+    'build-backend': [
+      platform.os === 'windows'
+        ? 'leapmux.exe'
+        : 'leapmux',
+    ],
     'build-backend-docker': ['leapmux'],
-    'build-frontend': ['frontend/.output/public/index.html', 'frontend/.output/public/app.js', 'frontend/.vinxi/build/client/app.js'],
+    // The build also writes Nitro's server bundle inside node_modules, which install-frontend-deps must not claim.
+    'build-frontend': ['frontend/.output/public/index.html', 'frontend/.output/public/app.js', 'frontend/node_modules/.nitro/vite/services/ssr/index.js'],
     'site': ['site/public/index.html'],
   }
   // These are producer outputs, independent of the Taskfile's expected-output patterns.
@@ -96,22 +158,36 @@ function fixture(platform = hostPlatform) {
     outputs['build-desktop-sidecar'] = [`desktop/go/bin/${sidecar}`]
     outputs[`build-desktop-${platform.os}`] = bundle
   }
-  outputs['generate-desktop-icons'] = [...ALL_ICON_FILES, ICO_FILE, ...TRAY_ICON_FILES.map(icon => icon.name)]
+  outputs['generate-desktop-icons'] = [
+    ...ALL_ICON_FILES,
+    ICO_FILE,
+    ...TRAY_ICON_FILES.map(icon => icon.name),
+  ]
     .map(file => `desktop/rust/icons/${file}`)
   outputs['prepare-dmg-tools'] = ['frontend/node_modules/macos-alias/build/Release/volume.node']
   for (const [name, task] of Object.entries(config.tasks)) {
-    for (const key of ['BUF_CONTEXT', 'GO_CONTEXT', 'JS_CONTEXT', 'RUST_CONTEXT', 'SDK_CONTEXT']) {
+    for (const key of [
+      'BUF_CONTEXT',
+      'GO_CONTEXT',
+      'JS_CONTEXT',
+      'RUST_CONTEXT',
+      'SDK_CONTEXT',
+    ]) {
       if (task.vars?.[key])
         task.vars[key] = `fixture-${key}`
     }
     const commands = task.cmds ?? []
-    const isAction = cmd => typeof cmd === 'string' ? !cmd.includes('scripts/task-state.mjs') : !cmd.task
+    const isAction = cmd => typeof cmd === 'string'
+      ? !cmd.includes('scripts/task-state.mjs')
+      : !cmd.task
     const actions = commands.filter(isAction)
     const lastAction = actions.at(-1)
     task.cmds = commands.flatMap((cmd) => {
       if (!isAction(cmd))
         return [cmd]
-      return cmd === lastAction ? [`bun fixture.mjs ${name}`] : []
+      return cmd === lastAction
+        ? [`bun fixture.mjs ${name}`]
+        : []
     })
   }
   write(dir, 'Taskfile.yaml', Bun.YAML.stringify(config))
@@ -132,7 +208,27 @@ for (const path of outputs[task] ?? []) {
   // Keep the helper at the same relative location as the production task.
   mkdirSync(join(dir, 'scripts'), { recursive: true })
   cpSync(join(root, 'scripts/task-state.mjs'), join(dir, 'scripts/task-state.mjs'))
-  for (const path of ['proto/leapmux/v1/agent.proto', 'proto/leapmux/v1/scope.proto', 'buf.yaml', 'buf.gen.yaml', 'contracts/wire.json', 'NOTICE.html', 'frontend/src/app.ts', 'frontend/package.json', 'frontend/bun.lock', 'frontend/scripts/generate-icons.mjs', 'icons/leapmux-icon.svg', 'icons/leapmux-icon-square.svg', 'backend/main.go', 'backend/go.mod', 'backend/go.sum', 'go.work', 'backend/internal/hub/frontend.embed', 'backend/internal/hub/store/sqlite/db/migrations/001.sql', 'backend/internal/worker/db/migrations/001.sql'])
+  for (const path of [
+    'proto/leapmux/v1/agent.proto',
+    'proto/leapmux/v1/scope.proto',
+    'buf.yaml',
+    'buf.gen.yaml',
+    'contracts/wire.json',
+    'NOTICE.html',
+    'frontend/src/app.ts',
+    'frontend/package.json',
+    'frontend/bun.lock',
+    'frontend/scripts/generate-icons.mjs',
+    'icons/leapmux-icon.svg',
+    'icons/leapmux-icon-square.svg',
+    'backend/main.go',
+    'backend/go.mod',
+    'backend/go.sum',
+    'go.work',
+    'backend/internal/hub/frontend.embed',
+    'backend/internal/hub/store/sqlite/db/migrations/001.sql',
+    'backend/internal/worker/db/migrations/001.sql',
+  ])
     write(dir, path)
   return dir
 }
@@ -142,7 +238,10 @@ function run(dir, ...args) {
   const result = spawnSync('task', args, {
     cwd: dir,
     encoding: 'utf8',
-    env: { ...process.env, TASK_TEMP_DIR: join(dir, '.task') },
+    env: {
+      ...process.env,
+      TASK_TEMP_DIR: join(dir, '.task'),
+    },
   })
   expect(result.error).toBeUndefined()
   expect(result.status, result.stdout + result.stderr).toBe(0)
@@ -159,7 +258,9 @@ function useGoCommandRecipes(dir, platform) {
     ['build-desktop-sidecar', '../../compiler.mjs'],
   ]) {
     config.tasks[target].cmds = production.tasks[target].cmds.map(command =>
-      typeof command === 'string' ? command.replace('go build', `bun ${compilerPath} ${target}`) : command,
+      typeof command === 'string'
+        ? command.replace('go build', `bun ${compilerPath} ${target}`)
+        : command,
     )
   }
   writeFileSync(path, Bun.YAML.stringify(config))
@@ -213,8 +314,15 @@ describe('task build cache', () => {
     for (const other of ['darwin', 'linux', 'windows'].filter(os => os !== platform.os))
       expect(first).not.toContain(`build-desktop-${other}`)
     expect(first.includes('prepare-dmg-tools')).toBe(platform.os === 'darwin')
-    expect(existsSync(join(dir, platform.os === 'windows' ? 'leapmux' : 'leapmux.exe'))).toBe(false)
-    for (const optional of ['frontend/.npmrc', 'frontend/bunfig.toml', 'desktop/rust/rust-toolchain.toml', '.cargo/config.toml'])
+    expect(existsSync(join(dir, platform.os === 'windows'
+      ? 'leapmux'
+      : 'leapmux.exe'))).toBe(false)
+    for (const optional of [
+      'frontend/.npmrc',
+      'frontend/bunfig.toml',
+      'desktop/rust/rust-toolchain.toml',
+      '.cargo/config.toml',
+    ])
       expect(existsSync(join(dir, optional))).toBe(false)
     expect(run(dir, 'build')).toEqual([])
   })
@@ -225,7 +333,12 @@ describe('task build cache', () => {
     const { sidecar, bundle } = platformOutputs(platform)
     run(dir, 'build')
     const artifacts = [
-      { path: platform.os === 'windows' ? 'leapmux.exe' : 'leapmux', task: 'build-backend' },
+      {
+        path: platform.os === 'windows'
+          ? 'leapmux.exe'
+          : 'leapmux',
+        task: 'build-backend',
+      },
       { path: `desktop/go/bin/${sidecar}`, task: 'build-desktop-sidecar' },
       ...bundle.map(path => ({ path, task: `build-desktop-${platform.os}` })),
     ]
@@ -249,15 +362,17 @@ describe('task build cache', () => {
     expect(run(dir, 'build-frontend')).toEqual([])
   })
 
-  it('ignores generated server-function manifests but still repairs changed dependencies', () => {
+  it.each([
+    'frontend/node_modules/.nitro/vite/services/ssr/index.js',
+    'frontend/node_modules/.vitest-cache/629580bea917285efd8a9d8aab80fc81222b2073',
+  ])('ignores %s, which a later task writes, but still repairs changed dependencies', (generated) => {
     const dir = fixture()
     expect(run(dir, 'install-frontend-deps')).toEqual(['install-frontend-deps'])
-    const manifest = 'frontend/node_modules/.tanstack-start/server-functions-manifest.json'
-    write(dir, manifest, '{}')
+    write(dir, generated, '{}')
     expect(run(dir, 'install-frontend-deps')).toEqual([])
-    write(dir, manifest, '{"function":"generated"}')
+    write(dir, generated, '{"module":"generated"}')
     expect(run(dir, 'install-frontend-deps')).toEqual([])
-    rmSync(join(dir, manifest))
+    rmSync(join(dir, generated))
     expect(run(dir, 'install-frontend-deps')).toEqual([])
     write(dir, 'frontend/node_modules/package/index.js', 'changed dependency')
     expect(run(dir, 'install-frontend-deps')).toEqual(['install-frontend-deps'])
@@ -265,7 +380,15 @@ describe('task build cache', () => {
     expect(run(dir, 'install-frontend-deps')).toEqual([])
   })
 
-  it.each(['generate-sqlc-hub', 'generate-sqlc-worker', 'build-backend', 'build-backend-docker', 'build-desktop-sidecar', 'lint-backend', 'lint-desktop'])('checks every Go workspace manifest for %s', (target) => {
+  it.each([
+    'generate-sqlc-hub',
+    'generate-sqlc-worker',
+    'build-backend',
+    'build-backend-docker',
+    'build-desktop-sidecar',
+    'lint-backend',
+    'lint-desktop',
+  ])('checks every Go workspace manifest for %s', (target) => {
     const dir = fixture()
     const file = join(dir, 'Taskfile.yaml')
     const config = Bun.YAML.parse(readFileSync(file, 'utf8'))
@@ -277,7 +400,14 @@ describe('task build cache', () => {
     writeFileSync(file, Bun.YAML.stringify(config))
     expect(run(dir, target)).toEqual([target])
     expect(run(dir, target)).toEqual([])
-    for (const input of ['go.work', 'go.work.sum', 'backend/go.mod', 'backend/go.sum', 'desktop/go/go.mod', 'desktop/go/go.sum']) {
+    for (const input of [
+      'go.work',
+      'go.work.sum',
+      'backend/go.mod',
+      'backend/go.sum',
+      'desktop/go/go.mod',
+      'desktop/go/go.sum',
+    ]) {
       write(dir, input, 'changed workspace manifest')
       expect(run(dir, target), input).toEqual([target])
     }
@@ -308,7 +438,13 @@ describe('task build cache', () => {
     expect(existsSync(join(dir, 'frontend/.output/public/app.js'))).toBe(true)
   })
 
-  it.each(['VERSION=2.0.0', 'COMMIT_HASH=def456', 'BRANCH=feature', 'LEAPMUX_DEV=1', 'BUILD_TIME=explicit'])('invalidates changed build metadata: %s', (option) => {
+  it.each([
+    'VERSION=2.0.0',
+    'COMMIT_HASH=def456',
+    'BRANCH=feature',
+    'LEAPMUX_DEV=1',
+    'BUILD_TIME=explicit',
+  ])('invalidates changed build metadata: %s', (option) => {
     const dir = fixture()
     run(dir, 'build-frontend')
     expect(run(dir, 'build-frontend', option)).toContain('build-frontend')
@@ -408,7 +544,9 @@ describe('task build cache', () => {
     const dir = fixture()
     run(dir, 'build-backend')
     run(dir, 'build-backend-docker')
-    expect(run(dir, 'build-backend')).toEqual(hostPlatform.os === 'windows' ? [] : ['build-backend'])
+    expect(run(dir, 'build-backend')).toEqual(hostPlatform.os === 'windows'
+      ? []
+      : ['build-backend'])
   })
 
   it('exports the Docker target and CGO options to the Go compiler', () => {
@@ -418,7 +556,9 @@ describe('task build cache', () => {
     const production = Bun.YAML.parse(readFileSync(join(root, 'Taskfile.yaml'), 'utf8'))
     const dockerBuild = production.tasks['build-backend-docker'].cmds.find(cmd => typeof cmd === 'string' && cmd.includes('go build'))
     const task = config.tasks['build-backend-docker']
-    task.cmds = task.cmds.map(cmd => cmd === 'bun fixture.mjs build-backend-docker' ? dockerBuild.replace('go build', 'bun record-env.mjs') : cmd)
+    task.cmds = task.cmds.map(cmd => cmd === 'bun fixture.mjs build-backend-docker'
+      ? dockerBuild.replace('go build', 'bun record-env.mjs')
+      : cmd)
     writeFileSync(file, Bun.YAML.stringify(config))
     write(dir, 'backend/record-env.mjs', `
 import { writeFileSync } from 'node:fs'
@@ -447,7 +587,9 @@ writeFileSync('../leapmux', 'docker')
     const commandText = frontend ? 'bun run build' : 'go build'
     const command = production.tasks[target].cmds.find(cmd => typeof cmd === 'string' && cmd.includes(commandText))
     config.tasks[target].cmds = config.tasks[target].cmds.map(cmd =>
-      cmd === `bun fixture.mjs ${target}` ? command.replace(commandText, 'bun metadata.mjs') : cmd,
+      cmd === `bun fixture.mjs ${target}`
+        ? command.replace(commandText, 'bun metadata.mjs')
+        : cmd,
     )
     writeFileSync(file, Bun.YAML.stringify(config))
     const moduleDir = frontend ? 'frontend' : 'backend'
@@ -459,7 +601,9 @@ writeFileSync('metadata-result', JSON.stringify({ args: process.argv.slice(2), b
     run(dir, target, `BRANCH=${branch}`)
     expect(existsSync(join(dir, moduleDir, 'injected'))).toBe(false)
     const result = JSON.parse(readFileSync(join(dir, moduleDir, 'metadata-result'), 'utf8'))
-    expect(frontend ? result.branch : result.args.join(' ')).toContain(branch)
+    expect(frontend
+      ? result.branch
+      : result.args.join(' ')).toContain(branch)
   })
 
   it.each(['missing', 'modified'])('repairs a %s registry dependency file with the real package manager', async (damage) => {
@@ -472,7 +616,13 @@ writeFileSync('metadata-result', JSON.stringify({ args: process.argv.slice(2), b
     write(dir, 'package/package.json', JSON.stringify({ name: 'cache-fixture', version: '1.0.0' }))
     write(dir, 'package/index.js', 'export const value = 42')
     const archive = join(dir, 'dependency.tgz')
-    const pack = spawnSync(process.execPath, ['pm', 'pack', '--ignore-scripts', '--filename', archive], {
+    const pack = spawnSync(process.execPath, [
+      'pm',
+      'pack',
+      '--ignore-scripts',
+      '--filename',
+      archive,
+    ], {
       cwd: join(dir, 'package'),
       encoding: 'utf8',
     })
@@ -488,11 +638,13 @@ writeFileSync('metadata-result', JSON.stringify({ args: process.argv.slice(2), b
         return Response.json({
           'name': 'cache-fixture',
           'dist-tags': { latest: '1.0.0' },
-          'versions': { '1.0.0': {
-            name: 'cache-fixture',
-            version: '1.0.0',
-            dist: { shasum, tarball: new URL('dependency.tgz', request.url).href },
-          } },
+          'versions': {
+            '1.0.0': {
+              name: 'cache-fixture',
+              version: '1.0.0',
+              dist: { shasum, tarball: new URL('dependency.tgz', request.url).href },
+            },
+          },
         })
       },
     })
@@ -501,13 +653,24 @@ writeFileSync('metadata-result', JSON.stringify({ args: process.argv.slice(2), b
         cwd,
         stdout: 'pipe',
         stderr: 'pipe',
-        env: { ...process.env, TASK_TEMP_DIR: join(dir, '.task'), BUN_INSTALL_CACHE_DIR: join(dir, 'package-cache') },
+        env: {
+          ...process.env,
+          TASK_TEMP_DIR: join(dir, '.task'),
+          BUN_INSTALL_CACHE_DIR: join(dir, 'package-cache'),
+        },
       })
-      const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+      const [code, out, err] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ])
       expect(code, out + err).toBe(0)
     }
     try {
-      write(dir, 'frontend/package.json', JSON.stringify({ private: true, dependencies: { 'cache-fixture': '1.0.0' } }))
+      write(dir, 'frontend/package.json', JSON.stringify({
+        private: true,
+        dependencies: { 'cache-fixture': '1.0.0' },
+      }))
       write(dir, 'frontend/.npmrc', `registry=${registry.url.href}`)
       rmSync(join(dir, 'frontend/bun.lock'))
       await execute(process.execPath, ['install', '--lockfile-only'], join(dir, 'frontend'))

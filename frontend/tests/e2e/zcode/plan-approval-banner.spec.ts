@@ -23,13 +23,20 @@ zcodeTest('rejects a native ZCode plan and delivers approval-shaped feedback as 
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
   await page.setViewportSize({ width: 780, height: 1000 })
-  const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, ZCODE_AGENT, { directoryPrefix: 'zcode-feedback-', optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' } })
+  const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, ZCODE_AGENT, {
+    directoryPrefix: 'zcode-feedback-',
+    optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' },
+  })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
   await expectSettingsChip(page, 'Plan')
   // Script the plan request and the reply to its feedback as separate turns.
   // Approval-shaped feedback must remain feedback.
   const start = await modelScript.queue(
-    { toolCalls: [exitPlanModeToolCall(AgentProvider.ZCODE, 'feedback-probe', '# Feedback probe\n\n- Change no files.')] },
+    {
+      toolCalls: [
+        exitPlanModeToolCall(AgentProvider.ZCODE, 'feedback-probe', '# Feedback probe\n\n- Change no files.'),
+      ],
+    },
     { text: 'FEEDBACK_RECEIVED' },
   )
   await sendMessage(page, modelScript.prompt('Request approval for a short plan titled "Feedback probe".'))
@@ -81,7 +88,10 @@ function zcodePlanFileStem(sessionId: string): string {
 // Its native result makes the model continue in the same turn.
 zcodeTest('approves a native ZCode plan and runs the native exit in the same turn', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   const directory = newProviderWorkingDir(ZCODE_AGENT, 'zcode-approval-')
-  const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, ZCODE_AGENT, { workingDir: directory, optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' } })
+  const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, ZCODE_AGENT, {
+    workingDir: directory,
+    optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' },
+  })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
   const agent = await currentNativeAgent({ page, leapmuxServer })
   expect(agent.id).toBe(agentId)
@@ -89,7 +99,11 @@ zcodeTest('approves a native ZCode plan and runs the native exit in the same tur
   await withCleanup(async () => {
     const plan = '# Approval probe\n\n- Change no files.'
     const start = await modelScript.queue(
-      { toolCalls: [exitPlanModeToolCall(AgentProvider.ZCODE, 'approval-probe', plan)] },
+      {
+        toolCalls: [
+          exitPlanModeToolCall(AgentProvider.ZCODE, 'approval-probe', plan),
+        ],
+      },
       { text: 'APPROVAL_RECEIVED' },
     )
     await sendMessage(page, modelScript.prompt('Request approval for a short plan titled "Approval probe".'))
@@ -109,7 +123,10 @@ zcodeTest('approves a native ZCode plan and runs the native exit in the same tur
     expect(readFileSync(join(directory, '.zcode', 'plans', `plan-${zcodePlanFileStem(agent.agentSessionId)}.md`), 'utf8')).toBe(plan)
 
     const { decision } = await readObservedNativeDecision({ leapmuxServer }, agent, watch, observed)
-    expect(decision.request).toMatchObject({ method: ZCODE_METHOD.RequestUserInput, request: { tool_name: ZCODE_TOOL.ExitPlanMode } })
+    expect(decision.request).toMatchObject({
+      method: ZCODE_METHOD.RequestUserInput,
+      request: { tool_name: ZCODE_TOOL.ExitPlanMode },
+    })
     // The app-server matches a reply by its id alone, so the reply carries no `jsonrpc`.
     expect(decision.response).toEqual({
       id: observed.payload.id,
@@ -129,13 +146,20 @@ zcodeTest('approves a native ZCode plan and runs the native exit in the same tur
 // An earlier mode change would make ExitPlanMode fail and prevent the native continuation.
 zcodeTest('approves a native ZCode plan into a chosen mode applied after the native exit', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   const directory = newProviderWorkingDir(ZCODE_AGENT, 'zcode-approval-yolo-')
-  const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, ZCODE_AGENT, { workingDir: directory, optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' } })
+  const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, ZCODE_AGENT, {
+    workingDir: directory,
+    optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' },
+  })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
   const agent = await currentNativeAgent({ page, leapmuxServer })
   expect(agent.id).toBe(agentId)
   const plan = '# Bypass probe\n\n- Change no files.'
   const start = await modelScript.queue(
-    { toolCalls: [exitPlanModeToolCall(AgentProvider.ZCODE, 'bypass-probe', plan)] },
+    {
+      toolCalls: [
+        exitPlanModeToolCall(AgentProvider.ZCODE, 'bypass-probe', plan),
+      ],
+    },
     { text: 'BYPASS_APPROVAL_RECEIVED' },
   )
   await sendMessage(page, modelScript.prompt('Request approval for a short plan titled "Bypass probe".'))
@@ -164,7 +188,11 @@ zcodeTest('approves a native ZCode plan with Clear Context and leaves no card of
   })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
   const start = await modelScript.queue(
-    { toolCalls: [exitPlanModeToolCall(AgentProvider.ZCODE, 'clear-plan', modelScript.prompt('# Clear context plan\n\n- Change no files.'))] },
+    {
+      toolCalls: [
+        exitPlanModeToolCall(AgentProvider.ZCODE, 'clear-plan', modelScript.prompt('# Clear context plan\n\n- Change no files.')),
+      ],
+    },
     { text: 'PLAN_RAN' },
   )
   await sendMessage(page, modelScript.prompt('Request approval for the scripted plan.'))
@@ -188,7 +216,11 @@ zcodeTest('stops a ZCode turn that waits for plan approval and marks it interrup
     optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' },
   })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-  const start = await modelScript.queue({ toolCalls: [exitPlanModeToolCall(AgentProvider.ZCODE, 'stop-plan', '# Stop this plan\n\n- Change no files.')] })
+  const start = await modelScript.queue({
+    toolCalls: [
+      exitPlanModeToolCall(AgentProvider.ZCODE, 'stop-plan', '# Stop this plan\n\n- Change no files.'),
+    ],
+  })
   await sendMessage(page, modelScript.prompt('Request approval for the scripted plan.'))
   await modelScript.waitForSteps(start + 1)
   await expect(controlBanner(page)).toContainText('Plan Ready for Review')

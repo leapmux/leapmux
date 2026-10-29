@@ -9,7 +9,12 @@ import { LETTA_TITLE_RULE } from './housekeeping'
 import { LETTA_AGENT, nativeContext } from './scenarios'
 
 lettaTest('applies effort and restores the native default without replacing the session', async ({ authenticatedReasoningLettaWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedReasoningLettaWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedReasoningLettaWorkspace.workspaceId,
+  })
   const before = await currentNativeAgent(context)
   await exerciseNativeOptionSequence(context, {
     groupId: 'effort',
@@ -22,14 +27,21 @@ lettaTest('applies effort and restores the native default without replacing the 
     ],
     nativeProof: (request, step) => {
       expect(request.body).toHaveProperty('model', 'gpt-5.4')
-      expect(request.body).toHaveProperty('reasoning.effort', step.value === 'auto' ? 'none' : step.value)
+      expect(request.body).toHaveProperty('reasoning.effort', step.value === 'auto'
+        ? 'none'
+        : step.value)
     },
   })
   expect((await currentNativeAgent(context)).agentSessionId).toBe(before.agentSessionId)
 })
 
 lettaTest('hides effort on a plain model and restores the reasoning catalog on return', async ({ authenticatedReasoningLettaWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedReasoningLettaWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedReasoningLettaWorkspace.workspaceId,
+  })
   await exerciseEffortModelRoundTrip(context, {
     effortGroupId: 'effort',
     model: LETTA_REASONING_MODEL_ID,
@@ -45,7 +57,12 @@ lettaTest('hides effort on a plain model and restores the reasoning catalog on r
 })
 
 lettaTest('keeps an offered effort when switching reasoning models', async ({ authenticatedReasoningLettaWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedReasoningLettaWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedReasoningLettaWorkspace.workspaceId,
+  })
   await exerciseModelSwitchKeepsOption(context, {
     kept: { groupId: 'effort', value: 'high' },
     model: 'openai/gpt-5.5',
@@ -61,13 +78,18 @@ const restartTest = createProviderProcessTest({
   nativeContext,
   skipReason: LETTA_E2E_SKIP_REASON,
   modelRules: [LETTA_TITLE_RULE],
-  openOptions: { model: LETTA_REASONING_MODEL_ID, optionValues: { effort: 'high' } },
+  openOptions: {
+    model: LETTA_REASONING_MODEL_ID,
+    optionValues: { effort: 'high' },
+  },
 })
 
 restartTest('applies a configured startup effort and retains it across a worker restart', async ({ native, separateHubWorker }) => {
   await exerciseNativeOptionSequence(native, {
     groupId: 'effort',
-    steps: [{ value: 'high', via: 'default' }],
+    steps: [
+      { value: 'high', via: 'default' },
+    ],
     nativeProof: request => expect(request.body).toHaveProperty('reasoning.effort', 'high'),
   })
   await exerciseWorkerRestart(native, separateHubWorker, 'worker')

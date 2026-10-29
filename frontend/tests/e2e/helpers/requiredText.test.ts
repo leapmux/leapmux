@@ -6,7 +6,14 @@ describe('requireNonemptyText', () => {
     expect(() => requireNonemptyText(' a ', 'The test rule', 'field')).not.toThrow()
   })
 
-  it.each(['', ' \n\t', undefined, null, 0, ['text']])('refuses %j with the subject and the field', (value) => {
+  it.each([
+    '',
+    ' \n\t',
+    undefined,
+    null,
+    0,
+    ['text'],
+  ])('refuses %j with the subject and the field', (value) => {
     expect(() => requireNonemptyText(value, 'The test rule', 'field')).toThrow('The test rule requires nonempty text for field.')
   })
 })

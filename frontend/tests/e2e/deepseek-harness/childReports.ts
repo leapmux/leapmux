@@ -8,7 +8,9 @@ export function deepseekHarnessChildReportRule(childSessionId: string): MockMode
   const exactId = escapeRegExp(childSessionId)
   return {
     name: `the native parent report for ${childSessionId}`,
-    when: { lastMessage: { role: 'user', text: `^Background subagent ${exactId} (?:finished and will do no further work unless you send it more|was stopped before it finished)\\.` } },
+    when: {
+      lastMessage: { role: 'user', text: `^Background subagent ${exactId} (?:finished and will do no further work unless you send it more|was stopped before it finished)\\.` },
+    },
     respond: { text: 'The native parent consumed its exact child report.' },
   }
 }

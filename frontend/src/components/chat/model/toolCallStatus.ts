@@ -15,7 +15,16 @@ import type { ProviderToolOutcome, ToolOutcome } from './toolOutcome'
  * (`DeclinedToolCallState`). Its result, when present, is the refusal in words, or
  * the prose answer of a kind whose own result is prose.
  */
-export const TOOL_CALL_STATUSES = ['unstated', 'pending', 'in_progress', 'completed', 'failed', 'cancelled', 'declined', 'incomplete'] as const
+export const TOOL_CALL_STATUSES = [
+  'unstated',
+  'pending',
+  'in_progress',
+  'completed',
+  'failed',
+  'cancelled',
+  'declined',
+  'incomplete',
+] as const
 
 export type ToolCallStatus = (typeof TOOL_CALL_STATUSES)[number]
 
@@ -27,7 +36,13 @@ export type FinishedToolCallStatus = 'completed' | 'failed' | 'cancelled' | 'dec
 
 /** The two halves as values, so a test can walk them without restating the union. */
 export const UNFINISHED_TOOL_STATUSES = ['unstated', 'pending', 'in_progress'] as const
-export const FINISHED_TOOL_STATUSES = ['completed', 'failed', 'cancelled', 'declined', 'incomplete'] as const
+export const FINISHED_TOOL_STATUSES = [
+  'completed',
+  'failed',
+  'cancelled',
+  'declined',
+  'incomplete',
+] as const
 
 /**
  * Whether one status ends its call.
@@ -50,7 +65,9 @@ const KNOWN_TOOL_CALL_STATUSES: ReadonlySet<string> = new Set(TOOL_CALL_STATUSES
  * nothing about it.
  */
 export function toolCallStatus(value: string | undefined): ToolCallStatus {
-  return value !== undefined && KNOWN_TOOL_CALL_STATUSES.has(value) ? value as ToolCallStatus : 'unstated'
+  return value !== undefined && KNOWN_TOOL_CALL_STATUSES.has(value)
+    ? value as ToolCallStatus
+    : 'unstated'
 }
 
 /** The status an outcome word states, for the three that end a call. */

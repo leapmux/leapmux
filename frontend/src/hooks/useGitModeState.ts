@@ -115,9 +115,19 @@ export function initialIntentForMode(mode: GitMode): GitModeIntent {
     case GitMode.SwitchBranch:
       return { mode, checkoutBranch: '', checkoutBranchError: null }
     case GitMode.CreateBranch:
-      return { mode, createBranch: '', createBranchError: null, createBranchBase: '' }
+      return {
+        mode,
+        createBranch: '',
+        createBranchError: null,
+        createBranchBase: '',
+      }
     case GitMode.CreateWorktree:
-      return { mode, worktreeBranch: '', worktreeBranchError: null, worktreeBaseBranch: '' }
+      return {
+        mode,
+        worktreeBranch: '',
+        worktreeBranchError: null,
+        worktreeBaseBranch: '',
+      }
     case GitMode.UseWorktree:
       return { mode, useWorktreePath: '' }
   }

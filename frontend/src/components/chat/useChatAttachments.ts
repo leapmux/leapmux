@@ -66,7 +66,9 @@ export function useChatAttachments(opts: UseChatAttachmentsOptions): UseChatAtta
     if (agentId === previousAgentId)
       return
     invalidateReads()
-    setAttachments(agentId ? getAttachments(agentId) : [])
+    setAttachments(agentId
+      ? getAttachments(agentId)
+      : [])
     setActiveDraftKey(agentId)
   }))
 
@@ -107,14 +109,18 @@ export function useChatAttachments(opts: UseChatAttachmentsOptions): UseChatAtta
     for (const item of [...files]) {
       if (!ownsDraft(draft))
         return 0
-      const file = item instanceof File ? item : item.file
+      const file = item instanceof File
+        ? item
+        : item.file
       if (currentSize + file.size > MAX_TOTAL_ATTACHMENT_SIZE) {
         sizeLimitHit = true
         break
       }
       const filename = isPastedImage
         ? `${nextPastedImageName(draft.key)}.${file.type.split('/')[1] || 'png'}`
-        : (item instanceof File ? undefined : item.filename)
+        : (item instanceof File
+            ? undefined
+            : item.filename)
       let attachment: FileAttachment
       try {
         attachment = await readFileAsAttachment(file, filename)
@@ -153,11 +159,17 @@ export function useChatAttachments(opts: UseChatAttachmentsOptions): UseChatAtta
       additions.push(attachment)
       currentSize += attachment.size
     }
-    if (additions.length > 0 && !writeAttachments([...currentAttachments, ...additions], draft))
+    if (additions.length > 0 && !writeAttachments([
+      ...currentAttachments,
+      ...additions,
+    ], draft)) {
       return 0
+    }
 
     for (const [reason, count] of rejectionReasons) {
-      showWarnToast(count === 1 ? reason : `${reason} (${count} files)`)
+      showWarnToast(count === 1
+        ? reason
+        : `${reason} (${count} files)`)
     }
     if (sizeLimitHit)
       showWarnToast(`One message accepts at most ${MAX_TOTAL_ATTACHMENT_SIZE / 1024 / 1024} MiB of text and attachments`)
@@ -211,8 +223,12 @@ export function useChatAttachments(opts: UseChatAttachmentsOptions): UseChatAtta
       return 0
     const { files, sizeLimitHit, failures } = collected
     if (failures.length > 0) {
-      const paths = failures.flatMap(failure => failure.path === undefined ? [] : [failure.path])
-      showWarnToast(`Could not read the dropped files${paths.length > 0 ? `: ${paths.join(', ')}` : ''}`)
+      const paths = failures.flatMap(failure => failure.path === undefined
+        ? []
+        : [failure.path])
+      showWarnToast(`Could not read the dropped files${paths.length > 0
+        ? `: ${paths.join(', ')}`
+        : ''}`)
     }
     if (sizeLimitHit)
       showWarnToast(`One message accepts at most ${MAX_TOTAL_ATTACHMENT_SIZE / 1024 / 1024} MiB of text and attachments`)

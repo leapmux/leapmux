@@ -12,7 +12,11 @@ for (const approval of [true, false]) {
     const plan = '# Exact native plan\n\n1. Inspect the scratch file.\n2. Implement only after approval.'
     const callId = `native-plan-${approval ? 'approve' : 'reject'}`
     const start = await modelScript.queue(
-      { toolCalls: [exitPlanModeToolCall(native.provider, callId, plan)] },
+      {
+        toolCalls: [
+          exitPlanModeToolCall(native.provider, callId, plan),
+        ],
+      },
       { text: 'The native plan review completed.' },
     )
     await sendMessage(page, modelScript.prompt('Present the exact native plan for review.'))

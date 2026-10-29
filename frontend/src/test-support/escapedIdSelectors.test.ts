@@ -27,7 +27,9 @@ const UNESCAPED_ID_INTERPOLATION = /\[data-[\w-]+-id[~|^$*]?="[^"]*\$\{(?!cssAtt
 
 /** Return the 1-based number of each code line of `source` that interpolates an unescaped value into an ID selector. */
 function unescapedIdSelectorLines(source: string): number[] {
-  return stripCommentLines(source).split('\n').flatMap((text, index) => UNESCAPED_ID_INTERPOLATION.test(text) ? [index + 1] : [])
+  return stripCommentLines(source).split('\n').flatMap((text, index) => UNESCAPED_ID_INTERPOLATION.test(text)
+    ? [index + 1]
+    : [])
 }
 
 /**

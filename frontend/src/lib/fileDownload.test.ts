@@ -70,7 +70,11 @@ function spyAnchor(): AnchorSpy {
     }
     return el
   })
-  return { clickSpy, downloadName, restore: () => createSpy.mockRestore() }
+  return {
+    clickSpy,
+    downloadName,
+    restore: () => createSpy.mockRestore(),
+  }
 }
 
 /**
@@ -252,8 +256,20 @@ interface SaveFnCase {
 }
 
 const SAVE_FN_CASES: SaveFnCase[] = [
-  { label: 'saveFileToDownloads', fn: saveFileToDownloads, open: fileSaveOpenImpl, id: 7, finalPath: '/home/alice/Downloads/big.bin' },
-  { label: 'saveFileAs', fn: saveFileAs, open: fileSaveOpenDialogImpl, id: 22, finalPath: '/home/alice/saved.bin' },
+  {
+    label: 'saveFileToDownloads',
+    fn: saveFileToDownloads,
+    open: fileSaveOpenImpl,
+    id: 7,
+    finalPath: '/home/alice/Downloads/big.bin',
+  },
+  {
+    label: 'saveFileAs',
+    fn: saveFileAs,
+    open: fileSaveOpenDialogImpl,
+    id: 22,
+    finalPath: '/home/alice/saved.bin',
+  },
 ]
 
 for (const c of SAVE_FN_CASES) {

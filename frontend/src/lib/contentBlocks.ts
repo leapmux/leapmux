@@ -40,7 +40,9 @@ export function getMessageContent(parent: Record<string, unknown> | null | undef
 
 /** Narrow an unknown value to a content-block array. */
 export function asContentArray(value: unknown): ContentBlock[] | null {
-  return Array.isArray(value) ? (value as ContentBlock[]) : null
+  return Array.isArray(value)
+    ? (value as ContentBlock[])
+    : null
 }
 
 /**
@@ -69,7 +71,9 @@ export type BlockFormatter = (block: ContentBlock) => string | null
  */
 export const markdownImageFormatter: BlockFormatter = (block) => {
   const source = parseImageBlock(block)
-  return source ? imageBlockToMarkdown(source) : null
+  return source
+    ? imageBlockToMarkdown(source)
+    : null
 }
 
 /** A tool result split into the text to render and the images to mount. */

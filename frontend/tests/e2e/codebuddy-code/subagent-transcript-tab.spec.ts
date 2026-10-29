@@ -16,10 +16,12 @@ codebuddyTest.describe('CodeBuddy Code subagent registry', () => {
     })
     const start = await modelScript.queue(
       {
-        toolCalls: [spawnSubagentToolCall(native.provider, 'spawn-codebuddy', {
-          description: 'Ask for one word',
-          prompt: modelScript.prompt('Reply with the single word PONG.'),
-        })],
+        toolCalls: [
+          spawnSubagentToolCall(native.provider, 'spawn-codebuddy', {
+            description: 'Ask for one word',
+            prompt: modelScript.prompt('Reply with the single word PONG.'),
+          }),
+        ],
       },
       { text: 'The subagent reported PONG.' },
     )

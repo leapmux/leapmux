@@ -43,5 +43,7 @@ import { failedResult } from '../../../model/toolCall'
  * completed.
  */
 export function claudeToolFailureResult(result: ClaudeToolRow | undefined): ToolFailureResult | undefined {
-  return result?.isError === true ? failedResult(result.resultContent) : undefined
+  return result?.isError === true
+    ? failedResult(result.resultContent)
+    : undefined
 }

@@ -21,40 +21,110 @@ function sharedSpec(): ToolCallSpec {
     kind: 'execute',
     request: { command: 'node native-script.js', description: 'Native command' },
     title: 'Native title',
-    metadata: [{ label: 'Native metadata', value: 'kept' }],
+    metadata: [
+      { label: 'Native metadata', value: 'kept' },
+    ],
     result: {
-      commands: [{ output: 'Native preview.', exitCode: 37, label: 'inline', durationMs: 5, truncated: true, outputUnavailable: false }],
+      commands: [
+        {
+          output: 'Native preview.',
+          exitCode: 37,
+          label: 'inline',
+          durationMs: 5,
+          truncated: true,
+          outputUnavailable: false,
+        },
+      ],
       unresolvedTerminals: [],
     },
   }
 }
 
 describe('diracCommandExit', () => {
-  it.each([0, 7, -7, Number.MAX_SAFE_INTEGER, Number.MIN_SAFE_INTEGER])('preserves a safe signed native code %s', (exitCode) => {
-    expect(diracCommandExit({ rawOutput: { output: 'Native preview.', exitCode, signal: null } })).toEqual({ exitCode })
+  it.each([
+    0,
+    7,
+    -7,
+    Number.MAX_SAFE_INTEGER,
+    Number.MIN_SAFE_INTEGER,
+  ])('preserves a safe signed native code %s', (exitCode) => {
+    expect(diracCommandExit({
+      rawOutput: { output: 'Native preview.', exitCode, signal: null },
+    })).toEqual({ exitCode })
   })
 
   it('keeps an explicit null code without claiming an exit', () => {
-    expect(diracCommandExit({ rawOutput: { output: '', exitCode: null, signal: null } })).toEqual({ exitCode: null })
+    expect(diracCommandExit({
+      rawOutput: { output: '', exitCode: null, signal: null },
+    })).toEqual({ exitCode: null })
   })
 
-  it.each([undefined, '', '7', false, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, {}, []])('claims no numeric code for a missing or malformed field: %j', (exitCode) => {
-    expect(diracCommandExit({ rawOutput: { output: '', ...(exitCode === undefined ? {} : { exitCode }) } })).toEqual({})
+  it.each([
+    undefined,
+    '',
+    '7',
+    false,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+    {},
+    [],
+  ])('claims no numeric code for a missing or malformed field: %j', (exitCode) => {
+    expect(diracCommandExit({
+      rawOutput: {
+        output: '',
+        ...(exitCode === undefined
+          ? {}
+          : { exitCode }),
+      },
+    })).toEqual({})
   })
 
   it.each([null, 0, 7])('preserves a native signal before a conflicting code: %j', (exitCode) => {
-    expect(diracCommandExit({ rawOutput: { output: 'Native preview.', exitCode, signal: 'SIGTERM' } })).toEqual({ signal: 'SIGTERM' })
+    expect(diracCommandExit({
+      rawOutput: { output: 'Native preview.', exitCode, signal: 'SIGTERM' },
+    })).toEqual({ signal: 'SIGTERM' })
   })
 
-  it.each([undefined, null, '', ' ', false, 7, [], {}, 'SIG\0TERM'])('claims no signal for an absent or malformed field: %j', (signal) => {
-    expect(diracCommandExit({ rawOutput: { output: '', exitCode: null, signal } })).toEqual({ exitCode: null })
+  it.each([
+    undefined,
+    null,
+    '',
+    ' ',
+    false,
+    7,
+    [],
+    {},
+    'SIG\0TERM',
+  ])('claims no signal for an absent or malformed field: %j', (signal) => {
+    expect(diracCommandExit({
+      rawOutput: { output: '', exitCode: null, signal },
+    })).toEqual({ exitCode: null })
   })
 
   it('keeps a rejected command without a numeric or signal claim', () => {
-    expect(diracCommandExit({ rawOutput: { output: '', userRejected: true, exitCode: 0, signal: 'SIGTERM' } })).toEqual({})
+    expect(diracCommandExit({
+      rawOutput: {
+        output: '',
+        userRejected: true,
+        exitCode: 0,
+        signal: 'SIGTERM',
+      },
+    })).toEqual({})
   })
 
-  it.each([undefined, null, false, 0, '', [], {}, { exitCode: 7 }, { output: false, exitCode: 7 }])('does not read exit fields from another raw shape: %j', (rawOutput) => {
+  it.each([
+    undefined,
+    null,
+    false,
+    0,
+    '',
+    [],
+    {},
+    { exitCode: 7 },
+    { output: false, exitCode: 7 },
+  ])('does not read exit fields from another raw shape: %j', (rawOutput) => {
     expect(diracCommandExit({ rawOutput })).toBeUndefined()
   })
 })
@@ -69,7 +139,13 @@ describe('diracExecuteSpec', () => {
       throw new Error('The fixture requires one command.')
     spec.result.commands[0]!.output = output
     const result = diracExecuteSpec(nativeFacts({ output, exitCode }), () => spec)
-    expect(result).toMatchObject({ result: { commands: [{ output: expected, exitCode }] } })
+    expect(result).toMatchObject({
+      result: {
+        commands: [
+          { output: expected, exitCode },
+        ],
+      },
+    })
   })
 
   it('changes only the native exit and keeps the original result fields', () => {
@@ -82,7 +158,16 @@ describe('diracExecuteSpec', () => {
     expect(result).toEqual({
       ...before,
       result: {
-        commands: [{ output: 'Native preview.', exitCode: 7, label: 'inline', durationMs: 5, truncated: true, outputUnavailable: false }],
+        commands: [
+          {
+            output: 'Native preview.',
+            exitCode: 7,
+            label: 'inline',
+            durationMs: 5,
+            truncated: true,
+            outputUnavailable: false,
+          },
+        ],
         unresolvedTerminals: [],
       },
     })
@@ -100,7 +185,17 @@ describe('diracExecuteSpec', () => {
   })
 
   it('preserves multiple commands without applying an aggregate exit to them', () => {
-    const spec: ToolCallSpec = { kind: 'execute', request: { command: 'native' }, result: { commands: [{ output: 'one', exitCode: 1 }, { output: 'two', signal: 'SIGINT' }], unresolvedTerminals: [] } }
+    const spec: ToolCallSpec = {
+      kind: 'execute',
+      request: { command: 'native' },
+      result: {
+        commands: [
+          { output: 'one', exitCode: 1 },
+          { output: 'two', signal: 'SIGINT' },
+        ],
+        unresolvedTerminals: [],
+      },
+    }
     expect(diracExecuteSpec(nativeFacts(), () => spec)).toBe(spec)
   })
 
@@ -113,17 +208,42 @@ describe('diracExecuteSpec', () => {
 
   it.each(['facts', 'result'] as const)('keeps unresolved terminal references in the %s', (owner) => {
     const facts = nativeFacts()
-    const spec: ToolCallSpec = { kind: 'execute', request: { command: 'native' }, result: { commands: [{ output: 'Native preview.' }], unresolvedTerminals: owner === 'result' ? ['native-terminal'] : [] } }
+    const spec: ToolCallSpec = {
+      kind: 'execute',
+      request: { command: 'native' },
+      result: {
+        commands: [
+          { output: 'Native preview.' },
+        ],
+        unresolvedTerminals: owner === 'result'
+          ? ['native-terminal']
+          : [],
+      },
+    }
     if (owner === 'facts')
       facts.terminals.unresolved.push('native-terminal')
     expect(diracExecuteSpec(facts, () => spec)).toBe(spec)
   })
 
   it.each([
-    { kind: 'execute', request: { command: 'native' } },
-    { kind: 'execute', request: { command: 'native' }, result: { commands: [], unresolvedTerminals: [] } },
-    { kind: 'execute', request: { command: 'native' }, result: failedResult('Native failure.') },
-    { kind: 'read', request: { path: '/native/file' } },
+    {
+      kind: 'execute',
+      request: { command: 'native' },
+    },
+    {
+      kind: 'execute',
+      request: { command: 'native' },
+      result: { commands: [], unresolvedTerminals: [] },
+    },
+    {
+      kind: 'execute',
+      request: { command: 'native' },
+      result: failedResult('Native failure.'),
+    },
+    {
+      kind: 'read',
+      request: { path: '/native/file' },
+    },
   ] satisfies ToolCallSpec[])('preserves a result without one inline command: %j', (spec) => {
     expect(diracExecuteSpec(nativeFacts(), () => spec)).toBe(spec)
   })

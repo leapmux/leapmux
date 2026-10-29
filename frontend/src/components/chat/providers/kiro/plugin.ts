@@ -26,7 +26,13 @@ registerACPProvider({
   // - Images.
   // - PDF files.
   // - Word and Excel files.
-  attachments: { text: true, image: true, pdf: true, audio: false, binary: [...KIRO_BINARY_MIME] },
+  attachments: {
+    text: true,
+    image: true,
+    pdf: true,
+    audio: false,
+    binary: [...KIRO_BINARY_MIME],
+  },
   extractControl: kiroExtractControl,
   elicitation: kiroElicitation,
   controlResponseDisplay: kiroControlResponseSummary,

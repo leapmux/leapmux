@@ -16,7 +16,13 @@ function receiptStores(onAgentSettled: (agentId: string, toolUses?: number) => v
   const bridge = installTestBridge({ workspaceId: WORKSPACE_ID })
   const tabs = createTestTabStores(WORKSPACE_ID)
   for (const [index, id] of ['agent-1', 'agent-2'].entries()) {
-    emitAddTab({ type: TabType.AGENT, id, tileId: bridge.rootTileId, position: `p${index + 1}`, workerId: 'worker-1' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id,
+      tileId: bridge.rootTileId,
+      position: `p${index + 1}`,
+      workerId: 'worker-1',
+    })
     tabs.metadata.patch(id, { agentStatus: AgentStatus.ACTIVE })
   }
   tabs.selection.setActiveById(TabType.AGENT, 'agent-1')
@@ -39,7 +45,10 @@ describe('handleActivityChanged', () => {
       const listener = (event: Event) => {
         order.push('receipt')
         const detail = (event as CustomEvent<AgentSettledEventDetail>).detail
-        receipts.push({ detail, busy: stores.agentActivityStore.isBusy(detail.agentId) })
+        receipts.push({
+          detail,
+          busy: stores.agentActivityStore.isBusy(detail.agentId),
+        })
       }
       window.addEventListener(AGENT_SETTLED_EVENT, listener)
       try {
@@ -47,7 +56,12 @@ describe('handleActivityChanged', () => {
         expect(receipts).toEqual([])
         handleActivityChanged('agent-1', { state: AgentActivityState.IDLE, numToolUses: 0 }, stores)
         expect(order).toEqual(['sound', 'receipt'])
-        expect(receipts).toEqual([{ detail: { agentId: 'agent-1', state: AgentActivityState.IDLE, numToolUses: 0 }, busy: false }])
+        expect(receipts).toEqual([
+          {
+            detail: { agentId: 'agent-1', state: AgentActivityState.IDLE, numToolUses: 0 },
+            busy: false,
+          },
+        ])
       }
       finally {
         window.removeEventListener(AGENT_SETTLED_EVENT, listener)

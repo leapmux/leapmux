@@ -27,7 +27,9 @@ export function capMapInsertionOrder<K, V>(
   const { protect, onEvict } = opts ?? {}
   // Raise the cap to fit the un-evictable protected keys (see the doc above), so a
   // window rendering more rows than `max` doesn't leave the map stuck above its bound.
-  const effectiveMax = protect ? Math.max(max, protect.size) : max
+  const effectiveMax = protect
+    ? Math.max(max, protect.size)
+    : max
   if (map.size <= effectiveMax)
     return map
   for (const key of map.keys()) {

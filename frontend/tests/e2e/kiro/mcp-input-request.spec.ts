@@ -24,14 +24,23 @@ kiroTest.describe('Kiro control requests', () => {
       },
     })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     // Kiro loads the server in the background. Its tool exists once Kiro lists it.
     await expect.poll(() => existsSync(server.ready)).toBe(true)
 
     const callId = 'kiro-mcp'
     const answer = 'The form came back.'
     const start = await modelScript.queue(
-      { toolCalls: [mcpToolCall(context.provider, callId, { server: server.name, tool: 'ask', input: {} })] },
+      {
+        toolCalls: [
+          mcpToolCall(context.provider, callId, { server: server.name, tool: 'ask', input: {} }),
+        ],
+      },
       nativeTextStep(context, answer),
     )
     await sendMessage(page, modelScript.prompt('Call the probe form tool.'))

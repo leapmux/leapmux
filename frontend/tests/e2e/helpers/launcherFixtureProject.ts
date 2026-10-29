@@ -295,7 +295,7 @@ export function fixtureCases(report: FixtureRecord): FixtureCase[] {
   const cases: FixtureCase[] = []
   const visit = (suites: unknown): void => {
     if (!Array.isArray(suites))
-      throw new Error('The fixture report has no suite array.')
+      throw new TypeError('The fixture report has no suite array.')
     for (const suite of suites) {
       if (!isObject(suite) || !Array.isArray(suite.specs))
         throw new Error('The fixture report contains an incomplete suite.')
@@ -305,7 +305,13 @@ export function fixtureCases(report: FixtureRecord): FixtureCase[] {
         const test = spec.tests[0]
         if (!isObject(test) || !Array.isArray(test.results))
           throw new Error('The fixture report contains an incomplete test.')
-        cases.push({ id: fixtureStringField(spec, 'id'), title: fixtureStringField(spec, 'title'), file: fixtureStringField(spec, 'file'), status: fixtureStringField(test, 'status'), results: test.results })
+        cases.push({
+          id: fixtureStringField(spec, 'id'),
+          title: fixtureStringField(spec, 'title'),
+          file: fixtureStringField(spec, 'file'),
+          status: fixtureStringField(test, 'status'),
+          results: test.results,
+        })
       }
       if (suite.suites !== undefined)
         visit(suite.suites)
@@ -350,7 +356,9 @@ export default {
   fullyParallel: false,
   retries: 0,
   timeout: 10_000,
-  use: ${policy.browserTrace ? `{ browserName: 'chromium', headless: true, trace: 'retain-on-failure' }` : '{}'},
+  use: ${policy.browserTrace
+    ? `{ browserName: 'chromium', headless: true, trace: 'retain-on-failure' }`
+    : '{}'},
   outputDir: join(process.env.LEAPMUX_E2E_OUTPUT_FILE_DIR ?? process.cwd(), 'test-results'),
 };
 `)
@@ -367,7 +375,12 @@ export default {
 
 /** Release every waiting fixture process before the cleanup stops the launcher that owns it. */
 export function releaseFixtureProcesses(records: string): void {
-  for (const file of ['release-alpha', 'release-beta', 'release-build', 'release-worker-teardown']) {
+  for (const file of [
+    'release-alpha',
+    'release-beta',
+    'release-build',
+    'release-worker-teardown',
+  ]) {
     const path = join(records, file)
     if (!existsSync(path))
       writeFileSync(path, 'release')
@@ -405,7 +418,12 @@ finally {
   const log = join(root, `launcher-console-${randomUUID()}.log`)
   const descriptor = openSync(log, 'wx')
   const env = shardReporterEnvironment(process.env, join(root, 'launcher-artifacts'))
-  for (const key of ['LEAPMUX_E2E_OUTPUT_FILE_DIR', 'LEAPMUX_E2E_NONCE_PATH', 'LEAPMUX_E2E_NONCE', 'PLAYWRIGHT_LAST_RUN_OUTPUT_FILE'])
+  for (const key of [
+    'LEAPMUX_E2E_OUTPUT_FILE_DIR',
+    'LEAPMUX_E2E_NONCE_PATH',
+    'LEAPMUX_E2E_NONCE',
+    'PLAYWRIGHT_LAST_RUN_OUTPUT_FILE',
+  ])
     delete env[key]
   env.PLAYWRIGHT_JSON_OUTPUT_FILE = options.reportPath ?? join(root, 'retained-artifacts', 'combined.json')
   env.E2E_STATE_PATH = join(root, 'foreign-state.json')
@@ -415,7 +433,10 @@ finally {
   delete env.PWPAUSE
   let child: ChildProcess
   try {
-    child = spawn('bun', [driver, ...(options.args ?? ['--workers=2', '--reporter=json', `--output=${join(root, 'retained-artifacts')}`])], {
+    child = spawn('bun', [
+      driver,
+      ...(options.args ?? ['--workers=2', '--reporter=json', `--output=${join(root, 'retained-artifacts')}`]),
+    ], {
       cwd: root,
       env,
       stdio: ['pipe', descriptor, descriptor],
@@ -470,12 +491,19 @@ export async function runLauncherFixtureProject(root: string, options: FixtureRu
   const { workers, failCases } = options
   const records = join(root, 'records')
   for (const label of ['alpha', 'beta']) {
-    for (const prefix of ['entry-', 'exit-', 'release-'])
-      rmSync(join(records, `${prefix}${label}${prefix === 'release-' ? '' : '.json'}`), { force: true })
+    for (const prefix of ['entry-', 'exit-', 'release-']) {
+      rmSync(join(records, `${prefix}${label}${prefix === 'release-'
+        ? ''
+        : '.json'}`), { force: true })
+    }
   }
   const policy = {
-    ...(failCases === undefined ? {} : { failCases }),
-    ...(options.browserTrace ? { browserTrace: true } : {}),
+    ...(failCases === undefined
+      ? {}
+      : { failCases }),
+    ...(options.browserTrace
+      ? { browserTrace: true }
+      : {}),
   }
   writeFileSync(join(records, 'policy.json'), JSON.stringify(policy))
   const expectedCases = options.expectedCases ?? ['alpha', 'beta']
@@ -525,14 +553,31 @@ export async function runLauncherFixtureProject(root: string, options: FixtureRu
   const releaseCheck = setInterval(releaseCases, FILE_CHECK_INTERVAL_MS)
   let launcher: ReturnType<typeof startLauncher> | undefined
   return withCleanup(async () => {
-    launcher = startLauncher(root, { args: [`--workers=${workers}`, '--reporter=json', `--output=${output}`, ...(options.args ?? [])], reportPath })
+    launcher = startLauncher(root, {
+      args: [
+        `--workers=${workers}`,
+        '--reporter=json',
+        `--output=${output}`,
+        ...(options.args ?? []),
+      ],
+      reportPath,
+    })
     const result = await Promise.race([launcher.completion, watcherFailure.promise])
     if (result.code === null || result.signal !== null)
       throw new Error(`The private launcher exited through signal ${result.signal}.`)
     if (!existsSync(reportPath))
       throw new Error(`The private launcher produced no report.\n${readFileSync(launcher.log, 'utf8')}`)
     const report = readFixtureRecord(reportPath)
-    return { root, records, report, cases: fixtureCases(report), code: result.code, parallelRelease, reportPath, consolePath: launcher.log }
+    return {
+      root,
+      records,
+      report,
+      cases: fixtureCases(report),
+      code: result.code,
+      parallelRelease,
+      reportPath,
+      consolePath: launcher.log,
+    }
   }, async () => {
     clearInterval(releaseCheck)
     listener.close()

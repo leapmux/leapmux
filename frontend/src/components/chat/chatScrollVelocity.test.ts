@@ -4,7 +4,11 @@ import { createScrollVelocity } from './chatScrollVelocity'
 describe('createScrollVelocity', () => {
   it('measures the sample after a programmatic write over the interval since the WRITE, not the last real sample', () => {
     let clock = 0
-    const v = createScrollVelocity({ now: () => clock, thresholdPxPerMs: 1, idleMs: 100 })
+    const v = createScrollVelocity({
+      now: () => clock,
+      thresholdPxPerMs: 1,
+      idleMs: 100,
+    })
     // Seed with a real sample.
     v.sample(0)
     // A long gap, then a programmatic write (a re-pin) jumps the position.
@@ -22,7 +26,11 @@ describe('createScrollVelocity', () => {
 
   it('still reports idle from the last REAL sample, ignoring a programmatic write', () => {
     let clock = 0
-    const v = createScrollVelocity({ now: () => clock, thresholdPxPerMs: 1, idleMs: 100 })
+    const v = createScrollVelocity({
+      now: () => clock,
+      thresholdPxPerMs: 1,
+      idleMs: 100,
+    })
     v.sample(0)
     clock = 10
     v.sample(50) // a real fling sample: 50px / 10ms = 5 px/ms
@@ -37,7 +45,11 @@ describe('createScrollVelocity', () => {
 
   it('drops a same-tick coalesced sample without re-baselining (keeps the prior interval)', () => {
     let clock = 0
-    const v = createScrollVelocity({ now: () => clock, thresholdPxPerMs: 1, idleMs: 100 })
+    const v = createScrollVelocity({
+      now: () => clock,
+      thresholdPxPerMs: 1,
+      idleMs: 100,
+    })
     v.sample(0)
     clock = 10
     v.sample(50) // velocity 5 px/ms
@@ -49,7 +61,11 @@ describe('createScrollVelocity', () => {
 
   it('attributes a coalesced jump to the NEXT interval from the last TIMED baseline', () => {
     let clock = 0
-    const v = createScrollVelocity({ now: () => clock, thresholdPxPerMs: 1, idleMs: 100 })
+    const v = createScrollVelocity({
+      now: () => clock,
+      thresholdPxPerMs: 1,
+      idleMs: 100,
+    })
     v.sample(0)
     clock = 10
     v.sample(100) // timed baseline: pos 100 @ t=10
@@ -124,7 +140,11 @@ describe('createScrollVelocity', () => {
       let clock = 0
       const v = make(() => clock)
       v.sample(0)
-      for (const [t, pos] of [[100, 10], [200, 20], [300, 30]] as const) {
+      for (const [t, pos] of [
+        [100, 10],
+        [200, 20],
+        [300, 30],
+      ] as const) {
         clock = t
         v.sample(pos) // 0.1 px/ms throughout
       }

@@ -21,7 +21,12 @@ reasonixTest('runs configured native Starlark, reports script errors, and calls 
     },
     openAgent: (server, workspaceId, workingDir) => openAgentViaAPI(server, workspaceId, workingDir, agentOpenOptions(REASONIX_AGENT.provider)),
   }, async ({ server, workspaceId, workingDir }) => {
-    const native = await nativeContext({ page, leapmuxServer: server, workspaceId, modelScript })
+    const native = await nativeContext({
+      page,
+      leapmuxServer: server,
+      workspaceId,
+      modelScript,
+    })
     await exerciseNativeCodeExecution(native, {
       prepare: () => bypassToolRequests(native),
       catalogProof: (request) => {
@@ -30,9 +35,24 @@ reasonixTest('runs configured native Starlark, reports script errors, and calls 
         expect(schema.additionalProperties).toBe(false)
       },
       scripts: marker => [
-        { label: 'output', source: `print(${JSON.stringify(marker)} + str(40 + 2))`, expected: `${marker}42`, failed: false },
-        { label: 'failure', source: `fail(${JSON.stringify(marker)} + str(70 + 7))`, expected: `${marker}77`, failed: true },
-        { label: 'tool calls', source: `call("write_file", path="reasonix-script.txt", content=str(6 * 7))\nprint(${JSON.stringify(marker)} + call("read_file", path="reasonix-script.txt"))`, expected: `${marker}42`, failed: false },
+        {
+          label: 'output',
+          source: `print(${JSON.stringify(marker)} + str(40 + 2))`,
+          expected: `${marker}42`,
+          failed: false,
+        },
+        {
+          label: 'failure',
+          source: `fail(${JSON.stringify(marker)} + str(70 + 7))`,
+          expected: `${marker}77`,
+          failed: true,
+        },
+        {
+          label: 'tool calls',
+          source: `call("write_file", path="reasonix-script.txt", content=str(6 * 7))\nprint(${JSON.stringify(marker)} + call("read_file", path="reasonix-script.txt"))`,
+          expected: `${marker}42`,
+          failed: false,
+        },
       ],
       nativeProof: async (_request, callId) => {
         if (callId === 'native-code-2')

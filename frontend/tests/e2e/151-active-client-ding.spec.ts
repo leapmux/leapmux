@@ -113,8 +113,14 @@ test.describe('Active-client ding gate', () => {
     const sessions = [await freshAdminSessionViaAPI(hubUrl), await freshAdminSessionViaAPI(hubUrl)] as const
 
     await withCleanup(() => withExtraClients(browser, leapmuxServer, 2, async ([pageA, pageB]) => {
-      const a: Client = { page: pageA, watch: watchUserEvents(pageA) }
-      const b: Client = { page: pageB, watch: watchUserEvents(pageB) }
+      const a: Client = {
+        page: pageA,
+        watch: watchUserEvents(pageA),
+      }
+      const b: Client = {
+        page: pageB,
+        watch: watchUserEvents(pageB),
+      }
       const watches = [a.watch, b.watch]
 
       // A opens first and B last, so B leads. Then A starts its stream last
@@ -126,7 +132,14 @@ test.describe('Active-client ding gate', () => {
 
       // A is active: only A plays the ding. B has never played, so its
       // cooldown cannot be what silences it.
-      await settledTurn({ active: a, clients: [a, b], activeClientId: clientA, workspaceId: wsId, modelScript, gate: 'turn-of-a' })
+      await settledTurn({
+        active: a,
+        clients: [a, b],
+        activeClientId: clientA,
+        workspaceId: wsId,
+        modelScript,
+        gate: 'turn-of-a',
+      })
       expect(await readDings(pageA), 'the active client plays the ding').toBe(1)
       expect(await readDings(pageB), 'the other client plays no ding').toBe(0)
 
@@ -135,7 +148,14 @@ test.describe('Active-client ding gate', () => {
       // because A's own sixty-second cooldown also holds it. B's silence
       // above is the proof, and B's ding here shows that B could play.
       await becomeActive(b, clientB, wsId, watches)
-      await settledTurn({ active: b, clients: [a, b], activeClientId: clientB, workspaceId: wsId, modelScript, gate: 'turn-of-b' })
+      await settledTurn({
+        active: b,
+        clients: [a, b],
+        activeClientId: clientB,
+        workspaceId: wsId,
+        modelScript,
+        gate: 'turn-of-b',
+      })
       expect(await readDings(pageB), 'the client that became active plays the ding').toBe(1)
       expect(await readDings(pageA), 'the client that is no longer active plays no further ding').toBe(1)
     }), () => finishCleanup(sessions.map(session => logoutViaAPI(hubUrl, session))))

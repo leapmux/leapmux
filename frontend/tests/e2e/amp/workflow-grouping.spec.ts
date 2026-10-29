@@ -11,10 +11,21 @@ const MARKERS = ['FIRST', 'SECOND'] as const
 // Amp runs each remote Task without a child session, so neither row links a child agent.
 ampTest('keeps two actual remote Tasks as separate rows without a workflow group', async ({ native }) => {
   const { page, modelScript } = native
-  for (const marker of MARKERS)
-    await modelScript.rule({ name: `amp ungrouped ${marker}`, when: { user: `AMPWORKFLOW${marker}` }, respond: { text: `AMP_NATIVE_GROUP_REPORT_${marker}` }, once: true })
+  for (const marker of MARKERS) {
+    await modelScript.rule({
+      name: `amp ungrouped ${marker}`,
+      when: { user: `AMPWORKFLOW${marker}` },
+      respond: { text: `AMP_NATIVE_GROUP_REPORT_${marker}` },
+      once: true,
+    })
+  }
   const start = await modelScript.queue(
-    { toolCalls: MARKERS.map(marker => spawnSubagentToolCall(AgentProvider.AMP, `amp-workflow-${marker}`, { description: `Run the ${marker.toLowerCase()} group task`, prompt: modelScript.prompt(`AMPWORKFLOW${marker} Report the requested result.`) })) },
+    {
+      toolCalls: MARKERS.map(marker => spawnSubagentToolCall(AgentProvider.AMP, `amp-workflow-${marker}`, {
+        description: `Run the ${marker.toLowerCase()} group task`,
+        prompt: modelScript.prompt(`AMPWORKFLOW${marker} Report the requested result.`),
+      })),
+    },
     { text: 'The parent consumed both actual remote task reports.' },
   )
   await sendMessage(page, modelScript.prompt('Run both remote Tasks and collect both reports.'))

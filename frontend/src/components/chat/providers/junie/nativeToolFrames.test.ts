@@ -29,8 +29,17 @@ describe('Junie native tool frames', () => {
       status: 'in_progress',
       title: 'Edit note.txt',
       kind: 'edit',
-      content: [{ type: 'diff', path: '/w/note.txt', oldText: 'junie-before\n', newText: 'junie-after\n' }],
-      locations: [{ path: '/w/note.txt' }],
+      content: [
+        {
+          type: 'diff',
+          path: '/w/note.txt',
+          oldText: 'junie-before\n',
+          newText: 'junie-after\n',
+        },
+      ],
+      locations: [
+        { path: '/w/note.txt' },
+      ],
     }, undefined, undefined)
 
     expect(call.kind).toBe('edit')

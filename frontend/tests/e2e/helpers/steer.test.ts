@@ -15,7 +15,9 @@ class TestLocator {
 
   getByRole(_role: string, options: { name: string }) {
     return new TestLocator(() => {
-      const buttons = this.elements().flatMap(element => [...element.querySelectorAll('button')])
+      const buttons = this.elements().flatMap(element => [
+        ...element.querySelectorAll('button'),
+      ])
       return buttons.filter(element => element.textContent === options.name)
     })
   }
@@ -30,12 +32,15 @@ class TestLocator {
   async click() {
     const element = this.elements()[0]
     if (!(element instanceof HTMLElement))
-      throw new Error('The test locator has no clickable element.')
+      throw new TypeError('The test locator has no clickable element.')
     element.click()
   }
 }
 
-vi.mock('./ui', () => ({ sendMessage: vi.fn(), assistantBubbles: vi.fn() }))
+vi.mock('./ui', () => ({
+  sendMessage: vi.fn(),
+  assistantBubbles: vi.fn(),
+}))
 vi.mock('@playwright/test', () => ({
   expect: (locator: TestLocator) => ({
     toBeVisible: async () => expect(locator.elements().length).toBeGreaterThan(0),
@@ -56,9 +61,13 @@ describe('steerQueuedInput', () => {
         row.setAttribute('data-input-state', String(AgentInputState.AWAITING_ECHO))
     })
     const page = {
-      getByTestId: (id: RegExp) => new TestLocator(() => [...document.querySelectorAll('[data-testid]')]
+      getByTestId: (id: RegExp) => new TestLocator(() => [
+        ...document.querySelectorAll('[data-testid]'),
+      ]
         .filter(element => id.test(element.getAttribute('data-testid') ?? ''))),
-      locator: (selector: string) => new TestLocator(() => [...document.querySelectorAll(selector)]),
+      locator: (selector: string) => new TestLocator(() => [
+        ...document.querySelectorAll(selector),
+      ]),
     } as unknown as Page
     const result = steerQueuedInput(page, { message: 'Queued message', match: 'Queued message' })
     if (outcome === 'queued')

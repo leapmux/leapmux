@@ -66,11 +66,15 @@ export default function(pi) {
       await controlBanner(page).getByTestId('control-interrupt').click()
     }
     else {
-      await answerControl(page, 'cancel' in scenario ? 'deny' : 'allow')
+      await answerControl(page, 'cancel' in scenario
+        ? 'deny'
+        : 'allow')
     }
     await expect.poll(() => existsSync(log)).toBe(true)
     const reply: unknown = JSON.parse(readFileSync(log, 'utf8'))
-    expect(reply).toEqual('cancel' in scenario ? { answered: false } : { answered: true, value: scenario.value })
+    expect(reply).toEqual('cancel' in scenario
+      ? { answered: false }
+      : { answered: true, value: scenario.value })
     await expect(editor).toHaveCount(0)
   })
 }

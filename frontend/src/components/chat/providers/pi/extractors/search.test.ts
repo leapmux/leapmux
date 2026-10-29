@@ -8,12 +8,21 @@ function searchResult(toolName: string, text: string, details?: Record<string, u
     type: 'tool_execution_end',
     toolCallId: 'call-1',
     toolName,
-    result: { content: [{ type: 'text', text }], ...(details ? { details } : {}) },
+    result: {
+      content: [
+        { type: 'text', text },
+      ],
+      ...(details
+        ? { details }
+        : {}),
+    },
   }
 }
 
 /** Pi states a limit in its result details. The notice is only cut when one is confirmed. */
-const LIMIT = { truncation: { truncated: true } }
+const LIMIT = {
+  truncation: { truncated: true },
+}
 
 describe('extractPiSearch truncation notice', () => {
   it('cuts the notice that Pi appends after a blank line', () => {

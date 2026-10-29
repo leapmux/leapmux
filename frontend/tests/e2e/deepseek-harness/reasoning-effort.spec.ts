@@ -4,7 +4,14 @@ import { DEEPSEEK_HARNESS_ALT_MODEL_ID, DEEPSEEK_HARNESS_MODEL_ID, DEEPSEEK_HARN
 import { exerciseEffortModelRoundTrip, exerciseModelSwitchKeepsOption, exerciseNativeOption } from '../helpers/nativeSettings'
 
 deepseekHarnessTest('uses the selected native reasoning effort before and after reload', async ({ native }) => {
-  await exerciseNativeOption(native, { groupId: 'effort', value: 'low', nativeProof: request => expect(request.body).toMatchObject({ thinking: { type: 'enabled' }, output_config: { effort: 'low' } }) })
+  await exerciseNativeOption(native, {
+    groupId: 'effort',
+    value: 'low',
+    nativeProof: request => expect(request.body).toMatchObject({
+      thinking: { type: 'enabled' },
+      output_config: { effort: 'low' },
+    }),
+  })
 })
 
 // Both models offer low. The second model starts at another default, so a reset shows.
@@ -12,7 +19,11 @@ deepseekHarnessTest('keeps the chosen effort after a model switch and a reload',
   await exerciseModelSwitchKeepsOption(native, {
     kept: { groupId: 'effort', value: 'low' },
     model: DEEPSEEK_HARNESS_ALT_MODEL_ID,
-    nativeProof: request => expect(request.body).toMatchObject({ model: 'deepseek-v4-pro', thinking: { type: 'enabled' }, output_config: { effort: 'low' } }),
+    nativeProof: request => expect(request.body).toMatchObject({
+      model: 'deepseek-v4-pro',
+      thinking: { type: 'enabled' },
+      output_config: { effort: 'low' },
+    }),
   })
 })
 
@@ -28,6 +39,10 @@ deepseekHarnessTest('hides the effort for a model without levels and settles a d
     via: DEEPSEEK_HARNESS_PLAIN_MODEL_ID,
     viaEfforts: 'hidden',
     settled: 'high',
-    nativeProof: request => expect(request.body).toMatchObject({ model: 'deepseek-flash', thinking: { type: 'enabled' }, output_config: { effort: 'high' } }),
+    nativeProof: request => expect(request.body).toMatchObject({
+      model: 'deepseek-flash',
+      thinking: { type: 'enabled' },
+      output_config: { effort: 'high' },
+    }),
   })
 })

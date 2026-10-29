@@ -25,9 +25,15 @@ function renderVisible(thinkingTokens?: number, outputBytes?: number, outputByte
       <ThinkingIndicator
         visible={true}
         paused={true}
-        {...(thinkingTokens === undefined ? {} : { thinkingTokens })}
-        {...(outputBytes === undefined ? {} : { outputBytes })}
-        {...(outputBytesMinimum === undefined ? {} : { outputBytesMinimum })}
+        {...(thinkingTokens === undefined
+          ? {}
+          : { thinkingTokens })}
+        {...(outputBytes === undefined
+          ? {}
+          : { outputBytes })}
+        {...(outputBytesMinimum === undefined
+          ? {}
+          : { outputBytesMinimum })}
       />
     ))
   }
@@ -207,10 +213,14 @@ describe('thinking indicator chips', () => {
           {...(goalSupported === true || goal !== undefined
             ? {
                 goal: {
-                  ...(goal === undefined ? {} : { current: goal }),
+                  ...(goal === undefined
+                    ? {}
+                    : { current: goal }),
                   progress: goalProgress ?? {},
                   actions: goalActions ?? [],
-                  ...(onGoalAction === undefined ? {} : { onAction: onGoalAction }),
+                  ...(onGoalAction === undefined
+                    ? {}
+                    : { onAction: onGoalAction }),
                 },
               }
             : {})}
@@ -223,13 +233,17 @@ describe('thinking indicator chips', () => {
   }
 
   it('labels the bg-tasks counter rather than showing a bare number', () => {
-    const { getByTestId, queryByTestId } = renderChips({ backgroundTasks: running(2) })
+    const { getByTestId, queryByTestId } = renderChips({
+      backgroundTasks: running(2),
+    })
     expect(getByTestId('thinking-bg-tasks-chip')).toHaveTextContent('2 background tasks')
     expect(queryByTestId('bg-tasks-popover')).toBeInTheDocument()
   })
 
   it('uses the singular noun for a single background task', () => {
-    const { getByTestId } = renderChips({ backgroundTasks: running(1) })
+    const { getByTestId } = renderChips({
+      backgroundTasks: running(1),
+    })
     expect(getByTestId('thinking-bg-tasks-chip')).toHaveTextContent('1 background task')
   })
 
@@ -289,7 +303,9 @@ describe('thinking indicator chips', () => {
   // The kind filter only changes the displayed list.
   // The card popover must remain open so the user can read that list.
   it('stays open when the user picks a kind tab', async () => {
-    const { getByTestId } = renderChips({ backgroundTasks: running(2) })
+    const { getByTestId } = renderChips({
+      backgroundTasks: running(2),
+    })
     const popover = getByTestId('bg-tasks-popover')
     const hide = vi.spyOn(popover, 'hidePopover')
 
@@ -304,7 +320,9 @@ describe('thinking indicator chips', () => {
   it('closes when the user opens a subagent from a row', async () => {
     const onOpenSubagent = vi.fn()
     const { getByTestId, container } = renderChips({
-      backgroundTasks: [bgTask({ rowKey: 'a', status: 'running', childAgentId: 'c1' })],
+      backgroundTasks: [
+        bgTask({ rowKey: 'a', status: 'running', childAgentId: 'c1' }),
+      ],
       onOpenSubagent,
     })
     const popover = getByTestId('bg-tasks-popover')
@@ -323,7 +341,9 @@ describe('thinking indicator chips', () => {
    */
   it('renders a static row when the host supplies no way to open a subagent', () => {
     const { container } = renderChips({
-      backgroundTasks: [bgTask({ rowKey: 'a', status: 'running', childAgentId: 'c1' })],
+      backgroundTasks: [
+        bgTask({ rowKey: 'a', status: 'running', childAgentId: 'c1' }),
+      ],
     })
     const row = container.querySelector('[data-testid="bg-task-row"]')!
     expect(row.tagName).toBe('DIV')
@@ -334,7 +354,14 @@ describe('thinking indicator chips', () => {
   it('closes the to-dos popover when the user starts to set a goal', async () => {
     const onGoalAction = vi.fn()
     const { getByTestId } = renderChips({
-      todos: [{ rowKey: 'a', content: 'Run tests', status: 'pending', activeForm: '' }],
+      todos: [
+        {
+          rowKey: 'a',
+          content: 'Run tests',
+          status: 'pending',
+          activeForm: '',
+        },
+      ],
       goal: { objective: 'Ship it', status: 'active' },
       goalActions: ['set', 'clear', 'pause'],
       onGoalAction,
@@ -361,7 +388,14 @@ describe('thinking indicator chips', () => {
   it('keeps the to-dos popover open for an action that acts in place', async () => {
     const onGoalAction = vi.fn()
     const { getByTestId } = renderChips({
-      todos: [{ rowKey: 'a', content: 'Run tests', status: 'pending', activeForm: '' }],
+      todos: [
+        {
+          rowKey: 'a',
+          content: 'Run tests',
+          status: 'pending',
+          activeForm: '',
+        },
+      ],
       goal: { objective: 'Ship it', status: 'active' },
       goalActions: ['set', 'clear', 'pause'],
       onGoalAction,
@@ -384,7 +418,14 @@ describe('thinking indicator chips', () => {
   // Omitting one field would remove content or disable controls.
   it('passes the rest of the goal surface through to the card', () => {
     const { getByTestId } = renderChips({
-      todos: [{ rowKey: 'a', content: 'Run tests', status: 'pending', activeForm: '' }],
+      todos: [
+        {
+          rowKey: 'a',
+          content: 'Run tests',
+          status: 'pending',
+          activeForm: '',
+        },
+      ],
       goal: { objective: 'Keep the suite green', status: 'active' },
       goalProgress: { tokensUsed: 1200 },
       goalActions: ['set', 'clear', 'pause'],
@@ -401,7 +442,14 @@ describe('thinking indicator chips', () => {
   // An unconditional wrapper would offer controls that have no action handler.
   it('offers no goal controls when the host supplies no handler', () => {
     const { queryByTestId } = renderChips({
-      todos: [{ rowKey: 'a', content: 'Run tests', status: 'pending', activeForm: '' }],
+      todos: [
+        {
+          rowKey: 'a',
+          content: 'Run tests',
+          status: 'pending',
+          activeForm: '',
+        },
+      ],
       goal: { objective: 'Ship it', status: 'active' },
       goalActions: ['set', 'clear', 'pause'],
     })
@@ -411,9 +459,24 @@ describe('thinking indicator chips', () => {
 
   it('renders the todos counter as done/total plus a noun', () => {
     const todos: TodoItem[] = [
-      { rowKey: 'a', content: 'a', status: 'completed', activeForm: '' },
-      { rowKey: 'b', content: 'b', status: 'in_progress', activeForm: 'doing b' },
-      { rowKey: 'c', content: 'c', status: 'pending', activeForm: '' },
+      {
+        rowKey: 'a',
+        content: 'a',
+        status: 'completed',
+        activeForm: '',
+      },
+      {
+        rowKey: 'b',
+        content: 'b',
+        status: 'in_progress',
+        activeForm: 'doing b',
+      },
+      {
+        rowKey: 'c',
+        content: 'c',
+        status: 'pending',
+        activeForm: '',
+      },
     ]
     const { getByTestId } = renderChips({ todos })
     expect(getByTestId('thinking-todos-chip')).toHaveTextContent('1/3 to-dos')
@@ -421,14 +484,26 @@ describe('thinking indicator chips', () => {
   })
 
   it('uses the singular noun for a one-item to-do list', () => {
-    const todos: TodoItem[] = [{ rowKey: 'a', content: 'a', status: 'pending', activeForm: '' }]
+    const todos: TodoItem[] = [
+      {
+        rowKey: 'a',
+        content: 'a',
+        status: 'pending',
+        activeForm: '',
+      },
+    ]
     const { getByTestId } = renderChips({ todos })
     expect(getByTestId('thinking-todos-chip')).toHaveTextContent('0/1 to-do')
   })
 
   it('hides the todos chip when all todos are deleted', () => {
     const todos: TodoItem[] = [
-      { rowKey: 'a', content: 'a', status: 'deleted', activeForm: '' },
+      {
+        rowKey: 'a',
+        content: 'a',
+        status: 'deleted',
+        activeForm: '',
+      },
     ]
     const { queryByTestId } = renderChips({ todos })
     expect(queryByTestId('thinking-todos-chip')).toBeNull()
@@ -441,7 +516,11 @@ describe('thinking indicator chips', () => {
 
   it('reports an unknown goal through the actual chip and silent popover', () => {
     const current = protoGoalToStore(create(AgentGoalSchema, { objective: 'Keep the objective', status: AgentGoalStatus.UNKNOWN, statusDetail: 'future-state' }))
-    const { getByTestId, container } = renderChips({ todos: [], goal: current, goalProgress: { iterations: 3 } })
+    const { getByTestId, container } = renderChips({
+      todos: [],
+      goal: current,
+      goalProgress: { iterations: 3 },
+    })
     expect(getByTestId('goal-objective')).toHaveTextContent('Keep the objective')
     expect(getByTestId('goal-status-detail')).toHaveTextContent('future-state')
     expect(getByTestId('goal-progress')).toHaveTextContent('3 turns')
@@ -467,8 +546,18 @@ describe('thinking indicator chips', () => {
   // The popover still displays the goal card.
   it('shows the to-do count when a list exists beside a goal', () => {
     const todos: TodoItem[] = [
-      { rowKey: 'a', content: 'a', status: 'completed', activeForm: '' },
-      { rowKey: 'b', content: 'b', status: 'pending', activeForm: '' },
+      {
+        rowKey: 'a',
+        content: 'a',
+        status: 'completed',
+        activeForm: '',
+      },
+      {
+        rowKey: 'b',
+        content: 'b',
+        status: 'pending',
+        activeForm: '',
+      },
     ]
     const { getByTestId } = renderChips({
       todos,
@@ -482,12 +571,23 @@ describe('thinking indicator chips', () => {
    * An empty capable surface supports Set but supplies no goal status to display.
    */
   it('hides the chip for a goal-capable agent that has no goal yet', () => {
-    const { queryByTestId } = renderChips({ todos: [], goalSupported: true, goalActions: ['set'] })
+    const { queryByTestId } = renderChips({
+      todos: [],
+      goalSupported: true,
+      goalActions: ['set'],
+    })
     expect(queryByTestId('thinking-todos-chip')).toBeNull()
   })
 
   it('renders the goal card above the list in the to-dos popover', () => {
-    const todos: TodoItem[] = [{ rowKey: 'a', content: 'Run tests', status: 'pending', activeForm: '' }]
+    const todos: TodoItem[] = [
+      {
+        rowKey: 'a',
+        content: 'Run tests',
+        status: 'pending',
+        activeForm: '',
+      },
+    ]
     const { getByTestId, getByText } = renderChips({
       todos,
       goal: { objective: 'Ship it', status: 'active' },
@@ -498,7 +598,14 @@ describe('thinking indicator chips', () => {
   })
 
   it('renders no goal card when the host passes no surface', () => {
-    const todos: TodoItem[] = [{ rowKey: 'a', content: 'Run tests', status: 'pending', activeForm: '' }]
+    const todos: TodoItem[] = [
+      {
+        rowKey: 'a',
+        content: 'Run tests',
+        status: 'pending',
+        activeForm: '',
+      },
+    ]
     const { queryByTestId } = renderChips({ todos })
     expect(queryByTestId('goal-card')).toBeNull()
   })
@@ -508,7 +615,14 @@ describe('thinking indicator chips', () => {
    * The popover must retain its route to the first Set action.
    */
   it('offers the empty card and its Set route for a goal-capable agent with no goal', () => {
-    const todos: TodoItem[] = [{ rowKey: 'a', content: 'Run tests', status: 'pending', activeForm: '' }]
+    const todos: TodoItem[] = [
+      {
+        rowKey: 'a',
+        content: 'Run tests',
+        status: 'pending',
+        activeForm: '',
+      },
+    ]
     const { getByTestId } = renderChips({
       todos,
       goalSupported: true,
@@ -522,15 +636,37 @@ describe('thinking indicator chips', () => {
   // The rotating verb precedes the counter row.
   // Separate adjacent counters with a middle dot, without adding one after the verb.
   it('draws two separators when all three counters show', () => {
-    const todos: TodoItem[] = [{ rowKey: 'a', content: 'a', status: 'pending', activeForm: '' }]
-    const { getByTestId } = renderChips({ thinkingTokens: 500, backgroundTasks: running(2), todos })
+    const todos: TodoItem[] = [
+      {
+        rowKey: 'a',
+        content: 'a',
+        status: 'pending',
+        activeForm: '',
+      },
+    ]
+    const { getByTestId } = renderChips({
+      thinkingTokens: 500,
+      backgroundTasks: running(2),
+      todos,
+    })
     const dots = (getByTestId('thinking-indicator').textContent ?? '').split('\u00B7').length - 1
     expect(dots).toBe(2)
   })
 
   it('orders the verb before the counters, separated by middots', () => {
-    const todos: TodoItem[] = [{ rowKey: 'a', content: 'a', status: 'pending', activeForm: '' }]
-    const { getByTestId, getByText } = renderChips({ thinkingTokens: 500, backgroundTasks: running(2), todos })
+    const todos: TodoItem[] = [
+      {
+        rowKey: 'a',
+        content: 'a',
+        status: 'pending',
+        activeForm: '',
+      },
+    ]
+    const { getByTestId, getByText } = renderChips({
+      thinkingTokens: 500,
+      backgroundTasks: running(2),
+      todos,
+    })
     // The odometer is aria-hidden; getByText finds the screen-reader copy.
     const tokens = getByText('500 tokens')
     const bg = getByTestId('thinking-bg-tasks-chip')
@@ -549,7 +685,10 @@ describe('thinking indicator chips', () => {
   // Tokens is the last counter.
   // Its separator requires a visible preceding counter.
   it('draws one separator between the two counters that remain', () => {
-    const { getByTestId } = renderChips({ thinkingTokens: 500, backgroundTasks: running(2) })
+    const { getByTestId } = renderChips({
+      thinkingTokens: 500,
+      backgroundTasks: running(2),
+    })
     const dots = (getByTestId('thinking-indicator').textContent ?? '').split('·').length - 1
     expect(dots).toBe(1)
   })
@@ -562,7 +701,9 @@ describe('thinking indicator chips', () => {
 
   // An absent adjacent counter must not leave a separator.
   it('draws no separator when only one counter is present', () => {
-    const { getByTestId } = renderChips({ backgroundTasks: running(2) })
+    const { getByTestId } = renderChips({
+      backgroundTasks: running(2),
+    })
     expect(getByTestId('thinking-indicator').textContent).not.toContain('\u00B7')
   })
 })

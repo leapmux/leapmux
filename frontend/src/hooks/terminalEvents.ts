@@ -148,7 +148,9 @@ function isWorkspaceActiveTerminal(
     return isTabOnScreen(
       {
         tileId: tab.tileId,
-        ...(tab.workspaceId !== undefined ? { workspaceId: tab.workspaceId } : {}),
+        ...(tab.workspaceId !== undefined
+          ? { workspaceId: tab.workspaceId }
+          : {}),
         type: TabType.TERMINAL,
         id: terminalId,
       },

@@ -148,10 +148,15 @@ describe('SettingsPanel string-list accessible names', () => {
 
 describe('SettingsPanel claimed proto keys', () => {
   it('does not render hub-scope duplicates of object-shaped keys the registry already owns', () => {
-    const store = fakeStore([protoDescriptor()])
+    const store = fakeStore([
+      protoDescriptor(),
+    ])
     render(withPreferences(() => (
       <SettingsPanel
-        rows={[...registryFor('appearance'), ...rowsFor(store, 'appearance')]}
+        rows={[
+          ...registryFor('appearance'),
+          ...rowsFor(store, 'appearance'),
+        ]}
         restartGroup={false}
         elevationGroup={false}
         writeErrors={[]}
@@ -164,13 +169,20 @@ describe('SettingsPanel claimed proto keys', () => {
   })
 
   it('still renders an unclaimed user-scope proto row in the matching category', () => {
-    const store = fakeStore([protoDescriptor({
-      key: 'unclaimed_appearance',
-      fields: [field({ name: '', label: 'Unclaimed appearance toggle', kind: SettingFieldKind.BOOL })],
-    })])
+    const store = fakeStore([
+      protoDescriptor({
+        key: 'unclaimed_appearance',
+        fields: [
+          field({ name: '', label: 'Unclaimed appearance toggle', kind: SettingFieldKind.BOOL }),
+        ],
+      }),
+    ])
     render(withPreferences(() => (
       <SettingsPanel
-        rows={[...registryFor('appearance'), ...rowsFor(store, 'appearance')]}
+        rows={[
+          ...registryFor('appearance'),
+          ...rowsFor(store, 'appearance'),
+        ]}
         restartGroup={false}
         elevationGroup={false}
         writeErrors={[]}
@@ -180,11 +192,15 @@ describe('SettingsPanel claimed proto keys', () => {
   })
 
   it('an admin group renders hub rows and no registry rows', () => {
-    const store = fakeStore([protoDescriptor({
-      key: 'signup_enabled',
-      category: 'signup',
-      fields: [field({ name: '', label: 'Allow public signup', kind: SettingFieldKind.BOOL })],
-    })])
+    const store = fakeStore([
+      protoDescriptor({
+        key: 'signup_enabled',
+        category: 'signup',
+        fields: [
+          field({ name: '', label: 'Allow public signup', kind: SettingFieldKind.BOOL }),
+        ],
+      }),
+    ])
     render(() => (
       <SettingsPanel
         rows={rowsFor(store, 'signup', false)}
@@ -198,21 +214,25 @@ describe('SettingsPanel claimed proto keys', () => {
   })
 
   it('does not paint a proto-key write error onto every field of an object setting', () => {
-    const store = fakeStore([protoDescriptor({
-      key: 'queue_budget',
-      category: 'advanced',
-      fields: [
-        field({ name: 'relay_bytes', label: 'Queue budget - relay', kind: SettingFieldKind.INT }),
-        field({ name: 'worker_bytes', label: 'Queue budget - worker', kind: SettingFieldKind.INT }),
-        field({ name: 'userevents_bytes', label: 'Queue budget - user events', kind: SettingFieldKind.INT }),
-      ],
-    })])
+    const store = fakeStore([
+      protoDescriptor({
+        key: 'queue_budget',
+        category: 'advanced',
+        fields: [
+          field({ name: 'relay_bytes', label: 'Queue budget - relay', kind: SettingFieldKind.INT }),
+          field({ name: 'worker_bytes', label: 'Queue budget - worker', kind: SettingFieldKind.INT }),
+          field({ name: 'userevents_bytes', label: 'Queue budget - user events', kind: SettingFieldKind.INT }),
+        ],
+      }),
+    ])
     render(() => (
       <SettingsPanel
         rows={rowsFor(store, 'advanced', false)}
         restartGroup={false}
         elevationGroup={false}
-        writeErrors={[{ key: 'queue_budget', message: 'queue budget relay_bytes must be 0 (auto-size) or at least 4194304 bytes' }]}
+        writeErrors={[
+          { key: 'queue_budget', message: 'queue budget relay_bytes must be 0 (auto-size) or at least 4194304 bytes' },
+        ]}
       />
     ))
     expect(screen.getByText('Queue budget - relay')).toBeTruthy()
@@ -222,17 +242,23 @@ describe('SettingsPanel claimed proto keys', () => {
   })
 
   it('shows a scalar write error on the matching row only', () => {
-    const store = fakeStore([protoDescriptor({
-      key: 'session_duration_seconds',
-      category: 'general',
-      fields: [field({ name: '', label: 'Session duration', kind: SettingFieldKind.INT })],
-    })])
+    const store = fakeStore([
+      protoDescriptor({
+        key: 'session_duration_seconds',
+        category: 'general',
+        fields: [
+          field({ name: '', label: 'Session duration', kind: SettingFieldKind.INT }),
+        ],
+      }),
+    ])
     render(() => (
       <SettingsPanel
         rows={rowsFor(store, 'general', false)}
         restartGroup={false}
         elevationGroup={false}
-        writeErrors={[{ key: 'session_duration_seconds', message: 'session duration must be at least 300s' }]}
+        writeErrors={[
+          { key: 'session_duration_seconds', message: 'session duration must be at least 300s' },
+        ]}
       />
     ))
     expect(screen.getByTestId('setting-error-session_duration_seconds').textContent)
@@ -251,7 +277,9 @@ describe('SettingsPanel claimed proto keys', () => {
           rows={registryFor('desktop')}
           restartGroup={false}
           elevationGroup={false}
-          writeErrors={[{ key: 'desktop.trayEnabled', message: 'LeapMux could not create a tray icon on this desktop' }]}
+          writeErrors={[
+            { key: 'desktop.trayEnabled', message: 'LeapMux could not create a tray icon on this desktop' },
+          ]}
         />
       )))
       expect(screen.getByTestId('setting-error-desktop.trayEnabled').textContent)
@@ -300,7 +328,9 @@ describe('SettingsPanel restart warning', () => {
     key: 'session_duration_seconds',
     category: 'general',
     restart: true,
-    fields: [field({ name: '', label: 'Session duration', kind: SettingFieldKind.INT })],
+    fields: [
+      field({ name: '', label: 'Session duration', kind: SettingFieldKind.INT }),
+    ],
   })
 
   it('warns when the group is a restart group', () => {
@@ -340,7 +370,10 @@ describe('SettingsPanel restart warning', () => {
  * group is on screen.
  */
 describe('SettingsPanel verified-session state', () => {
-  const inTwoHours = () => ({ seconds: BigInt(Math.floor(Date.now() / 1000) + 7200), nanos: 0 })
+  const inTwoHours = () => ({
+    seconds: BigInt(Math.floor(Date.now() / 1000) + 7200),
+    nanos: 0,
+  })
 
   afterEach(() => elevationExpiresAt.mockReturnValue(undefined))
 
@@ -375,7 +408,9 @@ describe('SettingsPanel verified-session state', () => {
     const { container } = render(() => (
       <SettingsPanel rows={[]} restartGroup={true} elevationGroup={true} writeErrors={[]} />
     ))
-    const alerts = [...container.querySelectorAll('[role="alert"]')]
+    const alerts = [
+      ...container.querySelectorAll('[role="alert"]'),
+    ]
     expect(alerts).toHaveLength(2)
     expect(alerts[0]!.textContent).toContain('This session is verified')
     expect(alerts[1]!.textContent).toContain('after a hub restart')

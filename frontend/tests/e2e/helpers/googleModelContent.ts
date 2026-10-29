@@ -4,7 +4,9 @@ import { isObject } from '../../../src/lib/jsonPick'
 export function googlePartsText(parts: unknown): string {
   if (!Array.isArray(parts))
     return ''
-  return parts.filter(isObject).flatMap(part => typeof part.text === 'string' ? [part.text] : []).join('\n')
+  return parts.filter(isObject).flatMap(part => typeof part.text === 'string'
+    ? [part.text]
+    : []).join('\n')
 }
 
 /** Read the last user prompt. Function-response-only rows preserve the preceding prompt. */
@@ -25,7 +27,7 @@ export function googleLastUserText(contents: unknown): string {
 /** Read exact function declarations in their native order. */
 export function googleFunctionDeclarations(tools: unknown): Record<string, unknown>[] {
   if (!Array.isArray(tools))
-    throw new Error('The native Google model request contains no tool catalog.')
+    throw new TypeError('The native Google model request contains no tool catalog.')
   return tools.flatMap((tool: unknown) => {
     if (!isObject(tool) || !Array.isArray(tool.functionDeclarations))
       throw new Error('The native Google tool catalog contains an invalid entry.')

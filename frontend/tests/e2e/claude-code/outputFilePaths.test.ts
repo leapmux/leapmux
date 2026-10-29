@@ -18,5 +18,10 @@ const frame = {
 }
 
 describe('readClaudeNativeOutput', () => {
-  runNativeOutputReaderCases({ read: readClaudeNativeOutput, frame, path, pointerError: 'The native Claude result has no filesystem output pointer.' })
+  runNativeOutputReaderCases({
+    read: readClaudeNativeOutput,
+    frame,
+    path,
+    pointerError: 'The native Claude result has no filesystem output pointer.',
+  })
 })

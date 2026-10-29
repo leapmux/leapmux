@@ -21,8 +21,18 @@ export function ampSettingsPath(agentEnv: Readonly<Record<string, string>> | und
  */
 export function ampMcpSettings(path: string, server: McpProbeServer): Record<string, unknown> {
   assertMcpServerName(server.name)
-  const settings: unknown = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {}
+  const settings: unknown = existsSync(path)
+    ? JSON.parse(readFileSync(path, 'utf8'))
+    : {}
   if (!isObject(settings))
     throw new Error('The private Amp settings must hold a JSON object.')
-  return { ...settings, 'amp.mcpServers': { [server.name]: { command: server.command, args: [...server.args] } } }
+  return {
+    ...settings,
+    'amp.mcpServers': {
+      [server.name]: {
+        command: server.command,
+        args: [...server.args],
+      },
+    },
+  }
 }

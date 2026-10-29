@@ -84,7 +84,9 @@ describe('FilesSortMenu', () => {
    */
   it('names each radio group separately', () => {
     renderMenu()
-    const groups = [...document.querySelectorAll('[role="group"]')]
+    const groups = [
+      ...document.querySelectorAll('[role="group"]'),
+    ]
     expect(groups.map(g => g.getAttribute('aria-label'))).toEqual(['Sort by', 'Order'])
     // The popover is a plain div, so the menu role has to come from inside it.
     expect(document.querySelector('[role="menu"]')?.getAttribute('aria-label')).toBe('Sort files')

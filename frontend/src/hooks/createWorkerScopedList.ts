@@ -113,13 +113,19 @@ export function createWorkerScopedList<Args extends WorkerScopedArgs, Resp>(
   const run = fetcher.run as (args: Args | null) => Promise<void>
 
   const argsFor = (workerId: string): Args =>
-    ({ ...untrack(opts.args), workerId }) as Args
+    ({
+      ...untrack(opts.args),
+      workerId,
+    }) as Args
 
   // ONE effect over both inputs. Two effects would each see a fetch the other
   // had just started but not yet finished -- the success sentinel advances on
   // success alone -- and would issue it twice.
   createEffect(on(
-    [opts.workerId, () => opts.enabled?.() ?? true],
+    [
+      opts.workerId,
+      () => opts.enabled?.() ?? true,
+    ],
     ([workerId, enabled]) => {
       // BEFORE the gate, and before any decision to fetch. An answer belongs
       // to the worker it came from, so the moment the worker is a different

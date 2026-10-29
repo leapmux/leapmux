@@ -11,7 +11,9 @@ import { GROK_AGENT } from './scenarios'
 
 grokTest.describe('Grok Build workflow grouping', () => {
   grokTest('groups a native Rhai workflow with its child', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { optionValues: { approvalMode: 'always-approve' } })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, {
+      optionValues: { approvalMode: 'always-approve' },
+    })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
 
     const name = 'leapmux-probe'
@@ -29,7 +31,11 @@ grokTest.describe('Grok Build workflow grouping', () => {
       once: true,
     })
     const start = await modelScript.queue(
-      { toolCalls: [grokWorkflowToolCall('run-workflow', script)] },
+      {
+        toolCalls: [
+          grokWorkflowToolCall('run-workflow', script),
+        ],
+      },
       { text: 'The workflow finished.' },
     )
     await modelScript.fallback({ text: 'The workflow notification arrived.' })

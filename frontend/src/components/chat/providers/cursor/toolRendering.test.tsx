@@ -15,18 +15,64 @@ import './plugin'
 import '../testMocks'
 
 function renderTool(fields: Record<string, unknown>, supplemental?: Record<string, unknown>) {
-  const tool = { sessionUpdate: 'tool_call_update', status: 'completed', toolCallId: 'cursor-tool', ...fields }
-  const parsed = { ...input(tool), supplementalContent: supplemental ? { sessionUpdate: tool.sessionUpdate, status: tool.status, toolCallId: tool.toolCallId, ...supplemental } : undefined }
+  const tool = {
+    sessionUpdate: 'tool_call_update',
+    status: 'completed',
+    toolCallId: 'cursor-tool',
+    ...fields,
+  }
+  const parsed = {
+    ...input(tool),
+    supplementalContent: supplemental
+      ? {
+          sessionUpdate: tool.sessionUpdate,
+          status: tool.status,
+          toolCallId: tool.toolCallId,
+          ...supplemental,
+        }
+      : undefined,
+  }
   const category = providerFor(AgentProvider.CURSOR)!.transcript.classify(parsed)
-  return render(() => renderMessageContent(tool, { premeasureMode: true, sources: testMessageSources({ current: () => parsed }) }, category, AgentProvider.CURSOR))
+  return render(() => renderMessageContent(tool, {
+    premeasureMode: true,
+    sources: testMessageSources({
+      current: () => parsed,
+    }),
+  }, category, AgentProvider.CURSOR))
 }
 
 describe('cursor native tool rendering', () => {
   it('keeps a recovered final report out of the request preview', () => {
-    const { container } = renderTool({ sessionUpdate: 'tool_call', status: 'pending', kind: 'other', rawInput: { _toolName: 'task', description: 'Inspect sample', prompt: 'Read the file' } }, {
+    const { container } = renderTool({
+      sessionUpdate: 'tool_call',
+      status: 'pending',
+      kind: 'other',
+      rawInput: { _toolName: 'task', description: 'Inspect sample', prompt: 'Read the file' },
+    }, {
       rawOutput: {
-        content: [{ type: 'tool-result', toolCallId: 'cursor-tool', toolName: 'Task', result: 'Native final report' }],
-        providerOptions: { cursor: { highLevelToolCallResult: { output: { success: { conversationSteps: [{ assistantMessage: { text: 'Native final report' } }] } } } } },
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'cursor-tool',
+            toolName: 'Task',
+            result: 'Native final report',
+          },
+        ],
+        providerOptions: {
+          cursor: {
+            highLevelToolCallResult: {
+              output: {
+                success: {
+                  conversationSteps: [
+                    {
+                      assistantMessage: { text: 'Native final report' },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
       },
     })
     expect(container.textContent).toContain('Read the file')
@@ -39,8 +85,22 @@ describe('cursor native tool rendering', () => {
   // ZCode all render theirs there. See RL-003.
   describe('a plan', () => {
     const PLAN = '# Add CHANGELOG.md\n\nPLANMARKER-7\n\n## Steps\n\n- Seed an Unreleased section.'
-    const call = { sessionUpdate: 'tool_call', status: 'pending', title: 'Create Plan', kind: 'other', toolCallId: 'plan-1', rawInput: { _toolName: 'createPlan' } }
-    const done = { sessionUpdate: 'tool_call_update', status: 'completed', title: 'Create Plan', kind: 'other', toolCallId: 'plan-1', rawInput: { _toolName: 'createPlan' } }
+    const call = {
+      sessionUpdate: 'tool_call',
+      status: 'pending',
+      title: 'Create Plan',
+      kind: 'other',
+      toolCallId: 'plan-1',
+      rawInput: { _toolName: 'createPlan' },
+    }
+    const done = {
+      sessionUpdate: 'tool_call_update',
+      status: 'completed',
+      title: 'Create Plan',
+      kind: 'other',
+      toolCallId: 'plan-1',
+      rawInput: { _toolName: 'createPlan' },
+    }
 
     function parse(tool: Record<string, unknown>) {
       return {
@@ -61,7 +121,11 @@ describe('cursor native tool rendering', () => {
         current: () => parsed,
         role: () => role,
         visibleRows: () => ({ request: role === 'request', result: role === 'result' || result !== undefined }),
-        ...(result ? { result: () => parse(result) } : {}),
+        ...(result
+          ? {
+              result: () => parse(result),
+            }
+          : {}),
       })
       return render(() => renderMessageContent(tool, { premeasureMode: true, sources }, category, AgentProvider.CURSOR))
     }
@@ -90,32 +154,64 @@ describe('cursor native tool rendering', () => {
     })
 
     // The whole plan as JSON is what a reader saw where the plan belonged.
-    it.each([['request', call], ['result', done]] as const)('states no raw arguments on the %s row', (role, tool) => {
+    it.each([
+      ['request', call],
+      ['result', done],
+    ] as const)('states no raw arguments on the %s row', (role, tool) => {
       expect(renderRow(tool, role).container.textContent).not.toContain('"_toolName"')
     })
   })
 
   it('uses the shared agent prompt for a task launch', () => {
-    const { container } = renderTool({ sessionUpdate: 'tool_call', status: 'pending', title: 'Task: Inspect sample', kind: 'other', rawInput: {
-      _toolName: 'task',
-      description: 'Inspect sample',
-      prompt: '- Read **sample.py**',
-      subagentType: { explore: {} },
-    } })
+    const { container } = renderTool({
+      sessionUpdate: 'tool_call',
+      status: 'pending',
+      title: 'Task: Inspect sample',
+      kind: 'other',
+      rawInput: {
+        _toolName: 'task',
+        description: 'Inspect sample',
+        prompt: '- Read **sample.py**',
+        subagentType: { explore: {} },
+      },
+    })
     expect(container.textContent).toContain('Inspect sample (Explore)')
     expect(container.querySelector('li strong')?.textContent).toBe('sample.py')
     expect(container.textContent).not.toContain('"_toolName"')
   })
 
   it('renders the native subagent report that ACP omits', () => {
-    const { container } = renderTool({ kind: 'other', rawInput: { _toolName: 'task', description: 'Inspect sample' }, rawOutput: { durationMs: 1000, isBackground: false } }, {
+    const { container } = renderTool({
+      kind: 'other',
+      rawInput: { _toolName: 'task', description: 'Inspect sample' },
+      rawOutput: { durationMs: 1000, isBackground: false },
+    }, {
       rawOutput: {
-        content: [{ type: 'tool-result', toolCallId: 'cursor-tool', toolName: 'Task', result: 'Native model wrapper' }],
-        providerOptions: { cursor: { highLevelToolCallResult: { output: { success: {
-          agentId: 'child-1',
-          durationMs: '1000',
-          conversationSteps: [{ assistantMessage: { text: '- Read **sample.py**' } }],
-        } } } } },
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'cursor-tool',
+            toolName: 'Task',
+            result: 'Native model wrapper',
+          },
+        ],
+        providerOptions: {
+          cursor: {
+            highLevelToolCallResult: {
+              output: {
+                success: {
+                  agentId: 'child-1',
+                  durationMs: '1000',
+                  conversationSteps: [
+                    {
+                      assistantMessage: { text: '- Read **sample.py**' },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
       },
     })
     expect(container.textContent).toContain('Agent "Inspect sample" completed')
@@ -126,39 +222,98 @@ describe('cursor native tool rendering', () => {
   })
 
   it('shows a missing report explicitly when the native store is absent', () => {
-    const { container } = renderTool({ kind: 'other', rawInput: { _toolName: 'task', description: 'Inspect sample' }, rawOutput: { durationMs: 1000, isBackground: false } })
+    const { container } = renderTool({
+      kind: 'other',
+      rawInput: { _toolName: 'task', description: 'Inspect sample' },
+      rawOutput: { durationMs: 1000, isBackground: false },
+    })
     expect(container.textContent).toContain('Agent "Inspect sample" completed')
     expect(container.textContent).toContain('The provider did not supply a report.')
   })
 
   it('keeps a background launch marked as running', () => {
-    const { container } = renderTool({ kind: 'other', rawInput: { _toolName: 'task', description: 'Inspect sample' }, rawOutput: { durationMs: 0, isBackground: true } })
+    const { container } = renderTool({
+      kind: 'other',
+      rawInput: { _toolName: 'task', description: 'Inspect sample' },
+      rawOutput: { durationMs: 0, isBackground: true },
+    })
     expect(container.textContent).toContain('Agent "Inspect sample" running')
     expect(container.querySelector('.lucide-check')).toBeNull()
     expect(container.textContent).not.toContain('did not supply a report')
   })
 
   it('shows one failure status when a subagent launch fails', () => {
-    const { container } = renderTool({ status: 'failed', kind: 'other', rawInput: { _toolName: 'task', description: 'Inspect sample' }, rawOutput: { error: 'Source unavailable' } })
+    const { container } = renderTool({
+      status: 'failed',
+      kind: 'other',
+      rawInput: { _toolName: 'task', description: 'Inspect sample' },
+      rawOutput: { error: 'Source unavailable' },
+    })
     expect(container.querySelectorAll('.lucide-circle-alert')).toHaveLength(1)
     expect(container.textContent).toContain('Agent "Inspect sample" failed')
     expect(container.textContent).toContain('Source unavailable')
   })
 
-  it.each([{ scenario: 'absent', experimental_content: undefined }, { scenario: 'empty', experimental_content: [] }])('uses native image content when the usual content array is $scenario', ({ experimental_content }) => {
+  it.each([
+    { scenario: 'absent', experimental_content: undefined },
+    { scenario: 'empty', experimental_content: [] },
+  ])('uses native image content when the usual content array is $scenario', ({ experimental_content }) => {
     const data = pngBase64(12, 8)
-    const fields = { kind: 'other', rawInput: { providerIdentifier: 'probe', toolName: 'image' } }
+    const fields = {
+      kind: 'other',
+      rawInput: { providerIdentifier: 'probe', toolName: 'image' },
+    }
     const rawOutput = {
-      content: [{ type: 'tool-result', toolCallId: 'cursor-tool', toolName: 'mcp_probe_image', result: 'Image returned', experimental_content, providerOptions: { cursor: { imageDescriptions: { 1: 'A red square' } } } }],
-      providerOptions: { cursor: { highLevelToolCallResult: { output: { success: { content: [{ text: { text: 'Native **caption**' } }, { image: { data, mimeType: 'image/png' } }] } } } } },
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'cursor-tool',
+          toolName: 'mcp_probe_image',
+          result: 'Image returned',
+          experimental_content,
+          providerOptions: {
+            cursor: {
+              imageDescriptions: { 1: 'A red square' },
+            },
+          },
+        },
+      ],
+      providerOptions: {
+        cursor: {
+          highLevelToolCallResult: {
+            output: {
+              success: {
+                content: [
+                  {
+                    text: { text: 'Native **caption**' },
+                  },
+                  {
+                    image: { data, mimeType: 'image/png' },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
     }
     const { container } = renderTool(fields, { rawOutput })
     expect(container.querySelector('img')?.getAttribute('src')).toContain(data)
     expect(container.querySelector('img')?.getAttribute('alt')).toBe('A red square')
     expect(container.textContent).toContain('A red square')
     expect(container.querySelector('strong')?.textContent).toBe('caption')
-    const payload = { sessionUpdate: 'tool_call_update', toolCallId: 'cursor-tool', status: 'completed', ...fields }
-    const supplementalContent = { sessionUpdate: 'tool_call_update', toolCallId: 'cursor-tool', status: 'completed', rawOutput }
+    const payload = {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'cursor-tool',
+      status: 'completed',
+      ...fields,
+    }
+    const supplementalContent = {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'cursor-tool',
+      status: 'completed',
+      rawOutput,
+    }
     expect(providerRowImages(AgentProvider.CURSOR, payload, { supplementalContent }).map(image => image.data)).toEqual([data])
     expect(providerToolMeta(AgentProvider.CURSOR, payload, { supplementalContent })?.copyableContent()).toContain('A red square')
   })
@@ -169,7 +324,10 @@ describe('cursor native tool rendering', () => {
   // call built. So the row carried the image and drew nothing.
   it('draws the picture a generateImage call produced', () => {
     const { container } = renderTool(
-      { kind: 'other', rawInput: { _toolName: 'generateImage', description: 'A cat' } },
+      {
+        kind: 'other',
+        rawInput: { _toolName: 'generateImage', description: 'A cat' },
+      },
       {
         [CURSOR_SUPPLEMENT.Extension]: {
           method: CURSOR_METHOD.GenerateImage,
@@ -185,14 +343,47 @@ describe('cursor native tool rendering', () => {
   })
 
   it('opens the native image with its description as alternative text', async () => {
-    const tool = { sessionUpdate: 'tool_call_update', toolCallId: 'image', status: 'completed', kind: 'other' }
-    const message = makeMessage({ agentProvider: AgentProvider.CURSOR, seq: 7n, spanId: 'image', content: rawContent(tool), supplementalContent: rawContent({ provider: {
-      ...tool,
-      rawOutput: {
-        content: [{ type: 'tool-result', toolCallId: 'image', toolName: 'mcp_probe_image', experimental_content: [{ type: 'image', mimeType: 'image/png', data: pngBase64(12, 8) }], providerOptions: { cursor: { imageDescriptions: { 0: 'A red square' } } } }],
-      },
-    } }) })
-    const context = testMessageContext({ messages: () => [message] })
+    const tool = {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'image',
+      status: 'completed',
+      kind: 'other',
+    }
+    const message = makeMessage({
+      agentProvider: AgentProvider.CURSOR,
+      seq: 7n,
+      spanId: 'image',
+      content: rawContent(tool),
+      supplementalContent: rawContent({
+        provider: {
+          ...tool,
+          rawOutput: {
+            content: [
+              {
+                type: 'tool-result',
+                toolCallId: 'image',
+                toolName: 'mcp_probe_image',
+                experimental_content: [
+                  {
+                    type: 'image',
+                    mimeType: 'image/png',
+                    data: pngBase64(12, 8),
+                  },
+                ],
+                providerOptions: {
+                  cursor: {
+                    imageDescriptions: { 0: 'A red square' },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      }),
+    })
+    const context = testMessageContext({
+      messages: () => [message],
+    })
     const { container } = render(() => <ChatImageViewer workerId="worker" agentId="agent" seq={7n} imageIndex={0} title="Screenshot" messages={context} />)
     await waitFor(() => expect(container.querySelector('img')?.getAttribute('alt')).toBe('A red square'))
   })
@@ -204,10 +395,39 @@ describe('cursor native tool rendering', () => {
       rawOutput: { totalMatches: 1 },
     }, {
       rawOutput: {
-        content: [{ type: 'tool-result', toolCallId: 'cursor-tool', toolName: 'Grep', result: 'sample.py:7:answer = 42' }],
-        providerOptions: { cursor: { highLevelToolCallResult: { output: { success: {
-          workspaceResults: { '/project': { content: { matches: [{ file: './sample.py', matches: [{ lineNumber: 7, content: 'answer = 42' }] }], totalMatchedLines: 1 } } },
-        } } } } },
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'cursor-tool',
+            toolName: 'Grep',
+            result: 'sample.py:7:answer = 42',
+          },
+        ],
+        providerOptions: {
+          cursor: {
+            highLevelToolCallResult: {
+              output: {
+                success: {
+                  workspaceResults: {
+                    '/project': {
+                      content: {
+                        matches: [
+                          {
+                            file: './sample.py',
+                            matches: [
+                              { lineNumber: 7, content: 'answer = 42' },
+                            ],
+                          },
+                        ],
+                        totalMatchedLines: 1,
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     })
     expect(container.textContent).toContain('answer = 42')
@@ -219,11 +439,33 @@ describe('cursor native tool rendering', () => {
     const { container } = renderTool({
       kind: 'edit',
       rawInput: { path: '/project/sample.py', old_string: '41', new_string: '42' },
-      content: [{ type: 'diff', path: '/project/sample.py', oldText: '41', newText: '42' }],
+      content: [
+        {
+          type: 'diff',
+          path: '/project/sample.py',
+          oldText: '41',
+          newText: '42',
+        },
+      ],
     }, {
       rawOutput: {
-        content: [{ type: 'tool-result', toolCallId: 'cursor-tool', toolName: 'StrReplace', result: 'Saved' }],
-        providerOptions: { cursor: { highLevelToolCallResult: { output: { success: { path: '/project/sample.py', beforeFullFileContent: 'answer = 41\n', afterFullFileContent: 'answer = 42\n' } } } } },
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'cursor-tool',
+            toolName: 'StrReplace',
+            result: 'Saved',
+          },
+        ],
+        providerOptions: {
+          cursor: {
+            highLevelToolCallResult: {
+              output: {
+                success: { path: '/project/sample.py', beforeFullFileContent: 'answer = 41\n', afterFullFileContent: 'answer = 42\n' },
+              },
+            },
+          },
+        },
       },
     })
     expect(container.textContent).toContain('answer = 41')
@@ -236,7 +478,16 @@ describe('cursor native tool rendering', () => {
       rawInput: { pattern: 'answer' },
       rawOutput: { totalMatches: 0 },
     }, {
-      rawOutput: { content: [{ type: 'tool-result', toolCallId: 'other-tool', toolName: 'Grep', result: 'unrelated-result' }] },
+      rawOutput: {
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'other-tool',
+            toolName: 'Grep',
+            result: 'unrelated-result',
+          },
+        ],
+      },
     })
     expect(container.textContent).not.toContain('unrelated-result')
     expect(container.textContent).toContain('No matches found')
@@ -258,7 +509,9 @@ describe('cursor native tool rendering', () => {
       kind: 'read',
       rawInput: { path: '/project/sample.py' },
       rawOutput: { content: 'answer = 42\nprint(answer)' },
-      locations: [{ path: '/project/sample.py', line: 7 }],
+      locations: [
+        { path: '/project/sample.py', line: 7 },
+      ],
     })
     expect(container.textContent).toContain('answer = 42')
     expect(container.textContent).toContain('7')
@@ -280,7 +533,14 @@ describe('cursor native tool rendering', () => {
       // The call states the file it writes. A file operation that names none is not
       // one this build draws (invariant I7), and the header reads from the request.
       rawInput: { path: '/project/new.py', content: 'answer = 42' },
-      content: [{ type: 'diff', path: '/project/new.py', oldText: '-- /dev/null', newText: '++ b//project/new.py\nanswer = 42' }],
+      content: [
+        {
+          type: 'diff',
+          path: '/project/new.py',
+          oldText: '-- /dev/null',
+          newText: '++ b//project/new.py\nanswer = 42',
+        },
+      ],
     })
     expect(container.textContent).toContain('answer = 42')
     expect(container.textContent).not.toContain('/dev/null')
@@ -295,16 +555,40 @@ describe('cursor native tool rendering', () => {
 describe('cursor read that returned no content', () => {
   const storedRead = (result: string, success: Record<string, unknown>) => ({
     rawOutput: {
-      content: [{ type: 'tool-result', toolCallId: 'cursor-tool', toolName: 'Read', result }],
-      providerOptions: { cursor: { highLevelToolCallResult: { isError: false, output: { success } } } },
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'cursor-tool',
+          toolName: 'Read',
+          result,
+        },
+      ],
+      providerOptions: {
+        cursor: {
+          highLevelToolCallResult: {
+            isError: false,
+            output: { success },
+          },
+        },
+      },
     },
   })
   const refusal = 'File content (5040000 characters) exceeds maximum allowed characters (100000 characters).'
 
   it('states why the read returned nothing', () => {
     const { container } = renderTool(
-      { kind: 'read', rawInput: { path: 'bigfile.txt' }, rawOutput: { content: '' } },
-      storedRead(refusal, { content: '', exceededLimit: true, totalLines: 60001, fileSize: 5040000, path: 'bigfile.txt' }),
+      {
+        kind: 'read',
+        rawInput: { path: 'bigfile.txt' },
+        rawOutput: { content: '' },
+      },
+      storedRead(refusal, {
+        content: '',
+        exceededLimit: true,
+        totalLines: 60001,
+        fileSize: 5040000,
+        path: 'bigfile.txt',
+      }),
     )
     expect(container.textContent).toContain('exceeds maximum allowed characters')
     expect(container.textContent).not.toContain('[no output]')
@@ -312,7 +596,11 @@ describe('cursor read that returned no content', () => {
 
   it('still renders a file the read did return', () => {
     const { container } = renderTool(
-      { kind: 'read', rawInput: { path: 'small.txt' }, rawOutput: { content: '' } },
+      {
+        kind: 'read',
+        rawInput: { path: 'small.txt' },
+        rawOutput: { content: '' },
+      },
       storedRead('alpha\nbeta', { content: 'alpha\nbeta', totalLines: 2, path: 'small.txt' }),
     )
     expect(container.textContent).toContain('alpha')
@@ -322,7 +610,11 @@ describe('cursor read that returned no content', () => {
   // Nothing returned and nothing said is the one case the shared notice is for.
   it('says only that nothing came back when the provider gave no reason', () => {
     const { container } = renderTool(
-      { kind: 'read', rawInput: { path: 'empty.txt' }, rawOutput: { content: '' } },
+      {
+        kind: 'read',
+        rawInput: { path: 'empty.txt' },
+        rawOutput: { content: '' },
+      },
       storedRead('', { content: '', totalLines: 0, path: 'empty.txt' }),
     )
     expect(container.textContent).toContain('[no output]')

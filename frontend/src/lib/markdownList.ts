@@ -16,7 +16,11 @@ export function markdownBulletList(entries: readonly string[]): string {
   return entries
     .map(entry => entry
       .split('\n')
-      .map((line, index) => index === 0 ? `- ${line}` : line === '' ? '' : `${CONTINUATION_INDENT}${line}`)
+      .map((line, index) => index === 0
+        ? `- ${line}`
+        : line === ''
+          ? ''
+          : `${CONTINUATION_INDENT}${line}`)
       .join('\n'))
     .join('\n')
 }

@@ -8,7 +8,11 @@ import { runningChildOptions } from './scenarios'
 
 describe('runningChildOptions', () => {
   function options(id: string) {
-    return runningChildOptions({ provider: AgentProvider.FAST_AGENT, prompt: text => mockScenarioPrompt(id, text), textStep: text => ({ text }) })
+    return runningChildOptions({
+      provider: AgentProvider.FAST_AGENT,
+      prompt: text => mockScenarioPrompt(id, text),
+      textStep: text => ({ text }),
+    })
   }
 
   /** The script of the child's turns. Every Fast Agent child has one, so its absence fails the test. */
@@ -32,7 +36,7 @@ describe('runningChildOptions', () => {
     const label = first.spawn.arguments?.label
     expect(typeof label).toBe('string')
     if (typeof label !== 'string')
-      throw new Error('The actual Fast Agent spawn contains no native label.')
+      throw new TypeError('The actual Fast Agent spawn contains no native label.')
     expect(label.length).toBeGreaterThan(0)
     expect(label.length).toBeLessThanOrEqual(32)
     expect(label).toMatch(/^[A-Z0-9][\w -]*[A-Z0-9]$/i)
@@ -51,15 +55,47 @@ describe('runningChildOptions', () => {
     const id = 'native-fast-parent-error'
     const child = options(id)
     try {
-      await registerMockModelScenario(server.url, id, { housekeeping: [], steps: [{ text: 'ACTUAL_PARENT_REPLY' }], rules: [{ name: 'actual child matcher', when: scriptOf(child).matcher, respond: { text: 'INCORRECT_CHILD_REPLY' }, once: true }] })
+      await registerMockModelScenario(server.url, id, {
+        housekeeping: [],
+        steps: [
+          { text: 'ACTUAL_PARENT_REPLY' },
+        ],
+        rules: [
+          {
+            name: 'actual child matcher',
+            when: scriptOf(child).matcher,
+            respond: { text: 'INCORRECT_CHILD_REPLY' },
+            once: true,
+          },
+        ],
+      })
       const response = await fetch(`${server.url}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ model: 'mock-model', stream: false, messages: [
-          { role: 'user', content: mockScenarioPrompt(id, 'Create the scripted native child.') },
-          { role: 'assistant', tool_calls: [{ id: child.spawn.id, type: 'function', function: { name: 'subagent', arguments: JSON.stringify(child.spawn.arguments) } }] },
-          { role: 'tool', tool_call_id: child.spawn.id, content: 'Error: 1 validation error for call[subagent]\nlabel\n  String should have at most 32 characters' },
-        ] }),
+        body: JSON.stringify({
+          model: 'mock-model',
+          stream: false,
+          messages: [
+            {
+              role: 'user',
+              content: mockScenarioPrompt(id, 'Create the scripted native child.'),
+            },
+            {
+              role: 'assistant',
+              tool_calls: [
+                {
+                  id: child.spawn.id,
+                  type: 'function',
+                  function: {
+                    name: 'subagent',
+                    arguments: JSON.stringify(child.spawn.arguments),
+                  },
+                },
+              ],
+            },
+            { role: 'tool', tool_call_id: child.spawn.id, content: 'Error: 1 validation error for call[subagent]\nlabel\n  String should have at most 32 characters' },
+          ],
+        }),
       })
       expect(response.status).toBe(200)
       expect(await response.text()).toContain('ACTUAL_PARENT_REPLY')
@@ -76,15 +112,35 @@ describe('runningChildOptions', () => {
     const id = 'native-fast-current-child'
     const child = options(id)
     try {
-      await registerMockModelScenario(server.url, id, { housekeeping: [], steps: [], rules: [{ name: 'actual child matcher', when: scriptOf(child).matcher, respond: { text: 'ACTUAL_CHILD_REPLY' }, once: true }] })
+      await registerMockModelScenario(server.url, id, {
+        housekeeping: [],
+        steps: [],
+        rules: [
+          {
+            name: 'actual child matcher',
+            when: scriptOf(child).matcher,
+            respond: { text: 'ACTUAL_CHILD_REPLY' },
+            once: true,
+          },
+        ],
+      })
       const response = await fetch(`${server.url}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ model: 'mock-model', stream: false, messages: [{ role: 'user', content: child.spawn.arguments?.message }] }),
+        body: JSON.stringify({
+          model: 'mock-model',
+          stream: false,
+          messages: [
+            { role: 'user', content: child.spawn.arguments?.message },
+          ],
+        }),
       })
       expect(response.status).toBe(200)
       expect(await response.text()).toContain('ACTUAL_CHILD_REPLY')
-      expect(await readScenarioStatus(server.url, id)).toMatchObject({ nextStep: 0, ruleMatches: { 'actual child matcher': 1 } })
+      expect(await readScenarioStatus(server.url, id)).toMatchObject({
+        nextStep: 0,
+        ruleMatches: { 'actual child matcher': 1 },
+      })
     }
     finally {
       await server.close()

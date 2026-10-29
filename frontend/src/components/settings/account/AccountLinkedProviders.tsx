@@ -82,7 +82,9 @@ export const AccountLinkedProviders: Component = () => {
                 onClick={() => void detach(provider.id)}
                 disabled={action.busy() === provider.id || elevationPrompting()}
               >
-                {action.busy() === provider.id ? 'Unlinking...' : 'Unlink'}
+                {action.busy() === provider.id
+                  ? 'Unlinking...'
+                  : 'Unlink'}
               </ConfirmButton>
             </div>
           </div>

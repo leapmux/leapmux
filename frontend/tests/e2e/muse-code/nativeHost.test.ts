@@ -15,11 +15,20 @@ beforeEach(() => {
   directory = mkdtempSync(join(scratch, 'muse-native-host-test-'))
 })
 // A Windows handle on the private directory outlives the host by a moment, so the cleanup retries.
-afterEach(() => rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }))
+afterEach(() => rmSync(directory, {
+  recursive: true,
+  force: true,
+  maxRetries: 10,
+  retryDelay: 100,
+}))
 
 async function controlledHost(writeFailure?: Error) {
   const child = Object.assign(new EventEmitter(), {
-    stdin: writeFailure ? new Writable({ write: (_chunk, _encoding, callback) => callback(writeFailure) }) : new PassThrough(),
+    stdin: writeFailure
+      ? new Writable({
+          write: (_chunk, _encoding, callback) => callback(writeFailure),
+        })
+      : new PassThrough(),
     stdout: new PassThrough(),
     stderr: new PassThrough(),
     exitCode: null as number | null,
@@ -29,7 +38,13 @@ async function controlledHost(writeFailure?: Error) {
   const cancellations: ReturnType<typeof vi.fn>[] = []
   const deadlines: (() => void)[] = []
   const stop = vi.fn(async () => {})
-  const launch: MuseNativeLaunch = { executable: '/private/muse', args: ['serve'], cwd: directory, env: {}, runDirectory: directory }
+  const launch: MuseNativeLaunch = {
+    executable: '/private/muse',
+    args: ['serve'],
+    cwd: directory,
+    env: {},
+    runDirectory: directory,
+  }
   const host = await MuseNativeHost.start(launch, {
     start: () => ({ child: child as unknown as ChildProcess, stop }),
     scheduleDeadline: (fail) => {
@@ -39,7 +54,13 @@ async function controlledHost(writeFailure?: Error) {
       return cancel
     },
   })
-  return { host, child, stop, deadlines, cancellations }
+  return {
+    host,
+    child,
+    stop,
+    deadlines,
+    cancellations,
+  }
 }
 
 describe('MuseNativeHost', () => {
@@ -49,10 +70,20 @@ createInterface({ input: process.stdin }).on('line', raw => {
   const frame = JSON.parse(raw);
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { method: frame.method, params: frame.params, marker: '\u754C' } }) + '\\n');
 });`
-    const host = await MuseNativeHost.start({ executable: process.execPath, args: ['--eval', script], cwd: directory, env: {}, runDirectory: directory })
+    const host = await MuseNativeHost.start({
+      executable: process.execPath,
+      args: ['--eval', script],
+      cwd: directory,
+      env: {},
+      runDirectory: directory,
+    })
     try {
       const result = await host.request('initialize', { zero: 0, empty: '' })
-      expect(result).toEqual({ method: 'initialize', params: { zero: 0, empty: '' }, marker: '\u754C' })
+      expect(result).toEqual({
+        method: 'initialize',
+        params: { zero: 0, empty: '' },
+        marker: '\u754C',
+      })
       expect(readdirSync(join(directory, 'processes'))).toHaveLength(1)
     }
     finally {
@@ -62,14 +93,22 @@ createInterface({ input: process.stdin }).on('line', raw => {
   })
 
   it('rejects a real process exit before its reply and closes after that exit', async () => {
-    const host = await MuseNativeHost.start({ executable: process.execPath, args: ['--eval', 'process.exit(7)'], cwd: directory, env: {}, runDirectory: directory })
+    const host = await MuseNativeHost.start({
+      executable: process.execPath,
+      args: ['--eval', 'process.exit(7)'],
+      cwd: directory,
+      env: {},
+      runDirectory: directory,
+    })
     try {
       await expect(host.request('initialize', {})).rejects.toThrow(/ended|exited/)
     }
     finally {
       await host.close()
     }
-    expect(existsSync(join(directory, 'processes')) ? readdirSync(join(directory, 'processes')) : []).toEqual([])
+    expect(existsSync(join(directory, 'processes'))
+      ? readdirSync(join(directory, 'processes'))
+      : []).toEqual([])
   })
 
   it('releases an owned process when its initialization fails and retains a cleanup failure', async () => {
@@ -78,8 +117,16 @@ createInterface({ input: process.stdin }).on('line', raw => {
     const stop = vi.fn(async () => {
       throw failure
     })
-    const launch: MuseNativeLaunch = { executable: '/private/muse', args: ['serve'], cwd: directory, env: {}, runDirectory: directory }
-    const result = await MuseNativeHost.start(launch, { start: () => ({ child: child as unknown as ChildProcess, stop }) }).catch(error => error)
+    const launch: MuseNativeLaunch = {
+      executable: '/private/muse',
+      args: ['serve'],
+      cwd: directory,
+      env: {},
+      runDirectory: directory,
+    }
+    const result = await MuseNativeHost.start(launch, {
+      start: () => ({ child: child as unknown as ChildProcess, stop }),
+    }).catch(error => error)
     expect(result).toBeInstanceOf(AggregateError)
     expect(result.errors[0].message).toContain('three owned pipe streams')
     expect(result.errors[1]).toBe(failure)
@@ -119,7 +166,10 @@ createInterface({ input: process.stdin }).on('line', raw => {
     try {
       expect(cancellations[0]).toHaveBeenCalledOnce()
       deadlines[0]!()
-      await Promise.all([host.close(), host.close()])
+      await Promise.all([
+        host.close(),
+        host.close(),
+      ])
       expect(stop).toHaveBeenCalledOnce()
     }
     finally {
@@ -141,7 +191,10 @@ createInterface({ input: process.stdin }).on('line', raw => {
     expect(settled).toBe(false)
     const raw = '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"muse"},"extra":0}}'
     child.stdout.write(`${raw}\n`)
-    expect(await request).toEqual({ serverInfo: { name: 'muse' }, extra: 0 })
+    expect(await request).toEqual({
+      serverInfo: { name: 'muse' },
+      extra: 0,
+    })
     expect(host.frames.at(-1)?.raw).toBe(raw)
     expect(cancellations[0]).toHaveBeenCalledOnce()
     await host.close()

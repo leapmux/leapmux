@@ -18,8 +18,12 @@ import { withTestWorkspace } from './workspace'
 
 const events = vi.hoisted(() => [] as string[])
 
-vi.mock('./nativeWorker', () => ({ withNativeWorker: vi.fn() }))
-vi.mock('./nativeScenario', () => ({ currentNativeAgent: vi.fn() }))
+vi.mock('./nativeWorker', () => ({
+  withNativeWorker: vi.fn(),
+}))
+vi.mock('./nativeScenario', () => ({
+  currentNativeAgent: vi.fn(),
+}))
 vi.mock('./runDirectory', async importOriginal => ({
   ...await importOriginal<typeof import('./runDirectory')>(),
   createTestDirectory: vi.fn(),
@@ -42,7 +46,12 @@ vi.mock('./workspace', () => ({
 }))
 
 const page = {} as Page
-const suite = { hubUrl: 'http://hub.test', adminToken: 'suite-token', workerId: 'suite-worker', agentEnv: { HOME: '/suite/home' } }
+const suite = {
+  hubUrl: 'http://hub.test',
+  adminToken: 'suite-token',
+  workerId: 'suite-worker',
+  agentEnv: { HOME: '/suite/home' },
+}
 const providerAgent = { provider: AgentProvider.DIRAC, prefix: 'native' }
 let runDirectory: string
 
@@ -55,7 +64,12 @@ function agent(id: string): AgentInfo {
 function startWorker() {
   vi.mocked(withNativeWorker).mockImplementation(async (server, _options, use) => {
     events.push('worker')
-    await use({ server: { ...server, workerId: 'private-worker', agentEnv: server.agentEnv ?? {} }, workerId: 'private-worker', dataDir: '/private/data', output: createServerOutput() })
+    await use({
+      server: { ...server, workerId: 'private-worker', agentEnv: server.agentEnv ?? {} },
+      workerId: 'private-worker',
+      dataDir: '/private/data',
+      output: createServerOutput(),
+    })
   })
 }
 
@@ -98,7 +112,11 @@ describe('withPrivateNativeWorkspace', () => {
     })
     const run = options((directory) => {
       events.push(`prepare ${directory}`)
-      return { agentEnv: { HOME: '/private/home' }, env: { PRIVATE_FLAG: '1' }, setup: 'kept-setup' }
+      return {
+        agentEnv: { HOME: '/private/home' },
+        env: { PRIVATE_FLAG: '1' },
+        setup: 'kept-setup',
+      }
     })
     await withPrivateNativeWorkspace(page, suite, run, use)
     expect(events).toEqual([
@@ -115,15 +133,27 @@ describe('withPrivateNativeWorkspace', () => {
     expect(createTestDirectory).toHaveBeenCalledExactlyOnceWith('unit-private-private-')
     expect(newProviderWorkingDir).toHaveBeenCalledWith(providerAgent, 'unit-private-wd-')
     expect(withNativeWorker).toHaveBeenCalledWith(
-      { ...suite, agentEnv: { HOME: '/private/home' } },
-      { dataDirPrefix: 'unit-private-worker', workerName: 'Unit private Worker', env: { PRIVATE_FLAG: '1' }, privateDirectories: [runDirectory] },
+      {
+        ...suite,
+        agentEnv: { HOME: '/private/home' },
+      },
+      {
+        dataDirPrefix: 'unit-private-worker',
+        workerName: 'Unit private Worker',
+        env: { PRIVATE_FLAG: '1' },
+        privateDirectories: [runDirectory],
+      },
       expect.any(Function),
     )
     expect(loginViaToken).toHaveBeenCalledWith(page, 'suite-token')
     expect(run.openAgent).toHaveBeenCalledWith(expect.objectContaining({ workerId: 'private-worker' }), 'private-workspace', '/private/unit-private-wd-')
     expect(use).toHaveBeenCalledExactlyOnceWith({
       workspaceId: 'private-workspace',
-      server: { ...suite, workerId: 'private-worker', agentEnv: { HOME: '/private/home' } },
+      server: {
+        ...suite,
+        workerId: 'private-worker',
+        agentEnv: { HOME: '/private/home' },
+      },
       agentId: 'opened-agent',
       workingDir: '/private/unit-private-wd-',
       agent: agent('opened-agent'),
@@ -135,7 +165,11 @@ describe('withPrivateNativeWorkspace', () => {
   it('keeps the suite agent environment and adds no variable when the preparation states neither', async () => {
     startWorker()
     await withPrivateNativeWorkspace(page, suite, options(() => ({ setup: 'none' })), async () => {})
-    expect(withNativeWorker).toHaveBeenCalledWith(suite, { dataDirPrefix: 'unit-private-worker', workerName: 'Unit private Worker', privateDirectories: [runDirectory] }, expect.any(Function))
+    expect(withNativeWorker).toHaveBeenCalledWith(suite, {
+      dataDirPrefix: 'unit-private-worker',
+      workerName: 'Unit private Worker',
+      privateDirectories: [runDirectory],
+    }, expect.any(Function))
   })
 
   it('removes the partial run directory and starts no Worker when the preparation fails', async () => {
@@ -201,7 +235,10 @@ describe('withPrivateNativeWorkspace', () => {
   })
 
   it.each(['', 'a/b', '..'])('refuses the prefix %j before it creates a directory', async (prefix) => {
-    await expect(withPrivateNativeWorkspace(page, suite, { ...options(() => ({ setup: 'none' })), prefix }, async () => {})).rejects.toThrow('one file-name component')
+    await expect(withPrivateNativeWorkspace(page, suite, {
+      ...options(() => ({ setup: 'none' })),
+      prefix,
+    }, async () => {})).rejects.toThrow('one file-name component')
     expect(createTestDirectory).not.toHaveBeenCalled()
   })
 })

@@ -70,13 +70,17 @@ export function permissionPillOptions(presets: ProviderPermissionPresets | undef
   // Use the Minus icon for the Unchanged choice to keep room for the decision buttons.
   // Keep Unchanged as its accessible name and tooltip.
   // The other choices retain text that identifies their preset.
-  const options: PillOptionSpec<PermissionPresetChoice>[] = [{ key: 'unspecified', label: 'Unchanged', icon: Minus }]
+  const options: PillOptionSpec<PermissionPresetChoice>[] = [
+    { key: 'unspecified', label: 'Unchanged', icon: Minus },
+  ]
   for (const spec of PERMISSION_PRESET_SPECS) {
     if (presets[spec.kind])
       options.push({ key: spec.kind, label: spec.shortLabel })
   }
   // Omit a group that contains only Unchanged because it offers no preset choice.
-  return options.length > 1 && isPillOptions(options) ? options : undefined
+  return options.length > 1 && isPillOptions(options)
+    ? options
+    : undefined
 }
 
 /** A render-ready permission pill group, or undefined when it draws no pills. */
@@ -97,7 +101,9 @@ export function buildPermissionPill(
   // Otherwise, select unspecified, which every displayed group offers and which applies no change.
   // This also handles a plan approval that initially selects Smart when that provider offers no Smart preset.
   const stored = choiceState.choice()
-  const selected = options.some(option => option.key === stored) ? stored : 'unspecified'
+  const selected = options.some(option => option.key === stored)
+    ? stored
+    : 'unspecified'
   return { options, selected, onSelect: choiceState.setChoice }
 }
 
@@ -106,7 +112,9 @@ export function buildSessionPermissionPill(
   presets: PermissionPresetController | undefined,
   choiceState: PermissionPresetChoiceState,
 ): ControlPermissionPill | undefined {
-  return presets?.apply ? buildPermissionPill(presets, choiceState) : undefined
+  return presets?.apply
+    ? buildPermissionPill(presets, choiceState)
+    : undefined
 }
 
 /**
@@ -119,10 +127,14 @@ export function applyPermissionPreset(
   presets: PermissionPresetController | undefined,
   choice: PermissionPresetChoice,
 ): Promise<void> {
-  const preset = choice === 'unspecified' ? undefined : presets?.[choice]
+  const preset = choice === 'unspecified'
+    ? undefined
+    : presets?.[choice]
   if (!presets?.apply || !preset)
     return Promise.resolve()
-  return Promise.resolve(presets.apply({ sets: { ...preset.sets } }))
+  return Promise.resolve(presets.apply({
+    sets: { ...preset.sets },
+  }))
 }
 
 /**

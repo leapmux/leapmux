@@ -16,8 +16,14 @@ droidTest.describe('Factory Droid MCP input form', () => {
       const callId = 'call-echo'
       const call = mcpToolCall(context.provider, callId, { server: server.name, tool: 'echo', input: echoArguments })
       const start = await modelScript.queue(
-        { toolCalls: [droidToolSearchToolCall('search-echo', `${server.name} echo`)] },
-        { toolCalls: [call] },
+        {
+          toolCalls: [
+            droidToolSearchToolCall('search-echo', `${server.name} echo`),
+          ],
+        },
+        {
+          toolCalls: [call],
+        },
         { text: 'The MCP echo completed.' },
       )
       await sendMessage(page, modelScript.prompt(`Load ${server.name} echo, then call it once.`))

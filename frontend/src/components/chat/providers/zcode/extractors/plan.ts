@@ -9,7 +9,10 @@ export function zcodeControlPlanText(parsed: unknown): string | null {
   const params = pickObject(parsed, 'params')
   if (pickObject(params, 'schema')?.interaction !== ZCODE_INTERACTION.PlanApproval)
     return null
-  for (const content of [pickObject(params, 'input'), pickObject(params, 'context')]) {
+  for (const content of [
+    pickObject(params, 'input'),
+    pickObject(params, 'context'),
+  ]) {
     const plan = pickString(content, 'plan')
     if (plan.trim())
       return plan
@@ -45,6 +48,8 @@ export function zcodePlanText(parsed: unknown, spanType?: string, supplemental?:
   // arguments outside the frame -- the same stream every other argument of a
   // `scheduled` call arrives through.
   const streamed = pickString(zcodeExtractTool(supplemental ?? undefined)?.input ?? {}, 'plan')
-  const plan = pickString(update.input, 'plan').trim() || (typeof streamed === 'string' ? streamed.trim() : '')
+  const plan = pickString(update.input, 'plan').trim() || (typeof streamed === 'string'
+    ? streamed.trim()
+    : '')
   return plan || null
 }

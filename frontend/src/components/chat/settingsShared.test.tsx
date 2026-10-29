@@ -21,7 +21,9 @@ function effortGroup(effortIds: string[], defaultValue = 'auto'): AvailableOptio
   } as unknown as AvailableOptionGroup
 }
 
-const groups = [effortGroup(['auto', 'max', 'high', 'medium', 'low'])]
+const groups = [
+  effortGroup(['auto', 'max', 'high', 'medium', 'low']),
+]
 
 describe('valueValidForGroup', () => {
   it('returns true when the effort is one of the group tiers', () => {
@@ -36,7 +38,9 @@ describe('valueValidForGroup', () => {
   })
 
   it('returns false for a group that offers no efforts', () => {
-    expect(valueValidForGroup([effortGroup([])], 'effort', 'auto')).toBe(false)
+    expect(valueValidForGroup([
+      effortGroup([]),
+    ], 'effort', 'auto')).toBe(false)
   })
 
   it('returns false for an unknown group id', () => {
@@ -71,17 +75,30 @@ describe('currentValueOrDefault', () => {
   // S6: a transient empty default on the effort group falls back to EFFORT_AUTO so the select
   // never renders blank during a first-handshake catalog -- but only when the group offers auto.
   it('falls back to EFFORT_AUTO when the effort default is empty but auto is offered', () => {
-    const g = [effortGroup(['auto', 'high', 'low'], '')] // empty default (transient handshake)
+    const g = [
+      effortGroup(['auto', 'high', 'low'], ''),
+    ] // empty default (transient handshake)
     expect(currentValueOrDefault(g, 'effort', 'xhigh')).toBe('auto')
   })
 
   it('returns empty for an effort group with an empty default that does NOT offer auto', () => {
-    const g = [effortGroup(['high', 'low'], '')] // no auto tier, empty default
+    const g = [
+      effortGroup(['high', 'low'], ''),
+    ] // no auto tier, empty default
     expect(currentValueOrDefault(g, 'effort', 'xhigh')).toBe('')
   })
 
   it('does not apply the auto fallback to a non-effort group', () => {
-    const g = [{ id: 'reasoning', options: [{ id: 'auto' }, { id: 'on' }], defaultValue: '' } as unknown as AvailableOptionGroup]
+    const g = [
+      {
+        id: 'reasoning',
+        options: [
+          { id: 'auto' },
+          { id: 'on' },
+        ],
+        defaultValue: '',
+      } as unknown as AvailableOptionGroup,
+    ]
     expect(currentValueOrDefault(g, 'reasoning', 'off')).toBe('')
   })
 
@@ -89,7 +106,16 @@ describe('currentValueOrDefault', () => {
   // (Copilot/OpenCode/Goose) can report a model list before any current/default resolves.
   // Unlike effort tiers (sorted strongest-first), the first model is the catalog's
   // most-preferred, so it is a safe fallback over rendering nothing.
-  const modelGroup = (defaultValue = '') => [{ id: 'model', options: [{ id: 'gpt-5' }, { id: 'gpt-4' }], defaultValue } as unknown as AvailableOptionGroup]
+  const modelGroup = (defaultValue = '') => [
+    {
+      id: 'model',
+      options: [
+        { id: 'gpt-5' },
+        { id: 'gpt-4' },
+      ],
+      defaultValue,
+    } as unknown as AvailableOptionGroup,
+  ]
 
   it('falls back to the first model when the model group has no default and the value is invalid', () => {
     expect(currentValueOrDefault(modelGroup(), 'model', '')).toBe('gpt-5')
@@ -102,7 +128,9 @@ describe('currentValueOrDefault', () => {
   })
 
   it('returns empty for a model group with no options', () => {
-    const empty = [{ id: 'model', options: [], defaultValue: '' } as unknown as AvailableOptionGroup]
+    const empty = [
+      { id: 'model', options: [], defaultValue: '' } as unknown as AvailableOptionGroup,
+    ]
     expect(currentValueOrDefault(empty, 'model', '')).toBe('')
   })
 })
@@ -145,7 +173,9 @@ describe('currentModeFor', () => {
   const read = currentModeFor('permissionMode', 'default')
 
   it('reads the agent optionValues entry for the group key', () => {
-    expect(read({ optionValues: { permissionMode: 'plan' } })).toBe('plan')
+    expect(read({
+      optionValues: { permissionMode: 'plan' },
+    })).toBe('plan')
   })
 
   it('falls back to the default when the key is absent or optionValues is undefined', () => {
@@ -162,7 +192,9 @@ describe('buildPlanMode', () => {
     expect(pm.defaultValue).toBe('collaborate')
     // currentMode reads the SAME group key the field reports, and falls back to the SAME default --
     // so the closure can't drift from the sibling fields (the drift an inline literal allowed).
-    expect(pm.currentMode({ optionValues: { collaboration_mode: 'plan' } })).toBe('plan')
+    expect(pm.currentMode({
+      optionValues: { collaboration_mode: 'plan' },
+    })).toBe('plan')
     expect(pm.currentMode({ optionValues: {} })).toBe('collaborate')
     expect(pm.currentMode({})).toBe('collaborate')
   })
@@ -185,7 +217,9 @@ describe('optionGroupDefaultValue', () => {
 
   it('returns empty for an unknown group or no options', () => {
     expect(optionGroupDefaultValue(groups, 'not-a-group')).toBe('')
-    expect(optionGroupDefaultValue([effortGroup([])], 'effort')).toBe('')
+    expect(optionGroupDefaultValue([
+      effortGroup([]),
+    ], 'effort')).toBe('')
   })
 })
 
@@ -196,20 +230,34 @@ describe('mergeStableOptionGroupRefs', () => {
       label: id,
       order: 10,
       currentValue,
-      options: [create(AvailableOptionSchema, { id: 'x', name: 'x' })],
+      options: [
+        create(AvailableOptionSchema, { id: 'x', name: 'x' }),
+      ],
     })
   }
 
   it('returns the previous array when every group is unchanged', () => {
-    const prev = [group('model', 'sonnet'), group('effort', 'high')]
+    const prev = [
+      group('model', 'sonnet'),
+      group('effort', 'high'),
+    ]
     // Distinct objects, identical content (mirrors a re-decoded broadcast).
-    const next = [group('model', 'sonnet'), group('effort', 'high')]
+    const next = [
+      group('model', 'sonnet'),
+      group('effort', 'high'),
+    ]
     expect(mergeStableOptionGroupRefs(next, prev)).toBe(prev)
   })
 
   it('reuses an unchanged group reference when a sibling changes', () => {
-    const prev = [group('model', 'sonnet'), group('effort', 'high')]
-    const next = [group('model', 'sonnet'), group('effort', 'xhigh')]
+    const prev = [
+      group('model', 'sonnet'),
+      group('effort', 'high'),
+    ]
+    const next = [
+      group('model', 'sonnet'),
+      group('effort', 'xhigh'),
+    ]
     const out = mergeStableOptionGroupRefs(next, prev)
     expect(out).not.toBe(prev)
     expect(out[0]).toBe(prev[0]) // unchanged model group keeps its reference
@@ -218,8 +266,13 @@ describe('mergeStableOptionGroupRefs', () => {
   })
 
   it('keeps the new reference for an added group', () => {
-    const prev = [group('model', 'sonnet')]
-    const next = [group('model', 'sonnet'), group('effort', 'high')]
+    const prev = [
+      group('model', 'sonnet'),
+    ]
+    const next = [
+      group('model', 'sonnet'),
+      group('effort', 'high'),
+    ]
     const out = mergeStableOptionGroupRefs(next, prev)
     expect(out[0]).toBe(prev[0])
     expect(out[1]).toBe(next[1])
@@ -227,15 +280,21 @@ describe('mergeStableOptionGroupRefs', () => {
 })
 
 describe('resolvedCurrent', () => {
-  const catalog = [effortGroup(['auto', 'max', 'high', 'low'], 'high')]
+  const catalog = [
+    effortGroup(['auto', 'max', 'high', 'low'], 'high'),
+  ]
 
   it('prefers the optimistic value over the catalog current value', () => {
-    const groups = [{ ...catalog[0]!, currentValue: 'low' } as AvailableOptionGroup]
+    const groups = [
+      { ...catalog[0]!, currentValue: 'low' } as AvailableOptionGroup,
+    ]
     expect(resolvedCurrent(groups, { effort: 'max' }, 'effort')).toBe('max')
   })
 
   it('falls back to the catalog current value when nothing is optimistic', () => {
-    const groups = [{ ...catalog[0]!, currentValue: 'low' } as AvailableOptionGroup]
+    const groups = [
+      { ...catalog[0]!, currentValue: 'low' } as AvailableOptionGroup,
+    ]
     expect(resolvedCurrent(groups, {}, 'effort')).toBe('low')
   })
 

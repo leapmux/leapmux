@@ -13,8 +13,16 @@ lettaTest('reports advancing tokens during native text output and preserves the 
 })
 
 lettaTest('reports advancing tokens during native reasoning and preserves the completed answer', async ({ authenticatedReasoningLettaWorkspace, page, modelScript, leapmuxServer }) => {
-  const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedReasoningLettaWorkspace.workspaceId })
-  await exerciseTokenProgress(native, { supported: true, step: { reasoning: 'The native reasoning stream supplies enough characters for two held chunks before the complete final answer.' } })
+  const native = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedReasoningLettaWorkspace.workspaceId,
+  })
+  await exerciseTokenProgress(native, {
+    supported: true,
+    step: { reasoning: 'The native reasoning stream supplies enough characters for two held chunks before the complete final answer.' },
+  })
 })
 
 lettaTest('reports no byte count throughout an actual native shell output stream', async ({ native }) => {
@@ -27,13 +35,23 @@ lettaTest('replaces live native shell windows and retains one actual final resul
     supported: false,
     unsupportedCounterScope: 'selected',
     afterOutputBoundary: async (boundary) => {
-      const current = boundary.phase === 'first' ? boundary.firstMarker : boundary.secondMarker
+      const current = boundary.phase === 'first'
+        ? boundary.firstMarker
+        : boundary.secondMarker
       const snapshot = await readNativeMessageSnapshot(native, agent.id)
       await testInfo.attach(`letta-live-native-before-assertion-${boundary.phase}`, {
         body: JSON.stringify({
           agentId: snapshot.agentId,
           sessionId: snapshot.agentSessionId,
-          messages: snapshot.messages.map(message => ({ id: message.id, seq: message.seq.toString(), spanId: message.spanId, spanType: message.spanType, completion: message.completion, agentSessionId: message.agentSessionId, frame: nativeMessageBody(message) })),
+          messages: snapshot.messages.map(message => ({
+            id: message.id,
+            seq: message.seq.toString(),
+            spanId: message.spanId,
+            spanType: message.spanType,
+            completion: message.completion,
+            agentSessionId: message.agentSessionId,
+            frame: nativeMessageBody(message),
+          })),
         }),
         contentType: 'application/json',
       })
@@ -41,7 +59,9 @@ lettaTest('replaces live native shell windows and retains one actual final resul
       await expect(live).toHaveCount(1)
       await expect(live).toBeVisible()
       // The shared publisher sends only the last 2 KiB. Native markers remain in the retained records.
-      const tail = boundary.phase === 'first' ? boundary.firstLiveTail : boundary.secondLiveTail
+      const tail = boundary.phase === 'first'
+        ? boundary.firstLiveTail
+        : boundary.secondLiveTail
       await expect(live).toContainText(tail)
       if (boundary.phase === 'second')
         await expect(live).not.toContainText(boundary.firstLiveTail)
@@ -50,7 +70,10 @@ lettaTest('replaces live native shell windows and retains one actual final resul
       const progress = currentSnapshot.messages.map(nativeMessageBody).filter(isObject).filter(isLettaToolProgress)
       expect(progress.length).toBeGreaterThan(0)
       expect(progress.at(-1)?.tool_return).toContain(current)
-      await testInfo.attach(`letta-live-native-window-${boundary.phase}`, { body: JSON.stringify({ sessionId: currentSnapshot.agentSessionId, progress }), contentType: 'application/json' })
+      await testInfo.attach(`letta-live-native-window-${boundary.phase}`, {
+        body: JSON.stringify({ sessionId: currentSnapshot.agentSessionId, progress }),
+        contentType: 'application/json',
+      })
     },
   })
   const result = toolCallRow(native.page, PROGRESS_OUTPUT_CALL_ID)

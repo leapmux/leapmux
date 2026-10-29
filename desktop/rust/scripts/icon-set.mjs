@@ -119,11 +119,18 @@ export function pixelSize(name) {
 // pixel dimensions, and `@2` marks the high density variant.
 export function hicolorIconPath(name, binaryName) {
   const pixels = pixelSize(name)
-  const density = name.includes('@2x') ? '@2' : ''
+  const density = name.includes('@2x')
+    ? '@2'
+    : ''
   return `usr/share/icons/hicolor/${pixels}x${pixels}${density}/apps/${binaryName}.png`
 }
 
 // Every PNG that the generator renders, so one build serves each platform's
 // list. Declared last because it calls pixelSize while the module evaluates.
-export const ALL_ICON_FILES = [...new Set([...LINUX_ICON_FILES, ...SHARED_ICON_FILES])]
+export const ALL_ICON_FILES = [
+  ...new Set([
+    ...LINUX_ICON_FILES,
+    ...SHARED_ICON_FILES,
+  ]),
+]
   .sort((a, b) => pixelSize(a) - pixelSize(b) || a.localeCompare(b))

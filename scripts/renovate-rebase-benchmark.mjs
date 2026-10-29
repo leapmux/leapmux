@@ -25,7 +25,9 @@ export function selectRebaseUpgrades(records, timings) {
     const record = records.find(record => record.branch === branch && record.msg === 'Created post-upgrade commands data file.')
     if (!record || !passed.has(branch))
       continue
-    const upgrades = typeof record.dataFileContent === 'string' ? JSON.parse(record.dataFileContent) : record.dataFileContent
+    const upgrades = typeof record.dataFileContent === 'string'
+      ? JSON.parse(record.dataFileContent)
+      : record.dataFileContent
     validateUpgrades(upgrades)
     if (upgrades.every(upgrade => upgrade.manager === 'gomod') && upgrades.some(upgrade => upgrade.packageFile !== 'site/go.mod'))
       return upgrades
@@ -34,12 +36,55 @@ export function selectRebaseUpgrades(records, timings) {
 }
 
 function benchmarkEnvironment() {
-  const allowed = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TZ', 'TMPDIR', 'TMP', 'TEMP', 'SystemRoot', 'COMSPEC', 'PATHEXT', 'GOPATH', 'GOMODCACHE', 'GOCACHE', 'GOPROXY', 'GOSUMDB', 'CARGO_HOME', 'RUSTUP_HOME', 'RUSTUP_TOOLCHAIN', 'BUN_INSTALL', 'BUN_INSTALL_CACHE_DIR']
-  return { ...Object.fromEntries(allowed.filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]])), CI: 'true', GOTOOLCHAIN: 'local', GIT_TERMINAL_PROMPT: '0' }
+  const allowed = [
+    'PATH',
+    'HOME',
+    'LANG',
+    'LC_ALL',
+    'TZ',
+    'TMPDIR',
+    'TMP',
+    'TEMP',
+    'SystemRoot',
+    'COMSPEC',
+    'PATHEXT',
+    'GOPATH',
+    'GOMODCACHE',
+    'GOCACHE',
+    'GOPROXY',
+    'GOSUMDB',
+    'CARGO_HOME',
+    'RUSTUP_HOME',
+    'RUSTUP_TOOLCHAIN',
+    'BUN_INSTALL',
+    'BUN_INSTALL_CACHE_DIR',
+  ]
+  return {
+    ...Object.fromEntries(allowed.filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]])),
+    CI: 'true',
+    GOTOOLCHAIN: 'local',
+    GIT_TERMINAL_PROMPT: '0',
+  }
 }
 
 function git(cwd, args, input) {
-  const result = spawnSync('git', ['-c', 'core.fsmonitor=false', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-c', 'core.hooksPath=/dev/null', ...args], { cwd, env: benchmarkEnvironment(), input, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
+  const result = spawnSync('git', [
+    '-c',
+    'core.fsmonitor=false',
+    '-c',
+    'gc.auto=0',
+    '-c',
+    'maintenance.auto=false',
+    '-c',
+    'core.hooksPath=/dev/null',
+    ...args,
+  ], {
+    cwd,
+    env: benchmarkEnvironment(),
+    input,
+    encoding: 'utf8',
+    maxBuffer: 32 * 1024 * 1024,
+  })
   if (result.status !== 0)
     throw new Error(`Rebase fixture git ${args[0]} failed: ${result.stderr}`)
   return result.stdout
@@ -51,14 +96,23 @@ async function executePostUpgrade(root, trusted, upgrades, log) {
   writeFileSync(metadata, JSON.stringify(upgrades))
   const descriptor = openSync(log, 'w')
   try {
-    const result = await runWithTimeout('bun', [resolve(trusted, 'scripts/renovate-post-upgrade.mjs')], {
+    const result = await runWithTimeout('bun', [
+      resolve(trusted, 'scripts/renovate-post-upgrade.mjs'),
+    ], {
       cwd: root,
-      env: { ...benchmarkEnvironment(), RENOVATE_TRUSTED_ROOT: trusted, RENOVATE_POST_UPGRADE_COMMAND_DATA_FILE: metadata },
+      env: {
+        ...benchmarkEnvironment(),
+        RENOVATE_TRUSTED_ROOT: trusted,
+        RENOVATE_POST_UPGRADE_COMMAND_DATA_FILE: metadata,
+      },
       stdio: ['ignore', descriptor, descriptor],
       timeoutMs: 8 * 60 * 1000,
     })
-    if (result.code !== 0)
-      throw new Error(`Rebased Go artifact processing failed: ${result.timedOut ? 'eight-minute execution limit exceeded' : readFileSync(log, 'utf8').slice(-4000)}`)
+    if (result.code !== 0) {
+      throw new Error(`Rebased Go artifact processing failed: ${result.timedOut
+        ? 'eight-minute execution limit exceeded'
+        : readFileSync(log, 'utf8').slice(-4000)}`)
+    }
   }
   finally {
     closeSync(descriptor)
@@ -78,15 +132,34 @@ export async function benchmarkRebases({ sourceRoot, trusted = sourceRoot, upgra
     return Math.round(performance.now() - started)
   }
   try {
-    git(sourceRoot, ['clone', '--quiet', '--no-hardlinks', sourceRoot, fixture])
+    git(sourceRoot, [
+      'clone',
+      '--quiet',
+      '--no-hardlinks',
+      sourceRoot,
+      fixture,
+    ])
     mkdirSync(resolve(fixture, '.git/no-hooks'))
-    for (const [key, value] of Object.entries({ 'core.fsmonitor': 'false', 'gc.auto': '0', 'maintenance.auto': 'false', 'core.hooksPath': resolve(fixture, '.git/no-hooks'), 'commit.gpgsign': 'false', 'user.name': 'Renovate validation', 'user.email': 'renovate-validation@example.invalid' }))
+    for (const [key, value] of Object.entries({
+      'core.fsmonitor': 'false',
+      'gc.auto': '0',
+      'maintenance.auto': 'false',
+      'core.hooksPath': resolve(fixture, '.git/no-hooks'),
+      'commit.gpgsign': 'false',
+      'user.name': 'Renovate validation',
+      'user.email': 'renovate-validation@example.invalid',
+    }))
       git(fixture, ['config', key, value])
     git(fixture, ['switch', '-c', 'benchmark/base'])
     git(fixture, ['switch', '-c', 'benchmark/dependency'])
     const initialMs = await post('initial')
     git(fixture, ['add', '--update'])
-    git(fixture, ['commit', '--allow-empty', '-m', 'test: Prepare the dependency fixture'])
+    git(fixture, [
+      'commit',
+      '--allow-empty',
+      '-m',
+      'test: Prepare the dependency fixture',
+    ])
     for (const label of ['readme-base', 'go-import-base']) {
       git(fixture, ['switch', 'benchmark/base'])
       if (label === 'readme-base') {
@@ -106,18 +179,50 @@ export async function benchmarkRebases({ sourceRoot, trusted = sourceRoot, upgra
       git(fixture, ['rebase', 'benchmark/base'])
       const rebaseMs = Math.round(performance.now() - rebaseStarted)
       // Explicit prefixes keep git apply independent of the user's diff.noprefix setting.
-      const patch = git(fixture, ['diff', '--binary', '--src-prefix=a/', '--dst-prefix=b/', 'benchmark/base', 'benchmark/dependency'])
-      git(fixture, ['switch', '-C', 'benchmark/proposal', 'benchmark/base'])
+      const patch = git(fixture, [
+        'diff',
+        '--binary',
+        '--src-prefix=a/',
+        '--dst-prefix=b/',
+        'benchmark/base',
+        'benchmark/dependency',
+      ])
+      git(fixture, [
+        'switch',
+        '-C',
+        'benchmark/proposal',
+        'benchmark/base',
+      ])
       // Renovate regenerates the proposal against the new base rather than committing old artifacts again.
       if (patch)
         git(fixture, ['apply', '--index'], patch)
       const postMs = await post(label)
-      cases.push({ label, rebaseMs, postMs, durationMs: rebaseMs + postMs })
+      cases.push({
+        label,
+        rebaseMs,
+        postMs,
+        durationMs: rebaseMs + postMs,
+      })
       git(fixture, ['add', '--update'])
-      git(fixture, ['commit', '--allow-empty', '-m', `test: Regenerate ${label} fixture`])
-      git(fixture, ['branch', '--force', 'benchmark/dependency', 'HEAD'])
+      git(fixture, [
+        'commit',
+        '--allow-empty',
+        '-m',
+        `test: Regenerate ${label} fixture`,
+      ])
+      git(fixture, [
+        'branch',
+        '--force',
+        'benchmark/dependency',
+        'HEAD',
+      ])
     }
-    return { status: 'passed', initialMs, durationMs: Math.round(performance.now() - started), cases }
+    return {
+      status: 'passed',
+      initialMs,
+      durationMs: Math.round(performance.now() - started),
+      cases,
+    }
   }
   finally {
     rmSync(fixture, { recursive: true, force: true })
@@ -127,7 +232,9 @@ export async function benchmarkRebases({ sourceRoot, trusted = sourceRoot, upgra
 function records(path) {
   return readFileSync(path, 'utf8').split('\n').filter(Boolean).flatMap((line) => {
     try {
-      return [JSON.parse(line)]
+      return [
+        JSON.parse(line),
+      ]
     }
     catch { return [] }
   })
@@ -144,7 +251,11 @@ if (import.meta.main) {
     representativeQueueDuration(execution.durationMs, 0)
     const upgrades = selectRebaseUpgrades(records(resolve(trusted, '.tmp/renovate-cli.log')), records(resolve(trusted, '.tmp/renovate-timings.jsonl')))
     const result = upgrades
-      ? await benchmarkRebases({ sourceRoot: trusted, upgrades, outputRoot: resolve(trusted, '.tmp/renovate-rebase') })
+      ? await benchmarkRebases({
+          sourceRoot: trusted,
+          upgrades,
+          outputRoot: resolve(trusted, '.tmp/renovate-rebase'),
+        })
       : { status: 'skipped', reason: 'No successful workspace Go proposal is available for representative rebases.' }
     if (upgrades)
       result.representativeQueueMs = representativeQueueDuration(execution.durationMs, result.durationMs)

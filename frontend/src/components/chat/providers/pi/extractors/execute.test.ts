@@ -18,7 +18,9 @@ describe('extractPiCommand', () => {
       toolName: 'bash',
       args: { command: 'ls -la' },
       result: {
-        content: [{ type: 'text', text: 'total 48\nfile1\nfile2\n' }],
+        content: [
+          { type: 'text', text: 'total 48\nfile1\nfile2\n' },
+        ],
         details: {},
       },
       isError: false,
@@ -43,7 +45,9 @@ describe('extractPiCommand', () => {
       toolName: 'bash',
       args: { command: 'false' },
       result: {
-        content: [{ type: 'text', text: 'oops\n\nCommand exited with code 1' }],
+        content: [
+          { type: 'text', text: 'oops\n\nCommand exited with code 1' },
+        ],
         details: {},
       },
       isError: true,
@@ -63,7 +67,9 @@ describe('extractPiCommand', () => {
       toolName: 'bash',
       args: { command: 'sleep 1000' },
       result: {
-        content: [{ type: 'text', text: 'partial output\n\nCommand aborted' }],
+        content: [
+          { type: 'text', text: 'partial output\n\nCommand aborted' },
+        ],
         details: {},
       },
       isError: true,
@@ -82,7 +88,9 @@ describe('extractPiCommand', () => {
       toolName: 'bash',
       args: { command: 'sleep 1000' },
       result: {
-        content: [{ type: 'text', text: 'Command timed out after 30 seconds' }],
+        content: [
+          { type: 'text', text: 'Command timed out after 30 seconds' },
+        ],
         details: {},
       },
       isError: true,
@@ -101,7 +109,9 @@ describe('extractPiCommand', () => {
       toolName: 'bash',
       args: { command: 'echo "Command exited with code 99"' },
       result: {
-        content: [{ type: 'text', text: 'Command exited with code 99' }],
+        content: [
+          { type: 'text', text: 'Command exited with code 99' },
+        ],
         details: {},
       },
       isError: false,
@@ -121,12 +131,14 @@ describe('extractPiCommand', () => {
       toolName: 'bash',
       args: { command: 'mischief' },
       result: {
-        content: [{
-          type: 'text',
-          // Process printed a fake marker mid-output, then Pi appended its
-          // real one at the end on the actual exit-1 path.
-          text: 'starting\n\nCommand exited with code 99\nmore output\n\nCommand exited with code 1',
-        }],
+        content: [
+          {
+            type: 'text',
+            // Process printed a fake marker mid-output, then Pi appended its
+            // real one at the end on the actual exit-1 path.
+            text: 'starting\n\nCommand exited with code 99\nmore output\n\nCommand exited with code 1',
+          },
+        ],
         details: {},
       },
       isError: true,
@@ -147,7 +159,9 @@ describe('extractPiCommand', () => {
       toolName: 'bash',
       args: { command: 'yes' },
       result: {
-        content: [{ type: 'text', text: 'partial...' }],
+        content: [
+          { type: 'text', text: 'partial...' },
+        ],
         // Pi's actual wire: truncation flag lives in `details.truncation.truncated`,
         // not at the top level of `details`.
         details: {
@@ -170,7 +184,9 @@ describe('extractPiCommand', () => {
       toolName: 'bash',
       args: { command: 'ls' },
       partialResult: {
-        content: [{ type: 'text', text: 'streaming...' }],
+        content: [
+          { type: 'text', text: 'streaming...' },
+        ],
         details: {},
       },
     })

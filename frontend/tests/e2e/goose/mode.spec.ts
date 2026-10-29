@@ -44,7 +44,11 @@ gooseTest('smart mode asks before a removal and auto mode runs it', async ({ nat
     // Auto mode runs the removal without a banner, so the scenario answers no control.
     const autoCall = `goose-auto-remove-${phase}`
     const autoStep = await modelScript.queue(
-      { toolCalls: [bashToolCall(AgentProvider.GOOSE, autoCall, removal)] },
+      {
+        toolCalls: [
+          bashToolCall(AgentProvider.GOOSE, autoCall, removal),
+        ],
+      },
       { text: 'The Auto check ended.' },
     )
     await sendMessage(page, modelScript.prompt('Run the scripted removal under Auto.'))
@@ -70,7 +74,11 @@ gooseTest('returns from Auto to Approve with one notice and restored native appr
   writeFileSync(marker, 'The native removal must run.\n')
   const command = `rm -f ${basename(marker)} && printf 'goose-return-%s' "$((40 + 2))"`
   const step = await modelScript.queue(
-    { toolCalls: [bashToolCall(AgentProvider.GOOSE, 'goose-return-auto', command)] },
+    {
+      toolCalls: [
+        bashToolCall(AgentProvider.GOOSE, 'goose-return-auto', command),
+      ],
+    },
     { text: 'The Auto removal ran.' },
   )
   await sendMessage(page, modelScript.prompt('Run the scripted removal in Auto mode.'))
@@ -91,7 +99,11 @@ gooseTest('returns from Auto to Approve with one notice and restored native appr
   await modelScript.rule({
     name: classifier,
     when: { system: 'permission-safety classifier' },
-    respond: { toolCalls: [goosePermissionJudgmentToolCall('goose-return-mode-judge', ['goose-approve-safe-returned', 'goose-approve-safe-restored'])] },
+    respond: {
+      toolCalls: [
+        goosePermissionJudgmentToolCall('goose-return-mode-judge', ['goose-approve-safe-returned', 'goose-approve-safe-restored']),
+      ],
+    },
   })
   for (const phase of ['returned', 'restored']) {
     if (phase === 'restored') {

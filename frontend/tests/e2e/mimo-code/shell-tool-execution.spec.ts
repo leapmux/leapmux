@@ -21,12 +21,19 @@ mimoTest.describe('MiMo Code tool execution', () => {
     // it in a tool row.
     const outputRow = () => toolRows(native.page).filter({ hasText: 'mimo-42' }).first()
     const start = await native.modelScript.queue(
-      { toolCalls: [bashToolCall(native.provider, 'echo-call', command)] },
+      {
+        toolCalls: [
+          bashToolCall(native.provider, 'echo-call', command),
+        ],
+      },
       nativeTextStep(native, 'The command printed its number.'),
     )
     await sendMessage(native.page, native.modelScript.prompt('Run the arithmetic command.'))
     await runWithGatedOutput(
-      { gate, shown: () => expect(outputRow(), 'the running row shows the output of the held command').toBeVisible() },
+      {
+        gate,
+        shown: () => expect(outputRow(), 'the running row shows the output of the held command').toBeVisible(),
+      },
       () => waitForNativeToolSteps(native, start + 2),
     )
 
@@ -47,7 +54,9 @@ mimoTest.describe('MiMo Code interactive commands', () => {
   mimoTest('refuses an interactive command without blocking the turn', async ({ native }) => {
     const { page } = native
     await runNativeToolTurn(native, {
-      toolCalls: [mimoInteractiveBashToolCall('interactive-call', 'read -p "Name? " name; echo "hi $name"')],
+      toolCalls: [
+        mimoInteractiveBashToolCall('interactive-call', 'read -p "Name? " name; echo "hi $name"'),
+      ],
       prompt: 'Ask for my name in the shell.',
       answer: 'INTERACTIVE_REFUSED',
       permissions: 'none',
@@ -60,5 +69,7 @@ mimoTest.describe('MiMo Code interactive commands', () => {
 
 mimoTest('preserves a literal private shell path with spaces and metacharacters', async ({ native }) => {
   // The failed command writes only to stderr, so its output gate releases on the stderr text that the running row shows.
-  await exerciseMiMoShellToolExecution(native, { prepare: () => applyPermissionPreset(native.page, 'bypass') })
+  await exerciseMiMoShellToolExecution(native, {
+    prepare: () => applyPermissionPreset(native.page, 'bypass'),
+  })
 })

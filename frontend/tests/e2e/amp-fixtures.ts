@@ -22,7 +22,9 @@ export const AMP_E2E_SKIP_REASON: string | null = missingBinaryReason('amp', 'Am
  * Amp's executor runs. A spec that tests tool rendering would otherwise answer a
  * banner before each call. The permission spec opens its own workspace in Ask.
  */
-export const AMP_ALLOW_ALL = { optionValues: { permissionMode: AMP_PERMISSION_MODE.AllowAll } }
+export const AMP_ALLOW_ALL = {
+  optionValues: { permissionMode: AMP_PERMISSION_MODE.AllowAll },
+}
 
 export const ampTest = createProviderTest({
   agent: AMP_AGENT,

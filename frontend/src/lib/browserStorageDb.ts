@@ -166,7 +166,9 @@ export interface StorageWrite {
 }
 
 /** A write that is already settled, for the paths that never reach the queue. */
-export const REFUSED_WRITE: StorageWrite = { durable: Promise.resolve(false) }
+export const REFUSED_WRITE: StorageWrite = {
+  durable: Promise.resolve(false),
+}
 
 export interface KvWriteOptions {
   /**
@@ -250,7 +252,9 @@ function enqueue(
     settle = resolve
   })
   const superseded = pending.get(key)
-  const settles = superseded === undefined ? [settle] : [...superseded.settles, settle]
+  const settles = superseded === undefined
+    ? [settle]
+    : [...superseded.settles, settle]
   writeEpoch++
   pending.set(key, build(settles, superseded))
   scheduleFlush()
@@ -275,7 +279,12 @@ export function enqueueKvPut(row: KvRow, opts: KvWriteOptions): StorageWrite {
 }
 
 export function enqueueKvDelete(key: string, opts: KvWriteOptions): StorageWrite {
-  return enqueue(key, settles => ({ kind: 'delete', key, publish: opts.publish, settles }))
+  return enqueue(key, settles => ({
+    kind: 'delete',
+    key,
+    publish: opts.publish,
+    settles,
+  }))
 }
 
 /**
@@ -294,7 +303,9 @@ export function peekKvPending(key: string): { row: KvRow } | { removed: true } |
   const op = pending.get(key) ?? inFlightBatch?.get(key)
   if (op === undefined)
     return undefined
-  return op.kind === 'put' ? { row: op.row } : { removed: true }
+  return op.kind === 'put'
+    ? { row: op.row }
+    : { removed: true }
 }
 
 /**
@@ -358,8 +369,11 @@ async function runFlush(): Promise<void> {
       // A reset that lands mid-transaction closes the connection underneath it,
       // and the failure that produces says nothing about the storage: the batch
       // was abandoned on purpose.
-      if (generation === resetGeneration)
-        reportWriteFailure([...batch.keys()], err)
+      if (generation === resetGeneration) {
+        reportWriteFailure([
+          ...batch.keys(),
+        ], err)
+      }
     }
     if (generation !== resetGeneration)
       return
@@ -480,7 +494,12 @@ export async function sweepKv(
         : []
       // A key can be in both lists; the set is what makes the delete and the
       // reported result idempotent.
-      const victims = [...new Set([...expired, ...unregistered])]
+      const victims = [
+        ...new Set([
+          ...expired,
+          ...unregistered,
+        ]),
+      ]
       if (victims.length === 0)
         return
       await db[TABLE].bulkDelete(victims)

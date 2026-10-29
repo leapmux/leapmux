@@ -26,13 +26,22 @@ describe('AMP_IGNORED_GUIDANCE_FILES', () => {
   it('matches each sentinel file directly in a run root, whatever the parent of the run root', () => {
     for (const parent of ['/private/tmp', '/home/ci/runs']) {
       const root = `${parent}/${RUN_ROOT_PREFIX}Xy9z01`
-      for (const name of ['AGENTS.md', 'AGENT.md', 'CLAUDE.md', 'CONTEXT.md'])
+      for (const name of [
+        'AGENTS.md',
+        'AGENT.md',
+        'CLAUDE.md',
+        'CONTEXT.md',
+      ])
         expect(matchesGlob(join(root, name), AMP_IGNORED_GUIDANCE_FILES), join(root, name)).toBe(true)
     }
   })
 
   it('matches no file of a working directory below the run root', () => {
-    for (const path of [join(runRoot, '1', 'work', 'AGENTS.md'), join(runRoot, 'AGENTS', 'AGENTS.md'), join(runRoot, '1', 'AGENTS.md')])
+    for (const path of [
+      join(runRoot, '1', 'work', 'AGENTS.md'),
+      join(runRoot, 'AGENTS', 'AGENTS.md'),
+      join(runRoot, '1', 'AGENTS.md'),
+    ])
       expect(matchesGlob(path, AMP_IGNORED_GUIDANCE_FILES), path).toBe(false)
   })
 

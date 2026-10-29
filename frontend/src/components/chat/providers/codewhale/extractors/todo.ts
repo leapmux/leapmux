@@ -27,7 +27,9 @@ export function codewhaleTodoItems(toolName: string, args: Record<string, unknow
 
 /** The explanation an `update_plan` call gives above its steps, when it gives one. */
 export function codewhalePlanNote(toolName: string, args: Record<string, unknown>): string {
-  return toolName === CODEWHALE_TOOL.UpdatePlan ? pickString(args, 'explanation').trim() : ''
+  return toolName === CODEWHALE_TOOL.UpdatePlan
+    ? pickString(args, 'explanation').trim()
+    : ''
 }
 
 /**
@@ -40,5 +42,7 @@ export function codewhalePlanNote(toolName: string, args: Record<string, unknown
 export function codewhaleChecklistItems(metadata: Record<string, unknown>): TodoItem[] | null {
   const checklist = pickObject(pickObject(metadata, CODEWHALE_RESULT_FIELD.TaskUpdates), CODEWHALE_RESULT_FIELD.Checklist)
   const items = checklist?.[CODEWHALE_RESULT_FIELD.Items]
-  return Array.isArray(items) ? rawTodosToItems(items) : null
+  return Array.isArray(items)
+    ? rawTodosToItems(items)
+    : null
 }

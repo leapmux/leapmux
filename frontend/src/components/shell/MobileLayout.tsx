@@ -32,11 +32,17 @@ export type MobileOverlay = 'none' | 'left' | 'right' | 'sheet'
 export function nextOverlayForSwipe(current: MobileOverlay, direction: SwipeDirection): MobileOverlay {
   switch (current) {
     case 'none':
-      return direction === 'right' ? 'left' : 'right'
+      return direction === 'right'
+        ? 'left'
+        : 'right'
     case 'left':
-      return direction === 'left' ? 'none' : current
+      return direction === 'left'
+        ? 'none'
+        : current
     case 'right':
-      return direction === 'right' ? 'none' : current
+      return direction === 'right'
+        ? 'none'
+        : current
     case 'sheet':
       // The sheet drops from the tab bar and closes through the chip that
       // opened it. It covers the swipe region entirely, so a finger under it is
@@ -59,11 +65,17 @@ export function createMobileOverlayState() {
   return {
     overlay,
     toggleDrawer: (side: 'left' | 'right') =>
-      setOverlay(prev => (prev === side ? 'none' : side)),
+      setOverlay(prev => (prev === side
+        ? 'none'
+        : side)),
     toggleSheet: () =>
-      setOverlay(prev => (prev === 'sheet' ? 'none' : 'sheet')),
+      setOverlay(prev => (prev === 'sheet'
+        ? 'none'
+        : 'sheet')),
     closeSheet: () =>
-      setOverlay(prev => (prev === 'sheet' ? 'none' : prev)),
+      setOverlay(prev => (prev === 'sheet'
+        ? 'none'
+        : prev)),
     closeAll: () => setOverlay('none'),
     applySwipe: (direction: SwipeDirection) =>
       setOverlay(prev => nextOverlayForSwipe(prev, direction)),
@@ -126,7 +138,9 @@ export const MobileLayout: Component<MobileLayoutProps> = (props) => {
    * toggles, the tab chip and its own strip. A swipe there belongs to the bar.
    */
   function armSwipe(el: HTMLElement) {
-    onCleanup(attachHorizontalSwipe(el, { onSwipe: direction => props.onSwipe(direction) }))
+    onCleanup(attachHorizontalSwipe(el, {
+      onSwipe: direction => props.onSwipe(direction),
+    }))
   }
 
   return (

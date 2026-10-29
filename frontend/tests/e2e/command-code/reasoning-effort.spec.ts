@@ -11,11 +11,18 @@ function wireModel(modelID: string): string {
 
 /** Require a native request of `modelID` at `effort`. */
 function expectModelAtEffort(request: MockModelRequestRecord, modelID: string, effort: string): void {
-  expect(request.body).toMatchObject({ model: wireModel(modelID), reasoning_effort: effort })
+  expect(request.body).toMatchObject({
+    model: wireModel(modelID),
+    reasoning_effort: effort,
+  })
 }
 
 commandCodeTest('uses the selected native effort before and after reload', async ({ native: context }) => {
-  await exerciseNativeOption(context, { groupId: 'effort', value: 'low', nativeProof: request => expect(request.body).toMatchObject({ model: 'command-code-e2e', reasoning_effort: 'low' }) })
+  await exerciseNativeOption(context, {
+    groupId: 'effort',
+    value: 'low',
+    nativeProof: request => expect(request.body).toMatchObject({ model: 'command-code-e2e', reasoning_effort: 'low' }),
+  })
 })
 
 // The host keeps its effort across `set_model` when the new model offers it. Without a pinned effort the host runs a

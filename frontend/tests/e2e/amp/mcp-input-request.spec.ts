@@ -7,7 +7,12 @@ import { ampMcpSettings, ampSettingsPath } from './mcpConfiguration'
 import { nativeContext } from './scenarios'
 
 ampTest('returns the actual native MCP unsupported-method reply without a browser form', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   const configurationPath = ampSettingsPath(leapmuxServer.agentEnv)
   await withNativeMcpFormAgent(context, {
     directoryPrefix: 'amp-native-mcp-refusal-',
@@ -19,6 +24,16 @@ ampTest('returns the actual native MCP unsupported-method reply without a browse
     await sendNativeAnswer(context, 'Start the native session that loads the registered form server.', 'The native session started.')
     await waitForMcpToolListed(receiptLog, 'ask')
     const callId = 'native-amp-form-refusal'
-    await expectUnsupportedMcpInput(context, { receiptLog, callId, additionalTestIds: ['control-banner'], invoke: () => invokeNativeMcpTool(context, { server: server.name, tool: 'ask', callId, input: {} }) })
+    await expectUnsupportedMcpInput(context, {
+      receiptLog,
+      callId,
+      additionalTestIds: ['control-banner'],
+      invoke: () => invokeNativeMcpTool(context, {
+        server: server.name,
+        tool: 'ask',
+        callId,
+        input: {},
+      }),
+    })
   })
 })

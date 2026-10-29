@@ -5,7 +5,13 @@ import { describe, expect, it } from 'vitest'
 import { BOOT_DEFER_CSS_ATTR } from '~/lib/bootDocumentAssets'
 
 function linkTags(html: string): string[] {
-  return [...html.matchAll(/<link\b[^>]*>/g)].map(m => m[0])
+  return [
+    ...html.matchAll(/<link\b[^>]*>/g),
+  ].map(m => m[0])
+}
+
+function hrefOf(tag: string): string | undefined {
+  return tag.match(/\bhref="([^"]*)"/)?.[1]
 }
 
 /**
@@ -25,6 +31,10 @@ describe('built index.html cold-start assets', () => {
     const stylesheets = linkTags(html).filter(tag => tag.includes('rel="stylesheet"'))
 
     expect(stylesheets.length).toBeGreaterThan(0)
+    // StartServer's useAssets would append a second, blocking copy of each
+    // stylesheet beside the deferred one.
+    const hrefs = stylesheets.map(hrefOf)
+    expect(new Set(hrefs).size, `a stylesheet is linked twice: ${hrefs.join(', ')}`).toBe(hrefs.length)
     for (const tag of stylesheets) {
       expect(tag).toContain('media="print"')
       expect(tag).toContain(BOOT_DEFER_CSS_ATTR)
@@ -39,7 +49,13 @@ describe('built index.html cold-start assets', () => {
     const preloads = linkTags(html).filter(tag => tag.includes('rel="modulepreload"'))
 
     expect(preloads).toHaveLength(1)
-    expect(preloads[0]).toMatch(/\/client-[^"/]+\.js/)
+    // The preload must fetch the same file that the entry script runs. This
+    // comparison holds whatever name the framework gives the entry chunk.
+    const entryScripts = [
+      ...html.matchAll(/<script type="module" src="([^"]+)"/g),
+    ].map(m => m[1])
+    expect(entryScripts).toHaveLength(1)
+    expect(hrefOf(preloads[0]!)).toBe(entryScripts[0])
     expect(preloads[0]).not.toContain('AuthContext')
     expect(preloads[0]).not.toContain('captcha')
   })

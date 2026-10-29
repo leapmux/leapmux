@@ -347,9 +347,14 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   const [documentDraftKey, setDocumentDraftKey] = createSignal<string | null>(null)
   const [persistEditorDraft, setPersistEditorDraft] = createSignal<(key: string, updateMetadata?: () => void) => boolean>()
   const scheduleIdentity = createMemo(
-    () => [queueEdit.attachmentDraftKey(), scheduleDraftEpoch()] as const,
+    () => [
+      queueEdit.attachmentDraftKey(),
+      scheduleDraftEpoch(),
+    ] as const,
     undefined,
-    { equals: (previous, next) => previous?.[0] === next[0] && previous?.[1] === next[1] },
+    {
+      equals: (previous, next) => previous?.[0] === next[0] && previous?.[1] === next[1],
+    },
   )
   const [hydratedScheduleKey] = createResource(
     scheduleIdentity,
@@ -364,7 +369,11 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
 
   // Restore one lifetime for text and metadata after both reads finish.
   createEffect(on(
-    () => [queueEdit.attachmentDraftKey(), scheduleHydrated(), persistEditorDraft()] as const,
+    () => [
+      queueEdit.attachmentDraftKey(),
+      scheduleHydrated(),
+      persistEditorDraft(),
+    ] as const,
     ([key, ready, persist]) => {
       if (ready)
         persist?.(key)
@@ -376,7 +385,9 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     if (draft !== undefined)
       return draft
     const editing = editingInput()
-    return editing ? datetimeLocalOf(editing.scheduledAt) : EMPTY_SCHEDULE
+    return editing
+      ? datetimeLocalOf(editing.scheduledAt)
+      : EMPTY_SCHEDULE
   }
 
   const att = useChatAttachments({
@@ -488,8 +499,12 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     return Object.keys(usable).length > 0
       ? {
           ...usable,
-          ...(props.onSettingChange !== undefined ? { apply: props.onSettingChange } : {}),
-          ...(active !== undefined ? { active } : {}),
+          ...(props.onSettingChange !== undefined
+            ? { apply: props.onSettingChange }
+            : {}),
+          ...(active !== undefined
+            ? { active }
+            : {}),
         }
       : undefined
   })
@@ -502,7 +517,9 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       get agent() {
         return {
           optionValues: currentOptionValues(),
-          ...(props.agent?.agentProvider !== undefined ? { agentProvider: props.agent.agentProvider } : {}),
+          ...(props.agent?.agentProvider !== undefined
+            ? { agentProvider: props.agent.agentProvider }
+            : {}),
         }
       },
       get controlRequests() { return props.controlRequests },
@@ -540,7 +557,9 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       }
       // An edit that kept the stored schedule leaves it to the Worker, so a
       // deadline that a provider moved during the edit survives the save.
-      const editSchedule = check.verdict === 'unchanged' ? undefined : check.wire
+      const editSchedule = check.verdict === 'unchanged'
+        ? undefined
+        : check.wire
       const sentAttachmentDraftKey = untrack(att.activeDraftKey)
       state.sending.start()
       state.setEnqueueInFlight(true)
@@ -597,8 +616,12 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     }
     att.handleFileInputChange(fileInputRef)
   }
-  const addFilesWhenReady = (...args: Parameters<typeof addFiles>) => acceptsAttachments() ? addFiles(...args) : Promise.resolve(0)
-  const addDropDataTransferWhenReady = (dataTransfer: DataTransfer) => acceptsAttachments() ? att.addDroppedDataTransfer(dataTransfer) : Promise.resolve(0)
+  const addFilesWhenReady = (...args: Parameters<typeof addFiles>) => acceptsAttachments()
+    ? addFiles(...args)
+    : Promise.resolve(0)
+  const addDropDataTransferWhenReady = (dataTransfer: DataTransfer) => acceptsAttachments()
+    ? att.addDroppedDataTransfer(dataTransfer)
+    : Promise.resolve(0)
 
   /**
    * Whether an EMPTY composer still submits something.
@@ -676,8 +699,14 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       homeDir: workerHomeDir(),
       // Omitted rather than `flavor: flavorFromOs(undefined)`, which answers 'posix'
       // and would stop a Windows path compressing while the OS is unknown.
-      ...(os ? { flavor: flavorFromOs(os) } : {}),
-      ...(git?.diffStats !== undefined ? { stats: git.diffStats } : {}),
+      ...(os
+        ? {
+            flavor: flavorFromOs(os),
+          }
+        : {}),
+      ...(git?.diffStats !== undefined
+        ? { stats: git.diffStats }
+        : {}),
     }
   })
   const info = useAgentInfoCard({
@@ -699,7 +728,9 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     // Keyed on the request INSTANCE, so a re-ask that reuses the id opens an
     // empty editor rather than the text the user typed for the instance that
     // went away. `cleanupControlRequestDrafts` composes the same key.
-    const pageSuffix = ctrl.isAskUserQuestion() ? `-q-${answerState.currentPage()}` : ''
+    const pageSuffix = ctrl.isAskUserQuestion()
+      ? `-q-${answerState.currentPage()}`
+      : ''
     return `${props.agentId}-ctrl-${requestInstanceId(request)}${pageSuffix}`
   })
   let triggerSend: (() => void | Promise<void>) | undefined
@@ -726,19 +757,27 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         >
           <ContextUsageGrid
             size={iconSize.xs}
-            {...(props.agentSessionInfo?.contextUsage !== undefined ? { contextUsage: props.agentSessionInfo.contextUsage } : {})}
+            {...(props.agentSessionInfo?.contextUsage !== undefined
+              ? { contextUsage: props.agentSessionInfo.contextUsage }
+              : {})}
             {...(() => {
               const ctxWindow = modelContextWindow()
-              return ctxWindow !== undefined ? { modelContextWindow: ctxWindow } : {}
+              return ctxWindow !== undefined
+                ? { modelContextWindow: ctxWindow }
+                : {}
             })()}
-            {...(props.agent?.agentProvider !== undefined ? { agentProvider: props.agent.agentProvider } : {})}
+            {...(props.agent?.agentProvider !== undefined
+              ? { agentProvider: props.agent.agentProvider }
+              : {})}
           />
           <Show when={info.urgentRateLimit()}>
             {rl => (
               <Tooltip
                 {...(() => {
                   const text = rateLimitResetTooltip(rl().info)
-                  return text !== undefined ? { text } : {}
+                  return text !== undefined
+                    ? { text }
+                    : {}
                 })()}
               >
                 <span class={styles.rateLimitCountdown}>
@@ -769,14 +808,18 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       data-chat-panel
     >
       <div
-        class={`${styles.editorResizeHandle} ${isDragging() ? styles.editorResizeHandleActive : ''}`}
+        class={`${styles.editorResizeHandle} ${isDragging()
+          ? styles.editorResizeHandleActive
+          : ''}`}
         data-testid="editor-resize-handle"
         on:pointerdown={handleResizeStart}
         on:dblclick={resetEditorHeight}
       />
       <div
         class={styles.inputArea}
-        data-no-status-bar={preferences.showComposerStatusBar() ? undefined : ''}
+        data-no-status-bar={preferences.showComposerStatusBar()
+          ? undefined
+          : ''}
       >
         <AgentInputQueuePauseBanner
           paused={queuePaused() && queueControlsShown()}
@@ -808,10 +851,14 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           clientId={props.queueClientId ?? ''}
           supportsSteering={props.agent?.supportsSteering ?? false}
           supportsPreemption={props.agent?.supportsPreemption ?? false}
-          {...(props.inputQueue !== undefined ? { snapshot: props.inputQueue } : {})}
+          {...(props.inputQueue !== undefined
+            ? { snapshot: props.inputQueue }
+            : {})}
           {...(() => {
             const activeEditInputId = queueEdit.activeEditingInput()?.id
-            return activeEditInputId !== undefined ? { activeEditInputId } : {}
+            return activeEditInputId !== undefined
+              ? { activeEditInputId }
+              : {}
           })()}
           onEdit={(item, takeover) => {
             queueEdit.loadQueueEdit(item, takeover, false)
@@ -850,17 +897,25 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           prepareDraft={prepareScheduleDraft}
           draftMetadataRecords={scheduleDraftMetadataRecords}
           onDocumentDraftReady={setDocumentDraftKey}
-          {...(props.suppressAutoFocus !== undefined ? { suppressAutoFocus: props.suppressAutoFocus } : {})}
+          {...(props.suppressAutoFocus !== undefined
+            ? { suppressAutoFocus: props.suppressAutoFocus }
+            : {})}
           draftKey={(() => {
             const key = activeDraftKey()
             const controlRequestId = ctrl.activeControlRequest()?.requestId
             return {
               agentId: props.agentId,
-              ...(key !== undefined ? { key } : {}),
-              ...(controlRequestId !== undefined ? { controlRequestId } : {}),
+              ...(key !== undefined
+                ? { key }
+                : {}),
+              ...(controlRequestId !== undefined
+                ? { controlRequestId }
+                : {}),
             }
           })()}
-          onSend={ctrl.activeControlRequest() ? ctrl.handleControlSend : ctrl.handleSend}
+          onSend={ctrl.activeControlRequest()
+            ? ctrl.handleControlSend
+            : ctrl.handleSend}
           onAfterSend={queueEdit.handleAfterSend}
           onDraftKeyChanged={(key) => {
             const pending = queueEdit.takePendingTextForDraftKey(key)
@@ -869,12 +924,16 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           }}
           disabled={disabled()}
           hideInput={ctrl.editorPurpose() === 'none'}
-          {...(props.disabledReason !== undefined ? { disabledPlaceholder: props.disabledReason } : {})}
+          {...(props.disabledReason !== undefined
+            ? { disabledPlaceholder: props.disabledReason }
+            : {})}
           onTogglePlanMode={ctrl.togglePlanMode}
           {...(() => {
             // Read ONCE: a signal read in the condition and again in the value re-samples it.
             const pinned = editorMinHeightSignal()
-            return pinned !== undefined ? { pinnedHeight: pinned } : {}
+            return pinned !== undefined
+              ? { pinnedHeight: pinned }
+              : {}
           })()}
           maxHeight={editorHeight.maxEditorHeight()}
           onContentHeightChange={setEditorContentHeight}
@@ -890,7 +949,9 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             }
             if (has && ctrl.isAskUserQuestion() && ctrl.editorTextReplacesOptions()) {
               const page = answerState.currentPage()
-              answerState.setSelections(prev => (prev[page] ?? []).length > 0 ? { ...prev, [page]: [] } : prev)
+              answerState.setSelections(prev => (prev[page] ?? []).length > 0
+                ? { ...prev, [page]: [] }
+                : prev)
             }
           }}
           imperative={{
@@ -934,7 +995,9 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           {...(() => {
             // Read ONCE: the placeholder is reactive and must not be re-sampled between check and value.
             const placeholder = ctrl.editorPlaceholder()
-            return placeholder !== undefined ? { placeholder } : {}
+            return placeholder !== undefined
+              ? { placeholder }
+              : {}
           })()}
           allowEmptySend={allowEmptySend()}
           // The keyed owner is what reacts in this slot. `createComponent`
@@ -954,14 +1017,24 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                   request={request}
                   answerState={answerState}
                   optionsDisabled={ctrl.editorTextReplacesOptions() && hasContent()}
-                  {...(props.messageContext !== undefined ? { messageContext: props.messageContext } : {})}
+                  {...(props.messageContext !== undefined
+                    ? { messageContext: props.messageContext }
+                    : {})}
                   {...(() => {
                     const agentProvider = ctrl.activeControlProvider()
-                    return agentProvider !== undefined ? { agentProvider } : {}
+                    return agentProvider !== undefined
+                      ? { agentProvider }
+                      : {}
                   })()}
                   controlSurface={ctrl.activeControlSurface()}
-                  {...(request.nonBlocking ? { onAnswerLater: ctrl.closeQuestions } : {})}
-                  {...(ctrl.showInterrupt() ? { onInterrupt: () => props.onInterrupt?.() } : {})}
+                  {...(request.nonBlocking
+                    ? { onAnswerLater: ctrl.closeQuestions }
+                    : {})}
+                  {...(ctrl.showInterrupt()
+                    ? {
+                        onInterrupt: () => props.onInterrupt?.(),
+                      }
+                    : {})}
                 />
               )}
             </Show>
@@ -977,21 +1050,41 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               workingTree={workingTree()}
               enterKeyMode={preferences.enterKeyMode}
               onToggleEnterMode={() => {
-                const next = preferences.enterKeyMode() === 'enter-sends' ? 'cmd-enter-sends' : 'enter-sends'
+                const next = preferences.enterKeyMode() === 'enter-sends'
+                  ? 'cmd-enter-sends'
+                  : 'enter-sends'
                 preferences.setEnterKeyMode(next)
               }}
               showStatusBar={preferences.showComposerStatusBar}
               onToggleStatusBar={() => preferences.setShowComposerStatusBar(!preferences.showComposerStatusBar())}
-              {...(props.agent?.agentProvider !== undefined ? { agentProvider: props.agent.agentProvider } : {})}
-              {...(props.onSettingChange !== undefined ? { onSettingChange: props.onSettingChange } : {})}
-              {...(props.disabledReason !== undefined ? { disabledReason: props.disabledReason } : {})}
-              {...(enqueueInFlight() ? { attachmentDisabledReason: 'Queueing input...' } : {})}
-              {...(props.settingsLoading !== undefined ? { settingsLoading: props.settingsLoading } : {})}
-              {...(props.branchActions !== undefined ? { branchActions: props.branchActions } : {})}
-              {...(props.branchWorkerId !== undefined ? { branchWorkerId: props.branchWorkerId } : {})}
-              {...(props.branchDisabledReason !== undefined ? { branchDisabledReason: props.branchDisabledReason } : {})}
+              {...(props.agent?.agentProvider !== undefined
+                ? { agentProvider: props.agent.agentProvider }
+                : {})}
+              {...(props.onSettingChange !== undefined
+                ? { onSettingChange: props.onSettingChange }
+                : {})}
+              {...(props.disabledReason !== undefined
+                ? { disabledReason: props.disabledReason }
+                : {})}
+              {...(enqueueInFlight()
+                ? { attachmentDisabledReason: 'Queueing input...' }
+                : {})}
+              {...(props.settingsLoading !== undefined
+                ? { settingsLoading: props.settingsLoading }
+                : {})}
+              {...(props.branchActions !== undefined
+                ? { branchActions: props.branchActions }
+                : {})}
+              {...(props.branchWorkerId !== undefined
+                ? { branchWorkerId: props.branchWorkerId }
+                : {})}
+              {...(props.branchDisabledReason !== undefined
+                ? { branchDisabledReason: props.branchDisabledReason }
+                : {})}
               // The stable function, not a rendered element — see the prop's doc.
-              {...(info.showInfoTrigger() ? { agentInfo: agentInfoRows } : {})}
+              {...(info.showInfoTrigger()
+                ? { agentInfo: agentInfoRows }
+                : {})}
             />
           )}
           // Control requests use the full footer width.
@@ -1013,20 +1106,30 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                       hasEditorContent={ctrl.editorPurpose() !== 'none' && hasContent()}
                       onTriggerSend={() => { void triggerSend?.() }}
                       editorContentRef={() => editorContentRef}
-                      {...(props.messageContext !== undefined ? { messageContext: props.messageContext } : {})}
+                      {...(props.messageContext !== undefined
+                        ? { messageContext: props.messageContext }
+                        : {})}
                       {...(() => {
                         const agentProvider = ctrl.activeControlProvider()
-                        return agentProvider !== undefined ? { agentProvider } : {}
+                        return agentProvider !== undefined
+                          ? { agentProvider }
+                          : {}
                       })()}
                       controlSurface={ctrl.activeControlSurface()}
-                      {...(props.agentSessionInfo?.contextUsage !== undefined ? { contextUsage: props.agentSessionInfo.contextUsage } : {})}
+                      {...(props.agentSessionInfo?.contextUsage !== undefined
+                        ? { contextUsage: props.agentSessionInfo.contextUsage }
+                        : {})}
                       {...(() => {
                         const presets = permissionPresets()
-                        return presets !== undefined ? { presets } : {}
+                        return presets !== undefined
+                          ? { presets }
+                          : {}
                       })()}
                       {...(() => {
                         const ctxWindow = modelContextWindow()
-                        return ctxWindow !== undefined ? { modelContextWindow: ctxWindow } : {}
+                        return ctxWindow !== undefined
+                          ? { modelContextWindow: ctxWindow }
+                          : {}
                       })()}
                     />
                   ),
@@ -1045,7 +1148,12 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                           `display: none` label reaches neither a screen reader
                           nor a by-name lookup.
                         */}
-                        <Tooltip text={interrupting() ? 'Interrupting...' : 'Interrupt'} ariaLabel>
+                        <Tooltip
+                          text={interrupting()
+                            ? 'Interrupting...'
+                            : 'Interrupt'}
+                          ariaLabel
+                        >
                           <button
                             class={actionButtonClass(true)}
                             onMouseDown={keepFocusOnPress}
@@ -1056,7 +1164,11 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                             <Show when={interrupting()} fallback={<Icon icon={Square} size="sm" />}>
                               <Spinner />
                             </Show>
-                            <span class={hideInNarrowComposer}>{interrupting() ? 'Interrupting...' : 'Interrupt'}</span>
+                            <span class={hideInNarrowComposer}>
+                              {interrupting()
+                                ? 'Interrupting...'
+                                : 'Interrupt'}
+                            </span>
                           </button>
                         </Tooltip>
                       </Show>
@@ -1085,14 +1197,21 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                             value={scheduleDraft()}
                             {...(() => {
                               const stored = editingInput()?.scheduledAt
-                              return stored !== undefined ? { existingStored: stored } : {}
+                              return stored !== undefined
+                                ? { existingStored: stored }
+                                : {}
                             })()}
                             onApply={value => persistEditorDraft()?.(draftKey, () => storeScheduleDraft(draftKey, value))}
                             disabled={disabled() || sending() || enqueueInFlight() || !scheduleHydrated()}
                           />
                         )}
                       </Show>
-                      <Tooltip text={queuePaused() ? 'Add to queue' : 'Send'} ariaLabel>
+                      <Tooltip
+                        text={queuePaused()
+                          ? 'Add to queue'
+                          : 'Send'}
+                        ariaLabel
+                      >
                         <button
                           type="button"
                           class={actionButtonClass()}
@@ -1104,7 +1223,11 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                           <Show when={sending()} fallback={<Icon icon={SendHorizontal} size="sm" />}>
                             <Spinner data-testid="send-spinner" />
                           </Show>
-                          <span class={hideInNarrowComposer}>{queuePaused() ? 'Queue' : 'Send'}</span>
+                          <span class={hideInNarrowComposer}>
+                            {queuePaused()
+                              ? 'Queue'
+                              : 'Send'}
+                          </span>
                         </button>
                       </Tooltip>
                     </div>
@@ -1117,13 +1240,27 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         <ComposerStatusBar
           workingTree={workingTree()}
           optionValues={currentOptionValues()}
-          {...(props.agent !== undefined ? { agent: props.agent } : {})}
-          {...(props.onSettingChange !== undefined ? { onSettingChange: props.onSettingChange } : {})}
-          {...(props.branchActions !== undefined ? { branchActions: props.branchActions } : {})}
-          {...(props.branchWorkerId !== undefined ? { branchWorkerId: props.branchWorkerId } : {})}
-          {...(props.branchDisabledReason !== undefined ? { branchDisabledReason: props.branchDisabledReason } : {})}
-          {...(props.disabledReason !== undefined ? { disabledReason: props.disabledReason } : {})}
-          {...(info.showInfoTrigger() ? { infoTrigger: renderAgentInfoTrigger } : {})}
+          {...(props.agent !== undefined
+            ? { agent: props.agent }
+            : {})}
+          {...(props.onSettingChange !== undefined
+            ? { onSettingChange: props.onSettingChange }
+            : {})}
+          {...(props.branchActions !== undefined
+            ? { branchActions: props.branchActions }
+            : {})}
+          {...(props.branchWorkerId !== undefined
+            ? { branchWorkerId: props.branchWorkerId }
+            : {})}
+          {...(props.branchDisabledReason !== undefined
+            ? { branchDisabledReason: props.branchDisabledReason }
+            : {})}
+          {...(props.disabledReason !== undefined
+            ? { disabledReason: props.disabledReason }
+            : {})}
+          {...(info.showInfoTrigger()
+            ? { infoTrigger: renderAgentInfoTrigger }
+            : {})}
         />
       </Show>
       <Show when={uncertainRetry()}>

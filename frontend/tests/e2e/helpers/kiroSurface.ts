@@ -84,10 +84,28 @@ export function createKiroSurface(host: MockModelScriptHost): MockSurface {
 
 const KIRO_REMOTE_RPC_PREFIX = '/service/KiroWebBearerService/operation/'
 const KIRO_REMOTE_RPC_RESPONSES: ReadonlyMap<string, { status: number, body: Buffer }> = new Map([
-  ['ListAvailableProviders', { status: 200, body: Buffer.from('a16970726f76696465727380', 'hex') }],
-  ['ListSpaces', { status: 200, body: Buffer.from('a16673706163657380', 'hex') }],
+  [
+    'ListAvailableProviders',
+    {
+      status: 200,
+      body: Buffer.from('a16970726f76696465727380', 'hex'),
+    },
+  ],
+  [
+    'ListSpaces',
+    {
+      status: 200,
+      body: Buffer.from('a16673706163657380', 'hex'),
+    },
+  ],
   // Native CBOR: {__type:'CloudConfigNotEnabledException',message:'Cloud configuration is disabled in the fixture.'}.
-  ['GetConfigManifest', { status: 403, body: Buffer.from('a2665f5f74797065781e436c6f7564436f6e6669674e6f74456e61626c6564457863657074696f6e676d657373616765782f436c6f756420636f6e66696775726174696f6e2069732064697361626c656420696e2074686520666978747572652e', 'hex') }],
+  [
+    'GetConfigManifest',
+    {
+      status: 403,
+      body: Buffer.from('a2665f5f74797065781e436c6f7564436f6e6669674e6f74456e61626c6564457863657074696f6e676d657373616765782f436c6f756420636f6e66696775726174696f6e2069732064697361626c656420696e2074686520666978747572652e', 'hex'),
+    },
+  ],
 ])
 
 /** Remote operations identify themselves in the native service path. */
@@ -170,9 +188,29 @@ export interface KiroMockModel {
  * Kiro reads their native schema and copies selected values into `additionalModelRequestFields`.
  */
 export const KIRO_MOCK_MODELS: readonly KiroMockModel[] = [
-  { modelId: 'kiro-e2e', modelName: 'Kiro E2E', description: 'Mock model with effort', rateMultiplier: 1, effortLevels: ['low', 'medium', 'high'], defaultEffort: 'high' },
-  { modelId: 'kiro-e2e-lite', modelName: 'Kiro E2E Lite', description: 'Mock model without effort', rateMultiplier: 0.4 },
-  { modelId: 'kiro-e2e-thinking', modelName: 'Kiro E2E Thinking', description: 'Mock model with independent thinking and effort', rateMultiplier: 1, effortLevels: ['low', 'medium', 'high'], defaultEffort: 'high', thinkingDefault: 'disabled' },
+  {
+    modelId: 'kiro-e2e',
+    modelName: 'Kiro E2E',
+    description: 'Mock model with effort',
+    rateMultiplier: 1,
+    effortLevels: ['low', 'medium', 'high'],
+    defaultEffort: 'high',
+  },
+  {
+    modelId: 'kiro-e2e-lite',
+    modelName: 'Kiro E2E Lite',
+    description: 'Mock model without effort',
+    rateMultiplier: 0.4,
+  },
+  {
+    modelId: 'kiro-e2e-thinking',
+    modelName: 'Kiro E2E Thinking',
+    description: 'Mock model with independent thinking and effort',
+    rateMultiplier: 1,
+    effortLevels: ['low', 'medium', 'high'],
+    defaultEffort: 'high',
+    thinkingDefault: 'disabled',
+  },
 ]
 
 /** The session's default model: the first of the catalogue. */
@@ -186,7 +224,9 @@ export function isKiroRequest(request: IncomingMessage): boolean {
 /** The operation of one call: the last segment of `Service.Operation`. */
 export function kiroOperation(request: IncomingMessage): string {
   const target = request.headers[KIRO_TARGET_HEADER]
-  const value = Array.isArray(target) ? target[0] ?? '' : target ?? ''
+  const value = Array.isArray(target)
+    ? target[0] ?? ''
+    : target ?? ''
   return value.slice(value.lastIndexOf('.') + 1)
 }
 
@@ -195,7 +235,11 @@ export function kiroRequestMetadata(request: IncomingMessage): { operation?: str
   const remoteOperation = kiroRemoteOperation(request.url ?? '')
   if (remoteOperation !== undefined)
     return { operation: remoteOperation }
-  return isKiroRequest(request) ? { operation: kiroOperation(request) } : {}
+  return isKiroRequest(request)
+    ? {
+        operation: kiroOperation(request),
+      }
+    : {}
 }
 
 /** Decode and answer the Kiro service without changing the native conversation body. */
@@ -225,7 +269,11 @@ export async function handleKiroHttp(request: IncomingMessage, response: ServerR
       answer.recordHttpResponse(response, () => nativeError)
       if (!await answer.holdStep({ request, response }))
         return { kind: 'abandoned' }
-      return { kind: 'step', step: answer.step, stream: answer.stream(response, request) }
+      return {
+        kind: 'step',
+        step: answer.step,
+        stream: answer.stream(response, request),
+      }
     },
     errorResponse: error => (nativeError = error),
   })
@@ -237,16 +285,32 @@ export function kiroModelCatalog() {
   const models = KIRO_MOCK_MODELS.map((model) => {
     const properties = {
       ...(model.effortLevels
-        ? { output_config: {
-            type: 'object',
-            properties: { effort: { type: 'string', enum: [...model.effortLevels], default: model.defaultEffort } },
-          } }
+        ? {
+            output_config: {
+              type: 'object',
+              properties: {
+                effort: {
+                  type: 'string',
+                  enum: [...model.effortLevels],
+                  default: model.defaultEffort,
+                },
+              },
+            },
+          }
         : {}),
       ...(model.thinkingDefault !== undefined
-        ? { thinking: {
-            type: 'object',
-            properties: { type: { type: 'string', enum: [...KIRO_THINKING_TYPES], default: model.thinkingDefault } },
-          } }
+        ? {
+            thinking: {
+              type: 'object',
+              properties: {
+                type: {
+                  type: 'string',
+                  enum: [...KIRO_THINKING_TYPES],
+                  default: model.thinkingDefault,
+                },
+              },
+            },
+          }
         : {}),
     }
     return {
@@ -278,7 +342,9 @@ export function kiroCurrentUserInput(body: unknown): Record<string, unknown> | u
   if (!isObject(body) || !isObject(body.conversationState) || !isObject(body.conversationState.currentMessage))
     return undefined
   const message = body.conversationState.currentMessage.userInputMessage
-  return isObject(message) ? message : undefined
+  return isObject(message)
+    ? message
+    : undefined
 }
 
 /** Select from actual user prompts. Native system history and tool results cannot select a scenario. */
@@ -306,7 +372,11 @@ export function kiroUserText(body: unknown): string {
   const message = kiroCurrentUserInput(body)
   if (!message)
     return ''
-  const parts = [typeof message.content === 'string' ? message.content : '']
+  const parts = [
+    typeof message.content === 'string'
+      ? message.content
+      : '',
+  ]
   const context = message.userInputMessageContext
   if (isObject(context) && Array.isArray(context.toolResults)) {
     for (const result of context.toolResults) {
@@ -327,7 +397,9 @@ export function kiroSystemText(body: unknown): string {
   if (!isObject(body) || !isObject(body.conversationState) || !Array.isArray(body.conversationState.history))
     return ''
   const first = body.conversationState.history[0]
-  return isObject(first) && isObject(first.userInputMessage) ? contentText(first.userInputMessage.content) : ''
+  return isObject(first) && isObject(first.userInputMessage)
+    ? contentText(first.userInputMessage.content)
+    : ''
 }
 
 /** What the scenario machinery answers for one model turn. */
@@ -388,7 +460,9 @@ async function serveKiro(request: IncomingMessage, response: ServerResponse, bod
     toolEvents = (answer.step.toolCalls ?? []).flatMap(kiroToolUseEvents)
   }
   catch (error) {
-    writeAwsError(response, 400, 'ValidationException', error instanceof Error ? error.message : String(error), options.errorResponse)
+    writeAwsError(response, 400, 'ValidationException', error instanceof Error
+      ? error.message
+      : String(error), options.errorResponse)
     return
   }
   await writeKiroTurn(response, body, answer.step, toolEvents, answer.stream ?? createModelStream(response, answer.step.stream))
@@ -413,8 +487,18 @@ export function kiroToolUseEvents(tool: MockModelToolCall): KiroEvent[] {
   if (tool.namespace !== undefined)
     throw new Error(`Kiro's service has no tool namespace, so tool call ${tool.name} cannot state one`)
   return [
-    ['toolUseEvent', { toolUseId: tool.id, name: tool.name, input: JSON.stringify(tool.arguments ?? {}) }],
-    ['toolUseEvent', { toolUseId: tool.id, name: tool.name, stop: true }],
+    [
+      'toolUseEvent',
+      {
+        toolUseId: tool.id,
+        name: tool.name,
+        input: JSON.stringify(tool.arguments ?? {}),
+      },
+    ],
+    [
+      'toolUseEvent',
+      { toolUseId: tool.id, name: tool.name, stop: true },
+    ],
   ]
 }
 
@@ -440,7 +524,9 @@ async function writeKiroTurn(response: ServerResponse, body: unknown, step: Mock
   const outputTokens = step.usage?.outputTokens ?? 1
   const metadata: Record<string, unknown> = {
     tokenUsage: { uncachedInputTokens: inputTokens, outputTokens, totalTokens: inputTokens + outputTokens },
-    stopReason: toolEvents.length > 0 ? 'TOOL_USE' : 'END_TURN',
+    stopReason: toolEvents.length > 0
+      ? 'TOOL_USE'
+      : 'END_TURN',
   }
   // A scripted refusal ends the stream the way Kiro's service states a content
   // filter: the CONTENT_FILTERED stop reason beside its stopDetails.refusal.
@@ -458,7 +544,10 @@ async function writeKiroTurn(response: ServerResponse, body: unknown, step: Mock
 }
 
 function writeAwsJSON(response: ServerResponse, status: number, value: unknown): void {
-  writeResponseHeaders(response, status, { 'content-type': AWS_JSON_CONTENT_TYPE, 'x-amzn-requestid': randomUUID() })
+  writeResponseHeaders(response, status, {
+    'content-type': AWS_JSON_CONTENT_TYPE,
+    'x-amzn-requestid': randomUUID(),
+  })
   response.end(Buffer.from(JSON.stringify(value), 'utf8'))
 }
 
@@ -467,7 +556,11 @@ function writeAwsJSON(response: ServerResponse, status: number, value: unknown):
  * the client reads to decide whether to retry.
  */
 function writeAwsError(response: ServerResponse, status: number, errorType: string, message: string, observe?: KiroSurfaceOptions['errorResponse']): void {
-  writeResponseHeaders(response, status, { 'content-type': AWS_JSON_CONTENT_TYPE, 'x-amzn-errortype': errorType, 'x-amzn-requestid': randomUUID() })
+  writeResponseHeaders(response, status, {
+    'content-type': AWS_JSON_CONTENT_TYPE,
+    'x-amzn-errortype': errorType,
+    'x-amzn-requestid': randomUUID(),
+  })
   observe?.({ code: errorType, message })
   response.end(Buffer.from(JSON.stringify({ __type: errorType, message }), 'utf8'))
 }

@@ -22,23 +22,38 @@ export function clineReadImages(output: unknown, requestPath: string): ImageResu
   return records.flatMap((record) => {
     if (record.success === false || !Array.isArray(record.result))
       return []
-    const filePath = pickString(record, 'query') || (records.length === 1 ? requestPath : '')
+    const filePath = pickString(record, 'query') || (records.length === 1
+      ? requestPath
+      : '')
     return record.result.filter(isObject).flatMap((part) => {
       const data = pickString(part, 'data')
       const mimeType = pickString(part, 'mediaType')
       if (part.type !== 'image' || !data.trim() || !/^image\/[\w.+-]+$/i.test(mimeType))
         return []
-      return [{ data, mimeType, ...(filePath ? { filePath } : {}) }]
+      return [
+        {
+          data,
+          mimeType,
+          ...(filePath
+            ? { filePath }
+            : {}),
+        },
+      ]
     })
   })
 }
 
 /** The files one call states. The first file is the request's path; each other one follows it. */
 export function clineReadRequest(args: Record<string, unknown>): ReadRequest {
-  const files = Array.isArray(args.files) ? args.files.filter(isObject) : []
+  const files = Array.isArray(args.files)
+    ? args.files.filter(isObject)
+    : []
   const first = files[0]
-  if (!first)
-    return { path: pickString(args, 'path') }
+  if (!first) {
+    return {
+      path: pickString(args, 'path'),
+    }
+  }
   const path = files.map(file => pickString(file, 'path')).filter(Boolean).join(', ')
   if (files.length > 1)
     return { path }
@@ -46,8 +61,16 @@ export function clineReadRequest(args: Record<string, unknown>): ReadRequest {
   const end = pickNumber(first, 'end_line', undefined)
   if (start === undefined || !Number.isInteger(start) || start < 1)
     return { path }
-  const limit = end !== undefined && Number.isInteger(end) && end >= start ? end - start + 1 : undefined
-  return { path, offset: start, ...(limit !== undefined ? { limit } : {}) }
+  const limit = end !== undefined && Number.isInteger(end) && end >= start
+    ? end - start + 1
+    : undefined
+  return {
+    path,
+    offset: start,
+    ...(limit !== undefined
+      ? { limit }
+      : {}),
+  }
 }
 
 /** The numbered lines of one file's text, or null when a line is not numbered. */
@@ -57,7 +80,10 @@ function numberedLines(content: string): NumberedFileLine[] | null {
     const match = NUMBERED_LINE.exec(line)
     if (!match?.[1])
       return null
-    lines.push({ num: Number(match[1]), text: match[2] ?? '' })
+    lines.push({
+      num: Number(match[1]),
+      text: match[2] ?? '',
+    })
   }
   return lines
 }
@@ -69,13 +95,18 @@ function numberedLines(content: string): NumberedFileLine[] | null {
  */
 export function clineReadResult(output: unknown): ReadFileResult | null {
   const operations = clineOperations(output)
-  const only = operations.length === 1 ? operations[0] : undefined
+  const only = operations.length === 1
+    ? operations[0]
+    : undefined
   if (only) {
     if (!only.success)
       return { lines: null, fallbackContent: only.error || only.result }
     if (only.result === '')
       return { lines: [], fallbackContent: '' }
-    return { lines: numberedLines(only.result), fallbackContent: only.result }
+    return {
+      lines: numberedLines(only.result),
+      fallbackContent: only.result,
+    }
   }
   if (operations.length === 0)
     return null

@@ -134,9 +134,18 @@ describe('parseFileSortOrder', () => {
   it.each([
     ['null', null],
     ['a string', 'size'],
-    ['an unknown key', { key: 'colour', direction: 'asc' }],
-    ['an unknown direction', { key: 'size', direction: 'sideways' }],
-    ['a missing direction', { key: 'size' }],
+    [
+      'an unknown key',
+      { key: 'colour', direction: 'asc' },
+    ],
+    [
+      'an unknown direction',
+      { key: 'size', direction: 'sideways' },
+    ],
+    [
+      'a missing direction',
+      { key: 'size' },
+    ],
   ])('falls back to the default for %s', (_label, raw) => {
     expect(parseFileSortOrder(raw)).toEqual(DEFAULT_FILE_SORT_ORDER)
   })
@@ -245,8 +254,18 @@ describe('makeFileComparator', () => {
       { name: 'unknown-b.txt' },
       { name: 'small.txt', size: 1 },
     ]
-    expect(sorted(bySize, order('size', 'asc'))).toEqual(['small.txt', 'big.txt', 'unknown-a.txt', 'unknown-b.txt'])
-    expect(sorted(bySize, order('size', 'desc'))).toEqual(['big.txt', 'small.txt', 'unknown-a.txt', 'unknown-b.txt'])
+    expect(sorted(bySize, order('size', 'asc'))).toEqual([
+      'small.txt',
+      'big.txt',
+      'unknown-a.txt',
+      'unknown-b.txt',
+    ])
+    expect(sorted(bySize, order('size', 'desc'))).toEqual([
+      'big.txt',
+      'small.txt',
+      'unknown-a.txt',
+      'unknown-b.txt',
+    ])
 
     const byTime: Entry[] = [
       { name: 'blank.txt', modTime: '' },
@@ -254,8 +273,18 @@ describe('makeFileComparator', () => {
       { name: 'absent.txt' },
       { name: 'old.txt', modTime: '2020-05-01T10:00:00Z' },
     ]
-    expect(sorted(byTime, order('modified', 'asc'))).toEqual(['old.txt', 'new.txt', 'absent.txt', 'blank.txt'])
-    expect(sorted(byTime, order('modified', 'desc'))).toEqual(['new.txt', 'old.txt', 'absent.txt', 'blank.txt'])
+    expect(sorted(byTime, order('modified', 'asc'))).toEqual([
+      'old.txt',
+      'new.txt',
+      'absent.txt',
+      'blank.txt',
+    ])
+    expect(sorted(byTime, order('modified', 'desc'))).toEqual([
+      'new.txt',
+      'old.txt',
+      'absent.txt',
+      'blank.txt',
+    ])
   })
 
   it('groups files by extension, with extensionless entries first', () => {
@@ -286,9 +315,17 @@ describe('makeFileComparator', () => {
 
   it('handles an empty list, a single entry, and all-of-one-kind lists', () => {
     expect(sorted([], order('size', 'desc'))).toEqual([])
-    expect(sorted([{ name: 'only.txt', size: 3 }], order('size', 'desc'))).toEqual(['only.txt'])
-    expect(sorted([{ name: 'b', isDir: true }, { name: 'a', isDir: true }], order('size'))).toEqual(['a', 'b'])
-    expect(sorted([{ name: 'b.txt' }, { name: 'a.txt' }], order('name'))).toEqual(['a.txt', 'b.txt'])
+    expect(sorted([
+      { name: 'only.txt', size: 3 },
+    ], order('size', 'desc'))).toEqual(['only.txt'])
+    expect(sorted([
+      { name: 'b', isDir: true },
+      { name: 'a', isDir: true },
+    ], order('size'))).toEqual(['a', 'b'])
+    expect(sorted([
+      { name: 'b.txt' },
+      { name: 'a.txt' },
+    ], order('name'))).toEqual(['a.txt', 'b.txt'])
   })
 
   it('is antisymmetric, so the order does not depend on the input order', () => {

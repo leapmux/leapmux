@@ -8,7 +8,10 @@ import { classifyKimiMessage } from './classification'
 import '../index'
 
 function classify(parent: Record<string, unknown>, extra: { completion?: MessageCompletion, spanType?: string } = {}) {
-  return classifyKimiMessage({ ...input(parent, undefined, AgentProvider.KIMI_CODE), ...extra })
+  return classifyKimiMessage({
+    ...input(parent, undefined, AgentProvider.KIMI_CODE),
+    ...extra,
+  })
 }
 
 describe('classifyKimiMessage', () => {
@@ -46,16 +49,29 @@ describe('classifyKimiMessage', () => {
 
   it('reads a notice as a notification', () => {
     const category = classify(kimiFrame(KIMI_EVENT.Warning, { message: 'Low disk space' }))
-    expect(category).toStrictEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Warning: Low disk space' }] })
+    expect(category).toStrictEqual({
+      kind: 'notification',
+      entries: [
+        { kind: 'text', text: 'Warning: Low disk space' },
+      ],
+    })
   })
 
   it('hides a notice it cannot word, and a user turn', () => {
     expect(classify(kimiFrame(KIMI_EVENT.Warning, {}))).toStrictEqual({ kind: 'hidden' })
-    expect(classify(kimiFrame(KIMI_EVENT.TurnStarted, { origin: { kind: 'user' } }))).toStrictEqual({ kind: 'hidden' })
+    expect(classify(kimiFrame(KIMI_EVENT.TurnStarted, {
+      origin: { kind: 'user' },
+    }))).toStrictEqual({ kind: 'hidden' })
   })
 
   it('classifies events without a current stored reader as unknown', () => {
-    for (const type of [KIMI_EVENT.AgentStatusUpdated, KIMI_EVENT.PromptSubmitted, KIMI_EVENT.ContextSpliced, KIMI_EVENT.SessionMetaUpdated, 'future.event'])
+    for (const type of [
+      KIMI_EVENT.AgentStatusUpdated,
+      KIMI_EVENT.PromptSubmitted,
+      KIMI_EVENT.ContextSpliced,
+      KIMI_EVENT.SessionMetaUpdated,
+      'future.event',
+    ])
       expect(classify(kimiFrame(type)), type).toStrictEqual({ kind: 'unknown' })
   })
 
@@ -79,14 +95,20 @@ describe('classifyKimiMessage', () => {
       old_seqs: [1, 2],
       messages: [
         kimiFrame(KIMI_EVENT.Warning, { message: 'A native warning.' }),
-        kimiFrame(KIMI_EVENT.CompactionCompleted, { result: { tokensBefore: 9000, tokensAfter: 1200 } }),
+        kimiFrame(KIMI_EVENT.CompactionCompleted, {
+          result: { tokensBefore: 9000, tokensAfter: 1200 },
+        }),
       ],
     }
     expect(classifyThread(wrapper.messages)).toStrictEqual({
       kind: 'notification',
       entries: [
         { kind: 'text', text: 'Warning: A native warning.' },
-        { kind: 'compaction', phase: 'end', detail: { pre: 9000, post: 1200 } },
+        {
+          kind: 'compaction',
+          phase: 'end',
+          detail: { pre: 9000, post: 1200 },
+        },
       ],
     })
     expect(classifyThread([])).toStrictEqual({ kind: 'hidden' })
@@ -94,9 +116,19 @@ describe('classifyKimiMessage', () => {
 
   it('keeps the worded entries of a thread and hides a thread that words nothing', () => {
     const silent = kimiFrame(KIMI_EVENT.Warning, {})
-    const userTurn = kimiFrame(KIMI_EVENT.TurnStarted, { origin: { kind: 'user' } })
-    expect(classifyThread([silent, kimiFrame(KIMI_EVENT.Warning, { message: 'Low disk' })]))
-      .toStrictEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Warning: Low disk' }] })
+    const userTurn = kimiFrame(KIMI_EVENT.TurnStarted, {
+      origin: { kind: 'user' },
+    })
+    expect(classifyThread([
+      silent,
+      kimiFrame(KIMI_EVENT.Warning, { message: 'Low disk' }),
+    ]))
+      .toStrictEqual({
+        kind: 'notification',
+        entries: [
+          { kind: 'text', text: 'Warning: Low disk' },
+        ],
+      })
     expect(classifyThread([silent, userTurn])).toStrictEqual({ kind: 'hidden' })
   })
 
@@ -108,23 +140,38 @@ describe('classifyKimiMessage', () => {
   })
 
   it('reads a wrapper that is no notice thread by its parent, and no row at all as unknown', () => {
-    expect(classifyThread([{ content: 'Hello.' }])).toStrictEqual({ kind: 'unknown' })
+    expect(classifyThread([
+      { content: 'Hello.' },
+    ])).toStrictEqual({ kind: 'unknown' })
     expect(classifyKimiMessage(input(undefined, undefined, AgentProvider.KIMI_CODE))).toStrictEqual({ kind: 'unknown' })
   })
 
   it('words a turn the agent started by itself', () => {
-    expect(classify(kimiFrame(KIMI_EVENT.TurnStarted, { origin: { kind: 'system_trigger', name: 'goal_continuation' } })))
-      .toStrictEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Continuing the goal' }] })
+    expect(classify(kimiFrame(KIMI_EVENT.TurnStarted, {
+      origin: { kind: 'system_trigger', name: 'goal_continuation' },
+    })))
+      .toStrictEqual({
+        kind: 'notification',
+        entries: [
+          { kind: 'text', text: 'Continuing the goal' },
+        ],
+      })
   })
 
   it('reads every notice type it records as a notification when the notice words something', () => {
     const worded: Record<string, Record<string, unknown>> = {
-      [KIMI_EVENT.TurnStarted]: { origin: { kind: 'retry' } },
+      [KIMI_EVENT.TurnStarted]: {
+        origin: { kind: 'retry' },
+      },
       [KIMI_EVENT.TurnStepRetrying]: { nextAttempt: 2 },
       [KIMI_EVENT.CompactionCompleted]: {},
       [KIMI_EVENT.CompactionCancelled]: {},
       [KIMI_EVENT.HookResult]: { blocked: true, hookEvent: 'UserPromptSubmit', content: 'Blocked.' },
-      [KIMI_EVENT.ConfigWarning]: { warnings: [{ message: 'Warning.' }] },
+      [KIMI_EVENT.ConfigWarning]: {
+        warnings: [
+          { message: 'Warning.' },
+        ],
+      },
       [KIMI_EVENT.Warning]: { message: 'w' },
       [KIMI_EVENT.Error]: { message: 'e' },
       [KIMI_EVENT.TaskNotified]: { title: 't' },
@@ -140,5 +187,8 @@ describe('classifyKimiMessage', () => {
 
 /** One consolidated thread of rows, as the store hands it to the classifier. */
 function classifyThread(messages: unknown[]) {
-  return classifyKimiMessage(input(undefined, { old_seqs: messages.map((_, index) => index + 1), messages }, AgentProvider.KIMI_CODE))
+  return classifyKimiMessage(input(undefined, {
+    old_seqs: messages.map((_, index) => index + 1),
+    messages,
+  }, AgentProvider.KIMI_CODE))
 }

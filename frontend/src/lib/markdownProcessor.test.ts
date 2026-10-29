@@ -28,8 +28,14 @@ function processors(): Promise<[string, (md: string) => string][]> {
     const highlighter = await createLazyOnigurumaHighlighter().ensureReady()
     const shiki = createMarkdownProcessor(highlighter, syntaxThemePair())
     return [
-      ['createMarkdownProcessor', (md: string) => String(shiki.processSync(md))],
-      ['plainMarkdownProcessor', (md: string) => String(plainMarkdownProcessor.processSync(md))],
+      [
+        'createMarkdownProcessor',
+        (md: string) => String(shiki.processSync(md)),
+      ],
+      [
+        'plainMarkdownProcessor',
+        (md: string) => String(plainMarkdownProcessor.processSync(md)),
+      ],
     ]
   })()
   return sharedProcessors
@@ -37,7 +43,9 @@ function processors(): Promise<[string, (md: string) => string][]> {
 
 describe('renderWithPlainFallback', () => {
   it('returns the processor output when it succeeds', () => {
-    const ok = { processSync: (t: string) => `<pre class="shiki">${t}</pre>` } as unknown as Processor
+    const ok = {
+      processSync: (t: string) => `<pre class="shiki">${t}</pre>`,
+    } as unknown as Processor
     expect(renderWithPlainFallback(ok, 'const x = 1')).toContain('class="shiki"')
   })
 
@@ -81,7 +89,9 @@ describe('renderWithPlainFallback', () => {
   it('stays quiet when the processor succeeds', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
-      const ok = { processSync: (t: string) => `<p>${t}</p>` } as unknown as Processor
+      const ok = {
+        processSync: (t: string) => `<p>${t}</p>`,
+      } as unknown as Processor
 
       renderWithPlainFallback(ok, 'hello')
 
@@ -397,7 +407,12 @@ describe('link hardening in both processors', () => {
     // javascript: vector agent-authored markdown could smuggle in -- loses the
     // anchor entirely rather than becoming a hardened clickable link.
     for (const [name, render] of await processors()) {
-      for (const href of ['mailto:a@b.example', 'tel:+15551234', 'javascript:alert(1)', '//evil.example/x']) {
+      for (const href of [
+        'mailto:a@b.example',
+        'tel:+15551234',
+        'javascript:alert(1)',
+        '//evil.example/x',
+      ]) {
         const html = render(`[label](${href})`)
         expect(html, `${name}: ${href}`).not.toContain('<a')
         expect(html, `${name}: ${href}`).not.toContain(href)

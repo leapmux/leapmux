@@ -90,9 +90,21 @@ function makeProps() {
     termOps: {
       handleOpenTerminal: vi.fn(),
     },
-    newAgentDialog: { open: vi.fn(), close: vi.fn(), isOpen: () => false },
-    newTerminalDialog: { open: vi.fn(), close: vi.fn(), isOpen: () => false },
-    newWorkspaceDialog: { open: vi.fn(), close: vi.fn(), value: () => null },
+    newAgentDialog: {
+      open: vi.fn(),
+      close: vi.fn(),
+      isOpen: () => false,
+    },
+    newTerminalDialog: {
+      open: vi.fn(),
+      close: vi.fn(),
+      isOpen: () => false,
+    },
+    newWorkspaceDialog: {
+      open: vi.fn(),
+      close: vi.fn(),
+      value: () => null,
+    },
     hasActiveWorkspace: () => true,
     toggleFloatingTab: vi.fn(),
     toggleLeftSidebar: vi.fn(),
@@ -103,13 +115,22 @@ function makeProps() {
     splitFocusedTile: vi.fn(),
     scrollFocusedTabPage: vi.fn(),
     writeToFocusedTerminal: vi.fn(),
-    getCurrentTabContext: () => ({ workerId: '', workingDir: '', homeDir: '', gitToplevel: '' }),
+    getCurrentTabContext: () => ({
+      workerId: '',
+      workingDir: '',
+      homeDir: '',
+      gitToplevel: '',
+    }),
     customKeybindings: () => [],
     preferredExternalAppId: (): string | undefined => undefined,
     setPreferredExternalAppId: vi.fn(),
     getAgentInputQueue: (): AgentInputQueueSnapshot | undefined => undefined,
     steerQueueItem: vi.fn(async () => {}),
-    quakePanel: { open: vi.fn(), close: vi.fn(), toggle: vi.fn() },
+    quakePanel: {
+      open: vi.fn(),
+      close: vi.fn(),
+      toggle: vi.fn(),
+    },
   }
 }
 
@@ -184,7 +205,12 @@ describe('useShortcuts', () => {
     expect(props.tabOps.handleTabClose).toHaveBeenCalledWith(tab)
   })
 
-  it.each([TabType.AGENT, TabType.TERMINAL, TabType.FILE, TabType.IMAGE])(
+  it.each([
+    TabType.AGENT,
+    TabType.TERMINAL,
+    TabType.FILE,
+    TabType.IMAGE,
+  ])(
     'refuses to close tab type %s in an archived workspace',
     (type) => {
       const props = makeProps() as any
@@ -206,7 +232,11 @@ describe('useShortcuts', () => {
     function makeNoWorkspaceProps() {
       const props = makeProps() as any
       props.hasActiveWorkspace = () => false
-      props.newWorkspaceDialog = { open: vi.fn(), close: vi.fn(), value: () => null }
+      props.newWorkspaceDialog = {
+        open: vi.fn(),
+        close: vi.fn(),
+        value: () => null,
+      }
       return props
     }
 
@@ -264,7 +294,10 @@ describe('useShortcuts', () => {
       document.body.appendChild(panel)
 
       const send = vi.fn()
-      registerChatPanel(panel, { send, hasPendingInput: () => true })
+      registerChatPanel(panel, {
+        send,
+        hasPendingInput: () => true,
+      })
       input.focus()
 
       executeCommand('chat.sendMessage')
@@ -285,7 +318,10 @@ describe('useShortcuts', () => {
       const panel = document.createElement('div')
       panel.setAttribute('data-chat-panel', '')
       document.body.appendChild(panel)
-      registerChatPanel(panel, { send, hasPendingInput: () => true })
+      registerChatPanel(panel, {
+        send,
+        hasPendingInput: () => true,
+      })
 
       const outside = document.createElement('input')
       document.body.appendChild(outside)
@@ -334,14 +370,18 @@ describe('useShortcuts', () => {
       tab?: unknown
     } = {}) {
       const props = makeProps()
-      const items = over.items ?? [{ canSteer: true, id: 'q1' }]
+      const items = over.items ?? [
+        { canSteer: true, id: 'q1' },
+      ]
       const tab = 'tab' in over
         ? over.tab
         : { type: TabType.AGENT, id: 'a1', supportsSteering: over.supportsSteering ?? true }
       return {
         ...props,
         resolveFocusedTab: () => tab,
-        getAgentInputQueue: () => (over.snapshot === false ? undefined : { items }),
+        getAgentInputQueue: () => (over.snapshot === false
+          ? undefined
+          : { items }),
         steerQueueItem: vi.fn(async () => {}),
       }
     }
@@ -369,7 +409,11 @@ describe('useShortcuts', () => {
     })
 
     it('does nothing when the worker refuses to steer the head', () => {
-      expect(run(steerProps({ items: [{ canSteer: false, id: 'q1' }] }))).not.toHaveBeenCalled()
+      expect(run(steerProps({
+        items: [
+          { canSteer: false, id: 'q1' },
+        ],
+      }))).not.toHaveBeenCalled()
     })
 
     it('does nothing when the queue is empty', () => {
@@ -385,13 +429,20 @@ describe('useShortcuts', () => {
     })
 
     it('does nothing when the focused tab is a terminal', () => {
-      expect(run(steerProps({ tab: { type: TabType.TERMINAL, id: 't1' } }))).not.toHaveBeenCalled()
+      expect(run(steerProps({
+        tab: { type: TabType.TERMINAL, id: 't1' },
+      }))).not.toHaveBeenCalled()
     })
 
     // The worker marks `canSteer` on index 0 alone, so a scan would answer a
     // different question than the one the worker will enforce.
     it('steers the head alone, although a later item reports canSteer', () => {
-      const steer = run(steerProps({ items: [{ canSteer: false, id: 'q1' }, { canSteer: true, id: 'q2' }] }))
+      const steer = run(steerProps({
+        items: [
+          { canSteer: false, id: 'q1' },
+          { canSteer: true, id: 'q2' },
+        ],
+      }))
       expect(steer).not.toHaveBeenCalled()
     })
   })
@@ -405,7 +456,10 @@ describe('useShortcuts', () => {
       const panel = document.createElement('div')
       panel.setAttribute('data-chat-panel', '')
       document.body.appendChild(panel)
-      registerChatPanel(panel, { send: vi.fn(), hasPendingInput })
+      registerChatPanel(panel, {
+        send: vi.fn(),
+        hasPendingInput,
+      })
       return panel
     }
 
@@ -479,7 +533,11 @@ describe('useShortcuts', () => {
       return {
         ...makeProps(),
         resolveFocusedTab: () => tab,
-        quakePanel: { open: vi.fn(), close: vi.fn(), toggle: vi.fn() },
+        quakePanel: {
+          open: vi.fn(),
+          close: vi.fn(),
+          toggle: vi.fn(),
+        },
       }
     }
 
@@ -492,7 +550,12 @@ describe('useShortcuts', () => {
       return props.quakePanel
     }
 
-    const agentTab = { type: TabType.AGENT, id: 'a1', workerId: 'w1', workingDir: '/repo' }
+    const agentTab = {
+      type: TabType.AGENT,
+      id: 'a1',
+      workerId: 'w1',
+      workingDir: '/repo',
+    }
     const QUAKE_KEY = { workerId: 'w1', workingDir: '/repo' }
 
     it('toggles the panel of the focused agent tab', () => {
@@ -519,9 +582,33 @@ describe('useShortcuts', () => {
      * exists.
      */
     it.each([
-      ['a terminal tab', { type: TabType.TERMINAL, id: 't1', workerId: 'w1', workingDir: '/repo' }],
-      ['a file viewer', { type: TabType.FILE, id: 'f1', workerId: 'w1', workingDir: '/repo' }],
-      ['an image viewer', { type: TabType.IMAGE, id: 'i1', workerId: 'w1', workingDir: '/repo' }],
+      [
+        'a terminal tab',
+        {
+          type: TabType.TERMINAL,
+          id: 't1',
+          workerId: 'w1',
+          workingDir: '/repo',
+        },
+      ],
+      [
+        'a file viewer',
+        {
+          type: TabType.FILE,
+          id: 'f1',
+          workerId: 'w1',
+          workingDir: '/repo',
+        },
+      ],
+      [
+        'an image viewer',
+        {
+          type: TabType.IMAGE,
+          id: 'i1',
+          workerId: 'w1',
+          workingDir: '/repo',
+        },
+      ],
     ])('toggles the panel from %s too', (_label, tab) => {
       const panel = run(quakeProps(tab), 'terminal.toggleQuake')
       expect(panel.toggle).toHaveBeenCalledWith(tab)
@@ -531,7 +618,13 @@ describe('useShortcuts', () => {
     // root's panel. That is the right answer rather than a special case, and it
     // replaces the refusal this used to carry.
     it('toggles the root panel from a subagent tab', () => {
-      const child = { type: TabType.AGENT, id: 'c1', parentAgentId: 'a1', workerId: 'w1', workingDir: '/repo' }
+      const child = {
+        type: TabType.AGENT,
+        id: 'c1',
+        parentAgentId: 'a1',
+        workerId: 'w1',
+        workingDir: '/repo',
+      }
       const panel = run(quakeProps(child), 'terminal.toggleQuake')
       expect(panel.toggle).toHaveBeenCalledWith(child)
     })
@@ -544,8 +637,14 @@ describe('useShortcuts', () => {
     // The one refusal left, and it is about the DIRECTORY rather than the tab
     // kind: a tab with no worker or no working directory has no panel.
     it.each([
-      ['no worker', { type: TabType.AGENT, id: 'a1', workingDir: '/repo' }],
-      ['no working directory', { type: TabType.AGENT, id: 'a1', workerId: 'w1' }],
+      [
+        'no worker',
+        { type: TabType.AGENT, id: 'a1', workingDir: '/repo' },
+      ],
+      [
+        'no working directory',
+        { type: TabType.AGENT, id: 'a1', workerId: 'w1' },
+      ],
     ])('does nothing for a tab with %s', (_label, tab) => {
       const panel = run(quakeProps(tab), 'terminal.toggleQuake')
       expect(panel.toggle).not.toHaveBeenCalled()
@@ -593,7 +692,9 @@ describe('useShortcuts', () => {
     it('does nothing when there is no active working dir', async () => {
       const props = makeSoloProps(undefined)
       runtimeStateMock.mockResolvedValue(soloRuntime(true))
-      loadExternalAppsMock.mockResolvedValue([{ id: 'vscode', displayName: 'VS Code' }])
+      loadExternalAppsMock.mockResolvedValue([
+        { id: 'vscode', displayName: 'VS Code' },
+      ])
 
       render(() => {
         useShortcuts(props as any)
@@ -607,7 +708,9 @@ describe('useShortcuts', () => {
     it('does nothing when not in solo mode', async () => {
       const props = makeSoloProps('/p')
       runtimeStateMock.mockResolvedValue(soloRuntime(false))
-      loadExternalAppsMock.mockResolvedValue([{ id: 'vscode', displayName: 'VS Code' }])
+      loadExternalAppsMock.mockResolvedValue([
+        { id: 'vscode', displayName: 'VS Code' },
+      ])
 
       render(() => {
         useShortcuts(props as any)

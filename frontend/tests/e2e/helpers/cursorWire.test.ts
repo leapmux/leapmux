@@ -68,7 +68,10 @@ describe('cursorPromptOf', () => {
 describe('cursorConversationIdOf', () => {
   it('reads the Run request conversation ID beside the action', () => {
     const prompt = readCursorProtobufFields(clientMessageWithPrompt('Continue.')).strings.get(1)![0]!
-    const run = Buffer.concat([prompt, encodeStringField(5, 'cursor-conversation-1')])
+    const run = Buffer.concat([
+      prompt,
+      encodeStringField(5, 'cursor-conversation-1'),
+    ])
     expect(cursorConversationIdOf(encodeLengthDelimited(1, run))).toBe('cursor-conversation-1')
   })
 
@@ -84,7 +87,10 @@ describe('cursorConversationIdOf', () => {
 
 describe('cursorAttachmentPayloads', () => {
   const runWithContext = (context: Uint8Array) => {
-    const userMessage = Buffer.concat([encodeStringField(1, 'Inspect.'), encodeLengthDelimited(3, context)])
+    const userMessage = Buffer.concat([
+      encodeStringField(1, 'Inspect.'),
+      encodeLengthDelimited(3, context),
+    ])
     const userAction = encodeLengthDelimited(1, userMessage)
     const action = encodeLengthDelimited(1, userAction)
     const run = encodeLengthDelimited(2, action)
@@ -92,14 +98,33 @@ describe('cursorAttachmentPayloads', () => {
   }
 
   it('reads inline image, document, and file content from the selected context', () => {
-    const image = Buffer.concat([encodeLengthDelimited(8, Uint8Array.from([0x89, 0x50])), encodeStringField(7, 'image/png')])
-    const document = Buffer.concat([encodeLengthDelimited(8, Uint8Array.from([0x25, 0x50])), encodeStringField(3, 'report.pdf'), encodeStringField(4, 'application/pdf')])
-    const file = Buffer.concat([encodeStringField(1, 'text fixture'), encodeStringField(2, 'notes.txt')])
-    const context = Buffer.concat([encodeLengthDelimited(1, image), encodeLengthDelimited(25, document), encodeLengthDelimited(4, file)])
+    const image = Buffer.concat([
+      encodeLengthDelimited(8, Uint8Array.from([0x89, 0x50])),
+      encodeStringField(7, 'image/png'),
+    ])
+    const document = Buffer.concat([
+      encodeLengthDelimited(8, Uint8Array.from([0x25, 0x50])),
+      encodeStringField(3, 'report.pdf'),
+      encodeStringField(4, 'application/pdf'),
+    ])
+    const file = Buffer.concat([
+      encodeStringField(1, 'text fixture'),
+      encodeStringField(2, 'notes.txt'),
+    ])
+    const context = Buffer.concat([
+      encodeLengthDelimited(1, image),
+      encodeLengthDelimited(25, document),
+      encodeLengthDelimited(4, file),
+    ])
 
     expect(cursorAttachmentPayloads(runWithContext(context))).toEqual([
       { kind: 'image', data: 'iVA=', mimeType: 'image/png' },
-      { kind: 'document', data: 'JVA=', filename: 'report.pdf', mimeType: 'application/pdf' },
+      {
+        kind: 'document',
+        data: 'JVA=',
+        filename: 'report.pdf',
+        mimeType: 'application/pdf',
+      },
       { kind: 'file', data: 'text fixture', filename: 'notes.txt' },
     ])
   })
@@ -107,7 +132,9 @@ describe('cursorAttachmentPayloads', () => {
   it('reads inline bytes from a blob-id-with-data attachment', () => {
     const blob = encodeLengthDelimited(9, encodeLengthDelimited(2, Uint8Array.from([0, 0xFF])))
     expect(cursorAttachmentPayloads(runWithContext(encodeLengthDelimited(1, blob))))
-      .toEqual([{ kind: 'image', data: 'AP8=' }])
+      .toEqual([
+        { kind: 'image', data: 'AP8=' },
+      ])
   })
 
   it('returns no inline payload for a blob reference or a message with no context', () => {
@@ -136,14 +163,30 @@ describe('cursorTurnEnded', () => {
   it('encodes the empty update as four bytes', () => {
     // 0x0A: interaction_update, field 1, length-delimited, two bytes long.
     // 0x72: turn_ended, field 14, length-delimited -- (14 << 3) | 2 -- and empty.
-    expect([...cursorTurnEnded()]).toEqual([0x0A, 0x02, 0x72, 0x00])
+    expect([
+      ...cursorTurnEnded(),
+    ]).toEqual([0x0A, 0x02, 0x72, 0x00])
   })
 
   it('encodes scripted input and output token counts', () => {
     // The installed TurnEndedUpdate descriptor sets input_tokens=1 and output_tokens=2.
-    expect([...cursorTurnEnded({ inputTokens: 12_000, outputTokens: 40 })])
-      .toEqual([0x0A, 0x07, 0x72, 0x05, 0x08, 0xE0, 0x5D, 0x10, 0x28])
-    expect([...cursorTurnEnded({ inputTokens: 0 })]).toEqual([0x0A, 0x04, 0x72, 0x02, 0x08, 0x00])
+    expect([
+      ...cursorTurnEnded({ inputTokens: 12_000, outputTokens: 40 }),
+    ])
+      .toEqual([
+        0x0A,
+        0x07,
+        0x72,
+        0x05,
+        0x08,
+        0xE0,
+        0x5D,
+        0x10,
+        0x28,
+      ])
+    expect([
+      ...cursorTurnEnded({ inputTokens: 0 }),
+    ]).toEqual([0x0A, 0x04, 0x72, 0x02, 0x08, 0x00])
   })
 })
 
@@ -165,7 +208,9 @@ describe('takeConnectFrames', () => {
     const prompt = clientMessageWithPrompt('CHILD_NATIVE_EXECUTION: reply once.\n\nLEAPMUXE2ESCENARIO:native-child')
     const compressed = new Uint8Array(gzipSync(prompt))
     const { frames, rest } = takeConnectFrames(connectFrame(compressed, 0x01))
-    expect(frames).toEqual([{ flags: 0x01, payload: compressed }])
+    expect(frames).toEqual([
+      { flags: 0x01, payload: compressed },
+    ])
     expect(rest.byteLength).toBe(0)
   })
 
@@ -176,7 +221,10 @@ describe('takeConnectFrames', () => {
       connectFrame(message),
       connectFrame(trailers, 0x02),
     ])))
-    expect(frames).toEqual([{ flags: 0, payload: message }, { flags: 0x02, payload: trailers }])
+    expect(frames).toEqual([
+      { flags: 0, payload: message },
+      { flags: 0x02, payload: trailers },
+    ])
   })
 
   it('retains a compressed frame flag after a partial header or payload', () => {
@@ -185,20 +233,34 @@ describe('takeConnectFrames', () => {
     for (const cut of [1, 4, 5, whole.byteLength - 1]) {
       const first = takeConnectFrames(whole.subarray(0, cut))
       expect(first.frames).toHaveLength(0)
-      const next = takeConnectFrames(new Uint8Array(Buffer.concat([first.rest, whole.subarray(cut)])))
-      expect(next.frames).toEqual([{ flags: 0x01, payload }])
+      const next = takeConnectFrames(new Uint8Array(Buffer.concat([
+        first.rest,
+        whole.subarray(cut),
+      ])))
+      expect(next.frames).toEqual([
+        { flags: 0x01, payload },
+      ])
       expect(next.rest.byteLength).toBe(0)
     }
   })
 
   it('keeps an empty message payload distinct from the end of the stream', () => {
     const empty = new Uint8Array()
-    const { frames } = takeConnectFrames(new Uint8Array(Buffer.concat([connectFrame(empty), connectFrame(empty, 0x02)])))
-    expect(frames).toEqual([{ flags: 0, payload: empty }, { flags: 0x02, payload: empty }])
+    const { frames } = takeConnectFrames(new Uint8Array(Buffer.concat([
+      connectFrame(empty),
+      connectFrame(empty, 0x02),
+    ])))
+    expect(frames).toEqual([
+      { flags: 0, payload: empty },
+      { flags: 0x02, payload: empty },
+    ])
   })
 
   it('splits several frames out of one buffer', () => {
-    const buffer = Buffer.concat([connectFrame(encodeStringField(1, 'a')), connectFrame(encodeStringField(1, 'b'))])
+    const buffer = Buffer.concat([
+      connectFrame(encodeStringField(1, 'a')),
+      connectFrame(encodeStringField(1, 'b')),
+    ])
     const { frames, rest } = takeConnectFrames(new Uint8Array(buffer))
     expect(frames).toHaveLength(2)
     expect(rest.byteLength).toBe(0)
@@ -218,7 +280,10 @@ describe('takeConnectFrames', () => {
   it('reassembles a frame split across two chunks', () => {
     const whole = connectFrame(encodeStringField(1, 'hello'))
     const first = takeConnectFrames(whole.subarray(0, 6))
-    const joined = Buffer.concat([first.rest, whole.subarray(6)])
+    const joined = Buffer.concat([
+      first.rest,
+      whole.subarray(6),
+    ])
     const { frames } = takeConnectFrames(new Uint8Array(joined))
     expect(frames).toHaveLength(1)
     expect(new TextDecoder().decode(descend(frames[0]!.payload, [1])!)).toBe('hello')
@@ -234,7 +299,9 @@ describe('cursorAvailableModels', () => {
   const FIELD_VARIANT_STRING = 9
 
   const text = (bytes: Uint8Array | undefined): string | undefined =>
-    bytes === undefined ? undefined : new TextDecoder().decode(bytes)
+    bytes === undefined
+      ? undefined
+      : new TextDecoder().decode(bytes)
 
   it('encodes native boolean and enum parameter definitions independently of variants', () => {
     const model = {
@@ -242,8 +309,24 @@ describe('cursorAvailableModels', () => {
       displayName: 'Parameterized',
       variants: [],
       parameterDefinitions: [
-        { id: 'thinking', name: 'Thinking', kind: 'boolean' as const, values: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'On' }] },
-        { id: 'effort', name: 'Effort', kind: 'enum' as const, values: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }] },
+        {
+          id: 'thinking',
+          name: 'Thinking',
+          kind: 'boolean' as const,
+          values: [
+            { value: 'false', name: 'Off' },
+            { value: 'true', name: 'On' },
+          ],
+        },
+        {
+          id: 'effort',
+          name: 'Effort',
+          kind: 'enum' as const,
+          values: [
+            { value: 'low', name: 'Low' },
+            { value: 'high', name: 'High' },
+          ],
+        },
       ],
     }
     const encoded = cursorAvailableModels([model])
@@ -256,7 +339,9 @@ describe('cursorAvailableModels', () => {
       expect(text(fields.get(1)?.[0])).toBe(expected.id)
       expect(text(fields.get(2)?.[0])).toBe(expected.name)
       const type = readCursorProtobufFields(fields.get(4)![0]!).strings
-      expect([...type.keys()]).toEqual([index + 1])
+      expect([
+        ...type.keys(),
+      ]).toEqual([index + 1])
       const values = readCursorProtobufFields(type.get(index + 1)![0]!).strings.get(1) ?? []
       expect(values.map(value => ({
         value: text(readCursorProtobufFields(value).strings.get(1)?.[0]),
@@ -266,14 +351,35 @@ describe('cursorAvailableModels', () => {
   })
 
   it.each([undefined, []])('omits parameter definitions when none are supplied: %j', (parameterDefinitions) => {
-    const encoded = cursorAvailableModels([{ name: 'plain', displayName: 'Plain', variants: [], ...(parameterDefinitions === undefined ? {} : { parameterDefinitions }) }])
+    const encoded = cursorAvailableModels([
+      {
+        name: 'plain',
+        displayName: 'Plain',
+        variants: [],
+        ...(parameterDefinitions === undefined
+          ? {}
+          : { parameterDefinitions }),
+      },
+    ])
     expect(readCursorProtobufFields(descend(encoded, [FIELD_MODELS])!).strings.has(29)).toBe(false)
   })
 
   it('writes one repeated models entry per model', () => {
     const encoded = cursorAvailableModels([
-      { name: 'default', displayName: 'Auto', variants: [{ id: 'default[]', displayName: 'Auto' }] },
-      { name: 'mock-grok', displayName: 'Mock Grok', variants: [{ id: 'mock-grok[]', displayName: 'Mock Grok' }] },
+      {
+        name: 'default',
+        displayName: 'Auto',
+        variants: [
+          { id: 'default[]', displayName: 'Auto' },
+        ],
+      },
+      {
+        name: 'mock-grok',
+        displayName: 'Mock Grok',
+        variants: [
+          { id: 'mock-grok[]', displayName: 'Mock Grok' },
+        ],
+      },
     ])
     const models = readCursorProtobufFields(encoded).strings.get(FIELD_MODELS)
     expect(models).toHaveLength(2)
@@ -284,14 +390,16 @@ describe('cursorAvailableModels', () => {
   // The picker requires both the variant's display name and variant string.
   // Encoding and decoding must preserve both values for every variant.
   it('keeps every variant display name and bracketed id', () => {
-    const encoded = cursorAvailableModels([{
-      name: 'mock-grok',
-      displayName: 'Mock Grok',
-      variants: [
-        { id: 'mock-grok[context=256k,reasoning_effort=low]', displayName: 'Mock Grok Low' },
-        { id: 'mock-grok[context=256k,reasoning_effort=xhigh]', displayName: 'Mock Grok Extra High' },
-      ],
-    }])
+    const encoded = cursorAvailableModels([
+      {
+        name: 'mock-grok',
+        displayName: 'Mock Grok',
+        variants: [
+          { id: 'mock-grok[context=256k,reasoning_effort=low]', displayName: 'Mock Grok Low' },
+          { id: 'mock-grok[context=256k,reasoning_effort=xhigh]', displayName: 'Mock Grok Extra High' },
+        ],
+      },
+    ])
     const model = readCursorProtobufFields(encoded).strings.get(FIELD_MODELS)![0]!
     const variants = readCursorProtobufFields(model).strings.get(FIELD_MODEL_VARIANTS)
     expect(variants).toHaveLength(2)
@@ -310,43 +418,79 @@ describe('cursorAvailableModels', () => {
 
   it('writes an alias for each one given, and none when there are none', () => {
     const withAlias = cursorAvailableModels([
-      { name: 'default', displayName: 'Auto', aliases: ['auto'], variants: [{ id: 'default[]', displayName: 'Auto' }] },
+      {
+        name: 'default',
+        displayName: 'Auto',
+        aliases: ['auto'],
+        variants: [
+          { id: 'default[]', displayName: 'Auto' },
+        ],
+      },
     ])
     const aliased = readCursorProtobufFields(readCursorProtobufFields(withAlias).strings.get(FIELD_MODELS)![0]!).strings
     expect(aliased.get(FIELD_MODEL_ID_ALIASES)?.map(a => text(a))).toEqual(['auto'])
 
     const without = cursorAvailableModels([
-      { name: 'mock-grok', displayName: 'Mock Grok', variants: [{ id: 'mock-grok[]', displayName: 'Mock Grok' }] },
+      {
+        name: 'mock-grok',
+        displayName: 'Mock Grok',
+        variants: [
+          { id: 'mock-grok[]', displayName: 'Mock Grok' },
+        ],
+      },
     ])
     const bare = readCursorProtobufFields(readCursorProtobufFields(without).strings.get(FIELD_MODELS)![0]!).strings
     expect(bare.get(FIELD_MODEL_ID_ALIASES)).toBeUndefined()
   })
 
   it('preserves each explicit native variant parameter instead of deriving it from the display ID', () => {
-    const encoded = cursorAvailableModels([{
-      name: 'mock-grok',
-      displayName: 'Mock Grok',
-      variants: [{
-        id: 'display-only[]',
-        displayName: 'Mock Grok Low',
-        parameters: [{ id: 'context', value: '256k' }, { id: 'reasoning_effort', value: 'low' }],
-      }],
-    }])
+    const encoded = cursorAvailableModels([
+      {
+        name: 'mock-grok',
+        displayName: 'Mock Grok',
+        variants: [
+          {
+            id: 'display-only[]',
+            displayName: 'Mock Grok Low',
+            parameters: [
+              { id: 'context', value: '256k' },
+              { id: 'reasoning_effort', value: 'low' },
+            ],
+          },
+        ],
+      },
+    ])
     const model = readCursorProtobufFields(encoded).strings.get(FIELD_MODELS)![0]!
     const variant = readCursorProtobufFields(model).strings.get(FIELD_MODEL_VARIANTS)![0]!
     const parameters = readCursorProtobufFields(variant).strings.get(1) ?? []
     expect(parameters.map((parameter) => {
       const fields = readCursorProtobufFields(parameter).strings
-      return { id: text(fields.get(1)?.[0]), value: text(fields.get(2)?.[0]) }
-    })).toEqual([{ id: 'context', value: '256k' }, { id: 'reasoning_effort', value: 'low' }])
+      return {
+        id: text(fields.get(1)?.[0]),
+        value: text(fields.get(2)?.[0]),
+      }
+    })).toEqual([
+      { id: 'context', value: '256k' },
+      { id: 'reasoning_effort', value: 'low' },
+    ])
   })
 
   it('preserves an empty native parameter value', () => {
-    const encoded = cursorAvailableModels([{
-      name: 'mock-model',
-      displayName: 'Mock Model',
-      variants: [{ id: 'mock-model[]', displayName: 'Mock Model', parameters: [{ id: 'native-option', value: '' }] }],
-    }])
+    const encoded = cursorAvailableModels([
+      {
+        name: 'mock-model',
+        displayName: 'Mock Model',
+        variants: [
+          {
+            id: 'mock-model[]',
+            displayName: 'Mock Model',
+            parameters: [
+              { id: 'native-option', value: '' },
+            ],
+          },
+        ],
+      },
+    ])
     const parameter = descend(encoded, [FIELD_MODELS, FIELD_MODEL_VARIANTS, 1])
     expect(parameter).toBeDefined()
     expect(text(readCursorProtobufFields(parameter!).strings.get(1)?.[0])).toBe('native-option')
@@ -361,7 +505,9 @@ describe('cursorAvailableModels', () => {
 
   // The parameterized picker can list a model without variants. The encoder must not invent default parameters.
   it('writes a model that has no variants', () => {
-    const encoded = cursorAvailableModels([{ name: 'bare', displayName: 'Bare', variants: [] }])
+    const encoded = cursorAvailableModels([
+      { name: 'bare', displayName: 'Bare', variants: [] },
+    ])
     const model = readCursorProtobufFields(encoded).strings.get(FIELD_MODELS)![0]!
     expect(readCursorProtobufFields(model).strings.get(FIELD_MODEL_VARIANTS)).toBeUndefined()
     expect(text(readCursorProtobufFields(model).strings.get(FIELD_MODEL_NAME)?.[0])).toBe('bare')
@@ -380,14 +526,18 @@ describe('cursorDefaultModel', () => {
     name: 'default',
     displayName: 'Auto',
     aliases: ['auto'],
-    variants: [{ id: 'default[]', displayName: 'Auto', isDefault: true }],
+    variants: [
+      { id: 'default[]', displayName: 'Auto', isDefault: true },
+    ],
   }
 
   const details = (encoded: Uint8Array): Map<number, Uint8Array[]> =>
     readCursorProtobufFields(readCursorProtobufFields(encoded).strings.get(FIELD_MODEL_DETAILS)![0]!).strings
 
   const text = (bytes: Uint8Array | undefined): string | undefined =>
-    bytes === undefined ? undefined : new TextDecoder().decode(bytes)
+    bytes === undefined
+      ? undefined
+      : new TextDecoder().decode(bytes)
 
   it('names the model and both of its display forms', () => {
     const fields = details(cursorDefaultModel(auto))
@@ -416,7 +566,12 @@ describe('cursorUsableModels', () => {
 
   it('repeats one models entry per model, in order', () => {
     const encoded = cursorUsableModels([
-      { name: 'default', displayName: 'Auto', aliases: ['auto'], variants: [] },
+      {
+        name: 'default',
+        displayName: 'Auto',
+        aliases: ['auto'],
+        variants: [],
+      },
       { name: 'mock-grok', displayName: 'Mock Grok', variants: [] },
     ])
     const entries = readCursorProtobufFields(encoded).strings.get(FIELD_MODEL_DETAILS)
@@ -446,7 +601,9 @@ describe('cursorSetBlob', () => {
     const id = Uint8Array.from([0xDE, 0xAD, 0xBE, 0xEF])
     const data = new TextEncoder().encode('{"role":"tool"}')
     const args = setBlobArgs(cursorSetBlob(7, id, data))
-    expect([...args.get(FIELD_SET_BLOB_ID)![0]!]).toEqual([0xDE, 0xAD, 0xBE, 0xEF])
+    expect([
+      ...args.get(FIELD_SET_BLOB_ID)![0]!,
+    ]).toEqual([0xDE, 0xAD, 0xBE, 0xEF])
     expect(new TextDecoder().decode(args.get(FIELD_SET_BLOB_DATA)![0]!)).toBe('{"role":"tool"}')
   })
 
@@ -454,8 +611,12 @@ describe('cursorSetBlob', () => {
   // A value above 127 must not shift later fields.
   it('keeps the args readable for a multi-byte message id', () => {
     const args = setBlobArgs(cursorSetBlob(300, Uint8Array.from([1]), Uint8Array.from([2])))
-    expect([...args.get(FIELD_SET_BLOB_ID)![0]!]).toEqual([1])
-    expect([...args.get(FIELD_SET_BLOB_DATA)![0]!]).toEqual([2])
+    expect([
+      ...args.get(FIELD_SET_BLOB_ID)![0]!,
+    ]).toEqual([1])
+    expect([
+      ...args.get(FIELD_SET_BLOB_DATA)![0]!,
+    ]).toEqual([2])
   })
 
   it('writes an empty blob without losing either field', () => {
@@ -484,8 +645,12 @@ describe('cursorTodoStarted and cursorTodoCompleted', () => {
       throw new Error('The started Todo update holds fewer than two items.')
     expect(new TextDecoder().decode(readCursorProtobufFields(first).strings.get(1)![0]!)).toBe('1')
     expect(new TextDecoder().decode(readCursorProtobufFields(first).strings.get(2)![0]!)).toBe('Inspect')
-    expect([...first.slice(-2)]).toEqual([0x18, 3])
-    expect([...second.slice(-2)]).toEqual([0x18, 2])
+    expect([
+      ...first.slice(-2),
+    ]).toEqual([0x18, 3])
+    expect([
+      ...second.slice(-2),
+    ]).toEqual([0x18, 2])
   })
 
   it('writes the completed Todo list and native success count', () => {
@@ -495,7 +660,9 @@ describe('cursorTodoStarted and cursorTodoCompleted', () => {
     const items = readCursorProtobufFields(success).strings.get(1)
     expect(items).toHaveLength(2)
     expect(new TextDecoder().decode(readCursorProtobufFields(items![1]!).strings.get(2)![0]!)).toBe('Report')
-    expect([...success.slice(-4)]).toEqual([0x10, 2, 0x18, 0])
+    expect([
+      ...success.slice(-4),
+    ]).toEqual([0x10, 2, 0x18, 0])
   })
 
   it('keeps an empty replacement list as a valid snapshot', () => {
@@ -506,7 +673,12 @@ describe('cursorTodoStarted and cursorTodoCompleted', () => {
 })
 
 describe('cursorGenerateImageStarted and cursorGenerateImageCompleted', () => {
-  const call = { callID: 'image-1', description: 'A teal square', filePath: '/work/teal.png', imageData: 'cG5n' }
+  const call = {
+    callID: 'image-1',
+    description: 'A teal square',
+    filePath: '/work/teal.png',
+    imageData: 'cG5n',
+  }
 
   it('encodes the native tool id and image request', () => {
     const started = cursorGenerateImageStarted(call)
@@ -530,7 +702,9 @@ describe('cursorGenerateImageStarted and cursorGenerateImageCompleted', () => {
 
 describe('cursorWebFetchStarted and cursorWebFetchCompleted', () => {
   const call = { kind: 'webFetch', callID: 'fetch-native', url: 'https://example.invalid/零' } as const
-  const text = (bytes: Uint8Array | undefined): string | undefined => bytes === undefined ? undefined : new TextDecoder().decode(bytes)
+  const text = (bytes: Uint8Array | undefined): string | undefined => bytes === undefined
+    ? undefined
+    : new TextDecoder().decode(bytes)
 
   it('opens the native row with its URL and call ID, before any result exists', () => {
     const update = cursorWebFetchStarted(call)
@@ -549,7 +723,12 @@ describe('cursorWebFetchStarted and cursorWebFetchCompleted', () => {
   })
 
   it.each(['User rejected', '', 'Keep 零 🔒'])('closes a refused fetch with its exact reason %j', (reason) => {
-    const update = cursorWebFetchCompleted(call, { kind: 'webFetch', id: 300, approved: false, reason })
+    const update = cursorWebFetchCompleted(call, {
+      kind: 'webFetch',
+      id: 300,
+      approved: false,
+      reason,
+    })
     expect(text(descend(update, [1, 3, 2, 37, 2, 3, 1]))).toBe(reason)
     expect(descend(update, [1, 3, 2, 37, 2, 1])).toBeUndefined()
   })
@@ -573,7 +752,16 @@ describe('cursorInteractionQuery and cursorInteractionResponseOf', () => {
       kind: 'question',
       callID: 'cursor-q',
       title: 'Color',
-      questions: [{ id: 'question-1', prompt: 'Which color?', allowMultiple: false, options: [{ id: 'option-1-1', label: 'Blue' }] }],
+      questions: [
+        {
+          id: 'question-1',
+          prompt: 'Which color?',
+          allowMultiple: false,
+          options: [
+            { id: 'option-1-1', label: 'Blue' },
+          ],
+        },
+      ],
     })
     const request = descend(query, [7, 3])!
     expect(new TextDecoder().decode(readCursorProtobufFields(request).strings.get(2)?.[0])).toBe('cursor-q')
@@ -587,7 +775,13 @@ describe('cursorInteractionQuery and cursorInteractionResponseOf', () => {
   })
 
   it('encodes plan and web-fetch queries in their own union fields', () => {
-    const plan = cursorInteractionQuery(301, { kind: 'plan', callID: 'plan-1', name: 'Review', overview: 'No edits', plan: '# Plan' })
+    const plan = cursorInteractionQuery(301, {
+      kind: 'plan',
+      callID: 'plan-1',
+      name: 'Review',
+      overview: 'No edits',
+      plan: '# Plan',
+    })
     expect(new TextDecoder().decode(descend(plan, [7, 7, 1, 1]))).toBe('# Plan')
     expect(new TextDecoder().decode(descend(plan, [7, 7, 1, 4]))).toBe('Review')
     const fetch = cursorInteractionQuery(302, { kind: 'webFetch', callID: 'fetch-1', url: 'https://example.invalid/probe' })
@@ -596,12 +790,20 @@ describe('cursorInteractionQuery and cursorInteractionResponseOf', () => {
   })
 
   it('decodes the selected native question option and multi-byte query id', () => {
-    const answer = Buffer.concat([encodeStringField(1, 'question-1'), encodeStringField(2, 'option-1-1')])
+    const answer = Buffer.concat([
+      encodeStringField(1, 'question-1'),
+      encodeStringField(2, 'option-1-1'),
+    ])
     const question = encodeLengthDelimited(1, encodeLengthDelimited(1, encodeLengthDelimited(1, answer)))
     expect(cursorInteractionResponseOf(reply(300, 3, question))).toEqual({
       kind: 'question',
       id: 300,
-      answers: [{ questionID: 'question-1', selectedOptionIDs: ['option-1-1'] }],
+      answers: [
+        {
+          questionID: 'question-1',
+          selectedOptionIDs: ['option-1-1'],
+        },
+      ],
     })
   })
 
@@ -609,7 +811,12 @@ describe('cursorInteractionQuery and cursorInteractionResponseOf', () => {
     const plan = encodeLengthDelimited(1, encodeLengthDelimited(1, new Uint8Array(0)))
     expect(cursorInteractionResponseOf(reply(301, 7, plan))).toEqual({ kind: 'plan', id: 301, accepted: true })
     const refused = encodeLengthDelimited(2, encodeStringField(1, 'Denied'))
-    expect(cursorInteractionResponseOf(reply(302, 9, refused))).toEqual({ kind: 'webFetch', id: 302, approved: false, reason: 'Denied' })
+    expect(cursorInteractionResponseOf(reply(302, 9, refused))).toEqual({
+      kind: 'webFetch',
+      id: 302,
+      approved: false,
+      reason: 'Denied',
+    })
   })
 
   it('ignores other client messages and refuses a response without an id', () => {
@@ -622,7 +829,11 @@ describe('cursorInteractionQuery and cursorInteractionResponseOf', () => {
 describe('cursorMcpExec and cursorMcpResponseOf', () => {
   function reply(id: number | undefined, result: Uint8Array): Uint8Array {
     return encodeLengthDelimited(2, Buffer.concat([
-      ...(id === undefined ? [] : [encodeVarintField(1, id)]),
+      ...(id === undefined
+        ? []
+        : [
+            encodeVarintField(1, id),
+          ]),
       encodeLengthDelimited(11, result),
     ]))
   }
@@ -632,7 +843,13 @@ describe('cursorMcpExec and cursorMcpResponseOf', () => {
       callID: 'mcp-1',
       server: 'form_probe',
       tool: 'echo',
-      input: { count: 0, enabled: false, nested: { values: [null, -2, 'blue'] } },
+      input: {
+        count: 0,
+        enabled: false,
+        nested: {
+          values: [null, -2, 'blue'],
+        },
+      },
     })
     const exec = descend(encoded, [2])!
     const args = descend(exec, [11])!
@@ -644,17 +861,37 @@ describe('cursorMcpExec and cursorMcpResponseOf', () => {
     const input = Object.fromEntries((fields.get(2) ?? []).map((entry) => {
       const key = new TextDecoder().decode(descend(entry, [1]))
       const value = fromBinary(ValueSchema, descend(entry, [2])!)
-      return [key, toJson(ValueSchema, value)]
+      return [
+        key,
+        toJson(ValueSchema, value),
+      ]
     }))
-    expect(input).toEqual({ count: 0, enabled: false, nested: { values: [null, -2, 'blue'] } })
+    expect(input).toEqual({
+      count: 0,
+      enabled: false,
+      nested: {
+        values: [null, -2, 'blue'],
+      },
+    })
     expect([...args]).toContain(0x40)
   })
 
   it('keeps an empty input and refuses non-JSON values', () => {
-    const call = { callID: 'mcp-1', server: 'form_probe', tool: 'ask', input: {} }
+    const call = {
+      callID: 'mcp-1',
+      server: 'form_probe',
+      tool: 'ask',
+      input: {},
+    }
     expect(readCursorProtobufFields(descend(cursorMcpExec(301, call), [2, 11])!).strings.get(2)).toBeUndefined()
-    expect(() => cursorMcpExec(301, { ...call, input: { count: Number.NaN } })).toThrow('non-finite number')
-    expect(() => cursorMcpExec(301, { ...call, input: { missing: undefined } })).toThrow('non-JSON value')
+    expect(() => cursorMcpExec(301, {
+      ...call,
+      input: { count: Number.NaN },
+    })).toThrow('non-finite number')
+    expect(() => cursorMcpExec(301, {
+      ...call,
+      input: { missing: undefined },
+    })).toThrow('non-JSON value')
     const cycle: Record<string, unknown> = {}
     cycle.self = cycle
     expect(() => cursorMcpExec(301, { ...call, input: cycle })).toThrow('cycle')
@@ -673,7 +910,10 @@ describe('cursorMcpExec and cursorMcpResponseOf', () => {
       success: false,
       text: 'server unavailable',
     })
-    const missingTool = Buffer.concat([encodeStringField(1, 'form_probe_ask'), encodeStringField(2, 'ask')])
+    const missingTool = Buffer.concat([
+      encodeStringField(1, 'form_probe_ask'),
+      encodeStringField(2, 'ask'),
+    ])
     expect(cursorMcpResponseOf(reply(303, encodeLengthDelimited(5, missingTool)))).toEqual({
       id: 303,
       success: false,
@@ -691,11 +931,18 @@ describe('cursorMcpExec and cursorMcpResponseOf', () => {
 describe('cursorRequestContextExec and cursorRequestContextResponseOf', () => {
   function reply(id: number | undefined, result: Uint8Array): Uint8Array {
     return encodeLengthDelimited(2, Buffer.concat([
-      ...(id === undefined ? [] : [encodeVarintField(1, id)]),
+      ...(id === undefined
+        ? []
+        : [
+            encodeVarintField(1, id),
+          ]),
       encodeLengthDelimited(10, result),
     ]))
   }
-  const rule = (path: string, content: string) => encodeLengthDelimited(2, Buffer.concat([encodeStringField(1, path), encodeStringField(2, content)]))
+  const rule = (path: string, content: string) => encodeLengthDelimited(2, Buffer.concat([
+    encodeStringField(1, path),
+    encodeStringField(2, content),
+  ]))
   const success = (...rules: Uint8Array[]) => encodeLengthDelimited(1, encodeLengthDelimited(1, Buffer.concat(rules)))
 
   it('encodes the native request context query with its id and call identity', () => {
@@ -703,7 +950,12 @@ describe('cursorRequestContextExec and cursorRequestContextResponseOf', () => {
     const fields = readCursorProtobufFields(exec).strings
     expect(new TextDecoder().decode(fields.get(15)?.[0])).toBe('context-1')
     expect(fields.get(10)?.[0]?.byteLength).toBe(0)
-    expect([...exec.subarray(0, 3)]).toEqual([0x08, ...encodeVarint(301)])
+    expect([
+      ...exec.subarray(0, 3),
+    ]).toEqual([
+      0x08,
+      ...encodeVarint(301),
+    ])
   })
 
   it('refuses an execution id that is not a positive uint32', () => {
@@ -743,7 +995,12 @@ describe('cursorRequestContextExec and cursorRequestContextResponseOf', () => {
 
 describe('cursorExecutionRequest', () => {
   it('uses the native shell envelope and argument field numbers', () => {
-    const frame = cursorExecutionRequest(3, { kind: 'shell', callID: 'tool', command: 'printf native', workingDirectory: '/project' })
+    const frame = cursorExecutionRequest(3, {
+      kind: 'shell',
+      callID: 'tool',
+      command: 'printf native',
+      workingDirectory: '/project',
+    })
     const args = readCursorProtobufFields(descend(frame, [2, 2])!).strings
     expect(new TextDecoder().decode(args.get(1)?.[0])).toBe('printf native')
     expect(new TextDecoder().decode(args.get(2)?.[0])).toBe('/project')
@@ -758,7 +1015,12 @@ describe('cursorExecutionRequest', () => {
   })
 
   it('keeps empty write text and the actual read path', () => {
-    const write = readCursorProtobufFields(descend(cursorExecutionRequest(4, { kind: 'write', callID: 'tool', path: '/project/empty', content: '' }), [2, 3])!).strings
+    const write = readCursorProtobufFields(descend(cursorExecutionRequest(4, {
+      kind: 'write',
+      callID: 'tool',
+      path: '/project/empty',
+      content: '',
+    }), [2, 3])!).strings
     expect(write.has(2)).toBe(true)
     expect(write.get(2)?.[0]?.length).toBe(0)
     const read = readCursorProtobufFields(descend(cursorExecutionRequest(5, { kind: 'read', callID: 'tool', path: '/project/empty' }), [2, 7])!).strings
@@ -772,15 +1034,37 @@ describe('cursorExecutionRequest', () => {
 
 describe('cursorExecutionResponseOf', () => {
   it('preserves actual stdout and stderr from a failed native shell', () => {
-    const frame = executionReplyFrame(3, 2, 2, Buffer.concat([encodeVarintField(3, 7), encodeStringField(5, 'actual out'), encodeStringField(6, 'actual err')]), 'tool')
+    const frame = executionReplyFrame(3, 2, 2, Buffer.concat([
+      encodeVarintField(3, 7),
+      encodeStringField(5, 'actual out'),
+      encodeStringField(6, 'actual err'),
+    ]), 'tool')
     const reply = cursorExecutionResponseOf(frame)
-    expect(reply).toMatchObject({ id: 3, execID: 'tool', kind: 'shell', success: false, exitCode: 7 })
+    expect(reply).toMatchObject({
+      id: 3,
+      execID: 'tool',
+      kind: 'shell',
+      success: false,
+      exitCode: 7,
+    })
     expect(reply?.text).toContain('actual out')
     expect(reply?.text).toContain('actual err')
   })
 
   it('reads a native signed int32 exit code', () => {
-    const negativeOne = Uint8Array.from([0x18, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01])
+    const negativeOne = Uint8Array.from([
+      0x18,
+      0xFF,
+      0xFF,
+      0xFF,
+      0xFF,
+      0xFF,
+      0xFF,
+      0xFF,
+      0xFF,
+      0xFF,
+      0x01,
+    ])
     expect(cursorExecutionResponseOf(executionReplyFrame(3, 2, 2, negativeOne, 'tool'))).toMatchObject({ exitCode: -1, success: false })
   })
 
@@ -811,7 +1095,10 @@ describe('cursorExecutionToolCompleted', () => {
   it('uses the source-backed start and completion update fields', () => {
     const call = { kind: 'read' as const, callID: 'tool', path: '/project/a' }
     expect(descend(cursorExecutionToolStarted(call), [1, 2, 2, 8, 1])).toBeDefined()
-    const reply = cursorExecutionResponseOf(executionReplyFrame(3, 7, 1, Buffer.concat([encodeStringField(1, '/project/a'), encodeStringField(2, 'actual data')]), 'tool'))
+    const reply = cursorExecutionResponseOf(executionReplyFrame(3, 7, 1, Buffer.concat([
+      encodeStringField(1, '/project/a'),
+      encodeStringField(2, 'actual data'),
+    ]), 'tool'))
     if (!reply)
       throw new Error('The native read has no reply.')
     const frame = cursorExecutionToolCompleted(call, reply, { before: '', after: '' })

@@ -14,14 +14,16 @@ import { ohMyPiTest } from '../ohmypi-fixtures'
 ohMyPiTest.describe('control requests for Oh My Pi', () => {
   ohMyPiTest('delivers the answer to a question', async ({ native }) => {
     const { result } = await exerciseQuestionAnswer(native, {
-      questions: [{
-        question: 'Choose a style',
-        header: 'Style',
-        options: [
-          { label: 'Alpha', description: 'Use the first style.' },
-          { label: 'Beta', description: 'Use the second style.' },
-        ],
-      }],
+      questions: [
+        {
+          question: 'Choose a style',
+          header: 'Style',
+          options: [
+            { label: 'Alpha', description: 'Use the first style.' },
+            { label: 'Beta', description: 'Use the second style.' },
+          ],
+        },
+      ],
       callId: 'style-question',
       prompt: 'Ask me which style to use.',
       answer: 'Recorded the style.',

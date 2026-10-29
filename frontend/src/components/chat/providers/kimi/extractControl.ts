@@ -86,13 +86,24 @@ export function kimiApprovalDisplayKind(payload: Record<string, unknown>): strin
  * revisions, and a refusal that also leaves plan mode.
  */
 export function kimiPlanChoices(display: Record<string, unknown> | undefined): PlanChoice[] {
-  const options = display && Array.isArray(display.options) ? display.options.filter(isObject) : []
+  const options = display && Array.isArray(display.options)
+    ? display.options.filter(isObject)
+    : []
   const approaches = options.flatMap((option) => {
     const label = pickString(option, 'label')
     if (!label)
       return []
     const description = pickString(option, 'description')
-    return [{ id: label, label: `Approve: ${label}`, ...(description ? { description } : {}), approves: true }]
+    return [
+      {
+        id: label,
+        label: `Approve: ${label}`,
+        ...(description
+          ? { description }
+          : {}),
+        approves: true,
+      },
+    ]
   })
   return [
     ...approaches,
@@ -138,7 +149,13 @@ export function kimiExtractControl(input: ControlExtractionInput): ExtractedCont
   const displayKind = pickString(display, 'kind')
   if (displayKind === KIMI_DISPLAY.PlanReview && kimiApprovalAgentId(payload) === KIMI_MAIN_AGENT) {
     const plan = pickString(display, 'plan')
-    return { kind: 'plan', ...(plan.trim() ? { text: plan } : {}), choices: kimiPlanChoices(display) }
+    return {
+      kind: 'plan',
+      ...(plan.trim()
+        ? { text: plan }
+        : {}),
+      choices: kimiPlanChoices(display),
+    }
   }
   const toolName = pickString(payload, 'tool_name')
   const reason = pickString(payload, 'action')
@@ -146,20 +163,36 @@ export function kimiExtractControl(input: ControlExtractionInput): ExtractedCont
   const cwd = pickString(display, 'cwd')
   // A subagent's plan review states its plan in prose, which reads as text. The rest
   // of the display stays in the arguments.
-  const planText = displayKind === KIMI_DISPLAY.PlanReview ? pickString(display, 'plan') : ''
-  const plan = planText.trim() ? planText : ''
-  const args = plan && display ? Object.fromEntries(Object.entries(display).filter(([key]) => key !== 'plan')) : display
+  const planText = displayKind === KIMI_DISPLAY.PlanReview
+    ? pickString(display, 'plan')
+    : ''
+  const plan = planText.trim()
+    ? planText
+    : ''
+  const args = plan && display
+    ? Object.fromEntries(Object.entries(display).filter(([key]) => key !== 'plan'))
+    : display
   return {
     kind: 'permission',
     permission: {
       title: toolName,
-      ...(reason ? { reason } : {}),
-      ...(plan ? { text: plan } : {}),
-      ...(command ? { command } : {}),
-      ...(cwd ? { workingDirectory: cwd } : {}),
+      ...(reason
+        ? { reason }
+        : {}),
+      ...(plan
+        ? { text: plan }
+        : {}),
+      ...(command
+        ? { command }
+        : {}),
+      ...(cwd
+        ? { workingDirectory: cwd }
+        : {}),
       // The display is the whole statement of the call the approval carries: the server
       // sends no arguments beside it.
-      ...(args ? { input: args } : {}),
+      ...(args
+        ? { input: args }
+        : {}),
       options: kimiPermissionOptions(displayKind, display),
     },
   }

@@ -108,11 +108,20 @@ function liveChildRules(context: LiveChildContext, spec: LiveChildSpec, finalRes
       {
         name: 'the child reads its marker file',
         when: spec.childWhen,
-        respond: { toolCalls: [readToolCall(context.provider, LIVE_CHILD_READ_CALL_ID, read.filePath)] },
+        respond: {
+          toolCalls: [
+            readToolCall(context.provider, LIVE_CHILD_READ_CALL_ID, read.filePath),
+          ],
+        },
         once: true,
       },
       // Only the Read result supplies the marker, so this rule answers the request that follows the Read.
-      { name: 'the held child answer after the read', when: { body: read.marker }, respond: finalResponse, once: true },
+      {
+        name: 'the held child answer after the read',
+        when: { body: read.marker },
+        respond: finalResponse,
+        once: true,
+      },
     ]
   }
   if (spec.toolProof && 'shell' in spec.toolProof) {
@@ -120,14 +129,25 @@ function liveChildRules(context: LiveChildContext, spec: LiveChildSpec, finalRes
       {
         name: 'the child runs its shell command',
         when: spec.childWhen,
-        respond: { toolCalls: [bashToolCall(context.provider, LIVE_CHILD_SHELL_CALL_ID, spec.toolProof.shell.command)] },
+        respond: {
+          toolCalls: [
+            bashToolCall(context.provider, LIVE_CHILD_SHELL_CALL_ID, spec.toolProof.shell.command),
+          ],
+        },
         once: true,
       },
       // The rule above consumes this matcher once. This rule remains available, so repeated child requests get the held answer too.
       { name: 'the held child answer after the shell command', when: spec.childWhen, respond: finalResponse },
     ]
   }
-  return [{ name: 'the held child answer', when: spec.childWhen, respond: finalResponse, once: true }]
+  return [
+    {
+      name: 'the held child answer',
+      when: spec.childWhen,
+      respond: finalResponse,
+      once: true,
+    },
+  ]
 }
 
 /**
@@ -141,12 +161,22 @@ export async function exerciseLiveChildTranscript(context: LiveChildContext, spe
   if (taskWords === '')
     throw new Error(`A live child needs a task that shows words in its tab, not ${JSON.stringify(spec.childTask)}.`)
   const gate = `live-child-${context.provider}`
-  const parentGate = spec.holdParentAnswer ? `live-parent-${context.provider}` : undefined
-  const finalResponse: MockModelStep = { ...(spec.childResponse ?? { text: DEFAULT_CHILD_ANSWER }), gate }
+  const parentGate = spec.holdParentAnswer
+    ? `live-parent-${context.provider}`
+    : undefined
+  const finalResponse: MockModelStep = {
+    ...(spec.childResponse ?? { text: DEFAULT_CHILD_ANSWER }),
+    gate,
+  }
   // A final response that only calls a tool shows no answer words to check.
-  const heldWords = finalResponse.text === undefined ? '' : markdownToPlainText(finalResponse.text)
+  const heldWords = finalResponse.text === undefined
+    ? ''
+    : markdownToPlainText(finalResponse.text)
   const read: MarkerRead | undefined = spec.toolProof && 'read' in spec.toolProof
-    ? { filePath: join(spec.toolProof.read.workingDir, `live-child-${context.provider}.txt`), marker: uniqueMarker('CHILDREAD') }
+    ? {
+        filePath: join(spec.toolProof.read.workingDir, `live-child-${context.provider}.txt`),
+        marker: uniqueMarker('CHILDREAD'),
+      }
     : undefined
   // The parent is the agent on screen before the child spawns.
   const parentId = await selectedAgentTabId(page)
@@ -156,12 +186,23 @@ export async function exerciseLiveChildTranscript(context: LiveChildContext, spe
   const child = await withCleanup(async (): Promise<LiveChild> => {
     await modelScript.rule(...liveChildRules(context, spec, finalResponse, read))
     await modelScript.queue(
-      { toolCalls: [spawnSubagentToolCall(context.provider, LIVE_CHILD_SPAWN_CALL_ID, {
-        description: 'Answer the live child task',
-        prompt: modelScript.prompt(spec.childTask),
-        ...(spec.background === undefined ? {} : { background: spec.background }),
-      })] },
-      { text: 'The child task ended.', ...(parentGate ? { gate: parentGate } : {}) },
+      {
+        toolCalls: [
+          spawnSubagentToolCall(context.provider, LIVE_CHILD_SPAWN_CALL_ID, {
+            description: 'Answer the live child task',
+            prompt: modelScript.prompt(spec.childTask),
+            ...(spec.background === undefined
+              ? {}
+              : { background: spec.background }),
+          }),
+        ],
+      },
+      {
+        text: 'The child task ended.',
+        ...(parentGate
+          ? { gate: parentGate }
+          : {}),
+      },
     )
     await sendMessage(page, modelScript.prompt(spec.parentTask))
     await modelScript.waitForGate(gate)
@@ -173,7 +214,9 @@ export async function exerciseLiveChildTranscript(context: LiveChildContext, spe
     if (heldWords !== '')
       await expect(assistantBubbles(page).filter({ hasText: heldWords })).toHaveCount(0)
     if (read) {
-      await expect(toolRows(page).filter({ hasText: basename(read.filePath) }).first()).toBeVisible()
+      await expect(toolRows(page).filter({
+        hasText: basename(read.filePath),
+      }).first()).toBeVisible()
       if (spec.toolProof && 'read' in spec.toolProof && spec.toolProof.read.expandResult) {
         const rowId = await nativeToolRowId(context, LIVE_CHILD_READ_CALL_ID)
         await expandNativeResultView(toolCallRow(page, rowId))
@@ -195,7 +238,11 @@ export async function exerciseLiveChildTranscript(context: LiveChildContext, spe
     return { row, childId, parentId }
   }, () => finishCleanup([
     modelScript.releaseGateIfHeld(gate),
-    ...(parentGate ? [modelScript.releaseGateIfHeld(parentGate)] : []),
+    ...(parentGate
+      ? [
+          modelScript.releaseGateIfHeld(parentGate),
+        ]
+      : []),
   ]))
   await completeLiveChildTranscript(modelScript, async () => {
     if (heldWords !== '' && (spec.finalAnswerInChildTab ?? true))
@@ -223,7 +270,10 @@ export function writeChildMarkerFile(directory: string, fileName: string): Child
     throw new Error('A child marker file needs the working directory of the agent.')
   if (fileName.trim() === '' || basename(fileName) !== fileName)
     throw new Error(`A child marker file needs a plain file name, not ${JSON.stringify(fileName)}.`)
-  const file = { path: join(directory, fileName), marker: uniqueMarker('NATIVECHILDREAD') }
+  const file = {
+    path: join(directory, fileName),
+    marker: uniqueMarker('NATIVECHILDREAD'),
+  }
   writeFileSync(file.path, file.marker)
   return file
 }

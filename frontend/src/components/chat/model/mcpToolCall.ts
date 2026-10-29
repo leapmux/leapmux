@@ -44,7 +44,9 @@ export interface McpCallFacts {
 
 /** Display name fragment: "Server / tool" (or just "tool" when server is empty). */
 export function mcpToolCallDisplayName(source: { server: string, tool: string }): string {
-  return source.server ? `${source.server} / ${source.tool}` : source.tool
+  return source.server
+    ? `${source.server} / ${source.tool}`
+    : source.tool
 }
 
 /** The prefix an `mcp__server__tool` identifier carries. */
@@ -56,7 +58,11 @@ const MCP_TOOL_NAME_PREFIX = 'mcp__'
  * Omit a separate label so every provider uses that same title.
  */
 export function mcpToolCallRequest(server: string, tool: string, args: Record<string, unknown>): Pick<ToolCallSpec<'mcp'>, 'kind' | 'title' | 'request'> {
-  return { kind: 'mcp', title: mcpToolCallDisplayName({ server, tool }), request: { server, tool, args } }
+  return {
+    kind: 'mcp',
+    title: mcpToolCallDisplayName({ server, tool }),
+    request: { server, tool, args },
+  }
 }
 
 /**
@@ -83,7 +89,9 @@ export function splitPrefixedPair(id: string, prefix: string, separator: string)
     return null
   const server = id.slice(prefix.length, index)
   const tool = id.slice(index + separator.length)
-  return server && tool ? { server, tool } : null
+  return server && tool
+    ? { server, tool }
+    : null
 }
 
 /**
@@ -104,14 +112,20 @@ export function parseMcpContentItem(raw: unknown): McpContentItem {
   const image = parseImageBlock(obj)
   if (image)
     return { type: 'image', source: image }
-  const resource = t === 'resource' ? pickObject(obj, 'resource') ?? obj : undefined
+  const resource = t === 'resource'
+    ? pickObject(obj, 'resource') ?? obj
+    : undefined
   if (resource && typeof resource.uri === 'string' && !('blob' in resource)) {
     const mimeType = pickString(resource, 'mimeType', undefined)
     return {
       type: 'resource',
       uri: resource.uri,
-      ...(mimeType !== undefined ? { mimeType } : {}),
-      ...(typeof resource.text === 'string' ? { text: resource.text } : {}),
+      ...(mimeType !== undefined
+        ? { mimeType }
+        : {}),
+      ...(typeof resource.text === 'string'
+        ? { text: resource.text }
+        : {}),
     }
   }
   return { type: 'unknown', raw }

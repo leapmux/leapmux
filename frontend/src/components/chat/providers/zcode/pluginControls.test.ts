@@ -10,11 +10,23 @@ function decode(bytes: unknown): Record<string, unknown> {
 
 // The Worker asks ZCode's hook-trust question itself, in LeapMux's neutral shape.
 describe('zcodeControls', () => {
-  const question = { type: WORKSPACE_TRUST_CONTROL_TYPE.Question, path: '/work/project', configuration: ['hooks'] }
+  const question = {
+    type: WORKSPACE_TRUST_CONTROL_TYPE.Question,
+    path: '/work/project',
+    configuration: ['hooks'],
+  }
   const permission = {
     method: ZCODE_METHOD.RequestPermission,
-    request: { tool_name: ZCODE_TOOL.Bash, input: { command: 'ls' } },
-    params: { options: [{ optionId: 'allow', name: 'Allow' }, { optionId: 'deny', name: 'Deny' }] },
+    request: {
+      tool_name: ZCODE_TOOL.Bash,
+      input: { command: 'ls' },
+    },
+    params: {
+      options: [
+        { optionId: 'allow', name: 'Allow' },
+        { optionId: 'deny', name: 'Deny' },
+      ],
+    },
   }
 
   it('draws the hook-trust question with the name of the agent', () => {
@@ -40,7 +52,11 @@ describe('zcodeControls', () => {
     await zcodeControls.sendPermissionOption?.(onRespond, 'workspace-trust:session-1', optionId)
     expect(decode(onRespond.mock.calls[0]?.[0])).toEqual({
       type: 'control_response',
-      response: { subtype: 'success', request_id: 'workspace-trust:session-1', response: { behavior } },
+      response: {
+        subtype: 'success',
+        request_id: 'workspace-trust:session-1',
+        response: { behavior },
+      },
     })
   })
 
@@ -48,7 +64,10 @@ describe('zcodeControls', () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
     await zcodeControls.sendPermissionOption?.(onRespond, 'req-1', 'allow_once')
     expect(decode(onRespond.mock.calls[0]?.[0])).toMatchObject({
-      response: { request_id: 'req-1', response: { behavior: 'allow' } },
+      response: {
+        request_id: 'req-1',
+        response: { behavior: 'allow' },
+      },
     })
   })
 
@@ -60,7 +79,13 @@ describe('zcodeControls', () => {
       requestId: 'workspace-trust:session-1',
       claimToken: '',
       request: question,
-      response: { type: 'control_response', response: { request_id: 'workspace-trust:session-1', response: { decision } } },
+      response: {
+        type: 'control_response',
+        response: {
+          request_id: 'workspace-trust:session-1',
+          response: { decision },
+        },
+      },
     })).toEqual({ kind: 'label', text })
   })
 })

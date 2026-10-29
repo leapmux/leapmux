@@ -28,15 +28,26 @@ lettaTest('keeps the native shell preview, output path, and every phase record a
       const original = lettaNativeFinalReturn(frames, capture.call.id, excerpt)
       const readToolRecords = (messages: typeof capture.snapshot.messages) => messages.filter(message => message.agentSessionId === capture.agent.agentSessionId).flatMap((message) => {
         const frame = nativeMessageBody(message)
-        return isObject(frame) && frame[LETTA_DELTA_FIELD.ToolCallID] === capture.nativeCallId ? [{ message, frame }] : []
+        return isObject(frame) && frame[LETTA_DELTA_FIELD.ToolCallID] === capture.nativeCallId
+          ? [
+              { message, frame },
+            ]
+          : []
       })
       const records = readToolRecords(capture.snapshot.messages)
-      const recordWire = (messages: typeof records) => messages.map(record => ({ id: record.message.id, content: Buffer.from(record.message.content).toString('base64'), compression: record.message.contentCompression }))
+      const recordWire = (messages: typeof records) => messages.map(record => ({
+        id: record.message.id,
+        content: Buffer.from(record.message.content).toString('base64'),
+        compression: record.message.contentCompression,
+      }))
       const progress = records.filter(record => lettaNativeProgressReturn(record.frame))
       const lifecycle = records.filter(record => record.frame[LETTA_DELTA_FIELD.MessageType] === LETTA_DELTA_KIND.ClientToolEnd)
       expect(progress.length).toBeGreaterThan(0)
       expect(lifecycle).toHaveLength(1)
-      for (const record of [...progress, ...lifecycle]) {
+      for (const record of [
+        ...progress,
+        ...lifecycle,
+      ]) {
         expect(record.frame[LETTA_DELTA_FIELD.RunID]).toBe(original[LETTA_DELTA_FIELD.RunID])
         expect(record.frame[LETTA_DELTA_FIELD.ToolCallID]).toBe(capture.nativeCallId)
       }
@@ -47,7 +58,15 @@ lettaTest('keeps the native shell preview, output path, and every phase record a
       expect(records.slice(endIndex + 1).every(record => !lettaNativeProgressReturn(record.frame))).toBe(true)
       expect(records.at(-1)?.frame).toEqual(original)
       const wire = recordWire(records)
-      await testInfo.attach('letta-code-native-tool-phase-records', { body: JSON.stringify({ sessionId: capture.agent.agentSessionId, callId: capture.nativeCallId, runId: original[LETTA_DELTA_FIELD.RunID], wire }), contentType: 'application/json' })
+      await testInfo.attach('letta-code-native-tool-phase-records', {
+        body: JSON.stringify({
+          sessionId: capture.agent.agentSessionId,
+          callId: capture.nativeCallId,
+          runId: original[LETTA_DELTA_FIELD.RunID],
+          wire,
+        }),
+        contentType: 'application/json',
+      })
       expect(JSON.stringify(original)).not.toContain(output.omittedMarker)
       const path = lettaOutputFilePath(excerpt, home, capture.agent.workingDir)
       assertPrivateNativePath(path, home)
@@ -71,7 +90,18 @@ lettaTest('keeps the native shell preview, output path, and every phase record a
       const phases = readPhases(capture.snapshot)
       expect(phases.final.frame).toEqual(original)
       expect(excerpt).not.toContain(output.omittedMarker)
-      await testInfo.attach('letta-native-output-path-preview', { body: JSON.stringify({ path, agentId: capture.agent.id, sessionId: capture.agent.agentSessionId, callId: capture.nativeCallId, previewText: excerpt, frame: original, wire }), contentType: 'application/json' })
+      await testInfo.attach('letta-native-output-path-preview', {
+        body: JSON.stringify({
+          path,
+          agentId: capture.agent.id,
+          sessionId: capture.agent.agentSessionId,
+          callId: capture.nativeCallId,
+          previewText: excerpt,
+          frame: original,
+          wire,
+        }),
+        contentType: 'application/json',
+      })
       expect(excerpt).toContain(output.firstMarker)
       expect(excerpt).not.toContain(output.lastMarker)
       await proveNativeToolOutputFilePaths({

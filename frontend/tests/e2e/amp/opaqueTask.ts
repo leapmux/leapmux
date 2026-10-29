@@ -43,7 +43,9 @@ export async function openOpaqueAmpTask(context: ManagedNativeScenarioContext, o
   const marker = uniqueMarker()
   const gate = `amp-opaque-${marker}`
   const rule = options.ruleName ?? `amp-opaque-child-${marker}`
-  const progress = options.report ? options.report.slice(0, 10) : `AMPCHILDPROGRESS${marker}`
+  const progress = options.report
+    ? options.report.slice(0, 10)
+    : `AMPCHILDPROGRESS${marker}`
   const report = options.report ?? `${progress} The actual remote task reports forty-two.`
   const callId = options.callId ?? `amp-task-${marker}`
   const task = options.task ?? { description: 'Run the remote counting task', prompt: `AMPREMOTETASK${marker} Count to forty-two and report the result.` }
@@ -52,9 +54,29 @@ export async function openOpaqueAmpTask(context: ManagedNativeScenarioContext, o
     await context.modelScript.releaseGateIfHeld(gate)
   }
   return cleanupOnFailure(async () => {
-    await context.modelScript.rule({ name: rule, when: { user: task.prompt }, respond: { text: report, stream: { chunkChars: progress.length, delayMs: 0, gates: [{ afterChunk: 1, name: gate }] } } })
+    await context.modelScript.rule({
+      name: rule,
+      when: { user: task.prompt },
+      respond: {
+        text: report,
+        stream: {
+          chunkChars: progress.length,
+          delayMs: 0,
+          gates: [
+            { afterChunk: 1, name: gate },
+          ],
+        },
+      },
+    })
     const start = await context.modelScript.queue(
-      { toolCalls: [spawnSubagentToolCall(context.provider, callId, { description: task.description, prompt: context.modelScript.prompt(task.prompt) })] },
+      {
+        toolCalls: [
+          spawnSubagentToolCall(context.provider, callId, {
+            description: task.description,
+            prompt: context.modelScript.prompt(task.prompt),
+          }),
+        ],
+      },
       { text: options.parentAnswer ?? 'The parent consumed the actual remote report.' },
     )
     await sendMessage(context.page, context.modelScript.prompt(options.parentPrompt ?? 'Start the remote counting task and wait for its report.'))

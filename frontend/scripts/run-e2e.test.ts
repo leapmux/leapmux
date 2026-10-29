@@ -17,9 +17,15 @@ import { spawnWindowsCommandJob } from './windowsCommandJob'
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
   const spawn = vi.fn()
-  return { ...actual, spawn, default: { ...actual, spawn } }
+  return {
+    ...actual,
+    spawn,
+    default: { ...actual, spawn },
+  }
 })
-vi.mock('./resolve-task-bin', () => ({ resolveTaskBin: () => 'task' }))
+vi.mock('./resolve-task-bin', () => ({
+  resolveTaskBin: () => 'task',
+}))
 // The Windows job launcher wraps every owned command in a PowerShell host, so this
 // orchestration test would record that host instead of Task's own command line. The
 // wrapper has its own native integration suite; here the logical spawn is the subject.
@@ -50,7 +56,10 @@ vi.mock('./windowsCommandJob', async () => {
 })
 vi.mock('../tests/e2e/helpers/runBinary', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../tests/e2e/helpers/runBinary')>()
-  return { ...actual, copyRunBinary: vi.fn(actual.copyRunBinary) }
+  return {
+    ...actual,
+    copyRunBinary: vi.fn(actual.copyRunBinary),
+  }
 })
 
 const calls: { command: string, args: string[], env: NodeJS.ProcessEnv }[] = []
@@ -73,7 +82,11 @@ it('keeps actual short runtime roots separate from readable test-result shard pa
       return
     const runtime = dirname(env.LEAPMUX_E2E_NONCE_PATH)
     const artifact = env.LEAPMUX_E2E_OUTPUT_FILE_DIR ?? ''
-    observed.push({ runtime, binary: runBinaryPath(runtime), artifact })
+    observed.push({
+      runtime,
+      binary: runBinaryPath(runtime),
+      artifact,
+    })
   })
   expect(await runE2E(['--workers=2'], projectRoot)).toBe(0)
   const shards = observed.filter(value => value.artifact.includes('shard-'))
@@ -107,8 +120,12 @@ it('states the run root that holds each shard directory, and none to the build o
   vi.stubEnv(RUN_ROOT_ENV, '/stale/run-root/of/a/caller')
   const stated: { runtime: string, runRoot: string | undefined }[] = []
   processes([0, 0], (env) => {
-    if (env.LEAPMUX_E2E_NONCE_PATH && env.LEAPMUX_E2E_OUTPUT_FILE_DIR?.includes('shard-'))
-      stated.push({ runtime: dirname(env.LEAPMUX_E2E_NONCE_PATH), runRoot: env[RUN_ROOT_ENV] })
+    if (env.LEAPMUX_E2E_NONCE_PATH && env.LEAPMUX_E2E_OUTPUT_FILE_DIR?.includes('shard-')) {
+      stated.push({
+        runtime: dirname(env.LEAPMUX_E2E_NONCE_PATH),
+        runRoot: env[RUN_ROOT_ENV],
+      })
+    }
   })
   expect(await runE2E(['--workers=2'], projectRoot)).toBe(0)
   expect(stated).toHaveLength(2)
@@ -214,18 +231,35 @@ function signalCommandGroup(pid: number, signal: string | number = 'SIGTERM'): t
 
 function selectedReport() {
   return {
-    config: { projects: [{ name: 'mock-chromium', testDir: join(projectRoot, 'frontend/tests/e2e') }] },
+    config: {
+      projects: [
+        {
+          name: 'mock-chromium',
+          testDir: join(projectRoot, 'frontend/tests/e2e'),
+        },
+      ],
+    },
     suites: ['first.spec.ts', 'second.spec.ts'].map(file => ({
       title: file,
       file,
-      specs: [{
-        id: file,
-        title: 'a selected test',
-        file,
-        line: 1,
-        column: 1,
-        tests: [{ projectId: 'mock-chromium', projectName: 'mock-chromium', results: [{ status: 'passed', duration: 125 }] }],
-      }],
+      specs: [
+        {
+          id: file,
+          title: 'a selected test',
+          file,
+          line: 1,
+          column: 1,
+          tests: [
+            {
+              projectId: 'mock-chromium',
+              projectName: 'mock-chromium',
+              results: [
+                { status: 'passed', duration: 125 },
+              ],
+            },
+          ],
+        },
+      ],
     })),
     errors: [],
   }
@@ -269,7 +303,12 @@ function partialLaunchFailure(options: { stopFailure?: Error, signal?: boolean, 
   const copy = vi.mocked(copyRunBinary).getMockImplementation()
   if (!completed || !copy)
     throw new Error('The controlled launcher fixture is absent.')
-  const state = { stopped: false, directory: '', trackedRecord: '', setupFailure: new Error('The second shard copy failed.') }
+  const state = {
+    stopped: false,
+    directory: '',
+    trackedRecord: '',
+    setupFailure: new Error('The second shard copy failed.'),
+  }
   const exited = deferred<void>()
   let child: ChildProcess | undefined
   vi.mocked(copyRunBinary).mockImplementationOnce(copy).mockImplementationOnce(copy).mockImplementationOnce(() => {
@@ -379,11 +418,19 @@ function heldSerialCommand(options: { stopFailure?: Error, inheritedPipe?: boole
     finish()
     await completion
   })
-  return { state, launched: launched.promise, stopAttempted: stopAttempted.promise, completion, finish }
+  return {
+    state,
+    launched: launched.promise,
+    stopAttempted: stopAttempted.promise,
+    completion,
+    finish,
+  }
 }
 
 function failureLeaves(error: unknown): unknown[] {
-  return error instanceof AggregateError ? error.errors.flatMap(failureLeaves) : [error]
+  return error instanceof AggregateError
+    ? error.errors.flatMap(failureLeaves)
+    : [error]
 }
 
 describe('end-to-end launcher', () => {
@@ -490,7 +537,10 @@ describe('end-to-end launcher', () => {
     vi.stubEnv('PLAYWRIGHT_LAST_RUN_OUTPUT_FILE', destination)
     const state = join(projectRoot, 'frontend', destination || join('public-output', '.last-run.json'))
     mkdirSync(dirname(state), { recursive: true })
-    writeFileSync(state, JSON.stringify({ status: 'failed', failedTests: ['test-id'] }))
+    writeFileSync(state, JSON.stringify({
+      status: 'failed',
+      failedTests: ['test-id'],
+    }))
     processes()
     expect(await runE2E(['--workers=1', '--last-failed', '--output=public-output'], projectRoot)).toBe(0)
     const child = calls.find(call => call.args.includes('test'))
@@ -532,7 +582,10 @@ describe('end-to-end launcher', () => {
   })
 
   it('removes signal handlers even when child termination fails', async () => {
-    const listeners = { interrupt: process.listenerCount('SIGINT'), terminate: process.listenerCount('SIGTERM') }
+    const listeners = {
+      interrupt: process.listenerCount('SIGINT'),
+      terminate: process.listenerCount('SIGTERM'),
+    }
     const originalInterrupts = process.listeners('SIGINT')
     const originalTerminates = process.listeners('SIGTERM')
     const failure = new Error('The child refuses the stop signal.')
@@ -619,20 +672,36 @@ describe('end-to-end launcher', () => {
       suites: files.map(file => ({
         title: file,
         file,
-        specs: [{
-          id: file,
-          title: 'a selected test',
-          file,
-          line: 1,
-          column: 1,
-          tests: [{
-            projectId: 'mock-chromium',
-            projectName: 'mock-chromium',
-            ...(failedFiles.includes(file)
-              ? { status: 'unexpected', expectedStatus: 'passed', results: [{ status: 'failed', duration: 5 }] }
-              : { status: 'expected', expectedStatus: 'passed', results: [{ status: 'passed', duration: 5 }] }),
-          }],
-        }],
+        specs: [
+          {
+            id: file,
+            title: 'a selected test',
+            file,
+            line: 1,
+            column: 1,
+            tests: [
+              {
+                projectId: 'mock-chromium',
+                projectName: 'mock-chromium',
+                ...(failedFiles.includes(file)
+                  ? {
+                      status: 'unexpected',
+                      expectedStatus: 'passed',
+                      results: [
+                        { status: 'failed', duration: 5 },
+                      ],
+                    }
+                  : {
+                      status: 'expected',
+                      expectedStatus: 'passed',
+                      results: [
+                        { status: 'passed', duration: 5 },
+                      ],
+                    }),
+              },
+            ],
+          },
+        ],
       })),
     }
   }
@@ -659,7 +728,10 @@ describe('end-to-end launcher', () => {
     }) as typeof process.stdout.write
     vi.spyOn(process.stdout, 'write').mockImplementation(collect(stdout))
     vi.spyOn(process.stderr, 'write').mockImplementation(collect(stderr))
-    return { stdout: () => stdout.join(''), stderr: () => stderr.join('') }
+    return {
+      stdout: () => stdout.join(''),
+      stderr: () => stderr.join(''),
+    }
   }
 
   function emptyReport() {
@@ -667,7 +739,10 @@ describe('end-to-end launcher', () => {
   }
 
   it('shares the last-failed state with every parallel shard through private copies', async () => {
-    const content = JSON.stringify({ status: 'failed', failedTests: ['test-id'] })
+    const content = JSON.stringify({
+      status: 'failed',
+      failedTests: ['test-id'],
+    })
     writeLastRunState(JSON.parse(content))
     processes()
     expect(await runE2E(['--workers=2', '--last-failed'], projectRoot)).toBe(0)
@@ -695,8 +770,14 @@ describe('end-to-end launcher', () => {
   })
 
   it.each([
-    { args: ['--last-failed'], code: 1 },
-    { args: ['--last-failed', '--pass-with-no-tests'], code: 0 },
+    {
+      args: ['--last-failed'],
+      code: 1,
+    },
+    {
+      args: ['--last-failed', '--pass-with-no-tests'],
+      code: 0,
+    },
   ])('settles a parallel last-failed run without failed tests before any build starts: %j', async ({ args, code }) => {
     writeLastRunState({ status: 'passed', failedTests: [] })
     const before = readFileSync(lastRunStateFile(), 'utf8')
@@ -707,12 +788,39 @@ describe('end-to-end launcher', () => {
   })
 
   it.each([
-    { args: ['--last-failed'], code: 1, stream: 'stderr', message: 'No selected E2E test matches a failed test in', hint: 'Add --pass-with-no-tests to accept an empty selection.' },
-    { args: ['--last-failed', '--pass-with-no-tests'], code: 0, stream: 'stdout', message: 'No selected E2E test matches a failed test in', hint: '' },
-    { args: ['--grep', 'no match'], code: 1, stream: 'stderr', message: 'No selected E2E test files exist.', hint: 'Add --pass-with-no-tests to accept an empty selection.' },
-    { args: ['--grep', 'no match', '--pass-with-no-tests'], code: 0, stream: 'stdout', message: 'No selected E2E test files exist.', hint: '' },
+    {
+      args: ['--last-failed'],
+      code: 1,
+      stream: 'stderr',
+      message: 'No selected E2E test matches a failed test in',
+      hint: 'Add --pass-with-no-tests to accept an empty selection.',
+    },
+    {
+      args: ['--last-failed', '--pass-with-no-tests'],
+      code: 0,
+      stream: 'stdout',
+      message: 'No selected E2E test matches a failed test in',
+      hint: '',
+    },
+    {
+      args: ['--grep', 'no match'],
+      code: 1,
+      stream: 'stderr',
+      message: 'No selected E2E test files exist.',
+      hint: 'Add --pass-with-no-tests to accept an empty selection.',
+    },
+    {
+      args: ['--grep', 'no match', '--pass-with-no-tests'],
+      code: 0,
+      stream: 'stdout',
+      message: 'No selected E2E test files exist.',
+      hint: '',
+    },
   ] as const)('keeps the saved failed tests when discovery selects no test file: %j', async ({ args, code, stream, message, hint }) => {
-    const saved = { status: 'failed', failedTests: ['first-id', 'second-id'] }
+    const saved = {
+      status: 'failed',
+      failedTests: ['first-id', 'second-id'],
+    }
     writeLastRunState(saved)
     const before = readFileSync(lastRunStateFile(), 'utf8')
     discoveredReport = emptyReport
@@ -733,7 +841,10 @@ describe('end-to-end launcher', () => {
   })
 
   it('assigns the selected files to balanced shards from the recorded duration history', async () => {
-    writeDurationHistory({ 'first.spec.ts': { durationMs: 10, cases: 1 }, 'second.spec.ts': { durationMs: 5000, cases: 1 } })
+    writeDurationHistory({
+      'first.spec.ts': { durationMs: 10, cases: 1 },
+      'second.spec.ts': { durationMs: 5000, cases: 1 },
+    })
     processes()
     expect(await runE2E(['--workers=2'], projectRoot)).toBe(0)
     const children = shardChildren()
@@ -748,11 +859,20 @@ describe('end-to-end launcher', () => {
     expect(lists).toEqual(['second.spec.ts\n', 'first.spec.ts\n'])
     // The merged run replaces the estimates of the measured files for the next plan.
     const history: unknown = JSON.parse(readFileSync(join(projectRoot, 'frontend/test-results/.file-durations.json'), 'utf8'))
-    expect(history).toEqual({ version: 1, files: { 'first.spec.ts': { durationMs: 125, cases: 1 }, 'second.spec.ts': { durationMs: 125, cases: 1 } } })
+    expect(history).toEqual({
+      version: 1,
+      files: {
+        'first.spec.ts': { durationMs: 125, cases: 1 },
+        'second.spec.ts': { durationMs: 125, cases: 1 },
+      },
+    })
   })
 
   it('keeps Playwright\'s own shard split when the caller turns balancing off', async () => {
-    writeDurationHistory({ 'first.spec.ts': { durationMs: 10, cases: 1 }, 'second.spec.ts': { durationMs: 5000, cases: 1 } })
+    writeDurationHistory({
+      'first.spec.ts': { durationMs: 10, cases: 1 },
+      'second.spec.ts': { durationMs: 5000, cases: 1 },
+    })
     processes()
     expect(await runE2E(['--workers=2', '--balance=off'], projectRoot)).toBe(0)
     const children = shardChildren()
@@ -820,7 +940,10 @@ describe('end-to-end launcher', () => {
 
   it('reruns the failed files when the combined report is not older than the last-run state', async () => {
     writeCombinedReport(['second.spec.ts'])
-    writeLastRunState({ status: 'failed', failedTests: ['second-id'] })
+    writeLastRunState({
+      status: 'failed',
+      failedTests: ['second-id'],
+    })
     ageFile(lastRunStateFile(), 60)
     processes()
     expect(await runE2E(['--workers=2', '--failed-files'], projectRoot)).toBe(0)
@@ -839,7 +962,10 @@ describe('end-to-end launcher', () => {
   it('writes the combined report after the merge replaced the state, so the next --failed-files run accepts it', async () => {
     mergedReport = () => {
       // Playwright's merge reporter replaces the last-run state before the launcher saves the report.
-      writeLastRunState({ status: 'failed', failedTests: ['second-id'] })
+      writeLastRunState({
+        status: 'failed',
+        failedTests: ['second-id'],
+      })
       return combinedReport(['second.spec.ts'])
     }
     processes()
@@ -856,7 +982,10 @@ describe('end-to-end launcher', () => {
   it('keeps the preceding combined report when the merged report misses a selected case', async () => {
     writeCombinedReport(['first.spec.ts'])
     const preceding = readFileSync(combinedReportFile(), 'utf8')
-    mergedReport = () => ({ ...selectedReport(), suites: selectedReport().suites.slice(0, 1) })
+    mergedReport = () => ({
+      ...selectedReport(),
+      suites: selectedReport().suites.slice(0, 1),
+    })
     processes()
     await expect(runE2E(['--workers=2'], projectRoot)).rejects.toThrow('does not contain every selected test case exactly once')
     expect(readFileSync(combinedReportFile(), 'utf8')).toBe(preceding)
@@ -894,16 +1023,28 @@ describe('end-to-end launcher', () => {
   })
 
   it('saves the duration of the files that another run recorded while this run went on', async () => {
-    writeDurationHistory({ 'first.spec.ts': { durationMs: 10, cases: 1 } })
+    writeDurationHistory({
+      'first.spec.ts': { durationMs: 10, cases: 1 },
+    })
     mergedReport = () => {
       // A second launcher run that shares this output root ends first and saves its own measurement.
-      writeDurationHistory({ 'first.spec.ts': { durationMs: 10, cases: 1 }, 'other.spec.ts': { durationMs: 700, cases: 2 } })
+      writeDurationHistory({
+        'first.spec.ts': { durationMs: 10, cases: 1 },
+        'other.spec.ts': { durationMs: 700, cases: 2 },
+      })
       return selectedReport()
     }
     processes()
     expect(await runE2E(['--workers=2'], projectRoot)).toBe(0)
     const history: unknown = JSON.parse(readFileSync(durationHistoryFile(), 'utf8'))
-    expect(history).toEqual({ version: 1, files: { 'first.spec.ts': { durationMs: 125, cases: 1 }, 'other.spec.ts': { durationMs: 700, cases: 2 }, 'second.spec.ts': { durationMs: 125, cases: 1 } } })
+    expect(history).toEqual({
+      version: 1,
+      files: {
+        'first.spec.ts': { durationMs: 125, cases: 1 },
+        'other.spec.ts': { durationMs: 700, cases: 2 },
+        'second.spec.ts': { durationMs: 125, cases: 1 },
+      },
+    })
   })
 
   it('warns and keeps the result of the run when the duration history cannot be saved', async () => {
@@ -1050,8 +1191,17 @@ describe('end-to-end launcher', () => {
       mkdirSync(directory)
       // Git exits with status 128 when it finds no repository. A failure for another reason, such as an absent git executable, does not give that status.
       expect(() => execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: directory, env, stdio: 'ignore' })).toThrow(expect.objectContaining({ status: 128 }))
-      execFileSync('git', ['-c', 'init.templateDir=', 'init', '--quiet'], { cwd: directory, env, stdio: 'ignore' })
-      for (const [key, value] of [['core.fsmonitor', 'false'], ['gc.auto', '0'], ['maintenance.auto', 'false']])
+      execFileSync('git', [
+        '-c',
+        'init.templateDir=',
+        'init',
+        '--quiet',
+      ], { cwd: directory, env, stdio: 'ignore' })
+      for (const [key, value] of [
+        ['core.fsmonitor', 'false'],
+        ['gc.auto', '0'],
+        ['maintenance.auto', 'false'],
+      ])
         execFileSync('git', ['config', key!, value!], { cwd: directory, env, stdio: 'ignore' })
       const output = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: directory, env, encoding: 'utf8' })
       expect(resolve(output.trim())).toBe(directory)

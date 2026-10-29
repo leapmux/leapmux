@@ -7,7 +7,16 @@ import { mcpProbeServer } from './mcpProbeServer'
 
 let homeDir: string
 const echoServer = mcpProbeServer('echo_probe', '/srv/echo.mjs')
-const options = () => ({ homeDir, baseURL: 'http://127.0.0.1:4567/v1', modelKey: 'unit-key', providerID: 'unit-provider', modelID: 'unit-model', mcpEchoServer: echoServer })
+function options() {
+  return {
+    homeDir,
+    baseURL: 'http://127.0.0.1:4567/v1',
+    modelKey: 'unit-key',
+    providerID: 'unit-provider',
+    modelID: 'unit-model',
+    mcpEchoServer: echoServer,
+  }
+}
 
 beforeEach(() => {
   const scratch = resolve(import.meta.dirname, '../../../../.tmp')
@@ -22,14 +31,20 @@ afterEach(() => {
 
 describe('createClineEnvironment', () => {
   it.each([false, true])('writes the configured thinking preference %s and effort into the private provider profile', (enabled) => {
-    const configured = { ...options(), reasoning: { enabled, effort: 'low' } }
+    const configured = {
+      ...options(),
+      reasoning: { enabled, effort: 'low' },
+    }
     const env = createClineEnvironment(configured)
     const providers = JSON.parse(readFileSync(join(env.CLINE_DATA_DIR!, 'settings', 'providers.json'), 'utf8'))
     expect(providers.providers['unit-provider'].settings.reasoning).toEqual({ enabled, effort: 'low' })
   })
 
   it('selects the given provider and model with a UTC update time, which Cline requires', () => {
-    vi.useFakeTimers({ now: new Date('2026-10-06T01:02:03.004Z'), toFake: ['Date'] })
+    vi.useFakeTimers({
+      now: new Date('2026-10-06T01:02:03.004Z'),
+      toFake: ['Date'],
+    })
     const env = createClineEnvironment(options())
     const settings = join(env.CLINE_DATA_DIR!, 'settings')
     expect(JSON.parse(readFileSync(join(settings, 'providers.json'), 'utf8'))).toEqual({
@@ -38,7 +53,12 @@ describe('createClineEnvironment', () => {
       modes: {},
       providers: {
         'unit-provider': {
-          settings: { provider: 'unit-provider', apiKey: 'unit-key', model: 'unit-model', baseUrl: 'http://127.0.0.1:4567/v1' },
+          settings: {
+            provider: 'unit-provider',
+            apiKey: 'unit-key',
+            model: 'unit-model',
+            baseUrl: 'http://127.0.0.1:4567/v1',
+          },
           updatedAt: '2026-10-06T01:02:03.004Z',
           tokenSource: 'manual',
         },
@@ -56,7 +76,15 @@ describe('createClineEnvironment', () => {
     const settings = join(createClineEnvironment(options()).CLINE_DATA_DIR!, 'settings')
     expect(JSON.parse(readFileSync(join(settings, 'global-settings.json'), 'utf8'))).toEqual({ telemetryOptOut: true, autoUpdateEnabled: false })
     expect(JSON.parse(readFileSync(join(settings, 'cline_mcp_settings.json'), 'utf8'))).toEqual({
-      mcpServers: { echo_probe: { transport: { type: 'stdio', command: echoServer.command, args: ['/srv/echo.mjs'] } } },
+      mcpServers: {
+        echo_probe: {
+          transport: {
+            type: 'stdio',
+            command: echoServer.command,
+            args: ['/srv/echo.mjs'],
+          },
+        },
+      },
     })
   })
 

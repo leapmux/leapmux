@@ -88,7 +88,9 @@ function makeMockTerminalInstance(): TerminalInstance {
     textarea,
     attachCustomKeyEventHandler: vi.fn(),
     // Real xterm's onData returns an IDisposable; the IME layer disposes it.
-    onData: vi.fn(() => ({ dispose: () => {} })),
+    onData: vi.fn(() => ({
+      dispose: () => {},
+    })),
     onTitleChange: vi.fn(),
     onBell: vi.fn((cb: () => void) => {
       bellHandler = cb
@@ -99,7 +101,9 @@ function makeMockTerminalInstance(): TerminalInstance {
     }),
     reset: vi.fn(),
     write: vi.fn((data: string | Uint8Array, cb?: () => void) => {
-      const text = typeof data === 'string' ? data : new TextDecoder().decode(data)
+      const text = typeof data === 'string'
+        ? data
+        : new TextDecoder().decode(data)
       if (text.includes('\x07')) {
         bellHandler?.()
       }
@@ -123,8 +127,12 @@ function makeMockTerminalInstance(): TerminalInstance {
 
   return {
     terminal,
-    fitAddon: { fit: vi.fn() } as any,
-    serializeAddon: { serialize: vi.fn() } as any,
+    fitAddon: {
+      fit: vi.fn(),
+    } as any,
+    serializeAddon: {
+      serialize: vi.fn(),
+    } as any,
     suppressInput: false,
     // WebGL-ineligible so the shared pool never tries to attach a real context
     // to this mock during the on-screen effect; the acquire/release wiring is
@@ -153,7 +161,11 @@ describe('TerminalView', () => {
     const acquireSpy = vi.spyOn(webglPool, 'acquire')
     const releaseSpy = vi.spyOn(webglPool, 'release')
 
-    const baseTab = { type: TabType.TERMINAL as const, workspaceId: 'ws-1', screen: new Uint8Array() }
+    const baseTab = {
+      type: TabType.TERMINAL as const,
+      workspaceId: 'ws-1',
+      screen: new Uint8Array(),
+    }
     render(() => (
       <PreferencesProvider>
         <TerminalView
@@ -204,7 +216,9 @@ describe('TerminalView', () => {
       title,
       screen: new Uint8Array(),
     })
-    const [terminals, setTerminals] = createSignal<TerminalTab[]>([tab('bash')])
+    const [terminals, setTerminals] = createSignal<TerminalTab[]>([
+      tab('bash'),
+    ])
 
     const { container } = render(() => (
       <PreferencesProvider>
@@ -228,7 +242,9 @@ describe('TerminalView', () => {
 
     // A fresh object with the SAME id -- exactly what the join hands back after any
     // metadata write on this tab.
-    setTerminals([tab('zsh — ~/repo')])
+    setTerminals([
+      tab('zsh — ~/repo'),
+    ])
     await Promise.resolve()
 
     expect(paneFor('term-1'), 'the container is the SAME DOM node').toBe(before)
@@ -253,7 +269,9 @@ describe('TerminalView', () => {
       <PreferencesProvider>
         <TerminalView
           confirmLink={confirmLink}
-          terminals={[tab()]}
+          terminals={[
+            tab(),
+          ]}
           activeTerminalId="term-cached"
           visible
           tileFocused={false}
@@ -295,14 +313,16 @@ describe('TerminalView', () => {
       <PreferencesProvider>
         <TerminalView
           confirmLink={stubConfirmLink}
-          terminals={[{
-            id: 'term-1',
-            type: TabType.TERMINAL,
-            workspaceId: 'ws-1',
-            status: TerminalStatus.STARTING,
-            startupMessage: 'Starting zsh…',
-            screen: new Uint8Array(),
-          }]}
+          terminals={[
+            {
+              id: 'term-1',
+              type: TabType.TERMINAL,
+              workspaceId: 'ws-1',
+              status: TerminalStatus.STARTING,
+              startupMessage: 'Starting zsh…',
+              screen: new Uint8Array(),
+            },
+          ]}
           activeTerminalId="term-1"
           visible
           tileFocused={false}
@@ -325,13 +345,15 @@ describe('TerminalView', () => {
       <PreferencesProvider>
         <TerminalView
           confirmLink={stubConfirmLink}
-          terminals={[{
-            id: 'term-1',
-            type: TabType.TERMINAL,
-            workspaceId: 'ws-1',
-            status: TerminalStatus.STARTING,
-            screen: new Uint8Array(),
-          }]}
+          terminals={[
+            {
+              id: 'term-1',
+              type: TabType.TERMINAL,
+              workspaceId: 'ws-1',
+              status: TerminalStatus.STARTING,
+              screen: new Uint8Array(),
+            },
+          ]}
           activeTerminalId="term-1"
           visible
           tileFocused={false}
@@ -354,13 +376,15 @@ describe('TerminalView', () => {
       <PreferencesProvider>
         <TerminalView
           confirmLink={stubConfirmLink}
-          terminals={[{
-            id: 'term-exited-empty',
-            type: TabType.TERMINAL,
-            workspaceId: 'ws-1',
-            status: TerminalStatus.EXITED,
-            screen: new Uint8Array(),
-          }]}
+          terminals={[
+            {
+              id: 'term-exited-empty',
+              type: TabType.TERMINAL,
+              workspaceId: 'ws-1',
+              status: TerminalStatus.EXITED,
+              screen: new Uint8Array(),
+            },
+          ]}
           activeTerminalId="term-exited-empty"
           visible
           tileFocused={false}
@@ -393,7 +417,11 @@ describe('TerminalView', () => {
       .mockReturnValueOnce(instanceA)
       .mockReturnValueOnce(instanceB)
 
-    const baseTab = { type: TabType.TERMINAL as const, workspaceId: 'ws-1', screen: new Uint8Array() }
+    const baseTab = {
+      type: TabType.TERMINAL as const,
+      workspaceId: 'ws-1',
+      screen: new Uint8Array(),
+    }
     const [terminals, setTerminals] = createSignal<TerminalTab[]>([
       { id: 'dispose-test-A', ...baseTab },
       { id: 'dispose-test-B', ...baseTab },
@@ -424,7 +452,9 @@ describe('TerminalView', () => {
     // alone does not auto-dispose (the id may have moved to another tile).
     const releaseSpy = vi.spyOn(webglPool, 'release')
     disposeTerminalInstance('dispose-test-A')
-    setTerminals([{ id: 'dispose-test-B', ...baseTab }])
+    setTerminals([
+      { id: 'dispose-test-B', ...baseTab },
+    ])
 
     expect(getTerminalInstance('dispose-test-A')).toBeUndefined()
     expect(instanceA.dispose).toHaveBeenCalledTimes(1)
@@ -443,7 +473,11 @@ describe('TerminalView', () => {
       .mockReturnValueOnce(instanceA)
       .mockReturnValueOnce(instanceB)
 
-    const baseTab = { type: TabType.TERMINAL as const, workspaceId: 'ws-1', screen: new Uint8Array() }
+    const baseTab = {
+      type: TabType.TERMINAL as const,
+      workspaceId: 'ws-1',
+      screen: new Uint8Array(),
+    }
     const [activeId, setActiveId] = createSignal('switch-A')
     const acquireSpy = vi.spyOn(webglPool, 'acquire')
     const releaseSpy = vi.spyOn(webglPool, 'release')
@@ -502,12 +536,18 @@ describe('TerminalView', () => {
       applyTheme({ ...DEFAULT_THEME_VALUE, mode: 'light' })
       applyTheme(DEFAULT_THEME_VALUE)
 
-      const baseTab = { type: TabType.TERMINAL as const, workspaceId: 'ws-1', screen: new Uint8Array() }
+      const baseTab = {
+        type: TabType.TERMINAL as const,
+        workspaceId: 'ws-1',
+        screen: new Uint8Array(),
+      }
       render(() => (
         <PreferencesProvider>
           <TerminalView
             confirmLink={stubConfirmLink}
-            terminals={[{ id: 'theme-A', ...baseTab }]}
+            terminals={[
+              { id: 'theme-A', ...baseTab },
+            ]}
             activeTerminalId="theme-A"
             visible
             tileFocused
@@ -583,12 +623,18 @@ describe('TerminalView', () => {
       applyTheme({ ...DEFAULT_THEME_VALUE, mode: 'light' })
       applyTheme(DEFAULT_THEME_VALUE)
 
-      const baseTab = { type: TabType.TERMINAL as const, workspaceId: 'ws-1', screen: new Uint8Array() }
+      const baseTab = {
+        type: TabType.TERMINAL as const,
+        workspaceId: 'ws-1',
+        screen: new Uint8Array(),
+      }
       render(() => (
         <PreferencesProvider>
           <TerminalView
             confirmLink={stubConfirmLink}
-            terminals={[{ id: 'themed-A', ...baseTab }]}
+            terminals={[
+              { id: 'themed-A', ...baseTab },
+            ]}
             activeTerminalId="themed-A"
             visible
             tileFocused
@@ -598,7 +644,9 @@ describe('TerminalView', () => {
           />
           <TerminalView
             confirmLink={stubConfirmLink}
-            terminals={[{ id: 'themed-B', ...baseTab }]}
+            terminals={[
+              { id: 'themed-B', ...baseTab },
+            ]}
             activeTerminalId="themed-B"
             visible
             tileFocused
@@ -654,12 +702,14 @@ describe('TerminalView', () => {
       <PreferencesProvider>
         <TerminalView
           confirmLink={stubConfirmLink}
-          terminals={[{
-            id: 'term-1',
-            type: TabType.TERMINAL,
-            workspaceId: 'ws-1',
-            screen: new Uint8Array(),
-          }]}
+          terminals={[
+            {
+              id: 'term-1',
+              type: TabType.TERMINAL,
+              workspaceId: 'ws-1',
+              screen: new Uint8Array(),
+            },
+          ]}
           activeTerminalId="term-1"
           visible
           tileFocused={false}
@@ -705,13 +755,15 @@ describe('TerminalView', () => {
     mockCreateTerminalInstance.mockReturnValue(instance)
 
     const initialPayload = new TextEncoder().encode('restored screen')
-    const [terminals, setTerminals] = createStore<TerminalTab[]>([{
-      id: 'term-late-screen',
-      type: TabType.TERMINAL,
-      workspaceId: 'ws-1',
+    const [terminals, setTerminals] = createStore<TerminalTab[]>([
+      {
+        id: 'term-late-screen',
+        type: TabType.TERMINAL,
+        workspaceId: 'ws-1',
       // No `screen` key yet — ListTerminals hasn't returned, and an absent
       // optional reads as undefined.
-    }])
+      },
+    ])
 
     render(() => (
       <PreferencesProvider>
@@ -754,13 +806,15 @@ describe('TerminalView', () => {
     mockCreateTerminalInstance.mockReturnValue(instance)
 
     const screen = new TextEncoder().encode('once')
-    const [terminals, setTerminals] = createStore<TerminalTab[]>([{
-      id: 'term-no-double-write',
-      type: TabType.TERMINAL,
-      workspaceId: 'ws-1',
-      screen,
-      title: 'Initial',
-    }])
+    const [terminals, setTerminals] = createStore<TerminalTab[]>([
+      {
+        id: 'term-no-double-write',
+        type: TabType.TERMINAL,
+        workspaceId: 'ws-1',
+        screen,
+        title: 'Initial',
+      },
+    ])
 
     render(() => (
       <PreferencesProvider>
@@ -828,7 +882,14 @@ describe('disposeTerminalInstance scrollback capture', () => {
       <PreferencesProvider>
         <TerminalView
           confirmLink={stubConfirmLink}
-          terminals={[{ id, type: TabType.TERMINAL, workspaceId: 'ws-1', screen: new Uint8Array() } as TerminalTab]}
+          terminals={[
+            {
+              id,
+              type: TabType.TERMINAL,
+              workspaceId: 'ws-1',
+              screen: new Uint8Array(),
+            } as TerminalTab,
+          ]}
           activeTerminalId={id}
           visible
           tileFocused={false}
@@ -853,7 +914,9 @@ describe('disposeTerminalInstance scrollback capture', () => {
       captured.push({
         id,
         text: new TextDecoder().decode(screen),
-        ...(parsedOffset !== undefined ? { parsedOffset } : {}),
+        ...(parsedOffset !== undefined
+          ? { parsedOffset }
+          : {}),
       })
     })
 
@@ -931,7 +994,14 @@ describe('TerminalView IME wiring', () => {
       <PreferencesProvider>
         <TerminalView
           confirmLink={stubConfirmLink}
-          terminals={[{ id, type: TabType.TERMINAL, workspaceId: 'ws-1', screen: new Uint8Array() } as TerminalTab]}
+          terminals={[
+            {
+              id,
+              type: TabType.TERMINAL,
+              workspaceId: 'ws-1',
+              screen: new Uint8Array(),
+            } as TerminalTab,
+          ]}
           activeTerminalId={id}
           visible
           tileFocused={false}
@@ -1114,12 +1184,18 @@ describe('TerminalView focus while a tab is being renamed', () => {
   function renderWith(tabEditing: () => boolean) {
     const instance = makeMockTerminalInstance()
     mockCreateTerminalInstance.mockReturnValue(instance)
-    const baseTab = { type: TabType.TERMINAL as const, workspaceId: 'ws-1', screen: new Uint8Array() }
+    const baseTab = {
+      type: TabType.TERMINAL as const,
+      workspaceId: 'ws-1',
+      screen: new Uint8Array(),
+    }
     render(() => (
       <PreferencesProvider>
         <TerminalView
           confirmLink={stubConfirmLink}
-          terminals={[{ id: 'focus-guard', ...baseTab }]}
+          terminals={[
+            { id: 'focus-guard', ...baseTab },
+          ]}
           activeTerminalId="focus-guard"
           visible
           tileFocused
@@ -1151,12 +1227,18 @@ describe('TerminalView focus while a tab is being renamed', () => {
   it('takes the keyboard when the prop is absent, for a caller with no tab bar', async () => {
     const instance = makeMockTerminalInstance()
     mockCreateTerminalInstance.mockReturnValue(instance)
-    const baseTab = { type: TabType.TERMINAL as const, workspaceId: 'ws-1', screen: new Uint8Array() }
+    const baseTab = {
+      type: TabType.TERMINAL as const,
+      workspaceId: 'ws-1',
+      screen: new Uint8Array(),
+    }
     render(() => (
       <PreferencesProvider>
         <TerminalView
           confirmLink={stubConfirmLink}
-          terminals={[{ id: 'no-tabbar', ...baseTab }]}
+          terminals={[
+            { id: 'no-tabbar', ...baseTab },
+          ]}
           activeTerminalId="no-tabbar"
           visible
           tileFocused
@@ -1190,7 +1272,15 @@ describe('the focused terminal, by id', () => {
     render(() => (
       <PreferencesProvider>
         <TerminalView
-          terminals={[{ id, type: TabType.TERMINAL, workspaceId: 'ws-1', status: TerminalStatus.READY, screen: new Uint8Array() } as TerminalTab]}
+          terminals={[
+            {
+              id,
+              type: TabType.TERMINAL,
+              workspaceId: 'ws-1',
+              status: TerminalStatus.READY,
+              screen: new Uint8Array(),
+            } as TerminalTab,
+          ]}
           activeTerminalId={id}
           visible
           tileFocused={false}

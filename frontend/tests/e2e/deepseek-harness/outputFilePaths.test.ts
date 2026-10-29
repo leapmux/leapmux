@@ -6,8 +6,21 @@ import { readDeepseekHarnessNativeOutput } from './outputFilePaths'
 const path = '/owned/dsh-spill-q1W2e3/session-0123456789ab/0123456789ab-bash.txt'
 const preview = `(Output omitted. Full formatted result stored at: ${path}. Use read_file.)`
 function fixture(text = preview, callId = 'call', sessionId = 'session') {
-  const frame = { type: 'tool/result', data: { message: { toolCallId: callId, content: [{ type: 'text', text }], isError: false } } }
-  return nativeOutputSnapshot([{ frame, spanId: callId, spanType: 'bash' }], { agentSessionId: sessionId })
+  const frame = {
+    type: 'tool/result',
+    data: {
+      message: {
+        toolCallId: callId,
+        content: [
+          { type: 'text', text },
+        ],
+        isError: false,
+      },
+    },
+  }
+  return nativeOutputSnapshot([
+    { frame, spanId: callId, spanType: 'bash' },
+  ], { agentSessionId: sessionId })
 }
 
 describe('readDeepseekHarnessNativeOutput', () => {
@@ -17,14 +30,24 @@ describe('readDeepseekHarnessNativeOutput', () => {
     const result = readDeepseekHarnessNativeOutput(snapshot, 'call')
     expect(result.paths).toEqual([path])
     expect(result.previewText).toBe(preview)
-    expect(result.blocks).toEqual([{ type: 'text', text: preview }])
+    expect(result.blocks).toEqual([
+      { type: 'text', text: preview },
+    ])
     expect(result.supplement).toBeUndefined()
     expect(snapshot.messages[0]!.content).toEqual(before)
   })
 
   it('ignores a root or provider complete-text receipt', () => {
     const snapshot = fixture()
-    const receipt = { outputFile: { sessionId: 'session', toolCallId: 'call', files: [{ path, text: 'Unowned complete bytes' }] } }
+    const receipt = {
+      outputFile: {
+        sessionId: 'session',
+        toolCallId: 'call',
+        files: [
+          { path, text: 'Unowned complete bytes' },
+        ],
+      },
+    }
     snapshot.messages[0]!.supplementalContent = new TextEncoder().encode(JSON.stringify({ ...receipt, provider: receipt }))
     snapshot.messages[0]!.supplementalContentCompression = ContentCompression.NONE
     expect(readDeepseekHarnessNativeOutput(snapshot, 'call').previewText).toBe(preview)

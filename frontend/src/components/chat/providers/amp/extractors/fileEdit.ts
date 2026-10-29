@@ -44,13 +44,17 @@ export function ampFilePathFromUri(uri: string): string {
   catch {
     return uri
   }
-  return /^\/[A-Z]:/i.test(path) ? path.slice(1) : path
+  return /^\/[A-Z]:/i.test(path)
+    ? path.slice(1)
+    : path
 }
 
 /** The changes one `apply_patch` call asked for, or null when its patch text does not parse. */
 export function ampPatchRequestChanges(args: Record<string, unknown>): FileEditDiff[] | null {
   const patch = pickString(args, 'patchText')
-  return patch ? applyPatchFileChanges(patch) : null
+  return patch
+    ? applyPatchFileChanges(patch)
+    : null
 }
 
 /**
@@ -75,7 +79,15 @@ export function ampPatchResultChanges(text: string): FileEditDiff[] | null {
     if (!filePath)
       return []
     const patch = pickString(file, 'diff')
-    return [{ filePath, operation: patchOperation(pickString(file, 'type')), ...(patch ? { patch } : {}) }]
+    return [
+      {
+        filePath,
+        operation: patchOperation(pickString(file, 'type')),
+        ...(patch
+          ? { patch }
+          : {}),
+      },
+    ]
   })
   return fileEditDiffsFromChanges(entries)
 }
@@ -85,7 +97,10 @@ export function ampEditFileChange(args: Record<string, unknown>): FileEditDiff |
   const path = pickString(args, 'path')
   if (!path)
     return null
-  return { ...fileEditDiffFromOldNew(path, pickString(args, 'old_str'), pickString(args, 'new_str')), operation: 'edit' }
+  return {
+    ...fileEditDiffFromOldNew(path, pickString(args, 'old_str'), pickString(args, 'new_str')),
+    operation: 'edit',
+  }
 }
 
 /**
@@ -104,9 +119,15 @@ export function ampEditFileResultChange(text: string, requested: FileEditDiff | 
   catch {
     record = undefined
   }
-  const diff = isObject(record) ? pickString(record, 'diff') : ''
-  const patched = path && diff ? fileEditDiffFromUnifiedPatch(path, stripDiffFence(diff)) : null
-  return patched ? { ...patched, operation: 'edit' } : requested
+  const diff = isObject(record)
+    ? pickString(record, 'diff')
+    : ''
+  const patched = path && diff
+    ? fileEditDiffFromUnifiedPatch(path, stripDiffFence(diff))
+    : null
+  return patched
+    ? { ...patched, operation: 'edit' }
+    : requested
 }
 
 /** The body of a fenced diff block, or the text unchanged when it is not fenced. */
@@ -118,5 +139,7 @@ function stripDiffFence(text: string): string {
 /** The file one `create_file` call writes. */
 export function ampCreateFileChange(args: Record<string, unknown>): FileEditDiff | null {
   const path = pickString(args, 'path')
-  return path ? fileEditDiffFromWholeFile(path, pickString(args, 'content'), 'add') : null
+  return path
+    ? fileEditDiffFromWholeFile(path, pickString(args, 'content'), 'add')
+    : null
 }

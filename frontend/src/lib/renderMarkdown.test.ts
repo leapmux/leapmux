@@ -83,7 +83,9 @@ describe('renderMarkdown shared token-style classes', () => {
     expect(html).not.toContain('<span style=')
     // Every class referenced by the HTML has an injected rule defining the
     // dual-theme variables.
-    const classes = [...html.matchAll(/class="(sk-[0-9a-z-]+)"/g)].map(m => m[1])
+    const classes = [
+      ...html.matchAll(/class="(sk-[0-9a-z-]+)"/g),
+    ].map(m => m[1])
     expect(classes.length).toBeGreaterThan(0)
     for (const className of new Set(classes))
       expect(injectedRules()).toContain(`.${className}{`)
@@ -129,7 +131,12 @@ describe('renderMarkdown shared token-style classes', () => {
     if (dispatch === undefined)
       throw new Error('expected a worker dispatch')
     dispatch.worker.onmessage?.({
-      data: { id: dispatch.id, html: '<p>legacy fallback</p>', retryable: false, styles: {} },
+      data: {
+        id: dispatch.id,
+        html: '<p>legacy fallback</p>',
+        retryable: false,
+        styles: {},
+      },
     } as MessageEvent)
     await vi.waitFor(() => {
       expect(renderMarkdown(text)).toBe('<p>legacy fallback</p>')
@@ -154,7 +161,12 @@ describe('renderMarkdown shared token-style classes', () => {
     if (dispatch === undefined)
       throw new Error('expected a worker dispatch')
     dispatch.worker.onmessage?.({
-      data: { id: dispatch.id, html: '<p>oversized fallback</p>', retryable: false, styles: {} },
+      data: {
+        id: dispatch.id,
+        html: '<p>oversized fallback</p>',
+        retryable: false,
+        styles: {},
+      },
     } as MessageEvent)
     await vi.waitFor(() => {
       expect(renderMarkdown(text)).toBe('<p>oversized fallback</p>')

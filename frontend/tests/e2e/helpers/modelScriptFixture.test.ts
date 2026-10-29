@@ -13,7 +13,9 @@ import { currentTestDeadline, WAIT_REPORT_MARGIN_MS } from './testDeadline'
 const servers: MockModelServer[] = []
 const fixtureServer = vi.hoisted(() => ({ mockModelUrl: '' }))
 
-vi.mock('./server', () => ({ getGlobalState: () => fixtureServer }))
+vi.mock('./server', () => ({
+  getGlobalState: () => fixtureServer,
+}))
 
 afterEach(async () => {
   vi.restoreAllMocks()
@@ -35,7 +37,9 @@ function complete(server: MockModelServer, messages: Array<Record<string, unknow
 }
 
 async function answer(server: MockModelServer, prompt: string): Promise<string> {
-  const response = await complete(server, [{ role: 'user', content: prompt }])
+  const response = await complete(server, [
+    { role: 'user', content: prompt },
+  ])
   expect(response.status).toBe(200)
   const body = await response.json() as { choices: Array<{ message: { content: string } }> }
   return body.choices[0]!.message.content
@@ -78,7 +82,7 @@ describe('modelScriptFixtures', () => {
   function startFixture(): StartFixture {
     const registration = modelScriptFixtures.testStartedAt
     if (!Array.isArray(registration) || typeof registration[0] !== 'function')
-      throw new Error('The testStartedAt fixture is not an automatic fixture with a callback.')
+      throw new TypeError('The testStartedAt fixture is not an automatic fixture with a callback.')
     expect(registration[1]).toEqual({ auto: true })
     return registration[0] as unknown as StartFixture
   }
@@ -112,22 +116,33 @@ describe('expectTurnEndedAfter', () => {
       nextStep,
       stepCount: nextStep,
       requests: [],
-      unexpectedRequests: Array.from({ length: unexpected }, () => ({ protocol: 'openai-chat-completions' as const, path: '/v1/chat/completions', reason: 'unscripted', body: {} })),
+      unexpectedRequests: Array.from({ length: unexpected }, () => ({
+        protocol: 'openai-chat-completions' as const,
+        path: '/v1/chat/completions',
+        reason: 'unscripted',
+        body: {},
+      })),
       ruleMatches: {},
       pendingGates: [],
     }
   }
 
   it('accepts a turn that requested exactly the stated steps', async () => {
-    await expect(expectTurnEndedAfter({ status: async () => status(3) }, 3)).resolves.toBeUndefined()
+    await expect(expectTurnEndedAfter({
+      status: async () => status(3),
+    }, 3)).resolves.toBeUndefined()
   })
 
   it.each([2, 4])('refuses a turn that requested %i ordered steps instead of 3', async (nextStep) => {
-    await expect(expectTurnEndedAfter({ status: async () => status(nextStep) }, 3)).rejects.toThrow('the agent requested 3 ordered steps and no more')
+    await expect(expectTurnEndedAfter({
+      status: async () => status(nextStep),
+    }, 3)).rejects.toThrow('the agent requested 3 ordered steps and no more')
   })
 
   it('refuses a request that the script did not expect', async () => {
-    await expect(expectTurnEndedAfter({ status: async () => status(3, 1) }, 3)).rejects.toThrow('the agent sent no request that the script did not expect')
+    await expect(expectTurnEndedAfter({
+      status: async () => status(3, 1),
+    }, 3)).rejects.toThrow('the agent sent no request that the script did not expect')
   })
 
   it.each([0, -1, 1.5, Number.NaN])('refuses the step count %s before it reads the script', async (nextStep) => {
@@ -141,7 +156,9 @@ describe('startModelScript', () => {
   // A cleanup can release a gate after the native client cancels the held request.
   // The cancelled request leaves the gate with nothing to release, and that cleanup must not fail.
   it('reports no release, and does not fail, for a gated response that the client cancelled', async () => {
-    const server = await createMockModelServer({ models: ['native-cleanup-unit'] })
+    const server = await createMockModelServer({
+      models: ['native-cleanup-unit'],
+    })
     servers.push(server)
     const { script, finish } = await startModelScript(server.url)
     const controller = new AbortController()
@@ -150,7 +167,17 @@ describe('startModelScript', () => {
       const pending = fetch(`${server.url}/v1/messages`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-api-key': 'leapmux-e2e-model-key' },
-        body: JSON.stringify({ model: 'native-cleanup-unit', max_tokens: 100, stream: true, messages: [{ role: 'user', content: script.prompt('Hold the native cleanup test response.') }] }),
+        body: JSON.stringify({
+          model: 'native-cleanup-unit',
+          max_tokens: 100,
+          stream: true,
+          messages: [
+            {
+              role: 'user',
+              content: script.prompt('Hold the native cleanup test response.'),
+            },
+          ],
+        }),
         signal: controller.signal,
       }).then(() => null, error => error)
       await script.waitForGate('native-cancelled-response')
@@ -174,12 +201,21 @@ describe('startModelScript', () => {
     let injected = false
     const nativeStatuses: number[] = []
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, options) => {
-      const target = typeof input === 'string' ? input : 'url' in input ? input.url : input.toString()
+      const target = typeof input === 'string'
+        ? input
+        : 'url' in input
+          ? input.url
+          : input.toString()
       const url = new URL(target)
       if (!injected && options?.method === 'DELETE' && url.pathname.endsWith(`/${script.id}`)) {
         injected = true
         for (const text of ['The scripted turn arrives.', 'The extra native turn has no answer.']) {
-          const response = await complete(server, [{ role: 'user', content: script.prompt(text) }])
+          const response = await complete(server, [
+            {
+              role: 'user',
+              content: script.prompt(text),
+            },
+          ])
           nativeStatuses.push(response.status)
           await response.arrayBuffer()
         }
@@ -196,7 +232,12 @@ describe('startModelScript', () => {
   it('force-removes an unexpected request after an already failed test', async () => {
     const server = await startServer()
     const { script, finish } = await startModelScript(server.url)
-    const unexpected = await complete(server, [{ role: 'user', content: script.prompt('The already failed test sends an unexpected turn.') }])
+    const unexpected = await complete(server, [
+      {
+        role: 'user',
+        content: script.prompt('The already failed test sends an unexpected turn.'),
+      },
+    ])
     expect(unexpected.status).toBe(409)
     await unexpected.arrayBuffer()
     await expect(finish(false)).resolves.toBeUndefined()
@@ -206,14 +247,23 @@ describe('startModelScript', () => {
   it('keeps the strict-script failure when forced cleanup also fails', async () => {
     const server = await startServer()
     const { script, finish } = await startModelScript(server.url)
-    const unexpected = await complete(server, [{ role: 'user', content: script.prompt('This native request is unscripted.') }])
+    const unexpected = await complete(server, [
+      {
+        role: 'user',
+        content: script.prompt('This native request is unscripted.'),
+      },
+    ])
     expect(unexpected.status).toBe(409)
     await unexpected.arrayBuffer()
     await script.queue({ text: 'This later answer stays unused.' })
     script.allowUnconsumed('the native turn was interrupted')
     const nativeFetch = globalThis.fetch.bind(globalThis)
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, options) => {
-      const target = typeof input === 'string' ? input : 'url' in input ? input.url : input.toString()
+      const target = typeof input === 'string'
+        ? input
+        : 'url' in input
+          ? input.url
+          : input.toString()
       const url = new URL(target)
       if (options?.method === 'DELETE' && url.searchParams.get('force') === 'true')
         return new Response('The cleanup transport failed.', { status: 503 })
@@ -221,8 +271,12 @@ describe('startModelScript', () => {
     })
     await expect(finish(true)).rejects.toMatchObject({
       errors: [
-        expect.objectContaining({ message: expect.stringMatching(/incomplete:.*1 request the script did not answer/) }),
-        expect.objectContaining({ message: expect.stringContaining('503 The cleanup transport failed.') }),
+        expect.objectContaining({
+          message: expect.stringMatching(/incomplete:.*1 request the script did not answer/),
+        }),
+        expect.objectContaining({
+          message: expect.stringContaining('503 The cleanup transport failed.'),
+        }),
       ],
     })
   })
@@ -230,7 +284,12 @@ describe('startModelScript', () => {
   it('fails teardown for an unscripted request even when an unconsumed queue is permitted', async () => {
     const server = await startServer()
     const { script, finish } = await startModelScript(server.url)
-    const unexpected = await complete(server, [{ role: 'user', content: script.prompt('The native turn was not scripted.') }])
+    const unexpected = await complete(server, [
+      {
+        role: 'user',
+        content: script.prompt('The native turn was not scripted.'),
+      },
+    ])
     expect(unexpected.status).toBe(409)
     await script.queue({ text: 'The interrupted provider never requests this answer.' })
     script.allowUnconsumed('the test interrupts the native turn before the next model request')
@@ -248,7 +307,9 @@ describe('startModelScript', () => {
   it('reads the current whole-test deadline without storing an old value', async () => {
     const server = await startServer()
     let deadline: number | undefined
-    const { script, finish } = await startModelScript(server.url, { testDeadline: () => deadline })
+    const { script, finish } = await startModelScript(server.url, {
+      testDeadline: () => deadline,
+    })
     expect(script.testDeadline()).toBeUndefined()
     deadline = 240_000
     expect(script.testDeadline()).toBe(240_000)
@@ -272,7 +333,10 @@ describe('startModelScript', () => {
 
     const title = await complete(server, [
       { role: 'system', content: 'Generate a short title for this conversation.' },
-      { role: 'user', content: script.prompt('Run.') },
+      {
+        role: 'user',
+        content: script.prompt('Run.'),
+      },
     ])
     expect(title.status).toBe(200)
     await finish(true)
@@ -349,7 +413,9 @@ describe('startModelScript', () => {
   it('fails with the script state when the agent never requests the step', async () => {
     const server = await startServer()
     let deadline: number | undefined
-    const { script, finish } = await startModelScript(server.url, { testDeadline: () => deadline })
+    const { script, finish } = await startModelScript(server.url, {
+      testDeadline: () => deadline,
+    })
     await script.queue({ text: 'Never asked for' })
     deadline = Date.now() + WAIT_REPORT_MARGIN_MS + 300
     await expect(script.requestAt(0)).rejects.toThrow(/reached 0 of 1 answers in \d+ms, before the test's own timeout: 0 of 1 queued answers consumed/)
@@ -394,7 +460,11 @@ describe('startModelScript', () => {
     const server = await startServer()
     const { script, finish } = await startModelScript(server.url)
     await script.queue({ text: 'Queued' })
-    await script.rule({ name: 'retry', when: { user: 'retry this' }, respond: { text: 'Retried' } })
+    await script.rule({
+      name: 'retry',
+      when: { user: 'retry this' },
+      respond: { text: 'Retried' },
+    })
 
     expect(await answer(server, script.prompt('Please retry this.'))).toBe('Retried')
     expect(await answer(server, script.prompt('Please retry this.'))).toBe('Retried')
@@ -406,11 +476,19 @@ describe('startModelScript', () => {
   it('lets a high-priority rule the test adds win over the housekeeping rule it replaces', async () => {
     const server = await startServer()
     const { script, finish } = await startModelScript(server.url)
-    await script.rule({ name: 'own-title', priority: 'high', when: { system: 'generate a short title' }, respond: { text: 'Chosen' } })
+    await script.rule({
+      name: 'own-title',
+      priority: 'high',
+      when: { system: 'generate a short title' },
+      respond: { text: 'Chosen' },
+    })
 
     const title = await complete(server, [
       { role: 'system', content: 'Generate a short title for this conversation.' },
-      { role: 'user', content: script.prompt('Run.') },
+      {
+        role: 'user',
+        content: script.prompt('Run.'),
+      },
     ])
     expect((await title.json() as { choices: Array<{ message: { content: string } }> }).choices[0]!.message.content)
       .toBe('Chosen')
@@ -422,7 +500,10 @@ describe('startModelScript', () => {
     const { script, finish } = await startModelScript(server.url)
     const title = await complete(server, [
       { role: 'system', content: 'Generate a short title for this conversation.' },
-      { role: 'user', content: script.prompt('Run.') },
+      {
+        role: 'user',
+        content: script.prompt('Run.'),
+      },
     ])
     expect((await title.json() as { choices: Array<{ message: { content: string } }> }).choices[0]!.message.content)
       .toBe(MOCK_SESSION_TITLE)
@@ -441,7 +522,12 @@ describe('startModelScript', () => {
   it('fails the teardown for a request the script did not answer', async () => {
     const server = await startServer()
     const { script, finish } = await startModelScript(server.url)
-    expect((await complete(server, [{ role: 'user', content: script.prompt('Unscripted.') }])).status).toBe(409)
+    expect((await complete(server, [
+      {
+        role: 'user',
+        content: script.prompt('Unscripted.'),
+      },
+    ])).status).toBe(409)
 
     await expect(finish(true)).rejects.toThrow('1 request the script did not answer')
   })
@@ -494,7 +580,11 @@ describe('startModelScript', () => {
 
     const answerPromise = answer(server, script.prompt('Ask the child.'))
     const status = await script.waitForGate('child-answer')
-    expect(status).toMatchObject({ nextStep: 1, pendingGates: ['child-answer'], complete: false })
+    expect(status).toMatchObject({
+      nextStep: 1,
+      pendingGates: ['child-answer'],
+      complete: false,
+    })
     await script.releaseGate('child-answer')
     expect(await answerPromise).toBe('Child answer.')
     await finish(true)
@@ -555,7 +645,9 @@ describe('startModelScript', () => {
   it('ends a stalled wait before the test deadline, with the progress of the script', async () => {
     const server = await startServer()
     let deadline: number | undefined
-    const { script, finish } = await startModelScript(server.url, { testDeadline: () => deadline })
+    const { script, finish } = await startModelScript(server.url, {
+      testDeadline: () => deadline,
+    })
     await script.queue({ text: 'Never asked for' })
 
     deadline = Date.now() + WAIT_REPORT_MARGIN_MS + 300
@@ -566,7 +658,9 @@ describe('startModelScript', () => {
 
   it('ends at once when the test deadline leaves no time for the wait', async () => {
     const server = await startServer()
-    const { script, finish } = await startModelScript(server.url, { testDeadline: () => Date.now() })
+    const { script, finish } = await startModelScript(server.url, {
+      testDeadline: () => Date.now(),
+    })
     await script.queue({ text: 'Never asked for' })
     await expect(script.waitForSteps()).rejects.toThrow(/reached 0 of 1 answers/)
     await finish(false)
@@ -575,7 +669,9 @@ describe('startModelScript', () => {
   // A test without a whole-test deadline keeps the caller's wait limit.
   it('keeps the limit that the caller states when the test has no deadline', async () => {
     const server = await startServer()
-    const { script, finish } = await startModelScript(server.url, { testDeadline: () => undefined })
+    const { script, finish } = await startModelScript(server.url, {
+      testDeadline: () => undefined,
+    })
     await script.queue({ text: 'Never asked for' })
     await expect(script.waitForSteps(1, 200)).rejects.toThrow(/reached 0 of 1 answers/)
     await finish(false)
@@ -596,7 +692,12 @@ describe('startModelScript', () => {
     expect(await answer(server, script.prompt('One scripted turn.'))).toBe('The scripted answer.')
     const marker = `BODY_MARKER_${'x'.repeat(200_000)}`
     for (const index of [1, 2, 3]) {
-      const unexpected = await complete(server, [{ role: 'user', content: script.prompt(`Unscripted request ${index} ${marker}`) }])
+      const unexpected = await complete(server, [
+        {
+          role: 'user',
+          content: script.prompt(`Unscripted request ${index} ${marker}`),
+        },
+      ])
       expect(unexpected.status).toBe(409)
       await unexpected.arrayBuffer()
     }
@@ -632,7 +733,12 @@ describe('startModelScript', () => {
         throw new Error('The disk is full.')
       },
     })
-    const unexpected = await complete(server, [{ role: 'user', content: script.prompt('An unscripted turn.') }])
+    const unexpected = await complete(server, [
+      {
+        role: 'user',
+        content: script.prompt('An unscripted turn.'),
+      },
+    ])
     expect(unexpected.status).toBe(409)
     await unexpected.arrayBuffer()
 

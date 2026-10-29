@@ -28,14 +28,20 @@ describe('startRegistration', () => {
   })
 
   it('parses server JSON and returns a credential JSON string', async () => {
-    const options = { challenge: 'abc', rp: { name: 'LeapMux' } }
+    const options = {
+      challenge: 'abc',
+      rp: { name: 'LeapMux' },
+    }
     const result = await startRegistration(JSON.stringify(options))
     expect(mockStartRegistration).toHaveBeenCalledWith({ optionsJSON: options })
     expect(JSON.parse(result)).toEqual({ id: 'cred-1', response: {} })
   })
 
   it('unwraps go-webauthn publicKey envelopes before calling the browser', async () => {
-    const inner = { challenge: 'abc', rp: { name: 'LeapMux' } }
+    const inner = {
+      challenge: 'abc',
+      rp: { name: 'LeapMux' },
+    }
     await startRegistration(JSON.stringify({ publicKey: inner }))
     expect(mockStartRegistration).toHaveBeenCalledWith({ optionsJSON: inner })
   })

@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { selectedText } from './selection'
 
 /** A page whose `evaluate` runs the page function in this document, as Playwright does in the browser. */
-const page = { evaluate: async <R>(body: () => R) => body() } as unknown as Page
+const page = {
+  evaluate: async <R>(body: () => R) => body(),
+} as unknown as Page
 
 afterEach(() => {
   window.getSelection()?.removeAllRanges()

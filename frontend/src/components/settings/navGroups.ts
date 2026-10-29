@@ -18,32 +18,102 @@ export const NAV_GROUPS: readonly NavGroup[] = [
   // deliberately -- a password, a passkey, an address -- where the rest are
   // preferences they adjust while they are already here, so a place under
   // seven of them put the errand behind the browsing.
-  { id: 'account', title: 'Account', category: 'account', admin: false },
+  {
+    id: 'account',
+    title: 'Account',
+    category: 'account',
+    admin: false,
+  },
   // Apps follows Account, and holds the whole app errand: what the account
   // AUTHORIZED (Connected apps) and what it REGISTERED for others to
   // authorize. It is a user group, not an administration one -- an ordinary
   // account may register an app for itself, and ownership rather than a role
   // decides what each caller sees.
-  { id: 'apps', title: 'Apps', category: 'apps', admin: false },
-  { id: 'appearance', title: 'Appearance', category: 'appearance', admin: false },
-  { id: 'notifications', title: 'Notifications', category: 'notifications', admin: false },
-  { id: 'chat', title: 'Chat & Composer', category: 'chat', admin: false },
-  { id: 'terminal', title: 'Terminal', category: 'terminal', admin: false },
+  {
+    id: 'apps',
+    title: 'Apps',
+    category: 'apps',
+    admin: false,
+  },
+  {
+    id: 'appearance',
+    title: 'Appearance',
+    category: 'appearance',
+    admin: false,
+  },
+  {
+    id: 'notifications',
+    title: 'Notifications',
+    category: 'notifications',
+    admin: false,
+  },
+  {
+    id: 'chat',
+    title: 'Chat & Composer',
+    category: 'chat',
+    admin: false,
+  },
+  {
+    id: 'terminal',
+    title: 'Terminal',
+    category: 'terminal',
+    admin: false,
+  },
   // The tray / menu-bar icon, what a close and a minimize do, and the login
   // launch. Every row carries `hidden: () => !isDesktopApp()`, so
   // `occupiedNavGroups` drops the whole section in a browser -- the group
   // needs no visibility rule of its own.
-  { id: 'desktop', title: 'Desktop', category: 'desktop', admin: false },
-  { id: 'files', title: 'Files & Applications', category: 'files', admin: false },
-  { id: 'shortcuts', title: 'Keyboard Shortcuts', category: 'shortcuts', admin: false },
-  { id: 'advanced', title: 'Advanced', category: 'advanced', admin: false },
-  { id: 'admin-general', title: 'General', category: 'general', admin: true },
-  { id: 'admin-signup', title: 'Sign-up & Access', category: 'signup', admin: true },
+  {
+    id: 'desktop',
+    title: 'Desktop',
+    category: 'desktop',
+    admin: false,
+  },
+  {
+    id: 'files',
+    title: 'Files & Applications',
+    category: 'files',
+    admin: false,
+  },
+  {
+    id: 'shortcuts',
+    title: 'Keyboard Shortcuts',
+    category: 'shortcuts',
+    admin: false,
+  },
+  {
+    id: 'advanced',
+    title: 'Advanced',
+    category: 'advanced',
+    admin: false,
+  },
+  {
+    id: 'admin-general',
+    title: 'General',
+    category: 'general',
+    admin: true,
+  },
+  {
+    id: 'admin-signup',
+    title: 'Sign-up & Access',
+    category: 'signup',
+    admin: true,
+  },
   // Straight after Sign-up & Access because this section controls the hub's
   // network entry points. The solo listen-address row can be hidden while the
   // trusted reverse-proxy row keeps this section visible in every hub mode.
-  { id: 'admin-network', title: 'Network access', category: 'network', admin: true },
-  { id: 'admin-email', title: 'Email (SMTP)', category: 'email', admin: true },
+  {
+    id: 'admin-network',
+    title: 'Network access',
+    category: 'network',
+    admin: true,
+  },
+  {
+    id: 'admin-email',
+    title: 'Email (SMTP)',
+    category: 'email',
+    admin: true,
+  },
   // The same category on the ADMINISTRATION side, which is where the hub's
   // own app settings live -- RFC 7591 open registration today. `advanced`
   // already appears on both sides for the same reason: one category can hold
@@ -54,11 +124,36 @@ export const NAV_GROUPS: readonly NavGroup[] = [
   // beside it holds what this ACCOUNT registered and authorized, and the two
   // one-word titles read as the same list twice. The word the administration
   // side adds is WHO the registration reaches -- every account on the hub.
-  { id: 'admin-apps', title: 'Hub-wide Apps', category: 'apps', admin: true },
-  { id: 'admin-captcha', title: 'Bot Protection', category: 'captcha', admin: true },
-  { id: 'admin-rate-limits', title: 'Rate Limits', category: 'rate-limits', admin: true },
-  { id: 'admin-limits', title: 'Limits & Timeouts', category: 'limits', admin: true },
-  { id: 'admin-advanced', title: 'Advanced', category: 'advanced', admin: true },
+  {
+    id: 'admin-apps',
+    title: 'Hub-wide Apps',
+    category: 'apps',
+    admin: true,
+  },
+  {
+    id: 'admin-captcha',
+    title: 'Bot Protection',
+    category: 'captcha',
+    admin: true,
+  },
+  {
+    id: 'admin-rate-limits',
+    title: 'Rate Limits',
+    category: 'rate-limits',
+    admin: true,
+  },
+  {
+    id: 'admin-limits',
+    title: 'Limits & Timeouts',
+    category: 'limits',
+    admin: true,
+  },
+  {
+    id: 'admin-advanced',
+    title: 'Advanced',
+    category: 'advanced',
+    admin: true,
+  },
 ]
 
 /**

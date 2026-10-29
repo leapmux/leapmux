@@ -163,7 +163,9 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
   const homeDir = useWorkerHomeDir(() => props.workerId)
   const flavor = () => {
     const os = workerInfoStore.getOs(props.workerId)
-    return os ? flavorFromOs(os) : undefined
+    return os
+      ? flavorFromOs(os)
+      : undefined
   }
   // Spread-ready `flavor` and `gitState`, each read ONCE: both answer
   // undefined until the worker does, and the spreads keep the props absent
@@ -172,11 +174,15 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
   // the same snapshot the row renders.
   const flavorProps = () => {
     const value = flavor()
-    return value !== undefined ? { flavor: value } : {}
+    return value !== undefined
+      ? { flavor: value }
+      : {}
   }
   const gitStateProps = () => {
     const value = info()?.gitState
-    return value !== undefined ? { gitState: value } : {}
+    return value !== undefined
+      ? { gitState: value }
+      : {}
   }
 
   // Selectable branches exclude the one being deleted. The inspect RPC
@@ -451,13 +457,20 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
             data-variant="danger"
             disabled={!canSubmit()}
             {...(removalBlockedReason()
-              ? { blocked: { reason: removalBlockedReason(), reasonId: blockedReasonId } }
+              ? {
+                  blocked: {
+                    reason: removalBlockedReason(),
+                    reasonId: blockedReasonId,
+                  },
+                }
               : {})}
             onClick={handleDelete}
           >
             <Show when={submitting.loading()} fallback={deleteLabel()}>
               <Spinner />
-              {isWorktree() ? 'Checking...' : 'Deleting...'}
+              {isWorktree()
+                ? 'Checking...'
+                : 'Deleting...'}
             </Show>
           </ConfirmButton>
         </>
@@ -478,16 +491,30 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
                 // The worktree dir for a worktree, and the repo root this
                 // dialog is locked to otherwise. `worktreePath` is populated
                 // only on the worktree path, so it cannot serve both.
-                directory: isWorktree() ? i().worktreePath : props.gitToplevel,
-                ...(homeDir() !== undefined ? { homeDir: homeDir() } : {}),
+                directory: isWorktree()
+                  ? i().worktreePath
+                  : props.gitToplevel,
+                ...(homeDir() !== undefined
+                  ? {
+                      homeDir: homeDir(),
+                    }
+                  : {}),
                 ...flavorProps(),
                 ...gitStateProps(),
               }}
               affectedTabs={{
-                agents: isOnlyBranch() ? 0 : tabCounts.agents,
-                terminals: isOnlyBranch() ? 0 : tabCounts.terminals,
-                files: isOnlyBranch() ? 0 : tabCounts.files,
-                images: isOnlyBranch() ? 0 : tabCounts.images,
+                agents: isOnlyBranch()
+                  ? 0
+                  : tabCounts.agents,
+                terminals: isOnlyBranch()
+                  ? 0
+                  : tabCounts.terminals,
+                files: isOnlyBranch()
+                  ? 0
+                  : tabCounts.files,
+                images: isOnlyBranch()
+                  ? 0
+                  : tabCounts.images,
                 willStop: isWorktree(),
               }}
             />

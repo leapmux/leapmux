@@ -59,7 +59,9 @@ export function rowDomIdentity(key: string): string {
   let clean = ''
   for (const ch of key) {
     const code = ch.codePointAt(0) ?? 0
-    clean += code < 0x20 || code === 0x7F || (code >= 0x80 && code <= 0x9F) ? '\uFFFD' : ch
+    clean += code < 0x20 || code === 0x7F || (code >= 0x80 && code <= 0x9F)
+      ? '\uFFFD'
+      : ch
   }
   return clean
 }
@@ -68,7 +70,9 @@ export function rowDomIdentity(key: string): string {
 // The Worker already cleans titles. cleanName preserves that cleaned value.
 function rowTitle(item: BackgroundTaskItem): string {
   // Optional descriptions skip the cleaner when absent.
-  const readable = (text: string | undefined): string => (text ? cleanName(text) : '')
+  const readable = (text: string | undefined): string => (text
+    ? cleanName(text)
+    : '')
   // A valid identity can contain only invisible bidirectional characters.
   // Use the workspace's Untitled label when every cleaned candidate is empty.
   return readable(item.title) || readable(item.description) || readable(item.rowKey) || 'Untitled'
@@ -96,8 +100,12 @@ function secondary(item: BackgroundTaskItem, title: string): string {
   const raw = isOpenBackgroundTaskStatus(item.status)
     ? item.activity || item.description || ''
     : backgroundTaskEndLabel(item.status)
-  const text = raw ? cleanName(raw) : ''
-  return text.trim() === title.trim() ? '' : text
+  const text = raw
+    ? cleanName(raw)
+    : ''
+  return text.trim() === title.trim()
+    ? ''
+    : text
 }
 
 // Explain a final status whose label omits the cause, such as an interrupted process after a restart.
@@ -153,7 +161,9 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
   const groupKeys = createMemo(
     () => grouped().groups.map(g => g.key),
     undefined,
-    { equals: (a, b) => a.length === b.length && a.every((k, i) => k === b[i]) },
+    {
+      equals: (a, b) => a.length === b.length && a.every((k, i) => k === b[i]),
+    },
   )
 
   /**
@@ -221,7 +231,9 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
       return {
         [styles.taskStruck]: !isOpenBackgroundTaskStatus(item.status),
         // Recompute the cursor class when the child transcript becomes available.
-        [styles.taskRowStatic]: clickable ? !clickable() : true,
+        [styles.taskRowStatic]: clickable
+          ? !clickable()
+          : true,
       }
     },
     'data-testid': 'bg-task-row',
@@ -244,7 +256,9 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
         {...rowAttrs(item, clickable)}
         // aria-disabled preserves pointer events for the title tooltip while the child starts.
         // The click handler still refuses a row without an available transcript.
-        aria-disabled={clickable() ? undefined : 'true'}
+        aria-disabled={clickable()
+          ? undefined
+          : 'true'}
         onClick={() => clickable() && props.onOpenSubagent?.(item)}
       >
         {rowBody(item)}
@@ -258,10 +272,16 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
       fallback={(
         <div
           class={styles.emptyState}
-          classList={{ [styles.emptyStateFailed]: reportsLoadFailure() }}
-          data-testid={reportsLoadFailure() ? 'bg-task-load-failed' : 'bg-task-empty'}
+          classList={{
+            [styles.emptyStateFailed]: reportsLoadFailure(),
+          }}
+          data-testid={reportsLoadFailure()
+            ? 'bg-task-load-failed'
+            : 'bg-task-empty'}
         >
-          {reportsLoadFailure() ? LOAD_FAILED_MESSAGE : props.emptyMessage}
+          {reportsLoadFailure()
+            ? LOAD_FAILED_MESSAGE
+            : props.emptyMessage}
         </div>
       )}
     >

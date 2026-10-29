@@ -38,10 +38,28 @@ describe('prepareDroidAttachments', () => {
     const result = await prepareDroidAttachments(directory, 'http://127.0.0.1:4567', provider)
     const settings = JSON.parse(readFileSync(join(homeDir, '.factory', 'settings.json'), 'utf8'))
     expect(settings.customModels).toEqual([
-      expect.objectContaining({ id: DROID_MOCK_MODEL_IDS.primary, model: MOCK_MODELS.droid, provider, baseUrl: 'http://127.0.0.1:4567/v1', apiKey: MODEL_KEY }),
-      expect.objectContaining({ id: DROID_MOCK_MODEL_IDS.alternate, model: MOCK_MODELS.droidAlt, provider: 'generic-chat-completion-api', baseUrl: 'http://127.0.0.1:4567/v1', apiKey: MODEL_KEY }),
+      expect.objectContaining({
+        id: DROID_MOCK_MODEL_IDS.primary,
+        model: MOCK_MODELS.droid,
+        provider,
+        baseUrl: 'http://127.0.0.1:4567/v1',
+        apiKey: MODEL_KEY,
+      }),
+      expect.objectContaining({
+        id: DROID_MOCK_MODEL_IDS.alternate,
+        model: MOCK_MODELS.droidAlt,
+        provider: 'generic-chat-completion-api',
+        baseUrl: 'http://127.0.0.1:4567/v1',
+        apiKey: MODEL_KEY,
+      }),
     ])
-    expect(result.agentEnv).toMatchObject({ HOME: homeDir, PATH: 'private-tools', FACTORY_HOME_OVERRIDE: homeDir, FACTORY_API_BASE_URL: 'http://127.0.0.1:4567/v1', FACTORY_DROID_AUTO_UPDATE_ENABLED: '0' })
+    expect(result.agentEnv).toMatchObject({
+      HOME: homeDir,
+      PATH: 'private-tools',
+      FACTORY_HOME_OVERRIDE: homeDir,
+      FACTORY_API_BASE_URL: 'http://127.0.0.1:4567/v1',
+      FACTORY_DROID_AUTO_UPDATE_ENABLED: '0',
+    })
   })
 
   it('keeps two model-route configurations in separate native homes', async () => {

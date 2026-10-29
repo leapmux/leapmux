@@ -13,7 +13,9 @@ export function rawDiffToHunks(oldStr: string, newStr: string): StructuredPatchH
   let oldLines = 0
   let newLines = 0
   for (const change of changes) {
-    const prefix = change.added ? '+' : change.removed ? '-' : ' '
+    const prefix = change.added
+      ? '+'
+      : change.removed ? '-' : ' '
     const rawLines = change.value.replace(TRAILING_NEWLINE_RE, '').split('\n')
     for (const line of rawLines) {
       lines.push(prefix + line)
@@ -29,7 +31,15 @@ export function rawDiffToHunks(oldStr: string, newStr: string): StructuredPatchH
       }
     }
   }
-  return [{ oldStart: 1, oldLines, newStart: 1, newLines, lines }]
+  return [
+    {
+      oldStart: 1,
+      oldLines,
+      newStart: 1,
+      newLines,
+      lines,
+    },
+  ]
 }
 
 /** Format structuredPatch hunks as a unified diff string suitable for copying. */
@@ -71,7 +81,10 @@ export function extractSidesFromHunks(hunks: StructuredPatchHunk[]): { oldCode: 
       }
     }
   }
-  return { oldCode: oldLines.join('\n'), newCode: newLines.join('\n') }
+  return {
+    oldCode: oldLines.join('\n'),
+    newCode: newLines.join('\n'),
+  }
 }
 
 /**

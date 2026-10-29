@@ -86,21 +86,27 @@ describe('AddTunnelDialog', () => {
   it('port validation rejects 0', () => {
     renderDialog()
     const targetPort = screen.getByTestId('target-port')
-    fireEvent.input(targetPort, { target: { value: '0' } })
+    fireEvent.input(targetPort, {
+      target: { value: '0' },
+    })
     expect(screen.getByText('Must be 1-65535')).toBeInTheDocument()
   })
 
   it('port validation rejects 65536', () => {
     renderDialog()
     const targetPort = screen.getByTestId('target-port')
-    fireEvent.input(targetPort, { target: { value: '65536' } })
+    fireEvent.input(targetPort, {
+      target: { value: '65536' },
+    })
     expect(screen.getByText('Must be 1-65535')).toBeInTheDocument()
   })
 
   it('port validation rejects non-numeric', () => {
     renderDialog()
     const targetPort = screen.getByTestId('target-port')
-    fireEvent.input(targetPort, { target: { value: 'abc' } })
+    fireEvent.input(targetPort, {
+      target: { value: 'abc' },
+    })
     expect(screen.getByText('Must be 1-65535')).toBeInTheDocument()
   })
 
@@ -109,7 +115,9 @@ describe('AddTunnelDialog', () => {
     const targetPort = screen.getByTestId('target-port')
 
     for (const port of ['1', '80', '443', '65535']) {
-      fireEvent.input(targetPort, { target: { value: port } })
+      fireEvent.input(targetPort, {
+        target: { value: port },
+      })
       expect(screen.queryByText('Must be 1-65535')).not.toBeInTheDocument()
     }
   })
@@ -130,26 +138,34 @@ describe('AddTunnelDialog', () => {
   for (const [value, why] of nonDecimalPorts) {
     it(`port validation rejects ${JSON.stringify(value)} (${why})`, () => {
       renderDialog()
-      fireEvent.input(screen.getByTestId('target-port'), { target: { value } })
+      fireEvent.input(screen.getByTestId('target-port'), {
+        target: { value },
+      })
       expect(screen.getByText('Must be 1-65535')).toBeInTheDocument()
     })
   }
 
   it('port validation accepts a decimal port padded with spaces', () => {
     renderDialog()
-    fireEvent.input(screen.getByTestId('target-port'), { target: { value: ' 80 ' } })
+    fireEvent.input(screen.getByTestId('target-port'), {
+      target: { value: ' 80 ' },
+    })
     expect(screen.queryByText('Must be 1-65535')).not.toBeInTheDocument()
   })
 
   it('bind port validation rejects a hex literal too', () => {
     renderDialog()
-    fireEvent.input(screen.getByTestId('bind-port'), { target: { value: '0x50' } })
+    fireEvent.input(screen.getByTestId('bind-port'), {
+      target: { value: '0x50' },
+    })
     expect(screen.getByText('Must be 1-65535')).toBeInTheDocument()
   })
 
   it('does not submit a port the user did not type', () => {
     const { store } = renderDialog()
-    fireEvent.input(screen.getByTestId('target-port'), { target: { value: '0x50' } })
+    fireEvent.input(screen.getByTestId('target-port'), {
+      target: { value: '0x50' },
+    })
     expect(screen.getByTestId('tunnel-create')).toBeDisabled()
     expect(store.add).not.toHaveBeenCalled()
   })
@@ -157,21 +173,27 @@ describe('AddTunnelDialog', () => {
   it('address validation accepts hostname', () => {
     renderDialog()
     const targetAddr = screen.getByTestId('target-addr')
-    fireEvent.input(targetAddr, { target: { value: 'my-host.local' } })
+    fireEvent.input(targetAddr, {
+      target: { value: 'my-host.local' },
+    })
     expect(screen.queryByText('Required')).not.toBeInTheDocument()
   })
 
   it('address validation accepts IPv4', () => {
     renderDialog()
     const targetAddr = screen.getByTestId('target-addr')
-    fireEvent.input(targetAddr, { target: { value: '192.168.1.1' } })
+    fireEvent.input(targetAddr, {
+      target: { value: '192.168.1.1' },
+    })
     expect(screen.queryByText('Required')).not.toBeInTheDocument()
   })
 
   it('address validation rejects empty target address', () => {
     renderDialog()
     const targetAddr = screen.getByTestId('target-addr')
-    fireEvent.input(targetAddr, { target: { value: '' } })
+    fireEvent.input(targetAddr, {
+      target: { value: '' },
+    })
     expect(screen.getByText('Required')).toBeInTheDocument()
   })
 
@@ -184,7 +206,9 @@ describe('AddTunnelDialog', () => {
   it('create button enabled when all fields filled', () => {
     renderDialog()
     const targetPort = screen.getByTestId('target-port')
-    fireEvent.input(targetPort, { target: { value: '3000' } })
+    fireEvent.input(targetPort, {
+      target: { value: '3000' },
+    })
     const createBtn = screen.getByTestId('tunnel-create')
     expect(createBtn).not.toBeDisabled()
   })
@@ -192,7 +216,9 @@ describe('AddTunnelDialog', () => {
   it('submit calls tunnelStore.add with correct config', async () => {
     const { store } = renderDialog()
     const targetPort = screen.getByTestId('target-port')
-    fireEvent.input(targetPort, { target: { value: '3000' } })
+    fireEvent.input(targetPort, {
+      target: { value: '3000' },
+    })
 
     const form = screen.getByTestId('tunnel-create').closest('form')!
     fireEvent.submit(form)
@@ -225,7 +251,9 @@ describe('AddTunnelDialog', () => {
     ))
 
     const targetPort = screen.getByTestId('target-port')
-    fireEvent.input(targetPort, { target: { value: '3000' } })
+    fireEvent.input(targetPort, {
+      target: { value: '3000' },
+    })
     const form = screen.getByTestId('tunnel-create').closest('form')!
     fireEvent.submit(form)
 
@@ -240,7 +268,9 @@ describe('AddTunnelDialog', () => {
     renderDialog({ onCreated })
 
     const targetPort = screen.getByTestId('target-port')
-    fireEvent.input(targetPort, { target: { value: '3000' } })
+    fireEvent.input(targetPort, {
+      target: { value: '3000' },
+    })
     const form = screen.getByTestId('tunnel-create').closest('form')!
     fireEvent.submit(form)
 
@@ -252,7 +282,9 @@ describe('AddTunnelDialog', () => {
   it('bind port defaults to target port for port forwarding', async () => {
     const { store } = renderDialog()
     const targetPort = screen.getByTestId('target-port')
-    fireEvent.input(targetPort, { target: { value: '3000' } })
+    fireEvent.input(targetPort, {
+      target: { value: '3000' },
+    })
 
     const form = screen.getByTestId('tunnel-create').closest('form')!
     fireEvent.submit(form)
@@ -298,25 +330,33 @@ describe('AddTunnelDialog bind address validation', () => {
   // refuses it; the dialog must say so up front rather than let the create fail.
   it('rejects a bind address that is not loopback', () => {
     renderDialog()
-    fireEvent.input(screen.getByTestId('bind-addr'), { target: { value: '0.0.0.0' } })
+    fireEvent.input(screen.getByTestId('bind-addr'), {
+      target: { value: '0.0.0.0' },
+    })
     expect(screen.getByText(/loopback/i)).toBeInTheDocument()
   })
 
   it('rejects a bind address that is not an IP address at all', () => {
     renderDialog()
-    fireEvent.input(screen.getByTestId('bind-addr'), { target: { value: 'localhost' } })
+    fireEvent.input(screen.getByTestId('bind-addr'), {
+      target: { value: 'localhost' },
+    })
     expect(screen.getByText(/loopback/i)).toBeInTheDocument()
   })
 
   it('accepts a loopback bind address', () => {
     renderDialog()
-    fireEvent.input(screen.getByTestId('bind-addr'), { target: { value: '127.0.0.1' } })
+    fireEvent.input(screen.getByTestId('bind-addr'), {
+      target: { value: '127.0.0.1' },
+    })
     expect(screen.queryByText(/loopback/i)).not.toBeInTheDocument()
   })
 
   it('requires a bind address', () => {
     renderDialog()
-    fireEvent.input(screen.getByTestId('bind-addr'), { target: { value: '' } })
+    fireEvent.input(screen.getByTestId('bind-addr'), {
+      target: { value: '' },
+    })
     expect(screen.getByText('Required')).toBeInTheDocument()
   })
 
@@ -324,10 +364,14 @@ describe('AddTunnelDialog bind address validation', () => {
   // SUBMITTED value too: the sidecar's net.ParseIP("[::1]") returns nil.
   it('accepts a bracketed IPv6 loopback and submits it unbracketed', async () => {
     const { store } = renderDialog()
-    fireEvent.input(screen.getByTestId('bind-addr'), { target: { value: '[::1]' } })
+    fireEvent.input(screen.getByTestId('bind-addr'), {
+      target: { value: '[::1]' },
+    })
     expect(screen.queryByText(/loopback/i)).not.toBeInTheDocument()
 
-    fireEvent.input(screen.getByTestId('target-port'), { target: { value: '3000' } })
+    fireEvent.input(screen.getByTestId('target-port'), {
+      target: { value: '3000' },
+    })
     fireEvent.submit(screen.getByTestId('tunnel-create').closest('form')!)
 
     await vi.waitFor(() => {

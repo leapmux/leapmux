@@ -16,7 +16,10 @@ import { assistantBubbles, resumeQueueAfterFailure, sendMessage, waitForAgentIdl
  */
 export async function exerciseNativeQuotaHeaders(context: ManagedNativeScenarioContext): Promise<MockModelRequestRecord> {
   const answer = uniqueMarker('NATIVEQUOTAHEADERS')
-  const start = await context.modelScript.queue({ ...nativeTextStep(context, answer), rateLimits: nearLimitRateLimits() })
+  const start = await context.modelScript.queue({
+    ...nativeTextStep(context, answer),
+    rateLimits: nearLimitRateLimits(),
+  })
   await sendMessage(context.page, context.modelScript.prompt('Complete the native quota-header probe.'))
   await context.modelScript.waitForSteps(start + 1)
   await waitForAgentIdle(context.page)

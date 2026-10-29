@@ -15,7 +15,11 @@ function result(markup: string): HTMLElement {
   root.innerHTML = markup
   document.body.append(root)
   const rectangle = new DOMRect(0, 0, 64, 64)
-  const rectangles = Object.assign([rectangle], { item: (index: number) => index === 0 ? rectangle : null })
+  const rectangles = Object.assign([rectangle], {
+    item: (index: number) => index === 0
+      ? rectangle
+      : null,
+  })
   for (const element of root.querySelectorAll<HTMLElement>('*'))
     vi.spyOn(element, 'getClientRects').mockReturnValue(rectangles)
   return root
@@ -29,7 +33,9 @@ describe('deepseekHarnessRenderedMcpContent', () => {
   })
 
   it('reports no attached result when every matched row detached', () => {
-    expect(deepseekHarnessRenderedMcpContent([document.createElement('div')], [])).toBeNull()
+    expect(deepseekHarnessRenderedMcpContent([
+      document.createElement('div'),
+    ], [])).toBeNull()
   })
 
   it('reads actual short paragraphs, large text, and repeated images in their rendered order', () => {
@@ -93,7 +99,13 @@ describe('deepseekHarnessRenderedMcpContent', () => {
     ])
   })
 
-  it.each(['hidden', 'aria-hidden="true"', 'style="display:none"', 'style="visibility:hidden"', 'style="visibility:collapse"'])('ignores a hidden copy under %s', (attribute) => {
+  it.each([
+    'hidden',
+    'aria-hidden="true"',
+    'style="display:none"',
+    'style="visibility:hidden"',
+    'style="visibility:collapse"',
+  ])('ignores a hidden copy under %s', (attribute) => {
     const root = result(`<div ${attribute}><p>Hidden native text.</p>${image}</div><p>Visible native text.</p>${image}`)
     expect(deepseekHarnessRenderedMcpContent(root, displayNotices)).toEqual([
       { type: 'text', text: 'Visible native text.' },
@@ -106,7 +118,9 @@ describe('deepseekHarnessRenderedMcpContent', () => {
     const unmeasured = root.firstElementChild
     if (!unmeasured)
       throw new Error('The rendered order fixture requires its unmeasured text.')
-    const rectangles = Object.assign([], { item: () => null })
+    const rectangles = Object.assign([], {
+      item: () => null,
+    })
     vi.mocked(unmeasured.getClientRects).mockReturnValue(rectangles)
     expect(deepseekHarnessRenderedMcpContent(root, displayNotices)).toEqual([
       { type: 'image', index: 0 },
@@ -117,8 +131,15 @@ describe('deepseekHarnessRenderedMcpContent', () => {
   it('detects a missing image instead of inferring it from the control', () => {
     const root = result('<p>First native text.</p><button aria-label="Open image"></button><p>Last native text.</p>')
     const actual = deepseekHarnessRenderedMcpContent(root, displayNotices)
-    expect(actual).toEqual([{ type: 'text', text: 'First native text.' }, { type: 'text', text: 'Last native text.' }])
-    expect(actual).not.toEqual([{ type: 'text', text: 'First native text.' }, { type: 'image', index: 0 }, { type: 'text', text: 'Last native text.' }])
+    expect(actual).toEqual([
+      { type: 'text', text: 'First native text.' },
+      { type: 'text', text: 'Last native text.' },
+    ])
+    expect(actual).not.toEqual([
+      { type: 'text', text: 'First native text.' },
+      { type: 'image', index: 0 },
+      { type: 'text', text: 'Last native text.' },
+    ])
   })
 
   it('distinguishes an empty result from a detached result', () => {
@@ -183,7 +204,9 @@ describe('deepseekHarnessMcpTextDisplay', () => {
     ])
     const aboveLimit = sized(MARKDOWN_PARSE_CHAR_LIMIT + 1)
     expect(aboveLimit.native).toHaveLength(MARKDOWN_PARSE_CHAR_LIMIT + 1)
-    expect(deepseekHarnessMcpTextDisplay(aboveLimit.native)).toEqual([{ type: 'text', text: aboveLimit.native }])
+    expect(deepseekHarnessMcpTextDisplay(aboveLimit.native)).toEqual([
+      { type: 'text', text: aboveLimit.native },
+    ])
   })
 
   it.each([

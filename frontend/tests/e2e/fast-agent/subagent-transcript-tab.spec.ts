@@ -26,8 +26,18 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
     const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, FAST_AGENT_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const runs = [
-      { task: 'FIRSTFASTCHILDTASK count the first set.', description: 'First Fast child', archive: 'FASTFIRSTARCHIVE', root: 'FASTFIRSTROOT' },
-      { task: 'SECONDFASTCHILDTASK count the second set.', description: 'Second Fast child', archive: 'FASTSECONDARCHIVE', root: 'FASTSECONDROOT' },
+      {
+        task: 'FIRSTFASTCHILDTASK count the first set.',
+        description: 'First Fast child',
+        archive: 'FASTFIRSTARCHIVE',
+        root: 'FASTFIRSTROOT',
+      },
+      {
+        task: 'SECONDFASTCHILDTASK count the second set.',
+        description: 'Second Fast child',
+        archive: 'FASTSECONDARCHIVE',
+        root: 'FASTSECONDROOT',
+      },
     ] as const
     let previousChildID = ''
     let previousPrompt = ''
@@ -46,7 +56,11 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
         once: true,
       })
       const start = await modelScript.queue(
-        { toolCalls: [spawnSubagentToolCall(PROVIDER, 'fast-reused-child-call', { description: run.description, prompt: childPrompt })] },
+        {
+          toolCalls: [
+            spawnSubagentToolCall(PROVIDER, 'fast-reused-child-call', { description: run.description, prompt: childPrompt }),
+          ],
+        },
         { text: run.root },
       )
       await sendMessage(page, modelScript.prompt(`Delegate ${run.description}.`))
@@ -88,7 +102,11 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
       once: true,
     })
     const firstStart = await modelScript.queue(
-      { toolCalls: [spawnSubagentToolCall(PROVIDER, 'fast-same-first', { description: 'Count files', prompt: childPrompt })] },
+      {
+        toolCalls: [
+          spawnSubagentToolCall(PROVIDER, 'fast-same-first', { description: 'Count files', prompt: childPrompt }),
+        ],
+      },
       { text: 'FASTSAMEROOTONE' },
     )
     await sendMessage(page, modelScript.prompt('Delegate the first count.'))
@@ -110,7 +128,11 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
       once: true,
     })
     const secondStart = await modelScript.queue(
-      { toolCalls: [spawnSubagentToolCall(PROVIDER, 'fast-same-second', { description: 'Count files', prompt: childPrompt })] },
+      {
+        toolCalls: [
+          spawnSubagentToolCall(PROVIDER, 'fast-same-second', { description: 'Count files', prompt: childPrompt }),
+        ],
+      },
       { text: 'FASTSAMEROOTTWO' },
     )
     await sendMessage(page, modelScript.prompt('Delegate the second count with the same task.'))
@@ -151,7 +173,9 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
         when: { body: CHILD_TASK },
         respond: {
           text: modelScript.prompt('FAST_CHILD_EARLY_TEXT'),
-          toolCalls: [readToolCall(PROVIDER, 'fast-child-read', note)],
+          toolCalls: [
+            readToolCall(PROVIDER, 'fast-child-read', note),
+          ],
           gate: 'fast-child-first',
         },
         once: true,
@@ -159,12 +183,18 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
       {
         name: 'the Fast Agent child reports its count',
         when: { body: CHILD_TASK },
-        respond: { text: modelScript.prompt('FAST_AGENT_CHILD_DONE') },
+        respond: {
+          text: modelScript.prompt('FAST_AGENT_CHILD_DONE'),
+        },
         once: true,
       },
     )
     const start = await modelScript.queue(
-      { toolCalls: [spawnSubagentToolCall(PROVIDER, 'fast-spawn', { description: 'Count files', prompt: childPrompt })] },
+      {
+        toolCalls: [
+          spawnSubagentToolCall(PROVIDER, 'fast-spawn', { description: 'Count files', prompt: childPrompt }),
+        ],
+      },
       { text: 'FAST_AGENT_ROOT_DONE' },
     )
     await sendMessage(page, modelScript.prompt('Delegate the count, then report.'))
@@ -216,7 +246,9 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
         when: { body: CHILD_TASK },
         respond: {
           text: modelScript.prompt('FAST_CHILD_RESUME_EARLY'),
-          toolCalls: [readToolCall(PROVIDER, 'fast-resume-child-read', note)],
+          toolCalls: [
+            readToolCall(PROVIDER, 'fast-resume-child-read', note),
+          ],
           gate: 'fast-resume-child-first',
         },
         once: true,
@@ -224,12 +256,18 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
       {
         name: 'the resumed Fast Agent child reports its result',
         when: { body: CHILD_TASK },
-        respond: { text: modelScript.prompt('FAST_CHILD_RESUME_FINAL') },
+        respond: {
+          text: modelScript.prompt('FAST_CHILD_RESUME_FINAL'),
+        },
         once: true,
       },
     )
     const start = await modelScript.queue(
-      { toolCalls: [spawnSubagentToolCall(PROVIDER, 'fast-resume-spawn', { description: 'Count files', prompt: childPrompt })] },
+      {
+        toolCalls: [
+          spawnSubagentToolCall(PROVIDER, 'fast-resume-spawn', { description: 'Count files', prompt: childPrompt }),
+        ],
+      },
       { text: 'FAST_ROOT_RESUME_DONE' },
     )
     await sendMessage(page, modelScript.prompt('Delegate the count, then report.'))

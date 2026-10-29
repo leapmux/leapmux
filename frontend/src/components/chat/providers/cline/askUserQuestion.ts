@@ -25,7 +25,9 @@ import { clinePayload } from './protocol'
 /** The capability request of a stored control payload, when it is a question. */
 function questionRequest(payload: Record<string, unknown>): Record<string, unknown> | null {
   const request = clinePayload(payload, CLINE_EVENT.CapabilityRequested)
-  return request && pickString(request, 'capabilityName') === CLINE_CAPABILITY.AskQuestion ? request : null
+  return request && pickString(request, 'capabilityName') === CLINE_CAPABILITY.AskQuestion
+    ? request
+    : null
 }
 
 /** Whether a stored control payload is a question request. */
@@ -45,10 +47,12 @@ export function clineQuestionsFromPayload(payload: Record<string, unknown>): Con
   const [question, options] = args
   if (typeof question !== 'string' || question.trim() === '')
     return []
-  return [{
-    question: question.trim(),
-    options: stringArray(options).map(label => ({ value: label, label })),
-  }]
+  return [
+    {
+      question: question.trim(),
+      options: stringArray(options).map(label => ({ value: label, label })),
+    },
+  ]
 }
 
 /**

@@ -37,15 +37,23 @@ function commandText(command: unknown): string {
     return command
   if (!isObject(command))
     return ''
-  return [pickString(command, 'command'), ...stringArray(command.args)].filter(Boolean).join(' ')
+  return [
+    pickString(command, 'command'),
+    ...stringArray(command.args),
+  ].filter(Boolean).join(' ')
 }
 
 /** The commands one call states, a line each. */
 export function clineCommandRequest(args: Record<string, unknown>): ExecuteRequest {
   const commands = Array.isArray(args.commands)
     ? args.commands.map(commandText).filter(Boolean)
-    : [pickString(args, 'command')].filter(Boolean)
-  return { command: commands.join('\n'), language: 'bash' }
+    : [
+        pickString(args, 'command'),
+      ].filter(Boolean)
+  return {
+    command: commands.join('\n'),
+    language: 'bash',
+  }
 }
 
 /**
@@ -63,7 +71,9 @@ function clineExitCode(operation: ClineOperation): number | undefined {
   if (digits === undefined)
     return undefined
   const code = Number(digits)
-  return Number.isSafeInteger(code) && code !== 0 ? code : undefined
+  return Number.isSafeInteger(code) && code !== 0
+    ? code
+    : undefined
 }
 
 /**
@@ -78,7 +88,9 @@ function withoutExitLine(result: string, code: number): string {
   const line = `[Command exited with code ${code}]`
   if (result === line)
     return ''
-  return result.startsWith(`${line}\n`) ? result.slice(line.length + 1) : result
+  return result.startsWith(`${line}\n`)
+    ? result.slice(line.length + 1)
+    : result
 }
 
 /**
@@ -94,12 +106,25 @@ function withoutExitLine(result: string, code: number): string {
  */
 export function clineCommandResults(output: unknown): CommandResult[] {
   return clineOperations(output).map((operation) => {
-    const label = operation.query ? { label: operation.query } : {}
+    const label = operation.query
+      ? { label: operation.query }
+      : {}
     const exitCode = clineExitCode(operation)
-    if (exitCode !== undefined)
-      return { output: withoutExitLine(operation.result, exitCode), exitCode, ...label }
-    const separator = operation.result === '' || operation.result.endsWith('\n') ? '' : '\n'
-    const text = operation.error ? `${operation.result}${separator}${operation.error}` : operation.result
-    return operation.success ? { output: text, ...label } : { output: text, failed: true, ...label }
+    if (exitCode !== undefined) {
+      return {
+        output: withoutExitLine(operation.result, exitCode),
+        exitCode,
+        ...label,
+      }
+    }
+    const separator = operation.result === '' || operation.result.endsWith('\n')
+      ? ''
+      : '\n'
+    const text = operation.error
+      ? `${operation.result}${separator}${operation.error}`
+      : operation.result
+    return operation.success
+      ? { output: text, ...label }
+      : { output: text, failed: true, ...label }
   })
 }

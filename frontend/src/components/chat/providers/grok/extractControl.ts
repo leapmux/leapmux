@@ -41,16 +41,25 @@ export function grokExtractControl(input: ControlExtractionInput): ExtractedCont
     // Grok sends the plan's markdown, or `null` for an empty plan. The approval then
     // draws no plan text, which is what the reader would see in the plan file too.
     const text = pickString(params, 'planContent')
-    return { kind: 'plan', ...(text ? { text } : {}) }
+    return {
+      kind: 'plan',
+      ...(text
+        ? { text }
+        : {}),
+    }
   }
   if (payload.method === GROK_METHOD.FolderTrust) {
     const kinds = stringArray(params?.configKinds).filter(Boolean)
     const workspace = pickString(params, 'workspace') || pickString(params, 'cwd')
-    const found = kinds.length > 0 ? ` (${kinds.join(', ')})` : ''
+    const found = kinds.length > 0
+      ? ` (${kinds.join(', ')})`
+      : ''
     return {
       kind: 'permission',
       permission: {
-        title: workspace ? `Trust the workspace ${workspace}` : 'Trust this workspace',
+        title: workspace
+          ? `Trust the workspace ${workspace}`
+          : 'Trust this workspace',
         reason: `The repository holds its own Grok Build configuration${found}. Grok Build loads it only from a workspace you trust, and it keeps your answer for the workspace.`,
         options: [...GROK_FOLDER_TRUST_OPTIONS],
       },

@@ -42,9 +42,13 @@ function agentToolResult(resultContent: string, toolUseResult?: Record<string, u
     type: 'user',
     message: {
       role: 'user',
-      content: [{ tool_use_id: 'test-agent', type: 'tool_result', content: resultContent }],
+      content: [
+        { tool_use_id: 'test-agent', type: 'tool_result', content: resultContent },
+      ],
     },
-    ...(toolUseResult ? { tool_use_result: toolUseResult } : {}),
+    ...(toolUseResult
+      ? { tool_use_result: toolUseResult }
+      : {}),
   }
 }
 
@@ -60,14 +64,29 @@ function renderAgentResult(
         topLevel: null,
         parentObject: {
           type: 'assistant',
-          message: { role: 'assistant', content: [{ type: 'tool_use', id: 'test-agent', name: 'Agent', input: toolUseInput }] },
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'test-agent',
+                name: 'Agent',
+                input: toolUseInput,
+              },
+            ],
+          },
         },
         wrapper: null,
       }, AgentProvider.CLAUDE_CODE)
     : undefined
   const result = renderMessageContent(
     agentToolResult(resultContent, toolUseResult),
-    { spanType: 'Agent', sources: testMessageSources({ request: () => (toolUseParsed) }) },
+    {
+      spanType: 'Agent',
+      sources: testMessageSources({
+        request: () => (toolUseParsed),
+      }),
+    },
     category,
     AgentProvider.CLAUDE_CODE,
   )
@@ -173,7 +192,9 @@ describe('claude Agent tool_result rendering: a finished run', () => {
   const completed = {
     status: 'completed',
     agentId: 'a7bcba10b2b861663',
-    content: [{ type: 'text', text: 'The tide comes in twice a day.' }],
+    content: [
+      { type: 'text', text: 'The tide comes in twice a day.' },
+    ],
     prompt: PROMPT,
     resolvedModel: 'claude-opus-5[1m]',
   }
@@ -216,7 +237,9 @@ describe('claude Agent tool_result rendering: a finished run', () => {
       {
         status: 'completed',
         agentId: 'a7bcba10b2b861663',
-        content: [{ type: 'text', text: 'The tide comes in twice a day.' }],
+        content: [
+          { type: 'text', text: 'The tide comes in twice a day.' },
+        ],
         resolvedModel: 'claude-opus-5[1m]',
       },
       { description: 'SCAN triage + angle recommendation' },
@@ -233,7 +256,9 @@ describe('claude Agent tool_result rendering: a finished run', () => {
       {
         status: 'completed',
         agentId: 'a7bcba10b2b861663',
-        content: [{ type: 'text', text: 'The tide comes in twice a day.' }],
+        content: [
+          { type: 'text', text: 'The tide comes in twice a day.' },
+        ],
         resolvedModel: 'claude-opus-5[1m]',
       },
       { description: '   ' },
@@ -258,7 +283,9 @@ describe('claude toolbar actions for Agent', () => {
     const copied = meta({
       status: 'completed',
       agentId: 'a1',
-      content: [{ type: 'text', text: 'The report.' }],
+      content: [
+        { type: 'text', text: 'The report.' },
+      ],
       prompt: PROMPT,
     }, '')?.copyableContent()
     expect(copied).toBe('The report.')
@@ -285,7 +312,9 @@ describe('claude Agent tool_result rendering: field-list edge cases', () => {
     const text = renderAgentResult('', {
       status: 'completed',
       agentId: 'a1',
-      content: [{ type: 'text', text: 'done' }],
+      content: [
+        { type: 'text', text: 'done' },
+      ],
       worktreePath: '/tmp/wt/feature',
       worktreeBranch: 'feature-x',
     }).textContent ?? ''

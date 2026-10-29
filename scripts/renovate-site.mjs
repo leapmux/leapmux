@@ -8,19 +8,24 @@ function requirementFor(path, metadata) {
 export function configurationModulePins(configuration, metadata) {
   const imports = configuration.module?.imports ?? []
   if (!Array.isArray(imports))
-    throw new Error('Hugo module imports must be an array.')
-  return [...new Map(imports.filter(entry => !entry.disable).map((entry) => {
-    if (typeof entry.path !== 'string' || entry.path === '')
-      throw new Error('A Hugo module import requires a path.')
-    const pin = requirementFor(entry.path, metadata)
-    if (!pin)
-      throw new Error(`Hugo configuration import ${entry.path} has no pinned module requirement.`)
-    return [pin.Path, pin]
-  })).values()]
+    throw new TypeError('Hugo module imports must be an array.')
+  return [
+    ...new Map(imports.filter(entry => !entry.disable).map((entry) => {
+      if (typeof entry.path !== 'string' || entry.path === '')
+        throw new Error('A Hugo module import requires a path.')
+      const pin = requirementFor(entry.path, metadata)
+      if (!pin)
+        throw new Error(`Hugo configuration import ${entry.path} has no pinned module requirement.`)
+      return [pin.Path, pin]
+    })).values(),
+  ]
 }
 
 export function refreshSite({ root, run, read = path => readFileSync(resolve(root, path), 'utf8'), write = (path, content) => writeFileSync(resolve(root, path), content) }) {
-  const options = { cwd: 'site', env: { GOWORK: 'off' } }
+  const options = {
+    cwd: 'site',
+    env: { GOWORK: 'off' },
+  }
   const metadata = () => JSON.parse(run('go', ['mod', 'edit', '-json'], { ...options, capture: true }))
   const before = metadata()
   const source = read('site/go.mod')
@@ -39,7 +44,10 @@ export function refreshSite({ root, run, read = path => readFileSync(resolve(roo
     write('site/go.mod', `${read('site/go.mod').trimEnd()}\n\n${restored.join('\n')}\n`)
     run('go', ['mod', 'edit', '-fmt'], options)
   }
-  run('go', ['mod', 'download', 'all'], { ...options, env: { GOWORK: 'off', GOFLAGS: '-mod=mod' } })
+  run('go', ['mod', 'download', 'all'], {
+    ...options,
+    env: { GOWORK: 'off', GOFLAGS: '-mod=mod' },
+  })
   const after = metadata()
   for (const tool of before.Tool ?? []) {
     const owner = requirementFor(tool.Path, before)

@@ -22,7 +22,9 @@ function request(
     requestId: 'req-1',
     agentId: 'agent-1',
     payload: {
-      method: toolName === ZCODE_TOOL.Bash ? 'interaction/requestPermission' : ZCODE_METHOD.RequestUserInput,
+      method: toolName === ZCODE_TOOL.Bash
+        ? 'interaction/requestPermission'
+        : ZCODE_METHOD.RequestUserInput,
       request: { tool_name: toolName, input },
       params,
     },
@@ -39,7 +41,11 @@ describe('zcode plan approval control', () => {
     const { container } = render(() => (
       <ControlRequestContent
         agentProvider={AgentProvider.ZCODE}
-        request={request(ZCODE_TOOL.ExitPlanMode, { questions: [{ question: '# Plan\n\nStep one' }] })}
+        request={request(ZCODE_TOOL.ExitPlanMode, {
+          questions: [
+            { question: '# Plan\n\nStep one' },
+          ],
+        })}
         answerState={createControlAnswerState()}
       />
     ))
@@ -62,7 +68,11 @@ describe('zcode plan approval control', () => {
     const { getByTestId } = render(() => (
       <ControlRequestActions
         agentProvider={AgentProvider.ZCODE}
-        request={request(ZCODE_TOOL.ExitPlanMode, { questions: [{ question: 'the plan' }] })}
+        request={request(ZCODE_TOOL.ExitPlanMode, {
+          questions: [
+            { question: 'the plan' },
+          ],
+        })}
         answerState={createControlAnswerState()}
         onRespond={onRespond}
         hasEditorContent={false}
@@ -73,7 +83,10 @@ describe('zcode plan approval control', () => {
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
     expect(decode(onRespond.mock.calls[0]?.[0])).toMatchObject({
       type: 'control_response',
-      response: { request_id: 'req-1', response: { behavior: 'allow' } },
+      response: {
+        request_id: 'req-1',
+        response: { behavior: 'allow' },
+      },
     })
   })
 
@@ -85,7 +98,11 @@ describe('zcode plan approval control', () => {
     const { getByTestId } = render(() => (
       <ControlRequestActions
         agentProvider={AgentProvider.ZCODE}
-        request={request(ZCODE_TOOL.ExitPlanMode, { questions: [{ question: 'the plan' }] })}
+        request={request(ZCODE_TOOL.ExitPlanMode, {
+          questions: [
+            { question: 'the plan' },
+          ],
+        })}
         answerState={createControlAnswerState()}
         onRespond={onRespond}
         hasEditorContent={false}
@@ -101,9 +118,23 @@ describe('zcode plan approval control', () => {
 describe('zcode native questions', () => {
   it('shows the option description through the shared question control', () => {
     const control = request(ZCODE_TOOL.AskUserQuestion, {
-      questions: [{ question: 'Pick a color.', options: [{ label: 'Blue' }] }],
+      questions: [
+        {
+          question: 'Pick a color.',
+          options: [
+            { label: 'Blue' },
+          ],
+        },
+      ],
     }, {
-      questions: [{ question: 'Pick a color.', options: [{ label: 'Blue', value: 'Blue', description: 'Choose the color blue.' }] }],
+      questions: [
+        {
+          question: 'Pick a color.',
+          options: [
+            { label: 'Blue', value: 'Blue', description: 'Choose the color blue.' },
+          ],
+        },
+      ],
     })
     const { getByText, getByRole } = render(() => (
       <ControlRequestContent agentProvider={AgentProvider.ZCODE} request={control} answerState={createControlAnswerState()} />
@@ -115,10 +146,15 @@ describe('zcode native questions', () => {
 
 describe('zcode question control', () => {
   const questionInput = {
-    questions: [{
-      question: 'Which database?',
-      options: [{ value: 'Postgres' }, { value: 'MySQL' }],
-    }],
+    questions: [
+      {
+        question: 'Which database?',
+        options: [
+          { value: 'Postgres' },
+          { value: 'MySQL' },
+        ],
+      },
+    ],
   }
 
   it('renders the question and its options through the shared control', () => {
@@ -139,7 +175,11 @@ describe('zcode question control', () => {
     const { getByTestId } = render(() => (
       <ControlRequestActions
         request={request(ZCODE_TOOL.AskUserQuestion, questionInput)}
-        answerState={createControlAnswerState({ selections: { 0: ['MySQL'] } })}
+        answerState={createControlAnswerState({
+          selections: {
+            0: ['MySQL'],
+          },
+        })}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
@@ -152,7 +192,9 @@ describe('zcode question control', () => {
       response: {
         response: {
           behavior: 'allow',
-          updatedInput: { answers: { 'Which database?': 'MySQL' } },
+          updatedInput: {
+            answers: { 'Which database?': 'MySQL' },
+          },
         },
       },
     })
@@ -200,7 +242,9 @@ describe('zcode permission control', () => {
     fireEvent.click(getByTestId('control-allow-btn'))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
     expect(decode(onRespond.mock.calls[0]?.[0])).toMatchObject({
-      response: { response: { behavior: 'allow' } },
+      response: {
+        response: { behavior: 'allow' },
+      },
     })
   })
 
@@ -220,7 +264,9 @@ describe('zcode permission control', () => {
     fireEvent.click(getByTestId('control-deny-btn'))
     expect(onTriggerSend).not.toHaveBeenCalled()
     expect(decode(onRespond.mock.calls[0]?.[0])).toMatchObject({
-      response: { response: { behavior: 'deny' } },
+      response: {
+        response: { behavior: 'deny' },
+      },
     })
   })
 
@@ -243,7 +289,9 @@ describe('zcode permission control', () => {
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
         presets={{
-          bypass: { sets: { permissionMode: ZCODE_MODE.Yolo } },
+          bypass: {
+            sets: { permissionMode: ZCODE_MODE.Yolo },
+          },
           apply: (change) => {
             order.push(`mode:${change.sets.permissionMode}`)
           },
@@ -271,9 +319,29 @@ describe('zcode permission control', () => {
 
 /** The options a live Bash permission request offered, captured from the app-server: an always-allow choice carries its permission-rule updates inside its own response. */
 const ZCODE_CAPTURED_OPTIONS = [
-  { optionId: 'allow_once', kind: 'allow_once', name: 'Allow once', response: { decision: 'allow', reason: 'Approved once' } },
-  { optionId: 'allow_project', kind: 'allow_always', name: 'Always allow in this project', response: { decision: 'allow', permissionUpdates: [{ type: 'addRules' }] } },
-  { optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } },
+  {
+    optionId: 'allow_once',
+    kind: 'allow_once',
+    name: 'Allow once',
+    response: { decision: 'allow', reason: 'Approved once' },
+  },
+  {
+    optionId: 'allow_project',
+    kind: 'allow_always',
+    name: 'Always allow in this project',
+    response: {
+      decision: 'allow',
+      permissionUpdates: [
+        { type: 'addRules' },
+      ],
+    },
+  },
+  {
+    optionId: 'deny',
+    kind: 'deny',
+    name: 'Deny',
+    response: { decision: 'deny' },
+  },
 ]
 
 describe('zcode offered permission options', () => {
@@ -282,7 +350,9 @@ describe('zcode offered permission options', () => {
       payload: request(ZCODE_TOOL.Bash, { command: 'rm -rf build' }, { options: ZCODE_CAPTURED_OPTIONS }).payload,
     })
     expect(extracted?.kind).toBe('permission')
-    expect(extracted && 'permission' in extracted ? extracted.permission.options : []).toEqual([
+    expect(extracted && 'permission' in extracted
+      ? extracted.permission.options
+      : []).toEqual([
       { optionId: 'allow_once', kind: 'allow_once', name: 'Allow once' },
       { optionId: 'allow_project', kind: 'allow_always', name: 'Always allow in this project' },
       { optionId: 'deny', kind: 'reject_once', name: 'Deny' },
@@ -291,9 +361,15 @@ describe('zcode offered permission options', () => {
 
   it('keeps an unknown native kind instead of guessing a canonical slot', () => {
     const extracted = zcodeExtractControl({
-      payload: request(ZCODE_TOOL.Bash, { command: 'ls' }, { options: [{ optionId: 'escalate', kind: 'escalate', name: 'Escalate' }] }).payload,
+      payload: request(ZCODE_TOOL.Bash, { command: 'ls' }, {
+        options: [
+          { optionId: 'escalate', kind: 'escalate', name: 'Escalate' },
+        ],
+      }).payload,
     })
-    expect(extracted && 'permission' in extracted ? extracted.permission.options : []).toEqual([
+    expect(extracted && 'permission' in extracted
+      ? extracted.permission.options
+      : []).toEqual([
       { optionId: 'escalate', kind: 'escalate', name: 'Escalate' },
     ])
   })
@@ -317,7 +393,9 @@ describe('zcode offered permission options', () => {
     fireEvent.click(getByTestId('control-allow-btn'))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
     expect(decode(onRespond.mock.calls[0]?.[0])).toMatchObject({
-      response: { response: { behavior: 'allow', choice: 'allow_project' } },
+      response: {
+        response: { behavior: 'allow', choice: 'allow_project' },
+      },
     })
   })
 
@@ -336,7 +414,9 @@ describe('zcode offered permission options', () => {
     fireEvent.click(getByRole('button', { name: 'Deny' }))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
     expect(decode(onRespond.mock.calls[0]?.[0])).toMatchObject({
-      response: { response: { behavior: 'deny', choice: 'deny' } },
+      response: {
+        response: { behavior: 'deny', choice: 'deny' },
+      },
     })
   })
 })

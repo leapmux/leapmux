@@ -4,5 +4,8 @@ import { expectUnsupportedGoalActions } from '../helpers/unsupportedConfiguratio
 import { opencodeTest } from '../opencode-fixtures'
 
 opencodeTest('proves the native session-goal-pause-and-resume limit after a real sidebar operation', async ({ native }) => {
-  await expectUnsupportedGoalActions(native, { actions: [AgentGoalAction.PAUSE, AgentGoalAction.RESUME], relatedProof: () => exerciseRelatedTodo(native) })
+  await expectUnsupportedGoalActions(native, {
+    actions: [AgentGoalAction.PAUSE, AgentGoalAction.RESUME],
+    relatedProof: () => exerciseRelatedTodo(native),
+  })
 })

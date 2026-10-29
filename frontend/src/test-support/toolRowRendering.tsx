@@ -32,9 +32,24 @@ export interface ToolRowFrames {
  * provider.
  */
 export function renderToolRows(provider: AgentProvider, frames: ToolRowFrames): { request: HTMLElement, result: HTMLElement } {
-  const stored = (frame: Record<string, unknown>, supplementalContent?: Record<string, unknown>): ParsedMessageContent => ({ rawText: '', topLevel: frame, parentObject: frame, wrapper: null, supplementalContent })
-  const requestRow = providerRow(provider, frames.opening, { role: 'request', spanType: frames.spanType, supplementalContent: frames.requestSupplement, result: stored(frames.ending) })
-  const resultRow = providerRow(provider, frames.ending, { role: 'result', spanType: frames.spanType, request: stored(frames.opening, frames.requestSupplement) })
+  const stored = (frame: Record<string, unknown>, supplementalContent?: Record<string, unknown>): ParsedMessageContent => ({
+    rawText: '',
+    topLevel: frame,
+    parentObject: frame,
+    wrapper: null,
+    supplementalContent,
+  })
+  const requestRow = providerRow(provider, frames.opening, {
+    role: 'request',
+    spanType: frames.spanType,
+    supplementalContent: frames.requestSupplement,
+    result: stored(frames.ending),
+  })
+  const resultRow = providerRow(provider, frames.ending, {
+    role: 'result',
+    spanType: frames.spanType,
+    request: stored(frames.opening, frames.requestSupplement),
+  })
   if (requestRow?.kind !== 'tool' || resultRow?.kind !== 'tool')
     throw new Error('A finished call is a tool row on each side.')
   return {

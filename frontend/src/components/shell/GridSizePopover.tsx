@@ -63,8 +63,12 @@ export const GridSizePopover: Component<GridSizePopoverProps> = (props) => {
       // From an unset selection (-1, -1) the first arrow key snaps to (0, 0);
       // subsequent keys move one cell along the axis, clamped to the grid.
       const [dr, dc] = delta
-      const newRow = row < 0 ? 0 : Math.max(0, Math.min(row + dr, HOVER_GRID_ROWS - 1))
-      const newCol = col < 0 ? 0 : Math.max(0, Math.min(col + dc, HOVER_GRID_COLS - 1))
+      const newRow = row < 0
+        ? 0
+        : Math.max(0, Math.min(row + dr, HOVER_GRID_ROWS - 1))
+      const newCol = col < 0
+        ? 0
+        : Math.max(0, Math.min(col + dc, HOVER_GRID_COLS - 1))
       batch(() => {
         setHoverRow(newRow)
         setHoverCol(newCol)
@@ -148,7 +152,9 @@ export const GridSizePopover: Component<GridSizePopoverProps> = (props) => {
                 role="gridcell"
                 class={styles.cell}
                 data-testid={`grid-size-cell-${r}-${c}`}
-                data-highlighted={r <= hoverRow() && c <= hoverCol() ? 'true' : 'false'}
+                data-highlighted={r <= hoverRow() && c <= hoverCol()
+                  ? 'true'
+                  : 'false'}
                 onPointerEnter={() => {
                   batch(() => {
                     setHoverRow(r)

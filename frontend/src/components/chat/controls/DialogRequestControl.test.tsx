@@ -12,7 +12,9 @@ import { createControlAnswerState } from './types'
 
 // The Enter key of an input sends outside the decision buttons, so its failure
 // reaches the reader through the shared action toast. The mock records it.
-vi.mock('~/components/common/Toast', () => ({ showWarnToast: vi.fn() }))
+vi.mock('~/components/common/Toast', () => ({
+  showWarnToast: vi.fn(),
+}))
 
 /**
  * A dialog that resolves itself is one the reader must be able to see a deadline on,
@@ -89,7 +91,12 @@ describe('DialogRequestContent', () => {
   // The message belongs to a confirm, and the placeholder hint to an input. Each
   // variant draws only its own field, so a payload that carries both draws one.
   it('states the placeholder of an input as a hint and leaves its message out', () => {
-    const { container, getByText, queryByText } = renderContent({ title: 'Branch name', message: 'Unused', placeholder: 'main', variant: 'input' })
+    const { container, getByText, queryByText } = renderContent({
+      title: 'Branch name',
+      message: 'Unused',
+      placeholder: 'main',
+      variant: 'input',
+    })
     expect(getByText('hint: main')).toBeVisible()
     expect(queryByText('Unused')).toBeNull()
     expect(container.querySelector('textarea')).toBeNull()
@@ -101,7 +108,12 @@ describe('DialogRequestContent', () => {
   })
 
   it('draws the editor with no message and no hint', () => {
-    const { container, getByTestId } = renderContent({ title: 'Commit message', message: 'Unused', placeholder: 'Unused', variant: 'editor' })
+    const { container, getByTestId } = renderContent({
+      title: 'Commit message',
+      message: 'Unused',
+      placeholder: 'Unused',
+      variant: 'editor',
+    })
     expect(getByTestId('dialog-editor')).toHaveAccessibleName('Commit message')
     expect(container.textContent).toBe('Commit message')
   })
@@ -131,7 +143,10 @@ describe('DialogRequestActions', () => {
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
     fireEvent.click(getByTestId('control-deny-btn'))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledTimes(2))
-    expect(sent(onRespond)).toEqual([{ id: 'd1', confirmed: true }, { id: 'd1', confirmed: false }])
+    expect(sent(onRespond)).toEqual([
+      { id: 'd1', confirmed: true },
+      { id: 'd1', confirmed: false },
+    ])
   })
 
   it('draws no field for a confirm or an editor', () => {
@@ -140,7 +155,12 @@ describe('DialogRequestActions', () => {
   })
 
   it('starts an input from its draft, and states its hint and its title', () => {
-    const { getByTestId } = renderActions({ title: 'Branch name', placeholder: 'main', prefill: 'feature/', variant: 'input' })
+    const { getByTestId } = renderActions({
+      title: 'Branch name',
+      placeholder: 'main',
+      prefill: 'feature/',
+      variant: 'input',
+    })
     const input = getByTestId('dialog-input') as HTMLInputElement
     expect(input.value).toBe('feature/')
     expect(input.placeholder).toBe('main')
@@ -150,13 +170,20 @@ describe('DialogRequestActions', () => {
   it('sends the typed text of an input, by the button and by Enter', async () => {
     const { getByTestId, onRespond } = renderActions({ title: 'Branch name', variant: 'input' })
     const input = getByTestId('dialog-input') as HTMLInputElement
-    fireEvent.input(input, { target: { value: 'hello world' } })
+    fireEvent.input(input, {
+      target: { value: 'hello world' },
+    })
     fireEvent.click(getByTestId('control-allow-btn'))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    fireEvent.input(input, { target: { value: 'by enter' } })
+    fireEvent.input(input, {
+      target: { value: 'by enter' },
+    })
     fireEvent.keyDown(input, { key: 'Enter' })
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledTimes(2))
-    expect(sent(onRespond)).toEqual([{ id: 'd1', value: 'hello world' }, { id: 'd1', value: 'by enter' }])
+    expect(sent(onRespond)).toEqual([
+      { id: 'd1', value: 'hello world' },
+      { id: 'd1', value: 'by enter' },
+    ])
   })
 
   // A runtime tells an empty answer apart from a dismissal.
@@ -168,7 +195,10 @@ describe('DialogRequestActions', () => {
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
     fireEvent.click(getByTestId('control-deny-btn'))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledTimes(2))
-    expect(sent(onRespond)).toEqual([{ id: 'd1', value: '' }, { id: 'd1', cancelled: true }])
+    expect(sent(onRespond)).toEqual([
+      { id: 'd1', value: '' },
+      { id: 'd1', cancelled: true },
+    ])
   })
 
   // The editor draws in the content half, and the send reads what the reader typed
@@ -179,28 +209,38 @@ describe('DialogRequestActions', () => {
     const content = render(() => <DialogRequestContent request={request} answerState={answerState} dialog={dialog} />)
     const editor = content.getByTestId('dialog-editor') as HTMLTextAreaElement
     expect(editor.value).toBe('fix: ')
-    fireEvent.input(editor, { target: { value: 'fix: typo\nin the docs' } })
+    fireEvent.input(editor, {
+      target: { value: 'fix: typo\nin the docs' },
+    })
     const { getByTestId, onRespond } = renderActions(dialog, answerState)
     fireEvent.click(getByTestId('control-allow-btn'))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    expect(sent(onRespond)).toEqual([{ id: 'd1', value: 'fix: typo\nin the docs' }])
+    expect(sent(onRespond)).toEqual([
+      { id: 'd1', value: 'fix: typo\nin the docs' },
+    ])
   })
 
   it('sends the draft of an editor that the reader did not change', async () => {
     const { getByTestId, onRespond } = renderActions({ title: 'Commit message', prefill: 'fix: ', variant: 'editor' })
     fireEvent.click(getByTestId('control-allow-btn'))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    expect(sent(onRespond)).toEqual([{ id: 'd1', value: 'fix: ' }])
+    expect(sent(onRespond)).toEqual([
+      { id: 'd1', value: 'fix: ' },
+    ])
   })
 
   // A reader who clears the draft sends the empty text, not the draft again: the
   // answer state holds the empty value, and an empty value is a real answer.
   it('sends the empty text of an input whose draft the reader cleared', async () => {
     const { getByTestId, onRespond } = renderActions({ title: 'Branch name', prefill: 'feature/', variant: 'input' })
-    fireEvent.input(getByTestId('dialog-input'), { target: { value: '' } })
+    fireEvent.input(getByTestId('dialog-input'), {
+      target: { value: '' },
+    })
     fireEvent.click(getByTestId('control-allow-btn'))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    expect(sent(onRespond)).toEqual([{ id: 'd1', value: '' }])
+    expect(sent(onRespond)).toEqual([
+      { id: 'd1', value: '' },
+    ])
   })
 
   it('offers Cancel and Send for an editor, and Cancel dismisses it', async () => {
@@ -209,13 +249,17 @@ describe('DialogRequestActions', () => {
     expect(getByTestId('control-deny-btn')).toHaveTextContent('Cancel')
     fireEvent.click(getByTestId('control-deny-btn'))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    expect(sent(onRespond)).toEqual([{ id: 'd1', cancelled: true }])
+    expect(sent(onRespond)).toEqual([
+      { id: 'd1', cancelled: true },
+    ])
   })
 
   it('sends nothing for a key other than Enter', () => {
     const { getByTestId, onRespond } = renderActions({ title: 'Branch name', variant: 'input' })
     const input = getByTestId('dialog-input')
-    fireEvent.input(input, { target: { value: 'main' } })
+    fireEvent.input(input, {
+      target: { value: 'main' },
+    })
     fireEvent.keyDown(input, { key: 'a' })
     fireEvent.keyDown(input, { key: 'Escape' })
     expect(onRespond).not.toHaveBeenCalled()
@@ -261,7 +305,9 @@ describe('DialogRequestActions', () => {
     setCurrent({ ...request, requestId: 'd2' })
     fireEvent.click(getByTestId('control-allow-btn'))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    expect(sent(onRespond)).toEqual([{ id: 'd2', confirmed: true }])
+    expect(sent(onRespond)).toEqual([
+      { id: 'd2', confirmed: true },
+    ])
   })
 })
 
@@ -272,7 +318,10 @@ describe('ControlRequestActions', () => {
     const { getByTestId, queryByTestId } = render(() => (
       <ControlRequestActions
         request={request}
-        controlSurface={{ kind: 'dialog', dialog: { title: 'Proceed?', variant: 'input' } }}
+        controlSurface={{
+          kind: 'dialog',
+          dialog: { title: 'Proceed?', variant: 'input' },
+        }}
         agentProvider={AgentProvider.CLAUDE_CODE}
         answerState={createControlAnswerState()}
         onRespond={vi.fn(async () => {})}

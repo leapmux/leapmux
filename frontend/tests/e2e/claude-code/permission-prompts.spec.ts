@@ -32,7 +32,9 @@ for (const decision of ['allow', 'deny'] as const) {
         }
       },
       // Claude's answer is the neutral envelope, so the shared reader states the word of the button.
-      viewProof: () => expect(savedControlAnswer(native.page)).toHaveText(decision === 'allow' ? 'Allow' : 'Deny'),
+      viewProof: () => expect(savedControlAnswer(native.page)).toHaveText(decision === 'allow'
+        ? 'Allow'
+        : 'Deny'),
     })
   })
 }

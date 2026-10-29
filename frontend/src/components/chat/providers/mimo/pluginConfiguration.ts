@@ -5,7 +5,13 @@ import { MIMO_AUDIO_MIME, MIMO_DEFAULT_MODE, MIMO_MODE } from '~/generated/contr
 export const mimoConfiguration: ProviderConfigurationCapability = {
   // Media travels as file parts. Audio also requires the native model's audio
   // capability, which the worker checks before it writes the prompt.
-  attachments: { text: true, image: true, pdf: true, audio: [...MIMO_AUDIO_MIME], binary: false },
+  attachments: {
+    text: true,
+    image: true,
+    pdf: true,
+    audio: [...MIMO_AUDIO_MIME],
+    binary: false,
+  },
   // MiMo's primary agents -- build, plan and any the configuration adds -- ride the
   // permission-mode axis, so plan mode and its toggle work as for every provider.
   triggerModeGroupKey: 'permissionMode',

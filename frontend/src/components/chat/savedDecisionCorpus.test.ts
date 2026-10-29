@@ -52,5 +52,10 @@ function storedResponse(
 ): PersistedControlResponse {
   // The claim token never reaches a derivation. It is present because the type requires
   // it, and its value is deliberately not one.
-  return { requestId: 'request', claimToken: 'not-a-token', request, response }
+  return {
+    requestId: 'request',
+    claimToken: 'not-a-token',
+    request,
+    response,
+  }
 }

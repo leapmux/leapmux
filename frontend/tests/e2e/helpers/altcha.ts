@@ -77,5 +77,8 @@ export async function solveCaptchaViaAPI(hubUrl: string): Promise<{ captchaPaylo
     },
     solution,
   })
-  return { captchaPayload: Buffer.from(payload, 'utf8').toString('base64'), honeypot: '' }
+  return {
+    captchaPayload: Buffer.from(payload, 'utf8').toString('base64'),
+    honeypot: '',
+  }
 }

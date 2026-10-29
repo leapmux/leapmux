@@ -46,7 +46,9 @@ export async function withNativeConfigurationFile(
   const existing = existsSync(options.path)
   if (existing)
     assertPrivateNativePath(options.path, options.runDir)
-  const original = existing ? readFileSync(options.path) : undefined
+  const original = existing
+    ? readFileSync(options.path)
+    : undefined
   await withCleanup(async () => {
     writeFixture(options.path, options.content)
     await use()

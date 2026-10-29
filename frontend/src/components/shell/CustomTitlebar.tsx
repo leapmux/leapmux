@@ -70,11 +70,19 @@ export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
   // In fullscreen the maximize control becomes the only in-titlebar way out, so
   // it relabels and routes to setFullscreen(false) instead of toggleMaximize
   // (which can't leave fullscreen).
-  const maximizeLabel = () => (isFullscreen() ? 'Exit Full Screen' : isMaximized() ? 'Restore' : 'Maximize')
-  const onMaximizeControl = () => (isFullscreen() ? void windowExitFullscreen() : void windowToggleMaximize())
+  const maximizeLabel = () => (isFullscreen()
+    ? 'Exit Full Screen'
+    : isMaximized()
+      ? 'Restore'
+      : 'Maximize')
+  const onMaximizeControl = () => (isFullscreen()
+    ? void windowExitFullscreen()
+    : void windowToggleMaximize())
   // Reserve space for the macOS native traffic lights, except in fullscreen
   // where they are hidden — otherwise the menu is stranded past an empty gap.
-  const macPadding = () => (isMacDesktop && !isFullscreen() ? `${MAC_TRAFFIC_LIGHT_INSET_PX}px` : undefined)
+  const macPadding = () => (isMacDesktop && !isFullscreen()
+    ? `${MAC_TRAFFIC_LIGHT_INSET_PX}px`
+    : undefined)
   // Hoisted so the detail spread narrows: a second call would read as
   // `string | undefined` again, which `detail?: string` does not take.
   const webInspectorHint = getShortcutHintsText('app.openWebInspector')
@@ -115,13 +123,17 @@ export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
           <button role="menuitem" onClick={() => openWebInspector()}>
             <DropdownMenuItemContent
               label="Open Web Inspector"
-              {...(webInspectorHint !== undefined ? { detail: webInspectorHint } : {})}
+              {...(webInspectorHint !== undefined
+                ? { detail: webInspectorHint }
+                : {})}
             />
           </button>
           <button role="menuitem" onClick={() => quitApp()}>
             <DropdownMenuItemContent
               label="Quit"
-              {...(quitHint !== undefined ? { detail: quitHint } : {})}
+              {...(quitHint !== undefined
+                ? { detail: quitHint }
+                : {})}
             />
           </button>
         </Show>
@@ -143,7 +155,9 @@ export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
             onClick={() => void windowMinimize()}
           />
           <IconButton
-            icon={isMaximized() || isFullscreen() ? WindowRestoreIcon : WindowMaximizeIcon}
+            icon={isMaximized() || isFullscreen()
+              ? WindowRestoreIcon
+              : WindowMaximizeIcon}
             iconSize="lg"
             size="md"
             title={maximizeLabel()}

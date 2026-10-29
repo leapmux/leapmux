@@ -95,7 +95,9 @@ export function ImageRender(props: {
       const currentZoom = props.zoom
       const oldScale = currentZoom === 'fit'
         ? (fitScale() ?? 1)
-        : currentZoom === 'actual' ? 1 : currentZoom
+        : currentZoom === 'actual'
+          ? 1
+          : currentZoom
 
       const newScale = Math.min(
         ZOOM_MAX,
@@ -141,7 +143,9 @@ export function ImageRender(props: {
         return null
       return { w: ns.w * fs, h: ns.h * fs }
     }
-    const s = z === 'actual' ? 1 : z
+    const s = z === 'actual'
+      ? 1
+      : z
     return { w: ns.w * s, h: ns.h * s }
   })
 
@@ -227,7 +231,9 @@ export function ImageFileView(props: {
                     content={props.content}
                     filePath={props.filePath}
                     totalSize={props.totalSize ?? props.content.length}
-                    {...(props.onQuote !== undefined ? { onQuote: props.onQuote } : {})}
+                    {...(props.onQuote !== undefined
+                      ? { onQuote: props.onQuote }
+                      : {})}
                   />
                 </div>
               </div>
@@ -237,7 +243,9 @@ export function ImageFileView(props: {
                 content={props.content}
                 filePath={props.filePath}
                 totalSize={props.totalSize ?? props.content.length}
-                {...(props.onQuote !== undefined ? { onQuote: props.onQuote } : {})}
+                {...(props.onQuote !== undefined
+                  ? { onQuote: props.onQuote }
+                  : {})}
               />
             </Match>
           </Switch>

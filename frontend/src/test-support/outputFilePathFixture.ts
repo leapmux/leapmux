@@ -21,16 +21,29 @@ export function outputFilePathFixture(
   if (!call)
     throw new Error('The output path fixture requires a valid registered tool call.')
   return (payload = original, changes = {}) => {
-    const scoped = { ...defaults, ...changes }
+    const scoped = {
+      ...defaults,
+      ...changes,
+    }
     const resolved = resolveMessageForRendering({
-      ...input(isObject(payload) ? payload : undefined, undefined, provider),
-      topLevel: isObject(payload) ? payload : null,
+      ...input(isObject(payload)
+        ? payload
+        : undefined, undefined, provider),
+      topLevel: isObject(payload)
+        ? payload
+        : null,
       supplementalContent: scoped.supplementalContent,
-      ...(scoped.agentSessionId === undefined ? {} : { agentSessionId: scoped.agentSessionId }),
+      ...(scoped.agentSessionId === undefined
+        ? {}
+        : { agentSessionId: scoped.agentSessionId }),
     }, provider)
     const span = scoped.span ?? {
-      request: scoped.request === undefined ? undefined : resolveMessageForRendering(scoped.request, provider),
-      result: scoped.result === undefined ? undefined : resolveMessageForRendering(scoped.result, provider),
+      request: scoped.request === undefined
+        ? undefined
+        : resolveMessageForRendering(scoped.request, provider),
+      result: scoped.result === undefined
+        ? undefined
+        : resolveMessageForRendering(scoped.result, provider),
       role: scoped.role ?? 'result',
       visibleRows: { request: scoped.request !== undefined, result: scoped.result !== undefined || (scoped.role ?? 'result') === 'result' },
     }

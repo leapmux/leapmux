@@ -30,7 +30,11 @@ codewhaleTest.describe('Codewhale settings', () => {
     await expectSettingsChip(page, 'High')
 
     const planStep = await modelScript.queue(
-      { toolCalls: [bashToolCall(AgentProvider.CODEWHALE, 'mode-plan', 'echo "mode-plan-$((40 + 2))"')] },
+      {
+        toolCalls: [
+          bashToolCall(AgentProvider.CODEWHALE, 'mode-plan', 'echo "mode-plan-$((40 + 2))"'),
+        ],
+      },
       { text: 'The Plan turn ended.' },
     )
     await sendMessage(page, modelScript.prompt('Check whether Plan mode permits a shell command.'))
@@ -52,7 +56,11 @@ codewhaleTest.describe('Codewhale settings', () => {
     await expectSettingsOptionChosen(page, 'permissionMode-auto_review')
 
     const restoredStep = await modelScript.queue(
-      { toolCalls: [bashToolCall(AgentProvider.CODEWHALE, 'mode-plan-restored', 'echo "restored-plan-$((40 + 2))"')] },
+      {
+        toolCalls: [
+          bashToolCall(AgentProvider.CODEWHALE, 'mode-plan-restored', 'echo "restored-plan-$((40 + 2))"'),
+        ],
+      },
       { text: 'The restored Plan turn ended.' },
     )
     await sendMessage(page, modelScript.prompt('Check the restored native Plan restriction.'))
@@ -73,7 +81,11 @@ codewhaleTest.describe('Codewhale settings', () => {
 
     await applyPermissionPreset(page, 'bypass')
     const agentStep = await modelScript.queue(
-      { toolCalls: [bashToolCall(AgentProvider.CODEWHALE, 'mode-agent', 'echo "mode-agent-$((40 + 2))"')] },
+      {
+        toolCalls: [
+          bashToolCall(AgentProvider.CODEWHALE, 'mode-agent', 'echo "mode-agent-$((40 + 2))"'),
+        ],
+      },
       { text: 'The Agent turn ended.' },
     )
     await sendMessage(page, modelScript.prompt('Run the shell command in Agent mode.'))
@@ -84,7 +96,11 @@ codewhaleTest.describe('Codewhale settings', () => {
     await expectSettingsChip(page, 'Agent')
     await expectSettingsOptionChosen(page, 'permissionMode-full_access')
     const restoredAgentStep = await modelScript.queue(
-      { toolCalls: [bashToolCall(AgentProvider.CODEWHALE, 'restored-mode-agent', 'echo "restored-agent-$((40 + 2))"')] },
+      {
+        toolCalls: [
+          bashToolCall(AgentProvider.CODEWHALE, 'restored-mode-agent', 'echo "restored-agent-$((40 + 2))"'),
+        ],
+      },
       { text: 'The restored Agent turn ended.' },
     )
     await sendMessage(page, modelScript.prompt('Run the shell command after restoring Agent mode.'))

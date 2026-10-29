@@ -51,7 +51,9 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
             workerId: config.workerId,
             type: config.type,
             bindAddr: config.bindAddr || '127.0.0.1',
-            bindPort: config.bindPort || (config.type === 'socks5' ? 1080 : config.targetPort),
+            bindPort: config.bindPort || (config.type === 'socks5'
+              ? 1080
+              : config.targetPort),
             targetAddr: config.targetAddr || '',
             targetPort: config.targetPort || 0,
           }
@@ -86,10 +88,14 @@ function addTunnelMockInitScript(page: import('@playwright/test').Page) {
           const params = new URLSearchParams()
           for (const workspaceId of args.workspaceIds ?? [])
             params.append('workspace_ids', workspaceId)
-          const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+          const protocol = window.location.protocol === 'https:'
+            ? 'wss:'
+            : 'ws:'
           const qs = params.toString()
           const socket = new WebSocket(
-            `${protocol}//${window.location.host}/ws/userevents${qs ? `?${qs}` : ''}`,
+            `${protocol}//${window.location.host}/ws/userevents${qs
+              ? `?${qs}`
+              : ''}`,
             ['userevents-relay'],
           )
           userEventsSocket = socket

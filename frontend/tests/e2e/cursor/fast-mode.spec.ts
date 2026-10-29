@@ -9,7 +9,16 @@ cursorTest('toggles native fast serving independently of the model and effort', 
   await waitForSettingsIdle(native.page)
   await exerciseNativeOptionSequence(native, {
     groupId: 'fast',
-    steps: [{ value: 'true', via: 'choose' }, { value: 'true', via: 'reload' }, { value: 'false', via: 'choose' }],
-    nativeProof: (request, step) => expectCursorNativeParameters(request, 'mock-sonnet', { context: '200k', effort: 'high', thinking: 'false', fast: step.value }),
+    steps: [
+      { value: 'true', via: 'choose' },
+      { value: 'true', via: 'reload' },
+      { value: 'false', via: 'choose' },
+    ],
+    nativeProof: (request, step) => expectCursorNativeParameters(request, 'mock-sonnet', {
+      context: '200k',
+      effort: 'high',
+      thinking: 'false',
+      fast: step.value,
+    }),
   })
 })

@@ -13,9 +13,15 @@ beforeAll(() => {
 describe('none renderer', () => {
   checkKindModule({
     kind: 'unspecified',
-    request: { args: { q: 1 } },
+    request: {
+      args: { q: 1 },
+    },
     titlePart: 'RAW TITLE',
-    result: { content: [{ type: 'text', text: 'generic answer' }] },
+    result: {
+      content: [
+        { type: 'text', text: 'generic answer' },
+      ],
+    },
     resultPart: 'generic answer',
   })
 })

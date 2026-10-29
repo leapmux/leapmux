@@ -19,12 +19,18 @@ grokTest.describe('Grok Build control requests', () => {
   // Grok's plan approval is a request of its own. Approve takes the shared plan
   // surface, and Grok leaves plan mode itself, which the chip then follows.
   grokTest('approves a plan and leaves plan mode', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' } })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, {
+      optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' },
+    })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsChip(page, 'Plan')
 
     const start = await modelScript.queue(
-      { toolCalls: [exitPlanModeToolCall(PROVIDER, 'grok-plan', '')] },
+      {
+        toolCalls: [
+          exitPlanModeToolCall(PROVIDER, 'grok-plan', ''),
+        ],
+      },
       { text: 'Plan approved; starting.' },
     )
     await sendMessage(page, modelScript.prompt('Finish planning and ask for approval.'))
@@ -45,14 +51,20 @@ grokTest.describe('Grok Build control requests', () => {
   // The mock writes no plan file, so Grok's text is its no-plan refusal. Grok stays in
   // plan mode and sends no mode change.
   grokTest('rejects a plan, returns the refusal to the model, and stays in plan mode', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' } })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, {
+      optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' },
+    })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsChip(page, 'Plan')
     const agent = await currentNativeAgent({ page, leapmuxServer })
     const watch = await watchNativeControls(leapmuxServer, agent.id)
     await withCleanup(async () => {
       const start = await modelScript.queue(
-        { toolCalls: [exitPlanModeToolCall(PROVIDER, 'grok-rejected-plan', '')] },
+        {
+          toolCalls: [
+            exitPlanModeToolCall(PROVIDER, 'grok-rejected-plan', ''),
+          ],
+        },
         { text: 'Still planning after the rejection.' },
       )
       await sendMessage(page, modelScript.prompt('Finish planning and ask for approval.'))
@@ -73,7 +85,11 @@ grokTest.describe('Grok Build control requests', () => {
       const { decision } = await readObservedNativeDecision({ leapmuxServer }, agent, watch, observed)
       expect(decision.request.method).toBe(GROK_METHOD.ExitPlanMode)
       // A bare rejection carries no feedback field, which is what selects Grok's own refusal text.
-      expect(decision.response).toEqual({ jsonrpc: '2.0', id: observed.payload.id, result: { [GROK_REPLY_FIELD.Outcome]: GROK_PLAN_OUTCOME.Cancelled } })
+      expect(decision.response).toEqual({
+        jsonrpc: '2.0',
+        id: observed.payload.id,
+        result: { [GROK_REPLY_FIELD.Outcome]: GROK_PLAN_OUTCOME.Cancelled },
+      })
 
       await page.reload()
       await expect(savedControlAnswer(page)).toHaveText('Reject')

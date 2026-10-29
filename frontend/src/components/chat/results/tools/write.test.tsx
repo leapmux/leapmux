@@ -17,14 +17,37 @@ beforeAll(() => {
 describe('write renderer', () => {
   checkKindModule({
     kind: 'write',
-    request: { changes: [{ filePath: '/p/new.ts', oldStr: '', newStr: 'one\n', structuredPatch: null, operation: 'add' as const }] },
+    request: {
+      changes: [
+        {
+          filePath: '/p/new.ts',
+          oldStr: '',
+          newStr: 'one\n',
+          structuredPatch: null,
+          operation: 'add' as const,
+        },
+      ],
+    },
     titlePart: 'new.ts',
-    result: { changes: [{ filePath: '/p/new.ts', oldStr: '', newStr: 'one\n', structuredPatch: null, operation: 'add' as const }] },
+    result: {
+      changes: [
+        {
+          filePath: '/p/new.ts',
+          oldStr: '',
+          newStr: 'one\n',
+          structuredPatch: null,
+          operation: 'add' as const,
+        },
+      ],
+    },
   })
 })
 
 function renderWrite(changes: FileEditDiff[]) {
-  const call = toolCallFixture('write', { request: { changes }, result: { changes } })
+  const call = toolCallFixture('write', {
+    request: { changes },
+    result: { changes },
+  })
   return render(() => <ToolMessage row={toolRow(call)} />)
 }
 
@@ -32,7 +55,15 @@ describe('writeRenderer', () => {
   // The line count takes the place of the diff badge. An E2E locator that
   // requires the badge (`fileChangeRow`) therefore never finds this row.
   it('titles a write that creates one file with its line count and no diff badge', () => {
-    const view = renderWrite([{ filePath: '/p/new.ts', oldStr: '', newStr: 'one\ntwo\n', structuredPatch: null, operation: 'add' }])
+    const view = renderWrite([
+      {
+        filePath: '/p/new.ts',
+        oldStr: '',
+        newStr: 'one\ntwo\n',
+        structuredPatch: null,
+        operation: 'add',
+      },
+    ])
 
     expect(view.container.textContent).toContain('/p/new.ts (2 lines)')
     expect(view.queryByTestId('git-diff-stats')).toBeNull()
@@ -43,7 +74,15 @@ describe('writeRenderer', () => {
   })
 
   it('states no line count for a write that creates an empty file', () => {
-    const view = renderWrite([{ filePath: '/p/empty.ts', oldStr: '', newStr: '', structuredPatch: null, operation: 'add' }])
+    const view = renderWrite([
+      {
+        filePath: '/p/empty.ts',
+        oldStr: '',
+        newStr: '',
+        structuredPatch: null,
+        operation: 'add',
+      },
+    ])
 
     expect(view.container.textContent).toContain('/p/empty.ts')
     expect(view.container.textContent).not.toMatch(/\(\d+ lines?\)/)
@@ -53,7 +92,14 @@ describe('writeRenderer', () => {
   // Only an add states a whole-file count. A write that replaces part of an
   // existing file takes the title that every other file change takes.
   it('titles a write that changes an existing file with the diff badge', () => {
-    const view = renderWrite([{ filePath: '/p/old.ts', oldStr: 'before\n', newStr: 'after\n', operation: 'edit' }])
+    const view = renderWrite([
+      {
+        filePath: '/p/old.ts',
+        oldStr: 'before\n',
+        newStr: 'after\n',
+        operation: 'edit',
+      },
+    ])
 
     expect(view.container.textContent).toContain('/p/old.ts')
     expect(view.container.textContent).not.toMatch(/\(\d+ lines?\)/)

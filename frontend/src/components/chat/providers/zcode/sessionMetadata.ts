@@ -22,7 +22,12 @@ export function zcodeContextUsageFromMessage(parsed: ParsedMessageContent): Cont
   const cacheCreationInputTokens = pickNumber(usage, 'cacheWriteTokens', 0)
   if (inputTokens === 0 && outputTokens === 0 && cacheReadInputTokens === 0 && cacheCreationInputTokens === 0)
     return null
-  const info: ContextUsageInfo = { inputTokens, cacheCreationInputTokens, cacheReadInputTokens, outputTokens }
+  const info: ContextUsageInfo = {
+    inputTokens,
+    cacheCreationInputTokens,
+    cacheReadInputTokens,
+    outputTokens,
+  }
   const total = pickNumber(usage, 'totalTokens')
   if (total != null && total > 0)
     info.contextTokens = total

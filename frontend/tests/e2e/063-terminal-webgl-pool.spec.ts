@@ -21,7 +21,9 @@ function terminalIds(page: Page): Promise<{ active: string[], hidden: string[] }
     const hidden: string[] = []
     for (const el of document.querySelectorAll<HTMLElement>('[data-terminal-id]')) {
       const id = el.dataset.terminalId!
-      ;(el.dataset.active === 'true' ? active : hidden).push(id)
+      ;(el.dataset.active === 'true'
+        ? active
+        : hidden).push(id)
     }
     return { active, hidden }
   })

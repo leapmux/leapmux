@@ -34,7 +34,12 @@ describe('nativeControlFrame', () => {
   it('captures a real control request and its later completed response state', () => {
     expect(nativeControlFrame(controlEvent('{"type":"native-permission","enabled":false,"count":0,"input":""}'))).toEqual({
       requestId: 'native-control-1',
-      payload: { type: 'native-permission', enabled: false, count: 0, input: '' },
+      payload: {
+        type: 'native-permission',
+        enabled: false,
+        count: 0,
+        input: '',
+      },
       responseState: ControlResponseState.READY,
     })
     expect(nativeControlFrame(controlEvent('{"type":"native-permission"}', { changed: true }))).toEqual({
@@ -50,14 +55,23 @@ describe('nativeControlFrame', () => {
   })
 
   it('skips an event that is not a control', () => {
-    expect(nativeControlFrame(create(AgentEventSchema, { agentId: 'agent-1', event: { case: 'inputQueueChanged', value: {} } }))).toBeUndefined()
+    expect(nativeControlFrame(create(AgentEventSchema, {
+      agentId: 'agent-1',
+      event: { case: 'inputQueueChanged', value: {} },
+    }))).toBeUndefined()
   })
 
   it('refuses a control with no request ID', () => {
     expect(selectorFailure(controlEvent('{}', { requestId: '' })).cause).toMatchObject({ message: 'The native control frame has no request ID.' })
   })
 
-  it.each(['{invalid', 'null', '[]', '"text"', '0'])('refuses malformed or non-object native control content: %s', (payload) => {
+  it.each([
+    '{invalid',
+    'null',
+    '[]',
+    '"text"',
+    '0',
+  ])('refuses malformed or non-object native control content: %s', (payload) => {
     const failure = selectorFailure(controlEvent(payload))
     expect(failure.message).toBe('The Worker sent an invalid native control frame.')
     expect(failure.cause).toBeInstanceOf(Error)

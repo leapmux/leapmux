@@ -182,7 +182,9 @@ function runGenerator(staging) {
   const [cmd, ...rest] = opts.generator
   const args = rest.map(a => a.replaceAll('{STAGING}', staging))
   const result = spawnSync(resolveExecutable(cmd), args, {
-    cwd: opts.cwdStaging ? staging : process.cwd(),
+    cwd: opts.cwdStaging
+      ? staging
+      : process.cwd(),
     stdio: 'inherit',
     env: { ...process.env, STAGING: staging },
   })

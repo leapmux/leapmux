@@ -12,12 +12,21 @@ describe('prettifyJson', () => {
   })
 
   it('formats plain objects', () => {
-    expect(prettifyJson({ a: 1, b: { c: true } })).toContain('{\n')
-    expect(prettifyJson({ a: 1, b: { c: true } })).toContain('"a": 1')
+    expect(prettifyJson({
+      a: 1,
+      b: { c: true },
+    })).toContain('{\n')
+    expect(prettifyJson({
+      a: 1,
+      b: { c: true },
+    })).toContain('"a": 1')
   })
 
   it('formats arrays', () => {
-    expect(prettifyJson([{ a: 1 }, { b: 2 }])).toContain('"a": 1')
+    expect(prettifyJson([
+      { a: 1 },
+      { b: 2 },
+    ])).toContain('"a": 1')
   })
 
   it('formats valid json strings', () => {

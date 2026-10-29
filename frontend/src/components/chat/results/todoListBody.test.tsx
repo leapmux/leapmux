@@ -34,7 +34,13 @@ describe('todoListBody', () => {
    */
   it('renders the to-do list in its wrapping variant', () => {
     const { container } = renderBody([
-      { id: '1', rowKey: '1', content: LONG, status: 'pending', activeForm: '' },
+      {
+        id: '1',
+        rowKey: '1',
+        content: LONG,
+        status: 'pending',
+        activeForm: '',
+      },
     ])
 
     const list = container.querySelector(classSelector(todoStyles.todoList))!
@@ -45,7 +51,13 @@ describe('todoListBody', () => {
   // the clip off through CSS rather than by rendering a different element.
   it('keeps the label on the shared clipping element', () => {
     const { container } = renderBody([
-      { id: '1', rowKey: '1', content: LONG, status: 'pending', activeForm: '' },
+      {
+        id: '1',
+        rowKey: '1',
+        content: LONG,
+        status: 'pending',
+        activeForm: '',
+      },
     ])
 
     const label = container.querySelector(classSelector(todoStyles.todoText))!

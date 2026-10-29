@@ -42,14 +42,20 @@ export interface RailMetricsInputs {
 export function createRailMetrics(inp: RailMetricsInputs): Accessor<RailScrollMetrics> {
   const [metrics, setMetrics] = createSignal<RailScrollMetrics>(
     { scrollTop: 0, dist: 0, clientHeight: 0 },
-    { equals: (a, b) => a.scrollTop === b.scrollTop && a.dist === b.dist && a.clientHeight === b.clientHeight },
+    {
+      equals: (a, b) => a.scrollTop === b.scrollTop && a.dist === b.dist && a.clientHeight === b.clientHeight,
+    },
   )
 
   const sample = () => {
     const el = inp.scrollEl()
     if (!el)
       return
-    setMetrics({ scrollTop: clampScrollTop(el, el.scrollTop), dist: distFromBottom(el), clientHeight: el.clientHeight })
+    setMetrics({
+      scrollTop: clampScrollTop(el, el.scrollTop),
+      dist: distFromBottom(el),
+      clientHeight: el.clientHeight,
+    })
   }
 
   // Attach the passive scroll listener + ResizeObserver whenever the scroll element changes.
@@ -86,7 +92,10 @@ export function createRailMetrics(inp: RailMetricsInputs): Accessor<RailScrollMe
     }
     geoCoalescer.push()
   }
-  createEffect(on(() => [inp.totalHeight(), inp.geometryVersion()], () => sampleAfterGeometryCommit()))
+  createEffect(on(() => [
+    inp.totalHeight(),
+    inp.geometryVersion(),
+  ], () => sampleAfterGeometryCommit()))
   onCleanup(() => geoCoalescer.abort())
 
   return metrics

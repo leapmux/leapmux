@@ -29,9 +29,24 @@ import { expect } from '../fixtures'`,
     })
     expect(findings).toEqual([
       { path: '/e2e/fixtures.ts', line: 3, kind: 'reexport' },
-      { path: '/e2e/a.spec.ts', line: 1, kind: 'import', module: './fixtures' },
-      { path: '/e2e/helpers/b.spec.ts', line: 2, kind: 'import', module: '../fixtures' },
-      { path: '/e2e/c.spec.ts', line: 1, kind: 'import', module: './fixtures' },
+      {
+        path: '/e2e/a.spec.ts',
+        line: 1,
+        kind: 'import',
+        module: './fixtures',
+      },
+      {
+        path: '/e2e/helpers/b.spec.ts',
+        line: 2,
+        kind: 'import',
+        module: '../fixtures',
+      },
+      {
+        path: '/e2e/c.spec.ts',
+        line: 1,
+        kind: 'import',
+        module: './fixtures',
+      },
     ])
   })
 
@@ -71,7 +86,10 @@ export { expect }`,
 })
 
 describe('e2e expect imports', () => {
-  const files = collectE2EFiles().map(path => ({ path, source: readFileSync(path, 'utf-8') }))
+  const files = collectE2EFiles().map(path => ({
+    path,
+    source: readFileSync(path, 'utf-8'),
+  }))
 
   it('scans the e2e tree', () => {
     expect(files.length).toBeGreaterThan(100)
@@ -79,7 +97,9 @@ describe('e2e expect imports', () => {
 
   it('imports the plain expect from Playwright, never through a module that passes it on', () => {
     const offenders = passedOnExpects(files)
-      .map(finding => `${posixRelative(e2eRoot, finding.path)}:${finding.line}  ${finding.kind === 'reexport' ? 're-exports expect' : `imports expect from ${finding.module}`}`)
+      .map(finding => `${posixRelative(e2eRoot, finding.path)}:${finding.line}  ${finding.kind === 'reexport'
+        ? 're-exports expect'
+        : `imports expect from ${finding.module}`}`)
     const hint = [
       'Import expect from @playwright/test. A fixture module exports its test object only,',
       'unless it extends expect into a value of its own:',

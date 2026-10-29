@@ -148,7 +148,14 @@ async function providerTestObjects(): Promise<ProviderTestObject[]> {
       const fixtures = capture.mock.calls[0]![0] as unknown as RegisteredProviderFixtures
       const aliases = Object.keys(fixtures).filter(name => /^authenticated\w+Workspace$/.test(name))
       expect(aliases, file).toHaveLength(1)
-      objects.push({ file, scenarioDirectory, nativeWorkspace: aliases[0]!, agentName, providerName, fixtures })
+      objects.push({
+        file,
+        scenarioDirectory,
+        nativeWorkspace: aliases[0]!,
+        agentName,
+        providerName,
+        fixtures,
+      })
     }
   }
   finally {
@@ -282,10 +289,14 @@ describe('createProviderTest', () => {
 
   it('passes workspace options and diagnostics without replacing the canonical provider', () => {
     const onFailure = vi.fn(async () => {})
-    const openOptions = { optionValues: { permissionMode: 'default' } }
+    const openOptions = {
+      optionValues: { permissionMode: 'default' },
+    }
     const capture = vi.spyOn(workspaceHelpers, 'authenticatedAgentWorkspace')
     try {
-      register({ workspaceOptions: { openOptions, onFailure } })
+      register({
+        workspaceOptions: { openOptions, onFailure },
+      })
       expect(capture).toHaveBeenCalledExactlyOnceWith({ ...agent, openOptions, onFailure })
     }
     finally {
@@ -295,14 +306,22 @@ describe('createProviderTest', () => {
 
   it.each(['original-workspace', 'overridden-workspace'])('uses the same workspace for the alias and native context: %s', async (workspaceId) => {
     const fixtures = register()
-    const providerWorkspace = { workspaceId, workingDir: { path: '/unit/directory' } }
+    const providerWorkspace = {
+      workspaceId,
+      workingDir: { path: '/unit/directory' },
+    }
     const alias = fixtures.authenticatedUnitWorkspace as (args: object, use: (workspace: unknown) => Promise<void>) => Promise<void>
     const useAlias = vi.fn(async () => {})
     await alias({ providerWorkspace }, useAlias)
     expect(useAlias).toHaveBeenCalledExactlyOnceWith(providerWorkspace)
     const useNative = vi.fn(async (_context: ManagedNativeScenarioContext) => {})
     await fixtures.native({ ...UNIT_FIXTURES, providerWorkspace }, useNative)
-    expect(useNative).toHaveBeenCalledExactlyOnceWith({ ...UNIT_FIXTURES, workspaceId, provider: agent.provider, providerAgent: agent })
+    expect(useNative).toHaveBeenCalledExactlyOnceWith({
+      ...UNIT_FIXTURES,
+      workspaceId,
+      provider: agent.provider,
+      providerAgent: agent,
+    })
   })
 
   it.each(['provider', 'providerAgent'] as const)('rejects a mismatched %s before use', async (field) => {
@@ -311,20 +330,40 @@ describe('createProviderTest', () => {
         ...input,
         provider: agent.provider,
         providerAgent: agent,
-        [field]: field === 'provider' ? AgentProvider.CLAUDE_CODE : { ...agent },
+        [field]: field === 'provider'
+          ? AgentProvider.CLAUDE_CODE
+          : { ...agent },
       }) as ManagedNativeScenarioContext,
     })
     const use = vi.fn(async () => {})
-    await expect(fixtures.native({ ...UNIT_FIXTURES, providerWorkspace: { workspaceId: 'unit-workspace' } }, use)).rejects.toThrow('must use the provider')
+    await expect(fixtures.native({
+      ...UNIT_FIXTURES,
+      providerWorkspace: { workspaceId: 'unit-workspace' },
+    }, use)).rejects.toThrow('must use the provider')
     expect(use).not.toHaveBeenCalled()
   })
 
-  it.each(['workspaceId', 'page', 'modelScript', 'leapmuxServer'] as const)('rejects a context that replaces %s', async (field) => {
+  it.each([
+    'workspaceId',
+    'page',
+    'modelScript',
+    'leapmuxServer',
+  ] as const)('rejects a context that replaces %s', async (field) => {
     const fixtures = register({
-      nativeContext: async input => ({ ...input, provider: agent.provider, providerAgent: agent, [field]: field === 'workspaceId' ? 'other-workspace' : {} }) as ManagedNativeScenarioContext,
+      nativeContext: async input => ({
+        ...input,
+        provider: agent.provider,
+        providerAgent: agent,
+        [field]: field === 'workspaceId'
+          ? 'other-workspace'
+          : {},
+      }) as ManagedNativeScenarioContext,
     })
     const use = vi.fn(async () => {})
-    await expect(fixtures.native({ ...UNIT_FIXTURES, providerWorkspace: { workspaceId: 'unit-workspace' } }, use)).rejects.toThrow('must retain its workspace')
+    await expect(fixtures.native({
+      ...UNIT_FIXTURES,
+      providerWorkspace: { workspaceId: 'unit-workspace' },
+    }, use)).rejects.toThrow('must retain its workspace')
     expect(use).not.toHaveBeenCalled()
   })
 
@@ -336,42 +375,64 @@ describe('createProviderTest', () => {
       },
     })
     const use = vi.fn(async () => {})
-    await expect(fixtures.native({ ...UNIT_FIXTURES, providerWorkspace: { workspaceId: 'unit-workspace' } }, use)).rejects.toBe(failure)
+    await expect(fixtures.native({
+      ...UNIT_FIXTURES,
+      providerWorkspace: { workspaceId: 'unit-workspace' },
+    }, use)).rejects.toBe(failure)
     expect(use).not.toHaveBeenCalled()
   })
 
   it('propagates a failure from the test body', async () => {
     const fixtures = register()
     const failure = new Error('The test body failed.')
-    await expect(fixtures.native({ ...UNIT_FIXTURES, providerWorkspace: { workspaceId: 'unit-workspace' } }, async () => {
+    await expect(fixtures.native({
+      ...UNIT_FIXTURES,
+      providerWorkspace: { workspaceId: 'unit-workspace' },
+    }, async () => {
       throw failure
     })).rejects.toBe(failure)
   })
 
   it.each([
     { modelRules: [] },
-    { modelRules: [{ name: 'title', when: { system: 'title helper' }, respond: { text: 'A title' } }] },
+    {
+      modelRules: [
+        {
+          name: 'title',
+          when: { system: 'title helper' },
+          respond: { text: 'A title' },
+        },
+      ],
+    },
   ])('registers housekeeping rules before use: %j', async ({ modelRules }) => {
     const events: string[] = []
     const fixtures = register({ modelRules })
-    const script = { rule: vi.fn(async () => {
-      events.push('rules')
-    }) }
+    const script = {
+      rule: vi.fn(async () => {
+        events.push('rules')
+      }),
+    }
     await fixtures.modelScript({ modelScript: script }, async (actual) => {
       expect(actual).toBe(script)
       events.push('use')
     })
-    expect(events).toEqual(modelRules.length === 0 ? ['use'] : ['rules', 'use'])
-    expect(script.rule.mock.calls).toEqual(modelRules.length === 0 ? [] : [modelRules])
+    expect(events).toEqual(modelRules.length === 0
+      ? ['use']
+      : ['rules', 'use'])
+    expect(script.rule.mock.calls).toEqual(modelRules.length === 0
+      ? []
+      : [modelRules])
   })
 
   it('retains the CLI skip reason in the automatic fixture', async () => {
     const fixtures = register({ skipReason: 'The test CLI is absent.' })
     const [skip, options] = fixtures.cliSkip as ReturnType<typeof cliSkipFixture>
     const stop = new Error('Skipped.')
-    const testInfo = { skip: vi.fn(() => {
-      throw stop
-    }) }
+    const testInfo = {
+      skip: vi.fn(() => {
+        throw stop
+      }),
+    }
     const use = vi.fn(async () => {})
     await expect((skip as unknown as (args: object, use: () => Promise<void>, info: typeof testInfo) => Promise<void>)({}, use, testInfo)).rejects.toBe(stop)
     expect(options).toEqual({ auto: true })
@@ -409,7 +470,13 @@ describe('createProviderProcessTest', () => {
 
   it('registers provider housekeeping before the process scenario uses its model script', async () => {
     const events: string[] = []
-    const modelRules = [{ name: 'provider-title', when: { system: 'title helper' }, respond: { text: 'A title' } }]
+    const modelRules = [
+      {
+        name: 'provider-title',
+        when: { system: 'title helper' },
+        respond: { text: 'A title' },
+      },
+    ]
     const options = {
       agent: { provider: AgentProvider.CODEX, prefix: 'process-unit' },
       nativeContext: async () => UNIT_FIXTURES as ManagedNativeScenarioContext,
@@ -425,9 +492,11 @@ describe('createProviderProcessTest', () => {
       expect(registered.modelScript).toBeTypeOf('function')
       if (!registered.modelScript)
         throw new Error('The process fixture omitted its model rules.')
-      const script = { rule: vi.fn(async () => {
-        events.push('rules')
-      }) }
+      const script = {
+        rule: vi.fn(async () => {
+          events.push('rules')
+        }),
+      }
       await registered.modelScript({ modelScript: script }, async (actual) => {
         expect(actual).toBe(script)
         events.push('use')

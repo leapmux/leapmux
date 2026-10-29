@@ -12,7 +12,12 @@ import { CLINE_CAPABILITY, CLINE_EVENT } from '~/generated/contracts/cline-proto
 
 /** One Cline event envelope. */
 export function clineEvent(event: string, payload: Record<string, unknown>): Record<string, unknown> {
-  return { version: 'v1', event, sessionId: 'session_1', payload }
+  return {
+    version: 'v1',
+    event,
+    sessionId: 'session_1',
+    payload,
+  }
 }
 
 /** One pending tool approval, as the control surface receives it. */
@@ -37,6 +42,10 @@ export function clineQuestionRequest(question: string, options: string[]): Recor
     requestId: 'capreq_1',
     targetClientId: 'leapmux-agent',
     capabilityName: CLINE_CAPABILITY.AskQuestion,
-    payload: { executor: 'askQuestion', args: [question, options], context: { sessionId: 'session_1', agentId: 'agent_1', toolCallId: 'call_q' } },
+    payload: {
+      executor: 'askQuestion',
+      args: [question, options],
+      context: { sessionId: 'session_1', agentId: 'agent_1', toolCallId: 'call_q' },
+    },
   })
 }

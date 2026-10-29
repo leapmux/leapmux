@@ -44,10 +44,22 @@ describe('assertCornerAlpha', () => {
   // still pass on an image that is opaque or transparent everywhere.
   it('reads each of the four corners', () => {
     const corners = [
-      { alpha: [0, 255, 255, 255], at: '(0,0)' },
-      { alpha: [255, 0, 255, 255], at: '(3,0)' },
-      { alpha: [255, 255, 0, 255], at: '(0,3)' },
-      { alpha: [255, 255, 255, 0], at: '(3,3)' },
+      {
+        alpha: [0, 255, 255, 255],
+        at: '(0,0)',
+      },
+      {
+        alpha: [255, 0, 255, 255],
+        at: '(3,0)',
+      },
+      {
+        alpha: [255, 255, 0, 255],
+        at: '(0,3)',
+      },
+      {
+        alpha: [255, 255, 255, 0],
+        at: '(3,3)',
+      },
     ]
     for (const { alpha, at } of corners) {
       expect(() => assertCornerAlpha(pixelsWithCornerAlpha(4, 4, alpha), 4, 4, true))

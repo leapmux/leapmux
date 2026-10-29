@@ -15,13 +15,21 @@ export function diracNotificationEntry(message: Record<string, unknown>): Notifi
     return []
   switch (text) {
     case DIRAC_NOTICE.RetryingApiRequest:
-      return [{ kind: 'status', text: 'Retrying the model request' }]
+      return [
+        { kind: 'status', text: 'Retrying the model request' },
+      ]
     case DIRAC_NOTICE.HookCancelled:
-      return [{ kind: 'hook', outcome: 'blocked', detail: 'cancelled by user' }]
+      return [
+        { kind: 'hook', outcome: 'blocked', detail: 'cancelled by user' },
+      ]
     case DIRAC_NOTICE.ShellIntegrationUnavailable:
-      return [{ kind: 'status', text }]
+      return [
+        { kind: 'status', text },
+      ]
     case DIRAC_NOTICE.ShellIntegrationSuggestion:
-      return [{ kind: 'status', text }]
+      return [
+        { kind: 'status', text },
+      ]
     default:
       return []
   }

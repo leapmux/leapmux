@@ -11,7 +11,10 @@ export const LETTA_CHATGPT_USAGE_PATH = '/backend-api/wham/usage'
 /** Redirect native ChatGPT HTTP calls without replacing the CLI's protocol or model loop. */
 export function writeLettaTransport(options: { directory: string, shimsDirectory: string, origin: string }): void {
   const origin = requireLoopbackHttpURL(options.origin, 'The Letta mock', { originOnly: true }).origin
-  const installed = findBinary('letta', { ...process.env, PATH: agentSearchPath(process.env.PATH) })
+  const installed = findBinary('letta', {
+    ...process.env,
+    PATH: agentSearchPath(process.env.PATH),
+  })
   if (installed === null)
     return
   mkdirSync(options.directory, { recursive: true })

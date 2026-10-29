@@ -47,7 +47,10 @@ export function parseFastAgentCatalog(text: string): { tools: FastAgentCatalogTo
     if (section === '## MCP / local tools' && header) {
       if (Number(header[1]) !== tools.length + 1)
         throw new Error('The native Fast Agent catalog has an incomplete tool sequence.')
-      current = { name: markdownText(header[2]!), description: '' }
+      current = {
+        name: markdownText(header[2]!),
+        description: '',
+      }
       tools.push(current)
     }
     else if (section === '## MCP / local tools' && /^\d+\./.test(line)) {
@@ -74,7 +77,9 @@ export function parseFastAgentCatalog(text: string): { tools: FastAgentCatalogTo
 export function parseFastAgentToolSchema(text: string, name: string): Record<string, unknown> {
   if (!name || !text.startsWith(`# Tool schema: ${name.replace(/[\\[\]*_`]/g, '\\$&')}\n`))
     throw new Error('The native Fast Agent schema belongs to another tool.')
-  const blocks = [...text.matchAll(/## Input schema\n\n```json\n([\s\S]*?)\n```/g)]
+  const blocks = [
+    ...text.matchAll(/## Input schema\n\n```json\n([\s\S]*?)\n```/g),
+  ]
   if (blocks.length !== 1)
     throw new Error('The native Fast Agent command supplied no unique input schema.')
   const schema: unknown = JSON.parse(blocks[0]![1]!)
@@ -93,7 +98,9 @@ export function fastAgentCatalogCommandReply(before: NativeMessageSnapshot, afte
     .map(nativeMessageBody)
     .filter(frame => isObject(frame) && frame.type === ASSEMBLED_MESSAGE.Type && frame.kind === ASSEMBLED_MESSAGE.KindText
       && frame.completion === ASSEMBLED_MESSAGE.CompletionComplete && typeof frame.text === 'string')
-    .map(frame => isObject(frame) && typeof frame.text === 'string' ? frame.text : '')
+    .map(frame => isObject(frame) && typeof frame.text === 'string'
+      ? frame.text
+      : '')
     .filter(text => text.startsWith(heading))
   if (texts.length > 1)
     throw new Error('The native Fast Agent command produced ambiguous catalog replies.')
@@ -160,7 +167,12 @@ export function assertFastAgentShellCatalog(catalog: FastAgentCompleteCatalog): 
     execute: ['command', 'args', 'env', 'cwd'],
     read_text_file: ['path', 'line', 'limit'],
     write_text_file: ['path', 'content'],
-    subagent: ['message', 'model', 'label', 'include_user_message'],
+    subagent: [
+      'message',
+      'model',
+      'label',
+      'include_user_message',
+    ],
   }
   if (catalog.hosted.length !== 0 || catalog.tools.length !== Object.keys(fields).length)
     throw new Error('The complete native Fast Agent catalog differs from its audited private configuration.')

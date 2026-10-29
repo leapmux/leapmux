@@ -102,7 +102,9 @@ describe('commandOutputIsCollapsible', () => {
   })
 
   it('offers the expand for one line that exceeds the collapsed character cap', () => {
-    expect(commandOutputIsCollapsible({ output: 'x'.repeat(1_000) })).toBe(true)
+    expect(commandOutputIsCollapsible({
+      output: 'x'.repeat(1_000),
+    })).toBe(true)
   })
 
   it.each([

@@ -387,7 +387,11 @@ export class PendingOpsManager {
    * pass partial initializers like `{ atHlc }`.
    */
   private recordFrame(event: MessageInitShape<typeof WatchUserEventSchema>['event']): void {
-    this.record(create(WatchUserEventSchema, { ...(event !== undefined ? { event } : {}) }))
+    this.record(create(WatchUserEventSchema, {
+      ...(event !== undefined
+        ? { event }
+        : {}),
+    }))
   }
 
   /**
@@ -721,7 +725,10 @@ export class PendingOpsManager {
     // record() must stay: a cold reload replays the op-log through these same
     // handlers, and without the batch_end frame the replayed watermark would
     // stop at the checkpoint.
-    this.recordFrame({ case: 'batchEnd', value: { atHlc } })
+    this.recordFrame({
+      case: 'batchEnd',
+      value: { atHlc },
+    })
     // No notify(): this mutates only the clock and the resume watermark, and
     // project() reads neither. crdtState is declared `{ equals: false }`, so a
     // tick here would re-run the whole projection traversal and hand back an
@@ -806,7 +813,10 @@ export class PendingOpsManager {
         break
       this.pendingOwnEchoBatchIds.delete(oldest)
     }
-    this.recordFrame({ case: 'batch', value: { batchId: batch.batchId, ops: batch.ops } })
+    this.recordFrame({
+      case: 'batch',
+      value: { batchId: batch.batchId, ops: batch.ops },
+    })
     this.state.pendingBatches.splice(idx, 1)
     this.recomputeSpeculative()
     this.notify?.()
@@ -1092,7 +1102,9 @@ export class PendingOpsManager {
  * by consumeBatchCommitted on commit, after which the op is never re-sent.)
  */
 function applySpeculative(state: UserCrdtState, op: CrdtOp): void {
-  applyOp(state, op, op.canonicalHlc ? undefined : (op.clientHlc ?? undefined))
+  applyOp(state, op, op.canonicalHlc
+    ? undefined
+    : (op.clientHlc ?? undefined))
 }
 
 /**

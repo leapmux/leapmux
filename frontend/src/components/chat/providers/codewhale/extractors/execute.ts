@@ -46,24 +46,39 @@ function gitCommand(toolName: string, args: Record<string, unknown>): string {
 export function codewhaleExecuteRequest(toolName: string, args: Record<string, unknown>): ExecuteRequest {
   const description = pickString(args, 'description')
   const cwd = pickString(args, 'cwd')
-  const language: CommandLanguage | undefined = JAVASCRIPT_TOOLS.has(toolName) ? 'javascript' : undefined
+  const language: CommandLanguage | undefined = JAVASCRIPT_TOOLS.has(toolName)
+    ? 'javascript'
+    : undefined
   return {
     command: codewhaleCommandText(toolName, args),
-    ...(language !== undefined ? { language } : {}),
-    ...(description ? { description } : {}),
-    ...(cwd ? { cwd } : {}),
+    ...(language !== undefined
+      ? { language }
+      : {}),
+    ...(description
+      ? { description }
+      : {}),
+    ...(cwd
+      ? { cwd }
+      : {}),
   }
 }
 
 function codewhaleCommandText(toolName: string, args: Record<string, unknown>): string {
   if (toolName === CODEWHALE_TOOL.Git || GIT_SUBCOMMANDS.has(toolName))
     return gitCommand(toolName, args)
-  if (toolName === CODEWHALE_TOOL.RunTests)
-    return ['cargo test', pickString(args, 'args')].filter(Boolean).join(' ')
+  if (toolName === CODEWHALE_TOOL.RunTests) {
+    return [
+      'cargo test',
+      pickString(args, 'args'),
+    ].filter(Boolean).join(' ')
+  }
   const stated = pickString(args, 'command') || pickString(args, 'cmd') || pickString(args, 'code') || pickString(args, 'input')
   if (stated)
     return stated
-  return [toolName, pickString(args, 'action')].filter(Boolean).join(' ')
+  return [
+    toolName,
+    pickString(args, 'action'),
+  ].filter(Boolean).join(' ')
 }
 
 /**
@@ -78,8 +93,12 @@ export function codewhaleCommandResult(text: string, metadata: Record<string, un
   const durationMs = pickNumber(metadata, CODEWHALE_RESULT_METADATA.DurationMs)
   return {
     output: text,
-    ...(exitCode !== null && Number.isSafeInteger(exitCode) ? { exitCode } : {}),
-    ...(durationMs !== null && durationMs >= 0 ? { durationMs } : {}),
+    ...(exitCode !== null && Number.isSafeInteger(exitCode)
+      ? { exitCode }
+      : {}),
+    ...(durationMs !== null && durationMs >= 0
+      ? { durationMs }
+      : {}),
   }
 }
 
@@ -101,7 +120,9 @@ export function codewhaleFailedCommand(text: string, metadata: Record<string, un
   if (!text.startsWith(CODEWHALE_FAILURE_PREFIX))
     return undefined
   const trailer = CODEWHALE_EXIT_TRAILER.exec(text)
-  const exitCode = trailer ? Number(trailer[1]) : Number.NaN
+  const exitCode = trailer
+    ? Number(trailer[1])
+    : Number.NaN
   if (!trailer || trailer.index < CODEWHALE_FAILURE_PREFIX.length || !Number.isSafeInteger(exitCode))
     return undefined
   const output = text.slice(CODEWHALE_FAILURE_PREFIX.length, trailer.index).replace(/\n+$/, '')

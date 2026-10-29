@@ -35,8 +35,18 @@ describe('isolates shard full tool output', () => {
     expect(config.outputDir).toBe(join(directory, 'test-results'))
     expect(config.reporter).toEqual([
       ['list'],
-      ['blob', { outputDir: join(directory, 'blob-report') }],
-      ['json', { outputFile: join(directory, 'report.json') }],
+      [
+        'blob',
+        {
+          outputDir: join(directory, 'blob-report'),
+        },
+      ],
+      [
+        'json',
+        {
+          outputFile: join(directory, 'report.json'),
+        },
+      ],
     ])
   })
 

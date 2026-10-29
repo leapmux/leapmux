@@ -14,7 +14,9 @@ import { copilotEvent } from './protocol'
 export function copilotSpanRole(parsed: ResolvedMessageContent) {
   switch (copilotEvent(parsed.parentObject)?.type) {
     case COPILOT_EVENT.ToolStarted:
-      return retainedRowIsFinal(parsed.completion) ? 'result' as const : 'request' as const
+      return retainedRowIsFinal(parsed.completion)
+        ? 'result' as const
+        : 'request' as const
     case COPILOT_EVENT.ToolCompleted:
       return 'result' as const
     default:
@@ -29,5 +31,7 @@ export function copilotRelatedMessages(parsed: ResolvedMessageContent) {
   if (role !== 'request')
     return []
   const row = copilotToolRow(parsed.parentObject)
-  return row && (row.kind === 'agent' || Object.keys(row.input).length === 0) ? ['result'] as const : []
+  return row && (row.kind === 'agent' || Object.keys(row.input).length === 0)
+    ? ['result'] as const
+    : []
 }

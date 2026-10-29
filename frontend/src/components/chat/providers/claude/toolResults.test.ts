@@ -42,7 +42,9 @@ function requestCallOf(name: string) {
   if (!fixture)
     throw new Error(`No fixture states ${name}`)
   const frame = openingFrameOf(fixture)
-  return frame === null ? null : providerToolCall(AgentProvider.CLAUDE_CODE, frame, { spanType: name })
+  return frame === null
+    ? null
+    : providerToolCall(AgentProvider.CLAUDE_CODE, frame, { spanType: name })
 }
 
 describe('claude tool results', () => {

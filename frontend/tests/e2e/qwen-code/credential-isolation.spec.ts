@@ -9,7 +9,9 @@ qwenTest('loads private native configuration and calls only the suite mock', asy
   // settings.json therefore holds the variable name, and the private environment holds the key.
   // The expected key is the suite constant, so the proof compares the private environment with it.
   await exerciseCredentialIsolation(native, {
-    configurationFiles: [join(environment.QWEN_HOME!, 'settings.json')],
+    configurationFiles: [
+      join(environment.QWEN_HOME!, 'settings.json'),
+    ],
     inlineConfiguration: [environment.LEAPMUX_E2E_MODEL_API_KEY!],
     configurationMarkers: ['"envKey": "LEAPMUX_E2E_MODEL_API_KEY"'],
     privateDirectories: [environment.QWEN_HOME!],

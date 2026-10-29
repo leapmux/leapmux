@@ -21,7 +21,10 @@ function extractedImages(raw: Record<string, unknown>): Array<McpContentItem | n
     const mimeType = pickString(entry, 'mime_type')
     if (!data || !mimeType.startsWith('image/'))
       return null
-    return { type: 'image', source: { url: `data:${mimeType};base64,${data}` } }
+    return {
+      type: 'image',
+      source: { url: `data:${mimeType};base64,${data}` },
+    }
   })
 }
 
@@ -35,7 +38,10 @@ export function grokMcpContent(facts: ACPToolFacts): McpContentItem[] {
   const output = pickString(pickObject(raw, 'output'), 'OkayOutput', undefined)
   if (content.length > 0) {
     const seen = new Set(content.filter(item => item.type === 'image').map(item => item.source.url))
-    return [...content, ...images.filter((item): item is McpContentItem & { type: 'image' } => item?.type === 'image' && !seen.has(item.source.url))]
+    return [
+      ...content,
+      ...images.filter((item): item is McpContentItem & { type: 'image' } => item?.type === 'image' && !seen.has(item.source.url)),
+    ]
   }
   if (output === undefined)
     return images.filter((item): item is McpContentItem => item !== null)
@@ -55,7 +61,10 @@ export function grokMcpContent(facts: ACPToolFacts): McpContentItem[] {
       result.push(image ?? { type: 'text', text: match[0] })
     }
     else {
-      result.push({ type: 'image', source: { url: match[0] } })
+      result.push({
+        type: 'image',
+        source: { url: match[0] },
+      })
     }
     start = position + match[0].length
   }

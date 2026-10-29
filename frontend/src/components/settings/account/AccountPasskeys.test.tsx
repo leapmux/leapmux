@@ -116,7 +116,14 @@ describe('AccountPasskeys', () => {
     mockRefreshUser.mockResolvedValue(undefined)
     mockUser.mockReturnValue(passwordUser)
     mockListPasskeys.mockResolvedValue({
-      passkeys: [{ id: 'pk-1', friendlyName: 'Laptop', transports: [], credentialId: 'cred-abc' }],
+      passkeys: [
+        {
+          id: 'pk-1',
+          friendlyName: 'Laptop',
+          transports: [],
+          credentialId: 'cred-abc',
+        },
+      ],
       rpId: 'localhost',
     })
     mockDeletePasskey.mockResolvedValue({})
@@ -126,7 +133,12 @@ describe('AccountPasskeys', () => {
     mockBeginPasskeyRegistration.mockResolvedValue({ sessionId: 'sess-1', optionsJson: '{}' })
     mockStartRegistration.mockResolvedValue('{"id":"cred-new"}')
     mockFinishPasskeyRegistration.mockResolvedValue({
-      passkey: { id: 'pk-2', friendlyName: 'Phone', transports: [], credentialId: 'cred-new' },
+      passkey: {
+        id: 'pk-2',
+        friendlyName: 'Phone',
+        transports: [],
+        credentialId: 'cred-new',
+      },
     })
   })
 
@@ -174,8 +186,12 @@ describe('AccountPasskeys', () => {
     expect(await screen.findByText(/only sign-in method/i)).toBeInTheDocument()
     expect(await screen.findByRole('button', { name: 'Remove passkey' })).toBeDisabled()
 
-    fireEvent.input(lastLabelled('New Password'), { target: { value: 'newpass123' } })
-    fireEvent.input(lastLabelled('Confirm Password'), { target: { value: 'newpass123' } })
+    fireEvent.input(lastLabelled('New Password'), {
+      target: { value: 'newpass123' },
+    })
+    fireEvent.input(lastLabelled('Confirm Password'), {
+      target: { value: 'newpass123' },
+    })
     expect(screen.getByRole('button', { name: 'Remove passkey' })).toBeEnabled()
 
     // The dialog's danger primary is a ConfirmButton: arm, then confirm.
@@ -207,8 +223,12 @@ describe('AccountPasskeys', () => {
     const disabled = await screen.findAllByRole('button', { name: 'Disable passkey sign-in' })
     expect(disabled[disabled.length - 1]!).toBeDisabled()
 
-    fireEvent.input(lastLabelled('New Password'), { target: { value: 'newpass123' } })
-    fireEvent.input(lastLabelled('Confirm Password'), { target: { value: 'newpass123' } })
+    fireEvent.input(lastLabelled('New Password'), {
+      target: { value: 'newpass123' },
+    })
+    fireEvent.input(lastLabelled('Confirm Password'), {
+      target: { value: 'newpass123' },
+    })
     const enabled = screen.getAllByRole('button', { name: 'Disable passkey sign-in' })
     fireEvent.click(enabled[enabled.length - 1]!)
     await vi.waitFor(() => {
@@ -235,7 +255,14 @@ describe('AccountPasskeys', () => {
   it('keeps the added passkey in the list when the follow-up refresh fails', async () => {
     mockListPasskeys
       .mockResolvedValueOnce({
-        passkeys: [{ id: 'pk-1', friendlyName: 'Laptop', transports: [], credentialId: 'cred-abc' }],
+        passkeys: [
+          {
+            id: 'pk-1',
+            friendlyName: 'Laptop',
+            transports: [],
+            credentialId: 'cred-abc',
+          },
+        ],
       })
       .mockRejectedValue(new Error('list failed'))
 
@@ -251,7 +278,14 @@ describe('AccountPasskeys', () => {
   it('keeps the passkey removed from the list when the follow-up refresh fails', async () => {
     mockListPasskeys
       .mockResolvedValueOnce({
-        passkeys: [{ id: 'pk-1', friendlyName: 'Laptop', transports: [], credentialId: 'cred-abc' }],
+        passkeys: [
+          {
+            id: 'pk-1',
+            friendlyName: 'Laptop',
+            transports: [],
+            credentialId: 'cred-abc',
+          },
+        ],
       })
       .mockRejectedValue(new Error('list failed'))
 
@@ -447,7 +481,14 @@ describe('AccountPasskeys on a page that cannot run a ceremony', () => {
   it('still offers removal', async () => {
     setSystemInfoMock({ passkeyBlocker: 'origin-not-allowed' })
     mockListPasskeys.mockResolvedValue({
-      passkeys: [{ id: 'pk-1', friendlyName: 'Laptop', transports: [], credentialId: 'cred-abc' }],
+      passkeys: [
+        {
+          id: 'pk-1',
+          friendlyName: 'Laptop',
+          transports: [],
+          credentialId: 'cred-abc',
+        },
+      ],
       rpId: 'localhost',
     })
     render(() => <AccountPasskeys />)
@@ -482,13 +523,25 @@ describe('AccountPasskeys opens its dialogs on the click', () => {
     mockRefreshUser.mockResolvedValue(undefined)
     mockUser.mockReturnValue(passwordUser)
     mockListPasskeys.mockResolvedValue({
-      passkeys: [{ id: 'pk-1', friendlyName: 'Laptop', transports: [], credentialId: 'cred-abc' }],
+      passkeys: [
+        {
+          id: 'pk-1',
+          friendlyName: 'Laptop',
+          transports: [],
+          credentialId: 'cred-abc',
+        },
+      ],
       rpId: 'localhost',
     })
     mockBeginPasskeyRegistration.mockResolvedValue({ sessionId: 'sess-1', optionsJson: '{}' })
     mockStartRegistration.mockResolvedValue('{"id":"cred-new"}')
     mockFinishPasskeyRegistration.mockResolvedValue({
-      passkey: { id: 'pk-2', friendlyName: 'Phone', transports: [], credentialId: 'cred-new' },
+      passkey: {
+        id: 'pk-2',
+        friendlyName: 'Phone',
+        transports: [],
+        credentialId: 'cred-new',
+      },
     })
     mockDeletePasskey.mockResolvedValue({})
     mockDeactivatePasskeyAuth.mockResolvedValue({})

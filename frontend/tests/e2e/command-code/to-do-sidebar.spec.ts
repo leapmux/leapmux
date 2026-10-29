@@ -8,7 +8,9 @@ import { commandCodeTaskCreateToolCall, commandCodeTaskUpdateToolCall } from '..
 commandCodeTest('creates and completes the actual native task and preserves its sidebar status', async ({ native }) => {
   const { page } = native
   const creation = await runNativeToolTurn(native, {
-    toolCalls: [commandCodeTaskCreateToolCall('native-task-create', 'Inspect the native checklist', 'Read the actual source and report its state.')],
+    toolCalls: [
+      commandCodeTaskCreateToolCall('native-task-create', 'Inspect the native checklist', 'Read the actual source and report its state.'),
+    ],
     prompt: 'Create the supplied native task.',
     answer: 'The native task creation completed.',
   })
@@ -21,7 +23,9 @@ commandCodeTest('creates and completes the actual native task and preserves its 
   await expect(item).toContainText('Inspect the native checklist')
   await expect(item.locator('[data-task-checkbox="pending"]')).toHaveCount(1)
   const completion = await runNativeToolTurn(native, {
-    toolCalls: [commandCodeTaskUpdateToolCall('native-task-complete', taskID, 'completed')],
+    toolCalls: [
+      commandCodeTaskUpdateToolCall('native-task-complete', taskID, 'completed'),
+    ],
     prompt: 'Complete the actual native task ID.',
     answer: 'The native task completed.',
   })

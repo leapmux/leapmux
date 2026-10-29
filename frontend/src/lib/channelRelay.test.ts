@@ -21,7 +21,9 @@ class FakeSocket implements ChannelSocket {
   private listeners = new Map<string, Set<(ev: any) => void>>()
 
   send(data: Uint8Array<ArrayBuffer> | ArrayBuffer): void {
-    this.sent.push(data instanceof Uint8Array ? data : new Uint8Array(data))
+    this.sent.push(data instanceof Uint8Array
+      ? data
+      : new Uint8Array(data))
   }
 
   close(): void {
@@ -43,7 +45,9 @@ class FakeSocket implements ChannelSocket {
   }
 
   emit(type: string, ev: any): void {
-    for (const cb of [...(this.listeners.get(type) ?? [])])
+    for (const cb of [
+      ...(this.listeners.get(type) ?? []),
+    ])
       cb(ev)
   }
 
@@ -129,7 +133,9 @@ describe('channelRelay', () => {
       ciphertext: new Uint8Array([9]),
       correlationId: 1n,
     })
-    sock.emit('message', { data: frame(workerMsg) })
+    sock.emit('message', {
+      data: frame(workerMsg),
+    })
     expect(onFrame).toHaveBeenCalledOnce()
     expect(onFrame.mock.calls[0]![0]).toBe('ch-1')
 
@@ -139,7 +145,9 @@ describe('channelRelay', () => {
       ciphertext: toBinary(HubControlFrameSchema, create(HubControlFrameSchema, {})),
       correlationId: 0n,
     })
-    sock.emit('message', { data: frame(hubMsg) })
+    sock.emit('message', {
+      data: frame(hubMsg),
+    })
     expect(onHubControl).toHaveBeenCalledOnce()
   })
 
@@ -263,10 +271,14 @@ describe('channelRelay', () => {
       correlationId: 1n,
     })
     onFrame.mockClear()
-    sock1.emit('message', { data: frame(workerMsg) })
+    sock1.emit('message', {
+      data: frame(workerMsg),
+    })
     expect(onFrame).not.toHaveBeenCalled()
 
-    sock2.emit('message', { data: frame(workerMsg) })
+    sock2.emit('message', {
+      data: frame(workerMsg),
+    })
     expect(onFrame).toHaveBeenCalledOnce()
   })
 
@@ -306,7 +318,9 @@ describe('channelRelay', () => {
       correlationId: 2n,
     })
     // Node/WS path: Buffer-like view rather than a bare ArrayBuffer.
-    sock.emit('message', { data: new Uint8Array(frame(workerMsg)) })
+    sock.emit('message', {
+      data: new Uint8Array(frame(workerMsg)),
+    })
     expect(onFrame).toHaveBeenCalledOnce()
     expect(onFrame.mock.calls[0]![0]).toBe('ch-view')
   })
@@ -393,7 +407,12 @@ describe('channelRelay', () => {
         onCloseDrain,
         onFatalClose,
       })
-      return { relay, sockets, onCloseDrain, onFatalClose }
+      return {
+        relay,
+        sockets,
+        onCloseDrain,
+        onFatalClose,
+      }
     }
 
     it('latches on 1008, reports the reason, and refuses to redial', async () => {

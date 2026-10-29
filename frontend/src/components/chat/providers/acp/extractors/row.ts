@@ -58,7 +58,13 @@ function acpPlanRow(update: Record<string, unknown>): ChatRow | null {
     return null
   const call = createToolCall(
     { id: '', name: ACP_SESSION_UPDATE.PLAN, lifecycle: SYNTHETIC_TOOL_LIFECYCLE },
-    { kind: 'todo', label: 'Plan', title: 'Plan', request: { items: todos }, result: { items: todos } },
+    {
+      kind: 'todo',
+      label: 'Plan',
+      title: 'Plan',
+      request: { items: todos },
+      result: { items: todos },
+    },
   )
   return toolCallRow(call, 'result', { request: false, result: false })
 }
@@ -76,8 +82,12 @@ function acpToolCallSpanRow(tool: Record<string, unknown>, current: ParsedMessag
   // a mismatched request, and the row flags must refuse it the same way.
   const own = current
   const callId = pickString(tool, 'toolCallId') || ''
-  const requestSide = acpSideCallId(span.request) === callId ? span.request : undefined
-  const resultSide = acpSideCallId(span.result) === callId ? span.result : undefined
+  const requestSide = acpSideCallId(span.request) === callId
+    ? span.request
+    : undefined
+  const resultSide = acpSideCallId(span.result) === callId
+    ? span.result
+    : undefined
   // ONE call from every side: the request identifies the arguments, the result the
   // payload. Whichever frame this row is, the merged object carries both.
   const requestFrame = requestSide?.parentObject
@@ -96,8 +106,14 @@ function acpToolCallSpanRow(tool: Record<string, unknown>, current: ParsedMessag
   const call: ToolCall = acpToolCall(resolved, callAdapter, (resultSide ?? own).supplementalContent, own.completion, {
     role: span.role,
     hasResult: !!resultSide,
-    ...(own.agentSessionId === undefined ? {} : { agentSessionId: own.agentSessionId }),
+    ...(own.agentSessionId === undefined
+      ? {}
+      : { agentSessionId: own.agentSessionId }),
   })
-  const role: ToolSpanRowRole = finished ? 'result' : pickString(tool, ACP_SUPPLEMENT_IDENTITY.SessionUpdate) === ACP_SESSION_UPDATE.TOOL_CALL ? 'request' : 'update'
+  const role: ToolSpanRowRole = finished
+    ? 'result'
+    : pickString(tool, ACP_SUPPLEMENT_IDENTITY.SessionUpdate) === ACP_SESSION_UPDATE.TOOL_CALL
+      ? 'request'
+      : 'update'
   return toolCallRow(call, role, span.visibleRows)
 }

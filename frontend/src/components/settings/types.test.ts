@@ -20,7 +20,9 @@ describe('descriptorVisible', () => {
 
   it('reads the predicate on every call, so a live answer applies', () => {
     let hide = false
-    const d = descriptor({ hidden: () => hide })
+    const d = descriptor({
+      hidden: () => hide,
+    })
     expect(descriptorVisible(d)).toBe(true)
     hide = true
     expect(descriptorVisible(d)).toBe(false)

@@ -59,7 +59,9 @@ export function fileEditNewStr(source: FileEditDiff): string {
  * by hand: the patch wins when it carries hunks, because that is what the row draws.
  */
 export function fileEditContent(patch: StructuredPatchHunk[] | null | undefined, oldStr: string, newStr: string): FileEditContent {
-  return patch?.length ? { structuredPatch: patch } : { structuredPatch: null, oldStr, newStr }
+  return patch?.length
+    ? { structuredPatch: patch }
+    : { structuredPatch: null, oldStr, newStr }
 }
 
 const NO_NEWLINE_MARKER = '\\ No newline at end of file'
@@ -147,7 +149,9 @@ export function normalizeStructuredPatchHunks(hunks: unknown): StructuredPatchHu
   // A list that HELD hunks and kept none carries no drawable patch, so it answers the
   // null an absent one answers. An EMPTY list stays empty: nothing was dropped, and a
   // zero-hunk patch is what the caller handed over.
-  return hunks.length > 0 && result.length === 0 ? null : result
+  return hunks.length > 0 && result.length === 0
+    ? null
+    : result
 }
 
 /**
@@ -170,7 +174,9 @@ export function nonEmptyStructuredPatch(source: FileEditDiff): StructuredPatchHu
   if (cached !== undefined)
     return cached
   const hunks = normalizeStructuredPatchHunks(source.structuredPatch)
-  const answer = hunks && hunks.length > 0 ? hunks : null
+  const answer = hunks && hunks.length > 0
+    ? hunks
+    : null
   nonEmptyPatchBySource.set(source, answer)
   return answer
 }
@@ -184,7 +190,10 @@ export function nonEmptyStructuredPatch(source: FileEditDiff): StructuredPatchHu
 export function fileEditDiffFromHunks(path: string, hunks: StructuredPatchHunk[]): FileEditDiff {
   // A patch this build cannot read leaves NO sides to fall back to, so the source
   // states an empty pair rather than a patch it would then have to guard at each read.
-  return { filePath: path, ...fileEditContent(normalizeStructuredPatchHunks(hunks), '', '') }
+  return {
+    filePath: path,
+    ...fileEditContent(normalizeStructuredPatchHunks(hunks), '', ''),
+  }
 }
 
 /**
@@ -241,12 +250,16 @@ export function fileEditDiffHunks(source: FileEditDiff): StructuredPatchHunk[] {
 
 export function fileEditCopyableText(source: FileEditDiff): string {
   const { filePath, previousPath, operation } = source
-  const diff = fileEditHasDiff(source) ? formatUnifiedDiffText(fileEditDiffHunks(source), source.filePath) : ''
+  const diff = fileEditHasDiff(source)
+    ? formatUnifiedDiffText(fileEditDiffHunks(source), source.filePath)
+    : ''
   const metadata = previousPath && previousPath !== filePath
     ? `rename from ${previousPath}\nrename to ${filePath}`
     : !diff && operation === 'delete'
         ? `Deleted ${filePath}`
-        : !diff && operation === 'add' ? `Created ${filePath}` : ''
+        : !diff && operation === 'add'
+            ? `Created ${filePath}`
+            : ''
   return [metadata, source.notice, diff].filter(Boolean).join('\n')
 }
 
@@ -254,16 +267,23 @@ export function fileEditCopyableText(source: FileEditDiff): string {
 export function requestedFileChangesCopyable(sources: FileEditDiff[]): string {
   if (sources.length === 0)
     return ''
-  return ['Requested changes', ...sources.map((source) => {
+  return [
+    'Requested changes',
+    ...sources.map((source) => {
     // The copy text words a REQUESTED operation itself ("Delete x"), so the operation
     // is pulled out here: the landed-change wording ("Deleted x") must not state it first.
-    const { operation, ...rest } = source
-    const diff = fileEditCopyableText(rest)
-    if (diff)
-      return diff
-    const verb = operation === 'delete' ? 'Delete' : operation === 'add' ? 'Create' : 'Change'
-    return `${verb} ${source.filePath}`
-  })].join('\n\n')
+      const { operation, ...rest } = source
+      const diff = fileEditCopyableText(rest)
+      if (diff)
+        return diff
+      const verb = operation === 'delete'
+        ? 'Delete'
+        : operation === 'add'
+          ? 'Create'
+          : 'Change'
+      return `${verb} ${source.filePath}`
+    }),
+  ].join('\n\n')
 }
 
 /**
@@ -278,7 +298,12 @@ export function requestedFileChangesCopyable(sources: FileEditDiff[]): string {
  * and a patch in another.
  */
 export function fileEditDiffFromOldNew(path: string, oldStr: string, newStr: string): FileEditDiff {
-  return { filePath: path, structuredPatch: null, oldStr, newStr }
+  return {
+    filePath: path,
+    structuredPatch: null,
+    oldStr,
+    newStr,
+  }
 }
 
 /**
@@ -302,7 +327,9 @@ export function fileEditDiffFromOldNew(path: string, oldStr: string, newStr: str
  */
 export function fileEditDiffFromUnifiedPatch(path: string, patch: string): FileEditDiff | null {
   const parsed = parseUnifiedDiffCached(patch)
-  return parsed ? fileEditDiffFromHunks(path, parsed.hunks) : null
+  return parsed
+    ? fileEditDiffFromHunks(path, parsed.hunks)
+    : null
 }
 
 /**
@@ -314,8 +341,20 @@ export function fileEditDiffFromUnifiedPatch(path: string, patch: string): FileE
  */
 export function fileEditDiffFromWholeFile(path: string, content: string, operation: Extract<FileChangeOperation, 'add' | 'delete'>): FileEditDiff {
   return operation === 'add'
-    ? { filePath: path, structuredPatch: null, oldStr: '', newStr: content, operation }
-    : { filePath: path, structuredPatch: null, oldStr: content, newStr: '', operation }
+    ? {
+        filePath: path,
+        structuredPatch: null,
+        oldStr: '',
+        newStr: content,
+        operation,
+      }
+    : {
+        filePath: path,
+        structuredPatch: null,
+        oldStr: content,
+        newStr: '',
+        operation,
+      }
 }
 
 /**
@@ -347,7 +386,9 @@ export interface FileChangeEntry {
  */
 export function fileEditDiffsFromChanges(entries: FileChangeEntry[]): FileEditDiff[] {
   return entries.flatMap((entry) => {
-    const patched = entry.patch ? fileEditDiffFromUnifiedPatch(entry.filePath, entry.patch) : null
+    const patched = entry.patch
+      ? fileEditDiffFromUnifiedPatch(entry.filePath, entry.patch)
+      : null
     const whole = !patched && entry.content !== undefined && (entry.operation === 'add' || entry.operation === 'delete')
       ? fileEditDiffFromWholeFile(entry.filePath, entry.content, entry.operation)
       : null
@@ -357,6 +398,10 @@ export function fileEditDiffsFromChanges(entries: FileChangeEntry[]): FileEditDi
     // The move's old path rides only when the entry stated one, so an entry without
     // one keeps no `previousPath` key rather than an explicitly undefined one.
     const renamed = { ...source, operation: entry.operation }
-    return [entry.previousPath !== undefined ? { ...renamed, previousPath: entry.previousPath } : renamed]
+    return [
+      entry.previousPath !== undefined
+        ? { ...renamed, previousPath: entry.previousPath }
+        : renamed,
+    ]
   })
 }

@@ -55,7 +55,10 @@ export function createUpdatableDialogState<T>(): UpdatableDialogState<T> {
       const current = value()
       if (current === null)
         return false
-      setValue(() => ({ ...current, ...patch }))
+      setValue(() => ({
+        ...current,
+        ...patch,
+      }))
       return true
     },
     value,

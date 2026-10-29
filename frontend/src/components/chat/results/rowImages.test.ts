@@ -15,8 +15,15 @@ describe('imagesForRow', () => {
 
   it('lists a merged call\'s pictures in the order the row draws them', () => {
     const call = toolCallFixture('read', {
-      images: [picture('own')],
-      extraContent: [{ type: 'image', source: picture('extra') }],
+      images: [
+        picture('own'),
+      ],
+      extraContent: [
+        {
+          type: 'image',
+          source: picture('extra'),
+        },
+      ],
     })
     expect(imagesForRow(toolRow(call)).map(p => p.data)).toEqual(['extra', 'own'])
   })
@@ -33,14 +40,30 @@ describe('imagesForRow', () => {
   // is what joins the two halves into the one order the row draws.
   it('lists a generic result\'s pictures before the extra content\'s', () => {
     const call = toolCallFixture('mcp', {
-      extraContent: [{ type: 'image', source: picture('extra') }],
-      result: { content: [{ type: 'image', source: picture('inline') }] },
+      extraContent: [
+        {
+          type: 'image',
+          source: picture('extra'),
+        },
+      ],
+      result: {
+        content: [
+          {
+            type: 'image',
+            source: picture('inline'),
+          },
+        ],
+      },
     })
     expect(imagesForRow(toolRow(call)).map(p => p.data)).toEqual(['inline', 'extra'])
   })
 
   it('lists nothing for a request row paired with its result row', () => {
-    const call = toolCallFixture('read', { images: [picture('own')] })
+    const call = toolCallFixture('read', {
+      images: [
+        picture('own'),
+      ],
+    })
     expect(imagesForRow(toolRow(call, 'request', { result: true }))).toEqual([])
   })
 })
@@ -63,7 +86,15 @@ describe('quotableTextForRow', () => {
 describe('resultImages', () => {
   it.each(['unspecified', 'other', 'mcp'] as const)('reads the content pictures of a %s result', (kind) => {
     const call = toolCallFixture(kind, {
-      result: { content: [{ type: 'image', source: picture('inline') }, { type: 'text', text: 'beside it' }] },
+      result: {
+        content: [
+          {
+            type: 'image',
+            source: picture('inline'),
+          },
+          { type: 'text', text: 'beside it' },
+        ],
+      },
     })
     expect(resultImages(call).map(p => p.data)).toEqual(['inline'])
   })
@@ -71,7 +102,11 @@ describe('resultImages', () => {
   // A kind whose result declares no content blocks at all. The narrowing is what keeps
   // this from reading a field the result does not have.
   it('answers nothing for a kind that carries its pictures on the call', () => {
-    expect(resultImages(toolCallFixture('read', { images: [picture('own')] }))).toEqual([])
+    expect(resultImages(toolCallFixture('read', {
+      images: [
+        picture('own'),
+      ],
+    }))).toEqual([])
   })
 
   it('answers nothing for a generic call that has not answered', () => {
@@ -84,12 +119,23 @@ describe('resultImages', () => {
   // completed and this build could not read its payload, and a failure states that
   // the call did not complete at all.
   it('answers nothing for a result this build could not read', () => {
-    expect(resultImages(toolCallFixture('mcp', { result: unparsedResult('raw bytes') }))).toEqual([])
-    expect(resultImages(toolCallFixture('mcp', { status: 'failed', result: failedResult('the server refused') }))).toEqual([])
+    expect(resultImages(toolCallFixture('mcp', {
+      result: unparsedResult('raw bytes'),
+    }))).toEqual([])
+    expect(resultImages(toolCallFixture('mcp', {
+      status: 'failed',
+      result: failedResult('the server refused'),
+    }))).toEqual([])
   })
 
   it('answers nothing for a generic result whose content holds no picture', () => {
-    expect(resultImages(toolCallFixture('other', { result: { content: [{ type: 'text', text: 'words' }] } }))).toEqual([])
+    expect(resultImages(toolCallFixture('other', {
+      result: {
+        content: [
+          { type: 'text', text: 'words' },
+        ],
+      },
+    }))).toEqual([])
   })
 })
 

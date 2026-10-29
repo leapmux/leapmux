@@ -14,8 +14,15 @@ export function validateUpgrades(upgrades) {
   for (const upgrade of upgrades) {
     if (!upgrade || typeof upgrade !== 'object' || typeof upgrade.manager !== 'string')
       throw new Error('An upgrade must specify its manager.')
-    if (!['gomod', 'bun', 'cargo', 'github-actions', 'regex'].includes(upgrade.manager))
+    if (![
+      'gomod',
+      'bun',
+      'cargo',
+      'github-actions',
+      'regex',
+    ].includes(upgrade.manager)) {
       throw new Error(`Unsupported dependency manager: ${upgrade.manager}`)
+    }
     if (upgrade.updateType === 'lockFileMaintenance' && !['bun', 'cargo'].includes(upgrade.manager))
       throw new Error('Only Bun and Cargo support coordinated lockfile maintenance.')
     if (!isDependencyInput(upgrade.manager, upgrade.packageFile))
@@ -47,7 +54,11 @@ export async function postUpgrade(upgrades, { root = process.cwd(), trusted = pr
       cwd: resolve(root, options.cwd ?? '.'),
       encoding: 'utf8',
       input: options.input,
-      env: { ...process.env, ...(options.env ?? {}), GOTOOLCHAIN: 'local' },
+      env: {
+        ...process.env,
+        ...(options.env ?? {}),
+        GOTOOLCHAIN: 'local',
+      },
       maxBuffer: 64 * 1024 * 1024,
       stdio: ['pipe', 'pipe', 'pipe'],
     })
@@ -72,10 +83,24 @@ export async function postUpgrade(upgrades, { root = process.cwd(), trusted = pr
   const hasCargo = upgrades.some(upgrade => upgrade.manager === 'cargo')
   if (goState.hasWorkspaceGo || hasFrontend)
     run('task', ['sync-protobuf-generators'])
-  if (hasFrontend || hasCargo)
-    await reconcile({ root, trusted, run, upgrades, security: upgrades.some(upgrade => upgrade.isVulnerabilityAlert) })
+  if (hasFrontend || hasCargo) {
+    await reconcile({
+      root,
+      trusted,
+      run,
+      upgrades,
+      security: upgrades.some(upgrade => upgrade.isVulnerabilityAlert),
+    })
+  }
   finishGoUpgrades(goState, { root, run, read, write })
-  const changed = run('git', ['diff', '--no-renames', '--name-only', '-z', 'HEAD', '--'], { capture: true }).split('\0').filter(Boolean)
+  const changed = run('git', [
+    'diff',
+    '--no-renames',
+    '--name-only',
+    '-z',
+    'HEAD',
+    '--',
+  ], { capture: true }).split('\0').filter(Boolean)
   if (needsNotice(changed))
     run('task', ['generate-notice'])
 }
@@ -99,8 +124,21 @@ if (import.meta.main) {
   }
   finally {
     if (process.env.RENOVATE_TRUSTED_ROOT) {
-      const entries = Array.isArray(upgrades) ? upgrades : []
-      appendFileSync(resolve(process.env.RENOVATE_TRUSTED_ROOT, '.tmp/renovate-timings.jsonl'), `${JSON.stringify({ started, durationMs: Math.round(performance.now() - stopwatch), status, branches: [...new Set(entries.map(upgrade => upgrade?.branchName))], dependencies: entries.map(upgrade => upgrade?.depName), updateTypes: [...new Set(entries.map(upgrade => upgrade?.updateType))] })}\n`)
+      const entries = Array.isArray(upgrades)
+        ? upgrades
+        : []
+      appendFileSync(resolve(process.env.RENOVATE_TRUSTED_ROOT, '.tmp/renovate-timings.jsonl'), `${JSON.stringify({
+        started,
+        durationMs: Math.round(performance.now() - stopwatch),
+        status,
+        branches: [
+          ...new Set(entries.map(upgrade => upgrade?.branchName)),
+        ],
+        dependencies: entries.map(upgrade => upgrade?.depName),
+        updateTypes: [
+          ...new Set(entries.map(upgrade => upgrade?.updateType)),
+        ],
+      })}\n`)
     }
   }
 }

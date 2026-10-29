@@ -18,13 +18,38 @@ export interface NativeLinearGradient {
   stops: Record<string, string>[]
 }
 
-const ROOT_ATTRIBUTES = new Set(['xmlns', 'xmlns:xlink', 'viewBox', 'width', 'height', 'fill'])
+const ROOT_ATTRIBUTES = new Set([
+  'xmlns',
+  'xmlns:xlink',
+  'viewBox',
+  'width',
+  'height',
+  'fill',
+])
 const ELEMENT_ATTRIBUTES = {
-  path: new Set(['d', 'fill', 'fill-rule', 'clip-rule', 'fill-opacity']),
+  path: new Set([
+    'd',
+    'fill',
+    'fill-rule',
+    'clip-rule',
+    'fill-opacity',
+  ]),
   image: new Set(['width', 'height', 'href']),
 }
-const GRADIENT_ATTRIBUTES = new Set(['id', 'x1', 'y1', 'x2', 'y2', 'gradientUnits'])
-const STOP_ATTRIBUTES = new Set(['offset', 'stop-color', 'stop-opacity', 'style'])
+const GRADIENT_ATTRIBUTES = new Set([
+  'id',
+  'x1',
+  'y1',
+  'x2',
+  'y2',
+  'gradientUnits',
+])
+const STOP_ATTRIBUTES = new Set([
+  'offset',
+  'stop-color',
+  'stop-opacity',
+  'style',
+])
 const GRADIENT_ID = /^[a-z_][\w:.-]*$/i
 const LOCAL_PAINT = /^url\(#([a-z_][\w:.-]*)\)$/i
 const HEX_COLOR = /^#(?:[\da-f]{3,4}|[\da-f]{6}|[\da-f]{8})$/i
@@ -116,7 +141,9 @@ function stopStyle(value: string): boolean {
 
 function gradientOffset(value: string | undefined): number {
   const percent = value?.endsWith('%') === true
-  return svgNumber(percent ? value!.slice(0, -1) : value) / (percent ? 100 : 1)
+  return svgNumber(percent
+    ? value!.slice(0, -1)
+    : value) / (percent ? 100 : 1)
 }
 
 function readLinearGradients(source: string): NativeLinearGradient[] {
@@ -131,8 +158,11 @@ function readLinearGradients(source: string): NativeLinearGradient[] {
       throw new Error('The native provider gradient requires a unique local ID.')
     for (const coordinate of ['x1', 'y1', 'x2', 'y2']) {
       const value = attributes[coordinate]
-      if (value !== undefined && !Number.isFinite(svgNumber(value.endsWith('%') ? value.slice(0, -1) : value)))
+      if (value !== undefined && !Number.isFinite(svgNumber(value.endsWith('%')
+        ? value.slice(0, -1)
+        : value))) {
         throw new Error('The native provider gradient contains an invalid coordinate.')
+      }
     }
     if (attributes.gradientUnits !== undefined && attributes.gradientUnits !== 'userSpaceOnUse' && attributes.gradientUnits !== 'objectBoundingBox')
       throw new Error('The native provider gradient contains unsupported units.')
@@ -188,7 +218,9 @@ export function readNativeProviderMark(source: string): NativeProviderMark {
   }
   let body = root[2]
   let linearGradients: NativeLinearGradient[] = []
-  const definitions = [...body.matchAll(/<defs>([\s\S]*?)<\/defs>/g)]
+  const definitions = [
+    ...body.matchAll(/<defs>([\s\S]*?)<\/defs>/g),
+  ]
   if (definitions.length > 1)
     throw new Error('The native provider mark contains repeated definitions.')
   if (definitions.length === 1) {
@@ -202,7 +234,9 @@ export function readNativeProviderMark(source: string): NativeProviderMark {
   for (const element of body.matchAll(/<(path|image)\s+([^\s<>][^<>]*)\/>/g)) {
     if (body.slice(cursor, element.index).trim())
       throw new Error('The native provider mark contains unsupported SVG content.')
-    const type = element[1] === 'path' ? 'path' : 'image'
+    const type = element[1] === 'path'
+      ? 'path'
+      : 'image'
     const fields = readAttributes(element[2]!, ELEMENT_ATTRIBUTES[type])
     if (type === 'path' && !fields.d?.trim())
       throw new Error('The native provider path requires its complete geometry.')
@@ -220,8 +254,12 @@ export function readNativeProviderMark(source: string): NativeProviderMark {
   return {
     viewBox,
     elements,
-    ...(attributes.fill === undefined ? {} : { fill: attributes.fill }),
-    ...(linearGradients.length === 0 ? {} : { linearGradients }),
+    ...(attributes.fill === undefined
+      ? {}
+      : { fill: attributes.fill }),
+    ...(linearGradients.length === 0
+      ? {}
+      : { linearGradients }),
   }
 }
 

@@ -32,30 +32,60 @@ lettaTest.describe('Letta Code subagents', () => {
       await modelScript.rule(
         {
           name: 'the Letta child reads the marker file',
-          when: { user: CHILD_READ_TASK, lastMessage: { role: 'user' } },
+          when: {
+            user: CHILD_READ_TASK,
+            lastMessage: { role: 'user' },
+          },
           respond: {
             text: 'LETTA_CHILD_EARLY',
-            toolCalls: [readToolCall(native.provider, 'letta-child-read', note)],
+            toolCalls: [
+              readToolCall(native.provider, 'letta-child-read', note),
+            ],
           },
           once: true,
         },
         {
           name: 'the Letta child reports the marker',
-          when: { user: CHILD_READ_TASK, lastMessage: { role: 'tool', text: CHILD_READ_MARKER } },
-          respond: { gate: CHILD_GATE, text: 'LETTA_CHILD_FINAL', stream: { chunkChars: 4, delayMs: 0, gates: [{ afterChunk: 1, name: FIRST_PROGRESS_GATE }, { afterChunk: 2, name: SECOND_PROGRESS_GATE }] } },
+          when: {
+            user: CHILD_READ_TASK,
+            lastMessage: { role: 'tool', text: CHILD_READ_MARKER },
+          },
+          respond: {
+            gate: CHILD_GATE,
+            text: 'LETTA_CHILD_FINAL',
+            stream: {
+              chunkChars: 4,
+              delayMs: 0,
+              gates: [
+                { afterChunk: 1, name: FIRST_PROGRESS_GATE },
+                { afterChunk: 2, name: SECOND_PROGRESS_GATE },
+              ],
+            },
+          },
           once: true,
         },
       )
       const start = await modelScript.queue(
-        { toolCalls: [spawnSubagentToolCall(native.provider, 'letta-live-child', {
-          description: 'Read the marker file',
-          prompt: childPrompt,
-        })] },
+        {
+          toolCalls: [
+            spawnSubagentToolCall(native.provider, 'letta-live-child', {
+              description: 'Read the marker file',
+              prompt: childPrompt,
+            }),
+          ],
+        },
         { text: 'LETTA_LIVE_ROOT_DONE' },
       )
       await sendMessage(page, modelScript.prompt('Ask the child to read the marker file, then report.'))
       await modelScript.waitForGate(CHILD_GATE)
-      await registerLettaChildNoticeRule(native, { name: 'the Letta root handles the marker child completion notice', spawnCallId: 'letta-live-child', description: 'Read the marker file', report: 'LETTA_CHILD_FINAL', reply: 'LETTA_LIVE_ROOT_AFTER_CHILD_DONE', once: true })
+      await registerLettaChildNoticeRule(native, {
+        name: 'the Letta root handles the marker child completion notice',
+        spawnCallId: 'letta-live-child',
+        description: 'Read the marker file',
+        report: 'LETTA_CHILD_FINAL',
+        reply: 'LETTA_LIVE_ROOT_AFTER_CHILD_DONE',
+        once: true,
+      })
       const row = await requireRegistryRow(page)
       await expect(row).toHaveAttribute('data-status', 'running')
       const childTabId = await openChildTabFromRow(page, row)
@@ -84,7 +114,12 @@ lettaTest.describe('Letta Code subagents', () => {
       await expect.poll(async () => (await modelScript.status()).ruleMatches['the Letta root handles the marker child completion notice'] ?? 0).toBe(1)
       await waitForAgentIdle(page)
       await expect(assistantBubbles(page).filter({ hasText: 'LETTA_CHILD_FINAL' })).toHaveCount(1)
-      await expectRowsInOrder(messageContents(page), [CHILD_READ_TASK, 'LETTA_CHILD_EARLY', CHILD_READ_MARKER, 'LETTA_CHILD_FINAL'])
+      await expectRowsInOrder(messageContents(page), [
+        CHILD_READ_TASK,
+        'LETTA_CHILD_EARLY',
+        CHILD_READ_MARKER,
+        'LETTA_CHILD_FINAL',
+      ])
       await tabById(page, rootTabId).click()
       await expect(assistantBubbles(page).filter({ hasText: 'LETTA_LIVE_ROOT_DONE' })).toHaveCount(1)
       await expectRowBecomesFinal(page, await requireRegistryRow(page))

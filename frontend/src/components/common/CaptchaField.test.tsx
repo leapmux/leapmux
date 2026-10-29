@@ -20,9 +20,15 @@ const turnstileMounted = vi.fn((props: Record<string, unknown>) => <div data-tes
 const recaptchaMounted = vi.fn((props: Record<string, unknown>) => <div data-testid="recaptcha" data-props={JSON.stringify(props)} />)
 // vi.mock factories are hoisted above the const declarations; the
 // wrapper closures defer the access until the mocked module is loaded.
-vi.mock('./AltchaField', () => ({ AltchaField: (props: Record<string, unknown>) => altchaMounted(props) }))
-vi.mock('./TurnstileField', () => ({ TurnstileField: (props: Record<string, unknown>) => turnstileMounted(props) }))
-vi.mock('./RecaptchaV3Field', () => ({ RecaptchaV3Field: (props: Record<string, unknown>) => recaptchaMounted(props) }))
+vi.mock('./AltchaField', () => ({
+  AltchaField: (props: Record<string, unknown>) => altchaMounted(props),
+}))
+vi.mock('./TurnstileField', () => ({
+  TurnstileField: (props: Record<string, unknown>) => turnstileMounted(props),
+}))
+vi.mock('./RecaptchaV3Field', () => ({
+  RecaptchaV3Field: (props: Record<string, unknown>) => recaptchaMounted(props),
+}))
 
 function renderDispatcher() {
   return render(() => (

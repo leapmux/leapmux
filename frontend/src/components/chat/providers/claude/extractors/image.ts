@@ -42,9 +42,14 @@ export function claudeImagesFromToolResult(args: ClaudeImageArgs): ImageResultSo
   // images is never the `Read`-on-an-image shape this branch exists for, and
   // collapsing it to one would drop images the row renders -- and shift every
   // index an image tab addresses.
-  const structured = args.blockImages.length <= 1 ? claudeStructuredImage(args.toolUseResult) : null
-  if (structured)
-    return [withPath(structured)]
+  const structured = args.blockImages.length <= 1
+    ? claudeStructuredImage(args.toolUseResult)
+    : null
+  if (structured) {
+    return [
+      withPath(structured),
+    ]
+  }
 
   return args.blockImages.map(withPath)
 }
@@ -69,8 +74,12 @@ function claudeStructuredImage(toolUseResult: Record<string, unknown> | null | u
   // the MIME type and the dimensions both.
   return {
     data,
-    ...(mimeType !== undefined ? { mimeType } : {}),
-    ...(dimensions ? { dimensions } : {}),
+    ...(mimeType !== undefined
+      ? { mimeType }
+      : {}),
+    ...(dimensions
+      ? { dimensions }
+      : {}),
   }
 }
 
@@ -92,7 +101,9 @@ function claudeImageDimensions(file: Record<string, unknown> | null): { width: n
   const height = pickFirstNumber(dims, ['displayHeight', 'originalHeight', 'height'])
   // A zero or negative side would make the aspect-ratio reservation divide by
   // zero, so treat it the same as an absent field and sniff instead.
-  return width && height && width > 0 && height > 0 ? { width, height } : null
+  return width && height && width > 0 && height > 0
+    ? { width, height }
+    : null
 }
 
 /**
@@ -124,7 +135,11 @@ export function claudeToolResultImages(
     // `null` is the arg type's own "no structured payload", which `pickObject`
     // already answers with; `undefined` would state an absent key instead.
     toolUseResult: pickObject(parsed, 'tool_use_result'),
-    blockImages: blocks ? splitToolResultContent(blocks, { text: 'text' }).images : [],
-    ...(toolInput !== undefined ? { toolInput } : {}),
+    blockImages: blocks
+      ? splitToolResultContent(blocks, { text: 'text' }).images
+      : [],
+    ...(toolInput !== undefined
+      ? { toolInput }
+      : {}),
   })
 }

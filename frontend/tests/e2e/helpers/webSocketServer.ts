@@ -88,7 +88,9 @@ export function acceptWebSocket(request: IncomingMessage, socket: Duplex, head: 
     .split(',')
     .map(value => value.trim())
     .filter(value => value !== '')
-  const protocol = offered.length === 0 ? '' : (options.protocols ?? []).find(candidate => offered.includes(candidate))
+  const protocol = offered.length === 0
+    ? ''
+    : (options.protocols ?? []).find(candidate => offered.includes(candidate))
   if (protocol === undefined) {
     refuse(socket, 400, 'Bad Request')
     return null
@@ -98,7 +100,9 @@ export function acceptWebSocket(request: IncomingMessage, socket: Duplex, head: 
     'Upgrade: websocket',
     'Connection: Upgrade',
     `Sec-WebSocket-Accept: ${webSocketAcceptKey(key)}`,
-    ...(protocol ? [`Sec-WebSocket-Protocol: ${protocol}`] : []),
+    ...(protocol
+      ? [`Sec-WebSocket-Protocol: ${protocol}`]
+      : []),
   ]
   socket.write(`${lines.join('\r\n')}\r\n\r\n`)
   return new Connection(socket, protocol, head)
@@ -184,7 +188,11 @@ export function readClientFrame(data: Buffer): FrameRead {
   const payload = Buffer.from(data.subarray(offset + 4, offset + 4 + length))
   for (let index = 0; index < payload.byteLength; index++)
     payload[index] = payload[index]! ^ mask[index % 4]!
-  return { kind: 'frame', frame: { fin: (first & 0x80) !== 0, opcode: first & 0x0F, payload }, rest: data.subarray(offset + 4 + length) }
+  return {
+    kind: 'frame',
+    frame: { fin: (first & 0x80) !== 0, opcode: first & 0x0F, payload },
+    rest: data.subarray(offset + 4 + length),
+  }
 }
 
 class Connection implements WebSocketConnection {

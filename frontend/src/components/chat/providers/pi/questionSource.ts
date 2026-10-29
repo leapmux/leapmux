@@ -34,7 +34,9 @@ export function piQuestionOptionLine(option: SourceOption, index: number): strin
  */
 function piQuestionRecords(args: Record<string, unknown>): Record<string, unknown>[] {
   const questions = args.questions
-  return Array.isArray(questions) ? questions.filter(isObject) : [args]
+  return Array.isArray(questions)
+    ? questions.filter(isObject)
+    : [args]
 }
 
 /**
@@ -52,7 +54,12 @@ export function piQuestionsFromArgs(args: Record<string, unknown>): QuestionProm
     piQuestionRecords(args),
     (record) => {
       const header = text(pickString(record, 'header'))
-      return { ...(header ? { header } : {}), question: text(pickString(record, 'question')) }
+      return {
+        ...(header
+          ? { header }
+          : {}),
+        question: text(pickString(record, 'question')),
+      }
     },
     (option) => {
       const label = text(pickString(option, 'label'))
@@ -62,8 +69,12 @@ export function piQuestionsFromArgs(args: Record<string, unknown>): QuestionProm
       const preview = pickString(option, 'preview', undefined)
       return {
         label,
-        ...(description ? { description } : {}),
-        ...(preview !== undefined ? { preview } : {}),
+        ...(description
+          ? { description }
+          : {}),
+        ...(preview !== undefined
+          ? { preview }
+          : {}),
       }
     },
   )
@@ -78,7 +89,9 @@ export function piQuestionsFromArgs(args: Record<string, unknown>): QuestionProm
  */
 export function piQuestionTitle(questions: QuestionPrompt[]): string | undefined {
   // One question is the list; the `length === 1` test pins the indexed read.
-  return questions.length === 1 ? questions[0]?.question : undefined
+  return questions.length === 1
+    ? questions[0]?.question
+    : undefined
 }
 
 /** Validate the source against the dialog before adding omitted option previews. */
@@ -105,12 +118,23 @@ export function piQuestionFromSource(dialog: Record<string, unknown>, source?: P
       return {
         label: text(pickString(row, 'label')),
         description: text(pickString(row, 'description')),
-        ...(preview !== undefined ? { preview } : {}),
+        ...(preview !== undefined
+          ? { preview }
+          : {}),
       }
     })
     const header = text(pickString(value, 'header'))
     const prompt = text(value.question)
-    const question: PiSourceQuestion = { index, prompt, header, title: `${header ? `[${header}] ` : ''}${prompt}`, multiSelect: value.multiSelect === true, options }
+    const question: PiSourceQuestion = {
+      index,
+      prompt,
+      header,
+      title: `${header
+        ? `[${header}] `
+        : ''}${prompt}`,
+      multiSelect: value.multiSelect === true,
+      options,
+    }
     const lines = options.map(piQuestionOptionLine)
     let valid = false
     if (method === PI_DIALOG_METHOD.Select && !question.multiSelect && Array.isArray(dialog.options)) {

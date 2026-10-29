@@ -5,14 +5,42 @@ import { input } from '../../testUtils'
 import { museOutputFilePaths } from './outputFilePaths'
 
 function frame(path: unknown, sessionId = 'session', itemId = 'item') {
-  return { method: 'item/completed', params: { sessionId, item: { itemId, kind: 'toolCall', turnId: 'turn', callId: 'call', tool: 'bash', status: 'completed', visibleOutput: 'Native preview', outputRef: { id: 'opaque-output', uri: 'native://opaque-output', kind: 'attachment', mediaType: 'future/media', path } } } }
+  return {
+    method: 'item/completed',
+    params: {
+      sessionId,
+      item: {
+        itemId,
+        kind: 'toolCall',
+        turnId: 'turn',
+        callId: 'call',
+        tool: 'bash',
+        status: 'completed',
+        visibleOutput: 'Native preview',
+        outputRef: {
+          id: 'opaque-output',
+          uri: 'native://opaque-output',
+          kind: 'attachment',
+          mediaType: 'future/media',
+          path,
+        },
+      },
+    },
+  }
 }
 
 function extraction(own: Record<string, unknown>, result?: Record<string, unknown>): RowExtractionInput {
   return {
     resolved: input(own, undefined, AgentProvider.MUSE_CODE),
     category: { kind: 'tool_result' },
-    span: { request: undefined, result: result ? input(result, undefined, AgentProvider.MUSE_CODE) : undefined, role: 'result', visibleRows: { request: false, result: true } },
+    span: {
+      request: undefined,
+      result: result
+        ? input(result, undefined, AgentProvider.MUSE_CODE)
+        : undefined,
+      role: 'result',
+      visibleRows: { request: false, result: true },
+    },
   }
 }
 

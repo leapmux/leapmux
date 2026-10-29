@@ -22,9 +22,15 @@ function makeMsg(source: MessageSource, content: unknown, opts?: { seq?: bigint,
     source,
     content: rawContent(content),
     // Partial<> rejects an explicit undefined option. Omit the option when its value is absent.
-    ...(opts?.seq === undefined ? {} : { seq: opts.seq }),
-    ...(opts?.spanId === undefined ? {} : { spanId: opts.spanId }),
-    ...(opts?.spanType === undefined ? {} : { spanType: opts.spanType }),
+    ...(opts?.seq === undefined
+      ? {}
+      : { seq: opts.seq }),
+    ...(opts?.spanId === undefined
+      ? {}
+      : { spanId: opts.spanId }),
+    ...(opts?.spanType === undefined
+      ? {}
+      : { spanType: opts.spanType }),
   })
 }
 
@@ -40,7 +46,10 @@ function wrap(...messages: unknown[]): { type: typeof NOTIFICATION_THREAD_TYPE, 
 describe('parseMessageContent', () => {
   it('keeps native session identity in neutral metadata without changing provider bytes', () => {
     const original = { type: 'native-result', output: 'native output' }
-    const message = makeMessage({ content: rawContent(original), agentSessionId: 'native-current-session' })
+    const message = makeMessage({
+      content: rawContent(original),
+      agentSessionId: 'native-current-session',
+    })
     const result = parseMessageContent(message)
     expect(result.agentSessionId).toBe('native-current-session')
     expect(result.parentObject).toEqual(original)
@@ -50,13 +59,19 @@ describe('parseMessageContent', () => {
 
   it('keeps the Worker session column separate from a foreign provider session field', () => {
     const original = { type: 'native-result', agentSessionId: 'foreign-provider-session' }
-    const result = parseMessageContent(makeMessage({ content: rawContent(original), agentSessionId: 'native-current-session' }))
+    const result = parseMessageContent(makeMessage({
+      content: rawContent(original),
+      agentSessionId: 'native-current-session',
+    }))
     expect(result.agentSessionId).toBe('native-current-session')
     expect(result.parentObject).toEqual(original)
   })
 
   it('keeps an empty or unreadable message session without inventing a provider identity', () => {
-    for (const content of [new TextEncoder().encode('{invalid'), new Uint8Array([0xFF, 0xFE])]) {
+    for (const content of [
+      new TextEncoder().encode('{invalid'),
+      new Uint8Array([0xFF, 0xFE]),
+    ]) {
       const result = parseMessageContent(makeMessage({ content, agentSessionId: '' }))
       expect(result.agentSessionId).toBe('')
       expect(result.parentObject).toBeUndefined()
@@ -72,16 +87,34 @@ describe('parseMessageContent', () => {
   })
 
   it('separates typed completion from a provider field with the same name', () => {
-    const original = { _leapmux: { completion: 'complete' }, completion: 'provider-specific' }
-    const result = parseMessageContent(makeMessage({ content: rawContent(original), completion: MessageCompletion.ERROR }))
+    const original = {
+      _leapmux: { completion: 'complete' },
+      completion: 'provider-specific',
+    }
+    const result = parseMessageContent(makeMessage({
+      content: rawContent(original),
+      completion: MessageCompletion.ERROR,
+    }))
     expect(result.completion).toBe(MessageCompletion.ERROR)
     expect(result.parentObject).toEqual(original)
   })
 
   it('keeps original and supplemental JSON in separate fields', () => {
-    const original = { type: 'tool_call', supplemental_content: { native: true }, _leapmux: 'native' }
-    const supplemental = { rawInput: { command: 'npm test' } }
-    const result = parseMessageContent(makeMessage({ content: rawContent(original), supplementalContent: rawContent({ provider: supplemental, metadata: { duration_ms: 0 } }) }))
+    const original = {
+      type: 'tool_call',
+      supplemental_content: { native: true },
+      _leapmux: 'native',
+    }
+    const supplemental = {
+      rawInput: { command: 'npm test' },
+    }
+    const result = parseMessageContent(makeMessage({
+      content: rawContent(original),
+      supplementalContent: rawContent({
+        provider: supplemental,
+        metadata: { duration_ms: 0 },
+      }),
+    }))
     expect(result.topLevel).toEqual(original)
     expect(result.parentObject).toEqual(original)
     expect(result.rawText).toBe(JSON.stringify(original))
@@ -90,24 +123,39 @@ describe('parseMessageContent', () => {
   })
 
   it('retains received opaque metadata without interpreting its encoded fields', () => {
-    const original = { type: 'notification_thread', old_seqs: [], messages: [{ type: 'system', text: 'Visible notice' }] }
-    const records = [{
-      label: 'opaque:zero',
-      data_base64: '/wB7IndpZGUiOjkwMDcxOTkyNTQ3NDA5OTN9',
-      extra_base64: 'AAE=',
-      empty_base64: '',
-      status: 4,
-      retained: true,
-    }, {
-      label: '',
-      data_base64: '',
-      extra_base64: '',
-      empty_base64: 'eyJkdXJhdGlvbl9tcyI6MH0=',
-      retained: false,
-    }]
+    const original = {
+      type: 'notification_thread',
+      old_seqs: [],
+      messages: [
+        { type: 'system', text: 'Visible notice' },
+      ],
+    }
+    const records = [
+      {
+        label: 'opaque:zero',
+        data_base64: '/wB7IndpZGUiOjkwMDcxOTkyNTQ3NDA5OTN9',
+        extra_base64: 'AAE=',
+        empty_base64: '',
+        status: 4,
+        retained: true,
+      },
+      {
+        label: '',
+        data_base64: '',
+        extra_base64: '',
+        empty_base64: 'eyJkdXJhdGlvbl9tcyI6MH0=',
+        retained: false,
+      },
+    ]
     const provider = { notification_entries: 'Provider field', recovered: true }
-    const supplement = { provider, metadata: { duration_ms: 0, opaque_records: records } }
-    const message = makeMessage({ content: rawContent(original), supplementalContent: rawContent(supplement) })
+    const supplement = {
+      provider,
+      metadata: { duration_ms: 0, opaque_records: records },
+    }
+    const message = makeMessage({
+      content: rawContent(original),
+      supplementalContent: rawContent(supplement),
+    })
     const result = parseMessageContent(message)
     expect(result.rawText).toBe(JSON.stringify(original))
     expect(result.wrapper?.messages).toEqual(original.messages)
@@ -119,9 +167,19 @@ describe('parseMessageContent', () => {
   })
 
   it('keeps an unknown metadata array without interpreting its fields', () => {
-    const original = { type: 'assistant', message: { content: [] } }
-    const metadata = { opaque_records: [{ encoded_value: 'This is unknown metadata.' }] }
-    const message = makeMessage({ content: rawContent(original), supplementalContent: rawContent({ metadata }) })
+    const original = {
+      type: 'assistant',
+      message: { content: [] },
+    }
+    const metadata = {
+      opaque_records: [
+        { encoded_value: 'This is unknown metadata.' },
+      ],
+    }
+    const message = makeMessage({
+      content: rawContent(original),
+      supplementalContent: rawContent({ metadata }),
+    })
     const result = parseMessageContent(message)
     expect(result.parentObject).toEqual(original)
     expect(result.messageMetadata).toEqual(metadata)
@@ -130,7 +188,10 @@ describe('parseMessageContent', () => {
 
   it('preserves the original when supplemental JSON is invalid', () => {
     const original = { content: 'Original text' }
-    const result = parseMessageContent(makeMessage({ content: rawContent(original), supplementalContent: new TextEncoder().encode('{invalid') }))
+    const result = parseMessageContent(makeMessage({
+      content: rawContent(original),
+      supplementalContent: new TextEncoder().encode('{invalid'),
+    }))
     expect(result.parentObject).toEqual(original)
     expect(result.supplementalContent).toBeUndefined()
     expect(result.supplementalRawText).toBe('{invalid')
@@ -148,12 +209,16 @@ describe('parseMessageContent', () => {
 
   it('retains a byte order mark in the original text', () => {
     const original = '\uFEFF{"content":"Native text"}'
-    const message = makeMessage({ content: new TextEncoder().encode(original) })
+    const message = makeMessage({
+      content: new TextEncoder().encode(original),
+    })
     expect(parseMessageContent(message).rawText).toBe(original)
   })
 
   it('reports invalid original text encoding without replacing its bytes', () => {
-    const message = makeMessage({ content: new Uint8Array([0xFF, 0xFE]) })
+    const message = makeMessage({
+      content: new Uint8Array([0xFF, 0xFE]),
+    })
     const parsed = parseMessageContent(message)
     expect(parsed.contentDecodeFailed).toBe(true)
     expect(message.content).toEqual(new Uint8Array([0xFF, 0xFE]))
@@ -161,7 +226,10 @@ describe('parseMessageContent', () => {
 
   it('keeps the original readable when supplemental text encoding is invalid', () => {
     const original = { content: 'Native text' }
-    const message = makeMessage({ content: rawContent(original), supplementalContent: new Uint8Array([0xFF, 0xFE]) })
+    const message = makeMessage({
+      content: rawContent(original),
+      supplementalContent: new Uint8Array([0xFF, 0xFE]),
+    })
     const parsed = parseMessageContent(message)
     expect(parsed.parentObject).toEqual(original)
     expect(parsed.supplementalRawText).toBeUndefined()
@@ -179,7 +247,12 @@ describe('parseMessageContent', () => {
   })
 
   it('parses AGENT-source notification wrapper content (e.g. api_retry)', () => {
-    const inner = { type: 'system', subtype: 'api_retry', attempt: 2, max_retries: 10 }
+    const inner = {
+      type: 'system',
+      subtype: 'api_retry',
+      attempt: 2,
+      max_retries: 10,
+    }
     const msg = makeMsg(MessageSource.AGENT, wrap(inner))
     const result = parseMessageContent(msg)
 
@@ -197,7 +270,10 @@ describe('parseMessageContent', () => {
   })
 
   it('parses raw content for non-LEAPMUX messages', () => {
-    const content = { type: 'assistant', message: { content: [] } }
+    const content = {
+      type: 'assistant',
+      message: { content: [] },
+    }
     const msg = makeMsg(MessageSource.AGENT, content)
     const result = parseMessageContent(msg)
 
@@ -217,7 +293,9 @@ describe('parseMessageContent', () => {
   })
 
   it('returns safe defaults for invalid JSON', () => {
-    const msg = makeMessage({ content: new TextEncoder().encode('not json') })
+    const msg = makeMessage({
+      content: new TextEncoder().encode('not json'),
+    })
     const result = parseMessageContent(msg)
 
     expect(result.rawText).toBe('not json')
@@ -226,7 +304,9 @@ describe('parseMessageContent', () => {
   })
 
   it('returns safe defaults for empty content', () => {
-    const msg = makeMessage({ content: new Uint8Array() })
+    const msg = makeMessage({
+      content: new Uint8Array(),
+    })
     const result = parseMessageContent(msg)
 
     // An empty Uint8Array decodes to an empty string. JSON.parse rejects it, so topLevel remains null.
@@ -283,7 +363,12 @@ describe('messageUsage', () => {
   const usageOf = (content: unknown) => messageUsage(parseMessageContent(makeMsg(MessageSource.AGENT, content)))
 
   it('returns the raw usage bag when message.usage is present', () => {
-    expect(usageOf({ type: 'assistant', message: { usage: { input_tokens: 42 } } })).toEqual({ input_tokens: 42 })
+    expect(usageOf({
+      type: 'assistant',
+      message: {
+        usage: { input_tokens: 42 },
+      },
+    })).toEqual({ input_tokens: 42 })
   })
 
   it('returns undefined when the message carries no usage', () => {
@@ -322,7 +407,9 @@ describe('extractContextUsage', () => {
     const content = {
       type: 'assistant',
       total_cost_usd: 0.05,
-      message: { usage: { input_tokens: 1000 } },
+      message: {
+        usage: { input_tokens: 1000 },
+      },
     }
     const msg = makeMsg(MessageSource.AGENT, content)
     const result = extractContextUsage(parseMessageContent(msg), stubFallback)
@@ -392,31 +479,57 @@ describe('extractContextUsage', () => {
   })
 
   it('extracts a normalized reading that states the fill alone', () => {
-    const msg = makeMsg(MessageSource.AGENT, { type: 'assistant', context_usage: { usage_percent: 3.5 } })
+    const msg = makeMsg(MessageSource.AGENT, {
+      type: 'assistant',
+      context_usage: { usage_percent: 3.5 },
+    })
     expect(extractContextUsage(parseMessageContent(msg), noProviderUsage)).toEqual({
-      contextUsage: { inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, usagePercent: 3.5 },
+      contextUsage: {
+        inputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        usagePercent: 3.5,
+      },
     })
   })
 
   it('keeps a stated zero percentage and drops a percentage that is no reading', () => {
-    const zero = makeMsg(MessageSource.AGENT, { type: 'assistant', context_usage: { usage_percent: 0 } })
+    const zero = makeMsg(MessageSource.AGENT, {
+      type: 'assistant',
+      context_usage: { usage_percent: 0 },
+    })
     expect(extractContextUsage(parseMessageContent(zero), noProviderUsage)?.contextUsage?.usagePercent).toBe(0)
     for (const value of [-1, 'full', null]) {
-      const msg = makeMsg(MessageSource.AGENT, { type: 'assistant', context_usage: { usage_percent: value } })
+      const msg = makeMsg(MessageSource.AGENT, {
+        type: 'assistant',
+        context_usage: { usage_percent: value },
+      })
       expect(extractContextUsage(parseMessageContent(msg), noProviderUsage), String(value)).toBeNull()
     }
   })
 
   it('keeps the percentage beside a token count', () => {
     // The parser retains the token count and percentage. The meter gives the token count priority.
-    const msg = makeMsg(MessageSource.AGENT, { type: 'assistant', context_usage: { input_tokens: 10, context_window: 100, usage_percent: 40 } })
+    const msg = makeMsg(MessageSource.AGENT, {
+      type: 'assistant',
+      context_usage: { input_tokens: 10, context_window: 100, usage_percent: 40 },
+    })
     expect(extractContextUsage(parseMessageContent(msg), noProviderUsage)).toEqual({
-      contextUsage: { inputTokens: 10, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, contextWindow: 100, usagePercent: 40 },
+      contextUsage: {
+        inputTokens: 10,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        contextWindow: 100,
+        usagePercent: 40,
+      },
     })
   })
 
   it('drops a percentage that is no reading and keeps the token count beside it', () => {
-    const msg = makeMsg(MessageSource.AGENT, { type: 'assistant', context_usage: { input_tokens: 10, usage_percent: -1 } })
+    const msg = makeMsg(MessageSource.AGENT, {
+      type: 'assistant',
+      context_usage: { input_tokens: 10, usage_percent: -1 },
+    })
     const usage = extractContextUsage(parseMessageContent(msg), noProviderUsage)?.contextUsage
     expect(usage).toEqual({ inputTokens: 10, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 })
     // Omit the key instead of writing undefined because the store compares key counts.
@@ -424,7 +537,10 @@ describe('extractContextUsage', () => {
   })
 
   it('keeps a percentage past the whole window for the meter to cap', () => {
-    const msg = makeMsg(MessageSource.AGENT, { type: 'assistant', context_usage: { usage_percent: 250 } })
+    const msg = makeMsg(MessageSource.AGENT, {
+      type: 'assistant',
+      context_usage: { usage_percent: 250 },
+    })
     expect(extractContextUsage(parseMessageContent(msg), noProviderUsage)?.contextUsage?.usagePercent).toBe(250)
   })
 
@@ -435,7 +551,10 @@ describe('extractContextUsage', () => {
     const content = {
       type: 'message_end',
       context_usage: { input_tokens: 100, cache_read_input_tokens: 20 },
-      message: { role: 'assistant', usage: { input: 999 } },
+      message: {
+        role: 'assistant',
+        usage: { input: 999 },
+      },
     }
     const msg = makeMsg(MessageSource.AGENT, content)
     const result = extractContextUsage(parseMessageContent(msg), () => {
@@ -616,12 +735,16 @@ describe('extractSettingsChanges', () => {
   it('extracts settings changes', () => {
     const content = {
       type: 'settings_changed',
-      changes: { permissionMode: { old: 'default', new: 'plan' } },
+      changes: {
+        permissionMode: { old: 'default', new: 'plan' },
+      },
     }
     const msg = makeMsg(MessageSource.LEAPMUX, wrap(content))
     const result = extractSettingsChanges(parseMessageContent(msg))
 
-    expect(result).toEqual({ permissionMode: { old: 'default', new: 'plan' } })
+    expect(result).toEqual({
+      permissionMode: { old: 'default', new: 'plan' },
+    })
   })
 
   it('returns null for non-settings_changed type', () => {

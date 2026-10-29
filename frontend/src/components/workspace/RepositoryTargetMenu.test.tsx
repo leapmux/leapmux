@@ -30,21 +30,29 @@ describe('RepositoryTargetMenu', () => {
   // A submenu holding the only choice is a click the user should not have to
   // make, which is the rule the tab-creation items already followed.
   it('renders one target FLAT, with no submenu and no header', () => {
-    renderMenu([{ label: 'leapmux' }])
+    renderMenu([
+      { label: 'leapmux' },
+    ])
 
     expect(items('host')).toEqual(['act on leapmux'])
     expect(screen.queryByText('Repositories')).not.toBeInTheDocument()
   })
 
   it('gives each of several targets its own submenu, under the header', () => {
-    renderMenu([{ label: 'alpha' }, { label: 'beta' }])
+    renderMenu([
+      { label: 'alpha' },
+      { label: 'beta' },
+    ])
 
     expect(screen.getByText('Repositories')).toBeInTheDocument()
     expect(items('host')).toEqual(['alpha', 'beta'])
   })
 
   it('renders one target\'s actions inside its own submenu', () => {
-    renderMenu([{ label: 'alpha' }, { label: 'beta' }])
+    renderMenu([
+      { label: 'alpha' },
+      { label: 'beta' },
+    ])
 
     fireEvent.click(screen.getByTestId('target-beta'))
     expect(items('target-beta-popover')).toEqual(['act on beta'])
@@ -53,7 +61,10 @@ describe('RepositoryTargetMenu', () => {
   // A shared id would address whichever copy the DOM holds first, which is
   // exactly the case that renders more than one submenu.
   it('gives each submenu an id derived from its own label', () => {
-    renderMenu([{ label: 'worker-a · my.repo' }, { label: 'beta' }])
+    renderMenu([
+      { label: 'worker-a · my.repo' },
+      { label: 'beta' },
+    ])
 
     expect(screen.getByTestId('target-worker-a-my-repo')).toBeInTheDocument()
     expect(screen.getByTestId('target-beta')).toBeInTheDocument()
@@ -64,7 +75,10 @@ describe('RepositoryTargetMenu', () => {
   // exists for, and a repository label carries a worker name, a middle dot and
   // a path -- all of which fold to the same hyphen.
   it('keeps two submenus apart when their labels fold to one slug', () => {
-    renderMenu([{ label: 'worker · a/b' }, { label: 'worker-a-b' }])
+    renderMenu([
+      { label: 'worker · a/b' },
+      { label: 'worker-a-b' },
+    ])
 
     const ids = screen.getAllByRole('menuitem', { hidden: true })
       .map(el => el.closest('[data-testid]')?.getAttribute('data-testid'))
@@ -73,7 +87,10 @@ describe('RepositoryTargetMenu', () => {
   })
 
   it('falls back to the position when a label has nothing addressable in it', () => {
-    renderMenu([{ label: '日本語' }, { label: 'beta' }])
+    renderMenu([
+      { label: '日本語' },
+      { label: 'beta' },
+    ])
 
     // An empty slug would have made the id `target-`, which the sibling's
     // popover id `target-beta-popover` does not collide with only by luck.
@@ -93,7 +110,9 @@ describe('RepositoryTargetMenu', () => {
   // for the single-target branch handed `undefined` to the caller's render
   // prop whenever that transition beat the enclosing guard.
   it('renders nothing when the only target disappears', () => {
-    const [targets, setTargets] = createSignal<Repo[]>([{ label: 'alpha' }])
+    const [targets, setTargets] = createSignal<Repo[]>([
+      { label: 'alpha' },
+    ])
     render(() => (
       <menu data-testid="host">
         <RepositoryTargetMenu

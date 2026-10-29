@@ -28,12 +28,16 @@ codexTest('stops an actual native tool and reaches the same native session after
       if (!isObject(frame) || pickString(frame, 'method') !== CODEX_METHOD.RawResponseItemCompleted)
         return []
       const item = pickObject(pickObject(frame, 'params'), 'item')
-      return item && pickString(item, 'call_id') === 'held-native-tool' ? [item] : []
+      return item && pickString(item, 'call_id') === 'held-native-tool'
+        ? [item]
+        : []
     })
     const wrapper = rawItems.find(item => pickString(item, 'type') === CODEX_RAW_ITEM.CustomToolCall)
     const result = rawItems.find(item => pickString(item, 'type') === CODEX_RAW_ITEM.CustomToolCallOutput)
     const command = frames.find((frame) => {
-      const item = pickObject(isObject(frame) ? frame : undefined, 'item')
+      const item = pickObject(isObject(frame)
+        ? frame
+        : undefined, 'item')
       return pickString(item, 'type') === CODEX_ITEM.CommandExecution && pickString(item, 'command').includes('interrupt-started-')
     })
     return { wrapper, result, command }
@@ -98,16 +102,20 @@ codexTest.describe('codex interrupt', () => {
       // and both agents therefore read the root's prompt as their last user turn.
       await modelScript.rule({
         name: 'the child works until the test ends',
-        when: { body: ['NEW_TASK', taskName] },
+        when: {
+          body: ['NEW_TASK', taskName],
+        },
         respond: { text: 'The report is ready.', gate: 'codex-interrupt-a-turn-hold-1' },
       })
       // The ROOT holds too: its turn has to be interruptible, and a root that
       // finished would clear the loading state this test asserts on.
       const spawn = await modelScript.queue({
-        toolCalls: [spawnSubagentToolCall(AgentProvider.CODEX, 'spawn-interrupt-probe', {
-          description: taskName.replaceAll('_', ' '),
-          prompt: modelScript.prompt('Inspect the worker agent package and prepare a detailed report.'),
-        })],
+        toolCalls: [
+          spawnSubagentToolCall(AgentProvider.CODEX, 'spawn-interrupt-probe', {
+            description: taskName.replaceAll('_', ' '),
+            prompt: modelScript.prompt('Inspect the worker agent package and prepare a detailed report.'),
+          }),
+        ],
       })
       await modelScript.queue({ text: 'The child finished.', gate: 'codex-interrupt-a-turn-hold-2' })
       modelScript.allowUnconsumed('the interrupt ends the root turn while the child still runs')
@@ -127,7 +135,10 @@ codexTest.describe('codex interrupt', () => {
       await expect(interruptBtn).toHaveText('Interrupt')
       await expect(row).toHaveAttribute('data-status', 'running')
     }, async () => {
-      await finishCleanup([modelScript.releaseGateIfHeld('codex-interrupt-a-turn-hold-1'), modelScript.releaseGateIfHeld('codex-interrupt-a-turn-hold-2')])
+      await finishCleanup([
+        modelScript.releaseGateIfHeld('codex-interrupt-a-turn-hold-1'),
+        modelScript.releaseGateIfHeld('codex-interrupt-a-turn-hold-2'),
+      ])
     })
   })
 })

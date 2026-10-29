@@ -34,7 +34,10 @@ export function useFocusInvariant(args: UseFocusInvariantArgs): void {
   const { layoutStore, floatingWindowStore } = args
   createEffect(
     on(
-      [() => layoutStore.state.focusedTileId, () => layoutStore.state.root],
+      [
+        () => layoutStore.state.focusedTileId,
+        () => layoutStore.state.root,
+      ],
       ([f, root]) => {
         if (!f)
           return

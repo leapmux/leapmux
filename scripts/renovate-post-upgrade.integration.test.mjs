@@ -42,14 +42,35 @@ function proxyFixture(modules) {
   mkdirSync(resolve(root, '.tmp'), { recursive: true })
   const fixture = mkdtempSync(resolve(root, '.tmp/renovate-go-integration-'))
   fixtures.push(fixture)
-  const env = { ...process.env, GOTOOLCHAIN: 'local', GOWORK: 'off', GOPROXY: pathToFileURL(resolve(fixture, 'proxy')).href, GOSUMDB: 'off', GOMODCACHE: resolve(fixture, 'module-cache') }
+  const env = {
+    ...process.env,
+    GOTOOLCHAIN: 'local',
+    GOWORK: 'off',
+    GOPROXY: pathToFileURL(resolve(fixture, 'proxy')).href,
+    GOSUMDB: 'off',
+    GOMODCACHE: resolve(fixture, 'module-cache'),
+  }
   const execute = (command, args, options = {}) => {
-    const result = spawnSync(command, args, { cwd: resolve(fixture, options.cwd ?? '.'), encoding: 'utf8', input: options.input, env: { ...env, ...(options.env ?? {}), GOFLAGS: `-modcacherw ${options.env?.GOFLAGS ?? ''}` } })
+    const result = spawnSync(command, args, {
+      cwd: resolve(fixture, options.cwd ?? '.'),
+      encoding: 'utf8',
+      input: options.input,
+      env: {
+        ...env,
+        ...(options.env ?? {}),
+        GOFLAGS: `-modcacherw ${options.env?.GOFLAGS ?? ''}`,
+      },
+    })
     expect(result.status, `${command} ${args.join(' ')}\n${result.stdout}\n${result.stderr}`).toBe(0)
     return result.stdout
   }
   write(fixture, 'zipper.go', zipper)
-  execute('go', ['run', 'zipper.go', resolve(fixture, 'proxy'), JSON.stringify(modules)])
+  execute('go', [
+    'run',
+    'zipper.go',
+    resolve(fixture, 'proxy'),
+    JSON.stringify(modules),
+  ])
   return { fixture, execute }
 }
 
@@ -91,15 +112,34 @@ describe('postUpgrade with real Go metadata and a local module proxy', () => {
         }
         return ''
       }
-      if (command === 'go' && args[0] === 'work')
-        return execute(command, args, { ...options, env: { GOWORK: resolve(fixture, 'go.work') } })
+      if (command === 'go' && args[0] === 'work') {
+        return execute(command, args, {
+          ...options,
+          env: {
+            GOWORK: resolve(fixture, 'go.work'),
+          },
+        })
+      }
       if (command === 'go' && args[1] === 'tidy')
         expect(generated).toBe(true)
       if (command === 'git')
         return 'backend/go.mod\0'
       return execute(command, args, options)
     }
-    await postUpgrade([{ manager: 'gomod', packageFile: 'backend/go.mod', depName: 'example.com/tools/sqlc', depType: 'require', newValue: 'v1.1.0' }], { root: fixture, trusted: root, run, reconcile: async () => {} })
+    await postUpgrade([
+      {
+        manager: 'gomod',
+        packageFile: 'backend/go.mod',
+        depName: 'example.com/tools/sqlc',
+        depType: 'require',
+        newValue: 'v1.1.0',
+      },
+    ], {
+      root: fixture,
+      trusted: root,
+      run,
+      reconcile: async () => {},
+    })
     expect(readFileSync(resolve(fixture, 'backend/generated/generated.go'), 'utf8')).toContain('const Value = 2')
     expect(readFileSync(resolve(fixture, 'desktop/go/go.mod'), 'utf8')).toContain('replace github.com/leapmux/leapmux => ../../backend')
     execute('go', ['test', './...'], { cwd: 'backend' })
@@ -116,11 +156,25 @@ describe('postUpgrade with real Go metadata and a local module proxy', () => {
     for (const [key, value] of Object.entries({ 'core.fsmonitor': 'false', 'gc.auto': '0', 'maintenance.auto': 'false' }))
       execute('git', ['config', key, value])
     execute('git', ['add', 'site'])
-    await postUpgrade([{ manager: 'gomod', packageFile: 'site/go.mod', depName: 'example.com/theme', depType: 'require', newValue: 'v2.0.0' }], { root: fixture, trusted: root, run: (command, args, options = {}) => {
-      if (command === 'task' || args[0] === 'work' || (command === 'go' && options.cwd !== 'site'))
-        throw new Error('A site update invoked workspace processing.')
-      return command === 'git' ? 'site/go.mod\0site/go.sum\0site/hugo.yaml\0' : execute(command, args, options)
-    } })
+    await postUpgrade([
+      {
+        manager: 'gomod',
+        packageFile: 'site/go.mod',
+        depName: 'example.com/theme',
+        depType: 'require',
+        newValue: 'v2.0.0',
+      },
+    ], {
+      root: fixture,
+      trusted: root,
+      run: (command, args, options = {}) => {
+        if (command === 'task' || args[0] === 'work' || (command === 'go' && options.cwd !== 'site'))
+          throw new Error('A site update invoked workspace processing.')
+        return command === 'git'
+          ? 'site/go.mod\0site/go.sum\0site/hugo.yaml\0'
+          : execute(command, args, options)
+      },
+    })
     const module = readFileSync(resolve(fixture, 'site/go.mod'), 'utf8')
     expect(module).toContain('example.com/theme/v2 v2.0.0 // retain configuration import')
     expect(module).toContain('example.com/tools/hugo v1.1.0')
@@ -139,6 +193,14 @@ describe('postUpgrade with real Go metadata and a local module proxy', () => {
     for (const [key, value] of Object.entries({ 'core.fsmonitor': 'false', 'gc.auto': '0', 'maintenance.auto': 'false' }))
       expect(git(['config', key, value]).status).toBe(0)
     expect(git(['add', 'backend', 'desktop']).status).toBe(0)
-    await expect(postUpgrade([{ manager: 'gomod', packageFile: 'backend/go.mod', depName: 'example.com/library', depType: 'require', newValue: 'v1.0.0' }], { root: fixture, trusted: root })).rejects.toThrow('GOTOOLCHAIN=local')
+    await expect(postUpgrade([
+      {
+        manager: 'gomod',
+        packageFile: 'backend/go.mod',
+        depName: 'example.com/library',
+        depType: 'require',
+        newValue: 'v1.0.0',
+      },
+    ], { root: fixture, trusted: root })).rejects.toThrow('GOTOOLCHAIN=local')
   })
 })

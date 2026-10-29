@@ -32,5 +32,7 @@ const COMMAND_CODE_TOOL_KINDS: ReadonlyMap<string, ToolKind> = new Map([
 ])
 
 export function commandCodeToolKind(name: string): ToolKind {
-  return COMMAND_CODE_TOOL_KINDS.get(name) ?? (parseMcpToolName(name) ? 'mcp' : 'other')
+  return COMMAND_CODE_TOOL_KINDS.get(name) ?? (parseMcpToolName(name)
+    ? 'mcp'
+    : 'other')
 }

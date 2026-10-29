@@ -35,12 +35,16 @@ export function claudeSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
     else if (b.type === 'tool_result')
       hasToolResult = true
   }
-  return hasToolUse ? 'request' : hasToolResult ? 'result' : 'other'
+  return hasToolUse
+    ? 'request'
+    : hasToolResult ? 'result' : 'other'
 }
 
 export function claudeRelatedMessages(parsed: ResolvedMessageContent) {
   if (claudeSpanRole(parsed) === 'result')
     return ['request'] as const
   const tool = canonicalClaudeToolName(extractToolUseInfo(parsed)?.toolName ?? '')
-  return REQUEST_NEEDS_RESULT.has(tool) ? ['result'] as const : []
+  return REQUEST_NEEDS_RESULT.has(tool)
+    ? ['result'] as const
+    : []
 }

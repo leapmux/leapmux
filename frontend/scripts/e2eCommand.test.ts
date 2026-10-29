@@ -9,11 +9,17 @@ import { spawnCommandProcess } from './e2eCommandProcess'
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
-  return { ...actual, spawn: vi.fn() }
+  return {
+    ...actual,
+    spawn: vi.fn(),
+  }
 })
 vi.mock('./e2eCommandProcess', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./e2eCommandProcess')>()
-  return { ...actual, spawnCommandProcess: vi.fn(actual.spawnCommandProcess) }
+  return {
+    ...actual,
+    spawnCommandProcess: vi.fn(actual.spawnCommandProcess),
+  }
 })
 
 let projectRoot: string
@@ -51,7 +57,9 @@ describe('runCommand', () => {
       kill: vi.fn(() => true),
     })
     vi.mocked(spawn).mockReturnValue(child)
-    const result = runCommand('controlled', [], {}, { logPath: join(projectRoot, 'console.log') })
+    const result = runCommand('controlled', [], {}, {
+      logPath: join(projectRoot, 'console.log'),
+    })
     stdout.emit('error', failure)
     child.emit('exit', 0, null)
     child.emit('close', 0, null)
@@ -63,7 +71,9 @@ describe('runCommand', () => {
     const child = Object.assign(new ChildProcess(), { stdout })
     vi.mocked(spawn).mockReturnValue(child)
     const failure = new Error('The parent output stream failed.')
-    const result = runCommand('controlled', [], {}, { logPath: join(projectRoot, 'console.log') })
+    const result = runCommand('controlled', [], {}, {
+      logPath: join(projectRoot, 'console.log'),
+    })
     stdout.end('a final line without a newline')
     const write = vi.spyOn(process.stdout, 'write').mockImplementationOnce(() => {
       throw failure

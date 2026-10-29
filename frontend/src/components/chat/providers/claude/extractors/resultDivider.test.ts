@@ -4,7 +4,12 @@ import { claudeResultDivider } from './resultDivider'
 
 /** The envelope the command line interface closes a turn with. */
 function resultFrame(extra: Record<string, unknown> = {}): Record<string, unknown> {
-  return { type: 'result', duration_ms: 1200, is_error: true, ...extra }
+  return {
+    type: 'result',
+    duration_ms: 1200,
+    is_error: true,
+    ...extra,
+  }
 }
 
 describe('claudeResultDivider', () => {
@@ -14,7 +19,10 @@ describe('claudeResultDivider', () => {
   })
 
   it('joins the stated reasons into the detail of a non-success subtype', () => {
-    const divider = claudeResultDivider(resultFrame({ subtype: 'error_during_execution', errors: ['first', 'second'] }))
+    const divider = claudeResultDivider(resultFrame({
+      subtype: 'error_during_execution',
+      errors: ['first', 'second'],
+    }))
     expect(divider?.detail).toBe('first\nsecond')
     expect(divider?.isError).toBe(true)
   })
@@ -23,18 +31,32 @@ describe('claudeResultDivider', () => {
   // reader sees. A cast let an object through, and the join wrote "[object Object]"
   // where the reason belongs.
   it('drops a reason entry that is no string', () => {
-    const errors = ['first', { code: 500 }, 42, null, 'second']
+    const errors = [
+      'first',
+      { code: 500 },
+      42,
+      null,
+      'second',
+    ]
     expect(claudeResultDivider(resultFrame({ subtype: 'error_during_execution', errors }))?.detail).toBe('first\nsecond')
     expect(claudeResultDivider(resultFrame({ errors }))?.label).toContain('first; second')
   })
 
   it('falls back to the result text when every stated reason is unreadable', () => {
-    const divider = claudeResultDivider(resultFrame({ subtype: 'error_during_execution', errors: [{ code: 500 }], result: 'the raw reason' }))
+    const divider = claudeResultDivider(resultFrame({
+      subtype: 'error_during_execution',
+      errors: [
+        { code: 500 },
+      ],
+      result: 'the raw reason',
+    }))
     expect(divider?.detail).toBe('the raw reason')
   })
 
   it('answers an interrupted turn ahead of the error branch', () => {
-    const divider = claudeResultDivider(resultFrame({ errors: ['ignored'] }), MessageCompletion.INTERRUPTED)
+    const divider = claudeResultDivider(resultFrame({
+      errors: ['ignored'],
+    }), MessageCompletion.INTERRUPTED)
     expect(divider?.isError).toBeUndefined()
     expect(divider?.detail).toBeUndefined()
   })

@@ -41,7 +41,11 @@ export interface ToolCallMeta extends ToolResultMeta {
 
 /** The meta a ToolFailureResult or an UnparsedToolResult offers: one plain text block. */
 export function plainMeta(text: string): ToolKindMeta {
-  return { collapsible: textNeedsCollapse(text), hasDiff: false, copyableContent: () => text || null }
+  return {
+    collapsible: textNeedsCollapse(text),
+    hasDiff: false,
+    copyableContent: () => text || null,
+  }
 }
 
 /** One row's copyable text, and the words that describe the side which stated it. */
@@ -83,14 +87,22 @@ export function toolCallMeta(row: ToolCallRow): ToolCallMeta {
   const call = row.call
   const drawsRequest = rowDrawsRequest(row)
   const drawsResult = rowDrawsResult(row)
-  const plain = isToolFailureResult(call.result) || isUnparsedToolResult(call.result) ? call.result : undefined
+  const plain = isToolFailureResult(call.result) || isUnparsedToolResult(call.result)
+    ? call.result
+    : undefined
   // The renderer and the call reach the hooks as ONE correlated pair, over the same
   // total table every reader dispatches through.
   const request = drawsRequest
     ? dispatchToolCall(call, ({ renderer, parsed }) => renderer.requestMeta?.(parsed, call.result !== undefined || rowHasResultRow(row)) ?? {})
     : {}
-  const result = drawsResult ? dispatchToolCall(call, ({ renderer, resolved }) => resolved !== undefined ? renderer.resultMeta(resolved) : undefined) : undefined
-  const fallback = drawsResult && plain ? plainMeta(plain.text) : undefined
+  const result = drawsResult
+    ? dispatchToolCall(call, ({ renderer, resolved }) => resolved !== undefined
+        ? renderer.resultMeta(resolved)
+        : undefined)
+    : undefined
+  const fallback = drawsResult && plain
+    ? plainMeta(plain.text)
+    : undefined
   const primary = result ?? fallback
   // The BODY text and its words, built together. The primary side answers first and
   // the request side answers when it states nothing, so the label must follow the same
@@ -101,16 +113,22 @@ export function toolCallMeta(row: ToolCallRow): ToolCallMeta {
     if (cached)
       return cached
     const primaryText = primary?.copyableContent() ?? null
-    const requestText = primaryText === null && drawsRequest ? request.copyableContent?.() ?? null : null
+    const requestText = primaryText === null && drawsRequest
+      ? request.copyableContent?.() ?? null
+      : null
     const text = [
       primaryText ?? requestText,
-      drawsResult ? contentBlocksCopyable(call.extraContent ?? []) : null,
+      drawsResult
+        ? contentBlocksCopyable(call.extraContent ?? [])
+        : null,
     ].filter(Boolean).join('\n\n') || null
     // Neither side answered, so the text is the call's EXTRA content and neither
     // side's words describe it.
     const label = primaryText !== null
       ? primary?.copyLabel
-      : requestText !== null ? request.copyLabel : undefined
+      : requestText !== null
+        ? request.copyLabel
+        : undefined
     const built: RowCopyable = { text, label }
     copyableByRow.set(row, built)
     return built
@@ -139,12 +157,18 @@ export function toolCallMeta(row: ToolCallRow): ToolCallMeta {
     hasDiff: (primary?.hasDiff ?? false) || (drawsRequest && (request.hasDiff ?? false)),
     copyableContent,
     hasCopyable: copyableContent() !== null,
-    ...(copyLabel !== undefined ? { copyLabel } : {}),
-    ...(expandLabel !== undefined ? { expandLabel } : {}),
+    ...(copyLabel !== undefined
+      ? { copyLabel }
+      : {}),
+    ...(expandLabel !== undefined
+      ? { expandLabel }
+      : {}),
     // The request side answers when there is no primary, exactly as the two labels
     // above do. Consulting only `primary` made every request-side `previewText`
     // unreachable, so a pending edit's rail mark fell through to `copyableContent`
     // and showed a whole unified diff where the file paths belong.
-    previewText: () => (primary ? primary.previewText?.() : request.previewText?.()) ?? copyableContent(),
+    previewText: () => (primary
+      ? primary.previewText?.()
+      : request.previewText?.()) ?? copyableContent(),
   }
 }

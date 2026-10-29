@@ -19,26 +19,47 @@ import { withMockPiModel } from './scriptedModel'
 
 piTest('preserves complete native MCP arguments without an adapter permission dialog', async ({ page, modelScript, authenticatedEmptyWorkspace, leapmuxServer }) => {
   const directory = newProviderWorkingDir(PI_AGENT, 'pi-native-mcp-permission-')
-  const input = { query: 'x'.repeat(900), limit: 0, tail: 'END_MCP_ARGUMENTS' }
+  const input = {
+    query: 'x'.repeat(900),
+    limit: 0,
+    tail: 'END_MCP_ARGUMENTS',
+  }
   const receiptLog = join(directory, 'native-mcp-receipt.json')
   const server = writeMcpFormServer(directory, 'permission-server.mjs', { expectedEchoArguments: input, receiptLog })
   writePiMcpConfiguration(directory, getGlobalState().tmpDir, { [server.name]: server })
   await withMockPiModel(directory, leapmuxServer, async (settings) => {
     await openAgentViaAPI(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     // The tool turn allows any banner that appears, so the observation proves that the MCP call raises none.
-    await expectNoNativeControl(context, { testId: 'control-banner', relatedProof: async () => {
-      const { resultRequest } = await runNativeToolTurn(context, {
-        toolCalls: [mcpToolCall(context.provider, 'native-mcp-arguments', { server: server.name, tool: 'echo', input })],
-        prompt: 'Run the native MCP argument probe.',
-        answer: 'The native MCP arguments reached the server.',
-      })
-      expect(nativeToolResult(resultRequest, 'native-mcp-arguments')).toContain('PERMISSION_ACCEPTED')
-      expect(readMcpServerReceipt(receiptLog).toolResults).toEqual([{ id: expect.anything(), tool: 'echo', text: 'PERMISSION_ACCEPTED', isError: false }])
-      await expect(messageBubbles(page).filter({ hasText: 'END_MCP_ARGUMENTS' }).first()).toBeVisible()
-      await expect(messageBubbles(page).filter({ hasText: 'PERMISSION_ACCEPTED' }).first()).toBeVisible()
-    } })
+    await expectNoNativeControl(context, {
+      testId: 'control-banner',
+      relatedProof: async () => {
+        const { resultRequest } = await runNativeToolTurn(context, {
+          toolCalls: [
+            mcpToolCall(context.provider, 'native-mcp-arguments', { server: server.name, tool: 'echo', input }),
+          ],
+          prompt: 'Run the native MCP argument probe.',
+          answer: 'The native MCP arguments reached the server.',
+        })
+        expect(nativeToolResult(resultRequest, 'native-mcp-arguments')).toContain('PERMISSION_ACCEPTED')
+        expect(readMcpServerReceipt(receiptLog).toolResults).toEqual([
+          {
+            id: expect.anything(),
+            tool: 'echo',
+            text: 'PERMISSION_ACCEPTED',
+            isError: false,
+          },
+        ])
+        await expect(messageBubbles(page).filter({ hasText: 'END_MCP_ARGUMENTS' }).first()).toBeVisible()
+        await expect(messageBubbles(page).filter({ hasText: 'PERMISSION_ACCEPTED' }).first()).toBeVisible()
+      },
+    })
     await page.reload()
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expect(messageBubbles(page).filter({ hasText: 'PERMISSION_ACCEPTED' }).first()).toBeVisible()

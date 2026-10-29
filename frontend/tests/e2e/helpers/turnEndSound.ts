@@ -54,7 +54,12 @@ export function selectIdleReceipt(receipts: readonly unknown[], boundary: SoundR
 }
 
 function installBrowserSoundProbe(options: { eventName: string, spyAudio: boolean, reset: boolean }): void {
-  const state = window.__nativeSoundProbe ?? { plays: [], settled: [], audioInstalled: false, receiptInstalled: false }
+  const state = window.__nativeSoundProbe ?? {
+    plays: [],
+    settled: [],
+    audioInstalled: false,
+    receiptInstalled: false,
+  }
   if (options.reset) {
     state.plays = []
     state.settled = []
@@ -88,7 +93,10 @@ async function soundProbeSnapshot(page: Page): Promise<{ plays: string[], settle
     const state = window.__nativeSoundProbe
     if (!state)
       throw new Error('The sound probe did not start before the app.')
-    return { plays: [...state.plays], settled: [...state.settled] }
+    return {
+      plays: [...state.plays],
+      settled: [...state.settled],
+    }
   })
 }
 
@@ -183,10 +191,18 @@ export async function sendToolUsingTurn(page: Page, script: ModelScript, options
   const after = await soundReceiptCursor(page)
   const answer: MockModelStep = {
     text: 'The working directory is above.',
-    ...(holdAnswerMs === undefined ? {} : { delayMs: holdAnswerMs }),
-    ...(answerGate === undefined ? {} : { gate: answerGate }),
+    ...(holdAnswerMs === undefined
+      ? {}
+      : { delayMs: holdAnswerMs }),
+    ...(answerGate === undefined
+      ? {}
+      : { gate: answerGate }),
   }
-  const start = await script.queue({ toolCalls: [bashToolCall(provider, 'pwd-call', 'pwd')] }, answer)
+  const start = await script.queue({
+    toolCalls: [
+      bashToolCall(provider, 'pwd-call', 'pwd'),
+    ],
+  }, answer)
   await sendMessage(page, script.prompt(TOOL_USING_PROMPT))
   await script.waitForSteps(start + 2)
   return { agentId, after }

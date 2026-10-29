@@ -15,7 +15,12 @@ const schema = new Schema({
     text: { group: 'inline', inline: true },
   },
   marks: {
-    link: { attrs: { href: {}, title: { default: null } } },
+    link: {
+      attrs: {
+        href: {},
+        title: { default: null },
+      },
+    },
     strong: {},
   },
 })
@@ -52,10 +57,17 @@ describe('linkRangeAt', () => {
 
   it('finds the run and its href from a click inside it', () => {
     // doc(1) > paragraph(1) so the text starts at position 1.
-    const state = stateOf(schema.text('docs', [link('https://x.test')]))
+    const state = stateOf(schema.text('docs', [
+      link('https://x.test'),
+    ]))
     const range = linkRangeAt(state, 3)
 
-    expect(range).toEqual({ from: 1, to: 5, href: 'https://x.test', attrs: { href: 'https://x.test', title: null } })
+    expect(range).toEqual({
+      from: 1,
+      to: 5,
+      href: 'https://x.test',
+      attrs: { href: 'https://x.test', title: null },
+    })
   })
 
   it('covers the whole link when another mark splits it into several text nodes', () => {
@@ -64,25 +76,49 @@ describe('linkRangeAt', () => {
     // carrying the old href.
     const href = 'https://x.test'
     const state = stateOf(
-      schema.text('bold', [link(href), strong]),
-      schema.text(' rest', [link(href)]),
+      schema.text('bold', [
+        link(href),
+        strong,
+      ]),
+      schema.text(' rest', [
+        link(href),
+      ]),
     )
 
     const fromBoldHalf = linkRangeAt(state, 3)
     const fromPlainHalf = linkRangeAt(state, 7)
 
-    expect(fromBoldHalf).toEqual({ from: 1, to: 10, href, attrs: { href, title: null } })
+    expect(fromBoldHalf).toEqual({
+      from: 1,
+      to: 10,
+      href,
+      attrs: { href, title: null },
+    })
     expect(fromPlainHalf).toEqual(fromBoldHalf)
   })
 
   it('stops at a neighbouring link with a different href', () => {
     const state = stateOf(
-      schema.text('one', [link('https://one.test')]),
-      schema.text('two', [link('https://two.test')]),
+      schema.text('one', [
+        link('https://one.test'),
+      ]),
+      schema.text('two', [
+        link('https://two.test'),
+      ]),
     )
 
-    expect(linkRangeAt(state, 2)).toEqual({ from: 1, to: 4, href: 'https://one.test', attrs: { href: 'https://one.test', title: null } })
-    expect(linkRangeAt(state, 5)).toEqual({ from: 4, to: 7, href: 'https://two.test', attrs: { href: 'https://two.test', title: null } })
+    expect(linkRangeAt(state, 2)).toEqual({
+      from: 1,
+      to: 4,
+      href: 'https://one.test',
+      attrs: { href: 'https://one.test', title: null },
+    })
+    expect(linkRangeAt(state, 5)).toEqual({
+      from: 4,
+      to: 7,
+      href: 'https://two.test',
+      attrs: { href: 'https://two.test', title: null },
+    })
   })
 
   // `$pos.marks()` reports the marks of the node BEFORE the position whenever
@@ -92,7 +128,9 @@ describe('linkRangeAt', () => {
   it('finds a link at its leading edge when plain text precedes it', () => {
     const state = stateOf(
       schema.text('see '),
-      schema.text('docs', [link('https://x.test')]),
+      schema.text('docs', [
+        link('https://x.test'),
+      ]),
     )
     // Position 5 is the boundary: the end of 'see ' and the first character of
     // the link. Clicking the left half of the 'd' resolves here.
@@ -107,7 +145,9 @@ describe('linkRangeAt', () => {
   it('returns null past the end of a trailing link', () => {
     const state = stateOf(
       schema.text('read the '),
-      schema.text('docs', [link('https://x.test')]),
+      schema.text('docs', [
+        link('https://x.test'),
+      ]),
     )
     // The paragraph end, which is also the link run's `to`. A click in the blank
     // space to the right of the text lands here.
@@ -118,8 +158,12 @@ describe('linkRangeAt', () => {
     // The boundary belongs to the link the caret would enter, not the one it
     // leaves. Reading the preceding node answered with the left link.
     const state = stateOf(
-      schema.text('one', [link('https://one.test')]),
-      schema.text('two', [link('https://two.test')]),
+      schema.text('one', [
+        link('https://one.test'),
+      ]),
+      schema.text('two', [
+        link('https://two.test'),
+      ]),
     )
     expect(linkRangeAt(state, 4)?.href).toBe('https://two.test')
   })
@@ -128,7 +172,9 @@ describe('linkRangeAt', () => {
     // Milkdown's link schema declares `title` beside `href` and serializes it,
     // so `[docs](url "The docs")` round-trips one. Rebuilding the mark from the
     // href alone lost it with nothing said.
-    const state = stateOf(schema.text('docs', [link('https://x.test', 'The docs')]))
+    const state = stateOf(schema.text('docs', [
+      link('https://x.test', 'The docs'),
+    ]))
 
     expect(linkRangeAt(state, 3)?.attrs).toEqual({ href: 'https://x.test', title: 'The docs' })
   })
@@ -157,7 +203,12 @@ describe('linkRangeAt', () => {
 // time in three, with no error anywhere. Both halves are raw DOM handlers now,
 // and the decision between them is these two pure functions.
 describe('pressClosesPopover', () => {
-  const run = { from: 1, to: 5, href: 'https://a.test', attrs: {} }
+  const run = {
+    from: 1,
+    to: 5,
+    href: 'https://a.test',
+    attrs: {},
+  }
 
   it('closes when the press lands on the run the popover is already open for', () => {
     expect(pressClosesPopover(run, run, true)).toBe(true)
@@ -186,7 +237,12 @@ describe('pressClosesPopover', () => {
 })
 
 describe('clickAction', () => {
-  const run = { from: 1, to: 5, href: 'https://a.test', attrs: {} }
+  const run = {
+    from: 1,
+    to: 5,
+    href: 'https://a.test',
+    attrs: {},
+  }
 
   it('opens a press that landed on a link with the popover shut', () => {
     expect(clickAction(run, false, true)).toBe('open')
@@ -244,7 +300,9 @@ describe('linkShortcutTarget', () => {
   // leaving the selection carrying two.
   it('takes the selection, not the link inside it, so applying overrides', () => {
     const state = withSelection(
-      stateOf(schema.text('see '), schema.text('docs', [link('https://old.test')])),
+      stateOf(schema.text('see '), schema.text('docs', [
+        link('https://old.test'),
+      ])),
       1,
       9,
     )
@@ -255,7 +313,9 @@ describe('linkShortcutTarget', () => {
   // Mod-K with a bare CARET on a link means "edit this link", so the popover
   // opens on its current URL and the range covers the whole run.
   it('offers the link under a caret, with its current href', () => {
-    const state = withSelection(stateOf(schema.text('docs', [link('https://x.test', 'The docs')])), 3, 3)
+    const state = withSelection(stateOf(schema.text('docs', [
+      link('https://x.test', 'The docs'),
+    ])), 3, 3)
 
     expect(linkShortcutTarget(state)).toEqual({
       from: 1,
@@ -268,7 +328,12 @@ describe('linkShortcutTarget', () => {
   it('covers the whole run when another mark splits the link', () => {
     const href = 'https://x.test'
     const state = withSelection(
-      stateOf(schema.text('bold', [link(href), strong]), schema.text(' rest', [link(href)])),
+      stateOf(schema.text('bold', [
+        link(href),
+        strong,
+      ]), schema.text(' rest', [
+        link(href),
+      ])),
       3,
       3,
     )

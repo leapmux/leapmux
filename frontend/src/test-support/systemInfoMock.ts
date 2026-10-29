@@ -108,7 +108,10 @@ export const systemInfoMock = {
 
 /** Patch snapshot values reactively; every tracked read re-evaluates. */
 export function setSystemInfoMock(patch: Partial<SystemInfoMockState>): void {
-  setState({ ...state(), ...patch })
+  setState({
+    ...state(),
+    ...patch,
+  })
 }
 
 /** Restore the defaults and clear the call history, for beforeEach. */

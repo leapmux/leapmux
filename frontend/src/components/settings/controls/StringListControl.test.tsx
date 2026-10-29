@@ -22,7 +22,9 @@ describe('StringListControl', () => {
       <StringListControl value={['Inter']} addLabel="Add font" ariaLabel="Fonts" onChange={onChange} />
     ))
     const input = screen.getByPlaceholderText('Name') as HTMLInputElement
-    fireEvent.input(input, { target: { value: '   ' } })
+    fireEvent.input(input, {
+      target: { value: '   ' },
+    })
     expect((screen.getByRole('button', { name: 'Add font' }) as HTMLButtonElement).disabled).toBe(true)
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(onChange).not.toHaveBeenCalled()
@@ -40,7 +42,9 @@ describe('StringListControl', () => {
       <StringListControl value={[]} addLabel="Add font" ariaLabel="Fonts" onChange={onChange} />
     ))
     const input = screen.getByPlaceholderText('Name') as HTMLInputElement
-    fireEvent.input(input, { target: { value: 'Fira$Code "100%"' } })
+    fireEvent.input(input, {
+      target: { value: 'Fira$Code "100%"' },
+    })
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(onChange).toHaveBeenCalledWith(['Fira$Code "100%"'])
   })
@@ -54,7 +58,9 @@ describe('StringListControl', () => {
       <StringListControl value={[]} addLabel="Add font" ariaLabel="Fonts" onChange={onChange} />
     ))
     const input = screen.getByPlaceholderText('Name') as HTMLInputElement
-    fireEvent.input(input, { target: { value: '\u200B\uFEFF' } })
+    fireEvent.input(input, {
+      target: { value: '\u200B\uFEFF' },
+    })
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(onChange).not.toHaveBeenCalled()
     expect(screen.getByText(/must not be empty/i)).toBeTruthy()
@@ -79,7 +85,9 @@ describe('StringListControl', () => {
       <StringListControl value={[]} addLabel="Add font" ariaLabel="Fonts" onChange={onChange} />
     ))
     const input = screen.getByPlaceholderText('Name') as HTMLInputElement
-    fireEvent.input(input, { target: { value: typed } })
+    fireEvent.input(input, {
+      target: { value: typed },
+    })
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(onChange).toHaveBeenCalledWith([stored])
   })
@@ -105,7 +113,9 @@ describe('StringListControl', () => {
     const { unmount } = render(() => (
       <StringListControl value={atCapMinusOne} addLabel="Add font" ariaLabel="Fonts" onChange={onChange} />
     ))
-    fireEvent.input(screen.getByPlaceholderText('Name'), { target: { value: 'Last' } })
+    fireEvent.input(screen.getByPlaceholderText('Name'), {
+      target: { value: 'Last' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Add font' }))
     expect(onChange).toHaveBeenCalledWith([...atCapMinusOne, 'Last'])
     const firstCall = onChange.mock.calls[0]
@@ -117,7 +127,9 @@ describe('StringListControl', () => {
     render(() => (
       <StringListControl value={atCap} addLabel="Add font" ariaLabel="Fonts" onChange={refused} />
     ))
-    fireEvent.input(screen.getByPlaceholderText('Name'), { target: { value: 'OneTooMany' } })
+    fireEvent.input(screen.getByPlaceholderText('Name'), {
+      target: { value: 'OneTooMany' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Add font' }))
     expect(refused).not.toHaveBeenCalled()
     expect(screen.getByText(`Too many entries (max ${MAX_STRING_LIST_ITEMS})`)).toBeTruthy()
@@ -130,7 +142,9 @@ describe('StringListControl', () => {
     ))
     fireEvent.dblClick(screen.getByText('Inter'))
     const editor = screen.getByLabelText('Rename Fonts') as HTMLInputElement
-    fireEvent.input(editor, { target: { value: 'Hack' } })
+    fireEvent.input(editor, {
+      target: { value: 'Hack' },
+    })
     const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     editor.dispatchEvent(escape)
     expect(onChange).not.toHaveBeenCalled()
@@ -222,7 +236,9 @@ describe('StringListControl busy state', () => {
     const input = screen.getByPlaceholderText('Name') as HTMLInputElement
     const addButton = screen.getByRole('button', { name: 'Add font' }) as HTMLButtonElement
 
-    fireEvent.input(input, { target: { value: 'Hack' } })
+    fireEvent.input(input, {
+      target: { value: 'Hack' },
+    })
     expect(addButton.disabled).toBe(false)
     fireEvent.click(addButton)
 
@@ -246,7 +262,9 @@ describe('StringListControl busy state', () => {
         value={['Inter', 'Roboto']}
         addLabel="Add font"
         ariaLabel="Fonts"
-        onChange={() => (++call === 1 ? first.promise : second.promise)}
+        onChange={() => (++call === 1
+          ? first.promise
+          : second.promise)}
       />
     ))
     const input = screen.getByPlaceholderText('Name') as HTMLInputElement
@@ -301,7 +319,9 @@ describe('StringListControl busy state', () => {
     const input = screen.getByPlaceholderText('Name') as HTMLInputElement
     const addButton = () => screen.getByRole('button', { name: 'Add font' }) as HTMLButtonElement
 
-    fireEvent.input(input, { target: { value: 'Last' } })
+    fireEvent.input(input, {
+      target: { value: 'Last' },
+    })
     fireEvent.click(addButton())
     expect(onChange).toHaveBeenCalledWith([...atCapMinusOne, 'Last'])
 
@@ -312,7 +332,9 @@ describe('StringListControl busy state', () => {
     write.resolve()
     await waitFor(() => expect(input.disabled).toBe(false))
 
-    fireEvent.input(input, { target: { value: 'OneTooMany' } })
+    fireEvent.input(input, {
+      target: { value: 'OneTooMany' },
+    })
     fireEvent.click(addButton())
     expect(onChange).toHaveBeenCalledTimes(1)
     expect(screen.getByText(`Too many entries (max ${MAX_STRING_LIST_ITEMS})`)).toBeTruthy()

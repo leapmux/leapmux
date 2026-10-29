@@ -7,5 +7,7 @@ clineTest('classifies real native controls and proves the missing workspace-trus
 })
 
 clineTest('loads project rules without a workspace trust decision', async ({ native }) => {
-  await exerciseNativeWorkspaceTrustLimit(native, { projectConfiguration: instructionFileConfiguration('AGENTS.md') })
+  await exerciseNativeWorkspaceTrustLimit(native, {
+    projectConfiguration: instructionFileConfiguration('AGENTS.md'),
+  })
 })

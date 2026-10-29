@@ -25,7 +25,9 @@ describe('read tool icons', () => {
   // shared `read` kind, and the kind owns the glyph.
   it('uses the Eye icon for Claude Code Read tool uses', () => {
     expect(claudeToolIcon(CLAUDE_TOOL_NAMES.READ)).toBeUndefined()
-    expect(rendererFor({ kind: claudeToolKind(CLAUDE_TOOL_NAMES.READ) }).icon).toBe(Eye)
+    expect(rendererFor({
+      kind: claudeToolKind(CLAUDE_TOOL_NAMES.READ),
+    }).icon).toBe(Eye)
   })
 
   it('uses the Eye icon for ACP read tool uses', () => {

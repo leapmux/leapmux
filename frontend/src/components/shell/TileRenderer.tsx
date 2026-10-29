@@ -371,7 +371,9 @@ export function createTileRenderer(opts: TileRendererOpts) {
   // once at request time and walk a stable list. Used by all three close flows
   // (tile / window / grid).
   const collectTabsFromTiles = (tileIds: readonly string[]) =>
-    tileIds.flatMap(id => [...view.forTile(id)])
+    tileIds.flatMap(id => [
+      ...view.forTile(id),
+    ])
 
   // Tile-close flow.
   interface ClosingTile {
@@ -442,11 +444,18 @@ export function createTileRenderer(opts: TileRendererOpts) {
     probeBusy,
     plan: (ctx) => {
       const fws = floatingWindowStore
-      if (!fws)
-        return { tabs: [], preserve: () => {}, finalize: () => {} }
+      if (!fws) {
+        return {
+          tabs: [],
+          preserve: () => {},
+          finalize: () => {},
+        }
+      }
       // Snapshot the tile-id list — the source set is invalidated mid-loop
       // by removeIfEmpty auto-cleanup inside handleTabClose.
-      const tileIds = [...fws.getWindowTileIdSet(ctx.windowId) ?? []]
+      const tileIds = [
+        ...fws.getWindowTileIdSet(ctx.windowId) ?? [],
+      ]
       const tabs = collectTabsFromTiles(tileIds)
       return closePlanWithDispose({
         tabs,
@@ -456,7 +465,9 @@ export function createTileRenderer(opts: TileRendererOpts) {
             // The window's focused tile holds the tab the user was last on;
             // carry that selection to the destination when it has none.
             const focusedSourceTile = fws.getWindow(ctx.windowId)?.focusedTileId ?? tileIds[0]
-            const sourceActive = focusedSourceTile ? selection.activeTabForTile(focusedSourceTile) : undefined
+            const sourceActive = focusedSourceTile
+              ? selection.activeTabForTile(focusedSourceTile)
+              : undefined
             for (const t of tileIds)
               emitMergeTabsIntoTile(view.forTile(t), view.forTile(targetTileId), targetTileId)
             if (sourceActive && !selection.state.activeByTile[targetTileId])
@@ -544,8 +555,12 @@ export function createTileRenderer(opts: TileRendererOpts) {
           // question, not the grid's.
           const focused = layoutStore.focusedTileId()
           const preferredOrder = [
-            ...(tileIds.includes(focused) ? [focused] : []),
-            ...(tileIds.includes(ctx.ownerTileId) ? [ctx.ownerTileId] : []),
+            ...(tileIds.includes(focused)
+              ? [focused]
+              : []),
+            ...(tileIds.includes(ctx.ownerTileId)
+              ? [ctx.ownerTileId]
+              : []),
             ...tileIds,
           ]
           const sourceActive = preferredOrder
@@ -594,7 +609,9 @@ export function createTileRenderer(opts: TileRendererOpts) {
 
   const resolveFocusedTab = (): Tab | null => {
     const tileId = layoutStore.focusedTileId()
-    return tileId ? getActiveTabForTile(tileId) : null
+    return tileId
+      ? getActiveTabForTile(tileId)
+      : null
   }
 
   // Background-task registry helpers. The registry is keyed by ROOT owner id,
@@ -606,10 +623,18 @@ export function createTileRenderer(opts: TileRendererOpts) {
   const bgRootFor = taskScope.rootFor
   const bgTasksFor = taskScope.rootTasksFor
   const contextKey = (workerId: string, agentId: string) => JSON.stringify([workerId, agentId])
-  const contextKeys = createMemo(() => [...new Set(view.forWorkspace(activeWorkspace()?.id ?? '').flatMap(tab =>
-    tab.type === TabType.AGENT
-      ? [contextKey(tab.workerId ?? '', tab.id)]
-      : tab.type === TabType.IMAGE && tab.imageAgentId ? [contextKey(tab.workerId ?? '', tab.imageAgentId)] : []))])
+  const contextKeys = createMemo(() => [
+    ...new Set(view.forWorkspace(activeWorkspace()?.id ?? '').flatMap(tab =>
+      tab.type === TabType.AGENT
+        ? [
+            contextKey(tab.workerId ?? '', tab.id),
+          ]
+        : tab.type === TabType.IMAGE && tab.imageAgentId
+          ? [
+              contextKey(tab.workerId ?? '', tab.imageAgentId),
+            ]
+          : [])),
+  ])
   const contexts = createMemo(mapArray(contextKeys, (key) => {
     const [workerId, agentId] = JSON.parse(key) as [string, string]
     const backgroundRows = createMemo(() => new Map(bgTasksFor(agentId).map(row => [row.rowKey, row])))
@@ -706,10 +731,18 @@ export function createTileRenderer(opts: TileRendererOpts) {
       // at, so both dialogs follow the current tab context.
       onNewAgentAdvanced: () => newAgentDialog.open({}),
       onNewTerminalAdvanced: () => newTerminalDialog.open({}),
-      ...(providers !== undefined ? { availableProviders: providers } : {}),
-      ...(shells !== undefined ? { availableShells: shells } : {}),
-      ...(defaultShell !== undefined ? { defaultShell } : {}),
-      ...(loadingProvider !== undefined ? { newAgentLoadingProvider: loadingProvider } : {}),
+      ...(providers !== undefined
+        ? { availableProviders: providers }
+        : {}),
+      ...(shells !== undefined
+        ? { availableShells: shells }
+        : {}),
+      ...(defaultShell !== undefined
+        ? { defaultShell }
+        : {}),
+      ...(loadingProvider !== undefined
+        ? { newAgentLoadingProvider: loadingProvider }
+        : {}),
       newTerminalLoading: newTerminalLoading(),
       newShellLoading: newShellLoading(),
       hasActiveTabContext: !!getCurrentTabContext().workerId,
@@ -791,19 +824,27 @@ export function createTileRenderer(opts: TileRendererOpts) {
     const tab = createMemo(() => getActiveTabForTile(tileId))
     const agentTab = () => {
       const t = tab()
-      return t?.type === TabType.AGENT ? t : null
+      return t?.type === TabType.AGENT
+        ? t
+        : null
     }
     const terminalTab = () => {
       const t = tab()
-      return t?.type === TabType.TERMINAL ? t : null
+      return t?.type === TabType.TERMINAL
+        ? t
+        : null
     }
     const fileTab = () => {
       const t = tab()
-      return t?.type === TabType.FILE ? t : null
+      return t?.type === TabType.FILE
+        ? t
+        : null
     }
     const imageTab = () => {
       const t = tab()
-      return t?.type === TabType.IMAGE ? t : null
+      return t?.type === TabType.IMAGE
+        ? t
+        : null
     }
     // One pass over the tile's tabs produces buckets for the four For loops
     // below. The source `getTabsForTile` is itself memoised, so this memo only
@@ -851,8 +892,12 @@ export function createTileRenderer(opts: TileRendererOpts) {
       const activeId = agentTab()?.id
       if (layoutStore.focusedTileId() !== tileId)
         return
-      getScrollStateRef.set(activeId ? agentScrollStates.get(activeId) : undefined)
-      forceScrollToBottomRef.set(activeId ? agentScrollToBottoms.get(activeId) : undefined)
+      getScrollStateRef.set(activeId
+        ? agentScrollStates.get(activeId)
+        : undefined)
+      forceScrollToBottomRef.set(activeId
+        ? agentScrollToBottoms.get(activeId)
+        : undefined)
     })
     const hasTerminals = () => tileTerminals().length > 0
 
@@ -910,7 +955,9 @@ export function createTileRenderer(opts: TileRendererOpts) {
             const goalSurface = createMemo<GoalSurface | undefined>(() => {
               const rootId = bgRootFor(agentId)
               const surface: GoalSurface = {
-                ...(pluginFor(view.getAgentTab(rootId)?.agentProvider)?.session?.goalStatusUnconfirmed ? { statusUnconfirmed: true as const } : {}),
+                ...(pluginFor(view.getAgentTab(rootId)?.agentProvider)?.session?.goalStatusUnconfirmed
+                  ? { statusUnconfirmed: true as const }
+                  : {}),
                 // `current` is optional without undefined; the goal store
                 // answering undefined means the agent has none.
                 ...optionalProp('current', goalFor(agentId)),
@@ -918,9 +965,15 @@ export function createTileRenderer(opts: TileRendererOpts) {
                 actions: goalActionsFor(agentId),
                 // Absent, not undefined: the field is optional without
                 // undefined, and absence is what makes the surface read-only.
-                ...(onGoalAction !== undefined ? { onAction: (action: GoalAction) => onGoalAction(rootId, action) } : {}),
+                ...(onGoalAction !== undefined
+                  ? {
+                      onAction: (action: GoalAction) => onGoalAction(rootId, action),
+                    }
+                  : {}),
               }
-              return hasGoalSurface(surface) ? surface : undefined
+              return hasGoalSurface(surface)
+                ? surface
+                : undefined
             })
 
             // A named const with GETTERS, not an inline object literal in the
@@ -949,7 +1002,9 @@ export function createTileRenderer(opts: TileRendererOpts) {
               get goal() { return goalSurface() },
               // Both callbacks stay omitted when the shell wired none: the
               // prop types take no explicit undefined.
-              ...(onOpenBackgroundTask !== undefined ? { onOpenSubagent: onOpenBackgroundTask } : {}),
+              ...(onOpenBackgroundTask !== undefined
+                ? { onOpenSubagent: onOpenBackgroundTask }
+                : {}),
               // The WORKER travels with the agent, from the tab that owns this
               // transcript. Reading it from the focused tile instead would take
               // it from a different tab: a click lands on this button before the
@@ -1071,7 +1126,9 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     {...optionalProp('messageContext', messages())}
                     // Archived workspaces keep the transcript read-only: the
                     // quote/reply hooks stay omitted rather than undefined.
-                    {...(isActiveWorkspaceArchived() ? {} : { onQuote: quoteIntoComposer, onReply: quoteIntoComposer })}
+                    {...(isActiveWorkspaceArchived()
+                      ? {}
+                      : { onQuote: quoteIntoComposer, onReply: quoteIntoComposer })}
                     agentLifecycle={agentLifecycle}
                   />
                 </Show>
@@ -1289,7 +1346,9 @@ export function createTileRenderer(opts: TileRendererOpts) {
       workspaceId: activeWorkspace()?.id ?? '',
       workspaceTabs: () => view.forWorkspace(activeWorkspace()?.id ?? ''),
       repoGitStore,
-      ...(branchCallbacks?.isWorkerKnownOnline !== undefined ? { isWorkerKnownOnline: branchCallbacks.isWorkerKnownOnline } : {}),
+      ...(branchCallbacks?.isWorkerKnownOnline !== undefined
+        ? { isWorkerKnownOnline: branchCallbacks.isWorkerKnownOnline }
+        : {}),
     })
     const branchDisabledReason = () => branchAction().disabledReason
     // The menu takes its actions already bound to this branch. `buildRef` is
@@ -1325,7 +1384,9 @@ export function createTileRenderer(opts: TileRendererOpts) {
         ...optionalProp('turnRetryOffer', chatStore.getTurnRetryOffer(agentId())),
         ...optionalProp('promptSuggestion', chatStore.getPromptSuggestion(agentId())),
         ...optionalProp('branchActions', branchMenuActions()),
-        ...(subagentReadOnly() ? { disabledReason: SUBAGENT_NO_MESSAGES_HINT } : {}),
+        ...(subagentReadOnly()
+          ? { disabledReason: SUBAGENT_NO_MESSAGES_HINT }
+          : {}),
       }
     }
     return (
@@ -1382,7 +1443,9 @@ export function createTileRenderer(opts: TileRendererOpts) {
     // the two surfaces cannot drift.
     const pop = createMemo<TilePopAction | undefined>(() => {
       const tab = activeTab()
-      return tab ? tabPopFor(tileId, tab) : undefined
+      return tab
+        ? tabPopFor(tileId, tab)
+        : undefined
     })
     // Built ONCE, and held in a plain variable so the JSX below passes it as a
     // static prop. `tabBar` is a DOM SUBTREE, not a value. A prop whose getter

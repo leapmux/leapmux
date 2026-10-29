@@ -26,7 +26,12 @@ museTest('proves the absent native MCP elicitation route without a browser form'
   // The elicitation never resolves, so the turn ends interrupted and its queued
   // answer stays unconsumed on purpose.
   modelScript.allowUnconsumed('the absent native elicitation route holds the turn until the interrupt')
-  const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const native = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   const settingsPath = museSettingsPath(native)
   await withNativeMcpFormAgent(native, {
     directoryPrefix: 'muse-native-mcp-form-',
@@ -36,7 +41,16 @@ museTest('proves the absent native MCP elicitation route without a browser form'
       if (typeof settings !== 'object' || settings === null || !('mcpServers' in settings))
         throw new Error('The private Muse settings hold no MCP server table.')
       const servers = (settings as { mcpServers: Record<string, unknown> }).mcpServers
-      return { ...(settings as object), mcpServers: { ...servers, [server.name]: { command: server.command, args: [...server.args] } } }
+      return {
+        ...(settings as object),
+        mcpServers: {
+          ...servers,
+          [server.name]: {
+            command: server.command,
+            args: [...server.args],
+          },
+        },
+      }
     },
   }, async ({ server, receiptLog }) => {
     const callId = 'muse-native-elicitation'
@@ -44,7 +58,12 @@ museTest('proves the absent native MCP elicitation route without a browser form'
       testId: 'elicitation-form',
       additionalTestIds: ['control-banner'],
       relatedProof: async () => {
-        const pending = invokeNativeMcpTool(native, { server: server.name, tool: 'ask', callId, input: {} })
+        const pending = invokeNativeMcpTool(native, {
+          server: server.name,
+          tool: 'ask',
+          callId,
+          input: {},
+        })
         // The elicitation never resolves: muse holds no route to answer it. Wait
         // for the server to have SEEN its own request, then interrupt the turn.
         await expect.poll(async () => readMcpServerReceipt(receiptLog).elicitationRequests.length, { timeout: 30000 }).toBeGreaterThan(0)

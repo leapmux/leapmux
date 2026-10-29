@@ -18,7 +18,11 @@ kimiTest.describe('runs Kimi Code subagents and background tasks', () => {
       {
         name: 'the child runs its shell probe',
         when: kimiChildTurn('printf kimi-child-tool-ok'),
-        respond: { toolCalls: [bashToolCall(native.provider, 'child-shell', 'printf kimi-child-tool-ok')] },
+        respond: {
+          toolCalls: [
+            bashToolCall(native.provider, 'child-shell', 'printf kimi-child-tool-ok'),
+          ],
+        },
         once: true,
       },
       {
@@ -29,10 +33,12 @@ kimiTest.describe('runs Kimi Code subagents and background tasks', () => {
     )
     const start = await modelScript.queue(
       {
-        toolCalls: [spawnSubagentToolCall(native.provider, 'spawn-kimi', {
-          description: 'Run the shell probe',
-          prompt: modelScript.prompt('Use Bash to run printf kimi-child-tool-ok, then reply with exactly KIMI_CHILD_PONG.'),
-        })],
+        toolCalls: [
+          spawnSubagentToolCall(native.provider, 'spawn-kimi', {
+            description: 'Run the shell probe',
+            prompt: modelScript.prompt('Use Bash to run printf kimi-child-tool-ok, then reply with exactly KIMI_CHILD_PONG.'),
+          }),
+        ],
       },
       { text: 'KIMI_ROOT_DONE' },
     )

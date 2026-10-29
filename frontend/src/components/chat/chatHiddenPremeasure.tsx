@@ -64,7 +64,9 @@ function createSharedPremeasureFrame() {
   let cancelFrame: (() => void) | undefined
   const flush = () => {
     cancelFrame = undefined
-    const tasks = [...pending.values()]
+    const tasks = [
+      ...pending.values(),
+    ]
     pending.clear()
     // Phase 1: every layout read against one clean layout (the first pays the reflow).
     const results = tasks.map(task => task.read())

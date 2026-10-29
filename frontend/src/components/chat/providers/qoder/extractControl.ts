@@ -43,7 +43,9 @@ export function qoderExtractControl(input: ControlExtractionInput): ExtractedCon
     permission: {
       title: toolName,
       input: toolInput,
-      ...(command !== undefined ? { command } : {}),
+      ...(command !== undefined
+        ? { command }
+        : {}),
       options: QODER_PERMISSION_OPTIONS,
     },
   }

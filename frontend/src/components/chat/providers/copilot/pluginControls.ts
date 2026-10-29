@@ -30,7 +30,9 @@ export const copilotControls: ProviderControlCapability = {
       const typed = answerState.customTexts()[0]?.trim() ?? ''
       // The runtime distinguishes a selected choice from a free-form answer and
       // accepts an explicit empty answer.
-      const answer = selected.length > 0 ? selected.join(', ') : typed
+      const answer = selected.length > 0
+        ? selected.join(', ')
+        : typed
       const response = { behavior: 'allow', answer, wasFreeform: selected.length === 0 }
       return sendResponse(sendControlResponse, buildControlResponseEnvelope(request.requestId, response))
     },

@@ -84,7 +84,9 @@ export function isSameRepo(
  */
 export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal): Partial<TerminalTab> & Pick<TerminalMeta, 'lastOffset'> {
   const status: TerminalStatus
-    = term.status === TerminalStatus.READY && term.exited ? TerminalStatus.EXITED : term.status
+    = term.status === TerminalStatus.READY && term.exited
+      ? TerminalStatus.EXITED
+      : term.status
   const fields: Partial<TerminalTab> & Pick<TerminalMeta, 'lastOffset'> = {
     workerId,
     status,
@@ -97,14 +99,20 @@ export function protoToTerminalTabFields(workerId: string, term: ProtoTerminal):
   assignDefined(fields, 'title', term.title || undefined)
   assignDefined(fields, 'workingDir', term.workingDir || undefined)
   assignDefined(fields, 'shellStartDir', term.shellStartDir || undefined)
-  assignDefined(fields, 'screen', term.screen.length > 0 ? term.screen : undefined)
-  assignDefined(fields, 'lastOffset', term.screen.length > 0 ? Number(term.screenEndOffset) : undefined)
+  assignDefined(fields, 'screen', term.screen.length > 0
+    ? term.screen
+    : undefined)
+  assignDefined(fields, 'lastOffset', term.screen.length > 0
+    ? Number(term.screenEndOffset)
+    : undefined)
   assignDefined(fields, 'cols', term.cols || undefined)
   assignDefined(fields, 'rows', term.rows || undefined)
   // Any persisted screen means the shell already painted content; an
   // exited DB-only terminal has no future data source, so it must not
   // remain covered by the startup overlay either.
-  assignDefined(fields, 'contentReady', term.screen.length > 0 || term.exited ? true : undefined)
+  assignDefined(fields, 'contentReady', term.screen.length > 0 || term.exited
+    ? true
+    : undefined)
   if (term.gitStatus?.toplevel)
     fields.gitToplevel = term.gitStatus.toplevel
   return fields
@@ -160,7 +168,9 @@ export function optionValuesFromGroups(groups: AvailableOptionGroup[] | undefine
  * write through here makes that invariant mechanical rather than convention-only.
  */
 export function setOptionValue(map: Record<string, string> | undefined, id: string, value: string): Record<string, string> {
-  const next = { ...(map ?? {}) }
+  const next = {
+    ...(map ?? {}),
+  }
   if (value)
     next[id] = value
   else
@@ -468,7 +478,10 @@ function withSelectedModelSubGroups(groups: AvailableOptionGroup[], selectedMode
   if (!selected)
     return groups
   const kept = groups.filter(g => !dependentIds.has(g.id))
-  return [...kept, ...selected.subGroups].sort((a, b) => a.order - b.order)
+  return [
+    ...kept,
+    ...selected.subGroups,
+  ].sort((a, b) => a.order - b.order)
 }
 
 // Cache the optimistic projection per (optionGroups, optionValues) reference pair. Both keys are
@@ -659,7 +672,10 @@ export function planOptimisticRepoGit(
   newTab: { workerId?: string, shellStartDir?: string, workingDir?: string },
 ): OptimisticRepoGitPlan {
   const fields = resolveOptimisticGitInfo(activeTab, newTab)
-  const noop = { fields, commit: () => {} }
+  const noop = {
+    fields,
+    commit: () => {},
+  }
 
   const workerId = newTab.workerId ?? ''
   if (!fields.gitToplevel || !workerId || !activeTab?.workerId)
@@ -695,7 +711,9 @@ export function planOptimisticRepoGit(
         branch: from.branch,
         originUrl: from.originUrl,
         isWorktree: from.isWorktree,
-        ...(from.gitStatusSeen !== undefined ? { gitStatusSeen: from.gitStatusSeen } : {}),
+        ...(from.gitStatusSeen !== undefined
+          ? { gitStatusSeen: from.gitStatusSeen }
+          : {}),
       })
     },
   }
@@ -729,7 +747,10 @@ export function openedAgentTabFields(
   // The return type is inferred, like `openedTerminalMetadata`'s: `hydrated`
   // lives on `TabMetadata`, not on `AgentTab`, so `Partial<AgentTab>` would
   // drop it.
-  return { ...protoToAgentTabFields(store, agent.workerId, agent), hydrated: true }
+  return {
+    ...protoToAgentTabFields(store, agent.workerId, agent),
+    hydrated: true,
+  }
 }
 
 /**
@@ -785,13 +806,18 @@ export function tabDisplayLabel(tab: Tab): string {
     return tab.title
   if (tab.type === TabType.TERMINAL && tab.ptyTitle)
     return tab.ptyTitle
-  if (tab.type === TabType.FILE)
-    return (tab.filePath ? basename(tab.filePath) : '') || 'File'
+  if (tab.type === TabType.FILE) {
+    return (tab.filePath
+      ? basename(tab.filePath)
+      : '') || 'File'
+  }
   // An IMAGE tab's name comes from its payload, which the tab strip reads as
   // `title` above; this is the pre-hydration placeholder.
   if (tab.type === TabType.IMAGE)
     return 'Image'
-  return tab.type === TabType.AGENT ? 'Agent' : 'Terminal'
+  return tab.type === TabType.AGENT
+    ? 'Agent'
+    : 'Terminal'
 }
 
 /**
@@ -817,7 +843,9 @@ export function tabTooltipText(tab: Tab): string {
  * needs this, so the rule lives here rather than as a ternary at each one.
  */
 export function tabTooltipShowWhen(tab: Tab): 'always' | 'clipped' {
-  return tabTooltipText(tab) === tabDisplayLabel(tab) ? 'clipped' : 'always'
+  return tabTooltipText(tab) === tabDisplayLabel(tab)
+    ? 'clipped'
+    : 'always'
 }
 
 /** Whether a terminal tab should show the OSC 9;4 progress affordance. */
@@ -828,7 +856,9 @@ export function terminalProgressVisible(tab: Tab): boolean {
 }
 
 export function terminalProgressPercent(tab: Tab): number {
-  return isTerminalTab(tab) ? (tab.progressPercent ?? 0) : 0
+  return isTerminalTab(tab)
+    ? (tab.progressPercent ?? 0)
+    : 0
 }
 
 export function terminalProgressIndeterminate(tab: Tab): boolean {
@@ -840,7 +870,9 @@ export function terminalProgressBarProps(tab: Tab): { style: { '--progress-perce
   const percent = Math.max(0, Math.min(100, terminalProgressPercent(tab)))
   return {
     style: { '--progress-percent': `${percent}%` },
-    title: terminalProgressIndeterminate(tab) ? 'In progress' : `${percent}%`,
+    title: terminalProgressIndeterminate(tab)
+      ? 'In progress'
+      : `${percent}%`,
   }
 }
 
@@ -856,7 +888,10 @@ export function parseTabKey(key: string): { type: TabType, id: string } | null {
   const typeNum = Number(key.slice(0, idx))
   if (!Number.isInteger(typeNum))
     return null
-  return { type: typeNum as TabType, id: key.slice(idx + 1) }
+  return {
+    type: typeNum as TabType,
+    id: key.slice(idx + 1),
+  }
 }
 
 /**

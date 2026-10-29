@@ -12,7 +12,10 @@ const CURSOR = AgentProvider.CURSOR
 // available/mru interaction without faking the composition layer.
 let mockStored: AgentProvider[] = []
 const touchSpy = vi.fn((p: AgentProvider) => {
-  mockStored = [p, ...mockStored.filter(x => x !== p)]
+  mockStored = [
+    p,
+    ...mockStored.filter(x => x !== p),
+  ]
 })
 
 vi.mock('~/lib/mruAgentProviders', () => ({

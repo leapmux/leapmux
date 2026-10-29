@@ -180,7 +180,9 @@ export function createMarkdownProcessor(highlighter: HighlighterCore, pair: Synt
       // shikiStyleClass — the worker ships the class->declaration dictionary
       // alongside the HTML for main-thread rule injection).
       mergeSameStyleTokens: true,
-      transformers: [shikiStyleClassTransformer()],
+      transformers: [
+        shikiStyleClassTransformer(),
+      ],
       // A fence whose language isn't loaded (worker: lazy-load missed it; sync
       // fallback: outside the 20-lang set) or that errors degrades to a plain
       // `text` block instead of throwing the whole document to plain.

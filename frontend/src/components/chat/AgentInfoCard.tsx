@@ -44,7 +44,9 @@ export function formatAgentSessionIdForDisplay(agentProvider: AgentProvider | un
     return sessionId
 
   const tail = basename(sessionId) || sessionId
-  return tail.endsWith('.jsonl') ? tail.slice(0, -'.jsonl'.length) : tail
+  return tail.endsWith('.jsonl')
+    ? tail.slice(0, -'.jsonl'.length)
+    : tail
 }
 
 function CopyButton(props: { getText: () => string | undefined, title: string, testId?: string }) {
@@ -102,9 +104,13 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
 
   const sessionIdDisplay = createMemo(() => {
     const sessionId = agent()?.agentSessionId
-    return sessionId ? formatAgentSessionIdForDisplay(agent()?.agentProvider, sessionId) : undefined
+    return sessionId
+      ? formatAgentSessionIdForDisplay(agent()?.agentProvider, sessionId)
+      : undefined
   })
-  const sessionIdCopyTitle = () => pluginFor(agent()?.agentProvider)?.session?.sessionIdIsFilePath ? 'Copy session file path' : 'Copy session ID'
+  const sessionIdCopyTitle = () => pluginFor(agent()?.agentProvider)?.session?.sessionIdIsFilePath
+    ? 'Copy session file path'
+    : 'Copy session ID'
 
   // 1-minute timer for countdown refresh
   const [now, setNow] = createSignal(Date.now())
@@ -126,7 +132,9 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
   // the property the whole card is built on.
   const agentProviderRow = createMemo(() => {
     const provider = agent()?.agentProvider
-    return provider == null ? undefined : { provider }
+    return provider == null
+      ? undefined
+      : { provider }
   })
 
   // Derive urgent rate limit (re-evaluates each minute due to `now()` dependency)
@@ -207,7 +215,9 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
                   parts.push(`+${git.ahead}`)
                 if (git?.behind)
                   parts.push(`-${git.behind}`)
-                return parts.length > 0 ? ` [${parts.join(' ')}]` : ''
+                return parts.length > 0
+                  ? ` [${parts.join(' ')}]`
+                  : ''
               })()}
             </span>
             <CopyButton
@@ -292,8 +302,12 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
           const bufferPct = contextBufferPct(agent()?.agentProvider)
           // The percentage is a share of the window less the headroom that the
           // provider keeps, so each form of the row states that headroom.
-          const headroom = bufferPct > 0 ? ` with ${bufferPct}% headroom` : ''
-          const percentSuffix = pct != null ? ` (${Math.round(pct)}%${headroom})` : ''
+          const headroom = bufferPct > 0
+            ? ` with ${bufferPct}% headroom`
+            : ''
+          const percentSuffix = pct != null
+            ? ` (${Math.round(pct)}%${headroom})`
+            : ''
           return (
             <div class={styles.infoRow}>
               <span class={styles.infoLabel}>Context</span>
@@ -332,24 +346,35 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
             // value that spells an `Object.prototype` member falls through to the generic
             // heading instead of rendering that function's source.
             const typeLabel = info.label?.trim() || (rateLimitPopoverLabel(info.rateLimitType)
-              ?? (info.rateLimitType ? `Rate Limit (${info.rateLimitType})` : 'Rate Limit'))
+              ?? (info.rateLimitType
+                ? `Rate Limit (${info.rateLimitType})`
+                : 'Rate Limit'))
 
             const resetsAt = getResetsAt(info)
             const statusParts = rateLimitSummaryParts(info)
 
             const countdown = createMemo(() => {
               void now()
-              return typeof resetsAt === 'number' ? formatCountdown(resetsAt) : null
+              return typeof resetsAt === 'number'
+                ? formatCountdown(resetsAt)
+                : null
             })
 
             return (
               <div class={styles.infoRow}>
                 <span class={styles.infoLabel}>{typeLabel}</span>
                 <span class={styles.infoValueText}>
-                  {statusParts.length > 0 ? statusParts.join(', ') : 'Unknown'}
+                  {statusParts.length > 0
+                    ? statusParts.join(', ')
+                    : 'Unknown'}
                   <Show when={countdown()}>
                     {', '}
-                    <Tooltip {...(typeof resetsAt === 'number' ? { text: formatResetTimestamp(resetsAt) } : {})}>
+                    <Tooltip {...(typeof resetsAt === 'number'
+                      ? {
+                          text: formatResetTimestamp(resetsAt),
+                        }
+                      : {})}
+                    >
                       <span>{`resets in ${countdown()}`}</span>
                     </Tooltip>
                   </Show>

@@ -16,8 +16,10 @@ export function copilotOutputFilePaths(input: RowExtractionInput, call: ToolCall
     || !Array.isArray(result?.contents)) {
     return []
   }
-  return [...new Set(result.contents.filter(isObject)
-    .filter(block => block.type === 'shell_exit')
-    .map(block => block.outputFilePath)
-    .filter((path): path is string => isFilesystemPath(path)))]
+  return [
+    ...new Set(result.contents.filter(isObject)
+      .filter(block => block.type === 'shell_exit')
+      .map(block => block.outputFilePath)
+      .filter((path): path is string => isFilesystemPath(path))),
+  ]
 }

@@ -22,7 +22,12 @@ import {
 // so these set the ASPECT and the density of the labels, never a pixel size.
 const WIDTH = 320
 const HEIGHT = 180
-const PAD = { top: 8, right: 8, bottom: 18, left: 34 }
+const PAD = {
+  top: 8,
+  right: 8,
+  bottom: 18,
+  left: 34,
+}
 const PLOT = { w: WIDTH - PAD.left - PAD.right, h: HEIGHT - PAD.top - PAD.bottom }
 
 function valueBlock(source: ChartResult): string[][] {
@@ -33,12 +38,17 @@ function valueBlock(source: ChartResult): string[][] {
     return []
   const rows = Math.max(source.labels.length, ...columns.map(column => seriesValues(column.series).length), 0)
   return [
-    ['', ...columns.map(column => chartSeriesName(column.series, column.index))],
+    [
+      '',
+      ...columns.map(column => chartSeriesName(column.series, column.index)),
+    ],
     ...Array.from({ length: rows }, (_, row) => [
       source.labels[row] ?? `#${row + 1}`,
       ...columns.map((column) => {
         const value = seriesValues(column.series)[row]
-        return value === undefined ? '' : String(value)
+        return value === undefined
+          ? ''
+          : String(value)
       }),
     ]),
   ]
@@ -50,12 +60,25 @@ function pointBlock(source: ChartResult): string[][] {
     return []
   const hasRadius = plotted.some(series => seriesPoints(series).some(point => point.r !== undefined))
   return [
-    ['', 'x', 'y', ...(hasRadius ? ['r'] : [])],
+    [
+      '',
+      'x',
+      'y',
+      ...(hasRadius
+        ? ['r']
+        : []),
+    ],
     ...source.series.flatMap((series, index) => seriesPoints(series).map(point => [
       chartSeriesName(series, index),
       String(point.x),
       String(point.y),
-      ...(hasRadius ? [point.r === undefined ? '' : String(point.r)] : []),
+      ...(hasRadius
+        ? [
+            point.r === undefined
+              ? ''
+              : String(point.r),
+          ]
+        : []),
     ])),
   ]
 }
@@ -63,14 +86,23 @@ function pointBlock(source: ChartResult): string[][] {
 export function chartCopyableText(source: ChartResult): string {
   if (source.error)
     return source.error
-  return [valueBlock(source), pointBlock(source)]
+  return [
+    valueBlock(source),
+    pointBlock(source),
+  ]
     .filter(block => block.length > 0)
     .map(block => block.map(line => line.join('\t')).join('\n'))
     .join('\n\n')
 }
 
 /** The shapes drawn on an x/y plane. Everything else is a circle or a table. */
-const CARTESIAN: ReadonlySet<ChartShape> = new Set(['bar', 'line', 'area', 'scatter', 'bubble'])
+const CARTESIAN: ReadonlySet<ChartShape> = new Set([
+  'bar',
+  'line',
+  'area',
+  'scatter',
+  'bubble',
+])
 const CIRCULAR: ReadonlySet<ChartShape> = new Set(['pie', 'doughnut'])
 
 function color(index: number): string {
@@ -101,7 +133,9 @@ function axisNumber(value: number): string {
     return `${Number((value / 1_000_000).toFixed(1))}M`
   if (magnitude >= 1000)
     return `${Number((value / 1000).toFixed(1))}k`
-  return `${Number(value.toFixed(magnitude < 1 ? 2 : 0))}`
+  return `${Number(value.toFixed(magnitude < 1
+    ? 2
+    : 0))}`
 }
 
 /**
@@ -133,7 +167,9 @@ function valueRange(source: ChartResult): { min: number, max: number } {
     }
   }
   // A flat chart still needs a height, or every bar divides by zero.
-  return max === min ? { min, max: max + 1 } : { min, max }
+  return max === min
+    ? { min, max: max + 1 }
+    : { min, max }
 }
 
 /** The horizontal range a point chart covers. One running pass, for the reason above. */
@@ -152,7 +188,9 @@ function pointRange(source: ChartResult): { min: number, max: number } {
   // empty case. A chart with no coordinates still needs a width to divide by.
   if (min > max)
     return { min: 0, max: 1 }
-  return max === min ? { min, max: max + 1 } : { min, max }
+  return max === min
+    ? { min, max: max + 1 }
+    : { min, max }
 }
 
 /**
@@ -167,7 +205,9 @@ function pointRange(source: ChartResult): { min: number, max: number } {
 function CircularLegend(props: { source: ChartResult }): JSX.Element {
   const values = () => {
     const first = props.source.series[0]
-    return first ? seriesValues(first) : []
+    return first
+      ? seriesValues(first)
+      : []
   }
   return (
     <Show when={values().length > 0 && props.source.labels.length > 0}>
@@ -177,7 +217,12 @@ function CircularLegend(props: { source: ChartResult }): JSX.Element {
             // A zero draws no wedge, so it earns no swatch either.
             <Show when={value > 0}>
               <span class={chartLegendEntry}>
-                <span class={chartLegendSwatch} style={{ 'background-color': color(index()) }} />
+                <span
+                  class={chartLegendSwatch}
+                  style={{
+                    'background-color': color(index()),
+                  }}
+                />
                 {props.source.labels[index()] ?? `#${index() + 1}`}
               </span>
             </Show>
@@ -196,7 +241,12 @@ function ChartLegend(props: { source: ChartResult }): JSX.Element {
           {(series, index) => (
             <Show when={series.label}>
               <span class={chartLegendEntry}>
-                <span class={chartLegendSwatch} style={{ 'background-color': color(index()) }} />
+                <span
+                  class={chartLegendSwatch}
+                  style={{
+                    'background-color': color(index()),
+                  }}
+                />
                 {series.label}
               </span>
             </Show>
@@ -302,9 +352,13 @@ function CartesianChart(props: { source: ChartResult }): JSX.Element {
                     <circle
                       cx={px(point.x)}
                       cy={y(point.y)}
-                      r={shape() === 'bubble' ? Math.max(Math.min(point.r ?? 3, 20), 2) : 3}
+                      r={shape() === 'bubble'
+                        ? Math.max(Math.min(point.r ?? 3, 20), 2)
+                        : 3}
                       fill={stroke()}
-                      fill-opacity={shape() === 'bubble' ? 0.55 : 1}
+                      fill-opacity={shape() === 'bubble'
+                        ? 0.55
+                        : 1}
                     />
                   )}
                 </For>
@@ -336,7 +390,9 @@ function arcsOf(values: number[]): { index: number, start: number, end: number, 
   const whole = values.reduce((sum, value) => sum + value, 0)
   let angle = -Math.PI / 2
   return values.map((value, index) => {
-    const sweep = whole > 0 ? (value / whole) * Math.PI * 2 : 0
+    const sweep = whole > 0
+      ? (value / whole) * Math.PI * 2
+      : 0
     const start = angle
     angle += sweep
     return { index, start, end: angle, sweep }
@@ -347,10 +403,14 @@ function arcsOf(values: number[]): { index: number, start: number, end: number, 
 function CircularChart(props: { source: ChartResult }): JSX.Element {
   const values = () => {
     const first = props.source.series[0]
-    return (first ? seriesValues(first) : []).map(value => Math.max(value, 0))
+    return (first
+      ? seriesValues(first)
+      : []).map(value => Math.max(value, 0))
   }
   const radius = 70
-  const inner = () => (props.source.shape === 'doughnut' ? radius * 0.55 : 0)
+  const inner = () => (props.source.shape === 'doughnut'
+    ? radius * 0.55
+    : 0)
   const centre = { x: WIDTH / 2, y: HEIGHT / 2 }
 
   const arcs = () => arcsOf(values())
@@ -373,14 +433,22 @@ function CircularChart(props: { source: ChartResult }): JSX.Element {
                   // total sits in one category draws as a filled pie.
                   ? [
                       `M ${centre.x} ${centre.y - radius} A ${radius} ${radius} 0 1 1 ${centre.x - 0.01} ${centre.y - radius} Z`,
-                      ...(inner() > 0 ? [`M ${centre.x} ${centre.y - inner()} A ${inner()} ${inner()} 0 1 0 ${centre.x - 0.01} ${centre.y - inner()} Z`] : []),
+                      ...(inner() > 0
+                        ? [`M ${centre.x} ${centre.y - inner()} A ${inner()} ${inner()} 0 1 0 ${centre.x - 0.01} ${centre.y - inner()} Z`]
+                        : []),
                     ].join(' ')
                   : [
                       `M ${point(arc.start, inner())}`,
                       `L ${point(arc.start, radius)}`,
-                      `A ${radius} ${radius} 0 ${arc.sweep > Math.PI ? 1 : 0} 1 ${point(arc.end, radius)}`,
+                      `A ${radius} ${radius} 0 ${arc.sweep > Math.PI
+                        ? 1
+                        : 0} 1 ${point(arc.end, radius)}`,
                       `L ${point(arc.end, inner())}`,
-                      ...(inner() > 0 ? [`A ${inner()} ${inner()} 0 ${arc.sweep > Math.PI ? 1 : 0} 0 ${point(arc.start, inner())}`] : []),
+                      ...(inner() > 0
+                        ? [`A ${inner()} ${inner()} 0 ${arc.sweep > Math.PI
+                            ? 1
+                            : 0} 0 ${point(arc.start, inner())}`]
+                        : []),
                       'Z',
                     ].join(' ')
               }

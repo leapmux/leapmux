@@ -100,7 +100,9 @@ export function opTarget(op: CrdtOp): OpTarget {
 
 /** `opTarget`'s entity spelled as the shared `kind:id` key. */
 export function opTargetKey(target: OpTarget): string | null {
-  return target.case === 'entity' ? `${target.kind}:${target.id}` : null
+  return target.case === 'entity'
+    ? `${target.kind}:${target.id}`
+    : null
 }
 
 /**
@@ -174,7 +176,10 @@ export function setNodeDirection(ctx: OpBuilderCtx, nodeId: string, direction: n
 }
 
 export function setNodeRatios(ctx: OpBuilderCtx, nodeId: string, ratios: number[]): CrdtOp {
-  return setNodeRegister(ctx, nodeId, { case: 'ratios', value: create(DoubleListSchema, { values: ratios }) })
+  return setNodeRegister(ctx, nodeId, {
+    case: 'ratios',
+    value: create(DoubleListSchema, { values: ratios }),
+  })
 }
 
 export function setNodeRows(ctx: OpBuilderCtx, nodeId: string, rows: number): CrdtOp {
@@ -186,11 +191,17 @@ export function setNodeCols(ctx: OpBuilderCtx, nodeId: string, cols: number): Cr
 }
 
 export function setNodeRowRatios(ctx: OpBuilderCtx, nodeId: string, values: number[]): CrdtOp {
-  return setNodeRegister(ctx, nodeId, { case: 'rowRatios', value: create(DoubleListSchema, { values }) })
+  return setNodeRegister(ctx, nodeId, {
+    case: 'rowRatios',
+    value: create(DoubleListSchema, { values }),
+  })
 }
 
 export function setNodeColRatios(ctx: OpBuilderCtx, nodeId: string, values: number[]): CrdtOp {
-  return setNodeRegister(ctx, nodeId, { case: 'colRatios', value: create(DoubleListSchema, { values }) })
+  return setNodeRegister(ctx, nodeId, {
+    case: 'colRatios',
+    value: create(DoubleListSchema, { values }),
+  })
 }
 
 export function tombstoneNode(ctx: OpBuilderCtx, nodeId: string): CrdtOp {
@@ -229,7 +240,9 @@ export function tombstoneTab(ctx: OpBuilderCtx, tabType: TabType, tabId: string)
 export function reviveTab(ctx: OpBuilderCtx, tabType: TabType, tabId: string): CrdtOp {
   return buildOp(ctx, {
     case: 'reviveTab',
-    value: create(ReviveTabOpSchema, { tab: { tabType, tabId } }),
+    value: create(ReviveTabOpSchema, {
+      tab: { tabType, tabId },
+    }),
   })
 }
 
@@ -308,8 +321,11 @@ export function liveTabsOnTile(state: UserCrdtState, tileId: string): Array<{ ta
       matches.push({ tabType: t.tabType, tabId: t.tabId, position: t.position?.value ?? '' })
   }
   matches.sort((a, b) => {
-    if (a.position !== b.position)
-      return a.position < b.position ? -1 : 1
+    if (a.position !== b.position) {
+      return a.position < b.position
+        ? -1
+        : 1
+    }
     return cmpStr(a.tabId, b.tabId)
   })
   return matches.map(t => ({ tabType: t.tabType, tabId: t.tabId }))

@@ -8,14 +8,23 @@ function row(toolUseResult: Record<string, unknown>): ClaudeToolRow {
   return { input: {}, toolUseResult, resultContent: '' } as ClaudeToolRow
 }
 
-const args = { toolName: 'TaskOutput', input: { task_id: 'task-42' }, toolUseResult: null, resultContent: '' } as unknown as ClaudeToolRow
+const args = {
+  toolName: 'TaskOutput',
+  input: { task_id: 'task-42' },
+  toolUseResult: null,
+  resultContent: '',
+} as unknown as ClaudeToolRow
 const request = claudeRequestFor('task', args.input, { toolName: args.toolName, result: undefined, context: {} })
 
 /** The state a call reports, in the words the shared outcome vocabulary states. */
 function outcomeOf(status: string): string | undefined {
-  const payload = claudeTaskSpec(request, args, row({ task: { status, task_id: 'task-42' } }))
+  const payload = claudeTaskSpec(request, args, row({
+    task: { status, task_id: 'task-42' },
+  }))
   const result = typedResult(payload)
-  return result && 'outcome' in result ? result.outcome : undefined
+  return result && 'outcome' in result
+    ? result.outcome
+    : undefined
 }
 
 /**
@@ -39,7 +48,12 @@ describe('claudeTaskSpec outcome', () => {
 
   // Anything the four words do not cover is a task still working, which the card draws
   // with the waiting glyph rather than an ended one.
-  it.each(['running', 'pending', '', 'something-newer'])('reads the %s status as still running', (status) => {
+  it.each([
+    'running',
+    'pending',
+    '',
+    'something-newer',
+  ])('reads the %s status as still running', (status) => {
     expect(outcomeOf(status)).toBe('running')
   })
 
@@ -60,7 +74,12 @@ describe('claudeTaskSpec outcome', () => {
  */
 describe('claudeTaskSpec failure rung', () => {
   const failedRow = (toolUseResult: Record<string, unknown> | undefined): ClaudeToolRow =>
-    ({ input: {}, toolUseResult, resultContent: 'No such task', isError: true }) as ClaudeToolRow
+    ({
+      input: {},
+      toolUseResult,
+      resultContent: 'No such task',
+      isError: true,
+    }) as ClaudeToolRow
 
   it('states the reason alone for a TaskOutput the tool failed', () => {
     const payload = claudeTaskSpec(request, args, failedRow(undefined))

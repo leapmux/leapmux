@@ -9,8 +9,12 @@ codexTest.describe('codex subagent lifecycle', () => {
     const { page, modelScript } = native
     const child = await openHeldChildTab(native, {
       rowTitle: HELD_CHILD_NAME,
-      childTurn: { body: ['NEW_TASK', HELD_CHILD_NAME, HELD_CHILD_TASK] },
-      rootTurnsAfterSpawn: [{ text: 'The child started.' }],
+      childTurn: {
+        body: ['NEW_TASK', HELD_CHILD_NAME, HELD_CHILD_TASK],
+      },
+      rootTurnsAfterSpawn: [
+        { text: 'The child started.' },
+      ],
     })
 
     // Codex pauses an interrupted child, and its root answered at the spawn, not after the stop.

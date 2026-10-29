@@ -114,8 +114,15 @@ export function parsePiNumberedDiff(diff: string): StructuredPatchHunk[] | null 
       pendingAnchor = false
     }
 
-    if (!cur)
-      cur = { oldStart: oldPos, newStart: newPos, oldLines: 0, newLines: 0, lines: [] }
+    if (!cur) {
+      cur = {
+        oldStart: oldPos,
+        newStart: newPos,
+        oldLines: 0,
+        newLines: 0,
+        lines: [],
+      }
+    }
 
     if (parsed.prefix === '+') {
       cur.lines.push(`+${parsed.content}`)

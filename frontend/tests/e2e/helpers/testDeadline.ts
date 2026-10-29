@@ -31,7 +31,7 @@ let running: RunningTest | undefined
  */
 export function startTestDeadline(startedAt: number, timeout: () => number): () => void {
   if (!Number.isFinite(startedAt))
-    throw new Error(`A test start must be a finite time, not ${startedAt}.`)
+    throw new TypeError(`A test start must be a finite time, not ${startedAt}.`)
   const record: RunningTest = { startedAt, timeout }
   running = record
   return () => {
@@ -60,7 +60,9 @@ export function currentTestDeadline(): number | undefined {
   if (!running)
     return undefined
   const timeout = running.timeout()
-  return timeout > 0 ? running.startedAt + timeout : undefined
+  return timeout > 0
+    ? running.startedAt + timeout
+    : undefined
 }
 
 /**

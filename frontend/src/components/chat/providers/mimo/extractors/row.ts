@@ -38,17 +38,27 @@ function mimoToolSpanRow(input: RowExtractionInput): ChatRow | null {
   if (!own)
     return null
   const completion = input.completion ?? parsed.completion
-  const side = span.result ? mimoToolPart(span.result.parentObject) : null
+  const side = span.result
+    ? mimoToolPart(span.result.parentObject)
+    : null
   const result = side?.partId === own.partId && side.messageId === own.messageId
     && side.sessionId === own.sessionId && side.callId === own.callId
     ? side
     : null
-  const role = mimoToolSpanRole(own, completion) === 'result' ? 'result' : 'request'
+  const role = mimoToolSpanRole(own, completion) === 'result'
+    ? 'result'
+    : 'request'
   const call = mimoToolCall({
     own,
-    ...(input.spanId ? { registryKey: input.spanId } : {}),
-    ...(result ? { result } : {}),
-    ...(completion !== undefined ? { completion } : {}),
+    ...(input.spanId
+      ? { registryKey: input.spanId }
+      : {}),
+    ...(result
+      ? { result }
+      : {}),
+    ...(completion !== undefined
+      ? { completion }
+      : {}),
     rowFinal: role === 'result',
   })
   return toolCallRow(call, role, span.visibleRows)

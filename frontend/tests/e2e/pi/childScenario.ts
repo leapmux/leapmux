@@ -50,16 +50,24 @@ export async function exercisePiForegroundChild(context: ManagedNativeScenarioCo
     })
     const start = await modelScript.queue(
       {
-        toolCalls: [spawnSubagentToolCall(context.provider, 'spawn-pi', {
-          description: 'Run the fruit task',
-          prompt: modelScript.prompt('List three fruits, then count to five, then report done.'),
-        })],
+        toolCalls: [
+          spawnSubagentToolCall(context.provider, 'spawn-pi', {
+            description: 'Run the fruit task',
+            prompt: modelScript.prompt('List three fruits, then count to five, then report done.'),
+          }),
+        ],
       },
       { text: 'The subagent listed three fruits and counted to five.' },
     )
     await sendMessage(page, modelScript.prompt('Spawn one subagent for the counting task and report what it says.'))
     await modelScript.waitForGate(gate)
-    await registerPiChildNoticeRule(modelScript, { name: 'the parent acknowledges the subagent notification', spawnCallId: 'spawn-pi', description: 'Run the fruit task', report, reply: 'The subagent finished the counting task.' })
+    await registerPiChildNoticeRule(modelScript, {
+      name: 'the parent acknowledges the subagent notification',
+      spawnCallId: 'spawn-pi',
+      description: 'Run the fruit task',
+      report,
+      reply: 'The subagent finished the counting task.',
+    })
     await modelScript.releaseGate(gate)
     await modelScript.waitForSteps(start + 2)
 

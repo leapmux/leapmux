@@ -48,15 +48,19 @@ codexTest.describe('codex subagent lifecycle', () => {
     // a task, and the task name pins it to this child rather than another.
     await modelScript.rule({
       name: 'the child answers with its marker',
-      when: { body: ['NEW_TASK', taskName] },
+      when: {
+        body: ['NEW_TASK', taskName],
+      },
       respond: { text: 'CHILD_DONE' },
     })
     const start = await modelScript.queue(
       {
-        toolCalls: [spawnSubagentToolCall(native.provider, 'spawn-child', {
-          description: taskName.replaceAll('_', ' '),
-          prompt: modelScript.prompt('reply with the child marker'),
-        })],
+        toolCalls: [
+          spawnSubagentToolCall(native.provider, 'spawn-child', {
+            description: taskName.replaceAll('_', ' '),
+            prompt: modelScript.prompt('reply with the child marker'),
+          }),
+        ],
       },
       { text: 'ROOT_DONE' },
     )
@@ -85,7 +89,9 @@ codexTest.describe('codex subagent lifecycle', () => {
     //    (the child tab propagates to the hub's ListTabs async).
     await retryUntilPass(async () => {
       const child = await nativeAgentById(native, childTabId)
-      expect(child && !child.acceptsMessages ? 'read-only' : null, 'the Worker holds the child as a read-only agent').toBe('read-only')
+      expect(child && !child.acceptsMessages
+        ? 'read-only'
+        : null, 'the Worker holds the child as a read-only agent').toBe('read-only')
     })
 
     // 7. Select the parent and prove the child answer did not leak into it.
@@ -105,7 +111,11 @@ codexTest.describe('provider tool rendering', () => {
     // Its model result reports the timeout. The empty agent item must reveal later rows.
     const callId = 'empty-wait'
     const stepIndex = await modelScript.queue(
-      { toolCalls: [codexWaitAgentToolCall(callId, 1)] },
+      {
+        toolCalls: [
+          codexWaitAgentToolCall(callId, 1),
+        ],
+      },
       { text: 'VISIBLE_AFTER_EMPTY_WAIT' },
     )
     await page.reload()
@@ -113,7 +123,10 @@ codexTest.describe('provider tool rendering', () => {
     await sendMessage(page, modelScript.prompt('Wait for the agents that are not running.'))
     const status = await modelScript.waitForSteps(stepIndex + 2)
     const nativeResult = nativeToolResult(stepRequest(status, stepIndex + 1), callId)
-    expect(JSON.parse(nativeResult)).toMatchObject({ timed_out: true, message: expect.stringContaining('Wait timed out.') })
+    expect(JSON.parse(nativeResult)).toMatchObject({
+      timed_out: true,
+      message: expect.stringContaining('Wait timed out.'),
+    })
     expect(nativeResult).not.toMatch(/unsupported call|failed to parse function arguments/)
 
     const chat = page.locator('[data-chat-scroll-container="true"]').filter({ visible: true })

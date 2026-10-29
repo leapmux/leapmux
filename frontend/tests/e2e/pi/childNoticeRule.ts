@@ -53,18 +53,35 @@ export function piChildLaunch(request: MockModelRequestRecord, spawnCallId: stri
   const result = nativeToolResult(request, spawnCallId)
   if (!/^Agent (?:started|queued) in background\.$/m.test(result))
     throw new Error('The Pi child receipt contains no successful background launch.')
-  const ids = [...result.matchAll(/^Agent ID: ([\da-f]{8}-[\da-f]{4}-[\da-f]{3})$/gm)]
-  const files = [...result.matchAll(/^Output file: ([^\r\n]+)$/gm)]
+  const ids = [
+    ...result.matchAll(/^Agent ID: ([\da-f]{8}-[\da-f]{4}-[\da-f]{3})$/gm),
+  ]
+  const files = [
+    ...result.matchAll(/^Output file: ([^\r\n]+)$/gm),
+  ]
   const childId = ids[0]?.[1]
   if (ids.length !== 1 || !childId || files.length > 1)
     throw new Error('The Pi child receipt contains no unique native child identity.')
   const outputFile = files[0]?.[1]
-  return { spawnCallId, description: input.description, childId, ...(outputFile === undefined ? {} : { outputFile }) }
+  return {
+    spawnCallId,
+    description: input.description,
+    childId,
+    ...(outputFile === undefined
+      ? {}
+      : { outputFile }),
+  }
 }
 
 /** Match the completion envelope of one actual Pi child, with its call and report. */
 export function piChildNoticeRule(launch: PiChildLaunch, options: PiNoticeOptions): MockModelRule {
-  for (const field of ['name', 'spawnCallId', 'description', 'report', 'reply'] as const)
+  for (const field of [
+    'name',
+    'spawnCallId',
+    'description',
+    'report',
+    'reply',
+  ] as const)
     requireNotice(options[field], field)
   if (launch.spawnCallId !== options.spawnCallId || launch.description !== options.description)
     throw new Error('The Pi notification does not identify its actual Agent call.')
@@ -78,17 +95,27 @@ export function piChildNoticeRule(launch: PiChildLaunch, options: PiNoticeOption
   const envelope = `^<task-notification>\\n`
     + `<task-id>${escapeRegExp(launch.childId)}</task-id>\\n`
     + `<tool-use-id>${escapeRegExp(encodeNativeXmlText(options.spawnCallId))}</tool-use-id>\\n${
-      launch.outputFile === undefined ? '' : `<output-file>${escapeRegExp(encodeNativeXmlText(launch.outputFile))}</output-file>\\n`
+      launch.outputFile === undefined
+        ? ''
+        : `<output-file>${escapeRegExp(encodeNativeXmlText(launch.outputFile))}</output-file>\\n`
     }<status>Done</status>\\n`
     + `<summary>Agent "${escapeRegExp(encodeNativeXmlText(options.description))}" completed</summary>\\n`
     + `<result>${escapeRegExp(encodeNativeXmlText(options.report))}</result>\\n${usage}\\n</task-notification>${
-      launch.outputFile === undefined ? '' : `\\nFull transcript available at: ${escapeRegExp(launch.outputFile)}`
+      launch.outputFile === undefined
+        ? ''
+        : `\\nFull transcript available at: ${escapeRegExp(launch.outputFile)}`
     }$`
   return {
     name: options.name,
-    when: { protocol: 'openai-chat-completions', user: envelope, lastMessage: { role: 'user', text: envelope } },
+    when: {
+      protocol: 'openai-chat-completions',
+      user: envelope,
+      lastMessage: { role: 'user', text: envelope },
+    },
     respond: { text: options.reply },
-    ...(options.once === undefined ? {} : { once: options.once }),
+    ...(options.once === undefined
+      ? {}
+      : { once: options.once }),
   }
 }
 
@@ -102,7 +129,13 @@ export async function registerPiChildNoticeRule(modelScript: Pick<ModelScript, '
 
 /** Keep a native workflow notice separate from an individual child notice. */
 export function piWorkflowNoticeRule(options: PiWorkflowNoticeOptions): MockModelRule {
-  for (const field of ['name', 'taskId', 'callId', 'workflowName', 'reply'] as const)
+  for (const field of [
+    'name',
+    'taskId',
+    'callId',
+    'workflowName',
+    'reply',
+  ] as const)
     requireNotice(options[field], field)
   if (!/^wf_[\w-]+$/.test(options.taskId) || options.reports.length === 0)
     throw new Error('The Pi workflow notification requires an actual task ID and reports.')
@@ -117,15 +150,23 @@ export function piWorkflowNoticeRule(options: PiWorkflowNoticeOptions): MockMode
   const rawTotal = `(?!(?:${smallerTotals}) agents)[1-9]\\d*`
   const envelope = `^<task-notification>\\n`
     + `<task-id>${escapeRegExp(options.taskId)}</task-id>\\n<tool-use-id>${escapeRegExp(encodeNativeXmlText(options.callId))}</tool-use-id>\\n${
-      options.scriptPath === undefined ? '' : `<script>${escapeRegExp(encodeNativeXmlText(options.scriptPath))}</script>\\n`
+      options.scriptPath === undefined
+        ? ''
+        : `<script>${escapeRegExp(encodeNativeXmlText(options.scriptPath))}</script>\\n`
     }<status>Done</status>\\n`
     + `<summary>Workflow "${escapeRegExp(encodeNativeXmlText(options.workflowName))}" completed — ${options.reports.length}/${rawTotal} agents</summary>\\n`
     + `<result>${reports}[^<]*</result>\\n`
     + `<usage><total_tokens>\\d+</total_tokens><tool_uses>\\d+</tool_uses><duration_ms>\\d+</duration_ms></usage>\\n</task-notification>$`
   return {
     name: options.name,
-    when: { protocol: 'openai-chat-completions', user: envelope, lastMessage: { role: 'user', text: envelope } },
+    when: {
+      protocol: 'openai-chat-completions',
+      user: envelope,
+      lastMessage: { role: 'user', text: envelope },
+    },
     respond: { text: options.reply },
-    ...(options.once === undefined ? {} : { once: options.once }),
+    ...(options.once === undefined
+      ? {}
+      : { once: options.once }),
   }
 }

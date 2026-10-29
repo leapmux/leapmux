@@ -16,10 +16,21 @@ const solo = vi.hoisted(() => vi.fn(() => false))
 const elevationExpiresAt = vi.hoisted(() => vi.fn((): { seconds: bigint, nanos: number } | undefined => undefined))
 
 vi.mock('~/api/clients', () => ({
-  userClient: { listUserSettings, updateUserSetting: vi.fn(), resetUserSetting: vi.fn() },
-  adminSettingsClient: { listSettings, updateSetting, updateSettingSecret: vi.fn(), resetSetting: vi.fn() },
+  userClient: {
+    listUserSettings,
+    updateUserSetting: vi.fn(),
+    resetUserSetting: vi.fn(),
+  },
+  adminSettingsClient: {
+    listSettings,
+    updateSetting,
+    updateSettingSecret: vi.fn(),
+    resetSetting: vi.fn(),
+  },
   // The hub-wide registrations row's custom editor lists apps through this.
-  appClient: { listApps: vi.fn().mockResolvedValue({ apps: [] }) },
+  appClient: {
+    listApps: vi.fn().mockResolvedValue({ apps: [] }),
+  },
   authClient: {},
 }))
 
@@ -43,7 +54,10 @@ vi.mock('~/context/AuthContext', async () => {
   })
   return {
     useAuth: () => ({
-      user: () => ({ ...account(), isAdmin: isAdmin() }),
+      user: () => ({
+        ...account(),
+        isAdmin: isAdmin(),
+      }),
       elevationExpiresAt: () => elevationExpiresAt(),
       dropElevation: vi.fn().mockResolvedValue(undefined),
       refreshUser,
@@ -78,7 +92,10 @@ beforeEach(() => {
   // registry joins only the text a user reads onto it. A dialog that wants
   // Theme, the font stacks or the keyboard-shortcuts editor therefore needs
   // the real schema here.
-  listUserSettings.mockResolvedValue({ descriptors: accountWireDescriptors(), values: [] })
+  listUserSettings.mockResolvedValue({
+    descriptors: accountWireDescriptors(),
+    values: [],
+  })
   listSettings.mockResolvedValue({ descriptors: [], values: [] })
   isAdmin.mockReturnValue(false)
   solo.mockReturnValue(false)
@@ -98,10 +115,12 @@ afterEach(() => {
 describe('PreferencesDialog desktop shell refusal', () => {
   it('shows the refusal on the row that owns it', async () => {
     desktop.mockReturnValue(true)
-    reportDesktopShellRefusals([{
-      setting: 'trayEnabled',
-      message: 'LeapMux could not create a tray icon on this desktop',
-    }])
+    reportDesktopShellRefusals([
+      {
+        setting: 'trayEnabled',
+        message: 'LeapMux could not create a tray icon on this desktop',
+      },
+    ])
     renderDialog('desktop')
 
     expect((await screen.findByTestId('setting-error-desktop.trayEnabled')).textContent)
@@ -166,16 +185,30 @@ describe('PreferencesDialog admin restriction', () => {
   it('shows the administration groups only to admins', async () => {
     isAdmin.mockReturnValue(true)
     listSettings.mockResolvedValue({
-      descriptors: [{
-        key: 'session_duration_seconds',
-        category: 'general',
-        title: 'Session duration',
-        summary: '',
-        order: 10,
-        hiddenInSolo: false,
-        restart: false,
-        fields: [{ name: '', label: 'Session duration', help: '', kind: 2, enumValues: [], unit: 'seconds', secret: false, placeholder: '', min: 300n }],
-      }],
+      descriptors: [
+        {
+          key: 'session_duration_seconds',
+          category: 'general',
+          title: 'Session duration',
+          summary: '',
+          order: 10,
+          hiddenInSolo: false,
+          restart: false,
+          fields: [
+            {
+              name: '',
+              label: 'Session duration',
+              help: '',
+              kind: 2,
+              enumValues: [],
+              unit: 'seconds',
+              secret: false,
+              placeholder: '',
+              min: 300n,
+            },
+          ],
+        },
+      ],
       values: [],
     })
     renderDialog('admin-general')
@@ -206,16 +239,30 @@ describe('PreferencesDialog admin restriction', () => {
   it('keeps an open admin editor mounted through an account re-read', async () => {
     isAdmin.mockReturnValue(true)
     listSettings.mockResolvedValue({
-      descriptors: [{
-        key: 'session_duration_seconds',
-        category: 'general',
-        title: 'Session duration',
-        summary: '',
-        order: 10,
-        hiddenInSolo: false,
-        restart: false,
-        fields: [{ name: '', label: 'Session duration', help: '', kind: 2, enumValues: [], unit: 'seconds', secret: false, placeholder: '', min: 300n }],
-      }],
+      descriptors: [
+        {
+          key: 'session_duration_seconds',
+          category: 'general',
+          title: 'Session duration',
+          summary: '',
+          order: 10,
+          hiddenInSolo: false,
+          restart: false,
+          fields: [
+            {
+              name: '',
+              label: 'Session duration',
+              help: '',
+              kind: 2,
+              enumValues: [],
+              unit: 'seconds',
+              secret: false,
+              placeholder: '',
+              min: 300n,
+            },
+          ],
+        },
+      ],
       values: [],
     })
     renderDialog('admin-general')
@@ -233,16 +280,29 @@ describe('PreferencesDialog admin restriction', () => {
   it('marks admin groups that hold restart-class settings', async () => {
     isAdmin.mockReturnValue(true)
     listSettings.mockResolvedValue({
-      descriptors: [{
-        key: 'queue_budget',
-        category: 'advanced',
-        title: 'Queue budgets',
-        summary: '',
-        order: 20,
-        hiddenInSolo: false,
-        restart: true,
-        fields: [{ name: 'relay_bytes', label: 'Relay', help: '', kind: 2, enumValues: [], unit: 'bytes', secret: false, placeholder: '' }],
-      }],
+      descriptors: [
+        {
+          key: 'queue_budget',
+          category: 'advanced',
+          title: 'Queue budgets',
+          summary: '',
+          order: 20,
+          hiddenInSolo: false,
+          restart: true,
+          fields: [
+            {
+              name: 'relay_bytes',
+              label: 'Relay',
+              help: '',
+              kind: 2,
+              enumValues: [],
+              unit: 'bytes',
+              secret: false,
+              placeholder: '',
+            },
+          ],
+        },
+      ],
       values: [],
     })
     renderDialog('admin-advanced')
@@ -265,7 +325,19 @@ describe('PreferencesDialog admin restriction', () => {
           order: 10,
           hiddenInSolo: false,
           restart: false,
-          fields: [{ name: '', label: 'Session duration', help: '', kind: 2, enumValues: [], unit: 'seconds', secret: false, placeholder: '', min: 300n }],
+          fields: [
+            {
+              name: '',
+              label: 'Session duration',
+              help: '',
+              kind: 2,
+              enumValues: [],
+              unit: 'seconds',
+              secret: false,
+              placeholder: '',
+              min: 300n,
+            },
+          ],
         },
         {
           key: 'hidden_restart_setting',
@@ -275,7 +347,18 @@ describe('PreferencesDialog admin restriction', () => {
           order: 20,
           hiddenInSolo: true,
           restart: true,
-          fields: [{ name: '', label: 'Hidden restart setting', help: '', kind: 1, enumValues: [], unit: '', secret: false, placeholder: '' }],
+          fields: [
+            {
+              name: '',
+              label: 'Hidden restart setting',
+              help: '',
+              kind: 1,
+              enumValues: [],
+              unit: '',
+              secret: false,
+              placeholder: '',
+            },
+          ],
         },
       ],
       values: [],
@@ -293,7 +376,9 @@ describe('PreferencesDialog admin restriction', () => {
   // only because neither one could see it.
   it('marks a USER group whose row the hub declares restart-class', async () => {
     listUserSettings.mockResolvedValue({
-      descriptors: accountWireDescriptors().map(d => (d.key === 'theme' ? { ...d, restart: true } : d)),
+      descriptors: accountWireDescriptors().map(d => (d.key === 'theme'
+        ? { ...d, restart: true }
+        : d)),
       values: [],
     })
     renderDialog('appearance')
@@ -307,17 +392,38 @@ describe('PreferencesDialog admin restriction', () => {
   it('renders the restart warning on restart groups', async () => {
     isAdmin.mockReturnValue(true)
     listSettings.mockResolvedValue({
-      descriptors: [{
-        key: 'queue_budget',
-        category: 'advanced',
-        title: 'Queue budgets',
-        summary: '',
-        order: 20,
-        hiddenInSolo: false,
-        restart: true,
-        fields: [{ name: 'relay_bytes', label: 'Relay', help: '', kind: 2, enumValues: [], unit: 'bytes', secret: false, placeholder: '' }],
-      }],
-      values: [{ key: 'queue_budget', valueJson: '', effectiveJson: '{"relay_bytes":0}', customized: false, secretSet: {} }],
+      descriptors: [
+        {
+          key: 'queue_budget',
+          category: 'advanced',
+          title: 'Queue budgets',
+          summary: '',
+          order: 20,
+          hiddenInSolo: false,
+          restart: true,
+          fields: [
+            {
+              name: 'relay_bytes',
+              label: 'Relay',
+              help: '',
+              kind: 2,
+              enumValues: [],
+              unit: 'bytes',
+              secret: false,
+              placeholder: '',
+            },
+          ],
+        },
+      ],
+      values: [
+        {
+          key: 'queue_budget',
+          valueJson: '',
+          effectiveJson: '{"relay_bytes":0}',
+          customized: false,
+          secretSet: {},
+        },
+      ],
     })
     renderDialog('admin-advanced')
     await waitFor(() => expect(screen.getByText('Changes in this group apply after a hub restart.')).toBeTruthy())
@@ -362,7 +468,9 @@ describe('PreferencesDialog deep link', () => {
     ))
     await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
     const search = screen.getByTestId('preferences-search') as HTMLInputElement
-    fireEvent.input(search, { target: { value: 'volume' } })
+    fireEvent.input(search, {
+      target: { value: 'volume' },
+    })
     await waitFor(() => expect(screen.getByTestId('preferences-search-results')).toBeTruthy())
 
     fireEvent.click(screen.getByRole('button', { name: /Turn-end volume/ }))
@@ -417,7 +525,12 @@ describe('PreferencesDialog solo mode', () => {
     expect(screen.getByTestId('preferences-nav-apps')).toBeTruthy()
     const panel = document.querySelector('#preferences-panel')!
     expect(panel.querySelector('[data-setting-id="account.password"]')).toBeTruthy()
-    for (const id of ['account.profile', 'account.email', 'account.passkeys', 'account.linkedProviders'])
+    for (const id of [
+      'account.profile',
+      'account.email',
+      'account.passkeys',
+      'account.linkedProviders',
+    ])
       expect(panel.querySelector(`[data-setting-id="${id}"]`), `${id} must stay hidden in solo`).toBeNull()
   })
 
@@ -444,7 +557,19 @@ describe('PreferencesDialog solo mode', () => {
           order: 10,
           hiddenInSolo: false,
           restart: false,
-          fields: [{ name: '', label: 'Session duration', help: '', kind: 2, enumValues: [], unit: 'seconds', secret: false, placeholder: '', min: 300n }],
+          fields: [
+            {
+              name: '',
+              label: 'Session duration',
+              help: '',
+              kind: 2,
+              enumValues: [],
+              unit: 'seconds',
+              secret: false,
+              placeholder: '',
+              min: 300n,
+            },
+          ],
         },
         {
           key: 'captcha.enabled',
@@ -454,7 +579,18 @@ describe('PreferencesDialog solo mode', () => {
           order: 10,
           hiddenInSolo: true,
           restart: false,
-          fields: [{ name: '', label: 'Bot protection enabled', help: '', kind: 1, enumValues: [], unit: '', secret: false, placeholder: '' }],
+          fields: [
+            {
+              name: '',
+              label: 'Bot protection enabled',
+              help: '',
+              kind: 1,
+              enumValues: [],
+              unit: '',
+              secret: false,
+              placeholder: '',
+            },
+          ],
         },
         {
           key: 'rate_limit.elevation',
@@ -464,7 +600,18 @@ describe('PreferencesDialog solo mode', () => {
           order: 10,
           hiddenInSolo: true,
           restart: false,
-          fields: [{ name: 'enabled', label: 'Enabled', help: '', kind: 1, enumValues: [], unit: '', secret: false, placeholder: '' }],
+          fields: [
+            {
+              name: 'enabled',
+              label: 'Enabled',
+              help: '',
+              kind: 1,
+              enumValues: [],
+              unit: '',
+              secret: false,
+              placeholder: '',
+            },
+          ],
         },
       ],
       values: [],
@@ -488,7 +635,19 @@ describe('PreferencesDialog solo mode', () => {
           order: 10,
           hiddenInSolo: false,
           restart: false,
-          fields: [{ name: '', label: 'Session duration', help: '', kind: 2, enumValues: [], unit: 'seconds', secret: false, placeholder: '', min: 300n }],
+          fields: [
+            {
+              name: '',
+              label: 'Session duration',
+              help: '',
+              kind: 2,
+              enumValues: [],
+              unit: 'seconds',
+              secret: false,
+              placeholder: '',
+              min: 300n,
+            },
+          ],
         },
         {
           key: 'captcha.enabled',
@@ -498,7 +657,18 @@ describe('PreferencesDialog solo mode', () => {
           order: 10,
           hiddenInSolo: true,
           restart: false,
-          fields: [{ name: '', label: 'Bot protection enabled', help: '', kind: 1, enumValues: [], unit: '', secret: false, placeholder: '' }],
+          fields: [
+            {
+              name: '',
+              label: 'Bot protection enabled',
+              help: '',
+              kind: 1,
+              enumValues: [],
+              unit: '',
+              secret: false,
+              placeholder: '',
+            },
+          ],
         },
       ],
       values: [],
@@ -524,7 +694,9 @@ describe('PreferencesDialog search', () => {
     renderDialog()
     await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
     const search = screen.getByTestId('preferences-search') as HTMLInputElement
-    fireEvent.input(search, { target: { value: 'volume' } })
+    fireEvent.input(search, {
+      target: { value: 'volume' },
+    })
     await waitFor(() => expect(screen.queryByTestId('preferences-nav-appearance')).toBeNull())
     await waitFor(() => expect(screen.getByTestId('preferences-search-results')).toBeTruthy())
     // Turn-end sound (keyword) + Turn-end volume (label) both hit.
@@ -541,7 +713,9 @@ describe('PreferencesDialog search', () => {
     ))
     await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
     const search = screen.getByTestId('preferences-search') as HTMLInputElement
-    fireEvent.input(search, { target: { value: 'theme' } })
+    fireEvent.input(search, {
+      target: { value: 'theme' },
+    })
     await waitFor(() => expect(screen.getByTestId('preferences-search-results')).toBeTruthy())
 
     fireEvent.keyDown(search, { key: 'Escape' })
@@ -555,7 +729,9 @@ describe('PreferencesDialog search', () => {
     renderDialog()
     await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
     const search = screen.getByTestId('preferences-search') as HTMLInputElement
-    fireEvent.input(search, { target: { value: 'xyzzy-no-such-setting' } })
+    fireEvent.input(search, {
+      target: { value: 'xyzzy-no-such-setting' },
+    })
     await waitFor(() => expect(screen.getByText(/No settings match/)).toBeTruthy())
     expect(screen.getByText(/xyzzy-no-such-setting/)).toBeTruthy()
   })
@@ -675,17 +851,23 @@ describe('PreferencesDialog search index', () => {
     order: 50,
     hiddenInSolo: true,
     restart: false,
-    fields: [{
-      name: 'site_key',
-      label: 'Turnstile site key',
-      help: '',
-      kind: 4,
-      enumValues: [],
-      unit: '',
-      secret: false,
-      placeholder: '',
-      dependsOn: { key: 'captcha.selected', field: '', in: ['turnstile'] },
-    }],
+    fields: [
+      {
+        name: 'site_key',
+        label: 'Turnstile site key',
+        help: '',
+        kind: 4,
+        enumValues: [],
+        unit: '',
+        secret: false,
+        placeholder: '',
+        dependsOn: {
+          key: 'captcha.selected',
+          field: '',
+          in: ['turnstile'],
+        },
+      },
+    ],
   }
 
   // The index is built from the rows the panel renders, so "searchable"
@@ -696,12 +878,22 @@ describe('PreferencesDialog search index', () => {
     isAdmin.mockReturnValue(true)
     listSettings.mockResolvedValue({
       descriptors: [captchaDescriptor],
-      values: [{ key: 'captcha.selected', valueJson: '"altcha"', effectiveJson: '"altcha"', customized: false, secretSet: {} }],
+      values: [
+        {
+          key: 'captcha.selected',
+          valueJson: '"altcha"',
+          effectiveJson: '"altcha"',
+          customized: false,
+          secretSet: {},
+        },
+      ],
     })
     renderDialog()
     await waitFor(() => expect(listSettings).toHaveBeenCalled())
 
-    fireEvent.input(screen.getByTestId('preferences-search'), { target: { value: 'Turnstile site key' } })
+    fireEvent.input(screen.getByTestId('preferences-search'), {
+      target: { value: 'Turnstile site key' },
+    })
     const results = await waitFor(() => screen.getByTestId('preferences-search-results'))
     // Assert on the RESULT BUTTONS: the empty-state message echoes the query
     // back, so a text match on the query proves nothing either way.
@@ -712,12 +904,22 @@ describe('PreferencesDialog search index', () => {
     isAdmin.mockReturnValue(true)
     listSettings.mockResolvedValue({
       descriptors: [captchaDescriptor],
-      values: [{ key: 'captcha.selected', valueJson: '"turnstile"', effectiveJson: '"turnstile"', customized: false, secretSet: {} }],
+      values: [
+        {
+          key: 'captcha.selected',
+          valueJson: '"turnstile"',
+          effectiveJson: '"turnstile"',
+          customized: false,
+          secretSet: {},
+        },
+      ],
     })
     renderDialog()
     await waitFor(() => expect(listSettings).toHaveBeenCalled())
 
-    fireEvent.input(screen.getByTestId('preferences-search'), { target: { value: 'Turnstile site key' } })
+    fireEvent.input(screen.getByTestId('preferences-search'), {
+      target: { value: 'Turnstile site key' },
+    })
     const results = await waitFor(() => screen.getByTestId('preferences-search-results'))
     await waitFor(() => expect(results.querySelectorAll('button').length).toBeGreaterThan(0))
     expect(results.textContent).toContain('Turnstile site key')
@@ -759,17 +961,19 @@ const signupDescriptor = {
   order: 10,
   hiddenInSolo: false,
   restart: false,
-  fields: [{
-    name: '',
-    label: 'Open sign-up',
-    help: '',
-    kind: 1,
-    enumValues: [],
-    unit: '',
-    secret: false,
-    placeholder: '',
-    customId: '',
-  }],
+  fields: [
+    {
+      name: '',
+      label: 'Open sign-up',
+      help: '',
+      kind: 1,
+      enumValues: [],
+      unit: '',
+      secret: false,
+      placeholder: '',
+      customId: '',
+    },
+  ],
 }
 
 /**
@@ -799,9 +1003,13 @@ describe('a hub-setting write keeps the row it came from', () => {
     isAdmin.mockReturnValue(true)
     listSettings.mockResolvedValue({
       descriptors: [signupDescriptor],
-      values: [signupValue('false')],
+      values: [
+        signupValue('false'),
+      ],
     })
-    updateSetting.mockResolvedValue({ value: signupValue('true', { valueJson: 'true', customized: true }) })
+    updateSetting.mockResolvedValue({
+      value: signupValue('true', { valueJson: 'true', customized: true }),
+    })
 
     renderDialog('admin-signup')
     const toggle = await screen.findByRole('switch', { name: 'Open sign-up' })
@@ -830,7 +1038,9 @@ describe('a hub setting a read-time rule overrides', () => {
       descriptors: [signupDescriptor],
       // Nothing stored, so the code default is what an edit replaces; dev
       // mode holds sign-up open until an operator stores a row.
-      values: [signupValue('true', { mergedJson: 'false' })],
+      values: [
+        signupValue('true', { mergedJson: 'false' }),
+      ],
     })
 
     renderDialog('admin-signup')
@@ -846,7 +1056,9 @@ describe('a hub setting a read-time rule overrides', () => {
     isAdmin.mockReturnValue(true)
     listSettings.mockResolvedValue({
       descriptors: [signupDescriptor],
-      values: [signupValue('true', { valueJson: 'true', mergedJson: 'true', customized: true })],
+      values: [
+        signupValue('true', { valueJson: 'true', mergedJson: 'true', customized: true }),
+      ],
     })
 
     renderDialog('admin-signup')
@@ -903,20 +1115,37 @@ describe('PreferencesDialog section order', () => {
  * every hub-settings write.
  */
 describe('PreferencesDialog verified-session state', () => {
-  const inTwoHours = () => ({ seconds: BigInt(Math.floor(Date.now() / 1000) + 7200), nanos: 0 })
+  const inTwoHours = () => ({
+    seconds: BigInt(Math.floor(Date.now() / 1000) + 7200),
+    nanos: 0,
+  })
 
   function adminGeneralSettings() {
     return {
-      descriptors: [{
-        key: 'session_duration_seconds',
-        category: 'general',
-        title: 'Session duration',
-        summary: '',
-        order: 10,
-        hiddenInSolo: false,
-        restart: false,
-        fields: [{ name: '', label: 'Session duration', help: '', kind: 2, enumValues: [], unit: 'seconds', secret: false, placeholder: '', min: 300n }],
-      }],
+      descriptors: [
+        {
+          key: 'session_duration_seconds',
+          category: 'general',
+          title: 'Session duration',
+          summary: '',
+          order: 10,
+          hiddenInSolo: false,
+          restart: false,
+          fields: [
+            {
+              name: '',
+              label: 'Session duration',
+              help: '',
+              kind: 2,
+              enumValues: [],
+              unit: 'seconds',
+              secret: false,
+              placeholder: '',
+              min: 300n,
+            },
+          ],
+        },
+      ],
       values: [],
     }
   }

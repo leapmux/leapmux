@@ -129,5 +129,11 @@ export function createFlingSettle(ctx: ScrollContext, extras: {
     timer = setTimeout(settle, FLING_SETTLE_MS)
   }
 
-  return { accumulate, reset, rebase, schedule, cancel }
+  return {
+    accumulate,
+    reset,
+    rebase,
+    schedule,
+    cancel,
+  }
 }

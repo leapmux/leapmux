@@ -33,8 +33,20 @@ describe('chatPremeasureBands', () => {
   })
 
   describe('collectUnmeasuredCandidates', () => {
-    const all = [entry('a'), entry('b'), entry('c'), entry('d'), entry('e')]
-    const items = [item('a'), item('b'), item('c'), item('d'), item('e')]
+    const all = [
+      entry('a'),
+      entry('b'),
+      entry('c'),
+      entry('d'),
+      entry('e'),
+    ]
+    const items = [
+      item('a'),
+      item('b'),
+      item('c'),
+      item('d'),
+      item('e'),
+    ]
 
     it('collects only the unmeasured rows in [from, to), pairing each entry with its item', () => {
       const measured = new Set(['b'])

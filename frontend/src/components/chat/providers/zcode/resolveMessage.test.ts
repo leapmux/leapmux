@@ -17,7 +17,10 @@ describe('zcode supplemental input conformance', () => {
 
   it.each(fixture.cases)('$name', ({ original, supplemental, expected }) => {
     const before = JSON.stringify({ original, supplemental })
-    expect(resolveZCodeMessage({ ...input(original), supplementalContent: supplemental })).toEqual(expected)
+    expect(resolveZCodeMessage({
+      ...input(original),
+      supplementalContent: supplemental,
+    })).toEqual(expected)
     expect(JSON.stringify({ original, supplemental })).toBe(before)
   })
 })

@@ -46,13 +46,19 @@ export function droidIsQuestionRequest(payload: Record<string, unknown>): boolea
  */
 function droidQuestions(payload: Record<string, unknown>): DroidQuestion[] {
   const raw: unknown = payload[DROID_ASK_USER_FIELD.Questions]
-  const questions: unknown[] = Array.isArray(raw) ? raw : []
+  const questions: unknown[] = Array.isArray(raw)
+    ? raw
+    : []
   return questions.filter(isObject).map((question) => {
     const index: unknown = question[DROID_ASK_USER_FIELD.Index]
     const rawOptions: unknown = question[DROID_ASK_USER_FIELD.Options]
-    const options: unknown[] = Array.isArray(rawOptions) ? rawOptions : []
+    const options: unknown[] = Array.isArray(rawOptions)
+      ? rawOptions
+      : []
     return {
-      index: typeof index === 'number' && Number.isInteger(index) ? index : undefined,
+      index: typeof index === 'number' && Number.isInteger(index)
+        ? index
+        : undefined,
       question: pickString(question, DROID_ASK_USER_FIELD.Question),
       options: options.filter((option): option is string => typeof option === 'string'),
       multiSelect: question[DROID_ASK_USER_FIELD.MultiSelect] === true,
@@ -82,8 +88,14 @@ export function droidQuestionsFromPayload(payload: Record<string, unknown>): Con
 function droidAnswerText(question: DroidQuestion, picked: readonly string[], typed: string): string {
   const chosen = question.options.filter(option => picked.includes(option))
   const text = typed.trim()
-  if (question.multiSelect)
-    return [...chosen, ...(text ? [text] : [])].join(ANSWER_PART_SEPARATOR)
+  if (question.multiSelect) {
+    return [
+      ...chosen,
+      ...(text
+        ? [text]
+        : []),
+    ].join(ANSWER_PART_SEPARATOR)
+  }
   return chosen[0] ?? text
 }
 
@@ -97,7 +109,9 @@ function droidAnswerText(question: DroidQuestion, picked: readonly string[], typ
  */
 export function buildDroidAnswer(requestId: string, payload: Record<string, unknown>, state: ControlAnswerState): Record<string, unknown> {
   const answers = droidQuestions(payload).map((question, position) => ({
-    ...(question.index === undefined ? {} : { [DROID_ASK_USER_FIELD.Index]: question.index }),
+    ...(question.index === undefined
+      ? {}
+      : { [DROID_ASK_USER_FIELD.Index]: question.index }),
     [DROID_ASK_USER_FIELD.Answer]: droidAnswerText(question, state.selections()[position] ?? [], state.customTexts()[position] ?? ''),
   }))
   return buildControlResponseEnvelope(requestId, { behavior: 'allow', [DROID_REPLY.Answers]: answers })

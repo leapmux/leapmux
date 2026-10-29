@@ -24,6 +24,10 @@ export const JUNIE_BRAVE = {
  * Thus, Plan and a preset can remain active together.
  */
 export const juniePermissionPresets = {
-  smart: { sets: { [JUNIE_CONFIG.BraveMode]: JUNIE_BRAVE.Auto } },
-  bypass: { sets: { [JUNIE_CONFIG.BraveMode]: JUNIE_BRAVE.On } },
+  smart: {
+    sets: { [JUNIE_CONFIG.BraveMode]: JUNIE_BRAVE.Auto },
+  },
+  bypass: {
+    sets: { [JUNIE_CONFIG.BraveMode]: JUNIE_BRAVE.On },
+  },
 } satisfies ProviderPermissionPresets

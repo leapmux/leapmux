@@ -10,9 +10,13 @@ function expectModelAtEffort(request: MockModelRequestRecord, model: string, eff
 }
 
 grokTest('sends the chosen effort into native turns before and after reload', async ({ native }) => {
-  await exerciseNativeOption(native, { groupId: 'reasoning_effort', value: 'high', nativeProof: (request) => {
-    expect(request.body).toHaveProperty('reasoning_effort', 'high')
-  } })
+  await exerciseNativeOption(native, {
+    groupId: 'reasoning_effort',
+    value: 'high',
+    nativeProof: (request) => {
+      expect(request.body).toHaveProperty('reasoning_effort', 'high')
+    },
+  })
 })
 
 // Grok keeps the effort across a model switch when the new model offers it (`grok/settings_test.go`). The reasoning

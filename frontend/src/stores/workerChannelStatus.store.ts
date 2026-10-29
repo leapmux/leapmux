@@ -18,7 +18,9 @@ export function createWorkerChannelStatusStore(cm: ChannelManager) {
 
   function getStatus(workerId: string): ChannelStatus {
     version() // subscribe to changes
-    return cm.hasOpenChannel(workerId) ? 'connected' : 'disconnected'
+    return cm.hasOpenChannel(workerId)
+      ? 'connected'
+      : 'disconnected'
   }
 
   return {

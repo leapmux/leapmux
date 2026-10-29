@@ -3,18 +3,44 @@ import { concatBytes, encodeLengthDelimited, encodeStringField, encodeVarintFiel
 import { cursorRunRequestWitness } from './cursorRequestWire'
 
 const run = (fields: Uint8Array[]) => encodeLengthDelimited(1, concatBytes(fields))
-const userMode = (mode?: number) => encodeLengthDelimited(2, encodeLengthDelimited(1, encodeLengthDelimited(1, concatBytes([encodeStringField(1, 'Actual native prompt.'), ...(mode !== undefined ? [encodeVarintField(4, mode)] : [])]))))
+function userMode(mode?: number) {
+  return encodeLengthDelimited(2, encodeLengthDelimited(1, encodeLengthDelimited(1, concatBytes([
+    encodeStringField(1, 'Actual native prompt.'),
+    ...(mode !== undefined
+      ? [
+          encodeVarintField(4, mode),
+        ]
+      : []),
+  ]))))
+}
 
 describe('cursorRunRequestWitness', () => {
   it('reads actual selected project rules without deriving them from the user prompt', () => {
-    const rule = (path: string, content: string) => encodeLengthDelimited(10, encodeLengthDelimited(1, concatBytes([encodeStringField(1, path), encodeStringField(2, content)])))
-    const selected = encodeLengthDelimited(3, concatBytes([rule('/private/project/AGENTS.md', 'NATIVE_PROJECT_CONFIG'), rule('/private/project/.cursor/rules/empty.mdc', '')]))
-    const user = encodeLengthDelimited(2, encodeLengthDelimited(1, encodeLengthDelimited(1, concatBytes([encodeStringField(1, 'User prompt without the project marker.'), selected]))))
-    expect(cursorRunRequestWitness(run([user]))).toEqual({ mode: 0, cursorRules: [{ path: '/private/project/AGENTS.md', content: 'NATIVE_PROJECT_CONFIG' }, { path: '/private/project/.cursor/rules/empty.mdc', content: '' }] })
+    const rule = (path: string, content: string) => encodeLengthDelimited(10, encodeLengthDelimited(1, concatBytes([
+      encodeStringField(1, path),
+      encodeStringField(2, content),
+    ])))
+    const selected = encodeLengthDelimited(3, concatBytes([
+      rule('/private/project/AGENTS.md', 'NATIVE_PROJECT_CONFIG'),
+      rule('/private/project/.cursor/rules/empty.mdc', ''),
+    ]))
+    const user = encodeLengthDelimited(2, encodeLengthDelimited(1, encodeLengthDelimited(1, concatBytes([
+      encodeStringField(1, 'User prompt without the project marker.'),
+      selected,
+    ]))))
+    expect(cursorRunRequestWitness(run([user]))).toEqual({
+      mode: 0,
+      cursorRules: [
+        { path: '/private/project/AGENTS.md', content: 'NATIVE_PROJECT_CONFIG' },
+        { path: '/private/project/.cursor/rules/empty.mdc', content: '' },
+      ],
+    })
   })
 
   it('keeps an absent project context distinct from an empty selected rule list', () => {
-    expect(cursorRunRequestWitness(run([userMode(1)]))).not.toHaveProperty('cursorRules')
+    expect(cursorRunRequestWitness(run([
+      userMode(1),
+    ]))).not.toHaveProperty('cursorRules')
     const user = encodeLengthDelimited(2, encodeLengthDelimited(1, encodeLengthDelimited(1, encodeLengthDelimited(3, new Uint8Array()))))
     expect(cursorRunRequestWitness(run([user]))).toEqual({ mode: 0, cursorRules: [] })
   })
@@ -34,27 +60,76 @@ describe('cursorRunRequestWitness', () => {
       encodeStringField(1, 'actual-model'),
       encodeVarintField(2, 1),
       encodeVarintField(7, 1),
-      encodeLengthDelimited(3, concatBytes([encodeStringField(1, 'reasoning_effort'), encodeStringField(2, 'low')])),
-      encodeLengthDelimited(3, concatBytes([encodeStringField(1, 'context'), encodeStringField(2, '256k')])),
+      encodeLengthDelimited(3, concatBytes([
+        encodeStringField(1, 'reasoning_effort'),
+        encodeStringField(2, 'low'),
+      ])),
+      encodeLengthDelimited(3, concatBytes([
+        encodeStringField(1, 'context'),
+        encodeStringField(2, '256k'),
+      ])),
     ]))
-    expect(cursorRunRequestWitness(run([requested, userMode(3)]))).toEqual({ requestedModel: { modelId: 'actual-model', maxMode: true, builtInModel: true, parameters: [{ id: 'reasoning_effort', value: 'low' }, { id: 'context', value: '256k' }] }, mode: 3 })
+    expect(cursorRunRequestWitness(run([
+      requested,
+      userMode(3),
+    ]))).toEqual({
+      requestedModel: {
+        modelId: 'actual-model',
+        maxMode: true,
+        builtInModel: true,
+        parameters: [
+          { id: 'reasoning_effort', value: 'low' },
+          { id: 'context', value: '256k' },
+        ],
+      },
+      mode: 3,
+    })
   })
 
   it('keeps native requested and catalog model details separate', () => {
-    const frame = run([encodeLengthDelimited(9, encodeStringField(1, 'native-requested')), encodeLengthDelimited(3, encodeStringField(1, 'native-details'))])
-    expect(cursorRunRequestWitness(frame)).toEqual({ requestedModel: { modelId: 'native-requested', maxMode: false, builtInModel: false, parameters: [] }, modelDetails: { modelId: 'native-details' } })
+    const frame = run([
+      encodeLengthDelimited(9, encodeStringField(1, 'native-requested')),
+      encodeLengthDelimited(3, encodeStringField(1, 'native-details')),
+    ])
+    expect(cursorRunRequestWitness(frame)).toEqual({
+      requestedModel: {
+        modelId: 'native-requested',
+        maxMode: false,
+        builtInModel: false,
+        parameters: [],
+      },
+      modelDetails: { modelId: 'native-details' },
+    })
   })
 
   it('retains optional detail false and requested proto3 false defaults', () => {
-    expect(cursorRunRequestWitness(run([encodeLengthDelimited(9, new Uint8Array()), encodeLengthDelimited(3, concatBytes([encodeStringField(1, 'native-details'), encodeVarintField(7, 0)]))]))).toEqual({ requestedModel: { modelId: '', maxMode: false, builtInModel: false, parameters: [] }, modelDetails: { modelId: 'native-details', maxMode: false } })
+    expect(cursorRunRequestWitness(run([
+      encodeLengthDelimited(9, new Uint8Array()),
+      encodeLengthDelimited(3, concatBytes([
+        encodeStringField(1, 'native-details'),
+        encodeVarintField(7, 0),
+      ])),
+    ]))).toEqual({
+      requestedModel: {
+        modelId: '',
+        maxMode: false,
+        builtInModel: false,
+        parameters: [],
+      },
+      modelDetails: { modelId: 'native-details', maxMode: false },
+    })
   })
 
   it.each([0, 1, 2, 3, 8, 99])('preserves the actual native mode value: %s', (mode) => {
-    expect(cursorRunRequestWitness(run([userMode(mode)]))?.mode).toBe(mode)
+    expect(cursorRunRequestWitness(run([
+      userMode(mode),
+    ]))?.mode).toBe(mode)
   })
 
   it('uses an unspecified mode only when the actual UserMessage omits its enum', () => {
-    expect(cursorRunRequestWitness(run([userMode()]))).toEqual({ mode: 0 })
+    expect(cursorRunRequestWitness(run([
+      userMode(),
+    ]))).toEqual({ mode: 0 })
     expect(cursorRunRequestWitness(run([]))).toEqual({})
   })
 
@@ -63,8 +138,12 @@ describe('cursorRunRequestWitness', () => {
   })
 
   it('rejects malformed native booleans and truncated native fields', () => {
-    expect(() => cursorRunRequestWitness(run([encodeLengthDelimited(9, encodeVarintField(2, 2))]))).toThrow('must be zero or one')
-    const complete = run([encodeLengthDelimited(9, encodeStringField(1, 'actual-model'))])
+    expect(() => cursorRunRequestWitness(run([
+      encodeLengthDelimited(9, encodeVarintField(2, 2)),
+    ]))).toThrow('must be zero or one')
+    const complete = run([
+      encodeLengthDelimited(9, encodeStringField(1, 'actual-model')),
+    ])
     expect(() => cursorRunRequestWitness(complete.subarray(0, complete.length - 1))).toThrow('truncated')
   })
 })

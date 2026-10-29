@@ -10,7 +10,12 @@ import { updateTodosToolCall } from '../helpers/providerToolCalls'
 deepseekHarnessTest('updates the whole native to-do snapshot and keeps sidebar status after reload', async ({ native }) => {
   const { page } = native
   const creation = await runNativeToolTurn(native, {
-    toolCalls: [updateTodosToolCall(native.provider, 'native-todo-create', [{ step: 'Inspect the native source', status: 'in_progress' }, { step: 'Report the native result', status: 'pending' }])],
+    toolCalls: [
+      updateTodosToolCall(native.provider, 'native-todo-create', [
+        { step: 'Inspect the native source', status: 'in_progress' },
+        { step: 'Report the native result', status: 'pending' },
+      ]),
+    ],
     prompt: 'Create the exact native to-do snapshot.',
     answer: 'The native to-do snapshot completed.',
   })
@@ -26,7 +31,12 @@ deepseekHarnessTest('updates the whole native to-do snapshot and keeps sidebar s
   await expect(list).toContainText('Report the native result')
   await expect(list.locator('[data-task-checkbox="in_progress"]')).toHaveCount(1)
   await runNativeToolTurn(native, {
-    toolCalls: [updateTodosToolCall(native.provider, 'native-todo-complete', [{ step: 'Inspect the native source', status: 'completed' }, { step: 'Report the native result', status: 'completed' }])],
+    toolCalls: [
+      updateTodosToolCall(native.provider, 'native-todo-complete', [
+        { step: 'Inspect the native source', status: 'completed' },
+        { step: 'Report the native result', status: 'completed' },
+      ]),
+    ],
     prompt: 'Complete both actual native to-do entries.',
     answer: 'The native to-do work completed.',
   })

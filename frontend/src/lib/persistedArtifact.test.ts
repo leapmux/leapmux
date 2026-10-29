@@ -117,7 +117,13 @@ describe('createPersistedArtifact', () => {
     themeKey = 'light-b,dark-b'
     artifact.write(dispatchNs, 'source', { v: 'html' })
 
-    expect(writes).toEqual([{ ns: 'test@1|light-a,dark-a', source: 'source', value: { v: 'html' } }])
+    expect(writes).toEqual([
+      {
+        ns: 'test@1|light-a,dark-a',
+        source: 'source',
+        value: { v: 'html' },
+      },
+    ])
   })
 
   it('drops a write when the store cannot serve, and one past the length cap', async () => {

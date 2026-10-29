@@ -10,6 +10,14 @@ export function codewhaleAutoReviewRule(name: string, decision: 'allow' | 'deny'
   return {
     name,
     when: { system: CODEWHALE_REVIEWER_POLICY },
-    respond: { text: JSON.stringify({ risk_level: decision === 'allow' ? 'low' : 'high', decision, reason }) },
+    respond: {
+      text: JSON.stringify({
+        risk_level: decision === 'allow'
+          ? 'low'
+          : 'high',
+        decision,
+        reason,
+      }),
+    },
   }
 }

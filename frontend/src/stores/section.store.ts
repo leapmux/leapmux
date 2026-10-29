@@ -69,7 +69,10 @@ export function createSectionStore() {
         setState('items', i => i.workspaceId === workspaceId, { sectionId, position })
       }
       else {
-        setState('items', prev => [...prev, { workspaceId, sectionId, position } as SectionItem])
+        setState('items', prev => [
+          ...prev,
+          { workspaceId, sectionId, position } as SectionItem,
+        ])
       }
     },
 

@@ -10,7 +10,10 @@ import { AgentProviderIcon, agentProviderLabel } from './AgentProviderIcon'
 const FALLBACK_CLASS = 'lucide-bot'
 
 describe('AgentProviderIcon', () => {
-  it.each(ALL_PROVIDERS.map(provider => [agentProviderLabel(provider), provider] as const))(
+  it.each(ALL_PROVIDERS.map(provider => [
+    agentProviderLabel(provider),
+    provider,
+  ] as const))(
     'renders a mark of its own for %s',
     (_label, provider) => {
       const { container } = render(() => <AgentProviderIcon provider={provider} size={20} />)
@@ -35,15 +38,27 @@ describe('AgentProviderIcon', () => {
       // A gradient id differs on each render, so it cannot tell two marks apart.
       const mark = container.innerHTML.replaceAll(/(id="|url\(#)[^")]+/g, '$1')
       unmount()
-      return [agentProviderLabel(provider), mark] as const
+      return [
+        agentProviderLabel(provider),
+        mark,
+      ] as const
     })
     const byMark = new Map<string, string[]>()
-    for (const [label, mark] of marks)
-      byMark.set(mark, [...(byMark.get(mark) ?? []), label])
-    expect([...byMark.values()].filter(labels => labels.length > 1)).toEqual([])
+    for (const [label, mark] of marks) {
+      byMark.set(mark, [
+        ...(byMark.get(mark) ?? []),
+        label,
+      ])
+    }
+    expect([
+      ...byMark.values(),
+    ].filter(labels => labels.length > 1)).toEqual([])
   })
 
-  it.each(ALL_PROVIDERS.map(provider => [agentProviderLabel(provider), provider] as const))(
+  it.each(ALL_PROVIDERS.map(provider => [
+    agentProviderLabel(provider),
+    provider,
+  ] as const))(
     'passes the class to the mark for %s',
     (_label, provider) => {
       const { container } = render(() => <AgentProviderIcon provider={provider} size={20} class="probe-class" />)
@@ -86,7 +101,9 @@ describe('AgentProviderIcon', () => {
         <For each={gradientProviders}>{provider => <AgentProviderIcon provider={provider} size={16} />}</For>
       </>
     ))
-    const ids = [...container.querySelectorAll('linearGradient, radialGradient')].map(gradient => gradient.id)
+    const ids = [
+      ...container.querySelectorAll('linearGradient, radialGradient'),
+    ].map(gradient => gradient.id)
     expect(ids).toHaveLength(gradientProviders.length * 2)
     expect(new Set(ids).size).toBe(ids.length)
     for (const path of container.querySelectorAll('path[fill^="url("]')) {

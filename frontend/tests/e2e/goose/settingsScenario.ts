@@ -10,7 +10,10 @@ import { chooseSettingsOption, expectSettingsChip, waitForSettingsIdle } from '.
 /** Require the reasoning model and its high effort in a native Goose Responses request. */
 function expectReasoningModelAtHighEffort(request: MockModelRequestRecord): void {
   expect(request.protocol).toBe('openai-responses')
-  expect(request.body).toMatchObject({ model: MOCK_MODELS.gooseReasoning, reasoning: { effort: 'high' } })
+  expect(request.body).toMatchObject({
+    model: MOCK_MODELS.gooseReasoning,
+    reasoning: { effort: 'high' },
+  })
 }
 
 /**

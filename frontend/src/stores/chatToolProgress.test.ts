@@ -4,7 +4,13 @@ import { createRenderEffect, createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { createToolProgressStore } from './chatToolProgress'
 
-const RETRY = { attempt: 2, maxRetries: 5, retryDelayMs: 4000, errorStatus: 529, errorCategory: 'overloaded' }
+const RETRY = {
+  attempt: 2,
+  maxRetries: 5,
+  retryDelayMs: 4000,
+  errorStatus: 529,
+  errorCategory: 'overloaded',
+}
 
 /** The provider session every span below belongs to, unless a test states another. */
 const SESSION = 'sess-1'
@@ -33,7 +39,11 @@ function storeWithReadCount(read: (store: ReturnType<typeof createToolProgressSt
       read(store)
       runs++
     })
-    return { store, runs: () => runs, dispose }
+    return {
+      store,
+      runs: () => runs,
+      dispose,
+    }
   })
 }
 
@@ -41,7 +51,10 @@ describe('createToolProgressStore', () => {
   it('records a heartbeat update and reads it back by span', () => {
     createRoot((dispose) => {
       const store = createToolProgressStore()
-      store.apply('a1', { ...span('toolu_A'), elapsedSeconds: 30 })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        elapsedSeconds: 30,
+      })
       expect(store.get('a1', span('toolu_A'))).toEqual({ elapsedSeconds: 30 })
       dispose()
     })
@@ -50,7 +63,10 @@ describe('createToolProgressStore', () => {
   it('answers undefined for an unknown span or agent', () => {
     createRoot((dispose) => {
       const store = createToolProgressStore()
-      store.apply('a1', { ...span('toolu_A'), elapsedSeconds: 30 })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        elapsedSeconds: 30,
+      })
       expect(store.get('a1', span('toolu_MISSING'))).toBeUndefined()
       expect(store.get('other', span('toolu_A'))).toBeUndefined()
       dispose()
@@ -61,7 +77,10 @@ describe('createToolProgressStore', () => {
   it('answers undefined for an empty span id', () => {
     createRoot((dispose) => {
       const store = createToolProgressStore()
-      store.apply('a1', { ...span('toolu_A'), elapsedSeconds: 30 })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        elapsedSeconds: 30,
+      })
       expect(store.get('a1', span(''))).toBeUndefined()
       expect(store.get('a1', span('', ''))).toBeUndefined()
       dispose()
@@ -75,12 +94,22 @@ describe('createToolProgressStore', () => {
   it('ignores an update with no span id', () => {
     const { store, runs, dispose } = storeWithReadCount(store => store.get('a1', span('toolu_A')))
     try {
-      store.apply('a1', { ...span(''), elapsedSeconds: 30, permissionCheck: true })
-      store.apply('a1', { ...span('', ''), retry: RETRY })
+      store.apply('a1', {
+        ...span(''),
+        elapsedSeconds: 30,
+        permissionCheck: true,
+      })
+      store.apply('a1', {
+        ...span('', ''),
+        retry: RETRY,
+      })
       expect(runs(), 'the updates wrote nothing that a badge reads').toBe(1)
       expect(store.get('a1', span('toolu_A'))).toBeUndefined()
       // A real update wakes the same reader, so the count above can see a write.
-      store.apply('a1', { ...span('toolu_A'), elapsedSeconds: 30 })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        elapsedSeconds: 30,
+      })
       expect(runs()).toBeGreaterThan(1)
     }
     finally {
@@ -94,8 +123,14 @@ describe('createToolProgressStore', () => {
   it('keeps two provider sessions of one agent apart', () => {
     createRoot((dispose) => {
       const store = createToolProgressStore()
-      store.apply('a1', { ...span('toolu_A', 'sess-1'), elapsedSeconds: 30 })
-      store.apply('a1', { ...span('toolu_A', 'sess-2'), elapsedSeconds: 90 })
+      store.apply('a1', {
+        ...span('toolu_A', 'sess-1'),
+        elapsedSeconds: 30,
+      })
+      store.apply('a1', {
+        ...span('toolu_A', 'sess-2'),
+        elapsedSeconds: 90,
+      })
       expect(store.get('a1', span('toolu_A', 'sess-1'))?.elapsedSeconds).toBe(30)
       expect(store.get('a1', span('toolu_A', 'sess-2'))?.elapsedSeconds).toBe(90)
       store.drop('a1', span('toolu_A', 'sess-1'))
@@ -110,7 +145,10 @@ describe('createToolProgressStore', () => {
   it('reads a session-less update back through a session-less row', () => {
     createRoot((dispose) => {
       const store = createToolProgressStore()
-      store.apply('a1', { ...span('toolu_A', ''), elapsedSeconds: 30 })
+      store.apply('a1', {
+        ...span('toolu_A', ''),
+        elapsedSeconds: 30,
+      })
       expect(store.get('a1', span('toolu_A', ''))?.elapsedSeconds).toBe(30)
       expect(store.get('a1', span('toolu_A', 'sess-1'))).toBeUndefined()
       dispose()
@@ -120,8 +158,14 @@ describe('createToolProgressStore', () => {
   it('raises the elapsed time as heartbeats arrive', () => {
     createRoot((dispose) => {
       const store = createToolProgressStore()
-      store.apply('a1', { ...span('toolu_A'), elapsedSeconds: 30 })
-      store.apply('a1', { ...span('toolu_A'), elapsedSeconds: 60 })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        elapsedSeconds: 30,
+      })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        elapsedSeconds: 60,
+      })
       expect(store.get('a1', span('toolu_A'))?.elapsedSeconds).toBe(60)
       dispose()
     })
@@ -130,8 +174,14 @@ describe('createToolProgressStore', () => {
   it('keeps parallel spans independent', () => {
     createRoot((dispose) => {
       const store = createToolProgressStore()
-      store.apply('a1', { ...span('toolu_A'), elapsedSeconds: 30 })
-      store.apply('a1', { ...span('toolu_B'), elapsedSeconds: 60 })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        elapsedSeconds: 30,
+      })
+      store.apply('a1', {
+        ...span('toolu_B'),
+        elapsedSeconds: 60,
+      })
       expect(store.get('a1', span('toolu_A'))).toEqual({ elapsedSeconds: 30 })
       expect(store.get('a1', span('toolu_B'))).toEqual({ elapsedSeconds: 60 })
       store.drop('a1', span('toolu_A'))
@@ -143,8 +193,14 @@ describe('createToolProgressStore', () => {
   it('keeps two agents apart', () => {
     createRoot((dispose) => {
       const store = createToolProgressStore()
-      store.apply('a1', { ...span('toolu_A'), elapsedSeconds: 30 })
-      store.apply('a2', { ...span('toolu_A'), elapsedSeconds: 90 })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        elapsedSeconds: 30,
+      })
+      store.apply('a2', {
+        ...span('toolu_A'),
+        elapsedSeconds: 90,
+      })
       store.clearAgent('a1')
       expect(store.get('a1', span('toolu_A'))).toBeUndefined()
       expect(store.get('a2', span('toolu_A'))?.elapsedSeconds).toBe(90)
@@ -157,8 +213,14 @@ describe('createToolProgressStore', () => {
   it('merges a retry update without disturbing the elapsed time', () => {
     createRoot((dispose) => {
       const store = createToolProgressStore()
-      store.apply('a1', { ...span('toolu_A'), elapsedSeconds: 90 })
-      store.apply('a1', { ...span('toolu_A'), retry: RETRY })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        elapsedSeconds: 90,
+      })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        retry: RETRY,
+      })
       expect(store.get('a1', span('toolu_A'))).toEqual({
         elapsedSeconds: 90,
         retry: RETRY,
@@ -170,8 +232,14 @@ describe('createToolProgressStore', () => {
   it('keeps the retry when a later heartbeat omits it', () => {
     createRoot((dispose) => {
       const store = createToolProgressStore()
-      store.apply('a1', { ...span('toolu_A'), retry: RETRY })
-      store.apply('a1', { ...span('toolu_A'), elapsedSeconds: 120 })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        retry: RETRY,
+      })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        elapsedSeconds: 120,
+      })
       expect(store.get('a1', span('toolu_A'))?.retry).toEqual(RETRY)
       expect(store.get('a1', span('toolu_A'))?.elapsedSeconds).toBe(120)
       dispose()
@@ -182,8 +250,15 @@ describe('createToolProgressStore', () => {
   it('clears the retry on an explicit null, keeping every other field', () => {
     createRoot((dispose) => {
       const store = createToolProgressStore()
-      store.apply('a1', { ...span('toolu_A'), elapsedSeconds: 90, retry: RETRY })
-      store.apply('a1', { ...span('toolu_A'), retry: null })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        elapsedSeconds: 90,
+        retry: RETRY,
+      })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        retry: null,
+      })
       // Asserted directly, not via toEqual: toEqual treats a key set to
       // undefined as absent, so it would pass even if the clear did nothing but
       // leave the old object in place.
@@ -199,9 +274,18 @@ describe('createToolProgressStore', () => {
   it('clears the retry of one session alone', () => {
     createRoot((dispose) => {
       const store = createToolProgressStore()
-      store.apply('a1', { ...span('toolu_A', 'sess-1'), retry: RETRY })
-      store.apply('a1', { ...span('toolu_A', 'sess-2'), retry: RETRY })
-      store.apply('a1', { ...span('toolu_A', 'sess-1'), retry: null })
+      store.apply('a1', {
+        ...span('toolu_A', 'sess-1'),
+        retry: RETRY,
+      })
+      store.apply('a1', {
+        ...span('toolu_A', 'sess-2'),
+        retry: RETRY,
+      })
+      store.apply('a1', {
+        ...span('toolu_A', 'sess-1'),
+        retry: null,
+      })
       expect(store.get('a1', span('toolu_A', 'sess-1'))?.retry).toBeUndefined()
       expect(store.get('a1', span('toolu_A', 'sess-2'))?.retry).toEqual(RETRY)
       dispose()
@@ -213,8 +297,14 @@ describe('createToolProgressStore', () => {
   it('sets the permission check on an explicit true', () => {
     createRoot((dispose) => {
       const store = createToolProgressStore()
-      store.apply('a1', { ...span('toolu_A'), elapsedSeconds: 30 })
-      store.apply('a1', { ...span('toolu_A'), permissionCheck: true })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        elapsedSeconds: 30,
+      })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        permissionCheck: true,
+      })
       expect(store.get('a1', span('toolu_A'))?.permissionCheck).toBe(true)
       dispose()
     })
@@ -223,8 +313,15 @@ describe('createToolProgressStore', () => {
   it('clears the permission check on an explicit null, keeping every other field', () => {
     createRoot((dispose) => {
       const store = createToolProgressStore()
-      store.apply('a1', { ...span('toolu_A'), elapsedSeconds: 90, permissionCheck: true })
-      store.apply('a1', { ...span('toolu_A'), permissionCheck: null })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        elapsedSeconds: 90,
+        permissionCheck: true,
+      })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        permissionCheck: null,
+      })
       // Asserted directly, not via toEqual: toEqual treats a key set to
       // undefined as absent, so it would pass even if the clear did nothing.
       expect(store.get('a1', span('toolu_A'))?.permissionCheck).toBeUndefined()
@@ -236,8 +333,14 @@ describe('createToolProgressStore', () => {
   it('keeps the permission check when a later update omits it', () => {
     createRoot((dispose) => {
       const store = createToolProgressStore()
-      store.apply('a1', { ...span('toolu_A'), permissionCheck: true })
-      store.apply('a1', { ...span('toolu_A'), elapsedSeconds: 120 })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        permissionCheck: true,
+      })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        elapsedSeconds: 120,
+      })
       expect(store.get('a1', span('toolu_A'))?.permissionCheck).toBe(true)
       expect(store.get('a1', span('toolu_A'))?.elapsedSeconds).toBe(120)
       dispose()
@@ -251,10 +354,19 @@ describe('createToolProgressStore', () => {
   it('replaces the output tail instead of appending it', () => {
     createRoot((dispose) => {
       const store = createToolProgressStore()
-      store.apply('a1', { ...span('toolu_A'), outputTail: 'first\n' })
-      store.apply('a1', { ...span('toolu_A'), outputTail: 'first\nsecond\n' })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        outputTail: 'first\n',
+      })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        outputTail: 'first\nsecond\n',
+      })
       expect(store.get('a1', span('toolu_A'))?.outputTail).toBe('first\nsecond\n')
-      store.apply('a1', { ...span('toolu_A'), outputTail: '' })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        outputTail: '',
+      })
       expect(store.get('a1', span('toolu_A'))?.outputTail).toBe('')
       dispose()
     })
@@ -265,10 +377,21 @@ describe('createToolProgressStore', () => {
   it('keeps and clears the output truncation flag on later updates', () => {
     createRoot((dispose) => {
       const store = createToolProgressStore()
-      store.apply('a1', { ...span('toolu_A'), outputTail: 'window', outputTruncated: true })
-      store.apply('a1', { ...span('toolu_A'), elapsedSeconds: 60 })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        outputTail: 'window',
+        outputTruncated: true,
+      })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        elapsedSeconds: 60,
+      })
       expect(store.get('a1', span('toolu_A'))?.outputTruncated).toBe(true)
-      store.apply('a1', { ...span('toolu_A'), outputTail: 'full text', outputTruncated: false })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        outputTail: 'full text',
+        outputTruncated: false,
+      })
       expect(store.get('a1', span('toolu_A'))?.outputTruncated).toBe(false)
       dispose()
     })
@@ -280,7 +403,14 @@ describe('createToolProgressStore', () => {
   it('leaves the entry unchanged when the same update arrives twice', () => {
     createRoot((dispose) => {
       const store = createToolProgressStore()
-      const update: ToolProgressUpdate = { ...span('toolu_A'), elapsedSeconds: 90, retry: RETRY, outputTail: 'building', outputTruncated: true, permissionCheck: true }
+      const update: ToolProgressUpdate = {
+        ...span('toolu_A'),
+        elapsedSeconds: 90,
+        retry: RETRY,
+        outputTail: 'building',
+        outputTruncated: true,
+        permissionCheck: true,
+      }
       store.apply('a1', update)
       store.apply('a1', update)
       expect(store.get('a1', span('toolu_A'))).toEqual({
@@ -297,8 +427,14 @@ describe('createToolProgressStore', () => {
   it('drops one span and clears every span for an agent', () => {
     createRoot((dispose) => {
       const store = createToolProgressStore()
-      store.apply('a1', { ...span('toolu_A'), elapsedSeconds: 30 })
-      store.apply('a1', { ...span('toolu_B'), elapsedSeconds: 30 })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        elapsedSeconds: 30,
+      })
+      store.apply('a1', {
+        ...span('toolu_B'),
+        elapsedSeconds: 30,
+      })
       store.drop('a1', span('toolu_A'))
       expect(store.get('a1', span('toolu_A'))).toBeUndefined()
       expect(store.get('a1', span('toolu_B'))).toBeDefined()
@@ -319,7 +455,10 @@ describe('createToolProgressStore', () => {
       expect(runs(), 'the calls wrote nothing that a badge reads').toBe(1)
       expect(store.get('a1', span('toolu_A'))).toBeUndefined()
       // A real update wakes the same reader, so the count above can see a write.
-      store.apply('a1', { ...span('toolu_A'), elapsedSeconds: 30 })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        elapsedSeconds: 30,
+      })
       expect(runs()).toBeGreaterThan(1)
     }
     finally {
@@ -332,7 +471,10 @@ describe('createToolProgressStore', () => {
   it('leaves live entries alone when a drop or clear identifies something else', () => {
     createRoot((dispose) => {
       const store = createToolProgressStore()
-      store.apply('a1', { ...span('toolu_A'), elapsedSeconds: 30 })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        elapsedSeconds: 30,
+      })
       store.drop('a1', span('toolu_MISSING'))
       store.drop('a1', span(''))
       store.clearAgent('a2')
@@ -346,7 +488,10 @@ describe('createToolProgressStore', () => {
   it('keeps the elapsed time when a later update omits it', () => {
     createRoot((dispose) => {
       const store = createToolProgressStore()
-      store.apply('a1', { ...span('toolu_A'), elapsedSeconds: 90 })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        elapsedSeconds: 90,
+      })
       store.apply('a1', span('toolu_A'))
       expect(store.get('a1', span('toolu_A'))?.elapsedSeconds).toBe(90)
       dispose()
@@ -360,12 +505,18 @@ describe('createToolProgressStore', () => {
   it('leaves an emptied agent record in place, and clears it only when it holds a span', () => {
     createRoot((dispose) => {
       const store = createToolProgressStore()
-      store.apply('a1', { ...span('toolu_A'), elapsedSeconds: 30 })
+      store.apply('a1', {
+        ...span('toolu_A'),
+        elapsedSeconds: 30,
+      })
       store.drop('a1', span('toolu_A'))
       expect(store.get('a1', span('toolu_A'))).toBeUndefined()
       // A clear over the emptied record is a no-op, and a later tool still lands.
       expect(() => store.clearAgent('a1')).not.toThrow()
-      store.apply('a1', { ...span('toolu_B'), elapsedSeconds: 60 })
+      store.apply('a1', {
+        ...span('toolu_B'),
+        elapsedSeconds: 60,
+      })
       expect(store.get('a1', span('toolu_B'))?.elapsedSeconds).toBe(60)
       store.clearAgent('a1')
       expect(store.get('a1', span('toolu_B'))).toBeUndefined()

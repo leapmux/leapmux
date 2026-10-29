@@ -21,7 +21,12 @@ ohMyPiTest('changes native service priority independently and preserves it acros
       optionValues: { permissionMode: 'yolo', effort: 'high', fastMode: 'false' },
     }),
   }, async ({ server, workspaceId }) => {
-    const native = await nativeContext({ page, leapmuxServer: server, workspaceId, modelScript })
+    const native = await nativeContext({
+      page,
+      leapmuxServer: server,
+      workspaceId,
+      modelScript,
+    })
     let initialEffort: unknown
     await exerciseNativeOptionSequence(native, {
       groupId: 'fastMode',

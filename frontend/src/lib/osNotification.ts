@@ -59,7 +59,9 @@ function prefEnabled(): boolean {
  * pre-pref `return` skips the dedupe entirely.
  */
 export function notifyOs(opts: { title: string, body: string, tag?: string }): void {
-  const message = opts.body ? `${opts.title}: ${opts.body}` : opts.title
+  const message = opts.body
+    ? `${opts.title}: ${opts.body}`
+    : opts.title
   const now = Date.now()
   if (opts.tag) {
     pruneExpiredTags(now)
@@ -88,7 +90,12 @@ export function notifyOs(opts: { title: string, body: string, tag?: string }): v
     return
   }
   try {
-    const notification = new Notification(opts.title, { body: opts.body, ...(opts.tag !== undefined ? { tag: opts.tag } : {}) })
+    const notification = new Notification(opts.title, {
+      body: opts.body,
+      ...(opts.tag !== undefined
+        ? { tag: opts.tag }
+        : {}),
+    })
     void notification
   }
   catch {

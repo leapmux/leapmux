@@ -184,7 +184,11 @@ export function documentedUnparsedThatParse(results: ToolResultCheck, callOf: Ca
 /** The fixture and reason entries that no longer name a tool the table holds. */
 export function staleResultEntries(kinds: ToolVocabularyCheck, results: ToolResultCheck): string[] {
   const present = new Set(kinds.names)
-  return [...Object.keys(results.fixtures), ...Object.keys(results.noResult), ...Object.keys(results.unparsed)]
+  return [
+    ...Object.keys(results.fixtures),
+    ...Object.keys(results.noResult),
+    ...Object.keys(results.unparsed),
+  ]
     .filter(name => !present.has(name))
 }
 
@@ -313,9 +317,15 @@ export function invariantViolations(call: ToolCall): string[] {
     request: call.request,
     result: call.result,
     images: call.images,
-    ...(call.extraContent === undefined ? {} : { extraContent: call.extraContent }),
-    ...(call.truncated === undefined ? {} : { truncated: call.truncated }),
+    ...(call.extraContent === undefined
+      ? {}
+      : { extraContent: call.extraContent }),
+    ...(call.truncated === undefined
+      ? {}
+      : { truncated: call.truncated }),
   }
   const fault = toolCallFault(draft)
-  return fault === null ? [] : [fault]
+  return fault === null
+    ? []
+    : [fault]
 }

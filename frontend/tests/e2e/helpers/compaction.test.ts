@@ -106,7 +106,7 @@ describe('compactionNoticeRow', () => {
     compactionNoticeRow(page)
     const pattern = steps[2]
     if (!(pattern instanceof RegExp))
-      throw new Error('The notice row filters on no pattern.')
+      throw new TypeError('The notice row filters on no pattern.')
     expect(pattern.test(compactedLabel(undefined))).toBe(true)
     expect(pattern.test(compactedLabel({ trigger: 'manual', pre: 12040, post: 3000 }))).toBe(true)
     expect(pattern.test(`${COMPACTION_NOTICE_TEXT}ly`)).toBe(false)
@@ -144,7 +144,14 @@ describe('expectCompactionNoticeAfterReload', () => {
 
   it('requires the detail of the notice before and after the reload', async () => {
     await expectCompactionNoticeAfterReload(noticePage(), { detail: 'manual' })
-    expect(events).toEqual(['count 1', 'detail manual', 'reload', 'idle', 'count 1', 'detail manual'])
+    expect(events).toEqual([
+      'count 1',
+      'detail manual',
+      'reload',
+      'idle',
+      'count 1',
+      'detail manual',
+    ])
   })
 
   it.each(['live', 'stored'])('refuses an extra notice in the %s transcript', async (phase) => {
@@ -162,7 +169,13 @@ describe('expectCompactionNoticeAfterReload', () => {
     expect(events).toEqual(['count 2', 'reload', 'idle', 'count 2'])
   })
 
-  it.each([-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])('refuses an invalid count: %s', async (count) => {
+  it.each([
+    -1,
+    0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])('refuses an invalid count: %s', async (count) => {
     await expect(expectCompactionNoticeAfterReload(noticePage(), { count })).rejects.toThrow('nonnegative whole number')
     expect(events).toEqual([])
   })

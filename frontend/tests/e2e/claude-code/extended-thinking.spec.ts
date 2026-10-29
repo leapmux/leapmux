@@ -7,7 +7,11 @@ import { chooseSettingsOption, expectSettingsChip, openSettingsMenu, visibleOnly
 
 test.describe('Agent Settings', () => {
   test('shows the native thinking requirement for each model', async ({ native, page }) => {
-    for (const [model, label] of [['sonnet', 'Adaptive'], ['haiku', 'On'], ['opus[1m]', 'Adaptive']] as const) {
+    for (const [model, label] of [
+      ['sonnet', 'Adaptive'],
+      ['haiku', 'On'],
+      ['opus[1m]', 'Adaptive'],
+    ] as const) {
       await chooseSettingsOption(page, `model-${model}`)
       await waitForSettingsIdle(page)
       const group = nativeOptionGroup(await currentNativeAgent(native), 'alwaysThinkingEnabled')
@@ -27,7 +31,9 @@ test.describe('Agent Settings', () => {
       await chooseSettingsOption(page, `model-${model}`)
       await waitForSettingsIdle(page)
       await page.reload()
-      await expectSettingsChip(page, model === 'haiku' ? 'Haiku' : 'Sonnet')
+      await expectSettingsChip(page, model === 'haiku'
+        ? 'Haiku'
+        : 'Sonnet')
       const group = nativeOptionGroup(await currentNativeAgent(native), 'alwaysThinkingEnabled')
       expect(group?.currentValue).toBe('on')
       expect(group?.options.map(option => option.id)).toEqual(['on'])
@@ -42,8 +48,22 @@ test.describe('Agent Settings', () => {
   // Current native models require adaptive thinking, even when an old stored setting requests Off.
   test('keeps required thinking and selected effort in native requests before and after reload', async ({ native, page }) => {
     const phases = [
-      { model: 'model-sonnet', effort: 'effort-medium', modelPattern: /^claude-sonnet-/, states: ['on'] as const, enabledType: 'adaptive', expectedEffort: 'medium' },
-      { model: 'model-haiku', effort: undefined, modelPattern: /^claude-haiku-/, states: ['on'] as const, enabledType: 'adaptive', expectedEffort: undefined },
+      {
+        model: 'model-sonnet',
+        effort: 'effort-medium',
+        modelPattern: /^claude-sonnet-/,
+        states: ['on'] as const,
+        enabledType: 'adaptive',
+        expectedEffort: 'medium',
+      },
+      {
+        model: 'model-haiku',
+        effort: undefined,
+        modelPattern: /^claude-haiku-/,
+        states: ['on'] as const,
+        enabledType: 'adaptive',
+        expectedEffort: undefined,
+      },
     ]
     for (const phase of phases) {
       await chooseSettingsOption(page, phase.model)
@@ -55,7 +75,10 @@ test.describe('Agent Settings', () => {
       let selectedModel: string | undefined
       await exerciseNativeOptionSequence(native, {
         groupId: 'alwaysThinkingEnabled',
-        steps: phase.states.flatMap(state => [{ value: state, via: 'default' as const }, { value: state, via: 'reload' as const }]),
+        steps: phase.states.flatMap(state => [
+          { value: state, via: 'default' as const },
+          { value: state, via: 'reload' as const },
+        ]),
         nativeProof: (request, step) => {
           expect(request.protocol).toBe('anthropic-messages')
           if (!isObject(request.body) || typeof request.body.model !== 'string')
@@ -64,9 +87,14 @@ test.describe('Agent Settings', () => {
           expect(request.body.model).toBe(selectedModel)
           expect(request.body.model).toEqual(expect.stringMatching(phase.modelPattern))
           expect(step.value).toBe('on')
-          expect(request.body).toMatchObject({ thinking: { type: phase.enabledType } })
-          if (phase.expectedEffort !== undefined)
-            expect(request.body).toMatchObject({ output_config: { effort: phase.expectedEffort } })
+          expect(request.body).toMatchObject({
+            thinking: { type: phase.enabledType },
+          })
+          if (phase.expectedEffort !== undefined) {
+            expect(request.body).toMatchObject({
+              output_config: { effort: phase.expectedEffort },
+            })
+          }
         },
       })
     }

@@ -27,7 +27,9 @@ export function testMessageContext(overrides: Partial<MessageContextSources> = {
       messageVersion: () => 0,
       contentVersion: () => 0,
       messageBySeq: seq => messages().find(message => message.seq === seq),
-      spanMessage: (spanId, side) => side === 'request' ? index().getRequestMessage('test', spanId) : index().getResultMessage('test', spanId),
+      spanMessage: (spanId, side) => side === 'request'
+        ? index().getRequestMessage('test', spanId)
+        : index().getResultMessage('test', spanId),
       fetchMessage: async () => undefined,
       fetchSpan: async () => [],
       fetchFileImage: async () => { throw new Error('The image source is unavailable') },
@@ -98,7 +100,11 @@ export function createMutableTranscript(archive: readonly AgentChatMessage[], op
     return windowIds()
       .map(id => archiveById.get(id))
       .filter((message): message is AgentChatMessage => message !== undefined)
-      .sort((a, b) => (a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0))
+      .sort((a, b) => (a.seq < b.seq
+        ? -1
+        : a.seq > b.seq
+          ? 1
+          : 0))
   })
   const index = createMemo(() => {
     const spans = createSpanIndex()
@@ -132,14 +138,20 @@ export function createMutableTranscript(archive: readonly AgentChatMessage[], op
       // asynchronous fetch below, so an out-of-window sequence exercises the
       // same fetch and cache path as the application.
       messageBySeq: seq => messages().find(message => message.seq === seq),
-      spanMessage: (identity, side) => side === 'request' ? index().getRequestMessage('test', identity) : index().getResultMessage('test', identity),
+      spanMessage: (identity, side) => side === 'request'
+        ? index().getRequestMessage('test', identity)
+        : index().getResultMessage('test', identity),
       // The default span fetch answers from the COMPLETE archive, filtered by the
       // whole span identity: the session AND the span id, which is what keeps one
       // session from answering another's reused tool id.
       fetchSpan: options.fetchSpan ?? (async (identity: MessageSpanIdentity) =>
-        [...archiveById.values()].filter(message => messageSpanKey(message) === messageSpanKey(identity))),
+        [
+          ...archiveById.values(),
+        ].filter(message => messageSpanKey(message) === messageSpanKey(identity))),
       fetchMessage: options.fetchMessage ?? (async (seq: bigint) =>
-        [...archiveById.values()].find(message => message.seq === seq)),
+        [
+          ...archiveById.values(),
+        ].find(message => message.seq === seq)),
       fetchFileImage: options.fetchFileImage ?? (async () => { throw new Error('The image source is unavailable') }),
       subscribe: (observer) => {
         observers.add(observer)

@@ -16,7 +16,10 @@ describe('splitExitCodeMarker', () => {
     expect(splitExitCodeMarker('Exit code 0\ndone')).toEqual({ output: 'done', exitCode: 0 })
   })
 
-  it.each(['9007199254740992', '9'.repeat(400)])('preserves a marker with an unsafe code %s', (code) => {
+  it.each([
+    '9007199254740992',
+    '9'.repeat(400),
+  ])('preserves a marker with an unsafe code %s', (code) => {
     const text = `Exit code ${code}\noriginal output`
     expect(splitExitCodeMarker(text)).toEqual({ output: text })
   })

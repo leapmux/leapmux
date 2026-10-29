@@ -129,7 +129,9 @@ export function emitUpdateGeometry(
 /** Single-op write: window opacity register. */
 export function emitUpdateOpacity(bridge: CRDTBridge, windowId: string, opacity: number): void {
   const ctx = ctxFromBridge(bridge)
-  bridge.enqueue(newBatch([setFloatingOpacity(ctx, windowId, opacity)]))
+  bridge.enqueue(newBatch([
+    setFloatingOpacity(ctx, windowId, opacity),
+  ]))
 }
 
 /**

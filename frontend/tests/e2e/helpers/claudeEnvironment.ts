@@ -22,7 +22,14 @@ export interface ClaudeEnvironmentOptions {
  * checkout or under a home would read the developer's own instructions. No spec relies on one of these files, so the
  * agent reads none. Claude Code matches each pattern against the absolute path with picomatch.
  */
-const CLAUDE_MEMORY_EXCLUDES = ['**/CLAUDE.md', '**/CLAUDE.local.md', '**/.claude/CLAUDE.md', '**/.claude/rules/**', '**/AGENTS.md', '**/.claude/AGENTS.md']
+const CLAUDE_MEMORY_EXCLUDES = [
+  '**/CLAUDE.md',
+  '**/CLAUDE.local.md',
+  '**/.claude/CLAUDE.md',
+  '**/.claude/rules/**',
+  '**/AGENTS.md',
+  '**/.claude/AGENTS.md',
+]
 
 /** Point Claude Code at the mock, with its configuration in the isolated HOME and its background traffic off. */
 export function createClaudeEnvironment(options: ClaudeEnvironmentOptions): Record<string, string> {

@@ -14,7 +14,12 @@ export function writeMcpPermissionServer(workingDir: string): McpProbeServer & {
   const server = writeMcpNoArgumentToolServer(workingDir, {
     name: MCP_PERMISSION_SERVER_NAME,
     fileBase: 'permission-server',
-    tool: { name: 'touch', description: 'Record a permitted call.', text: 'MCP_PERMISSION_TOOL_CALLED', calledFile: called },
+    tool: {
+      name: 'touch',
+      description: 'Record a permitted call.',
+      text: 'MCP_PERMISSION_TOOL_CALLED',
+      calledFile: called,
+    },
   })
   return { ...server, called }
 }

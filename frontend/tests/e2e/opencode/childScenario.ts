@@ -37,10 +37,12 @@ export async function exerciseOpencodeSpawnTranscript(context: ManagedNativeScen
   })
   const start = await modelScript.queue(
     {
-      toolCalls: [spawnSubagentToolCall(context.provider, 'spawn-opencode', {
-        description: 'Ask the subagent for one word',
-        prompt: modelScript.prompt('Reply with the single word PONG.'),
-      })],
+      toolCalls: [
+        spawnSubagentToolCall(context.provider, 'spawn-opencode', {
+          description: 'Ask the subagent for one word',
+          prompt: modelScript.prompt('Reply with the single word PONG.'),
+        }),
+      ],
     },
     { text: 'The subagent reported PONG.' },
   )

@@ -12,7 +12,9 @@ museTest('loads private native configuration and uses the suite mock credential'
   expect(environment.MUSE_NO_AUTO_UPDATE).toBe('1')
   const configurationDirectory = join(environment.HOME, '.config', 'muse')
   await exerciseCredentialIsolation(native, {
-    configurationFiles: [join(configurationDirectory, 'settings.json')],
+    configurationFiles: [
+      join(configurationDirectory, 'settings.json'),
+    ],
     privateDirectories: [configurationDirectory],
     absentFromConfiguration: [MODEL_KEY],
     configurationMarkers: [

@@ -10,6 +10,8 @@ export function qoderAutoReviewRule(name: string, shouldBlock: boolean, reason: 
   return {
     name,
     when: { system: QODER_REVIEWER_POLICY },
-    respond: { text: JSON.stringify({ shouldBlock, reason }) },
+    respond: {
+      text: JSON.stringify({ shouldBlock, reason }),
+    },
   }
 }

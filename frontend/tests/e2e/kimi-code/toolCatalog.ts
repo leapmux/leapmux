@@ -50,7 +50,9 @@ export function parseKimiCompleteCatalog(value: unknown): KimiCatalogTool[] {
       input_schema: null,
       source: entry.source,
       active: entry.active,
-      ...(typeof entry.mcp_server_id === 'string' ? { mcp_server_id: entry.mcp_server_id } : {}),
+      ...(typeof entry.mcp_server_id === 'string'
+        ? { mcp_server_id: entry.mcp_server_id }
+        : {}),
     }
   })
   if (!tools.some(tool => tool.source === 'builtin') || new Set(tools.map(tool => tool.name)).size !== tools.length)
@@ -144,7 +146,9 @@ export function createKimiCatalogCapture(directory: string, launch: NativeStartu
     receiptPath: join(directory, 'native-ready.json'),
     nonce: randomUUID(),
     executable,
-    launchArgs: [...launch.args ?? []],
+    launchArgs: [
+      ...launch.args ?? [],
+    ],
     runtimeExecutable: realpathSync(interpreter),
     runtimeInvocation: envNode ? 'node' : interpreter,
     wrapperExecutable: realpathSync(process.execPath),
@@ -252,7 +256,17 @@ export function parseKimiCatalogReceipt(value: unknown, capture: Pick<KimiCatalo
     || !Array.isArray(value.argv) || !value.argv.every((arg: unknown) => typeof arg === 'string')) {
     throw new Error('The Kimi native catalog receipt has an invalid process or capture identity.')
   }
-  const expected = [...capture.launchArgs, 'web', '--no-open', '--host', '127.0.0.1', '--port', '0', '--log-level', 'warn']
+  const expected = [
+    ...capture.launchArgs,
+    'web',
+    '--no-open',
+    '--host',
+    '127.0.0.1',
+    '--port',
+    '0',
+    '--log-level',
+    'warn',
+  ]
   if (JSON.stringify(value.argv) !== JSON.stringify(expected))
     throw new Error('The Kimi native catalog receipt does not identify the actual Worker server invocation.')
   const ready = parseKimiCatalogReadyLine(`Kimi server: ${value.origin}/#token=${value.token}`)
@@ -278,11 +292,19 @@ export interface KimiCatalogOwner {
 }
 
 function exactRuntimeCommand(command: string, executable: string, args: readonly string[], invocation = executable): boolean {
-  const prefixes = [executable, basename(executable), invocation].flatMap(value => [value, `"${value}"`, `'${value}'`])
+  const prefixes = [
+    executable,
+    basename(executable),
+    invocation,
+  ].flatMap(value => [value, `"${value}"`, `'${value}'`])
   const forms = [
     args.join(' '),
-    args.map(value => /\s/.test(value) ? `"${value.replaceAll('"', '\\"')}"` : value).join(' '),
-    args.map(value => /\s/.test(value) ? quotePosixShellArgument(value) : value).join(' '),
+    args.map(value => /\s/.test(value)
+      ? `"${value.replaceAll('"', '\\"')}"`
+      : value).join(' '),
+    args.map(value => /\s/.test(value)
+      ? quotePosixShellArgument(value)
+      : value).join(' '),
   ]
   return prefixes.some(prefix => forms.some(argv => command === `${prefix} ${argv}`))
 }
@@ -303,11 +325,22 @@ export async function assertKimiCatalogOwnership(
     throw new Error('The captured Kimi native child does not belong to its actual ready wrapper.')
   if (receipt.executable !== capture.executable)
     throw new Error('The captured Kimi native CLI differs from its actual launch.')
-  const nativeArgs = [...(capture.nativeIsScript ? [capture.executable] : []), ...receipt.argv]
-  const wrapperArgs = [capture.scriptPath, ...receipt.argv.slice(capture.launchArgs.length)]
+  const nativeArgs = [
+    ...(capture.nativeIsScript
+      ? [capture.executable]
+      : []),
+    ...receipt.argv,
+  ]
+  const wrapperArgs = [
+    capture.scriptPath,
+    ...receipt.argv.slice(capture.launchArgs.length),
+  ]
   if (!exactRuntimeCommand(wrapper.rawCommand ?? wrapper.command, capture.wrapperExecutable, wrapperArgs))
     throw new Error('The captured Kimi ready wrapper has another exact process command.')
-  const [nativeExecutable, wrapperExecutable] = await Promise.all([readExecutable(native.pid), readExecutable(wrapper.pid)])
+  const [nativeExecutable, wrapperExecutable] = await Promise.all([
+    readExecutable(native.pid),
+    readExecutable(wrapper.pid),
+  ])
   if (nativeExecutable !== capture.runtimeExecutable || wrapperExecutable !== capture.wrapperExecutable
     || (native.executable !== undefined && native.executable !== nativeExecutable)
     || (wrapper.executable !== undefined && wrapper.executable !== wrapperExecutable)) {
@@ -330,7 +363,10 @@ export async function queryKimiCompleteCatalog(connection: { origin: string, tok
     throw new Error('The Kimi native registry query requires its exact session and ready connection.')
   const url = new URL('/api/v1/tools', connection.origin)
   url.searchParams.set('session_id', connection.sessionId)
-  const response = await fetch(url, { headers: { Authorization: `Bearer ${connection.token}` }, signal: AbortSignal.timeout(30_000) })
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${connection.token}` },
+    signal: AbortSignal.timeout(30_000),
+  })
   if (!response.ok)
     throw new Error(`The owned native Kimi catalog request returned HTTP ${response.status}.`)
   return parseKimiCompleteCatalog(await response.json())

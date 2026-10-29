@@ -174,7 +174,9 @@ export function useSectionToggle(options: UseSectionToggleOptions): UseSectionTo
       const othersOpen = ids.some(id => id !== sectionId && isOpen(id))
       if (!othersOpen) {
         const currentIdx = ids.indexOf(sectionId)
-        const adjacentId = ids[currentIdx > 0 ? currentIdx - 1 : currentIdx + 1]
+        const adjacentId = ids[currentIdx > 0
+          ? currentIdx - 1
+          : currentIdx + 1]
         if (adjacentId) {
           setOpenSections(prev => ({ ...prev, [sectionId]: false, [adjacentId]: true }))
           notifyStateChange()

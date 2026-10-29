@@ -88,13 +88,26 @@ function componentValue(value: unknown): Pick<EvidenceErrorComponent, 'valueKind
     case 'boolean':
       return { valueKind: 'boolean', value }
     case 'number':
-      return { valueKind: 'number', value: Object.is(value, -0) ? '-0' : Number.isFinite(value) ? value : String(value) }
+      return {
+        valueKind: 'number',
+        value: Object.is(value, -0)
+          ? '-0'
+          : Number.isFinite(value)
+            ? value
+            : String(value),
+      }
     case 'undefined':
       return { valueKind: 'undefined', value: null }
     case 'bigint':
-      return { valueKind: 'bigint', value: String(value) }
+      return {
+        valueKind: 'bigint',
+        value: String(value),
+      }
     case 'symbol':
-      return { valueKind: 'symbol', value: String(value) }
+      return {
+        valueKind: 'symbol',
+        value: String(value),
+      }
     case 'function':
       return { valueKind: 'function', value: null }
     case 'object':
@@ -112,11 +125,20 @@ function componentValue(value: unknown): Pick<EvidenceErrorComponent, 'valueKind
 function componentHeader(value: unknown): Pick<EvidenceErrorComponent, 'name' | 'message'> {
   if (value instanceof Error)
     return { name: value.name, message: value.message }
-  if (typeof value === 'object' && value !== null)
-    return { name: 'NonError', message: Array.isArray(value) ? 'The thrown value is an array.' : 'The thrown value is an object.' }
+  if (typeof value === 'object' && value !== null) {
+    return {
+      name: 'NonError',
+      message: Array.isArray(value)
+        ? 'The thrown value is an array.'
+        : 'The thrown value is an object.',
+    }
+  }
   if (typeof value === 'function')
     return { name: 'NonError', message: 'The thrown value is a function.' }
-  return { name: 'NonError', message: String(value) }
+  return {
+    name: 'NonError',
+    message: String(value),
+  }
 }
 
 /** Preserve error details in a flat graph. Shared causes and cycles point at their first node. */
@@ -127,13 +149,30 @@ function evidenceError(error: unknown): EvidenceError {
     relation: EvidenceErrorComponent['relation']
     childIndex: number | null
     key: string | null
-  }[] = [{ value: error, parent: null, relation: 'root', childIndex: null, key: null }]
+  }[] = [
+    {
+      value: error,
+      parent: null,
+      relation: 'root',
+      childIndex: null,
+      key: null,
+    },
+  ]
   const components: EvidenceErrorComponent[] = []
   const seen = new WeakMap<object, number>()
   for (const item of queue) {
     const header = componentHeader(item.value)
     const value = componentValue(item.value)
-    const node: EvidenceErrorComponent = { id: components.length, parent: item.parent, relation: item.relation, childIndex: item.childIndex, key: item.key, ...header, ...value, reference: null }
+    const node: EvidenceErrorComponent = {
+      id: components.length,
+      parent: item.parent,
+      relation: item.relation,
+      childIndex: item.childIndex,
+      key: item.key,
+      ...header,
+      ...value,
+      reference: null,
+    }
     components.push(node)
     if ((typeof item.value !== 'object' || item.value === null) && typeof item.value !== 'function')
       continue
@@ -144,22 +183,47 @@ function evidenceError(error: unknown): EvidenceError {
     }
     seen.set(item.value, node.id)
     if (item.value instanceof AggregateError) {
-      for (const [index, child] of item.value.errors.entries())
-        queue.push({ value: child, parent: node.id, relation: 'aggregate', childIndex: index, key: null })
+      for (const [index, child] of item.value.errors.entries()) {
+        queue.push({
+          value: child,
+          parent: node.id,
+          relation: 'aggregate',
+          childIndex: index,
+          key: null,
+        })
+      }
     }
-    if (item.value instanceof Error && Object.hasOwn(item.value, 'cause'))
-      queue.push({ value: item.value.cause, parent: node.id, relation: 'cause', childIndex: null, key: 'cause' })
+    if (item.value instanceof Error && Object.hasOwn(item.value, 'cause')) {
+      queue.push({
+        value: item.value.cause,
+        parent: node.id,
+        relation: 'cause',
+        childIndex: null,
+        key: 'cause',
+      })
+    }
     for (const key of Object.keys(item.value)) {
       if (item.value instanceof Error && (key === 'name' || key === 'message' || key === 'cause' || (item.value instanceof AggregateError && key === 'errors')))
         continue
       const descriptor = Object.getOwnPropertyDescriptor(item.value, key)
       if (!descriptor)
         continue
-      const child = Object.hasOwn(descriptor, 'value') ? descriptor.value : { get: descriptor.get, set: descriptor.set }
-      queue.push({ value: child, parent: node.id, relation: 'property', childIndex: null, key })
+      const child = Object.hasOwn(descriptor, 'value')
+        ? descriptor.value
+        : { get: descriptor.get, set: descriptor.set }
+      queue.push({
+        value: child,
+        parent: node.id,
+        relation: 'property',
+        childIndex: null,
+        key,
+      })
     }
   }
-  return { ...componentHeader(error), components }
+  return {
+    ...componentHeader(error),
+    components,
+  }
 }
 
 function expectedOwner(agent: AgentInfo, prior: Readonly<AgentInfo>, workerId: string): boolean {
@@ -202,7 +266,12 @@ function archiveOwner(text: string, prior: Readonly<AgentInfo>) {
     if (!isObject(whole))
       throw new ArchiveRefusal('The native resume archive is not an object.')
     identity(whole, true)
-    return { sessionId: prior.agentSessionId, projectHash: expectedHash, kind, incompleteTrailingLine: false }
+    return {
+      sessionId: prior.agentSessionId,
+      projectHash: expectedHash,
+      kind,
+      incompleteTrailingLine: false,
+    }
   }
   const lines = text.split('\n')
   let incompleteTrailingLine = false
@@ -238,11 +307,27 @@ function archiveOwner(text: string, prior: Readonly<AgentInfo>) {
   }
   if (!foundHeader)
     throw new ArchiveRefusal('The native resume archive has no complete session owner.')
-  return { sessionId: prior.agentSessionId, projectHash: expectedHash, kind, incompleteTrailingLine }
+  return {
+    sessionId: prior.agentSessionId,
+    projectHash: expectedHash,
+    kind,
+    incompleteTrailingLine,
+  }
 }
 
 function emptyArchive(path: string): ArchiveObservation {
-  return { path, state: 'failed', sessionId: null, projectHash: null, kind: null, bytes: null, sha256: null, attachment: null, incompleteTrailingLine: null, error: null }
+  return {
+    path,
+    state: 'failed',
+    sessionId: null,
+    projectHash: null,
+    kind: null,
+    bytes: null,
+    sha256: null,
+    attachment: null,
+    incompleteTrailingLine: null,
+    error: null,
+  }
 }
 
 /** Attach native bytes and observed Worker state. This phase does not certify replay completion. */
@@ -254,25 +339,35 @@ export async function captureGeminiResumeEvidence(
   const prior = evidence.prior
   const receipt: GeminiResumeReceipt = {
     phase: evidence.phase,
-    priorAgent: prior ? toJson(AgentInfoSchema, prior, { alwaysEmitImplicit: true }) : null,
+    priorAgent: prior
+      ? toJson(AgentInfoSchema, prior, { alwaysEmitImplicit: true })
+      : null,
     selectedTabId: null,
     workerBefore: null,
     workerAfter: null,
     messages: [],
     workerRead: { state: 'not-read', error: null },
     archives: [],
-    request: evidence.phase === 'continued' ? evidence.request : null,
-    failure: evidence.phase === 'failed' ? evidenceError(evidence.cause) : null,
+    request: evidence.phase === 'continued'
+      ? evidence.request
+      : null,
+    failure: evidence.phase === 'failed'
+      ? evidenceError(evidence.cause)
+      : null,
   }
   let before: AgentInfo | null = null
   let readFailure: { value: unknown } | undefined
   const messages: AgentChatMessage[] = []
   try {
     const tab = selectedAgentTab(context.page)
-    receipt.selectedTabId = await tab.count() > 0 ? await tab.getAttribute('data-tab-id') : null
+    receipt.selectedTabId = await tab.count() > 0
+      ? await tab.getAttribute('data-tab-id')
+      : null
     if (receipt.selectedTabId) {
       before = await nativeAgentById(context, receipt.selectedTabId)
-      receipt.workerBefore = before ? toJson(AgentInfoSchema, before, { alwaysEmitImplicit: true }) : null
+      receipt.workerBefore = before
+        ? toJson(AgentInfoSchema, before, { alwaysEmitImplicit: true })
+        : null
     }
     if (before && prior) {
       if (before.id !== receipt.selectedTabId || !expectedOwner(before, prior, context.leapmuxServer.workerId))
@@ -287,12 +382,17 @@ export async function captureGeminiResumeEvidence(
   }
   catch (error) {
     readFailure = { value: error }
-    receipt.workerRead = { state: 'failed', error: evidenceError(error) }
+    receipt.workerRead = {
+      state: 'failed',
+      error: evidenceError(error),
+    }
   }
   if (before) {
     try {
       const after = await nativeAgentById(context, before.id)
-      receipt.workerAfter = after ? toJson(AgentInfoSchema, after, { alwaysEmitImplicit: true }) : null
+      receipt.workerAfter = after
+        ? toJson(AgentInfoSchema, after, { alwaysEmitImplicit: true })
+        : null
       if (!after || !sameAgentOwnership(before, after)) {
         const ownerFailure = new Error('The Worker session or owner changed during the resume evidence read.')
         receipt.workerRead = {
@@ -338,14 +438,21 @@ export async function captureGeminiResumeEvidence(
           Object.assign(observation, archiveOwner(text, prior))
         }
         catch (error) {
-          observation.state = error instanceof ArchiveRefusal ? 'refused' : 'failed'
+          observation.state = error instanceof ArchiveRefusal
+            ? 'refused'
+            : 'failed'
           observation.error = evidenceError(error)
           continue
         }
         const attachment = `gemini-resume-${evidence.phase}-archive-${index}${extname(name)}`
         const path = testInfo.outputPath(attachment)
         writeFileSync(path, text, 'utf8')
-        await testInfo.attach(attachment, { path, contentType: name.endsWith('.jsonl') ? 'application/x-ndjson' : 'application/json' })
+        await testInfo.attach(attachment, {
+          path,
+          contentType: name.endsWith('.jsonl')
+            ? 'application/x-ndjson'
+            : 'application/json',
+        })
         observation.state = 'owned-observation'
         observation.bytes = Buffer.byteLength(text)
         // This digest identifies captured bytes. Gemini supplies no exclusive replay token.
@@ -374,16 +481,24 @@ export async function exerciseGeminiResumeWithEvidence(
 ): Promise<NativeResumeResult> {
   let prior: Readonly<AgentInfo> | undefined
   try {
-    return await exerciseSessionResume(context, { resumeEvidence: async (evidence) => {
-      prior = evidence.prior
-      await captureGeminiResumeEvidence(context, testInfo, evidence)
-      if (evidence.phase === 'stored')
-        await waitForGeminiArchiveMinuteToPass(context, evidence.prior, clock)
-    } })
+    return await exerciseSessionResume(context, {
+      resumeEvidence: async (evidence) => {
+        prior = evidence.prior
+        await captureGeminiResumeEvidence(context, testInfo, evidence)
+        if (evidence.phase === 'stored')
+          await waitForGeminiArchiveMinuteToPass(context, evidence.prior, clock)
+      },
+    })
   }
   catch (failure) {
     try {
-      await captureGeminiResumeEvidence(context, testInfo, { phase: 'failed', ...(prior ? { prior } : {}), cause: failure })
+      await captureGeminiResumeEvidence(context, testInfo, {
+        phase: 'failed',
+        ...(prior
+          ? { prior }
+          : {}),
+        cause: failure,
+      })
     }
     catch (captureFailure) {
       throw new AggregateError([failure, captureFailure], 'The native resume scenario and failure evidence capture failed.')

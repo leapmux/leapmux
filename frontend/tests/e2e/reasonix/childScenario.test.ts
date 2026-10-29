@@ -11,7 +11,12 @@ const childPrompt = mockScenarioPrompt('reasonix-spawn-transcript', REASONIX_SPA
 const childPack = reasonixChildContextPack(childPrompt)
 
 function answers(userText: string): boolean {
-  return matchesRequest(reasonixSpawnChildRule().when, { protocol: 'openai-chat-completions', systemText: '', userText, body: {} })
+  return matchesRequest(reasonixSpawnChildRule().when, {
+    protocol: 'openai-chat-completions',
+    systemText: '',
+    userText,
+    body: {},
+  })
 }
 
 describe('reasonixSpawnChildRule', () => {

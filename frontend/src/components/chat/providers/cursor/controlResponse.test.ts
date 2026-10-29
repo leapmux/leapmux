@@ -3,21 +3,41 @@ import { describe, expect, it } from 'vitest'
 import { cursorControlResponseSummary } from './controlResponse'
 
 function cr(request: Record<string, unknown> | undefined, response: Record<string, unknown> | undefined): PersistedControlResponse {
-  return { claimToken: 'claim-1', requestId: '7', request, response }
+  return {
+    claimToken: 'claim-1',
+    requestId: '7',
+    request,
+    response,
+  }
 }
 
 const QUESTION_REQUEST = {
   method: 'cursor/ask_question',
   params: {
     questions: [
-      { id: 'q1', prompt: 'Pick a color', options: [{ id: 'o1', label: 'Red' }, { id: 'o2', label: 'Blue' }] },
-      { id: 'q2', prompt: 'Pick a size', options: [{ id: 's1', label: 'Large' }] },
+      {
+        id: 'q1',
+        prompt: 'Pick a color',
+        options: [
+          { id: 'o1', label: 'Red' },
+          { id: 'o2', label: 'Blue' },
+        ],
+      },
+      {
+        id: 'q2',
+        prompt: 'Pick a size',
+        options: [
+          { id: 's1', label: 'Large' },
+        ],
+      },
     ],
   },
 }
 
 function questionOutcome(outcome: Record<string, unknown>): Record<string, unknown> {
-  return { result: { outcome } }
+  return {
+    result: { outcome },
+  }
 }
 
 describe('cursorControlResponseSummary', () => {
@@ -26,8 +46,14 @@ describe('cursorControlResponseSummary', () => {
       const response = questionOutcome({
         outcome: 'answered',
         answers: [
-          { questionId: 'q1', selectedOptionIds: ['o1', 'o2'] },
-          { questionId: 'q2', selectedOptionIds: ['s1'] },
+          {
+            questionId: 'q1',
+            selectedOptionIds: ['o1', 'o2'],
+          },
+          {
+            questionId: 'q2',
+            selectedOptionIds: ['s1'],
+          },
         ],
       })
       expect(cursorControlResponseSummary(cr(QUESTION_REQUEST, response)))
@@ -40,7 +66,13 @@ describe('cursorControlResponseSummary', () => {
     it('reads a typed answer back beside the options it accompanied', () => {
       const response = questionOutcome({
         outcome: 'answered',
-        answers: [{ questionId: 'q1', selectedOptionIds: ['o1'], freeformText: 'and also purple' }],
+        answers: [
+          {
+            questionId: 'q1',
+            selectedOptionIds: ['o1'],
+            freeformText: 'and also purple',
+          },
+        ],
       })
       expect(cursorControlResponseSummary(cr(QUESTION_REQUEST, response)))
         .toEqual({ kind: 'label', text: 'Pick a color: Red, and also purple' })
@@ -49,7 +81,9 @@ describe('cursorControlResponseSummary', () => {
     it('reads a typed answer back when no option was selected', () => {
       const response = questionOutcome({
         outcome: 'answered',
-        answers: [{ questionId: 'q1', selectedOptionIds: [], freeformText: 'none of those' }],
+        answers: [
+          { questionId: 'q1', selectedOptionIds: [], freeformText: 'none of those' },
+        ],
       })
       expect(cursorControlResponseSummary(cr(QUESTION_REQUEST, response)))
         .toEqual({ kind: 'label', text: 'Pick a color: none of those' })
@@ -59,7 +93,10 @@ describe('cursorControlResponseSummary', () => {
       const response = questionOutcome({
         outcome: 'answered',
         answers: [
-          { questionId: 'q1', selectedOptionIds: ['o1', 'unknown'] },
+          {
+            questionId: 'q1',
+            selectedOptionIds: ['o1', 'unknown'],
+          },
           { questionId: 'q2', selectedOptionIds: [] },
         ],
       })
@@ -92,8 +129,19 @@ describe('cursorControlResponseSummary', () => {
   })
 
   it('delegates to the ACP permission path for a plain permission selection', () => {
-    const request = { method: 'session/request_permission', params: { options: [{ optionId: 'proceed_once', name: 'Allow once' }] } }
-    const response = { result: { outcome: { optionId: 'proceed_once' } } }
+    const request = {
+      method: 'session/request_permission',
+      params: {
+        options: [
+          { optionId: 'proceed_once', name: 'Allow once' },
+        ],
+      },
+    }
+    const response = {
+      result: {
+        outcome: { optionId: 'proceed_once' },
+      },
+    }
     expect(cursorControlResponseSummary(cr(request, response))).toEqual({ kind: 'label', text: 'Allow once' })
   })
 
@@ -110,7 +158,11 @@ describe('cursorControlResponseSummary', () => {
     })
 
     it('still resolves a permission selection via the response-based ACP path', () => {
-      expect(cursorControlResponseSummary(cr(undefined, { result: { outcome: { optionId: 'proceed_once' } } })))
+      expect(cursorControlResponseSummary(cr(undefined, {
+        result: {
+          outcome: { optionId: 'proceed_once' },
+        },
+      })))
         .toEqual({ kind: 'label', text: 'Allow once' })
     })
   })

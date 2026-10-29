@@ -46,7 +46,12 @@ interface RenderOptions {
 
 function renderContent(options: RenderOptions = {}) {
   const workspaces = (options.workspaceIds ?? ['ws-1']).map((id, index) =>
-    create(WorkspaceSchema, { id, title: index === 0 ? 'Workspace One' : `Workspace ${id}` }))
+    create(WorkspaceSchema, {
+      id,
+      title: index === 0
+        ? 'Workspace One'
+        : `Workspace ${id}`,
+    }))
   const activeWorkspaceId = options.activeWorkspaceId ?? (() => null)
   const getTabsForWorkspace = options.getTabsForWorkspace ?? (() => [])
 
@@ -117,7 +122,12 @@ describe('WorkspaceSectionContent', () => {
 })
 
 function agentTab(id: string, workspaceId: string, title = id): Tab {
-  return { type: TabType.AGENT, id, workspaceId, title }
+  return {
+    type: TabType.AGENT,
+    id,
+    workspaceId,
+    title,
+  }
 }
 
 /**
@@ -151,84 +161,145 @@ describe('WorkspaceSectionContent active workspace expansion', () => {
   })
 
   it('expands the active workspace once it has a tab', () => {
-    const store = createTabStore({ 'ws-1': [agentTab('a-1', 'ws-1')] })
-    renderContent({ activeWorkspaceId: () => 'ws-1', getTabsForWorkspace: store.getTabsForWorkspace })
+    const store = createTabStore({
+      'ws-1': [
+        agentTab('a-1', 'ws-1'),
+      ],
+    })
+    renderContent({
+      activeWorkspaceId: () => 'ws-1',
+      getTabsForWorkspace: store.getTabsForWorkspace,
+    })
 
     expect(expandedState('ws-1')).toBe('true')
   })
 
   it('leaves an active workspace with no tab collapsed', () => {
     const store = createTabStore({})
-    renderContent({ activeWorkspaceId: () => 'ws-1', getTabsForWorkspace: store.getTabsForWorkspace })
+    renderContent({
+      activeWorkspaceId: () => 'ws-1',
+      getTabsForWorkspace: store.getTabsForWorkspace,
+    })
 
     expect(expandedState('ws-1')).toBe('false')
   })
 
   it('keeps a collapsed active workspace collapsed when one of its tabs changes', () => {
-    const store = createTabStore({ 'ws-1': [agentTab('a-1', 'ws-1')] })
-    renderContent({ activeWorkspaceId: () => 'ws-1', getTabsForWorkspace: store.getTabsForWorkspace })
+    const store = createTabStore({
+      'ws-1': [
+        agentTab('a-1', 'ws-1'),
+      ],
+    })
+    renderContent({
+      activeWorkspaceId: () => 'ws-1',
+      getTabsForWorkspace: store.getTabsForWorkspace,
+    })
     expect(expandedState('ws-1')).toBe('true')
 
     // "Collapse all", then the tab's agent reports its startup: a new tab
     // object in a new list of the same length.
     setWorkspacesExpanded(['ws-1'], false)
     expect(expandedState('ws-1')).toBe('false')
-    store.replace('ws-1', [agentTab('a-1', 'ws-1', 'Agent started')])
+    store.replace('ws-1', [
+      agentTab('a-1', 'ws-1', 'Agent started'),
+    ])
 
     expect(expandedState('ws-1')).toBe('false')
   })
 
   it('keeps a collapsed active workspace collapsed when it gains a second tab', () => {
-    const store = createTabStore({ 'ws-1': [agentTab('a-1', 'ws-1')] })
-    renderContent({ activeWorkspaceId: () => 'ws-1', getTabsForWorkspace: store.getTabsForWorkspace })
+    const store = createTabStore({
+      'ws-1': [
+        agentTab('a-1', 'ws-1'),
+      ],
+    })
+    renderContent({
+      activeWorkspaceId: () => 'ws-1',
+      getTabsForWorkspace: store.getTabsForWorkspace,
+    })
 
     setWorkspacesExpanded(['ws-1'], false)
-    store.replace('ws-1', [agentTab('a-1', 'ws-1'), agentTab('a-2', 'ws-1')])
+    store.replace('ws-1', [
+      agentTab('a-1', 'ws-1'),
+      agentTab('a-2', 'ws-1'),
+    ])
 
     expect(expandedState('ws-1')).toBe('false')
   })
 
   it('keeps a collapsed active workspace collapsed when a tab of another workspace changes', () => {
     const store = createTabStore({
-      'ws-1': [agentTab('a-1', 'ws-1')],
-      'ws-2': [agentTab('b-1', 'ws-2')],
+      'ws-1': [
+        agentTab('a-1', 'ws-1'),
+      ],
+      'ws-2': [
+        agentTab('b-1', 'ws-2'),
+      ],
     })
-    renderContent({ workspaceIds: ['ws-1', 'ws-2'], activeWorkspaceId: () => 'ws-1', getTabsForWorkspace: store.getTabsForWorkspace })
+    renderContent({
+      workspaceIds: ['ws-1', 'ws-2'],
+      activeWorkspaceId: () => 'ws-1',
+      getTabsForWorkspace: store.getTabsForWorkspace,
+    })
 
     setWorkspacesExpanded(['ws-1'], false)
-    store.replace('ws-2', [agentTab('b-1', 'ws-2', 'Renamed')])
+    store.replace('ws-2', [
+      agentTab('b-1', 'ws-2', 'Renamed'),
+    ])
 
     expect(expandedState('ws-1')).toBe('false')
   })
 
   it('expands the active workspace when it gains its first tab', () => {
     const store = createTabStore({})
-    renderContent({ activeWorkspaceId: () => 'ws-1', getTabsForWorkspace: store.getTabsForWorkspace })
+    renderContent({
+      activeWorkspaceId: () => 'ws-1',
+      getTabsForWorkspace: store.getTabsForWorkspace,
+    })
     expect(expandedState('ws-1')).toBe('false')
 
-    store.replace('ws-1', [agentTab('a-1', 'ws-1')])
+    store.replace('ws-1', [
+      agentTab('a-1', 'ws-1'),
+    ])
 
     expect(expandedState('ws-1')).toBe('true')
   })
 
   it('expands the active workspace again after it lost every tab and gained a new one', () => {
-    const store = createTabStore({ 'ws-1': [agentTab('a-1', 'ws-1')] })
-    renderContent({ activeWorkspaceId: () => 'ws-1', getTabsForWorkspace: store.getTabsForWorkspace })
+    const store = createTabStore({
+      'ws-1': [
+        agentTab('a-1', 'ws-1'),
+      ],
+    })
+    renderContent({
+      activeWorkspaceId: () => 'ws-1',
+      getTabsForWorkspace: store.getTabsForWorkspace,
+    })
 
     setWorkspacesExpanded(['ws-1'], false)
     store.replace('ws-1', [])
-    store.replace('ws-1', [agentTab('a-2', 'ws-1')])
+    store.replace('ws-1', [
+      agentTab('a-2', 'ws-1'),
+    ])
 
     expect(expandedState('ws-1')).toBe('true')
   })
 
   it('expands each workspace that becomes active, and leaves the previous one as it was', () => {
     const store = createTabStore({
-      'ws-1': [agentTab('a-1', 'ws-1')],
-      'ws-2': [agentTab('b-1', 'ws-2')],
+      'ws-1': [
+        agentTab('a-1', 'ws-1'),
+      ],
+      'ws-2': [
+        agentTab('b-1', 'ws-2'),
+      ],
     })
     const [active, setActive] = createSignal<string | null>('ws-1')
-    renderContent({ workspaceIds: ['ws-1', 'ws-2'], activeWorkspaceId: active, getTabsForWorkspace: store.getTabsForWorkspace })
+    renderContent({
+      workspaceIds: ['ws-1', 'ws-2'],
+      activeWorkspaceId: active,
+      getTabsForWorkspace: store.getTabsForWorkspace,
+    })
     setWorkspacesExpanded(['ws-1'], false)
 
     setActive('ws-2')
@@ -242,8 +313,15 @@ describe('WorkspaceSectionContent active workspace expansion', () => {
   })
 
   it('expands nothing when no workspace is active', () => {
-    const store = createTabStore({ 'ws-1': [agentTab('a-1', 'ws-1')] })
-    renderContent({ activeWorkspaceId: () => null, getTabsForWorkspace: store.getTabsForWorkspace })
+    const store = createTabStore({
+      'ws-1': [
+        agentTab('a-1', 'ws-1'),
+      ],
+    })
+    renderContent({
+      activeWorkspaceId: () => null,
+      getTabsForWorkspace: store.getTabsForWorkspace,
+    })
 
     expect(expandedState('ws-1')).toBe('false')
   })

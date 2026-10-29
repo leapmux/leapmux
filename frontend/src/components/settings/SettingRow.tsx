@@ -57,7 +57,9 @@ export function formatEffectiveValue(control: SettingControl, value: unknown): s
     case 'toggle':
       // ToggleControl checks on `=== true` alone, so every other value
       // reads OFF in the control and must read Off here.
-      return value === true ? 'On' : 'Off'
+      return value === true
+        ? 'On'
+        : 'Off'
     case 'enum': {
       // An unmatched value keeps its raw text. The hub enforces a value
       // this client has no label for, and an empty note would report
@@ -70,9 +72,13 @@ export function formatEffectiveValue(control: SettingControl, value: unknown): s
     // the hub settled on is the whole point of the note. Most number keys
     // declare no unit, and those must gain no separator.
     case 'number':
-      return control.unit ? `${String(value)} ${control.unit}` : String(value)
+      return control.unit
+        ? `${String(value)} ${control.unit}`
+        : String(value)
     case 'slider':
-      return control.unit ? `${String(value)}${control.unit}` : String(value)
+      return control.unit
+        ? `${String(value)}${control.unit}`
+        : String(value)
     default:
       return String(value)
   }
@@ -120,8 +126,12 @@ export const SettingRow: Component<SettingRowProps> = (props) => {
   // and passes `undefined` through untouched.
   const effectiveText = createMemo<string | undefined>(() => {
     const read = props.binding.effective
-    const value = read ? read() : undefined
-    return value === undefined ? undefined : formatEffectiveValue(d().control, value)
+    const value = read
+      ? read()
+      : undefined
+    return value === undefined
+      ? undefined
+      : formatEffectiveValue(d().control, value)
   })
 
   /**
@@ -142,7 +152,9 @@ export const SettingRow: Component<SettingRowProps> = (props) => {
   const reportFailure = (seq: number, err: unknown) => {
     if (!writeSeq.isNewest(undefined, seq))
       return
-    setWriteError(err instanceof Error ? err.message : String(err))
+    setWriteError(err instanceof Error
+      ? err.message
+      : String(err))
   }
 
   /**
@@ -200,8 +212,12 @@ export const SettingRow: Component<SettingRowProps> = (props) => {
             min={c.min}
             max={c.max}
             step={c.step}
-            {...(c.unit === undefined ? {} : { unit: c.unit })}
-            value={typeof props.binding.value() === 'number' ? props.binding.value() as number : c.min}
+            {...(c.unit === undefined
+              ? {}
+              : { unit: c.unit })}
+            value={typeof props.binding.value() === 'number'
+              ? props.binding.value() as number
+              : c.min}
             onChange={commit}
           />
         )
@@ -209,11 +225,21 @@ export const SettingRow: Component<SettingRowProps> = (props) => {
         return (
           <NumberControl
             ariaLabel={d().label}
-            {...(c.min === undefined ? {} : { min: c.min })}
-            {...(c.max === undefined ? {} : { max: c.max })}
-            {...(c.step === undefined ? {} : { step: c.step })}
-            {...(c.unit === undefined ? {} : { unit: c.unit })}
-            value={typeof props.binding.value() === 'number' ? props.binding.value() as number : undefined}
+            {...(c.min === undefined
+              ? {}
+              : { min: c.min })}
+            {...(c.max === undefined
+              ? {}
+              : { max: c.max })}
+            {...(c.step === undefined
+              ? {}
+              : { step: c.step })}
+            {...(c.unit === undefined
+              ? {}
+              : { unit: c.unit })}
+            value={typeof props.binding.value() === 'number'
+              ? props.binding.value() as number
+              : undefined}
             onChange={commit}
           />
         )
@@ -221,8 +247,12 @@ export const SettingRow: Component<SettingRowProps> = (props) => {
         return (
           <TextControl
             ariaLabel={d().label}
-            {...(c.placeholder === undefined ? {} : { placeholder: c.placeholder })}
-            value={typeof props.binding.value() === 'string' ? props.binding.value() as string : undefined}
+            {...(c.placeholder === undefined
+              ? {}
+              : { placeholder: c.placeholder })}
+            value={typeof props.binding.value() === 'string'
+              ? props.binding.value() as string
+              : undefined}
             onChange={commit}
           />
         )
@@ -239,7 +269,9 @@ export const SettingRow: Component<SettingRowProps> = (props) => {
           <StringListControl
             ariaLabel={d().label}
             addLabel={c.addLabel}
-            value={Array.isArray(props.binding.value()) ? props.binding.value() as string[] : []}
+            value={Array.isArray(props.binding.value())
+              ? props.binding.value() as string[]
+              : []}
             onChange={commit}
           />
         )
@@ -301,7 +333,9 @@ export const SettingRow: Component<SettingRowProps> = (props) => {
             data-testid={`scope-chip-${d().id}`}
             onClick={() => setMenuOpen(o => !o)}
           >
-            {overridden() ? 'This device' : 'Account default'}
+            {overridden()
+              ? 'This device'
+              : 'Account default'}
             <Icon icon={ChevronDown} size="xs" aria-hidden="true" />
           </button>
           <DropdownMenu
@@ -332,7 +366,11 @@ export const SettingRow: Component<SettingRowProps> = (props) => {
         </>
       )
     }
-    const note = scope === 'account' ? 'Account' : scope === 'hub' ? 'Hub' : 'This device'
+    const note = scope === 'account'
+      ? 'Account'
+      : scope === 'hub'
+        ? 'Hub'
+        : 'This device'
     return <span class={styles.scopePlain}>{note}</span>
   }
 

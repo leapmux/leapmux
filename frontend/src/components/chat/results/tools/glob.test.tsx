@@ -16,6 +16,14 @@ describe('glob renderer', () => {
     request: { pattern: '*.ts', paths: [] },
     minimalTitlePart: '*',
     titlePart: '*.ts',
-    result: { filenames: [], content: '', numFiles: 0, numLines: 0, truncated: false, fallbackContent: '', empty: false },
+    result: {
+      filenames: [],
+      content: '',
+      numFiles: 0,
+      numLines: 0,
+      truncated: false,
+      fallbackContent: '',
+      empty: false,
+    },
   })
 })

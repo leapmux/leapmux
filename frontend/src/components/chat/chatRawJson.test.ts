@@ -17,17 +17,33 @@ interface MsgOver {
 }
 
 function msg(over: MsgOver = {}) {
-  return create(AgentChatMessageSchema, { id: 'm1', source: MessageSource.USER, seq: 7n, createdAt: 'T', ...over })
+  return create(AgentChatMessageSchema, {
+    id: 'm1',
+    source: MessageSource.USER,
+    seq: 7n,
+    createdAt: 'T',
+    ...over,
+  })
 }
 
 function parsed(over: Partial<ParsedMessageContent> = {}): ParsedMessageContent {
-  return { rawText: '', topLevel: null, parentObject: undefined, wrapper: null, ...over }
+  return {
+    rawText: '',
+    topLevel: null,
+    parentObject: undefined,
+    wrapper: null,
+    ...over,
+  }
 }
 
 describe('buildRawJsonEnvelope', () => {
   it('keeps finished metadata outside the original provider bytes', () => {
     const raw = '{"native":"unchanged","completion":"provider-value"}'
-    const message = create(AgentChatMessageSchema, { content: new TextEncoder().encode(raw), contentCompression: ContentCompression.NONE, completion: MessageCompletion.FINISHED })
+    const message = create(AgentChatMessageSchema, {
+      content: new TextEncoder().encode(raw),
+      contentCompression: ContentCompression.NONE,
+      completion: MessageCompletion.FINISHED,
+    })
     const output = JSON.parse(buildRawJsonEnvelope(message, parseMessageContent(message), 'agent'))
     expect(output.completion).toBe('finished')
     expect(output.content).toEqual(JSON.parse(raw))
@@ -79,8 +95,13 @@ describe('buildRawJsonEnvelope', () => {
   })
 
   it('separates supplemental data from identically named provider fields', () => {
-    const content = { supplemental_content: 'provider field', _leapmux: { native: true } }
-    const supplemental = { rawOutput: { text: 'Recovered result' } }
+    const content = {
+      supplemental_content: 'provider field',
+      _leapmux: { native: true },
+    }
+    const supplemental = {
+      rawOutput: { text: 'Recovered result' },
+    }
     const message = create(AgentChatMessageSchema, {
       content: new TextEncoder().encode(JSON.stringify(content)),
       contentCompression: ContentCompression.NONE,
@@ -93,8 +114,15 @@ describe('buildRawJsonEnvelope', () => {
   })
 
   it('keeps recovered provider metadata separate from worker metadata', () => {
-    const content = { metadata: { duration_ms: 'original provider field' } }
-    const supplement = { provider: { metadata: { duration_ms: 'recovered provider field' } }, metadata: { duration_ms: 0 } }
+    const content = {
+      metadata: { duration_ms: 'original provider field' },
+    }
+    const supplement = {
+      provider: {
+        metadata: { duration_ms: 'recovered provider field' },
+      },
+      metadata: { duration_ms: 0 },
+    }
     const message = create(AgentChatMessageSchema, {
       content: new TextEncoder().encode(JSON.stringify(content)),
       contentCompression: ContentCompression.NONE,
@@ -111,14 +139,16 @@ describe('buildRawJsonEnvelope', () => {
 
   it('shows exact received metadata strings beside consolidated content', () => {
     const original = ' {"type":"notification_thread","old_seqs":[3],"messages":[{"type":"system","text":"Visible notice"}]} '
-    const records = [{
-      label: 'opaque:zero',
-      data_base64: '/wB7IndpZGUiOjkwMDcxOTkyNTQ3NDA5OTN9',
-      extra_base64: 'AAE=',
-      empty_base64: '',
-      status: 4,
-      retained: true,
-    }]
+    const records = [
+      {
+        label: 'opaque:zero',
+        data_base64: '/wB7IndpZGUiOjkwMDcxOTkyNTQ3NDA5OTN9',
+        extra_base64: 'AAE=',
+        empty_base64: '',
+        status: 4,
+        retained: true,
+      },
+    ]
     const supplemental = `{"provider":{"notification_entries":"Provider field"},"metadata":{"duration_ms":0,"opaque_records":${JSON.stringify(records)}}}`
     const message = create(AgentChatMessageSchema, {
       content: new TextEncoder().encode(original),
@@ -131,7 +161,9 @@ describe('buildRawJsonEnvelope', () => {
     expect(result).toContain(`"content":${original}`)
     expect(result).toContain(`"supplemental_content":${supplemental}`)
     const envelope = JSON.parse(result)
-    expect(envelope.content.messages).toEqual([{ type: 'system', text: 'Visible notice' }])
+    expect(envelope.content.messages).toEqual([
+      { type: 'system', text: 'Visible notice' },
+    ])
     expect(envelope.supplemental_content.metadata.opaque_records).toEqual(records)
     expect(envelope.supplemental_content.provider.notification_entries).toBe('Provider field')
     expect(envelope.completion).toBe('finished')
@@ -181,7 +213,17 @@ describe('buildRawJsonEnvelope', () => {
     const message = create(AgentChatMessageSchema, {
       content: new TextEncoder().encode('{}'),
       contentCompression: ContentCompression.NONE,
-      supplementalContent: new Uint8Array([0x28, 0xB5, 0x2F, 0xFD, 0x20, 0x00, 0x01, 0x00, 0x00]),
+      supplementalContent: new Uint8Array([
+        0x28,
+        0xB5,
+        0x2F,
+        0xFD,
+        0x20,
+        0x00,
+        0x01,
+        0x00,
+        0x00,
+      ]),
       supplementalContentCompression: ContentCompression.ZSTD,
     })
     const output = buildRawJsonEnvelope(message, parseMessageContent(message), 'agent')
@@ -207,12 +249,23 @@ describe('buildRawJsonEnvelope', () => {
 
   it('builds the envelope with the core fields and parsed content', () => {
     const out = JSON.parse(buildRawJsonEnvelope(msg(), parsed({ rawText: '{"hello":"world"}' }), 'user'))
-    expect(out).toMatchObject({ id: 'm1', source: 'user', seq: 7, created_at: 'T', content: { hello: 'world' } })
+    expect(out).toMatchObject({
+      id: 'm1',
+      source: 'user',
+      seq: 7,
+      created_at: 'T',
+      content: { hello: 'world' },
+    })
   })
 
   it('serializes unsafe int64 seq values as exact strings', () => {
     const out = JSON.parse(buildRawJsonEnvelope(
-      create(AgentChatMessageSchema, { id: 'm1', source: MessageSource.USER, seq: 9007199254740993n, createdAt: 'T' }),
+      create(AgentChatMessageSchema, {
+        id: 'm1',
+        source: MessageSource.USER,
+        seq: 9007199254740993n,
+        createdAt: 'T',
+      }),
       parsed({ rawText: '{}' }),
       'user',
     ))
@@ -240,7 +293,9 @@ describe('buildRawJsonEnvelope', () => {
 
   it('parses a valid span_lines into structured JSON', () => {
     const out = JSON.parse(buildRawJsonEnvelope(msg({ spanLines: '[{"a":1}]' }), parsed({ rawText: '{}' }), 'user'))
-    expect(out.span_lines).toEqual([{ a: 1 }])
+    expect(out.span_lines).toEqual([
+      { a: 1 },
+    ])
   })
 
   it('keeps non-JSON content as a string in the envelope', () => {
@@ -250,10 +305,20 @@ describe('buildRawJsonEnvelope', () => {
   it('preserves the original notification wrapper inside content', () => {
     const out = JSON.parse(buildRawJsonEnvelope(
       msg(),
-      parsed({ rawText: '{"type":"notification_thread","old_seqs":[3,4],"messages":[{"x":1}]}', wrapper: { old_seqs: [3, 4], messages: [{ x: 1 }] } }),
+      parsed({
+        rawText: '{"type":"notification_thread","old_seqs":[3,4],"messages":[{"x":1}]}',
+        wrapper: {
+          old_seqs: [3, 4],
+          messages: [
+            { x: 1 },
+          ],
+        },
+      }),
       'leapmux',
     ))
-    expect(out.content.messages).toEqual([{ x: 1 }])
+    expect(out.content.messages).toEqual([
+      { x: 1 },
+    ])
     expect(out.content.old_seqs).toEqual([3, 4])
     expect(out.content.type).toBe('notification_thread')
   })
@@ -272,12 +337,22 @@ describe('buildRawJsonEnvelope', () => {
     it('injects geometry on the wrapper/notification path too (not only the content path)', () => {
       const out = JSON.parse(buildRawJsonEnvelope(
         msg(),
-        parsed({ rawText: '{"type":"notification_thread","old_seqs":[],"messages":[{"x":1}]}', wrapper: { old_seqs: [], messages: [{ x: 1 }] } }),
+        parsed({
+          rawText: '{"type":"notification_thread","old_seqs":[],"messages":[{"x":1}]}',
+          wrapper: {
+            old_seqs: [],
+            messages: [
+              { x: 1 },
+            ],
+          },
+        }),
         'leapmux',
         { measured: 203 },
       ))
       // Geometry stays outside the original notification content.
-      expect(out.content.messages).toEqual([{ x: 1 }])
+      expect(out.content.messages).toEqual([
+        { x: 1 },
+      ])
       expect(out.geometry.height).toBe(203)
     })
 

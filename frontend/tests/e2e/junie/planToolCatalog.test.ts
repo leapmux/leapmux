@@ -2,9 +2,47 @@ import { describe, expect, it } from 'vitest'
 import { PLAN_MODE_WITHHELD_TOOLS, planWithheldToolsOffered } from './planToolCatalog'
 
 /** The tool names of the requests that Junie 26.9.22 sent to the mock, in request order. */
-const DEFAULT_CATALOG = ['open', 'open_entire_file', 'scroll_down', 'scroll_up', 'ask_user', 'glob_search', 'grep_search', 'bash', 'answer', 'search_replace', 'multi_edit', 'create', 'undo_edit', 'submit', 'spawn_subagent', 'agent_skill_read_doc']
-const PLAN_CATALOG_WITHOUT_PLAN = ['open', 'open_entire_file', 'submit', 'ask_user', 'answer', 'glob_search', 'grep_search', 'bash', 'agent_skill_read_doc']
-const PLAN_CATALOG_WITH_PLAN = ['open', 'open_entire_file', 'multi_edit', 'submit', 'ask_user', 'answer', 'glob_search', 'grep_search', 'bash', 'agent_skill_read_doc']
+const DEFAULT_CATALOG = [
+  'open',
+  'open_entire_file',
+  'scroll_down',
+  'scroll_up',
+  'ask_user',
+  'glob_search',
+  'grep_search',
+  'bash',
+  'answer',
+  'search_replace',
+  'multi_edit',
+  'create',
+  'undo_edit',
+  'submit',
+  'spawn_subagent',
+  'agent_skill_read_doc',
+]
+const PLAN_CATALOG_WITHOUT_PLAN = [
+  'open',
+  'open_entire_file',
+  'submit',
+  'ask_user',
+  'answer',
+  'glob_search',
+  'grep_search',
+  'bash',
+  'agent_skill_read_doc',
+]
+const PLAN_CATALOG_WITH_PLAN = [
+  'open',
+  'open_entire_file',
+  'multi_edit',
+  'submit',
+  'ask_user',
+  'answer',
+  'glob_search',
+  'grep_search',
+  'bash',
+  'agent_skill_read_doc',
+]
 
 describe('planWithheldToolsOffered', () => {
   it('finds no withheld tool in the Plan catalog before a plan exists', () => {

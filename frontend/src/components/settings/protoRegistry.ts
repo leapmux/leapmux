@@ -60,7 +60,11 @@ const MIN_SAFE = BigInt(Number.MIN_SAFE_INTEGER)
 function limitToNumber(v: bigint | undefined): number | undefined {
   if (v === undefined)
     return undefined
-  return Number(v > MAX_SAFE ? MAX_SAFE : v < MIN_SAFE ? MIN_SAFE : v)
+  return Number(v > MAX_SAFE
+    ? MAX_SAFE
+    : v < MIN_SAFE
+      ? MIN_SAFE
+      : v)
 }
 
 /**
@@ -86,38 +90,72 @@ export function controlForField(
   // blur. The ALTCHA signing key is declared BYTES, so testing
   // `field.secret` inside the STRING case alone put the hub's signing key
   // in a plain text box.
-  if (field.secret)
-    return { kind: 'secret', isSet: () => valueOf()?.secretSet[field.name] === true }
+  if (field.secret) {
+    return {
+      kind: 'secret',
+      isSet: () => valueOf()?.secretSet[field.name] === true,
+    }
+  }
   switch (field.kind) {
     case SettingFieldKind.BOOL:
       return { kind: 'toggle' }
     case SettingFieldKind.INT: {
       const min = limitToNumber(field.min)
       const max = limitToNumber(field.max)
-      if (field.unit === '%' || field.unit === 'percent')
-        return { kind: 'slider', min: min ?? 0, max: max ?? 100, step: 1, unit: '%' }
+      if (field.unit === '%' || field.unit === 'percent') {
+        return {
+          kind: 'slider',
+          min: min ?? 0,
+          max: max ?? 100,
+          step: 1,
+          unit: '%',
+        }
+      }
       return {
         kind: 'number',
-        ...(min === undefined ? {} : { min }),
-        ...(max === undefined ? {} : { max }),
+        ...(min === undefined
+          ? {}
+          : { min }),
+        ...(max === undefined
+          ? {}
+          : { max }),
         step: 1,
-        ...(field.unit ? { unit: field.unit } : {}),
+        ...(field.unit
+          ? { unit: field.unit }
+          : {}),
       }
     }
     case SettingFieldKind.FLOAT:
       return {
         kind: 'number',
-        ...(field.minF === undefined ? {} : { min: field.minF }),
-        ...(field.maxF === undefined ? {} : { max: field.maxF }),
+        ...(field.minF === undefined
+          ? {}
+          : { min: field.minF }),
+        ...(field.maxF === undefined
+          ? {}
+          : { max: field.maxF }),
         step: 0.05,
-        ...(field.unit ? { unit: field.unit } : {}),
+        ...(field.unit
+          ? { unit: field.unit }
+          : {}),
       }
     case SettingFieldKind.STRING:
-      return { kind: 'text', ...(field.placeholder ? { placeholder: field.placeholder } : {}) }
+      return {
+        kind: 'text',
+        ...(field.placeholder
+          ? { placeholder: field.placeholder }
+          : {}),
+      }
     case SettingFieldKind.ENUM:
       return {
         kind: 'enum',
-        options: field.enumValues.map(v => ({ value: v.value, label: v.label, ...(v.help ? { help: v.help } : {}) })),
+        options: field.enumValues.map(v => ({
+          value: v.value,
+          label: v.label,
+          ...(v.help
+            ? { help: v.help }
+            : {}),
+        })),
       }
     case SettingFieldKind.STRING_LIST:
       return { kind: 'stringList', addLabel: 'Add' }
@@ -129,7 +167,9 @@ export function controlForField(
       // the same answer an unknown category gets. Casting the string to
       // CustomEditorId here instead produced a row with a label, help text,
       // and no control at all.
-      return isCustomEditorId(field.customId) ? { kind: 'custom', id: field.customId } : undefined
+      return isCustomEditorId(field.customId)
+        ? { kind: 'custom', id: field.customId }
+        : undefined
     default:
       // BYTES and anything a newer hub sends: render as text so an unknown
       // kind degrades instead of disappearing.
@@ -239,7 +279,9 @@ export function buildProtoRows(
       if (control === undefined)
         continue
       const scalar = field.name === ''
-      const id = scalar ? desc.key : `${desc.key}.${field.name}`
+      const id = scalar
+        ? desc.key
+        : `${desc.key}.${field.name}`
       // The CONTROL edits, so it binds to the configured document. Binding
       // it to the effective one made the note beneath it a tautology — the
       // note printed the control's own value straight back, and the
@@ -271,7 +313,9 @@ export function buildProtoRows(
       const binding: HubBinding = {
         value: valueOf,
         set: (v) => {
-          const partial = scalar ? v : { [field.name]: v }
+          const partial = scalar
+            ? v
+            : { [field.name]: v }
           return source.update(desc.key, JSON.stringify(partial))
         },
         customized,
@@ -280,11 +324,15 @@ export function buildProtoRows(
         // reset is exact. A field row must state what else goes with it,
         // which is what `resetsWholeKey` makes the row do.
         reset: () => source.reset(desc.key).then(() => undefined),
-        ...(scalar ? {} : { resetsWholeKey: desc.key }),
+        ...(scalar
+          ? {}
+          : { resetsWholeKey: desc.key }),
       }
       if (field.secret) {
         binding.set = (v) => {
-          const partial = scalar ? v : { [field.name]: v }
+          const partial = scalar
+            ? v
+            : { [field.name]: v }
           return source.updateSecret(desc.key, JSON.stringify(partial))
         }
       }
@@ -304,7 +352,9 @@ export function buildProtoRows(
       binding.effective = () => {
         const configured = valueOf()
         const applied = effectiveAt()
-        return JSON.stringify(configured) === JSON.stringify(applied) ? undefined : applied
+        return JSON.stringify(configured) === JSON.stringify(applied)
+          ? undefined
+          : applied
       }
       // Every hide rule is a separate reason, and the row hides when ANY of
       // them holds. A chain of ternaries would let the first reason cancel
@@ -333,13 +383,17 @@ export function buildProtoRows(
           id,
           category: desc.category as CategoryId,
           label: field.label || desc.title,
-          ...(help === '' ? {} : { help }),
+          ...(help === ''
+            ? {}
+            : { help }),
           // The setting's own title, so a search for the object name finds
           // every one of its fields even when each field is labelled apart.
           keywords: [desc.title],
           scope: 'hub',
           control,
-          ...(desc.restart ? { restart: true } : {}),
+          ...(desc.restart
+            ? { restart: true }
+            : {}),
           // NO `needsElevation` here. `scope: 'hub'` above already answers it,
           // and `descriptorNeedsElevation` reads the scope: the hub requires an
           // elevated session for every settings write rather than for one key
@@ -352,7 +406,9 @@ export function buildProtoRows(
           // no per-key flag that a new key can be added without.
           ...(hideReasons.length === 0
             ? {}
-            : { hidden: () => hideReasons.some(holds => holds()) }),
+            : {
+                hidden: () => hideReasons.some(holds => holds()),
+              }),
         },
         binding,
       })

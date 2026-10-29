@@ -90,7 +90,9 @@ export const ComposerScheduleControl: Component<ComposerScheduleControlProps> = 
     if (badInput())
       return scheduleRefusalMessage('invalid')
     const { verdict } = checkSchedule(field(), now(), props.existingStored)
-    return verdict === 'invalid' || verdict === 'notFuture' ? scheduleRefusalMessage(verdict) : undefined
+    return verdict === 'invalid' || verdict === 'notFuture'
+      ? scheduleRefusalMessage(verdict)
+      : undefined
   }
 
   const apply = () => {
@@ -120,13 +122,20 @@ export const ComposerScheduleControl: Component<ComposerScheduleControlProps> = 
       data-testid="schedule-send-popover"
       aria-label="Schedule send"
       trigger={triggerProps => (
-        <Tooltip text={scheduled() ? 'Change scheduled send' : 'Schedule send'} ariaLabel>
+        <Tooltip
+          text={scheduled()
+            ? 'Change scheduled send'
+            : 'Schedule send'}
+          ariaLabel
+        >
           <button
             type="button"
             class={actionButtonClass(true)}
             disabled={props.disabled}
             data-testid="schedule-send-trigger"
-            data-scheduled={scheduled() ? 'true' : undefined}
+            data-scheduled={scheduled()
+              ? 'true'
+              : undefined}
             {...triggerProps}
           >
             <Icon icon={CalendarClock} size="sm" />
@@ -143,8 +152,12 @@ export const ComposerScheduleControl: Component<ComposerScheduleControlProps> = 
             step={0.001}
             value={field()}
             data-testid="schedule-send-field"
-            aria-invalid={refusal() !== undefined ? 'true' : undefined}
-            aria-describedby={refusal() !== undefined ? `${hintId} ${errorId}` : hintId}
+            aria-invalid={refusal() !== undefined
+              ? 'true'
+              : undefined}
+            aria-describedby={refusal() !== undefined
+              ? `${hintId} ${errorId}`
+              : hintId}
             onInput={(e) => {
               // A partial native date has an empty value and badInput=true.
               // Capture validity before the controlled value resets the field.

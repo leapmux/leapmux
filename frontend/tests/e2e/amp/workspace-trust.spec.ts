@@ -20,17 +20,27 @@ ampTest('keeps untrusted project MCP servers blocked without an interactive trus
     optionValues: { permissionMode: AMP_PERMISSION_MODE.AllowAll },
     projectConfiguration: {
       prepare: ({ directory, marker }) => {
-        const server = writeMcpEchoServer(directory, { receiptLog: join(directory, 'native-project-mcp-receipt.json') })
-        expectedConfiguration = { command: server.command, args: [...server.args] }
+        const server = writeMcpEchoServer(directory, {
+          receiptLog: join(directory, 'native-project-mcp-receipt.json'),
+        })
+        expectedConfiguration = {
+          command: server.command,
+          args: [...server.args],
+        }
         const config = join(directory, '.amp', 'settings.json')
         mkdirSync(dirname(config), { recursive: true })
-        writeFileSync(config, JSON.stringify({ 'amp.mcpServers': { [marker]: expectedConfiguration } }))
+        writeFileSync(config, JSON.stringify({
+          'amp.mcpServers': { [marker]: expectedConfiguration },
+        }))
       },
       prove: async (privateContext, { directory, marker }) => {
         const receiptLog = join(directory, 'native-project-mcp-receipt.json')
         await sendNativeAnswer(privateContext, 'Reply once while the untrusted project MCP server awaits approval.', 'The first native project trust turn completed.')
         expect(existsSync(receiptLog)).toBe(false)
-        const { tools, workspaceMcpConfiguration } = await readAmpExecutorCatalog(privateContext, { workspaceMcpServer: marker, onOwnershipDiagnostic: ampCatalogDiagnosticAttachment(testInfo) })
+        const { tools, workspaceMcpConfiguration } = await readAmpExecutorCatalog(privateContext, {
+          workspaceMcpServer: marker,
+          onOwnershipDiagnostic: ampCatalogDiagnosticAttachment(testInfo),
+        })
         if (!expectedConfiguration)
           throw new Error('The native project MCP configuration did not complete preparation.')
         expect(workspaceMcpConfiguration).toEqual(expectedConfiguration)

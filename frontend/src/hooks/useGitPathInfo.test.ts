@@ -68,7 +68,10 @@ describe('useGitPathInfo', () => {
         setWorkerId('A')
         await flush()
         expect(getGitInfo).toHaveBeenCalledTimes(1)
-        expect(getGitInfo.mock.calls[0]).toEqual(['A', { workerId: 'A', path: '/repo' }])
+        expect(getGitInfo.mock.calls[0]).toEqual([
+          'A',
+          { workerId: 'A', path: '/repo' },
+        ])
         expect(info.info().isGitRepo).toBe(true)
         expect(info.info().isRepoRoot).toBe(true)
         expect(info.info().isWorktreeRoot).toBe(false)
@@ -459,7 +462,12 @@ describe('useGitPathInfo', () => {
     // lands on the same payload would replace the signal value by
     // identity and refire every dependent createEffect — wasted
     // renders for parent dialogs whose layouts depend on the accessor.
-    const sameResp = gitResp({ isWorktreeRoot: false, isRepoRoot: true, repoRoot: '/repo', currentBranch: 'main' })
+    const sameResp = gitResp({
+      isWorktreeRoot: false,
+      isRepoRoot: true,
+      repoRoot: '/repo',
+      currentBranch: 'main',
+    })
     getGitInfo
       .mockResolvedValueOnce(sameResp)
       .mockResolvedValueOnce(sameResp)

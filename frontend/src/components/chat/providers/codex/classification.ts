@@ -93,7 +93,9 @@ const CODEX_ITEM_CLASSIFIERS: Record<string, CodexItemClassifier> = {
     return { kind: 'tool_use' }
   },
   // The extractor's own read, so a measured row is always a row that draws.
-  [CODEX_ITEM.Reasoning]: item => codexReasoningHasText(item) ? { kind: 'assistant_thinking' } : { kind: 'hidden' },
+  [CODEX_ITEM.Reasoning]: item => codexReasoningHasText(item)
+    ? { kind: 'assistant_thinking' }
+    : { kind: 'hidden' },
   // These native items use the tool renderer. Classification and extraction must agree, as rowKindInvariant checks.
   [CODEX_ITEM.Sleep]: () => ({ kind: 'tool_use' }),
   [CODEX_ITEM.EnteredReviewMode]: () => ({ kind: 'tool_use' }),
@@ -162,14 +164,18 @@ export function classifyCodexMessage(input: ClassificationInput): MessageCategor
   // Classify the item through the same unwrap function that the extractor uses.
   // This also recognizes a tool row whose stored envelope retains item/started.
   const item = extractItem(parent) ?? undefined
-  const itemType = item ? pickString(item, 'type', undefined) : undefined
+  const itemType = item
+    ? pickString(item, 'type', undefined)
+    : undefined
   if (item && itemType) {
     if (itemType === CODEX_ITEM.ContextCompaction && method === CODEX_METHOD.ItemCompleted)
       return notification([parent])
     // `Object.hasOwn`, not a bare read: `itemType` comes straight off the wire,
     // and a value that spells an `Object.prototype` member answers with a function
     // the call below would then run.
-    const itemClassifier = Object.hasOwn(CODEX_ITEM_CLASSIFIERS, itemType) ? CODEX_ITEM_CLASSIFIERS[itemType] : undefined
+    const itemClassifier = Object.hasOwn(CODEX_ITEM_CLASSIFIERS, itemType)
+      ? CODEX_ITEM_CLASSIFIERS[itemType]
+      : undefined
     if (itemClassifier)
       return itemClassifier(item)
   }

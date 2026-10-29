@@ -26,7 +26,9 @@ vi.mock('~/lib/renderMarkdown', () => ({
   shikiHighlighter: {
     codeToHtml: (code: string) => `<pre><code>${code}</code></pre>`,
     codeToTokens: (code: string) => ({
-      tokens: code.split('\n').map(line => [{ content: line, htmlStyle: {} }]),
+      tokens: code.split('\n').map(line => [
+        { content: line, htmlStyle: {} },
+      ]),
     }),
   },
 }))

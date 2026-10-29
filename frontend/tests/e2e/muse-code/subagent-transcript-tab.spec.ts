@@ -49,7 +49,17 @@ museTest('opens the actual child history and preserves its native session after 
     for (const agentId of [child.parentId, child.childId]) {
       const snapshot = await readNativeMessageSnapshot(native, agentId)
       await testInfo.attach(`muse-native-transcript-${agentId}`, {
-        body: JSON.stringify({ agentId, agentSessionId: snapshot.agentSessionId, messages: snapshot.messages.map(message => ({ seq: String(message.seq), sessionId: message.agentSessionId, source: message.source, original: nativeMessageBody(message), supplement: nativeMessageSupplement(message) })) }),
+        body: JSON.stringify({
+          agentId,
+          agentSessionId: snapshot.agentSessionId,
+          messages: snapshot.messages.map(message => ({
+            seq: String(message.seq),
+            sessionId: message.agentSessionId,
+            source: message.source,
+            original: nativeMessageBody(message),
+            supplement: nativeMessageSupplement(message),
+          })),
+        }),
         contentType: 'application/json',
       })
     }
@@ -60,7 +70,9 @@ const restartTest = createProviderProcessTest({
   agent: MUSE_AGENT,
   nativeContext,
   skipReason: MUSE_E2E_SKIP_REASON,
-  openOptions: { optionValues: { workspaceTrust: 'agent', permissionMode: 'allowAll' } },
+  openOptions: {
+    optionValues: { workspaceTrust: 'agent', permissionMode: 'allowAll' },
+  },
 })
 
 restartTest('restores the same native child route and history after its owner restarts', async ({ native, separateHubWorker }) => {
@@ -79,9 +91,16 @@ restartTest('restores the same native child route and history after its owner re
   const rule = 'the restored Muse child reads its exact note'
   await modelScript.rule({
     name: rule,
-    when: { body: ['Workflow child completion protocol', note] },
+    when: {
+      body: ['Workflow child completion protocol', note],
+    },
     once: true,
-    respond: { text: answer, toolCalls: [museSubmitResultToolCall('muse-restored-child-submit', 'The restored child processed its note.')] },
+    respond: {
+      text: answer,
+      toolCalls: [
+        museSubmitResultToolCall('muse-restored-child-submit', 'The restored child processed its note.'),
+      ],
+    },
   })
   await sendMessage(page, note)
   await expect.poll(async () => (await modelScript.status()).ruleMatches[rule] ?? 0).toBe(1)
@@ -113,10 +132,18 @@ for (const active of [true, false]) {
     const gate = 'muse-native-parent-input'
     const spawnCallId = 'muse-native-parent-spawn'
     const initialAnswer = 'The initial native child task completed.'
-    const notices = [answer, humanAnswer, ...active ? [] : [initialAnswer]]
+    const notices = [
+      answer,
+      humanAnswer,
+      ...active
+        ? []
+        : [initialAnswer],
+    ]
     await modelScript.rule(...notices.map(summary => ({
       name: `the parent receives ${summary}`,
-      when: { body: ['<runtime-context source=', 'subagent_result', summary] },
+      when: {
+        body: ['<runtime-context source=', 'subagent_result', summary],
+      },
       once: true,
       respond: { text: `The parent acknowledged: ${summary}` },
     })))
@@ -135,12 +162,21 @@ for (const active of [true, false]) {
       await tabById(page, parentId).click()
       await childScript.queue(
         active
-          ? { gate, toolCalls: [bashToolCall(native.provider, 'muse-parent-input-boundary', 'printf \'MUSE_PARENT_INPUT_BOUNDARY\\n\'')] }
+          ? {
+              gate,
+              toolCalls: [
+                bashToolCall(native.provider, 'muse-parent-input-boundary', 'printf \'MUSE_PARENT_INPUT_BOUNDARY\\n\''),
+              ],
+            }
           : { text: initialAnswer },
         { text: answer },
       )
       const start = await modelScript.queue(
-        { toolCalls: [museSpawnChildToolCall(spawnCallId, randomUUID(), childScript.prompt(task))] },
+        {
+          toolCalls: [
+            museSpawnChildToolCall(spawnCallId, randomUUID(), childScript.prompt(task)),
+          ],
+        },
         { text: 'The parent spawned its native child.' },
       )
       await sendMessage(page, modelScript.prompt('Spawn the native child for the transcript test.'))
@@ -154,7 +190,9 @@ for (const active of [true, false]) {
           if (museItem(frame)?.callId !== spawnCallId)
             return []
           const result = museNativeResult(frame, parseMessageContent(message).supplementalContent)
-          return result?.structured ? [result.structured] : []
+          return result?.structured
+            ? [result.structured]
+            : []
         })
         expect(results).toHaveLength(1)
         expect(results[0]?.status).toBe('accepted')
@@ -175,7 +213,11 @@ for (const active of [true, false]) {
       diagnosticChildId = childId
       await tabById(page, parentId).click()
       const send = await modelScript.queue(
-        { toolCalls: [museSendChildMessageToolCall('muse-native-parent-send', randomUUID(), subagentId, note, active ? 'queue' : 'followup')] },
+        {
+          toolCalls: [
+            museSendChildMessageToolCall('muse-native-parent-send', randomUUID(), subagentId, note, active ? 'queue' : 'followup'),
+          ],
+        },
         { text: 'The parent delivered its native instruction.' },
       )
       // Only the native parent tool supplies the note to the child.
@@ -206,7 +248,12 @@ for (const active of [true, false]) {
       expect(afterReload.messages.map(message => message.id)).toEqual(beforeReload.messages.map(message => message.id))
       // Equal bodies remain separate inputs when different actors sent them.
       const humanRule = 'the native child reads its separate human input'
-      await childScript.rule({ name: humanRule, when: { body: note }, once: true, respond: { text: humanAnswer } })
+      await childScript.rule({
+        name: humanRule,
+        when: { body: note },
+        once: true,
+        respond: { text: humanAnswer },
+      })
       await sendMessage(page, note)
       const delivered = await retryUntilPass(async () => {
         const queue = await readNativeInputQueue(native.leapmuxServer, childId)
@@ -275,10 +322,16 @@ for (const active of [true, false]) {
       if (!complete && parentSnapshot) {
         try {
           const records = await readMuseNativeControlRecords(parentSnapshot.agentSessionId, native.leapmuxServer.agentEnv?.XDG_DATA_HOME)
-          await testInfo.attach('muse-native-parent-control-records', { body: JSON.stringify(records), contentType: 'application/json' })
+          await testInfo.attach('muse-native-parent-control-records', {
+            body: JSON.stringify(records),
+            contentType: 'application/json',
+          })
         }
         catch (error) {
-          await testInfo.attach('muse-native-control-diagnostic-error', { body: String(error), contentType: 'text/plain' })
+          await testInfo.attach('muse-native-control-diagnostic-error', {
+            body: String(error),
+            contentType: 'text/plain',
+          })
         }
       }
       for (const agentId of [diagnosticParentId, diagnosticChildId]) {
@@ -288,21 +341,47 @@ for (const active of [true, false]) {
           const snapshot = await readNativeMessageSnapshot(native, agentId)
           const queue = await readNativeInputQueue(native.leapmuxServer, agentId)
           await testInfo.attach(`muse-native-delivery-state-${agentId}`, {
-            body: JSON.stringify({ sessionId: snapshot.agentSessionId, queue, messages: snapshot.messages.map(message => ({ seq: String(message.seq), source: message.source, original: nativeMessageBody(message), supplement: nativeMessageSupplement(message) })) }, (_key, value) => typeof value === 'bigint' ? String(value) : value),
+            body: JSON.stringify({
+              sessionId: snapshot.agentSessionId,
+              queue,
+              messages: snapshot.messages.map(message => ({
+                seq: String(message.seq),
+                source: message.source,
+                original: nativeMessageBody(message),
+                supplement: nativeMessageSupplement(message),
+              })),
+            }, (_key, value) => typeof value === 'bigint'
+              ? String(value)
+              : value),
             contentType: 'application/json',
           })
         }
         catch (error) {
-          await testInfo.attach('muse-native-delivery-diagnostic-error', { body: String(error), contentType: 'text/plain' })
+          await testInfo.attach('muse-native-delivery-diagnostic-error', {
+            body: String(error),
+            contentType: 'text/plain',
+          })
         }
       }
       if (parentSnapshot) {
         await testInfo.attach('muse-native-parent-tool-transcript', {
-          body: JSON.stringify({ sessionId: parentSnapshot.agentSessionId, messages: parentSnapshot.messages.map(message => ({ seq: String(message.seq), source: message.source, spanId: message.spanId, original: nativeMessageBody(message), supplement: nativeMessageSupplement(message) })) }),
+          body: JSON.stringify({
+            sessionId: parentSnapshot.agentSessionId,
+            messages: parentSnapshot.messages.map(message => ({
+              seq: String(message.seq),
+              source: message.source,
+              spanId: message.spanId,
+              original: nativeMessageBody(message),
+              supplement: nativeMessageSupplement(message),
+            })),
+          }),
           contentType: 'application/json',
         })
       }
-      await testInfo.attach('muse-native-parent-input-model', { body: JSON.stringify(await childScript.status()), contentType: 'application/json' })
+      await testInfo.attach('muse-native-parent-input-model', {
+        body: JSON.stringify(await childScript.status()),
+        contentType: 'application/json',
+      })
       await childLifecycle.finish(complete)
     }
   })

@@ -47,7 +47,12 @@ describe('createExponentialBackoff', () => {
   })
 
   it('honors a non-default multiplier', () => {
-    const backoff = createExponentialBackoff<string>({ initialMs: 100, maxMs: 1000, multiplier: 3, jitterFactor: 0 })
+    const backoff = createExponentialBackoff<string>({
+      initialMs: 100,
+      maxMs: 1000,
+      multiplier: 3,
+      jitterFactor: 0,
+    })
     expect(backoff.schedule('k', () => {})).toBe(100)
     vi.runAllTimers()
     expect(backoff.schedule('k', () => {})).toBe(300)

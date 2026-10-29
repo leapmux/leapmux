@@ -11,7 +11,9 @@ fastAgentTest('runs the actual native turn with private configuration and mock c
   await exerciseCredentialIsolation(native, {
     privateDirectories: [home],
     expectedCredential: MODEL_KEY,
-    configurationFiles: [join(home, 'fast-agent.yaml')],
+    configurationFiles: [
+      join(home, 'fast-agent.yaml'),
+    ],
     configurationMarkers: ['gpt-4o'],
   })
 })

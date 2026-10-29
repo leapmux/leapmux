@@ -25,7 +25,9 @@ export function createCompassSimulation(
   let intervalId: ReturnType<typeof setInterval> | undefined
 
   function pickNewTarget(now: number) {
-    const offset = (Math.PI / 4 + Math.random() * Math.PI * 0.75) * (Math.random() < 0.5 ? 1 : -1)
+    const offset = (Math.PI / 4 + Math.random() * Math.PI * 0.75) * (Math.random() < 0.5
+      ? 1
+      : -1)
     target = angle + offset
     nextTargetTime = now + 1.5 + Math.random() * 2.0
   }

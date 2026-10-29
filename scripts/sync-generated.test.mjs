@@ -18,7 +18,18 @@ function fixture() {
 }
 
 function run(dir, args = []) {
-  return spawnSync(process.execPath, [join(root, 'scripts/sync-generated.mjs'), '--base', dir, '--copy', join(dir, 'source'), 'staged', '--out', 'staged', join(dir, 'output'), ...args], { encoding: 'utf8' })
+  return spawnSync(process.execPath, [
+    join(root, 'scripts/sync-generated.mjs'),
+    '--base',
+    dir,
+    '--copy',
+    join(dir, 'source'),
+    'staged',
+    '--out',
+    'staged',
+    join(dir, 'output'),
+    ...args,
+  ], { encoding: 'utf8' })
 }
 
 afterEach(() => {
@@ -40,7 +51,12 @@ describe('generated output publication', () => {
   it('removes staging after a generator fails and preserves published files', () => {
     const dir = fixture()
     writeFileSync(join(dir, 'output', 'file'), 'previous output')
-    const result = run(dir, ['--', process.execPath, '-e', 'process.exit(7)'])
+    const result = run(dir, [
+      '--',
+      process.execPath,
+      '-e',
+      'process.exit(7)',
+    ])
     expect(result.status).toBe(7)
     expect(readFileSync(join(dir, 'output', 'file'), 'utf8')).toBe('previous output')
     expect(readdirSync(dir).filter(name => name.startsWith('.gen-stage-'))).toEqual([])
@@ -48,7 +64,10 @@ describe('generated output publication', () => {
 
   it('removes staging when the generator executable does not exist', () => {
     const dir = fixture()
-    const result = run(dir, ['--', join(dir, 'missing-executable')])
+    const result = run(dir, [
+      '--',
+      join(dir, 'missing-executable'),
+    ])
     expect(result.status).not.toBe(0)
     expect(result.stderr).toContain('failed to run generator')
     expect(readdirSync(dir).filter(name => name.startsWith('.gen-stage-'))).toEqual([])
@@ -57,7 +76,11 @@ describe('generated output publication', () => {
   it('validates every output group before publishing the first group', () => {
     const dir = fixture()
     writeFileSync(join(dir, 'output', 'file'), 'previous output')
-    const result = run(dir, ['--out', 'missing', join(dir, 'other')])
+    const result = run(dir, [
+      '--out',
+      'missing',
+      join(dir, 'other'),
+    ])
     expect(result.status).not.toBe(0)
     expect(readFileSync(join(dir, 'output', 'file'), 'utf8')).toBe('previous output')
     expect(readdirSync(dir).filter(name => name.startsWith('.gen-stage-'))).toEqual([])
@@ -75,7 +98,11 @@ describe('generated output publication', () => {
   it('rejects a file where an output directory is required before publishing any group', () => {
     const dir = fixture()
     writeFileSync(join(dir, 'output', 'file'), 'previous output')
-    const result = run(dir, ['--out', 'staged/file', join(dir, 'other')])
+    const result = run(dir, [
+      '--out',
+      'staged/file',
+      join(dir, 'other'),
+    ])
     expect(result.status).not.toBe(0)
     expect(result.stderr).toContain('Generator output is not a directory')
     expect(readFileSync(join(dir, 'output', 'file'), 'utf8')).toBe('previous output')

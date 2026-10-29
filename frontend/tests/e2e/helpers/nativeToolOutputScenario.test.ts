@@ -10,8 +10,18 @@ import { computedNativeToolOutput } from './nativeToolOutput'
 import { nativeOutputFileCommand, runNativeToolOutputCapture } from './nativeToolOutputScenario'
 
 const context = { provider: AgentProvider.PI }
-const call = { id: 'call_native', name: 'native_tool', arguments: { source: 'computed source' } }
-const output = { source: 'compute(70 + 7)', text: 'FIRST42\nMIDDLE77\nLAST42', firstMarker: 'FIRST42', omittedMarker: 'MIDDLE77', lastMarker: 'LAST42' }
+const call = {
+  id: 'call_native',
+  name: 'native_tool',
+  arguments: { source: 'computed source' },
+}
+const output = {
+  source: 'compute(70 + 7)',
+  text: 'FIRST42\nMIDDLE77\nLAST42',
+  firstMarker: 'FIRST42',
+  omittedMarker: 'MIDDLE77',
+  lastMarker: 'LAST42',
+}
 
 describe('nativeOutputFileCommand', () => {
   it('keeps the physical command on one line for native command validators', () => {
@@ -40,7 +50,10 @@ describe('nativeOutputFileCommand', () => {
   it.each([0, 7, 255])('sets the exit code %s of the process after it writes the output', (exitCode) => {
     const expected = computedNativeToolOutput({ prefix: 'CommandProbe', lineCount: 5 })
     const command = nativeOutputFileCommand(expected, { exitCode })
-    const actual = spawnSync(process.execPath, ['-e', command.slice('node -e \''.length, -1)], { encoding: 'utf8' })
+    const actual = spawnSync(process.execPath, [
+      '-e',
+      command.slice('node -e \''.length, -1),
+    ], { encoding: 'utf8' })
     expect(actual.error).toBeUndefined()
     expect(actual.status).toBe(exitCode)
     expect(actual.stdout).toBe(expected.text)
@@ -61,7 +74,13 @@ function fixture() {
   const events: string[] = []
   const agent = create(AgentInfoSchema, { id: 'agent', agentSessionId: 'session' })
   const snapshot = { agentId: agent.id, agentSessionId: agent.agentSessionId, messages: [] }
-  const request = { protocol: 'openai-chat-completions' as const, path: '/v1/chat/completions', stepIndex: 5, body: {}, mockCredential: { kind: 'bearer' as const, accepted: true } }
+  const request = {
+    protocol: 'openai-chat-completions' as const,
+    path: '/v1/chat/completions',
+    stepIndex: 5,
+    body: {},
+    mockCredential: { kind: 'bearer' as const, accepted: true },
+  }
   const operations = {
     prepare: async () => { events.push('prepare') },
     queue: async () => {
@@ -91,14 +110,36 @@ function fixture() {
     attach: async () => { events.push('attach') },
     proof: async () => { events.push('proof') },
   }
-  return { operations, events, agent, snapshot, request }
+  return {
+    operations,
+    events,
+    agent,
+    snapshot,
+    request,
+  }
 }
 
 describe('runNativeToolOutputCapture', () => {
   it('attaches native evidence before idle and rereads complete rows before provider proof', async () => {
     const f = fixture()
     const capture = await runNativeToolOutputCapture(context, call, output, f.operations)
-    expect(f.events).toEqual(['prepare', 'agent', 'queue', 'send', 'model-complete', 'request', 'agent', 'snapshot', 'attach', 'idle', 'request', 'agent', 'snapshot', 'attach', 'proof'])
+    expect(f.events).toEqual([
+      'prepare',
+      'agent',
+      'queue',
+      'send',
+      'model-complete',
+      'request',
+      'agent',
+      'snapshot',
+      'attach',
+      'idle',
+      'request',
+      'agent',
+      'snapshot',
+      'attach',
+      'proof',
+    ])
     expect(capture.nativeCallId).toBe(call.id)
     expect(capture.request).toBe(f.request)
     expect(capture.output).toBe(output)
@@ -165,7 +206,9 @@ describe('runNativeToolOutputCapture', () => {
   it('supplies the owned Worker snapshot to a provider that resolves its actual native call ID', async () => {
     const f = fixture()
     const nativeCallId = vi.fn((_request: MockModelRequestRecord, scriptedId: string, snapshot?: NativeMessageSnapshot) => {
-      return snapshot ? `${scriptedId}_${snapshot.agentSessionId}` : 'missing-worker-snapshot'
+      return snapshot
+        ? `${scriptedId}_${snapshot.agentSessionId}`
+        : 'missing-worker-snapshot'
     })
     const capture = await runNativeToolOutputCapture(context, call, output, { ...f.operations, nativeCallId })
     expect(capture.nativeCallId).toBe('call_native_session')
@@ -213,13 +256,25 @@ describe('runNativeToolOutputCapture', () => {
     expect(f.events).toContain('proof')
   })
 
-  it.each([{ ...output, source: '' }, { ...output, text: '' }, { ...output, omittedMarker: '' }, { ...output, source: output.text }, { ...output, source: output.omittedMarker }])('rejects an invalid computed output before native invocation %j', async (invalid) => {
+  it.each([
+    { ...output, source: '' },
+    { ...output, text: '' },
+    { ...output, omittedMarker: '' },
+    { ...output, source: output.text },
+    { ...output, source: output.omittedMarker },
+  ])('rejects an invalid computed output before native invocation %j', async (invalid) => {
     const f = fixture()
     await expect(runNativeToolOutputCapture(context, call, invalid, f.operations)).rejects.toThrow('limited computed output')
     expect(f.events).toEqual([])
   })
 
-  it.each([-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER])('rejects an invalid queue index %j before sending the prompt', async (index) => {
+  it.each([
+    -1,
+    0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER,
+  ])('rejects an invalid queue index %j before sending the prompt', async (index) => {
     const f = fixture()
     f.operations.queue = async () => index
     await expect(runNativeToolOutputCapture(context, call, output, f.operations)).rejects.toThrow('invalid queue index')
@@ -256,7 +311,10 @@ describe('runNativeToolOutputCapture', () => {
   })
 
   it.each([
-    { ...output, source: 'x'.repeat(512 * 1024 + 1) },
+    {
+      ...output,
+      source: 'x'.repeat(512 * 1024 + 1),
+    },
     { ...output, text: `${output.text}${'x'.repeat(4 * 1024 * 1024)}` },
   ])('rejects generated data that exceeds capture limits', async (invalid) => {
     const f = fixture()

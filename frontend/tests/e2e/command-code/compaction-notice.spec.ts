@@ -26,7 +26,10 @@ commandCodeTest('ends an automatic compaction that has too little history to sum
   const { page, modelScript } = native
   // The native run2 probe triggers compaction from reported usage, then declines the short actual history.
   const start = await modelScript.queue(
-    { text: 'The reported usage is near the context limit.', usage: { inputTokens: 130000, outputTokens: 10 } },
+    {
+      text: 'The reported usage is near the context limit.',
+      usage: { inputTokens: 130000, outputTokens: 10 },
+    },
     { text: 'The turn after the skipped compaction completed.' },
   )
   await sendMessage(page, modelScript.prompt('Report the scripted high usage.'))

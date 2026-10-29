@@ -72,13 +72,20 @@ describe('fakeLocatorTree', () => {
     expect(pathOf(page.getByText('Saved', { exact: true }))).toBe('page >> text=Saved exact')
     expect(pathOf(page.getByLabel('Name'))).toBe('page >> label=Name')
     const row = page.locator('row')
-    expect(pathOf(row.filter({ hasText: 'Alpha', has: page.locator('icon'), visible: true }))).toBe('page >> row[hasText=Alpha has=(page >> icon) visible=true]')
+    expect(pathOf(row.filter({
+      hasText: 'Alpha',
+      has: page.locator('icon'),
+      visible: true,
+    }))).toBe('page >> row[hasText=Alpha has=(page >> icon) visible=true]')
     expect(pathOf(row.or(page.locator('cell')))).toBe('(page >> row | page >> cell)')
   })
 
   it('logs each action and each check with the path, and answers from the path', async () => {
     const log: string[] = []
-    const { page, node } = fakeLocatorTree({ log, answer: (expression, path) => !(expression === 'to.be.visible' && path === 'hidden') })
+    const { page, node } = fakeLocatorTree({
+      log,
+      answer: (expression, path) => !(expression === 'to.be.visible' && path === 'hidden'),
+    })
     await page.getByTestId('save').click()
     await page.getByLabel('Name').fill('Ada')
     await node('row').hover()
@@ -96,7 +103,10 @@ describe('fakeLocatorTree', () => {
 
   it('reads attributes through the attribute hook, logs each read, and reads null by default', async () => {
     const log: string[] = []
-    const { node } = fakeLocatorTree({ log, attribute: (name, path) => `${name} of ${path}` })
+    const { node } = fakeLocatorTree({
+      log,
+      attribute: (name, path) => `${name} of ${path}`,
+    })
     expect(await node('row').getAttribute('data-id')).toBe('data-id of row')
     expect(await fakeLocatorTree({ log: [] }).node('row').getAttribute('data-id')).toBeNull()
     expect(log).toEqual(['read data-id row'])
@@ -104,7 +114,10 @@ describe('fakeLocatorTree', () => {
 
   it('adds the members of the root page', async () => {
     const reload = vi.fn(async () => null)
-    const { page } = fakeLocatorTree({ log: [], page: { reload } })
+    const { page } = fakeLocatorTree({
+      log: [],
+      page: { reload },
+    })
     await page.reload()
     expect(reload).toHaveBeenCalledOnce()
   })

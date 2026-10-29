@@ -149,10 +149,13 @@ const commandActionSummaryStyle = {
 
 export const commandActionSingle = style(commandActionSummaryStyle)
 
-export const commandActionList = style([commandActionSummaryStyle, {
-  margin: 0,
-  paddingLeft: '1.25rem',
-}])
+export const commandActionList = style([
+  commandActionSummaryStyle,
+  {
+    margin: 0,
+    paddingLeft: '1.25rem',
+  },
+])
 
 export const commandActionLine = style({
   overflowWrap: 'anywhere',
@@ -197,16 +200,22 @@ codeSurface(toolInputSummary, 'transparent', [
 ])
 
 // Tool input detail text (natural language: descriptions, URLs, queries)
-export const toolInputText = style([clippedText, {
-  color: 'var(--foreground)',
-}])
+export const toolInputText = style([
+  clippedText,
+  {
+    color: 'var(--foreground)',
+  },
+])
 
 // Tool input code text (commands, patterns — monospaced)
-export const toolInputCode = style([clippedText, {
-  color: 'var(--foreground)',
-  fontFamily: 'var(--font-mono)',
-  fontVariantLigatures: 'none',
-}])
+export const toolInputCode = style([
+  clippedText,
+  {
+    color: 'var(--foreground)',
+    fontFamily: 'var(--font-mono)',
+    fontVariantLigatures: 'none',
+  },
+])
 
 // File path display in tool messages
 export const toolInputPath = style({
@@ -329,17 +338,20 @@ export const toolImage = style({
 // with 8px/16px padding. The reset is LAYERED, so the block/cursor below
 // survive it. `display: block` (not inline-flex) keeps the button's box the
 // image's own box, which is what the intrinsic-size reservation assumes.
-export const toolImageButton = style([controlReset, {
-  display: 'block',
-  cursor: 'zoom-in',
-  borderRadius: 'var(--radius-medium)',
-  selectors: {
-    '&:focus-visible': {
-      outline: '2px solid var(--primary)',
-      outlineOffset: '2px',
+export const toolImageButton = style([
+  controlReset,
+  {
+    display: 'block',
+    cursor: 'zoom-in',
+    borderRadius: 'var(--radius-medium)',
+    selectors: {
+      '&:focus-visible': {
+        outline: '2px solid var(--primary)',
+        outlineOffset: '2px',
+      },
     },
   },
-}])
+])
 
 // Wrapper around a tool-result image, link or placeholder so it sits on its
 // own line with the same spacing as toolInputSummary.
@@ -365,15 +377,19 @@ export const toolImageRow = style({
 // it ties with `clippedText` on specificity and wins whenever the bundler emits
 // `~/styles/shared.css.ts` first, and the recipient then wraps instead of ending
 // in an ellipsis.
-export const toolRecipientLink = style([controlReset, clippedText, {
-  cursor: 'pointer',
-  color: 'var(--primary)',
-  textDecoration: 'underline',
-  textUnderlineOffset: '2px',
-  selectors: {
-    '&:hover': { color: 'rgb(from var(--primary) r g b / 0.8)' },
+export const toolRecipientLink = style([
+  controlReset,
+  clippedText,
+  {
+    cursor: 'pointer',
+    color: 'var(--primary)',
+    textDecoration: 'underline',
+    textUnderlineOffset: '2px',
+    selectors: {
+      '&:hover': { color: 'rgb(from var(--primary) r g b / 0.8)' },
+    },
   },
-}])
+])
 
 // A label/value list for a tool result's structured fields (the Agent card's
 // agent id, model, output file). The label is muted and does not shrink, so the

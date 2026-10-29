@@ -33,7 +33,12 @@ describe('channelPool', () => {
     pool.set('c1', ch({ channelId: 'c1', workerId: 'w1', state: 'opening' }))
     expect(pool.hasOpenChannel('w1', 'user-a')).toBe(false)
 
-    pool.set('c1', ch({ channelId: 'c1', workerId: 'w1', state: 'verified', userId: 'user-a' }))
+    pool.set('c1', ch({
+      channelId: 'c1',
+      workerId: 'w1',
+      state: 'verified',
+      userId: 'user-a',
+    }))
     expect(pool.hasOpenChannel('w1', 'user-a')).toBe(true)
     expect(pool.hasOpenChannel('w1', 'user-b')).toBe(false)
     expect(pool.hasOpenChannelForWorker('w1')).toBe(true)

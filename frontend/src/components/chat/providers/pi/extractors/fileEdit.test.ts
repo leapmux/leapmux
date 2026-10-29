@@ -5,22 +5,52 @@ import { extractPiEdit, extractPiRead, extractPiWrite, piResolveDiffSources, res
 describe('extractPiEdit', () => {
   it.each([
     { oldText: 'before', newText: 'after' },
-    { edits: { oldText: 'before', newText: 'after' } },
-    { edits: JSON.stringify([{ oldText: 'before', newText: 'after' }]) },
-    { edits: JSON.stringify({ oldText: 'before', newText: 'after' }) },
+    {
+      edits: { oldText: 'before', newText: 'after' },
+    },
+    {
+      edits: JSON.stringify([
+        { oldText: 'before', newText: 'after' },
+      ]),
+    },
+    {
+      edits: JSON.stringify({ oldText: 'before', newText: 'after' }),
+    },
   ])('accepts the edit form that Pi normalizes before execution: %j', (args) => {
-    const result = extractPiEdit({ type: 'tool_execution_start', toolCallId: 'call', toolName: 'edit', args: { path: '/project/file.ts', ...args } })
-    expect(result).toEqual([{ filePath: '/project/file.ts', structuredPatch: null, oldStr: 'before', newStr: 'after' }])
+    const result = extractPiEdit({
+      type: 'tool_execution_start',
+      toolCallId: 'call',
+      toolName: 'edit',
+      args: { path: '/project/file.ts', ...args },
+    })
+    expect(result).toEqual([
+      {
+        filePath: '/project/file.ts',
+        structuredPatch: null,
+        oldStr: 'before',
+        newStr: 'after',
+      },
+    ])
   })
 
   it('combines an edits array with the legacy singleton fields', () => {
-    const result = extractPiEdit({ type: 'tool_execution_start', toolCallId: 'call', toolName: 'edit', args: {
-      path: '/project/file.ts',
-      edits: [{ oldText: 'one', newText: 'two' }],
-      oldText: 'three',
-      newText: '',
-    } })
-    expect(result?.map(source => [source.oldStr, source.newStr])).toEqual([['one', 'two'], ['three', '']])
+    const result = extractPiEdit({
+      type: 'tool_execution_start',
+      toolCallId: 'call',
+      toolName: 'edit',
+      args: {
+        path: '/project/file.ts',
+        edits: [
+          { oldText: 'one', newText: 'two' },
+        ],
+        oldText: 'three',
+        newText: '',
+      },
+    })
+    expect(result?.map(source => [source.oldStr, source.newStr])).toEqual([
+      ['one', 'two'],
+      ['three', ''],
+    ])
   })
 
   it('returns null for non-edit tool', () => {
@@ -39,12 +69,27 @@ describe('extractPiEdit', () => {
           { oldText: 'a', newText: 'b' },
         ],
       },
-      result: { content: [{ type: 'text', text: 'patched' }], details: {} },
+      result: {
+        content: [
+          { type: 'text', text: 'patched' },
+        ],
+        details: {},
+      },
       isError: false,
     })
     expect(out).toEqual([
-      { filePath: '/repo/src/foo.ts', structuredPatch: null, oldStr: 'old', newStr: 'new' },
-      { filePath: '/repo/src/foo.ts', structuredPatch: null, oldStr: 'a', newStr: 'b' },
+      {
+        filePath: '/repo/src/foo.ts',
+        structuredPatch: null,
+        oldStr: 'old',
+        newStr: 'new',
+      },
+      {
+        filePath: '/repo/src/foo.ts',
+        structuredPatch: null,
+        oldStr: 'a',
+        newStr: 'b',
+      },
     ])
   })
 
@@ -66,7 +111,12 @@ describe('extractPiWrite', () => {
       toolCallId: 'c',
       toolName: 'write',
       args: { path: '/tmp/foo', content: 'data\n' },
-      result: { content: [{ type: 'text', text: 'wrote 5 bytes' }], details: {} },
+      result: {
+        content: [
+          { type: 'text', text: 'wrote 5 bytes' },
+        ],
+        details: {},
+      },
     })
     expect(out).toEqual({
       filePath: '/tmp/foo',
@@ -85,10 +135,17 @@ describe('extractPiRead', () => {
       toolCallId: 'c',
       toolName: 'read',
       args: { path: '/repo/x', offset: 10, limit: 50 },
-      result: { content: [{ type: 'text', text: 'contents' }], details: {} },
+      result: {
+        content: [
+          { type: 'text', text: 'contents' },
+        ],
+        details: {},
+      },
     })
     expect(out).toEqual({
-      lines: [{ num: 10, text: 'contents' }],
+      lines: [
+        { num: 10, text: 'contents' },
+      ],
       fallbackContent: 'contents',
     })
   })
@@ -98,10 +155,18 @@ describe('extractPiRead', () => {
       type: 'tool_execution_end',
       toolCallId: 'c',
       toolName: 'read',
-      result: { content: [{ type: 'text', text: 'line1\nline2' }], details: {} },
+      result: {
+        content: [
+          { type: 'text', text: 'line1\nline2' },
+        ],
+        details: {},
+      },
     }, { path: '/repo/x', offset: 20, limit: 2 })
     expect(out).toEqual({
-      lines: [{ num: 20, text: 'line1' }, { num: 21, text: 'line2' }],
+      lines: [
+        { num: 20, text: 'line1' },
+        { num: 21, text: 'line2' },
+      ],
       fallbackContent: 'line1\nline2',
     })
   })
@@ -112,26 +177,52 @@ describe('extractPiRead', () => {
       toolCallId: 'c',
       toolName: 'read',
       args: { path: '/repo/x' },
-      result: { content: [{ type: 'text', text: 'first\nsecond' }], details: {} },
+      result: {
+        content: [
+          { type: 'text', text: 'first\nsecond' },
+        ],
+        details: {},
+      },
     })
-    expect(out?.lines).toEqual([{ num: 1, text: 'first' }, { num: 2, text: 'second' }])
+    expect(out?.lines).toEqual([
+      { num: 1, text: 'first' },
+      { num: 2, text: 'second' },
+    ])
   })
 })
 
 describe('piResolveDiffSources', () => {
   it('uses a request path that becomes available after the first diff lookup', () => {
-    const payload = { type: 'tool_execution_end', toolCallId: 'call', toolName: 'edit', result: { details: { diff: '-1 before\n+1 after' } } }
+    const payload = {
+      type: 'tool_execution_end',
+      toolCallId: 'call',
+      toolName: 'edit',
+      result: {
+        details: { diff: '-1 before\n+1 after' },
+      },
+    }
     expect(resolvePiResultDiff(payload, {}).source?.filePath).toBe('')
     expect(resolvePiResultDiff(payload, { path: '/project/late.ts' }).source?.filePath).toBe('/project/late.ts')
   })
 
   it('prefers the applied standard patch over the display-oriented numbered diff', () => {
-    const payload = { type: 'tool_execution_end', toolCallId: 'call', toolName: 'edit', result: { details: {
-      diff: '-1 displayBefore\n+1 displayAfter',
-      patch: '--- a/file.ts\n+++ b/file.ts\n@@ -7 +7 @@\n-actualBefore\n+actualAfter\n',
-    } } }
+    const payload = {
+      type: 'tool_execution_end',
+      toolCallId: 'call',
+      toolName: 'edit',
+      result: {
+        details: {
+          diff: '-1 displayBefore\n+1 displayAfter',
+          patch: '--- a/file.ts\n+++ b/file.ts\n@@ -7 +7 @@\n-actualBefore\n+actualAfter\n',
+        },
+      },
+    }
     const source = resolvePiResultDiff(payload, { path: '/project/file.ts' }).source
-    expect(source?.structuredPatch?.[0]).toMatchObject({ oldStart: 7, newStart: 7, lines: ['-actualBefore', '+actualAfter'] })
+    expect(source?.structuredPatch?.[0]).toMatchObject({
+      oldStart: 7,
+      newStart: 7,
+      lines: ['-actualBefore', '+actualAfter'],
+    })
   })
 
   // A tool_execution_start sibling with the original edit substitutions.
@@ -139,31 +230,67 @@ describe('piResolveDiffSources', () => {
     type: 'tool_execution_start',
     toolCallId: 't1',
     toolName: 'edit',
-    args: { path: '/repo/x.ts', edits: [{ oldText: 'a', newText: 'b' }] },
+    args: {
+      path: '/repo/x.ts',
+      edits: [
+        { oldText: 'a', newText: 'b' },
+      ],
+    },
   }
   const toolUseParsed = (parentObject: Record<string, unknown>): ParsedMessageContent =>
-    ({ rawText: '', topLevel: parentObject, parentObject, wrapper: null })
+    ({
+      rawText: '',
+      topLevel: parentObject,
+      parentObject,
+      wrapper: null,
+    })
   const end = (over: Record<string, unknown>): Record<string, unknown> =>
-    ({ type: 'tool_execution_end', toolCallId: 't1', toolName: 'edit', isError: false, ...over })
+    ({
+      type: 'tool_execution_end',
+      toolCallId: 't1',
+      toolName: 'edit',
+      isError: false,
+      ...over,
+    })
 
   it('returns no diff sources for a PRESENT-but-unparseable result diff (renderer shows raw text)', () => {
     // The renderer (PiDiffToolResult) draws the raw diff text in a single <pre> when
     // it can't parse, NOT a structured diff -- so the height/meta path must NOT
     // synthesize a fallback diff from the start args, or the estimate over-sizes the row.
-    const payload = end({ result: { details: { diff: 'GARBAGE not-a-numbered-diff' } } })
+    const payload = end({
+      result: {
+        details: { diff: 'GARBAGE not-a-numbered-diff' },
+      },
+    })
     expect(piResolveDiffSources(payload, toolUseParsed(startEdit))).toEqual([])
   })
 
   it('falls back to the start-args diff when the result carries NO diff at all', () => {
-    const payload = end({ result: { details: {} } })
+    const payload = end({
+      result: { details: {} },
+    })
     expect(piResolveDiffSources(payload, toolUseParsed(startEdit))).toEqual([
-      { filePath: '/repo/x.ts', structuredPatch: null, oldStr: 'a', newStr: 'b' },
+      {
+        filePath: '/repo/x.ts',
+        structuredPatch: null,
+        oldStr: 'a',
+        newStr: 'b',
+      },
     ])
   })
 
   it('uses the parsed result diff when it is well-formed', () => {
-    const diff = [' 1 first', '-2 old', '+2 new', ' 3 third'].join('\n')
-    const payload = end({ result: { details: { diff } } })
+    const diff = [
+      ' 1 first',
+      '-2 old',
+      '+2 new',
+      ' 3 third',
+    ].join('\n')
+    const payload = end({
+      result: {
+        details: { diff },
+      },
+    })
     const out = piResolveDiffSources(payload, toolUseParsed(startEdit))
     expect(out).toHaveLength(1)
     expect(out[0]?.filePath).toBe('/repo/x.ts')
@@ -171,7 +298,12 @@ describe('piResolveDiffSources', () => {
   })
 
   it('returns no diff sources for a failed execution (renders error text)', () => {
-    const payload = end({ isError: true, result: { details: { diff: 'GARBAGE' } } })
+    const payload = end({
+      isError: true,
+      result: {
+        details: { diff: 'GARBAGE' },
+      },
+    })
     expect(piResolveDiffSources(payload, toolUseParsed(startEdit))).toEqual([])
   })
 })

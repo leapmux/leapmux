@@ -85,7 +85,9 @@ export async function waitForJunieOutputFilePaths(
 ): Promise<JunieReadyOutputPaths> {
   const expected = { ...owner }
   validateOwner(expected)
-  const observation: { state: ObservationState } = { state: { kind: 'pending' } }
+  const observation: { state: ObservationState } = {
+    state: { kind: 'pending' },
+  }
   await operations.waitUntilSettled(async () => {
     if (observation.state.kind !== 'pending')
       return true

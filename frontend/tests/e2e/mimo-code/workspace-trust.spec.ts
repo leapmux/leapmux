@@ -27,7 +27,11 @@ mimoTest('loads project instructions without a workspace trust decision', async 
     projectConfiguration: {
       prepare: (project) => {
         instructions.prepare(project)
-        writeFileSync(join(project.directory, 'mimocode.json'), JSON.stringify({ instructions: [join(project.directory, PROJECT_INSTRUCTIONS)] }))
+        writeFileSync(join(project.directory, 'mimocode.json'), JSON.stringify({
+          instructions: [
+            join(project.directory, PROJECT_INSTRUCTIONS),
+          ],
+        }))
       },
       prove: instructions.prove,
     },

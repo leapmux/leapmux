@@ -62,7 +62,13 @@ export function FileEditDiffTitle(props: { source: FileEditDiff, context?: ToolR
         {' '}
         <span class={toolInputText}>(deleted)</span>
       </Show>
-      <DiffStatsBadge stats={{ ...stats(), untracked: 0 }} class={fileEditStats} />
+      <DiffStatsBadge
+        stats={{
+          ...stats(),
+          untracked: 0,
+        }}
+        class={fileEditStats}
+      />
     </span>
   )
 }
@@ -85,9 +91,15 @@ export function FileEditDiffBody(props: {
         hunks={hunks()}
         view={props.diff.view()}
         filePath={props.source.filePath}
-        {...(props.source.originalFile !== undefined ? { originalFile: props.source.originalFile } : {})}
-        {...((props.showLineNumbers ?? props.source.showLineNumbers) !== undefined ? { showLineNumbers: props.showLineNumbers ?? props.source.showLineNumbers } : {})}
-        {...(props.context !== undefined ? { context: props.context } : {})}
+        {...(props.source.originalFile !== undefined
+          ? { originalFile: props.source.originalFile }
+          : {})}
+        {...((props.showLineNumbers ?? props.source.showLineNumbers) !== undefined
+          ? { showLineNumbers: props.showLineNumbers ?? props.source.showLineNumbers }
+          : {})}
+        {...(props.context !== undefined
+          ? { context: props.context }
+          : {})}
       />
     </>
   )

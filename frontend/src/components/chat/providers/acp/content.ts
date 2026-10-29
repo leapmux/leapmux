@@ -24,7 +24,11 @@ export function flattenAcpContent(content: unknown): ContentBlock[] {
       const inner = entry.content
       // Some providers omit the type from text blocks. Preserve their command output.
       const text = pickString(inner, 'text')
-      return text && (inner.type === undefined || inner.type === 'text') ? [{ type: 'text', text }] : [inner]
+      return text && (inner.type === undefined || inner.type === 'text')
+        ? [
+            { type: 'text', text },
+          ]
+        : [inner]
     }
     return [entry]
   })
@@ -48,10 +52,18 @@ export function collectAcpToolTextFromContent(content: ContentBlock[], rawOutput
     return text
   const format = (value: unknown) => value === undefined || value === null
     ? ''
-    : typeof value === 'object' ? prettifyJson(value) : String(value)
+    : typeof value === 'object'
+      ? prettifyJson(value)
+      : String(value)
   if (!isObject(rawOutput))
     return format(rawOutput)
-  if ('output' in rawOutput || 'error' in rawOutput)
-    return [format(rawOutput.output), format(rawOutput.error)].filter(value => value !== '').join('\n')
-  return options.rawObjects === false ? '' : format(rawOutput)
+  if ('output' in rawOutput || 'error' in rawOutput) {
+    return [
+      format(rawOutput.output),
+      format(rawOutput.error),
+    ].filter(value => value !== '').join('\n')
+  }
+  return options.rawObjects === false
+    ? ''
+    : format(rawOutput)
 }

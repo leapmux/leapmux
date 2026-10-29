@@ -30,7 +30,9 @@ const flow = vi.hoisted(() => ({
 
 /** Return the next value of `values`. The last value repeats. */
 function next<T>(values: T[]): T {
-  const value = values.length > 1 ? values.shift() : values[0]
+  const value = values.length > 1
+    ? values.shift()
+    : values[0]
   if (value === undefined)
     throw new Error('The fake holds no value to report.')
   return value
@@ -38,7 +40,10 @@ function next<T>(values: T[]): T {
 
 /** A fake locator. The fake `expect` below records its assertions. */
 function fake(name: string) {
-  return { fake: name, last: () => fake(name) }
+  return {
+    fake: name,
+    last: () => fake(name),
+  }
 }
 
 vi.mock('./ui', () => ({
@@ -69,9 +74,17 @@ vi.mock('./nativeConversation', () => ({
   // A native session that keeps its history sends the earlier answers with each new prompt.
   sendNativeAnswer: async (_context: unknown, prompt: string, answer: string): Promise<MockModelRequestRecord> => {
     flow.events.push(`answer:${prompt}=>${answer}`)
-    const history = flow.keepsHistory ? flow.answers.join('\n') : ''
+    const history = flow.keepsHistory
+      ? flow.answers.join('\n')
+      : ''
     flow.answers.push(answer)
-    return { protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { messages: [history, prompt] } }
+    return {
+      protocol: 'openai-chat-completions',
+      path: '/v1/chat/completions',
+      body: {
+        messages: [history, prompt],
+      },
+    }
   },
 }))
 
@@ -164,7 +177,9 @@ function fakeScript(offset: number) {
 function context(script: ReturnType<typeof fakeScript>['script'], provider = AgentProvider.CODEX): ManagedNativeScenarioContext {
   return {
     // The page serves only the locator of the thinking indicator.
-    page: { locator: (selector: string) => fake(selector) } as unknown as Page,
+    page: {
+      locator: (selector: string) => fake(selector),
+    } as unknown as Page,
     modelScript: script as unknown as ModelScript,
     provider,
     providerAgent: { provider, prefix: 'control-interrupt-unit' },
@@ -213,7 +228,11 @@ describe('waitingControlSteps', () => {
   const control = raiseWaitingControl(AgentProvider.CODEWHALE, 'question', '', 'abc123')
 
   it('raises the control in one step', () => {
-    expect(waitingControlSteps(control)).toEqual([{ toolCalls: [control.toolCall] }])
+    expect(waitingControlSteps(control)).toEqual([
+      {
+        toolCalls: [control.toolCall],
+      },
+    ])
   })
 })
 
@@ -254,7 +273,13 @@ describe('exerciseControlInterrupt', () => {
     })
     await exerciseControlInterrupt(context(script), { control: 'question', prepare })
     const marker = runMarker()
-    expect(queued).toEqual([{ toolCalls: [askUserQuestionToolCall(AgentProvider.CODEX, WAITING_CONTROL_CALL_ID, [WAITING_QUESTION])] }])
+    expect(queued).toEqual([
+      {
+        toolCalls: [
+          askUserQuestionToolCall(AgentProvider.CODEX, WAITING_CONTROL_CALL_ID, [WAITING_QUESTION]),
+        ],
+      },
+    ])
     expect(flow.turnEnded).toHaveBeenCalledExactlyOnceWith(script, 2)
     expect(flow.events).toEqual([
       'prepare',
@@ -292,7 +317,13 @@ describe('exerciseControlInterrupt', () => {
     const { script, queued } = fakeScript(1)
     await exerciseControlInterrupt(context(script, AgentProvider.GOOSE), { control: 'permission' })
     const marker = runMarker()
-    expect(queued).toEqual([{ toolCalls: [bashToolCall(AgentProvider.GOOSE, WAITING_CONTROL_CALL_ID, `printf WAITINGCONTROL > waiting-control-${marker}.txt`)] }])
+    expect(queued).toEqual([
+      {
+        toolCalls: [
+          bashToolCall(AgentProvider.GOOSE, WAITING_CONTROL_CALL_ID, `printf WAITINGCONTROL > waiting-control-${marker}.txt`),
+        ],
+      },
+    ])
     expect(flow.events).toContain(`banner holds:waiting-control-${marker}.txt`)
   })
 

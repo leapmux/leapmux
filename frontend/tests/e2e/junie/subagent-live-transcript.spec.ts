@@ -29,7 +29,11 @@ junieTest.describe('Junie subagents and background tasks', () => {
       {
         name: 'the custom Junie child reads the marker file',
         when: { system: 'You are the LeapMux test subagent', body: CUSTOM_TASK },
-        respond: { toolCalls: [readToolCall(PROVIDER, 'junie-custom-read', note)] },
+        respond: {
+          toolCalls: [
+            readToolCall(PROVIDER, 'junie-custom-read', note),
+          ],
+        },
         once: true,
       },
       {
@@ -37,20 +41,28 @@ junieTest.describe('Junie subagents and background tasks', () => {
         when: { system: 'You are the LeapMux test subagent', body: CUSTOM_READ_MARKER },
         respond: {
           gate: CUSTOM_GATE,
-          toolCalls: [junieSubagentSubmitToolCall('junie-custom-submit', '### Summary\n- JUNIE_CUSTOM_CHILD_DONE: I read the marker file.\n### Changes\n- No files changed.\n### Verification\n- Read the marker file.')],
+          toolCalls: [
+            junieSubagentSubmitToolCall('junie-custom-submit', '### Summary\n- JUNIE_CUSTOM_CHILD_DONE: I read the marker file.\n### Changes\n- No files changed.\n### Verification\n- Read the marker file.'),
+          ],
         },
         once: true,
       },
     )
     const start = await modelScript.queue(
       {
-        toolCalls: [spawnSubagentToolCall(PROVIDER, 'junie-custom-spawn', {
-          description: 'Read the marker file',
-          prompt: modelScript.prompt(`${CUSTOM_TASK}\nPath: ${note}`),
-          agentType: 'leapmux-e2e-child',
-        })],
+        toolCalls: [
+          spawnSubagentToolCall(PROVIDER, 'junie-custom-spawn', {
+            description: 'Read the marker file',
+            prompt: modelScript.prompt(`${CUSTOM_TASK}\nPath: ${note}`),
+            agentType: 'leapmux-e2e-child',
+          }),
+        ],
       },
-      { toolCalls: [junieAnswerToolCall('junie-custom-root', 'JUNIE_CUSTOM_ROOT_DONE')] },
+      {
+        toolCalls: [
+          junieAnswerToolCall('junie-custom-root', 'JUNIE_CUSTOM_ROOT_DONE'),
+        ],
+      },
     )
     await sendMessage(page, modelScript.prompt('Delegate the marker file to the custom child, then report.'))
     await modelScript.waitForSteps(start + 1)

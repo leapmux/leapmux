@@ -15,8 +15,15 @@ kiroTest.describe('Kiro images in tool results', () => {
   // Kiro's native Read returns image metadata without image bytes. The call identifies the file.
   // This case verifies that native Read limitation. The following MCP case verifies an actual image result and its rendering.
   kiroTest('a Read of a PNG runs and draws no picture in the tool row', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    const { workingDir } = await openProviderAgent(leapmuxServer, context.workspaceId, KIRO_AGENT, { optionValues: { policyPreset: 'allow-all' } })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
+    const { workingDir } = await openProviderAgent(leapmuxServer, context.workspaceId, KIRO_AGENT, {
+      optionValues: { policyPreset: 'allow-all' },
+    })
     await openWorkspace(page, context.workspaceId)
     await expectSettingsOptionChosen(page, 'policyPreset-allow-all')
     await runToolImageTurn(context, {
@@ -28,21 +35,31 @@ kiroTest.describe('Kiro images in tool results', () => {
   })
 
   kiroTest('renders the image returned by a local MCP tool', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     let imageName = ''
     let ready = ''
-    await openProviderAgent(leapmuxServer, context.workspaceId, KIRO_AGENT, { optionValues: { policyPreset: 'allow-all' }, prepare: (workingDir) => {
-      imageName = writeToolImage(workingDir, 'kiro-mcp')
-      const server = writeMcpImageServer(workingDir, imageName)
-      ready = server.ready
-      writeKiroProjectMcpServers(workingDir, server)
-    } })
+    await openProviderAgent(leapmuxServer, context.workspaceId, KIRO_AGENT, {
+      optionValues: { policyPreset: 'allow-all' },
+      prepare: (workingDir) => {
+        imageName = writeToolImage(workingDir, 'kiro-mcp')
+        const server = writeMcpImageServer(workingDir, imageName)
+        ready = server.ready
+        writeKiroProjectMcpServers(workingDir, server)
+      },
+    })
     await openWorkspace(page, context.workspaceId)
     await expect.poll(() => existsSync(ready)).toBe(true)
 
     const callID = 'show-kiro-image'
     const { resultRequest } = await runNativeToolTurn(context, {
-      toolCalls: [mcpToolCall(context.provider, callID, { server: MCP_IMAGE_SERVER_NAME, tool: 'show', input: {} })],
+      toolCalls: [
+        mcpToolCall(context.provider, callID, { server: MCP_IMAGE_SERVER_NAME, tool: 'show', input: {} }),
+      ],
       prompt: `Call the ${MCP_IMAGE_SERVER_NAME} show tool.`,
       answer: 'The MCP tool returned an image.',
     })

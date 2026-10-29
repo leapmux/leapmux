@@ -65,7 +65,11 @@ describe('samePath', () => {
 
 describe('sameTreeEntries', () => {
   it('reports identical content as unchanged', () => {
-    expect(sameTreeEntries([node('/a/x')], [node('/a/x')])).toBe(true)
+    expect(sameTreeEntries([
+      node('/a/x'),
+    ], [
+      node('/a/x'),
+    ])).toBe(true)
     expect(sameTreeEntries([], [])).toBe(true)
   })
 
@@ -73,23 +77,44 @@ describe('sameTreeEntries', () => {
   // them: a file whose contents changed but whose name did not would otherwise
   // keep its stale size and its stale position under a size sort.
   it('reports a changed size or modTime as changed', () => {
-    expect(sameTreeEntries([node('/a/x', { size: 1 })], [node('/a/x', { size: 2 })])).toBe(false)
+    expect(sameTreeEntries([
+      node('/a/x', { size: 1 }),
+    ], [
+      node('/a/x', { size: 2 }),
+    ])).toBe(false)
     expect(sameTreeEntries(
-      [node('/a/x', { modTime: '2026-01-01T00:00:00Z' })],
-      [node('/a/x', { modTime: '2026-02-01T00:00:00Z' })],
+      [
+        node('/a/x', { modTime: '2026-01-01T00:00:00Z' }),
+      ],
+      [
+        node('/a/x', { modTime: '2026-02-01T00:00:00Z' }),
+      ],
     )).toBe(false)
   })
 
   it('reports a different length or a different path as changed', () => {
-    expect(sameTreeEntries([node('/a/x')], [node('/a/x'), node('/a/y')])).toBe(false)
-    expect(sameTreeEntries([node('/a/x')], [node('/a/y')])).toBe(false)
+    expect(sameTreeEntries([
+      node('/a/x'),
+    ], [
+      node('/a/x'),
+      node('/a/y'),
+    ])).toBe(false)
+    expect(sameTreeEntries([
+      node('/a/x'),
+    ], [
+      node('/a/y'),
+    ])).toBe(false)
   })
 })
 
 describe('serializeState and deserializeState', () => {
   const state = {
     expandedPaths: { '/a': true },
-    childrenCache: { '/a': [node('/a/x')] },
+    childrenCache: {
+      '/a': [
+        node('/a/x'),
+      ],
+    },
     truncatedDirs: { '/a': 300 },
   }
 
@@ -118,7 +143,15 @@ describe('serializeState and deserializeState', () => {
     const restored = deserializeState({
       v: DIRECTORY_TREE_STATE_VERSION,
       expandedPaths: { '/a': true },
-      childrenCache: { '/a': [node('/a/x')], '/bad': 'nope' as never, '/partial': [{ path: '/p' } as never] },
+      childrenCache: {
+        '/a': [
+          node('/a/x'),
+        ],
+        '/bad': 'nope' as never,
+        '/partial': [
+          { path: '/p' } as never,
+        ],
+      },
       truncatedDirs: {},
     })
     expect(Object.keys(restored!.childrenCache)).toEqual(['/a'])
@@ -147,10 +180,18 @@ describe('formatTruncationNotice', () => {
 
 describe('visibleSortedChildren', () => {
   const byName = (a: { displayName: string }, b: { displayName: string }) => a.displayName.localeCompare(b.displayName)
-  const all = [node('/a/c'), node('/a/.hidden'), node('/a/b')]
+  const all = [
+    node('/a/c'),
+    node('/a/.hidden'),
+    node('/a/b'),
+  ]
 
   it('drops hidden entries and sorts the rest', () => {
-    expect(visibleSortedChildren([node('/a/c'), node('/a/.h', { hidden: true }), node('/a/b')], false, undefined, byName)
+    expect(visibleSortedChildren([
+      node('/a/c'),
+      node('/a/.h', { hidden: true }),
+      node('/a/b'),
+    ], false, undefined, byName)
       .map(n => n.displayName)).toEqual(['b', 'c'])
   })
 
@@ -166,7 +207,10 @@ describe('visibleSortedChildren', () => {
   })
 
   it('does not mutate the input array', () => {
-    const input = [node('/a/c'), node('/a/b')]
+    const input = [
+      node('/a/c'),
+      node('/a/b'),
+    ]
     visibleSortedChildren(input, true, undefined, byName)
     expect(input.map(n => n.displayName)).toEqual(['c', 'b'])
   })

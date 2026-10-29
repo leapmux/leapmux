@@ -22,7 +22,9 @@ export function openCodeTaskResult(output: string, metadata: Record<string, unkn
       return null
     bodyStart = summaryEnd + '</summary>\n'.length
   }
-  const tag = state === 'error' ? 'task_error' : 'task_result'
+  const tag = state === 'error'
+    ? 'task_error'
+    : 'task_result'
   const opening = `<${tag}>\n`
   const closing = `\n</${tag}>\n</task>`
   if (!output.startsWith(opening, bodyStart) || !output.endsWith(closing))
@@ -33,17 +35,33 @@ export function openCodeTaskResult(output: string, metadata: Record<string, unkn
     return null
   const report = output.slice(bodyStart, bodyEnd)
   const model = pickString(pickObject(metadata, 'model'), 'modelID')
-  const rows: AgentRun['metadata'] = [{ label: 'Agent ID', value: agentId }]
+  const rows: AgentRun['metadata'] = [
+    { label: 'Agent ID', value: agentId },
+  ]
   if (model)
     rows.push({ label: 'Model', value: model })
-  const bodyLabel = state === 'running' ? 'Prompt' : undefined
+  const bodyLabel = state === 'running'
+    ? 'Prompt'
+    : undefined
   return {
     description: pickString(input, 'description').trim(),
     agentId,
-    statusLabel: state === 'running' ? 'launched asynchronously' : state === 'error' ? 'failed' : 'completed',
-    outcome: state === 'error' ? 'failed' : state === 'running' ? 'running' : 'completed',
+    statusLabel: state === 'running'
+      ? 'launched asynchronously'
+      : state === 'error'
+        ? 'failed'
+        : 'completed',
+    outcome: state === 'error'
+      ? 'failed'
+      : state === 'running'
+        ? 'running'
+        : 'completed',
     metadata: rows,
-    body: state === 'running' ? pickString(input, 'prompt') : report,
-    ...(bodyLabel !== undefined ? { bodyLabel } : {}),
+    body: state === 'running'
+      ? pickString(input, 'prompt')
+      : report,
+    ...(bodyLabel !== undefined
+      ? { bodyLabel }
+      : {}),
   }
 }

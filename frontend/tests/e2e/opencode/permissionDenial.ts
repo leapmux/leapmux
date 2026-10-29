@@ -41,13 +41,23 @@ export function openCodeToolEnding(snapshot: NativeMessageSnapshot, callId: stri
     const status = frame.status
     if (status !== 'completed' && status !== 'failed' && status !== 'cancelled')
       continue
-    const content: unknown[] = Array.isArray(frame.content) ? frame.content : []
+    const content: unknown[] = Array.isArray(frame.content)
+      ? frame.content
+      : []
     const text = content.flatMap(block => isObject(block) && block.type === 'content' && isObject(block.content)
       && block.content.type === 'text' && typeof block.content.text === 'string'
       ? [block.content.text]
       : [])
-    const raw = isObject(frame.rawOutput) ? frame.rawOutput : undefined
-    endings.push({ status, text, ...(typeof raw?.error === 'string' ? { error: raw.error } : {}) })
+    const raw = isObject(frame.rawOutput)
+      ? frame.rawOutput
+      : undefined
+    endings.push({
+      status,
+      text,
+      ...(typeof raw?.error === 'string'
+        ? { error: raw.error }
+        : {}),
+    })
   }
   const ending = endings[0]
   if (endings.length !== 1 || !ending)

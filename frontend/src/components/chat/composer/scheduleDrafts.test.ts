@@ -10,7 +10,12 @@ import { clearScheduleDraft, forgetAgentScheduleDrafts, getScheduleDraft, hydrat
 
 useTestStorage()
 
-const KEYS = ['agent-1', 'agent-10', queueEditDraftKey('agent-1', 'input-1'), queueEditDraftKey('agent-10', 'input-1')]
+const KEYS = [
+  'agent-1',
+  'agent-10',
+  queueEditDraftKey('agent-1', 'input-1'),
+  queueEditDraftKey('agent-10', 'input-1'),
+]
 
 afterEach(() => {
   for (const key of KEYS)
@@ -76,7 +81,10 @@ describe('schedule draft persistence', () => {
     setStorageAccountForTests('other-schedule-account')
     expect(getScheduleDraft('agent-1')).toBeUndefined()
     setStorageAccountForTests(TEST_USER_ID)
-    await Promise.all([hydrateScheduleDraft('agent-1'), hydrateScheduleDraft(edit)])
+    await Promise.all([
+      hydrateScheduleDraft('agent-1'),
+      hydrateScheduleDraft(edit),
+    ])
     expect(getScheduleDraft('agent-1')).toBe('2030-01-01T18:45')
     expect(getScheduleDraft(edit)).toBe('')
   })

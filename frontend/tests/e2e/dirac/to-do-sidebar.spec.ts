@@ -8,8 +8,16 @@ diracTest('shows completed native plan entries in the sidebar and keeps their st
   const { page, modelScript } = native
   await chooseSettingsOption(page, 'permissionMode-plan')
   const start = await modelScript.queue(
-    { toolCalls: [diracRespondToolCall('dirac-native-todo-plan', 'plan', '- DIRACPLANONE inspect the file.\n- DIRACPLANTWO report the result.')] },
-    { toolCalls: [diracRespondToolCall('dirac-native-todo-complete', 'complete', 'The native plan turn completed.')] },
+    {
+      toolCalls: [
+        diracRespondToolCall('dirac-native-todo-plan', 'plan', '- DIRACPLANONE inspect the file.\n- DIRACPLANTWO report the result.'),
+      ],
+    },
+    {
+      toolCalls: [
+        diracRespondToolCall('dirac-native-todo-complete', 'complete', 'The native plan turn completed.'),
+      ],
+    },
   )
   await sendMessage(page, modelScript.prompt('Return the scripted proposal and complete after its native acceptance.'))
   await modelScript.waitForSteps(start + 2)

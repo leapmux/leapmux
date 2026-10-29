@@ -24,14 +24,25 @@ export function qoderResultDivider(parsed: unknown, completion?: MessageCompleti
   if (!isObject(parsed) || pickString(parsed, 'type') !== 'result')
     return null
   const durationMs = pickNumber(parsed, 'duration_ms')
-  if (completion === MessageCompletion.INTERRUPTED)
-    return { label: turnEndLabel('interrupted', { durationMs }) }
+  if (completion === MessageCompletion.INTERRUPTED) {
+    return {
+      label: turnEndLabel('interrupted', { durationMs }),
+    }
+  }
   if (parsed.is_error === true || pickString(parsed, 'subtype') === 'error_during_execution') {
     // `stringArray`, never a cast: `errors` arrives off the wire, and a value
     // that is not a string must not reach the detail as "[object Object]".
     const detail = stringArray(parsed.errors).join('\n').trim()
     // `detail` must be absent (never '') so the shared renderer skips the block.
-    return { label: turnEndLabel('failed', { durationMs }), isError: true, ...(detail ? { detail } : {}) }
+    return {
+      label: turnEndLabel('failed', { durationMs }),
+      isError: true,
+      ...(detail
+        ? { detail }
+        : {}),
+    }
   }
-  return { label: turnEndLabel('ended', { durationMs }) }
+  return {
+    label: turnEndLabel('ended', { durationMs }),
+  }
 }

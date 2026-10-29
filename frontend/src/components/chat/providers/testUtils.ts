@@ -33,7 +33,13 @@ export function input(
     parentObject: parent,
     wrapper: wrapper ?? null,
   }, agentProvider)
-  return { ...resolved, agentProvider, ...(source !== undefined ? { source } : {}) }
+  return {
+    ...resolved,
+    agentProvider,
+    ...(source !== undefined
+      ? { source }
+      : {}),
+  }
 }
 
 interface ModelOpts {

@@ -8,11 +8,18 @@ import './plugin'
 const refusalChunk = {
   sessionUpdate: 'agent_message_chunk',
   content: { type: 'text', text: 'Probe refusal explanation.' },
-  _meta: { kiro: { refusal: { category: 'CYBER', explanation: 'Probe refusal explanation.', recommendedModel: 'kiro-probe-alt' } } },
+  _meta: {
+    kiro: {
+      refusal: { category: 'CYBER', explanation: 'Probe refusal explanation.', recommendedModel: 'kiro-probe-alt' },
+    },
+  },
 }
 
 function infoUpdate(kiro: Record<string, unknown>): Record<string, unknown> {
-  return { sessionUpdate: 'session_info_update', _meta: { kiro } }
+  return {
+    sessionUpdate: 'session_info_update',
+    _meta: { kiro },
+  }
 }
 
 describe('kiroNotificationEntry', () => {
@@ -29,7 +36,10 @@ describe('kiroNotificationEntry', () => {
     expect(kiroNotificationEntry(infoUpdate({ kind: 'summarization_completed' }))).toEqual([
       { kind: 'compaction', phase: 'end', outcome: 'completed' },
     ])
-    expect(kiroNotificationEntry(infoUpdate({ kind: 'summarization_failed', summarization: { status: 'context_too_small' } }))).toEqual([
+    expect(kiroNotificationEntry(infoUpdate({
+      kind: 'summarization_failed',
+      summarization: { status: 'context_too_small' },
+    }))).toEqual([
       { kind: 'compaction', phase: 'end', outcome: 'failed' },
     ])
     expect(plugin.session?.compactionBoundaryFromMessage?.(input(infoUpdate({ kind: 'summarization_completed' })))).toEqual({})
@@ -38,9 +48,20 @@ describe('kiroNotificationEntry', () => {
   it('reads a v1 hook failure and cancellation', () => {
     expect(kiroNotificationEntry(infoUpdate({
       kind: 'hook_update',
-      hook: { name: 'lint', status: 'failed', command: 'echo', result: { output: 'boom', exitCode: 1 } },
+      hook: {
+        name: 'lint',
+        status: 'failed',
+        command: 'echo',
+        result: { output: 'boom', exitCode: 1 },
+      },
     }))).toEqual([
-      { kind: 'hook', outcome: 'failed', name: 'lint', detail: 'boom', exitCode: 1 },
+      {
+        kind: 'hook',
+        outcome: 'failed',
+        name: 'lint',
+        detail: 'boom',
+        exitCode: 1,
+      },
     ])
     expect(kiroNotificationEntry(infoUpdate({
       kind: 'hook_update',
@@ -48,11 +69,20 @@ describe('kiroNotificationEntry', () => {
     }))).toEqual([
       { kind: 'hook', outcome: 'blocked', name: 'lint' },
     ])
-    expect(kiroNotificationEntry(infoUpdate({ kind: 'hook_update', hook: { name: 'lint', status: 'completed' } }))).toEqual([])
+    expect(kiroNotificationEntry(infoUpdate({
+      kind: 'hook_update',
+      hook: { name: 'lint', status: 'completed' },
+    }))).toEqual([])
   })
 
   it('leaves other frames unknown', () => {
     expect(kiroNotificationEntry(infoUpdate({ kind: 'turn_end', stopReason: 'end_turn' }))).toEqual([])
-    expect(kiroNotificationEntry({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hi' }, _meta: { kiro: { replayId: 'x' } } })).toEqual([])
+    expect(kiroNotificationEntry({
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'hi' },
+      _meta: {
+        kiro: { replayId: 'x' },
+      },
+    })).toEqual([])
   })
 })

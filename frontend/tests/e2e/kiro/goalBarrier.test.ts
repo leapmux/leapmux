@@ -8,11 +8,17 @@ import { createMockModelServer } from '../helpers/mockModelServer'
 import { startModelScript } from '../helpers/modelScriptFixture'
 import { sendKiroGoalBarrier } from './goalBarrier'
 
-const calls = vi.hoisted(() => ({ send: vi.fn() }))
+const calls = vi.hoisted(() => ({
+  send: vi.fn(),
+}))
 vi.mock('../helpers/ui', () => ({
   sendMessage: calls.send,
   waitForAgentIdle: async () => {},
-  assistantBubbles: () => ({ filter: () => ({ first: () => document.body }) }),
+  assistantBubbles: () => ({
+    filter: () => ({
+      first: () => document.body,
+    }),
+  }),
 }))
 vi.mock('@playwright/test', async () => ({ expect: (await import('vitest')).expect }))
 
@@ -35,11 +41,22 @@ describe('sendKiroGoalBarrier', () => {
       const response = await fetch(`${server.url}/`, {
         method: 'POST',
         headers: { 'content-type': 'application/x-amz-json-1.0', 'x-amz-target': 'KiroRuntimeService.GenerateAssistantResponse' },
-        body: JSON.stringify({ conversationState: {
-          conversationId: parentSession,
-          history: [{ userInputMessage: { content: script.prompt('Reply once after the native goal is cleared.') } }],
-          currentMessage: { userInputMessage: { content, origin: 'AI_EDITOR', modelId: 'kiro-e2e' } },
-        }, agentMode: 'vibe' }),
+        body: JSON.stringify({
+          conversationState: {
+            conversationId: parentSession,
+            history: [
+              {
+                userInputMessage: {
+                  content: script.prompt('Reply once after the native goal is cleared.'),
+                },
+              },
+            ],
+            currentMessage: {
+              userInputMessage: { content, origin: 'AI_EDITOR', modelId: 'kiro-e2e' },
+            },
+          },
+          agentMode: 'vibe',
+        }),
       })
       expect(response.status).toBe(200)
       responses.push(new TextDecoder().decode(await response.arrayBuffer()))
@@ -61,7 +78,12 @@ describe('sendKiroGoalBarrier', () => {
   }))
 
   it.each(['name', 'prompt', 'answer'] as const)('refuses an empty %s before sending a message', field => withScript(async (script) => {
-    const options = { name: 'barrier', prompt: 'Reply to the user.', answer: 'The user turn ended.', [field]: ' ' }
+    const options = {
+      name: 'barrier',
+      prompt: 'Reply to the user.',
+      answer: 'The user turn ended.',
+      [field]: ' ',
+    }
     await expect(sendKiroGoalBarrier({ page: {} as Page, modelScript: script }, options)).rejects.toThrow(`${field} must not be empty`)
     expect(calls.send).not.toHaveBeenCalled()
     expect((await script.status()).requests).toEqual([])

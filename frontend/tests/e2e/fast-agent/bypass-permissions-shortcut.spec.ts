@@ -41,7 +41,9 @@ const restartTest = createProviderProcessTest({
   agent: FAST_AGENT_AGENT,
   nativeContext,
   skipReason: FAST_AGENT_E2E_SKIP_REASON,
-  openOptions: { optionValues: { [FASTAGENT_OPTION.BypassPermissions]: 'true' } },
+  openOptions: {
+    optionValues: { [FASTAGENT_OPTION.BypassPermissions]: 'true' },
+  },
 })
 
 restartTest('retains the native Bypass flag after worker restart and restores normal permission handling afterward', async ({ native, separateHubWorker }) => {

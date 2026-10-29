@@ -13,12 +13,14 @@ function makeTaskOutputMessage() {
   return {
     type: 'assistant',
     message: {
-      content: [{
-        type: 'tool_use',
-        id: 'test',
-        name: 'TaskOutput',
-        input: { task_id: 'test123', block: true, timeout: 120000 },
-      }],
+      content: [
+        {
+          type: 'tool_use',
+          id: 'test',
+          name: 'TaskOutput',
+          input: { task_id: 'test123', block: true, timeout: 120000 },
+        },
+      ],
     },
   }
 }

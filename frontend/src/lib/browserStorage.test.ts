@@ -290,7 +290,9 @@ describe('browserStorage', () => {
         const off = onStorageAccountChange(() => seen.push(storedKeyFor(KEY_BROWSER_PREFS)))
 
         setStorageAccountForTests(OTHER)
-        expect(seen).toEqual([accountStorageKey(OTHER, KEY_BROWSER_PREFS)])
+        expect(seen).toEqual([
+          accountStorageKey(OTHER, KEY_BROWSER_PREFS),
+        ])
 
         off()
         setStorageAccountForTests(ACCOUNT)
@@ -339,7 +341,12 @@ describe('browserStorage', () => {
     // encoding is there so the day the hub's format widens is not the day
     // sign-in throws.
     it('carries any id the hub can mint, separators included', () => {
-      for (const id of ['has:colon', 'has-hyphen', 'has%percent', '사용자']) {
+      for (const id of [
+        'has:colon',
+        'has-hyphen',
+        'has%percent',
+        '사용자',
+      ]) {
         setStorageAccountForTests(id)
         localStorageSet(KEY_BROWSER_PREFS, { diffView: 'split' })
         expect(localStorageGet(KEY_BROWSER_PREFS), id).toEqual({ diffView: 'split' })
@@ -529,18 +536,24 @@ describe('browserStorage', () => {
 // write has validated anything.
 describe('the synchronous tier hands out private copies', () => {
   it('does not let a caller mutate the mirror through what it read', () => {
-    localStorageSet(KEY_KEY_PINS, { 'w-1': { publicKeyHex: 'aa', firstSeen: 1 } })
+    localStorageSet(KEY_KEY_PINS, {
+      'w-1': { publicKeyHex: 'aa', firstSeen: 1 },
+    })
 
     const pins = localStorageGet<Record<string, unknown>>(KEY_KEY_PINS)!
     delete pins['w-1']
     pins['w-2'] = { publicKeyHex: 'bb', firstSeen: 2 }
 
     // The store still holds what was written, because the caller mutated a copy.
-    expect(localStorageGet(KEY_KEY_PINS)).toEqual({ 'w-1': { publicKeyHex: 'aa', firstSeen: 1 } })
+    expect(localStorageGet(KEY_KEY_PINS)).toEqual({
+      'w-1': { publicKeyHex: 'aa', firstSeen: 1 },
+    })
   })
 
   it('gives each read its own copy', () => {
-    localStorageSet(KEY_KEY_PINS, { 'w-1': { publicKeyHex: 'aa', firstSeen: 1 } })
+    localStorageSet(KEY_KEY_PINS, {
+      'w-1': { publicKeyHex: 'aa', firstSeen: 1 },
+    })
     expect(localStorageGet(KEY_KEY_PINS)).not.toBe(localStorageGet(KEY_KEY_PINS))
   })
 

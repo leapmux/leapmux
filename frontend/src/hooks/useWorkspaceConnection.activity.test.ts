@@ -48,7 +48,9 @@ const streams = vi.hoisted(() => ({ opts: undefined as unknown }))
 vi.mock('~/hooks/useWatchEventsStreams', () => ({
   useWatchEventsStreams: (opts: unknown) => {
     streams.opts = opts
-    return { abortSignalFor: () => undefined }
+    return {
+      abortSignalFor: () => undefined,
+    }
   },
 }))
 
@@ -75,8 +77,20 @@ function mountConnection() {
   const controlStore = createControlStore()
   const settled: string[] = []
 
-  emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'p1', workerId: WORKER })
-  emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: 'p2', workerId: WORKER })
+  emitAddTab({
+    type: TabType.AGENT,
+    id: 'a1',
+    tileId: harness.rootTileId,
+    position: 'p1',
+    workerId: WORKER,
+  })
+  emitAddTab({
+    type: TabType.AGENT,
+    id: 'a2',
+    tileId: harness.rootTileId,
+    position: 'p2',
+    workerId: WORKER,
+  })
   metadata.patch('a1', { agentStatus: AgentStatus.ACTIVE })
   metadata.patch('a2', { agentStatus: AgentStatus.ACTIVE })
   // a2 is the active tab, so a1 is off screen and can receive a notification badge.
@@ -103,13 +117,17 @@ function mountConnection() {
       onAgentSettled: (id: string) => settled.push(id),
     })
   })
-  streamOpts().onReplayRequested?.(WORKER, 1n, [create(WatchAgentEntrySchema, {
-    agentId: 'a1',
-    mode: WatchMode.FULL,
-    replay: WatchReplayMode.LATEST,
-    cursorSeq: 0n,
-    replayId: 1n,
-  })], new Map([['a1', 'a1']]))
+  streamOpts().onReplayRequested?.(WORKER, 1n, [
+    create(WatchAgentEntrySchema, {
+      agentId: 'a1',
+      mode: WatchMode.FULL,
+      replay: WatchReplayMode.LATEST,
+      cursorSeq: 0n,
+      replayId: 1n,
+    }),
+  ], new Map([
+    ['a1', 'a1'],
+  ]))
   return {
     dispose,
     activity,
@@ -126,7 +144,16 @@ function controlPayload(): Uint8Array {
 
 function agentEvent(agentId: string, event: NonNullable<MessageInitShape<typeof AgentEventSchema>['event']>, replay = false): WatchEventsResponse {
   return create(WatchEventsResponseSchema, {
-    event: { case: 'agentEvent', value: create(AgentEventSchema, { agentId, event, replay, replayId: replay ? 1n : 0n, replayAgentId: replay ? agentId : '' }) },
+    event: {
+      case: 'agentEvent',
+      value: create(AgentEventSchema, {
+        agentId,
+        event,
+        replay,
+        replayId: replay ? 1n : 0n,
+        replayAgentId: replay ? agentId : '',
+      }),
+    },
   })
 }
 
@@ -195,7 +222,11 @@ describe('useWorkspaceConnection replay marking', () => {
 
     streamOpts().onEvent(WORKER, agentEvent('a1', {
       case: 'controlRequest',
-      value: { agentId: 'a1', requestId: 'req-1', payload: controlPayload() },
+      value: {
+        agentId: 'a1',
+        requestId: 'req-1',
+        payload: controlPayload(),
+      },
     }))
 
     expect(controlStore.getRequests('a1').length, 'the prompt is recorded either way').toBe(1)
@@ -208,7 +239,11 @@ describe('useWorkspaceConnection replay marking', () => {
 
     streamOpts().onEvent(WORKER, agentEvent('a1', {
       case: 'controlRequest',
-      value: { agentId: 'a1', requestId: 'req-1', payload: controlPayload() },
+      value: {
+        agentId: 'a1',
+        requestId: 'req-1',
+        payload: controlPayload(),
+      },
     }, true))
 
     expect(controlStore.getRequests('a1').length, 'the replay still hydrates the prompt').toBe(1)

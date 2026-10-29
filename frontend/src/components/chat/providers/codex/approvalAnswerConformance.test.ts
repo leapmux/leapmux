@@ -52,7 +52,9 @@ function browserAllowAnswer(request: ApprovalAnswerCase['request']): BrowserAnsw
     if (elicitation === undefined)
       throw new Error('the Codex plugin does not read this request as an elicitation')
     const choices: Record<string, string> = {}
-    const content = elicitation.mode === 'form' ? createElicitationForm(elicitation.schema).read(choices).content : undefined
+    const content = elicitation.mode === 'form'
+      ? createElicitationForm(elicitation.schema).read(choices).content
+      : undefined
     const envelope = buildElicitationResponse(requestId, MCP_ELICITATION_ACTION.Accept, content, elicitationAcceptMetadata(elicitation, choices))
     const inner = pickObject(envelope, 'response')
     return { id: inner?.request_id, result: inner?.response }

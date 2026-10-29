@@ -20,7 +20,9 @@ function git(cwd: string, args: string[]): string {
  */
 export function gitTopLevel(cwd: string): string {
   const output = git(cwd, ['rev-parse', '--show-toplevel']).trim()
-  return process.platform === 'win32' ? output.replaceAll('/', '\\') : output
+  return process.platform === 'win32'
+    ? output.replaceAll('/', '\\')
+    : output
 }
 
 /**
@@ -64,7 +66,12 @@ function pinGitConfig(repoDir: string): void {
  */
 export function initGitRepo(dir: string): void {
   mkdirSync(dir, { recursive: true })
-  git(dir, ['-c', 'core.fsmonitor=false', 'init', '--initial-branch=main'])
+  git(dir, [
+    '-c',
+    'core.fsmonitor=false',
+    'init',
+    '--initial-branch=main',
+  ])
   pinGitConfig(dir)
 }
 
@@ -116,10 +123,22 @@ export function ensureGitRepositoryRoot(dir: string): void {
 export function createGitRepoWithRemote(dataDir: string, name: string): { repoDir: string, bareDir: string } {
   const bareDir = join(dataDir, `${name}-bare`)
   mkdirSync(bareDir, { recursive: true })
-  git(bareDir, ['-c', 'core.fsmonitor=false', 'init', '--bare', '--initial-branch=main'])
+  git(bareDir, [
+    '-c',
+    'core.fsmonitor=false',
+    'init',
+    '--bare',
+    '--initial-branch=main',
+  ])
   pinGitConfig(bareDir)
   const repoDir = join(dataDir, name)
-  git(dataDir, ['-c', 'core.fsmonitor=false', 'clone', bareDir, repoDir])
+  git(dataDir, [
+    '-c',
+    'core.fsmonitor=false',
+    'clone',
+    bareDir,
+    repoDir,
+  ])
   // The clone of an empty repository takes its unborn branch from the host's `init.defaultBranch`, not from the
   // remote, so the branch is named here.
   git(repoDir, ['symbolic-ref', 'HEAD', 'refs/heads/main'])
@@ -136,7 +155,13 @@ export function createGitRepoWithRemote(dataDir: string, name: string): { repoDi
  */
 export function addWorktree(repoDir: string, dataDir: string, name: string, branch: string): string {
   const target = join(dataDir, name)
-  git(repoDir, ['worktree', 'add', target, '-b', branch])
+  git(repoDir, [
+    'worktree',
+    'add',
+    target,
+    '-b',
+    branch,
+  ])
   return realpathSync(target)
 }
 
@@ -147,7 +172,12 @@ export function addWorktree(repoDir: string, dataDir: string, name: string, bran
  */
 export function branchExists(repoDir: string, branchName: string): boolean {
   try {
-    git(repoDir, ['show-ref', '--verify', '--quiet', `refs/heads/${branchName}`])
+    git(repoDir, [
+      'show-ref',
+      '--verify',
+      '--quiet',
+      `refs/heads/${branchName}`,
+    ])
     return true
   }
   catch (error) {

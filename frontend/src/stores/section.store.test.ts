@@ -97,7 +97,9 @@ describe('createSectionStore', () => {
   it('should move workspace to a different section', () => {
     createRoot((dispose) => {
       const store = createSectionStore()
-      store.setItems([makeItem('w1', 's1', 'n')])
+      store.setItems([
+        makeItem('w1', 's1', 'n'),
+      ])
 
       store.moveWorkspace('w1', 's2', 'nn')
       expect(store.state.items).toHaveLength(1)
@@ -122,7 +124,9 @@ describe('createSectionStore', () => {
   it('should get section for workspace', () => {
     createRoot((dispose) => {
       const store = createSectionStore()
-      store.setItems([makeItem('w1', 's1', 'n')])
+      store.setItems([
+        makeItem('w1', 's1', 'n'),
+      ])
 
       expect(store.getSectionForWorkspace('w1')).toBe('s1')
       expect(store.getSectionForWorkspace('w2')).toBeUndefined()

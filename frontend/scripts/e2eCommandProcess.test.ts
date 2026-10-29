@@ -39,10 +39,19 @@ vi.mock('node:child_process', async (importOriginal) => {
   }
 })
 
-vi.mock('./windowsCommandJob', () => ({ spawnWindowsCommandJob: vi.fn() }))
+vi.mock('./windowsCommandJob', () => ({
+  spawnWindowsCommandJob: vi.fn(),
+}))
 
 beforeEach(() => {
-  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] })
+  vi.useFakeTimers({
+    toFake: [
+      'Date',
+      'setTimeout',
+      'clearTimeout',
+      'performance',
+    ],
+  })
   vi.clearAllMocks()
   Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
   kernel.alive.clear()
@@ -57,7 +66,9 @@ afterEach(() => {
 function treeProcess(delay = 50) {
   const stub = createProcessStub()
   vi.mocked(spawn).mockReturnValue(stub.proc)
-  kernel.alive.add(process.platform === 'win32' ? 123 : -123)
+  kernel.alive.add(process.platform === 'win32'
+    ? 123
+    : -123)
   const resource = spawnCommandProcess('controlled', ['argument'], { stdio: 'inherit', cwd: 'private-project' }, { ownTree: true, shutdownDelayMs: delay })
   return { ...stub, resource }
 }
@@ -102,7 +113,12 @@ describe('spawnCommandProcess', () => {
   it('preserves every ordinary spawn option and returns the exact child handle', async () => {
     const { emitter, proc } = createProcessStub({ exitCode: 0 })
     vi.mocked(spawn).mockReturnValue(proc)
-    const options = { stdio: 'inherit' as const, env: { PRIVATE: 'yes' }, detached: false, cwd: 'private-project' }
+    const options = {
+      stdio: 'inherit' as const,
+      env: { PRIVATE: 'yes' },
+      detached: false,
+      cwd: 'private-project',
+    }
     const resource = spawnCommandProcess('controlled', ['argument'], options)
     expect(vi.mocked(spawn)).toHaveBeenCalledExactlyOnceWith('controlled', ['argument'], options)
     expect(resource.child).toBe(proc)
@@ -156,7 +172,13 @@ describe('spawnCommandProcess', () => {
     await stopped
   })
 
-  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])('rejects an invalid shutdown delay before spawning: %s', (delay) => {
+  it.each([
+    0,
+    -1,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    2_147_483_648,
+  ])('rejects an invalid shutdown delay before spawning: %s', (delay) => {
     expect(() => spawnCommandProcess('controlled', [], {}, { ownTree: true, shutdownDelayMs: delay })).toThrow(RangeError)
     expect(spawn).not.toHaveBeenCalled()
     expect(process.kill).not.toHaveBeenCalled()
@@ -292,7 +314,9 @@ describe('spawnCommandProcess', () => {
     const { emitter, resource } = treeProcess()
     const result = resource.stop().then(() => null, error => error)
     await vi.advanceTimersByTimeAsync(100)
-    expect(await result).toMatchObject({ message: expect.stringContaining('process group 123') })
+    expect(await result).toMatchObject({
+      message: expect.stringContaining('process group 123'),
+    })
     expect(emitter.listenerCount('exit')).toBe(0)
     expect(emitter.listenerCount('error')).toBe(0)
     expect(vi.getTimerCount()).toBe(0)
@@ -385,7 +409,10 @@ describe('spawnCommandProcess', () => {
     try {
       await vi.advanceTimersByTimeAsync(0)
       expect(stdout.readableEnded).toBe(false)
-      expect(vi.mocked(process.kill).mock.calls).toEqual([[-123, 'SIGTERM'], [-123, 0]])
+      expect(vi.mocked(process.kill).mock.calls).toEqual([
+        [-123, 'SIGTERM'],
+        [-123, 0],
+      ])
       expect(result).toBeUndefined()
       allowProbes()
       kernel.alive.delete(-123)
@@ -527,7 +554,10 @@ describe('spawnCommandProcess', () => {
     try {
       await expect(resource.stop()).rejects.toBe(failure)
       expect(stdout.readableEnded).toBe(false)
-      expect(vi.mocked(process.kill).mock.calls).toEqual([[-123, 'SIGTERM'], [-123, 0]])
+      expect(vi.mocked(process.kill).mock.calls).toEqual([
+        [-123, 'SIGTERM'],
+        [-123, 0],
+      ])
       expect(emitter.listenerCount('exit')).toBe(0)
       expect(emitter.listenerCount('error')).toBe(0)
       expect(vi.getTimerCount()).toBe(0)
@@ -560,7 +590,10 @@ describe('spawnCommandProcess', () => {
     try {
       await vi.advanceTimersByTimeAsync(0)
       expect(result).toBeUndefined()
-      expect(vi.mocked(process.kill).mock.calls).toEqual([[-123, 'SIGTERM'], [-123, 0]])
+      expect(vi.mocked(process.kill).mock.calls).toEqual([
+        [-123, 'SIGTERM'],
+        [-123, 0],
+      ])
       failProbes = false
       kernel.alive.delete(-123)
       await vi.advanceTimersByTimeAsync(25)
@@ -679,7 +712,9 @@ describe('spawnCommandProcess', () => {
       result = error
     })
     try {
-      await vi.advanceTimersByTimeAsync(failedSignal === 'SIGKILL' ? 50 : 0)
+      await vi.advanceTimersByTimeAsync(failedSignal === 'SIGKILL'
+        ? 50
+        : 0)
       expect(result).toBe(descendantsSurvive ? undefined : 'finished')
       expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal === failedSignal)).toHaveLength(2)
       if (failedSignal === 'SIGKILL')

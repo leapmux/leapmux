@@ -11,10 +11,23 @@ const frame = {
   toolCallId: 'native-call',
   status: 'completed',
   rawInput: { command: 'printf native-preview' },
-  _meta: { goose: { toolCall: { toolName: 'shell', extensionName: 'developer' } } },
+  _meta: {
+    goose: {
+      toolCall: { toolName: 'shell', extensionName: 'developer' },
+    },
+  },
   content: [
-    { type: 'content', content: { type: 'text', text: 'native inline preview' } },
-    { type: 'content', content: { type: 'text', text: notice(path) } },
+    {
+      type: 'content',
+      content: { type: 'text', text: 'native inline preview' },
+    },
+    {
+      type: 'content',
+      content: {
+        type: 'text',
+        text: notice(path),
+      },
+    },
   ],
 }
 const options = { spanId: 'native-call', spanType: 'tool_call', agentSessionId: 'native-session' }
@@ -29,7 +42,22 @@ describe('registered Goose output file paths', () => {
 
   it('keeps distinct native paths in order and removes duplicates', () => {
     const other = '/native/goose/.tmp123/output-0'
-    const payload = { ...frame, content: [{ type: 'content', content: { type: 'text', text: [notice(path), notice(other), notice(path)].join('\n') } }] }
+    const payload = {
+      ...frame,
+      content: [
+        {
+          type: 'content',
+          content: {
+            type: 'text',
+            text: [
+              notice(path),
+              notice(other),
+              notice(path),
+            ].join('\n'),
+          },
+        },
+      ],
+    }
     expect(pathsFor()(payload)).toEqual([path, other])
   })
 
@@ -50,16 +78,43 @@ describe('registered Goose output file paths', () => {
   })
 
   it('reads prefixed native tool names', () => {
-    expect(pathsFor()({ ...frame, _meta: { goose: { toolCall: { toolName: 'developer__shell' } } } })).toEqual([path])
+    expect(pathsFor()({
+      ...frame,
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'developer__shell' },
+        },
+      },
+    })).toEqual([path])
   })
 
   it('refuses another call and another tool', () => {
     expect(pathsFor()({ ...frame, toolCallId: 'foreign' })).toEqual([])
-    expect(pathsFor()({ ...frame, _meta: { goose: { toolCall: { toolName: 'read', extensionName: 'developer' } } } })).toEqual([])
-    expect(pathsFor()({ ...frame, _meta: { goose: { toolCall: { toolName: 'shell', extensionName: 'other' } } } })).toEqual([])
+    expect(pathsFor()({
+      ...frame,
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'read', extensionName: 'developer' },
+        },
+      },
+    })).toEqual([])
+    expect(pathsFor()({
+      ...frame,
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'shell', extensionName: 'other' },
+        },
+      },
+    })).toEqual([])
   })
 
-  it.each(['https://example.com/stdout-0', 'file:///native/stdout-0', 'relative/stdout-0', '/native/zero\0byte/stdout-0', '/native/stdout-0\r'])('refuses a non-filesystem pointer: %j', (invalid) => {
+  it.each([
+    'https://example.com/stdout-0',
+    'file:///native/stdout-0',
+    'relative/stdout-0',
+    '/native/zero\0byte/stdout-0',
+    '/native/stdout-0\r',
+  ])('refuses a non-filesystem pointer: %j', (invalid) => {
     expect(pathsFor()(JSON.parse(JSON.stringify(frame).replaceAll(JSON.stringify(path).slice(1, -1), JSON.stringify(invalid).slice(1, -1))))).toEqual([])
   })
 
@@ -68,12 +123,31 @@ describe('registered Goose output file paths', () => {
   })
 
   it('does not derive a pointer from incomplete output or a bare filename', () => {
-    for (const text of [path, `Full output saved to ${path}`, notice(path).slice(0, -1), `prefix ${notice(path)}`])
-      expect(pathsFor()({ ...frame, content: [{ type: 'content', content: { type: 'text', text } }] })).toEqual([])
+    for (const text of [
+      path,
+      `Full output saved to ${path}`,
+      notice(path).slice(0, -1),
+      `prefix ${notice(path)}`,
+    ]) {
+      expect(pathsFor()({
+        ...frame,
+        content: [
+          {
+            type: 'content',
+            content: { type: 'text', text },
+          },
+        ],
+      })).toEqual([])
+    }
   })
 
   it('preserves the native preview when an unrelated supplement supplies full text', () => {
-    const meta = providerToolMeta(AgentProvider.GOOSE, frame, { ...options, supplementalContent: { completeOutput: { path, text: 'FORGED_BODY' } } })
+    const meta = providerToolMeta(AgentProvider.GOOSE, frame, {
+      ...options,
+      supplementalContent: {
+        completeOutput: { path, text: 'FORGED_BODY' },
+      },
+    })
     expect(meta?.copyableContent()).toContain('native inline preview')
     expect(meta?.copyableContent()).not.toContain('FORGED_BODY')
   })

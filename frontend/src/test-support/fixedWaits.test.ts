@@ -38,7 +38,9 @@ describe('fixedWaits', () => {
   await page.waitForTimeout(500)
 }`,
     })
-    expect(findings).toEqual([{ path: '/e2e/helpers/hold.ts', line: 2, enclosingFunction: 'hold' }])
+    expect(findings).toEqual([
+      { path: '/e2e/helpers/hold.ts', line: 2, enclosingFunction: 'hold' },
+    ])
   })
 
   it('finds a call on any receiver, with optional chaining, and through a string key', () => {
@@ -67,7 +69,9 @@ const { waitForTimeout: pause } = page`,
 
   it('gives an empty enclosing function to a wait in a test callback', () => {
     const findings = analyze({ 'spec.ts': 'test(\'case\', async ({ page }) => { await page.waitForTimeout(1) })' })
-    expect(findings).toEqual([{ path: '/e2e/spec.ts', line: 1, enclosingFunction: '' }])
+    expect(findings).toEqual([
+      { path: '/e2e/spec.ts', line: 1, enclosingFunction: '' },
+    ])
   })
 
   it('ignores the name in a comment, in a plain string, and in a definition', () => {
@@ -119,7 +123,10 @@ await page.sleep?.(1)
 })
 
 describe('e2e fixed waits', () => {
-  const files = collectE2EFiles().map(path => ({ path, source: readFileSync(path, 'utf-8') }))
+  const files = collectE2EFiles().map(path => ({
+    path,
+    source: readFileSync(path, 'utf-8'),
+  }))
   const findings = fixedWaits(files)
   const key = (finding: { path: string, enclosingFunction: string }) => `${posixRelative(e2eRoot, finding.path)} ${finding.enclosingFunction}`
 
@@ -141,7 +148,9 @@ describe('e2e fixed waits', () => {
 
   it('keeps no accepted wait that the e2e tree no longer holds', () => {
     const found = new Set(findings.map(key))
-    expect([...ACCEPTED.keys()].filter(entry => !found.has(entry))).toEqual([])
+    expect([
+      ...ACCEPTED.keys(),
+    ].filter(entry => !found.has(entry))).toEqual([])
   })
 
   it('never sleeps in a spec', () => {

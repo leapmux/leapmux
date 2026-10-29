@@ -58,7 +58,9 @@ export function createAuthMethodSelection(kind: AuthMethodKind): AuthMethodSelec
   const [method, setMethod] = createSignal<AuthMethod>('password')
 
   const effectiveMethod = (): AuthMethod =>
-    method() === 'passkey' && passkeyBlocker() === null ? 'passkey' : 'password'
+    method() === 'passkey' && passkeyBlocker() === null
+      ? 'passkey'
+      : 'password'
 
   const captchaAction = (): AuthCaptchaAction => CAPTCHA_ACTIONS[kind][effectiveMethod()]
 

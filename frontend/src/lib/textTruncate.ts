@@ -54,7 +54,9 @@ function resolveGraphemeSegmenter(): GraphemeSegmenter | null {
   if (graphemeSegmenter !== undefined)
     return graphemeSegmenter
   const Segmenter = (Intl as typeof Intl & { Segmenter?: GraphemeSegmenterConstructor }).Segmenter
-  graphemeSegmenter = Segmenter ? new Segmenter(undefined, { granularity: 'grapheme' }) : null
+  graphemeSegmenter = Segmenter
+    ? new Segmenter(undefined, { granularity: 'grapheme' })
+    : null
   return graphemeSegmenter
 }
 

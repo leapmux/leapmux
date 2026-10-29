@@ -14,8 +14,11 @@ import { ampBlockText, ampToolResult, ampToolUse } from './extractors/toolCommon
  * The current worker stores no empty or redacted assistant block.
  */
 function classifyAssistantRow(input: ClassificationInput, parent: Record<string, unknown>): MessageCategory {
-  if (ampToolUse(parent))
-    return retainedRowIsFinal(input.completion) ? { kind: 'tool_result' } : { kind: 'tool_use' }
+  if (ampToolUse(parent)) {
+    return retainedRowIsFinal(input.completion)
+      ? { kind: 'tool_result' }
+      : { kind: 'tool_use' }
+  }
   if (ampBlockText(parent, AMP_BLOCK_TYPE.Text, 'text'))
     return { kind: 'assistant_text' }
   if (ampBlockText(parent, AMP_BLOCK_TYPE.Thinking, 'thinking'))
@@ -53,7 +56,9 @@ export function classifyAmpMessage(input: ClassificationInput): MessageCategory 
       return classifyAssistantRow(input, parent)
     case AMP_LINE_TYPE.User:
       // A user row reaches the transcript only as a tool result.
-      return ampToolResult(parent) ? { kind: 'tool_result' } : { kind: 'unknown' }
+      return ampToolResult(parent)
+        ? { kind: 'tool_result' }
+        : { kind: 'unknown' }
     default:
       break
   }

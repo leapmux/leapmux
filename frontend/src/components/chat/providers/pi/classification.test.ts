@@ -7,30 +7,69 @@ import { classifyPiMessage } from './classification'
 describe('classifyPiMessage', () => {
   it.each([...PI_NOTIFICATION_EVENT])('threads the shared notification event %s', (type) => {
     const frame = { type, attempt: 1, result: {} }
-    expect(classifyPiMessage(input(frame, { old_seqs: [], messages: [frame] })).kind).toBe('notification')
+    expect(classifyPiMessage(input(frame, {
+      old_seqs: [],
+      messages: [frame],
+    })).kind).toBe('notification')
   })
 
   it('keeps a compaction entry in a notification thread', () => {
-    const frame = { type: 'entry_appended', entry: { type: 'compaction', tokensBefore: 0 } }
-    expect(classifyPiMessage(input(frame, { old_seqs: [], messages: [frame] }))).toEqual({ kind: 'notification', entries: [{ kind: 'compaction', phase: 'end', detail: { pre: 0 } }] })
+    const frame = {
+      type: 'entry_appended',
+      entry: { type: 'compaction', tokensBefore: 0 },
+    }
+    expect(classifyPiMessage(input(frame, {
+      old_seqs: [],
+      messages: [frame],
+    }))).toEqual({
+      kind: 'notification',
+      entries: [
+        {
+          kind: 'compaction',
+          phase: 'end',
+          detail: { pre: 0 },
+        },
+      ],
+    })
   })
 
   it('draws a displayed custom_message entry', () => {
-    expect(classifyPiMessage(input({ type: 'entry_appended', entry: { type: 'custom_message', display: true, content: 'A visible note.' } })))
+    expect(classifyPiMessage(input({
+      type: 'entry_appended',
+      entry: { type: 'custom_message', display: true, content: 'A visible note.' },
+    })))
       .toEqual({ kind: 'assistant_text' })
   })
 
   it('draws a boundary compaction entry', () => {
-    expect(classifyPiMessage(input({ type: 'entry_appended', entry: { type: 'compaction', tokensBefore: 12000 } })))
-      .toEqual({ kind: 'notification', entries: [{ kind: 'compaction', phase: 'end', detail: { pre: 12000 } }] })
+    expect(classifyPiMessage(input({
+      type: 'entry_appended',
+      entry: { type: 'compaction', tokensBefore: 12000 },
+    })))
+      .toEqual({
+        kind: 'notification',
+        entries: [
+          {
+            kind: 'compaction',
+            phase: 'end',
+            detail: { pre: 12000 },
+          },
+        ],
+      })
   })
 
   it('draws an unknown entry type as unknown', () => {
-    expect(classifyPiMessage(input({ type: 'entry_appended', entry: { type: 'future-entry' } }))).toEqual({ kind: 'unknown' })
+    expect(classifyPiMessage(input({
+      type: 'entry_appended',
+      entry: { type: 'future-entry' },
+    }))).toEqual({ kind: 'unknown' })
   })
 
   it('draws an unknown message role as unknown', () => {
-    expect(classifyPiMessage(input({ type: 'message_end', message: { role: 'future-role', content: 'Future output' } }))).toEqual({ kind: 'unknown' })
+    expect(classifyPiMessage(input({
+      type: 'message_end',
+      message: { role: 'future-role', content: 'Future output' },
+    }))).toEqual({ kind: 'unknown' })
   })
   // These entries no longer reach the transcript from the current Worker.
   it.each([
@@ -42,7 +81,10 @@ describe('classifyPiMessage', () => {
     'label',
     'session_info',
   ])('leaves an old %s session entry unknown', (entryType) => {
-    expect(classifyPiMessage(input({ type: 'entry_appended', entry: { type: entryType, customType: 'plan-mode-state' } }))).toEqual({ kind: 'unknown' })
+    expect(classifyPiMessage(input({
+      type: 'entry_appended',
+      entry: { type: entryType, customType: 'plan-mode-state' },
+    }))).toEqual({ kind: 'unknown' })
   })
 
   // The Worker consumes these events. No browser-only hide rule remains.
@@ -75,7 +117,10 @@ describe('classifyPiMessage', () => {
       { type: 'summarization_retry_scheduled', attempt: 1, delayMs: 500 },
       { type: 'summarization_retry_finished' },
     ]
-    const result = classifyPiMessage(input(messages[0], { old_seqs: [1, 2], messages }))
+    const result = classifyPiMessage(input(messages[0], {
+      old_seqs: [1, 2],
+      messages,
+    }))
     expect(result.kind).toBe('notification')
     if (result.kind === 'notification')
       expect(result.entries).toHaveLength(2)
@@ -84,7 +129,14 @@ describe('classifyPiMessage', () => {
   it('leaves stored lifecycle markers unknown', () => {
     // agent_settled says only that Pi will not continue on its own after the
     // agent_end that already drew the divider, so it has nothing to render.
-    for (const t of ['agent_start', 'agent_settled', 'turn_start', 'turn_end', 'message_start', 'tool_execution_update']) {
+    for (const t of [
+      'agent_start',
+      'agent_settled',
+      'turn_start',
+      'turn_end',
+      'message_start',
+      'tool_execution_update',
+    ]) {
       expect(classifyPiMessage(input({ type: t }))).toEqual({ kind: 'unknown' })
     }
   })
@@ -96,7 +148,12 @@ describe('classifyPiMessage', () => {
   it('classifies message_end with text content as assistant_text', () => {
     const parent = {
       type: 'message_end',
-      message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] },
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'hello' },
+        ],
+      },
     }
     expect(classifyPiMessage(input(parent))).toEqual({ kind: 'assistant_text' })
   })
@@ -106,7 +163,12 @@ describe('classifyPiMessage', () => {
   it('hides message_end with only thinking content', () => {
     const parent = {
       type: 'message_end',
-      message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'reasoning' }] },
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'reasoning' },
+        ],
+      },
     }
     expect(classifyPiMessage(input(parent))).toEqual({ kind: 'hidden' })
   })
@@ -117,10 +179,18 @@ describe('classifyPiMessage', () => {
   it('hides signature-only thinking blocks so tool-call message_end rows do not render empty thinking bubbles', () => {
     const parent = {
       type: 'message_end',
-      message: { role: 'assistant', content: [
-        { type: 'thinking', thinking: '', thinkingSignature: '{"id":"rs_1"}' },
-        { type: 'toolCall', id: 'call-1', name: 'read', arguments: { path: '/tmp/a.ts' } },
-      ] },
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: '', thinkingSignature: '{"id":"rs_1"}' },
+          {
+            type: 'toolCall',
+            id: 'call-1',
+            name: 'read',
+            arguments: { path: '/tmp/a.ts' },
+          },
+        ],
+      },
     }
     expect(classifyPiMessage(input(parent))).toEqual({ kind: 'hidden' })
   })
@@ -128,7 +198,12 @@ describe('classifyPiMessage', () => {
   it('hides message_end with only empty thinking content', () => {
     const parent = {
       type: 'message_end',
-      message: { role: 'assistant', content: [{ type: 'thinking', thinking: '', thinkingSignature: 'sig' }] },
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: '', thinkingSignature: 'sig' },
+        ],
+      },
     }
     expect(classifyPiMessage(input(parent))).toEqual({ kind: 'hidden' })
   })
@@ -138,7 +213,9 @@ describe('classifyPiMessage', () => {
       type: 'message_end',
       message: {
         role: 'user',
-        content: [{ type: 'text', text: 'Hi. Who are you?' }],
+        content: [
+          { type: 'text', text: 'Hi. Who are you?' },
+        ],
       },
     }
     expect(classifyPiMessage(input(parent))).toEqual({ kind: 'unknown' })
@@ -151,7 +228,9 @@ describe('classifyPiMessage', () => {
         role: 'toolResult',
         toolCallId: 'call-1',
         toolName: 'bash',
-        content: [{ type: 'text', text: 'output' }],
+        content: [
+          { type: 'text', text: 'output' },
+        ],
       },
     }
     expect(classifyPiMessage(input(parent))).toEqual({ kind: 'unknown' })
@@ -168,10 +247,13 @@ describe('classifyPiMessage', () => {
   it('classifies message_end with both thinking and text as assistant_text', () => {
     const parent = {
       type: 'message_end',
-      message: { role: 'assistant', content: [
-        { type: 'thinking', thinking: 'first' },
-        { type: 'text', text: 'second' },
-      ] },
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'first' },
+          { type: 'text', text: 'second' },
+        ],
+      },
     }
     expect(classifyPiMessage(input(parent))).toEqual({ kind: 'assistant_text' })
   })
@@ -191,7 +273,12 @@ describe('classifyPiMessage', () => {
       type: 'tool_execution_end',
       toolCallId: 'call-1',
       toolName: 'bash',
-      result: { content: [{ type: 'text', text: 'done' }], details: {} },
+      result: {
+        content: [
+          { type: 'text', text: 'done' },
+        ],
+        details: {},
+      },
     }
     const result = classifyPiMessage(input(parent))
     expect(result.kind).toBe('tool_result')
@@ -219,7 +306,9 @@ describe('classifyPiMessage', () => {
     const parent = { type: 'extension_ui_request', method: 'notify', message: 'Build finished' }
     expect(classifyPiMessage(input(parent))).toEqual({
       kind: 'notification',
-      entries: [{ kind: 'text', text: 'Build finished' }],
+      entries: [
+        { kind: 'text', text: 'Build finished' },
+      ],
     })
   })
 
@@ -246,8 +335,15 @@ describe('classifyPiMessage', () => {
 
   it('drops empty-notify requests from a thread but keeps a renderable notification', () => {
     const empty = { type: 'extension_ui_request', method: 'notify', message: '' }
-    const compaction = { type: 'compaction_end', reason: 'threshold', result: { tokensBefore: 12345 } }
-    const result = classifyPiMessage(input(empty, { old_seqs: [], messages: [empty, compaction] }))
+    const compaction = {
+      type: 'compaction_end',
+      reason: 'threshold',
+      result: { tokensBefore: 12345 },
+    }
+    const result = classifyPiMessage(input(empty, {
+      old_seqs: [],
+      messages: [empty, compaction],
+    }))
     expect(result.kind).toBe('notification')
     if (result.kind === 'notification')
       expect(result.entries).toHaveLength(1)
@@ -263,8 +359,17 @@ describe('classifyPiMessage', () => {
     // recognized as a thread, so it fell to the per-message branch and
     // MessageBubble rendered only messages[0] -- dropping the rest.
     const messages = [
-      { type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 2000 },
-      { type: 'compaction_end', reason: 'threshold', result: { tokensBefore: 12345 } },
+      {
+        type: 'auto_retry_start',
+        attempt: 1,
+        maxAttempts: 3,
+        delayMs: 2000,
+      },
+      {
+        type: 'compaction_end',
+        reason: 'threshold',
+        result: { tokensBefore: 12345 },
+      },
     ]
     const result = classifyPiMessage(input(messages[0], { old_seqs: [], messages }))
     expect(result.kind).toBe('notification')
@@ -274,8 +379,16 @@ describe('classifyPiMessage', () => {
 
   it('classifies a wrapper of two compaction_end boundaries as a notification', () => {
     const messages = [
-      { type: 'compaction_end', summary: 'first', result: { tokensBefore: 100000 } },
-      { type: 'compaction_end', summary: 'second', result: { tokensBefore: 50000 } },
+      {
+        type: 'compaction_end',
+        summary: 'first',
+        result: { tokensBefore: 100000 },
+      },
+      {
+        type: 'compaction_end',
+        summary: 'second',
+        result: { tokensBefore: 50000 },
+      },
     ]
     expect(classifyPiMessage(input(messages[0], { old_seqs: [], messages })).kind).toBe('notification')
   })
@@ -284,7 +397,12 @@ describe('classifyPiMessage', () => {
     // A wrapper whose entries are not Pi notification surface types (here an
     // assistant message_end) must not be hijacked into the notification path --
     // only the per-message classification applies (assistant_text here).
-    const messages = [{ type: 'message_end', message: { role: 'assistant' } }]
+    const messages = [
+      {
+        type: 'message_end',
+        message: { role: 'assistant' },
+      },
+    ]
     expect(classifyPiMessage(input(messages[0], { old_seqs: [], messages })).kind).not.toBe('notification')
   })
 
@@ -295,7 +413,12 @@ describe('classifyPiMessage', () => {
   // copy here can fall behind it.
   const plainRows = [
     { type: NOTIFICATION_TYPE.Interrupted },
-    { type: NOTIFICATION_TYPE.SettingsChanged, changes: { model: { old: 'a', new: 'b' } } },
+    {
+      type: NOTIFICATION_TYPE.SettingsChanged,
+      changes: {
+        model: { old: 'a', new: 'b' },
+      },
+    },
     { type: NOTIFICATION_TYPE.ContextCleared },
     { type: NOTIFICATION_TYPE.AgentError, error: 'failed' },
     { type: NOTIFICATION_TYPE.PlanUpdated, plan_title: 'Plan' },

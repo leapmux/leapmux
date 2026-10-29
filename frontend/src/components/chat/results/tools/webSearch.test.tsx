@@ -13,10 +13,18 @@ beforeAll(() => {
 describe('web_search renderer', () => {
   checkKindModule({
     kind: 'web_search',
-    request: { query: 'solidjs docs', queries: ['solidjs docs', 'solidjs guide'] },
+    request: {
+      query: 'solidjs docs',
+      queries: ['solidjs docs', 'solidjs guide'],
+    },
     minimalTitlePart: 'q',
     titlePart: 'solidjs docs',
-    result: { links: [{ title: 'Docs', url: 'https://solidjs.com' }], summary: 'found' },
+    result: {
+      links: [
+        { title: 'Docs', url: 'https://solidjs.com' },
+      ],
+      summary: 'found',
+    },
     resultPart: 'Docs',
   })
 })

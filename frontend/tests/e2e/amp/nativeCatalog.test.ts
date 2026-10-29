@@ -16,15 +16,47 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { ampToolUseID } from '../helpers/ampSurface'
 import { ampCatalogPermission, ampCatalogProcess, ampExecutorToolNames, ampPidReceipt, ampSettingsPath, ampWorkspaceMcpAwaitingApproval, ampWorkspaceMcpConfiguration, assertAmpGeneratedSettings, readAmpExecutorCatalog } from './nativeCatalog'
 
-const calls = vi.hoisted(() => ({ processes: vi.fn(), executable: vi.fn(), current: vi.fn(), catalog: vi.fn<AmpCatalogCommand>(), send: vi.fn(), idle: vi.fn(), watch: vi.fn(), cancelWatch: vi.fn(), channel: vi.fn(), nativeAgent: vi.fn(), state: { binaryPath: '', dataDir: '', tmpDir: '', ampPath: '' } }))
-vi.mock('../helpers/processTree', async importOriginal => ({ ...await importOriginal<typeof import('../helpers/processTree')>(), listProcesses: calls.processes }))
+const calls = vi.hoisted(() => ({
+  processes: vi.fn(),
+  executable: vi.fn(),
+  current: vi.fn(),
+  catalog: vi.fn<AmpCatalogCommand>(),
+  send: vi.fn(),
+  idle: vi.fn(),
+  watch: vi.fn(),
+  cancelWatch: vi.fn(),
+  channel: vi.fn(),
+  nativeAgent: vi.fn(),
+  state: {
+    binaryPath: '',
+    dataDir: '',
+    tmpDir: '',
+    ampPath: '',
+  },
+}))
+vi.mock('../helpers/processTree', async importOriginal => ({
+  ...await importOriginal<typeof import('../helpers/processTree')>(),
+  listProcesses: calls.processes,
+}))
 vi.mock('../helpers/processExecutable', () => ({ processExecutable: calls.executable }))
-vi.mock('../helpers/nativeScenario', async importOriginal => ({ ...await importOriginal<typeof import('../helpers/nativeScenario')>(), currentNativeAgent: calls.current, nativeAgentById: calls.nativeAgent }))
-vi.mock('../helpers/binaryOnPath', () => ({ requireBinary: () => calls.state.ampPath }))
-vi.mock('../helpers/server', () => ({ getGlobalState: () => calls.state, hubSpawnEnv: (environment: NodeJS.ProcessEnv) => ({ ...environment }) }))
+vi.mock('../helpers/nativeScenario', async importOriginal => ({
+  ...await importOriginal<typeof import('../helpers/nativeScenario')>(),
+  currentNativeAgent: calls.current,
+  nativeAgentById: calls.nativeAgent,
+}))
+vi.mock('../helpers/binaryOnPath', () => ({
+  requireBinary: () => calls.state.ampPath,
+}))
+vi.mock('../helpers/server', () => ({
+  getGlobalState: () => calls.state,
+  hubSpawnEnv: (environment: NodeJS.ProcessEnv) => ({ ...environment }),
+}))
 vi.mock('../helpers/ui', () => ({ sendMessage: calls.send, waitForAgentIdle: calls.idle }))
 vi.mock('../helpers/nativeControlWatch', () => ({ watchNativeControls: calls.watch }))
-vi.mock('../helpers/api', async importOriginal => ({ ...await importOriginal<typeof import('../helpers/api')>(), getTestChannel: calls.channel }))
+vi.mock('../helpers/api', async importOriginal => ({
+  ...await importOriginal<typeof import('../helpers/api')>(),
+  getTestChannel: calls.channel,
+}))
 vi.mock('../helpers/retryUntilPass', () => ({
   retryUntilPass: async (attempt: () => Promise<unknown>) => {
     let failure: unknown
@@ -58,7 +90,9 @@ vi.mock('@playwright/test', async (importOriginal) => {
     get: (target, property) => property === 'poll'
       ? (read: () => unknown | Promise<unknown>) => ({
           toBe: async (expected: unknown) => settle(read, value => Object.is(value, expected), value => expect(value).toBe(expected)),
-          not: { toBe: async (expected: unknown) => settle(read, value => !Object.is(value, expected), value => expect(value).not.toBe(expected)) },
+          not: {
+            toBe: async (expected: unknown) => settle(read, value => !Object.is(value, expected), value => expect(value).not.toBe(expected)),
+          },
         })
       : Reflect.get(target, property),
   })
@@ -94,11 +128,40 @@ function processFixture() {
   calls.state.tmpDir = directory
   writeFileSync(calls.state.binaryPath, '')
   writeFileSync(calls.state.ampPath, '')
-  writeFileSync(settingsPath, JSON.stringify({ 'amp.mcpServers': { credential_probe: { command: 'private-runtime', args: ['private-echo-server'] } } }))
-  const worker = { pid: 10, ppid: 1, command: `"${calls.state.binaryPath}" worker --data-dir "${workerDataDir}"`, executable: calls.state.binaryPath }
-  const amp = { pid: 20, ppid: 10, command: `"${calls.state.ampPath}" --execute --stream-json --stream-json-input --settings-file "${settingsPath}" --no-ide --no-color`, executable: calls.state.ampPath }
+  writeFileSync(settingsPath, JSON.stringify({
+    'amp.mcpServers': {
+      credential_probe: {
+        command: 'private-runtime',
+        args: ['private-echo-server'],
+      },
+    },
+  }))
+  const worker = {
+    pid: 10,
+    ppid: 1,
+    command: `"${calls.state.binaryPath}" worker --data-dir "${workerDataDir}"`,
+    executable: calls.state.binaryPath,
+  }
+  const amp = {
+    pid: 20,
+    ppid: 10,
+    command: `"${calls.state.ampPath}" --execute --stream-json --stream-json-input --settings-file "${settingsPath}" --no-ide --no-color`,
+    executable: calls.state.ampPath,
+  }
   const tool = { pid: 30, ppid: 20, command: 'private-runtime held-native-tool' }
-  return { settingsPath, worker, amp, tool, proof: { toolPid: 30, toolParentPid: 20, workerExecutable: calls.state.binaryPath, workerDataDir, ampExecutables: [calls.state.ampPath] } }
+  return {
+    settingsPath,
+    worker,
+    amp,
+    tool,
+    proof: {
+      toolPid: 30,
+      toolParentPid: 20,
+      workerExecutable: calls.state.binaryPath,
+      workerDataDir,
+      ampExecutables: [calls.state.ampPath],
+    },
+  }
 }
 beforeEach(() => {
   vi.resetAllMocks()
@@ -132,19 +195,29 @@ function catalogFixture(options: {
     return calls.state.ampPath
   })
   // The same Amp PID exists before the next scripted turn and stays under the exact Worker.
-  calls.processes.mockImplementation(() => calls.send.mock.calls.length === 0 ? [worker, amp] : [worker, amp, tool])
+  calls.processes.mockImplementation(() => calls.send.mock.calls.length === 0
+    ? [worker, amp]
+    : [worker, amp, tool])
   const liveAgent = create(AgentInfoSchema, {
     id: agentId,
     agentProvider: AgentProvider.AMP,
     status: AgentStatus.ACTIVE,
     agentSessionId: 'T-actual-session',
     workingDir: directory,
-    optionGroups: [{ id: 'agent_mode', currentValue: 'smart' }, { id: 'permissionMode', currentValue: options.permission ?? 'allow_all' }],
+    optionGroups: [
+      { id: 'agent_mode', currentValue: 'smart' },
+      { id: 'permissionMode', currentValue: options.permission ?? 'allow_all' },
+    ],
   })
   calls.current.mockResolvedValue(liveAgent)
   if (options.delayedSession)
     calls.current.mockResolvedValueOnce(create(AgentInfoSchema, { ...liveAgent, agentSessionId: '' }))
-  calls.catalog.mockResolvedValue({ stdout: JSON.stringify([{ name: 'read_file', source: 'built-in' }]), stderr: '' })
+  calls.catalog.mockResolvedValue({
+    stdout: JSON.stringify([
+      { name: 'read_file', source: 'built-in' },
+    ]),
+    stderr: '',
+  })
   let currentCallId = ''
   let pidFile = ''
   let releaseFile = ''
@@ -161,12 +234,18 @@ function catalogFixture(options: {
   // Playwright's generic method also admits element types that this fixture never supplies.
   const evaluateApproval = async (read: string | ((elements: HTMLButtonElement[], value: unknown) => unknown | Promise<unknown>), value?: unknown) => {
     if (typeof read !== 'function')
-      throw new Error('The native approval unit requires an actual browser function.')
+      throw new TypeError('The native approval unit requires an actual browser function.')
     const button = document.createElement('button')
-    Object.defineProperty(button, 'click', { value: () => approve() })
+    Object.defineProperty(button, 'click', {
+      value: () => approve(),
+    })
     const elements = [button]
     document.body.append(button)
-    Object.defineProperty(button, 'getClientRects', { value: () => [new DOMRect(0, 0, 10, 10)] })
+    Object.defineProperty(button, 'getClientRects', {
+      value: () => [
+        new DOMRect(0, 0, 10, 10),
+      ],
+    })
     try {
       return await read(elements, value)
     }
@@ -188,23 +267,32 @@ function catalogFixture(options: {
   // The attributes go through the DOM, so an agent ID with a quote stays one attribute value.
   outsideTile.querySelector('[data-testid="tab"]')?.setAttribute('data-tab-id', agentId)
   outsideTile.querySelector('[data-testid="agent-editor-panel"]')?.setAttribute('data-agent-id', agentId)
-  const page = guardedHandle<Page>({ locator: (selector) => {
-    if (options.editorOutsideTile) {
-      const matched = outsideTile.querySelectorAll(selector.replaceAll(':visible', ''))
-      if (matched.length !== 1)
+  const page = guardedHandle<Page>({
+    locator: (selector) => {
+      if (options.editorOutsideTile) {
+        const matched = outsideTile.querySelectorAll(selector.replaceAll(':visible', ''))
+        if (matched.length !== 1)
+          return absent
+      }
+      if (options.siblingControls && (!selector.includes('control-actions') || !selector.includes('data-agent-id="actual-agent"') || selector.includes('control-banner')))
         return absent
-    }
-    if (options.siblingControls && (!selector.includes('control-actions') || !selector.includes('data-agent-id="actual-agent"') || selector.includes('control-banner')))
-      return absent
-    return allow
-  } })
-  calls.watch.mockResolvedValue({ controls: () => controls, cancel: calls.cancelWatch })
-  const workerClose = vi.fn(async () => ({ result: { failureMessage: '', failureDetail: '' } }))
+      return allow
+    },
+  })
+  calls.watch.mockResolvedValue({
+    controls: () => controls,
+    cancel: calls.cancelWatch,
+  })
+  const workerClose = vi.fn(async () => ({
+    result: { failureMessage: '', failureDetail: '' },
+  }))
   calls.channel.mockResolvedValue({ callWorker: workerClose })
   calls.nativeAgent.mockResolvedValue(liveAgent)
   workerClose.mockImplementation(async () => {
     calls.nativeAgent.mockResolvedValue(null)
-    return { result: { failureMessage: '', failureDetail: '' } }
+    return {
+      result: { failureMessage: '', failureDetail: '' },
+    }
   })
   const status = (stepCount: number): MockModelScenarioStatus => ({
     complete: stepCount === 2,
@@ -213,12 +301,30 @@ function catalogFixture(options: {
     ruleMatches: {},
     pendingGates: [],
     requests: stepCount === 2
-      ? [{
-          protocol: 'anthropic-messages',
-          path: '/api/amp-native-receipt',
-          stepIndex: 1,
-          body: { messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: ampToolUseID('T-actual-session', currentCallId), content: JSON.stringify({ status: 'completed', result: JSON.stringify({ stdout: 'AMP_CATALOG_PID:30\n', stderr: '', exitCode: 0 }) }) }] }] },
-        }]
+      ? [
+          {
+            protocol: 'anthropic-messages',
+            path: '/api/amp-native-receipt',
+            stepIndex: 1,
+            body: {
+              messages: [
+                {
+                  role: 'user',
+                  content: [
+                    {
+                      type: 'tool_result',
+                      tool_use_id: ampToolUseID('T-actual-session', currentCallId),
+                      content: JSON.stringify({
+                        status: 'completed',
+                        result: JSON.stringify({ stdout: 'AMP_CATALOG_PID:30\n', stderr: '', exitCode: 0 }),
+                      }),
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        ]
       : [],
     unexpectedRequests: [],
   })
@@ -250,12 +356,19 @@ function catalogFixture(options: {
     provider: AgentProvider.AMP,
     providerAgent: { provider: AgentProvider.AMP, prefix: 'native-e2e' },
     workspaceId: 'actual-workspace',
-    leapmuxServer: { hubUrl: 'http://unit.invalid', adminToken: 'unit-token', workerId: 'actual-worker', agentEnv: { HOME: directory, AMP_URL: 'http://unit.invalid', AMP_API_KEY: 'private-test-key' } },
+    leapmuxServer: {
+      hubUrl: 'http://unit.invalid',
+      adminToken: 'unit-token',
+      workerId: 'actual-worker',
+      agentEnv: { HOME: directory, AMP_URL: 'http://unit.invalid', AMP_API_KEY: 'private-test-key' },
+    },
   }
   calls.send.mockImplementation(async () => {
     const call = queue.mock.calls.at(-1)?.[0]?.toolCalls?.[0]
     const input = call?.arguments
-    const command = isObject(input) ? input.command : undefined
+    const command = isObject(input)
+      ? input.command
+      : undefined
     if (!call || typeof command !== 'string')
       throw new Error('The Amp catalog fixture received no actual central shell command.')
     const basename = /amp-catalog-[A-Za-z0-9-]+\.pid/.exec(command)?.[0]
@@ -264,14 +377,26 @@ function catalogFixture(options: {
     currentCallId = call.id
     pidFile = join(directory, basename)
     releaseFile = join(directory, `${basename.slice(0, -4)}.release`)
-    createPid = () => writeFileSync(pidFile, JSON.stringify({ pid: 30, ppid: 20, workingDir: directory, home: context.leapmuxServer.agentEnv?.HOME, endpoint: 'http://unit.invalid' }))
+    createPid = () => writeFileSync(pidFile, JSON.stringify({
+      pid: 30,
+      ppid: 20,
+      workingDir: directory,
+      home: context.leapmuxServer.agentEnv?.HOME,
+      endpoint: 'http://unit.invalid',
+    }))
     if (options.permission === 'ask') {
-      controls.push({ requestId: 'native-permission', responseState: ControlResponseState.READY, payload: {
-        type: 'leapmux_amp_permission',
-        tool_name: 'shell_command',
-        tool_use_id: ampToolUseID('T-actual-session', options.wrongCall ? 'other-call' : currentCallId),
-        input: { command: options.wrongCommand ? 'another command' : command },
-      } })
+      controls.push({
+        requestId: 'native-permission',
+        responseState: ControlResponseState.READY,
+        payload: {
+          type: 'leapmux_amp_permission',
+          tool_name: 'shell_command',
+          tool_use_id: ampToolUseID('T-actual-session', options.wrongCall ? 'other-call' : currentCallId),
+          input: {
+            command: options.wrongCommand ? 'another command' : command,
+          },
+        },
+      })
     }
     else {
       createPid()
@@ -282,7 +407,20 @@ function catalogFixture(options: {
       throw new Error('The Amp catalog fixture contains no actual queued receipt paths.')
     return { pidFile, releaseFile }
   }
-  return { context, steps, status, files, clock, settingsPath, worker, amp, tool, approve, controls, workerClose }
+  return {
+    context,
+    steps,
+    status,
+    files,
+    clock,
+    settingsPath,
+    worker,
+    amp,
+    tool,
+    approve,
+    controls,
+    workerClose,
+  }
 }
 
 describe('ampSettingsPath', () => {
@@ -295,7 +433,17 @@ describe('ampSettingsPath', () => {
     expect(ampSettingsPath(`amp --execute --settings-file ${path} --no-ide --no-color`)).toBe(path.replace(/^["']|["']$/g, ''))
   })
 
-  it.each(['', 'amp --settings-file', 'amp --settings-file relative/settings.json --no-ide', 'amp --settings-file /private/other.json --no-ide', 'amp --settings-file /private/a/settings.json --settings-file /private/b/settings.json --no-ide', 'amp --settings-file-more /private/settings.json --no-ide', 'amp --settings-file /private/settings.json --no-ide-more', 'amp --settings-file /private/settings.json --no-ide --no-ide', 'amp --settings-file "/private/settings.json --no-ide'])('refuses an incomplete or ambiguous launch: %s', (command) => {
+  it.each([
+    '',
+    'amp --settings-file',
+    'amp --settings-file relative/settings.json --no-ide',
+    'amp --settings-file /private/other.json --no-ide',
+    'amp --settings-file /private/a/settings.json --settings-file /private/b/settings.json --no-ide',
+    'amp --settings-file-more /private/settings.json --no-ide',
+    'amp --settings-file /private/settings.json --no-ide-more',
+    'amp --settings-file /private/settings.json --no-ide --no-ide',
+    'amp --settings-file "/private/settings.json --no-ide',
+  ])('refuses an incomplete or ambiguous launch: %s', (command) => {
     expect(() => ampSettingsPath(command)).toThrow(/settings/)
   })
 
@@ -306,31 +454,67 @@ describe('ampSettingsPath', () => {
 })
 
 describe('ampCatalogPermission', () => {
-  const frame: NativeControlFrame = { requestId: 'exact-permission', responseState: ControlResponseState.READY, payload: {
-    type: 'leapmux_amp_permission',
-    tool_name: 'shell_command',
-    tool_use_id: ampToolUseID('thread', 'call'),
-    input: { command: 'exact native command' },
-  } }
+  const frame: NativeControlFrame = {
+    requestId: 'exact-permission',
+    responseState: ControlResponseState.READY,
+    payload: {
+      type: 'leapmux_amp_permission',
+      tool_name: 'shell_command',
+      tool_use_id: ampToolUseID('thread', 'call'),
+      input: { command: 'exact native command' },
+    },
+  }
 
   it('keeps one exact request despite identical replay and ignores completed controls', () => {
-    const completed = { ...frame, requestId: 'older', responseState: ControlResponseState.COMPLETED, payload: {} }
+    const completed = {
+      ...frame,
+      requestId: 'older',
+      responseState: ControlResponseState.COMPLETED,
+      payload: {},
+    }
     expect(ampCatalogPermission([completed, frame, frame], 'thread', 'call', 'exact native command')).toBe(frame)
     expect(ampCatalogPermission([], 'thread', 'call', 'exact native command')).toBeUndefined()
   })
 
   it('uses the latest state of an older replayed request before selecting the current call', () => {
-    const oldReady = { ...frame, requestId: 'older', payload: { ...frame.payload, tool_use_id: ampToolUseID('thread', 'old-call'), input: { command: 'earlier command' } } }
+    const oldReady = {
+      ...frame,
+      requestId: 'older',
+      payload: {
+        ...frame.payload,
+        tool_use_id: ampToolUseID('thread', 'old-call'),
+        input: { command: 'earlier command' },
+      },
+    }
     const oldCompleted = { ...oldReady, responseState: ControlResponseState.COMPLETED }
     expect(ampCatalogPermission([oldReady, oldCompleted, frame], 'thread', 'call', 'exact native command')).toBe(frame)
   })
 
   it('rejects distinct pending requests for the same native call', () => {
-    expect(() => ampCatalogPermission([frame, { ...frame, requestId: 'second' }], 'thread', 'call', 'exact native command')).toThrow('ambiguous')
+    expect(() => ampCatalogPermission([
+      frame,
+      { ...frame, requestId: 'second' },
+    ], 'thread', 'call', 'exact native command')).toThrow('ambiguous')
   })
 
-  it.each([{ type: 'other' }, { tool_name: 'other' }, { tool_use_id: 'other' }, { input: { command: 'other' } }, { input: null }])('rejects a wrong native permission shape: %j', (fields) => {
-    expect(() => ampCatalogPermission([{ ...frame, payload: { ...frame.payload, ...fields } }], 'thread', 'call', 'exact native command')).toThrow('permission')
+  it.each([
+    { type: 'other' },
+    { tool_name: 'other' },
+    { tool_use_id: 'other' },
+    {
+      input: { command: 'other' },
+    },
+    { input: null },
+  ])('rejects a wrong native permission shape: %j', (fields) => {
+    expect(() => ampCatalogPermission([
+      {
+        ...frame,
+        payload: {
+          ...frame.payload,
+          ...fields,
+        },
+      },
+    ], 'thread', 'call', 'exact native command')).toThrow('permission')
   })
 })
 
@@ -339,7 +523,9 @@ describe('assertAmpGeneratedSettings', () => {
     processFixture()
     const external = mkdtempSync(join(dirname(directory), 'amp-owned-settings-'))
     extraDirectories.push(external)
-    const parent = join(external, process.getuid ? `leapmux-agents-${process.getuid()}` : 'leapmux-agents')
+    const parent = join(external, process.getuid
+      ? `leapmux-agents-${process.getuid()}`
+      : 'leapmux-agents')
     const nativeDirectory = join(parent, 'amp-10-12345')
     mkdirSync(nativeDirectory, { recursive: true, mode: 0o700 })
     const path = join(nativeDirectory, 'settings.json')
@@ -355,7 +541,9 @@ describe('assertAmpGeneratedSettings', () => {
 
 describe('ampExecutorToolNames', () => {
   it('reads only the actual tool identities', () => {
-    expect(ampExecutorToolNames(JSON.stringify([{ name: 'shell_command', source: 'built-in', description: 'Execute a command.' }]))).toEqual(['shell_command'])
+    expect(ampExecutorToolNames(JSON.stringify([
+      { name: 'shell_command', source: 'built-in', description: 'Execute a command.' },
+    ]))).toEqual(['shell_command'])
   })
 
   it.each([
@@ -381,7 +569,9 @@ describe('readAmpExecutorCatalog', () => {
     calls.current.mockClear()
     calls.current.mockResolvedValueOnce(live).mockResolvedValue(create(AgentInfoSchema, { ...live, [field]: 'changed-identity' }))
     const failure = await readAmpExecutorCatalog(context, {}, calls.catalog).catch(error => error)
-    const errors = failure instanceof AggregateError ? failure.errors : [failure]
+    const errors = failure instanceof AggregateError
+      ? failure.errors
+      : [failure]
     expect(errors[0]).toHaveProperty('message', expect.stringContaining('changed-identity'))
     expect(calls.catalog).not.toHaveBeenCalled()
   })
@@ -420,7 +610,11 @@ describe('readAmpExecutorCatalog', () => {
 
   it('proves the physical owned executable when the observed native argv starts with bare amp', async () => {
     const { context, worker, amp, tool } = catalogFixture()
-    const observed = { pid: amp.pid, ppid: amp.ppid, command: amp.command.replace(`"${calls.state.ampPath}"`, 'amp') }
+    const observed = {
+      pid: amp.pid,
+      ppid: amp.ppid,
+      command: amp.command.replace(`"${calls.state.ampPath}"`, 'amp'),
+    }
     calls.processes.mockReturnValue([worker, observed, tool])
     await readAmpExecutorCatalog(context, {}, calls.catalog)
     expect(calls.executable).toHaveBeenCalledExactlyOnceWith(amp.pid)
@@ -429,7 +623,11 @@ describe('readAmpExecutorCatalog', () => {
 
   it('refuses a bare native argv when the actual physical executable belongs to another program', async () => {
     const { context, worker, amp, tool } = catalogFixture()
-    const observed = { pid: amp.pid, ppid: amp.ppid, command: amp.command.replace(`"${calls.state.ampPath}"`, 'amp') }
+    const observed = {
+      pid: amp.pid,
+      ppid: amp.ppid,
+      command: amp.command.replace(`"${calls.state.ampPath}"`, 'amp'),
+    }
     calls.processes.mockReturnValue([worker, observed, tool])
     const wrong = join(directory, 'not-amp')
     writeFileSync(wrong, '')
@@ -441,8 +639,16 @@ describe('readAmpExecutorCatalog', () => {
 
   it('refuses changed physical process ancestry after querying its executable', async () => {
     const { context, worker, amp, tool } = catalogFixture()
-    const observed = { pid: amp.pid, ppid: amp.ppid, command: amp.command.replace(`"${calls.state.ampPath}"`, 'amp') }
-    calls.processes.mockReturnValueOnce([worker, observed, tool]).mockReturnValue([worker, { ...observed, ppid: 99 }, tool])
+    const observed = {
+      pid: amp.pid,
+      ppid: amp.ppid,
+      command: amp.command.replace(`"${calls.state.ampPath}"`, 'amp'),
+    }
+    calls.processes.mockReturnValueOnce([worker, observed, tool]).mockReturnValue([
+      worker,
+      { ...observed, ppid: 99 },
+      tool,
+    ])
     await expect(readAmpExecutorCatalog(context, {}, calls.catalog)).rejects.toThrow('process changed during')
     expect(calls.catalog).not.toHaveBeenCalled()
   })
@@ -451,12 +657,21 @@ describe('readAmpExecutorCatalog', () => {
     const { context, worker, amp, tool, settingsPath } = catalogFixture()
     const external = mkdtempSync(join(dirname(directory), 'amp-native-generated-'))
     extraDirectories.push(external)
-    const parent = join(external, process.getuid ? `leapmux-agents-${process.getuid()}` : 'leapmux-agents')
+    const parent = join(external, process.getuid
+      ? `leapmux-agents-${process.getuid()}`
+      : 'leapmux-agents')
     const generated = join(parent, `amp-${worker.pid}-123456`)
     mkdirSync(generated, { recursive: true, mode: 0o700 })
     const generatedSettings = join(generated, 'settings.json')
     writeFileSync(generatedSettings, readFileSync(settingsPath), { mode: 0o600 })
-    calls.processes.mockReturnValue([worker, { ...amp, command: amp.command.replace(settingsPath, generatedSettings) }, tool])
+    calls.processes.mockReturnValue([
+      worker,
+      {
+        ...amp,
+        command: amp.command.replace(settingsPath, generatedSettings),
+      },
+      tool,
+    ])
     await readAmpExecutorCatalog(context, {}, calls.catalog)
     expect(calls.catalog).toHaveBeenCalledWith(calls.state.ampPath, expect.arrayContaining(['--settings-file', generatedSettings]), expect.anything())
   })
@@ -534,7 +749,11 @@ describe('readAmpExecutorCatalog', () => {
 
   it('copies exact private ownership evidence before the held tool releases', async () => {
     const { context, worker, amp, tool, files } = catalogFixture()
-    calls.processes.mockReturnValue([worker, { ...amp, executable: 'unrelated-native-executable' }, tool])
+    calls.processes.mockReturnValue([
+      worker,
+      { ...amp, executable: 'unrelated-native-executable' },
+      tool,
+    ])
     const reportDir = mkdtempSync(join(dirname(directory), 'amp-report-evidence-'))
     extraDirectories.push(reportDir)
     const reportCopy = join(reportDir, 'ownership.json')
@@ -543,7 +762,15 @@ describe('readAmpExecutorCatalog', () => {
       expect(calls.idle).not.toHaveBeenCalled()
       const text = readFileSync(path, 'utf8')
       const receipt: unknown = JSON.parse(text)
-      expect(receipt).toMatchObject({ proof: { toolPid: 30, toolParentPid: 20, workerExecutable: calls.state.binaryPath, workerDataDir: calls.state.dataDir }, ownership: { workerPid: 10 } })
+      expect(receipt).toMatchObject({
+        proof: {
+          toolPid: 30,
+          toolParentPid: 20,
+          workerExecutable: calls.state.binaryPath,
+          workerDataDir: calls.state.dataDir,
+        },
+        ownership: { workerPid: 10 },
+      })
       if (process.platform !== 'win32')
         expect(statSync(path).mode & 0o777).toBe(0o600)
       writeFileSync(reportCopy, text)
@@ -555,16 +782,25 @@ describe('readAmpExecutorCatalog', () => {
     expect(existsSync(files().pidFile)).toBe(false)
     expect(existsSync(files().releaseFile)).toBe(false)
     rmSync(directory, { recursive: true, force: true })
-    expect(JSON.parse(readFileSync(reportCopy, 'utf8'))).toMatchObject({ proof: { toolPid: 30 } })
+    expect(JSON.parse(readFileSync(reportCopy, 'utf8'))).toMatchObject({
+      proof: { toolPid: 30 },
+    })
   })
 
   it('keeps ownership and attachment failures while native cleanup still completes', async () => {
     const { context, worker, amp, tool, files } = catalogFixture()
-    calls.processes.mockReturnValue([worker, { ...amp, executable: 'unrelated-native-executable' }, tool])
+    calls.processes.mockReturnValue([
+      worker,
+      { ...amp, executable: 'unrelated-native-executable' },
+      tool,
+    ])
     const attachmentError = new Error('The private ownership attachment failed.')
-    const options = { workerDataDir: calls.state.dataDir, onOwnershipDiagnostic: vi.fn(async () => {
-      throw attachmentError
-    }) }
+    const options = {
+      workerDataDir: calls.state.dataDir,
+      onOwnershipDiagnostic: vi.fn(async () => {
+        throw attachmentError
+      }),
+    }
     let failure: unknown
     try {
       await readAmpExecutorCatalog(context, options, calls.catalog)
@@ -588,7 +824,18 @@ describe('readAmpExecutorCatalog', () => {
     const result = await readAmpExecutorCatalog(context, {}, calls.catalog)
     expect(result.tools).toEqual(['read_file'])
     expect(result.settings['amp.mcpServers']).toHaveProperty('credential_probe')
-    expect(calls.catalog).toHaveBeenCalledWith(calls.state.ampPath, ['tools', 'list', '--json', '--mode', 'smart', '--settings-file', settingsPath, '--no-ide', '--no-notifications', '--no-color'], expect.objectContaining({ cwd: directory, env: context.leapmuxServer.agentEnv }))
+    expect(calls.catalog).toHaveBeenCalledWith(calls.state.ampPath, [
+      'tools',
+      'list',
+      '--json',
+      '--mode',
+      'smart',
+      '--settings-file',
+      settingsPath,
+      '--no-ide',
+      '--no-notifications',
+      '--no-color',
+    ], expect.objectContaining({ cwd: directory, env: context.leapmuxServer.agentEnv }))
     expect(steps).toHaveBeenCalledWith(2)
     expect(calls.idle).toHaveBeenCalledWith(context.page)
     expect(existsSync(files().pidFile)).toBe(false)
@@ -616,10 +863,30 @@ describe('readAmpExecutorCatalog', () => {
       timeouts.push(options.timeout)
       now += 1000
       clock.mockReturnValue(now)
-      if (args[0] === 'tools')
-        return { stdout: JSON.stringify([{ name: 'read_file', source: 'built-in' }]), stderr: '' }
-      if (args[1] === 'list')
-        return { stdout: JSON.stringify([{ name: 'project_probe', source: 'workspace', type: 'command', spec: { command: 'private-runtime', args: ['private-server'] } }]), stderr: '' }
+      if (args[0] === 'tools') {
+        return {
+          stdout: JSON.stringify([
+            { name: 'read_file', source: 'built-in' },
+          ]),
+          stderr: '',
+        }
+      }
+      if (args[1] === 'list') {
+        return {
+          stdout: JSON.stringify([
+            {
+              name: 'project_probe',
+              source: 'workspace',
+              type: 'command',
+              spec: {
+                command: 'private-runtime',
+                args: ['private-server'],
+              },
+            },
+          ]),
+          stderr: '',
+        }
+      }
       return { stdout: 'project_probe (workspace: untrusted, server: untrusted): awaiting approval\n', stderr: '' }
     })
     await readAmpExecutorCatalog(context, { workspaceMcpServer: 'project_probe' }, calls.catalog)
@@ -629,18 +896,50 @@ describe('readAmpExecutorCatalog', () => {
   it('uses the installed combined MCP list without the removed local flag', async () => {
     const { context, settingsPath } = catalogFixture()
     calls.catalog.mockImplementation(async (_executable, args) => {
-      if (args[0] === 'tools')
-        return { stdout: JSON.stringify([{ name: 'read_file', source: 'built-in' }]), stderr: '' }
-      if (args[1] === 'list')
-        return { stdout: JSON.stringify([{ name: 'project_probe', source: 'workspace', type: 'command', spec: { command: 'private-runtime' } }]), stderr: '' }
+      if (args[0] === 'tools') {
+        return {
+          stdout: JSON.stringify([
+            { name: 'read_file', source: 'built-in' },
+          ]),
+          stderr: '',
+        }
+      }
+      if (args[1] === 'list') {
+        return {
+          stdout: JSON.stringify([
+            {
+              name: 'project_probe',
+              source: 'workspace',
+              type: 'command',
+              spec: { command: 'private-runtime' },
+            },
+          ]),
+          stderr: '',
+        }
+      }
       return { stdout: 'project_probe (workspace: untrusted, server: untrusted): awaiting approval\n', stderr: '' }
     })
     await readAmpExecutorCatalog(context, { workspaceMcpServer: 'project_probe' }, calls.catalog)
     const list = calls.catalog.mock.calls.find(([, args]) => args[0] === 'mcp' && args[1] === 'list')
-    expect(list?.[1]).toEqual(['mcp', 'list', '--json', '--settings-file', settingsPath, '--no-ide', '--no-notifications', '--no-color'])
+    expect(list?.[1]).toEqual([
+      'mcp',
+      'list',
+      '--json',
+      '--settings-file',
+      settingsPath,
+      '--no-ide',
+      '--no-notifications',
+      '--no-color',
+    ])
   })
 
-  it.each([1_000_000, 999_999, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])('refuses an expired or invalid deadline before native launch: %s', async (deadline) => {
+  it.each([
+    1_000_000,
+    999_999,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+  ])('refuses an expired or invalid deadline before native launch: %s', async (deadline) => {
     const { context } = catalogFixture()
     context.modelScript.testDeadline = () => deadline
     await expect(readAmpExecutorCatalog(context, {}, calls.catalog)).rejects.toThrow('deadline')
@@ -698,7 +997,14 @@ describe('readAmpExecutorCatalog', () => {
     extraDirectories.push(outside)
     const outsideSettings = join(outside, 'settings.json')
     writeFileSync(outsideSettings, JSON.stringify({ external: true }))
-    calls.processes.mockReturnValue([worker, { ...amp, command: amp.command.replace(settingsPath, outsideSettings) }, tool])
+    calls.processes.mockReturnValue([
+      worker,
+      {
+        ...amp,
+        command: amp.command.replace(settingsPath, outsideSettings),
+      },
+      tool,
+    ])
     await expect(readAmpExecutorCatalog(context, {}, calls.catalog)).rejects.toThrow('native Amp settings do not belong to the observed Worker directory')
     expect(calls.catalog).not.toHaveBeenCalled()
   })
@@ -707,26 +1013,45 @@ describe('readAmpExecutorCatalog', () => {
 describe('ampCatalogProcess', () => {
   it('selects only the held tool owner and excludes another Amp sibling', () => {
     const { worker, amp, tool, proof, settingsPath } = processFixture()
-    expect(ampCatalogProcess([worker, amp, tool, { ...amp, pid: 40 }], proof)).toEqual({ workerPid: 10, ampPid: 20, settingsPath })
+    expect(ampCatalogProcess([
+      worker,
+      amp,
+      tool,
+      { ...amp, pid: 40 },
+    ], proof)).toEqual({ workerPid: 10, ampPid: 20, settingsPath })
   })
 
   it('supports a shell and wrapper between the Worker and the native Amp process', () => {
     const { worker, amp, tool, proof } = processFixture()
     const shell = { pid: 15, ppid: 10, command: 'private-shell' }
     const wrapper = { pid: 16, ppid: 15, command: 'private-runtime amp-startup-wrapper' }
-    expect(ampCatalogProcess([worker, shell, wrapper, { ...amp, ppid: 16 }, tool], proof).ampPid).toBe(20)
+    expect(ampCatalogProcess([
+      worker,
+      shell,
+      wrapper,
+      { ...amp, ppid: 16 },
+      tool,
+    ], proof).ampPid).toBe(20)
   })
 
   it('requires the exact native command when executable metadata is absent', () => {
     const { worker, amp, tool, proof } = processFixture()
     const commandOnly = { pid: amp.pid, ppid: amp.ppid, command: amp.command }
     expect(ampCatalogProcess([worker, commandOnly, tool], proof).ampPid).toBe(20)
-    expect(() => ampCatalogProcess([worker, { ...commandOnly, command: `another-program ${amp.command}` }, tool], proof)).toThrow('complete native stream')
+    expect(() => ampCatalogProcess([
+      worker,
+      { ...commandOnly, command: `another-program ${amp.command}` },
+      tool,
+    ], proof)).toThrow('complete native stream')
   })
 
   it('refuses a wrong or duplicate actual tool parent', () => {
     const { worker, amp, tool, proof } = processFixture()
-    expect(() => ampCatalogProcess([worker, amp, { ...tool, ppid: 99 }], proof)).toThrow('matching parent')
+    expect(() => ampCatalogProcess([
+      worker,
+      amp,
+      { ...tool, ppid: 99 },
+    ], proof)).toThrow('matching parent')
     expect(() => ampCatalogProcess([worker, amp, tool, tool], proof)).toThrow('matching parent')
   })
 
@@ -745,43 +1070,123 @@ describe('ampCatalogProcess', () => {
 
   it('refuses incomplete native flags, another executable, and duplicate owned launches', () => {
     const { worker, amp, tool, proof } = processFixture()
-    expect(() => ampCatalogProcess([worker, { ...amp, command: amp.command.replace('--stream-json-input', '--stream-json-input-more') }, tool], proof)).toThrow('complete native stream')
-    expect(() => ampCatalogProcess([worker, { ...amp, executable: 'another-executable' }, tool], proof)).toThrow('complete native stream')
-    expect(() => ampCatalogProcess([worker, amp, tool, { ...amp, pid: 21, ppid: 20 }], proof)).toThrow('complete native stream')
+    expect(() => ampCatalogProcess([
+      worker,
+      {
+        ...amp,
+        command: amp.command.replace('--stream-json-input', '--stream-json-input-more'),
+      },
+      tool,
+    ], proof)).toThrow('complete native stream')
+    expect(() => ampCatalogProcess([
+      worker,
+      { ...amp, executable: 'another-executable' },
+      tool,
+    ], proof)).toThrow('complete native stream')
+    expect(() => ampCatalogProcess([
+      worker,
+      amp,
+      tool,
+      { ...amp, pid: 21, ppid: 20 },
+    ], proof)).toThrow('complete native stream')
   })
 })
 
 describe('ampPidReceipt', () => {
-  const receipt = { pid: 30, ppid: 20, workingDir: '/private/project', home: '/private/home', endpoint: 'http://unit.invalid' }
+  const receipt = {
+    pid: 30,
+    ppid: 20,
+    workingDir: '/private/project',
+    home: '/private/home',
+    endpoint: 'http://unit.invalid',
+  }
   it('retains only actual native PID and environment fields', () => {
     expect(ampPidReceipt(JSON.stringify({ ...receipt, unrelated: 'ignored' }))).toEqual(receipt)
   })
 
-  it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '30', null])('refuses an invalid native PID: %j', (pid) => {
+  it.each([
+    0,
+    -1,
+    1.5,
+    Number.MAX_SAFE_INTEGER + 1,
+    '30',
+    null,
+  ])('refuses an invalid native PID: %j', (pid) => {
     expect(() => ampPidReceipt(JSON.stringify({ ...receipt, pid }))).toThrow('valid PID')
     expect(() => ampPidReceipt(JSON.stringify({ ...receipt, ppid: pid }))).toThrow('valid PID')
   })
 
-  it.each([null, [], {}, { ...receipt, workingDir: 'relative' }, { ...receipt, home: '' }, { ...receipt, endpoint: '' }])('refuses missing native ownership fields: %j', (value) => {
+  it.each([
+    null,
+    [],
+    {},
+    { ...receipt, workingDir: 'relative' },
+    { ...receipt, home: '' },
+    { ...receipt, endpoint: '' },
+  ])('refuses missing native ownership fields: %j', (value) => {
     expect(() => ampPidReceipt(JSON.stringify(value))).toThrow('valid PID')
   })
 })
 
 describe('ampWorkspaceMcpConfiguration', () => {
-  const entry = { name: 'project_probe', source: 'workspace', type: 'command', spec: { command: 'private-runtime', args: ['private-server'] } }
+  const entry = {
+    name: 'project_probe',
+    source: 'workspace',
+    type: 'command',
+    spec: {
+      command: 'private-runtime',
+      args: ['private-server'],
+    },
+  }
   it('retains the exact installed CLI workspace command and permits omitted arguments', () => {
     expect(ampWorkspaceMcpConfiguration(JSON.stringify([entry]), 'project_probe')).toEqual(entry.spec)
-    expect(ampWorkspaceMcpConfiguration(JSON.stringify([{ ...entry, spec: { command: 'private-runtime' } }]), 'project_probe')).toEqual({ command: 'private-runtime' })
+    expect(ampWorkspaceMcpConfiguration(JSON.stringify([
+      {
+        ...entry,
+        spec: { command: 'private-runtime' },
+      },
+    ]), 'project_probe')).toEqual({ command: 'private-runtime' })
   })
 
   it.each([
     { entries: [] },
-    { entries: [entry, entry] },
-    { entries: [{ ...entry, source: 'global' }] },
-    { entries: [{ ...entry, type: 'url' }] },
-    { entries: [{ ...entry, spec: null }] },
-    { entries: [{ ...entry, spec: { command: '' } }] },
-    { entries: [{ ...entry, spec: { command: 'private-runtime', args: [1] } }] },
+    {
+      entries: [entry, entry],
+    },
+    {
+      entries: [
+        { ...entry, source: 'global' },
+      ],
+    },
+    {
+      entries: [
+        { ...entry, type: 'url' },
+      ],
+    },
+    {
+      entries: [
+        { ...entry, spec: null },
+      ],
+    },
+    {
+      entries: [
+        {
+          ...entry,
+          spec: { command: '' },
+        },
+      ],
+    },
+    {
+      entries: [
+        {
+          ...entry,
+          spec: {
+            command: 'private-runtime',
+            args: [1],
+          },
+        },
+      ],
+    },
   ])('refuses absent, ambiguous, or malformed workspace entries: $entries', ({ entries }) => {
     expect(() => ampWorkspaceMcpConfiguration(JSON.stringify(entries), 'project_probe')).toThrow('workspace command')
   })
@@ -799,7 +1204,12 @@ describe('ampWorkspaceMcpAwaitingApproval', () => {
     expect(() => ampWorkspaceMcpAwaitingApproval(`User settings: /private/settings.json\nproject_probe (workspace: untrusted): connecting...\n${blocked}\n`, 'project_probe')).not.toThrow()
   })
 
-  it.each(['', blocked.replace('project_probe', 'another_probe'), blocked.replace('workspace: untrusted', 'user settings'), `${blocked}\nproject_probe (workspace: trusted): connected (1 tools: echo)`])('refuses an absent, wrong-source, or superseded approval state: %s', (text) => {
+  it.each([
+    '',
+    blocked.replace('project_probe', 'another_probe'),
+    blocked.replace('workspace: untrusted', 'user settings'),
+    `${blocked}\nproject_probe (workspace: trusted): connected (1 tools: echo)`,
+  ])('refuses an absent, wrong-source, or superseded approval state: %s', (text) => {
     expect(() => ampWorkspaceMcpAwaitingApproval(text, 'project_probe')).toThrow('await approval')
   })
 })

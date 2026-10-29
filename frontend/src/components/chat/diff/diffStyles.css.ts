@@ -85,7 +85,9 @@ export const diffContent = style({
 // Only color is set here (no `bg`); backgroundColor is intentionally omitted so that
 // word-diff inline classes (diffRemovedInline, diffAddedInline) are not
 // overridden by a higher-specificity global rule.
-codeSurface(diffContainer, 'page', [{ suffix: ' span[data-shiki-token]' }])
+codeSurface(diffContainer, 'page', [
+  { suffix: ' span[data-shiki-token]' },
+])
 
 // Split diff container (two columns side by side)
 export const diffSplitContainer = style({
@@ -99,7 +101,9 @@ export const diffSplitContainer = style({
   marginTop: 'var(--space-1)',
 })
 
-codeSurface(diffSplitContainer, 'page', [{ suffix: ' span[data-shiki-token]' }])
+codeSurface(diffSplitContainer, 'page', [
+  { suffix: ' span[data-shiki-token]' },
+])
 
 // Gap separator row between hunks (shows hidden line count + expand buttons)
 export const diffGapSeparator = style({

@@ -20,7 +20,10 @@ describe('chatMessageOrder', () => {
   it.each(['older', 'newer'] as const)('accepts newer supplements in an overlapping %s page', (side) => {
     const original = create(AgentChatMessageSchema, { id: 'target', seq: 4n, supplementalRevision: 1n })
     const enriched = create(AgentChatMessageSchema, { ...original, supplementalRevision: 9007199254740993n })
-    const previous = [msg('kept', 3n), original]
+    const previous = [
+      msg('kept', 3n),
+      original,
+    ]
     const merged = mergeWindow(previous, [enriched], side)
     expect(ids(merged)).toEqual(['kept', 'target'])
     expect(merged[1]).toBe(enriched)
@@ -29,7 +32,10 @@ describe('chatMessageOrder', () => {
   })
 
   it('reads the edge sequences of a window', () => {
-    const messages = [msg('a', 1n), msg('b', 2n)]
+    const messages = [
+      msg('a', 1n),
+      msg('b', 2n),
+    ]
     expect(firstMessageSeq(messages)).toBe(1n)
     expect(lastMessageSeq(messages)).toBe(2n)
     expect(firstMessageSeq([])).toBeUndefined()
@@ -44,19 +50,30 @@ describe('chatMessageOrder', () => {
   })
 
   it('inserts messages in sequence order', () => {
-    expect(ids(insertMessageBySeq([msg('a', 1n), msg('c', 3n)], msg('b', 2n))))
+    expect(ids(insertMessageBySeq([
+      msg('a', 1n),
+      msg('c', 3n),
+    ], msg('b', 2n))))
       .toEqual(['a', 'b', 'c'])
   })
 
   it('keeps a surviving shared span', () => {
     expect(prunableDroppedSpanIds(
-      [msg('request', 1n, 'shared'), msg('old', 2n, 'old')],
-      [msg('result', 3n, 'shared')],
+      [
+        msg('request', 1n, 'shared'),
+        msg('old', 2n, 'old'),
+      ],
+      [
+        msg('result', 3n, 'shared'),
+      ],
     )).toEqual(['old'])
   })
 
   it('inserts a fresh row and discards a duplicate sequence', () => {
-    const previous = [msg('a', 1n), msg('c', 3n)]
+    const previous = [
+      msg('a', 1n),
+      msg('c', 3n),
+    ]
     const inserted = applyFreshMessage(previous, msg('b', 2n))
     expect(inserted.inserted).toBe(true)
     expect(ids(inserted.next)).toEqual(['a', 'b', 'c'])
@@ -67,23 +84,42 @@ describe('chatMessageOrder', () => {
   })
 
   it('merges older and newer pages without changing an identical window', () => {
-    const previous = [msg('c', 3n), msg('d', 4n)]
-    expect(ids(mergeWindow(previous, [msg('a', 1n), msg('b', 2n)], 'older')))
+    const previous = [
+      msg('c', 3n),
+      msg('d', 4n),
+    ]
+    expect(ids(mergeWindow(previous, [
+      msg('a', 1n),
+      msg('b', 2n),
+    ], 'older')))
       .toEqual(['a', 'b', 'c', 'd'])
-    expect(ids(mergeWindow(previous, [msg('e', 5n)], 'newer')))
+    expect(ids(mergeWindow(previous, [
+      msg('e', 5n),
+    ], 'newer')))
       .toEqual(['c', 'd', 'e'])
-    expect(mergeWindow(previous, [msg('c', 3n), msg('d', 4n)], 'newer')).toBe(previous)
+    expect(mergeWindow(previous, [
+      msg('c', 3n),
+      msg('d', 4n),
+    ], 'newer')).toBe(previous)
   })
 
   it('rejects an overlapping older page in development', () => {
-    expect(() => mergeWindow([msg('c', 3n)], [msg('x', 5n)], 'older'))
+    expect(() => mergeWindow([
+      msg('c', 3n),
+    ], [
+      msg('x', 5n),
+    ], 'older'))
       .toThrow(/overlaps the window head/)
   })
 
   it('uses a sequence insert for an overlapping older page in production', () => {
     vi.stubEnv('DEV', false)
     try {
-      expect(ids(mergeWindow([msg('c', 3n)], [msg('x', 5n)], 'older')))
+      expect(ids(mergeWindow([
+        msg('c', 3n),
+      ], [
+        msg('x', 5n),
+      ], 'older')))
         .toEqual(['c', 'x'])
     }
     finally {
@@ -93,8 +129,16 @@ describe('chatMessageOrder', () => {
 
   it('interleaves a newer page with the rows already in the window', () => {
     const merged = mergeWindow(
-      [msg('a', 1n), msg('c', 3n), msg('e', 5n)],
-      [msg('b', 2n), msg('d', 4n), msg('f', 6n)],
+      [
+        msg('a', 1n),
+        msg('c', 3n),
+        msg('e', 5n),
+      ],
+      [
+        msg('b', 2n),
+        msg('d', 4n),
+        msg('f', 6n),
+      ],
       'newer',
     )
     expect(ids(merged)).toEqual(['a', 'b', 'c', 'd', 'e', 'f'])
@@ -103,8 +147,15 @@ describe('chatMessageOrder', () => {
 
   it('keeps an unordered page in sequence order', () => {
     const merged = mergeWindow(
-      [msg('a', 1n), msg('d', 4n)],
-      [msg('e', 5n), msg('b', 2n), msg('c', 3n)],
+      [
+        msg('a', 1n),
+        msg('d', 4n),
+      ],
+      [
+        msg('e', 5n),
+        msg('b', 2n),
+        msg('c', 3n),
+      ],
       'newer',
     )
     expect(ids(merged)).toEqual(['a', 'b', 'c', 'd', 'e'])
@@ -112,8 +163,14 @@ describe('chatMessageOrder', () => {
 
   it('replaces a stable ID after a resequence', () => {
     const merged = mergeWindow(
-      [msg('a', 1n), msg('b', 2n), msg('c', 3n)],
-      [msg('b', 9n)],
+      [
+        msg('a', 1n),
+        msg('b', 2n),
+        msg('c', 3n),
+      ],
+      [
+        msg('b', 9n),
+      ],
       'newer',
     )
     expect(ids(merged)).toEqual(['a', 'c', 'b'])

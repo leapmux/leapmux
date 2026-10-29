@@ -213,13 +213,16 @@ describe('pill group with no selected option', () => {
 describe('pill group option identity', () => {
   it.each([
     ['no', []],
-    ['five', [
-      { key: 'one', label: 'One' },
-      { key: 'two', label: 'Two' },
-      { key: 'three', label: 'Three' },
-      { key: 'four', label: 'Four' },
-      { key: 'five', label: 'Five' },
-    ]],
+    [
+      'five',
+      [
+        { key: 'one', label: 'One' },
+        { key: 'two', label: 'Two' },
+        { key: 'three', label: 'Three' },
+        { key: 'four', label: 'Four' },
+        { key: 'five', label: 'Five' },
+      ],
+    ],
   ])('rejects %s options', (_description, options) => {
     const props = {
       label: 'Invalid count',
@@ -296,7 +299,9 @@ describe('pill group option identity', () => {
     expect(() => render(() => (
       <PillGroup
         label="Empty reason"
-        options={[{ key: 'blocked', label: 'Blocked', disabledReason: '' }]}
+        options={[
+          { key: 'blocked', label: 'Blocked', disabledReason: '' },
+        ]}
         selectedKey="blocked"
         onSelect={vi.fn()}
       />
@@ -390,7 +395,12 @@ describe('pill group disabled', () => {
     // receives its own keyboard events, so it must refuse them separately.
     const onSelect = renderDisabled('dark')
     const group = screen.getByRole('radiogroup', { name: 'Terminal theme mode' })
-    for (const key of ['ArrowRight', 'ArrowLeft', 'Home', 'End'])
+    for (const key of [
+      'ArrowRight',
+      'ArrowLeft',
+      'Home',
+      'End',
+    ])
       fireEvent.keyDown(group, { key })
     expect(onSelect).not.toHaveBeenCalled()
   })
@@ -503,11 +513,20 @@ function stubSelectionGeometry(
   geometry: { groupWidth: number, left: number, width: number },
 ): void {
   Object.defineProperties(group, {
-    clientWidth: { configurable: true, get: () => geometry.groupWidth },
+    clientWidth: {
+      configurable: true,
+      get: () => geometry.groupWidth,
+    },
   })
   Object.defineProperties(radio, {
-    offsetLeft: { configurable: true, get: () => geometry.left },
-    offsetWidth: { configurable: true, get: () => geometry.width },
+    offsetLeft: {
+      configurable: true,
+      get: () => geometry.left,
+    },
+    offsetWidth: {
+      configurable: true,
+      get: () => geometry.width,
+    },
   })
 }
 
@@ -567,7 +586,9 @@ describe('pill group sliding selection', () => {
     expect(labels).toHaveClass(styles.selectionWindowMoves)
     expect(fill!.style.getPropertyValue('--pill-selection-left')).toBe('70px')
     expect(fill!.style.getPropertyValue('--pill-selection-right')).toBe('0px')
-    expect([...labels!.querySelectorAll('[data-label]')].map(label => label.getAttribute('data-label')))
+    expect([
+      ...labels!.querySelectorAll('[data-label]'),
+    ].map(label => label.getAttribute('data-label')))
       .toEqual(['First', 'A wider second option'])
     expect(secondRadio).toHaveClass(styles.pillOptionSelectedTarget)
   })
@@ -586,7 +607,9 @@ describe('pill group small variant', () => {
         options={[first, second]}
         selectedKey="first"
         onSelect={vi.fn()}
-        {...(small !== undefined ? { small } : {})}
+        {...(small !== undefined
+          ? { small }
+          : {})}
       />
     ))
     const group = screen.getByRole('radiogroup', { name: 'Sized options' })
@@ -600,13 +623,21 @@ describe('pill group small variant', () => {
     stubSelectionGeometry(group, firstRadio, { groupWidth: 220, left: 0, width: 70 })
     stubSelectionGeometry(group, secondRadio, { groupWidth: 220, left: 70, width: 150 })
     triggerResizeObserversSync()
-    return { copies: [...group.querySelectorAll('[data-label]')], radios }
+    return {
+      copies: [
+        ...group.querySelectorAll('[data-label]'),
+      ],
+      radios,
+    }
   }
 
   it('keeps the full metrics when no size is asked for', () => {
     const { copies, radios } = renderSized(undefined)
 
-    for (const element of [...radios, ...copies])
+    for (const element of [
+      ...radios,
+      ...copies,
+    ])
       expect(element).not.toHaveClass(styles.pillOptionSmall)
   })
 
@@ -617,7 +648,10 @@ describe('pill group small variant', () => {
     const { copies, radios } = renderSized(true)
 
     expect(copies).toHaveLength(2)
-    for (const element of [...radios, ...copies])
+    for (const element of [
+      ...radios,
+      ...copies,
+    ])
       expect(element).toHaveClass(styles.pillOptionSmall)
   })
 })
@@ -648,7 +682,13 @@ describe('pill group icon option', () => {
     stubSelectionGeometry(group, firstRadio, { groupWidth: 220, left: 0, width: 70 })
     stubSelectionGeometry(group, secondRadio, { groupWidth: 220, left: 70, width: 150 })
     triggerResizeObserversSync()
-    return { copies: [...group.querySelectorAll('[data-label]')], group, radios }
+    return {
+      copies: [
+        ...group.querySelectorAll('[data-label]'),
+      ],
+      group,
+      radios,
+    }
   }
 
   it('keeps the name of an option that spells out no text', () => {

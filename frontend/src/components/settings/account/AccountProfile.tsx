@@ -92,7 +92,9 @@ export const AccountProfile: Component = () => {
       <StatusLine message={action.message()} />
       <div class={actionsFooter}>
         <button type="button" onClick={() => void save()} disabled={action.running() || !dirty() || !!displayNameError()}>
-          {action.running() ? 'Saving...' : 'Save Profile'}
+          {action.running()
+            ? 'Saving...'
+            : 'Save Profile'}
         </button>
       </div>
     </div>

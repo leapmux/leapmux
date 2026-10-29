@@ -29,7 +29,9 @@ describe('ampFilePathFromUri', () => {
 describe('ampPatchRequestChanges', () => {
   it('reads the file operations of the patch text', () => {
     const changes = ampPatchRequestChanges({ patchText: '*** Begin Patch\n*** Update File: /work/a.ts\n@@\n-old\n+new\n*** End Patch' })
-    expect(changes?.map(change => [change.filePath, change.operation])).toEqual([['/work/a.ts', 'edit']])
+    expect(changes?.map(change => [change.filePath, change.operation])).toEqual([
+      ['/work/a.ts', 'edit'],
+    ])
   })
 
   it('answers null for a patch it cannot follow, or no patch', () => {
@@ -42,7 +44,15 @@ describe('ampPatchResultChanges', () => {
   it('reads the diff of each file that landed', () => {
     const changes = ampPatchResultChanges(JSON.stringify({
       summary: 'update: /work/a.ts (+1/-1)',
-      files: [{ uri: 'file:///work/a.ts', type: 'update', additions: 1, deletions: 1, diff: UNIFIED }],
+      files: [
+        {
+          uri: 'file:///work/a.ts',
+          type: 'update',
+          additions: 1,
+          deletions: 1,
+          diff: UNIFIED,
+        },
+      ],
     }))
     expect(changes).toHaveLength(1)
     expect(changes?.[0]?.filePath).toBe('/work/a.ts')
@@ -76,8 +86,15 @@ describe('ampPatchResultChanges', () => {
   })
 
   it('reads an operation it does not know as an edit', () => {
-    const changes = ampPatchResultChanges(JSON.stringify({ summary: '', files: [{ uri: 'file:///work/a.ts', type: 'rename', diff: UNIFIED }] }))
-    expect(changes?.map(change => [change.filePath, change.operation])).toEqual([['/work/a.ts', 'edit']])
+    const changes = ampPatchResultChanges(JSON.stringify({
+      summary: '',
+      files: [
+        { uri: 'file:///work/a.ts', type: 'rename', diff: UNIFIED },
+      ],
+    }))
+    expect(changes?.map(change => [change.filePath, change.operation])).toEqual([
+      ['/work/a.ts', 'edit'],
+    ])
   })
 
   it('reads a record that lists no file as no change', () => {
@@ -106,14 +123,20 @@ describe('ampEditFileResultChange', () => {
 
   it('draws the diff Amp states, fenced or not', () => {
     for (const diff of [UNIFIED, `\`\`\`diff\n${UNIFIED}\`\`\``]) {
-      const change = ampEditFileResultChange(JSON.stringify({ diff, lineRange: [1, 1] }), requested)
+      const change = ampEditFileResultChange(JSON.stringify({
+        diff,
+        lineRange: [1, 1],
+      }), requested)
       expect(change?.structuredPatch, diff).toHaveLength(1)
       expect(change?.operation).toBe('edit')
     }
   })
 
   it('keeps the requested change for a diff it cannot read', () => {
-    expect(ampEditFileResultChange(JSON.stringify({ diff: 'no hunks here', lineRange: [1, 1] }), requested)).toBe(requested)
+    expect(ampEditFileResultChange(JSON.stringify({
+      diff: 'no hunks here',
+      lineRange: [1, 1],
+    }), requested)).toBe(requested)
     expect(ampEditFileResultChange('Edited.', requested)).toBe(requested)
     expect(ampEditFileResultChange('Edited.', null)).toBeNull()
   })
@@ -121,13 +144,21 @@ describe('ampEditFileResultChange', () => {
   // The diff states no file of its own that the row can trust, so a call that
   // stated no file draws no change, whatever the diff holds.
   it('answers null for a diff when the call stated no file', () => {
-    expect(ampEditFileResultChange(JSON.stringify({ diff: UNIFIED, lineRange: [1, 1] }), null)).toBeNull()
+    expect(ampEditFileResultChange(JSON.stringify({
+      diff: UNIFIED,
+      lineRange: [1, 1],
+    }), null)).toBeNull()
   })
 })
 
 describe('ampCreateFileChange', () => {
   it('reads the whole file as added', () => {
-    expect(ampCreateFileChange({ path: '/work/n.txt', content: 'x\n' })).toMatchObject({ filePath: '/work/n.txt', oldStr: '', newStr: 'x\n', operation: 'add' })
+    expect(ampCreateFileChange({ path: '/work/n.txt', content: 'x\n' })).toMatchObject({
+      filePath: '/work/n.txt',
+      oldStr: '',
+      newStr: 'x\n',
+      operation: 'add',
+    })
     expect(ampCreateFileChange({ content: 'x' })).toBeNull()
   })
 })

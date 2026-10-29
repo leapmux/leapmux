@@ -232,7 +232,9 @@ function policyKey(
   if (!field)
     return null
   const policy = table[field]
-  return policy && admits(policy) ? `${entity}:${field}` : null
+  return policy && admits(policy)
+    ? `${entity}:${field}`
+    : null
 }
 
 /**

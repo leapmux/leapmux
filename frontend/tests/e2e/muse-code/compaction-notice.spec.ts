@@ -14,7 +14,11 @@ museTest('draws and keeps the native notice after a manual compaction', async ({
   // The seed responses report usage above the soft threshold and below the
   // hard threshold. Manual compaction runs without an earlier automatic summary.
   await exerciseNativeCompaction(native, {
-    summary: { route: 'rule', when: museSummarizerMatcher, respond: museCompactionSummaryStep() },
+    summary: {
+      route: 'rule',
+      when: museSummarizerMatcher,
+      respond: museCompactionSummaryStep(),
+    },
     reportedInputTokens: MUSE_COMPACTION_REPORTED_INPUT_TOKENS,
   })
   await expectCompactionNoticeAfterReload(native.page)

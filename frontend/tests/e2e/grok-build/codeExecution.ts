@@ -31,7 +31,9 @@ export function grokWorkflowReportLabel(name: string, objective: string): string
   if (!label)
     throw new Error('The native Grok report requires its workflow name.')
   const detail = objective.trim()
-  return detail ? `${label}: ${detail}` : label
+  return detail
+    ? `${label}: ${detail}`
+    : label
 }
 
 /** Read the exact native launch result instead of the requested script. */
@@ -66,14 +68,24 @@ export function grokWorkflowCompletion(value: unknown, launch: GrokWorkflowLaunc
   }
   if (!Array.isArray(state.history) || !state.history.every(isObject))
     throw new Error('The native Grok workflow has no completion history.')
-  const event = state.status === 'complete' ? 'workflow_completed' : 'workflow_failed'
+  const event = state.status === 'complete'
+    ? 'workflow_completed'
+    : 'workflow_failed'
   const final = state.history.filter(isObject).filter(entry => entry.event === event)
   if (final.length !== 1)
     throw new Error('The native Grok workflow requires one exact completion event.')
-  const text = state.status === 'complete' ? state.result_summary : state.pause_message
+  const text = state.status === 'complete'
+    ? state.result_summary
+    : state.pause_message
   if (typeof text !== 'string' || (state.status === 'failed' && final[0]?.detail !== text))
     throw new Error('The native Grok workflow has no matching final output.')
-  return { runId: launch.runId, status: state.status === 'complete' ? 'completed' : 'failed', text }
+  return {
+    runId: launch.runId,
+    status: state.status === 'complete'
+      ? 'completed'
+      : 'failed',
+    text,
+  }
 }
 
 /** Validate the native output file against its private profile, session, and run. */

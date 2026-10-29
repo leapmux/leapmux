@@ -32,7 +32,9 @@ function spanText(lines: string[], requested: string | undefined, fuzzy: boolean
   const text = lines.join('\n').replaceAll('\r\n', '\n')
   if (requested !== undefined && !fuzzy) {
     const normalized = requested.replaceAll('\r\n', '\n')
-    const encoded = normalized === '' ? '<empty>' : normalized.replace(/\n$/, '')
+    const encoded = normalized === ''
+      ? '<empty>'
+      : normalized.replace(/\n$/, '')
     if (encoded === text)
       return normalized
     const fragments = text.split(`\n${SPAN_TRUNCATED}\n`)
@@ -62,7 +64,14 @@ function parseReceipts(body: string): ReplacementReceipt[] | undefined {
         || index > total || (active && (index <= active.index || total !== active.total))) {
         return undefined
       }
-      active = { index, total, occurrences, fuzzy: !!header[4], old: [], added: [] }
+      active = {
+        index,
+        total,
+        occurrences,
+        fuzzy: !!header[4],
+        old: [],
+        added: [],
+      }
       receipts.push(active)
     }
     else if (active && line.startsWith('-') && active.added.length === 0) {
@@ -75,7 +84,9 @@ function parseReceipts(body: string): ReplacementReceipt[] | undefined {
       return undefined
     }
   }
-  return receipts.length && receipts.every(receipt => receipt.old.length && receipt.added.length) ? receipts : undefined
+  return receipts.length && receipts.every(receipt => receipt.old.length && receipt.added.length)
+    ? receipts
+    : undefined
 }
 
 /** Prefer actual matched text. Recover omitted exact text only from its matching request. */
@@ -86,7 +97,11 @@ export function reasonixEditReceipt(output: string, filePath: string, input: Rec
   const receipts = parseReceipts(output.slice(position + RECEIPT_HEADER.length))
   if (!receipts)
     return []
-  const requests = Array.isArray(input.edits) ? input.edits.map(replacementRequest) : [replacementRequest(input)]
+  const requests = Array.isArray(input.edits)
+    ? input.edits.map(replacementRequest)
+    : [
+        replacementRequest(input),
+      ]
   // `parseReceipts` answers a list only when it holds one; the fallback is the type-level guard alone.
   const total = receipts[0]?.total ?? 0
   const summary = output.slice(0, position)
@@ -98,16 +113,35 @@ export function reasonixEditReceipt(output: string, filePath: string, input: Rec
   const sources: FileEditDiff[] = []
   for (let index = 1; index <= total; index++) {
     const receipt = byIndex.get(index)
-    const request = requests.length === total ? requests[index - 1] : undefined
-    const oldStr = receipt ? spanText(receipt.old, request?.old_string, receipt.fuzzy, false) : request?.old_string
-    const newStr = receipt ? spanText(receipt.added, request?.new_string, false, true) : request?.new_string
+    const request = requests.length === total
+      ? requests[index - 1]
+      : undefined
+    const oldStr = receipt
+      ? spanText(receipt.old, request?.old_string, receipt.fuzzy, false)
+      : request?.old_string
+    const newStr = receipt
+      ? spanText(receipt.added, request?.new_string, false, true)
+      : request?.new_string
     if (oldStr === undefined || newStr === undefined)
       return []
     const notes = [
       receipt?.fuzzy ? 'Fuzzy match' : '',
-      receipt && receipt.occurrences > 1 ? `${receipt.occurrences} replacements; ${receipt.fuzzy ? 'first matched sample' : 'one sample'} shown` : '',
+      receipt && receipt.occurrences > 1
+        ? `${receipt.occurrences} replacements; ${receipt.fuzzy ? 'first matched sample' : 'one sample'} shown`
+        : '',
     ].filter(Boolean)
-    sources.push({ filePath, structuredPatch: null, oldStr, newStr, showLineNumbers: false, ...(notes.length ? { notice: notes.join('; ') } : {}) })
+    sources.push({
+      filePath,
+      structuredPatch: null,
+      oldStr,
+      newStr,
+      showLineNumbers: false,
+      ...(notes.length
+        ? {
+            notice: notes.join('; '),
+          }
+        : {}),
+    })
   }
   return sources
 }

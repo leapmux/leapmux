@@ -113,7 +113,9 @@ vi.mock('./MessageBubble', async () => {
               // The scroll-idle highlight pause is only observable through the host
               // binding MessageBubble forwards into its focused context, so surface it
               // here for the tests that pin ChatView's highlightActivity window.
-              data-syntax-paused={props.host?.syntaxHighlightingPaused?.() ? 'true' : 'false'}
+              data-syntax-paused={props.host?.syntaxHighlightingPaused?.()
+                ? 'true'
+                : 'false'}
             />
           )
         : actual.MessageBubble(props)
@@ -143,7 +145,9 @@ vi.mock('./chatHiddenPremeasure', async () => {
   return {
     ...actual,
     ChatHiddenPremeasure: (props: Parameters<typeof actual.ChatHiddenPremeasure>[0]) => (
-      mockState.mockDeps ? MockHiddenPremeasure(props) : actual.ChatHiddenPremeasure(props)
+      mockState.mockDeps
+        ? MockHiddenPremeasure(props)
+        : actual.ChatHiddenPremeasure(props)
     ),
   }
 })
@@ -311,7 +315,9 @@ async function reportChatViewportSize(view: { container: HTMLElement }, width = 
 function makeMessage(role: string, text: string, id: string = '1'): AgentChatMessage {
   const content = JSON.stringify({
     message: {
-      content: [{ type: 'text', text }],
+      content: [
+        { type: 'text', text },
+      ],
     },
   })
   return {
@@ -385,7 +391,9 @@ function makeCodexFileChangeMessage(params: {
         id: params.spanId,
         status: params.status,
         changes: params.changes ?? (params.status === 'completed'
-          ? [{ path: 'a.txt', kind: 'update', diff: params.diff ?? '@@ -1 +1 @@\n-old\n+new' }]
+          ? [
+              { path: 'a.txt', kind: 'update', diff: params.diff ?? '@@ -1 +1 @@\n-old\n+new' },
+            ]
           : []),
       },
       threadId: 'thread-1',
@@ -484,7 +492,11 @@ function makeCodexWebSearchMessage(params: {
     agentProvider: AgentProvider.CODEX,
     spanId: params.spanId,
     spanType: 'webSearch',
-    spanLines: params.completed ? JSON.stringify([{ span_id: params.spanId, color: 1, type: 'connector_end' }]) : '[]',
+    spanLines: params.completed
+      ? JSON.stringify([
+          { span_id: params.spanId, color: 1, type: 'connector_end' },
+        ])
+      : '[]',
   } as AgentChatMessage
 }
 
@@ -548,7 +560,9 @@ function message(id: string, seq: number): AgentChatMessage {
 }
 
 function visibleBubbleIds(container: HTMLElement): string[] {
-  return [...container.querySelectorAll('[data-testid="mock-message-bubble"][data-premeasure="false"]')]
+  return [
+    ...container.querySelectorAll('[data-testid="mock-message-bubble"][data-premeasure="false"]'),
+  ]
     .map(el => el.getAttribute('data-message-id') ?? '')
 }
 
@@ -577,33 +591,63 @@ describe('sameVirtualItems', () => {
     id,
     hasSpanLines,
     // Omitted (not undefined) when the row states no height key.
-    ...(heightKey !== undefined ? { heightKey } : {}),
+    ...(heightKey !== undefined
+      ? { heightKey }
+      : {}),
   })
 
   it('is true for the same reference and for a geometry-equivalent rebuild', () => {
-    const a = [item('m1', false, '1'), item('m2', true, '2')]
+    const a = [
+      item('m1', false, '1'),
+      item('m2', true, '2'),
+    ]
     expect(sameVirtualItems(a, a)).toBe(true)
     // A fresh array (a streaming/command-stream delta re-walk) with identical
     // id/hasSpanLines/heightKey is geometry-equivalent -> keep the prior, no churn.
-    const b = [item('m1', false, '1'), item('m2', true, '2')]
+    const b = [
+      item('m1', false, '1'),
+      item('m2', true, '2'),
+    ]
     expect(sameVirtualItems(a, b)).toBe(true)
   })
 
   it('is false when a content version, span-line flag, id, or length changes', () => {
-    const base = [item('m1', false, '1'), item('m2', true, '2')]
-    expect(sameVirtualItems(base, [item('m1', false, '1'), item('m2', true, '3')])).toBe(false) // heightKey bumped
-    expect(sameVirtualItems(base, [item('m1', true, '1'), item('m2', true, '2')])).toBe(false) // hasSpanLines flipped
-    expect(sameVirtualItems(base, [item('mX', false, '1'), item('m2', true, '2')])).toBe(false) // id changed (reorder/insert)
-    expect(sameVirtualItems(base, [item('m1', false, '1')])).toBe(false) // a row appeared/left
+    const base = [
+      item('m1', false, '1'),
+      item('m2', true, '2'),
+    ]
+    expect(sameVirtualItems(base, [
+      item('m1', false, '1'),
+      item('m2', true, '3'),
+    ])).toBe(false) // heightKey bumped
+    expect(sameVirtualItems(base, [
+      item('m1', true, '1'),
+      item('m2', true, '2'),
+    ])).toBe(false) // hasSpanLines flipped
+    expect(sameVirtualItems(base, [
+      item('mX', false, '1'),
+      item('m2', true, '2'),
+    ])).toBe(false) // id changed (reorder/insert)
+    expect(sameVirtualItems(base, [
+      item('m1', false, '1'),
+    ])).toBe(false) // a row appeared/left
   })
 })
 
 describe('ChatView', () => {
   it('draws the live compaction while the agent is idle', async () => {
-    const messages = [makeMessage('assistant', 'The answer', 'msg-1')]
+    const messages = [
+      makeMessage('assistant', 'The answer', 'msg-1'),
+    ]
     const view = render(() => (
       <PreferencesProvider>
-        <ChatView messages={messages} agentLifecycle={{ agentWorking: false, liveCompaction: { trigger: 'auto' } }} />
+        <ChatView
+          messages={messages}
+          agentLifecycle={{
+            agentWorking: false,
+            liveCompaction: { trigger: 'auto' },
+          }}
+        />
       </PreferencesProvider>
     ))
     await reportChatViewportSize(view)
@@ -611,7 +655,9 @@ describe('ChatView', () => {
   })
 
   it('hides the live compaction when the reader views older history', async () => {
-    const messages = [makeMessage('assistant', 'An earlier answer', 'msg-1')]
+    const messages = [
+      makeMessage('assistant', 'An earlier answer', 'msg-1'),
+    ]
     const view = render(() => (
       <PreferencesProvider>
         <ChatView messages={messages} pagination={{ hasNewerMessages: true }} agentLifecycle={{ liveCompaction: {} }} />
@@ -630,21 +676,27 @@ describe('ChatView', () => {
       agentProvider: AgentProvider.GITHUB_COPILOT,
       contentCompression: ContentCompression.NONE,
       content: new TextEncoder().encode(JSON.stringify(payload)),
-      ...(inSpan ? { spanId, spanType: COPILOT_TOOL.Move } : {}),
+      ...(inSpan
+        ? { spanId, spanType: COPILOT_TOOL.Move }
+        : {}),
     })
     const messages = [
       nativeMessage('move-request', 1n, copilotToolStart(spanId, COPILOT_TOOL.Move, { source: '/p/old.ts', path: '/p/new.ts' }), true),
-      nativeMessage('move-result', 2n, copilotToolComplete(spanId, { result: { content: '' } }), true),
+      nativeMessage('move-result', 2n, copilotToolComplete(spanId, {
+        result: { content: '' },
+      }), true),
       nativeMessage('later-answer', 3n, copilotFrame(COPILOT_EVENT.AssistantMessage, { content: 'The actual later answer.' })),
       nativeMessage('later-divider', 4n, copilotFrame(COPILOT_EVENT.SessionIdle, {})),
     ]
-    const messageContext = testMessageContext({ messages: () => messages })
+    const messageContext = testMessageContext({
+      messages: () => messages,
+    })
     const view = render(() => <PreferencesProvider><ChatView messages={messages} messageContext={messageContext} /></PreferencesProvider>)
     await reportChatViewportSize(view)
     const row = (seq: number) => {
       const element = view.container.querySelector(`[data-seq="${seq}"]`)
       if (!(element instanceof HTMLElement))
-        throw new Error('The actual chat row did not mount.')
+        throw new TypeError('The actual chat row did not mount.')
       return element
     }
     const result = row(2)
@@ -703,7 +755,9 @@ describe('ChatView', () => {
     expect(secondID).toBeTruthy()
     expect(firstID).not.toBe(secondID)
 
-    setMessages([message('new-row', 1)])
+    setMessages([
+      message('new-row', 1),
+    ])
     const updatedChats = view.container.querySelectorAll('[data-testid="chat-container"]')
     expect(updatedChats[0]?.getAttribute('data-chat-instance-id')).toBe(firstID)
     expect(updatedChats[1]?.getAttribute('data-chat-instance-id')).toBe(secondID)
@@ -747,7 +801,10 @@ describe('ChatView', () => {
       agentSessionId,
     })
     const fetchSpan = vi.fn(async () => [request, result])
-    const messageContext = testMessageContext({ messages: () => [result], fetchSpan })
+    const messageContext = testMessageContext({
+      messages: () => [result],
+      fetchSpan,
+    })
     const view = render(() => (
       <PreferencesProvider>
         <ChatView messages={[result]} messageContext={messageContext} />
@@ -939,7 +996,9 @@ describe('ChatView', () => {
     render(() => (
       <PreferencesProvider>
         <ChatView
-          messages={[makeMessage('user', 'hello', 'm1')]}
+          messages={[
+            makeMessage('user', 'hello', 'm1'),
+          ]}
 
           agentLifecycle={{ agentStatus: AgentStatus.STARTING, providerLabel: 'Claude Code' }}
           pagination={{ hasNewerMessages: true }}
@@ -953,7 +1012,9 @@ describe('ChatView', () => {
     render(() => (
       <PreferencesProvider>
         <ChatView
-          messages={[makeMessage('user', 'hello', 'm1')]}
+          messages={[
+            makeMessage('user', 'hello', 'm1'),
+          ]}
 
           agentLifecycle={{ agentStatus: AgentStatus.STARTING, providerLabel: 'Claude Code' }}
           pagination={{ hasNewerMessages: false }}
@@ -966,7 +1027,10 @@ describe('ChatView', () => {
   it('renders empty state when all messages are hidden', () => {
     render(() => (
       <PreferencesProvider>
-        <ChatView messages={[makeCodexHiddenLifecycleMessage()]} />
+        <ChatView messages={[
+          makeCodexHiddenLifecycleMessage(),
+        ]}
+        />
       </PreferencesProvider>
     ))
     expect(screen.getByText('Send a message to start')).toBeInTheDocument()
@@ -978,7 +1042,12 @@ describe('ChatView', () => {
     // would be the mid-history blank-page bug.
     render(() => (
       <PreferencesProvider>
-        <ChatView messages={[makeCodexHiddenLifecycleMessage()]} pagination={{ hasOlderMessages: true }} />
+        <ChatView
+          messages={[
+            makeCodexHiddenLifecycleMessage(),
+          ]}
+          pagination={{ hasOlderMessages: true }}
+        />
       </PreferencesProvider>
     ))
     expect(screen.queryByText('Send a message to start')).not.toBeInTheDocument()
@@ -987,7 +1056,10 @@ describe('ChatView', () => {
   it('hides EnterPlanMode tool_result messages in chat history', () => {
     render(() => (
       <PreferencesProvider>
-        <ChatView messages={[makeClaudeEnterPlanModeResultMessage()]} />
+        <ChatView messages={[
+          makeClaudeEnterPlanModeResultMessage(),
+        ]}
+        />
       </PreferencesProvider>
     ))
     expect(screen.getByText('Send a message to start')).toBeInTheDocument()
@@ -1018,9 +1090,35 @@ describe('ChatView', () => {
       content: new TextEncoder().encode(JSON.stringify(inner)),
     })
     const messages = [
-      withContent('m1', { type: 'assistant', message: { content: [{ type: 'text', text: 'answer' }] } }, 1n),
-      withContent('m2', { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'pondering' }] } }, 2n),
-      withContent('m3', { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }] } }, 3n),
+      withContent('m1', {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: 'answer' },
+          ],
+        },
+      }, 1n),
+      withContent('m2', {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'thinking', thinking: 'pondering' },
+          ],
+        },
+      }, 2n),
+      withContent('m3', {
+        type: 'assistant',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 't1',
+              name: 'Bash',
+              input: { command: 'ls' },
+            },
+          ],
+        },
+      }, 3n),
     ]
 
     const view = render(() => (
@@ -1029,7 +1127,9 @@ describe('ChatView', () => {
       </PreferencesProvider>
     ))
 
-    const bands = [...view.container.querySelectorAll('[data-seq]')]
+    const bands = [
+      ...view.container.querySelectorAll('[data-seq]'),
+    ]
       .map(row => (row as HTMLElement).dataset.band)
     expect(bands).toEqual(['text', 'thought', undefined])
   })
@@ -1077,11 +1177,13 @@ describe('ChatView', () => {
   it('widens a turn-end divider row without banding it', () => {
     // A divider bleeds like a band, but its rule is drawn by a DESCENDANT, so
     // the row only widens -- it paints no strip and carries no band marker.
-    const messages = [{
-      ...makeMessage('assistant', '', 'm1'),
-      seq: 1n,
-      content: new TextEncoder().encode(JSON.stringify({ type: 'result', subtype: 'success', duration_ms: 1200 })),
-    }]
+    const messages = [
+      {
+        ...makeMessage('assistant', '', 'm1'),
+        seq: 1n,
+        content: new TextEncoder().encode(JSON.stringify({ type: 'result', subtype: 'success', duration_ms: 1200 })),
+      },
+    ]
 
     const view = render(() => (
       <PreferencesProvider>
@@ -1108,8 +1210,14 @@ describe('ChatView', () => {
 
   it('keeps unmeasured interior and tail rows invisible while reserving their estimated space', async () => {
     const messages = [
-      { ...makeMessage('assistant', 'Older tall output', 'msg-1'), seq: 1n },
-      { ...makeMessage('assistant', 'Current message', 'msg-2'), seq: 2n },
+      {
+        ...makeMessage('assistant', 'Older tall output', 'msg-1'),
+        seq: 1n,
+      },
+      {
+        ...makeMessage('assistant', 'Current message', 'msg-2'),
+        seq: 2n,
+      },
     ]
 
     const view = render(() => (
@@ -1205,7 +1313,10 @@ describe('ChatView', () => {
     const initialMessages = [
       makeMessage('assistant', 'Newest 1', 'msg-100'),
       makeMessage('assistant', 'Newest 2', 'msg-101'),
-    ].map((message, index) => ({ ...message, seq: BigInt(100 + index) }))
+    ].map((message, index) => ({
+      ...message,
+      seq: BigInt(100 + index),
+    }))
     let setMessages!: (messages: AgentChatMessage[]) => void
 
     const view = render(() => {
@@ -1248,8 +1359,14 @@ describe('ChatView', () => {
 
     scrollHeight = 2600
     setMessages([
-      { ...makeMessage('assistant', 'Older 1', 'msg-050'), seq: 50n },
-      { ...makeMessage('assistant', 'Older 2', 'msg-051'), seq: 51n },
+      {
+        ...makeMessage('assistant', 'Older 1', 'msg-050'),
+        seq: 50n,
+      },
+      {
+        ...makeMessage('assistant', 'Older 2', 'msg-051'),
+        seq: 51n,
+      },
       ...initialMessages,
     ])
 
@@ -1264,10 +1381,19 @@ describe('ChatView', () => {
 
     scrollHeight = 2700
     setMessages([
-      { ...makeMessage('assistant', 'Older 1', 'msg-050'), seq: 50n },
-      { ...makeMessage('assistant', 'Older 2', 'msg-051'), seq: 51n },
+      {
+        ...makeMessage('assistant', 'Older 1', 'msg-050'),
+        seq: 50n,
+      },
+      {
+        ...makeMessage('assistant', 'Older 2', 'msg-051'),
+        seq: 51n,
+      },
       ...initialMessages,
-      { ...makeMessage('assistant', 'Newest 3', 'msg-102'), seq: 102n },
+      {
+        ...makeMessage('assistant', 'Newest 3', 'msg-102'),
+        seq: 102n,
+      },
     ])
 
     await waitFor(() => expect(view.container).toHaveTextContent('Newest 3'))
@@ -1284,7 +1410,12 @@ describe('ChatView', () => {
     // jsdom-absent layout growth is simulated by growing scrollHeight below.)
     let setTokens!: (n: number) => void
     let setOutputBytes!: (n: number) => void
-    const messages = [{ ...makeMessage('assistant', 'Working on it', 'msg-1'), seq: 1n }]
+    const messages = [
+      {
+        ...makeMessage('assistant', 'Working on it', 'msg-1'),
+        seq: 1n,
+      },
+    ]
 
     const view = render(() => {
       const [tokens, updateTokens] = createSignal(0)
@@ -1319,8 +1450,14 @@ describe('ChatView', () => {
         scrollTop = Math.max(0, Math.min(value, scrollHeight - clientHeight))
       },
     })
-    Object.defineProperty(messageList, 'scrollHeight', { configurable: true, get: () => scrollHeight })
-    Object.defineProperty(messageList, 'clientHeight', { configurable: true, get: () => clientHeight })
+    Object.defineProperty(messageList, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    })
+    Object.defineProperty(messageList, 'clientHeight', {
+      configurable: true,
+      get: () => clientHeight,
+    })
 
     // Pin to the bottom and let the sticky-bottom record seed.
     scrollTop = scrollHeight - clientHeight // 500
@@ -1350,7 +1487,10 @@ describe('ChatView', () => {
     const initialMessages = [
       makeMessage('assistant', 'Newest 1', 'msg-100'),
       makeMessage('assistant', 'Newest 2', 'msg-101'),
-    ].map((message, index) => ({ ...message, seq: BigInt(100 + index) }))
+    ].map((message, index) => ({
+      ...message,
+      seq: BigInt(100 + index),
+    }))
     let setMessages!: (messages: AgentChatMessage[]) => void
 
     const view = render(() => {
@@ -1393,10 +1533,19 @@ describe('ChatView', () => {
 
     scrollHeight = 2700
     setMessages([
-      { ...makeMessage('assistant', 'Older 1', 'msg-050'), seq: 50n },
-      { ...makeMessage('assistant', 'Older 2', 'msg-051'), seq: 51n },
+      {
+        ...makeMessage('assistant', 'Older 1', 'msg-050'),
+        seq: 50n,
+      },
+      {
+        ...makeMessage('assistant', 'Older 2', 'msg-051'),
+        seq: 51n,
+      },
       ...initialMessages,
-      { ...makeMessage('assistant', 'Newest 3', 'msg-102'), seq: 102n },
+      {
+        ...makeMessage('assistant', 'Newest 3', 'msg-102'),
+        seq: 102n,
+      },
     ])
 
     await waitFor(() => expect(view.container).toHaveTextContent('Newest 3'))
@@ -1408,7 +1557,10 @@ describe('ChatView', () => {
     const initialMessages = [
       makeMessage('assistant', 'Newest 1', 'msg-100'),
       makeMessage('assistant', 'Newest 2', 'msg-101'),
-    ].map((message, index) => ({ ...message, seq: BigInt(100 + index) }))
+    ].map((message, index) => ({
+      ...message,
+      seq: BigInt(100 + index),
+    }))
     let setMessages!: (messages: AgentChatMessage[]) => void
     let setFetchingOlder!: (value: boolean) => void
 
@@ -1422,7 +1574,10 @@ describe('ChatView', () => {
           <ChatView
             messages={messages()}
 
-            pagination={{ hasOlderMessages: true, fetchingOlder: fetchingOlder() }}
+            pagination={{
+              hasOlderMessages: true,
+              fetchingOlder: fetchingOlder(),
+            }}
           />
         </PreferencesProvider>
       )
@@ -1459,8 +1614,14 @@ describe('ChatView', () => {
 
     scrollHeight = 2600
     setMessages([
-      { ...makeMessage('assistant', 'Older 1', 'msg-050'), seq: 50n },
-      { ...makeMessage('assistant', 'Older 2', 'msg-051'), seq: 51n },
+      {
+        ...makeMessage('assistant', 'Older 1', 'msg-050'),
+        seq: 50n,
+      },
+      {
+        ...makeMessage('assistant', 'Older 2', 'msg-051'),
+        seq: 51n,
+      },
       ...initialMessages,
     ])
 
@@ -1471,10 +1632,19 @@ describe('ChatView', () => {
     setFetchingOlder(false)
     scrollHeight = 2700
     setMessages([
-      { ...makeMessage('assistant', 'Older 1', 'msg-050'), seq: 50n },
-      { ...makeMessage('assistant', 'Older 2', 'msg-051'), seq: 51n },
+      {
+        ...makeMessage('assistant', 'Older 1', 'msg-050'),
+        seq: 50n,
+      },
+      {
+        ...makeMessage('assistant', 'Older 2', 'msg-051'),
+        seq: 51n,
+      },
       ...initialMessages,
-      { ...makeMessage('assistant', 'Newest 3', 'msg-102'), seq: 102n },
+      {
+        ...makeMessage('assistant', 'Newest 3', 'msg-102'),
+        seq: 102n,
+      },
     ])
 
     await waitFor(() => expect(view.container).toHaveTextContent('Newest 3'))
@@ -1485,7 +1655,10 @@ describe('ChatView', () => {
     const messages = [
       makeMessage('assistant', 'Retained 1', 'msg-1'),
       makeMessage('assistant', 'Retained 2', 'msg-2'),
-    ].map((message, index) => ({ ...message, seq: BigInt(index + 1) }))
+    ].map((message, index) => ({
+      ...message,
+      seq: BigInt(index + 1),
+    }))
     const onLoadOlderMessages = vi.fn()
     const onClearSavedViewportScroll = vi.fn()
 
@@ -1537,7 +1710,10 @@ describe('ChatView', () => {
     const messages = [
       makeMessage('assistant', 'Retained 1', 'msg-1'),
       makeMessage('assistant', 'Retained 2', 'msg-2'),
-    ].map((message, index) => ({ ...message, seq: BigInt(index + 1) }))
+    ].map((message, index) => ({
+      ...message,
+      seq: BigInt(index + 1),
+    }))
     const onLoadOlderMessages = vi.fn()
 
     render(() => (
@@ -1552,8 +1728,14 @@ describe('ChatView', () => {
 
     const chatContainer = screen.getByTestId('chat-container')
     const messageList = chatContainer.firstElementChild?.firstElementChild as HTMLDivElement
-    Object.defineProperty(messageList, 'scrollTop', { configurable: true, get: () => 0 })
-    Object.defineProperty(messageList, 'clientHeight', { configurable: true, get: () => 200 })
+    Object.defineProperty(messageList, 'scrollTop', {
+      configurable: true,
+      get: () => 0,
+    })
+    Object.defineProperty(messageList, 'clientHeight', {
+      configurable: true,
+      get: () => 200,
+    })
 
     fireEvent.wheel(messageList, { deltaY: -20 })
     expect(onLoadOlderMessages).toHaveBeenCalledTimes(1)
@@ -1563,7 +1745,10 @@ describe('ChatView', () => {
     const messages = [
       makeMessage('assistant', 'Retained 1', 'msg-1'),
       makeMessage('assistant', 'Retained 2', 'msg-2'),
-    ].map((message, index) => ({ ...message, seq: BigInt(index + 1) }))
+    ].map((message, index) => ({
+      ...message,
+      seq: BigInt(index + 1),
+    }))
     const onLoadOlderMessages = vi.fn()
 
     render(() => (
@@ -1578,8 +1763,14 @@ describe('ChatView', () => {
 
     const chatContainer = screen.getByTestId('chat-container')
     const messageList = chatContainer.firstElementChild?.firstElementChild as HTMLDivElement
-    Object.defineProperty(messageList, 'scrollTop', { configurable: true, get: () => 0 })
-    Object.defineProperty(messageList, 'clientHeight', { configurable: true, get: () => 200 })
+    Object.defineProperty(messageList, 'scrollTop', {
+      configurable: true,
+      get: () => 0,
+    })
+    Object.defineProperty(messageList, 'clientHeight', {
+      configurable: true,
+      get: () => 200,
+    })
 
     // ArrowUp is the explicit upward-intent key (Home jumps to the first
     // message and PageUp pages, so neither directly triggers older-loading).
@@ -1591,7 +1782,10 @@ describe('ChatView', () => {
     const messages = [
       makeMessage('assistant', 'Retained 1', 'msg-1'),
       makeMessage('assistant', 'Retained 2', 'msg-2'),
-    ].map((message, index) => ({ ...message, seq: BigInt(index + 1) }))
+    ].map((message, index) => ({
+      ...message,
+      seq: BigInt(index + 1),
+    }))
     let pageScroll!: (direction: -1 | 1) => void
 
     render(() => (
@@ -1607,7 +1801,10 @@ describe('ChatView', () => {
     const chatContainer = screen.getByTestId('chat-container')
     const messageList = chatContainer.firstElementChild?.firstElementChild as HTMLDivElement
     messageList.scrollBy = vi.fn()
-    Object.defineProperty(messageList, 'clientHeight', { configurable: true, get: () => 240 })
+    Object.defineProperty(messageList, 'clientHeight', {
+      configurable: true,
+      get: () => 240,
+    })
 
     pageScroll(1)
     // A page jump keeps PAGE_SCROLL_OVERLAP_PX (48) of context: 240 - 48 = 192.
@@ -1618,7 +1815,10 @@ describe('ChatView', () => {
     const messages = [
       makeMessage('assistant', 'Retained 1', 'msg-1'),
       makeMessage('assistant', 'Retained 2', 'msg-2'),
-    ].map((message, index) => ({ ...message, seq: BigInt(index + 1) }))
+    ].map((message, index) => ({
+      ...message,
+      seq: BigInt(index + 1),
+    }))
     let hiddenPageScroll!: (direction: -1 | 1) => void
     let visiblePageScroll!: (direction: -1 | 1) => void
 
@@ -1648,8 +1848,14 @@ describe('ChatView', () => {
     const hiddenList = chatContainers[0]?.firstElementChild?.firstElementChild as HTMLDivElement
     const visibleList = chatContainers[1]?.firstElementChild?.firstElementChild as HTMLDivElement
 
-    Object.defineProperty(hiddenList, 'clientHeight', { configurable: true, get: () => 120 })
-    Object.defineProperty(visibleList, 'clientHeight', { configurable: true, get: () => 240 })
+    Object.defineProperty(hiddenList, 'clientHeight', {
+      configurable: true,
+      get: () => 120,
+    })
+    Object.defineProperty(visibleList, 'clientHeight', {
+      configurable: true,
+      get: () => 240,
+    })
     hiddenList.scrollBy = vi.fn()
     visibleList.scrollBy = vi.fn()
 
@@ -1669,7 +1875,10 @@ describe('ChatView', () => {
     const messages = [
       makeMessage('assistant', 'Retained 1', 'msg-1'),
       makeMessage('assistant', 'Retained 2', 'msg-2'),
-    ].map((message, index) => ({ ...message, seq: BigInt(index + 1) }))
+    ].map((message, index) => ({
+      ...message,
+      seq: BigInt(index + 1),
+    }))
     const onLoadOlderMessages = vi.fn()
 
     render(() => (
@@ -1684,11 +1893,25 @@ describe('ChatView', () => {
 
     const chatContainer = screen.getByTestId('chat-container')
     const messageList = chatContainer.firstElementChild?.firstElementChild as HTMLDivElement
-    Object.defineProperty(messageList, 'scrollTop', { configurable: true, get: () => 0 })
-    Object.defineProperty(messageList, 'clientHeight', { configurable: true, get: () => 200 })
+    Object.defineProperty(messageList, 'scrollTop', {
+      configurable: true,
+      get: () => 0,
+    })
+    Object.defineProperty(messageList, 'clientHeight', {
+      configurable: true,
+      get: () => 200,
+    })
 
-    fireEvent.touchStart(messageList, { touches: [{ clientY: 100 }] })
-    fireEvent.touchMove(messageList, { touches: [{ clientY: 120 }] })
+    fireEvent.touchStart(messageList, {
+      touches: [
+        { clientY: 100 },
+      ],
+    })
+    fireEvent.touchMove(messageList, {
+      touches: [
+        { clientY: 120 },
+      ],
+    })
     fireEvent.pointerDown(messageList, { pointerType: 'touch', clientY: 100 })
     fireEvent.pointerMove(messageList, { pointerType: 'touch', clientY: 120 })
 
@@ -1697,8 +1920,19 @@ describe('ChatView', () => {
 
   it('keeps both codex commandExecution start and completed messages in history', () => {
     const messages = [
-      makeCodexCommandMessage({ id: 'cmd-start', seq: 1n, spanId: 'cmd-1', status: 'inProgress' }),
-      makeCodexCommandMessage({ id: 'cmd-done', seq: 2n, spanId: 'cmd-1', status: 'completed', aggregatedOutput: 'done\n' }),
+      makeCodexCommandMessage({
+        id: 'cmd-start',
+        seq: 1n,
+        spanId: 'cmd-1',
+        status: 'inProgress',
+      }),
+      makeCodexCommandMessage({
+        id: 'cmd-done',
+        seq: 2n,
+        spanId: 'cmd-1',
+        status: 'completed',
+        aggregatedOutput: 'done\n',
+      }),
     ]
 
     const view = render(() => (
@@ -1791,8 +2025,18 @@ describe('ChatView', () => {
 
   it('keeps both codex fileChange start and completed messages in history', () => {
     const messages = [
-      makeCodexFileChangeMessage({ id: 'fc-start', seq: 1n, spanId: 'fc-1', status: 'inProgress' }),
-      makeCodexFileChangeMessage({ id: 'fc-done', seq: 2n, spanId: 'fc-1', status: 'completed' }),
+      makeCodexFileChangeMessage({
+        id: 'fc-start',
+        seq: 1n,
+        spanId: 'fc-1',
+        status: 'inProgress',
+      }),
+      makeCodexFileChangeMessage({
+        id: 'fc-done',
+        seq: 2n,
+        spanId: 'fc-1',
+        status: 'completed',
+      }),
     ]
 
     render(() => (
@@ -1810,16 +2054,32 @@ describe('ChatView', () => {
   })
 
   it('draws a paired codex fileChange diff only on the result row', () => {
-    const changes = [{
-      path: 'a.txt',
-      kind: 'update',
-      diff: '@@ -1 +1 @@\n-codexPairedOld\n+codexPairedNew',
-    }]
-    const messages = [
-      makeCodexFileChangeMessage({ id: 'fc-start', seq: 1n, spanId: 'fc-1', status: 'inProgress', changes }),
-      makeCodexFileChangeMessage({ id: 'fc-done', seq: 2n, spanId: 'fc-1', status: 'completed', changes }),
+    const changes = [
+      {
+        path: 'a.txt',
+        kind: 'update',
+        diff: '@@ -1 +1 @@\n-codexPairedOld\n+codexPairedNew',
+      },
     ]
-    const messageContext = testMessageContext({ messages: () => messages })
+    const messages = [
+      makeCodexFileChangeMessage({
+        id: 'fc-start',
+        seq: 1n,
+        spanId: 'fc-1',
+        status: 'inProgress',
+        changes,
+      }),
+      makeCodexFileChangeMessage({
+        id: 'fc-done',
+        seq: 2n,
+        spanId: 'fc-1',
+        status: 'completed',
+        changes,
+      }),
+    ]
+    const messageContext = testMessageContext({
+      messages: () => messages,
+    })
 
     const view = render(() => (
       <PreferencesProvider>
@@ -1839,7 +2099,9 @@ describe('ChatView', () => {
         seq: 1n,
         spanId: 'fc-1',
         status: 'inProgress',
-        changes: [{ path: 'a.txt', kind: 'update', diff: '@@ -1 +1 @@\n-old\n+new' }],
+        changes: [
+          { path: 'a.txt', kind: 'update', diff: '@@ -1 +1 @@\n-old\n+new' },
+        ],
       }),
     ]
 
@@ -1858,7 +2120,12 @@ describe('ChatView', () => {
 
   it('renders a simple codex fileChange with Edit-style diff content', () => {
     const messages = [
-      makeCodexFileChangeMessage({ id: 'fc-done', seq: 1n, spanId: 'fc-1', status: 'completed' }),
+      makeCodexFileChangeMessage({
+        id: 'fc-done',
+        seq: 1n,
+        spanId: 'fc-1',
+        status: 'completed',
+      }),
     ]
 
     render(() => (
@@ -1882,7 +2149,13 @@ describe('ChatView', () => {
         seq: 1n,
         spanId: 'fc-1',
         status: 'inProgress',
-        changes: [{ path: '/repo/src/new-file.ts', kind: { type: 'add' }, diff: 'export const hello = "world"\n' }],
+        changes: [
+          {
+            path: '/repo/src/new-file.ts',
+            kind: { type: 'add' },
+            diff: 'export const hello = "world"\n',
+          },
+        ],
       }),
     ]
 
@@ -1907,7 +2180,13 @@ describe('ChatView', () => {
         seq: 1n,
         spanId: 'fc-1',
         status: 'completed',
-        changes: [{ path: '/repo/src/new-file.ts', kind: { type: 'add' }, diff: 'export const hello = "world"\n' }],
+        changes: [
+          {
+            path: '/repo/src/new-file.ts',
+            kind: { type: 'add' },
+            diff: 'export const hello = "world"\n',
+          },
+        ],
       }),
     ]
 
@@ -1928,7 +2207,13 @@ describe('ChatView', () => {
         seq: 1n,
         spanId: 'fc-1',
         status: 'inProgress',
-        changes: [{ path: '/repo/src/old-file.ts', kind: { type: 'delete' }, diff: 'export const old = true\n' }],
+        changes: [
+          {
+            path: '/repo/src/old-file.ts',
+            kind: { type: 'delete' },
+            diff: 'export const old = true\n',
+          },
+        ],
       }),
     ]
 
@@ -1949,7 +2234,13 @@ describe('ChatView', () => {
         seq: 1n,
         spanId: 'fc-1',
         status: 'completed',
-        changes: [{ path: '/repo/src/old-file.ts', kind: { type: 'delete' }, diff: 'export const old = true\n' }],
+        changes: [
+          {
+            path: '/repo/src/old-file.ts',
+            kind: { type: 'delete' },
+            diff: 'export const old = true\n',
+          },
+        ],
       }),
     ]
 
@@ -1972,8 +2263,16 @@ describe('ChatView', () => {
         spanId: 'fc-1',
         status: 'completed',
         changes: [
-          { path: '/repo/src/a.ts', kind: { type: 'update' }, diff: '@@ -1 +1 @@\n-oldValue\n+newValue\n' },
-          { path: '/repo/src/new-file.tsx', kind: { type: 'add' }, diff: 'export const hello = "world"\n' },
+          {
+            path: '/repo/src/a.ts',
+            kind: { type: 'update' },
+            diff: '@@ -1 +1 @@\n-oldValue\n+newValue\n',
+          },
+          {
+            path: '/repo/src/new-file.tsx',
+            kind: { type: 'add' },
+            diff: 'export const hello = "world"\n',
+          },
         ],
       }),
     ]
@@ -1994,7 +2293,12 @@ describe('ChatView', () => {
 
   it('shows shared toolbar actions for completed codex fileChange messages', () => {
     const messages = [
-      makeCodexFileChangeMessage({ id: 'fc-done', seq: 1n, spanId: 'fc-1', status: 'completed' }),
+      makeCodexFileChangeMessage({
+        id: 'fc-done',
+        seq: 1n,
+        spanId: 'fc-1',
+        status: 'completed',
+      }),
     ]
 
     const view = render(() => (
@@ -2017,8 +2321,16 @@ describe('ChatView', () => {
         spanId: 'fc-1',
         status: 'completed',
         changes: [
-          { path: 'a.txt', kind: { type: 'add' }, diff: '' },
-          { path: 'b.txt', kind: { type: 'delete' }, diff: '' },
+          {
+            path: 'a.txt',
+            kind: { type: 'add' },
+            diff: '',
+          },
+          {
+            path: 'b.txt',
+            kind: { type: 'delete' },
+            diff: '',
+          },
         ],
       }),
     ]
@@ -2158,7 +2470,12 @@ describe('ChatView', () => {
     localStorageSet(KEY_BROWSER_PREFS, { expandAgentThoughts: false })
 
     const messages = [
-      makeCodexReasoningMessage({ id: 'reason-done', seq: 1n, spanId: 'reason-1', summary: ['done'] }),
+      makeCodexReasoningMessage({
+        id: 'reason-done',
+        seq: 1n,
+        spanId: 'reason-1',
+        summary: ['done'],
+      }),
     ]
 
     render(() => (
@@ -2177,7 +2494,12 @@ describe('ChatView', () => {
   it('keeps completed codex reasoning visible while empty start reasoning remains hidden', () => {
     const messages = [
       makeCodexReasoningMessage({ id: 'reason-start', seq: 1n, spanId: 'reason-1' }),
-      makeCodexReasoningMessage({ id: 'reason-done', seq: 2n, spanId: 'reason-1', summary: ['done'] }),
+      makeCodexReasoningMessage({
+        id: 'reason-done',
+        seq: 2n,
+        spanId: 'reason-1',
+        summary: ['done'],
+      }),
     ]
 
     render(() => (
@@ -2407,7 +2729,9 @@ describe('chat view virtualized with stubbed deps', () => {
       virtualizerState.setRange?.({ start: 0, end: 1 })
       render(() => (
         <ChatView
-          messages={[message('m0', 1)]}
+          messages={[
+            message('m0', 1),
+          ]}
 
         />
       ))
@@ -2440,7 +2764,9 @@ describe('chat view virtualized with stubbed deps', () => {
       virtualizerState.setRange?.({ start: 0, end: 1 })
       render(() => (
         <ChatView
-          messages={[message('m0', 1)]}
+          messages={[
+            message('m0', 1),
+          ]}
 
         />
       ))
@@ -2477,7 +2803,9 @@ describe('chat view virtualized with stubbed deps', () => {
       virtualizerState.setRange?.({ start: 0, end: 1 })
       render(() => (
         <ChatView
-          messages={[message('m0', 1)]}
+          messages={[
+            message('m0', 1),
+          ]}
 
         />
       ))
@@ -2514,7 +2842,9 @@ describe('chat view virtualized with stubbed deps', () => {
       hiddenPremeasureState.candidates = []
       hiddenPremeasureState.onMeasure = undefined
       virtualizerState.setRange?.({ start: 0, end: 1 })
-      const [messages, setMessages] = createSignal([message('m0', 1)])
+      const [messages, setMessages] = createSignal([
+        message('m0', 1),
+      ])
       const { container } = render(() => (
         <ChatView
           messages={messages()}
@@ -2527,7 +2857,10 @@ describe('chat view virtualized with stubbed deps', () => {
       })
 
       virtualizerState.setRange?.({ start: 0, end: 2 })
-      setMessages([message('m0', 1), message('m1', 2)])
+      setMessages([
+        message('m0', 1),
+        message('m1', 2),
+      ])
 
       // The appended tail m1 is premeasured AND hidden until its height commits -- it must
       // not paint its real content at the estimate. It shows NO skeleton immediately (a
@@ -2555,7 +2888,9 @@ describe('chat view virtualized with stubbed deps', () => {
       hiddenPremeasureState.candidates = []
       hiddenPremeasureState.onMeasure = undefined
       virtualizerState.setRange?.({ start: 0, end: 1 })
-      const [messages, setMessages] = createSignal([message('m0', 1)])
+      const [messages, setMessages] = createSignal([
+        message('m0', 1),
+      ])
       const { container } = render(() => (
         <ChatView
           messages={messages()}
@@ -2564,7 +2899,11 @@ describe('chat view virtualized with stubbed deps', () => {
       ))
 
       virtualizerState.setRange?.({ start: 0, end: 3 })
-      setMessages([message('m0', 1), message('m1', 2), message('m2', 3)])
+      setMessages([
+        message('m0', 1),
+        message('m1', 2),
+        message('m2', 3),
+      ])
 
       // Both the interior unmeasured row m1 and the live tail m2 render hidden until
       // their heights commit (INVISIBILITY, not a 0-height collapse), so neither paints
@@ -2597,16 +2936,25 @@ describe('chat view virtualized with stubbed deps', () => {
         seq,
         content: new TextEncoder().encode(JSON.stringify({
           type: 'assistant',
-          message: { content: [{ type: 'text', text }] },
+          message: {
+            content: [
+              { type: 'text', text },
+            ],
+          },
         })),
       })
-      const [messages, setMessages] = createSignal([assistantText('m0', 1n, 'first')])
+      const [messages, setMessages] = createSignal([
+        assistantText('m0', 1n, 'first'),
+      ])
       const { container } = render(() => (
         <ChatView messages={messages()} />
       ))
 
       virtualizerState.setRange?.({ start: 0, end: 2 })
-      setMessages([assistantText('m0', 1n, 'first'), assistantText('m1', 2n, 'answer')])
+      setMessages([
+        assistantText('m0', 1n, 'first'),
+        assistantText('m1', 2n, 'answer'),
+      ])
       vi.advanceTimersByTime(SKELETON_SHOW_DELAY_MS)
 
       const skeleton = container.querySelector('[data-testid="row-skeleton"]')
@@ -2627,7 +2975,9 @@ describe('chat view virtualized with stubbed deps', () => {
       hiddenPremeasureState.candidates = []
       hiddenPremeasureState.onMeasure = undefined
       virtualizerState.setRange?.({ start: 0, end: 1 })
-      const [messages, setMessages] = createSignal([message('m0', 1)])
+      const [messages, setMessages] = createSignal([
+        message('m0', 1),
+      ])
       const { container } = render(() => (
         <ChatView
           messages={messages()}
@@ -2636,7 +2986,11 @@ describe('chat view virtualized with stubbed deps', () => {
       ))
 
       virtualizerState.setRange?.({ start: 0, end: 3 })
-      setMessages([message('m0', 1), message('m1', 2), message('m2', 3)])
+      setMessages([
+        message('m0', 1),
+        message('m1', 2),
+        message('m2', 3),
+      ])
 
       // m1 (interior) and m2 (live tail) are hidden immediately, but NO skeleton paints
       // yet -- a fast re-measure is expected, so the shimmer is deferred.
@@ -2645,7 +2999,9 @@ describe('chat view virtualized with stubbed deps', () => {
       // Only once the wait exceeds SKELETON_SHOW_DELAY_MS do the skeletons appear, one per
       // still-hidden row (m1 -> 100px, m2 -> 200px); m0 (measured) gets none.
       vi.advanceTimersByTime(SKELETON_SHOW_DELAY_MS)
-      const skeletons = [...container.querySelectorAll('[data-testid="row-skeleton"]')] as HTMLElement[]
+      const skeletons = [
+        ...container.querySelectorAll('[data-testid="row-skeleton"]'),
+      ] as HTMLElement[]
       expect(skeletons).toHaveLength(2)
       expect(skeletons.every(s => s.style.height === '100px')).toBe(true) // stub heightOfIndex
       expect(skeletons.map(s => s.parentElement!.style.transform).sort())
@@ -2658,7 +3014,9 @@ describe('chat view virtualized with stubbed deps', () => {
       virtualizerState.setRange?.({ start: 0, end: 3 }) // bump the stub's version signal
       expect((container.querySelector('[data-seq="2"]') as HTMLElement).style.visibility).not.toBe('hidden')
       expect((container.querySelector('[data-seq="3"]') as HTMLElement).style.visibility).not.toBe('hidden')
-      const lingering = [...container.querySelectorAll('[data-testid="row-skeleton"]')] as HTMLElement[]
+      const lingering = [
+        ...container.querySelectorAll('[data-testid="row-skeleton"]'),
+      ] as HTMLElement[]
       expect(lingering).toHaveLength(2)
       expect(lingering.every(s => s.parentElement!.classList.contains(rowSkeletonClosing))).toBe(true)
 
@@ -2684,7 +3042,11 @@ describe('chat view virtualized with stubbed deps', () => {
       prefsState.setDiffView?.('unified')
       prefsState.setExpandThoughts?.(true)
       virtualizerState.setRange?.({ start: 0, end: 3 })
-      const messages = [message('m0', 1), message('m1', 2), message('m2', 3)]
+      const messages = [
+        message('m0', 1),
+        message('m1', 2),
+        message('m2', 3),
+      ]
       render(() => (
         <ChatView
           messages={messages}
@@ -2694,8 +3056,12 @@ describe('chat view virtualized with stubbed deps', () => {
 
       // The premeasure mock captures each candidate row's heightKey (see its createEffect).
       const before = new Map(virtualizerState.currentHeightKeys)
-      expect([...before.keys()].sort()).toEqual(['m0', 'm1', 'm2'])
-      expect([...before.values()].every(key => typeof key === 'string' && key.length > 0)).toBe(true)
+      expect([
+        ...before.keys(),
+      ].sort()).toEqual(['m0', 'm1', 'm2'])
+      expect([
+        ...before.values(),
+      ].every(key => typeof key === 'string' && key.length > 0)).toBe(true)
 
       prefsState.setDiffView?.('split') // toggle the GLOBAL diff-view preference
       for (const id of ['m0', 'm1', 'm2'])
@@ -2718,7 +3084,9 @@ describe('chat view virtualized with stubbed deps', () => {
       hiddenPremeasureState.candidates = []
       hiddenPremeasureState.onMeasure = undefined
       virtualizerState.setRange?.({ start: 0, end: 1 })
-      const [messages, setMessages] = createSignal([message('m0', 1)])
+      const [messages, setMessages] = createSignal([
+        message('m0', 1),
+      ])
       const { container } = render(() => (
         <ChatView
           messages={messages()}
@@ -2728,7 +3096,11 @@ describe('chat view virtualized with stubbed deps', () => {
 
       // Append m1 (interior) and m2 (tail) together -- both hidden until measured.
       virtualizerState.setRange?.({ start: 0, end: 3 })
-      setMessages([message('m0', 1), message('m1', 2), message('m2', 3)])
+      setMessages([
+        message('m0', 1),
+        message('m1', 2),
+        message('m2', 3),
+      ])
       const interior = () => container.querySelector('[data-seq="2"]') as HTMLElement
       const tail = () => container.querySelector('[data-seq="3"]') as HTMLElement
       expect(interior().style.visibility).toBe('hidden')
@@ -2756,7 +3128,9 @@ describe('chat view virtualized with stubbed deps', () => {
       hiddenPremeasureState.candidates = []
       hiddenPremeasureState.onMeasure = undefined
       virtualizerState.setRange?.({ start: 0, end: 1 }) // only m0 is in the rendered range
-      const [messages, setMessages] = createSignal([message('m0', 1)])
+      const [messages, setMessages] = createSignal([
+        message('m0', 1),
+      ])
       render(() => (
         <ChatView
           messages={messages()}
@@ -2766,7 +3140,11 @@ describe('chat view virtualized with stubbed deps', () => {
 
       // m1 and m2 sit BEYOND the rendered range but within LOOKAHEAD_PREMEASURE_ROWS, so they
       // are premeasured ahead of scrolling into view (previously only in-range rows were).
-      setMessages([message('m0', 1), message('m1', 2), message('m2', 3)])
+      setMessages([
+        message('m0', 1),
+        message('m1', 2),
+        message('m2', 3),
+      ])
 
       await waitFor(() => {
         expect(hiddenPremeasureState.candidates.map(candidate => candidate.item.id).sort()).toEqual(['m1', 'm2'])
@@ -2800,7 +3178,9 @@ describe('chat view virtualized with stubbed deps', () => {
       // measurement proceeds) with OVERLAY loading skeletons painting their
       // reserved slots. In-row skeletons sit inside the data-seq row; overlays
       // sit in their own positioned wrapper.
-      const skeletons = [...container.querySelectorAll('[data-testid="row-skeleton"]')] as HTMLElement[]
+      const skeletons = [
+        ...container.querySelectorAll('[data-testid="row-skeleton"]'),
+      ] as HTMLElement[]
       const inRow = skeletons.filter(s => s.parentElement?.hasAttribute('data-seq'))
       const overlay = skeletons.filter(s => !s.parentElement?.hasAttribute('data-seq'))
       expect(inRow).toHaveLength(2) // m8, m9 (m0 was already real)
@@ -2809,11 +3189,22 @@ describe('chat view virtualized with stubbed deps', () => {
       expect(inRow[0]?.style.height).toBe('100px') // stub heightOfIndex
       // The body is ONE masked Oat fill block; its role="status" is what Oat's
       // `[role=status].skeleton` selector REQUIRES for the styles to apply.
-      const fills = [...(inRow[0]?.querySelectorAll('.skeleton.line') ?? [])] as HTMLElement[]
+      const fills = [
+        ...(inRow[0]?.querySelectorAll('.skeleton.line') ?? []),
+      ] as HTMLElement[]
       expect(fills).toHaveLength(1)
       expect(fills[0]?.getAttribute('role')).toBe('status')
       expect(visibleBubbleIds(container)).toEqual(
-        ['m0', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7'],
+        [
+          'm0',
+          'm1',
+          'm2',
+          'm3',
+          'm4',
+          'm5',
+          'm6',
+          'm7',
+        ],
       )
 
       virtualizerState.setDeferred?.(false) // fling settled
@@ -2823,9 +3214,22 @@ describe('chat view virtualized with stubbed deps', () => {
       // skeleton COPY on top for the crossfade beat (inside the row but wrapped,
       // so no longer a direct data-seq child).
       expect(visibleBubbleIds(container)).toEqual(
-        ['m0', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9'],
+        [
+          'm0',
+          'm1',
+          'm2',
+          'm3',
+          'm4',
+          'm5',
+          'm6',
+          'm7',
+          'm8',
+          'm9',
+        ],
       )
-      const during = [...container.querySelectorAll('[data-testid="row-skeleton"]')] as HTMLElement[]
+      const during = [
+        ...container.querySelectorAll('[data-testid="row-skeleton"]'),
+      ] as HTMLElement[]
       expect(during.filter(s => s.parentElement?.hasAttribute('data-seq'))).toHaveLength(0)
       const crossfading = during.filter(s => s.closest('[data-seq]') !== null)
       expect(crossfading).toHaveLength(2) // m8, m9 fading out over their bubbles
@@ -2835,7 +3239,9 @@ describe('chat view virtualized with stubbed deps', () => {
       // After the crossfade beat, only the 7 loading overlays (unmeasured rows)
       // remain.
       await waitFor(() => {
-        const remaining = [...container.querySelectorAll('[data-testid="row-skeleton"]')] as HTMLElement[]
+        const remaining = [
+          ...container.querySelectorAll('[data-testid="row-skeleton"]'),
+        ] as HTMLElement[]
         expect(remaining.filter(s => s.closest('[data-seq]') !== null)).toHaveLength(0)
         expect(remaining).toHaveLength(7)
       })
@@ -2853,7 +3259,9 @@ describe('chat view virtualized with stubbed deps', () => {
       try {
         const { container } = render(() => (
           <ChatView
-            messages={[message('m0', 1)]}
+            messages={[
+              message('m0', 1),
+            ]}
 
           />
         ))
@@ -2864,7 +3272,13 @@ describe('chat view virtualized with stubbed deps', () => {
           if (spy.mock.instances[i] === scroller)
             optionsByType.set(call[0], call[2])
         })
-        for (const type of ['wheel', 'touchstart', 'touchmove', 'touchend', 'touchcancel'])
+        for (const type of [
+          'wheel',
+          'touchstart',
+          'touchmove',
+          'touchend',
+          'touchcancel',
+        ])
           expect(optionsByType.get(type), `${type} listener`).toEqual({ passive: true })
       }
       finally {
@@ -2880,7 +3294,9 @@ describe('chat view virtualized with stubbed deps', () => {
   describe('chat view syntax-highlight scroll pause', () => {
     const renderChat = () => render(() => (
       <ChatView
-        messages={[message('m0', 1)]}
+        messages={[
+          message('m0', 1),
+        ]}
 
       />
     ))
@@ -2892,7 +3308,9 @@ describe('chat view virtualized with stubbed deps', () => {
       container.querySelector('[data-chat-scroll-container]') as HTMLElement
 
     it('pauses highlighting on a scroll gesture and resumes after the idle window', () => {
-      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
       const { container } = renderChat()
       expect(paused(container)).toBe('false')
 
@@ -2907,7 +3325,9 @@ describe('chat view virtualized with stubbed deps', () => {
     })
 
     it('stays paused across a continued scroll instead of resuming mid-gesture', () => {
-      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
       const { container } = renderChat()
 
       fireEvent.wheel(scroller(container), { deltaY: 40 })
@@ -2927,7 +3347,9 @@ describe('chat view virtualized with stubbed deps', () => {
       // Deliberate asymmetry with the rail, whose window ignores an un-prompted scroll:
       // the agent's stick-to-bottom churn during a streaming turn is exactly when
       // highlighting and the premeasure warm-up must stay off the main thread.
-      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
       const { container } = renderChat()
 
       fireEvent.scroll(scroller(container))
@@ -2938,7 +3360,9 @@ describe('chat view virtualized with stubbed deps', () => {
     })
 
     it('pauses on the keys that scroll natively and ignores the keys that do not', () => {
-      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
       const { container } = renderChat()
 
       fireEvent.keyDown(scroller(container), { key: 'a' })
@@ -2965,7 +3389,12 @@ describe('chat view virtualized with stubbed deps', () => {
 
     it('hides the native scrollbar when the rail is loaded AND has a server row to anchor', () => {
       const { container } = render(() => (
-        <ChatView messages={[message('m0', 1)]} rail={railBase} />
+        <ChatView
+          messages={[
+            message('m0', 1),
+          ]}
+          rail={railBase}
+        />
       ))
       expect(scroller(container).className).toContain(messageListRailActive)
     })
@@ -2979,7 +3408,12 @@ describe('chat view virtualized with stubbed deps', () => {
 
     it('keeps the native scrollbar while the rail is unseeded (marks RPC failed / slow)', () => {
       const { container } = render(() => (
-        <ChatView messages={[message('m0', 1)]} rail={{ ...railBase, loaded: false }} />
+        <ChatView
+          messages={[
+            message('m0', 1),
+          ]}
+          rail={{ ...railBase, loaded: false }}
+        />
       ))
       expect(scroller(container).className).not.toContain(messageListRailActive)
     })
@@ -3027,13 +3461,20 @@ describe('chat view virtualized with stubbed deps', () => {
       windowLastSeq: 5n,
     }
     const renderWithRail = () => render(() => (
-      <ChatView messages={[message('m0', 1)]} rail={railBase} />
+      <ChatView
+        messages={[
+          message('m0', 1),
+        ]}
+        rail={railBase}
+      />
     ))
     const scroller = (container: HTMLElement) => container.querySelector('[data-chat-scroll-container]') as HTMLElement
     const rail = (container: HTMLElement) => container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
 
     it('starts idle, lights the rail on a user scroll input, and lets it idle again', () => {
-      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
       const { container } = renderWithRail()
       // Nothing has scrolled yet, so the rail opens in its faded state rather than flashing
       // on at mount and fading a beat later.
@@ -3053,7 +3494,9 @@ describe('chat view virtualized with stubbed deps', () => {
       // The whole point of the split: the agent's stick-to-bottom fires a scroll on every
       // streaming commit, and a rail that lit up for those would stay lit for the entire
       // response. Contrast with the syntax-highlight pause above, which DOES take these.
-      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
       const { container } = renderWithRail()
 
       for (let commit = 0; commit < 10; commit++) {
@@ -3067,7 +3510,9 @@ describe('chat view virtualized with stubbed deps', () => {
       // After a touch flick no touch or pointer event fires while the content glides, so
       // without the coast relight the rail would fade mid-fling -- which is exactly what
       // it did while the bound was shorter than a real glide.
-      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
       const { container } = renderWithRail()
 
       // The flick. touchMOVE is what lights the rail: the press alone moves nothing.
@@ -3102,7 +3547,9 @@ describe('chat view virtualized with stubbed deps', () => {
     // relight would then hold the rail lit commit after commit through a streaming
     // turn. The bound is measured from the last INPUT and never re-based by a scroll.
     it('stops relighting the rail once a coast outruns its bound', () => {
-      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
       const { container } = renderWithRail()
 
       fireEvent.touchStart(scroller(container))
@@ -3120,7 +3567,9 @@ describe('chat view virtualized with stubbed deps', () => {
     // a scrollbar on screen every time the reader touched the list -- to dismiss the
     // keyboard, say -- and that tap is the gesture this pins as inert.
     it('does not light the rail for a press that never moves', () => {
-      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
       const { container } = renderWithRail()
 
       fireEvent.touchStart(scroller(container))
@@ -3143,7 +3592,9 @@ describe('chat view virtualized with stubbed deps', () => {
     })
 
     it('does not light the rail for a mouse hover', () => {
-      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
       const { container } = renderWithRail()
 
       fireEvent.pointerMove(scroller(container), { pointerType: 'mouse', buttons: 0 })
@@ -3158,9 +3609,14 @@ describe('chat view virtualized with stubbed deps', () => {
       // fires into a dead signal on every gesture. The feed is gated on rail presence so a
       // marks-less conversation pays nothing. Assert the gate indirectly: render with no rail,
       // then mount one and confirm the now-fed window lights on the next scroll.
-      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
       const { container } = render(() => (
-        <ChatView messages={[message('m0', 1)]} />
+        <ChatView messages={[
+          message('m0', 1),
+        ]}
+        />
       ))
 
       // No rail mounted, so no rail element to fade or light.
@@ -3187,7 +3643,10 @@ describe('chat view virtualized with stubbed deps', () => {
     it('reports 0 for a row that draws no rail', () => {
       const { container } = render(() => (
         <PreferencesProvider>
-          <ChatView messages={[withSpanLines('m1', [])]} />
+          <ChatView messages={[
+            withSpanLines('m1', []),
+          ]}
+          />
         </PreferencesProvider>
       ))
       const rows = container.querySelectorAll('[data-span-columns]')
@@ -3199,10 +3658,12 @@ describe('chat view virtualized with stubbed deps', () => {
       const { container } = render(() => (
         <PreferencesProvider>
           <ChatView
-            messages={[withSpanLines('m1', [
-              { span_id: 'span-A', color: 1, type: 'active' },
-              { span_id: 'span-B', color: 2, type: 'connector_end' },
-            ])]}
+            messages={[
+              withSpanLines('m1', [
+                { span_id: 'span-A', color: 1, type: 'active' },
+                { span_id: 'span-B', color: 2, type: 'connector_end' },
+              ]),
+            ]}
 
           />
         </PreferencesProvider>

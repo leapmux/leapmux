@@ -24,7 +24,15 @@ export function agentWatchRequest(agentId: string): Uint8Array {
   if (!agentId.trim())
     throw new Error('An agent event watch requires an agent ID.')
   return toBinary(WatchEventsRequestSchema, create(WatchEventsRequestSchema, {
-    agents: [{ agentId, mode: WatchMode.FULL, replay: WatchReplayMode.LATEST, cursorSeq: 0n, replayId: AGENT_WATCH_UPDATE_ID }],
+    agents: [
+      {
+        agentId,
+        mode: WatchMode.FULL,
+        replay: WatchReplayMode.LATEST,
+        cursorSeq: 0n,
+        replayId: AGENT_WATCH_UPDATE_ID,
+      },
+    ],
     updateId: AGENT_WATCH_UPDATE_ID,
   }))
 }
@@ -126,7 +134,9 @@ export class AgentEventCollector<T> {
 
   /** Keep the first failure. A later error must not replace its cause. */
   fail(error: unknown): void {
-    this.failure ??= error instanceof Error ? error : new Error(String(error))
+    this.failure ??= error instanceof Error
+      ? error
+      : new Error(String(error))
   }
 
   assertHealthy(): void {

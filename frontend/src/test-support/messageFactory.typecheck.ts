@@ -15,6 +15,16 @@ const captured: TranscriptFrame = {
 // @ts-expect-error A transcript frame must state one payload source.
 const missing: TranscriptFrame = { id: 'missing', provider: AgentProvider.CODEX }
 // @ts-expect-error A transcript frame cannot state both payload sources.
-const duplicate: TranscriptFrame = { id: 'duplicate', provider: AgentProvider.CODEX, content: {}, rawContent: new Uint8Array() }
+const duplicate: TranscriptFrame = {
+  id: 'duplicate',
+  provider: AgentProvider.CODEX,
+  content: {},
+  rawContent: new Uint8Array(),
+}
 
-void [structured, captured, missing, duplicate]
+void [
+  structured,
+  captured,
+  missing,
+  duplicate,
+]

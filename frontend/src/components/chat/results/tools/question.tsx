@@ -15,7 +15,9 @@ import { proseMeta } from './proseResult'
 function resultMarkdown(result: QuestionResult): string {
   return [
     ...result.answers.map(answer => `**${answer.header}** — ${answer.answer ?? '_no answer_'}`),
-    ...(result.note ? [result.note] : []),
+    ...(result.note
+      ? [result.note]
+      : []),
   ].join('\n\n')
 }
 
@@ -42,13 +44,43 @@ export const questionRenderer: ToolKindRenderer<'question'> = {
   },
   request(call, view) {
     const markdown = questionBodyMarkdown(call.request.questions)
-    return <Show when={markdown}>{text => <CollapsibleContent kind="markdown-tool-result" text={text()} isCollapsed={false} {...(view.context !== undefined ? { context: view.context } : {})} />}</Show>
+    return (
+      <Show when={markdown}>
+        {text => (
+          <CollapsibleContent
+            kind="markdown-tool-result"
+            text={text()}
+            isCollapsed={false}
+            {...(view.context !== undefined
+              ? { context: view.context }
+              : {})}
+          />
+        )}
+      </Show>
+    )
   },
   result(call, view) {
     const text = resultMarkdown(call.result)
-    return <Show when={text}>{answers => <CollapsibleContent outputPreview kind="markdown-tool-result" text={answers()} isCollapsed={false} {...(view.context !== undefined ? { context: view.context } : {})} />}</Show>
+    return (
+      <Show when={text}>
+        {answers => (
+          <CollapsibleContent
+            outputPreview
+            kind="markdown-tool-result"
+            text={answers()}
+            isCollapsed={false}
+            {...(view.context !== undefined
+              ? { context: view.context }
+              : {})}
+          />
+        )}
+      </Show>
+    )
   },
   resultMeta(call) {
-    return proseMeta({ text: resultMarkdown(call.result), format: 'markdown' })
+    return proseMeta({
+      text: resultMarkdown(call.result),
+      format: 'markdown',
+    })
   },
 }

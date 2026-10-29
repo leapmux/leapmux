@@ -176,7 +176,10 @@ test.describe('the authorization server pages', () => {
     // The control CLI, whose registered address is a loopback one.
     const res = await page.request.get(
       authorizeURL(leapmuxServer.hubUrl, { state: 'state-csp' }),
-      { headers: { Cookie: cookie }, maxRedirects: 0 },
+      {
+        headers: { Cookie: cookie },
+        maxRedirects: 0,
+      },
     )
     expect(res.status()).toBe(200)
     const csp = res.headers()['content-security-policy'] ?? ''

@@ -40,13 +40,21 @@ function compactionMessage(content: unknown) {
 
 describe('wireRateLimitUpdateFromSessionInfo calendar resets', () => {
   it('decodes optional labels and valid dates while retaining zero usage', () => {
-    expect(wireRateLimitUpdateFromSessionInfo({ rate_limits: { mode: 'replace', values: {
-      credit: { label: 'Plan — Credits', resets_on: '2024-02-29', utilization: 0 },
-      malformed: { label: 42, resets_on: '2026-02-29' },
-    } } })).toEqual({ mode: 'replace', values: {
-      credit: { label: 'Plan — Credits', resetsOn: '2024-02-29', utilization: 0 },
-      malformed: {},
-    } })
+    expect(wireRateLimitUpdateFromSessionInfo({
+      rate_limits: {
+        mode: 'replace',
+        values: {
+          credit: { label: 'Plan — Credits', resets_on: '2024-02-29', utilization: 0 },
+          malformed: { label: 42, resets_on: '2026-02-29' },
+        },
+      },
+    })).toEqual({
+      mode: 'replace',
+      values: {
+        credit: { label: 'Plan — Credits', resetsOn: '2024-02-29', utilization: 0 },
+        malformed: {},
+      },
+    })
   })
 })
 
@@ -54,7 +62,10 @@ describe('handleAgentSessionInfo compaction', () => {
   it('sets and clears the live compaction', () => {
     createRoot((dispose) => {
       const stores = compactionStores()
-      const receive = (compaction: unknown) => handleAgentSessionInfo('a', parseMessageContent(compactionMessage({ type: 'agent_session_info', info: { compaction } })), stores)
+      const receive = (compaction: unknown) => handleAgentSessionInfo('a', parseMessageContent(compactionMessage({
+        type: 'agent_session_info',
+        info: { compaction },
+      })), stores)
       expect(receive({ trigger: 'auto', extra: 'ignored' })).toBe(true)
       expect(stores.chatStore.getLiveCompaction('a')).toEqual({ trigger: 'auto' })
       receive({})
@@ -80,7 +91,12 @@ describe('handleAgentSessionInfo compaction', () => {
     })
   })
 
-  it.each(['inactive', 'offline', 'removed', 'context-cleared'] as const)('clears the compaction when the agent is %s', (reason) => {
+  it.each([
+    'inactive',
+    'offline',
+    'removed',
+    'context-cleared',
+  ] as const)('clears the compaction when the agent is %s', (reason) => {
     createRoot((dispose) => {
       const stores = compactionStores()
       stores.chatStore.setLiveCompaction('a', {})
@@ -105,7 +121,10 @@ describe('handleAgentSessionInfo compaction', () => {
   it('ignores transcript-only live state', () => {
     createRoot((dispose) => {
       const stores = compactionStores()
-      const parsed = parseMessageContent(compactionMessage({ type: 'agent_session_info', info: { compaction: {} } }))
+      const parsed = parseMessageContent(compactionMessage({
+        type: 'agent_session_info',
+        info: { compaction: {} },
+      }))
       handleAgentSessionInfo('a', parsed, stores, { phase: 'live' }, true)
       expect(stores.chatStore.getLiveCompaction('a')).toBeUndefined()
       dispose()

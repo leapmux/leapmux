@@ -57,7 +57,9 @@ export function compactionContextUsage(
     cacheCreationInputTokens: 0,
     cacheReadInputTokens: 0,
     contextTokens,
-    ...(existing?.contextWindow !== undefined ? { contextWindow: existing.contextWindow } : {}),
+    ...(existing?.contextWindow !== undefined
+      ? { contextWindow: existing.contextWindow }
+      : {}),
   }
 }
 
@@ -127,7 +129,10 @@ export function createAgentSessionStore() {
   const ensureLoaded = (agentId: string) => {
     if (reads.has(agentId))
       return
-    const record: StorageRead = { pending: null, touched: new Set() }
+    const record: StorageRead = {
+      pending: null,
+      touched: new Set(),
+    }
     reads.set(agentId, record)
     pendingOperations++
     record.pending = loadFromStorage(agentId).then((stored) => {
@@ -139,7 +144,10 @@ export function createAgentSessionStore() {
         // A clear also owns its field when the field was absent from memory.
         for (const field of record.touched)
           delete remaining[field]
-        setState('infoByAgent', agentId, (previous = {}) => ({ ...remaining, ...previous }))
+        setState('infoByAgent', agentId, (previous = {}) => ({
+          ...remaining,
+          ...previous,
+        }))
       }
       return storedFields
     }).catch(() => {
@@ -183,7 +191,9 @@ export function createAgentSessionStore() {
 
   const acceptsReplay = (agentId: string, replayId: bigint): boolean => {
     const receipt = replays.get(agentId)
-    return receipt ? receipt.active && receipt.replayId === replayId : replayId === 0n
+    return receipt
+      ? receipt.active && receipt.replayId === replayId
+      : replayId === 0n
   }
 
   const claimFieldWrite = (agentId: string, field: ReceiptField, delivery?: SessionMetadataDelivery): boolean => {
@@ -199,15 +209,25 @@ export function createAgentSessionStore() {
     let receipt = replays.get(agentId)
     if (!receipt) {
       // Generation zero supports direct handlers without a watch request.
-      receipt = { replayId: 0n, active: true, liveFields: new Map() }
+      receipt = {
+        replayId: 0n,
+        active: true,
+        liveFields: new Map(),
+      }
       replays.set(agentId, receipt)
     }
     if (receipt.active) {
-      const seq = delivery?.seq !== undefined && delivery.seq > 0n ? delivery.seq : null
+      const seq = delivery?.seq !== undefined && delivery.seq > 0n
+        ? delivery.seq
+        : null
       const previous = receipt.liveFields.get(field)
       // An ephemeral update cannot become comparable through a later row.
-      const latest = previous !== undefined && previous !== null && seq !== null && previous > seq ? previous : seq
-      receipt.liveFields.set(field, previous === null ? null : latest)
+      const latest = previous !== undefined && previous !== null && seq !== null && previous > seq
+        ? previous
+        : seq
+      receipt.liveFields.set(field, previous === null
+        ? null
+        : latest)
     }
     return true
   }
@@ -227,7 +247,11 @@ export function createAgentSessionStore() {
       const current = replays.get(agentId)
       if (current && replayId <= current.replayId)
         return
-      replays.set(agentId, { replayId, active: true, liveFields: new Map() })
+      replays.set(agentId, {
+        replayId,
+        active: true,
+        liveFields: new Map(),
+      })
     },
 
     retireReplay(agentId: string, replayId: bigint) {
@@ -286,7 +310,9 @@ export function createAgentSessionStore() {
           if (field === 'rateLimits' && typeof value === 'object') {
             const incoming = value as Record<string, RateLimitInfo>
             const rateLimitOptions = options.rateLimits ?? { mode: 'merge' as const }
-            const next = rateLimitOptions.mode === 'replace' ? {} : { ...merged.rateLimits }
+            const next = rateLimitOptions.mode === 'replace'
+              ? {}
+              : { ...merged.rateLimits }
             for (const [key, info] of Object.entries(incoming))
               next[key] = info
             for (const key of rateLimitOptions.deleteKeys ?? [])

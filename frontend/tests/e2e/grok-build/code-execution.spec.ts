@@ -19,9 +19,16 @@ import { grokWorkflowCompletion, grokWorkflowLaunch, grokWorkflowManifestPath, g
 import { GROK_AGENT, nativeContext } from './scenarios'
 
 grokTest('runs native Rhai scripts and retains computed output and errors after reload', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }, testInfo) => {
-  const opened = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { optionValues: { approvalMode: 'always-approve' } })
+  const opened = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, {
+    optionValues: { approvalMode: 'always-approve' },
+  })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   const agent = await currentNativeAgent(context)
   expect(agent.id).toBe(opened.agentId)
   const home = leapmuxServer.agentEnv.GROK_HOME
@@ -33,12 +40,16 @@ grokTest('runs native Rhai scripts and retains computed output and errors after 
     const label = failed ? 'error' : 'output'
     const name = grokWorkflowName(label, marker)
     const expected = `${marker}${failed ? 77 : 42}`
-    const source = `let meta = #{ name: ${JSON.stringify(name)}, description: "Compute one native value." };\n${failed ? `throw ${JSON.stringify(marker)} + (70 + 7).to_string();` : `${JSON.stringify(marker)} + (40 + 2).to_string()`}`
+    const source = `let meta = #{ name: ${JSON.stringify(name)}, description: "Compute one native value." };\n${failed
+      ? `throw ${JSON.stringify(marker)} + (70 + 7).to_string();`
+      : `${JSON.stringify(marker)} + (40 + 2).to_string()`}`
     expect(source).not.toContain(expected)
     const callId = `native-code-${label}`
     const answer = `The native ${label} launch returned.`
     const { toolRequest: catalog, resultRequest: result } = await runNativeToolTurn(context, {
-      toolCalls: [grokWorkflowToolCall(callId, source)],
+      toolCalls: [
+        grokWorkflowToolCall(callId, source),
+      ],
       prompt: `Run the native ${label} script.`,
       answer,
     })
@@ -48,7 +59,13 @@ grokTest('runs native Rhai scripts and retains computed output and errors after 
     const launchFrames = launchSnapshot.messages.filter(message => message.source === MessageSource.AGENT
       && message.agentSessionId === agent.agentSessionId && message.spanId === callId).map(nativeMessageBody)
     await testInfo.attach(`grok-${label}-native-launch`, {
-      body: JSON.stringify({ agentId: agent.id, sessionId: agent.agentSessionId, callId, result: nativeToolResult(result, callId), frames: launchFrames }),
+      body: JSON.stringify({
+        agentId: agent.id,
+        sessionId: agent.agentSessionId,
+        callId,
+        result: nativeToolResult(result, callId),
+        frames: launchFrames,
+      }),
       contentType: 'application/json',
     })
     const launch = grokWorkflowLaunch(launchFrames, callId)
@@ -69,7 +86,10 @@ grokTest('runs native Rhai scripts and retains computed output and errors after 
     if (!completion)
       throw new Error('The native Grok script did not store its final result.')
     expect(completion.text).toContain(expected)
-    await testInfo.attach(`grok-${label}-native-manifest`, { body: readFileSync(path), contentType: 'application/json' })
+    await testInfo.attach(`grok-${label}-native-manifest`, {
+      body: readFileSync(path),
+      contentType: 'application/json',
+    })
     const prove = async () => {
       const messages = await readNativeMessageSnapshot(context, agent.id)
       expect(messages.agentSessionId).toBe(agent.agentSessionId)

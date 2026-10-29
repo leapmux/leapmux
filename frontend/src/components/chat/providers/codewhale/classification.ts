@@ -19,8 +19,11 @@ export function classifyCodewhaleMessage(input: ClassificationInput): MessageCat
   // side, and a runtime event states `event` where the shared wrapper test reads
   // `type`. Every member is a notification by construction, so the entries decide, and
   // a thread of entries that draw nothing collapses to hidden.
-  if (wrapper)
-    return wrapper.messages.length === 0 ? { kind: 'hidden' } : notification(wrapper.messages, 'hidden')
+  if (wrapper) {
+    return wrapper.messages.length === 0
+      ? { kind: 'hidden' }
+      : notification(wrapper.messages, 'hidden')
+  }
   if (!parent)
     return { kind: 'unknown' }
 
@@ -51,7 +54,9 @@ export function classifyCodewhaleMessage(input: ClassificationInput): MessageCat
 function codewhaleToolCategory(frame: CodewhaleToolFrame, input: ClassificationInput): MessageCategory {
   if (codewhaleFrameDrawsNothing(frame))
     return { kind: 'hidden' }
-  return codewhaleToolSpanRole(frame, input) === 'result' ? { kind: 'tool_result' } : { kind: 'tool_use' }
+  return codewhaleToolSpanRole(frame, input) === 'result'
+    ? { kind: 'tool_result' }
+    : { kind: 'tool_use' }
 }
 
 /** The category of one message row: a reply, a reasoning step, or a row with no text. */
@@ -61,7 +66,9 @@ function messageCategory(parent: Record<string, unknown>): MessageCategory | nul
     return null
   if (!message.text.trim())
     return { kind: 'hidden' }
-  return message.kind === 'thinking' ? { kind: 'assistant_thinking' } : { kind: 'assistant_text' }
+  return message.kind === 'thinking'
+    ? { kind: 'assistant_thinking' }
+    : { kind: 'assistant_text' }
 }
 
 /** The category of one runtime event. */

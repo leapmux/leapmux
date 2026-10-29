@@ -128,8 +128,19 @@ describe('markdownWorkerClient', () => {
     expect(settled).toBe(false)
 
     const { id } = captured(captured(workers, 1).messages, 0)
-    captured(workers, 1).onmessage?.({ data: { id, html: '<p>second</p>', retryable: false, styles: { 'sk-x-1': '--shiki-light:#abc' } } } as MessageEvent)
-    await expect(second).resolves.toEqual({ html: '<p>second</p>', retryable: false, styles: { 'sk-x-1': '--shiki-light:#abc' } })
+    captured(workers, 1).onmessage?.({
+      data: {
+        id,
+        html: '<p>second</p>',
+        retryable: false,
+        styles: { 'sk-x-1': '--shiki-light:#abc' },
+      },
+    } as MessageEvent)
+    await expect(second).resolves.toEqual({
+      html: '<p>second</p>',
+      retryable: false,
+      styles: { 'sk-x-1': '--shiki-light:#abc' },
+    })
   })
 
   it('posts the pair it was given, not the one live when the gate releases the job', async () => {
@@ -180,7 +191,14 @@ describe('markdownWorkerClient', () => {
 
     // Release a slot so 'c' is posted.
     const first = captured(captured(workers, 0).messages, 0)
-    captured(workers, 0).onmessage?.({ data: { id: first.id, html: '<p>a</p>', retryable: false, styles: {} } } as MessageEvent)
+    captured(workers, 0).onmessage?.({
+      data: {
+        id: first.id,
+        html: '<p>a</p>',
+        retryable: false,
+        styles: {},
+      },
+    } as MessageEvent)
     await held[0]
 
     const posted = captured(workers, 0).messages.find(m => m.text === 'c')
@@ -214,7 +232,9 @@ describe('markdownWorkerClient', () => {
 
     const pending = renderMarkdownInWorker('text', PAIR)
     const { id } = captured(captured(workers, 0).messages, 0)
-    captured(workers, 0).onmessage?.({ data: { id, html: '<p>text</p>', retryable: false } } as MessageEvent)
+    captured(workers, 0).onmessage?.({
+      data: { id, html: '<p>text</p>', retryable: false },
+    } as MessageEvent)
     await expect(pending).resolves.toEqual({ html: '<p>text</p>', retryable: false, styles: {} })
   })
 })

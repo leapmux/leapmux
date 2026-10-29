@@ -258,10 +258,16 @@ describe('cross-workspace accessors', () => {
           store.splitTile('root-leaf', 'horizontal')
           const otherBefore = store.tileOrderFor('ws-other')
           const activeBefore = store.state.root
-          const orderBefore = [...store.tileOrderFor('ws-test')]
+          const orderBefore = [
+            ...store.tileOrderFor('ws-test'),
+          ]
 
           // What a divider drag emits, once per frame.
-          for (const r of [[0.4, 0.6], [0.35, 0.65], [0.3, 0.7]])
+          for (const r of [
+            [0.4, 0.6],
+            [0.35, 0.65],
+            [0.3, 0.7],
+          ])
             store.updateRatios('root-leaf', r)
 
           expect(store.tileOrderFor('ws-other'), 'the other workspace never moved').toBe(otherBefore)

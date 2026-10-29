@@ -70,7 +70,9 @@ function setup(closeDelayMs = 0, mutatable = true) {
   const workspace = { mutatable }
   // The live tab set, as the shell's `findTabInWorkingDir` sees it. A box so a
   // test can close the last tab of a directory.
-  const tabs = { live: [AGENT, SIBLING, TERMINAL_TAB, FILE_TAB] as Tab[] }
+  const tabs = {
+    live: [AGENT, SIBLING, TERMINAL_TAB, FILE_TAB] as Tab[],
+  }
   let dispose!: () => void
   const store = createRoot((d) => {
     dispose = d
@@ -82,7 +84,14 @@ function setup(closeDelayMs = 0, mutatable = true) {
       isWorkspaceMutatable: () => workspace.mutatable,
     })
   })
-  return { store, metadata, focusComposer, workspace, tabs, dispose }
+  return {
+    store,
+    metadata,
+    focusComposer,
+    workspace,
+    tabs,
+    dispose,
+  }
 }
 
 beforeEach(() => {
@@ -128,7 +137,10 @@ describe('createQuakeTerminalStore', () => {
     const { store, dispose } = setup()
     await store.open(AGENT)
 
-    expect(listTerminals).toHaveBeenCalledWith('w1', { tabIds: [], quakeWorkingDirs: ['/repo'] })
+    expect(listTerminals).toHaveBeenCalledWith('w1', {
+      tabIds: [],
+      quakeWorkingDirs: ['/repo'],
+    })
     expect(openTerminal).toHaveBeenCalledOnce()
     expect(openTerminal.mock.calls[0]?.[1]).toMatchObject({ quake: true, shell: '', workingDir: '/repo' })
     expect(store.entryFor(KEY)?.terminalId).toBe('quake-1')
@@ -199,7 +211,15 @@ describe('createQuakeTerminalStore', () => {
   // refuse anyway.
   it('adopts the quake terminal the worker already has, and opens nothing', async () => {
     listTerminals.mockResolvedValue({
-      terminals: [{ terminalId: 'shared-1', quake: true, cols: 80, rows: 25, screen: new Uint8Array() }],
+      terminals: [
+        {
+          terminalId: 'shared-1',
+          quake: true,
+          cols: 80,
+          rows: 25,
+          screen: new Uint8Array(),
+        },
+      ],
       verdicts: [],
     })
     const { store, metadata, dispose } = setup()
@@ -314,7 +334,9 @@ describe('createQuakeTerminalStore', () => {
 
     await store.open(AGENT)
 
-    expect(store.detachedTerminals()).toEqual([{ id: 'quake-1', workerId: 'w1', workspaceId: 'ws1' }])
+    expect(store.detachedTerminals()).toEqual([
+      { id: 'quake-1', workerId: 'w1', workspaceId: 'ws1' },
+    ])
     expect(store.isQuakeTerminal('quake-1')).toBe(true)
     expect(store.entryForTerminal('quake-1')?.keyId).toBe(KEY)
     dispose()

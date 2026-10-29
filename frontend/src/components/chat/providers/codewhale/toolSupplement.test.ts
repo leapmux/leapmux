@@ -2,7 +2,16 @@ import { describe, expect, it } from 'vitest'
 import { codewhaleToolOutputFiles } from './toolSupplement'
 
 describe('codewhaleToolOutputFiles', () => {
-  it.each([undefined, null, '', 0, [], {}, { outputFiles: [] }, { outputFiles: 'not a map' }])('refuses an absent or malformed artifact map: %j', (supplement) => {
+  it.each([
+    undefined,
+    null,
+    '',
+    0,
+    [],
+    {},
+    { outputFiles: [] },
+    { outputFiles: 'not a map' },
+  ])('refuses an absent or malformed artifact map: %j', (supplement) => {
     expect(codewhaleToolOutputFiles(supplement)).toBeUndefined()
   })
 

@@ -442,7 +442,8 @@ globalStyle(
 // EVERY code element wears the same step, and this is the one rule that paints
 // them: inline `code` in a paragraph, a bare `<pre>` outside a code surface, and
 // the three tags that mean the same thing in HTML and could arrive from a future
-// renderer. It also overrides Oat's own `code, pre` fill (`var(--faint)`).
+// renderer. It also overrides Oat's own fills: `var(--muted)` for `code` and
+// `var(--faint)` for `pre`.
 //
 // The strength is the constant a code BLOCK's field is built from, so inline
 // code and a fenced block are the same idea at the same weight, and neither can

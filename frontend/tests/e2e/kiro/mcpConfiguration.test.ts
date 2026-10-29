@@ -22,8 +22,14 @@ describe('writeKiroProjectMcpServers', () => {
     expect(path).toBe(join(workingDir, '.kiro', 'settings', 'mcp.json'))
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({
       mcpServers: {
-        echo_probe: { command: process.execPath, args: ['/run/echo.mjs'] },
-        probe: { command: process.execPath, args: ['/run/form.mjs'] },
+        echo_probe: {
+          command: process.execPath,
+          args: ['/run/echo.mjs'],
+        },
+        probe: {
+          command: process.execPath,
+          args: ['/run/form.mjs'],
+        },
       },
     })
   })

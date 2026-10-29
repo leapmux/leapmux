@@ -20,7 +20,9 @@ interface ParsedMcpStartup {
 }
 
 function startupStateAndError(status: unknown, fallbackError: unknown): { state: string, error: string } {
-  const fallback = typeof fallbackError === 'string' ? fallbackError : ''
+  const fallback = typeof fallbackError === 'string'
+    ? fallbackError
+    : ''
   if (typeof status === 'string')
     return { state: status, error: fallback }
   if (isObject(status)) {
@@ -39,8 +41,12 @@ function parseMcpStartup(parsed: Record<string, unknown>): ParsedMcpStartup | nu
   const name = pickString(params, 'name').trim()
   const { state, error } = startupStateAndError(params?.status, params?.error)
   const rawState = state.trim()
-  const errorSuffix = error.trim() ? ` (${error.trim()})` : ''
-  const kind: StartupKind = rawState === 'failed' ? 'failed' : 'unknown'
+  const errorSuffix = error.trim()
+    ? ` (${error.trim()})`
+    : ''
+  const kind: StartupKind = rawState === 'failed'
+    ? 'failed'
+    : 'unknown'
   return { kind, rawState, name, errorSuffix }
 }
 
@@ -55,8 +61,15 @@ function startupGroupEntry(parsed: Record<string, unknown>): NotificationEntry |
   // A startup without a server name supplies only the status prefix and error.
   if (!p.name)
     return { kind: 'text', text: `${prefix}${p.errorSuffix}` }
-  const groupKey = p.kind === 'unknown' ? `status:${stateLabel}` : p.kind
-  return { kind: 'group', groupKey, prefix, entry: `${p.name}${p.errorSuffix}` }
+  const groupKey = p.kind === 'unknown'
+    ? `status:${stateLabel}`
+    : p.kind
+  return {
+    kind: 'group',
+    groupKey,
+    prefix,
+    entry: `${p.name}${p.errorSuffix}`,
+  }
 }
 
 function mcpOauthFailureEntry(parsed: Record<string, unknown>): NotificationEntry | null {
@@ -65,9 +78,15 @@ function mcpOauthFailureEntry(parsed: Record<string, unknown>): NotificationEntr
   const params = pickObject(parsed, 'params')
   const name = pickString(params, 'name').trim()
   const error = pickString(params, 'error').trim()
-  const outcome = params?.success === false ? 'failed' : 'status unknown'
-  const subject = name ? ` for ${name}` : ''
-  const detail = error ? `: ${error}` : ''
+  const outcome = params?.success === false
+    ? 'failed'
+    : 'status unknown'
+  const subject = name
+    ? ` for ${name}`
+    : ''
+  const detail = error
+    ? `: ${error}`
+    : ''
   return { kind: 'status', text: `MCP OAuth login ${outcome}${subject}${detail}` }
 }
 
@@ -76,17 +95,32 @@ function hookFailureEntry(parsed: Record<string, unknown>): NotificationEntry | 
     return null
   const run = pickObject(pickObject(parsed, 'params'), 'run')
   const status = pickString(run, 'status') || 'status unknown'
-  const entries = Array.isArray(run?.entries) ? run.entries : []
+  const entries = Array.isArray(run?.entries)
+    ? run.entries
+    : []
   const entryText = entries
-    .map(entry => pickString(isObject(entry) ? entry : undefined, 'text').trim())
+    .map(entry => pickString(isObject(entry)
+      ? entry
+      : undefined, 'text').trim())
     .filter(Boolean)
     .join('; ')
   const detail = entryText || pickString(run, 'statusMessage').trim()
   if (status === 'failed' || status === 'blocked' || status === 'timed-out' || status === 'continued') {
     const event = pickString(run, 'eventName').trim()
-    return { kind: 'hook', outcome: status, ...(event ? { event } : {}), ...(detail ? { detail } : {}) }
+    return {
+      kind: 'hook',
+      outcome: status,
+      ...(event
+        ? { event }
+        : {}),
+      ...(detail
+        ? { detail }
+        : {}),
+    }
   }
-  return { kind: 'status', text: `Hook ${status}${detail ? `: ${detail}` : ''}` }
+  return { kind: 'status', text: `Hook ${status}${detail
+    ? `: ${detail}`
+    : ''}` }
 }
 
 /** Only the native completed item states a stored compaction end. */
@@ -121,7 +155,15 @@ export function codexNotificationEntry(msg: Record<string, unknown>): Notificati
 
   if (codexCompactionEnd(msg)) {
     const detail = compactionMetaFromBoundary(msg)
-    return [{ kind: 'compaction', phase: 'end', ...(detail !== null ? { detail } : {}) }]
+    return [
+      {
+        kind: 'compaction',
+        phase: 'end',
+        ...(detail !== null
+          ? { detail }
+          : {}),
+      },
+    ]
   }
 
   // An `error` frame states whether Codex intends to try again, which is the
@@ -132,15 +174,23 @@ export function codexNotificationEntry(msg: Record<string, unknown>): Notificati
     const message = pickString(detail, 'message')
     const info = pickString(detail, 'codexErrorInfo')
     const errorText = [message, info].filter(Boolean).join(' — ') || undefined
-    return [retryEntry('api', {
-      willRetry: error.willRetry === true,
-      ...(errorText !== undefined ? { error: errorText } : {}),
-    })]
+    return [
+      retryEntry('api', {
+        willRetry: error.willRetry === true,
+        ...(errorText !== undefined
+          ? { error: errorText }
+          : {}),
+      }),
+    ]
   }
   if (msg.method === CODEX_METHOD.Warning) {
     const params = pickObject(msg, 'params') ?? msg
     const text = pickString(params, 'message') || pickString(pickObject(params, 'warning'), 'message')
-    return text ? [{ kind: 'status', text: `Warning: ${text}` }] : []
+    return text
+      ? [
+          { kind: 'status', text: `Warning: ${text}` },
+        ]
+      : []
   }
   if (msg.method === CODEX_METHOD.ConfigWarning) {
     const params = pickObject(msg, 'params') ?? msg
@@ -149,8 +199,14 @@ export function codexNotificationEntry(msg: Record<string, unknown>): Notificati
     const path = pickString(params, 'path').trim()
     if (!summary)
       return []
-    const text = `Warning: ${summary}${details ? `: ${details}` : ''}${path ? ` (${path})` : ''}`
-    return [{ kind: 'status', text }]
+    const text = `Warning: ${summary}${details
+      ? `: ${details}`
+      : ''}${path
+      ? ` (${path})`
+      : ''}`
+    return [
+      { kind: 'status', text },
+    ]
   }
   if (msg.method === CODEX_METHOD.DeprecationNotice) {
     const params = pickObject(msg, 'params') ?? msg
@@ -158,41 +214,64 @@ export function codexNotificationEntry(msg: Record<string, unknown>): Notificati
     const details = pickString(params, 'details').trim()
     if (!summary)
       return []
-    return [{ kind: 'status', text: `Deprecated: ${summary}${details ? ` — ${details}` : ''}` }]
+    return [
+      { kind: 'status', text: `Deprecated: ${summary}${details
+        ? ` — ${details}`
+        : ''}` },
+    ]
   }
   if (msg.method === CODEX_METHOD.ModelSafetyBufferingUpdated) {
-    return [{ kind: 'text', text: 'Giving this request a little extra thought' }]
+    return [
+      { kind: 'text', text: 'Giving this request a little extra thought' },
+    ]
   }
   if (msg.method === CODEX_METHOD.ModelVerification) {
     // The Codex TUI states this notice only for the trustedAccessForCyber flag.
     // The row draws plain text, so the URL carries no markdown brackets.
     const params = pickObject(msg, 'params') ?? msg
-    const verifications = Array.isArray(params.verifications) ? params.verifications : []
+    const verifications = Array.isArray(params.verifications)
+      ? params.verifications
+      : []
     if (!verifications.includes(CODEX_TRUSTED_ACCESS_FOR_CYBER))
       return []
-    return [{
-      kind: 'text',
-      text: 'Your conversations have multiple flags for possible cybersecurity risk. Responses may take longer because extra safety checks are on. To get authorized for security work, join the Trusted Access for Cyber program: https://chatgpt.com/cyber',
-    }]
+    return [
+      {
+        kind: 'text',
+        text: 'Your conversations have multiple flags for possible cybersecurity risk. Responses may take longer because extra safety checks are on. To get authorized for security work, join the Trusted Access for Cyber program: https://chatgpt.com/cyber',
+      },
+    ]
   }
   if (msg.method === CODEX_METHOD.AuthRecoveryStarted || msg.method === CODEX_METHOD.AuthRecoveryCompleted) {
     const params = pickObject(msg, 'params') ?? msg
     const text = pickString(params, 'message').trim()
-    return text ? [{ kind: 'text', text }] : []
+    return text
+      ? [
+          { kind: 'text', text },
+        ]
+      : []
   }
 
   if (msg.method === CODEX_METHOD.AutoApprovalReviewCompleted) {
     const review = codexAutoReviewEntry(pickObject(msg, 'params'))
-    return review ? [review] : []
+    return review
+      ? [review]
+      : []
   }
   // The worker keeps only the warning that states why auto-review stopped a turn,
   // so its own words carry the reason.
   if (msg.method === CODEX_METHOD.GuardianWarning) {
     const text = pickString(pickObject(msg, 'params'), 'message').trim()
-    return text ? [{ kind: 'status', text }] : []
+    return text
+      ? [
+          { kind: 'status', text },
+        ]
+      : []
   }
-  if (msg.method === CODEX_METHOD.StrictReviewRequired)
-    return [{ kind: 'status', text: STRICT_REVIEW_NOTICE }]
+  if (msg.method === CODEX_METHOD.StrictReviewRequired) {
+    return [
+      { kind: 'status', text: STRICT_REVIEW_NOTICE },
+    ]
+  }
 
   return []
 }
@@ -236,8 +315,12 @@ function codexAutoReviewEntry(params: Record<string, unknown> | null | undefined
     kind: 'auto-review',
     reviewId,
     outcome,
-    ...(risk !== undefined ? { risk } : {}),
-    ...(rationale ? { rationale } : {}),
+    ...(risk !== undefined
+      ? { risk }
+      : {}),
+    ...(rationale
+      ? { rationale }
+      : {}),
     action: codexAutoReviewAction(pickObject(params, 'action')),
     approvable: outcome === 'denied',
   }
@@ -249,23 +332,38 @@ export function codexAutoReviewAction(action: Record<string, unknown> | null | u
     case CODEX_AUTO_REVIEW_ACTION.Command:
       return pickString(action, 'command')
     case CODEX_AUTO_REVIEW_ACTION.Execve: {
-      const argv = Array.isArray(action?.argv) ? action.argv.filter((part): part is string => typeof part === 'string') : []
-      return argv.length > 0 ? argv.map(quoteShellWord).join(' ') : pickString(action, 'program')
+      const argv = Array.isArray(action?.argv)
+        ? action.argv.filter((part): part is string => typeof part === 'string')
+        : []
+      return argv.length > 0
+        ? argv.map(quoteShellWord).join(' ')
+        : pickString(action, 'program')
     }
     case CODEX_AUTO_REVIEW_ACTION.WriteStdin:
       return `Write to process ${pickString(action, 'processId')}`
     case CODEX_AUTO_REVIEW_ACTION.ApplyPatch: {
-      const files = Array.isArray(action?.files) ? action.files.filter((file): file is string => typeof file === 'string') : []
-      return files.length > 0 ? `Edit ${files.join(', ')}` : 'Edit files'
+      const files = Array.isArray(action?.files)
+        ? action.files.filter((file): file is string => typeof file === 'string')
+        : []
+      return files.length > 0
+        ? `Edit ${files.join(', ')}`
+        : 'Edit files'
     }
     case CODEX_AUTO_REVIEW_ACTION.NetworkAccess: {
       const host = pickString(action, 'host')
-      const port = typeof action?.port === 'number' ? action.port : undefined
-      return `Connect to ${port !== undefined ? `${host}:${port}` : host}`
+      const port = typeof action?.port === 'number'
+        ? action.port
+        : undefined
+      return `Connect to ${port !== undefined
+        ? `${host}:${port}`
+        : host}`
     }
     case CODEX_AUTO_REVIEW_ACTION.McpToolCall: {
       const tool = pickString(action, 'toolTitle') || pickString(action, 'toolName')
-      return [pickString(action, 'server'), tool].filter(Boolean).join(' · ')
+      return [
+        pickString(action, 'server'),
+        tool,
+      ].filter(Boolean).join(' · ')
     }
     case CODEX_AUTO_REVIEW_ACTION.RequestPermissions:
       return pickString(action, 'reason').trim() || 'Request permissions'
@@ -276,7 +374,9 @@ export function codexAutoReviewAction(action: Record<string, unknown> | null | u
 
 /** Quote one shell word only when it needs quoting, so a plain argv reads plainly. */
 function quoteShellWord(word: string): string {
-  return /^[\w./:=@%+,-]+$/.test(word) ? word : `'${word.replaceAll('\'', `'\\''`)}'`
+  return /^[\w./:=@%+,-]+$/.test(word)
+    ? word
+    : `'${word.replaceAll('\'', `'\\''`)}'`
 }
 
 /** Identify an old stored start without restoring its notification reader. */

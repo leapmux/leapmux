@@ -11,7 +11,9 @@ kimiTest('loads private native configuration and calls only the suite mock', asy
   // credential of the turn request proves that Kimi read the key from the
   // variable.
   await exerciseCredentialIsolation(native, {
-    configurationFiles: [join(environment.KIMI_CODE_HOME!, 'config.toml')],
+    configurationFiles: [
+      join(environment.KIMI_CODE_HOME!, 'config.toml'),
+    ],
     privateDirectories: [environment.KIMI_CODE_HOME!],
     absentFromConfiguration: [MODEL_KEY],
     configurationMarkers: ['api_key_env = "LEAPMUX_E2E_MODEL_API_KEY"'],

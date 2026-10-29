@@ -7,12 +7,21 @@ import { OPENCODE_REFUSED_TOOL_ERRORS } from '../protocol'
 import { openCodeToolCallAdapterFor } from './toolCall'
 
 function model(tool: Record<string, unknown>): ToolCall {
-  return acpToolCall({ sessionUpdate: 'tool_call', toolCallId: 'open-code-tool', status: 'pending', kind: 'think', title: 'task', ...tool }, openCodeToolCallAdapterFor({ refusals: OPENCODE_REFUSED_TOOL_ERRORS }), undefined)
+  return acpToolCall({
+    sessionUpdate: 'tool_call',
+    toolCallId: 'open-code-tool',
+    status: 'pending',
+    kind: 'think',
+    title: 'task',
+    ...tool,
+  }, openCodeToolCallAdapterFor({ refusals: OPENCODE_REFUSED_TOOL_ERRORS }), undefined)
 }
 
 describe('openCodeToolCallAdapterFor subagent launches', () => {
   it('titles the row from the description', () => {
-    const call = model({ rawInput: { description: 'Inspect project structure', subagent_type: 'explore', prompt: 'Read the entry points.' } })
+    const call = model({
+      rawInput: { description: 'Inspect project structure', subagent_type: 'explore', prompt: 'Read the entry points.' },
+    })
     expect(call.kind).toBe('agent')
     expect(call.title).toBe('Inspect project structure')
     expect(call.kind === 'agent' && call.request).toEqual({ description: 'Inspect project structure', agentType: 'explore', prompt: 'Read the entry points.' })
@@ -21,11 +30,15 @@ describe('openCodeToolCallAdapterFor subagent launches', () => {
   it('falls back to the shared word when the launch describes nothing', () => {
     // This row read `Agent` before OpenCode joined the shared card, while Cursor and
     // Reasonix drew `Task` for the same launch.
-    expect(model({ rawInput: { prompt: 'Read the entry points.' } }).title).toBe('Task')
+    expect(model({
+      rawInput: { prompt: 'Read the entry points.' },
+    }).title).toBe('Task')
   })
 
   it('keeps the tool label OpenCode gives the row', () => {
-    expect(model({ rawInput: { description: 'Inspect project structure' } }).label).toBe('Task')
+    expect(model({
+      rawInput: { description: 'Inspect project structure' },
+    }).label).toBe('Task')
     expect(model({ rawInput: {} }).label).toBe('Task')
   })
 
@@ -40,7 +53,12 @@ describe('openCodeToolCallAdapterFor subagent launches', () => {
       sessionUpdate: 'tool_call_update',
       status: 'failed',
       rawInput: { description: 'Inspect project structure', subagent_type: 'explore', prompt: 'Read the entry points.' },
-      content: [{ type: 'content', content: { type: 'text', text: 'no such agent: explore' } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'no such agent: explore' },
+        },
+      ],
     })
     expect(call.kind).toBe('agent')
     expect(isToolFailureResult(call.result) && call.result.text).toBe('no such agent: explore')
@@ -56,7 +74,12 @@ describe('openCodeToolCallAdapterFor subagent launches', () => {
       sessionUpdate: 'tool_call_update',
       status: 'cancelled',
       rawInput: { description: 'Inspect project structure', subagent_type: 'explore', prompt: 'Read the entry points.' },
-      content: [{ type: 'content', content: { type: 'text', text: 'Read two entry points so far.' } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'Read two entry points so far.' },
+        },
+      ],
     })
     expect(call.kind).toBe('agent')
     expect(isToolFailureResult(call.result)).toBe(false)
@@ -69,7 +92,12 @@ describe('openCodeToolCallAdapterFor subagent launches', () => {
       sessionUpdate: 'tool_call_update',
       status: 'completed',
       rawInput: { description: 'Inspect project structure', subagent_type: 'explore' },
-      content: [{ type: 'content', content: { type: 'text', text: 'The agent reported nothing.' } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'The agent reported nothing.' },
+        },
+      ],
     })
     expect(call.kind).toBe('agent')
     expect(isUnparsedToolResult(call.result) && call.result.text).toBe('The agent reported nothing.')
@@ -82,16 +110,25 @@ describe('openCodeToolCallAdapterFor subagent launches', () => {
       sessionUpdate: 'tool_call_update',
       status: 'completed',
       rawInput: { description: 'Inspect project structure', subagent_type: 'explore' },
-      content: [{ type: 'content', content: { type: 'text', text: '<task id="t1" state="completed">\n<task_result>\nFound two entry points.\n</task_result>\n</task>' } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: '<task id="t1" state="completed">\n<task_result>\nFound two entry points.\n</task_result>\n</task>' },
+        },
+      ],
     })
     expect(call.kind).toBe('agent')
-    expect(call.kind === 'agent' ? typedResult(call)?.agents[0]?.body : undefined).toBe('Found two entry points.')
+    expect(call.kind === 'agent'
+      ? typedResult(call)?.agents[0]?.body
+      : undefined).toBe('Found two entry points.')
   })
 
   // A launch that has not finished answers nothing at all, so the row draws the
   // prompt it was given.
   it('answers nothing while the launch still runs', () => {
-    expect(model({ rawInput: { description: 'Inspect project structure', subagent_type: 'explore' } }).result).toBeUndefined()
+    expect(model({
+      rawInput: { description: 'Inspect project structure', subagent_type: 'explore' },
+    }).result).toBeUndefined()
   })
 })
 
@@ -101,19 +138,26 @@ describe('openCodeToolCallAdapterFor subagent launches', () => {
 // control surface expects, and nothing over ACP answers it -- see the constant's
 // own note in `toolPresentation.ts`.
 const KILO_QUESTION_INPUT = {
-  questions: [{
-    header: 'Task',
-    question: 'What would you like me to do in this session? You gave no task yet, so I need one before I start.',
-    options: [
-      { label: 'Describe the task', description: 'Tell me what you want built, fixed, or investigated in this repo.' },
-      { label: 'Inspect this directory', description: 'I explore the repo structure and report what is here, with no code changes.' },
-    ],
-  }],
+  questions: [
+    {
+      header: 'Task',
+      question: 'What would you like me to do in this session? You gave no task yet, so I need one before I start.',
+      options: [
+        { label: 'Describe the task', description: 'Tell me what you want built, fixed, or investigated in this repo.' },
+        { label: 'Inspect this directory', description: 'I explore the repo structure and report what is here, with no code changes.' },
+      ],
+    },
+  ],
 }
 
 describe('openCodeToolCallAdapterFor question rows', () => {
   it('states the question and the choices it offered', () => {
-    const call = model({ title: 'question', kind: 'other', status: 'in_progress', rawInput: KILO_QUESTION_INPUT })
+    const call = model({
+      title: 'question',
+      kind: 'other',
+      status: 'in_progress',
+      rawInput: KILO_QUESTION_INPUT,
+    })
     expect(call.name).toBe('question')
     expect(call.kind).toBe('question')
     expect(call.label).toBe('Question')
@@ -127,32 +171,83 @@ describe('openCodeToolCallAdapterFor question rows', () => {
   // and no label is answerable by that sentence, so it becomes the label rather than
   // sitting beside an empty one.
   const questionsOf = (questions: unknown) => {
-    const built = model({ title: 'question', kind: 'other', status: 'in_progress', rawInput: { questions } })
-    return built.kind === 'question' ? built.request.questions : []
+    const built = model({
+      title: 'question',
+      kind: 'other',
+      status: 'in_progress',
+      rawInput: { questions },
+    })
+    return built.kind === 'question'
+      ? built.request.questions
+      : []
   }
 
   it('labels an option with its description when it states no label', () => {
-    expect(questionsOf([{ question: 'Which files?', options: [{ description: 'Only the changed ones' }] }])[0]?.options)
-      .toStrictEqual([{ label: 'Only the changed ones' }])
+    expect(questionsOf([
+      {
+        question: 'Which files?',
+        options: [
+          { description: 'Only the changed ones' },
+        ],
+      },
+    ])[0]?.options)
+      .toStrictEqual([
+        { label: 'Only the changed ones' },
+      ])
   })
 
   it('keeps the description beside a label that states one', () => {
-    expect(questionsOf([{ header: 'Scope', question: 'Which files?', options: [{ label: 'Changed', description: 'Only the changed ones' }] }]))
-      .toStrictEqual([{ header: 'Scope', question: 'Which files?', options: [{ label: 'Changed', description: 'Only the changed ones' }] }])
+    expect(questionsOf([
+      {
+        header: 'Scope',
+        question: 'Which files?',
+        options: [
+          { label: 'Changed', description: 'Only the changed ones' },
+        ],
+      },
+    ]))
+      .toStrictEqual([
+        {
+          header: 'Scope',
+          question: 'Which files?',
+          options: [
+            { label: 'Changed', description: 'Only the changed ones' },
+          ],
+        },
+      ])
   })
 
   it('drops a question that states no question field', () => {
-    expect(questionsOf([{ header: 'Scope', options: [{ label: 'Changed' }] }])).toStrictEqual([])
+    expect(questionsOf([
+      {
+        header: 'Scope',
+        options: [
+          { label: 'Changed' },
+        ],
+      },
+    ])).toStrictEqual([])
   })
 
   it('drops an option that states neither a label nor a description', () => {
-    expect(questionsOf([{ question: 'Which files?', options: [{ value: 'changed' }] }])[0]?.options).toStrictEqual([])
+    expect(questionsOf([
+      {
+        question: 'Which files?',
+        options: [
+          { value: 'changed' },
+        ],
+      },
+    ])[0]?.options).toStrictEqual([])
   })
 
   // The OPENING frame carries an empty `rawInput`; the questions arrive on the
   // update after it. The row must not claim a question it has not been given.
   it('draws plain text before the questions arrive', () => {
-    const call = model({ title: 'question', kind: 'other', status: 'pending', rawInput: {} })
+    const call = model({
+      title: 'question',
+      kind: 'other',
+      status: 'pending',
+      rawInput: {},
+    })
     expect(call.kind).toBe('question')
     expect(call.kind === 'question' && call.request.questions).toEqual([])
   })
@@ -161,7 +256,18 @@ describe('openCodeToolCallAdapterFor question rows', () => {
   // no answer yet, and a call that FAILED never asked, so its reason must not draw as
   // a choice somebody made.
   it('answers nothing while the question is unanswered', () => {
-    const call = model({ title: 'question', kind: 'other', status: 'in_progress', rawInput: KILO_QUESTION_INPUT, content: [{ type: 'content', content: { text: 'Describe the task' } }] })
+    const call = model({
+      title: 'question',
+      kind: 'other',
+      status: 'in_progress',
+      rawInput: KILO_QUESTION_INPUT,
+      content: [
+        {
+          type: 'content',
+          content: { text: 'Describe the task' },
+        },
+      ],
+    })
     expect(call.kind).toBe('question')
     expect(call.result).toBeUndefined()
   })
@@ -173,7 +279,12 @@ describe('openCodeToolCallAdapterFor question rows', () => {
       kind: 'other',
       status: 'failed',
       rawInput: KILO_QUESTION_INPUT,
-      content: [{ type: 'content', content: { text: 'the question could not be shown' } }],
+      content: [
+        {
+          type: 'content',
+          content: { text: 'the question could not be shown' },
+        },
+      ],
     })
     expect(call.kind).toBe('question')
     expect(isToolFailureResult(call.result) && call.result.text).toBe('the question could not be shown')
@@ -186,10 +297,19 @@ describe('openCodeToolCallAdapterFor question rows', () => {
       kind: 'other',
       status: 'completed',
       rawInput: KILO_QUESTION_INPUT,
-      content: [{ type: 'content', content: { text: 'Describe the task' } }],
+      content: [
+        {
+          type: 'content',
+          content: { text: 'Describe the task' },
+        },
+      ],
     })
-    expect(call.kind === 'question' ? typedResult(call)?.answers : undefined)
-      .toStrictEqual([{ header: 'Task', answer: 'Describe the task' }])
+    expect(call.kind === 'question'
+      ? typedResult(call)?.answers
+      : undefined)
+      .toStrictEqual([
+        { header: 'Task', answer: 'Describe the task' },
+      ])
   })
 
   // An option with no sentence beside it still reads as a choice.
@@ -198,7 +318,16 @@ describe('openCodeToolCallAdapterFor question rows', () => {
       title: 'question',
       kind: 'other',
       status: 'in_progress',
-      rawInput: { questions: [{ question: 'Which one?', options: [{ label: 'The first' }] }] },
+      rawInput: {
+        questions: [
+          {
+            question: 'Which one?',
+            options: [
+              { label: 'The first' },
+            ],
+          },
+        ],
+      },
     })
     expect(call.kind === 'question' && call.request.questions[0]?.options[0]?.label).toBe('The first')
   })
@@ -211,21 +340,36 @@ describe('openCodeToolCallAdapterFor search counts', () => {
       kind: 'search',
       status: 'completed',
       rawInput: { pattern: '*.ts' },
-      rawOutput: { metadata: { count } },
-      ...(text ? { content: [{ type: 'content', content: { text } }] } : {}),
+      rawOutput: {
+        metadata: { count },
+      },
+      ...(text
+        ? {
+            content: [
+              {
+                type: 'content',
+                content: { text },
+              },
+            ],
+          }
+        : {}),
     })
   }
 
   it('lists the files the daemon printed', () => {
     const call = glob(2, 'a.ts\nb.ts')
-    expect(call.kind === 'glob' ? typedResult(call)?.filenames : undefined).toEqual(['a.ts', 'b.ts'])
+    expect(call.kind === 'glob'
+      ? typedResult(call)?.filenames
+      : undefined).toEqual(['a.ts', 'b.ts'])
   })
 
   // `''.trim().split('\n')` is `['']`, so trusting the count alone listed one file
   // with no name at all.
   it('lists no file when the count disagrees with an empty body', () => {
     const call = glob(3, '')
-    expect(call.kind === 'glob' ? typedResult(call)?.filenames : undefined).toEqual([])
+    expect(call.kind === 'glob'
+      ? typedResult(call)?.filenames
+      : undefined).toEqual([])
   })
 })
 
@@ -245,24 +389,53 @@ describe('openCodeToolCallAdapterFor kind stability', () => {
   function lifecycle(frame: Record<string, unknown>, answer: Record<string, unknown>, kinds?: (toolName: string) => ToolKind | undefined): ToolKind[] {
     const build = (tool: Record<string, unknown>) => acpToolCall(
       { sessionUpdate: 'tool_call', toolCallId: 'open-code-tool', ...tool },
-      openCodeToolCallAdapterFor({ refusals: OPENCODE_REFUSED_TOOL_ERRORS, ...(kinds ? { toolKinds: kinds } : {}) }),
+      openCodeToolCallAdapterFor({
+        refusals: OPENCODE_REFUSED_TOOL_ERRORS,
+        ...(kinds
+          ? { toolKinds: kinds }
+          : {}),
+      }),
       undefined,
     ).kind
     return [
       build({ ...frame, status: 'pending' }),
-      build({ ...frame, ...answer, status: 'completed' }),
-      build({ ...frame, status: 'failed', content: [{ type: 'content', content: { text: 'no such path' } }] }),
+      build({
+        ...frame,
+        ...answer,
+        status: 'completed',
+      }),
+      build({
+        ...frame,
+        status: 'failed',
+        content: [
+          {
+            type: 'content',
+            content: { text: 'no such path' },
+          },
+        ],
+      }),
     ]
   }
 
-  const GREP = { title: 'grep', kind: 'search', rawInput: { pattern: 'needle' } }
+  const GREP = {
+    title: 'grep',
+    kind: 'search',
+    rawInput: { pattern: 'needle' },
+  }
   /** OpenCode's own grep format: the heading, the path, then one row per match. */
   const GREP_BODY = 'Found 1 matches\n/p/a.ts:\n  Line 1: needle'
 
   it('holds the grep kind when the answer prints the format this build reads', () => {
     expect(lifecycle(GREP, {
-      rawOutput: { metadata: { matches: 1, truncated: false } },
-      content: [{ type: 'content', content: { text: GREP_BODY } }],
+      rawOutput: {
+        metadata: { matches: 1, truncated: false },
+      },
+      content: [
+        {
+          type: 'content',
+          content: { text: GREP_BODY },
+        },
+      ],
     })).toStrictEqual(['grep', 'grep', 'grep'])
   })
 
@@ -271,15 +444,33 @@ describe('openCodeToolCallAdapterFor kind stability', () => {
   // `search` here, so the row swapped its icon and its label as the answer landed.
   it('holds the grep kind when the answer prints a format this build cannot read', () => {
     expect(lifecycle(GREP, {
-      rawOutput: { metadata: { matches: 1, truncated: false } },
-      content: [{ type: 'content', content: { text: '/p/a.ts:1:needle' } }],
+      rawOutput: {
+        metadata: { matches: 1, truncated: false },
+      },
+      content: [
+        {
+          type: 'content',
+          content: { text: '/p/a.ts:1:needle' },
+        },
+      ],
     })).toStrictEqual(['grep', 'grep', 'grep'])
   })
 
   it('holds the glob kind when the answer counts matches rather than files', () => {
-    expect(lifecycle({ title: 'glob', kind: 'search', rawInput: { pattern: '*.ts' } }, {
-      rawOutput: { metadata: { matches: 2, truncated: false } },
-      content: [{ type: 'content', content: { text: '/p/a.ts\n/p/b.ts' } }],
+    expect(lifecycle({
+      title: 'glob',
+      kind: 'search',
+      rawInput: { pattern: '*.ts' },
+    }, {
+      rawOutput: {
+        metadata: { matches: 2, truncated: false },
+      },
+      content: [
+        {
+          type: 'content',
+          content: { text: '/p/a.ts\n/p/b.ts' },
+        },
+      ],
     })).toStrictEqual(['glob', 'glob', 'glob'])
   })
 
@@ -287,10 +478,23 @@ describe('openCodeToolCallAdapterFor kind stability', () => {
   // that decision is the call's own. A file counter in the answer must not turn its
   // semantic search into a glob over the filesystem.
   it('holds a kind the family table decided when the answer counts files', () => {
-    const kinds = (toolName: string) => toolName === 'semantic_search' ? 'search' as const : undefined
-    expect(lifecycle({ title: 'semantic_search', kind: 'other', rawInput: { query: 'the parser' } }, {
-      rawOutput: { metadata: { count: 2, truncated: false } },
-      content: [{ type: 'content', content: { text: '/p/a.ts\n/p/b.ts' } }],
+    const kinds = (toolName: string) => toolName === 'semantic_search'
+      ? 'search' as const
+      : undefined
+    expect(lifecycle({
+      title: 'semantic_search',
+      kind: 'other',
+      rawInput: { query: 'the parser' },
+    }, {
+      rawOutput: {
+        metadata: { count: 2, truncated: false },
+      },
+      content: [
+        {
+          type: 'content',
+          content: { text: '/p/a.ts\n/p/b.ts' },
+        },
+      ],
     }, kinds)).toStrictEqual(['search', 'search', 'search'])
   })
 
@@ -301,14 +505,32 @@ describe('openCodeToolCallAdapterFor kind stability', () => {
    * of which search ran, so the narrowing stands HERE and nowhere else.
    */
   it('narrows the wide search kind from the counter the answer carries', () => {
-    const wide = { title: 'context7_get_library_docs', kind: 'search', rawInput: { pattern: 'solid-js' } }
+    const wide = {
+      title: 'context7_get_library_docs',
+      kind: 'search',
+      rawInput: { pattern: 'solid-js' },
+    }
     expect(lifecycle(wide, {
-      rawOutput: { metadata: { count: 2, truncated: false } },
-      content: [{ type: 'content', content: { text: '/p/a.ts\n/p/b.ts' } }],
+      rawOutput: {
+        metadata: { count: 2, truncated: false },
+      },
+      content: [
+        {
+          type: 'content',
+          content: { text: '/p/a.ts\n/p/b.ts' },
+        },
+      ],
     })).toStrictEqual(['search', 'glob', 'search'])
     expect(lifecycle(wide, {
-      rawOutput: { metadata: { matches: 1, truncated: false } },
-      content: [{ type: 'content', content: { text: GREP_BODY } }],
+      rawOutput: {
+        metadata: { matches: 1, truncated: false },
+      },
+      content: [
+        {
+          type: 'content',
+          content: { text: GREP_BODY },
+        },
+      ],
     })).toStrictEqual(['search', 'grep', 'search'])
   })
 
@@ -320,12 +542,38 @@ describe('openCodeToolCallAdapterFor kind stability', () => {
    * difference and leave the kind alone.
    */
   it('draws the list kind only once the answer states a directory', () => {
-    const read = { title: 'read', kind: 'read', rawInput: { filePath: '/p' } }
+    const read = {
+      title: 'read',
+      kind: 'read',
+      rawInput: { filePath: '/p' },
+    }
     expect(lifecycle(read, {
-      rawOutput: { metadata: { display: { type: 'directory', path: '/p', entries: ['a.ts'], offset: 1, totalEntries: 1, truncated: false } } },
+      rawOutput: {
+        metadata: {
+          display: {
+            type: 'directory',
+            path: '/p',
+            entries: ['a.ts'],
+            offset: 1,
+            totalEntries: 1,
+            truncated: false,
+          },
+        },
+      },
     })).toStrictEqual(['read', 'list', 'read'])
     expect(lifecycle(read, {
-      rawOutput: { metadata: { display: { type: 'file', path: '/p/a.ts', text: 'alpha', lineStart: 1, totalLines: 1, truncated: false } } },
+      rawOutput: {
+        metadata: {
+          display: {
+            type: 'file',
+            path: '/p/a.ts',
+            text: 'alpha',
+            lineStart: 1,
+            totalLines: 1,
+            truncated: false,
+          },
+        },
+      },
     })).toStrictEqual(['read', 'read', 'read'])
   })
 })
@@ -345,12 +593,20 @@ describe('openCodeToolCallAdapterFor file bodies', () => {
       status: 'completed',
       rawInput: { filePath: '/p/a.ts' },
       content: [
-        { type: 'content', content: { type: 'resource_link', uri: 'file:///p/a.ts' } },
-        { type: 'content', content: { text: '1\tconst a = 1\n2\tconst b = 2\n' } },
+        {
+          type: 'content',
+          content: { type: 'resource_link', uri: 'file:///p/a.ts' },
+        },
+        {
+          type: 'content',
+          content: { text: '1\tconst a = 1\n2\tconst b = 2\n' },
+        },
       ],
     })
     expect(call.kind).toBe('read')
-    expect(call.kind === 'read' ? typedResult(call)?.lines?.map(line => line.text) : undefined).toEqual(['const a = 1', 'const b = 2'])
+    expect(call.kind === 'read'
+      ? typedResult(call)?.lines?.map(line => line.text)
+      : undefined).toEqual(['const a = 1', 'const b = 2'])
   })
 
   it('answers the reason a failed read stated', () => {
@@ -359,7 +615,12 @@ describe('openCodeToolCallAdapterFor file bodies', () => {
       kind: 'read',
       status: 'failed',
       rawInput: { filePath: '/p/a.ts' },
-      content: [{ type: 'content', content: { text: 'no such file' } }],
+      content: [
+        {
+          type: 'content',
+          content: { text: 'no such file' },
+        },
+      ],
     })
     expect(isToolFailureResult(call.result) && call.result.text).toBe('no such file')
   })
@@ -400,7 +661,9 @@ describe('openCodeToolCallAdapterFor edit-family requests', () => {
       status: 'completed',
       rawInput: { filePath: '/p/a.ts', oldString: 'a', newString: 'b' },
     })
-    expect(call.kind === 'edit' ? call.request.changes.map(change => change.filePath) : []).toEqual(['/p/a.ts'])
+    expect(call.kind === 'edit'
+      ? call.request.changes.map(change => change.filePath)
+      : []).toEqual(['/p/a.ts'])
   })
 })
 
@@ -422,7 +685,12 @@ describe('openCodeToolCallAdapterFor empty search results', () => {
     status: 'completed',
     rawInput: { pattern: 'x' },
     rawOutput: { metadata },
-    content: [{ type: 'content', content: { text } }],
+    content: [
+      {
+        type: 'content',
+        content: { text },
+      },
+    ],
   })
 
   // `openCodeSearchLines` answers a list only when it read EVERY row of OpenCode's
@@ -430,12 +698,16 @@ describe('openCodeToolCallAdapterFor empty search results', () => {
   it('reads the wording the native grep format prints when it matched nothing', () => {
     const call = searchCall('No files found', { matches: 0 })
     expect(call.kind).toBe('grep')
-    expect(call.kind === 'grep' ? typedResult(call)?.empty : undefined).toBe(true)
+    expect(call.kind === 'grep'
+      ? typedResult(call)?.empty
+      : undefined).toBe(true)
   })
 
   it('states no empty result for a native grep that listed matches', () => {
     const call = searchCall('Found 1 matches\n/p/a.ts:\n  Line 3: hit', { matches: 1 })
-    expect(call.kind === 'grep' ? typedResult(call)?.empty : undefined).toBe(false)
+    expect(call.kind === 'grep'
+      ? typedResult(call)?.empty
+      : undefined).toBe(false)
   })
 
   // The COUNT branch reads a total the daemon stated and never the body's own words,
@@ -444,9 +716,13 @@ describe('openCodeToolCallAdapterFor empty search results', () => {
   it('recognizes an empty count result from an empty body alone', () => {
     const empty = searchCall('', { count: 0 }, 'glob')
     expect(empty.kind).toBe('glob')
-    expect(empty.kind === 'glob' ? typedResult(empty)?.empty : undefined).toBe(true)
+    expect(empty.kind === 'glob'
+      ? typedResult(empty)?.empty
+      : undefined).toBe(true)
     const worded = searchCall('nothing matched', { count: 0 }, 'glob')
-    expect(worded.kind === 'glob' ? typedResult(worded)?.empty : undefined).toBe(false)
+    expect(worded.kind === 'glob'
+      ? typedResult(worded)?.empty
+      : undefined).toBe(false)
   })
 })
 
@@ -458,10 +734,23 @@ describe('openCodeToolCallAdapterFor empty search results', () => {
  * the live output tail only while the result is absent, so the tail went with it.
  */
 describe('openCodeToolCallAdapterFor to-do lists', () => {
-  const todos = [{ content: 'Inspect sample', status: 'in_progress' }, { content: 'Report findings', status: 'pending' }]
+  const todos = [
+    { content: 'Inspect sample', status: 'in_progress' },
+    { content: 'Report findings', status: 'pending' },
+  ]
   const saved = [
-    { rowKey: '0:Inspect sample', content: 'Inspect sample', status: 'in_progress', activeForm: '' },
-    { rowKey: '1:Report findings', content: 'Report findings', status: 'pending', activeForm: '' },
+    {
+      rowKey: '0:Inspect sample',
+      content: 'Inspect sample',
+      status: 'in_progress',
+      activeForm: '',
+    },
+    {
+      rowKey: '1:Report findings',
+      content: 'Report findings',
+      status: 'pending',
+      activeForm: '',
+    },
   ]
 
   const todoCall = (tool: Record<string, unknown>) => model({
@@ -478,18 +767,37 @@ describe('openCodeToolCallAdapterFor to-do lists', () => {
   it('answers nothing on the opening frame of a list', () => {
     const call = todoCall({ sessionUpdate: 'tool_call', status: 'pending' })
     expect(call.kind).toBe('todo')
-    expect(call.kind === 'todo' ? call.request.items : undefined).toStrictEqual(saved)
+    expect(call.kind === 'todo'
+      ? call.request.items
+      : undefined).toStrictEqual(saved)
     expect(call.result).toBeUndefined()
   })
 
   it('answers a completed list with the tasks it saved', () => {
-    const call = todoCall({ content: [{ type: 'content', content: { type: 'text', text: 'Saved' } }] })
+    const call = todoCall({
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'Saved' },
+        },
+      ],
+    })
     expect(call.kind).toBe('todo')
-    expect(call.kind === 'todo' ? typedResult(call)?.items : undefined).toStrictEqual(saved)
+    expect(call.kind === 'todo'
+      ? typedResult(call)?.items
+      : undefined).toStrictEqual(saved)
   })
 
   it('states the reason a failed list gave', () => {
-    const call = todoCall({ status: 'failed', content: [{ type: 'content', content: { text: 'the todo store is not writable' } }] })
+    const call = todoCall({
+      status: 'failed',
+      content: [
+        {
+          type: 'content',
+          content: { text: 'the todo store is not writable' },
+        },
+      ],
+    })
     expect(call.kind).toBe('todo')
     expect(isToolFailureResult(call.result) && call.result.text).toBe('the todo store is not writable')
   })
@@ -497,17 +805,35 @@ describe('openCodeToolCallAdapterFor to-do lists', () => {
   // A call the reader STOPPED keeps the list it collected. The row marks it partial
   // from its own status, so nothing here states that.
   it('keeps the list a cancelled call collected', () => {
-    const call = todoCall({ status: 'cancelled', content: [{ type: 'content', content: { text: 'stopped' } }] })
+    const call = todoCall({
+      status: 'cancelled',
+      content: [
+        {
+          type: 'content',
+          content: { text: 'stopped' },
+        },
+      ],
+    })
     expect(call.kind).toBe('todo')
     expect(isToolFailureResult(call.result)).toBe(false)
-    expect(call.kind === 'todo' ? typedResult(call)?.items : undefined).toStrictEqual(saved)
+    expect(call.kind === 'todo'
+      ? typedResult(call)?.items
+      : undefined).toStrictEqual(saved)
   })
 
   // A finished call that carried no list states the words it printed. `UnparsedToolResult`
   // is the brand for that -- this build could not read an answer into the kind's shape
   // -- and a `ToolFailureResult` would claim the call failed under a `completed` header.
   it('states the words a finished list printed when it carried no list', () => {
-    const call = todoCall({ rawInput: {}, content: [{ type: 'content', content: { text: 'nothing to save' } }] })
+    const call = todoCall({
+      rawInput: {},
+      content: [
+        {
+          type: 'content',
+          content: { text: 'nothing to save' },
+        },
+      ],
+    })
     expect(call.kind).toBe('todo')
     expect(isToolFailureResult(call.result)).toBe(false)
     expect(isUnparsedToolResult(call.result) && call.result.text).toBe('nothing to save')
@@ -529,11 +855,18 @@ describe('openCodeToolCallAdapterFor stopped calls', () => {
       kind: 'read',
       status: 'cancelled',
       rawInput: { filePath: '/p/a.ts' },
-      content: [{ type: 'content', content: { text: '1\tconst a = 1\n' } }],
+      content: [
+        {
+          type: 'content',
+          content: { text: '1\tconst a = 1\n' },
+        },
+      ],
     })
     expect(call.kind).toBe('read')
     expect(isToolFailureResult(call.result)).toBe(false)
-    expect(call.kind === 'read' ? typedResult(call)?.lines?.map(line => line.text) : undefined).toStrictEqual(['const a = 1'])
+    expect(call.kind === 'read'
+      ? typedResult(call)?.lines?.map(line => line.text)
+      : undefined).toStrictEqual(['const a = 1'])
   })
 
   it('states the reason a failed read gave', () => {
@@ -543,7 +876,12 @@ describe('openCodeToolCallAdapterFor stopped calls', () => {
       kind: 'read',
       status: 'failed',
       rawInput: { filePath: '/p/a.ts' },
-      content: [{ type: 'content', content: { text: 'no such file' } }],
+      content: [
+        {
+          type: 'content',
+          content: { text: 'no such file' },
+        },
+      ],
     })
     expect(isToolFailureResult(call.result) && call.result.text).toBe('no such file')
   })
@@ -558,14 +896,27 @@ describe('openCodeToolCallAdapterFor stopped calls', () => {
       kind: 'edit',
       status,
       rawInput: { filePath: '/p/a.ts', oldString: 'a', newString: 'b' },
-      content: [{ type: 'diff', path: '/p/a.ts', oldText: 'a', newText: 'b' }],
+      content: [
+        {
+          type: 'diff',
+          path: '/p/a.ts',
+          oldText: 'a',
+          newText: 'b',
+        },
+      ],
     })
     expect(call.kind).toBe('edit')
     // The file stays in the REQUEST at every state, so the row heads itself with it.
-    expect(call.kind === 'edit' ? call.request.changes.map(change => change.filePath) : []).toStrictEqual(['/p/a.ts'])
+    expect(call.kind === 'edit'
+      ? call.request.changes.map(change => change.filePath)
+      : []).toStrictEqual(['/p/a.ts'])
     expect(isToolFailureResult(call.result)).toBe(failed)
-    expect(call.kind === 'edit' ? typedResult(call)?.changes.map(change => change.filePath) : undefined)
-      .toStrictEqual(failed ? undefined : ['/p/a.ts'])
+    expect(call.kind === 'edit'
+      ? typedResult(call)?.changes.map(change => change.filePath)
+      : undefined)
+      .toStrictEqual(failed
+        ? undefined
+        : ['/p/a.ts'])
   })
 
   // The change the call ASKED for becomes the RESULT for a call that COMPLETED alone.
@@ -583,7 +934,9 @@ describe('openCodeToolCallAdapterFor stopped calls', () => {
     expect(call.kind).toBe('edit')
     expect(call.result).toBeUndefined()
     // The file stays in the REQUEST, so the row still heads itself with it.
-    expect(call.kind === 'edit' ? call.request.changes.map(change => change.filePath) : []).toStrictEqual(['/p/a.ts'])
+    expect(call.kind === 'edit'
+      ? call.request.changes.map(change => change.filePath)
+      : []).toStrictEqual(['/p/a.ts'])
   })
 
   it.each([
@@ -596,11 +949,20 @@ describe('openCodeToolCallAdapterFor stopped calls', () => {
       kind: 'search',
       status,
       rawInput: { pattern: 'needle' },
-      rawOutput: { metadata: { matches: 1 } },
-      content: [{ type: 'content', content: { text: 'Found 1 matches\n/p/a.ts:\n  Line 3: needle' } }],
+      rawOutput: {
+        metadata: { matches: 1 },
+      },
+      content: [
+        {
+          type: 'content',
+          content: { text: 'Found 1 matches\n/p/a.ts:\n  Line 3: needle' },
+        },
+      ],
     })
     expect(isToolFailureResult(call.result)).toBe(failed)
-    expect(call.kind === 'grep' ? typedResult(call)?.numLines : undefined).toBe(failed ? undefined : 1)
+    expect(call.kind === 'grep'
+      ? typedResult(call)?.numLines
+      : undefined).toBe(failed ? undefined : 1)
   })
 
   // Kilo's `chart` is the family's one kind whose whole body is the configuration it
@@ -609,7 +971,18 @@ describe('openCodeToolCallAdapterFor stopped calls', () => {
     ['cancelled', false],
     ['failed', true],
   ])('answers a %s chart through the same ladder', (status, failed) => {
-    const spec = JSON.stringify({ type: 'bar', data: { labels: ['A'], datasets: [{ label: 'Hits', data: [3] }] } })
+    const spec = JSON.stringify({
+      type: 'bar',
+      data: {
+        labels: ['A'],
+        datasets: [
+          {
+            label: 'Hits',
+            data: [3],
+          },
+        ],
+      },
+    })
     const call = acpToolCall({
       sessionUpdate: 'tool_call_update',
       toolCallId: 'open-code-tool',
@@ -617,12 +990,26 @@ describe('openCodeToolCallAdapterFor stopped calls', () => {
       kind: 'other',
       title: 'chart',
       rawInput: { title: 'Weekly hits', spec },
-      content: [{ type: 'content', content: { type: 'text', text: spec } }],
-    }, openCodeToolCallAdapterFor({ refusals: OPENCODE_REFUSED_TOOL_ERRORS, toolKinds: name => (name === 'chart' ? 'chart' : undefined) }), undefined)
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: spec },
+        },
+      ],
+    }, openCodeToolCallAdapterFor({
+      refusals: OPENCODE_REFUSED_TOOL_ERRORS,
+      toolKinds: name => (name === 'chart'
+        ? 'chart'
+        : undefined),
+    }), undefined)
     expect(call.kind).toBe('chart')
     expect(isToolFailureResult(call.result)).toBe(failed)
-    expect(call.kind === 'chart' ? typedResult(call)?.series.map(series => series.label) : undefined)
-      .toStrictEqual(failed ? undefined : ['Hits'])
+    expect(call.kind === 'chart'
+      ? typedResult(call)?.series.map(series => series.label)
+      : undefined)
+      .toStrictEqual(failed
+        ? undefined
+        : ['Hits'])
   })
 })
 
@@ -644,8 +1031,15 @@ describe('openCodeToolCallAdapterFor file-change aliases', () => {
       rawInput: { path: '/p/nb.ipynb', old_string: 'x', new_string: 'y' },
     })
     expect(call.kind).toBe('edit')
-    expect(call.kind === 'edit' ? call.request.changes : undefined).toStrictEqual([
-      { filePath: '/p/nb.ipynb', oldStr: 'x', newStr: 'y', structuredPatch: null },
+    expect(call.kind === 'edit'
+      ? call.request.changes
+      : undefined).toStrictEqual([
+      {
+        filePath: '/p/nb.ipynb',
+        oldStr: 'x',
+        newStr: 'y',
+        structuredPatch: null,
+      },
     ])
   })
 })
@@ -658,7 +1052,17 @@ describe('openCodeToolCallAdapterFor file-change aliases', () => {
  */
 describe('openCodeToolCallAdapterFor refused calls', () => {
   const DISMISSED = 'The user dismissed this question'
-  const QUESTION = { questions: [{ header: 'Scope', question: 'Which package?', options: [{ label: 'frontend' }] }] }
+  const QUESTION = {
+    questions: [
+      {
+        header: 'Scope',
+        question: 'Which package?',
+        options: [
+          { label: 'frontend' },
+        ],
+      },
+    ],
+  }
 
   /** A failed question call, with the error in the frame's content block and error field. */
   const failedQuestion = (rawOutput: Record<string, unknown> | undefined) => ({
@@ -668,8 +1072,15 @@ describe('openCodeToolCallAdapterFor refused calls', () => {
     kind: 'other',
     title: 'question',
     rawInput: QUESTION,
-    content: [{ type: 'content', content: { type: 'text', text: DISMISSED } }],
-    ...(rawOutput !== undefined ? { rawOutput } : {}),
+    content: [
+      {
+        type: 'content',
+        content: { type: 'text', text: DISMISSED },
+      },
+    ],
+    ...(rawOutput !== undefined
+      ? { rawOutput }
+      : {}),
   })
 
   // The daemons write different errors behind one wire format. OpenCode's question tool
@@ -677,7 +1088,9 @@ describe('openCodeToolCallAdapterFor refused calls', () => {
   it('reads a refusal only from the table the daemon supplies', () => {
     const frame = failedQuestion({ error: DISMISSED })
     expect(acpToolCall(frame, openCodeToolCallAdapterFor({ refusals: OPENCODE_REFUSED_TOOL_ERRORS }), undefined).status).toBe('declined')
-    expect(acpToolCall(frame, openCodeToolCallAdapterFor({ refusals: { messages: [], messagePrefixes: [] } }), undefined).status).toBe('failed')
+    expect(acpToolCall(frame, openCodeToolCallAdapterFor({
+      refusals: { messages: [], messagePrefixes: [] },
+    }), undefined).status).toBe('failed')
   })
 
   // `rawOutput.error` is the daemon's own slot for the error. A content block can hold

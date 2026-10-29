@@ -37,8 +37,18 @@ droidTest.describe('Factory Droid settings', () => {
     await expectSettingsChip(native.page, 'Auto (High)')
     await sendNativeAnswer(native, 'Reply before the mode sequence.', 'The Droid mode sequence started.')
     for (const mode of [
-      { value: DROID_MODE.Spec, label: 'Spec', previousLabel: 'Auto (High)', interactionMode: 'spec' },
-      { value: DROID_MODE.Default, label: 'Default', previousLabel: 'Spec', interactionMode: 'auto' },
+      {
+        value: DROID_MODE.Spec,
+        label: 'Spec',
+        previousLabel: 'Auto (High)',
+        interactionMode: 'spec',
+      },
+      {
+        value: DROID_MODE.Default,
+        label: 'Default',
+        previousLabel: 'Spec',
+        interactionMode: 'auto',
+      },
     ]) {
       const notice = await chooseNativeModeWithNotice(native, { groupId: 'permissionMode', ...mode, noticeLabel: 'Permissions' })
       const nativeProof = async (request: MockModelRequestRecord) => {

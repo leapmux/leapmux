@@ -11,10 +11,17 @@ const frame = {
     type: 'Bash',
     output_file: path,
     // Grok sends the preview as an array of UTF-8 bytes.
-    output: [...new TextEncoder().encode(READER_PREVIEW)],
+    output: [
+      ...new TextEncoder().encode(READER_PREVIEW),
+    ],
   },
 }
 
 describe('readGrokNativeOutput', () => {
-  runNativeOutputReaderCases({ read: readGrokNativeOutput, frame, path, pointerError: 'The native Grok result has no exact filesystem output pointer.' })
+  runNativeOutputReaderCases({
+    read: readGrokNativeOutput,
+    frame,
+    path,
+    pointerError: 'The native Grok result has no exact filesystem output pointer.',
+  })
 })

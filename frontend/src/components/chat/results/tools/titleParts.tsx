@@ -8,12 +8,20 @@ import { toolInputCode, toolInputPath, toolInputSummary, toolInputText } from '.
 export function renderReadTitle(path?: string, offset?: number, limit?: number, cwd?: string, homeDir?: string): JSX.Element | null {
   if (!path)
     return null
-  const start = offset !== undefined && Number.isSafeInteger(offset) && offset > 0 ? offset : undefined
-  const count = limit !== undefined && Number.isSafeInteger(limit) && limit > 0 ? limit : undefined
-  const end = count !== undefined && count - 1 <= Number.MAX_SAFE_INTEGER - (start ?? 1) ? (start ?? 1) + (count - 1) : undefined
+  const start = offset !== undefined && Number.isSafeInteger(offset) && offset > 0
+    ? offset
+    : undefined
+  const count = limit !== undefined && Number.isSafeInteger(limit) && limit > 0
+    ? limit
+    : undefined
+  const end = count !== undefined && count - 1 <= Number.MAX_SAFE_INTEGER - (start ?? 1)
+    ? (start ?? 1) + (count - 1)
+    : undefined
   const rangeStr = end !== undefined
     ? ` (Line ${start ?? 1}–${end})`
-    : start !== undefined ? ` (Line ${start}–)` : ''
+    : start !== undefined
+      ? ` (Line ${start}–)`
+      : ''
   return (
     <>
       <span class={toolInputPath}>{relativizePath(path, cwd, homeDir)}</span>
@@ -28,7 +36,9 @@ export function renderSearchTitle(pattern?: string, path?: string, cwd?: string,
   return (
     <>
       <span class={toolInputCode}>{`"${pattern}"`}</span>
-      {path ? <span class={toolInputText}>{` ${relativizePath(path, cwd, homeDir)}`}</span> : null}
+      {path
+        ? <span class={toolInputText}>{` ${relativizePath(path, cwd, homeDir)}`}</span>
+        : null}
     </>
   )
 }
@@ -48,7 +58,9 @@ export function renderUrlTitle(url?: string): JSX.Element | null {
 }
 
 export function renderQueryTitle(query?: string): JSX.Element | null {
-  return query ? <span class={toolInputText}>{query}</span> : null
+  return query
+    ? <span class={toolInputText}>{query}</span>
+    : null
 }
 
 /**

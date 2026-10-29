@@ -26,7 +26,9 @@ export function classifyCommandCodeMessage(input: ClassificationInput): MessageC
   if (!parent)
     return { kind: 'unknown' }
   if (!parent.type && typeof parent.content === 'string') {
-    return parent.planExecution === true ? { kind: 'plan_execution' } : { kind: 'user_content' }
+    return parent.planExecution === true
+      ? { kind: 'plan_execution' }
+      : { kind: 'user_content' }
   }
   if (parent.method === COMMAND_CODE_METHOD.TurnCompleted)
     return { kind: 'result_divider' }
@@ -34,14 +36,23 @@ export function classifyCommandCodeMessage(input: ClassificationInput): MessageC
   if (!event)
     return { kind: 'unknown' }
   const type = pickString(event, 'type')
-  if (type === COMMAND_CODE_EVENT.ToolQueued)
-    return retainedRowIsFinal(input.completion) ? { kind: 'tool_result' } : { kind: 'tool_use' }
+  if (type === COMMAND_CODE_EVENT.ToolQueued) {
+    return retainedRowIsFinal(input.completion)
+      ? { kind: 'tool_result' }
+      : { kind: 'tool_use' }
+  }
   if (COMMAND_CODE_TOOL_RESULTS.has(type))
     return { kind: 'tool_result' }
-  if (type === COMMAND_CODE_EVENT.ThinkingEnd)
-    return pickString(event, 'text') ? { kind: 'assistant_thinking' } : { kind: 'hidden' }
-  if (type === COMMAND_CODE_EVENT.MessageEnd)
-    return commandCodeText(event.content) ? { kind: 'assistant_text' } : { kind: 'hidden' }
+  if (type === COMMAND_CODE_EVENT.ThinkingEnd) {
+    return pickString(event, 'text')
+      ? { kind: 'assistant_thinking' }
+      : { kind: 'hidden' }
+  }
+  if (type === COMMAND_CODE_EVENT.MessageEnd) {
+    return commandCodeText(event.content)
+      ? { kind: 'assistant_text' }
+      : { kind: 'hidden' }
+  }
   if (NOTIFICATION_EVENTS.has(type))
     return notification([parent])
   return { kind: 'unknown' }

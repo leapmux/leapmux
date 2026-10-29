@@ -123,7 +123,10 @@ describe('claudeSearchFromToolResult grep', () => {
   })
 
   it('marks truncated=false when appliedLimit is missing', () => {
-    const source = claudeSearchFromToolResult('grep', { numFiles: 1, filenames: ['/a'] }, '')
+    const source = claudeSearchFromToolResult('grep', {
+      numFiles: 1,
+      filenames: ['/a'],
+    }, '')
     expect(source.truncated).toBe(false)
   })
 
@@ -176,7 +179,12 @@ describe('claudeSearchFromToolResult glob', () => {
  */
 describe('claudeSearchFromToolResult empty results', () => {
   it('reads an empty grep from the counters the tool stated', () => {
-    expect(claudeSearchFromToolResult('grep', { numFiles: 0, numLines: 0, filenames: [], content: '' }, 'No matches found').empty).toBe(true)
+    expect(claudeSearchFromToolResult('grep', {
+      numFiles: 0,
+      numLines: 0,
+      filenames: [],
+      content: '',
+    }, 'No matches found').empty).toBe(true)
   })
 
   it('reads an empty glob from the file list the tool stated', () => {
@@ -185,7 +193,9 @@ describe('claudeSearchFromToolResult empty results', () => {
 
   it('states no empty result for a structured answer that carries matches', () => {
     expect(claudeSearchFromToolResult('grep', { numFiles: 1, numLines: 2, content: 'a:1:hit' }, '').empty).toBe(false)
-    expect(claudeSearchFromToolResult('glob', { filenames: ['/a.ts'] }, '').empty).toBe(false)
+    expect(claudeSearchFromToolResult('glob', {
+      filenames: ['/a.ts'],
+    }, '').empty).toBe(false)
   })
 
   // The distinction the flag exists for. A structured object that stated NO counter
@@ -238,7 +248,10 @@ describe('claudeGrepSpec', () => {
 
   it('reads the search result for a call that did not fail', () => {
     const result = searchRow({ resultContent: 'Found 1 file\n/a.ts' })
-    expect(claudeGrepSpec(SEARCH_REQUEST, result).result).toMatchObject({ numFiles: 1, filenames: ['/a.ts'] })
+    expect(claudeGrepSpec(SEARCH_REQUEST, result).result).toMatchObject({
+      numFiles: 1,
+      filenames: ['/a.ts'],
+    })
   })
 
   it('states no result for a call that has not answered', () => {
@@ -254,7 +267,10 @@ describe('claudeGlobSpec', () => {
 
   it('reads the file list for a call that did not fail', () => {
     const result = searchRow({ toolName: 'Glob', resultContent: 'Found 2 files\n/a.ts\n/b.ts' })
-    expect(claudeGlobSpec(SEARCH_REQUEST, result).result).toMatchObject({ numFiles: 2, filenames: ['/a.ts', '/b.ts'] })
+    expect(claudeGlobSpec(SEARCH_REQUEST, result).result).toMatchObject({
+      numFiles: 2,
+      filenames: ['/a.ts', '/b.ts'],
+    })
   })
 })
 
@@ -265,13 +281,23 @@ describe('claudeGlobSpec', () => {
  */
 describe('claudeSearchFromToolResult filenames', () => {
   it('drops a non-string entry from a grep file list', () => {
-    const source = claudeSearchFromToolResult('grep', { numFiles: 2, filenames: ['/a.ts', 42, null, { path: '/b.ts' }] }, '')
+    const source = claudeSearchFromToolResult('grep', {
+      numFiles: 2,
+      filenames: [
+        '/a.ts',
+        42,
+        null,
+        { path: '/b.ts' },
+      ],
+    }, '')
     expect(source.filenames).toStrictEqual(['/a.ts'])
     expect(source.filenames.every(name => typeof name === 'string')).toBe(true)
   })
 
   it('drops a non-string entry from a glob file list', () => {
-    const source = claudeSearchFromToolResult('glob', { filenames: [42, '/b.ts'] }, '')
+    const source = claudeSearchFromToolResult('glob', {
+      filenames: [42, '/b.ts'],
+    }, '')
     expect(source.filenames).toStrictEqual(['/b.ts'])
     expect(source.numFiles).toBe(1)
   })
@@ -280,7 +306,9 @@ describe('claudeSearchFromToolResult filenames', () => {
   // decides that, because a filtered list that emptied says only that this build could
   // not read the entries -- and the raw text below is still the row's whole answer.
   it('refuses to call a glob list of unreadable entries empty', () => {
-    expect(claudeSearchFromToolResult('glob', { filenames: [42] }, 'raw body').empty).toBe(false)
+    expect(claudeSearchFromToolResult('glob', {
+      filenames: [42],
+    }, 'raw body').empty).toBe(false)
     expect(claudeSearchFromToolResult('glob', { filenames: [] }, 'No files found').empty).toBe(true)
   })
 

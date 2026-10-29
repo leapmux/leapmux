@@ -12,11 +12,17 @@ codebuddyTest.describe('CodeBuddy Code tool execution', () => {
   codebuddyTest('runs a Bash tool and draws its span', async ({ native }) => {
     const { page } = native
     const call = bashToolCall(native.provider, 'call-1', 'echo hi')
-    await runNativeToolTurn(native, { toolCalls: [call], prompt: 'Run echo hi.', answer: 'The command ran.' })
+    await runNativeToolTurn(native, {
+      toolCalls: [call],
+      prompt: 'Run echo hi.',
+      answer: 'The command ran.',
+    })
 
     await expect(assistantBubbles(page).filter({ hasText: 'The command ran.' }).first()).toBeVisible()
     // A tool call opens a span, so a row of this call draws a rail.
-    await expect(railedRows(page).filter({ has: page.locator(`[data-tool-call-id="${cssAttributeValue(call.id)}"]`) }).first()).toBeVisible()
+    await expect(railedRows(page).filter({
+      has: page.locator(`[data-tool-call-id="${cssAttributeValue(call.id)}"]`),
+    }).first()).toBeVisible()
   })
 })
 
@@ -37,12 +43,19 @@ codebuddyTest('runs successful and failed native commands with their actual outp
 
 codebuddyTest('preserves the native empty failure record before and after reload', async ({ native }) => {
   const call = bashToolCall(native.provider, 'empty-shell-failure', 'exit 7')
-  const { resultRequest } = await runNativeToolTurn(native, { toolCalls: [call], prompt: 'Run the empty failure command.', answer: 'The empty failure was recorded.' })
-  expect(nativeToolCallArguments(resultRequest, call.id)).toMatchObject({ name: 'Bash', arguments: { command: 'exit 7' } })
+  const { resultRequest } = await runNativeToolTurn(native, {
+    toolCalls: [call],
+    prompt: 'Run the empty failure command.',
+    answer: 'The empty failure was recorded.',
+  })
+  expect(nativeToolCallArguments(resultRequest, call.id)).toMatchObject({
+    name: 'Bash',
+    arguments: { command: 'exit 7' },
+  })
   const record = nativeToolResultContent(resultRequest, call.id)
   expect(record).toBe('Stdout: (empty)\nStderr: (empty)\nExit Code: 7\nSignal: (none)')
   if (typeof record !== 'string')
-    throw new Error('The native empty failure result is not text.')
+    throw new TypeError('The native empty failure result is not text.')
   for (const reload of [false, true]) {
     if (reload)
       await native.page.reload()

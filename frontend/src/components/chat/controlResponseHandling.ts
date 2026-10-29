@@ -89,15 +89,25 @@ export interface ControlResponseHandlingResult {
 
 /** Read persisted answer fields without trusting their stored types or page limits. */
 function normalizedSavedAnswer(value: unknown, questions: readonly ControlQuestion[] | undefined): ControlAnswerSeed {
-  const saved = isObject(value) ? value : {}
-  const entries = (field: string) => isObject(saved[field]) ? Object.entries(saved[field]) : []
+  const saved = isObject(value)
+    ? value
+    : {}
+  const entries = (field: string) => isObject(saved[field])
+    ? Object.entries(saved[field])
+    : []
   const page = saved.currentPage
   return {
     selections: Object.fromEntries(entries('selections').flatMap(([key, selection]) =>
-      Array.isArray(selection) && selection.every(item => typeof item === 'string') ? [[key, selection]] : [])),
+      Array.isArray(selection) && selection.every(item => typeof item === 'string')
+        ? [
+            [key, selection],
+          ]
+        : [])),
     customTexts: Object.fromEntries(entries('customTexts').filter((entry): entry is [string, string] =>
       typeof entry[1] === 'string' && questions?.[Number(entry[0])]?.allowCustomText !== false)),
-    currentPage: typeof page === 'number' && Number.isInteger(page) && page >= 0 && page < (questions?.length ?? 0) ? page : 0,
+    currentPage: typeof page === 'number' && Number.isInteger(page) && page >= 0 && page < (questions?.length ?? 0)
+      ? page
+      : 0,
     switches: Object.fromEntries(entries('switches').filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean')),
     choices: Object.fromEntries(entries('choices').filter((entry): entry is [string, string] => typeof entry[1] === 'string')),
   }
@@ -159,7 +169,9 @@ export function useControlResponseHandling(
     const decision = decidePlanModeToggle({ currentMode, planValue: pm.planValue, previousNonPlanMode })
     if (decision.updatePreviousNonPlanMode !== undefined)
       previousNonPlanModes.set(agentId, decision.updatePreviousNonPlanMode)
-    onChange({ sets: { [pm.groupKey]: decision.nextMode } })
+    onChange({
+      sets: { [pm.groupKey]: decision.nextMode },
+    })
   }
 
   // The first pending control request (if any).
@@ -208,7 +220,9 @@ export function useControlResponseHandling(
   }
   const questionFor = (request: ControlRequest) => {
     const surface = surfaceFor(request)
-    return surface?.kind === 'question' ? surface.question : undefined
+    return surface?.kind === 'question'
+      ? surface.question
+      : undefined
   }
 
   const isAskUserQuestion = createMemo(() => activeSurface()?.kind === 'question')
@@ -226,7 +240,9 @@ export function useControlResponseHandling(
     switch (activeSurface()?.kind) {
       // The question form takes the typed answer.
       case 'question':
-        return questionFor(request)?.questions[answerState.currentPage()]?.allowCustomText === false ? 'none' : 'answer'
+        return questionFor(request)?.questions[answerState.currentPage()]?.allowCustomText === false
+          ? 'none'
+          : 'answer'
       // The elicitation form carries its own fields, so the editor adds nothing.
       case 'elicitation':
         return 'none'
@@ -594,7 +610,9 @@ export function useControlResponseHandling(
     sendInFlight = true
     let sent: boolean | void | Promise<boolean | void>
     try {
-      sent = sendFn(content, currentAttachments.length > 0 ? currentAttachments : undefined)
+      sent = sendFn(content, currentAttachments.length > 0
+        ? currentAttachments
+        : undefined)
     }
     catch (error) {
       sendInFlight = false

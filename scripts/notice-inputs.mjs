@@ -50,9 +50,14 @@ export function noticeInputState(root = process.cwd(), outputs = []) {
   if (!Array.isArray(outputs) || outputs.some(pattern => typeof pattern !== 'string'))
     throw new Error('NOTICE output patterns must be an array of strings.')
   const exclusions = outputs.map(pattern => new Bun.Glob(pattern))
-  const patterns = NOTICE_INPUTS.filter(pattern => [...new Bun.Glob(pattern).scanSync({ cwd: root, dot: true, onlyFiles: true })]
+  const patterns = NOTICE_INPUTS.filter(pattern => [
+    ...new Bun.Glob(pattern).scanSync({ cwd: root, dot: true, onlyFiles: true }),
+  ]
     .some(file => !exclusions.some(glob => glob.match(file.replaceAll('\\', '/')))))
-  return outputState(root, [...patterns, ...outputs.map(exclude => ({ exclude }))])
+  return outputState(root, [
+    ...patterns,
+    ...outputs.map(exclude => ({ exclude })),
+  ])
 }
 
 export function selectNoticeInputs(event, { run = args => spawnSync('git', args, { encoding: 'utf8', timeout: 30000 }), warn = console.warn } = {}) {
@@ -60,12 +65,28 @@ export function selectNoticeInputs(event, { run = args => spawnSync('git', args,
   const head = event.pull_request?.head.sha ?? event.after
   if (!/^[a-f0-9]{40}$/.test(base ?? '') || !/^[a-f0-9]{40}$/.test(head ?? '') || /^0+$/.test(base) || /^0+$/.test(head))
     return true
-  const missing = [...new Set([base, head])].filter(sha => run(['cat-file', '-e', `${sha}^{commit}`]).status !== 0)
-  if (missing.length && run(['fetch', '--depth=1', '--no-tags', 'origin', ...missing]).status !== 0) {
+  const missing = [
+    ...new Set([base, head]),
+  ].filter(sha => run(['cat-file', '-e', `${sha}^{commit}`]).status !== 0)
+  if (missing.length && run([
+    'fetch',
+    '--depth=1',
+    '--no-tags',
+    'origin',
+    ...missing,
+  ]).status !== 0) {
     warn('NOTICE comparison commits are unavailable; generation is required.')
     return true
   }
-  const result = run(['diff', '--no-renames', '--name-only', '-z', base, head, '--'])
+  const result = run([
+    'diff',
+    '--no-renames',
+    '--name-only',
+    '-z',
+    base,
+    head,
+    '--',
+  ])
   if (result.status !== 0) {
     warn('NOTICE input comparison failed; generation is required.')
     return true

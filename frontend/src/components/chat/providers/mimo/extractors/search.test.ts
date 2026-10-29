@@ -17,19 +17,34 @@ describe('mimoGrepMatches', () => {
 
   it('reads the first page of a truncated search, and its notice', () => {
     const text = `Found 3 matches (showing first 1)\n/p/a.ts:\n  Line 1: a\n\n(${TRUNCATED})`
-    expect(mimoGrepMatches(text, 3)).toEqual({ matches: [{ filePath: '/p/a.ts', lineNumber: 1, text: 'a' }], notice: TRUNCATED })
+    expect(mimoGrepMatches(text, 3)).toEqual({
+      matches: [
+        { filePath: '/p/a.ts', lineNumber: 1, text: 'a' },
+      ],
+      notice: TRUNCATED,
+    })
   })
 
   // MiMo adds the notice when it could not read a part of the tree. The matches it
   // found are still the answer.
   it('reads a search that skipped paths it could not read', () => {
     expect(mimoGrepMatches(`Found 1 matches\n/p/a.ts:\n  Line 3: alpha\n\n(${PARTIAL})`, 1))
-      .toEqual({ matches: [{ filePath: '/p/a.ts', lineNumber: 3, text: 'alpha' }], notice: PARTIAL })
+      .toEqual({
+        matches: [
+          { filePath: '/p/a.ts', lineNumber: 3, text: 'alpha' },
+        ],
+        notice: PARTIAL,
+      })
   })
 
   it('states both notices of a truncated search that skipped paths', () => {
     const text = `Found 3 matches (showing first 1)\n/p/a.ts:\n  Line 1: a\n\n(${TRUNCATED})\n\n(${PARTIAL})`
-    expect(mimoGrepMatches(text, 3)).toEqual({ matches: [{ filePath: '/p/a.ts', lineNumber: 1, text: 'a' }], notice: `${TRUNCATED} ${PARTIAL}` })
+    expect(mimoGrepMatches(text, 3)).toEqual({
+      matches: [
+        { filePath: '/p/a.ts', lineNumber: 1, text: 'a' },
+      ],
+      notice: `${TRUNCATED} ${PARTIAL}`,
+    })
   })
 
   it('reads the empty answer', () => {
@@ -53,7 +68,11 @@ describe('mimoGrepMatches', () => {
   })
 
   it('keeps the text of a match whole, colons and indentation included', () => {
-    expect(mimoGrepMatches('Found 1 matches\n/p/a.ts:\n  Line 3:   key: value', 1)).toEqual({ matches: [{ filePath: '/p/a.ts', lineNumber: 3, text: '  key: value' }] })
+    expect(mimoGrepMatches('Found 1 matches\n/p/a.ts:\n  Line 3:   key: value', 1)).toEqual({
+      matches: [
+        { filePath: '/p/a.ts', lineNumber: 3, text: '  key: value' },
+      ],
+    })
   })
 
   it.each([
@@ -82,9 +101,14 @@ describe('mimoGrepMatches', () => {
 
 describe('mimoGlobFiles', () => {
   it('reads the listed files and the truncation notice', () => {
-    expect(mimoGlobFiles('/p/a.ts\n/p/b.ts', 2)).toEqual({ files: ['/p/a.ts', '/p/b.ts'] })
+    expect(mimoGlobFiles('/p/a.ts\n/p/b.ts', 2)).toEqual({
+      files: ['/p/a.ts', '/p/b.ts'],
+    })
     expect(mimoGlobFiles('/p/a.ts\n\n(Results are truncated: showing first 1 results. Consider using a more specific path or pattern.)', 1))
-      .toEqual({ files: ['/p/a.ts'], notice: 'Results are truncated: showing first 1 results. Consider using a more specific path or pattern.' })
+      .toEqual({
+        files: ['/p/a.ts'],
+        notice: 'Results are truncated: showing first 1 results. Consider using a more specific path or pattern.',
+      })
   })
 
   it('reads the empty answer', () => {
@@ -97,7 +121,9 @@ describe('mimoGlobFiles', () => {
   })
 
   it('reads Windows line endings and skips blank lines', () => {
-    expect(mimoGlobFiles('C:\\p\\a.ts\r\n\r\nC:\\p\\b.ts\r\n', 2)).toEqual({ files: ['C:\\p\\a.ts', 'C:\\p\\b.ts'] })
+    expect(mimoGlobFiles('C:\\p\\a.ts\r\n\r\nC:\\p\\b.ts\r\n', 2)).toEqual({
+      files: ['C:\\p\\a.ts', 'C:\\p\\b.ts'],
+    })
   })
 
   it.each([

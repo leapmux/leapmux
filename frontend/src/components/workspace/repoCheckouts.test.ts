@@ -26,7 +26,9 @@ const noneLocal = () => false
 
 describe('listRepoCheckouts', () => {
   it('gives one checkout for one branch', () => {
-    const got = listRepoCheckouts([branch()], ORIGIN, allLocal)
+    const got = listRepoCheckouts([
+      branch(),
+    ], ORIGIN, allLocal)
 
     expect(got).toHaveLength(1)
     expect(got[0]).toMatchObject({
@@ -43,7 +45,10 @@ describe('listRepoCheckouts', () => {
   // the pair alone.
   it('collapses branches that share one working tree', () => {
     const got = listRepoCheckouts(
-      [branch({ branchName: 'main' }), branch({ branchName: 'feature', displayLabel: 'feature' })],
+      [
+        branch({ branchName: 'main' }),
+        branch({ branchName: 'feature', displayLabel: 'feature' }),
+      ],
       ORIGIN,
       allLocal,
     )
@@ -56,7 +61,12 @@ describe('listRepoCheckouts', () => {
     const got = listRepoCheckouts(
       [
         branch(),
-        branch({ gitToplevel: '/home/me/wt', isWorktree: true, branchName: 'feature', displayLabel: 'feature' }),
+        branch({
+          gitToplevel: '/home/me/wt',
+          isWorktree: true,
+          branchName: 'feature',
+          displayLabel: 'feature',
+        }),
       ],
       ORIGIN,
       allLocal,
@@ -69,7 +79,10 @@ describe('listRepoCheckouts', () => {
   // different directories that happen to share a path.
   it('keeps the same path on two workers apart', () => {
     const got = listRepoCheckouts(
-      [branch(), branch({ workerId: 'w2' })],
+      [
+        branch(),
+        branch({ workerId: 'w2' }),
+      ],
       ORIGIN,
       workerId => workerId === 'w1',
     )
@@ -80,7 +93,10 @@ describe('listRepoCheckouts', () => {
 
   // Every item of the menu a checkout produces needs a path to act on.
   it('drops a branch group with no resolved toplevel', () => {
-    const got = listRepoCheckouts([branch({ gitToplevel: '' }), branch()], ORIGIN, allLocal)
+    const got = listRepoCheckouts([
+      branch({ gitToplevel: '' }),
+      branch(),
+    ], ORIGIN, allLocal)
 
     expect(got).toHaveLength(1)
     expect(got[0]?.gitToplevel).toBe('/home/me/leapmux')
@@ -91,7 +107,9 @@ describe('listRepoCheckouts', () => {
   })
 
   it('carries an empty origin through for a repository with no remote', () => {
-    const got = listRepoCheckouts([branch()], '', noneLocal)
+    const got = listRepoCheckouts([
+      branch(),
+    ], '', noneLocal)
 
     expect(got[0]?.originUrl).toBe('')
     expect(got[0]?.isLocal).toBe(false)
@@ -101,7 +119,9 @@ describe('listRepoCheckouts', () => {
   // the only thing this projection adds.
   it('keeps the tree\'s disambiguated label', () => {
     const got = listRepoCheckouts(
-      [branch({ displayLabel: 'main (worker-a)' })],
+      [
+        branch({ displayLabel: 'main (worker-a)' }),
+      ],
       ORIGIN,
       allLocal,
     )

@@ -86,7 +86,9 @@ function hmrBatch(makeCtx: () => Context<string | undefined>, order: 'consumer-f
   evaluateModules(makeCtx, hotA, hotB)
 
   return () => {
-    for (const hot of order === 'consumer-first' ? [hotB, hotA] : [hotA, hotB])
+    for (const hot of order === 'consumer-first'
+      ? [hotB, hotA]
+      : [hotA, hotB])
       hot.fire()
   }
 }

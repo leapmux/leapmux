@@ -19,7 +19,9 @@ export type HookOutcome = 'failed' | 'blocked' | 'timed-out' | 'continued'
 
 /** Keep finite, non-negative token counts. An invalid count stays absent. */
 export function tokenCount(n: unknown): number | undefined {
-  return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : undefined
+  return typeof n === 'number' && Number.isFinite(n) && n >= 0
+    ? n
+    : undefined
 }
 
 /** Build a retry entry with valid counters and a nonblank error. */
@@ -240,11 +242,19 @@ export function compactionMetaFromRecord(meta: Record<string, unknown> | undefin
   const rawPre = firstNumber(meta, ['pre_tokens', 'preTokens'])
   const pre = toTokenCount(rawPre)
   const post = toTokenCount(resolvePostTokens(meta, rawPre))
-  const trigger = typeof meta?.trigger === 'string' && meta.trigger ? meta.trigger : undefined
+  const trigger = typeof meta?.trigger === 'string' && meta.trigger
+    ? meta.trigger
+    : undefined
   return {
-    ...(trigger !== undefined ? { trigger } : {}),
-    ...(pre !== undefined ? { pre } : {}),
-    ...(post !== undefined ? { post } : {}),
+    ...(trigger !== undefined
+      ? { trigger }
+      : {}),
+    ...(pre !== undefined
+      ? { pre }
+      : {}),
+    ...(post !== undefined
+      ? { post }
+      : {}),
   }
 }
 

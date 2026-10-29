@@ -41,7 +41,9 @@ export function runRootParent(env: NodeJS.ProcessEnv = process.env, platform: No
   const override = env.LEAPMUX_E2E_RUN_PARENT
   if (override)
     return resolve(override)
-  return realpathSync(platform === 'win32' ? tmpdir() : '/tmp')
+  return realpathSync(platform === 'win32'
+    ? tmpdir()
+    : '/tmp')
 }
 
 /**
@@ -64,7 +66,14 @@ function privateRunEnvironment(env: NodeJS.ProcessEnv, runDir: string, runRoot: 
     // No private directory of the run may inherit a Git repository from above the run root.
     GIT_CEILING_DIRECTORIES: [runDir, env.GIT_CEILING_DIRECTORIES].filter(Boolean).join(delimiter),
   }
-  for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES'])
+  for (const key of [
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_COMMON_DIR',
+    'GIT_INDEX_FILE',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  ])
     delete result[key]
   return result
 }
@@ -84,7 +93,9 @@ function distinctFailures(errors: readonly unknown[]): unknown[] {
         return []
       if (children.length === original.length && children.every((child, index) => child === original[index]))
         return [error]
-      return [new AggregateError(children, error.message)]
+      return [
+        new AggregateError(children, error.message),
+      ]
     }
     if (seen.has(error))
       return []
@@ -135,13 +146,17 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
   const lastRunReport = join(outputRoot, LAST_RUN_REPORT_FILE)
   const historyPath = join(outputRoot, DURATION_HISTORY_FILE)
   // Read each saved selection before the build, so an absent, malformed, or empty selection costs no build.
-  const lastFailed = options.lastFailed ? readLastFailedState(lastRunState) : undefined
+  const lastFailed = options.lastFailed
+    ? readLastFailedState(lastRunState)
+    : undefined
   // A serial run keeps Playwright's own result for an empty selection, because Playwright writes the reports of that run.
   if (lastFailed?.failedTests.length === 0 && !options.serial)
     return finishWithoutTests(options.passWithNoTests, `The last-run state at ${lastRunState} lists no failed tests.`)
   let failedFiles: { report: string, files: string[], testList: string } | undefined
   if (options.failedFiles) {
-    const report = options.failedFilesFrom === undefined ? lastRunReport : resolve(cwd, options.failedFilesFrom)
+    const report = options.failedFilesFrom === undefined
+      ? lastRunReport
+      : resolve(cwd, options.failedFilesFrom)
     const files = readFailedReportFiles(report)
     // The caller chooses an explicit report. The saved report must describe the last run, which a serial run does not save.
     if (options.failedFilesFrom === undefined)
@@ -150,7 +165,11 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
       process.stdout.write(`No failed E2E test files exist in ${report}.\n`)
       return 0
     }
-    failedFiles = { report, files, testList: testListContent(files) }
+    failedFiles = {
+      report,
+      files,
+      testList: testListContent(files),
+    }
   }
   const owned = new Set<CommandProcess>()
   const directories = new Map<CommandProcess, string>()
@@ -228,7 +247,9 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
     if (failedFiles) {
       failedFilesList = join(outputFileDir, 'failed-files.txt')
       writeFileSync(failedFilesList, failedFiles.testList, { flag: 'wx' })
-      process.stdout.write(`E2E --failed-files: ${failedFiles.files.length} ${failedFiles.files.length === 1 ? 'file' : 'files'} from ${failedFiles.report}\n`)
+      process.stdout.write(`E2E --failed-files: ${failedFiles.files.length} ${failedFiles.files.length === 1
+        ? 'file'
+        : 'files'} from ${failedFiles.report}\n`)
     }
     if (options.serial) {
       runDirs.push(runDir)
@@ -238,7 +259,15 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
         // The Playwright CLI gives --last-failed-file precedence over this environment value.
         PLAYWRIGHT_LAST_RUN_OUTPUT_FILE: env.PLAYWRIGHT_LAST_RUN_OUTPUT_FILE || parentLastRun,
       }
-      const code = await command('node', [playwrightCli, 'test', '--workers=1', '--retries=0', ...serialRunArgs(options.playwrightArgs, join(outputFileDir, 'test-results'), failedFilesList)], { cwd, env: serialEnv }, { logPath: join(outputFileDir, 'console.log') })
+      const code = await command('node', [
+        playwrightCli,
+        'test',
+        '--workers=1',
+        '--retries=0',
+        ...serialRunArgs(options.playwrightArgs, join(outputFileDir, 'test-results'), failedFilesList),
+      ], { cwd, env: serialEnv }, {
+        logPath: join(outputFileDir, 'console.log'),
+      })
       process.stdout.write(`E2E artifacts: ${outputFileDir}\n`)
       return interrupted || code
     }
@@ -252,13 +281,24 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
     const filters = shardSelectionArgs(options.playwrightArgs)
     const selection: ChildSelection = {
       filters,
-      ...(lastFailedSnapshot === undefined ? {} : { lastFailedFile: lastFailedSnapshot }),
-      ...(failedFilesList === undefined ? {} : { testList: failedFilesList }),
+      ...(lastFailedSnapshot === undefined
+        ? {}
+        : { lastFailedFile: lastFailedSnapshot }),
+      ...(failedFilesList === undefined
+        ? {}
+        : { testList: failedFilesList }),
     }
     const discoveryDir = join(outputFileDir, 'discovery')
     mkdirSync(discoveryDir)
     const discoveryEnv = shardReporterEnvironment(env, discoveryDir)
-    const discoveryCode = await command('node', [playwrightCli, 'test', ...discoveryRunArgs(selection)], { cwd, env: discoveryEnv }, { logPath: join(discoveryDir, 'console.log'), label: 'discovery' })
+    const discoveryCode = await command('node', [
+      playwrightCli,
+      'test',
+      ...discoveryRunArgs(selection),
+    ], { cwd, env: discoveryEnv }, {
+      logPath: join(discoveryDir, 'console.log'),
+      label: 'discovery',
+    })
     if (discoveryCode !== 0 || interrupted)
       return interrupted || discoveryCode
     const coverage = readDiscoveredTestCoverage(discoveryEnv.PLAYWRIGHT_JSON_OUTPUT_FILE!)
@@ -268,12 +308,23 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
       if (absent.length)
         process.stderr.write(`Warning: these failed files from ${failedFiles.report} select no test now: ${absent.join(', ')}\n`)
     }
-    if (coverage.files.length === 0)
-      return finishWithoutTests(options.passWithNoTests, lastFailed ? `No selected E2E test matches a failed test in ${lastRunState}.` : 'No selected E2E test files exist.')
+    if (coverage.files.length === 0) {
+      return finishWithoutTests(options.passWithNoTests, lastFailed
+        ? `No selected E2E test matches a failed test in ${lastRunState}.`
+        : 'No selected E2E test files exist.')
+    }
     const history = readDurationHistory(historyPath)
-    const plan = planShards({ coverage, workers: options.workers, balance: options.balance, history, callerTestList: options.testList })
+    const plan = planShards({
+      coverage,
+      workers: options.workers,
+      balance: options.balance,
+      history,
+      callerTestList: options.testList,
+    })
     process.stdout.write(formatShardPlan(plan, historyPath))
-    const total = plan.kind === 'static' ? plan.total : plan.shards.length
+    const total = plan.kind === 'static'
+      ? plan.total
+      : plan.shards.length
     const artifacts: string[] = []
     const commands: Promise<number>[] = []
     for (let index = 1; index <= total; index++) {
@@ -286,7 +337,12 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
       mkdirSync(shardArtifacts)
       copyRunBinary(binary, shardDir)
       artifacts.push(shardArtifacts)
-      let shardSelection: ChildSelection = { filters, ...(failedFilesList === undefined ? {} : { testList: failedFilesList }) }
+      let shardSelection: ChildSelection = {
+        filters,
+        ...(failedFilesList === undefined
+          ? {}
+          : { testList: failedFilesList }),
+      }
       if (plan.kind === 'balanced') {
         // The shard's own list replaces the failed-file list: Playwright accepts one test list, and the shard's files are a subset.
         const testList = join(shardArtifacts, 'test-list.txt')
@@ -300,14 +356,21 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
         shardSelection = { ...shardSelection, lastFailedFile }
       }
       const testEnv = shardReporterEnvironment(privateRunEnvironment(env, shardDir, runDir), shardArtifacts)
-      const shardArgs = shardRunArgs(shardSelection, plan.kind === 'static' ? { index, total } : undefined)
-      commands.push(command('node', [playwrightCli, 'test', ...shardArgs], { cwd, env: testEnv }, { logPath: join(shardArtifacts, 'console.log'), label: `shard ${index}/${total}` }))
+      const shardArgs = shardRunArgs(shardSelection, plan.kind === 'static'
+        ? { index, total }
+        : undefined)
+      commands.push(command('node', [playwrightCli, 'test', ...shardArgs], { cwd, env: testEnv }, {
+        logPath: join(shardArtifacts, 'console.log'),
+        label: `shard ${index}/${total}`,
+      }))
     }
     const results = await Promise.allSettled(commands)
     await stopping
     if (interrupted)
       return interrupted
-    const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+    const failures = results.flatMap(result => result.status === 'rejected'
+      ? [result.reason]
+      : [])
     if (failures.length)
       throw new AggregateError(failures, 'One or more E2E shard processes failed to run.')
     const code = results.find(result => result.status === 'fulfilled' && result.value !== 0)
@@ -317,8 +380,19 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
     mergedEnv.PLAYWRIGHT_JSON_OUTPUT_FILE = mergedJsonDestination(process.env, cwd, outputFileDir)
     mergedEnv.PLAYWRIGHT_BLOB_OUTPUT_DIR = join(outputFileDir, 'merged-blob-report')
     mergedEnv.PLAYWRIGHT_LAST_RUN_OUTPUT_FILE = lastRunState
-    const reporters = [...new Set([...(options.reporters ?? 'list').split(','), 'json', lastRunReporter])].join(',')
-    const mergeCode = await command('node', [playwrightCli, 'merge-reports', `--reporter=${reporters}`, reports], { cwd, env: mergedEnv })
+    const reporters = [
+      ...new Set([
+        ...(options.reporters ?? 'list').split(','),
+        'json',
+        lastRunReporter,
+      ]),
+    ].join(',')
+    const mergeCode = await command('node', [
+      playwrightCli,
+      'merge-reports',
+      `--reporter=${reporters}`,
+      reports,
+    ], { cwd, env: mergedEnv })
     if (interrupted || mergeCode !== 0)
       return interrupted || mergeCode
     const mergedReportPath = mergedEnv.PLAYWRIGHT_JSON_OUTPUT_FILE
@@ -333,7 +407,9 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
     process.stdout.write(`E2E combined JSON report: ${mergedReportPath}\n`)
     if (options.reporters?.split(',').includes('json') && !process.env.PLAYWRIGHT_JSON_OUTPUT_FILE && !process.env.PLAYWRIGHT_JSON_OUTPUT_NAME)
       process.stdout.write(`${mergedText}\n`)
-    return code?.status === 'fulfilled' ? code.value : 0
+    return code?.status === 'fulfilled'
+      ? code.value
+      : 0
   }
 
   const cleanup = async (): Promise<unknown[]> => {
@@ -355,7 +431,9 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
     }
     const retained = new Set([...failedCommands].flatMap((command) => {
       const directory = directories.get(command)
-      return directory ? [directory] : []
+      return directory
+        ? [directory]
+        : []
     }))
     // A recorded descendant can retain stdout after the command root exits.
     // Stop those descendants before waiting for the command's stream-close event.
@@ -367,8 +445,12 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
       }
     }
     const completed = await Promise.allSettled([...pending].flatMap(([result, owner]) => {
-      const directory = owner ? directories.get(owner) : undefined
-      return (owner && failedCommands.has(owner)) || (directory && retained.has(directory)) ? [] : [result]
+      const directory = owner
+        ? directories.get(owner)
+        : undefined
+      return (owner && failedCommands.has(owner)) || (directory && retained.has(directory))
+        ? []
+        : [result]
     }))
     for (const result of completed) {
       if (result.status === 'rejected')
@@ -403,7 +485,9 @@ export async function runE2E(args: string[], projectRoot: string = root): Promis
     const cleanupFailures = await cleanup()
     if (cleanupFailures.length) {
       const failures = distinctFailures([
-        ...(outcome.status === 'failed' ? [outcome.error] : []),
+        ...(outcome.status === 'failed'
+          ? [outcome.error]
+          : []),
         ...cleanupFailures,
       ])
       throw new AggregateError(failures, 'Test cleanup failed')

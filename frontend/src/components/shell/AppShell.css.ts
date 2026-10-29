@@ -266,7 +266,10 @@ export const sheetOverlayOpen = style({
 // (`emptyTileActions`, `placeholder`) center their content by growing with
 // `flex: 1`, which only fills this pane when the slot itself is a flex
 // container — without it they pinned to the top.
-export const mobileTilePaneSlot = style([tileContent, { minHeight: 0 }])
+export const mobileTilePaneSlot = style([
+  tileContent,
+  { minHeight: 0 },
+])
 
 // --- End mobile layout styles ---
 

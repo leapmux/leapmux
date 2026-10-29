@@ -129,7 +129,10 @@ function readTitle(source: string, from: number): { title: string, start: number
   if (!QUOTES.has(source[i] ?? ''))
     return null
   const end = skipString(source, i)
-  return { title: source.slice(i + 1, end - 1), start: i + 1 }
+  return {
+    title: source.slice(i + 1, end - 1),
+    start: i + 1,
+  }
 }
 
 /** Every suite and case title in one file, with the line each one sits on. */
@@ -233,7 +236,10 @@ function importedNames(source: string): string[] {
 export function findFlattenedTitles(source: string, path: string): MangledTitle[] {
   const sibling = path.split('/').at(-1)?.replace(TEST_FILE, '') ?? ''
   const known = new Map<string, string>()
-  for (const name of [...importedNames(source), sibling]) {
+  for (const name of [
+    ...importedNames(source),
+    sibling,
+  ]) {
     if (isMultiWord(name))
       known.set(name.toLowerCase(), name)
   }
@@ -245,14 +251,20 @@ export function findFlattenedTitles(source: string, path: string): MangledTitle[
     if (firstWord === '' || firstWord !== firstWord.toLowerCase())
       return []
     const correct = known.get(firstWord)
-    return correct === undefined || correct === firstWord ? [] : [{ path, ...found }]
+    return correct === undefined || correct === firstWord
+      ? []
+      : [
+          { path, ...found },
+        ]
   })
 }
 
 /** Every unit test and e2e spec under the guarded roots, as an absolute path. */
 function collectTestFiles(): string[] {
   return SOURCE_ROOTS.flatMap(root =>
-    collectFiles(join(frontendRoot, root), { matches: name => TEST_FILE.test(name) }),
+    collectFiles(join(frontendRoot, root), {
+      matches: name => TEST_FILE.test(name),
+    }),
   )
 }
 
@@ -388,7 +400,12 @@ describe('test-title casing', () => {
 // Builds an import line without writing one into this file, for the same reason
 // `callSite` exists: the tree scan reads this module too.
 function importLine(names: string, from = './module'): string {
-  return ['import', `{ ${names} }`, 'from', `'${from}'`].join(' ')
+  return [
+    'import',
+    `{ ${names} }`,
+    'from',
+    `'${from}'`,
+  ].join(' ')
 }
 
 describe('test-title flattening', () => {
@@ -410,7 +427,11 @@ describe('test-title flattening', () => {
   })
 
   it('reports a flattened import, with the line it sits on', () => {
-    const source = [importLine('mcpToolCallDisplayName'), '', callSite('describe', 'mcptoolcalldisplayname')].join('\n')
+    const source = [
+      importLine('mcpToolCallDisplayName'),
+      '',
+      callSite('describe', 'mcptoolcalldisplayname'),
+    ].join('\n')
     expect(findFlattenedTitles(source, 'x.test.ts')).toEqual([
       { path: 'x.test.ts', line: 3, title: 'mcptoolcalldisplayname' },
     ])
@@ -424,7 +445,10 @@ describe('test-title flattening', () => {
   })
 
   it('reads the LOCAL name of an aliased import', () => {
-    const source = [importLine('parseMcpToolName as parseToolName'), callSite('it', 'parsetoolname splits the pair')].join('\n')
+    const source = [
+      importLine('parseMcpToolName as parseToolName'),
+      callSite('it', 'parsetoolname splits the pair'),
+    ].join('\n')
     expect(findFlattenedTitles(source, 'x.test.ts')).toHaveLength(1)
     // `parsemcptoolname` is the name at the OTHER end of the alias, which this file
     // never binds, so a title that used it would describe something else.
@@ -440,9 +464,15 @@ describe('test-title flattening', () => {
    */
   it('accepts an ordinary phrase, a genuinely lowercase name, and a one-word identifier', () => {
     expect(findFlattenedTitles(callSite('it', 'classifies an empty payload'), 'x.test.ts')).toEqual([])
-    const domEvent = [importLine('releasePointer'), callSite('describe', 'lostpointercapture')].join('\n')
+    const domEvent = [
+      importLine('releasePointer'),
+      callSite('describe', 'lostpointercapture'),
+    ].join('\n')
     expect(findFlattenedTitles(domEvent, 'x.test.ts')).toEqual([])
-    const oneWord = [importLine('Tooltip'), callSite('describe', 'tooltip')].join('\n')
+    const oneWord = [
+      importLine('Tooltip'),
+      callSite('describe', 'tooltip'),
+    ].join('\n')
     expect(findFlattenedTitles(oneWord, 'Tooltip.test.tsx')).toEqual([])
   })
 
@@ -454,16 +484,25 @@ describe('test-title flattening', () => {
    * `describe('pi ...')` for flattening a constant none of them mentions.
    */
   it('accepts a lowercase word that folds onto an all-caps constant', () => {
-    const source = [importLine('PI_EVENT, PI'), callSite('describe', 'pi tool presentation')].join('\n')
+    const source = [
+      importLine('PI_EVENT, PI'),
+      callSite('describe', 'pi tool presentation'),
+    ].join('\n')
     expect(findFlattenedTitles(source, 'createToolCall.test.ts')).toEqual([])
   })
 
   it('accepts the identifier written in its own casing', () => {
-    const camel = [importLine('mcpToolCallDisplayName'), callSite('describe', 'mcpToolCallDisplayName')].join('\n')
+    const camel = [
+      importLine('mcpToolCallDisplayName'),
+      callSite('describe', 'mcpToolCallDisplayName'),
+    ].join('\n')
     expect(findFlattenedTitles(camel, 'x.test.ts')).toEqual([])
     // A `describe` leads with a PascalCase name now that the lint rule ignores describe
     // titles, and this rule asks for exactly the spelling the file binds.
-    const pascal = [importLine('ChatRowSkeleton'), callSite('describe', 'ChatRowSkeleton')].join('\n')
+    const pascal = [
+      importLine('ChatRowSkeleton'),
+      callSite('describe', 'ChatRowSkeleton'),
+    ].join('\n')
     expect(findFlattenedTitles(pascal, 'ChatRowSkeleton.test.tsx')).toEqual([])
   })
 

@@ -6,7 +6,9 @@ import { nativeContext } from './scenarios'
 function cursorConversationId(body: unknown): string | undefined {
   if (body === null || typeof body !== 'object' || !('conversationId' in body))
     return undefined
-  return typeof body.conversationId === 'string' ? body.conversationId : undefined
+  return typeof body.conversationId === 'string'
+    ? body.conversationId
+    : undefined
 }
 
 const label = 'Cursor'

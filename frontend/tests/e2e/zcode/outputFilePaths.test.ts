@@ -6,9 +6,35 @@ import { readZcodeNativeOutput } from './outputFilePaths'
 const sessionId = 'native-session'
 const callId = 'native-call'
 const path = '/native/zcode/artifacts/native-session/native-call-tool-result-11111111-1111-4111-8111-111111111111.txt'
-const frame = { type: 'tool.updated', sessionId, payload: { kind: 'result', toolCallId: callId, result: { success: true, content: 'native preview' } } }
-const native = { sessionId, messageId: 'native-message', data: { type: 'tool', callID: callId, tool: 'GetWorkflowRun', state: { status: 'completed', metadata: { serialization: { budgetStrategy: 'artifact', artifactPath: path } } } } }
-const provider = { type: frame.type, payload: { kind: 'result', toolCallId: callId }, nativeTool: native }
+const frame = {
+  type: 'tool.updated',
+  sessionId,
+  payload: {
+    kind: 'result',
+    toolCallId: callId,
+    result: { success: true, content: 'native preview' },
+  },
+}
+const native = {
+  sessionId,
+  messageId: 'native-message',
+  data: {
+    type: 'tool',
+    callID: callId,
+    tool: 'GetWorkflowRun',
+    state: {
+      status: 'completed',
+      metadata: {
+        serialization: { budgetStrategy: 'artifact', artifactPath: path },
+      },
+    },
+  },
+}
+const provider = {
+  type: frame.type,
+  payload: { kind: 'result', toolCallId: callId },
+  nativeTool: native,
+}
 /** The error of the shared record reader for a snapshot with no record of the call in its session. */
 const NO_RECORD = 'The native output requires exactly one accepted record in its Worker session and span.'
 /** The error of the ZCode reader for a provider section that does not state the call, the session, and the path. */
@@ -17,7 +43,14 @@ const NO_OWNER = 'The native ZCode output pointer has no exact call and session 
 const FOREIGN_PATH = 'The native ZCode path belongs to another call or session.'
 
 function snapshot(original: unknown = frame, supplement: unknown = { provider }): NativeMessageSnapshot {
-  return nativeOutputSnapshot([{ frame: original, spanId: callId, spanType: 'GetWorkflowRun', supplement }], { agentId: 'native-agent', agentSessionId: sessionId })
+  return nativeOutputSnapshot([
+    {
+      frame: original,
+      spanId: callId,
+      spanType: 'GetWorkflowRun',
+      supplement,
+    },
+  ], { agentId: 'native-agent', agentSessionId: sessionId })
 }
 
 describe('readZcodeNativeOutput', () => {
@@ -55,7 +88,19 @@ describe('readZcodeNativeOutput', () => {
     expect(() => readZcodeNativeOutput(snapshot(frame, { provider: changed }), callId, 'GetWorkflowRun')).toThrow(error)
   })
 
-  it.each([null, {}, provider, { provider: null }, { provider: false }, { provider: { ...provider, payload: { kind: 'result', toolCallId: 'foreign' } } }])('refuses an absent or unowned provider section: %j', (supplement) => {
+  it.each([
+    null,
+    {},
+    provider,
+    { provider: null },
+    { provider: false },
+    {
+      provider: {
+        ...provider,
+        payload: { kind: 'result', toolCallId: 'foreign' },
+      },
+    },
+  ])('refuses an absent or unowned provider section: %j', (supplement) => {
     expect(() => readZcodeNativeOutput(snapshot(frame, supplement), callId, 'GetWorkflowRun')).toThrow(NO_OWNER)
   })
 
@@ -82,7 +127,12 @@ describe('readZcodeNativeOutput', () => {
   })
 
   it('ignores the removed body store when it contains other text', () => {
-    const receipt = readZcodeNativeOutput(snapshot(frame, { provider: { ...provider, outputFiles: { 'zcode-artifact://native-session/opaque': 'data:text/plain;base64,Rk9SR0VE' } } }), callId, 'GetWorkflowRun')
+    const receipt = readZcodeNativeOutput(snapshot(frame, {
+      provider: {
+        ...provider,
+        outputFiles: { 'zcode-artifact://native-session/opaque': 'data:text/plain;base64,Rk9SR0VE' },
+      },
+    }), callId, 'GetWorkflowRun')
     expect(receipt.previewText).toBe('native preview')
   })
 })

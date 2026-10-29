@@ -29,12 +29,16 @@ export function buildTaskCreateItem(
   return {
     // The id and the description ride only when the record stated them; a task
     // before its answer carries neither.
-    ...(id !== undefined ? { id } : {}),
+    ...(id !== undefined
+      ? { id }
+      : {}),
     rowKey: todoRowKey(id, 0, content),
     content,
     status: 'pending',
     activeForm: pickString(toolUseInput, 'activeForm'),
-    ...(description ? { description } : {}),
+    ...(description
+      ? { description }
+      : {}),
   }
 }
 
@@ -71,11 +75,15 @@ export function buildTaskGetItem(
   const description = pickString(task, 'description')
   return {
     // The id and the description ride only when the record stated them.
-    ...(id !== undefined ? { id } : {}),
+    ...(id !== undefined
+      ? { id }
+      : {}),
     rowKey: todoRowKey(id, 0, content),
     content,
     status: normalizeTodoStatus(task.status),
     activeForm: pickString(task, 'activeForm'),
-    ...(description ? { description } : {}),
+    ...(description
+      ? { description }
+      : {}),
   }
 }

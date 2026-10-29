@@ -361,7 +361,9 @@ export async function exerciseNativePlanWithEffort(
 ): Promise<void> {
   const build = await sendNativeAnswer(context, 'Reply once before the native Plan settings change.', `The build turn answered: ${uniqueMarker('BUILD')}.`)
   await options.nativeBuildProof(build)
-  const ownerBefore = options.afterModeSelected ? await currentNativeAgent(context) : undefined
+  const ownerBefore = options.afterModeSelected
+    ? await currentNativeAgent(context)
+    : undefined
   await chooseSettingsOption(context.page, `${options.effort.groupId}-${options.effort.value}`)
   await chooseSettingsOption(context.page, `${options.mode.groupId}-${options.mode.value}`)
   await waitForSettingsIdle(context.page)

@@ -9,5 +9,8 @@ import { exerciseTokenProgress } from '../helpers/generationProgress'
 const THINKING = 'NATIVEPROGRESSTHINKING weighs the scripted answer. '.repeat(6)
 
 claudeTest('advances the native model counter while each output segment remains held', async ({ native }) => {
-  await exerciseTokenProgress(native, { supported: true, step: { reasoning: THINKING } })
+  await exerciseTokenProgress(native, {
+    supported: true,
+    step: { reasoning: THINKING },
+  })
 })

@@ -22,7 +22,11 @@ export const JUNIE_AGENT: ProviderAgent = { provider: AgentProvider.JUNIE, prefi
  */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
   return managedNativeContext(fixtures, JUNIE_AGENT, {
-    textStep: (text: string) => ({ toolCalls: [junieAnswerToolCall(`junie-answer-${randomUUID()}`, text)] }),
+    textStep: (text: string) => ({
+      toolCalls: [
+        junieAnswerToolCall(`junie-answer-${randomUUID()}`, text),
+      ],
+    }),
     answerToolNames: [JUNIE_ANSWER_TOOL],
     // Junie compresses the prior exchange into its previous_issue row, and the reader splits it back into turns.
     readConversationTurns: junieModelTurns,
@@ -31,7 +35,10 @@ export async function nativeContext(fixtures: NativeContextFixtures): Promise<Ma
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */
 export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStartupLaunch {
-  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: 'junie', holdWhen: ['--acp=true'] })
+  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, {
+    binaryName: 'junie',
+    holdWhen: ['--acp=true'],
+  })
 }
 
 /** Open this provider's actual child task and hold its native final answer. */
@@ -39,17 +46,30 @@ export async function runningChild(context: ManagedNativeScenarioContext, option
   const task = `${uniqueMarker('NATIVECHILDTASK')} report one word.`
   const description = `${HELD_NATIVE_CHILD_DESCRIPTION} ${randomUUID()}`
   const agentType = 'leapmux-e2e-child'
-  const spawn = spawnSubagentToolCall(context.provider, `native-held-child-${randomUUID()}`, { description, prompt: context.modelScript.prompt(task), agentType })
+  const spawn = spawnSubagentToolCall(context.provider, `native-held-child-${randomUUID()}`, {
+    description,
+    prompt: context.modelScript.prompt(task),
+    agentType,
+  })
   return openRunningNativeChild(context, {
     gate: `native-child-${randomUUID()}`,
     child: {
       matcher: { system: 'You are the LeapMux test subagent', body: task },
-      finalStep: { toolCalls: [junieSubagentSubmitToolCall(`native-child-submit-${randomUUID()}`, '### Summary\n- NATIVECHILDCOMPLETE\n### Changes\n- No files changed.\n### Verification\n- Answered the scripted task.')] },
+      finalStep: {
+        toolCalls: [
+          junieSubagentSubmitToolCall(`native-child-submit-${randomUUID()}`, '### Summary\n- NATIVECHILDCOMPLETE\n### Changes\n- No files changed.\n### Verification\n- Answered the scripted task.'),
+        ],
+      },
     },
     spawn,
     allowExistingRows: options.allowExistingRows ?? false,
     rowText: agentType,
-    parentSteps: [{ toolCalls: [spawn] }, nativeTextStep(context, 'The native parent completed.')],
+    parentSteps: [
+      {
+        toolCalls: [spawn],
+      },
+      nativeTextStep(context, 'The native parent completed.'),
+    ],
   })
 }
 

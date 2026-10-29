@@ -42,7 +42,12 @@ lettaTest.describe('Letta Code modes', () => {
   })
 
   lettaTest('asks in Standard and runs a write in Unrestricted', async ({ askingLettaWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingLettaWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingLettaWorkspace.workspaceId,
+    })
     const file = join(askingLettaWorkspace.workingDir, 'letta-mode-proof.txt')
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Standard')
@@ -60,7 +65,11 @@ lettaTest.describe('Letta Code modes', () => {
     await expectSettingsChip(page, 'Unrestricted')
     // Unrestricted runs the write without a banner, so the scenario answers no control.
     const unrestrictedStep = await modelScript.queue(
-      { toolCalls: [writeToolCall(AgentProvider.LETTA, 'unrestricted-mode-write', { path: file, content: 'unrestricted\n' })] },
+      {
+        toolCalls: [
+          writeToolCall(AgentProvider.LETTA, 'unrestricted-mode-write', { path: file, content: 'unrestricted\n' }),
+        ],
+      },
       { text: 'The Unrestricted write finished.' },
     )
     await sendMessage(page, modelScript.prompt('Write the proof file without asking.'))

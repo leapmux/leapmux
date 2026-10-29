@@ -17,7 +17,12 @@ import { nativeContext } from './scenarios'
  */
 ohMyPiTest.describe('Oh My Pi control requests', () => {
   ohMyPiTest('runs a command after the reader allows it', async ({ askingOhMyPiWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingOhMyPiWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingOhMyPiWorkspace.workspaceId,
+    })
     await exerciseNativePermissionDecision(context, {
       toolCall: bashToolCall(context.provider, 'approve-call', 'echo "omp-$((40 + 2))"'),
       decision: 'allow',
@@ -36,7 +41,12 @@ ohMyPiTest.describe('Oh My Pi control requests', () => {
   })
 
   ohMyPiTest('refuses a command that the reader denies', async ({ askingOhMyPiWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingOhMyPiWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingOhMyPiWorkspace.workspaceId,
+    })
     await exerciseNativePermissionDecision(context, {
       toolCall: bashToolCall(context.provider, 'deny-call', 'echo "omp-$((50 + 5))"'),
       decision: 'deny',
@@ -59,7 +69,12 @@ ohMyPiTest.describe('Oh My Pi control requests', () => {
   // omp's select dialog answers with one choice, which carries no text. The reason follows as the reader's next
   // message, which opens a turn of its own after the refused turn.
   ohMyPiTest('sends the reader\'s typed refusal reason as the next message', async ({ askingOhMyPiWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingOhMyPiWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingOhMyPiWorkspace.workspaceId,
+    })
     await exerciseNativePermissionReason(context, {
       toolCall: bashToolCall(context.provider, 'reason-call', 'echo "omp-$((60 + 6))"'),
       route: 'next-message',

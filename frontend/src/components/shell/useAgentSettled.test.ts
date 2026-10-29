@@ -20,7 +20,9 @@ function record(e: Event) {
 beforeEach(() => {
   // Fake performance so monotonicNow (the cooldown clock) advances with
   // vi.advanceTimersByTime.
-  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
+  vi.useFakeTimers({
+    toFake: ['setTimeout', 'clearTimeout', 'performance'],
+  })
   play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
   rang = []
   window.addEventListener('leapmux:turn-end-played', record)
@@ -65,7 +67,10 @@ describe('useAgentSettled', () => {
 
   it('takes the volume from the preference, on a 0-100 scale', () => {
     makeHandler({
-      preferences: { turnEndSound: () => 'ding-dong', turnEndSoundVolume: () => 40 },
+      preferences: {
+        turnEndSound: () => 'ding-dong',
+        turnEndSoundVolume: () => 40,
+      },
     })('a-1')
 
     expect((play.mock.instances[0] as HTMLAudioElement).volume).toBeCloseTo(0.4)
@@ -73,7 +78,10 @@ describe('useAgentSettled', () => {
 
   it('stays quiet when the sound preference is off', () => {
     makeHandler({
-      preferences: { turnEndSound: () => 'none', turnEndSoundVolume: () => 50 },
+      preferences: {
+        turnEndSound: () => 'none',
+        turnEndSoundVolume: () => 50,
+      },
     })('a-1')
 
     expect(play).not.toHaveBeenCalled()
@@ -82,7 +90,9 @@ describe('useAgentSettled', () => {
 
   describe('subagent tabs', () => {
     it('stays quiet when the settled agent is a subagent transcript', () => {
-      makeHandler({ isSubagent: (id: string) => id === 'child-1' })('child-1')
+      makeHandler({
+        isSubagent: (id: string) => id === 'child-1',
+      })('child-1')
 
       expect(play).not.toHaveBeenCalled()
       expect(rang).toHaveLength(0)
@@ -93,7 +103,9 @@ describe('useAgentSettled', () => {
       // parent settles a moment later because that child was its last work. A
       // child that spent the 60s cooldown would silence the settle the user is
       // actually waiting for.
-      const settled = makeHandler({ isSubagent: (id: string) => id.startsWith('child-') })
+      const settled = makeHandler({
+        isSubagent: (id: string) => id.startsWith('child-'),
+      })
       settled('child-1')
       vi.advanceTimersByTime(50)
       settled('root-1')
@@ -106,7 +118,9 @@ describe('useAgentSettled', () => {
       // A child restored from the CRDT after a reload carries no parent link
       // until listAgents replies. A swallowed completion is worse than a
       // spurious one, so the unknown case rings.
-      makeHandler({ isSubagent: () => undefined })('a-1')
+      makeHandler({
+        isSubagent: () => undefined,
+      })('a-1')
 
       expect(rang.map(e => e.detail.agentId)).toEqual(['a-1'])
     })
@@ -115,7 +129,9 @@ describe('useAgentSettled', () => {
       // The same settle can turn out to be a child's once hydration lands, and
       // a child must never take the minute the root's own settle needs.
       const settled = makeHandler({
-        isSubagent: (id: string) => (id === 'unknown-1' ? undefined : false),
+        isSubagent: (id: string) => (id === 'unknown-1'
+          ? undefined
+          : false),
       })
       settled('unknown-1')
       vi.advanceTimersByTime(50)
@@ -125,7 +141,9 @@ describe('useAgentSettled', () => {
     })
 
     it('still rings for the root when a sibling child is open', () => {
-      const settled = makeHandler({ isSubagent: (id: string) => id === 'child-1' })
+      const settled = makeHandler({
+        isSubagent: (id: string) => id === 'child-1',
+      })
       settled('root-1')
 
       expect(rang.map(e => e.detail.agentId)).toEqual(['root-1'])
@@ -157,7 +175,9 @@ describe('useAgentSettled', () => {
   })
 
   it('stays quiet for an agent whose tab is closing', () => {
-    makeHandler({ isAgentClosing: id => id === 'a-1' })('a-1')
+    makeHandler({
+      isAgentClosing: id => id === 'a-1',
+    })('a-1')
 
     expect(play).not.toHaveBeenCalled()
   })
@@ -205,7 +225,10 @@ describe('useAgentSettled', () => {
     it('rings when no client leads, rather than swallowing the settle', () => {
       const activeClient = createActiveClientStore()
       activeClient.update(ACTIVE_WORKSPACE, 'client-b')
-      makeHandler({ activeClient, effectiveClientId: () => '' })('a-1')
+      makeHandler({
+        activeClient,
+        effectiveClientId: () => '',
+      })('a-1')
 
       expect(play).toHaveBeenCalledTimes(1)
     })
@@ -217,7 +240,10 @@ describe('useAgentSettled', () => {
       // cases above state.
       const activeClient = createActiveClientStore()
       activeClient.update(ACTIVE_WORKSPACE, 'client-b')
-      makeHandler({ activeClient, getActiveWorkspaceId: () => null })('a-1')
+      makeHandler({
+        activeClient,
+        getActiveWorkspaceId: () => null,
+      })('a-1')
 
       expect(play).toHaveBeenCalledTimes(1)
       expect(rang.map(e => e.detail.agentId)).toEqual(['a-1'])
@@ -226,7 +252,10 @@ describe('useAgentSettled', () => {
     it('rings when the active workspace is undefined too', () => {
       const activeClient = createActiveClientStore()
       activeClient.update(ACTIVE_WORKSPACE, 'client-b')
-      makeHandler({ activeClient, getActiveWorkspaceId: () => undefined })('a-1')
+      makeHandler({
+        activeClient,
+        getActiveWorkspaceId: () => undefined,
+      })('a-1')
 
       expect(play).toHaveBeenCalledTimes(1)
     })

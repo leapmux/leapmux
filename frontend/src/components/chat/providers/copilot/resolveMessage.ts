@@ -14,7 +14,9 @@ export function resolveCopilotMessage(parsed: ParsedMessageContent): Record<stri
   if (result.contents != null && !Array.isArray(result.contents))
     return original
 
-  const contents = Array.isArray(result.contents) ? result.contents : []
+  const contents = Array.isArray(result.contents)
+    ? result.contents
+    : []
   const present = new Set<string>()
   for (const item of contents) {
     if (isObject(item) && item.type === 'image')
@@ -47,7 +49,16 @@ export function resolveCopilotMessage(parsed: ParsedMessageContent): Record<stri
       ...params,
       event: {
         ...event,
-        data: { ...data, result: { ...result, contents: [...contents, ...images] } },
+        data: {
+          ...data,
+          result: {
+            ...result,
+            contents: [
+              ...contents,
+              ...images,
+            ],
+          },
+        },
       },
     },
   }

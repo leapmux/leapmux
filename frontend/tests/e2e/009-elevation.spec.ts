@@ -165,7 +165,9 @@ test.describe('the verified-session state', () => {
       if (!status || !firstRow)
         return 'missing'
       // Node.DOCUMENT_POSITION_FOLLOWING === 4.
-      return (status.compareDocumentPosition(firstRow) & 4) !== 0 ? 'before' : 'after'
+      return (status.compareDocumentPosition(firstRow) & 4) !== 0
+        ? 'before'
+        : 'after'
     })
     expect(order).toBe('before')
   })

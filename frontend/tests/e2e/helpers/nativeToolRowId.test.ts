@@ -16,7 +16,13 @@ beforeEach(() => {
 })
 
 describe('nativeToolRowId', () => {
-  it.each(['model-call', '', '  ', 'a"b\\c', 'raw\0call'])('keeps the raw ID without a provider resolver or a tab lookup: %j', async (callId) => {
+  it.each([
+    'model-call',
+    '',
+    '  ',
+    'a"b\\c',
+    'raw\0call',
+  ])('keeps the raw ID without a provider resolver or a tab lookup: %j', async (callId) => {
     expect(await nativeToolRowId({ page }, callId)).toBe(callId)
     expect(selectedAgentTabId).not.toHaveBeenCalled()
   })

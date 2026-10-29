@@ -30,7 +30,25 @@ export interface E2EOptions {
   serial: boolean
 }
 
-const SERIAL_OPTIONS = new Set(['--debug', '--headed', '--help', '-h', '--list', '--ui', '--ui-host', '--ui-port', '--shard', '--config', '-c', '--max-failures', '-x', '--global-timeout', '--update-snapshots', '-u', '--update-source-method'])
+const SERIAL_OPTIONS = new Set([
+  '--debug',
+  '--headed',
+  '--help',
+  '-h',
+  '--list',
+  '--ui',
+  '--ui-host',
+  '--ui-port',
+  '--shard',
+  '--config',
+  '-c',
+  '--max-failures',
+  '-x',
+  '--global-timeout',
+  '--update-snapshots',
+  '-u',
+  '--update-source-method',
+])
 /** Options whose next argument is always their value. The launcher consumes --workers, -j, --balance, and --failed-files-from. */
 const VALUE_OPTIONS = new Set([
   '--workers',
@@ -64,7 +82,12 @@ const VALUE_OPTIONS = new Set([
   '--update-source-method',
 ])
 /** Playwright options with an optional value. Commander takes the next argument as the value when it is not an option. */
-const OPTIONAL_VALUE_OPTIONS = new Set(['--debug', '--only-changed', '--update-snapshots', '-u'])
+const OPTIONAL_VALUE_OPTIONS = new Set([
+  '--debug',
+  '--only-changed',
+  '--update-snapshots',
+  '-u',
+])
 /** Playwright options that take a list. Commander adds every following argument that is not an option to the list. */
 const VARIADIC_OPTIONS = new Set(['--project'])
 /**
@@ -72,7 +95,14 @@ const VARIADIC_OPTIONS = new Set(['--project'])
  * --project is absent on purpose: playwright.config.ts defines one project, so a project filter keeps every test of a file,
  * and Playwright itself refuses an unknown project name.
  */
-const NARROWING_OPTIONS = new Set(['--grep', '-g', '--grep-invert', '-G', '--test-list-invert', '--shard'])
+const NARROWING_OPTIONS = new Set([
+  '--grep',
+  '-g',
+  '--grep-invert',
+  '-G',
+  '--test-list-invert',
+  '--shard',
+])
 /** Flags that the launcher reads. A value would change nothing in Playwright, so the launcher refuses one. */
 const INSPECTED_FLAGS = new Set(['--last-failed', '--pass-with-no-tests', '--failed-files'])
 
@@ -93,7 +123,9 @@ function shortArguments(argument: string): string[] {
       continue
     }
     if (option === '-u') {
-      result.push(index + 1 < argument.length ? `--update-snapshots=${argument.slice(index + 1)}` : '-u')
+      result.push(index + 1 < argument.length
+        ? `--update-snapshots=${argument.slice(index + 1)}`
+        : '-u')
       return result
     }
     if (VALUE_OPTIONS.has(option)) {
@@ -177,7 +209,9 @@ export function parseE2EOptions(args: readonly string[], capacity = availablePar
       continue
     }
     const separator = argument.indexOf('=')
-    const option = separator < 0 ? argument : argument.slice(0, separator)
+    const option = separator < 0
+      ? argument
+      : argument.slice(0, separator)
     if (option === '--parallelism' || option === '--parellelism')
       throw new Error('Use --workers to select the number of isolated E2E shards.')
     if (option === '--fully-parallel')
@@ -210,7 +244,9 @@ export function parseE2EOptions(args: readonly string[], capacity = availablePar
       playwrightArgs.push(argument)
       continue
     }
-    const value = separator < 0 ? input[++index] : argument.slice(separator + 1)
+    const value = separator < 0
+      ? input[++index]
+      : argument.slice(separator + 1)
     if (value === undefined || value.includes('\0'))
       throw new Error(`The E2E ${option} option requires a value without NUL.`)
     if (NARROWING_OPTIONS.has(option))
@@ -273,17 +309,31 @@ export function parseE2EOptions(args: readonly string[], capacity = availablePar
         playwrightArgs.push(input[++index]!)
     }
   }
-  if (failedFiles)
-    requireCompleteFailedFiles(positionals, { lastFailed, testList, onlyChanged, narrowing })
+  if (failedFiles) {
+    requireCompleteFailedFiles(positionals, {
+      lastFailed,
+      testList,
+      onlyChanged,
+      narrowing,
+    })
+  }
   return {
     workers: serial ? 1 : workers,
     playwrightArgs,
-    ...(reporters === undefined ? {} : { reporters }),
-    ...(outputDir === undefined ? {} : { outputDir }),
+    ...(reporters === undefined
+      ? {}
+      : { reporters }),
+    ...(outputDir === undefined
+      ? {}
+      : { outputDir }),
     lastFailed,
-    ...(lastFailedFile === undefined ? {} : { lastFailedFile }),
+    ...(lastFailedFile === undefined
+      ? {}
+      : { lastFailedFile }),
     failedFiles,
-    ...(failedFilesFrom === undefined ? {} : { failedFilesFrom }),
+    ...(failedFilesFrom === undefined
+      ? {}
+      : { failedFilesFrom }),
     passWithNoTests,
     testList,
     balance: balance ?? 'history',
@@ -303,8 +353,13 @@ function withoutRunOptions(args: readonly string[], removed: ReadonlySet<string>
   const last: string[] = []
   for (let index = 0; index < args.length; index++) {
     const argument = args[index]!
-    if (argument === '--')
-      return [...result, ...last, ...args.slice(index)]
+    if (argument === '--') {
+      return [
+        ...result,
+        ...last,
+        ...args.slice(index),
+      ]
+    }
     const option = argument.split('=', 1)[0]
     const takesValue = option !== undefined && VALUE_OPTIONS.has(option) && !argument.includes('=')
     if (option !== undefined && removed.has(option)) {
@@ -332,7 +387,10 @@ function withoutRunOptions(args: readonly string[], removed: ReadonlySet<string>
     if (takesValue)
       result.push(args[++index]!)
   }
-  return [...result, ...last]
+  return [
+    ...result,
+    ...last,
+  ]
 }
 
 /**
@@ -340,12 +398,21 @@ function withoutRunOptions(args: readonly string[], removed: ReadonlySet<string>
  * Remove the destinations and the last-run selection, because the launcher supplies a private copy of each one.
  */
 export function shardSelectionArgs(args: readonly string[]): string[] {
-  return withoutRunOptions(args, new Set(['--reporter', '--output', '--last-failed', '--last-failed-file']))
+  return withoutRunOptions(args, new Set([
+    '--reporter',
+    '--output',
+    '--last-failed',
+    '--last-failed-file',
+  ]))
 }
 
 /** Keep serial test artifacts inside this run without changing reporters or test filters. */
 export function serialRunArgs(args: readonly string[], outputDir: string, testList?: string): string[] {
-  return [`--output=${outputDir}`, ...testListArgs(testList), ...withoutRunOptions(args, new Set(['--output']))]
+  return [
+    `--output=${outputDir}`,
+    ...testListArgs(testList),
+    ...withoutRunOptions(args, new Set(['--output'])),
+  ]
 }
 
 export interface ChildSelection {
@@ -358,21 +425,32 @@ export interface ChildSelection {
 }
 
 function testListArgs(testList: string | undefined): string[] {
-  return testList === undefined ? [] : [`--test-list=${testList}`]
+  return testList === undefined
+    ? []
+    : [`--test-list=${testList}`]
 }
 
 /** The launcher options precede the caller filters, which can end with `--` and positional filters. */
 function childSelectionArgs(selection: ChildSelection): string[] {
   return [
     ...testListArgs(selection.testList),
-    ...(selection.lastFailedFile === undefined ? [] : ['--last-failed', `--last-failed-file=${selection.lastFailedFile}`]),
+    ...(selection.lastFailedFile === undefined
+      ? []
+      : ['--last-failed', `--last-failed-file=${selection.lastFailedFile}`]),
     ...selection.filters,
   ]
 }
 
 /** List the selected cases once, with the same selection that the shards receive. */
 export function discoveryRunArgs(selection: ChildSelection): string[] {
-  return ['--list', '--reporter=json', '--pass-with-no-tests', '--workers=1', '--retries=0', ...childSelectionArgs(selection)]
+  return [
+    '--list',
+    '--reporter=json',
+    '--pass-with-no-tests',
+    '--workers=1',
+    '--retries=0',
+    ...childSelectionArgs(selection),
+  ]
 }
 
 export interface StaticShard {
@@ -386,7 +464,9 @@ export interface StaticShard {
  */
 export function shardRunArgs(selection: ChildSelection, shard?: StaticShard): string[] {
   return [
-    ...(shard === undefined ? [] : [`--shard=${shard.index}/${shard.total}`]),
+    ...(shard === undefined
+      ? []
+      : [`--shard=${shard.index}/${shard.total}`]),
     '--workers=1',
     '--retries=0',
     '--reporter=list,blob,json',

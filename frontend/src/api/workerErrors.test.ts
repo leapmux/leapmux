@@ -48,7 +48,13 @@ describe('isWorkerUnreachable', () => {
   })
 
   it('does not match transient/internal codes', () => {
-    const codes: Code[] = [Code.Internal, Code.DeadlineExceeded, Code.Unknown, Code.ResourceExhausted, Code.Aborted]
+    const codes: Code[] = [
+      Code.Internal,
+      Code.DeadlineExceeded,
+      Code.Unknown,
+      Code.ResourceExhausted,
+      Code.Aborted,
+    ]
     for (const code of codes) {
       const err = new ConnectError('boom', code)
       expect(isWorkerUnreachable(err, undefined), `code=${code}`).toBe(false)

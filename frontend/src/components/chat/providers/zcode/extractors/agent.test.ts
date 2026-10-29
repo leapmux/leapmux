@@ -3,7 +3,15 @@ import { input } from '../../testUtils'
 import { zcodeAgentResult } from './agent'
 import { zcodeRow } from './toolCommon'
 
-const request = input({ type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'call', toolName: 'Agent', input: { description: 'Inspect the code', prompt: 'Read the entry points.' } } })
+const request = input({
+  type: 'tool.updated',
+  payload: {
+    kind: 'scheduled',
+    toolCallId: 'call',
+    toolName: 'Agent',
+    input: { description: 'Inspect the code', prompt: 'Read the entry points.' },
+  },
+})
 const footer = (tokens = '123') => `\nagentId: agent_child (use SendMessage with to: 'agent_child' to continue this agent)\n<usage>subagent_tokens: ${tokens}\ntool_uses: 0\nduration_ms: 0</usage>`
 const launch = [
   'Async agent launched successfully.',
@@ -13,7 +21,14 @@ const launch = [
 ].join('\n')
 
 function result(content: string, success = true) {
-  return zcodeAgentResult(zcodeRow({ type: 'tool.updated', payload: { kind: 'result', toolCallId: 'call', result: { success, content } } }, 'Agent', request))
+  return zcodeAgentResult(zcodeRow({
+    type: 'tool.updated',
+    payload: {
+      kind: 'result',
+      toolCallId: 'call',
+      result: { success, content },
+    },
+  }, 'Agent', request))
 }
 
 describe('zcode agent result extraction', () => {
@@ -43,7 +58,13 @@ describe('zcode agent result extraction', () => {
   })
 
   it('uses the prompt for a native background launch', () => {
-    expect(result(launch)).toMatchObject({ outcome: 'running', statusLabel: 'launched asynchronously', agentId: 'agent_child', body: 'Read the entry points.', bodyLabel: 'Prompt' })
+    expect(result(launch)).toMatchObject({
+      outcome: 'running',
+      statusLabel: 'launched asynchronously',
+      agentId: 'agent_child',
+      body: 'Read the entry points.',
+      bodyLabel: 'Prompt',
+    })
   })
 
   it('keeps a completed report that quotes a background launch', () => {

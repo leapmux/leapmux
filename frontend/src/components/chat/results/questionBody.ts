@@ -2,17 +2,23 @@ import type { QuestionOption, QuestionPrompt } from '../model/question'
 
 /** Indent every line, so a multi-line preview stays inside its own list item. */
 function indent(text: string, by: string): string {
-  return text.split('\n').map(line => (line ? by + line : line)).join('\n')
+  return text.split('\n').map(line => (line
+    ? by + line
+    : line)).join('\n')
 }
 
 /** One option: its label, the sentence that tells it apart, then its worked example. */
 function optionMarkdown(option: QuestionOption): string {
-  const head = option.description ? `**${option.label}** — ${option.description}` : `**${option.label}**`
+  const head = option.description
+    ? `**${option.label}** — ${option.description}`
+    : `**${option.label}**`
   const preview = option.preview?.trim()
   // Two spaces of indent is what keeps a fenced block inside the bullet. A preview
   // often IS a fenced block already, so it is never fenced a second time here --
   // that would show the reader the backticks instead of the code.
-  return preview ? `- ${head}\n\n${indent(preview, '  ')}` : `- ${head}`
+  return preview
+    ? `- ${head}\n\n${indent(preview, '  ')}`
+    : `- ${head}`
 }
 
 /**

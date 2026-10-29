@@ -12,11 +12,16 @@ const mockSetAuth = vi.fn()
 const soloElevation = { seconds: 1700000000n, nanos: 0 }
 
 vi.mock('~/api/clients', () => ({
-  authClient: { setInitialSoloPassword: (...args: unknown[]) => mockSetInitialSoloPassword(...args) },
+  authClient: {
+    setInitialSoloPassword: (...args: unknown[]) => mockSetInitialSoloPassword(...args),
+  },
 }))
 
 vi.mock('~/context/AuthContext', () => ({
-  useAuth: () => ({ refreshUser: () => mockRefreshUser(), setAuth: (...args: unknown[]) => mockSetAuth(...args) }),
+  useAuth: () => ({
+    refreshUser: () => mockRefreshUser(),
+    setAuth: (...args: unknown[]) => mockSetAuth(...args),
+  }),
 }))
 
 vi.mock('~/lib/systemInfo', async () => {
@@ -26,8 +31,12 @@ vi.mock('~/lib/systemInfo', async () => {
 
 /** Types a valid password pair into the gate. */
 function fillPassword(pw = 'correct-horse-battery-staple') {
-  fireEvent.input(screen.getByLabelText('New Password'), { target: { value: pw } })
-  fireEvent.input(screen.getByLabelText('Confirm Password'), { target: { value: pw } })
+  fireEvent.input(screen.getByLabelText('New Password'), {
+    target: { value: pw },
+  })
+  fireEvent.input(screen.getByLabelText('Confirm Password'), {
+    target: { value: pw },
+  })
 }
 
 describe('PasswordSetupGate', () => {
@@ -59,10 +68,14 @@ describe('PasswordSetupGate', () => {
     const submit = screen.getByRole('button', { name: 'Set Password' })
     expect(submit).toBeDisabled()
 
-    fireEvent.input(screen.getByLabelText('New Password'), { target: { value: 'correct-horse-battery-staple' } })
+    fireEvent.input(screen.getByLabelText('New Password'), {
+      target: { value: 'correct-horse-battery-staple' },
+    })
     expect(submit).toBeDisabled()
 
-    fireEvent.input(screen.getByLabelText('Confirm Password'), { target: { value: 'something-else-entirely' } })
+    fireEvent.input(screen.getByLabelText('Confirm Password'), {
+      target: { value: 'something-else-entirely' },
+    })
     expect(submit).toBeDisabled()
   })
 

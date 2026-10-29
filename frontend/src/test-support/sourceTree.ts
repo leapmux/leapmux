@@ -30,7 +30,6 @@ import { toPosixSeparators } from '~/lib/paths'
 export const SKIP_DIRS: ReadonlySet<string> = new Set([
   'node_modules',
   '.output',
-  '.vinxi',
   'dist',
   'test-results',
 ])
@@ -93,7 +92,10 @@ export function collectFiles(dir: string, options: CollectFilesOptions): string[
     return []
   const skip = options.alsoSkip === undefined
     ? SKIP_DIRS
-    : new Set([...SKIP_DIRS, ...options.alsoSkip])
+    : new Set([
+        ...SKIP_DIRS,
+        ...options.alsoSkip,
+      ])
   return walk(dir, options.matches, skip, options.skipPaths ?? NO_PATHS, '')
 }
 
@@ -115,7 +117,9 @@ function walk(
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (skip.has(entry.name))
       continue
-    const entryRel = rel === '' ? entry.name : `${rel}/${entry.name}`
+    const entryRel = rel === ''
+      ? entry.name
+      : `${rel}/${entry.name}`
     if (skipPaths.has(entryRel))
       continue
     const full = join(dir, entry.name)

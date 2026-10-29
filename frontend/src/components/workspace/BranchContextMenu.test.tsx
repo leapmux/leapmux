@@ -13,8 +13,13 @@ import { BranchContextMenu } from './BranchContextMenu'
 // via DropdownMenu's own onClick → hidePopover wiring.
 
 vi.mock('~/api/workerRpc', () => ({
-  listAvailableProviders: vi.fn(async () => ({ providers: [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX] })),
-  listAvailableShells: vi.fn(async () => ({ shells: ['/bin/zsh', '/bin/bash'], defaultShell: '/bin/zsh' })),
+  listAvailableProviders: vi.fn(async () => ({
+    providers: [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX],
+  })),
+  listAvailableShells: vi.fn(async () => ({
+    shells: ['/bin/zsh', '/bin/bash'],
+    defaultShell: '/bin/zsh',
+  })),
 }))
 
 const listProviders = workerRpc.listAvailableProviders as unknown as ReturnType<typeof vi.fn>
@@ -36,7 +41,9 @@ function renderMenu(disabledReason?: string, isWorktree = false) {
       isWorktree={isWorktree}
       workerId="w-1"
       actions={actions}
-      {...(disabledReason !== undefined ? { disabledReason } : {})}
+      {...(disabledReason !== undefined
+        ? { disabledReason }
+        : {})}
     />
   ))
   // Before the menu opens, the only button rendered is the trigger.
@@ -144,7 +151,14 @@ describe('BranchContextMenu', () => {
       const { trigger } = renderMenu('Worker "mac-mini" is offline', true)
       await openMenu(trigger)
 
-      for (const label of ['Switch to branch...', 'Create new branch...', 'Create new worktree...', 'Delete worktree...', 'New agent...', 'New terminal...'])
+      for (const label of [
+        'Switch to branch...',
+        'Create new branch...',
+        'Create new worktree...',
+        'Delete worktree...',
+        'New agent...',
+        'New terminal...',
+      ])
         expect(menuItem(label)).toBeDisabled()
     })
   })
@@ -240,7 +254,15 @@ describe('BranchContextMenu', () => {
     it('disables every item and describes it with the reason', async () => {
       const { trigger } = renderMenu(reason)
       await openMenu(trigger)
-      for (const label of ['Switch to branch...', 'Create new branch...', 'Create new worktree...', 'Delete branch...', 'New agent...', 'New terminal...', '/bin/zsh']) {
+      for (const label of [
+        'Switch to branch...',
+        'Create new branch...',
+        'Create new worktree...',
+        'Delete branch...',
+        'New agent...',
+        'New terminal...',
+        '/bin/zsh',
+      ]) {
         const item = menuItem(label)
         expect(item).toBeDisabled()
         // Through the Tooltip's offscreen description, not `title`. A reason
@@ -277,7 +299,14 @@ describe('BranchContextMenu', () => {
     it('leaves every item enabled when no reason is given', async () => {
       const { trigger } = renderMenu()
       await openMenu(trigger)
-      for (const label of ['Switch to branch...', 'Create new branch...', 'Create new worktree...', 'Delete branch...', 'New agent...', 'New terminal...'])
+      for (const label of [
+        'Switch to branch...',
+        'Create new branch...',
+        'Create new worktree...',
+        'Delete branch...',
+        'New agent...',
+        'New terminal...',
+      ])
         expect(menuItem(label)).toBeEnabled()
     })
   })
@@ -335,7 +364,9 @@ describe('BranchContextMenu repository section', () => {
         isWorktree={false}
         workerId="w-1"
         actions={actions}
-        {...(overrides.disabledReason !== undefined ? { disabledReason: overrides.disabledReason } : {})}
+        {...(overrides.disabledReason !== undefined
+          ? { disabledReason: overrides.disabledReason }
+          : {})}
         repository={() => ({
           gitToplevel: '/home/me/leapmux',
           originUrl: overrides.originUrl ?? 'https://example.com/o/r.git',
@@ -343,7 +374,10 @@ describe('BranchContextMenu repository section', () => {
         })}
       />
     )))
-    return { ...result, trigger: screen.getByRole('button') }
+    return {
+      ...result,
+      trigger: screen.getByRole('button'),
+    }
   }
 
   it('is absent until the menu opens', () => {

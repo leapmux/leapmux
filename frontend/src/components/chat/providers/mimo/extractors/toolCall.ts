@@ -79,7 +79,9 @@ export interface MiMoToolRow {
 
 /** One MiMo tool call, as the kind-discriminated pair. */
 export function mimoToolCall(row: MiMoToolRow): ToolCall {
-  const part = row.result && mimoToolFinished(row.result) ? row.result : row.own
+  const part = row.result && mimoToolFinished(row.result)
+    ? row.result
+    : row.own
   const facts = mimoToolFacts(part, part === row.own && retainedRowIsFinal(row.completion), row.registryKey)
   const envelope: ToolCallEnvelope = {
     id: part.partId,
@@ -95,7 +97,12 @@ export function mimoToolCall(row: MiMoToolRow): ToolCall {
   const spec = mimoSpecFor(facts)
   // The tool's OWN name, which the icon tooltip states.
   const label = spec.label ?? (part.tool || undefined)
-  return createToolCall(envelope, { ...spec, ...(label !== undefined ? { label } : {}) })
+  return createToolCall(envelope, {
+    ...spec,
+    ...(label !== undefined
+      ? { label }
+      : {}),
+  })
 }
 
 /** The status word one frame states. */
@@ -135,12 +142,18 @@ export function mimoToolFacts(part: MiMoToolPart, retainedFinal = false, registr
   const declined = hasErrorStatus && MIMO_DECLINED_ERRORS.some(sentence => part.error.includes(sentence))
   const aborted = hasErrorStatus && !declined && (part.error.includes(MIMO_ABORTED_TOOL_ERROR) || pickBoolean(part.metadata, 'interrupted') === true)
   const answered = mimoToolFinished(part)
-  const read = answered && !hasErrorStatus && (part.tool === MIMO_TOOL.Read) ? parseMiMoRead(part.output) : null
+  const read = answered && !hasErrorStatus && (part.tool === MIMO_TOOL.Read)
+    ? parseMiMoRead(part.output)
+    : null
   const facts: MiMoToolFacts = {
     part,
-    ...(registryKey ? { registryKey } : {}),
+    ...(registryKey
+      ? { registryKey }
+      : {}),
     kind: mimoToolKind(part.tool),
-    text: hasErrorStatus ? part.error || 'Tool call failed' : part.output,
+    text: hasErrorStatus
+      ? part.error || 'Tool call failed'
+      : part.output,
     answered,
     retained: retainedFinal && !answered,
     failed: hasErrorStatus && !declined && !aborted,
@@ -149,7 +162,10 @@ export function mimoToolFacts(part: MiMoToolPart, retainedFinal = false, registr
     images: mimoToolImages(part),
     read,
   }
-  return { ...facts, kind: mimoCallKind(facts) }
+  return {
+    ...facts,
+    kind: mimoCallKind(facts),
+  }
 }
 
 /**
@@ -184,9 +200,13 @@ export function mimoCallKind(facts: MiMoToolFacts): ToolKind {
       return 'other'
     }
     case MIMO_TOOL.Task:
-      return isObject(part.input.operation) ? 'todo' : 'other'
+      return isObject(part.input.operation)
+        ? 'todo'
+        : 'other'
     case MIMO_TOOL.Read:
-      return facts.read?.type === 'directory' ? 'list' : 'read'
+      return facts.read?.type === 'directory'
+        ? 'list'
+        : 'read'
     default:
       break
   }
@@ -201,21 +221,33 @@ function mimoQuestions(input: Record<string, unknown>): QuestionPrompt[] {
     input.questions,
     (question) => {
       const header = pickString(question, 'header')
-      return { ...(header ? { header } : {}), question: pickString(question, 'question') }
+      return {
+        ...(header
+          ? { header }
+          : {}),
+        question: pickString(question, 'question'),
+      }
     },
     (option) => {
       const label = pickString(option, 'label')
       if (!label)
         return null
       const description = pickString(option, 'description')
-      return { label, ...(description ? { description } : {}) }
+      return {
+        label,
+        ...(description
+          ? { description }
+          : {}),
+      }
     },
   )
 }
 
 /** The action a `workflow` call or a non-spawning `actor` call takes on its task. */
 function mimoTaskAction(part: MiMoToolPart): TaskRequest['action'] {
-  const operation = part.tool === MIMO_TOOL.Workflow ? pickString(part.input, 'operation') : mimoActorAction(part.input)
+  const operation = part.tool === MIMO_TOOL.Workflow
+    ? pickString(part.input, 'operation')
+    : mimoActorAction(part.input)
   switch (operation) {
     case MIMO_WORKFLOW_OPERATION.Status:
     case MIMO_WORKFLOW_OPERATION.Wait:
@@ -270,12 +302,22 @@ const MIMO_CRON_TRIGGER_ACTIONS: ReadonlyMap<string, TriggerRequest['action']> =
 export const MIMO_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<MiMoToolFacts> = {
   // MiMo nests the launch under `operation`.
   // The Worker uses the native spawn part ID as its registry key.
-  agent: (args, facts): ToolRequestByKind['agent'] => ({ ...mimoActorRequest(args), ...(facts.registryKey ? { registryKey: facts.registryKey } : {}) }),
+  agent: (args, facts): ToolRequestByKind['agent'] => ({
+    ...mimoActorRequest(args),
+    ...(facts.registryKey
+      ? { registryKey: facts.registryKey }
+      : {}),
+  }),
   // The recipient and the words of an `actor send`, nested under `operation`.
   message: (args): ToolRequestByKind['message'] => {
     const operation = mimoActorOperation(args)
     const to = pickString(operation, 'to_actor_id')
-    return { ...(to ? { to } : {}), text: pickString(operation, 'content') }
+    return {
+      ...(to
+        ? { to }
+        : {}),
+      text: pickString(operation, 'content'),
+    }
   },
   // The subagent or the workflow run the call acts on, and the action the operation
   // states. The shared entry answers `other` for every call.
@@ -283,7 +325,12 @@ export const MIMO_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<MiMoToolFacts> = 
     const taskId = facts.part.tool === MIMO_TOOL.Workflow
       ? pickString(args, 'run_id')
       : pickString(mimoActorOperation(args), 'actor_id') || pickString(mimoActorOperation(args), 'to_actor_id')
-    return { action: mimoTaskAction(facts.part), ...(taskId ? { taskId } : {}) }
+    return {
+      action: mimoTaskAction(facts.part),
+      ...(taskId
+        ? { taskId }
+        : {}),
+    }
   },
   // The language and the working directory, which the tool name and MiMo's own
   // `workdir` key state.
@@ -291,33 +338,49 @@ export const MIMO_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<MiMoToolFacts> = 
   // The change each of MiMo's five file tools states in its own shape.
   edit: (args, facts): ToolRequestByKind['edit'] => ({
     changes: mimoRequestedChanges(facts.part.tool, args),
-    ...(args.replace_all === true ? { replaceAll: true } : {}),
+    ...(args.replace_all === true
+      ? { replaceAll: true }
+      : {}),
   }),
-  write: (args, facts): ToolRequestByKind['write'] => ({ changes: mimoRequestedChanges(facts.part.tool, args) }),
+  write: (args, facts): ToolRequestByKind['write'] => ({
+    changes: mimoRequestedChanges(facts.part.tool, args),
+  }),
   // The item the `task` call acted on, nested under `operation`.
   todo: (args): ToolRequestByKind['todo'] => mimoTaskRequest(args),
   // The parsed QUESTIONS. The shared entry states an empty list, because the shape of
   // a question is each provider's own.
-  question: (args): ToolRequestByKind['question'] => ({ questions: mimoQuestions(args) }),
+  question: (args): ToolRequestByKind['question'] => ({
+    questions: mimoQuestions(args),
+  }),
   // The job and its schedule, nested under `operation`, and the action its operation
   // word states.
   trigger: (args): ToolRequestByKind['trigger'] => {
-    const operation = isObject(args.operation) ? args.operation : {}
+    const operation = isObject(args.operation)
+      ? args.operation
+      : {}
     const triggerId = pickString(operation, 'id')
     const schedule = pickString(operation, 'cron')
     const name = pickString(operation, 'prompt')
     return {
       action: MIMO_CRON_TRIGGER_ACTIONS.get(pickString(operation, 'action')) ?? 'other',
-      ...(triggerId ? { triggerId } : {}),
-      ...(name ? { name } : {}),
-      ...(schedule ? { schedule } : {}),
+      ...(triggerId
+        ? { triggerId }
+        : {}),
+      ...(name
+        ? { name }
+        : {}),
+      ...(schedule
+        ? { schedule }
+        : {}),
     }
   },
   // A plan approval selects MiMo's build agent.
   // The header states when the user sends the plan back.
   // Outside plan mode, the call changes no mode and keeps MiMo's title.
   switch_mode: (_args, facts): ToolRequestByKind['switch_mode'] =>
-    mimoPlanExitOutsidePlanMode(facts) ? {} : { mode: 'build', declinedTitle: 'Plan sent back' },
+    mimoPlanExitOutsidePlanMode(facts)
+      ? {}
+      : { mode: 'build', declinedTitle: 'Plan sent back' },
 }
 
 /**
@@ -363,16 +426,25 @@ function mimoArgumentsOnly<P extends ToolKind>(kind: P): (facts: MiMoToolFacts) 
   // The inner arrow states its OWN return type, although the signature above already
   // declares it. A contextual signature is not an annotated position, so without this
   // the literal escapes the excess-property check.
-  return (facts): ToolCallSpecVariant<P> => ({ kind, request: mimoRequestFor(kind, facts), ...mimoUnreadResult(facts) })
+  return (facts): ToolCallSpecVariant<P> => ({
+    kind,
+    request: mimoRequestFor(kind, facts),
+    ...mimoUnreadResult(facts),
+  })
 }
 
 /** The lifecycle of a kind whose answer this build cannot read into a shape. */
 function mimoUnreadResult(facts: MiMoToolFacts): { result?: ToolFailureResult | UnparsedToolResult } {
   if (!facts.answered)
     return {}
-  if (endedBadly(facts))
-    return { result: failedResult(facts.text) }
-  return { result: unparsedResult(facts.text) }
+  if (endedBadly(facts)) {
+    return {
+      result: failedResult(facts.text),
+    }
+  }
+  return {
+    result: unparsedResult(facts.text),
+  }
 }
 
 /**
@@ -388,14 +460,19 @@ function mimoUnreadResult(facts: MiMoToolFacts): { result?: ToolFailureResult | 
 function mimoGenericResult(facts: MiMoToolFacts): { result?: GenericToolResult | ToolFailureResult } {
   if (!facts.answered)
     return {}
-  if (endedBadly(facts))
-    return { result: failedResult(facts.text) }
+  if (endedBadly(facts)) {
+    return {
+      result: failedResult(facts.text),
+    }
+  }
   const content: McpContentItem[] = []
   if (facts.text)
     content.push({ type: 'text', text: facts.text })
   for (const source of facts.images)
     content.push({ type: 'image', source })
-  return { result: { content } }
+  return {
+    result: { content },
+  }
 }
 
 /** The failure or refusal a call that did not complete states, in the shared shape. */
@@ -428,7 +505,12 @@ export const MIMO_TOOL_READERS: ToolCallSpecReaderTable<MiMoToolFacts> = {
       // A command that the turn cut short printed output until the cut, and its last
       // update is the only record of that output.
       return facts.retained && pickString(facts.part.metadata, 'output')
-        ? { kind: 'execute', request, title, result: mimoExecuteResult(facts.part) }
+        ? {
+            kind: 'execute',
+            request,
+            title,
+            result: mimoExecuteResult(facts.part),
+          }
         : { kind: 'execute', request, title }
     }
     if (endedBadly(facts)) {
@@ -436,14 +518,36 @@ export const MIMO_TOOL_READERS: ToolCallSpecReaderTable<MiMoToolFacts> = {
       // never ran states its reason alone.
       const printed = pickString(facts.part.metadata, 'output')
       return printed
-        ? { kind: 'execute', request, title, result: mimoExecuteResult(facts.part), statusOverride: facts.aborted ? 'cancelled' : 'failed' }
-        : { kind: 'execute', request, title, result: failureOf(facts) }
+        ? {
+            kind: 'execute',
+            request,
+            title,
+            result: mimoExecuteResult(facts.part),
+            statusOverride: facts.aborted ? 'cancelled' : 'failed',
+          }
+        : {
+            kind: 'execute',
+            request,
+            title,
+            result: failureOf(facts),
+          }
     }
     // A script completes its call however it ended, and states the ending apart.
     const scriptOutcome = mimoExecOutcome(facts.part)
     return scriptOutcome
-      ? { kind: 'execute', request, title, result: mimoExecuteResult(facts.part), statusOverride: scriptOutcome }
-      : { kind: 'execute', request, title, result: mimoExecuteResult(facts.part) }
+      ? {
+          kind: 'execute',
+          request,
+          title,
+          result: mimoExecuteResult(facts.part),
+          statusOverride: scriptOutcome,
+        }
+      : {
+          kind: 'execute',
+          request,
+          title,
+          result: mimoExecuteResult(facts.part),
+        }
   },
   read: (facts): ToolCallSpecVariant<'read'> => {
     const request = mimoRequestFor('read', facts)
@@ -451,8 +555,13 @@ export const MIMO_TOOL_READERS: ToolCallSpecReaderTable<MiMoToolFacts> = {
     const images = facts.images.map(image => withFallbackFilePath(image, request.path))
     if (!facts.answered)
       return { kind: 'read', request }
-    if (endedBadly(facts))
-      return { kind: 'read', request, result: failureOf(facts) }
+    if (endedBadly(facts)) {
+      return {
+        kind: 'read',
+        request,
+        result: failureOf(facts),
+      }
+    }
     const body = facts.read
     if (body?.type === 'file') {
       return {
@@ -462,20 +571,39 @@ export const MIMO_TOOL_READERS: ToolCallSpecReaderTable<MiMoToolFacts> = {
         result: {
           lines: body.lines,
           fallbackContent: body.lines.map(line => line.text).join('\n'),
-          ...(body.notice !== undefined ? { trailing: [{ label: 'Range', text: body.notice }, ...body.trailing] } : body.trailing.length > 0 ? { trailing: body.trailing } : {}),
+          ...(body.notice !== undefined
+            ? {
+                trailing: [
+                  { label: 'Range', text: body.notice },
+                  ...body.trailing,
+                ],
+              }
+            : body.trailing.length > 0
+              ? { trailing: body.trailing }
+              : {}),
         },
       }
     }
     // The text describes the returned image or PDF. It describes other media also.
     // The row shows each image beside that text.
-    return { kind: 'read', request, images, result: unparsedResult(facts.text) }
+    return {
+      kind: 'read',
+      request,
+      images,
+      result: unparsedResult(facts.text),
+    }
   },
   list: (facts): ToolCallSpecVariant<'list'> => {
     const request = mimoRequestFor('list', facts)
     const body = facts.read
     if (!facts.answered || body?.type !== 'directory') {
-      if (facts.answered && endedBadly(facts))
-        return { kind: 'list', request, result: failureOf(facts) }
+      if (facts.answered && endedBadly(facts)) {
+        return {
+          kind: 'list',
+          request,
+          result: failureOf(facts),
+        }
+      }
       return { kind: 'list', request }
     }
     return {
@@ -483,8 +611,12 @@ export const MIMO_TOOL_READERS: ToolCallSpecReaderTable<MiMoToolFacts> = {
       request: { path: body.path || request.path },
       result: {
         entries: body.entries.map(path => ({ path })),
-        ...(body.totalEntries !== undefined ? { totalEntries: body.totalEntries } : {}),
-        ...(body.offset !== undefined ? { offset: body.offset } : {}),
+        ...(body.totalEntries !== undefined
+          ? { totalEntries: body.totalEntries }
+          : {}),
+        ...(body.offset !== undefined
+          ? { offset: body.offset }
+          : {}),
         truncated: body.truncated,
       },
     }
@@ -493,35 +625,70 @@ export const MIMO_TOOL_READERS: ToolCallSpecReaderTable<MiMoToolFacts> = {
     const request = mimoRequestFor('edit', facts)
     if (!facts.answered)
       return { kind: 'edit', request }
-    if (endedBadly(facts))
-      return { kind: 'edit', request, result: failureOf(facts) }
+    if (endedBadly(facts)) {
+      return {
+        kind: 'edit',
+        request,
+        result: failureOf(facts),
+      }
+    }
     const landed = mimoLandedChanges(facts.part, request.changes[0]?.filePath ?? '')
-    if (landed)
-      return { kind: 'edit', request, result: { changes: landed } }
+    if (landed) {
+      return {
+        kind: 'edit',
+        request,
+        result: { changes: landed },
+      }
+    }
     // Nothing states the landed change, so the change the call ASKED for is the best
     // statement of what it applied. It claims nothing beyond the call's own arguments.
-    return { kind: 'edit', request, result: { changes: request.changes } }
+    return {
+      kind: 'edit',
+      request,
+      result: { changes: request.changes },
+    }
   },
   write: (facts): ToolCallSpecVariant<'write'> => {
     const request = mimoRequestFor('write', facts)
     if (!facts.answered)
       return { kind: 'write', request }
-    if (endedBadly(facts))
-      return { kind: 'write', request, result: failureOf(facts) }
+    if (endedBadly(facts)) {
+      return {
+        kind: 'write',
+        request,
+        result: failureOf(facts),
+      }
+    }
     const landed = mimoLandedChanges(facts.part, request.changes[0]?.filePath ?? '')
-    return { kind: 'write', request, result: { changes: landed ?? request.changes } }
+    return {
+      kind: 'write',
+      request,
+      result: { changes: landed ?? request.changes },
+    }
   },
   glob: (facts): ToolCallSpecVariant<'glob'> => {
     const request = mimoRequestFor('glob', facts)
     if (!facts.answered)
       return { kind: 'glob', request }
-    if (endedBadly(facts))
-      return { kind: 'glob', request, result: failureOf(facts) }
+    if (endedBadly(facts)) {
+      return {
+        kind: 'glob',
+        request,
+        result: failureOf(facts),
+      }
+    }
     const count = pickNumber(facts.part.metadata, 'count', undefined)
     const truncated = pickBoolean(facts.part.metadata, 'truncated') === true
-    const listed = count === undefined ? null : mimoGlobFiles(facts.text, count)
-    if (!listed)
-      return { kind: 'glob', request, result: unparsedResult(facts.text) }
+    const listed = count === undefined
+      ? null
+      : mimoGlobFiles(facts.text, count)
+    if (!listed) {
+      return {
+        kind: 'glob',
+        request,
+        result: unparsedResult(facts.text),
+      }
+    }
     return {
       kind: 'glob',
       request,
@@ -531,7 +698,9 @@ export const MIMO_TOOL_READERS: ToolCallSpecReaderTable<MiMoToolFacts> = {
         numFiles: listed.files.length,
         numLines: 0,
         truncated,
-        ...(listed.notice !== undefined ? { notice: listed.notice } : {}),
+        ...(listed.notice !== undefined
+          ? { notice: listed.notice }
+          : {}),
         fallbackContent: facts.text,
         empty: listed.files.length === 0,
       },
@@ -541,13 +710,25 @@ export const MIMO_TOOL_READERS: ToolCallSpecReaderTable<MiMoToolFacts> = {
     const request = mimoRequestFor('grep', facts)
     if (!facts.answered)
       return { kind: 'grep', request }
-    if (endedBadly(facts))
-      return { kind: 'grep', request, result: failureOf(facts) }
+    if (endedBadly(facts)) {
+      return {
+        kind: 'grep',
+        request,
+        result: failureOf(facts),
+      }
+    }
     const matches = pickNumber(facts.part.metadata, 'matches', undefined)
     const truncated = pickBoolean(facts.part.metadata, 'truncated') === true
-    const listed = matches === undefined ? null : mimoGrepMatches(facts.text, matches)
-    if (!listed)
-      return { kind: 'grep', request, result: unparsedResult(facts.text) }
+    const listed = matches === undefined
+      ? null
+      : mimoGrepMatches(facts.text, matches)
+    if (!listed) {
+      return {
+        kind: 'grep',
+        request,
+        result: unparsedResult(facts.text),
+      }
+    }
     const lines = listed.matches
     return {
       kind: 'grep',
@@ -558,9 +739,13 @@ export const MIMO_TOOL_READERS: ToolCallSpecReaderTable<MiMoToolFacts> = {
         lines,
         numFiles: new Set(lines.map(line => line.filePath)).size,
         numLines: lines.length,
-        ...(matches !== undefined ? { matchCount: matches } : {}),
+        ...(matches !== undefined
+          ? { matchCount: matches }
+          : {}),
         truncated,
-        ...(listed.notice !== undefined ? { notice: listed.notice } : {}),
+        ...(listed.notice !== undefined
+          ? { notice: listed.notice }
+          : {}),
         fallbackContent: '',
         empty: lines.length === 0,
       },
@@ -570,8 +755,13 @@ export const MIMO_TOOL_READERS: ToolCallSpecReaderTable<MiMoToolFacts> = {
     const request = mimoRequestFor('search', facts)
     if (!facts.answered)
       return { kind: 'search', request }
-    if (endedBadly(facts))
-      return { kind: 'search', request, result: failureOf(facts) }
+    if (endedBadly(facts)) {
+      return {
+        kind: 'search',
+        request,
+        result: failureOf(facts),
+      }
+    }
     // These search corpora contain no files:
     // - Code snippets.
     // - Skills.
@@ -597,62 +787,141 @@ export const MIMO_TOOL_READERS: ToolCallSpecReaderTable<MiMoToolFacts> = {
     const title = request.description || undefined
     if (!facts.answered)
       return { kind: 'agent', request, title }
-    if (endedBadly(facts))
-      return { kind: 'agent', request, title, result: failureOf(facts) }
+    if (endedBadly(facts)) {
+      return {
+        kind: 'agent',
+        request,
+        title,
+        result: failureOf(facts),
+      }
+    }
     const run = mimoActorRun(facts.part)
-    if (run)
-      return { kind: 'agent', request, title, result: { agents: [{ ...run, ...(facts.registryKey ? { registryKey: facts.registryKey } : {}) }] } }
-    return { kind: 'agent', request, title, result: unparsedResult(facts.text) }
+    if (run) {
+      return {
+        kind: 'agent',
+        request,
+        title,
+        result: {
+          agents: [
+            {
+              ...run,
+              ...(facts.registryKey
+                ? { registryKey: facts.registryKey }
+                : {}),
+            },
+          ],
+        },
+      }
+    }
+    return {
+      kind: 'agent',
+      request,
+      title,
+      result: unparsedResult(facts.text),
+    }
   },
   message: (facts): ToolCallSpecVariant<'message'> => {
     const request = mimoRequestFor('message', facts)
     if (!facts.answered)
       return { kind: 'message', request }
-    if (endedBadly(facts))
-      return { kind: 'message', request, result: failureOf(facts) }
+    if (endedBadly(facts)) {
+      return {
+        kind: 'message',
+        request,
+        result: failureOf(facts),
+      }
+    }
     // MiMo completes a send that reached no subagent, and states the failure in the
     // call's title and its metadata alone.
     const error = pickString(facts.part.metadata, 'error')
-    if (error)
-      return { kind: 'message', request, result: failedResult(facts.part.title || error), statusOverride: 'failed' }
-    return { kind: 'message', request, result: proseResult(facts.text) }
+    if (error) {
+      return {
+        kind: 'message',
+        request,
+        result: failedResult(facts.part.title || error),
+        statusOverride: 'failed',
+      }
+    }
+    return {
+      kind: 'message',
+      request,
+      result: proseResult(facts.text),
+    }
   },
   task: (facts): ToolCallSpecVariant<'task'> => {
     const request = mimoRequestFor('task', facts)
     const title = facts.part.title || undefined
     if (!facts.answered)
       return { kind: 'task', request, title }
-    if (endedBadly(facts))
-      return { kind: 'task', request, title, result: failureOf(facts) }
+    if (endedBadly(facts)) {
+      return {
+        kind: 'task',
+        request,
+        title,
+        result: failureOf(facts),
+      }
+    }
     const outcome = facts.part.tool === MIMO_TOOL.Workflow
       ? mimoWorkflowOutcome(pickString(facts.part.metadata, 'status'))
       : mimoActorTaskOutcome(facts.part)
-    return { kind: 'task', request, title, result: { outcome, output: facts.text } }
+    return {
+      kind: 'task',
+      request,
+      title,
+      result: { outcome, output: facts.text },
+    }
   },
   todo: (facts): ToolCallSpecVariant<'todo'> => {
     const request = mimoRequestFor('todo', facts)
     // MiMo's own words for the call, such as `Task created: T1`. A call that has not
     // answered states none, and the renderer composes the header from the request.
-    const title = facts.answered && facts.part.title ? facts.part.title : undefined
+    const title = facts.answered && facts.part.title
+      ? facts.part.title
+      : undefined
     if (!facts.answered)
       return { kind: 'todo', request }
-    if (endedBadly(facts))
-      return { kind: 'todo', request, title, result: failureOf(facts) }
+    if (endedBadly(facts)) {
+      return {
+        kind: 'todo',
+        request,
+        title,
+        result: failureOf(facts),
+      }
+    }
     const result = mimoTaskResult(facts.part, request)
     return result
       ? { kind: 'todo', request, title, result }
-      : { kind: 'todo', request, title, result: unparsedResult(facts.text) }
+      : {
+          kind: 'todo',
+          request,
+          title,
+          result: unparsedResult(facts.text),
+        }
   },
   question: (facts): ToolCallSpecVariant<'question'> => {
     const request = mimoRequestFor('question', facts)
     const title = request.questions[0]?.header || request.questions[0]?.question || undefined
     if (!facts.answered)
       return { kind: 'question', request, title }
-    if (endedBadly(facts))
-      return { kind: 'question', request, title, result: failureOf(facts) }
-    const answers = Array.isArray(facts.part.metadata.answers) ? facts.part.metadata.answers : null
-    if (!answers)
-      return { kind: 'question', request, title, result: unparsedResult(facts.text) }
+    if (endedBadly(facts)) {
+      return {
+        kind: 'question',
+        request,
+        title,
+        result: failureOf(facts),
+      }
+    }
+    const answers = Array.isArray(facts.part.metadata.answers)
+      ? facts.part.metadata.answers
+      : null
+    if (!answers) {
+      return {
+        kind: 'question',
+        request,
+        title,
+        result: unparsedResult(facts.text),
+      }
+    }
     return {
       kind: 'question',
       request,
@@ -660,8 +929,15 @@ export const MIMO_TOOL_READERS: ToolCallSpecReaderTable<MiMoToolFacts> = {
       result: {
         answers: request.questions.map((question, index) => {
           const chosen = answers[index]
-          const words = Array.isArray(chosen) ? chosen.filter((word): word is string => typeof word === 'string' && word !== '') : []
-          return { header: question.header || question.question, answer: words.length > 0 ? words.join(', ') : null }
+          const words = Array.isArray(chosen)
+            ? chosen.filter((word): word is string => typeof word === 'string' && word !== '')
+            : []
+          return {
+            header: question.header || question.question,
+            answer: words.length > 0
+              ? words.join(', ')
+              : null,
+          }
         }),
       },
     }
@@ -671,80 +947,180 @@ export const MIMO_TOOL_READERS: ToolCallSpecReaderTable<MiMoToolFacts> = {
     const title = facts.part.title || undefined
     if (!facts.answered)
       return { kind: 'switch_mode', request }
-    if (facts.failed || facts.aborted)
-      return { kind: 'switch_mode', request, title, result: failureOf(facts) }
-    if (facts.declined)
-      return { kind: 'switch_mode', request, title, result: failureOf(facts), statusOverride: 'declined' }
+    if (facts.failed || facts.aborted) {
+      return {
+        kind: 'switch_mode',
+        request,
+        title,
+        result: failureOf(facts),
+      }
+    }
+    if (facts.declined) {
+      return {
+        kind: 'switch_mode',
+        request,
+        title,
+        result: failureOf(facts),
+        statusOverride: 'declined',
+      }
+    }
     // A call outside plan mode asked nobody, so nothing was approved or sent back.
-    if (mimoPlanExitOutsidePlanMode(facts))
-      return { kind: 'switch_mode', request, title, result: proseResult(facts.text) }
+    if (mimoPlanExitOutsidePlanMode(facts)) {
+      return {
+        kind: 'switch_mode',
+        request,
+        title,
+        result: proseResult(facts.text),
+      }
+    }
     // Sending a plan back answers the call.
     // The session stays in plan mode and retains the user's feedback.
     if (pickBoolean(facts.part.metadata, 'switched') === false && facts.part.metadata.feedback !== undefined) {
       const feedback = pickString(facts.part.metadata, 'feedback')
-      return { kind: 'switch_mode', request, title, result: proseResult(feedback || facts.text), statusOverride: 'declined' }
+      return {
+        kind: 'switch_mode',
+        request,
+        title,
+        result: proseResult(feedback || facts.text),
+        statusOverride: 'declined',
+      }
     }
-    return { kind: 'switch_mode', request, title, result: proseResult(facts.text) }
+    return {
+      kind: 'switch_mode',
+      request,
+      title,
+      result: proseResult(facts.text),
+    }
   },
   fetch: (facts): ToolCallSpecVariant<'fetch'> => {
     const request = mimoRequestFor('fetch', facts)
     if (!facts.answered)
       return { kind: 'fetch', request }
-    if (endedBadly(facts))
-      return { kind: 'fetch', request, result: failureOf(facts) }
-    return { kind: 'fetch', request, result: { result: facts.text } }
+    if (endedBadly(facts)) {
+      return {
+        kind: 'fetch',
+        request,
+        result: failureOf(facts),
+      }
+    }
+    return {
+      kind: 'fetch',
+      request,
+      result: { result: facts.text },
+    }
   },
   web_search: (facts): ToolCallSpecVariant<'web_search'> => {
     const request = mimoRequestFor('web_search', facts)
     if (!facts.answered)
       return { kind: 'web_search', request }
-    if (endedBadly(facts))
-      return { kind: 'web_search', request, result: failureOf(facts) }
-    return { kind: 'web_search', request, result: { links: [], summary: facts.text } }
+    if (endedBadly(facts)) {
+      return {
+        kind: 'web_search',
+        request,
+        result: failureOf(facts),
+      }
+    }
+    return {
+      kind: 'web_search',
+      request,
+      result: { links: [], summary: facts.text },
+    }
   },
   skill: (facts): ToolCallSpecVariant<'skill'> => {
     const request = mimoRequestFor('skill', facts)
     if (!facts.answered)
       return { kind: 'skill', request }
-    if (endedBadly(facts))
-      return { kind: 'skill', request, result: failureOf(facts) }
-    return { kind: 'skill', request, result: proseResult(facts.text, 'markdown') }
+    if (endedBadly(facts)) {
+      return {
+        kind: 'skill',
+        request,
+        result: failureOf(facts),
+      }
+    }
+    return {
+      kind: 'skill',
+      request,
+      result: proseResult(facts.text, 'markdown'),
+    }
   },
   memory: (facts): ToolCallSpecVariant<'memory'> => {
     const request = mimoRequestFor('memory', facts)
     if (!facts.answered)
       return { kind: 'memory', request }
-    if (endedBadly(facts))
-      return { kind: 'memory', request, result: failureOf(facts) }
-    return { kind: 'memory', request, result: proseResult(facts.text) }
+    if (endedBadly(facts)) {
+      return {
+        kind: 'memory',
+        request,
+        result: failureOf(facts),
+      }
+    }
+    return {
+      kind: 'memory',
+      request,
+      result: proseResult(facts.text),
+    }
   },
   trigger: (facts): ToolCallSpecVariant<'trigger'> => {
     const request = mimoRequestFor('trigger', facts)
     const title = facts.part.title || undefined
     if (!facts.answered)
       return { kind: 'trigger', request, title }
-    if (endedBadly(facts))
-      return { kind: 'trigger', request, title, result: failureOf(facts) }
-    return { kind: 'trigger', request, title, result: proseResult(facts.text) }
+    if (endedBadly(facts)) {
+      return {
+        kind: 'trigger',
+        request,
+        title,
+        result: failureOf(facts),
+      }
+    }
+    return {
+      kind: 'trigger',
+      request,
+      title,
+      result: proseResult(facts.text),
+    }
   },
   agents: (facts): ToolCallSpecVariant<'agents'> => {
     const request = mimoRequestFor('agents', facts)
     const title = facts.part.title || undefined
     if (!facts.answered)
       return { kind: 'agents', request, title }
-    if (endedBadly(facts))
-      return { kind: 'agents', request, title, result: failureOf(facts) }
-    return { kind: 'agents', request, title, result: proseResult(facts.text) }
+    if (endedBadly(facts)) {
+      return {
+        kind: 'agents',
+        request,
+        title,
+        result: failureOf(facts),
+      }
+    }
+    return {
+      kind: 'agents',
+      request,
+      title,
+      result: proseResult(facts.text),
+    }
   },
   // The generic card: `invalid`, and a tool from a later MiMo release.
-  other: (facts): ToolCallSpecVariant<'other'> => ({ kind: 'other', request: mimoRequestFor('other', facts), ...mimoGenericResult(facts) }),
+  other: (facts): ToolCallSpecVariant<'other'> => ({
+    kind: 'other',
+    request: mimoRequestFor('other', facts),
+    ...mimoGenericResult(facts),
+  }),
   // A stored row always identifies its tool, so it cannot use this kind.
   // The complete table still supplies the same card for this entry.
-  unspecified: (facts): ToolCallSpecVariant<'unspecified'> => ({ kind: 'unspecified', request: mimoRequestFor('unspecified', facts), ...mimoGenericResult(facts) }),
+  unspecified: (facts): ToolCallSpecVariant<'unspecified'> => ({
+    kind: 'unspecified',
+    request: mimoRequestFor('unspecified', facts),
+    ...mimoGenericResult(facts),
+  }),
   // No MiMo tool uses this kind.
   // MiMo identifies an MCP tool as `<server>_<tool>` without separate server and tool fields.
   // That tool therefore uses `other`. The complete table still supplies the same card here.
-  mcp: (facts): ToolCallSpecVariant<'mcp'> => ({ kind: 'mcp', request: mimoRequestFor('mcp', facts), ...mimoGenericResult(facts) }),
+  mcp: (facts): ToolCallSpecVariant<'mcp'> => ({
+    kind: 'mcp',
+    request: mimoRequestFor('mcp', facts),
+    ...mimoGenericResult(facts),
+  }),
   chart: mimoArgumentsOnly('chart'),
   delete: mimoArgumentsOnly('delete'),
   image: mimoArgumentsOnly('image'),

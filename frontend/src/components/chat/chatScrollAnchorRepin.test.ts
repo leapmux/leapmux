@@ -16,7 +16,11 @@ const anchorAt = (id: string): ScrollAnchor => ({ id, offsetWithinRow: 0 })
 function setup(geometry: { scrollTop?: number, clientHeight?: number, scrollHeight?: number } = {}) {
   const el = fakeEl(geometry)
   const writes: number[] = []
-  const flingSettle = { accumulate: vi.fn(), reset: vi.fn(), rebase: vi.fn() }
+  const flingSettle = {
+    accumulate: vi.fn(),
+    reset: vi.fn(),
+    rebase: vi.fn(),
+  }
   const velocity = {
     isFling: vi.fn(() => false),
     isActivelyFlinging: vi.fn(() => false),

@@ -18,7 +18,11 @@ ohMyPiTest.describe('Oh My Pi to-do list', () => {
     const { page, modelScript } = native
     // `init` states no status. omp marks the first task in progress itself.
     await modelScript.queue(
-      { toolCalls: [updateTodosToolCall(AgentProvider.OH_MY_PI, 'plan-1', TODO_LIST_STEPS.map(step => ({ step, status: 'pending' as const })))] },
+      {
+        toolCalls: [
+          updateTodosToolCall(AgentProvider.OH_MY_PI, 'plan-1', TODO_LIST_STEPS.map(step => ({ step, status: 'pending' as const }))),
+        ],
+      },
       { text: 'The plan is ready.' },
     )
     await sendMessage(page, modelScript.prompt('Plan the inspection of this repository.'))

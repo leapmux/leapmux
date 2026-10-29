@@ -55,7 +55,13 @@ export function clineToolStart(payload: unknown): ClineToolStart | null {
   if (!id || !name)
     return null
   const input = data[CLINE_FIELD.Input]
-  return { id, name, input: isObject(input) ? input : {} }
+  return {
+    id,
+    name,
+    input: isObject(input)
+      ? input
+      : {},
+  }
 }
 
 /** The call one row ends, or null for a row that ends none. */
@@ -86,7 +92,9 @@ const OPERATION_FAILED = 'The operation failed.'
  * stays in its own record, where the row draws it.
  */
 function singleOperationError(output: unknown): string {
-  const value = typeof output === 'string' ? parseJSON(output) : output
+  const value = typeof output === 'string'
+    ? parseJSON(output)
+    : output
   if (!isObject(value) || !('query' in value) || value.success !== false)
     return ''
   return pickString(value, 'error').trim() || OPERATION_FAILED
@@ -104,7 +112,9 @@ export function errorText(value: unknown): string {
     return text
   try {
     const parsed: unknown = JSON.parse(text)
-    return isObject(parsed) && typeof parsed.error === 'string' ? parsed.error : text
+    return isObject(parsed) && typeof parsed.error === 'string'
+      ? parsed.error
+      : text
   }
   catch {
     return text
@@ -145,8 +155,14 @@ export function clineOperations(output: unknown): ClineOperation[] {
 
 /** Keep native operation records available to readers of structured result parts. */
 export function clineOperationRecords(output: unknown): Record<string, unknown>[] {
-  const value = typeof output === 'string' ? parseJSON(output) : output
-  const records = Array.isArray(value) ? value : isObject(value) && 'query' in value ? [value] : []
+  const value = typeof output === 'string'
+    ? parseJSON(output)
+    : output
+  const records = Array.isArray(value)
+    ? value
+    : isObject(value) && 'query' in value
+      ? [value]
+      : []
   return records.filter(isObject)
 }
 

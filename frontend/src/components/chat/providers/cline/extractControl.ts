@@ -42,14 +42,22 @@ export function clineExtractControl(input: ControlExtractionInput): ExtractedCon
   if (toolName === CLINE_TOOL.SwitchToActMode)
     return { kind: 'plan' }
   const parsed = parseJSON(pickString(approval, 'inputJson'))
-  const args = isObject(parsed) ? parsed : {}
-  const command = clineToolKind(toolName) === 'execute' ? clineCommandRequest(args).command : ''
+  const args = isObject(parsed)
+    ? parsed
+    : {}
+  const command = clineToolKind(toolName) === 'execute'
+    ? clineCommandRequest(args).command
+    : ''
   return {
     kind: 'permission',
     permission: {
       title: toolName || 'Tool',
-      ...(startsAgent(toolName) ? { reason: CLINE_SPAWN_WARNING } : {}),
-      ...(command ? { command } : {}),
+      ...(startsAgent(toolName)
+        ? { reason: CLINE_SPAWN_WARNING }
+        : {}),
+      ...(command
+        ? { command }
+        : {}),
       input: args,
       options: [],
     },

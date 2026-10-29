@@ -24,7 +24,12 @@ grokTest.describe('Grok Build settings, folder trust and MCP forms', () => {
     writeFileSync(join(repository, '.mcp.json'), JSON.stringify(mcpServersConfig(server)))
     await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { workingDir: repository })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
 
     const trust = await waitForControlBanner(page)
     await expect(trust).toContainText('Trust the workspace')
@@ -39,7 +44,11 @@ grokTest.describe('Grok Build settings, folder trust and MCP forms', () => {
     const callId = 'grok-mcp'
     const answer = 'The form came back.'
     const start = await modelScript.queue(
-      { toolCalls: [mcpToolCall(context.provider, callId, { server: server.name, tool: 'ask', input: {} })] },
+      {
+        toolCalls: [
+          mcpToolCall(context.provider, callId, { server: server.name, tool: 'ask', input: {} }),
+        ],
+      },
       nativeTextStep(context, answer),
     )
     await sendMessage(page, modelScript.prompt('Call the probe form tool.'))

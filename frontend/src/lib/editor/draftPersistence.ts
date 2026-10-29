@@ -27,7 +27,13 @@ export async function loadDraft(agentId: string): Promise<Draft> {
 
 export function saveDraft(agentId: string, content: string, cursor: number, metadata: readonly DraftMetadataRecord[] = []): void {
   if (content) {
-    localStorageStoreMany([{ name: `${PREFIX_EDITOR_DRAFT}${agentId}`, value: { content, cursor } }, ...metadata])
+    localStorageStoreMany([
+      {
+        name: `${PREFIX_EDITOR_DRAFT}${agentId}`,
+        value: { content, cursor },
+      },
+      ...metadata,
+    ])
   }
   else {
     localStorageStoreMany(metadata)

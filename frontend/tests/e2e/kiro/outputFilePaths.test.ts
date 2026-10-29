@@ -24,5 +24,10 @@ const frame = {
 }
 
 describe('readKiroNativeOutput', () => {
-  runNativeOutputReaderCases({ read: readKiroNativeOutput, frame, path, pointerError: 'The native Kiro result has no exact filesystem output pointer.' })
+  runNativeOutputReaderCases({
+    read: readKiroNativeOutput,
+    frame,
+    path,
+    pointerError: 'The native Kiro result has no exact filesystem output pointer.',
+  })
 })

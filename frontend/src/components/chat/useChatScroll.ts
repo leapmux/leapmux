@@ -561,7 +561,9 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   let measurementBatchAt = Number.NEGATIVE_INFINITY
   const measurementBatchPayload = () => ({
     ...measurementBatch,
-    ageMs: measurementBatchAt === Number.NEGATIVE_INFINITY ? null : Math.round(monotonicNow() - measurementBatchAt),
+    ageMs: measurementBatchAt === Number.NEGATIVE_INFINITY
+      ? null
+      : Math.round(monotonicNow() - measurementBatchAt),
   })
 
   const scrollDomDebugSnapshot = () => {
@@ -669,7 +671,9 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // Arm/extend/disarm the stale-native shift record for this write (an 'anchor-repin'
     // larger than a screen arms it; other sources invalidate it).
     staleNativeTranslator.noteProgrammaticWrite({
-      ...(source !== undefined ? { source } : {}),
+      ...(source !== undefined
+        ? { source }
+        : {}),
       beforeTop,
       afterTop,
       clientHeight: beforeClientHeight,
@@ -973,7 +977,9 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     onLoadNewer: () => opts.onLoadNewerMessages?.(),
     isAtBottom,
     isFollowing,
-    anchorAtViewportTop: () => messageListRef ? virt.anchorAt(readLogicalScrollTop(messageListRef)) : null,
+    anchorAtViewportTop: () => messageListRef
+      ? virt.anchorAt(readLogicalScrollTop(messageListRef))
+      : null,
     bufferScreens: SCROLL_BUFFER_SCREENS,
   })
   const {
@@ -1090,8 +1096,12 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       // fling reversal / rubber-band bounce) keeps a nonzero sampled speed but leaves
       // `dir` null, and trusting lastScrollDir there would paint overscan on the side
       // the viewport just LEFT, flashing an unrendered gap on the side it now heads to.
-      const capPx = messageListRef ? flingOverscanCapPx(messageListRef.clientHeight) : 0
-      const px = dir ? Math.min(capPx, scrollVelocity.speed() * FLING_OVERSCAN_LOOKAHEAD_MS) : 0
+      const capPx = messageListRef
+        ? flingOverscanCapPx(messageListRef.clientHeight)
+        : 0
+      const px = dir
+        ? Math.min(capPx, scrollVelocity.speed() * FLING_OVERSCAN_LOOKAHEAD_MS)
+        : 0
       if (px > 0 && dir)
         lead = { dir, px }
     }
@@ -1189,12 +1199,16 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
         }
       }
     }
-    const scrollTopAtStart = messageListRef ? readLogicalScrollTop(messageListRef) : undefined
+    const scrollTopAtStart = messageListRef
+      ? readLogicalScrollTop(messageListRef)
+      : undefined
     // Same-epoch geometry for Detector B: refreshViewport's row mounts can grow
     // scrollHeight in this very flush, so maxScrollTop must be read HERE, alongside
     // scrollTopAtStart, not live at classification time -- else the positions and the
     // range they're compared against belong to different coordinate epochs.
-    const maxScrollTopAtStart = messageListRef ? maxScrollTopOf(messageListRef) : 0
+    const maxScrollTopAtStart = messageListRef
+      ? maxScrollTopOf(messageListRef)
+      : 0
     const lastScrollTopBeforeEvent = lastScrollTopForDir
     // Whether a fling was ALREADY in progress as of the PREVIOUS scroll event -- captured
     // before trackUserScrollAndComputeLead (below) samples THIS event's velocity. A trackpad momentum
@@ -1209,7 +1223,9 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // (a stall vs a steady cadence) and the tracker's PRE-sample speed (0 once idle). Read
     // before trackUserScrollAndComputeLead samples this event, for the same reason as the fling flag.
     const nowMs = monotonicNow()
-    const msSinceLastScrollEvent = lastScrollEventAt === undefined ? undefined : nowMs - lastScrollEventAt
+    const msSinceLastScrollEvent = lastScrollEventAt === undefined
+      ? undefined
+      : nowMs - lastScrollEventAt
     lastScrollEventAt = nowMs
     const speedBeforeEvent = scrollVelocity.speed()
     // Genuine user scrolls mark the window so the synchronous re-pin (fired while
@@ -1370,7 +1386,10 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // totalHeight alone would miss those and let the anchored row jump.
   // `defer:true` so the first render doesn't re-pin before anything has been
   // measured.
-  createEffect(on([() => virt.totalHeight(), () => virt.geometryVersion()], () => {
+  createEffect(on([
+    () => virt.totalHeight(),
+    () => virt.geometryVersion(),
+  ], () => {
     // Close the measurement batch FIRST: every commit of this flush already landed, and
     // nothing below read the new geometry yet, so these totals describe exactly the geometry
     // change the re-pin is about to compensate. `on(...)` runs this body untracked, so the
@@ -1433,17 +1452,25 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       return undefined
     const atBot = atBottom()
     const scrollTop = readLogicalScrollTop(messageListRef)
-    const a = atBot ? null : virt.anchorAt(scrollTop)
+    const a = atBot
+      ? null
+      : virt.anchorAt(scrollTop)
     // Scrolled away from the bottom but no resolvable anchor means the virtual
     // list is empty (e.g. an all-hidden window). There is no estimated spacer
     // here (totalHeight is 0), so a clamped raw scrollTop carries no drift risk
     // -- save it as a fallback rather than losing the position to bottom-follow
     // on return. (A non-zero scrollTop comes from non-virtual content: a tall
     // streaming block or startup banner.)
-    const rawScrollTop = !atBot && a === null ? scrollTop : undefined
+    const rawScrollTop = !atBot && a === null
+      ? scrollTop
+      : undefined
     return {
-      ...(a !== null ? { anchor: a } : {}),
-      ...(rawScrollTop !== undefined ? { rawScrollTop } : {}),
+      ...(a !== null
+        ? { anchor: a }
+        : {}),
+      ...(rawScrollTop !== undefined
+        ? { rawScrollTop }
+        : {}),
       atBottom: atBot,
       hasMoreNewer,
     }
@@ -1487,7 +1514,9 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
         return
       }
       framesLeft--
-      const step = remaining > 48 ? remaining * 0.5 : remaining * 0.4
+      const step = remaining > 48
+        ? remaining * 0.5
+        : remaining * 0.4
       writeScrollTopProgrammatically(readLogicalScrollTop(messageListRef) + Math.ceil(step), 'scroll-bottom-animation')
       scrollAnimationId = requestAnimationFrame(animate)
     }
@@ -1509,7 +1538,9 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     checkAtBottom,
     stickToBottom,
     setAnchor,
-    anchorAtCurrentTop: () => messageListRef ? virt.anchorAt(readLogicalScrollTop(messageListRef)) : null,
+    anchorAtCurrentTop: () => messageListRef
+      ? virt.anchorAt(readLogicalScrollTop(messageListRef))
+      : null,
     animateToBottom: scrollToBottomAnimated,
   })
   const { forceScrollToBottom, jumpToBottom, scrollToBottom } = tailFollower
@@ -1780,11 +1811,15 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // offset map, and totalHeight - that is the height BELOW it. (This also makes the old
     // fling-deferred-write correction unnecessary -- the offset reflects a prepend
     // regardless of a deferred scrollTop write.)
-    captureAnchor: () => messageListRef ? virt.anchorAt(readLogicalScrollTop(messageListRef)) : null,
+    captureAnchor: () => messageListRef
+      ? virt.anchorAt(readLogicalScrollTop(messageListRef))
+      : null,
     contentAbove: anchor => virt.scrollTopForAnchor(anchor),
     contentBelow: (anchor) => {
       const above = virt.scrollTopForAnchor(anchor)
-      return above == null ? null : virt.totalHeight() - above
+      return above == null
+        ? null
+        : virt.totalHeight() - above
     },
   })
   // handleScroll tops up the buffer for the new scroll position through this ref; the

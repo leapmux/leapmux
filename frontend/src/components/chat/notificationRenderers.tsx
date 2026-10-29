@@ -37,7 +37,9 @@ function NotificationDivider(props: { text: string, loading?: boolean }): JSXEle
       <Icon
         icon={props.loading ? LoaderCircle : ArrowDownToLine}
         size="sm"
-        {...(props.loading ? { class: spinner } : {})}
+        {...(props.loading
+          ? { class: spinner }
+          : {})}
       />
       {` ${props.text}`}
     </div>
@@ -83,7 +85,10 @@ function AutoReviewBlock(props: {
   }
   return (
     <div class={autoReview} data-testid="auto-review" data-outcome={props.block.outcome}>
-      <div class={props.block.outcome === 'denied' ? `${autoReviewHeader} ${autoReviewHeaderDenied}` : autoReviewHeader}>
+      <div class={props.block.outcome === 'denied'
+        ? `${autoReviewHeader} ${autoReviewHeaderDenied}`
+        : autoReviewHeader}
+      >
         <Icon icon={AUTO_REVIEW_ICONS[props.block.outcome]} size="sm" />
         {props.block.title}
       </div>
@@ -147,11 +152,18 @@ export function renderNotificationBlocks(blocks: readonly NotificationBlock[], c
     if (block.kind === 'subagent-report') {
       const warning = block.status === 'flagged'
       const withheld = block.status === 'withheld'
-      const verb = warning ? 'reported — security warning' : withheld ? 'report withheld' : 'reported'
+      const verb = warning
+        ? 'reported — security warning'
+        : withheld ? 'report withheld' : 'reported'
       elements.push(
         <div class={subagentReport}>
           <div class={subagentReportHeader}>
-            <Icon icon={warning || withheld ? TriangleAlert : Bot} size="sm" />
+            <Icon
+              icon={warning || withheld
+                ? TriangleAlert
+                : Bot}
+              size="sm"
+            />
             {`${block.label || 'Subagent'} ${verb}`}
           </div>
           <MarkdownText text={block.text} />
@@ -162,7 +174,9 @@ export function renderNotificationBlocks(blocks: readonly NotificationBlock[], c
     elements.push(
       <NotificationDivider
         text={block.text}
-        {...(block.loading !== undefined ? { loading: block.loading } : {})}
+        {...(block.loading !== undefined
+          ? { loading: block.loading }
+          : {})}
       />,
     )
   }

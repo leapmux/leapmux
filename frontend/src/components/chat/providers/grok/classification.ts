@@ -21,5 +21,7 @@ export function grokAgentTurnEnd(parent: Record<string, unknown>): string | unde
   if (pickString(update, 'sessionUpdate') !== GROK_NOTIFICATION.TurnCompleted)
     return undefined
   const reason = update?.stop_reason
-  return typeof reason === 'string' ? reason : ''
+  return typeof reason === 'string'
+    ? reason
+    : ''
 }

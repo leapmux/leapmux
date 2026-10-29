@@ -48,7 +48,9 @@ export const GoalActionsMenu: Component<GoalActionsMenuProps> = (props) => {
             // Read capabilities reactively so the disabled state and its reason stay consistent after a process restart.
             const reason = () => {
               const state = goalActionState(props.goal, item.action)
-              return state.kind === 'disabled' ? state.reason : undefined
+              return state.kind === 'disabled'
+                ? state.reason
+                : undefined
             }
             return (
               <>
@@ -58,7 +60,9 @@ export const GoalActionsMenu: Component<GoalActionsMenuProps> = (props) => {
                 </Show>
                 <DisabledReasonMenuItem
                   reason={reason()}
-                  {...(item.danger ? { class: dangerMenuItem } : {})}
+                  {...(item.danger
+                    ? { class: dangerMenuItem }
+                    : {})}
                   data-testid={`goal-action-${item.action}`}
                   onClick={() => props.goal.onAction?.(item.action)}
                 >

@@ -17,7 +17,9 @@ export function readZcodeNativeOutput(snapshot: NativeMessageSnapshot, callId: s
     accepts: frame => frame.type === ZCODE_EVENT.ToolUpdated && frame.sessionId === snapshot.agentSessionId
       && pickObject(frame, 'payload')?.kind === 'result' && pickObject(frame, 'payload')?.toolCallId === callId,
   })
-  const provider = isObject(record.supplement) ? pickObject(record.supplement, MESSAGE_SUPPLEMENT_FIELD.Provider) : undefined
+  const provider = isObject(record.supplement)
+    ? pickObject(record.supplement, MESSAGE_SUPPLEMENT_FIELD.Provider)
+    : undefined
   const payload = pickObject(provider, ZCODE_SUPPLEMENT.Payload)
   const native = pickObject(provider, ZCODE_SUPPLEMENT.NativeTool)
   const data = pickObject(native, 'data')
@@ -38,5 +40,12 @@ export function readZcodeNativeOutput(snapshot: NativeMessageSnapshot, callId: s
     || !/^tool-result-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.txt$/iu.test(leaf.slice(prefix.length))) {
     throw new Error('The native ZCode path belongs to another call or session.')
   }
-  return { paths: [path], previewText: result.content, frame: record.frame, supplement: record.supplement, native, content: record.message.content }
+  return {
+    paths: [path],
+    previewText: result.content,
+    frame: record.frame,
+    supplement: record.supplement,
+    native,
+    content: record.message.content,
+  }
 }

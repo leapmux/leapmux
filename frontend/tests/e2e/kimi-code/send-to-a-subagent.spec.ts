@@ -30,10 +30,12 @@ kimiTest.describe('sends to a Kimi Code subagent', () => {
     )
     const start = await modelScript.queue(
       {
-        toolCalls: [spawnSubagentToolCall(native.provider, 'spawn-kimi', {
-          description: 'Run the first probe',
-          prompt: modelScript.prompt('Reply with exactly KIMI_CHILD_FIRST.'),
-        })],
+        toolCalls: [
+          spawnSubagentToolCall(native.provider, 'spawn-kimi', {
+            description: 'Run the first probe',
+            prompt: modelScript.prompt('Reply with exactly KIMI_CHILD_FIRST.'),
+          }),
+        ],
       },
       { text: 'KIMI_ROOT_DONE' },
     )

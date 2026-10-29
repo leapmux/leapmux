@@ -3,7 +3,9 @@ import { nativeXmlField } from '../helpers/nativeXml'
 
 /** Keep exact Worker sequence and revision values in native diagnostic attachments. */
 export function qoderWorkflowDiagnosticJson(value: unknown): string {
-  const text = JSON.stringify(value, (_, field) => typeof field === 'bigint' ? field.toString() : field, 2)
+  const text = JSON.stringify(value, (_, field) => typeof field === 'bigint'
+    ? field.toString()
+    : field, 2)
   if (text === undefined)
     throw new Error('The Qoder Workflow diagnostic value cannot be serialized.')
   return text
@@ -37,7 +39,9 @@ export function qoderWorkflowModelOutcome(values: readonly unknown[], launch: Qo
       const texts = typeof message.content === 'string'
         ? [message.content]
         : Array.isArray(message.content)
-          ? message.content.flatMap(block => isObject(block) && block.type === 'text' && typeof block.text === 'string' ? [block.text] : [])
+          ? message.content.flatMap(block => isObject(block) && block.type === 'text' && typeof block.text === 'string'
+              ? [block.text]
+              : [])
           : []
       for (const text of texts) {
         for (const match of text.matchAll(/<task-notification>\n([\s\S]*?)\n<\/task-notification>/g)) {
@@ -50,7 +54,14 @@ export function qoderWorkflowModelOutcome(values: readonly unknown[], launch: Qo
           if ((status !== 'completed' && status !== 'failed') || summary === undefined || !outputFile)
             throw new Error('The Qoder Workflow notification has no complete final native outcome.')
           const resultText = nativeXmlField(body, 'result')
-          outcomes.push({ status, summary, outputFile, ...(resultText === undefined ? {} : { result: resultText }) })
+          outcomes.push({
+            status,
+            summary,
+            outputFile,
+            ...(resultText === undefined
+              ? {}
+              : { result: resultText }),
+          })
         }
       }
     }
@@ -76,7 +87,14 @@ export function qoderWorkflowLaunch(value: unknown, callId: string): QoderWorkfl
     || payload.transcriptDir === '' || typeof payload.scriptPath !== 'string' || payload.scriptPath === '') {
     return undefined
   }
-  return { sessionId: value.session_id, callId, taskId: payload.taskId, runId: payload.runId, transcriptDir: payload.transcriptDir, scriptPath: payload.scriptPath }
+  return {
+    sessionId: value.session_id,
+    callId,
+    taskId: payload.taskId,
+    runId: payload.runId,
+    transcriptDir: payload.transcriptDir,
+    scriptPath: payload.scriptPath,
+  }
 }
 
 /** Validate the complete native output against the exact launched workflow. */
@@ -88,5 +106,10 @@ export function qoderWorkflowOutput(value: unknown, launch: QoderWorkflowLaunch)
       throw new Error('The failed Qoder Workflow output has no native error.')
     return { status: 'failed', error: value.error }
   }
-  return { status: 'completed', ...('result' in value ? { result: value.result } : {}) }
+  return {
+    status: 'completed',
+    ...('result' in value
+      ? { result: value.result }
+      : {}),
+  }
 }

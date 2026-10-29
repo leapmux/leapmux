@@ -15,7 +15,9 @@ export const QuestionOptionItem: Component<{
   disabled?: boolean
   onChange: () => void
 }> = (props) => {
-  const preview = () => typeof props.option.preview === 'string' && props.option.preview.trim() ? props.option.preview : undefined
+  const preview = () => typeof props.option.preview === 'string' && props.option.preview.trim()
+    ? props.option.preview
+    : undefined
   return (
     <div class={questionOption}>
       <label class={styles.optionItem} data-testid={`question-option-${props.option.label}`}>

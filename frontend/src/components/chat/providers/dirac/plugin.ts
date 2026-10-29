@@ -14,6 +14,12 @@ registerACPProvider({
   defaultPermissionMode: DIRAC_MODE.Act,
   planValue: DIRAC_MODE.Plan,
   effortGroupKey: DIRAC_CONFIG.ReasoningEffort,
-  attachments: { text: true, image: true, pdf: false, audio: false, binary: false },
+  attachments: {
+    text: true,
+    image: true,
+    pdf: false,
+    audio: false,
+    binary: false,
+  },
   nativeNotifications: diracNativeNotifications,
 })

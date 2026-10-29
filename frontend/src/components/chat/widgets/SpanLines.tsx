@@ -54,7 +54,9 @@ function classFor(line: SpanLine | null): string {
   // `span_lines` payload, and a value that spells an `Object.prototype` member resolves
   // to that function -- a truthy value, so the `||` below never ran and the
   // function's source text landed in the `class` attribute.
-  const baseClass = Object.hasOwn(TYPE_STYLES, line.type) ? TYPE_STYLES[line.type] : spanLineActive
+  const baseClass = Object.hasOwn(TYPE_STYLES, line.type)
+    ? TYPE_STYLES[line.type]
+    : spanLineActive
   const colorClass = spanColorClassFor(line.color)
   const ptClass = line.passthrough_color != null && line.passthrough_color > 0
     ? spanPassthroughColors[spanColorKey(line.passthrough_color)]
@@ -83,13 +85,17 @@ function verticalSpanKey(line: SpanLine): string | undefined {
   if (line.span_id)
     return `id:${line.span_id}`
   const color = line.color ?? 0
-  return color > 0 ? `color:${color}` : undefined
+  return color > 0
+    ? `color:${color}`
+    : undefined
 }
 
 export function bodySpanKey(spanId: string | undefined, spanColor: number | undefined): string | undefined {
   if (spanId)
     return `id:${spanId}`
-  return spanColor !== undefined && spanColor > 0 ? `color:${spanColor}` : undefined
+  return spanColor !== undefined && spanColor > 0
+    ? `color:${spanColor}`
+    : undefined
 }
 
 /**

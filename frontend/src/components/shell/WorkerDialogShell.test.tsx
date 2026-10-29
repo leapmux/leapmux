@@ -24,13 +24,19 @@ function renderShellWithFormFooter(overrides: Partial<{
       error={overrides.error ?? null}
       onSubmit={onSubmit}
       onClose={onClose}
-      {...(overrides.compact !== undefined ? { compact: overrides.compact } : {})}
+      {...(overrides.compact !== undefined
+        ? { compact: overrides.compact }
+        : {})}
       footer={(
         <DialogFormFooter
           submitting={overrides.submitting ?? false}
-          {...(overrides.submitDisabled !== undefined ? { submitDisabled: overrides.submitDisabled } : {})}
+          {...(overrides.submitDisabled !== undefined
+            ? { submitDisabled: overrides.submitDisabled }
+            : {})}
           submitLabel={overrides.submitLabel ?? 'Create'}
-          {...(overrides.submittingLabel !== undefined ? { submittingLabel: overrides.submittingLabel } : {})}
+          {...(overrides.submittingLabel !== undefined
+            ? { submittingLabel: overrides.submittingLabel }
+            : {})}
           onClose={onClose}
         />
       )}

@@ -44,9 +44,13 @@ ohMyPiTest('applies Oh My Pi settings, keeps them over a restart and a reload, a
 })
 
 ohMyPiTest('sends low native effort before and after reload', async ({ native }) => {
-  await exerciseNativeOption(native, { groupId: 'effort', value: 'low', nativeProof: (request) => {
-    expect(request.body).toHaveProperty('reasoning_effort', 'low')
-  } })
+  await exerciseNativeOption(native, {
+    groupId: 'effort',
+    value: 'low',
+    nativeProof: (request) => {
+      expect(request.body).toHaveProperty('reasoning_effort', 'low')
+    },
+  })
 })
 
 // omp keeps the thinking level between reasoning models, and LeapMux folds the level that omp reports.
@@ -70,7 +74,15 @@ ohMyPiTest('keeps the configured level over a round trip through a model without
     model: `${MOCK_PROVIDER_IDS.ohMyPi}/${MOCK_MODELS.ohMyPi}`,
     chosen: 'max',
     via: OH_MY_PI_ALT_MODEL_ID,
-    viaEfforts: ['auto', 'xhigh', 'high', 'medium', 'low', 'minimal', 'off'],
+    viaEfforts: [
+      'auto',
+      'xhigh',
+      'high',
+      'medium',
+      'low',
+      'minimal',
+      'off',
+    ],
     settled: 'max',
     nativeProof: request => expect(request.body).toMatchObject({ model: MOCK_MODELS.ohMyPi, reasoning_effort: 'max' }),
   })

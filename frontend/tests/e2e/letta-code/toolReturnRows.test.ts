@@ -9,12 +9,22 @@ const ASSISTANT = JSON.stringify({ message_type: 'assistant_message', content: '
 
 /** A stored row whose content is `text`, with no compression. */
 function row(text: string) {
-  return create(AgentChatMessageSchema, { content: new TextEncoder().encode(text), contentCompression: ContentCompression.NONE })
+  return create(AgentChatMessageSchema, {
+    content: new TextEncoder().encode(text),
+    contentCompression: ContentCompression.NONE,
+  })
 }
 
 /** A watched event that carries `text` as a message row. */
 function messageEvent(text: string, replay: boolean) {
-  return create(AgentEventSchema, { agentId: 'letta-agent', replay, event: { case: 'agentMessage', value: row(text) } })
+  return create(AgentEventSchema, {
+    agentId: 'letta-agent',
+    replay,
+    event: {
+      case: 'agentMessage',
+      value: row(text),
+    },
+  })
 }
 
 describe('toolReturnRow', () => {
@@ -27,7 +37,10 @@ describe('toolReturnRow', () => {
   })
 
   it('returns undefined for a row whose content does not decode', () => {
-    const undecodable = create(AgentChatMessageSchema, { content: new TextEncoder().encode(TOOL_RETURN), contentCompression: ContentCompression.UNSPECIFIED })
+    const undecodable = create(AgentChatMessageSchema, {
+      content: new TextEncoder().encode(TOOL_RETURN),
+      contentCompression: ContentCompression.UNSPECIFIED,
+    })
     expect(toolReturnRow(undecodable)).toBeUndefined()
   })
 })
@@ -46,7 +59,13 @@ describe('liveToolReturnRow', () => {
   })
 
   it('skips an event that carries no message row', () => {
-    const statusChange = create(AgentEventSchema, { agentId: 'letta-agent', event: { case: 'statusChange', value: create(AgentStatusChangeSchema, {}) } })
+    const statusChange = create(AgentEventSchema, {
+      agentId: 'letta-agent',
+      event: {
+        case: 'statusChange',
+        value: create(AgentStatusChangeSchema, {}),
+      },
+    })
     expect(liveToolReturnRow(statusChange)).toBeUndefined()
   })
 })

@@ -6,13 +6,26 @@ import {
   presetPermissionMode,
 } from './planApproval'
 
-const SMART = { sets: { permissionMode: 'auto' } }
-const BYPASS = { sets: { permissionMode: 'bypassPermissions' } }
-const COPILOT_SMART = { sets: { copilot_assisted_approval: 'on' } }
-const COPILOT_BYPASS = { sets: { allow_all: 'on' } }
+const SMART = {
+  sets: { permissionMode: 'auto' },
+}
+const BYPASS = {
+  sets: { permissionMode: 'bypassPermissions' },
+}
+const COPILOT_SMART = {
+  sets: { copilot_assisted_approval: 'on' },
+}
+const COPILOT_BYPASS = {
+  sets: { allow_all: 'on' },
+}
 
 function controller(partial: Partial<PermissionPresetController> = {}): PermissionPresetController {
-  return { smart: SMART, bypass: BYPASS, apply: vi.fn(), ...partial }
+  return {
+    smart: SMART,
+    bypass: BYPASS,
+    apply: vi.fn(),
+    ...partial,
+  }
 }
 
 describe('plan approval permission presets', () => {

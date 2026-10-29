@@ -39,7 +39,9 @@ describe('cursor stored-tool supplement conformance', () => {
   it('answers a row that carries no stored record with null', () => {
     expect(cursorStoredToolOutput(undefined)).toBeNull()
     expect(cursorStoredToolOutput({ toolCallId: 'call-1' })).toBeNull()
-    expect(cursorStoredToolOutput({ rawOutput: { content: 'not a list' } })).toBeNull()
+    expect(cursorStoredToolOutput({
+      rawOutput: { content: 'not a list' },
+    })).toBeNull()
   })
 
   // A record stored beside ANOTHER call reaches no row, because the gate refuses the

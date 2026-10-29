@@ -16,10 +16,21 @@ export async function exerciseCommandCodeCompaction(context: ManagedNativeScenar
     // The native compactor keeps the last 30000 tokens (`keepRecentTokens`) and summarizes the earlier turns.
     // The last turn holds that much text, and typing it outlasts the test, so the helper inserts it.
     const recent = index === 5
-    await sendNativeAnswer(context, index === 0 ? `Keep ${old} in the old task.` : recent ? `Recent native task ${'padding '.repeat(18000)}` : `Prepare native compaction turn ${index}.`, `The native preparation turn ${index} completed.`, { entry: recent ? 'insert' : 'type' })
+    await sendNativeAnswer(context, index === 0
+      ? `Keep ${old} in the old task.`
+      : recent
+        ? `Recent native task ${'padding '.repeat(18000)}`
+        : `Prepare native compaction turn ${index}.`, `The native preparation turn ${index} completed.`, {
+      entry: recent ? 'insert' : 'type',
+    })
   }
   const summary = `COMMANDCODESUMMARY${marker}`
-  const start = await context.modelScript.queue({ text: summary, ...(hold.summaryGate !== undefined ? { gate: hold.summaryGate } : {}) })
+  const start = await context.modelScript.queue({
+    text: summary,
+    ...(hold.summaryGate !== undefined
+      ? { gate: hold.summaryGate }
+      : {}),
+  })
   await requestNativeCompaction(context, hold)
   await context.modelScript.waitForSteps(start + 1)
   await waitForAgentIdle(context.page)

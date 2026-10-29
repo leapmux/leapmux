@@ -11,7 +11,12 @@ import { liveToolReturnRow, toolReturnRow } from './toolReturnRows'
 
 lettaTest.describe('Letta Code images in tool results', () => {
   lettaTest('keeps the PNG in model input but receives text-only live and stored rows', async ({ authenticatedVisionLettaWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedVisionLettaWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedVisionLettaWorkspace.workspaceId,
+    })
     const agentId = await selectedAgentTabId(page)
     const watch = await watchAgentEvents(leapmuxServer, agentId, { label: 'Letta live tool result watch', select: liveToolReturnRow })
     try {
@@ -25,8 +30,14 @@ lettaTest.describe('Letta Code images in tool results', () => {
       const storedRows = (await readAllAgentMessages(context, agentId)).flatMap(message => toolReturnRow(message) ?? [])
       // The read throws the failure of the watch, such as a stream that ended before it.
       const liveRows = watch.items()
-      await testInfo.attach('letta-live-tool-results', { body: JSON.stringify(liveRows, null, 2), contentType: 'application/json' })
-      await testInfo.attach('letta-stored-tool-results', { body: JSON.stringify(storedRows, null, 2), contentType: 'application/json' })
+      await testInfo.attach('letta-live-tool-results', {
+        body: JSON.stringify(liveRows, null, 2),
+        contentType: 'application/json',
+      })
+      await testInfo.attach('letta-stored-tool-results', {
+        body: JSON.stringify(storedRows, null, 2),
+        contentType: 'application/json',
+      })
       expect(liveRows.length).toBeGreaterThan(0)
       expect(storedRows.length).toBeGreaterThan(0)
       expect(liveRows.some(row => row.includes(PNG_BASE64_PREFIX))).toBe(false)

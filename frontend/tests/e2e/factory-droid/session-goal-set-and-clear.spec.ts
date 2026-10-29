@@ -4,7 +4,10 @@ import { nativeGoalProbeTurn } from '../helpers/goalsAndTodos'
 import { expectUnsupportedGoalActions } from '../helpers/unsupportedConfiguration'
 
 droidTest('refuses only the unsupported native goal actions and preserves the supported actions', async ({ native }) => {
-  await expectUnsupportedGoalActions(native, { actions: [AgentGoalAction.SET, AgentGoalAction.CLEAR], relatedProof: async () => {
-    await nativeGoalProbeTurn(native)
-  } })
+  await expectUnsupportedGoalActions(native, {
+    actions: [AgentGoalAction.SET, AgentGoalAction.CLEAR],
+    relatedProof: async () => {
+      await nativeGoalProbeTurn(native)
+    },
+  })
 })

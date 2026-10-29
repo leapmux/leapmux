@@ -33,7 +33,9 @@ test.describe('Workspace persistence across reloads', () => {
     // one, so the reload below still has to honour the saved id rather than
     // the default.
     const fallback = await activeWorkspaceId(page)
-    const target = fallback === ws1 ? ws2 : ws1
+    const target = fallback === ws1
+      ? ws2
+      : ws1
 
     await openWorkspace(page, target)
     await reopenWorkspace(page, target)

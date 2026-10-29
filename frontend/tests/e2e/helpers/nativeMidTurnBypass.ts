@@ -22,7 +22,10 @@ export async function exerciseMidTurnBypass(
     callId: `mid-bypass-${index}`,
     outputPrefix: `${marker}_${index}_`,
   })
-  const [first, second] = operations ?? await Promise.all([createWrite(0), createWrite(1)])
+  const [first, second] = operations ?? await Promise.all([
+    createWrite(0),
+    createWrite(1),
+  ])
   const owner = await currentNativeAgent(context)
   const requests = await watchAgentEvents<MidTurnEvent>(context.leapmuxServer, owner.id, {
     label: 'mid-turn Bypass requests',
@@ -34,12 +37,22 @@ export async function exerciseMidTurnBypass(
       return undefined
     },
   })
-  const pendingInstances = () => [...new Set(requests.items().flatMap(event => event.kind === 'request' ? [JSON.stringify([event.request.requestId, event.request.claimToken])] : []))]
+  const pendingInstances = () => [
+    ...new Set(requests.items().flatMap(event => event.kind === 'request'
+      ? [
+          JSON.stringify([event.request.requestId, event.request.claimToken]),
+        ]
+      : [])),
+  ]
   const completedTurns = () => requests.items().filter(event => event.kind === 'turnEnd').length
   try {
     const start = await context.modelScript.queue(
-      { toolCalls: [first.toolCall] },
-      { toolCalls: [second.toolCall] },
+      {
+        toolCalls: [first.toolCall],
+      },
+      {
+        toolCalls: [second.toolCall],
+      },
       nativeTextStep(context, 'Both native tools ran after Bypass.'),
     )
     const turnsBefore = completedTurns()

@@ -7,5 +7,10 @@ piTest('pauses and resumes a native goal after reload', async ({ native }) => {
 })
 
 piTest('controls a real Pi goal through the shared goal panel and confirmation', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-  await exercisePiGoalPanel(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId }))
+  await exercisePiGoalPanel(await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  }))
 })

@@ -98,7 +98,11 @@ describe('MarkdownEditor send', () => {
           draftKey={{ key: DRAFT_KEY }}
           hideInput={hidden()}
           onSend={onSend}
-          imperative={{ sendRef: fn => send = fn, focusRef: fn => focus = fn, insertRef: fn => insert = fn }}
+          imperative={{
+            sendRef: fn => send = fn,
+            focusRef: fn => focus = fn,
+            insertRef: fn => insert = fn,
+          }}
         />
       </PreferencesProvider>
     ))
@@ -132,7 +136,9 @@ describe('MarkdownEditor send', () => {
           draftKey={{ key: DRAFT_KEY }}
           onSend={() => {}}
           onAfterSend={() => { throw resetFailure }}
-          imperative={{ sendRef: (fn) => { send = fn } }}
+          imperative={{
+            sendRef: (fn) => { send = fn },
+          }}
         />
       </PreferencesProvider>
     ))
@@ -160,7 +166,9 @@ describe('MarkdownEditor send', () => {
           surface="chat"
           draftKey={{ key: DRAFT_KEY }}
           onSend={() => Promise.resolve().then(() => { outside.focus() })}
-          imperative={{ sendRef: (fn) => { send = fn } }}
+          imperative={{
+            sendRef: (fn) => { send = fn },
+          }}
         />
       </PreferencesProvider>
     ))
@@ -207,12 +215,19 @@ describe('MarkdownEditor autofocus', () => {
           surface="chat"
           draftKey={{ key: FOCUS_KEY }}
           onSend={() => {}}
-          {...(suppressAutoFocus === undefined ? {} : { suppressAutoFocus })}
-          imperative={{ onReady: () => { ready = true } }}
+          {...(suppressAutoFocus === undefined
+            ? {}
+            : { suppressAutoFocus })}
+          imperative={{
+            onReady: () => { ready = true },
+          }}
         />
       </PreferencesProvider>
     ))
-    return { elsewhere, ready: () => ready }
+    return {
+      elsewhere,
+      ready: () => ready,
+    }
   }
 
   it('takes the keyboard once the editor is built', async () => {
@@ -270,9 +285,13 @@ describe('MarkdownEditor draft key swaps', () => {
       <PreferencesProvider>
         <MarkdownEditor
           surface="chat"
-          draftKey={{ key: key() }}
+          draftKey={{
+            key: key(),
+          }}
           onSend={() => {}}
-          imperative={{ sendRef: (fn) => { send = fn } }}
+          imperative={{
+            sendRef: (fn) => { send = fn },
+          }}
         />
       </PreferencesProvider>
     ))
@@ -351,9 +370,13 @@ describe('MarkdownEditor draft key swaps', () => {
       <PreferencesProvider>
         <MarkdownEditor
           surface="chat"
-          draftKey={{ key: key() }}
+          draftKey={{
+            key: key(),
+          }}
           onSend={() => {}}
-          imperative={{ sendRef: (fn) => { send = fn } }}
+          imperative={{
+            sendRef: (fn) => { send = fn },
+          }}
         />
       </PreferencesProvider>
     ))
@@ -433,7 +456,9 @@ describe('MarkdownEditor draft saves', () => {
       <PreferencesProvider>
         <MarkdownEditor
           surface="chat"
-          draftKey={{ key: key() }}
+          draftKey={{
+            key: key(),
+          }}
           onSend={() => new Promise<void>((resolve) => { finishSend = resolve })}
           onDraftKeyChanged={next => swappedTo.push(next)}
           imperative={{
@@ -447,7 +472,9 @@ describe('MarkdownEditor draft saves', () => {
     await waitFor(() => expect(send).toBeTypeOf('function'))
     await waitFor(() => expect(type).toBeTypeOf('function'))
     await waitFor(() => expect(text).toBeTypeOf('function'))
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'Date'],
+    })
     return {
       send: () => send?.(),
       type: value => type?.(value),
@@ -611,7 +638,13 @@ describe('MarkdownEditor surface', () => {
     expect(container.querySelector('[data-chat-input]')).toBeNull()
     // Every id, not only the two that identify the editor. The three layout slots
     // would put the same collision back for anything that addresses one.
-    for (const id of ['composer-editor', 'composer-box', 'composer-plus-slot', 'composer-separator', 'composer-footer-slot'])
+    for (const id of [
+      'composer-editor',
+      'composer-box',
+      'composer-plus-slot',
+      'composer-separator',
+      'composer-footer-slot',
+    ])
       expect(container.querySelector(`[data-testid="${id}"]`), id).toBeNull()
     expect(container.querySelector('[data-testid="goal-footer-slot"]')).not.toBeNull()
   })
@@ -685,7 +718,9 @@ describe('MarkdownEditor surface', () => {
           surface="goal"
           onSend={() => {}}
           onMarkdownChange={md => seen.push(md)}
-          imperative={{ contentRef: (_get, set) => { setContent = set } }}
+          imperative={{
+            contentRef: (_get, set) => { setContent = set },
+          }}
         />
       </PreferencesProvider>
     ))
@@ -828,7 +863,9 @@ describe('MarkdownEditor surface', () => {
           surface="goal"
           onSend={() => {}}
           onMarkdownChange={md => seen.push(md)}
-          imperative={{ contentRef: (_get, set) => { setContent = set } }}
+          imperative={{
+            contentRef: (_get, set) => { setContent = set },
+          }}
         />
       </PreferencesProvider>
     ))
@@ -855,7 +892,9 @@ describe('MarkdownEditor surface', () => {
           surface="goal"
           onSend={() => {}}
           onMarkdownChange={md => seen.push(md)}
-          imperative={{ contentRef: (_get, set) => { setContent = set } }}
+          imperative={{
+            contentRef: (_get, set) => { setContent = set },
+          }}
         />
       </PreferencesProvider>
     ))
@@ -881,7 +920,9 @@ describe('MarkdownEditor surface', () => {
           surface="goal"
           onSend={() => {}}
           onMarkdownChange={md => seen.push(md)}
-          imperative={{ contentRef: (_get, set) => { setContent = set } }}
+          imperative={{
+            contentRef: (_get, set) => { setContent = set },
+          }}
         />
       </PreferencesProvider>
     ))
@@ -900,7 +941,9 @@ describe('MarkdownEditor surface', () => {
           surface="chat"
           draftKey={{ key: DRAFT_KEY }}
           onSend={onSend}
-          imperative={{ sendRef: fn => send = fn }}
+          imperative={{
+            sendRef: fn => send = fn,
+          }}
         />
       </PreferencesProvider>
     ))
@@ -921,7 +964,9 @@ describe('MarkdownEditor surface', () => {
           surface="goal"
           onSend={() => {}}
           onMarkdownChange={md => seen.push(md)}
-          imperative={{ contentRef: (_get, set) => { setContent = set } }}
+          imperative={{
+            contentRef: (_get, set) => { setContent = set },
+          }}
         />
       </PreferencesProvider>
     ))
@@ -946,7 +991,9 @@ describe('MarkdownEditor surface', () => {
           surface="goal"
           onSend={() => {}}
           onMarkdownChange={md => seen.push(md)}
-          imperative={{ contentRef: (_get, set) => { setContent = set } }}
+          imperative={{
+            contentRef: (_get, set) => { setContent = set },
+          }}
         />
       </PreferencesProvider>
     ))
@@ -976,7 +1023,9 @@ describe('MarkdownEditor surface', () => {
             draftKey={{ key: KEY }}
             onSend={() => { setOpen(false) }}
             onMarkdownChange={md => seen.push(md)}
-            imperative={{ sendRef: (fn) => { send = fn } }}
+            imperative={{
+              sendRef: (fn) => { send = fn },
+            }}
           />
         </Show>
       </PreferencesProvider>
@@ -1006,11 +1055,22 @@ describe('MarkdownEditor draft metadata', () => {
     }))
     const metadata = vi.fn((draftKey: string) => {
       expect(prepared).toBe(true)
-      return [{ name: `${PREFIX_COMPOSER_SCHEDULE_DRAFT}${draftKey}` as const, value: 'schedule' }]
+      return [
+        { name: `${PREFIX_COMPOSER_SCHEDULE_DRAFT}${draftKey}` as const, value: 'schedule' },
+      ]
     })
     const view = render(() => (
       <PreferencesProvider>
-        <MarkdownEditor surface="chat" draftKey={{ key }} prepareDraft={prepare} draftMetadataRecords={metadata} onSend={() => {}} imperative={{ persistDraftRef: fn => persist = fn }} />
+        <MarkdownEditor
+          surface="chat"
+          draftKey={{ key }}
+          prepareDraft={prepare}
+          draftMetadataRecords={metadata}
+          onSend={() => {}}
+          imperative={{
+            persistDraftRef: fn => persist = fn,
+          }}
+        />
       </PreferencesProvider>
     ))
     await flush()
@@ -1035,13 +1095,29 @@ describe('MarkdownEditor draft metadata', () => {
     saveDraft('metadata-a', 'text a', -1)
     saveDraft('metadata-b', 'text b', -1)
     const preparation = deferred<void>()
-    const prepare = vi.fn((draftKey: string) => draftKey === 'metadata-b' ? preparation.promise : Promise.resolve())
+    const prepare = vi.fn((draftKey: string) => draftKey === 'metadata-b'
+      ? preparation.promise
+      : Promise.resolve())
     const metadataValues: Record<string, string> = { 'metadata-a': 'schedule a', 'metadata-b': 'schedule b' }
     let persist: ((key: string, update?: () => void) => boolean) | undefined
     const ready = vi.fn()
     const view = render(() => (
       <PreferencesProvider>
-        <MarkdownEditor surface="chat" draftKey={{ key: key() }} prepareDraft={prepare} draftMetadataRecords={draftKey => [{ name: `${PREFIX_COMPOSER_SCHEDULE_DRAFT}${draftKey}`, value: metadataValues[draftKey] }]} onDocumentDraftReady={ready} onSend={() => {}} imperative={{ persistDraftRef: fn => persist = fn }} />
+        <MarkdownEditor
+          surface="chat"
+          draftKey={{
+            key: key(),
+          }}
+          prepareDraft={prepare}
+          draftMetadataRecords={draftKey => [
+            { name: `${PREFIX_COMPOSER_SCHEDULE_DRAFT}${draftKey}`, value: metadataValues[draftKey] },
+          ]}
+          onDocumentDraftReady={ready}
+          onSend={() => {}}
+          imperative={{
+            persistDraftRef: fn => persist = fn,
+          }}
+        />
       </PreferencesProvider>
     ))
     await waitFor(() => expect(persist).toBeTypeOf('function'))

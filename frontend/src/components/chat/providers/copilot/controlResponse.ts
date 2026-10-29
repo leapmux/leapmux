@@ -76,7 +76,9 @@ export function copilotControlResponseSummary(cr: PersistedControlResponse): Con
       if (answer.approved === true)
         return label(CONTROL_DECISION_WORDS.plan.allow)
       const reason = pickString(answer, 'feedback')
-      return reason ? feedback(reason) : label(CONTROL_DECISION_WORDS.plan.deny)
+      return reason
+        ? feedback(reason)
+        : label(CONTROL_DECISION_WORDS.plan.deny)
     }
     case COPILOT_EVENT.ElicitationRequested:
       switch (pickString(answer, 'action')) {

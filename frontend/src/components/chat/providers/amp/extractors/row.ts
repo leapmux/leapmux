@@ -21,10 +21,15 @@ export function ampExtractRow(input: RowExtractionInput): ChatRow | null {
     case 'assistant_text': {
       const text = ampBlockText(payload, AMP_BLOCK_TYPE.Text, 'text')
       // A row with no text states nothing. It is not a row that this provider failed to read.
-      return text ? { kind: 'assistant-text', text } : { kind: 'hidden' }
+      return text
+        ? { kind: 'assistant-text', text }
+        : { kind: 'hidden' }
     }
     case 'assistant_thinking':
-      return { kind: 'assistant-thinking', text: ampBlockText(payload, AMP_BLOCK_TYPE.Thinking, 'thinking') }
+      return {
+        kind: 'assistant-thinking',
+        text: ampBlockText(payload, AMP_BLOCK_TYPE.Thinking, 'thinking'),
+      }
     case 'tool_use':
     case 'tool_result':
       return ampToolSpanRow(parsed, span)
@@ -49,7 +54,11 @@ function ampToolSpanRow(parsed: ParsedMessageContent, span: RowExtractionInput['
     return null
   const ownId = ampSideCallId(parsed)
   const mine = (side: ParsedMessageContent | undefined) => side !== undefined && ampSideCallId(side) === ownId
-  const row = ampToolRow(payload, mine(span.request) ? span.request : undefined, mine(span.result) ? span.result : undefined, parsed.completion)
+  const row = ampToolRow(payload, mine(span.request)
+    ? span.request
+    : undefined, mine(span.result)
+    ? span.result
+    : undefined, parsed.completion)
   if (!row)
     return null
   return toolCallRow(ampToolCall(row, parsed.completion), ampToolSpanRowRole(row), span.visibleRows)

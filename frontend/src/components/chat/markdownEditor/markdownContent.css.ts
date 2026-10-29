@@ -13,6 +13,14 @@ export const markdownContent = style({
   wordBreak: 'break-word',
 })
 
+// Oat underlines a link only inside `p`, `blockquote` and `figcaption`.
+// Markdown renders a tight list item, a table cell and a heading with no `<p>`,
+// so a link there would show as colored text alone, unlike the same link one
+// paragraph away. Every link in rendered markdown keeps its underline.
+globalStyle(`${markdownContent} a`, {
+  textDecoration: 'underline',
+})
+
 // Code blocks: move scroll to <code> so the copy button stays fixed.
 globalStyle(`${markdownContent} pre`, codeBlockPre('hidden'))
 globalStyle(`${markdownContent} pre code`, codeBlockCode)
@@ -40,7 +48,10 @@ globalStyle(`.${LARGE_TEXT_DISPLAY_CLASS}`, {
 // field to `pre.shiki` made those two frames a differently coloured block that
 // swapped under the reader. The token colours still land on `.shiki` alone,
 // because a plain `<pre>` carries no `--shiki-*` to read.
-codeSurface(`${markdownContent} pre`, 'block', [{ suffix: '.shiki' }, { suffix: '.shiki span' }])
+codeSurface(`${markdownContent} pre`, 'block', [
+  { suffix: '.shiki' },
+  { suffix: '.shiki span' },
+])
 
 // Task list checkboxes
 globalStyle(`${markdownContent} li > input[type="checkbox"]`, {

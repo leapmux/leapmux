@@ -65,7 +65,10 @@ export async function exerciseReasonixGoalLifecycle(context: ManagedNativeScenar
     await expectEmptyGoalCard(page)
     const status = await modelScript.waitForSteps(start + 2)
     expect(status.unexpectedRequests).toEqual([])
-  }, () => finishCleanup([modelScript.releaseGateIfHeld(firstGate), modelScript.releaseGateIfHeld(secondGate)]))
+  }, () => finishCleanup([
+    modelScript.releaseGateIfHeld(firstGate),
+    modelScript.releaseGateIfHeld(secondGate),
+  ]))
 }
 
 /** Pause the retained objective, reload, and resume it without creating a new native goal. */
@@ -117,7 +120,10 @@ export async function exerciseReasonixGoalPauseResume(context: ManagedNativeScen
     await expandGoalsAndTodosSection(page)
     await expectEmptyGoalCard(page)
     expect((await modelScript.waitForSteps(start + 2)).unexpectedRequests).toEqual([])
-  }, () => finishCleanup([modelScript.releaseGateIfHeld(firstGate), modelScript.releaseGateIfHeld(resumedGate)]))
+  }, () => finishCleanup([
+    modelScript.releaseGateIfHeld(firstGate),
+    modelScript.releaseGateIfHeld(resumedGate),
+  ]))
 }
 
 /** Recover the native goal that survives a model failure, including its retained objective. */

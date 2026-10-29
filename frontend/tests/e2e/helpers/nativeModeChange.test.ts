@@ -36,7 +36,9 @@ vi.mock('./notificationCopy', () => ({
   },
 }))
 
-vi.mock('./nativeScenario', () => ({ currentNativeAgent: async () => state.agent }))
+vi.mock('./nativeScenario', () => ({
+  currentNativeAgent: async () => state.agent,
+}))
 vi.mock('./nativeMessages', async (original) => {
   const actual = await original<typeof import('./nativeMessages')>()
   return {
@@ -51,13 +53,17 @@ vi.mock('./nativeMessages', async (original) => {
 
 vi.mock('@playwright/test', async () => {
   const { expect } = await import('vitest')
-  return { expect: (value: unknown) => {
-    if (value && typeof value === 'object' && 'count' in value && typeof value.count === 'function') {
-      const readCount = value.count
-      return { toHaveCount: async (count: number) => expect(await readCount()).toBe(count) }
-    }
-    return expect(value)
-  } }
+  return {
+    expect: (value: unknown) => {
+      if (value && typeof value === 'object' && 'count' in value && typeof value.count === 'function') {
+        const readCount = value.count
+        return {
+          toHaveCount: async (count: number) => expect(await readCount()).toBe(count),
+        }
+      }
+      return expect(value)
+    },
+  }
 })
 
 vi.mock('./thinkingIndicatorWatch', () => ({
@@ -72,10 +78,17 @@ vi.mock('./ui', () => ({
   scrollChatRowIntoView: async (_page: unknown, sequence: bigint) => {
     expect(sequence).toBe(1n)
   },
-  chatScrollContainer: () => ({ evaluate: async () => ({ top: 0, atEnd: true }), locator: (selector: string) => {
-    expect(selector).toBe('[data-seq="1"]')
-    return { locator: () => ({ count: async () => 1 }) }
-  } }),
+  chatScrollContainer: () => ({
+    evaluate: async () => ({ top: 0, atEnd: true }),
+    locator: (selector: string) => {
+      expect(selector).toBe('[data-seq="1"]')
+      return {
+        locator: () => ({
+          count: async () => 1,
+        }),
+      }
+    },
+  }),
   chooseSettingsOption: async (_page: unknown, option: string) => {
     state.events.push(`choose ${option}`)
     if (state.chooseError)
@@ -88,11 +101,16 @@ vi.mock('./ui', () => ({
   visibleOnly: (locator: Locator) => locator,
 }))
 
-const notice = { locator: () => notice, count: async () => {
-  const query = state.renderedQuery
-  const matches = typeof query === 'string' ? state.renderedText === query : query?.test(state.renderedText)
-  return matches ? state.noticeCount : 0
-} }
+const notice = {
+  locator: () => notice,
+  count: async () => {
+    const query = state.renderedQuery
+    const matches = typeof query === 'string'
+      ? state.renderedText === query
+      : query?.test(state.renderedText)
+    return matches ? state.noticeCount : 0
+  },
+}
 const context = {
   page: {
     getByText: (text: string | RegExp) => {
@@ -101,18 +119,35 @@ const context = {
       return notice
     },
   },
-  modelScript: { status: async () => {
-    state.modelStatusReads++
-    return { requests: Array.from({ length: state.requests }) }
-  } },
+  modelScript: {
+    status: async () => {
+      state.modelStatusReads++
+      return {
+        requests: Array.from({ length: state.requests }),
+      }
+    },
+  },
 } as unknown as ManagedNativeScenarioContext
-const change = { groupId: 'collaboration_mode', value: 'plan', label: 'Plan Mode', previousLabel: 'Default', noticeLabel: 'Workflow' }
+const change = {
+  groupId: 'collaboration_mode',
+  value: 'plan',
+  label: 'Plan Mode',
+  previousLabel: 'Default',
+  noticeLabel: 'Workflow',
+}
 
 function settingsChange(overrides: Record<string, unknown> = {}) {
   return {
     type: 'settings_changed',
     changes: {
-      collaboration_mode: { old: 'default', new: 'plan', old_label: 'Default', new_label: 'Plan Mode', label: 'Workflow', ...overrides },
+      collaboration_mode: {
+        old: 'default',
+        new: 'plan',
+        old_label: 'Default',
+        new_label: 'Plan Mode',
+        label: 'Workflow',
+        ...overrides,
+      },
     },
   }
 }
@@ -151,9 +186,13 @@ beforeEach(() => {
     agentSessionId: 'session',
     agentProvider: AgentProvider.CODEX,
     status: AgentStatus.ACTIVE,
-    optionGroups: [{ id: 'collaboration_mode', currentValue: 'default' }],
+    optionGroups: [
+      { id: 'collaboration_mode', currentValue: 'default' },
+    ],
   })
-  state.messages = [storedNotice()]
+  state.messages = [
+    storedNotice(),
+  ]
   state.reads = []
   state.onRead = undefined
   state.renderedText = 'Workflow (Default → Plan Mode)'
@@ -207,12 +246,27 @@ describe('captureStoredNativeModeNotice', () => {
   })
 
   it.each([
-    ['agent', { id: 'other-agent' }],
-    ['Worker', { workerId: 'other-worker' }],
-    ['provider', { agentProvider: AgentProvider.CLAUDE_CODE }],
-    ['working directory', { workingDir: '/other/work' }],
+    [
+      'agent',
+      { id: 'other-agent' },
+    ],
+    [
+      'Worker',
+      { workerId: 'other-worker' },
+    ],
+    [
+      'provider',
+      { agentProvider: AgentProvider.CLAUDE_CODE },
+    ],
+    [
+      'working directory',
+      { workingDir: '/other/work' },
+    ],
   ])('rejects the wrong %s owner supplied before capture', async (_field, overrides) => {
-    const owner = create(AgentInfoSchema, { ...ownerBefore(), ...overrides })
+    const owner = create(AgentInfoSchema, {
+      ...ownerBefore(),
+      ...overrides,
+    })
     await expect(captureStoredNativeModeNotice(context, owner, storedChange, locator)).rejects.toThrow('native mode notice owner')
     expect(state.reads).toEqual([])
   })
@@ -237,12 +291,22 @@ describe('captureStoredNativeModeNotice', () => {
   })
 
   it('rejects duplicate matching entries during capture', async () => {
-    state.messages = [storedNotice({ type: 'notification_thread', messages: [settingsChange(), settingsChange()] })]
+    state.messages = [
+      storedNotice({
+        type: 'notification_thread',
+        messages: [
+          settingsChange(),
+          settingsChange(),
+        ],
+      }),
+    ]
     await expect(captureStoredNativeModeNotice(context, ownerBefore(), storedChange, locator)).rejects.toThrow('exactly one stored native mode notice')
   })
 
   it('rejects a stored entry from another native session during capture', async () => {
-    state.messages = [storedNotice(undefined, { agentSessionId: 'other-session' })]
+    state.messages = [
+      storedNotice(undefined, { agentSessionId: 'other-session' }),
+    ]
     await expect(captureStoredNativeModeNotice(context, ownerBefore(), storedChange, locator)).rejects.toThrow('exactly one stored native mode notice')
   })
 })
@@ -308,7 +372,15 @@ describe('chooseNativeModeWithNotice', () => {
 
   it('requires the rendered notice token inside a combined notification paragraph', async () => {
     state.renderedText = 'Effort (Low → High), Workflow (Default → Plan Mode), Interrupted'
-    state.messages = [storedNotice({ type: 'notification_thread', messages: [settingsChange(), { type: 'interrupted' }] })]
+    state.messages = [
+      storedNotice({
+        type: 'notification_thread',
+        messages: [
+          settingsChange(),
+          { type: 'interrupted' },
+        ],
+      }),
+    ]
     await selectedNotice()
   })
 
@@ -323,11 +395,17 @@ describe('chooseNativeModeWithNotice', () => {
 
   it('finds the notice inside a combined notification thread after unrelated notifications', async () => {
     const result = await selectedNotice()
-    state.messages = [storedNotice({
-      type: 'notification_thread',
-      old_seqs: [1, 4],
-      messages: [{ type: 'interrupted' }, settingsChange(), { type: 'agent_status', text: 'Idle' }],
-    })]
+    state.messages = [
+      storedNotice({
+        type: 'notification_thread',
+        old_seqs: [1, 4],
+        messages: [
+          { type: 'interrupted' },
+          settingsChange(),
+          { type: 'agent_status', text: 'Idle' },
+        ],
+      }),
+    ]
     state.noticeCount = 0
     await result.assertStored()
   })
@@ -335,60 +413,133 @@ describe('chooseNativeModeWithNotice', () => {
   it('accepts a settings notice that also carries an unrelated option change', async () => {
     const result = await selectedNotice()
     const body = settingsChange()
-    state.messages = [storedNotice({
-      ...body,
-      changes: { ...body.changes, effort: { old: 'low', new: 'high', old_label: 'Low', new_label: 'High', label: 'Effort' } },
-    })]
+    state.messages = [
+      storedNotice({
+        ...body,
+        changes: {
+          ...body.changes,
+          effort: {
+            old: 'low',
+            new: 'high',
+            old_label: 'Low',
+            new_label: 'High',
+            label: 'Effort',
+          },
+        },
+      }),
+    ]
     await result.assertStored()
   })
 
   it.each(['separate rows', 'one thread'])('rejects duplicate matching notices in %s', async (location) => {
     const result = await selectedNotice()
     state.messages = location === 'separate rows'
-      ? [storedNotice(), storedNotice(undefined, { id: 'duplicate', seq: 2n })]
-      : [storedNotice({ type: 'notification_thread', messages: [settingsChange(), settingsChange()] })]
+      ? [
+          storedNotice(),
+          storedNotice(undefined, { id: 'duplicate', seq: 2n }),
+        ]
+      : [
+          storedNotice({
+            type: 'notification_thread',
+            messages: [
+              settingsChange(),
+              settingsChange(),
+            ],
+          }),
+        ]
     await expect(result.assertStored()).rejects.toThrow('exactly one stored native mode notice')
   })
 
   it.each([
-    ['old value', { old: 'ask' }],
-    ['new value', { new: 'default' }],
-    ['old label', { old_label: 'Ask' }],
-    ['new label', { new_label: 'Other Plan' }],
-    ['group label', { label: 'Other Workflow' }],
+    [
+      'old value',
+      { old: 'ask' },
+    ],
+    [
+      'new value',
+      { new: 'default' },
+    ],
+    [
+      'old label',
+      { old_label: 'Ask' },
+    ],
+    [
+      'new label',
+      { new_label: 'Other Plan' },
+    ],
+    [
+      'group label',
+      { label: 'Other Workflow' },
+    ],
   ])('rejects a stored notice with the wrong %s', async (_field, overrides) => {
     const result = await selectedNotice()
-    state.messages = [storedNotice(settingsChange(overrides))]
+    state.messages = [
+      storedNotice(settingsChange(overrides)),
+    ]
     await expect(result.assertStored()).rejects.toThrow('exactly one stored native mode notice')
   })
 
   it('rejects matching values under the wrong option group', async () => {
     const result = await selectedNotice()
-    state.messages = [storedNotice({ type: 'settings_changed', changes: { permissionMode: settingsChange().changes.collaboration_mode } })]
+    state.messages = [
+      storedNotice({
+        type: 'settings_changed',
+        changes: { permissionMode: settingsChange().changes.collaboration_mode },
+      }),
+    ]
     await expect(result.assertStored()).rejects.toThrow('exactly one stored native mode notice')
   })
 
   it.each([
-    ['native session', { agentSessionId: 'other-session' }],
-    ['provider', { agentProvider: AgentProvider.CLAUDE_CODE }],
-    ['source', { source: MessageSource.AGENT }],
-    ['message ID', { id: 'replacement-notice' }],
+    [
+      'native session',
+      { agentSessionId: 'other-session' },
+    ],
+    [
+      'provider',
+      { agentProvider: AgentProvider.CLAUDE_CODE },
+    ],
+    [
+      'source',
+      { source: MessageSource.AGENT },
+    ],
+    [
+      'message ID',
+      { id: 'replacement-notice' },
+    ],
   ])('rejects a stored notice with the wrong %s owner', async (_field, overrides) => {
     const result = await selectedNotice()
-    state.messages = [storedNotice(undefined, overrides)]
+    state.messages = [
+      storedNotice(undefined, overrides),
+    ]
     await expect(result.assertStored()).rejects.toThrow('stored native mode notice')
   })
 
   it.each([
-    ['agent', { id: 'other-agent' }],
-    ['Worker', { workerId: 'other-worker' }],
-    ['provider', { agentProvider: AgentProvider.CLAUDE_CODE }],
-    ['working directory', { workingDir: '/other/work' }],
+    [
+      'agent',
+      { id: 'other-agent' },
+    ],
+    [
+      'Worker',
+      { workerId: 'other-worker' },
+    ],
+    [
+      'provider',
+      { agentProvider: AgentProvider.CLAUDE_CODE },
+    ],
+    [
+      'working directory',
+      { workingDir: '/other/work' },
+    ],
   ])('rejects a different selected %s owner before it reads that transcript', async (_field, overrides) => {
     const result = await selectedNotice()
     if (!state.agent)
       throw new Error('The test requires its Worker agent.')
-    state.agent = create(AgentInfoSchema, { ...state.agent, ...overrides })
+    state.agent = create(AgentInfoSchema, {
+      ...state.agent,
+      ...overrides,
+    })
     await expect(result.assertStored()).rejects.toThrow('native mode notice owner')
     expect(state.reads).toEqual(['agent'])
   })
@@ -397,7 +548,9 @@ describe('chooseNativeModeWithNotice', () => {
     if (!state.agent)
       throw new Error('The test requires its Worker agent.')
     state.agent.agentSessionId = ''
-    state.messages = [storedNotice(undefined, { agentSessionId: '' })]
+    state.messages = [
+      storedNotice(undefined, { agentSessionId: '' }),
+    ]
     const result = await selectedNotice()
     state.agent.agentSessionId = 'first-native-session'
     await result.assertStored()

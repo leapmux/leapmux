@@ -123,7 +123,12 @@ const FORBIDDEN_ASSERTION_TYPES = [
  * own. Widening this guard would either fail on eleven files or need an allow-list
  * long enough to stop meaning anything.
  */
-const LAYER_DIRS = ['providers', 'model', 'results', 'widgets']
+const LAYER_DIRS = [
+  'providers',
+  'model',
+  'results',
+  'widgets',
+]
 
 function layerModules(extension: '.ts' | '.tsx'): string[] {
   return LAYER_DIRS.flatMap(dir => collectFiles(join(CHAT_DIR, dir), {
@@ -182,7 +187,9 @@ function rootIdentifier(node: ts.Expression): string | undefined {
       current = current.expression
       continue
     }
-    return ts.isIdentifier(current) ? current.text : undefined
+    return ts.isIdentifier(current)
+      ? current.text
+      : undefined
   }
 }
 
@@ -206,9 +213,15 @@ function classifyHooks(fileName: string, source: string): ClassifyHook[] {
       return null
     const value = ts.isPropertyAssignment(property)
       ? property.initializer
-      : ts.isShorthandPropertyAssignment(property) ? property.name : undefined
-    const root = value === undefined ? undefined : rootIdentifier(value)
-    return root === undefined ? null : imported.get(root) ?? null
+      : ts.isShorthandPropertyAssignment(property)
+        ? property.name
+        : undefined
+    const root = value === undefined
+      ? undefined
+      : rootIdentifier(value)
+    return root === undefined
+      ? null
+      : imported.get(root) ?? null
   }
 
   function visit(node: ts.Node): void {
@@ -243,7 +256,9 @@ function assertionsTo(source: string, types: string[]): Array<{ type: string, li
   const forbiddenTypes = new Set(types)
 
   function rightmostTypeName(name: ts.EntityName): string {
-    return ts.isIdentifier(name) ? name.text : rightmostTypeName(name.right)
+    return ts.isIdentifier(name)
+      ? name.text
+      : rightmostTypeName(name.right)
   }
 
   function containsForbiddenType(type: ts.TypeNode): boolean {
@@ -284,7 +299,9 @@ describe('the chat render pipeline holds the structure its guards assume', () =>
   })
 
   it('keeps JSX out of the local chat model', () => {
-    expect(collectFiles(MODEL_DIR, { matches: name => name.endsWith('.tsx') })).toEqual([])
+    expect(collectFiles(MODEL_DIR, {
+      matches: name => name.endsWith('.tsx'),
+    })).toEqual([])
   })
 
   // One file per kind: the pair a kind declares has exactly one home, and a kind
@@ -292,7 +309,9 @@ describe('the chat render pipeline holds the structure its guards assume', () =>
   // into a named failure.
   it('holds exactly one kind file per tool kind', () => {
     const SHARED_SHAPE_FILES = new Set(['index.ts', 'generic.ts', 'fileChange.ts'])
-    const kindFiles = collectFiles(join(MODEL_DIR, 'tools'), { matches: name => name.endsWith('.ts') })
+    const kindFiles = collectFiles(join(MODEL_DIR, 'tools'), {
+      matches: name => name.endsWith('.ts'),
+    })
       .map(file => basename(file))
       .filter(name => !SHARED_SHAPE_FILES.has(name) && !name.endsWith('.test.ts') && !name.endsWith('.typecheck.ts'))
     const fileForKind = (kind: string): string => {
@@ -360,27 +379,37 @@ describe('the chat render pipeline holds the structure its guards assume', () =>
    */
   it('reads an inline classify method as the file\'s own', () => {
     const source = `const plugin = {\n  classify(input) {\n    return { kind: 'unknown' }\n  },\n}\n`
-    expect(classifyHooks('plugin.ts', source)).toStrictEqual([{ line: 2, module: null }])
+    expect(classifyHooks('plugin.ts', source)).toStrictEqual([
+      { line: 2, module: null },
+    ])
   })
 
   it('reads an inline arrow as the file\'s own', () => {
     const source = `const plugin = {\n  classify: input => ({ kind: 'unknown' }),\n}\n`
-    expect(classifyHooks('plugin.ts', source)).toStrictEqual([{ line: 2, module: null }])
+    expect(classifyHooks('plugin.ts', source)).toStrictEqual([
+      { line: 2, module: null },
+    ])
   })
 
   it('reads a classifier the same file declares as the file\'s own', () => {
     const source = `function classifyThing(input) {\n  return { kind: 'unknown' }\n}\n\nconst plugin = {\n  classify: classifyThing,\n}\n`
-    expect(classifyHooks('plugin.ts', source)).toStrictEqual([{ line: 6, module: null }])
+    expect(classifyHooks('plugin.ts', source)).toStrictEqual([
+      { line: 6, module: null },
+    ])
   })
 
   it('reads an imported classifier as the module it arrives from', () => {
     const source = `import { classifyThing } from './classification'\n\nconst plugin = {\n  classify: classifyThing,\n}\n`
-    expect(classifyHooks('plugin.ts', source)).toStrictEqual([{ line: 4, module: './classification' }])
+    expect(classifyHooks('plugin.ts', source)).toStrictEqual([
+      { line: 4, module: './classification' },
+    ])
   })
 
   it('reads a classifier factory call as the module it arrives from', () => {
     const source = `import { classifyACPMessage } from '../acp/classification'\n\nconst plugin = {\n  classify: classifyACPMessage({}),\n}\n`
-    expect(classifyHooks('plugin.ts', source)).toStrictEqual([{ line: 4, module: '../acp/classification' }])
+    expect(classifyHooks('plugin.ts', source)).toStrictEqual([
+      { line: 4, module: '../acp/classification' },
+    ])
   })
 
   it('finds the classifier of every provider that registers one', () => {

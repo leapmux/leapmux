@@ -102,7 +102,13 @@ test.describe('Worktree Lifecycle', () => {
       'OpenTerminal',
       OpenTerminalRequestSchema,
       OpenTerminalResponseSchema,
-      { workerId, cols: 80, rows: 24, workingDir: repoDir, useWorktreePath: worktreeDir },
+      {
+        workerId,
+        cols: 80,
+        rows: 24,
+        workingDir: repoDir,
+        useWorktreePath: worktreeDir,
+      },
     )
     const terminalId = termResp2.terminalId
 
@@ -254,7 +260,12 @@ test.describe('Worktree Lifecycle', () => {
     // Make an uncommitted change in the worktree; the close action should
     // create a WIP commit and push it.
     writeFileSync(join(worktreeDir, 'extra.txt'), 'local only\n')
-    execFileSync('git', ['push', '-u', 'origin', 'unpushed-branch'], { cwd: worktreeDir })
+    execFileSync('git', [
+      'push',
+      '-u',
+      'origin',
+      'unpushed-branch',
+    ], { cwd: worktreeDir })
 
     const agent = await waitForSoleAgentViaAPI(leapmuxServer, workspaceId)
     const inspect = await inspectLastTabCloseViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agent.id)
@@ -270,7 +281,12 @@ test.describe('Worktree Lifecycle', () => {
     // command died with "fatal: Unable to read current working directory".
     // The remote is also the stronger assertion: it proves the WIP commit was
     // both made AND pushed, which is what this test is named for.
-    const remoteMessage = execFileSync('git', ['log', '-1', '--pretty=%s', 'unpushed-branch'], { cwd: bareDir, encoding: 'utf8' }).trim()
+    const remoteMessage = execFileSync('git', [
+      'log',
+      '-1',
+      '--pretty=%s',
+      'unpushed-branch',
+    ], { cwd: bareDir, encoding: 'utf8' }).trim()
     expect(remoteMessage).toBe('WIP')
   })
 
@@ -294,7 +310,9 @@ test.describe('Worktree Lifecycle', () => {
 
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
-    const closeDialog = page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: 'Close Last Tab' }) })
+    const closeDialog = page.getByRole('dialog').filter({
+      has: page.getByRole('heading', { name: 'Close Last Tab' }),
+    })
 
     // Close the agent tab via UI
     const agentTab = agentTabs(page)

@@ -20,9 +20,18 @@ import { zcodeEnvelope } from './toolCommon'
  * The map does not inherit object properties, so a wire value cannot select Object.prototype methods.
  */
 const ZCODE_DECISION_PHRASE: ReadonlyMap<string, (tool: string) => string> = new Map([
-  [ZCODE_DECISION.Deny, (tool: string) => `Denied ${tool}`],
-  [ZCODE_DECISION.Escalate, (tool: string) => `Escalated ${tool} for approval`],
-  [ZCODE_DECISION.Modify, (tool: string) => `Ran ${tool} with modified input`],
+  [
+    ZCODE_DECISION.Deny,
+    (tool: string) => `Denied ${tool}`,
+  ],
+  [
+    ZCODE_DECISION.Escalate,
+    (tool: string) => `Escalated ${tool} for approval`,
+  ],
+  [
+    ZCODE_DECISION.Modify,
+    (tool: string) => `Ran ${tool} with modified input`,
+  ],
 ])
 
 /**
@@ -42,12 +51,16 @@ export function describeZCodeNotification(parsed: unknown): string | null {
         return null
       const head = phrase(pickString(payload, 'toolName') || 'a tool')
       const reason = pickString(payload, 'reason')
-      return reason ? `${head} — ${reason}` : head
+      return reason
+        ? `${head} — ${reason}`
+        : head
     }
 
     case ZCODE_EVENT.TurnSteerQueued: {
       const preview = pickString(payload, 'inputPreview')
-      return preview ? `Queued for the running turn: ${preview}` : 'Queued for the running turn'
+      return preview
+        ? `Queued for the running turn: ${preview}`
+        : 'Queued for the running turn'
     }
 
     case ZCODE_EVENT.TurnSteerDrained:
@@ -55,7 +68,9 @@ export function describeZCodeNotification(parsed: unknown): string | null {
 
     case ZCODE_EVENT.SessionClosed: {
       const reason = pickString(payload, 'reason')
-      return reason ? `Session closed — ${reason}` : 'Session closed'
+      return reason
+        ? `Session closed — ${reason}`
+        : 'Session closed'
     }
 
     default:
@@ -94,7 +109,9 @@ function zcodeSessionUpdateEntries(payload: Record<string, unknown>): Notificati
     case 'compaction':
       return zcodeCompactionLifecycleEntries(payload)
     case 'microcompact':
-      return [{ kind: 'compaction', phase: 'end', micro: true }]
+      return [
+        { kind: 'compaction', phase: 'end', micro: true },
+      ]
     case 'networkStatus':
       return zcodeNetworkRetryEntries(payload)
     case 'modelSelected': {
@@ -102,13 +119,24 @@ function zcodeSessionUpdateEntries(payload: Record<string, unknown>): Notificati
       // target. The worker persists no other model selection.
       const from = pickString(pickObject(payload, 'previousModelSelection'), 'modelId')
       const to = pickString(pickObject(payload, 'modelSelection'), 'modelId')
-      return from && to ? [{ kind: 'text', text: `Switched from ${from} to ${to}` }] : []
+      return from && to
+        ? [
+            { kind: 'text', text: `Switched from ${from} to ${to}` },
+          ]
+        : []
     }
     case 'hookRun':
       return zcodeHookRunEntries(payload)
     case 'steerDiscarded': {
       const reason = ZCODE_STEER_DISCARD_REASON_PHRASE.get(pickString(payload, 'reason'))
-      return [{ kind: 'text', text: reason ? `Queued input discarded (${reason})` : 'Queued input discarded' }]
+      return [
+        {
+          kind: 'text',
+          text: reason
+            ? `Queued input discarded (${reason})`
+            : 'Queued input discarded',
+        },
+      ]
     }
     default:
       return []
@@ -120,11 +148,20 @@ function zcodeSessionUpdateEntries(payload: Record<string, unknown>): Notificati
  * A cancelled hook stops with its turn and supplies no failure notice.
  */
 const ZCODE_HOOK_OUTCOMES: ReadonlyMap<string, { outcome: HookOutcome, messageKey: string | null }> = new Map([
-  [ZCODE_HOOK_RUN_OUTCOME.Failed, { outcome: 'failed', messageKey: 'errorMessage' }],
-  [ZCODE_HOOK_RUN_OUTCOME.Blocked, { outcome: 'blocked', messageKey: 'blockReason' }],
+  [
+    ZCODE_HOOK_RUN_OUTCOME.Failed,
+    { outcome: 'failed', messageKey: 'errorMessage' },
+  ],
+  [
+    ZCODE_HOOK_RUN_OUTCOME.Blocked,
+    { outcome: 'blocked', messageKey: 'blockReason' },
+  ],
   // ZCode's message for a timeout is "Hook timed out after {n}ms", which repeats
   // the verb. The row omits it.
-  [ZCODE_HOOK_RUN_OUTCOME.TimedOut, { outcome: 'timed-out', messageKey: null }],
+  [
+    ZCODE_HOOK_RUN_OUTCOME.TimedOut,
+    { outcome: 'timed-out', messageKey: null },
+  ],
 ])
 
 /**
@@ -135,18 +172,35 @@ function zcodeHookRunEntries(payload: Record<string, unknown>): NotificationEntr
   if (!outcome)
     return []
   const event = pickString(payload, 'hookEventName').trim()
-  const message = outcome.messageKey ? pickString(payload, outcome.messageKey).trim() : ''
-  return [{ kind: 'hook', outcome: outcome.outcome, ...(event ? { event } : {}), ...(message ? { detail: message } : {}) }]
+  const message = outcome.messageKey
+    ? pickString(payload, outcome.messageKey).trim()
+    : ''
+  return [
+    {
+      kind: 'hook',
+      outcome: outcome.outcome,
+      ...(event
+        ? { event }
+        : {}),
+      ...(message
+        ? { detail: message }
+        : {}),
+    },
+  ]
 }
 
 /** `head — detail`, or `head` alone when the detail states nothing. */
 function withDetail(head: string, detail: string): string {
-  return detail ? `${head} — ${detail}` : head
+  return detail
+    ? `${head} — ${detail}`
+    : head
 }
 
 /** The text with a full stop at its end, unless it already ends a sentence. */
 function asSentence(text: string): string {
-  return /[.!?]$/.test(text) ? text : `${text}.`
+  return /[.!?]$/.test(text)
+    ? text
+    : `${text}.`
 }
 
 /** The goal check's own row, from its lifecycle state and its verdict. */
@@ -164,20 +218,41 @@ function zcodeGoalVerificationEntries(payload: Record<string, unknown>): Notific
   const reason = pickString(verification, 'reason').trim()
   switch (status) {
     case ZCODE_GOAL_VERIFICATION_STATUS.Completed: {
-      if (verification.passed === true)
-        return [{ kind: 'text', text: withDetail(`${prefix}Goal complete, ending task`, reason) }]
+      if (verification.passed === true) {
+        return [
+          {
+            kind: 'text',
+            text: withDetail(`${prefix}Goal complete, ending task`, reason),
+          },
+        ]
+      }
       // ZCode continues the goal loop only with a next action. With none, it
       // skips the continuation and the goal stays active with no turn running.
       const nextAction = pickString(verification, 'nextAction').trim()
-      if (!nextAction)
-        return [{ kind: 'text', text: withDetail(`${prefix}Goal incomplete; the goal stays active`, reason) }]
+      if (!nextAction) {
+        return [
+          {
+            kind: 'text',
+            text: withDetail(`${prefix}Goal incomplete; the goal stays active`, reason),
+          },
+        ]
+      }
       const head = withDetail(`${prefix}Goal incomplete, continuing`, reason)
-      return [{ kind: 'text', text: `${asSentence(head)} Next: ${nextAction}` }]
+      return [
+        { kind: 'text', text: `${asSentence(head)} Next: ${nextAction}` },
+      ]
     }
     case ZCODE_GOAL_VERIFICATION_STATUS.FailedClosed:
-      return [{ kind: 'text', text: withDetail(`${prefix}The goal check could not run, so the goal ends`, reason) }]
+      return [
+        {
+          kind: 'text',
+          text: withDetail(`${prefix}The goal check could not run, so the goal ends`, reason),
+        },
+      ]
     default:
-      return [{ kind: 'text', text: `${prefix}Goal check cancelled; the goal is paused` }]
+      return [
+        { kind: 'text', text: `${prefix}Goal check cancelled; the goal is paused` },
+      ]
   }
 }
 
@@ -208,14 +283,31 @@ function zcodeCompactionLifecycleEntries(payload: Record<string, unknown>): Noti
   const status = pickString(payload, 'status')
   switch (status) {
     case ZCODE_COMPACTION_STATUS.Skipped:
-      return [{ kind: 'compaction', phase: 'end', outcome: 'skipped' }]
+      return [
+        { kind: 'compaction', phase: 'end', outcome: 'skipped' },
+      ]
     case ZCODE_COMPACTION_STATUS.Completed:
-      return [{ kind: 'compaction', phase: 'end', detail: zcodeCompactionDetails(payload) }]
+      return [
+        {
+          kind: 'compaction',
+          phase: 'end',
+          detail: zcodeCompactionDetails(payload),
+        },
+      ]
     case ZCODE_COMPACTION_STATUS.Failed:
       // A failed compaction states why in its `reason`.
-      return [{ kind: 'compaction', phase: 'end', outcome: 'failed', error: pickString(payload, 'reason').trim() || 'the provider reported a failure' }]
+      return [
+        {
+          kind: 'compaction',
+          phase: 'end',
+          outcome: 'failed',
+          error: pickString(payload, 'reason').trim() || 'the provider reported a failure',
+        },
+      ]
     case ZCODE_COMPACTION_STATUS.Interrupted:
-      return [{ kind: 'compaction', phase: 'end', outcome: 'aborted' }]
+      return [
+        { kind: 'compaction', phase: 'end', outcome: 'aborted' },
+      ]
     default:
       return []
   }
@@ -248,12 +340,20 @@ function zcodeNetworkRetryEntries(payload: Record<string, unknown>): Notificatio
   const attempt = pickCounter(apiRetry, 'attempt')
   const maxAttempts = pickCounter(apiRetry, 'maxRetries')
   const delayMs = pickCounter(apiRetry, 'retryDelayMs')
-  return [retryEntry('api', {
-    ...(attempt !== undefined ? { attempt } : {}),
-    ...(maxAttempts !== undefined ? { maxAttempts } : {}),
-    ...(delayMs !== undefined ? { delayMs } : {}),
-    error: pickString(apiRetry, 'error'),
-  })]
+  return [
+    retryEntry('api', {
+      ...(attempt !== undefined
+        ? { attempt }
+        : {}),
+      ...(maxAttempts !== undefined
+        ? { maxAttempts }
+        : {}),
+      ...(delayMs !== undefined
+        ? { delayMs }
+        : {}),
+      error: pickString(apiRetry, 'error'),
+    }),
+  ]
 }
 
 /**
@@ -264,7 +364,11 @@ export function zcodeNotificationEntry(msg: Record<string, unknown>): Notificati
   if (envelope && envelope.type === ZCODE_EVENT.SessionUpdated)
     return zcodeSessionUpdateEntries(envelope.payload)
   const text = describeZCodeNotification(msg)
-  return text === null ? [] : [{ kind: 'text', text }]
+  return text === null
+    ? []
+    : [
+        { kind: 'text', text },
+      ]
 }
 
 /** Identify an old stored start without restoring its notification reader. */

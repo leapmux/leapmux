@@ -30,25 +30,40 @@ export function createCommandCodeEnvironment(options: CommandCodeEnvironmentOpti
   if (others.some(other => other.provider !== primary.provider) || new Set([primary, ...others].map(model => model.model)).size !== 3)
     throw new Error('The Command Code mock models must be distinct models of the same provider.')
   const mcpServers = Object.fromEntries(validatedMcpServers(options.mcpServers, 'Command Code', 32)
-    .map(server => [server.name, { command: server.command, args: server.args }]))
+    .map(server => [
+      server.name,
+      { command: server.command, args: server.args },
+    ]))
   const home = join(options.runDirectory, 'agent-home')
   const config = join(home, '.commandcode')
   mkdirSync(config, { recursive: true, mode: 0o700 })
-  writeFileSync(join(config, 'providers.json'), `${JSON.stringify({ provider: {
-    [primary.provider]: {
-      baseURL: `${endpoint.href.replace(/\/$/, '')}/v1`,
-      api: 'openai-completions',
-      apiKey: '$COMMAND_CODE_MOCK_KEY',
-      models: {
-        [primary.model]: { contextWindow: 131072, reasoning: true, reasoningEfforts: ['low', 'high'] },
-        [alternate.model]: { contextWindow: 131072 },
-        [reasoning.model]: { contextWindow: 131072, reasoning: true, reasoningEfforts: ['low', 'medium', 'high'] },
+  writeFileSync(join(config, 'providers.json'), `${JSON.stringify({
+    provider: {
+      [primary.provider]: {
+        baseURL: `${endpoint.href.replace(/\/$/, '')}/v1`,
+        api: 'openai-completions',
+        apiKey: '$COMMAND_CODE_MOCK_KEY',
+        models: {
+          [primary.model]: {
+            contextWindow: 131072,
+            reasoning: true,
+            reasoningEfforts: ['low', 'high'],
+          },
+          [alternate.model]: { contextWindow: 131072 },
+          [reasoning.model]: {
+            contextWindow: 131072,
+            reasoning: true,
+            reasoningEfforts: ['low', 'medium', 'high'],
+          },
+        },
       },
     },
-  } }, null, 2)}\n`, { mode: 0o600 })
+  }, null, 2)}\n`, { mode: 0o600 })
   writeFileSync(join(config, 'settings.json'), `${JSON.stringify({
     model: options.modelID,
-    mods: { disabled: ['learning', 'titling', 'update-notice'] },
+    mods: {
+      disabled: ['learning', 'titling', 'update-notice'],
+    },
     byokFeatureTasks: 'session',
   }, null, 2)}\n`, { mode: 0o600 })
   writeFileSync(join(config, 'mcp.json'), `${JSON.stringify({ mcpServers }, null, 2)}\n`, { mode: 0o600 })

@@ -53,11 +53,27 @@ export type ToolCallRow = {
 export function toolCallRow(call: ToolCall, role: ToolSpanRowRole, span: ToolSpanRowPresence): ToolCallRow {
   switch (role) {
     case 'request':
-      return { kind: 'tool', call, role, hasResultRow: span.result }
+      return {
+        kind: 'tool',
+        call,
+        role,
+        hasResultRow: span.result,
+      }
     case 'result':
-      return { kind: 'tool', call, role, hasRequestRow: span.request }
+      return {
+        kind: 'tool',
+        call,
+        role,
+        hasRequestRow: span.request,
+      }
     default:
-      return { kind: 'tool', call, role, hasRequestRow: span.request, hasResultRow: span.result }
+      return {
+        kind: 'tool',
+        call,
+        role,
+        hasRequestRow: span.request,
+        hasResultRow: span.result,
+      }
   }
 }
 

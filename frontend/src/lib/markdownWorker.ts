@@ -126,6 +126,12 @@ globalThis.onmessage = async (e: MessageEvent<MarkdownRenderRequest>) => {
     html = String(plainMarkdownProcessor.processSync(msg.text))
     retryable = true
   }
-  const response: MarkdownRenderResponse = { type: 'render-result', id: msg.id, html, retryable, styles: collectNewShikiStyles() }
+  const response: MarkdownRenderResponse = {
+    type: 'render-result',
+    id: msg.id,
+    html,
+    retryable,
+    styles: collectNewShikiStyles(),
+  }
   globalThis.postMessage(response)
 }

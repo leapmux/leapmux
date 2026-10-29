@@ -19,7 +19,11 @@ export function securityCompanions(targets, vulnerabilityAlerts) {
   // Match only the affected pair. Other Tauri packages retain routine major approval.
   return Object.entries(targets).map(([name, version]) => ({
     matchPackageNames: [name],
-    matchFileNames: [name.startsWith('@tauri-apps/') ? 'frontend/package.json' : 'desktop/rust/Cargo.toml'],
+    matchFileNames: [
+      name.startsWith('@tauri-apps/')
+        ? 'frontend/package.json'
+        : 'desktop/rust/Cargo.toml',
+    ],
     allowedVersions: `=${version}`,
     isVulnerabilityAlert: true,
     force,
@@ -27,10 +31,22 @@ export function securityCompanions(targets, vulnerabilityAlerts) {
 }
 
 export async function prepareTauriSecurity(alerts, config, baseline, { request = fetch, now = Date.now() } = {}) {
-  const targets = await planTauriTargets(tauriPairs(baseline), { policy: config, alerts, baseline, security: true, request, now })
+  const targets = await planTauriTargets(tauriPairs(baseline), {
+    policy: config,
+    alerts,
+    baseline,
+    security: true,
+    request,
+    now,
+  })
   if (!targets)
     return {}
-  return Object.fromEntries(targets.flatMap(({ pair, target }) => target.npm === pair.npmVersion && target.cargo === pair.cargoVersion ? [] : [[pair.npm, target.npm], [pair.cargo, target.cargo]]))
+  return Object.fromEntries(targets.flatMap(({ pair, target }) => target.npm === pair.npmVersion && target.cargo === pair.cargoVersion
+    ? []
+    : [
+        [pair.npm, target.npm],
+        [pair.cargo, target.cargo],
+      ]))
 }
 
 const REPOSITORY_API_PATH = '/repos/leapmux/leapmux'
@@ -57,7 +73,10 @@ function nextAlertPage(header, canonicalPath) {
     if (next || url.origin !== 'https://api.github.com' || url.username || url.password || url.hash
       || ![ALERTS_API_PATH, canonicalPath].includes(url.pathname) || url.searchParams.has('page')
       || url.searchParams.get('state') !== 'open' || url.searchParams.get('per_page') !== '100'
-      || ![url.searchParams.get('after'), url.searchParams.get('before')].some(Boolean)) {
+      || ![
+        url.searchParams.get('after'),
+        url.searchParams.get('before'),
+      ].some(Boolean)) {
       throw new Error('Unsafe or ambiguous Dependabot pagination link.')
     }
     url.searchParams.sort()
@@ -82,7 +101,7 @@ export async function readAlerts(token, request = fetch) {
     seen.add(path)
     const { data: batch, headers } = await readGithubJsonResponse(path, { token, request, description: 'Dependabot alert read' })
     if (!Array.isArray(batch))
-      throw new Error('Dependabot returned an invalid alert list.')
+      throw new TypeError('Dependabot returned an invalid alert list.')
     alerts.push(...batch)
     path = nextAlertPage(headers.get('link'), canonicalPath)
   }
@@ -94,7 +113,9 @@ if (import.meta.main) {
     await initializeRenovateLogger()
     const root = resolve(import.meta.dirname, '..')
     const config = await Bun.file(resolve(root, 'renovate.json')).json()
-    const alerts = process.argv.includes('--local') ? [] : await readAlerts(process.env.GH_TOKEN)
+    const alerts = process.argv.includes('--local')
+      ? []
+      : await readAlerts(process.env.GH_TOKEN)
     const baseline = readTauriVersions(root)
     assertTauriCompatibility(baseline)
     const securityTargets = await prepareTauriSecurity(alerts, config, baseline)

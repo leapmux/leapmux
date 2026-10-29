@@ -72,11 +72,15 @@ export function ChatImageViewer(props: {
   // expensive thing on the screen. It recomputes only when the resolution does.
   const bytes = createMemo(() => {
     const r = resolution()
-    return r.status === 'ready' ? decodeImageBytes(r.source) : null
+    return r.status === 'ready'
+      ? decodeImageBytes(r.source)
+      : null
   })
   const imageDescription = () => {
     const r = resolution()
-    return r.status === 'ready' ? r.source.description : undefined
+    return r.status === 'ready'
+      ? r.source.description
+      : undefined
   }
 
   return (
@@ -146,7 +150,10 @@ export function decodeImageBytes(source: { data?: string, url?: string, mimeType
   if (!inline)
     return null
   try {
-    return { content: base64ToUint8Array(inline.base64), mimeType: inline.mimeType }
+    return {
+      content: base64ToUint8Array(inline.base64),
+      mimeType: inline.mimeType,
+    }
   }
   catch {
     return null

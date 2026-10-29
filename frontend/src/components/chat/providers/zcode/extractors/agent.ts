@@ -35,9 +35,15 @@ export function zcodeAgentResult(row: ZCodeRow): AgentRun | null {
   if (!update || (!update.result && !update.isError))
     return null
   const input = zcodeToolInput(row)
-  const content = update.isError ? zcodeErrorText(update) || 'Tool call failed' : update.result?.content ?? ''
-  const footer = !update.isError ? RESULT_FOOTER.exec(content) : null
-  const launch = !update.isError && !footer ? launchedAgent(content) : null
+  const content = update.isError
+    ? zcodeErrorText(update) || 'Tool call failed'
+    : update.result?.content ?? ''
+  const footer = !update.isError
+    ? RESULT_FOOTER.exec(content)
+    : null
+  const launch = !update.isError && !footer
+    ? launchedAgent(content)
+    : null
   const metadata: AgentRun['metadata'] = []
   const agentId = footer?.[1] ?? launch?.agentId ?? ''
   if (agentId)
@@ -46,21 +52,46 @@ export function zcodeAgentResult(row: ZCodeRow): AgentRun | null {
     metadata.push({ label: 'Output', value: launch.outputFile })
   if (footer) {
     // Tuple-typed, so the label destructures as the string it is spelled as.
-    const counters: Array<[string, string | undefined]> = [['Tokens', footer[2]], ['Tool uses', footer[3]], ['Duration', footer[4]]]
+    const counters: Array<[string, string | undefined]> = [
+      ['Tokens', footer[2]],
+      ['Tool uses', footer[3]],
+      ['Duration', footer[4]],
+    ]
     for (const [label, value] of counters) {
       if (value === undefined)
         continue
       const number = Number(value)
-      metadata.push({ label, value: Number.isSafeInteger(number) ? label === 'Duration' ? formatDuration(number) : formatNumber(number) : value })
+      metadata.push({
+        label,
+        value: Number.isSafeInteger(number)
+          ? label === 'Duration'
+            ? formatDuration(number)
+            : formatNumber(number)
+          : value,
+      })
     }
   }
   return {
     description: pickString(input, 'description').trim(),
     agentId,
-    statusLabel: update.isError ? 'failed' : launch ? 'launched asynchronously' : footer ? 'completed' : 'returned a result',
-    outcome: update.isError ? 'failed' : launch ? 'running' : footer ? 'completed' : 'unknown',
+    statusLabel: update.isError
+      ? 'failed'
+      : launch
+        ? 'launched asynchronously'
+        : footer ? 'completed' : 'returned a result',
+    outcome: update.isError
+      ? 'failed'
+      : launch
+        ? 'running'
+        : footer ? 'completed' : 'unknown',
     metadata,
-    body: footer ? content.slice(0, footer.index) : launch ? pickString(input, 'prompt') : content,
-    ...(launch ? { bodyLabel: 'Prompt' as const } : {}),
+    body: footer
+      ? content.slice(0, footer.index)
+      : launch
+        ? pickString(input, 'prompt')
+        : content,
+    ...(launch
+      ? { bodyLabel: 'Prompt' as const }
+      : {}),
   }
 }

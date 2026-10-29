@@ -8,8 +8,14 @@ interface FakeDataTransfer {
   dropEffect: string
 }
 
-function fakeDataTransfer(files: File[] = [new File(['x'], 'x.png', { type: 'image/png' })]): FakeDataTransfer {
-  return { types: ['Files'], files, dropEffect: '' }
+function fakeDataTransfer(files: File[] = [
+  new File(['x'], 'x.png', { type: 'image/png' }),
+]): FakeDataTransfer {
+  return {
+    types: ['Files'],
+    files,
+    dropEffect: '',
+  }
 }
 
 function dispatchDragEvent(target: Element, type: string, dataTransfer: FakeDataTransfer): Event {
@@ -90,7 +96,11 @@ describe('ChatDropZone', () => {
     ))
 
     const inner = container.querySelector('[data-testid="inner"]') as HTMLElement
-    dispatchDragEvent(inner, 'dragenter', { types: ['text/plain'], files: [], dropEffect: '' })
+    dispatchDragEvent(inner, 'dragenter', {
+      types: ['text/plain'],
+      files: [],
+      dropEffect: '',
+    })
     expect(queryByText('Drop files to attach')).toBeFalsy()
   })
 

@@ -51,5 +51,11 @@ export function useAgentProviderSelection(
       setAgentProvider(best)
   })
 
-  return { agentProvider, setAgentProvider, recordProviderUse, available, noProviders }
+  return {
+    agentProvider,
+    setAgentProvider,
+    recordProviderUse,
+    available,
+    noProviders,
+  }
 }

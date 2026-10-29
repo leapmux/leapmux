@@ -20,9 +20,20 @@ function fixture(change = () => {}) {
     method: 'checksum',
     run: 'once',
     tasks: {
-      'build': { deps: ['prepare'], cmds: [{ task: 'compile' }] },
-      'prepare': { deps: ['generate'] },
-      'generate': { sources: ['schema'], generates: ['generated'], cmds: ['cp schema generated'] },
+      'build': {
+        deps: ['prepare'],
+        cmds: [
+          { task: 'compile' },
+        ],
+      },
+      'prepare': {
+        deps: ['generate'],
+      },
+      'generate': {
+        sources: ['schema'],
+        generates: ['generated'],
+        cmds: ['cp schema generated'],
+      },
       'compile': {
         sources: ['generated'],
         generates: ['artifact'],
@@ -47,7 +58,12 @@ function fixture(change = () => {}) {
  * check for an exact line would fail although the line is there.
  */
 function childEnv(dir, extra = {}) {
-  const env = { ...process.env, TASK_TEMP_DIR: join(dir, '.task'), NO_COLOR: '1', ...extra }
+  const env = {
+    ...process.env,
+    TASK_TEMP_DIR: join(dir, '.task'),
+    NO_COLOR: '1',
+    ...extra,
+  }
   delete env.FORCE_COLOR
   delete env.CLICOLOR_FORCE
   return env
@@ -84,7 +100,9 @@ describe('native build cache check', () => {
   it('uses the invoking Task executable when its path contains spaces', () => {
     const dir = fixture()
     expectSuccess(run(dir, 'build'))
-    const executable = join(dir, process.platform === 'win32' ? 'task executable.exe' : 'task executable')
+    const executable = join(dir, process.platform === 'win32'
+      ? 'task executable.exe'
+      : 'task executable')
     copyFileSync(taskExecutable, executable)
     chmodSync(executable, 0o755)
     expectSuccess(spawnSync(executable, ['check-build-cache'], {
@@ -116,13 +134,23 @@ describe('native build cache check', () => {
       rmSync(join(dir, 'artifact'))
     const result = run(dir, 'check-build-cache')
     expect(result.status).not.toBe(0)
-    expect(result.stderr).toContain(`Build commands ran: ${change === 'input' ? 'compile, generate' : 'compile'}\n`)
-    expect(readFileSync(join(dir, 'artifact'), 'utf8')).toBe(change === 'input' ? 'changed input' : 'first input')
+    expect(result.stderr).toContain(`Build commands ran: ${change === 'input'
+      ? 'compile, generate'
+      : 'compile'}\n`)
+    expect(readFileSync(join(dir, 'artifact'), 'utf8')).toBe(change === 'input'
+      ? 'changed input'
+      : 'first input')
     expect(readFileSync(join(dir, 'executions'), 'utf8')).toBe('compiled\ncompiled\n')
     expect(logs(dir)).toHaveLength(1)
   })
 
-  it.each(['root', 'task', 'command', 'call', 'environment'])('detects commands with silence set on the %s', (scope) => {
+  it.each([
+    'root',
+    'task',
+    'command',
+    'call',
+    'environment',
+  ])('detects commands with silence set on the %s', (scope) => {
     const dir = fixture((config) => {
       delete config.tasks.compile.sources
       if (scope === 'root')
@@ -135,7 +163,9 @@ describe('native build cache check', () => {
         config.tasks.build.cmds[0].silent = true
     })
     expectSuccess(run(dir, 'build'))
-    const result = run(dir, 'check-build-cache', scope === 'environment' ? { TASK_SILENT: 'true' } : {})
+    const result = run(dir, 'check-build-cache', scope === 'environment'
+      ? { TASK_SILENT: 'true' }
+      : {})
     expect(result.status).not.toBe(0)
     expect(result.stderr).toContain('Build commands ran: compile')
   })
@@ -144,7 +174,14 @@ describe('native build cache check', () => {
     const dir = fixture((config) => {
       config.tasks.build.cmds.push(
         { cmd: 'echo must-not-run', if: 'exit 1' },
-        { cmd: 'echo must-not-run', platforms: [process.platform === 'win32' ? 'linux' : 'windows'] },
+        {
+          cmd: 'echo must-not-run',
+          platforms: [
+            process.platform === 'win32'
+              ? 'linux'
+              : 'windows',
+          ],
+        },
       )
     })
     expectSuccess(run(dir, 'build'))
@@ -200,7 +237,10 @@ describe('native build cache check', () => {
 
   it('fails when Task cannot start', () => {
     const dir = fixture()
-    const result = spawnSync(process.execPath, [join(dir, 'scripts/check-build-cache.mjs'), join(dir, 'missing-task')], {
+    const result = spawnSync(process.execPath, [
+      join(dir, 'scripts/check-build-cache.mjs'),
+      join(dir, 'missing-task'),
+    ], {
       cwd: dir,
       encoding: 'utf8',
       env: childEnv(dir),
@@ -213,7 +253,10 @@ describe('native build cache check', () => {
     const dir = fixture()
     expectSuccess(run(dir, 'build'))
     rmSync(join(dir, 'artifact'))
-    const result = spawnSync(process.execPath, [join(dir, 'scripts/check-build-cache.mjs'), taskExecutable], {
+    const result = spawnSync(process.execPath, [
+      join(dir, 'scripts/check-build-cache.mjs'),
+      taskExecutable,
+    ], {
       cwd: dir,
       encoding: 'utf8',
       env: childEnv(dir, { TASK_DRY: 'true' }),
@@ -223,7 +266,12 @@ describe('native build cache check', () => {
     expect(readFileSync(join(dir, 'executions'), 'utf8')).toBe('compiled\ncompiled\n')
   })
 
-  it.each(['', 'task: "build" started\n', 'task: "build" finished\n', 'unknown Task log format\n'])(
+  it.each([
+    '',
+    'task: "build" started\n',
+    'task: "build" finished\n',
+    'unknown Task log format\n',
+  ])(
     'rejects an absent or incomplete execution log: %j',
     async (content) => {
       const dir = fixture()
@@ -235,7 +283,10 @@ describe('native build cache check', () => {
 
   it('accepts a build that Task skips through its own status check', () => {
     const dir = fixture((config) => {
-      config.tasks.build = { status: ['exit 0'], cmds: ['echo must-not-run'] }
+      config.tasks.build = {
+        status: ['exit 0'],
+        cmds: ['echo must-not-run'],
+      }
     })
     expectSuccess(run(dir, 'check-build-cache'))
     expect(logs(dir)[0].stderr).toContain('Task "build" is up to date')

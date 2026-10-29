@@ -22,11 +22,28 @@ import './plugin'
 describe('a refused streamed write of fast agent', () => {
   const REFUSAL = 'The user has declined permission to use this tool: acp_filesystem__write_text_file'
   const frames = {
-    opening: { sessionUpdate: 'tool_call', toolCallId: 'fast-write', title: 'write_text_file', kind: 'edit', status: 'pending', content: [] },
-    ending: { sessionUpdate: 'tool_call_update', toolCallId: 'fast-write', status: 'failed', content: acpTextContent(REFUSAL) },
+    opening: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'fast-write',
+      title: 'write_text_file',
+      kind: 'edit',
+      status: 'pending',
+      content: [],
+    },
+    ending: {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'fast-write',
+      status: 'failed',
+      content: acpTextContent(REFUSAL),
+    },
     spanType: 'edit',
   }
-  const supplement = { sessionUpdate: 'tool_call', toolCallId: 'fast-write', status: 'pending', rawInput: { path: '/w/fa-local.txt', content_length: 16 } }
+  const supplement = {
+    sessionUpdate: 'tool_call',
+    toolCallId: 'fast-write',
+    status: 'pending',
+    rawInput: { path: '/w/fa-local.txt', content_length: 16 },
+  }
 
   it('heads the request row with the file that the permission request stated', () => {
     const { request } = renderToolRows(AgentProvider.FAST_AGENT, { ...frames, requestSupplement: supplement })

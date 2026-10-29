@@ -37,7 +37,15 @@ export async function exerciseGoosePermissionRemoval(context: ManagedNativeScena
   await expectNativeOptionValue(context, 'permissionMode', GOOSE_MODE.SmartApprove)
   // Smart Approve asks Goose's permission-safety classifier about each tool call. The classifier lists no call as
   // read-only, so the removal raises a permission request.
-  await modelScript.rule({ name: `goose-native-removal-judge-${uniqueMarker()}`, when: { system: 'permission-safety classifier' }, respond: { toolCalls: [goosePermissionJudgmentToolCall('goose-removal-judge', [])] } })
+  await modelScript.rule({
+    name: `goose-native-removal-judge-${uniqueMarker()}`,
+    when: { system: 'permission-safety classifier' },
+    respond: {
+      toolCalls: [
+        goosePermissionJudgmentToolCall('goose-removal-judge', []),
+      ],
+    },
+  })
   const marker = join(workingDir, 'goose-mode-marker.txt')
   writeFileSync(marker, 'keep this file\n')
 
@@ -52,15 +60,20 @@ export async function exerciseGoosePermissionRemoval(context: ManagedNativeScena
 
   await applyPermissionPreset(page, 'bypass')
   await expectNativeOptionValue(context, 'permissionMode', GOOSE_MODE.Auto)
-  await expectNoNativeControl(context, { testId: 'control-banner', relatedProof: async () => {
+  await expectNoNativeControl(context, {
+    testId: 'control-banner',
+    relatedProof: async () => {
     // Auto runs the removal with no request, so the turn answers none, and a request fails it.
-    const { resultRequest } = await runNativeToolTurn(context, {
-      toolCalls: [bashToolCall(context.provider, 'goose-auto-remove', 'rm -f goose-mode-marker.txt && printf goose-mode-42')],
-      prompt: 'Run the scripted removal under Auto.',
-      answer: 'The Auto check ended.',
-      permissions: 'none',
-    })
-    expect(existsSync(marker)).toBe(false)
-    expect(nativeToolResult(resultRequest, 'goose-auto-remove')).toContain('goose-mode-42')
-  } })
+      const { resultRequest } = await runNativeToolTurn(context, {
+        toolCalls: [
+          bashToolCall(context.provider, 'goose-auto-remove', 'rm -f goose-mode-marker.txt && printf goose-mode-42'),
+        ],
+        prompt: 'Run the scripted removal under Auto.',
+        answer: 'The Auto check ended.',
+        permissions: 'none',
+      })
+      expect(existsSync(marker)).toBe(false)
+      expect(nativeToolResult(resultRequest, 'goose-auto-remove')).toContain('goose-mode-42')
+    },
+  })
 }

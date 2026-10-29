@@ -25,7 +25,9 @@ export interface CursorRunRequestWitness {
 
 function message(fields: CursorProtobufFields, field: number): CursorProtobufFields | undefined {
   const bytes = cursorProtobufBytes(fields, field)
-  return bytes !== undefined ? readCursorProtobufFields(bytes) : undefined
+  return bytes !== undefined
+    ? readCursorProtobufFields(bytes)
+    : undefined
 }
 
 function booleanField(fields: CursorProtobufFields, field: number): boolean | undefined {
@@ -58,7 +60,12 @@ export function cursorRunRequestWitness(frame: Uint8Array): CursorRunRequestWitn
   const details = message(run, 3)
   if (details) {
     const maxMode = booleanField(details, 7)
-    witness.modelDetails = { modelId: cursorProtobufString(details, 1) ?? '', ...(maxMode !== undefined ? { maxMode } : {}) }
+    witness.modelDetails = {
+      modelId: cursorProtobufString(details, 1) ?? '',
+      ...(maxMode !== undefined
+        ? { maxMode }
+        : {}),
+    }
   }
   const action = message(run, 2)
   const userAction = action && message(action, 1)

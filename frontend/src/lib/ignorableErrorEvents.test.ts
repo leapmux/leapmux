@@ -65,7 +65,9 @@ describe('isMutedErrorEvent', () => {
   // Each of the three below still gives a developer something to work with, so
   // none is ignorable -- this is what keeps the predicate from eating a real fault.
   it('does not match when the event still carries the thrown error', () => {
-    expect(isMutedErrorEvent(mutedEventFields({ error: new Error('Script error.') }))).toBe(false)
+    expect(isMutedErrorEvent(mutedEventFields({
+      error: new Error('Script error.'),
+    }))).toBe(false)
   })
 
   it('does not match when the engine supplied a filename', () => {
@@ -83,7 +85,9 @@ describe('isMutedErrorEvent', () => {
   })
 
   it('does not match an event with no message at all (a rejection)', () => {
-    expect(isMutedErrorEvent({ reason: new Error('rejected') } as unknown as Event)).toBe(false)
+    expect(isMutedErrorEvent({
+      reason: new Error('rejected'),
+    } as unknown as Event)).toBe(false)
   })
 })
 

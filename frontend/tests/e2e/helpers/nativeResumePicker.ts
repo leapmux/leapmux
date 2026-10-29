@@ -100,7 +100,12 @@ export async function openResumeSubject(
   await loginViaToken(page, server.adminToken)
   await openWorkspace(page, workspaceId)
   await agentTabs(page).filter({ hasText: 'Subject' }).first().click()
-  return { workspaceId, keeperId, subjectId, subjectDir }
+  return {
+    workspaceId,
+    keeperId,
+    subjectId,
+    subjectDir,
+  }
 }
 
 /**
@@ -129,8 +134,15 @@ export async function resumePickerScenario(
   const { keeperId, subjectId, subjectDir } = await openResumeSubject(fixtures, {
     label: options.label,
     subjectOptions: async (workspaceId) => {
-      built = await nativeContext({ page, modelScript, leapmuxServer: fixtures.leapmuxServer, workspaceId })
-      return agentOpenOptions(built.provider, options.subjectOptionValues ? { optionValues: options.subjectOptionValues } : {})
+      built = await nativeContext({
+        page,
+        modelScript,
+        leapmuxServer: fixtures.leapmuxServer,
+        workspaceId,
+      })
+      return agentOpenOptions(built.provider, options.subjectOptionValues
+        ? { optionValues: options.subjectOptionValues }
+        : {})
     },
   })
   if (!built)
@@ -160,7 +172,14 @@ export async function resumePickerScenario(
   const originalAnswerBubbles = await assistantBubbles(page).filter({ hasText: texts.originalAnswer }).count()
   await closeNativeAgentAndWait(context, subjectId)
 
-  await reopenFromSessionPicker(page, { provider, workingDir: subjectDir, sessionId, ...(options.sessionList ? { list: options.sessionList } : {}) })
+  await reopenFromSessionPicker(page, {
+    provider,
+    workingDir: subjectDir,
+    sessionId,
+    ...(options.sessionList
+      ? { list: options.sessionList }
+      : {}),
+  })
   const reopened = await expectReopenedNativeAgent(context, { agentProvider: provider, agentSessionId: sessionId }, [keeperId, subjectId])
 
   await expect(userBubbles(page).filter({ hasText: texts.originalPrompt })).toHaveCount(1)

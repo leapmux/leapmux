@@ -28,12 +28,22 @@ function writeRecord(record: unknown, store = 'store-native'): string {
 }
 
 function read() {
-  return readCodewhaleNativeMode({ home, runDir: directory, threadId, workingDir })
+  return readCodewhaleNativeMode({
+    home,
+    runDir: directory,
+    threadId,
+    workingDir,
+  })
 }
 
 describe('readCodewhaleNativeMode', () => {
   it.each(['agent', 'plan', 'operate'] as const)('reads the native %s state and keeps its original record', (mode) => {
-    const record = { id: threadId, workspace: workingDir, mode, permission_posture: 'ask' }
+    const record = {
+      id: threadId,
+      workspace: workingDir,
+      mode,
+      permission_posture: 'ask',
+    }
     const path = writeRecord(record)
     expect(read()).toEqual({ mode, path, record })
   })
@@ -48,9 +58,18 @@ describe('readCodewhaleNativeMode', () => {
   it.each([
     { record: null, reason: 'another owner' },
     { record: {}, reason: 'another owner' },
-    { record: { id: 'foreign', mode: 'operate' }, reason: 'another owner' },
-    { record: { id: threadId, workspace: '', mode: 'operate' }, reason: 'must be nonempty' },
-    { record: { id: threadId, workspace: 0, mode: 'operate' }, reason: 'another owner' },
+    {
+      record: { id: 'foreign', mode: 'operate' },
+      reason: 'another owner',
+    },
+    {
+      record: { id: threadId, workspace: '', mode: 'operate' },
+      reason: 'must be nonempty',
+    },
+    {
+      record: { id: threadId, workspace: 0, mode: 'operate' },
+      reason: 'another owner',
+    },
   ])('refuses a malformed or foreign owner with $reason: $record', ({ record, reason }) => {
     writeRecord(record)
     expect(read).toThrow(reason)
@@ -85,28 +104,64 @@ describe('readCodewhaleNativeMode', () => {
     }
   })
 
-  it.each(['', '.', '..', '../other', 'other/session', 'other\\session', 'zero\0byte'])('refuses an unsafe thread ID: %j', (threadId) => {
-    expect(() => readCodewhaleNativeMode({ home, runDir: directory, threadId, workingDir })).toThrow('one thread ID')
+  it.each([
+    '',
+    '.',
+    '..',
+    '../other',
+    'other/session',
+    'other\\session',
+    'zero\0byte',
+  ])('refuses an unsafe thread ID: %j', (threadId) => {
+    expect(() => readCodewhaleNativeMode({
+      home,
+      runDir: directory,
+      threadId,
+      workingDir,
+    })).toThrow('one thread ID')
   })
 })
 
 const contract = '<codewhale:runtime_event kind="operate_contract" visibility="internal">\nOrchestrate by default: run a `workflow` and parallel agent workers.\n</codewhale:runtime_event>\n<turn_meta>\nInput provenance: runtime (non-authoritative)\n</turn_meta>'
 
 function request(messages: unknown): MockModelRequestRecord {
-  return { protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { messages } }
+  return {
+    protocol: 'openai-chat-completions',
+    path: '/v1/chat/completions',
+    body: { messages },
+  }
 }
 
 describe('hasCodewhaleOperateContract', () => {
   it('reads the complete native internal contract in a user-role message', () => {
-    expect(hasCodewhaleOperateContract(request([{ role: 'user', content: contract }]))).toBe(true)
+    expect(hasCodewhaleOperateContract(request([
+      { role: 'user', content: contract },
+    ]))).toBe(true)
   })
 
-  it.each(['system', 'developer', 'assistant', 'tool'])('refuses the %s role', (role) => {
-    expect(hasCodewhaleOperateContract(request([{ role, content: contract }]))).toBe(false)
+  it.each([
+    'system',
+    'developer',
+    'assistant',
+    'tool',
+  ])('refuses the %s role', (role) => {
+    expect(hasCodewhaleOperateContract(request([
+      { role, content: contract },
+    ]))).toBe(false)
   })
 
-  it.each([contract.slice(0, -1), `Quote this: ${contract}`, 'Operate', '', null, false, 0])('refuses a quoted or malformed contract: %j', (content) => {
-    expect(hasCodewhaleOperateContract(request([{ role: 'user', content }]))).toBe(false)
+  it.each([
+    contract.slice(0, -1),
+    `Quote this: ${contract}`,
+    'Operate',
+    '',
+    null,
+    false,
+    0,
+  ])('refuses a quoted or malformed contract: %j', (content) => {
+    expect(hasCodewhaleOperateContract(request([
+      { role: 'user', content },
+    ]))).toBe(false)
   })
 
   it('refuses a malformed message collection', () => {
@@ -116,6 +171,8 @@ describe('hasCodewhaleOperateContract', () => {
 
   it('refuses a bare event without the native runtime provenance', () => {
     const bare = contract.slice(0, contract.indexOf('\n<turn_meta>'))
-    expect(hasCodewhaleOperateContract(request([{ role: 'user', content: bare }]))).toBe(false)
+    expect(hasCodewhaleOperateContract(request([
+      { role: 'user', content: bare },
+    ]))).toBe(false)
   })
 })

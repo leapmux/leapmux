@@ -30,8 +30,12 @@ const listDirectoryImpl = vi.hoisted(() => vi.fn())
 
 vi.mock('~/api/workerRpc', () => ({
   listDirectory: (...args: unknown[]) => listDirectoryImpl(...args),
-  statFile: async () => ({ info: { modTime: '2026-01-01T00:00:00Z' } }),
-  channelManager: { subscribe: () => () => {} },
+  statFile: async () => ({
+    info: { modTime: '2026-01-01T00:00:00Z' },
+  }),
+  channelManager: {
+    subscribe: () => () => {},
+  },
 }))
 vi.mock('~/api/platformBridge', () => platformBridgeMock(spies))
 vi.mock('~/lib/fileDownload', () => fileDownloadMock(spies))
@@ -42,15 +46,31 @@ const { DirectoryTree } = await import('./DirectoryTree')
 
 function setupTree() {
   listDirectoryImpl.mockResolvedValue({
-    listings: [{
-      path: '/repo',
-      entries: [
-        { path: '/repo/src', name: 'src', isDir: true, hidden: false, size: 0n, modTime: '2026-05-01T10:00:00Z' },
-        { path: '/repo/archive.zip', name: 'archive.zip', isDir: false, hidden: false, size: 1024n, modTime: '2026-05-01T10:00:00Z' },
-      ],
-      truncated: false,
-      totalEntries: 2,
-    }],
+    listings: [
+      {
+        path: '/repo',
+        entries: [
+          {
+            path: '/repo/src',
+            name: 'src',
+            isDir: true,
+            hidden: false,
+            size: 0n,
+            modTime: '2026-05-01T10:00:00Z',
+          },
+          {
+            path: '/repo/archive.zip',
+            name: 'archive.zip',
+            isDir: false,
+            hidden: false,
+            size: 1024n,
+            modTime: '2026-05-01T10:00:00Z',
+          },
+        ],
+        truncated: false,
+        totalEntries: 2,
+      },
+    ],
   })
 
   render(() => (

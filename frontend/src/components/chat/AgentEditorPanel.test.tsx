@@ -43,7 +43,9 @@ vi.mock('~/stores/workerInfo.store', () => ({
   workerInfoStore: {
     fetchWorkerInfo: vi.fn().mockResolvedValue(undefined),
     workerInfo: () => null,
-    getHomeDir: (workerId: string) => (workerId === 'w1' ? HOME : ''),
+    getHomeDir: (workerId: string) => (workerId === 'w1'
+      ? HOME
+      : ''),
     getOs: () => 'linux',
   },
 }))
@@ -59,17 +61,33 @@ beforeEach(() => {
   // it, and the saved-answer record these cases exercise lives in IndexedDB, so
   // freezing it would leave every read pending for the length of the test.
   // Everything the component itself schedules is still under the fake clock.
-  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
+  vi.useFakeTimers({
+    toFake: [
+      'setTimeout',
+      'clearTimeout',
+      'setInterval',
+      'clearInterval',
+      'Date',
+    ],
+  })
 })
 
 afterEach(async () => {
   vi.useRealTimers()
-  for (const id of ['a1', 'a2', 'a1-queue-owned-a1', 'a2-queue-owned-a2']) {
+  for (const id of [
+    'a1',
+    'a2',
+    'a1-queue-owned-a1',
+    'a2-queue-owned-a2',
+  ]) {
     clearDraft(id)
     clearAttachments(id)
   }
   // The schedule drafts outlive a panel on purpose, so each case drops them.
-  await Promise.all([forgetAgentScheduleDrafts('a1'), forgetAgentScheduleDrafts('a2')])
+  await Promise.all([
+    forgetAgentScheduleDrafts('a1'),
+    forgetAgentScheduleDrafts('a2'),
+  ])
 })
 
 function agent(overrides: MessageInitShape<typeof AgentInfoSchema> = {}): AgentInfo {
@@ -122,12 +140,16 @@ function renderPanel(options: RenderPanelOptions = {}) {
         agent={agent({
           workerId,
           agentProvider: options.agentProvider ?? AgentProvider.CLAUDE_CODE,
-          ...(options.optionGroups !== undefined ? { optionGroups: options.optionGroups } : {}),
+          ...(options.optionGroups !== undefined
+            ? { optionGroups: options.optionGroups }
+            : {}),
         })}
         repoGitStore={repoGitStore}
         gitTab={gitTab}
         onSendMessage={options.onSendMessage ?? (() => {})}
-        {...(options.agentSessionInfo !== undefined ? { agentSessionInfo: options.agentSessionInfo } : {})}
+        {...(options.agentSessionInfo !== undefined
+          ? { agentSessionInfo: options.agentSessionInfo }
+          : {})}
         {...(panelControlStore !== undefined
           ? {
               controlRequests: panelControlStore.getRequests('a1'),
@@ -135,16 +157,36 @@ function renderPanel(options: RenderPanelOptions = {}) {
               onQuestionsOpenChange: (open: boolean) => panelControlStore.setQuestionsOpen('a1', open),
             }
           : {})}
-        {...(options.onControlResponse !== undefined ? { onControlResponse: options.onControlResponse } : {})}
-        {...(options.onSettingChange !== undefined ? { onSettingChange: options.onSettingChange } : {})}
-        {...(options.onInterrupt !== undefined ? { onInterrupt: options.onInterrupt } : {})}
-        {...(options.agentActivity !== undefined ? { agentActivity: options.agentActivity } : {})}
-        {...(options.inputQueue !== undefined ? { inputQueue: options.inputQueue } : {})}
-        {...(options.onRetryPendingSend !== undefined ? { onRetryPendingSend: options.onRetryPendingSend } : {})}
-        {...(options.turnRetryOffer !== undefined ? { turnRetryOffer: options.turnRetryOffer } : {})}
-        {...(options.promptSuggestion !== undefined ? { promptSuggestion: options.promptSuggestion } : {})}
-        {...(options.onDismissPromptSuggestion !== undefined ? { onDismissPromptSuggestion: options.onDismissPromptSuggestion } : {})}
-        {...(options.onRetryTurn !== undefined ? { onRetryTurn: options.onRetryTurn } : {})}
+        {...(options.onControlResponse !== undefined
+          ? { onControlResponse: options.onControlResponse }
+          : {})}
+        {...(options.onSettingChange !== undefined
+          ? { onSettingChange: options.onSettingChange }
+          : {})}
+        {...(options.onInterrupt !== undefined
+          ? { onInterrupt: options.onInterrupt }
+          : {})}
+        {...(options.agentActivity !== undefined
+          ? { agentActivity: options.agentActivity }
+          : {})}
+        {...(options.inputQueue !== undefined
+          ? { inputQueue: options.inputQueue }
+          : {})}
+        {...(options.onRetryPendingSend !== undefined
+          ? { onRetryPendingSend: options.onRetryPendingSend }
+          : {})}
+        {...(options.turnRetryOffer !== undefined
+          ? { turnRetryOffer: options.turnRetryOffer }
+          : {})}
+        {...(options.promptSuggestion !== undefined
+          ? { promptSuggestion: options.promptSuggestion }
+          : {})}
+        {...(options.onDismissPromptSuggestion !== undefined
+          ? { onDismissPromptSuggestion: options.onDismissPromptSuggestion }
+          : {})}
+        {...(options.onRetryTurn !== undefined
+          ? { onRetryTurn: options.onRetryTurn }
+          : {})}
         branchActions={stubBranchMenuActions()}
         branchWorkerId={workerId}
       />
@@ -154,7 +196,9 @@ function renderPanel(options: RenderPanelOptions = {}) {
 
 /** A control request payload that specifies the tool the agent asks permission to run. */
 function toolRequestPayload(toolName: string): Record<string, unknown> {
-  return { request: { tool_name: toolName, input: {} } }
+  return {
+    request: { tool_name: toolName, input: {} },
+  }
 }
 
 /**
@@ -168,8 +212,22 @@ function questionRequestPayload(): Record<string, unknown> {
       tool_name: 'AskUserQuestion',
       input: {
         questions: [
-          { id: 'q1', question: 'Which database?', options: [{ label: 'Postgres' }, { label: 'MySQL' }] },
-          { id: 'q2', question: 'Which runtime?', options: [{ label: 'Bun' }, { label: 'Node' }] },
+          {
+            id: 'q1',
+            question: 'Which database?',
+            options: [
+              { label: 'Postgres' },
+              { label: 'MySQL' },
+            ],
+          },
+          {
+            id: 'q2',
+            question: 'Which runtime?',
+            options: [
+              { label: 'Bun' },
+              { label: 'Node' },
+            ],
+          },
         ],
       },
     },
@@ -177,25 +235,50 @@ function questionRequestPayload(): Record<string, unknown> {
 }
 
 describe('agent editor panel question selection notes', () => {
-  const question = { question: 'Which database?', options: [{ label: 'Postgres' }, { label: 'SQLite' }] }
+  const question = {
+    question: 'Which database?',
+    options: [
+      { label: 'Postgres' },
+      { label: 'SQLite' },
+    ],
+  }
 
   it.each([
     {
       label: 'a provider that preserves notes',
       provider: AgentProvider.GROK_BUILD,
-      payload: { jsonrpc: '2.0', id: 'ask-note', method: '_x.ai/ask_user_question', params: { sessionId: 'session', questions: [question] } },
+      payload: {
+        jsonrpc: '2.0',
+        id: 'ask-note',
+        method: '_x.ai/ask_user_question',
+        params: {
+          sessionId: 'session',
+          questions: [question],
+        },
+      },
       preserves: true,
     },
     {
       label: 'a provider with mutually exclusive answers',
       provider: AgentProvider.CLAUDE_CODE,
-      payload: { request: { tool_name: 'AskUserQuestion', input: { questions: [question] } } },
+      payload: {
+        request: {
+          tool_name: 'AskUserQuestion',
+          input: {
+            questions: [question],
+          },
+        },
+      },
       preserves: false,
     },
   ])('honors the selection policy of $label after the editor debounce', async ({ provider, payload, preserves }) => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, { requestId: 'ask-note', claimToken: 'claim-note', payload })
-    renderPanel({ agentProvider: provider, controlStore, onControlResponse: async () => {} })
+    renderPanel({
+      agentProvider: provider,
+      controlStore,
+      onControlResponse: async () => {},
+    })
     await vi.waitFor(() => expect(screen.getByTestId('question-option-Postgres')).toBeVisible())
     fireEvent.click(screen.getByTestId('question-option-Postgres'))
     const option = screen.getByTestId('question-option-Postgres').querySelector('input')
@@ -263,15 +346,25 @@ async function waitForControlActionsReady() {
 // prop getter builds.
 describe('AgentEditorPanel', () => {
   it('shows the reset-date tooltip for an epoch-zero quota reset', () => {
-    renderPanel({ agentSessionInfo: { rateLimits: { primary: { status: 'allowed_warning', utilization: 0.9, resetsAt: 0 } } } })
+    renderPanel({
+      agentSessionInfo: {
+        rateLimits: {
+          primary: { status: 'allowed_warning', utilization: 0.9, resetsAt: 0 },
+        },
+      },
+    })
     const warning = within(screen.getByTestId('agent-info-trigger')).getByText('Warning', { exact: true })
     const tooltip = hoverForTooltip(warning)
     expect(tooltip?.textContent).toContain(formatResetTimestamp(0))
   })
 
   it('shows a calendar reset tooltip for an exceeded account quota', () => {
-    const rateLimits = { credit: { status: 'exceeded', resetsOn: '2026-11-25' } }
-    renderPanel({ agentSessionInfo: { rateLimits } })
+    const rateLimits = {
+      credit: { status: 'exceeded', resetsOn: '2026-11-25' },
+    }
+    renderPanel({
+      agentSessionInfo: { rateLimits },
+    })
     const exceeded = within(screen.getByTestId('agent-info-trigger')).getByText('Exceeded', { exact: true })
     expect(hoverForTooltip(exceeded)?.textContent).toContain('Resets on 2026-11-25')
   })
@@ -298,7 +391,11 @@ describe('AgentEditorPanel', () => {
 
   it('reports an unavailable response handler without accepting the request', async () => {
     const controlStore = createControlStore()
-    addControlRequest(controlStore, { requestId: 'permission', payload: toolRequestPayload('Bash'), claimToken: 'claim' })
+    addControlRequest(controlStore, {
+      requestId: 'permission',
+      payload: toolRequestPayload('Bash'),
+      claimToken: 'claim',
+    })
     renderPanel({ controlStore })
     await waitForControlActionsReady()
     fireEvent.click(screen.getByTestId('control-allow-btn'))
@@ -309,7 +406,10 @@ describe('AgentEditorPanel', () => {
   it.each([AgentProvider.CLAUDE_CODE, AgentProvider.CURSOR, AgentProvider.PI])('disables pending decisions and retains the request after failed delivery for provider %s', async (agentProvider) => {
     const controlStore = createControlStore()
     const payload = agentProvider === AgentProvider.CURSOR
-      ? { method: 'cursor/create_plan', params: { name: 'Plan', overview: 'Keep the response.' } }
+      ? {
+          method: 'cursor/create_plan',
+          params: { name: 'Plan', overview: 'Keep the response.' },
+        }
       : agentProvider === AgentProvider.PI
         ? { type: 'extension_ui_request', method: 'confirm', title: 'Confirm the request.' }
         : toolRequestPayload('Bash')
@@ -334,7 +434,9 @@ describe('AgentEditorPanel', () => {
       fireEvent.click(screen.getByTestId('control-allow-btn'))
       await vi.waitFor(() => expect(onControlResponse).toHaveBeenCalledTimes(2))
       expect(screen.queryByRole('alert')).not.toBeInTheDocument()
-      expect(screen.getByTestId('control-allow-btn')).toHaveTextContent(agentProvider === AgentProvider.CLAUDE_CODE ? 'Allow' : 'Approve')
+      expect(screen.getByTestId('control-allow-btn')).toHaveTextContent(agentProvider === AgentProvider.CLAUDE_CODE
+        ? 'Allow'
+        : 'Approve')
     }
     finally {
       resolveDelivery()
@@ -348,7 +450,10 @@ describe('AgentEditorPanel', () => {
     expect(screen.queryByTestId('turn-retry-offer-retry')).not.toBeInTheDocument()
     withoutHandler.unmount()
 
-    renderPanel({ turnRetryOffer: offer, onRetryTurn: vi.fn().mockResolvedValue(true) })
+    renderPanel({
+      turnRetryOffer: offer,
+      onRetryTurn: vi.fn().mockResolvedValue(true),
+    })
     expect(screen.getByTestId('turn-retry-offer-banner')).toBeInTheDocument()
     expect(screen.getByTestId('turn-retry-offer-retry')).toBeInTheDocument()
   })
@@ -371,7 +476,11 @@ describe('AgentEditorPanel', () => {
 
   it('keeps text typed before the suggestion visibility updates', async () => {
     const dismiss = vi.fn()
-    renderPanel({ promptSuggestion: { text: 'run the tests' }, agentActivity: AgentActivityState.IDLE, onDismissPromptSuggestion: dismiss })
+    renderPanel({
+      promptSuggestion: { text: 'run the tests' },
+      agentActivity: AgentActivityState.IDLE,
+      onDismissPromptSuggestion: dismiss,
+    })
     await vi.waitFor(() => expect(getEditorRef('a1')).toBeDefined())
     expect(screen.getByTestId('prompt-suggestion-chip')).toBeVisible()
     getEditorRef('a1')?.insert('h')
@@ -384,10 +493,16 @@ describe('AgentEditorPanel', () => {
 
   it.each([false, true])('hides the queue toggle during a control request and restores its state (paused=%s)', (paused) => {
     const controlStore = createControlStore()
-    renderPanel({ controlStore, inputQueue: create(AgentInputQueueSnapshotSchema, { agentId: 'a1', paused }) })
+    renderPanel({
+      controlStore,
+      inputQueue: create(AgentInputQueueSnapshotSchema, { agentId: 'a1', paused }),
+    })
     const label = paused ? 'Resume Queue' : 'Pause Queue'
     expect(screen.getByTestId('queue-pause-button')).toHaveAttribute('aria-label', label)
-    addControlRequest(controlStore, { requestId: 'permission', payload: toolRequestPayload('Bash') })
+    addControlRequest(controlStore, {
+      requestId: 'permission',
+      payload: toolRequestPayload('Bash'),
+    })
     expect(screen.queryByTestId('queue-pause-button')).not.toBeInTheDocument()
     controlStore.removeRequest('a1', 'permission')
     expect(screen.getByTestId('queue-pause-button')).toHaveAttribute('aria-label', label)
@@ -395,7 +510,10 @@ describe('AgentEditorPanel', () => {
 
   it('removes the active control request without reading a null request', async () => {
     const controlStore = createControlStore()
-    addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode') })
+    addControlRequest(controlStore, {
+      requestId: 'plan-1',
+      payload: toolRequestPayload('ExitPlanMode'),
+    })
     renderPanel({ controlStore })
 
     expect(screen.getByTestId('control-banner')).toBeInTheDocument()
@@ -411,8 +529,14 @@ describe('AgentEditorPanel', () => {
 
   it('renders the next queued control request after removing the active request', async () => {
     const controlStore = createControlStore()
-    addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode') })
-    addControlRequest(controlStore, { requestId: 'bash-1', payload: toolRequestPayload('Bash') })
+    addControlRequest(controlStore, {
+      requestId: 'plan-1',
+      payload: toolRequestPayload('ExitPlanMode'),
+    })
+    addControlRequest(controlStore, {
+      requestId: 'bash-1',
+      payload: toolRequestPayload('Bash'),
+    })
     renderPanel({ controlStore })
 
     expect(screen.getByTestId('plan-approve-btn')).toBeInTheDocument()
@@ -430,7 +554,10 @@ describe('AgentEditorPanel', () => {
   // read of the store list would instead rebuild the footer on every write.
   it('keeps the active plan switches checked when a request queues behind it', async () => {
     const controlStore = createControlStore()
-    addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode') })
+    addControlRequest(controlStore, {
+      requestId: 'plan-1',
+      payload: toolRequestPayload('ExitPlanMode'),
+    })
     renderPanel({ controlStore })
 
     const clearContext = () => screen.getByTestId('plan-clear-context-checkbox').querySelector('input[type="checkbox"]')!
@@ -438,7 +565,10 @@ describe('AgentEditorPanel', () => {
     fireEvent.click(clearContext())
     expect(clearContext()).toBeChecked()
 
-    addControlRequest(controlStore, { requestId: 'bash-1', payload: toolRequestPayload('Bash') })
+    addControlRequest(controlStore, {
+      requestId: 'bash-1',
+      payload: toolRequestPayload('Bash'),
+    })
 
     expect(screen.getByTestId('control-banner')).toHaveTextContent('Plan Ready for Review')
     expect(clearContext()).toBeChecked()
@@ -507,7 +637,10 @@ describe('AgentEditorPanel', () => {
     expect(request?.requestId).toBe('plan-1')
     expect(request?.claimToken).toBe('claim-1')
     expect(JSON.parse(new TextDecoder().decode(content as Uint8Array))).toMatchObject({
-      response: { request_id: 'plan-1', response: { behavior: 'allow' } },
+      response: {
+        request_id: 'plan-1',
+        response: { behavior: 'allow' },
+      },
     })
   })
 
@@ -517,7 +650,10 @@ describe('AgentEditorPanel', () => {
   it('answers with no claim token when the rendered request carries none', async () => {
     const controlStore = createControlStore()
     const onControlResponse = vi.fn().mockResolvedValue(undefined)
-    addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode') })
+    addControlRequest(controlStore, {
+      requestId: 'plan-1',
+      payload: toolRequestPayload('ExitPlanMode'),
+    })
     renderPanel({ controlStore, onControlResponse })
 
     await waitForControlActionsReady()
@@ -533,7 +669,10 @@ describe('AgentEditorPanel', () => {
   // An unavailable handler must not discard a response that the user cannot deliver.
   it('retains the draft when the response handler is unavailable', async () => {
     const controlStore = createControlStore()
-    addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode') })
+    addControlRequest(controlStore, {
+      requestId: 'plan-1',
+      payload: toolRequestPayload('ExitPlanMode'),
+    })
     saveDraft('a1-ctrl-plan-1', 'no handler', 0)
     renderPanel({ controlStore })
 
@@ -556,16 +695,30 @@ describe('AgentEditorPanel', () => {
   it('clears only the answered request drafts and ask state', async () => {
     const controlStore = createControlStore()
     const onControlResponse = vi.fn().mockResolvedValue(undefined)
-    addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode') })
-    addControlRequest(controlStore, { requestId: 'bash-1', payload: toolRequestPayload('Bash') })
+    addControlRequest(controlStore, {
+      requestId: 'plan-1',
+      payload: toolRequestPayload('ExitPlanMode'),
+    })
+    addControlRequest(controlStore, {
+      requestId: 'bash-1',
+      payload: toolRequestPayload('Bash'),
+    })
     saveDraft('a1-ctrl-plan-1', 'rejection reason', 0)
     saveDraft('a1-ctrl-bash-1', 'queued sibling reason', 0)
     // A plan request has no questions, so the editor can never write a page key
     // for it. The cleanup derives the page count from the request, so it must
     // leave this key alone rather than sweep a guessed range of page indices.
     saveDraft('a1-ctrl-plan-1-q-3', 'not a key this request can write', 0)
-    localStorageStore(`${PREFIX_CONTROL_STATE}a1:plan-1`, { selections: { 0: ['Postgres'] } })
-    localStorageStore(`${PREFIX_CONTROL_STATE}a1:bash-1`, { selections: { 0: ['MySQL'] } })
+    localStorageStore(`${PREFIX_CONTROL_STATE}a1:plan-1`, {
+      selections: {
+        0: ['Postgres'],
+      },
+    })
+    localStorageStore(`${PREFIX_CONTROL_STATE}a1:bash-1`, {
+      selections: {
+        0: ['MySQL'],
+      },
+    })
     renderPanel({ controlStore, onControlResponse })
 
     await waitForControlActionsReady()
@@ -575,7 +728,11 @@ describe('AgentEditorPanel', () => {
     expect((await loadDraft('a1-ctrl-plan-1-q-3')).content).toBe('not a key this request can write')
     expect(await localStorageLoad(`${PREFIX_CONTROL_STATE}a1:plan-1`)).toBeUndefined()
     expect((await loadDraft('a1-ctrl-bash-1')).content).toBe('queued sibling reason')
-    expect(await localStorageLoad(`${PREFIX_CONTROL_STATE}a1:bash-1`)).toEqual({ selections: { 0: ['MySQL'] } })
+    expect(await localStorageLoad(`${PREFIX_CONTROL_STATE}a1:bash-1`)).toEqual({
+      selections: {
+        0: ['MySQL'],
+      },
+    })
   })
 
   // The per-page keys are derived from the question set, not from a fixed range,
@@ -585,13 +742,22 @@ describe('AgentEditorPanel', () => {
   it('clears every per-page draft of the answered question set', async () => {
     const controlStore = createControlStore()
     const onControlResponse = vi.fn().mockResolvedValue(undefined)
-    addControlRequest(controlStore, { requestId: 'ask-1', payload: questionRequestPayload() })
-    addControlRequest(controlStore, { requestId: 'bash-1', payload: toolRequestPayload('Bash') })
+    addControlRequest(controlStore, {
+      requestId: 'ask-1',
+      payload: questionRequestPayload(),
+    })
+    addControlRequest(controlStore, {
+      requestId: 'bash-1',
+      payload: toolRequestPayload('Bash'),
+    })
     saveDraft('a1-ctrl-ask-1-q-0', 'note for the first question', 0)
     saveDraft('a1-ctrl-ask-1-q-1', 'note for the second question', 0)
     saveDraft('a1-ctrl-bash-1', 'queued sibling reason', 0)
     expect(await localStorageStore(`${PREFIX_CONTROL_STATE}a1:ask-1`, {
-      selections: { 0: ['Postgres'], 1: ['Bun'] },
+      selections: {
+        0: ['Postgres'],
+        1: ['Bun'],
+      },
       currentPage: 1,
     }).durable).toBe(true)
     renderPanel({ controlStore, onControlResponse })
@@ -616,23 +782,46 @@ describe('AgentEditorPanel', () => {
   // the catalog carries that group.
   it('draws the permission pills only while the catalog carries the preset axes', async () => {
     const controlStore = createControlStore()
-    addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode'), claimToken: 'claim-1' })
-    renderPanel({ controlStore, onSettingChange: vi.fn(), optionGroups: [claudePermissionModeGroup()] })
+    addControlRequest(controlStore, {
+      requestId: 'plan-1',
+      payload: toolRequestPayload('ExitPlanMode'),
+      claimToken: 'claim-1',
+    })
+    renderPanel({
+      controlStore,
+      onSettingChange: vi.fn(),
+      optionGroups: [
+        claudePermissionModeGroup(),
+      ],
+    })
     await waitFor(() => expect(screen.getByRole('radiogroup', { name: 'Permissions' })).toBeInTheDocument())
 
     // The catalog drops the permissionMode group: no preset the banner could
     // offer is applicable, so the group must disappear rather than draw pills
     // that would silently do nothing.
     cleanup()
-    renderPanel({ controlStore, onSettingChange: vi.fn(), optionGroups: [] })
+    renderPanel({
+      controlStore,
+      onSettingChange: vi.fn(),
+      optionGroups: [],
+    })
     await waitFor(() => expect(screen.queryByTestId('control-permissions-pill-group')).not.toBeInTheDocument())
   })
 
   it('draws plan permission choices without a settings change handler', async () => {
     const controlStore = createControlStore()
-    addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode'), claimToken: 'claim-1' })
+    addControlRequest(controlStore, {
+      requestId: 'plan-1',
+      payload: toolRequestPayload('ExitPlanMode'),
+      claimToken: 'claim-1',
+    })
 
-    renderPanel({ controlStore, optionGroups: [claudePermissionModeGroup()] })
+    renderPanel({
+      controlStore,
+      optionGroups: [
+        claudePermissionModeGroup(),
+      ],
+    })
 
     await waitFor(() => expect(screen.getByRole('radiogroup', { name: 'Permissions' })).toBeInTheDocument())
     expect(within(screen.getByRole('radiogroup', { name: 'Permissions' })).getByRole('radio', { name: 'Smart' })).toBeChecked()
@@ -643,7 +832,11 @@ describe('AgentEditorPanel', () => {
   // wiring from `activePermissionPreset` to the drawn pill can be checked.
   it('opens an ordinary request on the preset the session already has on', async () => {
     const controlStore = createControlStore()
-    addControlRequest(controlStore, { requestId: 'bash-1', payload: toolRequestPayload('Bash'), claimToken: 'claim-1' })
+    addControlRequest(controlStore, {
+      requestId: 'bash-1',
+      payload: toolRequestPayload('Bash'),
+      claimToken: 'claim-1',
+    })
     const pill = () => within(screen.getByRole('radiogroup', { name: 'Permissions' }))
 
     // The session runs on Claude's bypass mode, so the group opens there and an
@@ -651,7 +844,9 @@ describe('AgentEditorPanel', () => {
     const running = renderPanel({
       controlStore,
       onSettingChange: vi.fn(),
-      optionGroups: [claudePermissionModeGroup(CLAUDE_MODE.BypassPermissions)],
+      optionGroups: [
+        claudePermissionModeGroup(CLAUDE_MODE.BypassPermissions),
+      ],
     })
     await waitFor(() => expect(pill().getByRole('radio', { name: 'Bypass' })).toBeChecked())
 
@@ -662,7 +857,9 @@ describe('AgentEditorPanel', () => {
     renderPanel({
       controlStore,
       onSettingChange: vi.fn(),
-      optionGroups: [claudePermissionModeGroup()],
+      optionGroups: [
+        claudePermissionModeGroup(),
+      ],
     })
     await waitFor(() => expect(pill().getByRole('radio', { name: 'Unchanged' })).toBeChecked())
     expect(pill().getByRole('radio', { name: 'Bypass' })).not.toBeChecked()
@@ -672,16 +869,32 @@ describe('AgentEditorPanel', () => {
   // the control component must not reset it to Unchanged.
   it('restores the permission pill choice of the rendered request instance after a remount', async () => {
     const controlStore = createControlStore()
-    addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode'), claimToken: 'claim-1' })
+    addControlRequest(controlStore, {
+      requestId: 'plan-1',
+      payload: toolRequestPayload('ExitPlanMode'),
+      claimToken: 'claim-1',
+    })
     const bypassRadio = () => within(screen.getByRole('radiogroup', { name: 'Permissions' })).getByRole('radio', { name: 'Bypass' })
-    const first = renderPanel({ controlStore, onSettingChange: vi.fn(), optionGroups: [claudePermissionModeGroup()] })
+    const first = renderPanel({
+      controlStore,
+      onSettingChange: vi.fn(),
+      optionGroups: [
+        claudePermissionModeGroup(),
+      ],
+    })
 
     await waitForControlActionsReady()
     fireEvent.click(bypassRadio())
     expect(bypassRadio()).toBeChecked()
 
     first.unmount()
-    renderPanel({ controlStore, onSettingChange: vi.fn(), optionGroups: [claudePermissionModeGroup()] })
+    renderPanel({
+      controlStore,
+      onSettingChange: vi.fn(),
+      optionGroups: [
+        claudePermissionModeGroup(),
+      ],
+    })
 
     // Polled: the saved record is read after the remount, not during it.
     await waitFor(() => expect(bypassRadio()).toBeChecked())
@@ -690,7 +903,11 @@ describe('AgentEditorPanel', () => {
   it('blocks plan approval until the saved permission choice restores', async () => {
     const controlStore = createControlStore()
     const onControlResponse = vi.fn().mockResolvedValue(undefined)
-    addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode'), claimToken: 'claim-1' })
+    addControlRequest(controlStore, {
+      requestId: 'plan-1',
+      payload: toolRequestPayload('ExitPlanMode'),
+      claimToken: 'claim-1',
+    })
     const key = `${PREFIX_CONTROL_STATE}a1:plan-1:claim-1`
     expect(await localStorageStore(key, {
       choices: { 'control-permissions-pill': 'bypass' },
@@ -700,7 +917,9 @@ describe('AgentEditorPanel', () => {
       controlStore,
       onControlResponse,
       onSettingChange: vi.fn(),
-      optionGroups: [claudePermissionModeGroup()],
+      optionGroups: [
+        claudePermissionModeGroup(),
+      ],
     })
 
     const approve = screen.getByTestId('plan-approve-btn')
@@ -724,7 +943,11 @@ describe('AgentEditorPanel', () => {
 
   it('restores the plan switches of the rendered request instance after a remount', async () => {
     const controlStore = createControlStore()
-    addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode'), claimToken: 'claim-1' })
+    addControlRequest(controlStore, {
+      requestId: 'plan-1',
+      payload: toolRequestPayload('ExitPlanMode'),
+      claimToken: 'claim-1',
+    })
     const clearContext = () => screen.getByTestId('plan-clear-context-checkbox').querySelector('input[type="checkbox"]')!
     const first = renderPanel({ controlStore })
 
@@ -746,7 +969,14 @@ describe('AgentEditorPanel', () => {
     addControlRequest(controlStore, {
       requestId: 'perm-1',
       claimToken: 'claim-1',
-      payload: { method: 'item/permissions/requestApproval', params: { permissions: { read: ['/repo'] } } },
+      payload: {
+        method: 'item/permissions/requestApproval',
+        params: {
+          permissions: {
+            read: ['/repo'],
+          },
+        },
+      },
     })
     const first = renderPanel({ controlStore, agentProvider: AgentProvider.CODEX })
 
@@ -769,7 +999,11 @@ describe('AgentEditorPanel', () => {
   it('discards the persisted switches of the answered request', async () => {
     const controlStore = createControlStore()
     const onControlResponse = vi.fn().mockResolvedValue(undefined)
-    addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode'), claimToken: 'claim-1' })
+    addControlRequest(controlStore, {
+      requestId: 'plan-1',
+      payload: toolRequestPayload('ExitPlanMode'),
+      claimToken: 'claim-1',
+    })
     renderPanel({ controlStore, onControlResponse })
     const key = `${PREFIX_CONTROL_STATE}a1:plan-1:claim-1`
 
@@ -805,7 +1039,11 @@ describe('AgentEditorPanel', () => {
     const firstQuestion = (revised.request as { input: { questions: { question: string }[] } }).input.questions[0]
     if (firstQuestion !== undefined)
       firstQuestion.question = 'Which cache?'
-    addControlRequest(controlStore, { requestId: 'ask-1', payload: questionRequestPayload(), claimToken: 'claim-1' })
+    addControlRequest(controlStore, {
+      requestId: 'ask-1',
+      payload: questionRequestPayload(),
+      claimToken: 'claim-1',
+    })
     addControlRequest(controlStore, { requestId: 'ask-1', payload: revised, claimToken: 'claim-2' })
     renderPanel({ controlStore })
 
@@ -823,9 +1061,23 @@ describe('AgentEditorPanel', () => {
   // saved copy is for -- and must not restore a sibling instance's.
   it('restores the saved answers of the rendered request instance only', async () => {
     const controlStore = createControlStore()
-    addControlRequest(controlStore, { requestId: 'ask-1', payload: questionRequestPayload(), claimToken: 'claim-1' })
-    localStorageStore(`${PREFIX_CONTROL_STATE}a1:ask-1:claim-1`, { selections: { 0: ['MySQL'] }, currentPage: 1 })
-    localStorageStore(`${PREFIX_CONTROL_STATE}a1:ask-1:claim-2`, { selections: { 0: ['Postgres'] }, currentPage: 0 })
+    addControlRequest(controlStore, {
+      requestId: 'ask-1',
+      payload: questionRequestPayload(),
+      claimToken: 'claim-1',
+    })
+    localStorageStore(`${PREFIX_CONTROL_STATE}a1:ask-1:claim-1`, {
+      selections: {
+        0: ['MySQL'],
+      },
+      currentPage: 1,
+    })
+    localStorageStore(`${PREFIX_CONTROL_STATE}a1:ask-1:claim-2`, {
+      selections: {
+        0: ['Postgres'],
+      },
+      currentPage: 0,
+    })
     renderPanel({ controlStore })
 
     await waitFor(() =>
@@ -848,8 +1100,17 @@ describe('agent editor panel pending questions', () => {
     expect(input).not.toBeDisabled()
     const read = vi.spyOn(FileReader.prototype, 'readAsArrayBuffer').mockImplementation(() => undefined)
     try {
-      addControlRequest(controlStore, { requestId: 'late-request', payload: questionRequestPayload() })
-      await fireEvent.change(input, { target: { files: [new File(['late'], 'late.txt', { type: 'text/plain' })] } })
+      addControlRequest(controlStore, {
+        requestId: 'late-request',
+        payload: questionRequestPayload(),
+      })
+      await fireEvent.change(input, {
+        target: {
+          files: [
+            new File(['late'], 'late.txt', { type: 'text/plain' }),
+          ],
+        },
+      })
       expect(read).not.toHaveBeenCalled()
       expect(input).toBeDisabled()
       expect(getAttachments('a1')).toEqual([])
@@ -862,11 +1123,21 @@ describe('agent editor panel pending questions', () => {
   it('accepts a file selection while a non-blocking question stays closed', async () => {
     vi.useRealTimers()
     const controlStore = createControlStore()
-    addControlRequest(controlStore, { requestId: 'waiting-question', payload: questionRequestPayload(), nonBlocking: true })
+    addControlRequest(controlStore, {
+      requestId: 'waiting-question',
+      payload: questionRequestPayload(),
+      nonBlocking: true,
+    })
     renderPanel({ controlStore })
     const input = screen.getByTestId('file-input')
     expect(input).not.toBeDisabled()
-    await fireEvent.change(input, { target: { files: [new File(['late'], 'late.txt', { type: 'text/plain' })] } })
+    await fireEvent.change(input, {
+      target: {
+        files: [
+          new File(['late'], 'late.txt', { type: 'text/plain' }),
+        ],
+      },
+    })
     await waitFor(() => expect(getAttachments('a1')).toHaveLength(1))
     expect(getAttachments('a1')[0]?.filename).toBe('late.txt')
   })
@@ -899,7 +1170,10 @@ describe('agent editor panel pending questions', () => {
       payload: questionRequestPayload(),
       nonBlocking: true,
     })
-    renderPanel({ controlStore, onControlResponse: async () => {} })
+    renderPanel({
+      controlStore,
+      onControlResponse: async () => {},
+    })
 
     fireEvent.click(screen.getByTestId('pending-questions-answer'))
 
@@ -980,7 +1254,10 @@ describe('agent editor panel composer emptiness', () => {
 
   it('reports something to submit while a control request waits for approval', async () => {
     const controlStore = createControlStore()
-    addControlRequest(controlStore, { requestId: 'r1', payload: toolRequestPayload('Bash') })
+    addControlRequest(controlStore, {
+      requestId: 'r1',
+      payload: toolRequestPayload('Bash'),
+    })
     renderPanel({ controlStore })
     expect((await registeredHandle()).hasPendingInput()).toBe(true)
   })
@@ -989,7 +1266,10 @@ describe('agent editor panel composer emptiness', () => {
   // question with nothing -- so that one is not something to submit.
   it('reports nothing to submit while an ask-user question waits', async () => {
     const controlStore = createControlStore()
-    addControlRequest(controlStore, { requestId: 'r1', payload: questionRequestPayload() })
+    addControlRequest(controlStore, {
+      requestId: 'r1',
+      payload: questionRequestPayload(),
+    })
     renderPanel({ controlStore })
     expect((await registeredHandle()).hasPendingInput()).toBe(false)
   })
@@ -1018,7 +1298,10 @@ describe('agent editor panel', () => {
     // The footer slot's own rule states no size, so a button that omits this
     // style falls back to the full-size metrics and breaks the row it shares
     // with the `[+]` button, whose height uses the same compact metrics.
-    renderPanel({ agentActivity: AgentActivityState.WORKING, onInterrupt: vi.fn() })
+    renderPanel({
+      agentActivity: AgentActivityState.WORKING,
+      onInterrupt: vi.fn(),
+    })
 
     expect(screen.getByTestId('queue-pause-button')).toHaveClass('outline', compactControl)
     expect(screen.getByTestId('interrupt-button')).toHaveClass('outline', compactControl)
@@ -1113,7 +1396,9 @@ describe('agent editor panel', () => {
           agent={agent()}
           repoGitStore={createRepoGitStore()}
           onSendMessage={() => {}}
-          inputQueue={create(AgentInputQueueSnapshotSchema, { agentId: agentId() })}
+          inputQueue={create(AgentInputQueueSnapshotSchema, {
+            agentId: agentId(),
+          })}
           onSetQueuePaused={onSetQueuePaused}
         />
       </PreferencesProvider>
@@ -1379,7 +1664,9 @@ describe('agent editor panel', () => {
     // Fake `setTimeout` alone, so the 1000 ms debounce cannot fire on its own
     // while every assertion below runs. A full fake clock also stops the
     // FileReader that `addFiles` awaits, and the read never completes.
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout'],
+    })
     send?.()
     await waitFor(() => expect(onSendMessage).toHaveBeenCalledWith('queued text', undefined, ''))
     expect(screen.getByTestId('file-input')).toBeDisabled()
@@ -1391,7 +1678,9 @@ describe('agent editor panel', () => {
     // The enqueue settled, so every attachment path opens again -- while the
     // spinner still shows, which is what proves the two are separate.
     expect(screen.getByTestId('send-spinner')).toBeInTheDocument()
-    await expect(addFiles?.([new File(['hello'], 'hello.txt', { type: 'text/plain' })])).resolves.toBe(1)
+    await expect(addFiles?.([
+      new File(['hello'], 'hello.txt', { type: 'text/plain' }),
+    ])).resolves.toBe(1)
 
     await fireEvent.click(screen.getByTestId('composer-plus-trigger'))
     expect(screen.getByTestId('composer-attach-file')).not.toBeDisabled()
@@ -1472,14 +1761,16 @@ describe('agent editor panel', () => {
     const queue = (id: string) => create(AgentInputQueueSnapshotSchema, {
       agentId: id,
       paused: true,
-      items: [{
-        id: `owned-${id}`,
-        agentId: id,
-        text: `preview ${id}`,
-        kind: AgentInputKind.USER_MESSAGE,
-        state: AgentInputState.QUEUED,
-        editOwnerClientId: 'client-a',
-      }],
+      items: [
+        {
+          id: `owned-${id}`,
+          agentId: id,
+          text: `preview ${id}`,
+          kind: AgentInputKind.USER_MESSAGE,
+          state: AgentInputState.QUEUED,
+          editOwnerClientId: 'client-a',
+        },
+      ],
     })
     const onBeginQueueEdit = vi.fn((item: { agentId: string }) => Promise.resolve({
       snapshot: queue(item.agentId),
@@ -1537,14 +1828,16 @@ describe('agent editor panel', () => {
       agentId: 'a1',
       revision: owner ? 2n : 1n,
       paused: true,
-      items: [{
-        id: 'queued-1',
-        agentId: 'a1',
-        text: 'queued preview',
-        kind: AgentInputKind.USER_MESSAGE,
-        state: AgentInputState.QUEUED,
-        editOwnerClientId: owner,
-      }],
+      items: [
+        {
+          id: 'queued-1',
+          agentId: 'a1',
+          text: 'queued preview',
+          kind: AgentInputKind.USER_MESSAGE,
+          state: AgentInputState.QUEUED,
+          editOwnerClientId: owner,
+        },
+      ],
     })
     const [snapshot, setSnapshot] = createSignal(queueSnapshot(''))
     const edited = queueSnapshot('client-a')
@@ -1591,14 +1884,16 @@ describe('agent editor panel', () => {
       agentId: 'a1',
       revision: owner ? 2n : 1n,
       paused: true,
-      items: [{
-        id: 'queued-1',
-        agentId: 'a1',
-        text: 'queued preview',
-        kind: AgentInputKind.USER_MESSAGE,
-        state: AgentInputState.QUEUED,
-        editOwnerClientId: owner,
-      }],
+      items: [
+        {
+          id: 'queued-1',
+          agentId: 'a1',
+          text: 'queued preview',
+          kind: AgentInputKind.USER_MESSAGE,
+          state: AgentInputState.QUEUED,
+          editOwnerClientId: owner,
+        },
+      ],
     })
     const [queue, setQueue] = createSignal(snapshot(''))
     render(() => (
@@ -1613,13 +1908,23 @@ describe('agent editor panel', () => {
           onBeginQueueEdit={() => {
             const edited = snapshot('client-a')
             setQueue(edited)
-            return Promise.resolve({ snapshot: edited, attachments: [queuedAttachment], text: 'queued text' })
+            return Promise.resolve({
+              snapshot: edited,
+              attachments: [queuedAttachment],
+              text: 'queued text',
+            })
           }}
         />
       </PreferencesProvider>
     ))
     try {
-      await fireEvent.change(screen.getByTestId('file-input'), { target: { files: [new File(['pending'], 'pending.txt')] } })
+      await fireEvent.change(screen.getByTestId('file-input'), {
+        target: {
+          files: [
+            new File(['pending'], 'pending.txt'),
+          ],
+        },
+      })
       const reader = readers[0]
       expect(reader).toBeDefined()
       await fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
@@ -1629,11 +1934,13 @@ describe('agent editor panel', () => {
       await Promise.resolve()
       expect(screen.getAllByTestId('attachment-pill')).toHaveLength(1)
       expect(screen.getByTestId('attachment-pill')).toHaveTextContent('queued.txt')
-      expect(getAttachments(queueEditDraftKey('a1', 'queued-1'))).toMatchObject([{
-        filename: 'queued.txt',
-        mimeType: 'text/plain',
-        data: queuedAttachment.data,
-      }])
+      expect(getAttachments(queueEditDraftKey('a1', 'queued-1'))).toMatchObject([
+        {
+          filename: 'queued.txt',
+          mimeType: 'text/plain',
+          data: queuedAttachment.data,
+        },
+      ])
       expect(getAttachments('a1')).toEqual([])
     }
     finally {
@@ -1651,13 +1958,15 @@ describe('agent editor panel', () => {
     const snapshot = create(AgentInputQueueSnapshotSchema, {
       agentId: 'a1',
       paused: true,
-      items: [{
-        id: 'queued-1',
-        agentId: 'a1',
-        text: 'queued preview',
-        kind: AgentInputKind.USER_MESSAGE,
-        state: AgentInputState.QUEUED,
-      }],
+      items: [
+        {
+          id: 'queued-1',
+          agentId: 'a1',
+          text: 'queued preview',
+          kind: AgentInputKind.USER_MESSAGE,
+          state: AgentInputState.QUEUED,
+        },
+      ],
     })
     const onDeleteQueueItem = vi.fn().mockResolvedValue(undefined)
     render(() => (
@@ -1688,13 +1997,15 @@ describe('agent editor panel', () => {
     const snapshot = create(AgentInputQueueSnapshotSchema, {
       agentId: 'a1',
       paused: true,
-      items: [{
-        id: 'uncertain-1',
-        agentId: 'a1',
-        text: 'possibly delivered',
-        kind: AgentInputKind.USER_MESSAGE,
-        state: AgentInputState.DELIVERY_UNCERTAIN,
-      }],
+      items: [
+        {
+          id: 'uncertain-1',
+          agentId: 'a1',
+          text: 'possibly delivered',
+          kind: AgentInputKind.USER_MESSAGE,
+          state: AgentInputState.DELIVERY_UNCERTAIN,
+        },
+      ],
     })
     render(() => (
       <PreferencesProvider>
@@ -1723,14 +2034,16 @@ describe('agent editor panel', () => {
     const snapshot = create(AgentInputQueueSnapshotSchema, {
       agentId: 'a1',
       paused: true,
-      items: [{
-        id: 'owned-1',
-        agentId: 'a1',
-        text: 'preview',
-        kind: AgentInputKind.USER_MESSAGE,
-        state: AgentInputState.QUEUED,
-        editOwnerClientId: 'client-a',
-      }],
+      items: [
+        {
+          id: 'owned-1',
+          agentId: 'a1',
+          text: 'preview',
+          kind: AgentInputKind.USER_MESSAGE,
+          state: AgentInputState.QUEUED,
+          editOwnerClientId: 'client-a',
+        },
+      ],
     })
     render(() => (
       <PreferencesProvider>
@@ -1754,14 +2067,16 @@ describe('agent editor panel', () => {
     const [agentId, setAgentId] = createSignal('a1')
     const queue = (id: string) => create(AgentInputQueueSnapshotSchema, {
       agentId: id,
-      items: [{
-        id: `owned-${id}`,
-        agentId: id,
-        text: id,
-        kind: AgentInputKind.USER_MESSAGE,
-        state: AgentInputState.QUEUED,
-        editOwnerClientId: 'client-a',
-      }],
+      items: [
+        {
+          id: `owned-${id}`,
+          agentId: id,
+          text: id,
+          kind: AgentInputKind.USER_MESSAGE,
+          state: AgentInputState.QUEUED,
+          editOwnerClientId: 'client-a',
+        },
+      ],
     })
     const onBeginQueueEdit = vi.fn(() => new Promise<never>(() => {}))
     render(() => (
@@ -1828,15 +2143,17 @@ describe('agent editor panel schedule send', () => {
   const ownedEditQueue = (agentId: string, scheduledAt: string) => create(AgentInputQueueSnapshotSchema, {
     agentId,
     paused: true,
-    items: [{
-      id: `owned-${agentId}`,
-      agentId,
-      text: `preview ${agentId}`,
-      kind: AgentInputKind.USER_MESSAGE,
-      state: AgentInputState.QUEUED,
-      editOwnerClientId: 'client-a',
-      scheduledAt,
-    }],
+    items: [
+      {
+        id: `owned-${agentId}`,
+        agentId,
+        text: `preview ${agentId}`,
+        kind: AgentInputKind.USER_MESSAGE,
+        state: AgentInputState.QUEUED,
+        editOwnerClientId: 'client-a',
+        scheduledAt,
+      },
+    ],
   })
   const editorText = () => document.querySelector('[data-testid="composer-editor"] .ProseMirror')
 
@@ -1844,7 +2161,9 @@ describe('agent editor panel schedule send', () => {
   const applySchedule = (field: string) => {
     fireEvent.click(screen.getByTestId('schedule-send-trigger'))
     const input = screen.getByTestId('schedule-send-field') as HTMLInputElement
-    fireEvent.input(input, { target: { value: field } })
+    fireEvent.input(input, {
+      target: { value: field },
+    })
     fireEvent.click(screen.getByTestId('schedule-send-apply'))
   }
 
@@ -1877,7 +2196,15 @@ describe('agent editor panel schedule send', () => {
   })
 
   it('refuses an expired draft without losing the text or the schedule', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
+    vi.useFakeTimers({
+      toFake: [
+        'setTimeout',
+        'clearTimeout',
+        'setInterval',
+        'clearInterval',
+        'Date',
+      ],
+    })
     const onSendMessage = vi.fn()
     renderPanel({ onSendMessage })
     await waitFor(() => expect(getEditorRef('a1')).toBeDefined())
@@ -1893,7 +2220,15 @@ describe('agent editor panel schedule send', () => {
   })
 
   it('re-sends an unanswered attempt after its schedule passed, with the schedule unchanged', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
+    vi.useFakeTimers({
+      toFake: [
+        'setTimeout',
+        'clearTimeout',
+        'setInterval',
+        'clearInterval',
+        'Date',
+      ],
+    })
     const onSendMessage = vi.fn()
     const at = futureAt()
     // The first send of this payload lost its answer, so the Worker may hold
@@ -1969,7 +2304,11 @@ describe('agent editor panel schedule send', () => {
     await waitFor(() => expect(getEditorRef('a1')).toBeDefined())
     fireEvent.click(screen.getByTestId('schedule-send-trigger'))
     const previousPopover = screen.getByTestId('schedule-send-popover')
-    fireEvent.input(screen.getByTestId('schedule-send-field'), { target: { value: futureField() } })
+    fireEvent.input(screen.getByTestId('schedule-send-field'), {
+      target: {
+        value: futureField(),
+      },
+    })
     setAgentId('a2')
     await waitFor(() => expect(getEditorRef('a2')).toBeDefined())
     expect(previousPopover).not.toBeInTheDocument()
@@ -1996,7 +2335,11 @@ describe('agent editor panel schedule send', () => {
           onSendMessage={() => {}}
           inputQueue={ownedEditQueue('a1', stored)}
           queueClientId="client-a"
-          onBeginQueueEdit={() => Promise.resolve({ snapshot: ownedEditQueue('a1', stored), attachments: [], text: 'full a1' })}
+          onBeginQueueEdit={() => Promise.resolve({
+            snapshot: ownedEditQueue('a1', stored),
+            attachments: [],
+            text: 'full a1',
+          })}
           onUpdateQueueItem={onUpdateQueueItem}
           triggerSendRef={(value) => { send = value }}
         />
@@ -2023,7 +2366,11 @@ describe('agent editor panel schedule send', () => {
           onSendMessage={() => {}}
           inputQueue={ownedEditQueue('a1', stored)}
           queueClientId="client-a"
-          onBeginQueueEdit={() => Promise.resolve({ snapshot: ownedEditQueue('a1', stored), attachments: [], text: 'full a1' })}
+          onBeginQueueEdit={() => Promise.resolve({
+            snapshot: ownedEditQueue('a1', stored),
+            attachments: [],
+            text: 'full a1',
+          })}
           onUpdateQueueItem={onUpdateQueueItem}
           triggerSendRef={(value) => { send = value }}
         />
@@ -2054,7 +2401,9 @@ describe('agent editor panel schedule send', () => {
           agent={agent()}
           repoGitStore={createRepoGitStore()}
           onSendMessage={() => {}}
-          inputQueue={agentId() === 'a1' ? queueA1 : queueA2}
+          inputQueue={agentId() === 'a1'
+            ? queueA1
+            : queueA2}
           queueClientId="client-a"
           onBeginQueueEdit={() => Promise.resolve({ snapshot: queueA1, attachments: [], text: 'full a1' })}
           onUpdateQueueItem={onUpdateQueueItem}
@@ -2083,7 +2432,9 @@ describe('agent editor panel schedule send', () => {
     renderPanel()
     await waitFor(() => expect(getEditorRef('a1')).toBeDefined())
     await waitFor(() => expect(screen.getByTestId('schedule-send-trigger')).not.toBeDisabled())
-    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+    vi.useFakeTimers({
+      toFake: ['Date', 'setTimeout', 'clearTimeout'],
+    })
     const started = Date.now()
     applySchedule(localFieldValueOf(new Date(started + 30 * DAY_MS)))
     getEditorRef('a1')?.set('original draft')
@@ -2106,7 +2457,9 @@ describe('agent editor panel schedule send', () => {
     renderPanel()
     await waitFor(() => expect(getEditorRef('a1')).toBeDefined())
     await waitFor(() => expect(screen.getByTestId('schedule-send-trigger')).not.toBeDisabled())
-    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+    vi.useFakeTimers({
+      toFake: ['Date', 'setTimeout', 'clearTimeout'],
+    })
     const started = Date.now()
     getEditorRef('a1')?.set('text before the schedule change')
     await vi.runAllTimersAsync()
@@ -2149,7 +2502,10 @@ describe('agent editor panel schedule send', () => {
       claimToken: 'claim-1',
       payload: toolRequestPayload('Bash'),
     })
-    renderPanel({ controlStore, onControlResponse: async () => {} })
+    renderPanel({
+      controlStore,
+      onControlResponse: async () => {},
+    })
     await vi.waitFor(() => expect(screen.getByTestId('control-banner')).toBeInTheDocument())
     // The control-response action cluster carries no schedule trigger: a reply
     // the user owes NOW inherits no ordinary schedule.

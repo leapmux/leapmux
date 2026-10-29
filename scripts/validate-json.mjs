@@ -101,10 +101,14 @@ export function discoverJsonFiles(root) {
 export function resolveSchemaPath(entry, root = '.') {
   if (entry.rule.schema) {
     const p = posix.join(root, entry.rule.schema)
-    return existsSync(p) ? p : null
+    return existsSync(p)
+      ? p
+      : null
   }
   const base = posix.join(root, entry.file.replace(/\.json$/, '.schema.json'))
-  return existsSync(base) ? base : null
+  return existsSync(base)
+    ? base
+    : null
 }
 
 /**
@@ -132,19 +136,28 @@ export function findDuplicateKeys(text) {
     const parent = stack.at(-1)
     if (!parent)
       return ''
-    return parent.keys ? `/${escapePointerToken(parent.key)}` : `/${parent.index}`
+    return parent.keys
+      ? `/${escapePointerToken(parent.key)}`
+      : `/${parent.index}`
   }
   for (let i = 0; i < text.length; i++) {
     const c = text[i]
     if (c === '"') {
       let end = i + 1
-      while (end < text.length && text[end] !== '"')
-        end += text[end] === '\\' ? 2 : 1
+      while (end < text.length && text[end] !== '"') {
+        end += text[end] === '\\'
+          ? 2
+          : 1
+      }
       const top = stack.at(-1)
       if (top?.keys && top.expectKey) {
         const key = JSON.parse(text.slice(i, end + 1))
-        if (top.keys.has(key))
-          duplicates.push({ path: stack.map(frame => frame.segment).join(''), key })
+        if (top.keys.has(key)) {
+          duplicates.push({
+            path: stack.map(frame => frame.segment).join(''),
+            key,
+          })
+        }
         top.keys.add(key)
         top.key = key
         top.expectKey = false
@@ -152,10 +165,19 @@ export function findDuplicateKeys(text) {
       i = end
     }
     else if (c === '{') {
-      stack.push({ segment: nextSegment(), keys: new Set(), key: '', expectKey: true })
+      stack.push({
+        segment: nextSegment(),
+        keys: new Set(),
+        key: '',
+        expectKey: true,
+      })
     }
     else if (c === '[') {
-      stack.push({ segment: nextSegment(), keys: null, index: 0 })
+      stack.push({
+        segment: nextSegment(),
+        keys: null,
+        index: 0,
+      })
     }
     else if (c === '}' || c === ']') {
       stack.pop()
@@ -213,7 +235,9 @@ export function validateAgainstSchema(ajv, compiled, dataPath, schemaPath) {
       validate = ajv.compile(schema)
     }
     catch (err) {
-      const detail = err instanceof Error ? err.message : String(err)
+      const detail = err instanceof Error
+        ? err.message
+        : String(err)
       return { reason: 'bad-schema', reasonText: `schema cannot compile: ${detail}` }
     }
     compiled.set(schemaPath, validate)
@@ -225,18 +249,30 @@ export function validateAgainstSchema(ajv, compiled, dataPath, schemaPath) {
     data = JSON.parse(dataText)
   }
   catch (err) {
-    return { reason: 'invalid', errors: [{ path: '/', message: `not valid JSON: ${err.message}` }] }
+    return {
+      reason: 'invalid',
+      errors: [
+        { path: '/', message: `not valid JSON: ${err.message}` },
+      ],
+    }
   }
-  const errors = findDuplicateKeys(dataText).map(d => ({ path: d.path || '/', message: duplicateKeyMessage(d.key) }))
+  const errors = findDuplicateKeys(dataText).map(d => ({
+    path: d.path || '/',
+    message: duplicateKeyMessage(d.key),
+  }))
   if (!validate(data)) {
     for (const e of validate.errors ?? []) {
       errors.push({
         path: e.instancePath || '/',
-        message: `${e.message ?? 'invalid'}${e.params ? ` (${JSON.stringify(e.params)})` : ''}`,
+        message: `${e.message ?? 'invalid'}${e.params
+          ? ` (${JSON.stringify(e.params)})`
+          : ''}`,
       })
     }
   }
-  return errors.length > 0 ? { reason: 'invalid', errors } : null
+  return errors.length > 0
+    ? { reason: 'invalid', errors }
+    : null
 }
 
 /**

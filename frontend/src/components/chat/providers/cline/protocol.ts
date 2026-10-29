@@ -51,7 +51,9 @@ export function clineEnvelope(message: unknown): ClineEnvelope | null {
 /** The payload of one row when it is the event `event`, or null. */
 export function clinePayload(message: unknown, event: string): Record<string, unknown> | null {
   const envelope = clineEnvelope(message)
-  return envelope && envelope.event === event ? envelope.payload : null
+  return envelope && envelope.event === event
+    ? envelope.payload
+    : null
 }
 
 /**

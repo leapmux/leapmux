@@ -64,7 +64,10 @@ function kiroMcpImages(tool: Record<string, unknown>): McpContentItem[] {
   const urls = kiroRawOutput(tool)?.imageBase64Urls
   if (!Array.isArray(urls))
     return []
-  return urls.filter((url): url is string => typeof url === 'string' && url !== '').map(url => ({ type: 'image' as const, source: { url } }))
+  return urls.filter((url): url is string => typeof url === 'string' && url !== '').map(url => ({
+    type: 'image' as const,
+    source: { url },
+  }))
 }
 
 /**
@@ -75,11 +78,20 @@ function kiroMcpImages(tool: Record<string, unknown>): McpContentItem[] {
  * states no result.
  */
 function kiroMcpSpec(facts: ACPToolFacts, title: string, pair: { server: string, tool: string }): ToolCallSpec {
-  const content = [...facts.content.map(parseMcpContentItem), ...kiroMcpImages(facts.tool)]
+  const content = [
+    ...facts.content.map(parseMcpContentItem),
+    ...kiroMcpImages(facts.tool),
+  ]
   return {
     ...mcpToolCallRequest(pair.server, pair.tool, kiroMcpArgs(facts.args)),
     name: title,
-    ...(acpResultAvailable(facts) ? { result: facts.status === 'failed' ? failedResult(facts.text) : { content } } : {}),
+    ...(acpResultAvailable(facts)
+      ? {
+          result: facts.status === 'failed'
+            ? failedResult(facts.text)
+            : { content },
+        }
+      : {}),
   }
 }
 
@@ -112,12 +124,23 @@ function kiroFileChangeArgs(title: string, input: Record<string, unknown>): Reco
   const path = pickString(input, 'path')
   switch (title) {
     case KIRO_TOOL.ReplaceInFile:
-      return { path, old_string: pickString(input, 'oldStr'), new_string: pickString(input, 'newStr') }
+      return {
+        path,
+        old_string: pickString(input, 'oldStr'),
+        new_string: pickString(input, 'newStr'),
+      }
     case KIRO_TOOL.WriteFile:
-      return { path, content: pickString(input, 'text') }
+      return {
+        path,
+        content: pickString(input, 'text'),
+      }
     case KIRO_TOOL.AppendToFile:
       // An append adds its text at the end, which reads as an insertion.
-      return { path, old_string: '', new_string: pickString(input, 'text') }
+      return {
+        path,
+        old_string: '',
+        new_string: pickString(input, 'text'),
+      }
     case KIRO_TOOL.DeleteFile:
       return { path: pickString(input, 'targetFile') || path }
     default:
@@ -143,7 +166,14 @@ function kiroArgs(title: string, input: Record<string, unknown>): Record<string,
     case KIRO_TOOL.KnowledgeSearch:
     case KIRO_TOOL.ToolSearch: {
       const include = pickString(input, 'includePattern')
-      return { pattern: pickString(input, 'query'), ...(include ? { paths: [include] } : {}) }
+      return {
+        pattern: pickString(input, 'query'),
+        ...(include
+          ? {
+              paths: [include],
+            }
+          : {}),
+      }
     }
     default:
       return input
@@ -163,10 +193,17 @@ function kiroCommandSpec(facts: ACPToolFacts, base: () => ToolCallSpec): ToolCal
   if (output === undefined && exit === undefined)
     return spec
   const commands = spec.result.commands.map((command) => {
-    const withOutput = output !== undefined ? { ...command, output } : command
-    return exit ? withCommandExit(withOutput, exit) : withOutput
+    const withOutput = output !== undefined
+      ? { ...command, output }
+      : command
+    return exit
+      ? withCommandExit(withOutput, exit)
+      : withOutput
   })
-  return { ...spec, result: { ...spec.result, commands } }
+  return {
+    ...spec,
+    result: { ...spec.result, commands },
+  }
 }
 
 /** The actions of Kiro's `Control Process` tool that LeapMux reads. */
@@ -182,18 +219,60 @@ const KIRO_PROCESS_STOP = 'stop'
 function kiroControlProcessSpec(facts: ACPToolFacts, title: string, input: Record<string, unknown>): ToolCallSpec {
   const action = pickString(input, 'action')
   if (action === KIRO_PROCESS_START) {
-    const remap = acpRemapFacts(facts, { tool: { ...facts.tool, [ACP_SUPPLEMENT_REQUEST.RawInput]: { command: pickString(input, 'command') } }, kind: 'execute' })
-    return { ...acpSpecFor(remap, 'execute'), name: title, metadata: [{ label: 'Background', value: 'Yes' }] }
+    const remap = acpRemapFacts(facts, {
+      tool: {
+        ...facts.tool,
+        [ACP_SUPPLEMENT_REQUEST.RawInput]: {
+          command: pickString(input, 'command'),
+        },
+      },
+      kind: 'execute',
+    })
+    return {
+      ...acpSpecFor(remap, 'execute'),
+      name: title,
+      metadata: [
+        { label: 'Background', value: 'Yes' },
+      ],
+    }
   }
-  if (action !== KIRO_PROCESS_STOP)
-    return { ...kiroGenericSpec(facts), name: title }
+  if (action !== KIRO_PROCESS_STOP) {
+    return {
+      ...kiroGenericSpec(facts),
+      name: title,
+    }
+  }
   const terminalId = pickString(input, 'terminalId')
-  const request: ToolRequestByKind['task'] = { action: 'stop', ...(terminalId ? { taskId: terminalId } : {}) }
-  if (!acpResultAvailable(facts))
-    return { kind: 'task', name: title, request, title }
-  if (facts.status === 'failed')
-    return { kind: 'task', name: title, request, title, result: failedResult(facts.text) }
-  return { kind: 'task', name: title, request, title, result: { outcome: 'stopped', output: facts.text } }
+  const request: ToolRequestByKind['task'] = {
+    action: 'stop',
+    ...(terminalId
+      ? { taskId: terminalId }
+      : {}),
+  }
+  if (!acpResultAvailable(facts)) {
+    return {
+      kind: 'task',
+      name: title,
+      request,
+      title,
+    }
+  }
+  if (facts.status === 'failed') {
+    return {
+      kind: 'task',
+      name: title,
+      request,
+      title,
+      result: failedResult(facts.text),
+    }
+  }
+  return {
+    kind: 'task',
+    name: title,
+    request,
+    title,
+    result: { outcome: 'stopped', output: facts.text },
+  }
 }
 
 /**
@@ -206,18 +285,39 @@ function kiroControlProcessSpec(facts: ACPToolFacts, title: string, input: Recor
 function kiroTodoSpec(facts: ACPToolFacts, title: string, input: Record<string, unknown>): ToolCallSpec {
   const asked = kiroRequestedTodoItems(input)
   const note = pickString(input, 'task_list_description').trim()
-  const request: ToolRequestByKind['todo'] = { items: asked, ...(note ? { note } : {}) }
+  const request: ToolRequestByKind['todo'] = {
+    items: asked,
+    ...(note
+      ? { note }
+      : {}),
+  }
   // No title: `todoRenderer` composes the words from the list. An explicit undefined,
   // because the ACP wrapper spreads this over the frame's own title.
-  const base = { kind: 'todo' as const, name: title, title: undefined, request }
+  const base = {
+    kind: 'todo' as const,
+    name: title,
+    title: undefined,
+    request,
+  }
   // A call that no answer reached states no list: the asked tasks are not the list
   // that Kiro holds.
   if (!acpResultAvailable(facts))
     return base
-  if (facts.status === 'failed')
-    return { ...base, result: failedResult(facts.text) }
+  if (facts.status === 'failed') {
+    return {
+      ...base,
+      result: failedResult(facts.text),
+    }
+  }
   const tasks = kiroRawOutput(facts.tool)?.tasks
-  return { ...base, result: { items: Array.isArray(tasks) ? kiroTodoItems(tasks) : asked } }
+  return {
+    ...base,
+    result: {
+      items: Array.isArray(tasks)
+        ? kiroTodoItems(tasks)
+        : asked,
+    },
+  }
 }
 
 /**
@@ -230,7 +330,12 @@ function kiroSwitchToExecutionSpec(facts: ACPToolFacts, title: string, input: Re
   const spec = acpSpecFor(acpRemapFacts(facts, { tool: facts.tool, kind: 'switch_mode' }), 'switch_mode')
   if (!plan || facts.status === 'failed' || !acpResultAvailable(facts))
     return { ...spec, name: title, title: 'Switch to execution' }
-  return { ...spec, name: title, title: 'Switch to execution', result: proseResult(plan, 'markdown') }
+  return {
+    ...spec,
+    name: title,
+    title: 'Switch to execution',
+    result: proseResult(plan, 'markdown'),
+  }
 }
 
 /**
@@ -251,7 +356,13 @@ function kiroGenericSpec(facts: ACPToolFacts): ToolCallSpec {
  */
 function kiroRemappedSpec<T extends keyof typeof KIRO_TOOL_KINDS>(facts: ACPToolFacts, title: T, input: Record<string, unknown>) {
   const kind: (typeof KIRO_TOOL_KINDS)[T] = KIRO_TOOL_KINDS[title]
-  const remapFacts = acpRemapFacts(facts, { tool: { ...facts.tool, [ACP_SUPPLEMENT_REQUEST.RawInput]: kiroArgs(title, input) }, kind })
+  const remapFacts = acpRemapFacts(facts, {
+    tool: {
+      ...facts.tool,
+      [ACP_SUPPLEMENT_REQUEST.RawInput]: kiroArgs(title, input),
+    },
+    kind,
+  })
   return acpSpecFor(remapFacts, kind)
 }
 
@@ -271,14 +382,39 @@ export const kiroToolCallAdapter: ACPToolCallAdapter = (facts, base) => {
     const subtaskId = pickString(meta, KIRO_META.AgentSubtaskId)
     // `facts.finished`, never the frame's own status: a retained row of a turn that
     // ended keeps its report, and `kiroAgentRun` states a run that sent none.
-    return { kind: 'agent', name: title, request, ...(facts.finished ? { result: { agents: [kiroAgentRun(facts, request, subtaskId)] } } : {}) }
+    return {
+      kind: 'agent',
+      name: title,
+      request,
+      ...(facts.finished
+        ? {
+            result: {
+              agents: [
+                kiroAgentRun(facts, request, subtaskId),
+              ],
+            },
+          }
+        : {}),
+    }
   }
   if (pickString(meta, 'toolId') === KIRO_USER_INPUT_TOOL_ID) {
     // The answer is the reply to Kiro's own question request, which draws in the
     // transcript as its own row. The call states the question alone.
     const questions = kiroUserInputQuestions(title, meta?.userInputOptions)
-    const asked = { kind: 'question' as const, name: KIRO_USER_INPUT_TOOL_ID, request: { questions: questions.slice(0, 1) }, title: 'Question' }
-    return acpResultAvailable(facts) && facts.status === 'failed' ? { ...asked, result: failedResult(facts.text) } : asked
+    const asked = {
+      kind: 'question' as const,
+      name: KIRO_USER_INPUT_TOOL_ID,
+      request: {
+        questions: questions.slice(0, 1),
+      },
+      title: 'Question',
+    }
+    return acpResultAvailable(facts) && facts.status === 'failed'
+      ? {
+          ...asked,
+          result: failedResult(facts.text),
+        }
+      : asked
   }
   const mcp = kiroMcpPair(title)
   if (mcp && facts.wireKind !== 'execute')
@@ -288,8 +424,14 @@ export const kiroToolCallAdapter: ACPToolCallAdapter = (facts, base) => {
   // states an action.
   if (facts.wireKind === 'execute' && !(title === KIRO_TOOL.ControlProcess && pickString(input, 'action')))
     return kiroCommandSpec(facts, base)
-  if (!isKiroTool(title))
-    return { ...base(), ...(title ? { name: title } : {}) }
+  if (!isKiroTool(title)) {
+    return {
+      ...base(),
+      ...(title
+        ? { name: title }
+        : {}),
+    }
+  }
 
   // Whether Kiro answered the call with a result that a typed reader can parse.
   const answered = acpResultAvailable(facts) && facts.status !== 'failed'
@@ -302,28 +444,47 @@ export const kiroToolCallAdapter: ACPToolCallAdapter = (facts, base) => {
       return kiroControlProcessSpec(facts, title, input)
     case KIRO_TOOL.ReadFile: {
       const spec = kiroRemappedSpec(facts, title, input)
-      const content = answered ? kiroReadResult(facts.text, pickNumber(input, 'offset') ?? 0) : null
-      return content ? { ...spec, name: title, result: content } : { ...spec, name: title }
+      const content = answered
+        ? kiroReadResult(facts.text, pickNumber(input, 'offset') ?? 0)
+        : null
+      return content
+        ? { ...spec, name: title, result: content }
+        : { ...spec, name: title }
     }
     case KIRO_TOOL.ListDirectory: {
       const spec = kiroRemappedSpec(facts, title, input)
-      const listing = answered ? kiroListResult(facts.text) : null
-      return listing ? { ...spec, name: title, result: listing } : { ...spec, name: title }
+      const listing = answered
+        ? kiroListResult(facts.text)
+        : null
+      return listing
+        ? { ...spec, name: title, result: listing }
+        : { ...spec, name: title }
     }
     case KIRO_TOOL.FileSearch: {
       const spec = kiroRemappedSpec(facts, title, input)
-      const files = answered ? kiroFileSearchResult(facts.text) : null
-      return files ? { ...spec, name: title, result: files } : { ...spec, name: title }
+      const files = answered
+        ? kiroFileSearchResult(facts.text)
+        : null
+      return files
+        ? { ...spec, name: title, result: files }
+        : { ...spec, name: title }
     }
     case KIRO_TOOL.GrepSearch: {
       const spec = kiroRemappedSpec(facts, title, input)
-      const matches = answered ? kiroGrepResult(facts.text) : null
-      return matches ? { ...spec, name: title, result: matches } : { ...spec, name: title }
+      const matches = answered
+        ? kiroGrepResult(facts.text)
+        : null
+      return matches
+        ? { ...spec, name: title, result: matches }
+        : { ...spec, name: title }
     }
     // `Update Session Information`, `Report Progress` and `Memory` need no case of
     // their own: the shared build of `report` and `memory` states the arguments as
     // the payload and Kiro's words as the answer.
     default:
-      return { ...kiroRemappedSpec(facts, title, input), name: title }
+      return {
+        ...kiroRemappedSpec(facts, title, input),
+        name: title,
+      }
   }
 }

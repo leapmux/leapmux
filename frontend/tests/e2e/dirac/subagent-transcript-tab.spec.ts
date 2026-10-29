@@ -24,7 +24,9 @@ diracTest.describe('Dirac subagent transcript', () => {
         when: { body: CHILD_TASK },
         respond: {
           text: 'DIRAC_CHILD_ARCHIVE_ONLY',
-          toolCalls: [diracRespondToolCall('dirac-child-done', 'complete', childAnswer)],
+          toolCalls: [
+            diracRespondToolCall('dirac-child-done', 'complete', childAnswer),
+          ],
           gate: 'dirac-child-reply',
         },
         once: true,
@@ -32,11 +34,19 @@ diracTest.describe('Dirac subagent transcript', () => {
       {
         name: 'the Dirac parent completes after the child',
         when: { body: 'Subagent results:' },
-        respond: { toolCalls: [diracRespondToolCall('dirac-root-done', 'complete', 'DIRAC_ROOT_DONE')] },
+        respond: {
+          toolCalls: [
+            diracRespondToolCall('dirac-root-done', 'complete', 'DIRAC_ROOT_DONE'),
+          ],
+        },
         once: true,
       },
     )
-    const start = await modelScript.queue({ toolCalls: [spawnSubagentToolCall(PROVIDER, 'dirac-spawn', { description: 'Count files', prompt: childPrompt })] })
+    const start = await modelScript.queue({
+      toolCalls: [
+        spawnSubagentToolCall(PROVIDER, 'dirac-spawn', { description: 'Count files', prompt: childPrompt }),
+      ],
+    })
     await sendMessage(page, modelScript.prompt('Delegate the count, then report.'))
     await modelScript.waitForGate('dirac-child-reply')
 
@@ -61,8 +71,20 @@ diracTest.describe('Dirac subagent transcript', () => {
     const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, DIRAC_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const runs = [
-      { task: 'FIRSTCHILDTASK count the first set.', description: 'First child count', archive: 'DIRACFIRSTARCHIVE', report: 'DIRACFIRSTREPORT', root: 'DIRACFIRSTROOT' },
-      { task: 'SECONDCHILDTASK count the second set.', description: 'Second child count', archive: 'DIRACSECONDARCHIVE', report: 'DIRACSECONDREPORT', root: 'DIRACSECONDROOT' },
+      {
+        task: 'FIRSTCHILDTASK count the first set.',
+        description: 'First child count',
+        archive: 'DIRACFIRSTARCHIVE',
+        report: 'DIRACFIRSTREPORT',
+        root: 'DIRACFIRSTROOT',
+      },
+      {
+        task: 'SECONDCHILDTASK count the second set.',
+        description: 'Second child count',
+        archive: 'DIRACSECONDARCHIVE',
+        report: 'DIRACSECONDREPORT',
+        root: 'DIRACSECONDROOT',
+      },
     ] as const
     let previousChildID = ''
     let previousPrompt = ''
@@ -80,19 +102,27 @@ diracTest.describe('Dirac subagent transcript', () => {
           when: { body: run.task },
           respond: {
             text: run.archive,
-            toolCalls: [diracRespondToolCall(`dirac-${index}-child-done`, 'complete', modelScript.prompt(run.report))],
+            toolCalls: [
+              diracRespondToolCall(`dirac-${index}-child-done`, 'complete', modelScript.prompt(run.report)),
+            ],
           },
           once: true,
         },
         {
           name: `dirac-${index}-parent`,
           when: { body: 'Subagent results:' },
-          respond: { toolCalls: [diracRespondToolCall(`dirac-${index}-root-done`, 'complete', run.root)] },
+          respond: {
+            toolCalls: [
+              diracRespondToolCall(`dirac-${index}-root-done`, 'complete', run.root),
+            ],
+          },
           once: true,
         },
       )
       const start = await modelScript.queue({
-        toolCalls: [spawnSubagentToolCall(PROVIDER, 'dirac-reused-child-call', { description: run.description, prompt: childPrompt })],
+        toolCalls: [
+          spawnSubagentToolCall(PROVIDER, 'dirac-reused-child-call', { description: run.description, prompt: childPrompt }),
+        ],
       })
       await sendMessage(page, modelScript.prompt(`Delegate ${run.description}.`))
       await modelScript.waitForSteps(start + 1)

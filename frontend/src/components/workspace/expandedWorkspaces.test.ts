@@ -26,7 +26,9 @@ import {
 
 /** The stored set, as a sorted array so the assertions do not depend on order. */
 function storedIds(): string[] {
-  return [...(sessionStorageGet<string[]>(KEY_EXPANDED_WORKSPACES) ?? [])].sort()
+  return [
+    ...(sessionStorageGet<string[]>(KEY_EXPANDED_WORKSPACES) ?? []),
+  ].sort()
 }
 
 /**

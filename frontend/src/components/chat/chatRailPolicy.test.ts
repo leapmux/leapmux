@@ -11,14 +11,27 @@ describe('chatRailPolicy', () => {
       // rail 400, fixed thumb 24 -> centre travels [12, 388] (travel 376).
       // dotFraction(2,{1,5})=0.3 -> 12+0.3*376=124.8; dotFraction(4)=0.7 -> 275.2.
       const dots = clusterMarks(
-        [{ seq: 2n, type: MarkType.USER_MESSAGE }, { seq: 4n, type: MarkType.CONTROL_RESPONSE }],
+        [
+          { seq: 2n, type: MarkType.USER_MESSAGE },
+          { seq: 4n, type: MarkType.CONTROL_RESPONSE },
+        ],
         { minSeq: 1n, maxSeq: 5n },
         400,
         24,
       )
       expect(dots).toEqual([
-        { seq: 2n, topPx: 125, type: MarkType.USER_MESSAGE, count: 1 },
-        { seq: 4n, topPx: 275, type: MarkType.CONTROL_RESPONSE, count: 1 },
+        {
+          seq: 2n,
+          topPx: 125,
+          type: MarkType.USER_MESSAGE,
+          count: 1,
+        },
+        {
+          seq: 4n,
+          topPx: 275,
+          type: MarkType.CONTROL_RESPONSE,
+          count: 1,
+        },
       ])
     })
 
@@ -35,7 +48,14 @@ describe('chatRailPolicy', () => {
         400,
         24,
       )
-      expect(dots).toEqual([{ seq: 502n, topPx: 14, type: MarkType.USER_MESSAGE, count: 3 }])
+      expect(dots).toEqual([
+        {
+          seq: 502n,
+          topPx: 14,
+          type: MarkType.USER_MESSAGE,
+          count: 3,
+        },
+      ])
     })
 
     it('drops marks outside [minSeq, maxSeq]', () => {
@@ -57,7 +77,10 @@ describe('chatRailPolicy', () => {
       // rather than clustering them all at the rail top (fraction 0) -- the fail-closed contract.
       const tooWide = BigInt(Number.MAX_SAFE_INTEGER) + 2n
       const dots = clusterMarks(
-        [{ seq: 5n, type: MarkType.USER_MESSAGE }, { seq: 9n, type: MarkType.CONTROL_RESPONSE }],
+        [
+          { seq: 5n, type: MarkType.USER_MESSAGE },
+          { seq: 9n, type: MarkType.CONTROL_RESPONSE },
+        ],
         { minSeq: 1n, maxSeq: tooWide },
         400,
         24,
@@ -66,7 +89,9 @@ describe('chatRailPolicy', () => {
     })
 
     it('returns [] for a zero-height rail (nothing to place)', () => {
-      expect(clusterMarks([{ seq: 2n, type: MarkType.USER_MESSAGE }], { minSeq: 1n, maxSeq: 5n }, 0, 0)).toEqual([])
+      expect(clusterMarks([
+        { seq: 2n, type: MarkType.USER_MESSAGE },
+      ], { minSeq: 1n, maxSeq: 5n }, 0, 0)).toEqual([])
     })
 
     it('returns [] for no marks', () => {
@@ -77,22 +102,45 @@ describe('chatRailPolicy', () => {
       // thumb 0 -> centerAxisY(f,400,0) = f*400. span = (5-2)+1 = 4.
       // dotFraction(2)=0.5/4=0.125 -> 50; dotFraction(5)=3.5/4=0.875 -> 350.
       const dots = clusterMarks(
-        [{ seq: 2n, type: MarkType.USER_MESSAGE }, { seq: 5n, type: MarkType.CONTROL_RESPONSE }],
+        [
+          { seq: 2n, type: MarkType.USER_MESSAGE },
+          { seq: 5n, type: MarkType.CONTROL_RESPONSE },
+        ],
         { minSeq: 2n, maxSeq: 5n },
         400,
         0,
       )
       expect(dots).toEqual([
-        { seq: 2n, topPx: 50, type: MarkType.USER_MESSAGE, count: 1 },
-        { seq: 5n, topPx: 350, type: MarkType.CONTROL_RESPONSE, count: 1 },
+        {
+          seq: 2n,
+          topPx: 50,
+          type: MarkType.USER_MESSAGE,
+          count: 1,
+        },
+        {
+          seq: 5n,
+          topPx: 350,
+          type: MarkType.CONTROL_RESPONSE,
+          count: 1,
+        },
       ])
     })
   })
 
   describe('dot clusters equal', () => {
     const base: DotCluster[] = [
-      { seq: 2n, topPx: 184, type: MarkType.USER_MESSAGE, count: 1 },
-      { seq: 4n, topPx: 216, type: MarkType.CONTROL_RESPONSE, count: 3 },
+      {
+        seq: 2n,
+        topPx: 184,
+        type: MarkType.USER_MESSAGE,
+        count: 1,
+      },
+      {
+        seq: 4n,
+        topPx: 216,
+        type: MarkType.CONTROL_RESPONSE,
+        count: 3,
+      },
     ]
     it('is true for content-equal arrays (so a +1 seq bump that keeps every pixel reuses the reference)', () => {
       expect(dotClustersEqual(base, base.map(d => ({ ...d })))).toBe(true)
@@ -103,18 +151,42 @@ describe('chatRailPolicy', () => {
       const second = base[1]
       if (first === undefined || second === undefined)
         throw new Error('fixture dots missing')
-      expect(dotClustersEqual(base, [{ ...first }, { ...second, topPx: 217 }])).toBe(false)
-      expect(dotClustersEqual(base, [{ ...first }, { ...second, count: 4 }])).toBe(false)
-      expect(dotClustersEqual(base, [{ ...first }, { ...second, seq: 5n }])).toBe(false)
+      expect(dotClustersEqual(base, [
+        { ...first },
+        { ...second, topPx: 217 },
+      ])).toBe(false)
+      expect(dotClustersEqual(base, [
+        { ...first },
+        { ...second, count: 4 },
+      ])).toBe(false)
+      expect(dotClustersEqual(base, [
+        { ...first },
+        { ...second, seq: 5n },
+      ])).toBe(false)
       expect(dotClustersEqual(base, [first])).toBe(false)
     })
   })
 
   describe('nearest dot within', () => {
     const dots: DotCluster[] = [
-      { seq: 1n, topPx: 20, type: MarkType.USER_MESSAGE, count: 1 },
-      { seq: 2n, topPx: 60, type: MarkType.USER_MESSAGE, count: 1 },
-      { seq: 3n, topPx: 100, type: MarkType.CONTROL_RESPONSE, count: 2 },
+      {
+        seq: 1n,
+        topPx: 20,
+        type: MarkType.USER_MESSAGE,
+        count: 1,
+      },
+      {
+        seq: 2n,
+        topPx: 60,
+        type: MarkType.USER_MESSAGE,
+        count: 1,
+      },
+      {
+        seq: 3n,
+        topPx: 100,
+        type: MarkType.CONTROL_RESPONSE,
+        count: 2,
+      },
     ]
     it('returns the dot within range nearest y (checking the lower-bound dot and its predecessor)', () => {
       expect(nearestDotWithin(dots, 58, 12)?.seq).toBe(2n) // 2px from the 60 dot
@@ -137,7 +209,10 @@ describe('chatRailPolicy', () => {
     const items = (seqs: bigint[]): VirtualItem[] => seqs.map((seq, i) => ({ id: `m${i}`, hasSpanLines: false, seq }))
     // The window-shape half of ScrollbarOwnerInputs (itemCount + precomputed rowSeqs), so a test
     // states a window as its seqs and mirrors how ChatView memoizes rowStartSeqs once per commit.
-    const window = (seqs: bigint[]) => ({ itemCount: seqs.length, rowSeqs: rowStartSeqs(items(seqs)) })
+    const window = (seqs: bigint[]) => ({
+      itemCount: seqs.length,
+      rowSeqs: rowStartSeqs(items(seqs)),
+    })
     const base = {
       loaded: true,
       ...window([1n, 2n, 3n]),
@@ -153,7 +228,11 @@ describe('chatRailPolicy', () => {
     })
 
     it('an empty window scrolls with neither bar', () => {
-      expect(resolveScrollbarOwner({ ...base, ...window([]), range: { minSeq: 0n, maxSeq: 0n } })).toBe('none')
+      expect(resolveScrollbarOwner({
+        ...base,
+        ...window([]),
+        range: { minSeq: 0n, maxSeq: 0n },
+      })).toBe('none')
     })
 
     it('the rail owns scrolling for a multi-seq history that overflows', () => {

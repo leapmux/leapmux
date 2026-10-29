@@ -28,14 +28,16 @@ function snapshotOwnedBy(owner: string) {
   return create(AgentInputQueueSnapshotSchema, {
     agentId: AGENT_ID,
     paused: true,
-    items: [{
-      id: INPUT_ID,
-      agentId: AGENT_ID,
-      text: 'queued preview',
-      kind: AgentInputKind.USER_MESSAGE,
-      state: AgentInputState.QUEUED,
-      editOwnerClientId: owner,
-    }],
+    items: [
+      {
+        id: INPUT_ID,
+        agentId: AGENT_ID,
+        text: 'queued preview',
+        kind: AgentInputKind.USER_MESSAGE,
+        state: AgentInputState.QUEUED,
+        editOwnerClientId: owner,
+      },
+    ],
   })
 }
 
@@ -74,7 +76,13 @@ function createHarness(initialOwner = CLIENT_ID) {
     })
     return disposeRoot
   })
-  return { session, setSnapshot, clearAllAttachments, replaceAttachments, dispose }
+  return {
+    session,
+    setSnapshot,
+    clearAllAttachments,
+    replaceAttachments,
+    dispose,
+  }
 }
 
 describe('createQueueEditSession ownership loss', () => {

@@ -20,9 +20,21 @@ codewhaleTest.describe('Codewhale tool execution', () => {
     // The native calls use one literal private path and keep the original basename.
     await runNativeToolSteps(native, {
       steps: [
-        { toolCalls: [writeToolCall(native.provider, 'write-call', { path, content: 'alpha\nold line\n' })] },
-        { toolCalls: [editToolCall(native.provider, 'edit-call', { path, before: 'old line', after: 'new line' })] },
-        { toolCalls: [readToolCall(native.provider, 'read-call', path)] },
+        {
+          toolCalls: [
+            writeToolCall(native.provider, 'write-call', { path, content: 'alpha\nold line\n' }),
+          ],
+        },
+        {
+          toolCalls: [
+            editToolCall(native.provider, 'edit-call', { path, before: 'old line', after: 'new line' }),
+          ],
+        },
+        {
+          toolCalls: [
+            readToolCall(native.provider, 'read-call', path),
+          ],
+        },
       ],
       prompt: 'Create notes.txt, change its old line, and read it back.',
       answer: 'notes.txt now holds the new line.',

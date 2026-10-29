@@ -14,7 +14,9 @@ export async function allowReadIfAsked(page: Page, childWentOn: () => Promise<bo
   await expect.poll(async () => {
     if (await childWentOn())
       return 'continued'
-    return await banner.isVisible() ? 'asked' : 'waiting'
+    return await banner.isVisible()
+      ? 'asked'
+      : 'waiting'
   }, { message: 'the Fast Agent child continues or asks to read its file' }).not.toBe('waiting')
   if (await childWentOn())
     return

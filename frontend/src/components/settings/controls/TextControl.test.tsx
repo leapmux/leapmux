@@ -21,11 +21,17 @@ describe('TextControl', () => {
     render(() => <TextControl value="https://hub.example.com" ariaLabel="Public URL" onChange={onChange} />)
     const input = textbox()
 
-    fireEvent.input(input, { target: { value: 'https://hub.example.co' } })
-    fireEvent.input(input, { target: { value: 'https://hub.example.com/x' } })
+    fireEvent.input(input, {
+      target: { value: 'https://hub.example.co' },
+    })
+    fireEvent.input(input, {
+      target: { value: 'https://hub.example.com/x' },
+    })
     expect(onChange).not.toHaveBeenCalled()
 
-    fireEvent.change(input, { target: { value: 'https://hub.example.com/x' } })
+    fireEvent.change(input, {
+      target: { value: 'https://hub.example.com/x' },
+    })
     expect(onChange).toHaveBeenCalledTimes(1)
     expect(onChange).toHaveBeenCalledWith('https://hub.example.com/x')
   })
@@ -47,7 +53,9 @@ describe('TextControl', () => {
     render(() => <TextControl value={stored()} ariaLabel="Public URL" onChange={() => refused.promise} />)
     const input = textbox()
 
-    fireEvent.change(input, { target: { value: 'not-a-url' } })
+    fireEvent.change(input, {
+      target: { value: 'not-a-url' },
+    })
     setStored('https://new.example.com')
     expect(input.value, 'the binding moved while the write was in flight').toBe('https://new.example.com')
 
@@ -61,7 +69,9 @@ describe('TextControl', () => {
     render(() => <TextControl value={undefined} ariaLabel="Public URL" onChange={() => refused.promise} />)
     const input = textbox()
 
-    fireEvent.change(input, { target: { value: 'not-a-url' } })
+    fireEvent.change(input, {
+      target: { value: 'not-a-url' },
+    })
     refused.resolve(false)
     await flush()
     expect(input.value).toBe('')
@@ -72,7 +82,9 @@ describe('TextControl', () => {
     render(() => <TextControl value="https://hub.example.com" ariaLabel="Public URL" onChange={() => accepted.promise} />)
     const input = textbox()
 
-    fireEvent.change(input, { target: { value: 'https://other.example.com' } })
+    fireEvent.change(input, {
+      target: { value: 'https://other.example.com' },
+    })
     accepted.resolve(true)
     await flush()
     expect(input.value).toBe('https://other.example.com')
@@ -91,7 +103,9 @@ describe('TextControl', () => {
     ))
     const input = textbox()
 
-    fireEvent.change(input, { target: { value: 'https://other.example.com' } })
+    fireEvent.change(input, {
+      target: { value: 'https://other.example.com' },
+    })
     await flush()
     expect(input.value).toBe('https://other.example.com')
   })

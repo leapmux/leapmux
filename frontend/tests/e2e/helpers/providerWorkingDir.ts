@@ -37,7 +37,9 @@ function brand(directory: string): ProviderWorkingDir {
  * A provider that states no rule gets a fresh private directory of the run.
  */
 export function newProviderWorkingDir(agent: ProviderAgent, prefix = `${agent.prefix}-wd-`): ProviderWorkingDir {
-  return agent.workingDir === undefined ? brand(createTestDirectory(prefix)) : agent.workingDir(prefix)
+  return agent.workingDir === undefined
+    ? brand(createTestDirectory(prefix))
+    : agent.workingDir(prefix)
 }
 
 /**

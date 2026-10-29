@@ -37,7 +37,11 @@ qoderTest.describe('native workflow grouping', () => {
     await modelScript.rule({
       name: 'the first workflow child reads its file',
       when: { system: WORKFLOW_CHILD_SYSTEM, user: firstPrompt },
-      respond: { toolCalls: [readToolCall(native.provider, 'workflow-read', file)] },
+      respond: {
+        toolCalls: [
+          readToolCall(native.provider, 'workflow-read', file),
+        ],
+      },
       once: true,
     }, {
       name: 'the first workflow child answers after the read',
@@ -51,7 +55,11 @@ qoderTest.describe('native workflow grouping', () => {
       once: true,
     })
     const start = await modelScript.queue(
-      { toolCalls: [codeExecutionToolCall(native.provider, 'run-qoder-workflow', script)] },
+      {
+        toolCalls: [
+          codeExecutionToolCall(native.provider, 'run-qoder-workflow', script),
+        ],
+      },
       { text: 'The Qoder workflow started.' },
     )
     await modelScript.fallback({ text: 'The Qoder workflow result arrived.' })

@@ -59,7 +59,10 @@ export function WebSearchResultsBody(props: {
         <div class={toolResultPrompt}>
           {pluralize(links().length, 'result')}
         </div>
-        <div class={`${webSearchLinkList}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>
+        <div class={`${webSearchLinkList}${isCollapsed()
+          ? ` ${toolResultCollapsed}`
+          : ''}`}
+        >
           <For each={displayLinks()}>
             {link => (
               <div class={toolMetaRow}>

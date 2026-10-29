@@ -45,7 +45,12 @@ describe('toAddress', () => {
   })
 
   it('round-trips what rowFromAddress read', () => {
-    for (const address of ['*:4327', '127.0.0.1:8080', '[::1]:4327', '[fe80::1%en0]:9000'])
+    for (const address of [
+      '*:4327',
+      '127.0.0.1:8080',
+      '[::1]:4327',
+      '[fe80::1%en0]:9000',
+    ])
       expect(toAddress(rowFromAddress(address))).toBe(address)
   })
 
@@ -186,6 +191,9 @@ describe('mergeNotes', () => {
   // would make each cover the other, and the panel would promise a fold between
   // two addresses that do not exist yet.
   it('ignores a row whose port is not a port', () => {
-    expect(mergeNotes('127.0.0.1:4327', [newRow('*', ''), newRow('*', '99999')])).toEqual([])
+    expect(mergeNotes('127.0.0.1:4327', [
+      newRow('*', ''),
+      newRow('*', '99999'),
+    ])).toEqual([])
   })
 })

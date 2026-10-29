@@ -15,23 +15,58 @@ function request(toolName: string, args: Record<string, unknown>, display?: Reco
 
 /** A successful result for one call, with its paired start beside it. */
 function done(toolName: string, args: Record<string, unknown>, output: unknown, display?: Record<string, unknown>): ToolResultFixture {
-  return { payload: kimiToolResult(CALL, output), options: { request: request(toolName, args, display), spanType: toolName } }
+  return {
+    payload: kimiToolResult(CALL, output),
+    options: {
+      request: request(toolName, args, display),
+      spanType: toolName,
+    },
+  }
 }
 
 const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
-  [KIMI_TOOL.Bash]: done(KIMI_TOOL.Bash, { command: 'echo hi', description: 'Say hi' }, 'hi\n', { kind: 'command', command: 'echo hi', cwd: '/work', language: 'bash' }),
+  [KIMI_TOOL.Bash]: done(KIMI_TOOL.Bash, { command: 'echo hi', description: 'Say hi' }, 'hi\n', {
+    kind: 'command',
+    command: 'echo hi',
+    cwd: '/work',
+    language: 'bash',
+  }),
   [KIMI_TOOL.Read]: done(KIMI_TOOL.Read, { path: 'a.go' }, '1\tpackage a\n2\t\n<system>2 lines read from file.</system>', { kind: 'file_io', operation: 'read', path: '/work/a.go' }),
-  [KIMI_TOOL.ReadMediaFile]: done(KIMI_TOOL.ReadMediaFile, { path: 'a.png' }, [{ type: 'text', text: 'Read image a.png' }, { type: 'image_url', imageUrl: { url: 'data:image/png;base64,iVBORw0KGgo=' } }]),
+  [KIMI_TOOL.ReadMediaFile]: done(KIMI_TOOL.ReadMediaFile, { path: 'a.png' }, [
+    { type: 'text', text: 'Read image a.png' },
+    {
+      type: 'image_url',
+      imageUrl: { url: 'data:image/png;base64,iVBORw0KGgo=' },
+    },
+  ]),
   [KIMI_TOOL.Write]: done(KIMI_TOOL.Write, { path: 'goal.txt', content: 'ok\n' }, 'Wrote 3 bytes to goal.txt', { kind: 'file_io', operation: 'write', path: '/work/goal.txt' }),
   [KIMI_TOOL.Edit]: done(KIMI_TOOL.Edit, { path: 'a.go', old_string: 'x', new_string: 'y' }, 'Edited a.go'),
   [KIMI_TOOL.Glob]: done(KIMI_TOOL.Glob, { pattern: '*.go' }, 'a.go\nb.go'),
   [KIMI_TOOL.Grep]: done(KIMI_TOOL.Grep, { pattern: 'needle' }, 'a.go:3:needle here'),
   [KIMI_TOOL.FetchURL]: done(KIMI_TOOL.FetchURL, { url: 'https://example.com' }, '# Example'),
   [KIMI_TOOL.WebSearch]: done(KIMI_TOOL.WebSearch, { query: 'kimi' }, 'Kimi Code is a coding agent.'),
-  [KIMI_TOOL.TodoList]: done(KIMI_TOOL.TodoList, { todos: [{ title: 'Run echo', status: 'in_progress' }] }, 'Todo list updated.'),
+  [KIMI_TOOL.TodoList]: done(KIMI_TOOL.TodoList, {
+    todos: [
+      { title: 'Run echo', status: 'in_progress' },
+    ],
+  }, 'Todo list updated.'),
   [KIMI_TOOL.Agent]: done(KIMI_TOOL.Agent, { prompt: 'List the files.', description: 'Probe subagent', subagent_type: 'explore' }, 'agent_id: agent-0\nactual_subagent_type: explore\nstatus: completed\nstop_reason: completed\n\n[summary]\nSubagent finished.\n\nresume_hint: Continue with Agent(resume="agent-0", prompt="...").'),
-  [KIMI_TOOL.AgentSwarm]: done(KIMI_TOOL.AgentSwarm, { description: 'Probe swarm', prompt_template: 'Reply with {{item}}.', items: ['alpha', 'beta'] }, '<agent_swarm_result>\n<summary>completed: 2</summary>\n<subagent agent_id="agent-0" item="alpha" outcome="completed">alpha done</subagent>\n<subagent agent_id="agent-1" item="beta" outcome="completed">beta done</subagent>\n</agent_swarm_result>'),
-  [KIMI_TOOL.AskUserQuestion]: done(KIMI_TOOL.AskUserQuestion, { questions: [{ question: 'Which color?', options: [{ label: 'Red' }, { label: 'Blue' }] }] }, '{"answers":{"Which color?":"Red"}}'),
+  [KIMI_TOOL.AgentSwarm]: done(KIMI_TOOL.AgentSwarm, {
+    description: 'Probe swarm',
+    prompt_template: 'Reply with {{item}}.',
+    items: ['alpha', 'beta'],
+  }, '<agent_swarm_result>\n<summary>completed: 2</summary>\n<subagent agent_id="agent-0" item="alpha" outcome="completed">alpha done</subagent>\n<subagent agent_id="agent-1" item="beta" outcome="completed">beta done</subagent>\n</agent_swarm_result>'),
+  [KIMI_TOOL.AskUserQuestion]: done(KIMI_TOOL.AskUserQuestion, {
+    questions: [
+      {
+        question: 'Which color?',
+        options: [
+          { label: 'Red' },
+          { label: 'Blue' },
+        ],
+      },
+    ],
+  }, '{"answers":{"Which color?":"Red"}}'),
   [KIMI_TOOL.Skill]: done(KIMI_TOOL.Skill, { skill: 'deploy' }, 'Deployed.'),
   [KIMI_TOOL.TaskList]: done(KIMI_TOOL.TaskList, {}, 'bash-1 running'),
   [KIMI_TOOL.TaskOutput]: done(KIMI_TOOL.TaskOutput, { task_id: 'bash-1' }, 'status: running\noutput: hi'),
@@ -63,7 +98,9 @@ function failed(kind: ToolKind, name: string): ToolFailureFixture {
     throw new Error(`No successful fixture pairs with the failed frame for ${name}`)
   return {
     payload: kimiToolResult(CALL, ERROR_TEXT, { isError: true }),
-    ...(paired.options !== undefined ? { options: paired.options } : {}),
+    ...(paired.options !== undefined
+      ? { options: paired.options }
+      : {}),
     kind,
     name,
     status: 'failed',

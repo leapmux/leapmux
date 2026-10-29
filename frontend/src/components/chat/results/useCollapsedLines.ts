@@ -30,9 +30,13 @@ function emitClippedLines(text: string, cap: number): string {
   let start = 0
   while (start <= text.length) {
     const next = text.indexOf('\n', start)
-    const end = next === -1 ? text.length : next
+    const end = next === -1
+      ? text.length
+      : next
     const sliceEnd = snapUtf16CutBackward(text, start + cap)
-    parts.push(end - start > cap ? `${text.slice(start, sliceEnd)}${TRUNCATION_INDICATOR}` : text.slice(start, end))
+    parts.push(end - start > cap
+      ? `${text.slice(start, sliceEnd)}${TRUNCATION_INDICATOR}`
+      : text.slice(start, end))
     if (next === -1)
       break
     parts.push('\n')
@@ -94,7 +98,9 @@ export function useCollapsedLines(opts: UseCollapsedLinesOptions): UseCollapsedL
       idx = next + 1
     }
     const slice = text.slice(0, idx - 1)
-    return hasLong ? emitClippedLines(slice, cap) : slice
+    return hasLong
+      ? emitClippedLines(slice, cap)
+      : slice
   })
   return { isCollapsed, display }
 }
@@ -142,6 +148,8 @@ export interface UseCollapsedItemsResult<T> {
 export function useCollapsedItems<T>(opts: UseCollapsedItemsOptions<T>): UseCollapsedItemsResult<T> {
   const threshold = opts.threshold ?? COLLAPSED_RESULT_ROWS
   const isCollapsed = createMemo(() => !opts.expanded() && opts.items().length > threshold)
-  const displayItems = createMemo(() => isCollapsed() ? opts.items().slice(0, threshold) : opts.items())
+  const displayItems = createMemo(() => isCollapsed()
+    ? opts.items().slice(0, threshold)
+    : opts.items())
   return { isCollapsed, displayItems }
 }

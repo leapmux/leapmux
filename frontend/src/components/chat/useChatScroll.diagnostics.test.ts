@@ -39,7 +39,12 @@ describe('useChatScroll stall indicators', () => {
       onLoadNewerMessages: () => {},
     })
     hook.attachListRef(div.el)
-    return { hook, div, setFetchingOlder, setFetchingNewer }
+    return {
+      hook,
+      div,
+      setFetchingOlder,
+      setFetchingNewer,
+    }
   }
 
   it('stalledOlder is TRUE when clamped at the top edge with an older fetch in flight', () =>
@@ -197,7 +202,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -241,7 +248,12 @@ describe('useChatScroll scroll-anomaly warnings', () => {
             '[chatScroll]',
             expect.stringContaining('anchor re-pin clamped'),
             expect.objectContaining({
-              batch: { commits: 1, deltaSum: -7, totalHeightDelta: -300, ageMs: expect.any(Number) },
+              batch: {
+                commits: 1,
+                deltaSum: -7,
+                totalHeightDelta: -300,
+                ageMs: expect.any(Number),
+              },
             }),
           )
           dispose()
@@ -249,7 +261,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -300,7 +314,12 @@ describe('useChatScroll scroll-anomaly warnings', () => {
             expect.stringContaining('unexpected scroll jump'),
             expect.objectContaining({
               deltaFromLast: 3000,
-              batch: { commits: 9, deltaSum: -68, totalHeightDelta: -74, ageMs: 6500 },
+              batch: {
+                commits: 9,
+                deltaSum: -68,
+                totalHeightDelta: -74,
+                ageMs: 6500,
+              },
             }),
           )
           nowSpy.mockRestore()
@@ -310,7 +329,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
         catch (e) {
           nowSpy.mockRestore()
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -351,7 +372,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -368,7 +391,10 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setClientHeight(500)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages })
+          const hook = useChatScroll({
+            virtualizer: makeStubVirtualizer(),
+            messages,
+          })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -407,7 +433,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
         catch (e) {
           nowSpy.mockRestore()
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -424,7 +452,10 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setClientHeight(500)
           div.setScrollTop(1000)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages })
+          const hook = useChatScroll({
+            virtualizer: makeStubVirtualizer(),
+            messages,
+          })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -456,7 +487,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
         catch (e) {
           nowSpy.mockRestore()
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -471,7 +504,10 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setClientHeight(500)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages })
+          const hook = useChatScroll({
+            virtualizer: makeStubVirtualizer(),
+            messages,
+          })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -490,7 +526,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -502,7 +540,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
       // the 750ms MOMENTUM_INPUT_GRACE_MS the input grace lapses -- but the velocity tracker,
       // fed by the scroll events themselves, still reports an active fling, so the coast is
       // excused. Without that signal, the still-moving momentum reads as an unexplained jump.
-      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -511,7 +551,10 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setClientHeight(500)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages })
+          const hook = useChatScroll({
+            virtualizer: makeStubVirtualizer(),
+            messages,
+          })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -547,7 +590,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
         catch (e) {
           vi.useRealTimers()
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -597,7 +642,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
         catch (e) {
           nowSpy.mockRestore()
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -644,7 +691,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
         catch (e) {
           nowSpy.mockRestore()
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -659,7 +708,10 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setClientHeight(500)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages })
+          const hook = useChatScroll({
+            virtualizer: makeStubVirtualizer(),
+            messages,
+          })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -680,7 +732,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -691,7 +745,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
       // ~150ms TTL between the re-pin write and the browser delivering its echo scroll
       // event -- the busy-main-thread case (a long older prepend re-measuring a 1200-row
       // list) the field report hit: fetchingOlder true, a 548px UP move, markers empty.
-      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -736,7 +792,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
         catch (e) {
           vi.useRealTimers()
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -752,7 +810,11 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setScrollTop(5123) // at the bottom (maxScrollTop 5856 - 733)
           const [messages] = createSignal<AgentChatMessage[]>([])
           const [hasOlder] = createSignal<boolean | undefined>(true)
-          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages, hasOlderMessages: hasOlder })
+          const hook = useChatScroll({
+            virtualizer: makeStubVirtualizer(),
+            messages,
+            hasOlderMessages: hasOlder,
+          })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -776,7 +838,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -786,7 +850,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
       // Symmetric grow-side of the delayed-echo case: a large one-step growth while
       // following the tail re-sticks to a much higher bottom, and the busy main thread
       // delivers that restick's echo past the marker TTL.
-      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -828,7 +894,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
         catch (e) {
           vi.useRealTimers()
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -879,7 +947,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
       // (16px) by design -- so this fires only because the emitter accumulates. It is also the
       // only test that proves the hook's onAnchorDrift callback is connected at all: while the
       // floor was per-event, deleting that line from useChatScroll failed nothing.
-      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -929,14 +999,18 @@ describe('useChatScroll scroll-anomaly warnings', () => {
         catch (e) {
           vi.useRealTimers()
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
 
   it('corrects a perceptible slow-scroll estimate correction instead of drifting', () =>
     new Promise<void>((resolve, reject) => {
-      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -978,14 +1052,18 @@ describe('useChatScroll scroll-anomaly warnings', () => {
         catch (e) {
           vi.useRealTimers()
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
 
   it('absorbs an imperceptible slow-scroll correction without warning', () =>
     new Promise<void>((resolve, reject) => {
-      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
       createRoot(async (dispose) => {
         try {
           const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -1024,7 +1102,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
         catch (e) {
           vi.useRealTimers()
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -1041,7 +1121,10 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setClientHeight(500)
           div.setScrollTop(1000)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages })
+          const hook = useChatScroll({
+            virtualizer: makeStubVirtualizer(),
+            messages,
+          })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1070,7 +1153,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
         catch (e) {
           nowSpy.mockRestore()
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -1087,7 +1172,10 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setClientHeight(500)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages })
+          const hook = useChatScroll({
+            virtualizer: makeStubVirtualizer(),
+            messages,
+          })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1126,7 +1214,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
         catch (e) {
           nowSpy.mockRestore()
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -1175,7 +1265,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
         catch (e) {
           nowSpy.mockRestore()
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -1199,7 +1291,10 @@ describe('useChatScroll scroll-anomaly warnings', () => {
           div.setClientHeight(500)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages })
+          const hook = useChatScroll({
+            virtualizer: makeStubVirtualizer(),
+            messages,
+          })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -1235,7 +1330,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
         catch (e) {
           nowSpy.mockRestore()
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -1277,7 +1374,9 @@ describe('useChatScroll scroll-anomaly warnings', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))

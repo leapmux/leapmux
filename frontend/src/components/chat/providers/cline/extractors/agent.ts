@@ -59,7 +59,9 @@ function reportText(output: unknown, value: unknown): string {
     return pickString(value, 'text')
   if (typeof value === 'string')
     return value
-  return typeof output === 'string' ? output : ''
+  return typeof output === 'string'
+    ? output
+    : ''
 }
 
 /**
@@ -67,17 +69,25 @@ function reportText(output: unknown, value: unknown): string {
  * states the result as an object live, and as its JSON text in a stored transcript.
  */
 export function clineAgentResult(request: AgentRequest, output: unknown): AgentResult {
-  const value = typeof output === 'string' ? parseJSON(output) ?? output : output
-  const record = isObject(value) ? value : {}
+  const value = typeof output === 'string'
+    ? parseJSON(output) ?? output
+    : output
+  const record = isObject(value)
+    ? value
+    : {}
   const text = reportText(output, value)
   return {
-    agents: [{
-      description: request.description,
-      ...(request.registryKey !== undefined ? { registryKey: request.registryKey } : {}),
-      agentId: '',
-      outcome: runStatus(pickString(record, 'finishReason')),
-      metadata: [],
-      body: text,
-    }],
+    agents: [
+      {
+        description: request.description,
+        ...(request.registryKey !== undefined
+          ? { registryKey: request.registryKey }
+          : {}),
+        agentId: '',
+        outcome: runStatus(pickString(record, 'finishReason')),
+        metadata: [],
+        body: text,
+      },
+    ],
   }
 }

@@ -79,15 +79,23 @@ export function acpBuildControlResponse(
     if (!content) {
       const allow = firstOptionOfKinds(options, [ACP_PERMISSION_KIND.AllowOnce, KIND_ALLOW_ALWAYS])
       return allow !== undefined
-        ? buildJsonRpcResult(requestId, { outcome: { outcome: ACP_PERMISSION_OUTCOME.Selected, optionId: allow } })
+        ? buildJsonRpcResult(requestId, {
+            outcome: { outcome: ACP_PERMISSION_OUTCOME.Selected, optionId: allow },
+          })
         : undefined
     }
     else {
       const reject = firstOptionOfKinds(options, [KIND_REJECT_ONCE, KIND_REJECT_ALWAYS])
       const result: Record<string, unknown> = reject !== undefined
-        ? { outcome: { outcome: ACP_PERMISSION_OUTCOME.Selected, optionId: reject } }
-        : { outcome: { outcome: ACP_PERMISSION_OUTCOME.Cancelled } }
-      return buildJsonRpcResult(requestId, policy.permissionRejectReason ? policy.permissionRejectReason(result, content) : result)
+        ? {
+            outcome: { outcome: ACP_PERMISSION_OUTCOME.Selected, optionId: reject },
+          }
+        : {
+            outcome: { outcome: ACP_PERMISSION_OUTCOME.Cancelled },
+          }
+      return buildJsonRpcResult(requestId, policy.permissionRejectReason
+        ? policy.permissionRejectReason(result, content)
+        : result)
     }
   }
   return content
@@ -126,9 +134,13 @@ function acpReplyPolicy(extractControl: ACPControlReader, permissionRejectReason
     isPlanApproval: payload => extractControl({ payload })?.kind === 'plan',
     permissionOptions: (payload) => {
       const control = extractControl({ payload })
-      return control?.kind === 'permission' ? control.permission.options : []
+      return control?.kind === 'permission'
+        ? control.permission.options
+        : []
     },
-    ...(permissionRejectReason !== undefined ? { permissionRejectReason } : {}),
+    ...(permissionRejectReason !== undefined
+      ? { permissionRejectReason }
+      : {}),
   }
 }
 
@@ -182,7 +194,9 @@ export function acpOptionIdKind(optionId: string): string {
   // an `Object.prototype` member resolves to that function. A function is truthy, so
   // `??` returned it as the KIND and the next caller that reads a kind without
   // `Object.hasOwn` of its own draws the function's source text, or calls it.
-  return Object.hasOwn(OPTION_ID_KINDS, optionId) ? OPTION_ID_KINDS[optionId] ?? '' : ''
+  return Object.hasOwn(OPTION_ID_KINDS, optionId)
+    ? OPTION_ID_KINDS[optionId] ?? ''
+    : ''
 }
 
 /**
@@ -208,11 +222,16 @@ export function acpPermissionResponseText(
   const result = pickObject(response, 'result', undefined)
   const outcome = pickObject(result, 'outcome', undefined)
   const optionId = pickString(outcome, 'optionId', '').trim()
-  if (!optionId)
-    return pickString(outcome, 'outcome', '') === ACP_PERMISSION_OUTCOME.Cancelled ? 'Cancelled' : null
+  if (!optionId) {
+    return pickString(outcome, 'outcome', '') === ACP_PERMISSION_OUTCOME.Cancelled
+      ? 'Cancelled'
+      : null
+  }
 
   const params = pickObject(request, 'params', undefined)
-  const options = Array.isArray(params?.options) ? params.options : []
+  const options = Array.isArray(params?.options)
+    ? params.options
+    : []
   for (const option of options) {
     if (!isObject(option))
       continue
@@ -224,11 +243,16 @@ export function acpPermissionResponseText(
     return permissionOptionLabel({
       optionId,
       kind: pickString(option, 'kind', '').trim(),
-      ...(name !== '' ? { name } : {}),
+      ...(name !== ''
+        ? { name }
+        : {}),
     })
   }
 
-  return permissionOptionLabel({ optionId, kind: acpOptionIdKind(optionId) })
+  return permissionOptionLabel({
+    optionId,
+    kind: acpOptionIdKind(optionId),
+  })
 }
 
 /**

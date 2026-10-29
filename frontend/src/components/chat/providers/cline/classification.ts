@@ -60,9 +60,13 @@ export function classifyClineMessage(input: ClassificationInput): MessageCategor
         return { kind: 'unknown' }
       // A retained copy of this row is the call's RESULT: the turn ended while the call
       // ran, so Cline sent no result and the worker stored the start again.
-      return retainedRowIsFinal(input.completion) ? { kind: 'tool_result' } : { kind: 'tool_use' }
+      return retainedRowIsFinal(input.completion)
+        ? { kind: 'tool_result' }
+        : { kind: 'tool_use' }
     case CLINE_EVENT.ToolFinished:
-      return clineToolFinish(parent) ? { kind: 'tool_result' } : { kind: 'unknown' }
+      return clineToolFinish(parent)
+        ? { kind: 'tool_result' }
+        : { kind: 'unknown' }
     case CLINE_EVENT.SessionNotice:
     case CLINE_EVENT.TeamProgress:
       return notification([parent])

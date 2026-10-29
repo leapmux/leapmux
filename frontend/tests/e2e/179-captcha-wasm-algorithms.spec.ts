@@ -57,12 +57,26 @@ const cases = [
     algorithm: 'SCRYPT',
     // N=1024/r=8 keeps each derivation ~1ms so the solve finishes fast;
     // the test's subject is the worker-loading path, not PoW difficulty.
-    args: ['--algorithm', 'SCRYPT', '--cost', '1024', '--memory-cost', '8'],
+    args: [
+      '--algorithm',
+      'SCRYPT',
+      '--cost',
+      '1024',
+      '--memory-cost',
+      '8',
+    ],
   },
   {
     algorithm: 'ARGON2ID',
     // t=1/m=8192KiB: same idea — minimal viable memory-hard params.
-    args: ['--algorithm', 'ARGON2ID', '--cost', '1', '--memory-cost', '8192'],
+    args: [
+      '--algorithm',
+      'ARGON2ID',
+      '--cost',
+      '1',
+      '--memory-cost',
+      '8192',
+    ],
   },
 ] as const
 

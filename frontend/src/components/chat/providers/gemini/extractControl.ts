@@ -16,13 +16,22 @@ export function geminiExtractControl(input: ControlExtractionInput): ExtractedCo
   }
   const source = input.source?.parentObject
   const rawSupplement = input.source?.supplementalContent
-  const supplement = isObject(rawSupplement) ? rawSupplement : undefined
+  const supplement = isObject(rawSupplement)
+    ? rawSupplement
+    : undefined
   const path = title.slice(PLAN_TITLE_PREFIX.length)
   const ownsSource = pickString(source, 'sessionUpdate') === 'tool_call'
     && pickString(source, 'toolCallId') === id
     && pickString(source, 'title') === title
     && pickString(supplement, GEMINI_SUPPLEMENT.PlanPath) === path
     && pickString(supplement, 'toolCallId') === id
-  const text = ownsSource ? pickString(supplement, GEMINI_SUPPLEMENT.PlanContent) : ''
-  return { kind: 'plan', ...(text ? { text } : {}) }
+  const text = ownsSource
+    ? pickString(supplement, GEMINI_SUPPLEMENT.PlanContent)
+    : ''
+  return {
+    kind: 'plan',
+    ...(text
+      ? { text }
+      : {}),
+  }
 }

@@ -19,9 +19,23 @@ function askUserResult(request: MockModelRequestRecord, callId: string): string 
 
 droidTest.describe('control requests for Factory Droid', () => {
   droidTest('answers a question through the shared question banner', async ({ askingDroidWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDroidWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingDroidWorkspace.workspaceId,
+    })
     const { result } = await exerciseQuestionAnswer(context, {
-      questions: [{ question: 'Which color do you prefer?', header: 'Color', options: [{ label: 'Blue', description: 'The color blue' }, { label: 'Red', description: 'The color red' }] }],
+      questions: [
+        {
+          question: 'Which color do you prefer?',
+          header: 'Color',
+          options: [
+            { label: 'Blue', description: 'The color blue' },
+            { label: 'Red', description: 'The color red' },
+          ],
+        },
+      ],
       callId: 'ask-1',
       prompt: 'Ask me a question.',
       answer: 'The answer was recorded.',
@@ -41,7 +55,12 @@ droidTest.describe('control requests for Factory Droid', () => {
   // in the order of the options, as Droid's own TUI does. The reply lists the answers
   // in the order of the questions, each under the index of its question.
   droidTest('sends every pick of a multiple-choice question, one answer for each question', async ({ askingDroidWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDroidWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingDroidWorkspace.workspaceId,
+    })
     const questions: QuestionRequest[] = [
       {
         question: 'Which colors do you like?',
@@ -56,7 +75,10 @@ droidTest.describe('control requests for Factory Droid', () => {
       {
         question: 'Which size do you want?',
         header: 'Size',
-        options: [{ label: 'Small', description: 'The small size' }, { label: 'Large', description: 'The large size' }],
+        options: [
+          { label: 'Small', description: 'The small size' },
+          { label: 'Large', description: 'The large size' },
+        ],
       },
     ]
     const { result } = await exerciseQuestionAnswer(context, {
@@ -64,7 +86,14 @@ droidTest.describe('control requests for Factory Droid', () => {
       callId: 'ask-multi',
       prompt: 'Ask me about colors and sizes.',
       answer: 'The answers were recorded.',
-      reply: chooseQuestionPages(context, questions, [{ labels: ['Red', 'Blue'] }, { labels: ['Large'] }]),
+      reply: chooseQuestionPages(context, questions, [
+        {
+          labels: ['Red', 'Blue'],
+        },
+        {
+          labels: ['Large'],
+        },
+      ]),
       readResult: askUserResult,
     })
     // Droid writes "<index>. [question] <question>", then "[answer] <answer>", for each

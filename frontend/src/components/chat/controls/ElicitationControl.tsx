@@ -45,7 +45,9 @@ export const ElicitationContent: Component<ContentProps & { elicitation: Elicita
           source={{
             // The generic title is the banner's own; any other replaces it.
             // Omitted when absent — `Show` reads it the same either way.
-            ...(props.elicitation.title === undefined || props.elicitation.title === 'Permission Required' ? {} : { title: props.elicitation.title }),
+            ...(props.elicitation.title === undefined || props.elicitation.title === 'Permission Required'
+              ? {}
+              : { title: props.elicitation.title }),
             input: props.elicitation.arguments,
           }}
         >
@@ -65,7 +67,9 @@ export const ElicitationContent: Component<ContentProps & { elicitation: Elicita
                   const selected = createMemo(() => {
                     try {
                       const array: unknown = JSON.parse(value() || '[]')
-                      return Array.isArray(array) ? array.map(item => JSON.stringify(item)) : []
+                      return Array.isArray(array)
+                        ? array.map(item => JSON.stringify(item))
+                        : []
                     }
                     catch {
                       return []
@@ -82,9 +86,14 @@ export const ElicitationContent: Component<ContentProps & { elicitation: Elicita
                           <LoadingMenu
                             ariaLabel={label}
                             value={value()}
-                            options={[{ value: '', label: 'Select an option', pinned: true }, ...field.options]}
+                            options={[
+                              { value: '', label: 'Select an option', pinned: true },
+                              ...field.options,
+                            ]}
                             emptyLabel="No options"
-                            {...(props.optionsDisabled === undefined ? {} : { disabled: props.optionsDisabled })}
+                            {...(props.optionsDisabled === undefined
+                              ? {}
+                              : { disabled: props.optionsDisabled })}
                             onChange={value => setValue(field.key, value)}
                           />
                         </Match>
@@ -97,7 +106,12 @@ export const ElicitationContent: Component<ContentProps & { elicitation: Elicita
                                     type="checkbox"
                                     checked={selected().includes(option.value)}
                                     onChange={(event) => {
-                                      const next = event.currentTarget.checked ? [...selected(), option.value] : selected().filter(value => value !== option.value)
+                                      const next = event.currentTarget.checked
+                                        ? [
+                                            ...selected(),
+                                            option.value,
+                                          ]
+                                        : selected().filter(value => value !== option.value)
                                       setValue(field.key, JSON.stringify(next.map(value => JSON.parse(value))))
                                     }}
                                   />
@@ -108,7 +122,15 @@ export const ElicitationContent: Component<ContentProps & { elicitation: Elicita
                           </div>
                         </Match>
                         <Match when={field.type === 'text' || field.type === 'number'}>
-                          <input id={id} type="text" inputMode={field.type === 'number' ? 'decimal' : undefined} value={value()} onInput={event => setValue(field.key, event.currentTarget.value)} />
+                          <input
+                            id={id}
+                            type="text"
+                            inputMode={field.type === 'number'
+                              ? 'decimal'
+                              : undefined}
+                            value={value()}
+                            onInput={event => setValue(field.key, event.currentTarget.value)}
+                          />
                         </Match>
                         <Match when={field.type === 'json'}>
                           <textarea id={id} value={value()} spellcheck={false} onInput={event => setValue(field.key, event.currentTarget.value)} />
@@ -135,13 +157,22 @@ export const ElicitationContent: Component<ContentProps & { elicitation: Elicita
 export const ElicitationActions: Component<ActionsProps & { elicitation: ElicitationRequest }> = (props) => {
   const form = createMemo(() => createElicitationForm(props.elicitation.schema))
   const answer = createMemo(() => form().read(props.answerState.choices()))
-  const canAccept = () => props.elicitation.mode === MCP_ELICITATION_MODE.Form ? !!answer().content : props.elicitation.mode === MCP_ELICITATION_MODE.URL && !!elicitationURL(props.elicitation.url)
+  const canAccept = () => props.elicitation.mode === MCP_ELICITATION_MODE.Form
+    ? !!answer().content
+    : props.elicitation.mode === MCP_ELICITATION_MODE.URL && !!elicitationURL(props.elicitation.url)
   const choice = createControlChoice(() => props.answerState, ELICITATION_ACCEPT_CHOICE, 'once')
   const choicePill = createMemo(() => {
     const options = props.elicitation.acceptChoices ?? []
     if (options.length < 2 || !isPillOptions(options))
       return undefined
-    return { label: 'Allow as', options, selected: options.some(option => option.key === choice.choice()) ? choice.choice()! : options[0].key, onSelect: choice.setChoice }
+    return {
+      label: 'Allow as',
+      options,
+      selected: options.some(option => option.key === choice.choice())
+        ? choice.choice()!
+        : options[0].key,
+      onSelect: choice.setChoice,
+    }
   })
   const [pending, setPending] = createSignal(false)
   const [error, setError] = createSignal('')
@@ -151,7 +182,9 @@ export const ElicitationActions: Component<ActionsProps & { elicitation: Elicita
     setPending(true)
     setError('')
     try {
-      await sendResponse(props.onRespond, buildElicitationResponse(props.request.requestId, action, props.elicitation.mode === MCP_ELICITATION_MODE.Form ? answer().content : undefined, elicitationAcceptMetadata(props.elicitation, props.answerState.choices())))
+      await sendResponse(props.onRespond, buildElicitationResponse(props.request.requestId, action, props.elicitation.mode === MCP_ELICITATION_MODE.Form
+        ? answer().content
+        : undefined, elicitationAcceptMetadata(props.elicitation, props.answerState.choices())))
     }
     catch (error) {
       if (!(error instanceof ReportedControlResponseError))
@@ -171,18 +204,29 @@ export const ElicitationActions: Component<ActionsProps & { elicitation: Elicita
       allowChoicePill={choicePill}
       error={error()}
       negativeAction={{
-        label: props.elicitation.purpose === 'permission' ? 'Deny' : 'Reject',
+        label: props.elicitation.purpose === 'permission'
+          ? 'Deny'
+          : 'Reject',
         testId: 'control-deny-btn',
         disabled: pending(),
         onSelect: () => respond(MCP_ELICITATION_ACTION.Decline),
       }}
       positiveAction={{
-        label: props.elicitation.purpose === 'permission' ? 'Allow' : 'Approve',
+        label: props.elicitation.purpose === 'permission'
+          ? 'Allow'
+          : 'Approve',
         testId: 'control-allow-btn',
         disabled: pending() || !canAccept(),
         onSelect: () => respond(MCP_ELICITATION_ACTION.Accept),
       }}
-      additionalActions={() => [{ label: 'Cancel', testId: 'control-cancel-btn', disabled: pending(), onSelect: () => respond(MCP_ELICITATION_ACTION.Cancel) }]}
+      additionalActions={() => [
+        {
+          label: 'Cancel',
+          testId: 'control-cancel-btn',
+          disabled: pending(),
+          onSelect: () => respond(MCP_ELICITATION_ACTION.Cancel),
+        },
+      ]}
     />
   )
 }

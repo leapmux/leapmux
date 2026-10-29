@@ -23,22 +23,41 @@ export const RENOVATE_MAIN_RULESET = {
   name: 'Renovate review and CI',
   target: 'branch',
   enforcement: 'active',
-  conditions: { ref_name: { include: ['refs/heads/main'], exclude: [] } },
-  bypass_actors: [{ ...administratorBypass }],
+  conditions: {
+    ref_name: {
+      include: ['refs/heads/main'],
+      exclude: [],
+    },
+  },
+  bypass_actors: [
+    { ...administratorBypass },
+  ],
   rules: [
-    { type: 'pull_request', parameters: { ...reviewRequirements } },
-    { type: 'required_status_checks', parameters: {
-      ...checkRequirements,
-      required_status_checks: requiredChecks.map(check => ({ ...check })),
-    } },
+    {
+      type: 'pull_request',
+      parameters: { ...reviewRequirements },
+    },
+    {
+      type: 'required_status_checks',
+      parameters: {
+        ...checkRequirements,
+        required_status_checks: requiredChecks.map(check => ({ ...check })),
+      },
+    },
   ],
 }
 
 /** Validate the effective main rules and every contributing ruleset's bypass actors. */
 export function checkProtection(effective, rulesets) {
   if (!Array.isArray(effective) || !Array.isArray(rulesets))
-    throw new Error('Protection responses must be arrays.')
-  const required = ['deletion', 'non_fast_forward', 'required_linear_history', 'pull_request', 'required_status_checks']
+    throw new TypeError('Protection responses must be arrays.')
+  const required = [
+    'deletion',
+    'non_fast_forward',
+    'required_linear_history',
+    'pull_request',
+    'required_status_checks',
+  ]
   for (const type of required) {
     if (!effective.some(rule => rule.type === type))
       throw new Error(`main lacks the ${type} rule.`)
@@ -48,7 +67,7 @@ export function checkProtection(effective, rulesets) {
     if (!source || source.enforcement !== 'active')
       throw new Error(`Cannot verify active ruleset ${rule.ruleset_id}.`)
     if (!Array.isArray(source.bypass_actors))
-      throw new Error(`Ruleset ${source.id} omits bypass actors.`)
+      throw new TypeError(`Ruleset ${source.id} omits bypass actors.`)
     for (const actor of source.bypass_actors) {
       if (Object.entries(administratorBypass).some(([key, value]) => actor[key] !== value))
         throw new Error(`Ruleset ${source.id} permits a bypass other than repository administrators.`)
@@ -58,7 +77,9 @@ export function checkProtection(effective, rulesets) {
   }
   const reviews = effective.filter(rule => rule.type === 'pull_request')
   if (!reviews.some(({ parameters }) => parameters && Object.entries(reviewRequirements).every(([key, value]) =>
-    typeof value === 'number' ? parameters[key] >= value : !value || parameters[key] === value))) {
+    typeof value === 'number'
+      ? parameters[key] >= value
+      : !value || parameters[key] === value))) {
     throw new Error('main requires one review, stale-review dismissal, latest-push approval, and administrator bypass.')
   }
   for (const { context, integration_id } of requiredChecks) {
@@ -92,8 +113,11 @@ function requireMatchingSources(effective, rulesets) {
     throw new Error('Protection requires nonempty ruleset sources.')
   const ids = new Set(effective.map(rule => rule.ruleset_id))
   const sources = new Set(rulesets.map(rule => rule?.id))
-  if ([...ids, ...sources].some(id => !Number.isSafeInteger(id) || id <= 0)
-    || sources.size !== rulesets.length || sources.size !== ids.size || [...ids].some(id => !sources.has(id))) {
+  if ([
+    ...ids,
+    ...sources,
+  ].some(id => !Number.isSafeInteger(id) || id <= 0)
+  || sources.size !== rulesets.length || sources.size !== ids.size || [...ids].some(id => !sources.has(id))) {
     throw new Error('The protection snapshot must cover exactly the effective ruleset sources.')
   }
 }
@@ -106,7 +130,10 @@ export function createProtectionSnapshot(effective, rulesets) {
     version: 1,
     repository: 'leapmux/leapmux',
     ref: 'refs/heads/main',
-    rulesets: rulesets.map(rule => ({ ...rulesetMetadata(rule), bypass_actors: structuredClone(rule.bypass_actors) })),
+    rulesets: rulesets.map(rule => ({
+      ...rulesetMetadata(rule),
+      bypass_actors: structuredClone(rule.bypass_actors),
+    })),
   }
 }
 
@@ -138,14 +165,16 @@ export async function readRepositoryProtection(get) {
   for (let page = 1; ; page++) {
     const batch = await get(`/repos/leapmux/leapmux/rules/branches/main?per_page=100&page=${page}`)
     if (!Array.isArray(batch))
-      throw new Error('GitHub returned an invalid effective rule list.')
+      throw new TypeError('GitHub returned an invalid effective rule list.')
     effective.push(...batch)
     if (batch.length < 100)
       break
     if (page >= 100)
       throw new Error('Effective protection exceeds the supported rule count.')
   }
-  const ids = [...new Set(effective.map(rule => rule.ruleset_id))]
+  const ids = [
+    ...new Set(effective.map(rule => rule.ruleset_id)),
+  ]
   if (ids.some(id => !Number.isSafeInteger(id) || id <= 0))
     throw new Error('GitHub returned an invalid ruleset source ID.')
   const rulesets = await Promise.all(ids.map(id => get(`/repos/leapmux/leapmux/rulesets/${id}`)))
@@ -156,10 +185,16 @@ export async function readRepositoryProtection(get) {
 export async function verifyRepository({ token = process.env.GH_TOKEN, repository = 'leapmux/leapmux', request = fetch, snapshot = process.env.RENOVATE_PROTECTION_SNAPSHOT } = {}) {
   if (repository !== 'leapmux/leapmux' || !token)
     throw new Error('Protection verification requires leapmux/leapmux and a read-only token.')
-  const freshRequest = (url, options) => request(url, { ...options, cache: 'no-store', headers: { ...options.headers, 'Cache-Control': 'no-cache' } })
+  const freshRequest = (url, options) => request(url, {
+    ...options,
+    cache: 'no-store',
+    headers: { ...options.headers, 'Cache-Control': 'no-cache' },
+  })
   const get = async path => (await readGithubJsonResponse(path, { token, request: freshRequest, description: 'GitHub protection read' })).data
   const { effective, rulesets } = await readRepositoryProtection(get)
-  const verified = snapshot ? restoreSnapshotActors(snapshot, effective, rulesets) : rulesets
+  const verified = snapshot
+    ? restoreSnapshotActors(snapshot, effective, rulesets)
+    : rulesets
   checkProtection(effective, verified)
   return { effective, rulesets: verified }
 }

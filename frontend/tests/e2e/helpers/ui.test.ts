@@ -102,7 +102,13 @@ describe('editorDraftContainsText', () => {
     expect(editorDraftContainsText({ content: '**a bold draft**' }, '**a bold draft**')).toBe(true)
   })
 
-  it.each([null, {}, { content: 0 }, { content: '' }, { content: 'another draft' }])('rejects an absent or unrelated stored draft: %j', (value) => {
+  it.each([
+    null,
+    {},
+    { content: 0 },
+    { content: '' },
+    { content: 'another draft' },
+  ])('rejects an absent or unrelated stored draft: %j', (value) => {
     expect(editorDraftContainsText(value, 'the expected draft')).toBe(false)
   })
 
@@ -114,8 +120,14 @@ describe('editorDraftContainsText', () => {
 describe('scrollChatRowIntoView', () => {
   it('reveals an unmeasured row without requiring it to be visible first', async () => {
     const scrollIntoView = vi.fn()
-    const element = { querySelector: () => ({ scrollIntoView }) }
-    const page = { locator: () => ({ evaluate: async (read: (element: unknown, sequence: string) => unknown, sequence: string) => read(element, sequence) }) } as unknown as Page
+    const element = {
+      querySelector: () => ({ scrollIntoView }),
+    }
+    const page = {
+      locator: () => ({
+        evaluate: async (read: (element: unknown, sequence: string) => unknown, sequence: string) => read(element, sequence),
+      }),
+    } as unknown as Page
     await scrollChatRowIntoView(page, 7n)
     expect(scrollIntoView).toHaveBeenCalledExactlyOnceWith({ block: 'center', behavior: 'instant' })
   })
@@ -126,13 +138,26 @@ describe('scrollChatRowIntoView', () => {
     const element = {
       scrollTop: 200,
       clientHeight: 100,
-      querySelector: () => attempts > 1 ? { scrollIntoView } : null,
-      querySelectorAll: () => [{ dataset: { seq: '0' } }, { dataset: { seq: '50' } }],
+      querySelector: () => attempts > 1
+        ? { scrollIntoView }
+        : null,
+      querySelectorAll: () => [
+        {
+          dataset: { seq: '0' },
+        },
+        {
+          dataset: { seq: '50' },
+        },
+      ],
     }
-    const page = { locator: () => ({ evaluate: async (read: (element: unknown, sequence: string) => unknown, sequence: string) => {
-      attempts++
-      return read(element, sequence)
-    } }) } as unknown as Page
+    const page = {
+      locator: () => ({
+        evaluate: async (read: (element: unknown, sequence: string) => unknown, sequence: string) => {
+          attempts++
+          return read(element, sequence)
+        },
+      }),
+    } as unknown as Page
     await scrollChatRowIntoView(page, sequence)
     expect(scrollIntoView).toHaveBeenCalledOnce()
     if (sequence < 50n)
@@ -148,13 +173,17 @@ describe('scrollChatRowIntoView', () => {
 
 describe('controlAgentId', () => {
   function banner(id: string | null): PlaywrightLocator {
-    return { locator: (selector: string) => {
-      expect(selector).toBe('xpath=ancestor::*[@data-testid="agent-editor-panel"][1]')
-      return { getAttribute: async (attribute: string) => {
-        expect(attribute).toBe('data-agent-id')
-        return id
-      } }
-    } } as unknown as PlaywrightLocator
+    return {
+      locator: (selector: string) => {
+        expect(selector).toBe('xpath=ancestor::*[@data-testid="agent-editor-panel"][1]')
+        return {
+          getAttribute: async (attribute: string) => {
+            expect(attribute).toBe('data-agent-id')
+            return id
+          },
+        }
+      },
+    } as unknown as PlaywrightLocator
   }
 
   it('reads the control owner without requiring a visible agent tab', async () => {
@@ -166,12 +195,16 @@ describe('controlAgentId', () => {
   })
 })
 
-const native = vi.hoisted(() => ({ agent: vi.fn<typeof import('./nativeScenario').nativeAgentById>() }))
+const native = vi.hoisted(() => ({
+  agent: vi.fn<typeof import('./nativeScenario').nativeAgentById>(),
+}))
 vi.mock('./nativeScenario', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./nativeScenario')>()
   return { ...actual, nativeAgentById: native.agent }
 })
-vi.mock('./captcha', () => ({ solveCaptchaViaUI: vi.fn(async () => {}) }))
+vi.mock('./captcha', () => ({
+  solveCaptchaViaUI: vi.fn(async () => {}),
+}))
 vi.mock('@playwright/test', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@playwright/test')>()
   const firstAttempt = new Proxy(actual.expect, {
@@ -181,7 +214,9 @@ vi.mock('@playwright/test', async (importOriginal) => {
       if (typeof value !== 'function')
         return matchers
       return new Proxy(matchers, {
-        get: (result, property) => property === 'toPass' ? async () => value() : Reflect.get(result, property),
+        get: (result, property) => property === 'toPass'
+          ? async () => value()
+          : Reflect.get(result, property),
       })
     },
   })
@@ -204,9 +239,11 @@ describe('isMaybeVisible', () => {
   })
 
   it('returns false when the immediate visibility read fails', async () => {
-    const locator = opaqueHandle<PlaywrightLocator>({ isVisible: async () => {
-      throw new Error('The native locator detached.')
-    } })
+    const locator = opaqueHandle<PlaywrightLocator>({
+      isVisible: async () => {
+        throw new Error('The native locator detached.')
+      },
+    })
     await expect(isMaybeVisible(locator)).resolves.toBe(false)
   })
 })
@@ -236,7 +273,18 @@ function settingsAgent(): AgentInfo {
     workerId: 'resolved-native-worker',
     agentProvider: AgentProvider.MIMO_CODE,
     status: AgentStatus.ACTIVE,
-    optionGroups: [{ id: MIMO_OPTION.PermissionPolicy, label: 'Permissions', mutable: true, currentValue: MIMO_PERMISSION_POLICY.Ask, options: [{ id: MIMO_PERMISSION_POLICY.Ask, name: 'Ask' }, { id: MIMO_PERMISSION_POLICY.Bypass, name: 'Bypass' }] }],
+    optionGroups: [
+      {
+        id: MIMO_OPTION.PermissionPolicy,
+        label: 'Permissions',
+        mutable: true,
+        currentValue: MIMO_PERMISSION_POLICY.Ask,
+        options: [
+          { id: MIMO_PERMISSION_POLICY.Ask, name: 'Ask' },
+          { id: MIMO_PERMISSION_POLICY.Bypass, name: 'Bypass' },
+        ],
+      },
+    ],
   })
 }
 
@@ -257,13 +305,37 @@ function pageWithNativeCatalog(options: { agent?: AgentInfo, presetMenuWitness?:
   const activeTab: PlaywrightLocator = opaqueHandle<PlaywrightLocator>({
     first: () => activeTab,
     filter: () => activeTab,
-    getAttribute: async attribute => attribute === 'data-tab-id' ? 'selected-native-agent' : attribute === 'data-tab-type' ? 'agent' : null,
+    getAttribute: async attribute => attribute === 'data-tab-id'
+      ? 'selected-native-agent'
+      : attribute === 'data-tab-type'
+        ? 'agent'
+        : null,
   }, catalogLocator())
   const spinner = opaqueHandle<PlaywrightLocator>({}, catalogLocator(false, options.pendingSettings))
-  const presetAction: PlaywrightLocator = opaqueHandle<PlaywrightLocator>({ getByTestId: () => presetAction }, catalogLocator())
-  const context = opaqueHandle<BrowserContext>({ cookies: async () => [{ name: 'leapmux-session', value: 'unit-native-session', domain: 'localhost', path: '/', expires: -1, httpOnly: true, secure: false, sameSite: 'Lax' }] })
+  const presetAction: PlaywrightLocator = opaqueHandle<PlaywrightLocator>({
+    getByTestId: () => presetAction,
+  }, catalogLocator())
+  const context = opaqueHandle<BrowserContext>({
+    cookies: async () => [
+      {
+        name: 'leapmux-session',
+        value: 'unit-native-session',
+        domain: 'localhost',
+        path: '/',
+        expires: -1,
+        httpOnly: true,
+        secure: false,
+        sameSite: 'Lax',
+      },
+    ],
+  })
   native.agent.mockReset().mockResolvedValue(options.agent ?? settingsAgent())
-  vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ tab: { tabId: 'selected-native-agent', workerId: 'resolved-native-worker', tabType: 'TAB_TYPE_AGENT' } }), { status: 200, headers: { 'content-type': 'application/json' } }))
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
+    tab: { tabId: 'selected-native-agent', workerId: 'resolved-native-worker', tabType: 'TAB_TYPE_AGENT' },
+  }), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  }))
   return opaqueHandle<Page>({
     context: () => context,
     url: () => options.pageUrl ?? 'http://127.0.0.1:61616/workspaces/unit-workspace',
@@ -286,19 +358,48 @@ function pageWithNativeCatalog(options: { agent?: AgentInfo, presetMenuWitness?:
 
 describe('chooseSettingsOption', () => {
   it.each([
-    { label: 'active catalog', settled: settingsAgent(), expected: 'The native catalog has no option group permissionPolicy.' },
-    { label: 'startup failure', settled: create(AgentInfoSchema, { ...settingsAgent(), status: AgentStatus.STARTUP_FAILED, startupError: 'The native replacement refused its settings.' }), expected: 'The native settings agent failed to start: The native replacement refused its settings.' },
-    { label: 'inactive agent', settled: create(AgentInfoSchema, { ...settingsAgent(), status: AgentStatus.INACTIVE }), expected: 'The native settings agent is not active on its owning Worker (INACTIVE).' },
+    {
+      label: 'active catalog',
+      settled: settingsAgent(),
+      expected: 'The native catalog has no option group permissionPolicy.',
+    },
+    {
+      label: 'startup failure',
+      settled: create(AgentInfoSchema, {
+        ...settingsAgent(),
+        status: AgentStatus.STARTUP_FAILED,
+        startupError: 'The native replacement refused its settings.',
+      }),
+      expected: 'The native settings agent failed to start: The native replacement refused its settings.',
+    },
+    {
+      label: 'inactive agent',
+      settled: create(AgentInfoSchema, {
+        ...settingsAgent(),
+        status: AgentStatus.INACTIVE,
+      }),
+      expected: 'The native settings agent is not active on its owning Worker (INACTIVE).',
+    },
     { label: 'absent row', settled: null, expected: 'The native settings agent is not active on its owning Worker (no row).' },
   ])('waits for the previous settings request before reading the $label', async ({ settled, expected }) => {
     const waiting = deferred<void>()
     const completed = deferred<void>()
     const queried = deferred<void>()
-    const page = pageWithNativeCatalog({ pendingSettings: { onWait: () => waiting.resolve(), completion: completed.promise } })
+    const page = pageWithNativeCatalog({
+      pendingSettings: {
+        onWait: () => waiting.resolve(),
+        completion: completed.promise,
+      },
+    })
     let settingsCompleted = false
     native.agent.mockImplementation(async () => {
       queried.resolve()
-      return settingsCompleted ? settled : create(AgentInfoSchema, { ...settingsAgent(), status: AgentStatus.INACTIVE })
+      return settingsCompleted
+        ? settled
+        : create(AgentInfoSchema, {
+            ...settingsAgent(),
+            status: AgentStatus.INACTIVE,
+          })
     })
     const selection = chooseSettingsOption(page, 'permissionPolicy-ask')
     const outcome = selection.then(() => undefined, (error: unknown) => error)
@@ -318,7 +419,9 @@ describe('chooseSettingsOption', () => {
       throw new Error('The settings regression reached the browser menu instead of catalog validation.')
     expect(observed.message).toBe(expected)
     expect(native.agent).toHaveBeenCalledTimes(1)
-    expect(native.agent).toHaveBeenCalledWith({ leapmuxServer: { hubUrl: 'http://127.0.0.1:61616', adminToken: 'leapmux-session=unit-native-session', workerId: 'resolved-native-worker' } }, 'selected-native-agent')
+    expect(native.agent).toHaveBeenCalledWith({
+      leapmuxServer: { hubUrl: 'http://127.0.0.1:61616', adminToken: 'leapmux-session=unit-native-session', workerId: 'resolved-native-worker' },
+    }, 'selected-native-agent')
   })
 
   it('reads the tab and its Worker from the hub that serves the page, not the suite hub', async () => {
@@ -326,7 +429,9 @@ describe('chooseSettingsOption', () => {
     const page = pageWithNativeCatalog({ pageUrl: 'http://127.0.0.1:52222/workspaces/private-workspace' })
     await expect(chooseSettingsOption(page, 'permissionPolicy-ask')).rejects.toThrow('The native catalog has no option group permissionPolicy.')
     expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith('http://127.0.0.1:52222/leapmux.v1.WorkspaceService/LocateTab', expect.anything())
-    expect(native.agent).toHaveBeenCalledWith({ leapmuxServer: { hubUrl: 'http://127.0.0.1:52222', adminToken: 'leapmux-session=unit-native-session', workerId: 'resolved-native-worker' } }, 'selected-native-agent')
+    expect(native.agent).toHaveBeenCalledWith({
+      leapmuxServer: { hubUrl: 'http://127.0.0.1:52222', adminToken: 'leapmux-session=unit-native-session', workerId: 'resolved-native-worker' },
+    }, 'selected-native-agent')
   })
 
   it.each(['about:blank', 'data:text/html,native'])('refuses a page that no hub serves: %s', async (pageUrl) => {
@@ -347,15 +452,25 @@ describe('chooseSettingsOption', () => {
 
   it('waits for native startup before validating the actual option catalog', async () => {
     const page = pageWithNativeCatalog()
-    native.agent.mockResolvedValueOnce(create(AgentInfoSchema, { ...settingsAgent(), status: AgentStatus.STARTING }))
+    native.agent.mockResolvedValueOnce(create(AgentInfoSchema, {
+      ...settingsAgent(),
+      status: AgentStatus.STARTING,
+    }))
     await expect(chooseSettingsOption(page, 'permissionPolicy-ask')).rejects.toThrow('The native catalog has no option group permissionPolicy.')
     expect(native.agent.mock.calls.length).toBeGreaterThanOrEqual(2)
   })
 
   it('reports the exact native startup failure before any menu retry', async () => {
-    const failed = create(AgentInfoSchema, { ...settingsAgent(), status: AgentStatus.STARTUP_FAILED, startupError: 'The installed native process refused the private configuration.' })
+    const failed = create(AgentInfoSchema, {
+      ...settingsAgent(),
+      status: AgentStatus.STARTUP_FAILED,
+      startupError: 'The installed native process refused the private configuration.',
+    })
     const page = pageWithNativeCatalog({ agent: failed })
-    native.agent.mockResolvedValueOnce(create(AgentInfoSchema, { ...settingsAgent(), status: AgentStatus.STARTING }))
+    native.agent.mockResolvedValueOnce(create(AgentInfoSchema, {
+      ...settingsAgent(),
+      status: AgentStatus.STARTING,
+    }))
     await expect(chooseSettingsOption(page, 'permissionPolicy-ask')).rejects.toThrow(failed.startupError)
     expect(native.agent.mock.calls.length).toBeGreaterThanOrEqual(2)
   })
@@ -366,7 +481,18 @@ describe('applyPermissionPreset', () => {
     const agent = create(AgentInfoSchema, {
       ...settingsAgent(),
       agentProvider: AgentProvider.AMP,
-      optionGroups: [create(AvailableOptionGroupSchema, { id: 'permissionMode', label: 'Permissions', mutable: true, currentValue: AMP_PERMISSION_MODE.AllowAll, options: [{ id: AMP_PERMISSION_MODE.Ask, name: 'Ask' }, { id: AMP_PERMISSION_MODE.AllowAll, name: 'Allow All' }] })],
+      optionGroups: [
+        create(AvailableOptionGroupSchema, {
+          id: 'permissionMode',
+          label: 'Permissions',
+          mutable: true,
+          currentValue: AMP_PERMISSION_MODE.AllowAll,
+          options: [
+            { id: AMP_PERMISSION_MODE.Ask, name: 'Ask' },
+            { id: AMP_PERMISSION_MODE.AllowAll, name: 'Allow All' },
+          ],
+        }),
+      ],
     })
     expect(permissionPresetAvailable(ampControls.permissionPresets?.bypass, agent.optionGroups)).toBe(true)
     const page = pageWithNativeCatalog({ agent, presetMenuWitness: true })
@@ -377,11 +503,13 @@ describe('applyPermissionPreset', () => {
 describe('enterMessageText', () => {
   function keyboard() {
     const calls: string[] = []
-    const handle = opaqueHandle<Page>({ keyboard: opaqueHandle<Page['keyboard']>({
-      type: vi.fn(async (text: string) => { calls.push(`type:${text}`) }),
-      insertText: vi.fn(async (text: string) => { calls.push(`insert:${text}`) }),
-      press: vi.fn(async (key: string) => { calls.push(`press:${key}`) }),
-    }) })
+    const handle = opaqueHandle<Page>({
+      keyboard: opaqueHandle<Page['keyboard']>({
+        type: vi.fn(async (text: string) => { calls.push(`type:${text}`) }),
+        insertText: vi.fn(async (text: string) => { calls.push(`insert:${text}`) }),
+        press: vi.fn(async (key: string) => { calls.push(`press:${key}`) }),
+      }),
+    })
     return { handle, calls }
   }
 
@@ -395,7 +523,12 @@ describe('enterMessageText', () => {
   it('inserts each line at once and presses Enter between the lines', async () => {
     const { handle, calls } = keyboard()
     await enterMessageText(handle, 'first line\n\nsecond line', 'insert')
-    expect(calls).toEqual(['insert:first line', 'press:Enter', 'press:Enter', 'insert:second line'])
+    expect(calls).toEqual([
+      'insert:first line',
+      'press:Enter',
+      'press:Enter',
+      'insert:second line',
+    ])
   })
 
   it('inserts a long line with one request', async () => {
@@ -427,18 +560,48 @@ describe('waitForNativeSettingsHydrated', () => {
     })
   }
 
-  const agentMode = { id: 'permissionMode', label: 'Mode', mutable: true, currentValue: 'agent', options: [{ id: 'agent', name: 'Agent' }] }
+  const agentMode = {
+    id: 'permissionMode',
+    label: 'Mode',
+    mutable: true,
+    currentValue: 'agent',
+    options: [
+      { id: 'agent', name: 'Agent' },
+    ],
+  }
 
   /** A page whose plus menu offers the `offered` group triggers. It records each group that the helper reads. */
   function pageWithSettingsMenu(offered: readonly string[]): { page: Page, read: string[] } {
     const read: string[] = []
     const activeTab: PlaywrightLocator = opaqueHandle<PlaywrightLocator>({
       first: () => activeTab,
-      getAttribute: async attribute => attribute === 'data-tab-id' ? 'selected-native-agent' : null,
+      getAttribute: async attribute => attribute === 'data-tab-id'
+        ? 'selected-native-agent'
+        : null,
     }, fakeLocator(() => true))
-    const plus = opaqueHandle<PlaywrightLocator>({ getAttribute: async () => 'true' }, fakeLocator(() => true))
-    const context = opaqueHandle<BrowserContext>({ cookies: async () => [{ name: 'leapmux-session', value: 'unit-native-session', domain: 'localhost', path: '/', expires: -1, httpOnly: true, secure: false, sameSite: 'Lax' }] })
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ tab: { tabId: 'selected-native-agent', workerId: 'resolved-native-worker', tabType: 'TAB_TYPE_AGENT' } }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const plus = opaqueHandle<PlaywrightLocator>({
+      getAttribute: async () => 'true',
+    }, fakeLocator(() => true))
+    const context = opaqueHandle<BrowserContext>({
+      cookies: async () => [
+        {
+          name: 'leapmux-session',
+          value: 'unit-native-session',
+          domain: 'localhost',
+          path: '/',
+          expires: -1,
+          httpOnly: true,
+          secure: false,
+          sameSite: 'Lax',
+        },
+      ],
+    })
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
+      tab: { tabId: 'selected-native-agent', workerId: 'resolved-native-worker', tabType: 'TAB_TYPE_AGENT' },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
     const page = opaqueHandle<Page>({
       context: () => context,
       url: () => 'http://127.0.0.1:61616/workspaces/unit-workspace',
@@ -454,10 +617,12 @@ describe('waitForNativeSettingsHydrated', () => {
           return opaqueHandle<PlaywrightLocator>({}, fakeLocator(() => true))
         const group = /^\[data-testid="composer-group-([^"]+)"\]$/.exec(selector)?.[1]
         if (group !== undefined) {
-          return opaqueHandle<PlaywrightLocator>({ isVisible: async () => {
-            read.push(group)
-            return offered.includes(group)
-          } })
+          return opaqueHandle<PlaywrightLocator>({
+            isVisible: async () => {
+              read.push(group)
+              return offered.includes(group)
+            },
+          })
         }
         throw new Error(`The settings hydration unit read an unexpected locator: ${selector}.`)
       },
@@ -470,14 +635,30 @@ describe('waitForNativeSettingsHydrated', () => {
     native.agent.mockReset().mockResolvedValue(fastAgentCatalog([agentMode]))
     await expect(waitForNativeSettingsHydrated(page)).resolves.toBeUndefined()
     expect(read).toEqual(['permissionMode'])
-    expect(native.agent).toHaveBeenCalledWith({ leapmuxServer: { hubUrl: 'http://127.0.0.1:61616', adminToken: 'leapmux-session=unit-native-session', workerId: 'resolved-native-worker' } }, 'selected-native-agent')
+    expect(native.agent).toHaveBeenCalledWith({
+      leapmuxServer: { hubUrl: 'http://127.0.0.1:61616', adminToken: 'leapmux-session=unit-native-session', workerId: 'resolved-native-worker' },
+    }, 'selected-native-agent')
   })
 
   it('requires every live group that the menu can draw, and skips a group with no option', async () => {
     const { page, read } = pageWithSettingsMenu(['model', 'permissionMode'])
     native.agent.mockReset().mockResolvedValue(fastAgentCatalog([
-      { id: 'model', label: 'Model', mutable: false, currentValue: 'gpt-4o', options: [{ id: 'gpt-4o', name: 'gpt-4o' }] },
-      { id: 'effort', label: 'Effort', mutable: true, currentValue: '', options: [] },
+      {
+        id: 'model',
+        label: 'Model',
+        mutable: false,
+        currentValue: 'gpt-4o',
+        options: [
+          { id: 'gpt-4o', name: 'gpt-4o' },
+        ],
+      },
+      {
+        id: 'effort',
+        label: 'Effort',
+        mutable: true,
+        currentValue: '',
+        options: [],
+      },
       agentMode,
     ]))
     await expect(waitForNativeSettingsHydrated(page)).resolves.toBeUndefined()
@@ -494,7 +675,17 @@ describe('waitForNativeSettingsHydrated', () => {
   it('reads the live catalog again in the attempt instead of the first snapshot', async () => {
     const { page, read } = pageWithSettingsMenu(['permissionMode'])
     native.agent.mockReset()
-      .mockResolvedValueOnce(fastAgentCatalog([{ id: 'model', label: 'Model', mutable: false, currentValue: 'gpt-4o', options: [{ id: 'gpt-4o', name: 'gpt-4o' }] }]))
+      .mockResolvedValueOnce(fastAgentCatalog([
+        {
+          id: 'model',
+          label: 'Model',
+          mutable: false,
+          currentValue: 'gpt-4o',
+          options: [
+            { id: 'gpt-4o', name: 'gpt-4o' },
+          ],
+        },
+      ]))
       .mockResolvedValue(fastAgentCatalog([agentMode]))
     await expect(waitForNativeSettingsHydrated(page)).resolves.toBeUndefined()
     expect(read).toEqual(['permissionMode'])
@@ -503,7 +694,18 @@ describe('waitForNativeSettingsHydrated', () => {
 
   it.each([
     { label: 'no group', groups: [] },
-    { label: 'only groups without an option', groups: [{ id: 'effort', label: 'Effort', mutable: true, currentValue: '', options: [] }] },
+    {
+      label: 'only groups without an option',
+      groups: [
+        {
+          id: 'effort',
+          label: 'Effort',
+          mutable: true,
+          currentValue: '',
+          options: [],
+        },
+      ],
+    },
   ])('fails for a live catalog with $label, which the menu cannot show', async ({ groups }) => {
     const { page, read } = pageWithSettingsMenu(['model'])
     native.agent.mockReset().mockResolvedValue(fastAgentCatalog(groups))
@@ -515,7 +717,10 @@ describe('waitForNativeSettingsHydrated', () => {
     const { page, read } = pageWithSettingsMenu(['permissionMode'])
     native.agent.mockReset()
       .mockResolvedValueOnce(fastAgentCatalog([agentMode]))
-      .mockResolvedValue(create(AgentInfoSchema, { ...fastAgentCatalog([agentMode]), status: AgentStatus.INACTIVE }))
+      .mockResolvedValue(create(AgentInfoSchema, {
+        ...fastAgentCatalog([agentMode]),
+        status: AgentStatus.INACTIVE,
+      }))
     await expect(waitForNativeSettingsHydrated(page)).rejects.toThrow('The native settings agent is not active on its owning Worker (INACTIVE).')
     expect(read).toEqual([])
   })
@@ -588,7 +793,12 @@ describe('waitForLayoutSave', () => {
   function browser(): { page: Pick<Page, 'evaluate'>, target: EventTarget } {
     const target = new EventTarget()
     vi.stubGlobal('window', target)
-    return { target, page: { evaluate: vi.fn().mockImplementation(callback => callback()) } }
+    return {
+      target,
+      page: {
+        evaluate: vi.fn().mockImplementation(callback => callback()),
+      },
+    }
   }
 
   it('uses only the transient listener for each wait', async () => {
@@ -641,7 +851,9 @@ describe('waitForLayoutSave', () => {
 
 /** A page whose `locator` returns the selector, so a test reads the exact selector that a helper builds. */
 function selectorPage(): Page {
-  return Object.assign({} as Page, { locator: (selector: string) => selector })
+  return Object.assign({} as Page, {
+    locator: (selector: string) => selector,
+  })
 }
 
 describe('toolCallRow', () => {
@@ -715,7 +927,9 @@ function assertingLocator(name: string, log: string[], answer: (expression: stri
 function queueToggle(state: { paused: boolean }, log: string[]): { page: Page, button: PlaywrightLocator } {
   const label = () => state.paused ? 'Resume Queue' : 'Pause Queue'
   const button = assertingLocator('queue', log, (expression, options) => {
-    const required = JSON.stringify(options).includes('Resume Queue') ? 'Resume Queue' : 'Pause Queue'
+    const required = JSON.stringify(options).includes('Resume Queue')
+      ? 'Resume Queue'
+      : 'Pause Queue'
     log.push(`requires ${required}`)
     return expression === 'to.have.text' && required === label()
   }, {
@@ -724,10 +938,12 @@ function queueToggle(state: { paused: boolean }, log: string[]): { page: Page, b
       state.paused = !state.paused
     },
   })
-  const page = opaqueHandle<Page>({ locator: (selector: string) => {
-    expect(selector).toBe('[data-testid="queue-pause-button"]:visible')
-    return button
-  } })
+  const page = opaqueHandle<Page>({
+    locator: (selector: string) => {
+      expect(selector).toBe('[data-testid="queue-pause-button"]:visible')
+      return button
+    },
+  })
   return { page, button }
 }
 
@@ -757,7 +973,13 @@ describe('resumePausedQueue', () => {
     const log: string[] = []
     const state = { paused: true }
     await resumePausedQueue(queueToggle(state, log).page)
-    expect(log).toEqual(['queue:to.have.text', 'requires Resume Queue', 'click', 'queue:to.have.text', 'requires Pause Queue'])
+    expect(log).toEqual([
+      'queue:to.have.text',
+      'requires Resume Queue',
+      'click',
+      'queue:to.have.text',
+      'requires Pause Queue',
+    ])
     expect(state.paused).toBe(false)
   })
 
@@ -799,9 +1021,11 @@ function focusableComposer(log: string[]): PlaywrightLocator {
     },
     locator: (selector: string) => {
       expect(selector).toBe(':scope > :first-child')
-      return opaqueHandle<PlaywrightLocator>({ click: async () => {
-        log.push('editor:text-click')
-      } })
+      return opaqueHandle<PlaywrightLocator>({
+        click: async () => {
+          log.push('editor:text-click')
+        },
+      })
     },
   })
 }
@@ -810,10 +1034,12 @@ describe('focusComposer', () => {
   it('clicks the text block without clicking the padding reserved for actions', async () => {
     const log: string[] = []
     const editor = focusableComposer(log)
-    const page = opaqueHandle<Page>({ locator: (selector: string) => {
-      expect(selector).toBe('[data-testid="composer-editor"]:visible .ProseMirror')
-      return editor
-    } })
+    const page = opaqueHandle<Page>({
+      locator: (selector: string) => {
+        expect(selector).toBe('[data-testid="composer-editor"]:visible .ProseMirror')
+        return editor
+      },
+    })
     expect(await focusComposer(page)).toBe(editor)
     expect(log).toEqual(['editor:to.be.visible', 'editor:text-click'])
   })
@@ -824,12 +1050,16 @@ describe('toggleModeWithShortcut', () => {
     const log: string[] = []
     const editor = focusableComposer(log)
     const spinner = assertingLocator('spinner', log, expression => expression !== 'to.be.visible')
-    const chips = opaqueHandle<PlaywrightLocator>({ filter: (options?: Parameters<PlaywrightLocator['filter']>[0]) => {
-      const hasText = String(options?.hasText)
-      return assertingLocator(`chip ${hasText}`, log, (_expression, count) => (count.expectedNumber === 0) !== (hasText === chip))
-    } })
+    const chips = opaqueHandle<PlaywrightLocator>({
+      filter: (options?: Parameters<PlaywrightLocator['filter']>[0]) => {
+        const hasText = String(options?.hasText)
+        return assertingLocator(`chip ${hasText}`, log, (_expression, count) => (count.expectedNumber === 0) !== (hasText === chip))
+      },
+    })
     const page = opaqueHandle<Page>({
-      keyboard: opaqueHandle<Page['keyboard']>({ press: async (key: string) => { log.push(`press ${key}`) } }),
+      keyboard: opaqueHandle<Page['keyboard']>({
+        press: async (key: string) => { log.push(`press ${key}`) },
+      }),
       locator: (selector: string) => {
         if (selector === '[data-testid="composer-editor"]:visible .ProseMirror')
           return editor
@@ -846,7 +1076,13 @@ describe('toggleModeWithShortcut', () => {
   it('focuses the composer before the press, waits for the settings, and requires the chip', async () => {
     const { page, log } = modePage('Plan')
     await toggleModeWithShortcut(page, 'Plan')
-    expect(log).toEqual(['editor:to.be.visible', 'editor:text-click', 'press Shift+Tab', 'spinner:to.be.visible', 'chip Plan:to.have.count=0'])
+    expect(log).toEqual([
+      'editor:to.be.visible',
+      'editor:text-click',
+      'press Shift+Tab',
+      'spinner:to.be.visible',
+      'chip Plan:to.have.count=0',
+    ])
   })
 
   it('fails when the press selects another chip', async () => {
@@ -859,7 +1095,9 @@ describe('expectAgentTabCount', () => {
   it('requires the exact count of agent tabs', async () => {
     const log: string[] = []
     const tabs = assertingLocator('tabs', log, (_expression, options) => options.expectedNumber === 2)
-    const page = opaqueHandle<Page>({ locator: () => tabs })
+    const page = opaqueHandle<Page>({
+      locator: () => tabs,
+    })
     await expectAgentTabCount(page, 2)
     expect(log).toEqual(['tabs:to.have.count=2'])
     await expect(expectAgentTabCount(page, 3)).rejects.toThrow(/toHaveCount/)
@@ -874,14 +1112,18 @@ describe('expectAgentTabCount', () => {
 describe('subagentReportBubble', () => {
   function chainPage() {
     const chain: unknown[] = []
-    const link: PlaywrightLocator = opaqueHandle<PlaywrightLocator>({ filter: (options) => {
-      chain.push(options?.hasText)
-      return link
-    } })
-    const page = opaqueHandle<Page>({ locator: (selector: string) => {
-      chain.push(selector)
-      return link
-    } })
+    const link: PlaywrightLocator = opaqueHandle<PlaywrightLocator>({
+      filter: (options) => {
+        chain.push(options?.hasText)
+        return link
+      },
+    })
+    const page = opaqueHandle<Page>({
+      locator: (selector: string) => {
+        chain.push(selector)
+        return link
+      },
+    })
     return { page, chain }
   }
 
@@ -899,7 +1141,12 @@ describe('subagentReportBubble', () => {
 })
 
 describe('rowOrderProblem', () => {
-  const rows = ['user prompt', 'READ_MARKER from the child', 'thinking', 'FINAL answer']
+  const rows = [
+    'user prompt',
+    'READ_MARKER from the child',
+    'thinking',
+    'FINAL answer',
+  ]
 
   it('accepts texts in their own rows in order, and reads the first row that holds a text', () => {
     expect(rowOrderProblem(rows, ['READ_MARKER', 'FINAL'])).toBe('')
@@ -928,13 +1175,23 @@ describe('rowOrderProblem', () => {
 
 describe('expectRowsInOrder', () => {
   it('passes for rows that hold the texts in order', async () => {
-    const rows = opaqueHandle<PlaywrightLocator>({ allTextContents: async () => ['first READ', 'then FINAL'] })
+    const rows = opaqueHandle<PlaywrightLocator>({
+      allTextContents: async () => ['first READ', 'then FINAL'],
+    })
     await expect(expectRowsInOrder(rows, ['READ', 'FINAL'])).resolves.toBeUndefined()
   })
 
   it.each([
-    { label: 'one text', texts: ['READ'], error: 'at least two texts' },
-    { label: 'an empty text', texts: ['READ', ''], error: 'not empty' },
+    {
+      label: 'one text',
+      texts: ['READ'],
+      error: 'at least two texts',
+    },
+    {
+      label: 'an empty text',
+      texts: ['READ', ''],
+      error: 'not empty',
+    },
   ])('refuses $label before it reads the rows', async ({ texts, error }) => {
     const rows = opaqueHandle<PlaywrightLocator>({})
     await expect(expectRowsInOrder(rows, texts)).rejects.toThrow(error)
@@ -970,11 +1227,19 @@ describe('offeredSettingsOptions', () => {
   function menuWith(testIds: string[]) {
     const log: string[] = []
     const rowSelectors: string[] = []
-    const groupPopover = opaqueHandle<PlaywrightLocator>({ locator: (selector: string) => {
-      rowSelectors.push(selector)
-      return opaqueHandle<PlaywrightLocator>({ evaluateAll: (async () => testIds) as unknown as PlaywrightLocator['evaluateAll'] })
-    } })
-    const page = plusMenuPage({ popover: opaqueHandle<PlaywrightLocator>({}), groupPopover, log })
+    const groupPopover = opaqueHandle<PlaywrightLocator>({
+      locator: (selector: string) => {
+        rowSelectors.push(selector)
+        return opaqueHandle<PlaywrightLocator>({
+          evaluateAll: (async () => testIds) as unknown as PlaywrightLocator['evaluateAll'],
+        })
+      },
+    })
+    const page = plusMenuPage({
+      popover: opaqueHandle<PlaywrightLocator>({}),
+      groupPopover,
+      log,
+    })
     return { page, log, rowSelectors }
   }
 
@@ -1012,13 +1277,18 @@ describe('expectPermissionShortcuts', () => {
         throw new Error(`The shortcut fake has no answer for ${expression}.`)
       })
     }
-    const popover = opaqueHandle<PlaywrightLocator>({ getByTestId: (testId: string | RegExp) => {
-      const kind = /^composer-(smart|bypass)-permissions$/.exec(String(testId))?.[1]
-      if (kind !== 'smart' && kind !== 'bypass')
-        throw new Error(`The menu has no shortcut ${String(testId)}.`)
-      return shortcut(kind)
-    } }, fakeLocator())
-    return { page: plusMenuPage({ popover, log }), log }
+    const popover = opaqueHandle<PlaywrightLocator>({
+      getByTestId: (testId: string | RegExp) => {
+        const kind = /^composer-(smart|bypass)-permissions$/.exec(String(testId))?.[1]
+        if (kind !== 'smart' && kind !== 'bypass')
+          throw new Error(`The menu has no shortcut ${String(testId)}.`)
+        return shortcut(kind)
+      },
+    }, fakeLocator())
+    return {
+      page: plusMenuPage({ popover, log }),
+      log,
+    }
   }
 
   it('opens a probe menu first, reads each stated shortcut in the next menu, and closes the menus', async () => {
@@ -1026,7 +1296,9 @@ describe('expectPermissionShortcuts', () => {
     await expectPermissionShortcuts(page, { smart: 'absent', bypass: 'offered' })
     const reads = log.filter(entry => entry.startsWith('smart:') || entry.startsWith('bypass:'))
     expect(reads).toEqual(['smart:to.have.count=0', 'bypass:to.be.visible', 'bypass:to.be.enabled'])
-    const closes = log.map((entry, index) => entry === 'close-menus' ? index : -1).filter(index => index >= 0)
+    const closes = log.map((entry, index) => entry === 'close-menus'
+      ? index
+      : -1).filter(index => index >= 0)
     expect(closes.length).toBeGreaterThanOrEqual(3)
     expect(log.at(-2)).toBe('close-menus')
   })
@@ -1038,10 +1310,30 @@ describe('expectPermissionShortcuts', () => {
   })
 
   it.each([
-    { label: 'an offered shortcut that the spec states absent', actual: { smart: 'offered' as const }, expected: { smart: 'absent' as const }, error: 'the menu has no smart permission shortcut' },
-    { label: 'an absent shortcut that the spec states offered', actual: {}, expected: { bypass: 'offered' as const }, error: 'the menu offers the bypass permission shortcut' },
-    { label: 'an enabled shortcut that the spec states disabled', actual: { bypass: 'offered' as const }, expected: { bypass: 'disabled' as const }, error: 'the bypass permission shortcut is disabled' },
-    { label: 'a disabled shortcut that the spec states offered', actual: { smart: 'disabled' as const }, expected: { smart: 'offered' as const }, error: 'the smart permission shortcut is enabled' },
+    {
+      label: 'an offered shortcut that the spec states absent',
+      actual: { smart: 'offered' as const },
+      expected: { smart: 'absent' as const },
+      error: 'the menu has no smart permission shortcut',
+    },
+    {
+      label: 'an absent shortcut that the spec states offered',
+      actual: {},
+      expected: { bypass: 'offered' as const },
+      error: 'the menu offers the bypass permission shortcut',
+    },
+    {
+      label: 'an enabled shortcut that the spec states disabled',
+      actual: { bypass: 'offered' as const },
+      expected: { bypass: 'disabled' as const },
+      error: 'the bypass permission shortcut is disabled',
+    },
+    {
+      label: 'a disabled shortcut that the spec states offered',
+      actual: { smart: 'disabled' as const },
+      expected: { smart: 'offered' as const },
+      error: 'the smart permission shortcut is enabled',
+    },
   ])('fails for $label', async ({ actual, expected, error }) => {
     await expect(expectPermissionShortcuts(menuWith(actual).page, expected)).rejects.toThrow(error)
   })
@@ -1057,10 +1349,12 @@ describe('expectPermissionShortcuts', () => {
  */
 function visibleTestIdPage(visible: (testId: string) => PlaywrightLocator): Page {
   return opaqueHandle<Page>({
-    getByTestId: (testId: string | RegExp) => opaqueHandle<PlaywrightLocator>({ filter: (options?: Parameters<PlaywrightLocator['filter']>[0]) => {
-      expect(options).toEqual({ visible: true })
-      return visible(String(testId))
-    } }),
+    getByTestId: (testId: string | RegExp) => opaqueHandle<PlaywrightLocator>({
+      filter: (options?: Parameters<PlaywrightLocator['filter']>[0]) => {
+        expect(options).toEqual({ visible: true })
+        return visible(String(testId))
+      },
+    }),
   })
 }
 
@@ -1076,7 +1370,13 @@ describe('controlBanner', () => {
 })
 
 describe('controlButton', () => {
-  it.each(['allow', 'deny', 'submit', 'stop', 'yolo'] as const)('selects every visible %s button', (action) => {
+  it.each([
+    'allow',
+    'deny',
+    'submit',
+    'stop',
+    'yolo',
+  ] as const)('selects every visible %s button', (action) => {
     const button = opaqueHandle<PlaywrightLocator>({})
     const page = visibleTestIdPage((testId) => {
       expect(testId).toBe(`control-${action}-btn`)
@@ -1138,10 +1438,14 @@ describe('waitForControlBanner', () => {
 describe('expectNoControlBanner', () => {
   // The fake banner has no `filter`, so a scoped read fails the test.
   function bannerPage(present: boolean, log: string[]): Page {
-    return opaqueHandle<Page>({ getByTestId: (testId: string | RegExp) => {
-      expect(testId).toBe('control-banner')
-      return assertingLocator('banner', log, (_expression, options) => present ? options.expectedNumber !== 0 : options.expectedNumber === 0)
-    } })
+    return opaqueHandle<Page>({
+      getByTestId: (testId: string | RegExp) => {
+        expect(testId).toBe('control-banner')
+        return assertingLocator('banner', log, (_expression, options) => present
+          ? options.expectedNumber !== 0
+          : options.expectedNumber === 0)
+      },
+    })
   }
 
   it('reads the count of every banner, hidden ones included', async () => {
@@ -1208,9 +1512,11 @@ describe('enterControlFeedback', () => {
         expect(selector).toBe('[data-testid="composer-editor"]:visible .ProseMirror')
         return editor
       },
-      keyboard: opaqueHandle<Page['keyboard']>({ type: async (text: string) => {
-        log.push(`type:${text}`)
-      } }),
+      keyboard: opaqueHandle<Page['keyboard']>({
+        type: async (text: string) => {
+          log.push(`type:${text}`)
+        },
+      }),
     })
     await enterControlFeedback(page, 'Keep the spec read-only.')
     expect(log).toEqual(['editor:to.be.visible', 'editor:text-click', 'type:Keep the spec read-only.'])
@@ -1254,14 +1560,18 @@ function fakeTree(answer: (expression: string, path: string) => boolean = () => 
   const { page } = fakeLocatorTree({
     log,
     answer,
-    attribute: (name, path) => answer(`attribute ${name}`, path) ? 'workspace-item-ws-active' : 'not-a-workspace-row',
+    attribute: (name, path) => answer(`attribute ${name}`, path)
+      ? 'workspace-item-ws-active'
+      : 'not-a-workspace-row',
     page: {
       goto: async (url: string) => {
         log.push(`goto ${url}`)
       },
-      context: () => ({ addCookies: async (cookies: Array<{ name: string, value: string }>) => {
-        log.push(`cookies ${cookies.map(cookie => `${cookie.name}=${cookie.value}`).join(', ')}`)
-      } }),
+      context: () => ({
+        addCookies: async (cookies: Array<{ name: string, value: string }>) => {
+          log.push(`cookies ${cookies.map(cookie => `${cookie.name}=${cookie.value}`).join(', ')}`)
+        },
+      }),
     },
   })
   return { log, root: page }
@@ -1284,10 +1594,12 @@ describe('expandSidebarSection', () => {
       evaluate: async () => !closed.value,
       locator: (selector: string) => {
         expect(selector).toBe('> [role="button"]')
-        return { click: async () => {
-          log.push('click header')
-          closed.value = false
-        } }
+        return {
+          click: async () => {
+            log.push('click header')
+            closed.value = false
+          },
+        }
       },
     }) as unknown as PlaywrightLocator
   }
@@ -1310,10 +1622,12 @@ describe('expandSidebarSection', () => {
     const closed = { value: true }
     const stuck = section(closed, log)
     const original = stuck.locator.bind(stuck)
-    stuck.locator = ((selector: string) => ({ click: async () => {
-      original(selector)
-      log.push('click header without effect')
-    } })) as PlaywrightLocator['locator']
+    stuck.locator = ((selector: string) => ({
+      click: async () => {
+        original(selector)
+        log.push('click header without effect')
+      },
+    })) as PlaywrightLocator['locator']
     await expect(expandSidebarSection(stuck)).rejects.toThrow('the sidebar section is open')
   })
 })
@@ -1374,8 +1688,12 @@ function workspaceRowPage(state: { expanded: boolean, active: boolean, chevronWo
   // `toHaveAttribute(name, value)` sends the attribute name as `expressionArg` and the expected value as the first
   // entry of `expectedText`.
   const row: PlaywrightLocator = fakeLocator((check) => {
-    log.push(`${check.expression} ${typeof check.expressionArg === 'string' ? check.expressionArg : ''}`.trim())
-    const received = String(check.expressionArg === 'data-expanded' ? state.expanded : state.active)
+    log.push(`${check.expression} ${typeof check.expressionArg === 'string'
+      ? check.expressionArg
+      : ''}`.trim())
+    const received = String(check.expressionArg === 'data-expanded'
+      ? state.expanded
+      : state.active)
     return { matches: received === check.expectedText?.[0]?.string, received }
   }, {
     first: () => row,
@@ -1392,18 +1710,22 @@ function workspaceRowPage(state: { expanded: boolean, active: boolean, chevronWo
     },
     locator: (selector: string) => {
       expect(selector).toBe('[data-testid="workspace-chevron-ws-1"]')
-      return { click: async () => {
-        log.push('click chevron')
-        if (state.chevronWorks ?? true)
-          state.expanded = !state.expanded
-      } }
+      return {
+        click: async () => {
+          log.push('click chevron')
+          if (state.chevronWorks ?? true)
+            state.expanded = !state.expanded
+        },
+      }
     },
     getByTestId: (testId: string) => {
       expect(testId).toBe('workspace-title')
-      return { click: async () => {
-        log.push('click title')
-        state.active = true
-      } }
+      return {
+        click: async () => {
+          log.push('click title')
+          state.active = true
+        },
+      }
     },
     click: async () => {
       throw new Error('A click on the whole row can land on its pinned three-dot trigger.')
@@ -1419,11 +1741,17 @@ function workspaceRowPage(state: { expanded: boolean, active: boolean, chevronWo
         return row
       // The tab strip that `waitForWorkspaceReady` reads.
       expect(selector).toBe('[data-testid="tab"]')
-      return { first: () => ({ isVisible: async () => true }) }
+      return {
+        first: () => ({
+          isVisible: async () => true,
+        }),
+      }
     }) as Page['locator'],
     getByRole: ((role: string, options?: { name?: string }) => {
       expect([role, options?.name]).toEqual(['button', 'Toggle workspaces'])
-      return { isVisible: async () => false }
+      return {
+        isVisible: async () => false,
+      }
     }) as Page['getByRole'],
   })
 }
@@ -1431,7 +1759,9 @@ function workspaceRowPage(state: { expanded: boolean, active: boolean, chevronWo
 describe('COMPOSER_EDITOR_SELECTOR', () => {
   it('names the editable node of the composer that composerEditor locates, without the visibility scope', () => {
     const selectors: string[] = []
-    composerEditor({ locator: (selector: string) => selectors.push(selector) } as unknown as Page)
+    composerEditor({
+      locator: (selector: string) => selectors.push(selector),
+    } as unknown as Page)
     expect(selectors).toHaveLength(1)
     expect(COMPOSER_EDITOR_SELECTOR).toBe('[data-testid="composer-editor"] .ProseMirror')
     expect(selectors[0]?.replace(':visible', '')).toBe(COMPOSER_EDITOR_SELECTOR)
@@ -1501,14 +1831,25 @@ describe('openWorkspace', () => {
     const log: string[] = []
     const state = { expanded: false, active: false }
     await openWorkspace(workspaceRowPage(state, log), 'ws-1')
-    expect(log).toEqual(['goto /', 'wait for row', 'read data-active', 'click title', 'to.have.attribute.value data-active'])
+    expect(log).toEqual([
+      'goto /',
+      'wait for row',
+      'read data-active',
+      'click title',
+      'to.have.attribute.value data-active',
+    ])
     expect(state.active).toBe(true)
   })
 
   it('clicks nothing for a workspace that the load already made active', async () => {
     const log: string[] = []
     await openWorkspace(workspaceRowPage({ expanded: false, active: true }, log), 'ws-1')
-    expect(log).toEqual(['goto /', 'wait for row', 'read data-active', 'to.have.attribute.value data-active'])
+    expect(log).toEqual([
+      'goto /',
+      'wait for row',
+      'read data-active',
+      'to.have.attribute.value data-active',
+    ])
   })
 })
 
@@ -1604,17 +1945,28 @@ describe('openTerminalViaUI', () => {
     return opaqueHandle<Page>({
       locator: (selector: string) => {
         if (selector === '[data-working-dir]:not([data-working-dir=""])') {
-          return opaqueHandle<PlaywrightLocator>({ first: () => opaqueHandle<PlaywrightLocator>({ waitFor: async () => {
-            log.push('directory known')
-          } }) })
+          return opaqueHandle<PlaywrightLocator>({
+            first: () => opaqueHandle<PlaywrightLocator>({
+              waitFor: async () => {
+                log.push('directory known')
+              },
+            }),
+          })
         }
-        if (selector === '[data-testid="tab"][data-tab-type="terminal"]')
-          return opaqueHandle<PlaywrightLocator>({ evaluateAll: (async () => clicked ? idsAfterClick : ['t-1']) as unknown as PlaywrightLocator['evaluateAll'] })
+        if (selector === '[data-testid="tab"][data-tab-type="terminal"]') {
+          return opaqueHandle<PlaywrightLocator>({
+            evaluateAll: (async () => clicked
+              ? idsAfterClick
+              : ['t-1']) as unknown as PlaywrightLocator['evaluateAll'],
+          })
+        }
         if (selector === '[data-testid="new-terminal-button"]') {
-          return opaqueHandle<PlaywrightLocator>({ click: async () => {
-            log.push('click')
-            clicked = true
-          } })
+          return opaqueHandle<PlaywrightLocator>({
+            click: async () => {
+              log.push('click')
+              clicked = true
+            },
+          })
         }
         if (selector.endsWith('[data-testid="terminal-startup-overlay"]'))
           return assertingLocator('startup', log, () => startupFinished)
@@ -1627,7 +1979,13 @@ describe('openTerminalViaUI', () => {
   it('clicks once the directory is known, and waits for the xterm of the terminal that the click added', async () => {
     const log: string[] = []
     await expect(openTerminalViaUI(terminalPage(log, ['t-1', 't-2']))).resolves.toBe('t-2')
-    expect(log).toEqual(['directory known', 'click', 'xterm of [data-terminal-id="t-2"] .xterm', 'xterm:to.be.visible', 'startup:to.have.count=0'])
+    expect(log).toEqual([
+      'directory known',
+      'click',
+      'xterm of [data-terminal-id="t-2"] .xterm',
+      'xterm:to.be.visible',
+      'startup:to.have.count=0',
+    ])
   })
 
   it('finds the new terminal by ID, wherever the tab bar places it', async () => {
@@ -1701,9 +2059,13 @@ describe('expectDialogStaysOpen', () => {
   function dialog(state: { visible: boolean, closing: boolean, opacity?: string, animations?: object[] }, checks: string[] = []) {
     vi.stubGlobal('CSSTransition', FakeCssTransition)
     vi.stubGlobal('getComputedStyle', () => ({ opacity: state.opacity ?? '1' }))
-    const element = { getAnimations: () => state.animations ?? [] }
+    const element = {
+      getAnimations: () => state.animations ?? [],
+    }
     return fakeLocator((check) => {
-      checks.push(`${check.expression} ${typeof check.expressionArg === 'string' ? check.expressionArg : ''}`.trim())
+      checks.push(`${check.expression} ${typeof check.expressionArg === 'string'
+        ? check.expressionArg
+        : ''}`.trim())
       if (check.expression === 'to.be.visible')
         return state.visible
       if (check.expression === 'to.have.attribute' && check.expressionArg === 'data-closing')
@@ -1720,7 +2082,14 @@ describe('expectDialogStaysOpen', () => {
 
   // Gate12 caught this state: Escape cleared the search while the dialog still faded in after it opened.
   it('accepts an open dialog while its opening fade-in still runs', async () => {
-    const opening = dialog({ visible: true, closing: false, opacity: '0.969432', animations: [new FakeCssTransition('opacity')] })
+    const opening = dialog({
+      visible: true,
+      closing: false,
+      opacity: '0.969432',
+      animations: [
+        new FakeCssTransition('opacity'),
+      ],
+    })
     await expect(expectDialogStaysOpen(opening, 'the dialog stays')).resolves.toBeUndefined()
   })
 
@@ -1771,18 +2140,26 @@ describe('openAgentInfoCard', () => {
   it.each([false, true])('keeps the card open across repeated calls when initially open=%s', async (initiallyOpen) => {
     let open = initiallyOpen
     let clicks = 0
-    const trigger = fakeLocator(() => true, { click: async () => {
-      open = !open
-      clicks++
-    } })
-    const popover = fakeLocator(check => check.expression === 'to.be.visible' ? open : true, { isVisible: async () => open })
-    const page = { locator: (selector: string) => {
-      if (selector === '[data-testid="agent-info-trigger"]')
-        return trigger
-      if (selector === '[data-testid="agent-info-popover"]')
-        return popover
-      throw new Error(`Unexpected agent info selector: ${selector}`)
-    } } as unknown as Page
+    const trigger = fakeLocator(() => true, {
+      click: async () => {
+        open = !open
+        clicks++
+      },
+    })
+    const popover = fakeLocator(check => check.expression === 'to.be.visible'
+      ? open
+      : true, {
+      isVisible: async () => open,
+    })
+    const page = {
+      locator: (selector: string) => {
+        if (selector === '[data-testid="agent-info-trigger"]')
+          return trigger
+        if (selector === '[data-testid="agent-info-popover"]')
+          return popover
+        throw new Error(`Unexpected agent info selector: ${selector}`)
+      },
+    } as unknown as Page
     expect(await openAgentInfoCard(page)).toBe(popover)
     expect(await openAgentInfoCard(page)).toBe(popover)
     expect(open).toBe(true)

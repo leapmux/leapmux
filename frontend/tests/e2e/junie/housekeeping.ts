@@ -18,8 +18,18 @@ const CAPABILITY_FILTER = 'capability filter agent'
  * {@link junieCapabilityAnswer}.
  */
 export const JUNIE_HOUSEKEEPING_RULES: readonly MockModelRule[] = [
-  { name: 'junie-capability-filter', priority: 'high', when: { system: CAPABILITY_FILTER }, respond: { text: '' } },
-  { name: 'junie-task-name', priority: 'high', when: { system: 'task description summarizer' }, respond: { text: MOCK_SESSION_TITLE } },
+  {
+    name: 'junie-capability-filter',
+    priority: 'high',
+    when: { system: CAPABILITY_FILTER },
+    respond: { text: '' },
+  },
+  {
+    name: 'junie-task-name',
+    priority: 'high',
+    when: { system: 'task description summarizer' },
+    respond: { text: MOCK_SESSION_TITLE },
+  },
   {
     name: 'junie-task-summary',
     priority: 'high',
@@ -36,5 +46,10 @@ export const JUNIE_HOUSEKEEPING_RULES: readonly MockModelRule[] = [
  * `name` must differ from every other rule of the script.
  */
 export function junieCapabilityAnswer(name: string, selection: string): MockModelRule {
-  return { name, priority: 'high', when: { system: CAPABILITY_FILTER }, respond: { text: selection } }
+  return {
+    name,
+    priority: 'high',
+    when: { system: CAPABILITY_FILTER },
+    respond: { text: selection },
+  }
 }

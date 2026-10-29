@@ -17,7 +17,12 @@ grokTest.describe('Grok Build control requests', () => {
     const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsOptionChosen(page, 'approvalMode-ask')
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     await exerciseAllowThenFeedbackRejection(context, { workingDir })
   })
 
@@ -27,7 +32,12 @@ grokTest.describe('Grok Build control requests', () => {
     const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsOptionChosen(page, 'approvalMode-ask')
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     const file = join(workingDir, 'grok-always.txt')
     // Each run appends the marker, so the file states how many runs happened. The redirect makes `ask` mode ask.
     const command = `printf grok-always >> ${file}`

@@ -33,7 +33,11 @@ export function resolveNativeProcessOwnership(rows: readonly ProcessRow[], toolP
       const rootPid = owned.at(-1)
       if (rootPid === undefined)
         throw new Error('The held native tool PID identifies the shared Worker.')
-      return { workerPid: pid, rootPid, ownedPids: withDescendants(rows, [rootPid]) }
+      return {
+        workerPid: pid,
+        rootPid,
+        ownedPids: withDescendants(rows, [rootPid]),
+      }
     }
     owned.push(pid)
     pid = row.ppid
@@ -43,7 +47,9 @@ export function resolveNativeProcessOwnership(rows: readonly ProcessRow[], toolP
 
 /** Windows compares an executable path without case. */
 function normalizeExecutable(value: string): string {
-  return process.platform === 'win32' ? value.toLowerCase() : value
+  return process.platform === 'win32'
+    ? value.toLowerCase()
+    : value
 }
 
 /** Whether two executable paths name the same file, as the host compares paths. */
@@ -167,7 +173,9 @@ export function workerDataDirectory(command: string): string {
     }
     // Keep the exact whitespace of the path between its words.
     const joined = command.slice(first.start, last.end)
-    values.push(inline === undefined ? joined : joined.slice(flag.length + 1))
+    values.push(inline === undefined
+      ? joined
+      : joined.slice(flag.length + 1))
   }
   if (values.length !== 1)
     throw new Error(`The Worker command line must hold one data-directory argument, not ${values.length}: ${command}`)

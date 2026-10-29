@@ -123,7 +123,9 @@ export function makeShiftingVirtualizer(shift: number, opts: { reanchorWhenShift
     ...virtualizerNoOps(),
     totalHeight: () => {
       version()
-      return shifted ? 8000 + shift : 8000
+      return shifted
+        ? 8000 + shift
+        : 8000
     },
     geometryVersion: version,
     updateViewport: () => {
@@ -139,7 +141,9 @@ export function makeShiftingVirtualizer(shift: number, opts: { reanchorWhenShift
       : { id: 'anchored-row', offsetWithinRow: scrollTop - SHIFT_ANCHOR_OFFSET }),
     scrollTopNearAnchor: () => null,
     scrollTopForAnchor: a => (a.id === 'anchored-row'
-      ? (shifted ? SHIFT_ANCHOR_OFFSET + shift : SHIFT_ANCHOR_OFFSET) + a.offsetWithinRow
+      ? (shifted
+          ? SHIFT_ANCHOR_OFFSET + shift
+          : SHIFT_ANCHOR_OFFSET) + a.offsetWithinRow
       : a.offsetWithinRow),
   }
   return {
@@ -190,7 +194,9 @@ export function makeRowVirtualizer(initialHeights: number[]) {
     if (!m)
       return -1
     const idx = Number(m[1])
-    return idx >= 0 && idx < heights().length ? idx : -1
+    return idx >= 0 && idx < heights().length
+      ? idx
+      : -1
   }
   // Delegate the anchor math to the REAL pure functions over this geometry, so these
   // tests exercise the production capture/resolve (including the zero-height-run
@@ -200,7 +206,10 @@ export function makeRowVirtualizer(initialHeights: number[]) {
     const offs = cumOffsets()
     return {
       // Persisted message sequences start at one.
-      list: hs.map((_, i) => ({ id: `g${gen()}_${i}`, seq: BigInt(i + 1) })),
+      list: hs.map((_, i) => ({
+        id: `g${gen()}_${i}`,
+        seq: BigInt(i + 1),
+      })),
       // Largest index whose top offset <= y (the row containing y), clamped to [0, n-1].
       indexAtOffset: (y) => {
         let idx = 0
@@ -241,7 +250,12 @@ export function makeRowVirtualizer(initialHeights: number[]) {
     setHeights(newHeights)
     setGeometryVersion(v => v + 1)
   }
-  return { virt, setRowHeight, replaceWindow, total }
+  return {
+    virt,
+    setRowHeight,
+    replaceWindow,
+    total,
+  }
 }
 
 export interface FakeScrollDiv {
@@ -295,7 +309,9 @@ export function makeFakeScrollDiv(): FakeScrollDiv {
   // vertical delta, like a real browser -- so a call-form refactor in production
   // can't silently turn every page jump into a no-op that trips the at-edge branch.
   el.scrollBy = ((opts?: ScrollToOptions | number, y?: number) => {
-    const top = typeof opts === 'number' ? (y ?? 0) : (opts?.top ?? 0)
+    const top = typeof opts === 'number'
+      ? (y ?? 0)
+      : (opts?.top ?? 0)
     scrollTop = clamp(scrollTop + top)
   }) as typeof el.scrollBy
   return {

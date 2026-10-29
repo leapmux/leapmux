@@ -9,7 +9,9 @@ import { ampCatalogDiagnosticAttachment } from './nativeCatalogDiagnostic'
 
 ampTest('offers no native to-do tool and keeps an authoritative empty sidebar after real tool execution', async ({ native }, testInfo) => {
   const { page } = native
-  const catalog = await readAmpExecutorCatalog(native, { onOwnershipDiagnostic: ampCatalogDiagnosticAttachment(testInfo) })
+  const catalog = await readAmpExecutorCatalog(native, {
+    onOwnershipDiagnostic: ampCatalogDiagnosticAttachment(testInfo),
+  })
   expect(catalog.tools).toContain('shell_command')
   expect(catalog.tools.filter(name => /todo|update_plan|plan_update/i.test(name))).toEqual([])
   await exerciseShellToolExecution(native, { includeFailure: false })

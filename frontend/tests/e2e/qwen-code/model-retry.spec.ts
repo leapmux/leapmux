@@ -14,7 +14,9 @@ qwenTest.describe('Qwen Code model retries', () => {
   qwenTest('folds rounds of failures into one resolved retry row', async ({ native }) => {
     const { page, modelScript } = native
     const start = await modelScript.queue(
-      ...Array.from({ length: QWEN_ATTEMPTS_PER_REQUEST }, () => ({ error: { status: 503, message: 'probe stub: service unavailable' } })),
+      ...Array.from({ length: QWEN_ATTEMPTS_PER_REQUEST }, () => ({
+        error: { status: 503, message: 'probe stub: service unavailable' },
+      })),
       { text: 'CEDAR_RETRY_ANSWER' },
     )
     await sendMessage(page, modelScript.prompt('Run the retry rounds probe.'))

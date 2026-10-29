@@ -40,7 +40,9 @@ export function MarkdownFileView(props: {
       return
     ignoreScroll = true
     const max = source.scrollHeight - source.clientHeight
-    const ratio = max > 0 ? source.scrollTop / max : 0
+    const ratio = max > 0
+      ? source.scrollTop / max
+      : 0
     target.scrollTop = ratio * (target.scrollHeight - target.clientHeight)
     requestAnimationFrame(() => {
       ignoreScroll = false
@@ -84,7 +86,9 @@ export function MarkdownFileView(props: {
           content={props.content}
           filePath={props.filePath}
           totalSize={props.totalSize}
-          {...(props.onQuote !== undefined ? { onQuote: props.onQuote } : {})}
+          {...(props.onQuote !== undefined
+            ? { onQuote: props.onQuote }
+            : {})}
         />
       </Show>
     </div>

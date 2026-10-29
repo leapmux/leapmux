@@ -10,7 +10,11 @@ codewhaleTest.describe('Codewhale to-do list', () => {
   codewhaleTest('shows the list that todo_write keeps, and keeps it after a reload', async ({ native }) => {
     const { page, modelScript } = native
     await modelScript.queue(
-      { toolCalls: [updateTodosToolCall(AgentProvider.CODEWHALE, 'todo-call', initialTodoList(TODO_LIST_STEPS))] },
+      {
+        toolCalls: [
+          updateTodosToolCall(AgentProvider.CODEWHALE, 'todo-call', initialTodoList(TODO_LIST_STEPS)),
+        ],
+      },
       { text: 'I wrote the plan.' },
     )
     await sendMessage(page, modelScript.prompt('Plan three steps to review this repository.'))

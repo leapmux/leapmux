@@ -13,6 +13,11 @@ export function writeMcpImageServer(workingDir: string, imageName: string): McpP
   return writeMcpNoArgumentToolServer(workingDir, {
     name: MCP_IMAGE_SERVER_NAME,
     fileBase: 'image-server',
-    tool: { name: 'show', description: 'Return a local PNG.', text: `MCP image ${imageName}`, pngFile: imageName },
+    tool: {
+      name: 'show',
+      description: 'Return a local PNG.',
+      text: `MCP image ${imageName}`,
+      pngFile: imageName,
+    },
   })
 }

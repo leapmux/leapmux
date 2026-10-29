@@ -23,8 +23,16 @@ kimiTest.describe('Kimi Code session goal', () => {
     await expectSettingsChip(page, 'Always Ask')
 
     const start = await modelScript.queue(
-      { toolCalls: [createGoalToolCall(KIMI, 'create-goal', 'Reply with KIMI_GOAL_DONE once.')] },
-      { toolCalls: [completeGoalToolCall(KIMI, 'complete-goal')] },
+      {
+        toolCalls: [
+          createGoalToolCall(KIMI, 'create-goal', 'Reply with KIMI_GOAL_DONE once.'),
+        ],
+      },
+      {
+        toolCalls: [
+          completeGoalToolCall(KIMI, 'complete-goal'),
+        ],
+      },
       { text: 'KIMI_GOAL_DONE' },
     )
     await sendMessage(page, modelScript.prompt('Start a goal to reply with KIMI_GOAL_DONE once, then complete it.'))

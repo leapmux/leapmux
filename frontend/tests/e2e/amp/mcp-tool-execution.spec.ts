@@ -22,7 +22,12 @@ ampTest.describe('Amp MCP tool execution', () => {
     await withNativeConfigurationFile({ path: config, content, runDir: getGlobalState().tmpDir }, async () => {
       await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, AMP_AGENT, { workingDir, ...AMP_ALLOW_ALL })
       await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-      const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+      const context = await nativeContext({
+        page,
+        modelScript,
+        leapmuxServer,
+        workspaceId: authenticatedEmptyWorkspace.workspaceId,
+      })
       // The first turn starts Amp. Its MCP discovery must finish before a scripted tool call.
       await sendNativeAnswer(context, 'Start the native session that loads the echo server.', 'The native echo session started.')
       await waitForMcpToolListed(receiptLog, 'echo')

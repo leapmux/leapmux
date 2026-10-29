@@ -27,8 +27,13 @@ export function parseColor(value: string): Rgb | undefined {
     return [(n >> 16) & 0xFF, (n >> 8) & 0xFF, n & 0xFF]
   }
   const fn = /^rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)/i.exec(value.trim())
-  if (fn)
-    return [Number(fn[1]), Number(fn[2]), Number(fn[3])]
+  if (fn) {
+    return [
+      Number(fn[1]),
+      Number(fn[2]),
+      Number(fn[3]),
+    ]
+  }
   return undefined
 }
 
@@ -36,7 +41,9 @@ export function parseColor(value: string): Rgb | undefined {
 export function luminance([r, g, b]: Rgb): number {
   const channel = (v: number) => {
     const s = v / 255
-    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4
+    return s <= 0.03928
+      ? s / 12.92
+      : ((s + 0.055) / 1.055) ** 2.4
   }
   return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
 }
@@ -50,7 +57,10 @@ export function luminance([r, g, b]: Rgb): number {
  */
 export function mixOver(fg: string, pct: string, bg: string): string {
   const p = Number.parseFloat(pct) / 100
-  const [f, b] = [parseColor(fg), parseColor(bg)]
+  const [f, b] = [
+    parseColor(fg),
+    parseColor(bg),
+  ]
   if (!f || !b)
     throw new Error(`cannot mix ${fg} over ${bg}`)
   return `#${f.map((c, i) => Math.round(c * p + b[i]! * (1 - p)).toString(16).padStart(2, '0')).join('')}`
@@ -62,7 +72,10 @@ export function contrast(fg: string, bg: string): number {
   const b = parseColor(bg)
   if (!a || !b)
     throw new Error(`cannot measure contrast between ${fg} and ${bg}`)
-  const [aLuminance, bLuminance] = [luminance(a), luminance(b)]
+  const [aLuminance, bLuminance] = [
+    luminance(a),
+    luminance(b),
+  ]
   const hi = Math.max(aLuminance, bLuminance)
   const lo = Math.min(aLuminance, bLuminance)
   return (hi + 0.05) / (lo + 0.05)
@@ -83,7 +96,10 @@ export function contrast(fg: string, bg: string): number {
  * tell two fills apart.
  */
 export function colorDistance(a: string, b: string): number {
-  const [x, y] = [parseColor(a), parseColor(b)]
+  const [x, y] = [
+    parseColor(a),
+    parseColor(b),
+  ]
   if (!x || !y)
     throw new Error(`cannot measure the distance between ${a} and ${b}`)
   return Math.hypot(x[0] - y[0], x[1] - y[1], x[2] - y[2])
@@ -93,15 +109,27 @@ export function colorDistance(a: string, b: string): number {
 function toLab([r, g, b]: Rgb): [number, number, number] {
   const linear = (v: number) => {
     const s = v / 255
-    return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4
+    return s <= 0.04045
+      ? s / 12.92
+      : ((s + 0.055) / 1.055) ** 2.4
   }
-  const [lr, lg, lb] = [linear(r), linear(g), linear(b)]
+  const [lr, lg, lb] = [
+    linear(r),
+    linear(g),
+    linear(b),
+  ]
   // sRGB to XYZ, then normalised by the D65 white point.
   const x = (lr * 0.4124 + lg * 0.3576 + lb * 0.1805) / 0.95047
   const y = lr * 0.2126 + lg * 0.7152 + lb * 0.0722
   const z = (lr * 0.0193 + lg * 0.1192 + lb * 0.9505) / 1.08883
-  const f = (c: number) => c > 0.008856 ? Math.cbrt(c) : 7.787 * c + 16 / 116
-  const [fx, fy, fz] = [f(x), f(y), f(z)]
+  const f = (c: number) => c > 0.008856
+    ? Math.cbrt(c)
+    : 7.787 * c + 16 / 116
+  const [fx, fy, fz] = [
+    f(x),
+    f(y),
+    f(z),
+  ]
   return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)]
 }
 
@@ -119,7 +147,10 @@ function toLab([r, g, b]: Rgb): [number, number, number] {
  * almost nothing here.
  */
 export function deltaE(a: string, b: string): number {
-  const [x, y] = [parseColor(a), parseColor(b)]
+  const [x, y] = [
+    parseColor(a),
+    parseColor(b),
+  ]
   if (!x || !y)
     throw new Error(`cannot measure the difference between ${a} and ${b}`)
   const [la, aa, ba] = toLab(x)
@@ -137,7 +168,9 @@ export function deltaE(a: string, b: string): number {
  * A colour this cannot read is a test that has stopped testing.
  */
 export function colorAlpha(color: string): number {
-  const toNumber = (raw: string) => raw.endsWith('%') ? Number.parseFloat(raw) / 100 : Number(raw)
+  const toNumber = (raw: string) => raw.endsWith('%')
+    ? Number.parseFloat(raw) / 100
+    : Number(raw)
   // `color(srgb r g b / a)` and `rgb(r g b / a)` -- the modern slash form.
   const slash = /\/\s*([\d.]+%?)\s*\)$/.exec(color)
   if (slash)

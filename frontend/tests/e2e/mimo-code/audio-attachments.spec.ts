@@ -26,16 +26,32 @@ async function withAudioCatalog(server: NativeContextFixtures['leapmuxServer'], 
 
 mimoTest('delivers WAV and FLAC bytes with and without prompts and retains all attachments after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   await withAudioCatalog(leapmuxServer, async () => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    await openNativeAgent(context, { directoryPrefix: 'mimo-audio-', overrides: { model: MIMO_AUDIO_MODEL_ID } })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
+    await openNativeAgent(context, {
+      directoryPrefix: 'mimo-audio-',
+      overrides: { model: MIMO_AUDIO_MODEL_ID },
+    })
     await proveNativeAudioAttachments(context, 'openai-chat-completions')
   })
 })
 
 mimoTest('retains unsupported audio input and retries the same recording after a native model switch', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   await withAudioCatalog(leapmuxServer, async () => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    await openNativeAgent(context, { directoryPrefix: 'mimo-audio-refusal-', overrides: { model: TEXT_MODEL_ID } })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
+    await openNativeAgent(context, {
+      directoryPrefix: 'mimo-audio-refusal-',
+      overrides: { model: TEXT_MODEL_ID },
+    })
     await proveNativeAudioModelRetry(context, MIMO_AUDIO_MODEL_ID, MOCK_MODELS.zai)
   })
 })

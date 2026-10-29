@@ -109,7 +109,13 @@ describe('installGlobalErrorSink', () => {
     const report = vi.fn()
     const t = install(report)
 
-    t.fire('error', { message: 'Script error.', filename: '', lineno: 0, colno: 0, error: null })
+    t.fire('error', {
+      message: 'Script error.',
+      filename: '',
+      lineno: 0,
+      colno: 0,
+      error: null,
+    })
 
     expect(report).not.toHaveBeenCalled()
   })
@@ -121,7 +127,12 @@ describe('installGlobalErrorSink', () => {
     const t = install(report)
     const error = new Error('Script error.')
 
-    t.fire('error', { message: 'Script error.', filename: 'app.js', lineno: 12, error })
+    t.fire('error', {
+      message: 'Script error.',
+      filename: 'app.js',
+      lineno: 12,
+      error,
+    })
 
     expect(report).toHaveBeenCalledTimes(1)
     expect(report.mock.calls[0]?.[1]).toBe(error)
@@ -131,8 +142,11 @@ describe('installGlobalErrorSink', () => {
     const report = vi.fn()
     const t = install(report)
 
-    for (let i = 0; i < 5; i++)
-      t.fire('error', { error: new Error('same every time') })
+    for (let i = 0; i < 5; i++) {
+      t.fire('error', {
+        error: new Error('same every time'),
+      })
+    }
 
     expect(report).toHaveBeenCalledTimes(1)
   })
@@ -141,9 +155,15 @@ describe('installGlobalErrorSink', () => {
     const report = vi.fn()
     const t = install(report)
 
-    t.fire('error', { error: new Error('first') })
-    t.fire('error', { error: new Error('first') })
-    t.fire('error', { error: new Error('second') })
+    t.fire('error', {
+      error: new Error('first'),
+    })
+    t.fire('error', {
+      error: new Error('first'),
+    })
+    t.fire('error', {
+      error: new Error('second'),
+    })
 
     expect(report).toHaveBeenCalledTimes(2)
     expect(report.mock.calls[1]?.[1]).toHaveProperty('message', 'second')
@@ -157,11 +177,16 @@ describe('installGlobalErrorSink', () => {
 
     // Well past the cap, then re-fire the very first message: it must have been
     // evicted, so it reports again rather than being treated as a duplicate.
-    for (let i = 0; i < 100; i++)
-      t.fire('error', { error: new Error(`unique ${i}`) })
+    for (let i = 0; i < 100; i++) {
+      t.fire('error', {
+        error: new Error(`unique ${i}`),
+      })
+    }
     report.mockClear()
 
-    t.fire('error', { error: new Error('unique 0') })
+    t.fire('error', {
+      error: new Error('unique 0'),
+    })
 
     expect(report).toHaveBeenCalledTimes(1)
   })
@@ -171,7 +196,9 @@ describe('installGlobalErrorSink', () => {
     const t = install(report)
     disposers.pop()!()
 
-    t.fire('error', { error: new Error('after disposal') })
+    t.fire('error', {
+      error: new Error('after disposal'),
+    })
 
     expect(report).not.toHaveBeenCalled()
     expect(t.listenerCount('error')).toBe(0)
@@ -179,7 +206,9 @@ describe('installGlobalErrorSink', () => {
   })
 
   it('is a no-op outside a DOM', () => {
-    expect(() => installGlobalErrorSink({ report: vi.fn() })()).not.toThrow()
+    expect(() => installGlobalErrorSink({
+      report: vi.fn(),
+    })()).not.toThrow()
   })
 
   // In dev the suppressor is registered first and in the capture phase, so it

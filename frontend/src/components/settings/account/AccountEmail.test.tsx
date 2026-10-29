@@ -66,7 +66,9 @@ describe('AccountEmail', () => {
 
   it('requests the change and reports what the hub did', async () => {
     renderRouted()
-    fireEvent.input(await screen.findByLabelText('New Email'), { target: { value: 'new@example.com' } })
+    fireEvent.input(await screen.findByLabelText('New Email'), {
+      target: { value: 'new@example.com' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Change Email' }))
 
     await vi.waitFor(() => {
@@ -83,7 +85,9 @@ describe('AccountEmail', () => {
     mockRefreshUser.mockReturnValue(promise)
 
     renderRouted()
-    fireEvent.input(await screen.findByLabelText('New Email'), { target: { value: 'new@example.com' } })
+    fireEvent.input(await screen.findByLabelText('New Email'), {
+      target: { value: 'new@example.com' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Change Email' }))
 
     await vi.waitFor(() => {
@@ -100,7 +104,9 @@ describe('AccountEmail', () => {
   it('says that the hub sent the code when it verifies first', async () => {
     mockRequestEmailChange.mockResolvedValue({ verificationRequired: true })
     renderRouted()
-    fireEvent.input(await screen.findByLabelText('New Email'), { target: { value: 'new@example.com' } })
+    fireEvent.input(await screen.findByLabelText('New Email'), {
+      target: { value: 'new@example.com' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Change Email' }))
 
     expect(await screen.findByText(/Check your inbox/)).toBeInTheDocument()
@@ -110,7 +116,9 @@ describe('AccountEmail', () => {
   // hub answers with "email is unchanged"; saying so here saves it.
   it('refuses the address the account already holds', async () => {
     renderRouted()
-    fireEvent.input(await screen.findByLabelText('New Email'), { target: { value: 'ALICE@example.com' } })
+    fireEvent.input(await screen.findByLabelText('New Email'), {
+      target: { value: 'ALICE@example.com' },
+    })
 
     expect(await screen.findByText('This is already your current email.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Change Email' })).toBeDisabled()
@@ -119,7 +127,9 @@ describe('AccountEmail', () => {
   it('reports a refusal instead of clearing the field', async () => {
     mockRequestEmailChange.mockRejectedValue(new Error('email is already in use'))
     renderRouted()
-    fireEvent.input(await screen.findByLabelText('New Email'), { target: { value: 'taken@example.com' } })
+    fireEvent.input(await screen.findByLabelText('New Email'), {
+      target: { value: 'taken@example.com' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Change Email' }))
 
     expect(await screen.findByText(/already in use/)).toBeInTheDocument()
@@ -168,7 +178,9 @@ describe('AccountEmail draft', () => {
 
   it('restores the address the user typed before the round trip', async () => {
     renderRouted()
-    fireEvent.input(await screen.findByLabelText('New Email'), { target: { value: 'new@example.com' } })
+    fireEvent.input(await screen.findByLabelText('New Email'), {
+      target: { value: 'new@example.com' },
+    })
     // A full-document navigation: everything in memory goes, the store stays.
     cleanup()
 
@@ -178,7 +190,9 @@ describe('AccountEmail draft', () => {
 
   it('keeps nothing once the change is sent', async () => {
     renderRouted()
-    fireEvent.input(await screen.findByLabelText('New Email'), { target: { value: 'new@example.com' } })
+    fireEvent.input(await screen.findByLabelText('New Email'), {
+      target: { value: 'new@example.com' },
+    })
     fireEvent.click(screen.getByRole('button', { name: /change email/i }))
     await screen.findByText('Email updated.')
     cleanup()
@@ -190,8 +204,12 @@ describe('AccountEmail draft', () => {
   it('keeps nothing once the user clears the field', async () => {
     renderRouted()
     const field = await screen.findByLabelText('New Email')
-    fireEvent.input(field, { target: { value: 'new@example.com' } })
-    fireEvent.input(field, { target: { value: '' } })
+    fireEvent.input(field, {
+      target: { value: 'new@example.com' },
+    })
+    fireEvent.input(field, {
+      target: { value: '' },
+    })
     cleanup()
 
     renderRouted()
@@ -203,7 +221,9 @@ describe('AccountEmail draft', () => {
   // is actually reached from here.
   it('does not offer one account the address another typed', async () => {
     renderRouted()
-    fireEvent.input(await screen.findByLabelText('New Email'), { target: { value: 'new@example.com' } })
+    fireEvent.input(await screen.findByLabelText('New Email'), {
+      target: { value: 'new@example.com' },
+    })
     cleanup()
 
     setStorageAccountForTests('user-2')

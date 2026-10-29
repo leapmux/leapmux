@@ -199,11 +199,28 @@ describe('isPlaywrightSpec', () => {
 describe('isAllowedE2ESpecPath', () => {
   const providers = new Set(['claude-code', 'codex'])
 
-  it.each(['001-auth.spec.ts', 'codex/basic-chat.spec.ts', 'claude-code/basic-chat.spec.ts', 'codex\\basic-chat.spec.ts'])('accepts %s', (path) => {
+  it.each([
+    '001-auth.spec.ts',
+    'codex/basic-chat.spec.ts',
+    'claude-code/basic-chat.spec.ts',
+    'codex\\basic-chat.spec.ts',
+  ])('accepts %s', (path) => {
     expect(isAllowedE2ESpecPath(path, providers)).toBe(true)
   })
 
-  it.each(['', '/001-auth.spec.ts', './001-auth.spec.ts', '../001-auth.spec.ts', 'helpers/toolImages.spec.ts', 'unknown/basic-chat.spec.ts', 'codex/nested/basic-chat.spec.ts', 'codex//basic-chat.spec.ts', 'codex/../basic-chat.spec.ts', 'codex/basic-chat.test.ts', 'codex/basic-chat.spec.tsx'])('rejects %s', (path) => {
+  it.each([
+    '',
+    '/001-auth.spec.ts',
+    './001-auth.spec.ts',
+    '../001-auth.spec.ts',
+    'helpers/toolImages.spec.ts',
+    'unknown/basic-chat.spec.ts',
+    'codex/nested/basic-chat.spec.ts',
+    'codex//basic-chat.spec.ts',
+    'codex/../basic-chat.spec.ts',
+    'codex/basic-chat.test.ts',
+    'codex/basic-chat.spec.tsx',
+  ])('rejects %s', (path) => {
     expect(isAllowedE2ESpecPath(path, providers)).toBe(false)
   })
 
@@ -223,7 +240,12 @@ describe('providerSpecDependencies', () => {
       import type { Example } from './codex/scenarios.ts'
       const test = import('./codex-fixtures')
       const other = require('./claude-fixtures.ts')
-    `, providers, fixtures)).toEqual(['./claude-code/scenarios', './codex/scenarios.ts', './codex-fixtures', './claude-fixtures.ts'])
+    `, providers, fixtures)).toEqual([
+      './claude-code/scenarios',
+      './codex/scenarios.ts',
+      './codex-fixtures',
+      './claude-fixtures.ts',
+    ])
   })
 
   it('accepts shared fixtures and helpers and ignores comments and ordinary strings', () => {

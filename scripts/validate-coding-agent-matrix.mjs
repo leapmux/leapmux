@@ -83,7 +83,19 @@ const SUPPORT_STATE_IDS = ['supported', 'agent-limit', 'leapmux-limit']
  * The directories of the repository that a user note never names. A path starts with one of
  * them. `internal` is the Go convention for a package that only the repository imports.
  */
-const REPOSITORY_ROOTS = ['frontend', 'backend', 'contracts', 'scripts', 'site', 'internal', 'desktop', 'proto', 'docker', 'testdata', 'icons']
+const REPOSITORY_ROOTS = [
+  'frontend',
+  'backend',
+  'contracts',
+  'scripts',
+  'site',
+  'internal',
+  'desktop',
+  'proto',
+  'docker',
+  'testdata',
+  'icons',
+]
 /** A repository directory, then a slash, then more path. A quotation mark or a bracket may come before it. */
 const PATH_TOKEN = new RegExp(`(?<![\\w./@-])(?:${REPOSITORY_ROOTS.join('|')})(?:/[\\w.@-]*)+`, 'g')
 /**
@@ -121,12 +133,16 @@ function validateSupportStates(states, errors) {
 
 /** The trimmed text of a note, or the empty string for a value that is not a string. */
 function trimmedNote(note) {
-  return typeof note === 'string' ? note.trim() : ''
+  return typeof note === 'string'
+    ? note.trim()
+    : ''
 }
 
 /** Report a detail note that is not a string. The website never shows it, but the checks below read it. */
 function detailNoteErrors(note, owner) {
-  return typeof note === 'string' ? [] : [`detail note of ${owner} is not a string`]
+  return typeof note === 'string'
+    ? []
+    : [`detail note of ${owner} is not a string`]
 }
 
 /**
@@ -261,7 +277,10 @@ export function validateCodingAgentMatrix(features, checklist, providerContract,
       const key = `${providerId}/${featureId}`
       if (cell.verified !== true)
         errors.push(`cell ${key} is not verified`)
-      validateCellNotes(cell, key, { published: publishedIds.has(featureId), hidden: hiddenIds.has(featureId) }, errors)
+      validateCellNotes(cell, key, {
+        published: publishedIds.has(featureId),
+        hidden: hiddenIds.has(featureId),
+      }, errors)
       if (cell.testStatus === 'passed' && !cell.spec)
         errors.push(`passed cell ${key} has no spec path`)
       if (cell.spec && !existsSync(join(root, cell.spec)))

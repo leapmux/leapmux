@@ -97,7 +97,9 @@ describe('filter tab bar (FilterTabBar)', () => {
     ))
     expect(getByTestId('task-filter-shell')).toBeDefined()
 
-    setTabList([{ key: 'all', label: 'All' }])
+    setTabList([
+      { key: 'all', label: 'All' },
+    ])
     expect(queryByTestId('task-filter-shell')).toBeNull()
 
     // The surviving tab still takes focus, which a stale entry would steal.

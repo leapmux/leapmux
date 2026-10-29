@@ -37,7 +37,13 @@ const SPECIAL_KEY_MAP: Record<string, string> = {
 
 const LETTER_KEY_RE = /^[a-z]$/i
 const DIGIT_KEY_RE = /^\d$/
-const MODIFIER_ORDER = ['CmdOrCtrl', 'Super', 'Ctrl', 'Alt', 'Shift']
+const MODIFIER_ORDER = [
+  'CmdOrCtrl',
+  'Super',
+  'Ctrl',
+  'Alt',
+  'Shift',
+]
 
 function keyCodeForTauri(key: string): string | undefined {
   if (FUNCTION_KEY_RE.test(key))
@@ -91,5 +97,7 @@ export function syncMacMenuAccelerator(menuItemId: string, commandId: string, bi
   if (!isTauriApp() || getPlatform() !== 'mac')
     return
   const binding = getPrimaryBindingForCommand(bindings, commandId)
-  setMenuItemAccelerator(menuItemId, binding ? tinykeysToTauriAccelerator(binding) : undefined)
+  setMenuItemAccelerator(menuItemId, binding
+    ? tinykeysToTauriAccelerator(binding)
+    : undefined)
 }

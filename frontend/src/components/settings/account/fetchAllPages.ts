@@ -43,7 +43,9 @@ export async function fetchAllPages<T>(
       break
     cursor = next
   }
-  return [...byKey.values()]
+  return [
+    ...byKey.values(),
+  ]
 }
 
 /**

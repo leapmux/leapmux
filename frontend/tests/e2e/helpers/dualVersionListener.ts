@@ -65,7 +65,9 @@ export function createDualVersionListener(http1: HttpServer, http2: Http2Server)
     server,
     close: () => {
       closing ??= new Promise<void>((resolve, reject) => {
-        server.close(error => error ? reject(error) : resolve())
+        server.close(error => error
+          ? reject(error)
+          : resolve())
         for (const session of sessions)
           session.destroy()
         for (const socket of sockets)

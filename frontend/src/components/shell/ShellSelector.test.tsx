@@ -56,12 +56,18 @@ describe('ShellSelector menu', () => {
   })
 
   it('does not suffix any option when defaultShell is empty', () => {
-    renderShellSelector({ shells: ['/bin/zsh', '/bin/bash'], defaultShell: '' })
+    renderShellSelector({
+      shells: ['/bin/zsh', '/bin/bash'],
+      defaultShell: '',
+    })
     expect(menuOptions(MENU)).toEqual(['/bin/zsh', '/bin/bash'])
   })
 
   it('fires setShell with the picked value', () => {
-    const { setShell } = renderShellSelector({ shells: ['/bin/zsh', '/bin/bash'], shell: '/bin/zsh' })
+    const { setShell } = renderShellSelector({
+      shells: ['/bin/zsh', '/bin/bash'],
+      shell: '/bin/zsh',
+    })
     pickMenuValue(MENU, '/bin/bash')
     expect(setShell).toHaveBeenCalledWith('/bin/bash')
   })
@@ -70,7 +76,10 @@ describe('ShellSelector menu', () => {
     // What replaced `select.value`. A menu carries its selection in
     // `aria-checked`, derived from the prop on every render -- which is why
     // there is no DOM state left to fall out of step with the caller.
-    renderShellSelector({ shells: ['/bin/zsh', '/bin/bash'], shell: '/bin/bash' })
+    renderShellSelector({
+      shells: ['/bin/zsh', '/bin/bash'],
+      shell: '/bin/bash',
+    })
     expect(menuTriggerText(MENU)).toContain('/bin/bash')
   })
 })
@@ -80,12 +89,16 @@ describe('ShellSelector menu', () => {
 // different typography from "Worker" beside it.
 describe('ShellSelector label row', () => {
   it('labels the field and offers a refresh button', () => {
-    renderShellSelector({ shells: ['/bin/zsh'] })
+    renderShellSelector({
+      shells: ['/bin/zsh'],
+    })
     expect(screen.getByTestId(REFRESH)).toBeInTheDocument()
   })
 
   it('calls refresh when the button is clicked', () => {
-    const { refresh } = renderShellSelector({ shells: ['/bin/zsh'] })
+    const { refresh } = renderShellSelector({
+      shells: ['/bin/zsh'],
+    })
     screen.getByTestId(REFRESH).click()
     expect(refresh).toHaveBeenCalledOnce()
   })
@@ -98,7 +111,10 @@ describe('ShellSelector label row', () => {
   })
 
   it('enables the refresh button once loading finishes', () => {
-    renderShellSelector({ loading: false, shells: ['/bin/zsh'] })
+    renderShellSelector({
+      loading: false,
+      shells: ['/bin/zsh'],
+    })
     expect(screen.getByTestId(REFRESH)).not.toBeDisabled()
   })
 

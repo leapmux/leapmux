@@ -53,8 +53,11 @@ export function hydrateScheduleDraft(key: string): Promise<void> {
   const version = {}
   versions.set(key, version)
   const request = localStorageLoad<unknown>(`${PREFIX_COMPOSER_SCHEDULE_DRAFT}${key}`).then((value) => {
-    if (accountEpoch() === epoch && versions.get(key) === version)
-      setScheduleDrafts(key, typeof value === 'string' ? value : undefined)
+    if (accountEpoch() === epoch && versions.get(key) === version) {
+      setScheduleDrafts(key, typeof value === 'string'
+        ? value
+        : undefined)
+    }
   }).finally(() => {
     if (loading.get(key) === request)
       loading.delete(key)
@@ -68,13 +71,19 @@ export function prepareScheduleDraft(key: string): Promise<void> {
   const pending = loading.get(key)
   if (pending)
     return pending
-  return versions.has(key) ? Promise.resolve() : hydrateScheduleDraft(key)
+  return versions.has(key)
+    ? Promise.resolve()
+    : hydrateScheduleDraft(key)
 }
 
 /** The metadata saved with the text of this exact document key. */
 export function scheduleDraftMetadataRecords(key: string): readonly DraftMetadataRecord[] {
   const value = getScheduleDraft(key)
-  return value === undefined ? [] : [{ name: `${PREFIX_COMPOSER_SCHEDULE_DRAFT}${key}`, value }]
+  return value === undefined
+    ? []
+    : [
+        { name: `${PREFIX_COMPOSER_SCHEDULE_DRAFT}${key}`, value },
+      ]
 }
 
 /** Record and persist the schedule draft of one composer key. */
@@ -95,7 +104,11 @@ export function clearScheduleDraft(key: string): void {
 /** Remove every draft of a retired agent, including edits not hydrated yet. */
 export function forgetAgentScheduleDrafts(agentId: string): Promise<void> {
   const queuePrefix = queueEditDraftKeyPrefix(agentId)
-  const keys = new Set([...Object.keys(scheduleDrafts), ...versions.keys(), ...loading.keys()])
+  const keys = new Set([
+    ...Object.keys(scheduleDrafts),
+    ...versions.keys(),
+    ...loading.keys(),
+  ])
   keys.add(agentId)
   batch(() => {
     for (const key of keys) {

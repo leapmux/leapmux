@@ -41,43 +41,79 @@ export function createDeepseekHarnessEnvironment(options: DeepseekHarnessEnviron
   mkdirSync(home, { recursive: true })
   const rows: unknown[] = [
     { id: 'session-title-llm', disabled: true },
-    { id: 'llm-deepseek', config: {
-      baseURL: endpoint.href.replace(/\/$/, ''),
-      apiKeyEnv: 'DEEPSEEK_API_KEY',
-      maxTokens: 4096,
-      models: [
-        { id: 'deepseek-flash', name: 'Mock Flash', contextWindow: DEEPSEEK_HARNESS_CONTEXT_WINDOW, inputModalities: ['text', 'image'] },
-        { id: 'deepseek-v4-pro', name: 'Mock Pro', contextWindow: DEEPSEEK_HARNESS_CONTEXT_WINDOW, inputModalities: ['text', 'image'] },
-      ],
-    } },
-    { id: 'agent-default-model', config: { provider: DEEPSEEK_HARNESS_PROVIDER_ID, model: 'deepseek-flash', reasoningEffort: 'high' } },
+    {
+      id: 'llm-deepseek',
+      config: {
+        baseURL: endpoint.href.replace(/\/$/, ''),
+        apiKeyEnv: 'DEEPSEEK_API_KEY',
+        maxTokens: 4096,
+        models: [
+          {
+            id: 'deepseek-flash',
+            name: 'Mock Flash',
+            contextWindow: DEEPSEEK_HARNESS_CONTEXT_WINDOW,
+            inputModalities: ['text', 'image'],
+          },
+          {
+            id: 'deepseek-v4-pro',
+            name: 'Mock Pro',
+            contextWindow: DEEPSEEK_HARNESS_CONTEXT_WINDOW,
+            inputModalities: ['text', 'image'],
+          },
+        ],
+      },
+    },
+    {
+      id: 'agent-default-model',
+      config: { provider: DEEPSEEK_HARNESS_PROVIDER_ID, model: 'deepseek-flash', reasoningEffort: 'high' },
+    },
     // The `web` profile mounts the pi-ai plugin under this ID with no route. A second mount of the plugin does not
     // compose, so the row configures the mount that the profile holds.
-    { id: 'llm-pi-ai', config: { providers: {
-      [DEEPSEEK_HARNESS_PLAIN_PROVIDER_ID]: {
-        displayName: 'LeapMux E2E Plain',
-        apiKeyEnv: 'DEEPSEEK_API_KEY',
-        api: 'openai-completions',
-        baseURL: `${endpoint.href.replace(/\/$/, '')}/v1`,
-        models: [{ id: DEEPSEEK_HARNESS_PLAIN_MODEL_WIRE_ID, name: 'Mock Plain', contextWindow: DEEPSEEK_HARNESS_CONTEXT_WINDOW, reasoningEfforts: false }],
+    {
+      id: 'llm-pi-ai',
+      config: {
+        providers: {
+          [DEEPSEEK_HARNESS_PLAIN_PROVIDER_ID]: {
+            displayName: 'LeapMux E2E Plain',
+            apiKeyEnv: 'DEEPSEEK_API_KEY',
+            api: 'openai-completions',
+            baseURL: `${endpoint.href.replace(/\/$/, '')}/v1`,
+            models: [
+              {
+                id: DEEPSEEK_HARNESS_PLAIN_MODEL_WIRE_ID,
+                name: 'Mock Plain',
+                contextWindow: DEEPSEEK_HARNESS_CONTEXT_WINDOW,
+                reasoningEfforts: false,
+              },
+            ],
+          },
+        },
       },
-    } } },
+    },
   ]
   // The native registry reads its default preset from this row. An absent selection keeps the shipped default.
-  if (options.agentPreset !== undefined)
-    rows.push({ id: 'agent-preset-registry', config: { default: options.agentPreset } })
+  if (options.agentPreset !== undefined) {
+    rows.push({
+      id: 'agent-preset-registry',
+      config: { default: options.agentPreset },
+    })
+  }
   const mcpServers = validatedMcpServers(options.mcpServers, 'DeepSeek Harness', 32)
   if (mcpServers.length > 0) {
     const servers = mcpServers.map((server) => {
-      return { id: `leapmux-mcp-${server.name}`, name: '@deepseek-ai/dsh-mcp-client', config: {
-        transport: 'stdio',
-        serverName: server.name,
-        command: server.command,
-        args: [...server.args],
-        cwd: options.runDirectory,
-        env: {},
-        failOnStartupError: true,
-      } }
+      return {
+        id: `leapmux-mcp-${server.name}`,
+        name: '@deepseek-ai/dsh-mcp-client',
+        config: {
+          transport: 'stdio',
+          serverName: server.name,
+          command: server.command,
+          args: [...server.args],
+          cwd: options.runDirectory,
+          env: {},
+          failOnStartupError: true,
+        },
+      }
     })
     rows.push({ insert: servers })
   }

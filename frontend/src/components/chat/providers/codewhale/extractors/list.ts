@@ -27,21 +27,37 @@ export function codewhaleListResult(text: string): ListResult | null {
     const summary = pickString(document, 'summary').trim()
     return {
       entries: stringArray(document.key_files).filter(Boolean).map(path => ({ path })),
-      ...(summary ? { notice: summary } : {}),
+      ...(summary
+        ? { notice: summary }
+        : {}),
     }
   }
-  const capped = isObject(document) && Array.isArray(document.entries) ? document : null
+  const capped = isObject(document) && Array.isArray(document.entries)
+    ? document
+    : null
   const raw = capped ? capped.entries : document
   if (!Array.isArray(raw))
     return null
   const entries = raw.filter(isObject).flatMap((entry) => {
     const name = pickString(entry, 'name')
-    return name ? [{ path: entry.is_dir === true ? `${name}/` : name }] : []
+    return name
+      ? [
+          {
+            path: entry.is_dir === true
+              ? `${name}/`
+              : name,
+          },
+        ]
+      : []
   })
   const total = pickNumber(capped, 'total_entries')
   return {
     entries,
-    ...(total !== null ? { totalEntries: total } : {}),
-    ...(pickBool(capped, 'truncated') ? { truncated: true } : {}),
+    ...(total !== null
+      ? { totalEntries: total }
+      : {}),
+    ...(pickBool(capped, 'truncated')
+      ? { truncated: true }
+      : {}),
   }
 }

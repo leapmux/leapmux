@@ -38,7 +38,13 @@ describe('rehypeBlockRemoteImages', () => {
   })
 
   it('blocks http, protocol-relative, relative and root-relative srcs (all are fetches)', () => {
-    for (const src of ['http://evil.example/x.png', '//evil.example/x.png', './x.png', '/x.png', 'x.png']) {
+    for (const src of [
+      'http://evil.example/x.png',
+      '//evil.example/x.png',
+      './x.png',
+      '/x.png',
+      'x.png',
+    ]) {
       const html = render(`![shot](${src})`)
       expect(html, src).not.toContain('<img')
       expect(html, src).toContain(BLOCKED_IMAGE_CHIP_TEXT)

@@ -53,8 +53,14 @@ async function fixture(options: StartupObservationFixtureOptions = {}, fixtureDi
   wrappers.push(wrapper)
   const start = (args: string[], input?: string, runtime: { environment?: NodeJS.ProcessEnv, workingDir?: string } = {}) => {
     const child = spawn(process.execPath, [wrapper.scriptPath, ...args], {
-      env: { ...process.env, NATIVE_WRAPPER_UNIT_MARKER: 'isolated-environment', ...runtime.environment },
-      ...(runtime.workingDir === undefined ? {} : { cwd: runtime.workingDir }),
+      env: {
+        ...process.env,
+        NATIVE_WRAPPER_UNIT_MARKER: 'isolated-environment',
+        ...runtime.environment,
+      },
+      ...(runtime.workingDir === undefined
+        ? {}
+        : { cwd: runtime.workingDir }),
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     children.push(child)
@@ -108,7 +114,10 @@ function firstHandshakeFragment() {
     }
     return emit.call(this, event, ...args)
   })
-  return { received, restore: () => connection.mockRestore() }
+  return {
+    received,
+    restore: () => connection.mockRestore(),
+  }
 }
 
 function reportServerCloseFailure(failure: Error) {
@@ -138,9 +147,21 @@ describe('resolveNativeStartupLaunch', () => {
   it('finds the isolated executable and retains native arguments without running it', () => {
     const executable = join(directory, 'private-native')
     writeFileSync(executable, 'This fixture must never run.\n', { mode: 0o755 })
-    const launch = { binaryName: 'private-native', args: ['native-prefix'], holdWhen: ['runtime', '--rpc'], passThroughWhen: ['--probe'], lazy: true }
+    const launch = {
+      binaryName: 'private-native',
+      args: ['native-prefix'],
+      holdWhen: ['runtime', '--rpc'],
+      passThroughWhen: ['--probe'],
+      lazy: true,
+    }
     expect(resolveNativeStartupLaunch({ PATH: directory }, launch)).toEqual({ ...launch, executable })
-    expect(launch).toEqual({ binaryName: 'private-native', args: ['native-prefix'], holdWhen: ['runtime', '--rpc'], passThroughWhen: ['--probe'], lazy: true })
+    expect(launch).toEqual({
+      binaryName: 'private-native',
+      args: ['native-prefix'],
+      holdWhen: ['runtime', '--rpc'],
+      passThroughWhen: ['--probe'],
+      lazy: true,
+    })
   })
 
   // The Worker starts with `hubSpawnEnv(agentEnv)`, and an agent environment with no PATH inherits the process PATH.
@@ -154,7 +175,9 @@ describe('resolveNativeStartupLaunch', () => {
     nativeExecutable(join(directory, 'process'), 'shared-native')
     const agentExecutable = nativeExecutable(join(directory, 'agent'), 'shared-native')
     vi.stubEnv('PATH', join(directory, 'process'))
-    expect(resolveNativeStartupLaunch({ PATH: join(directory, 'agent') }, { binaryName: 'shared-native' }).executable).toBe(agentExecutable)
+    expect(resolveNativeStartupLaunch({
+      PATH: join(directory, 'agent'),
+    }, { binaryName: 'shared-native' }).executable).toBe(agentExecutable)
   })
 
   it('rejects an absent agent environment', () => {
@@ -190,7 +213,14 @@ describe('resolveNativeStartupLaunch', () => {
       .toThrow('it must be the first name that the Worker probes, not undefined.')
   })
 
-  it.each(['', '.', '..', 'bin/native', 'bin\\native', 'native\0'])('rejects the executable name %j, which is not one file-name component', (binaryName) => {
+  it.each([
+    '',
+    '.',
+    '..',
+    'bin/native',
+    'bin\\native',
+    'native\0',
+  ])('rejects the executable name %j, which is not one file-name component', (binaryName) => {
     expect(() => resolveNativeStartupLaunch({ PATH: directory }, { binaryName })).toThrow('one file-name component')
   })
 })
@@ -202,7 +232,12 @@ describe('createNativeStartupWrapper', () => {
     const cleanupFailure = new Error('The listener cleanup reported a failure.')
     const close = reportServerCloseFailure(cleanupFailure)
     try {
-      await expect(createNativeStartupWrapper(wrapperDirectory, { binaryName: 'native-fixture', executable: process.execPath })).rejects.toMatchObject({ errors: [expect.objectContaining({ code: 'EISDIR' }), cleanupFailure] })
+      await expect(createNativeStartupWrapper(wrapperDirectory, { binaryName: 'native-fixture', executable: process.execPath })).rejects.toMatchObject({
+        errors: [
+          expect.objectContaining({ code: 'EISDIR' }),
+          cleanupFailure,
+        ],
+      })
     }
     finally {
       close.mockRestore()
@@ -214,7 +249,12 @@ describe('createNativeStartupWrapper', () => {
     const close = reportServerCloseFailure(cleanupFailure)
     const address = vi.spyOn(Server.prototype, 'address').mockReturnValue(null)
     try {
-      await expect(createNativeStartupWrapper(join(directory, 'address-refusal'), { binaryName: 'native-fixture', executable: process.execPath })).rejects.toMatchObject({ errors: [expect.objectContaining({ message: 'The startup wrapper received no TCP listener address.' }), cleanupFailure] })
+      await expect(createNativeStartupWrapper(join(directory, 'address-refusal'), { binaryName: 'native-fixture', executable: process.execPath })).rejects.toMatchObject({
+        errors: [
+          expect.objectContaining({ message: 'The startup wrapper received no TCP listener address.' }),
+          cleanupFailure,
+        ],
+      })
     }
     finally {
       address.mockRestore()
@@ -231,10 +271,17 @@ describe('createNativeStartupWrapper', () => {
     mkdirSync(temporary)
     observationProgram(program, outputFile, selected)
     const environment = { TMPDIR: temporary, TMP: temporary, TEMP: temporary }
-    const child = start(['runtime'], undefined, { workingDir, environment: { ...environment, PRIVATE_CREDENTIAL_NOT_SELECTED: 'controlled-credential-marker' } })
+    const child = start(['runtime'], undefined, {
+      workingDir,
+      environment: { ...environment, PRIVATE_CREDENTIAL_NOT_SELECTED: 'controlled-credential-marker' },
+    })
     const exited = once(child, 'exit')
     const entry = await wrapper.entry
-    expect(entry).toEqual({ pid: child.pid, argv: ['runtime'], observation: { workingDir, environment } })
+    expect(entry).toEqual({
+      pid: child.pid,
+      argv: ['runtime'],
+      observation: { workingDir, environment },
+    })
     expect(JSON.stringify(entry)).not.toContain('controlled-credential-marker')
     expect(JSON.stringify(entry)).not.toContain('PRIVATE_CREDENTIAL_NOT_SELECTED')
     expect(existsSync(outputFile)).toBe(false)
@@ -247,7 +294,14 @@ describe('createNativeStartupWrapper', () => {
     const { wrapper, start } = await fixture({ failRuntime: false, observeEnvironment: [] })
     const child = start(['runtime'])
     const exited = once(child, 'exit')
-    expect(await wrapper.entry).toEqual({ pid: child.pid, argv: ['runtime'], observation: { workingDir: process.cwd(), environment: {} } })
+    expect(await wrapper.entry).toEqual({
+      pid: child.pid,
+      argv: ['runtime'],
+      observation: {
+        workingDir: process.cwd(),
+        environment: {},
+      },
+    })
     await wrapper.release()
     expect(await exited).toEqual([0, null])
   })
@@ -256,10 +310,19 @@ describe('createNativeStartupWrapper', () => {
     const keys = ['PRIVATE_ABSENT_VALUE', 'PRIVATE_EMPTY_VALUE', 'PRIVATE_UNICODE_VALUE']
     const { wrapper, program, outputFile, start } = await fixture({ failRuntime: false, observeEnvironment: keys })
     observationProgram(program, outputFile, keys)
-    const child = start(['runtime'], undefined, { environment: { PRIVATE_ABSENT_VALUE: undefined, PRIVATE_EMPTY_VALUE: '', PRIVATE_UNICODE_VALUE: '한글π🙂\n' } })
+    const child = start(['runtime'], undefined, {
+      environment: { PRIVATE_ABSENT_VALUE: undefined, PRIVATE_EMPTY_VALUE: '', PRIVATE_UNICODE_VALUE: '한글π🙂\n' },
+    })
     const exited = once(child, 'exit')
-    const expected = { workingDir: process.cwd(), environment: { PRIVATE_ABSENT_VALUE: null, PRIVATE_EMPTY_VALUE: '', PRIVATE_UNICODE_VALUE: '한글π🙂\n' } }
-    expect(await wrapper.entry).toEqual({ pid: child.pid, argv: ['runtime'], observation: expected })
+    const expected = {
+      workingDir: process.cwd(),
+      environment: { PRIVATE_ABSENT_VALUE: null, PRIVATE_EMPTY_VALUE: '', PRIVATE_UNICODE_VALUE: '한글π🙂\n' },
+    }
+    expect(await wrapper.entry).toEqual({
+      pid: child.pid,
+      argv: ['runtime'],
+      observation: expected,
+    })
     await wrapper.release()
     expect(await exited).toEqual([0, null])
     expect(JSON.parse(readFileSync(outputFile, 'utf8'))).toEqual(expected)
@@ -269,15 +332,27 @@ describe('createNativeStartupWrapper', () => {
     const keys = ['PRIVATE_FIRST_VALUE']
     const { wrapper, start } = await fixture({ failRuntime: false, observeEnvironment: keys })
     keys.push('PRIVATE_LATER_VALUE')
-    const child = start(['runtime'], undefined, { environment: { PRIVATE_FIRST_VALUE: 'first', PRIVATE_LATER_VALUE: 'later' } })
+    const child = start(['runtime'], undefined, {
+      environment: { PRIVATE_FIRST_VALUE: 'first', PRIVATE_LATER_VALUE: 'later' },
+    })
     const exited = once(child, 'exit')
-    expect(await wrapper.entry).toEqual({ pid: child.pid, argv: ['runtime'], observation: { workingDir: process.cwd(), environment: { PRIVATE_FIRST_VALUE: 'first' } } })
+    expect(await wrapper.entry).toEqual({
+      pid: child.pid,
+      argv: ['runtime'],
+      observation: {
+        workingDir: process.cwd(),
+        environment: { PRIVATE_FIRST_VALUE: 'first' },
+      },
+    })
     await wrapper.release()
     expect(await exited).toEqual([0, null])
   })
 
   it('uses the platform case rule for duplicate environment keys', async () => {
-    const options = { failRuntime: false, observeEnvironment: ['TMPDIR', 'tmpdir'] }
+    const options = {
+      failRuntime: false,
+      observeEnvironment: ['TMPDIR', 'tmpdir'],
+    }
     if (process.platform === 'win32') {
       await expect(fixture(options)).rejects.toThrow(/environment|observation/i)
       return
@@ -286,7 +361,14 @@ describe('createNativeStartupWrapper', () => {
     const environment = { TMPDIR: 'upper', tmpdir: 'lower' }
     const child = start(['runtime'], undefined, { environment })
     const exited = once(child, 'exit')
-    expect(await wrapper.entry).toEqual({ pid: child.pid, argv: ['runtime'], observation: { workingDir: process.cwd(), environment } })
+    expect(await wrapper.entry).toEqual({
+      pid: child.pid,
+      argv: ['runtime'],
+      observation: {
+        workingDir: process.cwd(),
+        environment,
+      },
+    })
     await wrapper.release()
     expect(await exited).toEqual([0, null])
   })
@@ -295,48 +377,158 @@ describe('createNativeStartupWrapper', () => {
     { label: 'null selection', observeEnvironment: null },
     { label: 'string selection', observeEnvironment: 'TMPDIR' },
     { label: 'numeric selection', observeEnvironment: 0 },
-    { label: 'empty key', observeEnvironment: [''] },
-    { label: 'assignment key', observeEnvironment: ['TMPDIR=value'] },
-    { label: 'NUL key', observeEnvironment: ['TMP\0DIR'] },
-    { label: 'space key', observeEnvironment: ['TMP DIR'] },
-    { label: 'newline key', observeEnvironment: ['TMP\nDIR'] },
-    { label: 'numeric key', observeEnvironment: [0] },
-    { label: 'duplicate key', observeEnvironment: ['TMPDIR', 'TMPDIR'] },
+    {
+      label: 'empty key',
+      observeEnvironment: [''],
+    },
+    {
+      label: 'assignment key',
+      observeEnvironment: ['TMPDIR=value'],
+    },
+    {
+      label: 'NUL key',
+      observeEnvironment: ['TMP\0DIR'],
+    },
+    {
+      label: 'space key',
+      observeEnvironment: ['TMP DIR'],
+    },
+    {
+      label: 'newline key',
+      observeEnvironment: ['TMP\nDIR'],
+    },
+    {
+      label: 'numeric key',
+      observeEnvironment: [0],
+    },
+    {
+      label: 'duplicate key',
+      observeEnvironment: ['TMPDIR', 'TMPDIR'],
+    },
   ])('rejects an invalid environment observation selection: $label', async (invalid) => {
-    await expect(Reflect.apply(fixture, undefined, [{ failRuntime: false, observeEnvironment: invalid.observeEnvironment }])).rejects.toThrow(/environment|observation/i)
+    await expect(Reflect.apply(fixture, undefined, [
+      { failRuntime: false, observeEnvironment: invalid.observeEnvironment },
+    ])).rejects.toThrow(/environment|observation/i)
   })
 
   it.each([
     { label: 'absent observation', observation: undefined },
     { label: 'null observation', observation: null },
     { label: 'array observation', observation: [] },
-    { label: 'absent cwd', observation: { environment: { TMPDIR: 'actual' } } },
-    { label: 'empty cwd', observation: { workingDir: '', environment: { TMPDIR: 'actual' } } },
-    { label: 'relative cwd', observation: { workingDir: 'relative/path', environment: { TMPDIR: 'actual' } } },
-    { label: 'NUL cwd', observation: { workingDir: `${process.cwd()}\0invalid`, environment: { TMPDIR: 'actual' } } },
-    { label: 'absent environment', observation: { workingDir: process.cwd() } },
-    { label: 'null environment', observation: { workingDir: process.cwd(), environment: null } },
-    { label: 'array environment', observation: { workingDir: process.cwd(), environment: [] } },
-    { label: 'missing selected key', observation: { workingDir: process.cwd(), environment: {} } },
-    { label: 'unselected key', observation: { workingDir: process.cwd(), environment: { TMPDIR: 'actual', PRIVATE_UNSELECTED_VALUE: 'unselected' } } },
-    { label: 'numeric value', observation: { workingDir: process.cwd(), environment: { TMPDIR: 0 } } },
-    { label: 'object value', observation: { workingDir: process.cwd(), environment: { TMPDIR: {} } } },
+    {
+      label: 'absent cwd',
+      observation: {
+        environment: { TMPDIR: 'actual' },
+      },
+    },
+    {
+      label: 'empty cwd',
+      observation: {
+        workingDir: '',
+        environment: { TMPDIR: 'actual' },
+      },
+    },
+    {
+      label: 'relative cwd',
+      observation: {
+        workingDir: 'relative/path',
+        environment: { TMPDIR: 'actual' },
+      },
+    },
+    {
+      label: 'NUL cwd',
+      observation: {
+        workingDir: `${process.cwd()}\0invalid`,
+        environment: { TMPDIR: 'actual' },
+      },
+    },
+    {
+      label: 'absent environment',
+      observation: {
+        workingDir: process.cwd(),
+      },
+    },
+    {
+      label: 'null environment',
+      observation: {
+        workingDir: process.cwd(),
+        environment: null,
+      },
+    },
+    {
+      label: 'array environment',
+      observation: {
+        workingDir: process.cwd(),
+        environment: [],
+      },
+    },
+    {
+      label: 'missing selected key',
+      observation: {
+        workingDir: process.cwd(),
+        environment: {},
+      },
+    },
+    {
+      label: 'unselected key',
+      observation: {
+        workingDir: process.cwd(),
+        environment: { TMPDIR: 'actual', PRIVATE_UNSELECTED_VALUE: 'unselected' },
+      },
+    },
+    {
+      label: 'numeric value',
+      observation: {
+        workingDir: process.cwd(),
+        environment: { TMPDIR: 0 },
+      },
+    },
+    {
+      label: 'object value',
+      observation: {
+        workingDir: process.cwd(),
+        environment: { TMPDIR: {} },
+      },
+    },
   ])('refuses a malformed requested observation before accepting the process: $label', async ({ observation }) => {
-    const { wrapper } = await fixture({ failRuntime: false, observeEnvironment: ['TMPDIR'] })
-    expect(await handshakeVerdict(wrapper, { nonce: wrapper.endpoint.nonce, pid: process.pid, argv: ['runtime'], observation }, 'The startup environment observation was refused.')).toBe('refused')
+    const { wrapper } = await fixture({
+      failRuntime: false,
+      observeEnvironment: ['TMPDIR'],
+    })
+    expect(await handshakeVerdict(wrapper, {
+      nonce: wrapper.endpoint.nonce,
+      pid: process.pid,
+      argv: ['runtime'],
+      observation,
+    }, 'The startup environment observation was refused.')).toBe('refused')
   })
 
   it('accepts the exact handshake byte limit with observed Unicode values', async () => {
-    const { wrapper } = await fixture({ failRuntime: false, observeEnvironment: ['PRIVATE_UNICODE_VALUE'] })
+    const { wrapper } = await fixture({
+      failRuntime: false,
+      observeEnvironment: ['PRIVATE_UNICODE_VALUE'],
+    })
     const socket = connect(wrapper.endpoint.port, '127.0.0.1')
     const closed = once(socket, 'close')
     try {
       await once(socket, 'connect')
-      const observation = { workingDir: process.cwd(), environment: { PRIVATE_UNICODE_VALUE: '한글🙂' } }
-      const frame = JSON.stringify({ nonce: wrapper.endpoint.nonce, pid: process.pid, argv: ['runtime'], observation })
+      const observation = {
+        workingDir: process.cwd(),
+        environment: { PRIVATE_UNICODE_VALUE: '한글🙂' },
+      }
+      const frame = JSON.stringify({
+        nonce: wrapper.endpoint.nonce,
+        pid: process.pid,
+        argv: ['runtime'],
+        observation,
+      })
       const padding = ' '.repeat(65_536 - Buffer.byteLength(frame) - 1)
       socket.write(`${frame}${padding}\n`)
-      expect(await wrapper.entry).toEqual({ pid: process.pid, argv: ['runtime'], observation })
+      expect(await wrapper.entry).toEqual({
+        pid: process.pid,
+        argv: ['runtime'],
+        observation,
+      })
     }
     finally {
       socket.destroy()
@@ -345,19 +537,34 @@ describe('createNativeStartupWrapper', () => {
   })
 
   it('preserves an observed value when the handshake splits its UTF-8 bytes', async () => {
-    const { wrapper } = await fixture({ failRuntime: false, observeEnvironment: ['PRIVATE_UNICODE_VALUE'] })
+    const { wrapper } = await fixture({
+      failRuntime: false,
+      observeEnvironment: ['PRIVATE_UNICODE_VALUE'],
+    })
     const first = firstHandshakeFragment()
     const socket = connect(wrapper.endpoint.port, '127.0.0.1')
     const closed = once(socket, 'close')
     try {
       await once(socket, 'connect')
-      const observation = { workingDir: process.cwd(), environment: { PRIVATE_UNICODE_VALUE: '한글🙂' } }
-      const frame = Buffer.from(`${JSON.stringify({ nonce: wrapper.endpoint.nonce, pid: process.pid, argv: ['runtime'], observation })}\n`)
+      const observation = {
+        workingDir: process.cwd(),
+        environment: { PRIVATE_UNICODE_VALUE: '한글🙂' },
+      }
+      const frame = Buffer.from(`${JSON.stringify({
+        nonce: wrapper.endpoint.nonce,
+        pid: process.pid,
+        argv: ['runtime'],
+        observation,
+      })}\n`)
       const split = frame.indexOf(Buffer.from('한')) + 1
       socket.write(frame.subarray(0, split))
       await first.received
       socket.write(frame.subarray(split))
-      expect(await wrapper.entry).toEqual({ pid: process.pid, argv: ['runtime'], observation })
+      expect(await wrapper.entry).toEqual({
+        pid: process.pid,
+        argv: ['runtime'],
+        observation,
+      })
     }
     finally {
       first.restore()
@@ -367,17 +574,40 @@ describe('createNativeStartupWrapper', () => {
   })
 
   it('refuses oversized observation bytes before accepting the process', async () => {
-    const { wrapper } = await fixture({ failRuntime: false, observeEnvironment: ['PRIVATE_UNICODE_VALUE'] })
-    const value = { nonce: wrapper.endpoint.nonce, pid: process.pid, argv: ['runtime'], observation: { workingDir: process.cwd(), environment: { PRIVATE_UNICODE_VALUE: '한'.repeat(22_000) } } }
+    const { wrapper } = await fixture({
+      failRuntime: false,
+      observeEnvironment: ['PRIVATE_UNICODE_VALUE'],
+    })
+    const value = {
+      nonce: wrapper.endpoint.nonce,
+      pid: process.pid,
+      argv: ['runtime'],
+      observation: {
+        workingDir: process.cwd(),
+        environment: {
+          PRIVATE_UNICODE_VALUE: '한'.repeat(22_000),
+        },
+      },
+    }
     expect(Buffer.byteLength(JSON.stringify(value))).toBeGreaterThan(65_536)
     expect(await handshakeVerdict(wrapper, value)).toBe('refused')
   })
 
   it('keeps a second observed wrapper live after the first wrapper closes', async () => {
-    const first = await fixture({ failRuntime: false, observeEnvironment: ['TMPDIR'] }, join(directory, 'first-wrapper'))
-    const second = await fixture({ failRuntime: false, observeEnvironment: ['TMPDIR'] }, join(directory, 'second-wrapper'))
-    const firstChild = first.start(['runtime'], undefined, { environment: { TMPDIR: 'first' } })
-    const secondChild = second.start(['runtime'], undefined, { environment: { TMPDIR: 'second' } })
+    const first = await fixture({
+      failRuntime: false,
+      observeEnvironment: ['TMPDIR'],
+    }, join(directory, 'first-wrapper'))
+    const second = await fixture({
+      failRuntime: false,
+      observeEnvironment: ['TMPDIR'],
+    }, join(directory, 'second-wrapper'))
+    const firstChild = first.start(['runtime'], undefined, {
+      environment: { TMPDIR: 'first' },
+    })
+    const secondChild = second.start(['runtime'], undefined, {
+      environment: { TMPDIR: 'second' },
+    })
     const firstExited = once(firstChild, 'exit')
     const secondExited = once(secondChild, 'exit')
     await Promise.all([first.wrapper.entry, second.wrapper.entry])
@@ -434,7 +664,14 @@ describe('createNativeStartupWrapper', () => {
     const closed = once(socket, 'close')
     try {
       await once(socket, 'connect')
-      const frame = JSON.stringify({ nonce: wrapper.endpoint.nonce, pid: process.pid, argv: ['runtime', '한'.repeat(22_000)] })
+      const frame = JSON.stringify({
+        nonce: wrapper.endpoint.nonce,
+        pid: process.pid,
+        argv: [
+          'runtime',
+          '한'.repeat(22_000),
+        ],
+      })
       expect(frame.length).toBeLessThan(65_536)
       expect(Buffer.byteLength(frame)).toBeGreaterThan(65_536)
       socket.end(`${frame}\n`)
@@ -451,7 +688,14 @@ describe('createNativeStartupWrapper', () => {
 
   it('holds the native process and forwards its exact arguments and environment after release', async () => {
     const { wrapper, outputFile, start } = await fixture()
-    const args = ['runtime', 'a space', 'a"quote', 'a\'quote', '$literal', '']
+    const args = [
+      'runtime',
+      'a space',
+      'a"quote',
+      'a\'quote',
+      '$literal',
+      '',
+    ]
     const child = start(args)
     const exited = once(child, 'exit')
     expect(await wrapper.entry).toEqual({ pid: child.pid, argv: args })
@@ -472,7 +716,17 @@ describe('createNativeStartupWrapper', () => {
     expect(readFileSync(outputFile, 'utf8')).toBe('queued native input\n')
   })
 
-  it.each([{ args: ['--version'] }, { args: ['runtime', '--help'] }, { args: ['catalog'] }])('executes a discovery call without a runtime hold: %j', async ({ args }) => {
+  it.each([
+    {
+      args: ['--version'],
+    },
+    {
+      args: ['runtime', '--help'],
+    },
+    {
+      args: ['catalog'],
+    },
+  ])('executes a discovery call without a runtime hold: %j', async ({ args }) => {
     const { outputFile, start } = await fixture()
     const child = start(args)
     expect(await once(child, 'exit')).toEqual([0, null])
@@ -490,7 +744,9 @@ describe('createNativeStartupWrapper', () => {
   })
 
   it('runs a pass-through launch at once and still holds the runtime launch after it', async () => {
-    const { wrapper, outputFile, start } = await fixture({}, directory, { passThroughWhen: ['--probe'] })
+    const { wrapper, outputFile, start } = await fixture({}, directory, {
+      passThroughWhen: ['--probe'],
+    })
     const probe = start(['runtime', '--probe'])
     expect(await once(probe, 'exit')).toEqual([0, null])
     expect(JSON.parse(readFileSync(outputFile, 'utf8')).argv).toEqual(['runtime', '--probe'])
@@ -498,7 +754,10 @@ describe('createNativeStartupWrapper', () => {
 
     const child = start(['runtime'])
     const exited = once(child, 'exit')
-    expect(await wrapper.entry).toEqual({ pid: child.pid, argv: ['runtime'] })
+    expect(await wrapper.entry).toEqual({
+      pid: child.pid,
+      argv: ['runtime'],
+    })
     expect(existsSync(outputFile)).toBe(false)
     await wrapper.release()
     expect(await exited).toEqual([0, null])
@@ -506,13 +765,19 @@ describe('createNativeStartupWrapper', () => {
   })
 
   it('preserves the real exit code of a pass-through launch', async () => {
-    const { start } = await fixture({}, directory, { passThroughWhen: ['--probe'] })
-    const probe = start(['runtime', '--probe'], undefined, { environment: { NATIVE_WRAPPER_UNIT_EXIT: '3' } })
+    const { start } = await fixture({}, directory, {
+      passThroughWhen: ['--probe'],
+    })
+    const probe = start(['runtime', '--probe'], undefined, {
+      environment: { NATIVE_WRAPPER_UNIT_EXIT: '3' },
+    })
     expect(await once(probe, 'exit')).toEqual([3, null])
   })
 
   it('runs a pass-through launch with the real executable when the runtime fails', async () => {
-    const { wrapper, outputFile, start } = await fixture({ failRuntime: true }, directory, { passThroughWhen: ['--probe'] })
+    const { wrapper, outputFile, start } = await fixture({ failRuntime: true }, directory, {
+      passThroughWhen: ['--probe'],
+    })
     const probe = start(['runtime', '--probe'])
     expect(await once(probe, 'exit')).toEqual([0, null])
     expect(JSON.parse(readFileSync(outputFile, 'utf8')).argv).toEqual(['runtime', '--probe'])
@@ -525,8 +790,14 @@ describe('createNativeStartupWrapper', () => {
   })
 
   it.each([
-    { label: 'an empty word', passThroughWhen: [''] },
-    { label: 'a word that is also a hold word', passThroughWhen: ['--probe', 'runtime'] },
+    {
+      label: 'an empty word',
+      passThroughWhen: [''],
+    },
+    {
+      label: 'a word that is also a hold word',
+      passThroughWhen: ['--probe', 'runtime'],
+    },
   ])('rejects a pass-through list with $label', async ({ passThroughWhen }) => {
     await expect(fixture({}, directory, { passThroughWhen })).rejects.toThrow('pass-through')
   })
@@ -554,7 +825,11 @@ describe('createNativeStartupWrapper', () => {
     socket.on('data', data => reply += String(data))
     const closed = once(socket, 'close')
     await once(socket, 'connect')
-    socket.end(`${JSON.stringify({ nonce: 'wrong-nonce', pid: process.pid, argv: ['runtime'] })}\n`)
+    socket.end(`${JSON.stringify({
+      nonce: 'wrong-nonce',
+      pid: process.pid,
+      argv: ['runtime'],
+    })}\n`)
     await closed
     expect(reply).toContain('The startup handshake was refused.')
     const child = start(['runtime'])
@@ -582,7 +857,13 @@ describe('createNativeStartupWrapper', () => {
     await wrapper.dispose()
   })
 
-  it.each(['', '.', '..', 'parent/file', 'parent\\file'])('rejects an invalid executable filename: %s', async (binaryName) => {
+  it.each([
+    '',
+    '.',
+    '..',
+    'parent/file',
+    'parent\\file',
+  ])('rejects an invalid executable filename: %s', async (binaryName) => {
     await expect(createNativeStartupWrapper(directory, { binaryName, executable: process.execPath })).rejects.toThrow('one executable filename')
   })
 })

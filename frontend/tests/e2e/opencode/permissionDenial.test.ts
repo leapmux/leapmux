@@ -10,7 +10,12 @@ const rejectedFrame = {
   toolCallId: 'denied-1',
   status: 'failed',
   kind: 'execute',
-  content: [{ type: 'content', content: { type: 'text', text: OPENCODE_PERMISSION_REJECTION } }],
+  content: [
+    {
+      type: 'content',
+      content: { type: 'text', text: OPENCODE_PERMISSION_REJECTION },
+    },
+  ],
   rawOutput: { error: OPENCODE_PERMISSION_REJECTION },
 }
 
@@ -39,12 +44,21 @@ describe('openCodeToolEnding', () => {
   })
 
   it('ignores a final frame of the same call ID in another native session', () => {
-    const foreign = row({ ...rejectedFrame, status: 'completed', rawOutput: { output: 'FOREIGN' } }, { agentSessionId: 'other-session' })
+    const foreign = row({
+      ...rejectedFrame,
+      status: 'completed',
+      rawOutput: { output: 'FOREIGN' },
+    }, { agentSessionId: 'other-session' })
     expect(openCodeToolEnding(snapshot(foreign, row(rejectedFrame)), 'denied-1').status).toBe('failed')
   })
 
   it('omits the error of a frame whose raw output has none', () => {
-    const completed = { ...rejectedFrame, status: 'completed', content: [], rawOutput: { output: '' } }
+    const completed = {
+      ...rejectedFrame,
+      status: 'completed',
+      content: [],
+      rawOutput: { output: '' },
+    }
     expect(openCodeToolEnding(snapshot(row(completed)), 'denied-1')).toEqual({ status: 'completed', text: [] })
   })
 

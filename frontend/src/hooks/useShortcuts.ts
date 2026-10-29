@@ -141,7 +141,14 @@ export function useShortcuts(props: UseShortcutsProps): void {
   const cleanups: (() => void)[] = []
 
   function cmd(id: string, title: string, handler: () => void | Promise<void>, category?: string) {
-    cleanups.push(registerCommand({ id, title, handler, ...(category !== undefined ? { category } : {}) }))
+    cleanups.push(registerCommand({
+      id,
+      title,
+      handler,
+      ...(category !== undefined
+        ? { category }
+        : {}),
+    }))
   }
 
   // Agent/terminal shortcuts require an active workspace. When none is active,
@@ -229,7 +236,9 @@ export function useShortcuts(props: UseShortcutsProps): void {
 
   function getVisibleTabs() {
     const focusedTile = layoutStore.focusedTileId()
-    return focusedTile ? view.forTile(focusedTile) : view.forWorkspace(getActiveWorkspaceId() ?? '')
+    return focusedTile
+      ? view.forTile(focusedTile)
+      : view.forWorkspace(getActiveWorkspaceId() ?? '')
   }
 
   for (let i = 1; i <= 9; i++) {
@@ -326,7 +335,9 @@ export function useShortcuts(props: UseShortcutsProps): void {
     if (!tab)
       return null
     const key = quakeKeyForTab(tab)
-    return key === undefined ? null : { tab, key }
+    return key === undefined
+      ? null
+      : { tab, key }
   }
 
   /**
@@ -398,11 +409,18 @@ export function useShortcuts(props: UseShortcutsProps): void {
       cancelAnimationFrame(dialogRafId)
       dialogRafId = requestAnimationFrame(updateDialogOpen)
     })
-    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['open'] })
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['open'],
+    })
   })
   createEffect(() => {
     const type = activeTabType()
-    setContext('activeTabType', type !== null ? (TAB_TYPE_LABELS[type] ?? '') : undefined)
+    setContext('activeTabType', type !== null
+      ? (TAB_TYPE_LABELS[type] ?? '')
+      : undefined)
   })
 
   createEffect(() => {

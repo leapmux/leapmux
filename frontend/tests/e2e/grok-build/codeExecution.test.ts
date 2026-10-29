@@ -25,31 +25,81 @@ function manifest(status: string, text: string) {
       run_id: launch.runId,
       name: launch.name,
       status,
-      ...(status === 'complete' ? { result_summary: text } : { pause_message: text }),
-      history: [{ event: status === 'complete' ? 'workflow_completed' : 'workflow_failed', detail: status === 'failed' ? text : null, at: 'native-time' }],
+      ...(status === 'complete'
+        ? { result_summary: text }
+        : { pause_message: text }),
+      history: [
+        {
+          event: status === 'complete'
+            ? 'workflow_completed'
+            : 'workflow_failed',
+          detail: status === 'failed'
+            ? text
+            : null,
+          at: 'native-time',
+        },
+      ],
     },
   }
 }
 function frames(value: unknown) {
-  return [{ sessionUpdate: 'tool_call_update', toolCallId: 'launch', status: 'completed', rawOutput: value }]
+  return [
+    {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'launch',
+      status: 'completed',
+      rawOutput: value,
+    },
+  ]
 }
 
 describe('grokWorkflowLaunch', () => {
   it('reads the real launch result with its task alias and full tool output', () => {
-    expect(grokWorkflowLaunch(frames({ type: 'Workflow', run_id: launch.runId, task_id: launch.runId, name: launch.name, script_path: launch.scriptPath }), 'launch')).toEqual(launch)
+    expect(grokWorkflowLaunch(frames({
+      type: 'Workflow',
+      run_id: launch.runId,
+      task_id: launch.runId,
+      name: launch.name,
+      script_path: launch.scriptPath,
+    }), 'launch')).toEqual(launch)
   })
   it.each([
     { value: null },
     { value: {} },
-    { value: { type: 'Workflow', run_id: 'wf-1', task_id: 'other', name: 'code', script_path: launch.scriptPath } },
-    { value: { type: 'Workflow', run_id: 'wf-1', task_id: 'wf-1', name: 'code', script_path: 'relative' } },
+    {
+      value: {
+        type: 'Workflow',
+        run_id: 'wf-1',
+        task_id: 'other',
+        name: 'code',
+        script_path: launch.scriptPath,
+      },
+    },
+    {
+      value: {
+        type: 'Workflow',
+        run_id: 'wf-1',
+        task_id: 'wf-1',
+        name: 'code',
+        script_path: 'relative',
+      },
+    },
   ])('rejects an incomplete native launch', ({ value }) => {
     expect(() => grokWorkflowLaunch(frames(value), 'launch')).toThrow('The native Grok workflow launch has no exact run or script identity.')
   })
   it('rejects another call and repeated final launch records', () => {
-    const native = frames({ type: 'Workflow', run_id: launch.runId, task_id: launch.runId, name: launch.name, script_path: launch.scriptPath })
+    const native = frames({
+      type: 'Workflow',
+      run_id: launch.runId,
+      task_id: launch.runId,
+      name: launch.name,
+      script_path: launch.scriptPath,
+    })
     expect(() => grokWorkflowLaunch(native, 'other')).toThrow('one exact launch result')
-    expect(() => grokWorkflowLaunch([...native, ...native], 'launch')).toThrow('one exact launch result')
+    expect(() => grokWorkflowLaunch([
+      ...native,
+      ...native,
+    ], 'launch')).toThrow('one exact launch result')
   })
 })
 
@@ -64,15 +114,66 @@ describe('grokWorkflowCompletion', () => {
     expect(grokWorkflowCompletion(manifest('active', 'earlier'), launch)).toBeNull()
   })
   it.each([
-    [{ version: 3 }, 'The native Grok workflow manifest is invalid.'],
-    [{ script_revision: -1 }, 'The native Grok workflow manifest is invalid.'],
-    [{ state: { ...manifest('complete', 'answer').state, run_id: 'other' } }, 'The native Grok workflow manifest belongs to another run.'],
-    [{ state: { ...manifest('complete', 'answer').state, name: 'other' } }, 'The native Grok workflow manifest belongs to another run.'],
-    [{ state: { ...manifest('complete', 'answer').state, status: 'cancelled' } }, 'The native Grok workflow did not complete or fail.'],
-    [{ state: { ...manifest('complete', 'answer').state, history: [] } }, 'The native Grok workflow requires one exact completion event.'],
-    [{ state: { ...manifest('failed', 'answer').state, history: [{ event: 'workflow_failed', detail: 'other' }] } }, 'The native Grok workflow has no matching final output.'],
+    [
+      { version: 3 },
+      'The native Grok workflow manifest is invalid.',
+    ],
+    [
+      { script_revision: -1 },
+      'The native Grok workflow manifest is invalid.',
+    ],
+    [
+      {
+        state: {
+          ...manifest('complete', 'answer').state,
+          run_id: 'other',
+        },
+      },
+      'The native Grok workflow manifest belongs to another run.',
+    ],
+    [
+      {
+        state: {
+          ...manifest('complete', 'answer').state,
+          name: 'other',
+        },
+      },
+      'The native Grok workflow manifest belongs to another run.',
+    ],
+    [
+      {
+        state: {
+          ...manifest('complete', 'answer').state,
+          status: 'cancelled',
+        },
+      },
+      'The native Grok workflow did not complete or fail.',
+    ],
+    [
+      {
+        state: {
+          ...manifest('complete', 'answer').state,
+          history: [],
+        },
+      },
+      'The native Grok workflow requires one exact completion event.',
+    ],
+    [
+      {
+        state: {
+          ...manifest('failed', 'answer').state,
+          history: [
+            { event: 'workflow_failed', detail: 'other' },
+          ],
+        },
+      },
+      'The native Grok workflow has no matching final output.',
+    ],
   ])('rejects another run or an invalid final record', (changed, error) => {
-    expect(() => grokWorkflowCompletion({ ...manifest('complete', 'answer'), ...changed }, launch)).toThrow(error)
+    expect(() => grokWorkflowCompletion({
+      ...manifest('complete', 'answer'),
+      ...changed,
+    }, launch)).toThrow(error)
   })
 })
 
@@ -82,7 +183,10 @@ describe('grokWorkflowManifestPath', () => {
     const scriptPath = join(home, 'sessions', 'cwd', 'session', 'workflows', 'wf-1', 'script.rhai')
     mkdirSync(dirname(scriptPath), { recursive: true })
     writeFileSync(scriptPath, 'actual script')
-    return { home, nativeLaunch: { ...launch, scriptPath } }
+    return {
+      home,
+      nativeLaunch: { ...launch, scriptPath },
+    }
   }
   it('selects the exact native run beside its unchanged script', () => {
     const { home, nativeLaunch } = fixture()
@@ -176,7 +280,14 @@ describe('grokWorkflowName', () => {
     expect(grokWorkflowName('output', 'a'.repeat(64 - prefix.length)).length).toBe(64)
     expect(() => grokWorkflowName('output', 'a'.repeat(65 - prefix.length))).toThrow('64 bytes')
   })
-  it.each(['', '-invalid', 'invalid-', 'invalid--marker', 'invalid_marker', '文'])('rejects invalid native metadata marker %j', (marker) => {
+  it.each([
+    '',
+    '-invalid',
+    'invalid-',
+    'invalid--marker',
+    'invalid_marker',
+    '文',
+  ])('rejects invalid native metadata marker %j', (marker) => {
     expect(() => grokWorkflowName('output', marker)).toThrow('lowercase words')
   })
 })

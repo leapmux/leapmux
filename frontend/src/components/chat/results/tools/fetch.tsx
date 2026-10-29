@@ -11,7 +11,14 @@ export const fetchRenderer: ToolKindRenderer<'fetch'> = {
     return renderUrlTitle(call.request.url) ?? call.title ?? 'Fetch'
   },
   result(call, view) {
-    return <WebFetchResultBody source={call.result} {...(view.context !== undefined ? { context: view.context } : {})} />
+    return (
+      <WebFetchResultBody
+        source={call.result}
+        {...(view.context !== undefined
+          ? { context: view.context }
+          : {})}
+      />
+    )
   },
   resultMeta(call) {
     return {

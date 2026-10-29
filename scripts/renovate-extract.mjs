@@ -28,7 +28,9 @@ export async function selectExtractionFiles(files, policy) {
   const selected = new Set()
   for (const manager of getEnabledManagersList(config.enabledManagers)) {
     const base = getManagerConfig(config, manager)
-    const configurations = isCustomManager(manager) ? config.customManagers.filter(custom => custom.customType === manager).map(custom => mergeChildConfig(base, custom)) : [base]
+    const configurations = isCustomManager(manager)
+      ? config.customManagers.filter(custom => custom.customType === manager).map(custom => mergeChildConfig(base, custom))
+      : [base]
     for (const configuration of configurations) {
       for (const file of getMatchingFiles(configuration, files)) selected.add(file)
     }
@@ -47,7 +49,10 @@ export async function selectExtractionFiles(files, policy) {
 function validateInventory(inventory, files, read, log) {
   const paths = new Set(Object.values(inventory).flat().map(file => file.packageFile))
   const actions = files.filter(file => isGithubActionSource(file) && /^\s*(?:-\s*)?uses:\s*["']?[\w.-]+\//im.test(read(file)))
-  for (const file of [...Object.values(DEPENDENCY_INPUT_FILES).flat(), ...actions]) {
+  for (const file of [
+    ...Object.values(DEPENDENCY_INPUT_FILES).flat(),
+    ...actions,
+  ]) {
     if (!paths.has(file))
       throw new Error(`Renovate missed dependency source ${file}. Read ${log}`)
   }
@@ -68,9 +73,19 @@ export async function extractRenovateInventory({ root = repoRoot, trusted = repo
   writeFileSync(log, '')
   try {
     const policy = JSON.parse(readFileSync(resolve(root, 'renovate.json'), 'utf8'))
-    const files = [...new Set(git(root, ['ls-files', '--cached', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean))]
+    const files = [
+      ...new Set(git(root, [
+        'ls-files',
+        '--cached',
+        '--others',
+        '--exclude-standard',
+        '-z',
+      ]).split('\0').filter(Boolean)),
+    ]
     const proposed = files.filter(file => file !== 'renovate.json' && existsSync(resolve(root, file)))
-    const selected = fullTree ? proposed : await selectExtractionFiles(proposed, policy)
+    const selected = fullTree
+      ? proposed
+      : await selectExtractionFiles(proposed, policy)
     for (const file of selected) {
       mkdirSync(dirname(resolve(fixture, file)), { recursive: true })
       cpSync(resolve(root, file), resolve(fixture, file), { dereference: true })
@@ -78,18 +93,45 @@ export async function extractRenovateInventory({ root = repoRoot, trusted = repo
     git(fixture, ['init', '--initial-branch=main'])
     const hooks = resolve(fixture, '.git/no-hooks')
     mkdirSync(hooks)
-    for (const [key, value] of Object.entries({ 'core.fsmonitor': 'false', 'gc.auto': '0', 'maintenance.auto': 'false', 'commit.gpgsign': 'false', 'core.hooksPath': hooks, 'user.name': 'Inventory fixture', 'user.email': 'fixture@example.invalid' }))
+    for (const [key, value] of Object.entries({
+      'core.fsmonitor': 'false',
+      'gc.auto': '0',
+      'maintenance.auto': 'false',
+      'commit.gpgsign': 'false',
+      'core.hooksPath': hooks,
+      'user.name': 'Inventory fixture',
+      'user.email': 'fixture@example.invalid',
+    }))
       git(fixture, ['config', key, value])
     git(fixture, ['add', '--force', '--all'])
     git(fixture, ['commit', '-m', 'test: Record the proposed dependency inventory'])
-    const env = { ...process.env, RENOVATE_PLATFORM: 'local', RENOVATE_DRY_RUN: 'extract', RENOVATE_CONFIG_FILE: resolve(trusted, '.github/renovate-config.cjs'), RENOVATE_TRUSTED_ROOT: trusted, LOG_FORMAT: 'json', LOG_LEVEL: 'debug' }
+    const env = {
+      ...process.env,
+      RENOVATE_PLATFORM: 'local',
+      RENOVATE_DRY_RUN: 'extract',
+      RENOVATE_CONFIG_FILE: resolve(trusted, '.github/renovate-config.cjs'),
+      RENOVATE_TRUSTED_ROOT: trusted,
+      LOG_FORMAT: 'json',
+      LOG_LEVEL: 'debug',
+    }
     for (const key of ['RENOVATE_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN']) delete env[key]
-    const result = await run('node', [resolve(trusted, '.github/renovate/node_modules/renovate/dist/renovate.js')], { cwd: fixture, env, stdio: ['ignore', 'pipe', 'pipe'], output: { write: data => appendFileSync(log, data) } })
+    const result = await run('node', [
+      resolve(trusted, '.github/renovate/node_modules/renovate/dist/renovate.js'),
+    ], {
+      cwd: fixture,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      output: {
+        write: data => appendFileSync(log, data),
+      },
+    })
     if (result.code !== 0)
       throw new Error(`Local extraction failed. Read ${log}`)
     const records = readFileSync(log, 'utf8').split('\n').filter(Boolean).flatMap((line) => {
       try {
-        return [JSON.parse(line)]
+        return [
+          JSON.parse(line),
+        ]
       }
       catch { return [] }
     })
@@ -97,7 +139,14 @@ export async function extractRenovateInventory({ root = repoRoot, trusted = repo
     if (!inventory)
       throw new Error(`Renovate did not emit an extracted inventory. Read ${log}`)
     const counts = validateInventory(inventory, selected, file => readFileSync(resolve(fixture, file), 'utf8'), log)
-    const record = { inventory, fixture, log, snapshotFiles: selected, timing: result, ...counts }
+    const record = {
+      inventory,
+      fixture,
+      log,
+      snapshotFiles: selected,
+      timing: result,
+      ...counts,
+    }
     writeFileSync(resolve(root, '.tmp/renovate-inventory.json'), JSON.stringify(record, null, 2))
     return record
   }

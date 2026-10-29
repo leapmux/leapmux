@@ -27,7 +27,11 @@ codexTest.describe('codex permission requests', () => {
     await expectSettingsOptionChosen(page, 'permission_profile-:danger-full-access')
 
     const start = await modelScript.queue(
-      { toolCalls: [bashToolCall(CODEX, 'bypass-command', writeCommand(file, 'bypass-42'))] },
+      {
+        toolCalls: [
+          bashToolCall(CODEX, 'bypass-command', writeCommand(file, 'bypass-42')),
+        ],
+      },
       { text: 'Bypass command finished.' },
     )
     await sendMessage(page, modelScript.prompt('Write the scripted marker outside this workspace.'))
@@ -49,8 +53,16 @@ codexTest.describe('codex permission requests', () => {
     await expectSettingsOptionChosen(page, 'permissionMode-on-request')
 
     const start = await modelScript.queue(
-      { toolCalls: [codexEscalatedCommandToolCall('bypass-pending', writeCommand(first, 'pending-42'))] },
-      { toolCalls: [codexEscalatedCommandToolCall('bypass-later', writeCommand(second, 'later-42'))] },
+      {
+        toolCalls: [
+          codexEscalatedCommandToolCall('bypass-pending', writeCommand(first, 'pending-42')),
+        ],
+      },
+      {
+        toolCalls: [
+          codexEscalatedCommandToolCall('bypass-later', writeCommand(second, 'later-42')),
+        ],
+      },
       { text: 'Both commands finished.' },
     )
     await sendMessage(page, modelScript.prompt('Run both scripted commands outside this workspace.'))

@@ -23,11 +23,28 @@ geminiTest('preserves native MCP zero and empty arguments and failed results aft
   const server = writeMcpResultServer(parent.workingDir, { receiptLog })
   await withGeminiMcp(context, server, async () => {
     const operations = [
-      { tool: 'inspect', callId: 'gemini-mcp-inspect', input: { count: 0, enabled: false, text: '' }, expected: 'NATIVE_MCP_INSPECT:{"count":0,"enabled":false,"text":""}', failed: false },
-      { tool: 'fail', callId: 'gemini-mcp-failure', input: {}, expected: 'NATIVE_MCP_FAILED_RESULT', failed: true },
+      {
+        tool: 'inspect',
+        callId: 'gemini-mcp-inspect',
+        input: { count: 0, enabled: false, text: '' },
+        expected: 'NATIVE_MCP_INSPECT:{"count":0,"enabled":false,"text":""}',
+        failed: false,
+      },
+      {
+        tool: 'fail',
+        callId: 'gemini-mcp-failure',
+        input: {},
+        expected: 'NATIVE_MCP_FAILED_RESULT',
+        failed: true,
+      },
     ]
     for (const operation of operations) {
-      const call = { server: server.name, tool: operation.tool, callId: operation.callId, input: operation.input }
+      const call = {
+        server: server.name,
+        tool: operation.tool,
+        callId: operation.callId,
+        input: operation.input,
+      }
       const request = await invokeNativeMcpTool(context, call)
       expect(request.protocol).toBe('google-generative-language')
       const response = nativeToolResultContent(request, operation.callId)
@@ -36,7 +53,7 @@ geminiTest('preserves native MCP zero and empty arguments and failed results aft
       const field = operation.failed ? 'error' : 'output'
       const returned = response[field]
       if (typeof returned !== 'string')
-        throw new Error(`The native Gemini MCP response has no ${field} string.`)
+        throw new TypeError(`The native Gemini MCP response has no ${field} string.`)
       expect(response).not.toHaveProperty(operation.failed ? 'output' : 'error')
       expect(returned).toContain(operation.expected)
       if (!operation.failed) {
@@ -49,7 +66,11 @@ geminiTest('preserves native MCP zero and empty arguments and failed results aft
       const snapshot = await readNativeMessageSnapshot(context, (await currentNativeAgent(context)).id)
       const records = snapshot.messages.filter(row => row.spanId === nativeCallId).map(readGeminiStoredToolRecord).filter(isObject)
       expect(records).toHaveLength(1)
-      expect(records[0]).toMatchObject({ id: nativeCallId, status: operation.failed ? 'error' : 'success', args: operation.input })
+      expect(records[0]).toMatchObject({
+        id: nativeCallId,
+        status: operation.failed ? 'error' : 'success',
+        args: operation.input,
+      })
       if (!operation.failed) {
         expect(JSON.stringify(records[0])).not.toContain('privateFixture')
         expect(JSON.stringify(records[0])).not.toContain('nextCount')
@@ -62,7 +83,10 @@ geminiTest('preserves native MCP zero and empty arguments and failed results aft
       await expect(result).toContainText(operation.expected)
     }
     expect(readMcpCallArguments(receiptLog)).toEqual([
-      { name: 'inspect', arguments: { count: 0, enabled: false, text: '' } },
+      {
+        name: 'inspect',
+        arguments: { count: 0, enabled: false, text: '' },
+      },
       { name: 'fail', arguments: {} },
     ])
   })

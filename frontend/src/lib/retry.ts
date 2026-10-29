@@ -132,7 +132,9 @@ export function createExponentialBackoff<K>(opts: ExponentialBackoffOpts): Expon
 
   const nextBaseDelayFor = (key: K): number => {
     const prev = lastBaseDelays.get(key)
-    return prev === undefined ? initialMs : Math.min(prev * multiplier, maxMs)
+    return prev === undefined
+      ? initialMs
+      : Math.min(prev * multiplier, maxMs)
   }
 
   // Symmetric jitter: result ∈ [base * (1 - jitterFactor), base * (1 + jitterFactor)).
@@ -185,7 +187,9 @@ export function createExponentialBackoff<K>(opts: ExponentialBackoffOpts): Expon
       attempts.clear()
     },
     size: () => timers.size,
-    peekNextDelay: key => (timers.has(key) ? null : nextBaseDelayFor(key)),
+    peekNextDelay: key => (timers.has(key)
+      ? null
+      : nextBaseDelayFor(key)),
     isExhausted,
     attemptCount: key => attempts.get(key) ?? 0,
   }

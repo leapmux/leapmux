@@ -197,7 +197,9 @@ function assertRoundTrips(claim, replacement, want) {
  */
 export function applyClaim(claim, content, want) {
   const drifts = []
-  const matches = [...content.matchAll(claim.pattern)]
+  const matches = [
+    ...content.matchAll(claim.pattern),
+  ]
 
   // A claim that matches nothing is the failure mode this whole script exists
   // to prevent, one level up: the prose was reworded, the claim silently
@@ -263,7 +265,10 @@ function main(argv) {
       if (!versions.has(claim.key)) {
         throw new Error(`${claim.file} claims ${claim.key}, which versions.env does not define`)
       }
-      byFile.set(claim.file, [...(byFile.get(claim.file) ?? []), claim])
+      byFile.set(claim.file, [
+        ...(byFile.get(claim.file) ?? []),
+        claim,
+      ])
     }
 
     // Compute every rewrite before performing any of them. A claim that cannot

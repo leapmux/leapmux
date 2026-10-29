@@ -42,7 +42,9 @@ describe('TitleInput', () => {
 
   it('writes what the user types back into the field', () => {
     renderTitleInput()
-    fireEvent.input(screen.getByTestId('title-input'), { target: { value: 'my own name' } })
+    fireEvent.input(screen.getByTestId('title-input'), {
+      target: { value: 'my own name' },
+    })
     expect(screen.getByTestId('title-input')).toHaveValue('my own name')
   })
 
@@ -61,7 +63,9 @@ describe('TitleInput', () => {
 
   it('shows the error once the field is emptied', () => {
     renderTitleInput()
-    fireEvent.input(screen.getByTestId('title-input'), { target: { value: '' } })
+    fireEvent.input(screen.getByTestId('title-input'), {
+      target: { value: '' },
+    })
     expect(screen.getByText('Name must not be empty')).toBeInTheDocument()
   })
 
@@ -70,9 +74,13 @@ describe('TitleInput', () => {
   it('clears the error when the title becomes valid again', () => {
     renderTitleInput()
     const input = screen.getByTestId('title-input')
-    fireEvent.input(input, { target: { value: '' } })
+    fireEvent.input(input, {
+      target: { value: '' },
+    })
     expect(screen.getByText('Name must not be empty')).toBeInTheDocument()
-    fireEvent.input(input, { target: { value: 'Agent Tim' } })
+    fireEvent.input(input, {
+      target: { value: 'Agent Tim' },
+    })
     expect(screen.queryByText('Name must not be empty')).toBeNull()
   })
 
@@ -87,7 +95,9 @@ describe('TitleInput', () => {
   it('does not call the generator again on an ordinary edit', () => {
     const generate = vi.fn(() => 'Agent Gabe')
     renderTitleInput(generate)
-    fireEvent.input(screen.getByTestId('title-input'), { target: { value: 'x' } })
+    fireEvent.input(screen.getByTestId('title-input'), {
+      target: { value: 'x' },
+    })
     expect(generate).toHaveBeenCalledOnce()
   })
 })
@@ -99,7 +109,9 @@ describe('TitleInput error accessibility', () => {
   it('links the error to the input and announces it', () => {
     renderTitleInput()
     const input = screen.getByLabelText('Title')
-    fireEvent.input(input, { target: { value: '   ' } })
+    fireEvent.input(input, {
+      target: { value: '   ' },
+    })
 
     expect(input).toHaveAttribute('aria-invalid', 'true')
     const describedBy = input.getAttribute('aria-describedby')

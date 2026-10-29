@@ -41,7 +41,13 @@ export function createOhMyPiEnvironment(options: OhMyPiEnvironmentOptions): Reco
   writePrivateJSON(join(agentDir, 'models.yml'), ohMyPiModels(options))
   writePrivateJSON(join(agentDir, 'config.yml'), ohMyPiConfig(options))
   writePrivateJSON(join(agentDir, 'mcp.json'), {
-    mcpServers: { [options.mcpEchoServer.name]: { type: 'stdio', command: options.mcpEchoServer.command, args: [...options.mcpEchoServer.args] } },
+    mcpServers: {
+      [options.mcpEchoServer.name]: {
+        type: 'stdio',
+        command: options.mcpEchoServer.command,
+        args: [...options.mcpEchoServer.args],
+      },
+    },
   })
   return {
     OMP_PROFILE: options.profile,
@@ -82,7 +88,12 @@ function ohMyPiModels(options: OhMyPiEnvironmentOptions): Record<string, unknown
     input: ['text', 'image'],
     contextWindow: 128_000,
     maxTokens: 16_000,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    cost: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+    },
   }
   return {
     providers: {
@@ -92,7 +103,10 @@ function ohMyPiModels(options: OhMyPiEnvironmentOptions): Record<string, unknown
         // It uses the literal key only when that variable does not exist.
         apiKey: 'LEAPMUX_E2E_MODEL_API_KEY',
         api: 'openai-completions',
-        models: [primary, { ...primary, id: options.alternateModelID, name: options.alternateModelName ?? 'GLM-5.3 Alternate' }],
+        models: [
+          primary,
+          { ...primary, id: options.alternateModelID, name: options.alternateModelName ?? 'GLM-5.3 Alternate' },
+        ],
       },
     },
   }
@@ -217,7 +231,10 @@ function ohMyPiConfig(options: OhMyPiEnvironmentOptions): Record<string, unknown
     // A subagent runs the task role. Pinning its thinking level stops the per-prompt
     // classifier, which asks the judge role one question before each child turn.
     modelRoles: { default: model, task: `${model}:off` },
-    disabledProviders: [...OH_MY_PI_BUNDLED_PROVIDERS, ...OH_MY_PI_DISABLED_DISCOVERY_PROVIDERS],
+    disabledProviders: [
+      ...OH_MY_PI_BUNDLED_PROVIDERS,
+      ...OH_MY_PI_DISABLED_DISCOVERY_PROVIDERS,
+    ],
     startup: { checkUpdate: false, setupWizard: false },
     marketplace: { autoUpdate: 'off' },
     dev: { autoqa: false },
@@ -240,7 +257,9 @@ function ohMyPiConfig(options: OhMyPiEnvironmentOptions): Record<string, unknown
     async: { enabled: false },
     // The child scenarios use batch calls and finish through the native yield tool.
     task: { batch: true, structured: true },
-    bash: { autoBackground: { enabled: false } },
+    bash: {
+      autoBackground: { enabled: false },
+    },
     // The `replace` edit takes the text before and after. The default `hashline`
     // edit addresses lines by a hash of the file that only omp itself can compute,
     // which a scripted turn cannot know.

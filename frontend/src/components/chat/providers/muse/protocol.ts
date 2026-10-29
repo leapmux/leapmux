@@ -15,11 +15,15 @@ export function museItem(payload: unknown): Record<string, unknown> | undefined 
   if (!isObject(payload) || typeof payload.method !== 'string' || !ITEM_METHODS.has(payload.method))
     return undefined
   const item = pickObject(pickObject(payload, 'params'), 'item')
-  return item && pickString(item, 'itemId') && pickString(item, 'kind') ? item : undefined
+  return item && pickString(item, 'itemId') && pickString(item, 'kind')
+    ? item
+    : undefined
 }
 
 export function museParams(payload: unknown): Record<string, unknown> | undefined {
-  return isObject(payload) && typeof payload.method === 'string' && payload.method !== '' ? pickObject(payload, 'params') ?? undefined : undefined
+  return isObject(payload) && typeof payload.method === 'string' && payload.method !== ''
+    ? pickObject(payload, 'params') ?? undefined
+    : undefined
 }
 
 /** Match a sibling item to its exact native session and item identity. */

@@ -14,7 +14,10 @@ describe('channelFraming', () => {
 
   it('rejects a buffer shorter than the length prefix', () => {
     const result = unframeBytes(new Uint8Array([0, 0, 1]))
-    expect(result).toEqual({ ok: false, failure: { kind: 'short', length: 3 } })
+    expect(result).toEqual({
+      ok: false,
+      failure: { kind: 'short', length: 3 },
+    })
   })
 
   it('rejects a length-mismatched frame', () => {
@@ -22,7 +25,10 @@ describe('channelFraming', () => {
     // Corrupt the declared length.
     new DataView(framed.buffer).setUint32(0, 99)
     const result = unframeBytes(framed)
-    expect(result).toEqual({ ok: false, failure: { kind: 'mismatch', declared: 99, actual: 2 } })
+    expect(result).toEqual({
+      ok: false,
+      failure: { kind: 'mismatch', declared: 99, actual: 2 },
+    })
   })
 
   it('accepts an empty payload', () => {

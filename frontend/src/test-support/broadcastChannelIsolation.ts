@@ -9,7 +9,10 @@ export function installBroadcastChannelIsolation(testFilePath: string | undefine
     constructor(name: string) {
       super(JSON.stringify([testFilePath, name]))
       // The public name stays logical, as it does for channels on two origins.
-      Object.defineProperty(this, 'name', { configurable: true, get: () => name })
+      Object.defineProperty(this, 'name', {
+        configurable: true,
+        get: () => name,
+      })
     }
   }
 

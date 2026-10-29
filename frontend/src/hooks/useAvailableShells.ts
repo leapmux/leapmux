@@ -93,7 +93,9 @@ export function useAvailableShells(
     const s = shells()
     // `s.length > 0` guarantees the first shell exists; `?? ''` satisfies the
     // index-access check without changing the fallback chain.
-    return serverDefault() || (s.length > 0 ? s[0] ?? '' : '')
+    return serverDefault() || (s.length > 0
+      ? s[0] ?? ''
+      : '')
   }
   const shell = () => userSelectedShell() ?? defaultShell()
 

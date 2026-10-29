@@ -43,7 +43,9 @@ function zcodeOptionKind(kind: string): string {
  */
 export function zcodePermissionOptions(payload: Record<string, unknown>): PermissionOption[] {
   const params = pickObject(payload, 'params')
-  const offered = isObject(params) ? params.options : undefined
+  const offered = isObject(params)
+    ? params.options
+    : undefined
   if (!Array.isArray(offered))
     return []
   const options: PermissionOption[] = []
@@ -55,8 +57,15 @@ export function zcodePermissionOptions(payload: Record<string, unknown>): Permis
       continue
     const name = pickString(option, 'name', undefined)
     options.push(name === undefined
-      ? { optionId, kind: zcodeOptionKind(pickString(option, 'kind', '')) }
-      : { optionId, kind: zcodeOptionKind(pickString(option, 'kind', '')), name })
+      ? {
+          optionId,
+          kind: zcodeOptionKind(pickString(option, 'kind', '')),
+        }
+      : {
+          optionId,
+          kind: zcodeOptionKind(pickString(option, 'kind', '')),
+          name,
+        })
   }
   return options
 }
@@ -73,16 +82,22 @@ export function zcodeExtractControl(input: ControlExtractionInput): ExtractedCon
   // A shell call states its command, which the banner draws as code above the
   // arguments. One shared body spelled `'Bash'` inline for every provider that
   // reached it; the tool table owns the name here.
-  const command = toolName === ZCODE_TOOL.Bash ? pickString(toolInput, 'command', undefined) : undefined
+  const command = toolName === ZCODE_TOOL.Bash
+    ? pickString(toolInput, 'command', undefined)
+    : undefined
   return {
     kind: 'permission',
     permission: {
       title: toolName,
       // ZCode's own explanation of why the call needs approval, which is the most
       // useful line in the banner -- so it sits above the arguments.
-      ...(reason !== undefined ? { reason } : {}),
+      ...(reason !== undefined
+        ? { reason }
+        : {}),
       input: toolInput,
-      ...(command !== undefined ? { command } : {}),
+      ...(command !== undefined
+        ? { command }
+        : {}),
       options: zcodePermissionOptions(payload),
     },
   }

@@ -13,39 +13,68 @@ describe('buildMessageActions', () => {
   })
 
   it('offers only the JSON copy for a plain message', () => {
-    expect(ids({}, { onCopyJson: () => {} })).toEqual(['copy-json'])
+    expect(ids({}, {
+      onCopyJson: () => {},
+    })).toEqual(['copy-json'])
   })
 
   it('adds the quotable pair when the provider extracted text', () => {
     expect(ids(
-      { onCopyMarkdown: () => {}, onReply: () => {} },
-      { onCopyJson: () => {} },
+      {
+        onCopyMarkdown: () => {},
+        onReply: () => {},
+      },
+      {
+        onCopyJson: () => {},
+      },
     )).toEqual(['copy-json', 'copy-markdown', 'quote'])
   })
 
   it('adds the tool-result actions the provider metadata gates', () => {
     expect(ids(
-      { onCopyContent: () => {} },
-      { onCopyJson: () => {}, hasDiff: true, onToggleDiffView: () => {}, onToggleExpand: () => {} },
-    )).toEqual(['copy-json', 'copy-content', 'diff-view', 'expand'])
+      {
+        onCopyContent: () => {},
+      },
+      {
+        onCopyJson: () => {},
+        hasDiff: true,
+        onToggleDiffView: () => {},
+        onToggleExpand: () => {},
+      },
+    )).toEqual([
+      'copy-json',
+      'copy-content',
+      'diff-view',
+      'expand',
+    ])
   })
 
   it('withholds the diff toggle when the result has no diff', () => {
     // `hasDiff` and the handler are separate gates, and both must hold.
-    expect(ids({}, { onToggleDiffView: () => {} })).toEqual([])
+    expect(ids({}, {
+      onToggleDiffView: () => {},
+    })).toEqual([])
     expect(ids({}, { hasDiff: true })).toEqual([])
   })
 
   it('labels each copy for its own scope', () => {
     const actions = buildMessageActions(
-      { onCopyMarkdown: () => {}, onCopyContent: () => {}, copyContentLabel: 'Copy Command' },
-      { onCopyJson: () => {} },
+      {
+        onCopyMarkdown: () => {},
+        onCopyContent: () => {},
+        copyContentLabel: 'Copy Command',
+      },
+      {
+        onCopyJson: () => {},
+      },
     )
     expect(actions.map(a => a.label)).toEqual(['Copy Raw JSON', 'Copy Markdown', 'Copy Command'])
   })
 
   it('falls back to a bare Copy when the renderer named no content label', () => {
-    const [action] = buildMessageActions({ onCopyContent: () => {} }, {})
+    const [action] = buildMessageActions({
+      onCopyContent: () => {},
+    }, {})
     // The suite's own contract: an onCopyContent caller gets one action; the guard is type-level alone.
     if (action === undefined)
       throw new Error('expected a copy action')
@@ -54,8 +83,14 @@ describe('buildMessageActions', () => {
 
   it('reports the copied state in the label', () => {
     const actions = buildMessageActions(
-      { onCopyMarkdown: () => {}, markdownCopied: true },
-      { onCopyJson: () => {}, jsonCopied: true },
+      {
+        onCopyMarkdown: () => {},
+        markdownCopied: true,
+      },
+      {
+        onCopyJson: () => {},
+        jsonCopied: true,
+      },
     )
     expect(actions.map(a => a.label)).toEqual(['Copied', 'Copied'])
   })
@@ -81,7 +116,10 @@ describe('buildMessageActions', () => {
   })
 
   it('uses the renderer expand label when the row supplies one', () => {
-    const [action] = buildMessageActions({}, { onToggleExpand: () => {}, expandLabel: 'Show 40 more lines' })
+    const [action] = buildMessageActions({}, {
+      onToggleExpand: () => {},
+      expandLabel: 'Show 40 more lines',
+    })
     // An expand toggle always yields its action; the guard is type-level alone.
     if (action === undefined)
       throw new Error('expected an expand action')
@@ -101,8 +139,13 @@ describe('buildMessageActions', () => {
   // The expand toggle sits inside a header that is itself click-to-expand.
   it('marks only the expand toggle as needing the event stopped', () => {
     const actions = buildMessageActions(
-      { onReply: () => {} },
-      { onCopyJson: () => {}, onToggleExpand: () => {} },
+      {
+        onReply: () => {},
+      },
+      {
+        onCopyJson: () => {},
+        onToggleExpand: () => {},
+      },
     )
     expect(actions.filter(a => a.stopPropagation).map(a => a.id)).toEqual(['expand'])
   })
@@ -110,22 +153,45 @@ describe('buildMessageActions', () => {
 
 describe('leadingActions', () => {
   const all = () => buildMessageActions(
-    { onCopyMarkdown: () => {}, onCopyContent: () => {}, onReply: () => {} },
-    { onCopyJson: () => {}, hasDiff: true, onToggleDiffView: () => {}, onToggleExpand: () => {} },
+    {
+      onCopyMarkdown: () => {},
+      onCopyContent: () => {},
+      onReply: () => {},
+    },
+    {
+      onCopyJson: () => {},
+      hasDiff: true,
+      onToggleDiffView: () => {},
+      onToggleExpand: () => {},
+    },
   )
 
   it('reads copies-then-quote on an ordinary row', () => {
     expect(leadingActions(all(), false).map(a => a.id))
-      .toEqual(['copy-json', 'copy-markdown', 'copy-content', 'quote'])
+      .toEqual([
+        'copy-json',
+        'copy-markdown',
+        'copy-content',
+        'quote',
+      ])
   })
 
   it('moves quote to second on a mirrored row so it lands nearest the bubble', () => {
     expect(leadingActions(all(), true).map(a => a.id))
-      .toEqual(['quote', 'copy-json', 'copy-markdown', 'copy-content'])
+      .toEqual([
+        'quote',
+        'copy-json',
+        'copy-markdown',
+        'copy-content',
+      ])
   })
 
   it('skips an action the row does not offer, in both orders', () => {
-    const some = buildMessageActions({ onReply: () => {} }, { onCopyJson: () => {} })
+    const some = buildMessageActions({
+      onReply: () => {},
+    }, {
+      onCopyJson: () => {},
+    })
     expect(leadingActions(some, false).map(a => a.id)).toEqual(['copy-json', 'quote'])
     expect(leadingActions(some, true).map(a => a.id)).toEqual(['quote', 'copy-json'])
   })
@@ -147,6 +213,8 @@ describe('trailingActions', () => {
   })
 
   it('is empty when the row has neither toggle', () => {
-    expect(trailingActions(buildMessageActions({}, { onCopyJson: () => {} }))).toEqual([])
+    expect(trailingActions(buildMessageActions({}, {
+      onCopyJson: () => {},
+    }))).toEqual([])
   })
 })

@@ -31,10 +31,20 @@ describe('markdown text premeasure mode', () => {
 
   it.each([
     ['visible', undefined],
-    ['premeasure', { premeasureMode: true }],
+    [
+      'premeasure',
+      { premeasureMode: true },
+    ],
   ] as const)('uses a limited plain-text display for large %s markdown', (_label, context) => {
     const text = `<script>unsafe</script>\n${'x'.repeat(100_000)}\ntail`
-    const { container } = render(() => <MarkdownText text={text} {...(context === undefined ? {} : { context })} />)
+    const { container } = render(() => (
+      <MarkdownText
+        text={text}
+        {...(context === undefined
+          ? {}
+          : { context })}
+      />
+    ))
 
     expect(container.textContent!.length).toBeLessThan(text.length)
     expect(container.textContent).toContain('Display limited')
@@ -47,7 +57,14 @@ describe('markdown text premeasure mode', () => {
   })
 
   it('uses stable plain markdown without subscribing to cached-highlight updates while text is selected', () => {
-    const { container } = render(() => <MarkdownText text={'```ts\nx\n```'} context={{ textSelectionActive: () => true }} />)
+    const { container } = render(() => (
+      <MarkdownText
+        text={'```ts\nx\n```'}
+        context={{
+          textSelectionActive: () => true,
+        }}
+      />
+    ))
 
     expect(container.innerHTML).toContain('<p>plain</p>')
     expect(getCachedMarkdownHtml).toHaveBeenCalledWith('```ts\nx\n```')
@@ -60,7 +77,15 @@ describe('markdown text premeasure mode', () => {
     const cache = createMessageRenderCacheStore().forRow('row:selection')
     setCachedRenderValueForString({ renderCache: cache }, markdownCacheNamespace(), '**x**', '<p>row-highlighted</p>')
 
-    const { container } = render(() => <MarkdownText text="**x**" context={{ renderCache: cache, textSelectionActive: () => true }} />)
+    const { container } = render(() => (
+      <MarkdownText
+        text="**x**"
+        context={{
+          renderCache: cache,
+          textSelectionActive: () => true,
+        }}
+      />
+    ))
 
     expect(container.innerHTML).toContain('<p>row-highlighted</p>')
     expect(getCachedMarkdownHtml).not.toHaveBeenCalled()
@@ -120,7 +145,14 @@ describe('markdown text premeasure mode', () => {
   })
 
   it('uses cached highlighted markdown when available and does not dispatch highlighted rendering while visible scrolling is busy', () => {
-    const { container } = render(() => <MarkdownText text={'```ts\nx\n```'} context={{ syntaxHighlightingPaused: () => true }} />)
+    const { container } = render(() => (
+      <MarkdownText
+        text={'```ts\nx\n```'}
+        context={{
+          syntaxHighlightingPaused: () => true,
+        }}
+      />
+    ))
 
     expect(container.innerHTML).toContain('<p>cached-or-plain</p>')
     expect(renderMarkdownCachedOrPlain).toHaveBeenCalledWith('```ts\nx\n```')
@@ -132,7 +164,15 @@ describe('markdown text premeasure mode', () => {
     const cache = createMessageRenderCacheStore().forRow('row:paused-cache')
     vi.mocked(getCachedMarkdownHtml).mockReturnValue('<p>shared-highlighted</p>')
 
-    const { container } = render(() => <MarkdownText text="**x**" context={{ renderCache: cache, syntaxHighlightingPaused: () => true }} />)
+    const { container } = render(() => (
+      <MarkdownText
+        text="**x**"
+        context={{
+          renderCache: cache,
+          syntaxHighlightingPaused: () => true,
+        }}
+      />
+    ))
 
     expect(container.innerHTML).toContain('<p>shared-highlighted</p>')
     expect(getCachedRenderValueForString({ renderCache: cache }, markdownCacheNamespace(), '**x**')).toBe('<p>shared-highlighted</p>')
@@ -145,7 +185,15 @@ describe('markdown text premeasure mode', () => {
     const cache = createMessageRenderCacheStore().forRow('row:1')
     setCachedRenderValueForString({ renderCache: cache }, markdownCacheNamespace(), '**x**', '<p>row-highlighted</p>')
 
-    const { container } = render(() => <MarkdownText text="**x**" context={{ renderCache: cache, syntaxHighlightingPaused: () => true }} />)
+    const { container } = render(() => (
+      <MarkdownText
+        text="**x**"
+        context={{
+          renderCache: cache,
+          syntaxHighlightingPaused: () => true,
+        }}
+      />
+    ))
 
     expect(container.innerHTML).toContain('<p>row-highlighted</p>')
     expect(renderMarkdownCachedOrPlain).not.toHaveBeenCalled()

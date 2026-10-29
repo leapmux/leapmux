@@ -6,7 +6,9 @@ import { buildControlResponseEnvelope } from '~/utils/controlResponse'
 
 export function deepseekHarnessQuestionRecords(payload: Record<string, unknown>): Record<string, unknown>[] {
   const request = pickObject(payload, 'request') ?? payload
-  return Array.isArray(request.questions) ? request.questions.filter(isObject) : []
+  return Array.isArray(request.questions)
+    ? request.questions.filter(isObject)
+    : []
 }
 
 export function deepseekHarnessIsQuestionRequest(payload: Record<string, unknown>): boolean {
@@ -21,18 +23,36 @@ export function deepseekHarnessQuestions(payload: Record<string, unknown>): Cont
     if (!id || !question)
       return []
     const header = pickString(record, 'header')
-    const options = Array.isArray(record.options) ? record.options.filter(isObject) : []
-    return [{
-      id,
-      question,
-      options: options.flatMap((option) => {
-        const label = pickString(option, 'label')
-        const description = pickString(option, 'description')
-        return label ? [{ label, value: label, ...(description ? { description } : {}) }] : []
-      }),
-      ...(header ? { header } : {}),
-      ...(record.multiSelect === true ? { multiSelect: true } : {}),
-    }]
+    const options = Array.isArray(record.options)
+      ? record.options.filter(isObject)
+      : []
+    return [
+      {
+        id,
+        question,
+        options: options.flatMap((option) => {
+          const label = pickString(option, 'label')
+          const description = pickString(option, 'description')
+          return label
+            ? [
+                {
+                  label,
+                  value: label,
+                  ...(description
+                    ? { description }
+                    : {}),
+                },
+              ]
+            : []
+        }),
+        ...(header
+          ? { header }
+          : {}),
+        ...(record.multiSelect === true
+          ? { multiSelect: true }
+          : {}),
+      },
+    ]
   })
 }
 
@@ -43,7 +63,17 @@ export function buildDeepseekHarnessAnswers(requestId: string, questions: Contro
     const offered = new Set(question.options.map(option => option.value ?? option.label))
     const selected = (state.selections()[index] ?? []).filter(value => offered.has(value))
     const custom = (state.customTexts()[index] ?? '').trim()
-    return [{ id: question.id, selected: question.multiSelect ? selected : selected.slice(0, 1), ...(custom ? { custom } : {}) }]
+    return [
+      {
+        id: question.id,
+        selected: question.multiSelect
+          ? selected
+          : selected.slice(0, 1),
+        ...(custom
+          ? { custom }
+          : {}),
+      },
+    ]
   })
   return buildControlResponseEnvelope(requestId, { behavior: 'allow', answers })
 }

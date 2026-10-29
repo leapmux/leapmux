@@ -24,7 +24,9 @@ function proto(id: string, status: BackgroundTaskStatus, activeForm = ''): Proto
 describe('createBackgroundTaskStore', () => {
   it('replace applies the proto snapshot', () => {
     const store = createBackgroundTaskStore()
-    store.replace('a1', [proto('t1', BackgroundTaskStatus.RUNNING, 'working')])
+    store.replace('a1', [
+      proto('t1', BackgroundTaskStatus.RUNNING, 'working'),
+    ])
     expect(store.get('a1')).toHaveLength(1)
     expect(store.get('a1')[0]?.status).toBe('running')
     expect(store.get('a1')[0]?.activity).toBe('working')
@@ -55,9 +57,15 @@ describe('createBackgroundTaskStore', () => {
 
   it('replace still adds, drops and reorders rows', () => {
     const store = createBackgroundTaskStore()
-    store.replace('a1', [proto('t1', BackgroundTaskStatus.RUNNING), proto('t2', BackgroundTaskStatus.RUNNING)])
+    store.replace('a1', [
+      proto('t1', BackgroundTaskStatus.RUNNING),
+      proto('t2', BackgroundTaskStatus.RUNNING),
+    ])
 
-    store.replace('a1', [proto('t2', BackgroundTaskStatus.SUCCEEDED), proto('t3', BackgroundTaskStatus.PENDING)])
+    store.replace('a1', [
+      proto('t2', BackgroundTaskStatus.SUCCEEDED),
+      proto('t3', BackgroundTaskStatus.PENDING),
+    ])
 
     expect(store.get('a1').map(t => t.rowKey)).toEqual(['t2', 't3'])
     expect(store.get('a1').map(t => t.status)).toEqual(['succeeded', 'pending'])
@@ -67,10 +75,14 @@ describe('createBackgroundTaskStore', () => {
   // the one empty array every other agent reads as its default.
   it('replace into a cleared agent leaves every other agent empty', () => {
     const store = createBackgroundTaskStore()
-    store.replace('a1', [proto('t1', BackgroundTaskStatus.RUNNING)])
+    store.replace('a1', [
+      proto('t1', BackgroundTaskStatus.RUNNING),
+    ])
     store.clear('a1')
 
-    store.replace('a1', [proto('t2', BackgroundTaskStatus.RUNNING)])
+    store.replace('a1', [
+      proto('t2', BackgroundTaskStatus.RUNNING),
+    ])
 
     expect(store.get('a1').map(t => t.rowKey)).toEqual(['t2'])
     expect(store.get('a2')).toEqual([])
@@ -78,23 +90,35 @@ describe('createBackgroundTaskStore', () => {
 
   it('replace skips an identical re-broadcast', () => {
     const store = createBackgroundTaskStore()
-    store.replace('a1', [proto('t1', BackgroundTaskStatus.RUNNING)])
+    store.replace('a1', [
+      proto('t1', BackgroundTaskStatus.RUNNING),
+    ])
     const first = store.get('a1')
-    store.replace('a1', [proto('t1', BackgroundTaskStatus.RUNNING)])
+    store.replace('a1', [
+      proto('t1', BackgroundTaskStatus.RUNNING),
+    ])
     expect(store.get('a1')).toBe(first)
   })
 
   it('replace applies when activity changed', () => {
     const store = createBackgroundTaskStore()
-    store.replace('a1', [proto('t1', BackgroundTaskStatus.RUNNING, 'a')])
-    store.replace('a1', [proto('t1', BackgroundTaskStatus.RUNNING, 'b')])
+    store.replace('a1', [
+      proto('t1', BackgroundTaskStatus.RUNNING, 'a'),
+    ])
+    store.replace('a1', [
+      proto('t1', BackgroundTaskStatus.RUNNING, 'b'),
+    ])
     expect(store.get('a1')[0]?.activity).toBe('b')
   })
 
   it('remove drops only the targeted agent', () => {
     const store = createBackgroundTaskStore()
-    store.replace('a1', [proto('t1', BackgroundTaskStatus.RUNNING)])
-    store.replace('a2', [proto('t2', BackgroundTaskStatus.PENDING)])
+    store.replace('a1', [
+      proto('t1', BackgroundTaskStatus.RUNNING),
+    ])
+    store.replace('a2', [
+      proto('t2', BackgroundTaskStatus.PENDING),
+    ])
     store.remove('a1')
     expect(store.get('a1')).toEqual([])
     expect(store.get('a2')).toHaveLength(1)
@@ -140,7 +164,9 @@ describe('createBackgroundTaskStore', () => {
       expect(store.loadFailed('a1')).toBe(false)
 
       store.markLoadFailed('a2')
-      store.replace('a2', [proto('t1', BackgroundTaskStatus.RUNNING)])
+      store.replace('a2', [
+        proto('t1', BackgroundTaskStatus.RUNNING),
+      ])
       expect(store.loadFailed('a2')).toBe(false)
     })
 
@@ -149,9 +175,13 @@ describe('createBackgroundTaskStore', () => {
     // match the last good ones never clears the error.
     it('clears the failure even when the rows are unchanged', () => {
       const store = createBackgroundTaskStore()
-      store.replace('a1', [proto('t1', BackgroundTaskStatus.RUNNING)])
+      store.replace('a1', [
+        proto('t1', BackgroundTaskStatus.RUNNING),
+      ])
       store.markLoadFailed('a1')
-      store.replace('a1', [proto('t1', BackgroundTaskStatus.RUNNING)])
+      store.replace('a1', [
+        proto('t1', BackgroundTaskStatus.RUNNING),
+      ])
       expect(store.loadFailed('a1')).toBe(false)
     })
 

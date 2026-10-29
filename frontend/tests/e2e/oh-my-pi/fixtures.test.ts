@@ -45,7 +45,13 @@ describe('prepareFastModeOhMyPi', () => {
     const config = JSON.parse(readFileSync(join(agentDir, 'config.yml'), 'utf8'))
     expect(config.modelRoles.default).toBe(OH_MY_PI_FAST_MODEL_ID)
     expect(config.disabledProviders).toContain('openai')
-    expect(result.agentEnv).toMatchObject({ HOME: homeDir, PATH: 'private-tools', LEAPMUX_E2E_MODEL_API_KEY: 'unit-key', LEAPMUX_OHMYPI_DEFAULT_MODEL: OH_MY_PI_FAST_MODEL_ID, PI_PROXY: 'http://127.0.0.1:4567' })
+    expect(result.agentEnv).toMatchObject({
+      HOME: homeDir,
+      PATH: 'private-tools',
+      LEAPMUX_E2E_MODEL_API_KEY: 'unit-key',
+      LEAPMUX_OHMYPI_DEFAULT_MODEL: OH_MY_PI_FAST_MODEL_ID,
+      PI_PROXY: 'http://127.0.0.1:4567',
+    })
   })
 
   it('propagates a failure to prepare the isolated environment', async () => {

@@ -97,7 +97,14 @@ export function createProgrammaticScrollGuard(
       return
     pruneStale()
     writeGen++
-    markers.push({ top: el.scrollTop, at: now(), gen: writeGen, ...(source !== undefined ? { source } : {}) })
+    markers.push({
+      top: el.scrollTop,
+      at: now(),
+      gen: writeGen,
+      ...(source !== undefined
+        ? { source }
+        : {}),
+    })
     if (markers.length > MAX_ECHO_MARKERS)
       markers.shift()
     onMark?.(el.scrollTop)
@@ -151,7 +158,9 @@ export function createProgrammaticScrollGuard(
   const matchedEchoGen = (): number => {
     const i = matchIndex()
     // A matched index is inside the ring by construction; `?? 0` (no marker) is the type-level guard alone.
-    return i >= 0 ? markers[i]?.gen ?? 0 : 0
+    return i >= 0
+      ? markers[i]?.gen ?? 0
+      : 0
   }
 
   /**
@@ -176,9 +185,18 @@ export function createProgrammaticScrollGuard(
       top: m.top,
       ageMs: at - m.at,
       gen: m.gen,
-      ...(m.source !== undefined ? { source: m.source } : {}),
+      ...(m.source !== undefined
+        ? { source: m.source }
+        : {}),
     }))
   }
 
-  return { mark, write, isEcho, matchedEchoGen, consumeEcho, debugMarkers }
+  return {
+    mark,
+    write,
+    isEcho,
+    matchedEchoGen,
+    consumeEcho,
+    debugMarkers,
+  }
 }

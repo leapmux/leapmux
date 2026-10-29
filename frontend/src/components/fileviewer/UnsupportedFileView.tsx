@@ -19,7 +19,10 @@ function SaveButtonContent(props: {
 }): JSX.Element {
   return (
     <Show when={props.active} fallback={<>{props.label}</>}>
-      <StartupSpinner label={props.progress === null ? props.busyLabel : `${props.busyLabel} ${props.progress}%`} />
+      <StartupSpinner label={props.progress === null
+        ? props.busyLabel
+        : `${props.busyLabel} ${props.progress}%`}
+      />
     </Show>
   )
 }

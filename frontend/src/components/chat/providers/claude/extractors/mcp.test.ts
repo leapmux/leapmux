@@ -37,7 +37,9 @@ describe('claudeMcpFromToolResult', () => {
     expect(source).toMatchObject({
       server: 'claude_ai_Tavily',
       tool: 'tavily_search',
-      content: [{ type: 'text', text: 'A research summary.' }],
+      content: [
+        { type: 'text', text: 'A research summary.' },
+      ],
     })
   })
 
@@ -52,7 +54,10 @@ describe('claudeMcpFromToolResult', () => {
     })
     expect(source?.content).toEqual([
       { type: 'text', text: '## Results' },
-      { type: 'image', source: { mimeType: 'image/png' } },
+      {
+        type: 'image',
+        source: { mimeType: 'image/png' },
+      },
     ])
     expect(source?.argsJson).toBeUndefined()
   })
@@ -60,7 +65,9 @@ describe('claudeMcpFromToolResult', () => {
   it('marks error and surfaces text content as the error message', () => {
     const source = claudeMcpFromToolResult({
       toolName: 'mcp__github__create_issue',
-      resultContent: [{ type: 'text', text: 'Permission denied' }],
+      resultContent: [
+        { type: 'text', text: 'Permission denied' },
+      ],
       isError: true,
     })
     expect(source?.failed).toBe(true)

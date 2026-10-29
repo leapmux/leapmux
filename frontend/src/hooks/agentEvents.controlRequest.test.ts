@@ -29,7 +29,13 @@ function controlStores() {
     /** Place an agent tab and write the worker-reported status beside it. */
     addAgent(id: string, agentStatus: AgentStatus) {
       nextPosition += 1
-      emitAddTab({ type: TabType.AGENT, id, tileId: harness.rootTileId, position: `p${nextPosition}`, workerId: 'w1' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id,
+        tileId: harness.rootTileId,
+        position: `p${nextPosition}`,
+        workerId: 'w1',
+      })
       tabs.metadata.patch(id, { agentStatus })
     },
   }
@@ -40,8 +46,15 @@ function request(overrides: { requestId: string, nonBlocking?: boolean }): Agent
     agentId: 'a1',
     requestId: overrides.requestId,
     claimToken: `tok-${overrides.requestId}`,
-    payload: new TextEncoder().encode(JSON.stringify({ request: { tool_name: 'CodexAsyncQuestion', input: { title: 'Which color?' } } })),
-    ...(overrides.nonBlocking ? { nonBlocking: true } : {}),
+    payload: new TextEncoder().encode(JSON.stringify({
+      request: {
+        tool_name: 'CodexAsyncQuestion',
+        input: { title: 'Which color?' },
+      },
+    })),
+    ...(overrides.nonBlocking
+      ? { nonBlocking: true }
+      : {}),
   })
 }
 

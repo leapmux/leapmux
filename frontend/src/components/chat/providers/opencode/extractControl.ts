@@ -27,6 +27,11 @@ export function openCodeExtractControl(input: ControlExtractionInput): Extracted
     return null
   return {
     kind: 'permission',
-    permission: permission.options.length > 0 ? permission : { ...permission, options: [...DEFAULT_OPTIONS] },
+    permission: permission.options.length > 0
+      ? permission
+      : {
+          ...permission,
+          options: [...DEFAULT_OPTIONS],
+        },
   }
 }

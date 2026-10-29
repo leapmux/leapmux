@@ -11,7 +11,11 @@ clineTest.describe('Cline compaction notice', () => {
     const oldMarker = 'OLDER_TOOL_CONTEXT'
     const command = `node -e "process.stdout.write(('OLDER_' + 'TOOL_CONTEXT ').repeat(2000))"`
     const toolStep = await modelScript.queue(
-      { toolCalls: [bashToolCall(AgentProvider.CLINE, 'large-tool-result', command)] },
+      {
+        toolCalls: [
+          bashToolCall(AgentProvider.CLINE, 'large-tool-result', command),
+        ],
+      },
       { text: 'The earlier tool output is recorded.' },
     )
     await sendMessage(page, modelScript.prompt('Run the scripted command and record its output.'))
@@ -28,7 +32,9 @@ clineTest.describe('Cline compaction notice', () => {
     }
 
     const overflow = await modelScript.queue(
-      { error: { status: 400, code: 'context_length_exceeded', message: 'The maximum context length was exceeded.' } },
+      {
+        error: { status: 400, code: 'context_length_exceeded', message: 'The maximum context length was exceeded.' },
+      },
       { text: 'Recovered after compaction.' },
     )
     await sendMessage(page, modelScript.prompt('Reply after the context overflow recovery.'))

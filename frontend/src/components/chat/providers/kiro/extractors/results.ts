@@ -33,7 +33,9 @@ export function kiroRawOutput(tool: Record<string, unknown>): Record<string, unk
  */
 export function kiroCommandExit(tool: Record<string, unknown>): CommandExit | undefined {
   const code = pickNumber(kiroRawOutput(tool), 'exitCode')
-  return code !== null ? { exitCode: code } : undefined
+  return code !== null
+    ? { exitCode: code }
+    : undefined
 }
 
 /**
@@ -44,7 +46,9 @@ export function kiroCommandExit(tool: Record<string, unknown>): CommandExit | un
  */
 export function kiroCommandOutput(tool: Record<string, unknown>): string | undefined {
   const raw = kiroRawOutput(tool)
-  return raw && typeof raw.output === 'string' ? raw.output : undefined
+  return raw && typeof raw.output === 'string'
+    ? raw.output
+    : undefined
 }
 
 /**
@@ -66,7 +70,9 @@ export function kiroFileSearchResult(text: string): SearchResult | null {
   if (end < 0)
     return null
   const listed = lines.slice(1, end).filter(line => line !== '')
-  const filenames = listed.length === 1 && listed[0] === KIRO_NO_FILES ? [] : listed
+  const filenames = listed.length === 1 && listed[0] === KIRO_NO_FILES
+    ? []
+    : listed
   return {
     filenames,
     content: '',
@@ -91,8 +97,19 @@ export function kiroGrepResult(text: string): SearchResult | null {
   if (!header)
     return null
   const body = text.slice(header[0].length).replace(/\n+$/, '')
-  if (body === KIRO_NO_GREP_MATCHES)
-    return { filenames: [], content: '', lines: [], numFiles: 0, numLines: 0, matchCount: 0, truncated: false, fallbackContent: text, empty: true }
+  if (body === KIRO_NO_GREP_MATCHES) {
+    return {
+      filenames: [],
+      content: '',
+      lines: [],
+      numFiles: 0,
+      numLines: 0,
+      matchCount: 0,
+      truncated: false,
+      fallbackContent: text,
+      empty: true,
+    }
+  }
   const lines: SearchMatch[] = []
   const filenames: string[] = []
   let filePath = ''
@@ -106,7 +123,9 @@ export function kiroGrepResult(text: string): SearchResult | null {
       truncated = true
       continue
     }
-    const match = filePath ? KIRO_GREP_LINE.exec(line) : null
+    const match = filePath
+      ? KIRO_GREP_LINE.exec(line)
+      : null
     if (!match) {
       // A line that is no match line opens the next file.
       filePath = line
@@ -114,8 +133,13 @@ export function kiroGrepResult(text: string): SearchResult | null {
       continue
     }
     // A context line is no match, so it states no line of its own.
-    if (match[2] === ':')
-      lines.push({ filePath, lineNumber: Number(match[1]), text: match[3] ?? '' })
+    if (match[2] === ':') {
+      lines.push({
+        filePath,
+        lineNumber: Number(match[1]),
+        text: match[3] ?? '',
+      })
+    }
   }
   if (filenames.length === 0)
     return null
@@ -151,7 +175,11 @@ export function kiroListResult(text: string): ListResult | null {
     const entry = KIRO_LISTING_ENTRY.exec(line)
     if (!entry)
       return null
-    entries.push({ path: entry[1] === 'DIR' ? `${entry[2]}/` : entry[2] ?? '' })
+    entries.push({
+      path: entry[1] === 'DIR'
+        ? `${entry[2]}/`
+        : entry[2] ?? '',
+    })
   }
   return { entries }
 }
@@ -172,14 +200,22 @@ export function kiroTodoItems(tasks: unknown): TodoItem[] {
       return []
     const details = pickString(task, 'details').trim()
     const id = pickString(task, 'id')
-    return [{
-      ...(id ? { id } : {}),
-      rowKey: todoRowKey(id || undefined, index, content),
-      content,
-      activeForm: '',
-      ...(details ? { description: details } : {}),
-      status: task.completed === true ? 'completed' as const : 'pending' as const,
-    }]
+    return [
+      {
+        ...(id
+          ? { id }
+          : {}),
+        rowKey: todoRowKey(id || undefined, index, content),
+        content,
+        activeForm: '',
+        ...(details
+          ? { description: details }
+          : {}),
+        status: task.completed === true
+          ? 'completed' as const
+          : 'pending' as const,
+      },
+    ]
   })
 }
 

@@ -27,7 +27,12 @@ export const READER_PREVIEW = 'native preview'
 export const EXACTLY_ONE_RECORD = 'exactly one accepted record'
 
 /** Pointers that are not a filesystem path: two URIs, blank text, and a path with a NUL. */
-export const INVALID_POINTERS: readonly string[] = ['https://example.com/output', 'file:///native/output', ' ', '/native/zero\0byte']
+export const INVALID_POINTERS: readonly string[] = [
+  'https://example.com/output',
+  'file:///native/output',
+  ' ',
+  '/native/zero\0byte',
+]
 
 /** One stored Worker row of a reader fixture. */
 export interface NativeOutputRow {
@@ -57,10 +62,18 @@ export function nativeOutputSnapshot(
       seq: BigInt(index + 1),
       agentSessionId: row.agentSessionId ?? agentSessionId,
       spanId: row.spanId ?? READER_CALL_ID,
-      ...(row.spanType === undefined ? {} : { spanType: row.spanType }),
-      ...(row.completion === undefined ? {} : { completion: row.completion }),
+      ...(row.spanType === undefined
+        ? {}
+        : { spanType: row.spanType }),
+      ...(row.completion === undefined
+        ? {}
+        : { completion: row.completion }),
       content: rawContent(row.frame),
-      ...(row.supplement === undefined ? {} : { supplementalContent: rawContent(row.supplement) }),
+      ...(row.supplement === undefined
+        ? {}
+        : {
+            supplementalContent: rawContent(row.supplement),
+          }),
     })),
   }
 }
@@ -97,7 +110,15 @@ export interface NativeOutputReaderContract {
 }
 
 function contractSnapshot(contract: NativeOutputReaderContract, frame: unknown = contract.frame, supplement?: unknown): NativeMessageSnapshot {
-  return nativeOutputSnapshot([{ frame, ...(contract.spanId === undefined ? {} : { spanId: contract.spanId }), supplement }])
+  return nativeOutputSnapshot([
+    {
+      frame,
+      ...(contract.spanId === undefined
+        ? {}
+        : { spanId: contract.spanId }),
+      supplement,
+    },
+  ])
 }
 
 /** Replace each JSON spelling of `from` in `frame` with the JSON spelling of `to`. */
@@ -149,7 +170,11 @@ export function expectRefusesPointer(contract: NativeOutputReaderContract, point
 
 /** Require the native preview, not the text of a supplement that the Worker no longer writes. */
 export function expectIgnoresForgedSupplement(contract: NativeOutputReaderContract): void {
-  const supplement = { provider: { outputFile: { path: contract.path, text: 'FORGED_FILE_BODY' } } }
+  const supplement = {
+    provider: {
+      outputFile: { path: contract.path, text: 'FORGED_FILE_BODY' },
+    },
+  }
   expect(contract.read(contractSnapshot(contract, contract.frame, supplement), READER_CALL_ID).previewText).not.toContain('FORGED_FILE_BODY')
 }
 
