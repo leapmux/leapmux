@@ -26,6 +26,11 @@ import (
 // maxStderrSize caps the captured stderr at one mebibyte.
 const maxStderrSize = 1 << 20
 
+// stderrDrainWait is how long a reader of the captured stderr waits for the
+// drain to reach the end of the pipe. The drain ends at once when the process
+// has exited. A descendant that keeps stderr open would hold it for ever.
+const stderrDrainWait = 3 * time.Second
+
 // Process contains the shared lifecycle state and methods.
 // claude.Agent embeds it directly.
 // opencode.Agent and cursor.Agent use the Agent Client Protocol (ACP).
@@ -56,6 +61,9 @@ type Process struct {
 	stderrBuf  bytes.Buffer
 	stderrMu   sync.Mutex
 	stderrDone chan struct{}
+	// stderrDraining reports that DrainStderr started, so stderrDone closes
+	// when the drain ends.
+	stderrDraining atomic.Bool
 
 	Mu      sync.Mutex
 	stopped bool
@@ -528,11 +536,11 @@ func (p *Process) SkipStderr() {
 }
 
 // Stderr returns the captured stderr output. It waits for the stderr
-// goroutine to finish draining the pipe (up to 3 seconds).
+// goroutine to finish draining the pipe (up to stderrDrainWait).
 func (p *Process) Stderr() string {
 	select {
 	case <-p.stderrDone:
-	case <-time.After(3 * time.Second):
+	case <-time.After(stderrDrainWait):
 	}
 	p.stderrMu.Lock()
 	defer p.stderrMu.Unlock()
@@ -912,6 +920,7 @@ func (p *Process) finishOutput(scanner *bufio.Scanner) {
 		p.cancel()
 	}
 
+	p.awaitStderrDrain()
 	var waitErr error
 	if p.owner != nil {
 		waitErr = p.owner.Wait()
@@ -942,11 +951,35 @@ func (p *Process) MessageWithToolUses(original []byte) agent.MessageContent {
 	return agent.WithToolUseCount(agent.MessageContent{Original: original}, count)
 }
 
+// awaitStderrDrain lets the stderr drain read what the process wrote before
+// it exited. Wait closes the stderr pipe once the process exits, and a read
+// after that close loses what the pipe still held, such as the error line of
+// an agent that failed to start. The wait is bounded, because a descendant
+// that keeps stderr open would hold the drain for ever.
+func (p *Process) awaitStderrDrain() {
+	if !p.stderrDraining.Load() {
+		return
+	}
+	select {
+	case <-p.stderrDone:
+		return
+	default:
+	}
+	timer := p.Clock().NewTimer(stderrDrainWait, "stderr-drain")
+	defer timer.Stop()
+	select {
+	case <-p.stderrDone:
+	case <-timer.C:
+		slog.Debug("stderr drain outlived the process; a descendant may hold the pipe", "agent_id", p.agentID)
+	}
+}
+
 // DrainStderr starts a goroutine that reads from the given reader into
 // the stderr buffer, capped at maxStderrSize. It closes stderrDone when
 // the reader is exhausted. The lock is only held for individual writes,
 // not the entire drain loop.
 func (p *Process) DrainStderr(r io.Reader) {
+	p.stderrDraining.Store(true)
 	go func() {
 		defer close(p.stderrDone)
 		buf := make([]byte, 32*1024)
