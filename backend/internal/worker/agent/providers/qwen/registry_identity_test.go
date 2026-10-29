@@ -3,6 +3,7 @@ package qwen
 import (
 	"encoding/json"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -54,13 +55,26 @@ func qwenRegistryIdentityAgent(t *testing.T) (*Agent, *agenttest.ControlSink, ag
 // registry operations. Cleanup releases it even when an assertion fails.
 func holdQwenRegistryIdentityOutput(t *testing.T, a *Agent, services agent.ProviderServices) func() {
 	t.Helper()
+	return holdQwenOutput(t, a, services, func() error { return agent.FlushPendingOutput(services) })
+}
+
+// holdQwenOutput appends a write that refuses to run until release, and
+// returns once a flush ran it. The agent's own output paths flush the same
+// queue, and FlushPendingOutput reports no error while another flush is in
+// flight, so the refusal can reach that flush instead of this one. A test
+// replaces flush to order it against such a flush.
+func holdQwenOutput(t *testing.T, a *Agent, services agent.ProviderServices, flush func() error) func() {
+	t.Helper()
 	queue := agent.OutputQueueFor(services)
 	require.NotNil(t, queue)
 	var blocked atomic.Bool
 	blocked.Store(true)
+	refused := make(chan struct{})
+	var refusedOnce sync.Once
 	unavailable := errors.New("the earlier output write is unavailable")
 	queue.Append(agent.OutputWrite{Label: "hold Qwen registry identity output", Run: func() error {
 		if blocked.Load() {
+			refusedOnce.Do(func() { close(refused) })
 			return unavailable
 		}
 		return nil
@@ -74,8 +88,40 @@ func holdQwenRegistryIdentityOutput(t *testing.T, a *Agent, services agent.Provi
 		a.stopAllBackgroundTranscripts()
 		release()
 	})
-	require.ErrorIs(t, agent.FlushPendingOutput(services), unavailable)
+	if err := flush(); err != nil {
+		require.ErrorIs(t, err, unavailable)
+	}
+	select {
+	case <-refused:
+	case <-testutil.DeadlineContext(t).Done():
+		require.FailNow(t, "no flush ran the held output write")
+	}
 	return release
+}
+
+// A flush that another output path started first makes FlushPendingOutput
+// report no error, and that flush meets the held write instead.
+func TestHoldQwenOutputWaitsForAFlushThatIsAlreadyRunning(t *testing.T) {
+	t.Parallel()
+	a, _, services := qwenRegistryIdentityAgent(t)
+	queue := agent.OutputQueueFor(services)
+	require.NotNil(t, queue)
+	running, unblock := make(chan struct{}), make(chan struct{})
+	queue.Append(agent.OutputWrite{Label: "a flush in flight", Run: func() error {
+		close(running)
+		<-unblock
+		return nil
+	}})
+	flushed := make(chan error, 1)
+	go func() { flushed <- agent.FlushPendingOutput(services) }()
+	<-running
+	release := holdQwenOutput(t, a, services, func() error {
+		err := agent.FlushPendingOutput(services)
+		close(unblock)
+		return err
+	})
+	assert.ErrorContains(t, <-flushed, "the earlier output write is unavailable", "the flush in flight met the held write")
+	release()
 }
 
 func feedQwenRegistryIdentityUpdate(t *testing.T, a *Agent, sessionID string, update map[string]any) {
