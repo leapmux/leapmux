@@ -23,11 +23,15 @@ function commands(tasks, name, visited = new Set()) {
   if (!task)
     throw new Error(`Unknown task: ${name}`)
   return [
-    ...(task.deps ?? []).flatMap(dep => commands(tasks, typeof dep === 'string' ? dep : dep.task, visited)),
+    ...(task.deps ?? []).flatMap(dep => commands(tasks, typeof dep === 'string'
+      ? dep
+      : dep.task, visited)),
     ...(task.cmds ?? []).flatMap((cmd) => {
       if (typeof cmd === 'string')
         return [cmd]
-      return cmd.task ? commands(tasks, cmd.task, visited) : [cmd.cmd]
+      return cmd.task
+        ? commands(tasks, cmd.task, visited)
+        : [cmd.cmd]
     }),
   ]
 }
@@ -36,7 +40,10 @@ describe('native CI validation', () => {
   it('serializes SQL generators that compile the same Go tool on a cold cache', () => {
     const task = readYaml('Taskfile.yaml').tasks['generate-sqlc']
     expect(task.deps ?? []).toEqual([])
-    expect(task.cmds).toEqual([{ task: 'generate-sqlc-hub' }, { task: 'generate-sqlc-worker' }])
+    expect(task.cmds).toEqual([
+      { task: 'generate-sqlc-hub' },
+      { task: 'generate-sqlc-worker' },
+    ])
   })
 
   it('keeps cross-platform Go vet in lint instead of repeating it during tests', () => {
@@ -52,7 +59,9 @@ describe('native CI validation', () => {
     expect(linux.steps.find(step => step.run === 'task test-no-docker')?.if).toBe('matrix.arch == \'arm64\'')
     const armTests = commands(tasks, 'test-no-docker')
     for (const module of ['backend', 'desktop/go']) {
-      const lint = commands(tasks, module === 'backend' ? 'lint-backend' : 'lint-desktop')
+      const lint = commands(tasks, module === 'backend'
+        ? 'lint-backend'
+        : 'lint-desktop')
       for (const os of ['windows', 'linux', 'darwin']) {
         expect(lint).toContain(`cd ${module} && GOOS=${os} go vet -tags integration ./...`)
         expect(armTests).toContain(`cd ${module} && GOOS=${os} go vet -tags integration ./...`)
@@ -60,26 +69,60 @@ describe('native CI validation', () => {
     }
   })
 
-  it.each(['', 'frontend-native', 'backend', 'desktop-go', 'rust-test', 'rust-lint'])('propagates failures and stops subsequent native commands: %s', (failure) => {
+  it.each([
+    '',
+    'frontend-native',
+    'backend',
+    'desktop-go',
+    'rust-test',
+    'rust-lint',
+  ])('propagates failures and stops subsequent native commands: %s', (failure) => {
     const tasks = readYaml('Taskfile.yaml').tasks
     mkdirSync(join(root, '.tmp'), { recursive: true })
     const dir = mkdtempSync(join(root, '.tmp', 'ci-native-'))
     fixtures.push(dir)
-    const stages = ['frontend-native', 'backend', 'desktop-go', 'rust-test', 'rust-lint']
-    const selected = Object.fromEntries(['test-native', 'test-frontend-native', 'test-backend-no-docker-run', 'test-desktop-run'].map(name => [name, structuredClone(tasks[name])]))
+    const stages = [
+      'frontend-native',
+      'backend',
+      'desktop-go',
+      'rust-test',
+      'rust-lint',
+    ]
+    const selected = Object.fromEntries([
+      'test-native',
+      'test-frontend-native',
+      'test-backend-no-docker-run',
+      'test-desktop-run',
+    ].map(name => [
+      name,
+      structuredClone(tasks[name]),
+    ]))
     let index = 0
     // Retain the production orchestration. Replace compilation with a recorder
     // so the fixture can fail each test command without native toolchains.
-    for (const name of ['test-frontend-native', 'test-backend-no-docker-run', 'test-desktop-run', 'test-native']) {
+    for (const name of [
+      'test-frontend-native',
+      'test-backend-no-docker-run',
+      'test-desktop-run',
+      'test-native',
+    ]) {
       delete selected[name].deps
-      selected[name].cmds = selected[name].cmds.map(cmd => typeof cmd === 'string' ? `bun record.mjs ${stages[index++]}` : cmd)
+      selected[name].cmds = selected[name].cmds.map(cmd => typeof cmd === 'string'
+        ? `bun record.mjs ${stages[index++]}`
+        : cmd)
     }
     writeFileSync(join(dir, 'Taskfile.yaml'), Bun.YAML.stringify({ version: '3', tasks: selected }))
     writeFileSync(join(dir, 'record.mjs'), `import { appendFileSync } from 'node:fs'; appendFileSync('executed', process.argv[2] + '\\n'); if (process.argv[2] === process.env.FAIL_STAGE) process.exit(1)`)
-    const result = spawnSync('task', ['test-native'], { cwd: dir, env: { ...process.env, FAIL_STAGE: failure }, encoding: 'utf8' })
+    const result = spawnSync('task', ['test-native'], {
+      cwd: dir,
+      env: { ...process.env, FAIL_STAGE: failure },
+      encoding: 'utf8',
+    })
     expect(result.error).toBeUndefined()
     expect(result.status === 0, result.stdout + result.stderr).toBe(failure === '')
-    expect(readFileSync(join(dir, 'executed'), 'utf8').trim().split('\n')).toEqual(failure ? stages.slice(0, stages.indexOf(failure) + 1) : stages)
+    expect(readFileSync(join(dir, 'executed'), 'utf8').trim().split('\n')).toEqual(failure
+      ? stages.slice(0, stages.indexOf(failure) + 1)
+      : stages)
   })
 
   it('keeps native Go tests, Rust tests and Rust lint without repeated portable validation', () => {

@@ -3,10 +3,12 @@
 package opencodetest
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 
+	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
@@ -18,6 +20,14 @@ const outputFilePathEnv = "LEAPMUX_TEST_FAMILY_OUTPUT_FILE_PATH"
 type outputFileTurnSink struct {
 	*agenttest.Sink
 	finished chan struct{}
+}
+
+func newOutputFileTurnSink(ctx context.Context, clock quartz.Clock) *outputFileTurnSink {
+	sink := &outputFileTurnSink{Sink: &agenttest.Sink{}, finished: make(chan struct{})}
+	// A transient provider lock can retain final output. The standalone fixture
+	// needs the Worker's retry lifecycle even when no later native frame arrives.
+	sink.OutputQueue().ConfigureRetry(ctx, clock, nil)
+	return sink
 }
 
 func (s *outputFileTurnSink) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
