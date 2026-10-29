@@ -159,6 +159,7 @@ var copilotDroppedEvents = map[string]struct{}{
 	contracts.CopilotEventSessionCustomAgentsUpdated:             {},
 	contracts.CopilotEventSessionExtensionsAttachmentsPushed:     {},
 	contracts.CopilotEventSessionMcpServersLoaded:                {},
+	contracts.CopilotEventSessionMcpServerToolsLoaded:            {},
 	contracts.CopilotEventSessionMcpServerStatusChanged:          {},
 	contracts.CopilotEventSessionMcpServerRemoved:                {},
 	contracts.CopilotEventSessionMcpServerNeedsReconnect:         {},
@@ -183,6 +184,7 @@ var copilotDroppedEvents = map[string]struct{}{
 	contracts.CopilotEventSessionWorkspaceFileChanged:            {},
 	contracts.CopilotEventSessionHandoff:                         {},
 	contracts.CopilotEventUiEphemeralQuery:                       {},
+	contracts.CopilotEventInstructionUpdate:                      {},
 	contracts.CopilotEventSamplingCompleted:                      {},
 	contracts.CopilotEventExternalToolCompleted:                  {},
 	contracts.CopilotEventCommandQueued:                          {},
@@ -221,6 +223,9 @@ var copilotKnownEvents = func() map[string]struct{} {
 
 // A session can run for hours. Keep only recent reasoning IDs for duplicate checks.
 const maxCopilotReasoningIDs = 256
+
+// copilotLiveOutputLimit caps the live shell text retained for one running call.
+const copilotLiveOutputLimit = 8192
 
 // copilotMethodIsTelemetry reports whether a method describes the RUNTIME rather
 // than the work.
@@ -274,6 +279,14 @@ type copilotOpenTool struct {
 	// sawOutput records that this call already produced real output, so a later
 	// progress SENTENCE does not replace it. See reportNativeToolOutput.
 	sawOutput bool
+	// shellOutput owns append-only chunks separately from replacement snapshots.
+	shellOutput *copilotShellOutput
+}
+
+type copilotShellOutput struct {
+	tail      string
+	sequence  int64
+	truncated bool
 }
 
 // copilotToolStart is the part of `tool.execution_start` that LeapMux reads.
@@ -405,12 +418,20 @@ func (a *Agent) handleNativeEvent(raw []byte, event copilotEvent) {
 		a.reportNativeTextProgress(sink, event)
 	case contracts.CopilotEventSessionModeChanged, contracts.CopilotEventSessionPermissionsChanged,
 		contracts.CopilotEventSessionModelChange:
+		// No request here can remove the tools of a mode that ended. Copilot CLI 1.0.103
+		// and later keep the tool list and the system message of a model request
+		// append-only. A switch to Plan adds `exit_plan_mode` and `task_complete`, and a
+		// switch back keeps both and appends a notice that Plan ended. The runtime refuses
+		// a call to a kept tool outside its mode. session.tools.initializeAndValidate
+		// rebuilds the session's tool list, not the tool list of the model request.
 		a.refreshNativeSettingsInBackground()
 	case contracts.CopilotEventSessionAutopilotObjectiveChanged:
 		a.refreshNativeGoalInBackground()
+	case contracts.CopilotEventToolShellOutput:
+		a.reportNativeShellOutput(sink, event.Data)
+		return
 	case contracts.CopilotEventToolProgress, contracts.CopilotEventToolPartialResult:
-		// The only text a running call reports. It was dropped UNREAD before, so the
-		// row stayed blank for the whole call.
+		// Snapshots and progress sentences also feed the running row.
 		//
 		// The drop is LeapMux's own decision rather than the runtime's `ephemeral`
 		// mark: the frame carries a window on output the finished row states in
@@ -434,7 +455,8 @@ func (a *Agent) handleNativeEvent(raw []byte, event copilotEvent) {
 
 // reportNativeToolOutput carries the live text of a running call to its own row.
 //
-// partialOutput contains new tool output. progressMessage contains a runtime status sentence. Neither field is cumulative.
+// partialOutput replaces the previous snapshot of the running shell's output.
+// progressMessage contains a runtime status sentence.
 // The runtime can interleave both fields. Once output arrives, it takes priority over status sentences.
 // Before any output arrives, the row shows the status sentence.
 //
@@ -451,6 +473,11 @@ func (a *Agent) reportNativeToolOutput(sink agent.ProviderServices, data json.Ra
 	tool := a.openTools[frame.ToolCallID]
 	if frame.PartialOutput != "" {
 		if tool != nil {
+			// The shell stream and the snapshot can describe the same bytes.
+			// Once streaming starts, its sequence owns the live output.
+			if tool.shellOutput != nil {
+				return
+			}
 			tool.sawOutput = true
 		}
 		// A partial output is a WINDOW on more by definition.
@@ -464,6 +491,47 @@ func (a *Agent) reportNativeToolOutput(sink agent.ProviderServices, data json.Ra
 	}
 	// A whole sentence the runtime wrote, so it states no loss.
 	sink.ReportProgress(agent.OutputTailProgress(frame.ToolCallID, frame.ProgressMessage, false))
+}
+
+// reportNativeShellOutput joins the chunks of one call across all output streams.
+// The publication sequence rejects repeated chunks and identifies missing output.
+// The caller holds outputMu, which guards each open tool and its retained tail.
+func (a *Agent) reportNativeShellOutput(sink agent.ProviderServices, data json.RawMessage) {
+	var frame struct {
+		ToolCallID string `json:"toolCallId"`
+		Text       string `json:"text"`
+		Sequence   *int64 `json:"sequence"`
+	}
+	if err := json.Unmarshal(data, &frame); err != nil || frame.ToolCallID == "" || frame.Sequence == nil || *frame.Sequence < 0 {
+		return
+	}
+	tool := a.openTools[frame.ToolCallID]
+	if tool == nil {
+		// Without a start, no call owns retained state. Its one chunk still
+		// reaches the row, but earlier output may be missing.
+		if frame.Text != "" {
+			tail, _ := agent.ClipTailBytes(frame.Text, copilotLiveOutputLimit)
+			sink.ReportProgress(agent.OutputTailProgress(frame.ToolCallID, tail, true))
+		}
+		return
+	}
+	if tool.shellOutput == nil {
+		tool.shellOutput = &copilotShellOutput{sequence: -1}
+	}
+	output := tool.shellOutput
+	if *frame.Sequence <= output.sequence {
+		return
+	}
+	output.truncated = output.truncated || output.sequence != *frame.Sequence-1
+	output.sequence = *frame.Sequence
+	if frame.Text == "" {
+		return
+	}
+	var clipped bool
+	output.tail, clipped = agent.ClipTailBytes(output.tail+frame.Text, copilotLiveOutputLimit)
+	output.truncated = output.truncated || clipped
+	tool.sawOutput = true
+	a.sinkFor(tool.child).ReportProgress(agent.OutputTailProgress(frame.ToolCallID, output.tail, output.truncated))
 }
 
 // copilotTurnWasAborted reports whether the reader stopped the turn that is ending.

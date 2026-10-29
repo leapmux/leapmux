@@ -66,7 +66,8 @@ export function handleCopilotHttp(request: IncomingMessage, response: ServerResp
       login: 'leapmux-e2e',
       copilot_plan: 'individual_pro',
       token_based_billing: false,
-      is_mcp_enabled: false,
+      // Copilot CLI 1.0.103 reads this flag and loads no MCP server for an account that reports it off.
+      is_mcp_enabled: true,
       endpoints: { api: requestOrigin, telemetry: requestOrigin },
       analytics_tracking_id: 'leapmux-e2e',
     })

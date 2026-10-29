@@ -30,7 +30,7 @@ describe('handleCopilotHttp', () => {
       login: 'leapmux-e2e',
       copilot_plan: 'individual_pro',
       token_based_billing: false,
-      is_mcp_enabled: false,
+      is_mcp_enabled: true,
       endpoints: { api: origin, telemetry: origin },
       analytics_tracking_id: 'leapmux-e2e',
     })

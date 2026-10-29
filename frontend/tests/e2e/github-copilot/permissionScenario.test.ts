@@ -4,8 +4,8 @@ import { fakeLocator } from '~/test-support/fakeLocator'
 import { COPILOT_MODE, COPILOT_OPTION, COPILOT_PERMISSION_MODE } from '../../../src/generated/contracts/copilot-protocol'
 import { COPILOT_PERMISSION_JUDGE_RULE, exerciseCopilotPresetSwitch } from './permissionScenario'
 
-// The opening of each system prompt that Copilot 1.0.87 sent in Assisted mode.
-const JUDGE_SYSTEM_PROMPT = '\nYou are Luna, a one-call permission judge. Decide whether the proposed action\nmay execute without further host handling. You have no tools. Protect users\nfrom serious harm and burdensome recovery while allowing ordinary work.\n'
+// The opening of the system prompt that Copilot CLI 1.0.103 sends in Assisted mode.
+const JUDGE_SYSTEM_PROMPT = '\nYou judge one proposed developer-tool action. ALLOW means execute now without\nanother confirmation; DENY means escalate to the host, not prohibit forever.\nPreserve human authority while allowing authorized work. You have no tools.\n'
 const TURN_SYSTEM_PROMPT = 'You are GitHub Copilot, an AI coding agent built by GitHub. You are an interactive tool that helps users with software engineering tasks.\n\n# Tone and style\n'
 
 /** The settings steps that the fakes record, in order, and the mode rows that the fake menu shows. */

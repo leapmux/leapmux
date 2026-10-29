@@ -215,5 +215,5 @@ export async function readCopilotBuiltinCatalog(context: ManagedNativeScenarioCo
   const binary = requireBinary('copilot', 'The native Copilot catalog requires its installed CLI', env)
   const agent = await currentNativeAgent(context)
   const model = nativeOptionValue(agent, 'model')
-  return queryCopilotBuiltinCatalog({ executable: binary, args: ['--server', '--stdio', '--no-remote-export'], cwd: agent.workingDir, env, ...(model === undefined ? {} : { model }) })
+  return queryCopilotBuiltinCatalog({ executable: binary, args: ['--server', '--stdio', '--sync-session=off'], cwd: agent.workingDir, env, ...(model === undefined ? {} : { model }) })
 }

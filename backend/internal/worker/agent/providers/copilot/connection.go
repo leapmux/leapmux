@@ -55,7 +55,7 @@ func startCopilotConnection(parent context.Context, opts agent.Options) (*copilo
 	}
 	cmd, delimiter, prefix := launch.Wrap(ctx, launch.WrapSpec{
 		Shell: opts.Shell, LoginShell: opts.LoginShell, Launch: launchSpec, WorkingDir: opts.WorkingDir,
-		BaseArgs: []string{"--server", "--stdio", "--no-remote-export"},
+		BaseArgs: []string{"--server", "--stdio", "--sync-session=off"},
 		SetEnv:   []string{copilotAutoUpdateEnv},
 	})
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)

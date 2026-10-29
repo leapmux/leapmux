@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -407,8 +409,14 @@ func TestNativeCopilotDropsFramesThatCarryNoConversation(t *testing.T) {
 	a.HandleOutput(nativeCopilotEvent(t, "", "session.usage_checkpoint", map[string]any{
 		"totalNanoAiu": 12199400000, "totalPremiumRequests": 1,
 	}))
+	// Copilot CLI 1.0.103 records the prompt state behind a mode change. The
+	// record is bookkeeping, and its content repeats the mode notice.
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventInstructionUpdate, map[string]any{
+		"content":   "<mode_changed_notice>\nPlan mode is no longer active.\n</mode_changed_notice>",
+		"authority": "runtime", "lifetime": "persistent", "name": "mode-state",
+	}))
 
-	assert.Empty(t, sink.Messages(), "none of the three belongs in the transcript")
+	assert.Empty(t, sink.Messages(), "none of the four belongs in the transcript")
 }
 
 // The runtime's model-call trace and its hook plumbing describe the runtime rather
@@ -805,6 +813,203 @@ func TestCopilotNativeEvents_ProgressFramesFeedTheRunningRow(t *testing.T) {
 	assert.Contains(t, updates, agent.OutputTailProgress("call-1", "match one\nmatch two", true))
 	// Both frames are ephemeral: neither reaches the transcript.
 	assert.Equal(t, 0, sink.MessageCount())
+}
+
+// Copilot CLI 1.0.103 streams a running shell call as `tool.shell_output` chunks,
+// one per stream and sequence. The live tail joins those chunks. No chunk reaches
+// the transcript, because the finished row states the whole output.
+func TestCopilotNativeEvents_ShellOutputChunksFeedTheRunningRow(t *testing.T) {
+	t.Parallel()
+
+	a, sink := newNativeCopilotForEvents(t)
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolStarted,
+		map[string]any{"toolCallId": "call-1", "toolName": "bash"}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolShellOutput,
+		map[string]any{"toolCallId": "call-1", "stream": "stderr", "text": "compiling\n", "sequence": 0}))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolShellOutput,
+		map[string]any{"toolCallId": "call-1", "stream": "stdout", "text": "ok\n", "sequence": 1}))
+
+	updates := sink.ProgressUpdates()
+	assert.Contains(t, updates, agent.OutputTailProgress("call-1", "compiling\n", false))
+	assert.Contains(t, updates, agent.OutputTailProgress("call-1", "compiling\nok\n", false))
+	assert.Equal(t, 1, sink.MessageCount(), "only the tool start belongs in the transcript")
+}
+
+func TestCopilotNativeEvents_JoinsShellOutputWithoutLosingTextBeforeANewline(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolStarted,
+		map[string]any{"toolCallId": "call-1", "toolName": "bash"}))
+	for i, text := range []string{"compiling main.go", "\n", "", "ok"} {
+		a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolShellOutput,
+			map[string]any{"toolCallId": "call-1", "stream": "stdout", "text": text, "sequence": i}))
+	}
+	beforeStatus := len(sink.ProgressUpdates())
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolProgress,
+		map[string]any{"toolCallId": "call-1", "progressMessage": "Still running"}))
+	assert.Len(t, sink.ProgressUpdates(), beforeStatus, "a status sentence must not replace shell output")
+	updates := sink.ProgressUpdates()
+	assert.Equal(t, agent.OutputTailProgress("call-1", "compiling main.go\nok", false), updates[len(updates)-1])
+}
+
+func TestCopilotNativeEvents_ShellChunksAndSnapshotsDoNotDuplicateOutput(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+	a.HandleOutput(nativeCopilotToolStart(t, "", "call-1", contracts.CopilotToolBash))
+	for _, text := range []string{"h", "hel"} {
+		a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolPartialResult,
+			map[string]any{"toolCallId": "call-1", "partialOutput": text}))
+	}
+	updates := sink.ProgressUpdates()
+	assert.Equal(t, agent.OutputTailProgress("call-1", "hel", true), updates[len(updates)-1], "snapshots replace rather than append")
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolShellOutput,
+		map[string]any{"toolCallId": "call-1", "text": "hel", "sequence": 0}))
+	beforeSnapshot := len(sink.ProgressUpdates())
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolPartialResult,
+		map[string]any{"toolCallId": "call-1", "partialOutput": "hello"}))
+	assert.Len(t, sink.ProgressUpdates(), beforeSnapshot, "snapshots do not overwrite the shell stream")
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolShellOutput,
+		map[string]any{"toolCallId": "call-1", "text": "lo", "sequence": 1}))
+	updates = sink.ProgressUpdates()
+	assert.Equal(t, agent.OutputTailProgress("call-1", "hello", false), updates[len(updates)-1])
+}
+
+func TestCopilotNativeEvents_ShellSequencesRejectRepeatedChunksAndReportMissingOutput(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+	a.HandleOutput(nativeCopilotToolStart(t, "", "call-1", contracts.CopilotToolBash))
+	for _, chunk := range []struct {
+		sequence int64
+		text     string
+	}{
+		{0, "first"}, {0, "duplicate"}, {2, "third"}, {1, "late"}, {3, ""}, {4, "last"},
+	} {
+		a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolShellOutput,
+			map[string]any{"toolCallId": "call-1", "text": chunk.text, "sequence": chunk.sequence}))
+	}
+	assert.Equal(t, []agent.ProgressUpdate{
+		agent.OutputTailProgress("call-1", "first", false),
+		agent.OutputTailProgress("call-1", "firstthird", true),
+		agent.OutputTailProgress("call-1", "firstthirdlast", true),
+	}, sink.ProgressUpdates())
+}
+
+func TestCopilotNativeEvents_ShellOutputClipsAtRuneBoundariesAndKeepsTheLossFlag(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+	a.HandleOutput(nativeCopilotToolStart(t, "", "call-1", contracts.CopilotToolBash))
+	for sequence, text := range []string{strings.Repeat("가", copilotLiveOutputLimit), "end"} {
+		a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolShellOutput,
+			map[string]any{"toolCallId": "call-1", "text": text, "sequence": sequence}))
+	}
+	updates := sink.ProgressUpdates()
+	require.Len(t, updates, 2)
+	for _, update := range updates {
+		assert.LessOrEqual(t, len(update.Text), copilotLiveOutputLimit)
+		assert.True(t, utf8.ValidString(update.Text))
+		assert.True(t, update.Truncated)
+	}
+	assert.True(t, strings.HasSuffix(updates[1].Text, "가end"))
+}
+
+func TestCopilotNativeEvents_ShellOutputKeepsEachCallAndItsChildOwner(t *testing.T) {
+	t.Parallel()
+	a, root := newNativeCopilotForEvents(t)
+	child := &agenttest.Sink{}
+	a.children = map[string]*copilotNativeChild{"child": {nativeAgentID: "child", sink: agent.NewProviderServices(child)}}
+	a.HandleOutput(nativeCopilotToolStart(t, "", "root-call", contracts.CopilotToolBash))
+	a.HandleOutput(nativeCopilotToolStart(t, "child", "child-call", contracts.CopilotToolBash))
+	for sequence, text := range []string{"first", "second"} {
+		for _, id := range []string{"root-call", "child-call"} {
+			// The start fixes ownership even when a chunk omits agentId.
+			a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolShellOutput,
+				map[string]any{"toolCallId": id, "text": id + text, "sequence": sequence}))
+		}
+	}
+	assert.Equal(t, []agent.ProgressUpdate{
+		agent.OutputTailProgress("root-call", "root-callfirst", false),
+		agent.OutputTailProgress("root-call", "root-callfirstroot-callsecond", false),
+	}, root.ProgressUpdates())
+	assert.Equal(t, []agent.ProgressUpdate{
+		agent.OutputTailProgress("child-call", "child-callfirst", false),
+		agent.OutputTailProgress("child-call", "child-callfirstchild-callsecond", false),
+	}, child.ProgressUpdates())
+}
+
+func TestCopilotNativeEvents_ShellOutputKeepsConcurrentCallsSeparate(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+	const calls = 32
+	for i := range calls {
+		a.HandleOutput(nativeCopilotToolStart(t, "", fmt.Sprintf("call-%d", i), contracts.CopilotToolBash))
+	}
+	var writers sync.WaitGroup
+	for i := range calls {
+		writers.Go(func() {
+			id := fmt.Sprintf("call-%d", i)
+			for sequence, text := range []string{id + ":", "done"} {
+				a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolShellOutput,
+					map[string]any{"toolCallId": id, "text": text, "sequence": sequence}))
+			}
+		})
+	}
+	writers.Wait()
+	latest := make(map[string]agent.ProgressUpdate, calls)
+	updates := sink.ProgressUpdates()
+	require.Len(t, updates, calls*2)
+	for _, update := range updates {
+		latest[update.ScopeID] = update
+	}
+	require.Len(t, latest, calls)
+	for i := range calls {
+		id := fmt.Sprintf("call-%d", i)
+		assert.Equal(t, agent.OutputTailProgress(id, id+":done", false), latest[id])
+	}
+}
+
+func TestCopilotNativeEvents_ShellOutputEndsWithItsToolCall(t *testing.T) {
+	t.Parallel()
+	for _, finish := range []string{"completion", "turn-end"} {
+		t.Run(finish, func(t *testing.T) {
+			t.Parallel()
+			a, sink := newNativeCopilotForEvents(t)
+			a.HandleOutput(nativeCopilotToolStart(t, "", "call-1", contracts.CopilotToolBash))
+			a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolShellOutput,
+				map[string]any{"toolCallId": "call-1", "text": "old", "sequence": 8}))
+			assert.True(t, sink.ProgressUpdates()[0].Truncated, "a late subscription missed the beginning")
+			if finish == "completion" {
+				a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolCompleted,
+					map[string]any{"toolCallId": "call-1", "success": true}))
+			} else {
+				a.outputMu.Lock()
+				a.closeOpenNativeTools()
+				a.outputMu.Unlock()
+			}
+			assert.Empty(t, a.openTools)
+			a.HandleOutput(nativeCopilotToolStart(t, "", "call-1", contracts.CopilotToolBash))
+			a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolShellOutput,
+				map[string]any{"toolCallId": "call-1", "text": "new", "sequence": 0}))
+			updates := sink.ProgressUpdates()
+			assert.Equal(t, agent.OutputTailProgress("call-1", "new", false), updates[len(updates)-1])
+		})
+	}
+}
+
+func TestCopilotNativeEvents_ShellOutputRejectsInvalidFramesWithoutRetainingUnknownCalls(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+	for _, data := range []string{
+		`null`, `{"toolCallId":"call-1","text":"bad"}`, `{"toolCallId":"call-1","text":"bad","sequence":-1}`,
+		`{"toolCallId":"call-1","text":"bad","sequence":1.5}`, `{"text":"bad","sequence":0}`,
+		`{"toolCallId":"call-1","text":"","sequence":0}`,
+	} {
+		a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolShellOutput, json.RawMessage(data)))
+	}
+	assert.Empty(t, sink.ProgressUpdates())
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventToolShellOutput,
+		map[string]any{"toolCallId": "unknown", "text": "one chunk", "sequence": 0}))
+	assert.Equal(t, []agent.ProgressUpdate{agent.OutputTailProgress("unknown", "one chunk", true)}, sink.ProgressUpdates())
+	assert.Empty(t, a.openTools)
 }
 
 // The runtime interleaves the two frames, and they say different things. Once a call
