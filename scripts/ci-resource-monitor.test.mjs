@@ -324,7 +324,8 @@ describe('freeDisk', () => {
       join(directory, 'missing'),
     ])
     expect(report.split(',')).toHaveLength(2)
-    expect(report).toMatch(/:\d+\.\dG/)
+    // One separator follows the label: a Windows drive key such as C: ends with it.
+    expect(report).toMatch(/^[^,]*[^:]:\d+\.\dG,/)
     expect(report).toContain('fail(ENOENT)')
   })
 })

@@ -905,16 +905,19 @@ export function freeDisk(paths) {
     if (!path)
       continue
     try {
+      // statSync also rejects a missing path, on every OS.
+      const { dev } = statSync(path)
       const key = process.platform === 'win32'
         ? resolve(path).slice(0, 2).toUpperCase()
-        : String(statSync(path).dev)
+        : String(dev)
       if (parts.has(key))
         continue
       const stats = statfsSync(path)
+      // A drive key such as C: already ends with the separator.
       const label = process.platform === 'win32'
         ? key
-        : path
-      parts.set(key, `${label}:${formatGigabytes(Number(stats.bavail) * Number(stats.bsize))}`)
+        : `${path}:`
+      parts.set(key, `${label}${formatGigabytes(Number(stats.bavail) * Number(stats.bsize))}`)
     }
     catch (error) {
       parts.set(path, `${path}:fail(${error.code ?? error.message})`)
