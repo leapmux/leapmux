@@ -94,9 +94,9 @@ const copilotVersionProbeTimeout = 60 * time.Second
 // the server takes, so the version it checks is the program the server runs.
 // COPILOT_AUTO_UPDATE selects the runtime in both invocations, so both must
 // carry it.
-func probeCopilotVersion(ctx context.Context, opts agent.Options, spec launch.Spec) (copilotVersion, error) {
+func probeCopilotVersion(parent context.Context, opts agent.Options, spec launch.Spec) (copilotVersion, error) {
 	timeout := min(opts.EffectiveStartupTimeout(), copilotVersionProbeTimeout)
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	cmd, delimiter, _ := launch.Wrap(ctx, launch.WrapSpec{
 		Shell:      opts.Shell,
@@ -126,6 +126,9 @@ func probeCopilotVersion(ctx context.Context, opts agent.Options, spec launch.Sp
 		runErr = nil
 	}
 	if err := errors.Join(runErr, cleanupErr); err != nil {
+		if parentErr := parent.Err(); parentErr != nil {
+			return copilotVersion{}, fmt.Errorf("run `copilot --version`: %w", parentErr)
+		}
 		if ctx.Err() != nil {
 			return copilotVersion{}, fmt.Errorf("`copilot --version` did not answer within %s", timeout)
 		}

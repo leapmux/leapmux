@@ -473,13 +473,20 @@ func runFakeCopilotVersion() int {
 		return 1
 	case "hangs":
 		// The fake never answers. It blocks reading a pipe that nothing writes to,
-		// so only the probe's kill ends this wait.
+		// so only the probe's kill ends this wait. The started file, when the test
+		// sets one, tells the test that the probe's process runs.
 		blocked, hold, err := os.Pipe()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
 		fakeHeldPipeWriters = append(fakeHeldPipeWriters, hold)
+		if started := os.Getenv("LEAPMUX_TEST_COPILOT_VERSION_STARTED_FILE"); started != "" {
+			if err := os.WriteFile(started, nil, 0o600); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+		}
 		_, _ = io.Copy(io.Discard, blocked)
 	case "leaves-child":
 		// A process that inherits stdout and outlives this one, as a background

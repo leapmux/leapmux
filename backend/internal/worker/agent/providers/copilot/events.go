@@ -407,18 +407,12 @@ func (a *Agent) handleNativeEvent(raw []byte, event copilotEvent) {
 		a.reportNativeTextProgress(sink, event)
 	case contracts.CopilotEventSessionModeChanged, contracts.CopilotEventSessionPermissionsChanged,
 		contracts.CopilotEventSessionModelChange:
-		if event.Type == contracts.CopilotEventSessionModeChanged {
-			// Copilot CLI 1.0.103 keeps the tool list of the previous mode in the
-			// next model request: a switch to Plan adds its tools, and the switch back
-			// to Agent removes none until `session.tools.initializeAndValidate`
-			// reconstructs the list. The rebuild runs after the runtime reported the
-			// mode change, so it lands whichever side switched the mode.
-			go func() {
-				if _, err := a.requestNativeSession("tools.initializeAndValidate", nil); err != nil {
-					slog.Warn("Rebuild the Copilot tool list after a mode change", "agent_id", a.AgentID(), "error", err)
-				}
-			}()
-		}
+		// No request here can remove the tools of a mode that ended. Copilot CLI 1.0.103
+		// and later keep the tool list and the system message of a model request
+		// append-only. A switch to Plan adds `exit_plan_mode` and `task_complete`, and a
+		// switch back keeps both and appends a notice that Plan ended. The runtime refuses
+		// a call to a kept tool outside its mode. session.tools.initializeAndValidate
+		// rebuilds the session's tool list, not the tool list of the model request.
 		a.refreshNativeSettingsInBackground()
 	case contracts.CopilotEventSessionAutopilotObjectiveChanged:
 		a.refreshNativeGoalInBackground()

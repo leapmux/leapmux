@@ -4,7 +4,6 @@ package copilot
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -113,6 +112,61 @@ func TestStartReportsAVersionProbeThatNeverAnswers(t *testing.T) {
 	require.ErrorContains(t, err, "`copilot --version` did not answer within 2s")
 }
 
+func TestVersionProbeReportsCallerCancellation(t *testing.T) {
+	installFakeCopilot(t, "LEAPMUX_TEST_COPILOT_VERSION_SCENARIO=hangs")
+	spec, err := copilotLocator.Resolve(context.Background(), testutil.TestShell(), false, "GitHub Copilot")
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = probeCopilotVersion(ctx, agent.Options{
+		WorkingDir: t.TempDir(), Shell: testutil.TestShell(), StartupTimeout: 60 * time.Second,
+	}, spec)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.NotContains(t, err.Error(), "did not answer within")
+}
+
+// A user who stops the agent during startup cancels the probe while its process
+// runs. The error must report that cancellation, not a probe that timed out.
+func TestVersionProbeReportsCallerCancellationWhileItRuns(t *testing.T) {
+	startedFile := filepath.Join(t.TempDir(), "version.started")
+	installFakeCopilot(t, "LEAPMUX_TEST_COPILOT_VERSION_SCENARIO=hangs",
+		"LEAPMUX_TEST_COPILOT_VERSION_STARTED_FILE="+startedFile)
+	spec, err := copilotLocator.Resolve(context.Background(), testutil.TestShell(), false, "GitHub Copilot")
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	probed := make(chan error, 1)
+	go func() {
+		_, err := probeCopilotVersion(ctx, agent.Options{
+			WorkingDir: t.TempDir(), Shell: testutil.TestShell(), StartupTimeout: 60 * time.Second,
+		}, spec)
+		probed <- err
+	}()
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(startedFile)
+		return err == nil
+	}, 30*time.Second, 10*time.Millisecond, "the fake copilot starts to answer `--version`")
+	cancel()
+	err = <-probed
+	require.ErrorIs(t, err, context.Canceled)
+	assert.NotContains(t, err.Error(), "did not answer within")
+}
+
+// A caller deadline that ends before the probe's own limit is the caller's
+// deadline. The error must not claim that the probe waited its whole limit.
+func TestVersionProbeReportsAnEarlierCallerDeadline(t *testing.T) {
+	installFakeCopilot(t, "LEAPMUX_TEST_COPILOT_VERSION_SCENARIO=hangs")
+	spec, err := copilotLocator.Resolve(context.Background(), testutil.TestShell(), false, "GitHub Copilot")
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err = probeCopilotVersion(ctx, agent.Options{
+		WorkingDir: t.TempDir(), Shell: testutil.TestShell(), StartupTimeout: 60 * time.Second,
+	}, spec)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.NotContains(t, err.Error(), "did not answer within")
+}
+
 // A background job that the login shell's profile starts inherits the shell's
 // stdout, and it keeps the pipe open after `copilot --version` exits. The probe
 // must not wait for that job, which can run for as long as the user's session.
@@ -168,44 +222,4 @@ func readCopilotHelperChildPID(t *testing.T, pidFile string) int {
 	require.NoError(t, err)
 	require.Positive(t, pid)
 	return pid
-}
-
-// Copilot CLI 1.0.103 keeps the tool list of the previous mode in the next model
-// request: a switch to Plan adds its tools, and the switch back to Agent removes
-// none until `session.tools.initializeAndValidate` reconstructs the list. The
-// worker rebuilds it when the runtime reports the mode change, so the rebuild
-// lands whichever side switched the mode.
-func TestNativeCopilotModeChangeEventRebuildsTheToolList(t *testing.T) {
-	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
-	installFakeCopilot(t, "LEAPMUX_TEST_COPILOT_SESSION_REQUESTS="+requestsPath)
-	provider, err := startNativeCopilot(t.Context(), agent.Options{
-		AgentID: "native-mode-event", WorkingDir: t.TempDir(), Shell: testutil.TestShell(),
-		APITimeout: time.Second,
-	}, agent.NewProviderServices(&agenttest.Sink{}))
-	require.NoError(t, err)
-	t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
-	a := provider.(*Agent)
-
-	a.HandleOutput(fmt.Appendf(nil,
-		`{"jsonrpc":"2.0","method":"session.event","params":{"sessionId":%q,"event":{"id":"mode-id","type":"session.mode_changed","data":{"previousMode":"plan","newMode":"interactive"}}}}`,
-		a.currentNativeSessionID()))
-
-	require.Eventually(t, func() bool {
-		file, err := os.Open(requestsPath)
-		if err != nil {
-			return false
-		}
-		defer func() { _ = file.Close() }()
-		decoder := json.NewDecoder(file)
-		for decoder.More() {
-			var request agenttest.RecordedRequest
-			if err := decoder.Decode(&request); err != nil {
-				return false
-			}
-			if request.Method == "session.tools.initializeAndValidate" {
-				return true
-			}
-		}
-		return false
-	}, 30*time.Second, 10*time.Millisecond, "the mode event triggers the tool list rebuild")
 }

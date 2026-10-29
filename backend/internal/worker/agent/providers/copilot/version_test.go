@@ -18,6 +18,8 @@ func TestParseCopilotVersion(t *testing.T) {
 		{"1.0.103\n", copilotVersion{1, 0, 103}, true},
 		{"GitHub Copilot CLI 1.0.103.", copilotVersion{1, 0, 103}, true},
 		{"1.0.104-beta.2", copilotVersion{1, 0, 104}, true},
+		{"1.0.104+build.2", copilotVersion{1, 0, 104}, true},
+		{"1.0.104-beta.2+build.2", copilotVersion{1, 0, 104}, true},
 		{"v2.0.0 (build abc)", copilotVersion{2, 0, 0}, true},
 		{"GitHub Copilot CLI 1.0.103\nsee 2.0.0 for details", copilotVersion{1, 0, 103}, true},
 		{"", copilotVersion{}, false},
