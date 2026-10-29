@@ -2,6 +2,7 @@ package providerkit
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -30,7 +31,9 @@ func TestProcessExitCompletion(t *testing.T) {
 
 	process := &Process{}
 	assert.Equal(t, agent.MessageCompletionError, process.ProcessExitCompletion())
+	assert.False(t, process.ProcessExited())
 	process.NoteIntentionalStop()
+	assert.False(t, process.ProcessExited(), "a stop request does not record an exit")
 	assert.Equal(t, agent.MessageCompletionInterrupted, process.ProcessExitCompletion())
 	assert.Equal(t, agent.MessageCompletionInterrupted, (&Process{stopped: true}).ProcessExitCompletion())
 }
@@ -40,7 +43,44 @@ func TestProcessExitCompletionDoesNotChangeAfterExit(t *testing.T) {
 
 	process := &Process{}
 	process.recordProcessExit(errors.New("provider crashed"))
+	assert.True(t, process.ProcessExited())
 	process.NoteIntentionalStop()
 
 	assert.Equal(t, agent.MessageCompletionError, process.ProcessExitCompletion())
+}
+
+func TestProcessExitCompletionKeepsItsFirstClassificationWhenDiagnosticsChange(t *testing.T) {
+	t.Parallel()
+	process := &Process{}
+	cause := errors.New("provider failed")
+	process.recordProcessExit(cause)
+	process.Mu.Lock()
+	process.stopped = true
+	process.Mu.Unlock()
+	enriched := fmt.Errorf("startup diagnostic: %w", cause)
+	process.recordProcessExit(enriched)
+	assert.Equal(t, agent.MessageCompletionError, process.ProcessExitCompletion())
+	assert.Same(t, enriched, process.waitErr, "the final error must retain the diagnostic details")
+}
+
+func TestProcessExitErrorReadsWhileStartupDiagnosticsChange(t *testing.T) {
+	t.Parallel()
+	process := &Process{}
+	process.recordProcessExit(errors.New("native failure"))
+	start := make(chan struct{})
+	read := make(chan bool, 1)
+	go func() {
+		<-start
+		valid := true
+		for range 1000 {
+			valid = valid && process.ProcessExitError().Error() == "agent process exited unexpectedly"
+		}
+		read <- valid
+	}()
+	close(start)
+	diagnostic := errors.New("startup diagnostic")
+	for range 1000 {
+		process.recordProcessExit(diagnostic)
+	}
+	assert.True(t, <-read)
 }

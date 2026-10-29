@@ -23,16 +23,14 @@ type ProcessRecord struct {
 // ProcessTable indexes one OS snapshot. Names and identities remain live OS reads.
 type ProcessTable struct {
 	byPID    map[int]*process.Process
-	parent   map[int]int
-	start    map[int]int64
+	records  map[int]ProcessRecord
 	byParent map[int][]int
 }
 
 func newProcessTable(size int) *ProcessTable {
 	return &ProcessTable{
 		byPID:    make(map[int]*process.Process, size),
-		parent:   make(map[int]int, size),
-		start:    make(map[int]int64, size),
+		records:  make(map[int]ProcessRecord, size),
 		byParent: make(map[int][]int, size),
 	}
 }
@@ -44,25 +42,26 @@ func NewProcessTable(records []ProcessRecord) *ProcessTable {
 	return table
 }
 
-// index records each valid row, and then links each row below its parent. A
-// row links only to a parent that the same rows hold and that it could be a
-// child of (see ProcessIdentity.couldBeChildOf). A parent PID that no row holds
-// belongs to a process that ended, and a row without a start time cannot prove
-// its place, so neither links.
+// index keeps the last valid row for each PID, then derives observational
+// ancestry in first-seen PID order. Unknown creation times retain possible
+// work for a close warning. Known times exclude a child that predates its
+// recorded parent. VerifiedForest requires live identities before granting
+// destructive ownership, including for an uncertain snapshot relationship.
 func (t *ProcessTable) index(records []ProcessRecord) {
-	valid := make([]ProcessRecord, 0, len(records))
+	order := make([]int, 0, len(records))
 	for _, record := range records {
 		if record.PID <= 0 || record.PPID < 0 {
 			continue
 		}
-		t.parent[record.PID] = record.PPID
-		t.start[record.PID] = record.StartTime
-		valid = append(valid, record)
+		if _, exists := t.records[record.PID]; !exists {
+			order = append(order, record.PID)
+		}
+		t.records[record.PID] = record
 	}
-	for _, record := range valid {
-		parentStart, listed := t.start[record.PPID]
-		child := ProcessIdentity{PID: record.PID, StartTime: record.StartTime}
-		if !listed || !child.couldBeChildOf(ProcessIdentity{PID: record.PPID, StartTime: parentStart}) {
+	for _, pid := range order {
+		record := t.records[pid]
+		parent, listed := t.records[record.PPID]
+		if !listed || (record.StartTime > 0 && parent.StartTime > 0 && record.StartTime < parent.StartTime) {
 			continue
 		}
 		t.byParent[record.PPID] = append(t.byParent[record.PPID], record.PID)
@@ -98,9 +97,9 @@ func buildProcessTable(ctx context.Context, processes []*process.Process, readPa
 			}
 			continue
 		}
-		// Windows refuses some system processes a start-time read. Such a row
-		// stays without a start time, so it links to nothing, and it is no
-		// ownership failure: the worker can read every process that it started.
+		// A security descriptor can deny a creation-time read even for a
+		// descendant. Keep its possible ancestry for observation; live identity
+		// verification still decides destructive ownership.
 		start, err := readStart(ctx, candidate)
 		if err != nil {
 			if processGone(pid, err) {
@@ -128,9 +127,9 @@ func (t *ProcessTable) Records() []ProcessRecord {
 	if t == nil {
 		return nil
 	}
-	records := make([]ProcessRecord, 0, len(t.parent))
-	for pid, parent := range t.parent {
-		records = append(records, ProcessRecord{PID: pid, PPID: parent, StartTime: t.start[pid]})
+	records := make([]ProcessRecord, 0, len(t.records))
+	for _, record := range t.records {
+		records = append(records, record)
 	}
 	return records
 }

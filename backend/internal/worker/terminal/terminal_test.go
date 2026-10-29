@@ -788,13 +788,15 @@ func TestManager_NaturalExitRunsTheExitHandler(t *testing.T) {
 	}))
 	t.Cleanup(func() { m.RemoveTerminal(id) })
 
-	// Echo a marker first and wait for it, so the shell is past its init
-	// scripts and the exit below cannot be read before them.
-	require.NoError(t, m.SendInput(id, []byte("echo "+marker+testutil.TestShellEnter())))
+	// Wait for an executed marker that input echo cannot contain, so the shell
+	// finishes its init scripts before the exit command arrives.
+	command, err := testutil.TestShellOutputCommand(marker)
+	require.NoError(t, err)
+	require.NoError(t, m.SendInput(id, []byte(command+testutil.TestShellEnter())))
 	testutil.AssertEventually(t, func() bool {
 		screen, _, _ := m.ScreenSnapshotSince(id, 0)
 		return bytes.Contains(screen, []byte(marker))
-	}, "expected the shell to echo the marker")
+	}, "expected the shell to execute the marker command")
 
 	// cmd.exe under ConPTY does not propagate `exit N` to its OS exit code on
 	// the GitHub runner, so ask for a bare exit there and assert only that the
@@ -810,7 +812,9 @@ func TestManager_NaturalExitRunsTheExitHandler(t *testing.T) {
 	// handler that snapshots without them persists a screen missing the last
 	// thing the user saw. Two writes rather than one line, so no shell's
 	// command separator (`;` against cmd.exe's `&`) gets in the way.
-	require.NoError(t, m.SendInput(id, []byte("echo "+lastMarker+testutil.TestShellEnter())))
+	lastCommand, err := testutil.TestShellOutputCommand(lastMarker)
+	require.NoError(t, err)
+	require.NoError(t, m.SendInput(id, []byte(lastCommand+testutil.TestShellEnter())))
 	require.NoError(t, m.SendInput(id, []byte("exit"+exitArg+testutil.TestShellEnter())))
 
 	var got exitReport

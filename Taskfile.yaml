@@ -1162,7 +1162,7 @@ tasks:
     # The monitor reads each OS through its own probe, so each native CI job
     # runs this test. test-scripts runs it on Linux amd64.
     cmds:
-      - bun test --timeout 30000 scripts/ci-resource-monitor.test.mjs
+      - bun test --timeout 30000 scripts/ci-resource-monitor.test.mjs scripts/ci-resource-monitor/
 
   test-frontend-native:
     desc: Test frontend scripts and helpers with native process and filesystem behavior
@@ -1277,7 +1277,7 @@ tasks:
       - scripts/task-state.mjs
       - frontend/package.json
       - frontend/bun.lock
-      - scripts/*.mjs
+      - scripts/**/*.mjs
       - desktop/rust/scripts/*.mjs
       - eslint.config.mjs
       - .github/renovate-config.cjs

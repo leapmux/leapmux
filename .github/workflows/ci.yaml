@@ -63,10 +63,9 @@ jobs:
         # a minute of the repository's GITHUB_TOKEN limit. It starts after
         # the toolchain setup, which installs Bun.
         if: vars.CI_RESOURCE_MONITOR == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MONITOR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: bun scripts/ci-resource-monitor.mjs start
+        uses: ./.github/actions/ci-resource-monitor
+        with:
+          mode: start
 
       # Keep these post contexts separate. A prune failure must stop the save.
       - name: Cache Go build outputs
@@ -140,9 +139,9 @@ jobs:
 
       - name: Stop the resource monitor
         if: always() && vars.CI_RESOURCE_MONITOR == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bun scripts/ci-resource-monitor.mjs stop
+        uses: ./.github/actions/ci-resource-monitor
+        with:
+          mode: stop
 
   macos:
     runs-on: macos-26
@@ -170,10 +169,9 @@ jobs:
       - name: Start the resource monitor
         # See the linux job.
         if: vars.CI_RESOURCE_MONITOR == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MONITOR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: bun scripts/ci-resource-monitor.mjs start
+        uses: ./.github/actions/ci-resource-monitor
+        with:
+          mode: start
 
       # Keep these post contexts separate. A prune failure must stop the save.
       - name: Cache Go build outputs
@@ -214,9 +212,9 @@ jobs:
 
       - name: Stop the resource monitor
         if: always() && vars.CI_RESOURCE_MONITOR == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bun scripts/ci-resource-monitor.mjs stop
+        uses: ./.github/actions/ci-resource-monitor
+        with:
+          mode: stop
 
   windows:
     # WINDOWS_RUNNER pins the Visual Studio version with the image, because
@@ -252,11 +250,9 @@ jobs:
       - name: Start the resource monitor
         # See the linux job.
         if: vars.CI_RESOURCE_MONITOR == 'true'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MONITOR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: bun scripts/ci-resource-monitor.mjs start
+        uses: ./.github/actions/ci-resource-monitor
+        with:
+          mode: start
 
       # Keep these post contexts separate. A prune failure must stop the save.
       - name: Cache Go build outputs
@@ -299,10 +295,9 @@ jobs:
 
       - name: Stop the resource monitor
         if: always() && vars.CI_RESOURCE_MONITOR == 'true'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bun scripts/ci-resource-monitor.mjs stop
+        uses: ./.github/actions/ci-resource-monitor
+        with:
+          mode: stop
 
   docker:
     strategy:

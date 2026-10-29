@@ -2,6 +2,8 @@
 
 package procutil
 
+import "syscall"
+
 type processOwnerPlatform struct {
 	job *JobObject
 }
@@ -18,6 +20,11 @@ func (p *processOwnerPlatform) attach(root ProcessIdentity) error {
 
 func (p *processOwnerPlatform) cancel(ProcessIdentity) error {
 	return p.job.Terminate()
+}
+
+func (*processOwnerPlatform) signalRoot(root ProcessIdentity, signal syscall.Signal) error {
+	_, err := root.Signal(signal)
+	return err
 }
 
 func (p *processOwnerPlatform) terminate(ProcessIdentity) error {

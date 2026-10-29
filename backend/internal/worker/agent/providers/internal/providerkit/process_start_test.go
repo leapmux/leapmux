@@ -154,6 +154,82 @@ func TestZeroProcessCompletesARefusedStart(t *testing.T) {
 	require.Error(t, process.Wait())
 }
 
+func TestRefusedProcessStartPreservesUnreadStderr(t *testing.T) {
+	t.Parallel()
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	cmd := exec.CommandContext(t.Context(), executable)
+	pipes, err := SetupProcessPipes(cmd, nil)
+	require.NoError(t, err)
+	require.NoError(t, pipes.owner.Close())
+	_, err = fmt.Fprintln(cmd.Stderr, "native setup diagnostic")
+	require.NoError(t, err)
+	process := NewProcessFrom(ProcessConfig{pipes: pipes})
+	startErr := process.StartCmd()
+	require.ErrorContains(t, startErr, "cannot start this command")
+	assert.ErrorContains(t, startErr, "stderr: native setup diagnostic")
+	select {
+	case <-process.stderrDone:
+	default:
+		t.Error("a refused start must complete its diagnostic drain")
+	}
+	awaitProcessDone(t, testutil.DeadlineContext(t), &process)
+	process.Stop()
+	assert.Error(t, process.Wait())
+}
+
+func TestRefusedProcessStartRecordsItsFailureBeforeAConcurrentStop(t *testing.T) {
+	t.Parallel()
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	pipes, err := SetupProcessPipes(exec.CommandContext(t.Context(), executable), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = pipes.Close() })
+	require.NoError(t, pipes.owner.Close())
+	_, err = fmt.Fprintln(pipes.cmd.Stderr, "native setup diagnostic")
+	require.NoError(t, err)
+	clock := testutil.NewQuartzMock(t)
+	process := NewProcessFrom(ProcessConfig{pipes: pipes, Clock: clock})
+	gate := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(gate) }) }
+	process.DrainStderr(gatedReader{gate: gate, reader: pipes.Stderr()})
+	drainTrap := clock.Trap().NewTimer("stderr-drain")
+	stopTrap := clock.Trap().NewTimer("process-stop-grace")
+	started := make(chan error, 1)
+	go func() { started <- process.StartCmd() }()
+	t.Cleanup(func() {
+		release()
+		drainTrap.Close()
+		stopTrap.Close()
+		process.Stop()
+	})
+	deadline := testutil.DeadlineContext(t)
+	drainCall := drainTrap.MustWait(deadline)
+	process.Mu.Lock()
+	assert.True(t, process.ProcessExitedLocked(), "diagnostic collection must not delay the exit classification")
+	process.Mu.Unlock()
+	stopped := make(chan struct{})
+	go func() { process.Stop(); close(stopped) }()
+	stopCall := stopTrap.MustWait(deadline)
+	release()
+	drainCall.MustRelease(deadline)
+	stopCall.MustRelease(deadline)
+	select {
+	case startErr := <-started:
+		assert.ErrorContains(t, startErr, "stderr: native setup diagnostic")
+	case <-deadline.Done():
+		t.Fatal("the refused start did not finish after the diagnostic drain")
+	}
+	select {
+	case <-stopped:
+	case <-deadline.Done():
+		t.Fatal("the concurrent stop did not finish after the refused start")
+	}
+	assert.Equal(t, agent.MessageCompletionError, process.ProcessExitCompletion())
+	assert.ErrorContains(t, process.Wait(), "stderr: native setup diagnostic")
+}
+
 func TestProcessFormatStartupErrorPreservesItsCausesAndExactDiagnostics(t *testing.T) {
 	t.Parallel()
 	first := errors.New("native setup refused")
@@ -211,6 +287,17 @@ func TestProcessFormatStartupErrorReportsReadableNilDetails(t *testing.T) {
 			assert.Nil(t, errors.Unwrap(result))
 		})
 	}
+}
+
+func TestProcessFormatStartupErrorPreservesCauseWithoutAPhase(t *testing.T) {
+	t.Parallel()
+	drained := make(chan struct{})
+	close(drained)
+	process := NewProcessFrom(ProcessConfig{StderrDone: drained})
+	cause := errors.New("native setup refused")
+	result := process.FormatStartupError("", cause)
+	assert.EqualError(t, result, "native setup refused")
+	assert.ErrorIs(t, result, cause)
 }
 
 type customStartupDiagnosticCause struct{}

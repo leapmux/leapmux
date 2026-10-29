@@ -60,8 +60,3 @@ func TestAssignCmdRecordsThePidAsPgid(t *testing.T) {
 	err = owner.Wait()
 	require.Error(t, err, "Terminate must kill the Setsid child")
 }
-
-func TestSignalProcessGroupIsNoopOnNilProcess(t *testing.T) {
-	require.NoError(t, SignalProcessGroup(nil, syscall.SIGTERM))
-	require.NoError(t, SignalProcessGroup(exec.Command("true"), syscall.SIGTERM))
-}

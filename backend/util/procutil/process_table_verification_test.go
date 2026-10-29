@@ -2,6 +2,7 @@ package procutil
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 
@@ -104,6 +105,29 @@ func TestVerifiedForestOwnsAChildThatStartedInItsParentsMillisecond(t *testing.T
 	owned, err := table.verifyForest(t.Context(), []ProcessIdentity{verifier.identities[10]}, verifier)
 	require.NoError(t, err)
 	assert.Contains(t, owned, verifier.identities[13])
+}
+
+func TestVerifiedForestRequiresLiveIdentityForAnUncertainSnapshotEdge(t *testing.T) {
+	t.Parallel()
+	for _, earlier := range []bool{false, true} {
+		t.Run(fmt.Sprint(earlier), func(t *testing.T) {
+			t.Parallel()
+			table := NewProcessTable([]ProcessRecord{{PID: 10, PPID: 1, StartTime: 1000}, {PID: 11, PPID: 10}, {PID: 12, PPID: 11, StartTime: 1200}})
+			_, verifier := forestFixture()
+			if earlier {
+				verifier.identities[11] = ProcessIdentity{PID: 11, StartTime: 900}
+			} else {
+				delete(verifier.identities, 11)
+			}
+			observed, total := table.DescendantPIDs(10, 0, 0, nil)
+			assert.Equal(t, []int{11, 12}, observed)
+			assert.Equal(t, 2, total)
+			owned, err := table.verifyForest(t.Context(), []ProcessIdentity{verifier.identities[10]}, verifier)
+			require.NoError(t, err)
+			assert.Empty(t, owned)
+			assert.Empty(t, verifier.parentCalls, "uncertain or disproved identity grants no ownership")
+		})
+	}
 }
 
 func TestVerifiedForestRejectsAChildWhoseIdentityChangesDuringVerification(t *testing.T) {

@@ -2,13 +2,13 @@
 // native CI runner, because each OS reads its resources through its own probe.
 
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, describe, expect, it } from 'bun:test'
 import {
+  appendTextTail,
   composeSample,
-  cpuPercent,
   createProbe,
   formatTcpStates,
   freeDisk,
@@ -17,16 +17,9 @@ import {
   main,
   MAX_OUTPUT_CHARACTERS,
   monitorConfig,
-  parseMeminfo,
-  parseNetstat,
-  parseProcNetTcp,
-  parseProcStat,
-  parseProcStatCpu,
-  parsePs,
-  parseSwapSize,
-  parseSysctl,
-  parseVmStat,
+  run,
   runCanary,
+  takeSample,
 } from './ci-resource-monitor.mjs'
 
 const root = resolve(import.meta.dirname, '..')
@@ -45,123 +38,6 @@ function temporaryDirectory() {
   return directory
 }
 
-describe('parseProcStat', () => {
-  it('reads the fields after a command name that holds spaces and parentheses', () => {
-    const fields = [
-      'S',
-      '41',
-      ...Array.from({ length: 19 }, (_, index) => String(index)),
-      '345',
-      '1',
-    ]
-    expect(parseProcStat(`1234 (a (weird) name) ${fields.join(' ')}`)).toEqual({ comm: 'a (weird) name', parent: 41, rssPages: 345 })
-  })
-
-  it('rejects text without a command name', () => {
-    expect(parseProcStat('1234 S 41')).toBeNull()
-  })
-})
-
-describe('parseMeminfo', () => {
-  it('converts kilobyte values to bytes and keeps plain counts', () => {
-    const values = parseMeminfo('MemTotal:       16384 kB\nMemAvailable:    8192 kB\nHugePages_Total:       0\n')
-    expect(values.get('MemTotal')).toBe(16384 * 1024)
-    expect(values.get('MemAvailable')).toBe(8192 * 1024)
-    expect(values.get('HugePages_Total')).toBe(0)
-  })
-})
-
-describe('cpuPercent', () => {
-  it('reports the busy share between two readings of /proc/stat', () => {
-    const first = parseProcStatCpu('cpu  100 0 100 700 100 0 0 0 0 0\ncpu0 1 2 3\n')
-    const second = parseProcStatCpu('cpu  200 0 200 1300 300 0 0 0 0 0\n')
-    expect(first).toEqual({ idle: 800, total: 1000 })
-    expect(cpuPercent(first, second)).toBe('20%')
-  })
-
-  it('reports no figure for the first reading or an unchanged total', () => {
-    const reading = { idle: 5, total: 10 }
-    expect(cpuPercent(null, reading)).toBe('n/a')
-    expect(cpuPercent(reading, reading)).toBe('n/a')
-  })
-})
-
-describe('parseProcNetTcp', () => {
-  it('counts IPv4 and IPv6 connections by state', () => {
-    const header = '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n'
-    const counts = parseProcNetTcp(`${header}   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000 0 1\n   1: 0100007F:A1B2 0100007F:1F90 06 00000000:00000000 00:00000000 00000000  1000 0 2\n`)
-    parseProcNetTcp(`${header}   0: 00000000000000000000000001000000:1F90 00000000000000000000000000000000:0000 01 0 0 0 0 0 3\n`, counts)
-    expect([...counts]).toEqual([
-      ['Listen', 1],
-      ['TimeWait', 1],
-      ['Established', 1],
-    ])
-  })
-})
-
-describe('parsePs', () => {
-  it('reads each row and keeps the base name of a path that holds spaces', () => {
-    const rows = parsePs('    1     0  12000   0.5 /sbin/launchd\n  321     1   2048  12.0 /Applications/Some App.app/Contents/MacOS/Some App\n')
-    expect(rows).toEqual([
-      {
-        name: 'launchd',
-        pid: 1,
-        parent: 0,
-        memory: 12000 * 1024,
-        cpu: 0.5,
-        start: 0,
-        extra: [],
-      },
-      {
-        name: 'Some App',
-        pid: 321,
-        parent: 1,
-        memory: 2048 * 1024,
-        cpu: 12,
-        start: 0,
-        extra: [],
-      },
-    ])
-  })
-})
-
-describe('parseVmStat', () => {
-  it('reads the page size and the page counts', () => {
-    const { pageSize, pages } = parseVmStat('Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                               12345.\nPages occupied by compressor:              678.\n')
-    expect(pageSize).toBe(16384)
-    expect(pages.get('Pages free')).toBe(12345)
-    expect(pages.get('Pages occupied by compressor')).toBe(678)
-  })
-})
-
-describe('parseSysctl', () => {
-  it('reads named values, and parseSwapSize reads the swap sizes', () => {
-    const values = parseSysctl('hw.memsize: 17179869184\nvm.swapusage: total = 2048.00M  used = 1536.50M  free = 511.50M  (encrypted)\n')
-    expect(values.get('hw.memsize')).toBe('17179869184')
-    expect(parseSwapSize(values.get('vm.swapusage'), 'total')).toBe(2048 * 2 ** 20)
-    expect(parseSwapSize(values.get('vm.swapusage'), 'used')).toBe(1536.5 * 2 ** 20)
-    expect(parseSwapSize(undefined, 'used')).toBe(0)
-  })
-})
-
-describe('parseNetstat', () => {
-  it('counts the TCP connections by state and skips other lines', () => {
-    const counts = parseNetstat([
-      'Active Internet connections (including servers)',
-      'Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)',
-      'tcp4       0      0  127.0.0.1.8080         127.0.0.1.50000        ESTABLISHED',
-      'tcp6       0      0  *.22                   *.*                    LISTEN',
-      'tcp4       0      0  127.0.0.1.50001        127.0.0.1.8080         TIME_WAIT',
-      'udp4       0      0  *.5353                 *.*',
-    ].join('\n'))
-    expect([...counts]).toEqual([
-      ['Established', 1],
-      ['Listen', 1],
-      ['TimeWait', 1],
-    ])
-  })
-})
-
 describe('formatTcpStates', () => {
   it('puts the most common state first, and states none for no connection', () => {
     expect(formatTcpStates(new Map([
@@ -178,6 +54,33 @@ describe('limitText', () => {
     expect(limitText(exact)).toBe(exact)
     const longer = `head${'y'.repeat(MAX_OUTPUT_CHARACTERS)}`
     expect(limitText(longer)).toBe(`...${'y'.repeat(MAX_OUTPUT_CHARACTERS)}`)
+  })
+})
+
+describe('appendTextTail', () => {
+  it('preserves short, empty and exact-limit text', () => {
+    expect(appendTextTail('', '')).toBe('')
+    expect(appendTextTail('first\n', 'last\n')).toBe('first\nlast\n')
+    const exact = 'x'.repeat(MAX_OUTPUT_CHARACTERS)
+    expect(appendTextTail('', exact)).toBe(exact)
+    expect(appendTextTail(exact, '')).toBe(exact)
+  })
+
+  it('keeps the same published suffix while limiting retained history', () => {
+    let tail = ''
+    let complete = ''
+    for (let index = 0; index < 2160; index++) {
+      const line = `${String(index).padStart(4, '0')}:${'x'.repeat(460)}\n`
+      complete += line
+      tail = appendTextTail(tail, line)
+      expect(tail.length).toBeLessThanOrEqual(MAX_OUTPUT_CHARACTERS)
+      if (index % 100 === 0 || index === 2159)
+        expect(limitText(`\`\`\`\n${tail}\`\`\``)).toBe(limitText(`\`\`\`\n${complete}\`\`\``))
+    }
+    expect(tail).not.toContain('0000:')
+    expect(tail).toContain('2159:')
+    expect(appendTextTail('old', 'y'.repeat(MAX_OUTPUT_CHARACTERS + 1))).toBe('y'.repeat(MAX_OUTPUT_CHARACTERS))
+    expect(appendTextTail(tail, 'sample failed\n')).toEndWith('sample failed\n')
   })
 })
 
@@ -339,6 +242,7 @@ describe('the probe of this machine', () => {
     expect(self, 'the probe lists this process').toBeDefined()
     expect(self.parent).toBe(process.ppid)
     expect(self.memory).toBeGreaterThan(0)
+    expect(probe.parentStartTimesRequired === true).toBe(process.platform === 'win32')
     const system = new Map(probe.system(rows))
     expect(system.has('cpu')).toBe(true)
     expect(Number(system.get('procs'))).toBeGreaterThanOrEqual(1)
@@ -366,8 +270,9 @@ describe('the probe of this machine', () => {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-function fakeGitHub({ failCreate = false } = {}) {
+function fakeGitHub({ failCreate = false, failCompletion = 0 } = {}) {
   const requests = []
+  let state = 'in_progress'
   const server = Bun.serve({
     hostname: '127.0.0.1',
     port: 0,
@@ -380,13 +285,22 @@ function fakeGitHub({ failCreate = false } = {}) {
       })
       if (failCreate)
         return new Response('unavailable', { status: 503 })
+      const body = requests.at(-1).body
+      if (body.status === 'completed' && failCompletion-- > 0)
+        return new Response('completion unavailable', { status: 503 })
+      if (body.status)
+        state = body.status
       if (request.method === 'POST')
         return Response.json({ id: 42, html_url: 'https://github.test/checks/42' }, { status: 201 })
       return Response.json({ id: 42 })
     },
   })
   cleanups.push(() => server.stop(true))
-  return { requests, url: `http://127.0.0.1:${server.port}` }
+  return {
+    requests,
+    get state() { return state },
+    url: `http://127.0.0.1:${server.port}`,
+  }
 }
 
 function monitorEnv(directory, apiUrl, token = 'test-token') {
@@ -570,5 +484,334 @@ describe('main', () => {
     expect(await main(['start'], {})).toBe(0)
     expect(await main(['stop'], {})).toBe(0)
     expect(await main(['run'], {})).toBe(1)
+  })
+})
+
+/** Runs instrumentation without changing the test runner's built-ins. */
+async function runIsolatedProbe(source) {
+  const child = Bun.spawn([process.execPath, '--eval', source], { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' })
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ])
+  expect(code, stderr).toBe(0)
+  return JSON.parse(stdout)
+}
+
+function sampleRows(rows, options = {}) {
+  return composeSample({
+    time: 't',
+    system: [],
+    rows,
+    counted: [],
+    tcp: 'none',
+    free: '',
+    canary: 'ok',
+    memoryLabel: 'rss',
+    detail: true,
+    ...options,
+  })
+}
+
+function preparedMonitor(github, stopping = false) {
+  const env = monitorEnv(temporaryDirectory(), github.url)
+  const config = monitorConfig(env)
+  mkdirSync(config.directory, { recursive: true })
+  writeFileSync(config.checkRunPath, '42')
+  if (stopping)
+    writeFileSync(config.stopPath, '')
+  return { env, config }
+}
+
+describe('monitor completion recovery', () => {
+  it.each(['factory', 'header'])('completes the check after the probe %s fails', async (failure) => {
+    const github = fakeGitHub()
+    const { env, config } = preparedMonitor(github)
+    const unavailable = () => {
+      throw new Error('probe unavailable')
+    }
+    await expect(run(config, failure === 'factory'
+      ? unavailable
+      : () => ({ header: unavailable }))).rejects.toThrow('probe unavailable')
+    expect(existsSync(config.endedPath)).toBe(true)
+    expect(await main(['stop'], env)).toBe(0)
+    expect(github.state).toBe('completed')
+    expect(github.requests.at(-1).body.output.text).toContain('probe unavailable')
+  })
+
+  it('retries a rejected final publication from the stop handler', async () => {
+    const github = fakeGitHub({ failCompletion: 1 })
+    const { env, config } = preparedMonitor(github, true)
+    await run(config)
+    expect(github.state).toBe('in_progress')
+    expect(await main(['stop'], env)).toBe(0)
+    expect(github.state).toBe('completed')
+    expect(github.requests.filter(request => request.body.status === 'completed')).toHaveLength(2)
+    const count = github.requests.length
+    expect(await main(['stop'], env)).toBe(0)
+    expect(github.requests).toHaveLength(count)
+  })
+
+  it('warns without recording a PID when the detached sampler cannot start', async () => {
+    const directory = temporaryDirectory()
+    const env = monitorEnv(directory, 'http://127.0.0.1:9', '')
+    const source = `import { main } from ${JSON.stringify(script)}; process.execPath = ${JSON.stringify(join(directory, 'absent-bun'))}; process.exit(await main(['start'], process.env))`
+    const child = Bun.spawn([process.execPath, '--eval', source], { env, stdout: 'pipe', stderr: 'pipe' })
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ])
+    expect(code, stderr).toBe(0)
+    expect(stdout).toContain('::warning::The resource monitor did not start cleanly')
+    expect(stdout).not.toContain('Started the resource monitor')
+    expect(existsSync(monitorConfig(env).pidPath)).toBe(false)
+  })
+})
+
+describe('composeSample process grouping', () => {
+  it('groups same-name processes without repeatedly traversing prior members', async () => {
+    const rows = Array.from({ length: 64 }, (_, index) => ({
+      name: 'worker',
+      pid: 1000 + index,
+      parent: index < 32
+        ? 0
+        : 100,
+      memory: 1,
+      start: 0,
+      extra: [],
+    }))
+    const sample = await runIsolatedProbe(`
+      import { composeSample } from ${JSON.stringify(script)};
+      const options = ${JSON.stringify({
+        time: 't',
+        system: [],
+        counted: [],
+        tcp: 'none',
+        free: '',
+        canary: 'ok',
+        memoryLabel: 'rss',
+        detail: true,
+      })};
+      const rows = ${JSON.stringify(rows)};
+      const objects = new WeakSet(rows);
+      const iterate = Array.prototype[Symbol.iterator];
+      let visits = 0;
+      Array.prototype[Symbol.iterator] = function* () {
+        for (const value of iterate.call(this)) {
+          if (objects.has(value)) visits++;
+          yield value;
+        }
+      };
+      const sample = composeSample({ ...options, rows });
+      process.stdout.write(JSON.stringify({ ...sample, visits }));
+    `)
+    expect(sample.detail).toMatch(/worker\s+x64\s+parents=pid0x32,pid100x32/)
+    expect(sample.visits).toBeGreaterThan(0)
+    expect(sample.visits).toBeLessThanOrEqual(4 * rows.length)
+  })
+
+  it.each([
+    [0, 400],
+    [1, 0],
+    [0, 0],
+    [undefined, 400],
+    [1, undefined],
+    [-1, 400],
+  ])('keeps the PID when required creation times are unavailable: %j', (child, parent) => {
+    const rows = [
+      {
+        name: 'pwsh',
+        pid: 50,
+        parent: 1,
+        memory: 1,
+        start: parent,
+        extra: [],
+      },
+      {
+        name: 'winlogon',
+        pid: 60,
+        parent: 50,
+        memory: 1,
+        start: child,
+        extra: [],
+      },
+    ]
+    const result = sampleRows(rows, {
+      parentStartTimesRequired: true,
+      extraDetail: (items, parentName) => [`observed=${parentName(items[1])}`],
+    })
+    expect(result.detail).toMatch(/winlogon\s+pid=60\s+rss=0M\s+parent=pid50/)
+    expect(result.detail).toMatch(/winlogon\s+x1\s+parents=pid50x1/)
+    expect(result.detail).toContain('observed=pid50')
+  })
+
+  it.each([
+    [200, 100, true],
+    [100, 100, true],
+    [0, 0, false],
+  ])('keeps established parent names: %j', (child, parent, required) => {
+    const rows = [
+      {
+        name: 'shell',
+        pid: 50,
+        parent: 1,
+        memory: 1,
+        start: parent,
+        extra: [],
+      },
+      {
+        name: 'work',
+        pid: 60,
+        parent: 50,
+        memory: 1,
+        start: child,
+        extra: [],
+      },
+    ]
+    expect(sampleRows(rows, { parentStartTimesRequired: required }).detail).toMatch(/work\s+pid=60\s+rss=0M\s+parent=shell/)
+  })
+})
+
+describe('takeSample', () => {
+  it('forwards the requirement for known parent creation times', () => {
+    const probe = {
+      processes: () => [
+        {
+          name: 'pwsh',
+          pid: 50,
+          parent: 1,
+          start: 400,
+          memory: 1,
+          extra: [],
+        },
+        {
+          name: 'winlogon',
+          pid: 60,
+          parent: 50,
+          start: 0,
+          memory: 1,
+          extra: [],
+        },
+      ],
+      system: () => [],
+      tcpStates: () => new Map(),
+      canary: [
+        process.execPath,
+        ['-e', ''],
+      ],
+      counted: [],
+      memoryLabel: 'rss',
+      parentStartTimesRequired: true,
+    }
+    expect(takeSample(probe, { diskPaths: [] }, 0).detail).toMatch(/winlogon\s+pid=60\s+rss=0M\s+parent=pid50/)
+  })
+
+  it.each([
+    'processes',
+    'system',
+    'both',
+    'tcp',
+    'none',
+  ])('retains independent readings when %s collection fails', (failure) => {
+    const directory = temporaryDirectory()
+    const marker = join(directory, 'canary-ran')
+    const probe = {
+      processes() {
+        if (failure === 'processes' || failure === 'both')
+          throw new Error('process table unavailable')
+        return []
+      },
+      system(rows) {
+        if (failure === 'system' || failure === 'both')
+          throw new Error('system unavailable')
+        expect(rows).toEqual(failure === 'processes'
+          ? null
+          : [])
+        return [
+          ['avail', '1G'],
+        ]
+      },
+      tcpStates() {
+        if (failure === 'tcp')
+          throw new Error('TCP unavailable')
+        return new Map([
+          ['Listen', 2],
+        ])
+      },
+      counted: ['worker'],
+      memoryLabel: 'rss',
+      canary: [
+        process.execPath,
+        ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, '')`],
+      ],
+    }
+    const sample = takeSample(probe, {
+      diskPaths: [directory],
+    }, 0)
+    expect(existsSync(marker)).toBe(true)
+    expect(sample.line).toMatch(/canary=ok\(\d+ms\)/)
+    expect(sample.line).toMatch(/free=\S+\d\.\dG/)
+    if (failure === 'processes' || failure === 'both') {
+      expect(sample.line).toContain('worker=unavailable')
+      expect(sample.line).toContain('runner=unavailable')
+      expect(sample.detail).toContain('Process table unavailable')
+    }
+    else {
+      expect(sample.line).toContain('worker=0')
+      expect(sample.line).toContain('runner=absent')
+    }
+    if (failure !== 'system' && failure !== 'both')
+      expect(sample.line).toContain('avail=1G')
+    else
+      expect(sample.line).toContain('system=fail(system unavailable)')
+    expect(sample.line).toContain(failure === 'tcp'
+      ? 'tcp=fail(TCP unavailable)'
+      : 'tcp=Listen:2')
+  })
+})
+
+describe('run publication history', () => {
+  it('keeps the full disk log without joining obsolete publication history', async () => {
+    const github = fakeGitHub()
+    const { config } = preparedMonitor(github)
+    config.sampleMs = 1
+    config.publishMs = 1
+    const { largestJoin, controlJoin } = await runIsolatedProbe(`
+      import { run } from ${JSON.stringify(script)};
+      import { writeFileSync } from 'node:fs';
+      const config = ${JSON.stringify(config)};
+      let samples = 0;
+      const probe = {
+        header: () => ['history probe'],
+        processes() {
+          samples++;
+          if (samples === 8) writeFileSync(config.stopPath, '');
+          return [{ name: 'Runner.tail-probe-' + samples + '-' + 'x'.repeat(20000), pid: 10, parent: 1, memory: 1, start: 1, extra: [] }];
+        },
+        system: () => [], tcpStates: () => new Map(), counted: [], memoryLabel: 'rss', canary: [process.execPath, ['-e', '']],
+      };
+      const joinValues = Array.prototype.join;
+      let largestJoin = 0;
+      Array.prototype.join = function (separator) {
+        if (separator === '\\n' && typeof this[0] === 'string' && this[0].includes('runner=tail-probe-'))
+          largestJoin = Math.max(largestJoin, this.reduce((size, value) => size + value.length + 1, 0));
+        return joinValues.call(this, separator);
+      };
+      ['runner=tail-probe-control'].join('\\n');
+      const controlJoin = largestJoin;
+      largestJoin = 0;
+      await run(config, () => probe);
+      process.stdout.write(JSON.stringify({ largestJoin, controlJoin }));
+    `)
+    expect(controlJoin).toBeGreaterThan(0)
+    expect(largestJoin).toBeLessThanOrEqual(MAX_OUTPUT_CHARACTERS + 21000)
+    const log = readFileSync(config.logPath, 'utf8')
+    expect(log).toContain('runner=tail-probe-1-')
+    expect(log).toContain('runner=tail-probe-9-')
+    expect(github.state).toBe('completed')
+    expect(github.requests.at(-1).body.output.text).not.toContain('runner=tail-probe-1-')
+    expect(github.requests.at(-1).body.output.text).toContain('runner=tail-probe-9-')
   })
 })

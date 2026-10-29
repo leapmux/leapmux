@@ -83,8 +83,9 @@ func (t *ProcessTable) verifyForest(ctx context.Context, roots []ProcessIdentity
 				if !exists {
 					continue
 				}
-				// The table links no such process, but this check kills what it
-				// owns, so it confirms the order from the live identities too. A
+				// The table can retain an uncertain relationship for observation.
+				// This check grants destructive ownership, so it requires live
+				// identities that confirm the creation order. A
 				// process that started before its recorded parent is unrelated:
 				// on Windows it is csrss.exe or winlogon.exe, and killing it ends
 				// the user's session.

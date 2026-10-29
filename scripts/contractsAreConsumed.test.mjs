@@ -112,8 +112,17 @@ const tsSources = readAll(sourceFiles(join(root, 'frontend/src'), ['.ts', '.tsx'
  * because one table's name is a prefix of another's.
  */
 function wordPattern(symbol) {
-  return new RegExp(`\\b${symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`)
+  return new RegExp(`\\b${RegExp.escape(symbol)}\\b`)
 }
+
+describe('wordPattern', () => {
+  it('matches literal dots and rejects longer underscored symbols', () => {
+    expect(wordPattern('contracts.Probe').test('(contracts.Probe)')).toBe(true)
+    expect(wordPattern('contracts.Probe').test('contractsXProbe')).toBe(false)
+    expect(wordPattern('ZCODE_STORED_PART').test('ZCODE_STORED_PART_STATUS')).toBe(false)
+    expect(wordPattern('ZCODE_STORED_PART').test('(ZCODE_STORED_PART)')).toBe(true)
+  })
+})
 
 function mentions(sources, symbol) {
   const pattern = wordPattern(symbol)

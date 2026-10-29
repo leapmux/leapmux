@@ -19,6 +19,31 @@ const GO_CLAIM = CLAIMS.find(c => c.file === 'README.md' && c.key === 'GOLANG_VE
 
 const ROOT = resolve(import.meta.dirname, '..')
 
+describe('CLAIMS derived rules', () => {
+  it('preserves the file and rule order with independent regex instances', () => {
+    expect(CLAIMS.slice(0, 10).map(({ file, key }) => [file, key])).toEqual([
+      ['README.md', 'GOLANG_VERSION'],
+      ['README.md', 'NODE_VERSION'],
+      ['README.md', 'BUN_VERSION'],
+      ['site/content/docs/getting-started/installation.md', 'GOLANG_VERSION'],
+      ['site/content/docs/getting-started/installation.md', 'NODE_VERSION'],
+      ['site/content/docs/getting-started/installation.md', 'BUN_VERSION'],
+      ['go.work', 'GOLANG_VERSION'],
+      ['backend/go.mod', 'GOLANG_VERSION'],
+      ['desktop/go/go.mod', 'GOLANG_VERSION'],
+      ['site/go.mod', 'GOLANG_VERSION'],
+    ])
+    expect(new Set(CLAIMS.slice(0, 10).map(claim => claim.pattern)).size).toBe(10)
+  })
+
+  it('rewrites each documentation file and identifies a missing claim by its file', () => {
+    const claims = CLAIMS.filter(claim => claim.key === 'GOLANG_VERSION' && claim.file.endsWith('.md'))
+    for (const claim of claims)
+      expect(applyClaim(claim, '- **Go** 1.0.0 or later\n', '1.27.1').content).toBe('- **Go** 1.27.1 or later\n')
+    expect(() => applyClaim(claims[1], 'missing', '1.27.1')).toThrow('site/content/docs/getting-started/installation.md')
+  })
+})
+
 describe('parseVersions', () => {
   it('reads KEY=VALUE lines and skips comments and blanks', () => {
     const versions = parseVersions('# a comment\n\nGOLANG_VERSION=1.26.5\nNODE_VERSION=24.19.0\n')
@@ -295,5 +320,10 @@ describe('runner claims', () => {
     expect(windows).toBeDefined()
     expect(new RegExp(windows.pattern.source, 'm').test('    runs-on: macos-26')).toBe(false)
     expect(new RegExp(windows.pattern.source, 'm').test('    runs-on: windows-2025-vs2026')).toBe(true)
+  })
+
+  it('matches the matrix suffix literally', () => {
+    const claim = claimed('ci.yaml', 'UBUNTU_RUNNER', `    runs-on: ubuntu-24.04${runnerSuffix}`)
+    expect(() => applyClaim(claim, `    runs-on: ubuntu-24.04\${{ matrixXrunner_suffix }}\n`, '26.04')).toThrow('no line matches')
   })
 })

@@ -1,0 +1,20 @@
+name: Monitor CI resources
+description: Start or stop the resource monitor with the current job credentials.
+
+inputs:
+  mode:
+    description: The monitor mode, start or stop.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Run the resource monitor
+      if: always()
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      working-directory: ${{ github.workspace }}
+      env:
+        GH_TOKEN: ${{ github.token }}
+        # Associate the check with the pull request head rather than the merge commit.
+        MONITOR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      run: bun scripts/ci-resource-monitor.mjs "${{ inputs.mode }}"

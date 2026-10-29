@@ -112,7 +112,7 @@ func TestDescendantPIDs_CycleTerminates(t *testing.T) {
 	// The parent index is not an atomic snapshot of the machine, so a stale ppid
 	// pointing at a recycled pid can close a loop. Without the visited set this
 	// walk never returns, and the Worker hangs inside a close.
-	byParent := tree([2]int32{100, 1}, [2]int32{200, 100}, [2]int32{300, 200}, [2]int32{200, 300})
+	byParent := tree([2]int32{100, 300}, [2]int32{200, 100}, [2]int32{300, 200})
 
 	got, total := descendantPIDs(byParent, 100, 0, reportAll)
 
@@ -159,6 +159,18 @@ func TestDescendantPIDs_ReportsNoProcessThatStartedBeforeTheShell(t *testing.T) 
 
 	assert.Equal(t, []int32{300}, got)
 	assert.Equal(t, 1, total)
+}
+
+func TestDescendantPIDs_ReportsWorkWithAnUnreadableCreationTime(t *testing.T) {
+	t.Parallel()
+	table := procutil.NewProcessTable([]procutil.ProcessRecord{
+		{PID: 100, PPID: 1, StartTime: 1000},
+		{PID: 200, PPID: 100},
+		{PID: 300, PPID: 200, StartTime: 1200},
+	})
+	pids, total := descendantPIDs(table, 100, 0, reportAll)
+	assert.Equal(t, []int32{200, 300}, pids)
+	assert.Equal(t, 2, total)
 }
 
 func TestDescendantPIDs_EmptyTable(t *testing.T) {

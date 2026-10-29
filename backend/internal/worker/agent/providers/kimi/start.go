@@ -54,10 +54,9 @@ func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderSer
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 
 	a := &Agent{
-		Process:          providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "kimi", ShutdownGrace: shutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
-		sink:             agent.NewModelProgressResetSink(sink),
-		workingDir:       opts.WorkingDir,
-		descendantGroups: kimiDescendantGroups,
+		Process:    providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "kimi", ShutdownGrace: shutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
+		sink:       agent.NewModelProgressResetSink(sink),
+		workingDir: opts.WorkingDir,
 	}
 	a.clock = a.Clock()
 	a.serverLaunchedAt = a.clock.Now()

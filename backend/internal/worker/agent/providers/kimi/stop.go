@@ -14,25 +14,17 @@ import (
 // on every platform but Windows), so the signal that ends the server's process
 // group does not reach them -- and neither does its own graceful shutdown: a
 // running command and a background task both outlive `POST /shutdown` and
-// SIGTERM (measured on 2.0.2). A stop therefore:
+// SIGTERM (measured on 2.0.2).
 //
-//  1. aborts a running turn, which the server answers by killing the turn's
-//     command the way a user's interrupt does;
-//  2. records the process groups of every process the server started, while
-//     they are still its descendants;
-//  3. asks the server to shut down, and stops the process;
-//  4. kills every recorded group that outlived the server.
+// Stop captures verified descendants before each control request, because an
+// abort or shutdown can end the root. The shared owner retains those identities
+// after root exit and terminates the remaining commands. Windows also retains
+// descendants in the job object assigned to the server.
 //
-// Windows does not need step 4: the server starts its commands without
-// detaching them there, so they stay in the job object the worker assigned the
-// server to, and the job's teardown ends them.
-//
-// Wait, which the manager calls after every exit, ends the event stream and
-// settles what the process left open. It does that for a crash too, when
-// nobody calls Stop.
+// Protocol requests stop once native exit is recorded. Local cleanup still
+// closes the stream and endpoint and completes Process.Stop.
 
-// kimiStopStepTimeout limits each request the stop sends. A server that does not
-// answer is killed anyway.
+// kimiStopStepTimeout limits each native stop step.
 const kimiStopStepTimeout = 2 * time.Second
 
 // Interrupt aborts the main agent's running turn. A turn that is not running
@@ -52,45 +44,68 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	return a.api.post(ctx, kimiSessionPath(sessionID, kimiActionAbort), nil, nil)
 }
 
-// Stop ends the server and every process it started. It is safe to call more
+// Stop ends the server and its captured descendants. It is safe to call more
 // than once.
 func (a *Agent) Stop() {
 	if a.IsStopped() {
 		return
 	}
 	a.NoteIntentionalStop()
+	a.shutdownServer()
+	// Close the stream before Process.Stop so it cannot redial during local
+	// shutdown. Wait joins its goroutines.
+	if a.stream != nil {
+		a.stream.close()
+	}
+	a.Process.Stop()
+	if a.endpoint != nil {
+		a.endpoint.Close()
+	}
+}
+
+// captureServerOwnership retains descendants before a control request can end
+// their parent. A recorded exit prevents control of a later server at the same
+// endpoint. The generic stop still performs local cleanup after this returns.
+func (a *Agent) captureServerOwnership() bool {
+	if a.ProcessExited() {
+		return false
+	}
+	if cmd := a.Cmd(); cmd != nil && cmd.Process != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), kimiStopStepTimeout)
+		if err := a.BindDescendants(ctx); err != nil {
+			slog.Debug("kimi process ownership capture failed", "agent_id", a.AgentID(), "error", err)
+		}
+		cancel()
+	}
+	return !a.ProcessExited()
+}
+
+// shutdownServer runs the native protocol steps while this instance remains
+// live. Descendants can change during abort, so shutdown captures them again.
+func (a *Agent) shutdownServer() {
+	if a.api == nil {
+		return
+	}
 	a.Mu.Lock()
 	sessionID, active := a.sessionID, a.turnActive
 	a.Mu.Unlock()
-
-	if active && kimiCheckID("session", sessionID) == nil && a.api != nil {
+	if active && kimiCheckID("session", sessionID) == nil {
+		if !a.captureServerOwnership() {
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), kimiStopStepTimeout)
 		if err := a.api.post(ctx, kimiSessionPath(sessionID, kimiActionAbort), nil, nil); err != nil {
 			slog.Debug("kimi abort on stop", "agent_id", a.AgentID(), "error", err)
 		}
 		cancel()
 	}
-
-	var groups []int
-	if cmd := a.Cmd(); cmd != nil && cmd.Process != nil && a.descendantGroups != nil {
-		groups = a.descendantGroups(cmd.Process.Pid)
+	if !a.captureServerOwnership() {
+		return
 	}
-	if a.api != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), kimiStopStepTimeout)
-		if err := a.api.post(ctx, kimiRouteShutdown, nil, nil); err != nil {
-			slog.Debug("kimi shutdown request", "agent_id", a.AgentID(), "error", err)
-		}
-		cancel()
-	}
-	// The stream closes before the server exits, so the reader does not start to
-	// redial a server that goes away on purpose. Wait joins its goroutines.
-	if a.stream != nil {
-		a.stream.close()
-	}
-	a.Process.Stop()
-	killKimiGroups(groups)
-	if a.endpoint != nil {
-		a.endpoint.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), kimiStopStepTimeout)
+	defer cancel()
+	if err := a.api.post(ctx, kimiRouteShutdown, nil, nil); err != nil {
+		slog.Debug("kimi shutdown request", "agent_id", a.AgentID(), "error", err)
 	}
 }
 

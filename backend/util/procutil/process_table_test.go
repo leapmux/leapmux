@@ -92,10 +92,9 @@ func TestBuildProcessTableLinksNoChildToAParentOutsideTheSnapshot(t *testing.T) 
 	assert.Zero(t, total)
 }
 
-// Windows refuses some processes a start-time read. Such a row cannot prove
-// its place in the tree, so it links to nothing, and the snapshot reports no
-// ownership failure for a process that the worker never started.
-func TestBuildProcessTableKeepsARowWithAnUnreadableStartTimeUnlinked(t *testing.T) {
+// An unreadable creation time must not hide possible work from an observational
+// query. Destructive ownership still requires a verified live identity.
+func TestBuildProcessTableReportsRowsWithUnreadableStartTimes(t *testing.T) {
 	t.Parallel()
 	rows := []*process.Process{{Pid: 100}, {Pid: 200}, {Pid: 300}, {Pid: 400}}
 	parents := map[int32]int32{100: 1, 200: 100, 300: 200, 400: 100}
@@ -113,8 +112,8 @@ func TestBuildProcessTableKeepsARowWithAnUnreadableStartTimeUnlinked(t *testing.
 	})
 	require.NoError(t, err)
 	pids, total := table.DescendantPIDs(100, 0, 0, nil)
-	assert.Empty(t, pids, "neither the unreadable 200 nor its child 300 can prove a link")
-	assert.Zero(t, total)
+	assert.Equal(t, []int{200, 300}, pids)
+	assert.Equal(t, 2, total)
 	assert.ElementsMatch(t, []ProcessRecord{{PID: 100, PPID: 1, StartTime: 1}, {PID: 200, PPID: 100}, {PID: 300, PPID: 200, StartTime: 1}}, table.Records(),
 		"a process that ended during the read leaves no row")
 }
@@ -190,7 +189,7 @@ func TestNewProcessTablePreservesTraversalDepthCapAndFiltering(t *testing.T) {
 func TestNewProcessTableExcludesInvalidRecordsAndStopsAtCycles(t *testing.T) {
 	t.Parallel()
 	// Equal start times let a non-atomic snapshot close a loop.
-	table := NewProcessTable([]ProcessRecord{{PID: 10, PPID: 1, StartTime: 1}, {PID: 11, PPID: 10, StartTime: 1}, {PID: 12, PPID: 11, StartTime: 1}, {PID: 10, PPID: 12, StartTime: 1}, {PID: 11, PPID: 12, StartTime: 1}, {PID: 0, PPID: 10, StartTime: 1}, {PID: -1, PPID: 10, StartTime: 1}, {PID: 13, PPID: -1, StartTime: 1}})
+	table := NewProcessTable([]ProcessRecord{{PID: 10, PPID: 12, StartTime: 1}, {PID: 11, PPID: 10, StartTime: 1}, {PID: 12, PPID: 11, StartTime: 1}, {PID: 0, PPID: 10, StartTime: 1}, {PID: -1, PPID: 10, StartTime: 1}, {PID: 13, PPID: -1, StartTime: 1}})
 	pids, total := table.DescendantPIDs(10, 0, 0, nil)
 	assert.Equal(t, []int{11, 12}, pids)
 	assert.Equal(t, 2, total)
@@ -205,11 +204,49 @@ func TestNewProcessTableLinksNoChildThatStartedBeforeItsParent(t *testing.T) {
 		{PID: 700, PPID: 624, StartTime: 100},
 		{PID: 800, PPID: 624, StartTime: 6000},
 		{PID: 801, PPID: 700, StartTime: 7000},
-		{PID: 900, PPID: 624},
+		{PID: 900, PPID: 624, StartTime: 4000},
 	})
 	pids, total := table.DescendantPIDs(624, 0, 0, nil)
-	assert.Equal(t, []int{800}, pids, "700 predates 624, so its child 801 is no descendant either, and 900 has no start time")
+	assert.Equal(t, []int{800}, pids, "700 and 900 predate 624, so 700's child 801 is no descendant either")
 	assert.Equal(t, 1, total)
 	pids, _ = table.DescendantPIDs(700, 0, 0, nil)
 	assert.Equal(t, []int{801}, pids, "700 keeps its own child")
+}
+
+func TestNewProcessTableReportsChildrenOfARootWithAnUnknownStartTime(t *testing.T) {
+	t.Parallel()
+	table := NewProcessTable([]ProcessRecord{{PID: 10, PPID: 1}, {PID: 11, PPID: 10, StartTime: 1000}})
+	pids, total := table.DescendantPIDs(10, 0, 0, nil)
+	assert.Equal(t, []int{11}, pids)
+	assert.Equal(t, 1, total)
+}
+
+func TestNewProcessTableDerivesEdgesFromTheLastValidRowForEachPID(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		label   string
+		last    ProcessRecord
+		under10 []int
+		under20 []int
+	}{
+		{label: "changed parent", last: ProcessRecord{PID: 11, PPID: 20, StartTime: 1200}, under20: []int{11}},
+		{label: "earlier replacement", last: ProcessRecord{PID: 11, PPID: 10, StartTime: 900}},
+		{label: "invalid replacement", last: ProcessRecord{PID: 11, PPID: -1, StartTime: 1200}, under10: []int{11}},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			t.Parallel()
+			first := ProcessRecord{PID: 11, PPID: 10, StartTime: 1100}
+			table := NewProcessTable([]ProcessRecord{{PID: 10, PPID: 1, StartTime: 1000}, {PID: 20, PPID: 1, StartTime: 1000}, first, tc.last})
+			got10, _ := table.DescendantPIDs(10, 0, 0, nil)
+			got20, _ := table.DescendantPIDs(20, 0, 0, nil)
+			assert.Equal(t, tc.under10, got10)
+			assert.Equal(t, tc.under20, got20)
+			want := tc.last
+			if want.PPID < 0 {
+				want = first
+			}
+			assert.Contains(t, table.Records(), want)
+			assert.Len(t, table.Records(), 3)
+		})
+	}
 }

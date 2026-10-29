@@ -37,10 +37,9 @@ import (
 //     lists it under `not_found`. A REST read of the session loads it, which is
 //     the caller's job before it subscribes.
 //
-// Every goroutine of the stream runs under a context of its own, which close
-// cancels. The process context is not enough: the server exits by itself on a
-// stop, inside the stop's grace period, and on a crash, and neither exit
-// cancels the process context.
+// Every goroutine of the stream runs under its own context. Stop closes that
+// context, and Wait joins the goroutines. The process context ends after native
+// exit, but it does not control this independent stream context.
 
 // kimiFrame is one WebSocket frame: an event, an ack, a ping, or the hello.
 type kimiFrame struct {

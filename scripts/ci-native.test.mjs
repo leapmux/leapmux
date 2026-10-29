@@ -9,7 +9,7 @@ const readYaml = path => Bun.YAML.parse(readFileSync(resolve(root, path), 'utf8'
 const expression = body => `\${{ ${body} }}`
 // The one Bun test that the native jobs run: the resource monitor reads each
 // OS through its own probe, so each runner tests its own.
-const MONITOR_TEST = 'bun test --timeout 30000 scripts/ci-resource-monitor.test.mjs'
+const MONITOR_TEST = 'bun test --timeout 30000 scripts/ci-resource-monitor.test.mjs scripts/ci-resource-monitor/'
 const fixtures = []
 
 afterEach(() => {
@@ -188,8 +188,8 @@ describe('native CI validation', () => {
     const job = readYaml('.github/workflows/ci.yaml').jobs[name]
     const steps = job.steps
     const monitor = 'bun scripts/ci-resource-monitor.mjs'
-    const start = steps.findIndex(step => step.run === `${monitor} start`)
-    const stop = steps.findIndex(step => step.run === `${monitor} stop`)
+    const start = steps.findIndex(step => step.uses === './.github/actions/ci-resource-monitor' && step.with.mode === 'start')
+    const stop = steps.findIndex(step => step.uses === './.github/actions/ci-resource-monitor' && step.with.mode === 'stop')
     const setup = steps.findIndex(step => step.uses === './.github/actions/setup-build')
     const tests = steps.findIndex(step => /^task test(?:-native(?:-linux)?)?$/.test(step.run ?? ''))
     // The monitor needs the Bun that the toolchain setup installs.
@@ -200,14 +200,17 @@ describe('native CI validation', () => {
     // The repository variable CI_RESOURCE_MONITOR switches the monitor on.
     expect(steps[start].if).toBe('vars.CI_RESOURCE_MONITOR == \'true\'')
     expect(steps[stop].if).toBe('always() && vars.CI_RESOURCE_MONITOR == \'true\'')
-    for (const index of [start, stop]) {
-      expect(steps[index].shell).toBe(name === 'windows'
-        ? 'pwsh'
-        : undefined)
-      expect(steps[index].env.GH_TOKEN).toBe(expression('secrets.GITHUB_TOKEN'))
-    }
-    // A pull request's check run belongs to its head commit, not to the merge commit.
-    expect(steps[start].env.MONITOR_HEAD_SHA).toBe(expression('github.event.pull_request.head.sha || github.sha'))
+    const action = readYaml('.github/actions/ci-resource-monitor/action.yaml')
+    expect(action.inputs.mode.required).toBe(true)
+    expect(action.runs.using).toBe('composite')
+    expect(action.runs.steps).toHaveLength(1)
+    const invocation = action.runs.steps[0]
+    expect(invocation.if).toBe('always()')
+    expect(invocation.shell).toBe(expression('runner.os == \'Windows\' && \'pwsh\' || \'bash\''))
+    expect(invocation['working-directory']).toBe(expression('github.workspace'))
+    expect(invocation.env.GH_TOKEN).toBe(expression('github.token'))
+    expect(invocation.env.MONITOR_HEAD_SHA).toBe(expression('github.event.pull_request.head.sha || github.sha'))
+    expect(invocation.run).toBe(`${monitor} "${expression('inputs.mode')}"`)
     expect(job.permissions.checks).toBe('write')
     expect(existsSync(resolve(root, 'scripts/ci-resource-monitor.mjs'))).toBe(true)
   })

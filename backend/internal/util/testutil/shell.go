@@ -1,8 +1,10 @@
 package testutil
 
 import (
+	"errors"
 	"os"
 	"runtime"
+	"strings"
 )
 
 // TestShell returns a shell binary suitable for spawning a real PTY in
@@ -27,6 +29,29 @@ func TestShellEnter() string {
 		return "\r"
 	}
 	return "\n"
+}
+
+// TestShellOutputCommand prints an ASCII marker that is absent from the command
+// text. PTY input echo therefore cannot satisfy an output assertion.
+func TestShellOutputCommand(marker string) (string, error) {
+	if marker == "" {
+		return "", errors.New("shell marker must not be empty")
+	}
+	for _, ch := range marker {
+		validCharacter := (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_'
+		if !validCharacter {
+			return "", errors.New("shell marker must contain only ASCII letters, digits, and underscores")
+		}
+	}
+	split := len(marker) / 2
+	line := "printf '%s%s\\n' " + marker[:split] + " " + marker[split:]
+	if runtime.GOOS == "windows" {
+		line = "echo " + marker[:split] + "^" + marker[split:]
+	}
+	if strings.Contains(line, marker) {
+		return "", errors.New("shell marker must not occur in the generated command")
+	}
+	return line, nil
 }
 
 // TestSleepCommand returns a command line that keeps a child process alive for

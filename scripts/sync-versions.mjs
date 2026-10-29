@@ -35,11 +35,6 @@ export function major(version) {
   return version.split('.')[0]
 }
 
-/** Escape `text` for use as a literal inside a RegExp source. */
-function escapeRegExp(text) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
 /**
  * The claim over the `runs-on` lines of the jobs in one workflow that run on
  * one OS. `suffix` is the literal text after the version, such as an
@@ -49,7 +44,7 @@ function runnerClaim(workflow, key, os, suffix = '') {
   return {
     file: `.github/workflows/${workflow}`,
     key,
-    pattern: new RegExp(`^ {4}runs-on: ${os}-([\\w.-]+?)${escapeRegExp(suffix)}$`, 'gm'),
+    pattern: new RegExp(`^ {4}runs-on: ${os}-([\\w.-]+?)${RegExp.escape(suffix)}$`, 'gm'),
     render: v => `    runs-on: ${os}-${v}${suffix}`,
   }
 }
@@ -79,66 +74,37 @@ const ARM64_SUFFIX = `\${{ matrix.arch == 'arm64' && '-arm' || '' }}`
  * second source of truth for the same number.
  */
 export const CLAIMS = [
-  {
-    file: 'README.md',
-    key: 'GOLANG_VERSION',
-    pattern: /^- \*\*Go\*\* (\S+) or later$/gm,
-    render: v => `- **Go** ${v} or later`,
-  },
-  {
-    file: 'README.md',
-    key: 'NODE_VERSION',
-    pattern: /^- \*\*Node\.js\*\* (\S+) or later$/gm,
-    render: v => `- **Node.js** ${major(v)} or later`,
-  },
-  {
-    file: 'README.md',
-    key: 'BUN_VERSION',
-    pattern: /^- \*\*Bun\*\* (\S+) or later/gm,
-    render: v => `- **Bun** ${v} or later`,
-  },
-  {
-    file: 'site/content/docs/getting-started/installation.md',
-    key: 'GOLANG_VERSION',
-    pattern: /^- \*\*Go\*\* (\S+) or later$/gm,
-    render: v => `- **Go** ${v} or later`,
-  },
-  {
-    file: 'site/content/docs/getting-started/installation.md',
-    key: 'NODE_VERSION',
-    pattern: /^- \*\*Node\.js\*\* (\S+) or later$/gm,
-    render: v => `- **Node.js** ${major(v)} or later`,
-  },
-  {
-    file: 'site/content/docs/getting-started/installation.md',
-    key: 'BUN_VERSION',
-    pattern: /^- \*\*Bun\*\* (\S+) or later/gm,
-    render: v => `- **Bun** ${v} or later`,
-  },
-  {
-    file: 'go.work',
+  ...['README.md', 'site/content/docs/getting-started/installation.md'].flatMap(file => [
+    {
+      file,
+      key: 'GOLANG_VERSION',
+      pattern: /^- \*\*Go\*\* (\S+) or later$/gm,
+      render: v => `- **Go** ${v} or later`,
+    },
+    {
+      file,
+      key: 'NODE_VERSION',
+      pattern: /^- \*\*Node\.js\*\* (\S+) or later$/gm,
+      render: v => `- **Node.js** ${major(v)} or later`,
+    },
+    {
+      file,
+      key: 'BUN_VERSION',
+      pattern: /^- \*\*Bun\*\* (\S+) or later/gm,
+      render: v => `- **Bun** ${v} or later`,
+    },
+  ]),
+  ...[
+    'go.work',
+    'backend/go.mod',
+    'desktop/go/go.mod',
+    'site/go.mod',
+  ].map(file => ({
+    file,
     key: 'GOLANG_VERSION',
     pattern: /^go (\S+)$/gm,
     render: v => `go ${v}`,
-  },
-  {
-    file: 'backend/go.mod',
-    key: 'GOLANG_VERSION',
-    pattern: /^go (\S+)$/gm,
-    render: v => `go ${v}`,
-  },
-  {
-    file: 'desktop/go/go.mod',
-    key: 'GOLANG_VERSION',
-    pattern: /^go (\S+)$/gm,
-    render: v => `go ${v}`,
-  },
-  {
-    file: 'site/go.mod',
-    key: 'GOLANG_VERSION',
-    pattern: /^go (\S+)$/gm,
-    render: v => `go ${v}`,
-  },
+  })),
   // The runner image of every workflow job (see RUNNER IMAGES in ci.yaml).
   runnerClaim('ci.yaml', 'UBUNTU_RUNNER', 'ubuntu', MATRIX_RUNNER_SUFFIX),
   runnerClaim('ci.yaml', 'UBUNTU_RUNNER', 'ubuntu'),
