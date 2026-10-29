@@ -331,8 +331,7 @@ jobs:
   windows:
     # windows-2022, the same image that ci.yaml's windows job tests on. The
     # compiled caches are keyed by the runner image, so the two jobs share
-    # them only on the same image. See ci.yaml for the reason to avoid
-    # windows-latest.
+    # them only on the same image. Change both images together.
     runs-on: windows-2022
     permissions:
       contents: read

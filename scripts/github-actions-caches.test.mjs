@@ -220,7 +220,10 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     const groups = []
     for (const name of ['linux', 'macos', 'windows']) {
       const job = ci.jobs[name]
-      expect(job.permissions).toEqual({ contents: 'read', actions: 'write' })
+      // The Windows job also publishes its resource monitor to a check run.
+      expect(job.permissions).toEqual(name === 'windows'
+        ? { contents: 'read', actions: 'write', checks: 'write' }
+        : { contents: 'read', actions: 'write' })
       expect(job.concurrency['cancel-in-progress']).toBe(false)
       expect(job.concurrency.queue).toBe('max')
       expect(job.concurrency.group).toContain(expression('github.ref'))

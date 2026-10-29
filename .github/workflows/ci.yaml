@@ -24,6 +24,8 @@ jobs:
     # image that the container is built FROM, not the runner it is built ON.
     # The two track the same release today but are not the same knob.
     runs-on: ubuntu-24.04${{ matrix.runner_suffix }}
+    # TEMPORARY(windows-ci-lost-runner): run the Windows job alone.
+    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -126,6 +128,8 @@ jobs:
 
   macos:
     runs-on: macos-latest
+    # TEMPORARY(windows-ci-lost-runner): run the Windows job alone.
+    if: false
     permissions:
       contents: read
       actions: write
@@ -183,22 +187,45 @@ jobs:
         run: task check-build-cache
 
   windows:
-    # windows-2022, NOT windows-latest. Since 2026-10-13 ~17:00Z the latest
-    # image's fleet degrades mid-run. Every spawned process starts failing
-    # with STATUS_DLL_INIT_FAILED (0xC0000142) late in the suite. The runner
-    # then loses communication and uploads no logs. Six consecutive attempts
-    # showed this. The same suite content passed green on that image earlier
-    # that day. Unpin back to windows-latest only after the image stabilizes.
+    # windows-2022 is also the image of the Windows desktop artifacts
+    # (desktop-artifacts.yaml), and the compiled caches are keyed by the image.
+    #
+    # Since 2026-10-13, GitHub loses about a third of these runners during the
+    # Go test suite and keeps no log of the job. The losses began on
+    # windows-latest and continued on windows-2022, so the image is not their
+    # cause.
     runs-on: windows-2022
+    # TEMPORARY(windows-ci-lost-runner): end a lost job sooner.
+    timeout-minutes: 60
+    # TEMPORARY(windows-ci-lost-runner): run four copies to sample more runs.
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: [1, 2, 3, 4]
     permissions:
       contents: read
       actions: write
+      # The resource monitor publishes its samples to a check run.
+      checks: write
     concurrency:
-      group: compiled-go-native-windows-${{ github.ref }}
+      # TEMPORARY(windows-ci-lost-runner): each copy takes its own group.
+      group: compiled-go-native-windows-${{ github.ref }}-${{ matrix.copy }}
       cancel-in-progress: false
       queue: max
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Start the resource monitor
+        # GitHub keeps no log for a runner that it loses. The monitor
+        # publishes the runner's memory, processes, disk and network to a
+        # check run, which stays readable after such a loss.
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MONITOR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          # TEMPORARY(windows-ci-lost-runner): tell the copies apart.
+          MONITOR_CHECK_NAME: Windows resource monitor (copy ${{ matrix.copy }})
+        run: ./scripts/ci-windows-resource-monitor.ps1 -Mode Start
 
       - name: Setup build toolchain
         id: setup
@@ -248,12 +275,21 @@ jobs:
         shell: pwsh
         run: task check-build-cache
 
+      - name: Stop the resource monitor
+        if: always()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/ci-windows-resource-monitor.ps1 -Mode Stop
+
   docker:
     strategy:
       fail-fast: false
       matrix:
         variant: [alpine, ubuntu]
-    if: github.event_name == 'pull_request'
+    # TEMPORARY(windows-ci-lost-runner): run the Windows job alone.
+    # Restore: if: github.event_name == 'pull_request'
+    if: false
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -299,7 +335,9 @@ jobs:
 
   required-ci:
     name: Required CI
-    if: always()
+    # TEMPORARY(windows-ci-lost-runner): run the Windows job alone.
+    # Restore: if: always()
+    if: false
     needs: [linux, macos, windows, docker]
     runs-on: ubuntu-latest
     permissions: {}

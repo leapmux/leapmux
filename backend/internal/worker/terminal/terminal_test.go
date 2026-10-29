@@ -377,7 +377,7 @@ func TestTerminal_SendInputSkipsEmptyData(t *testing.T) {
 // WHERE IT BITES is Windows, and this says so because the test passes on Unix
 // either way: there the close takes the slave and the resize takes the master,
 // two different descriptors and no shared state, so even `-race` reports
-// nothing with the lock removed. On the windows-latest CI job the same run
+// nothing with the lock removed. On the Windows CI job the same run
 // drives two console APIs at one handle. Read a Unix pass as a smoke test --
 // no panic, no hang, and the exit still lands -- and the Windows job as the
 // assertion.

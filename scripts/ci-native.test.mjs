@@ -1,11 +1,12 @@
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, describe, expect, it } from 'bun:test'
 
 const root = resolve(import.meta.dirname, '..')
 const readYaml = path => Bun.YAML.parse(readFileSync(resolve(root, path), 'utf8'))
+const expression = body => `\${{ ${body} }}`
 const fixtures = []
 
 afterEach(() => {
@@ -172,5 +173,29 @@ describe('native CI validation', () => {
           expect(step.shell).toBe('pwsh')
       }
     }
+  })
+
+  it('monitors the Windows runner from checkout to the end of the job', () => {
+    const { windows } = readYaml('.github/workflows/ci.yaml').jobs
+    const steps = windows.steps
+    const monitor = './scripts/ci-windows-resource-monitor.ps1'
+    const start = steps.findIndex(step => step.run === `${monitor} -Mode Start`)
+    const stop = steps.findIndex(step => step.run === `${monitor} -Mode Stop`)
+    const checkout = steps.findIndex(step => String(step.uses).startsWith('actions/checkout@'))
+    const tests = steps.findIndex(step => step.run === 'task test-native')
+    // The monitor starts once the script exists and before any toolchain work.
+    expect(start).toBe(checkout + 1)
+    expect(tests).toBeGreaterThan(start)
+    // The stop step runs last and after a failure, so it prints the log of every job that GitHub keeps.
+    expect(stop).toBe(steps.length - 1)
+    expect(steps[stop].if).toBe('always()')
+    for (const index of [start, stop]) {
+      expect(steps[index].shell).toBe('pwsh')
+      expect(steps[index].env.GH_TOKEN).toBe(expression('secrets.GITHUB_TOKEN'))
+    }
+    // A pull request's check run belongs to its head commit, not to the merge commit.
+    expect(steps[start].env.MONITOR_HEAD_SHA).toBe(expression('github.event.pull_request.head.sha || github.sha'))
+    expect(windows.permissions.checks).toBe('write')
+    expect(existsSync(resolve(root, 'scripts/ci-windows-resource-monitor.ps1'))).toBe(true)
   })
 })
