@@ -5,6 +5,15 @@ import { win32 } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { readNativeToolOutputFile } from './nativeToolOutputFile'
 
+// The default suite uses POSIX paths on every host. Windows cases load the reader with win32 below.
+vi.mock('node:path', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:path')>()
+  return {
+    ...actual,
+    ...actual.posix,
+  }
+})
+
 function fixture(text = 'Complete\nnative77\n') {
   const bytes = Buffer.from(text)
   const stat: NativeToolOutputFileStat = {
@@ -28,14 +37,19 @@ function fixture(text = 'Complete\nnative77\n') {
 }
 
 describe('readNativeToolOutputFile', () => {
-  it('reads exact stable bytes from descriptor zero without following the file link', () => {
-    const f = fixture()
-    expect(readNativeToolOutputFile('/private/native/result.txt', f.bytes.length, f.io)).toBe('Complete\nnative77\n')
-    expect(f.io.open).toHaveBeenCalledWith(process.platform === 'win32'
-      ? '\\private\\native\\result.txt'
-      : '/private/native/result.txt', constants.O_RDONLY | constants.O_NOFOLLOW)
-    expect(f.io.read).toHaveBeenCalledWith(0)
-    expect(f.io.close).toHaveBeenCalledWith(0)
+  it.each(['darwin', 'linux', 'win32'])('reads exact stable bytes from descriptor zero without following the file link on %s', (platform) => {
+    const hostPlatform = process.platform
+    Object.defineProperty(process, 'platform', { value: platform })
+    try {
+      const f = fixture()
+      expect(readNativeToolOutputFile('/private/native/result.txt', f.bytes.length, f.io)).toBe('Complete\nnative77\n')
+      expect(f.io.open).toHaveBeenCalledWith('/private/native/result.txt', constants.O_RDONLY | constants.O_NOFOLLOW)
+      expect(f.io.read).toHaveBeenCalledWith(0)
+      expect(f.io.close).toHaveBeenCalledWith(0)
+    }
+    finally {
+      Object.defineProperty(process, 'platform', { value: hostPlatform })
+    }
   })
 
   it('retains an empty native file at a zero-byte read limit', () => {
@@ -179,14 +193,6 @@ describe('readNativeToolOutputFile', () => {
     expect(() => readNativeToolOutputFile('/private/native/result.txt', 100, f.io)).toThrow(failure)
   })
 })
-vi.mock('node:path', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:path')>()
-  return {
-    ...actual,
-    ...actual.posix,
-  }
-})
-
 afterEach(() => {
   vi.doUnmock('node:path')
   vi.resetModules()
@@ -210,9 +216,9 @@ function windowsFile(): NativeToolOutputFileIO {
     isSymbolicLink: () => false,
   }
   return {
-    realpath: () => 'C:\\private\\native',
-    lstat: () => stat,
-    open: () => 0,
+    realpath: vi.fn(() => 'C:\\private\\native'),
+    lstat: vi.fn(() => stat),
+    open: vi.fn(() => 0),
     stat: () => stat,
     read: () => bytes,
     close: vi.fn(),
@@ -220,18 +226,25 @@ function windowsFile(): NativeToolOutputFileIO {
 }
 
 describe('readNativeToolOutputFile Windows paths', () => {
-  it('reads the canonical native Windows path', async () => {
+  it.each(['C:\\private\\native\\result.txt', 'C:/private/native/result.txt'])('reads a native Windows path through its canonical file: %j', async (path) => {
     const read = await windowsReader()
-    expect(read('C:\\private\\native\\result.txt', 100, windowsFile())).toBe('complete native output')
-  })
-
-  it('reads the native slash form that provider libraries emit on Windows', async () => {
-    const read = await windowsReader()
-    expect(read('C:/private/native/result.txt', 100, windowsFile())).toBe('complete native output')
+    const io = windowsFile()
+    expect(read(path, 100, io)).toBe('complete native output')
+    expect(io.realpath).toHaveBeenCalledTimes(2)
+    expect(io.realpath).toHaveBeenNthCalledWith(1, 'C:\\private\\native')
+    expect(io.realpath).toHaveBeenNthCalledWith(2, 'C:\\private\\native')
+    expect(io.lstat).toHaveBeenCalledTimes(2)
+    expect(io.lstat).toHaveBeenNthCalledWith(1, 'C:\\private\\native\\result.txt')
+    expect(io.lstat).toHaveBeenNthCalledWith(2, 'C:\\private\\native\\result.txt')
+    expect(io.open).toHaveBeenCalledExactlyOnceWith('C:\\private\\native\\result.txt', constants.O_RDONLY | constants.O_NOFOLLOW)
+    expect(io.close).toHaveBeenCalledExactlyOnceWith(0)
   })
 
   it.each(['C:/private/../native/result.txt', 'C:private/result.txt', 'native/result.txt'])('rejects a noncanonical or relative Windows path: %j', async (path) => {
     const read = await windowsReader()
-    expect(() => read(path, 100, windowsFile())).toThrow('normalized file path')
+    const io = windowsFile()
+    expect(() => read(path, 100, io)).toThrow('normalized file path')
+    expect(io.realpath).not.toHaveBeenCalled()
+    expect(io.open).not.toHaveBeenCalled()
   })
 })
