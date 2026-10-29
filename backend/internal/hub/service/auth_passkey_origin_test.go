@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -22,13 +22,13 @@ import (
 
 func systemInfoFromOrigin(t *testing.T, env passkeyAuthTestEnv, origin string) *leapmuxv1.GetSystemInfoResponse {
 	t.Helper()
-	req := connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{})
+	ctx, info := connect.NewClientContext(context.Background())
 	if origin != "" {
-		req.Header().Set("Origin", origin)
+		info.RequestHeader().Set("Origin", origin)
 	}
-	resp, err := env.client.GetSystemInfo(context.Background(), req)
+	resp, err := env.client.GetSystemInfo(ctx, &leapmuxv1.GetSystemInfoRequest{})
 	require.NoError(t, err)
-	return resp.Msg
+	return resp
 }
 
 func TestGetSystemInfo_PasskeyEnabledFollowsTheRequestOrigin(t *testing.T) {
@@ -82,10 +82,10 @@ func TestGetSystemInfo_PasskeyDisabledWithoutAKeystore(t *testing.T) {
 	// No keystore: the hub runs no ceremony from any origin, so the allowed
 	// origin must not report otherwise.
 	client, _, _ := setupAuthTestServerBase(t, testConfig(), nil)
-	req := connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{})
-	req.Header().Set("Origin", passkeyTestOrigin)
-	resp, err := client.GetSystemInfo(context.Background(), req)
+	ctx, info := connect.NewClientContext(context.Background())
+	info.RequestHeader().Set("Origin", passkeyTestOrigin)
+	resp, err := client.GetSystemInfo(ctx, &leapmuxv1.GetSystemInfoRequest{})
 	require.NoError(t, err)
-	assert.False(t, resp.Msg.GetPasskeyEnabled(),
+	assert.False(t, resp.GetPasskeyEnabled(),
 		"a hub with no keystore runs no ceremony, whatever the origin")
 }

@@ -10,7 +10,8 @@ import (
 	"sort"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -64,11 +65,11 @@ type adminSettingsEnv struct {
 // elevation window and a test that needs one has to identify the row.
 func (e *adminSettingsEnv) adminBearer(t *testing.T) (bearer, tokenID string) {
 	t.Helper()
-	issued, err := e.userClient.IssueAPIToken(context.Background(), authedReq(&leapmuxv1.IssueAPITokenRequest{
+	issued, err := e.userClient.IssueAPIToken(authedReq(context.Background(), &leapmuxv1.IssueAPITokenRequest{
 		UserId: e.adminID, InstallationName: "admin-cli", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"},
 	}, e.token))
 	require.NoError(t, err)
-	return issued.Msg.GetAccessToken(), issued.Msg.GetTokenId()
+	return issued.GetAccessToken(), issued.GetTokenId()
 }
 
 // elevatedAdminBearer is the same credential with a proven factor on it, which
@@ -157,16 +158,19 @@ func setupAdminSettingsEnvRaw(t *testing.T, cfg *config.Config, opts ...settings
 	// mounts it. Every write verb here slides the elevation window, and the
 	// deadline it produced reaches a client only through this rung -- so a
 	// harness without it would pass whether the report worked or not.
-	connectOpts := connect.WithInterceptors(interceptor, service.NewElevationSlideInterceptor())
+	// The slide reporter rides beside the auth interceptor, exactly as the hub
+	// mounts it. Every write verb here slides the elevation window, and the
+	// deadline it produced reaches a client only through this rung -- so a
+	// harness without it would pass whether the report worked or not.
+	connectServer := connect.NewServer(interceptor, service.NewElevationResponseInterceptor())
 	adminSvc := service.NewAdminSettingsService(setMgr, cfg, st)
-	path, handler := leapmuxv1connect.NewAdminSettingsServiceHandler(adminSvc, connectOpts)
-	mux.Handle(path, handler)
-	userPath, userHandler := leapmuxv1connect.NewAdminUserServiceHandler(service.NewAdminUserService(service.AdminUserServiceDeps{
+	leapmuxv1connect.RegisterAdminSettingsServiceHandler(connectServer, adminSvc)
+	leapmuxv1connect.RegisterAdminUserServiceHandler(connectServer, service.NewAdminUserService(service.AdminUserServiceDeps{
 		Store:     st,
 		Validator: tv,
 		Lifecycle: auth.NewCredentialLifecycleEffects(contexts, nil, nil),
-	}), connectOpts)
-	mux.Handle(userPath, userHandler)
+	}))
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewUnstartedServer(mux)
 	server.EnableHTTP2 = true
@@ -174,23 +178,23 @@ func setupAdminSettingsEnvRaw(t *testing.T, cfg *config.Config, opts ...settings
 	t.Cleanup(server.Close)
 
 	return &adminSettingsEnv{
-		client:     leapmuxv1connect.NewAdminSettingsServiceClient(server.Client(), server.URL, connect.WithGRPC()),
+		client:     leapmuxv1connect.NewAdminSettingsServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC()))),
 		st:         st,
 		token:      token,
 		adminID:    admin.ID,
 		set:        setMgr,
 		svc:        adminSvc,
-		userClient: leapmuxv1connect.NewAdminUserServiceClient(server.Client(), server.URL, connect.WithGRPC()),
+		userClient: leapmuxv1connect.NewAdminUserServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC()))),
 	}
 }
 
 func TestAdminSettingsService_ListDescriptorsComplete(t *testing.T) {
 	env := setupAdminSettingsTest(t, &config.Config{})
-	resp, err := env.client.ListSettings(context.Background(), authedReq(&leapmuxv1.ListSettingsRequest{}, env.token))
+	resp, err := env.client.ListSettings(authedReq(context.Background(), &leapmuxv1.ListSettingsRequest{}, env.token))
 	require.NoError(t, err)
 
 	keys := map[string]*leapmuxv1.SettingDescriptor{}
-	for _, d := range resp.Msg.GetDescriptors() {
+	for _, d := range resp.GetDescriptors() {
 		keys[d.GetKey()] = d
 		// Every descriptor declares its presentation and editable shape.
 		assert.NotEmpty(t, d.GetCategory(), d.GetKey())
@@ -223,10 +227,10 @@ func TestAdminSettingsService_ValuesDefaultAndCustomized(t *testing.T) {
 	ctx := context.Background()
 
 	// Before any write: not customized, effective == default.
-	resp, err := env.client.ListSettings(ctx, authedReq(&leapmuxv1.ListSettingsRequest{}, env.token))
+	resp, err := env.client.ListSettings(authedReq(ctx, &leapmuxv1.ListSettingsRequest{}, env.token))
 	require.NoError(t, err)
 	byKey := map[string]*leapmuxv1.SettingValue{}
-	for _, v := range resp.Msg.GetValues() {
+	for _, v := range resp.GetValues() {
 		byKey[v.GetKey()] = v
 	}
 	require.Contains(t, byKey, "session_duration_seconds")
@@ -242,17 +246,17 @@ func TestAdminSettingsService_ValuesDefaultAndCustomized(t *testing.T) {
 	assert.JSONEq(t, `[]`, byKey["trusted_proxy_ranges"].GetEffectiveJson())
 
 	// A partial update merges onto the current value.
-	upd, err := env.client.UpdateSetting(ctx, authedReq(&leapmuxv1.UpdateSettingRequest{
+	upd, err := env.client.UpdateSetting(authedReq(ctx, &leapmuxv1.UpdateSettingRequest{
 		Key:         "session_duration_seconds",
 		PartialJson: "3600",
 	}, env.token))
 	require.NoError(t, err)
-	assert.True(t, upd.Msg.GetValue().GetCustomized())
-	assert.JSONEq(t, "3600", upd.Msg.GetValue().GetEffectiveJson())
-	assert.NotZero(t, upd.Msg.GetValue().GetUpdatedAt())
+	assert.True(t, upd.GetValue().GetCustomized())
+	assert.JSONEq(t, "3600", upd.GetValue().GetEffectiveJson())
+	assert.NotZero(t, upd.GetValue().GetUpdatedAt())
 
 	// An invalid value is refused with nothing stored.
-	_, err = env.client.UpdateSetting(ctx, authedReq(&leapmuxv1.UpdateSettingRequest{
+	_, err = env.client.UpdateSetting(authedReq(ctx, &leapmuxv1.UpdateSettingRequest{
 		Key:         "session_duration_seconds",
 		PartialJson: "1",
 	}, env.token))
@@ -260,7 +264,7 @@ func TestAdminSettingsService_ValuesDefaultAndCustomized(t *testing.T) {
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
 	// A stale field name is refused too (DisallowUnknownFields).
-	_, err = env.client.UpdateSetting(ctx, authedReq(&leapmuxv1.UpdateSettingRequest{
+	_, err = env.client.UpdateSetting(authedReq(ctx, &leapmuxv1.UpdateSettingRequest{
 		Key:         "smtp",
 		PartialJson: `{"hast":"x"}`,
 	}, env.token))
@@ -268,17 +272,17 @@ func TestAdminSettingsService_ValuesDefaultAndCustomized(t *testing.T) {
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
 	// Reset returns the default.
-	reset, err := env.client.ResetSetting(ctx, authedReq(&leapmuxv1.ResetSettingRequest{
+	reset, err := env.client.ResetSetting(authedReq(ctx, &leapmuxv1.ResetSettingRequest{
 		Key: "session_duration_seconds",
 	}, env.token))
 	require.NoError(t, err)
-	assert.False(t, reset.Msg.GetValue().GetCustomized())
-	assert.JSONEq(t, "604800", reset.Msg.GetValue().GetEffectiveJson())
+	assert.False(t, reset.GetValue().GetCustomized())
+	assert.JSONEq(t, "604800", reset.GetValue().GetEffectiveJson())
 }
 
 func TestAdminSettingsService_RejectsOverlappingTrustedProxySelectors(t *testing.T) {
 	env := setupAdminSettingsTest(t, &config.Config{})
-	_, err := env.client.UpdateSetting(context.Background(), authedReq(&leapmuxv1.UpdateSettingRequest{
+	_, err := env.client.UpdateSetting(authedReq(context.Background(), &leapmuxv1.UpdateSettingRequest{
 		Key:         requestsource.KeyTrustedProxyRanges.Name(),
 		PartialJson: `["192.0.2.0/24","192.0.2.7"]`,
 	}, env.token))
@@ -304,16 +308,16 @@ func TestAdminSettingsService_SecretsNeverLeave(t *testing.T) {
 	ctx := context.Background()
 
 	// Write a secret through the secret verb.
-	_, err := env.client.UpdateSettingSecret(ctx, authedReq(&leapmuxv1.UpdateSettingSecretRequest{
+	_, err := env.client.UpdateSettingSecret(authedReq(ctx, &leapmuxv1.UpdateSettingSecretRequest{
 		Key:         "smtp",
 		PartialJson: `{"password":"hunter2"}`,
 	}, env.token))
 	require.NoError(t, err)
 
-	resp, err := env.client.ListSettings(ctx, authedReq(&leapmuxv1.ListSettingsRequest{}, env.token))
+	resp, err := env.client.ListSettings(authedReq(ctx, &leapmuxv1.ListSettingsRequest{}, env.token))
 	require.NoError(t, err)
 	var smtp *leapmuxv1.SettingValue
-	for _, v := range resp.Msg.GetValues() {
+	for _, v := range resp.GetValues() {
 		if v.GetKey() == "smtp" {
 			smtp = v
 		}
@@ -337,7 +341,7 @@ func TestAdminSettingsService_SecretsNeverLeave(t *testing.T) {
 	assert.True(t, smtp.GetSecretSet()["password"], "secret_set reports the stored secret")
 
 	// UpdateSettingSecret on a key with no secret fields is refused.
-	_, err = env.client.UpdateSettingSecret(ctx, authedReq(&leapmuxv1.UpdateSettingSecretRequest{
+	_, err = env.client.UpdateSettingSecret(authedReq(ctx, &leapmuxv1.UpdateSettingSecretRequest{
 		Key:         "signup_enabled",
 		PartialJson: "true",
 	}, env.token))
@@ -360,10 +364,10 @@ func TestAdminSettingsService_EffectiveDiffersUnderDevMode(t *testing.T) {
 		settings.WithEffective(settings.KeySignupEnabled.Name(), func(s *settings.Snapshot) (any, bool) {
 			return settings.SignupEnabledEffective(s, cfg.DevMode), true
 		}))
-	resp, err := env.client.ListSettings(context.Background(), authedReq(&leapmuxv1.ListSettingsRequest{}, env.token))
+	resp, err := env.client.ListSettings(authedReq(context.Background(), &leapmuxv1.ListSettingsRequest{}, env.token))
 	require.NoError(t, err)
 	var signup *leapmuxv1.SettingValue
-	for _, v := range resp.Msg.GetValues() {
+	for _, v := range resp.GetValues() {
 		if v.GetKey() == "signup_enabled" {
 			signup = v
 		}
@@ -379,14 +383,14 @@ func TestAdminSettingsService_EmptyAndUnknownKey(t *testing.T) {
 	env := setupAdminSettingsTest(t, &config.Config{})
 	ctx := context.Background()
 
-	_, err := env.client.UpdateSetting(ctx, authedReq(&leapmuxv1.UpdateSettingRequest{
+	_, err := env.client.UpdateSetting(authedReq(ctx, &leapmuxv1.UpdateSettingRequest{
 		PartialJson: "true",
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "key is required")
 
-	_, err = env.client.UpdateSetting(ctx, authedReq(&leapmuxv1.UpdateSettingRequest{
+	_, err = env.client.UpdateSetting(authedReq(ctx, &leapmuxv1.UpdateSettingRequest{
 		Key:         "not_a_setting",
 		PartialJson: "true",
 	}, env.token))
@@ -394,12 +398,12 @@ func TestAdminSettingsService_EmptyAndUnknownKey(t *testing.T) {
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "unknown setting key")
 
-	_, err = env.client.ResetSetting(ctx, authedReq(&leapmuxv1.ResetSettingRequest{}, env.token))
+	_, err = env.client.ResetSetting(authedReq(ctx, &leapmuxv1.ResetSettingRequest{}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "key is required")
 
-	_, err = env.client.UpdateSettingSecret(ctx, authedReq(&leapmuxv1.UpdateSettingSecretRequest{
+	_, err = env.client.UpdateSettingSecret(authedReq(ctx, &leapmuxv1.UpdateSettingSecretRequest{
 		PartialJson: `{"password":"x"}`,
 	}, env.token))
 	require.Error(t, err)
@@ -412,10 +416,10 @@ func TestAdminSettingsService_EmptyAndUnknownKey(t *testing.T) {
 func listedKeysByCategory(t *testing.T, cfg *config.Config) map[string][]string {
 	t.Helper()
 	env := setupAdminSettingsTest(t, cfg)
-	resp, err := env.client.ListSettings(context.Background(), authedReq(&leapmuxv1.ListSettingsRequest{}, env.token))
+	resp, err := env.client.ListSettings(authedReq(context.Background(), &leapmuxv1.ListSettingsRequest{}, env.token))
 	require.NoError(t, err)
 	out := map[string][]string{}
-	for _, d := range resp.Msg.GetDescriptors() {
+	for _, d := range resp.GetDescriptors() {
 		out[d.GetCategory()] = append(out[d.GetCategory()], d.GetKey())
 	}
 	return out
@@ -542,11 +546,11 @@ func TestAdminSettingsService_QueueBudgetEffectiveReportsResolvedBytes(t *testin
 	env := setupAdminSettingsTestWithQueueBudget(t, &config.Config{},
 		func() settings.QueueBudgetValue { return resolved })
 
-	resp, err := env.client.ListSettings(context.Background(), authedReq(&leapmuxv1.ListSettingsRequest{}, env.token))
+	resp, err := env.client.ListSettings(authedReq(context.Background(), &leapmuxv1.ListSettingsRequest{}, env.token))
 	require.NoError(t, err)
 
 	var value *leapmuxv1.SettingValue
-	for _, v := range resp.Msg.GetValues() {
+	for _, v := range resp.GetValues() {
 		if v.GetKey() == settings.KeyQueueBudget.Name() {
 			value = v
 		}
@@ -572,9 +576,9 @@ func TestAdminSettingsService_QueueBudgetEffectiveReportsResolvedBytes(t *testin
 // that does not exercise this) the stored document is the honest answer.
 func TestAdminSettingsService_QueueBudgetEffectiveFallsBackToStored(t *testing.T) {
 	env := setupAdminSettingsTest(t, &config.Config{})
-	resp, err := env.client.ListSettings(context.Background(), authedReq(&leapmuxv1.ListSettingsRequest{}, env.token))
+	resp, err := env.client.ListSettings(authedReq(context.Background(), &leapmuxv1.ListSettingsRequest{}, env.token))
 	require.NoError(t, err)
-	for _, v := range resp.Msg.GetValues() {
+	for _, v := range resp.GetValues() {
 		if v.GetKey() == settings.KeyQueueBudget.Name() {
 			assert.JSONEq(t, v.GetMergedJson(), v.GetEffectiveJson())
 			return
@@ -592,14 +596,14 @@ func TestAdminSettingsService_ResetAltchaReprovisions(t *testing.T) {
 	env := setupAdminSettingsTestWithProvisioner(t, &config.Config{},
 		func(context.Context) error { calls++; return nil })
 
-	_, err := env.client.ResetSetting(context.Background(),
-		authedReq(&leapmuxv1.ResetSettingRequest{Key: captcha.AltchaKey.Name()}, env.token))
+	_, err := env.client.ResetSetting(authedReq(context.Background(),
+		&leapmuxv1.ResetSettingRequest{Key: captcha.AltchaKey.Name()}, env.token))
 	require.NoError(t, err)
 	assert.Equal(t, 1, calls, "resetting the ALTCHA key must re-provision its signing key")
 
 	// Any other key leaves it alone.
-	_, err = env.client.ResetSetting(context.Background(),
-		authedReq(&leapmuxv1.ResetSettingRequest{Key: settings.KeySignupEnabled.Name()}, env.token))
+	_, err = env.client.ResetSetting(authedReq(context.Background(),
+		&leapmuxv1.ResetSettingRequest{Key: settings.KeySignupEnabled.Name()}, env.token))
 	require.NoError(t, err)
 	assert.Equal(t, 1, calls, "an unrelated reset must not re-provision")
 }
@@ -610,8 +614,8 @@ func TestAdminSettingsService_ResetAltchaReportsProvisionFailure(t *testing.T) {
 	env := setupAdminSettingsTestWithProvisioner(t, &config.Config{},
 		func(context.Context) error { return errors.New("keystore unavailable") })
 
-	_, err := env.client.ResetSetting(context.Background(),
-		authedReq(&leapmuxv1.ResetSettingRequest{Key: captcha.AltchaKey.Name()}, env.token))
+	_, err := env.client.ResetSetting(authedReq(context.Background(),
+		&leapmuxv1.ResetSettingRequest{Key: captcha.AltchaKey.Name()}, env.token))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "the post-reset step failed",
 		"the manager identifies the key whose step failed")
@@ -639,7 +643,7 @@ func TestAdminSettingsService_ValueJsonIsTheStoredHalfOnly(t *testing.T) {
 
 	// One field written: the stored document carries THAT FIELD ONLY, while
 	// the merged one still carries all three.
-	_, err := env.client.UpdateSetting(ctx, authedReq(&leapmuxv1.UpdateSettingRequest{
+	_, err := env.client.UpdateSetting(authedReq(ctx, &leapmuxv1.UpdateSettingRequest{
 		Key: settings.KeyTimeouts.Name(), PartialJson: `{"api_seconds":11}`,
 	}, env.token))
 	require.NoError(t, err)
@@ -664,9 +668,9 @@ func TestAdminSettingsService_ValueJsonIsTheStoredHalfOnly(t *testing.T) {
 // when the key is absent.
 func settingValueByKey(t *testing.T, env *adminSettingsEnv, key string) *leapmuxv1.SettingValue {
 	t.Helper()
-	resp, err := env.client.ListSettings(context.Background(), authedReq(&leapmuxv1.ListSettingsRequest{}, env.token))
+	resp, err := env.client.ListSettings(authedReq(context.Background(), &leapmuxv1.ListSettingsRequest{}, env.token))
 	require.NoError(t, err)
-	for _, v := range resp.Msg.GetValues() {
+	for _, v := range resp.GetValues() {
 		if v.GetKey() == key {
 			return v
 		}
@@ -686,25 +690,25 @@ func TestAdminSettingsService_SoloRefusesWritingAHiddenKey(t *testing.T) {
 	ctx := context.Background()
 	hidden := settings.KeySignupEnabled.Name()
 
-	resp, err := env.client.ListSettings(ctx, authedReq(&leapmuxv1.ListSettingsRequest{}, env.token))
+	resp, err := env.client.ListSettings(authedReq(ctx, &leapmuxv1.ListSettingsRequest{}, env.token))
 	require.NoError(t, err)
-	for _, v := range resp.Msg.GetValues() {
+	for _, v := range resp.GetValues() {
 		require.NotEqual(t, hidden, v.GetKey(), "a solo hub must not list the key")
 	}
 
-	_, err = env.client.UpdateSetting(ctx, authedReq(&leapmuxv1.UpdateSettingRequest{
+	_, err = env.client.UpdateSetting(authedReq(ctx, &leapmuxv1.UpdateSettingRequest{
 		Key: hidden, PartialJson: "true",
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "not administrable in solo mode")
 
-	_, err = env.client.ResetSetting(ctx, authedReq(&leapmuxv1.ResetSettingRequest{Key: hidden}, env.token))
+	_, err = env.client.ResetSetting(authedReq(ctx, &leapmuxv1.ResetSettingRequest{Key: hidden}, env.token))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not administrable in solo mode")
 
 	// A key solo DOES read stays writable.
-	_, err = env.client.UpdateSetting(ctx, authedReq(&leapmuxv1.UpdateSettingRequest{
+	_, err = env.client.UpdateSetting(authedReq(ctx, &leapmuxv1.UpdateSettingRequest{
 		Key: settings.KeyPublicURL.Name(), PartialJson: `"https://hub.example.com"`,
 	}, env.token))
 	require.NoError(t, err)
@@ -731,12 +735,12 @@ func TestAdminSettingsService_SoloAdministersWhatItsSignInReads(t *testing.T) {
 		assert.True(t, listed[key], "a solo sign-in reads %s, so the operator must see it", key)
 	}
 
-	_, err := env.client.UpdateSetting(ctx, authedReq(&leapmuxv1.UpdateSettingRequest{
+	_, err := env.client.UpdateSetting(authedReq(ctx, &leapmuxv1.UpdateSettingRequest{
 		Key: settings.KeySecureCookies.Name(), PartialJson: "true",
 	}, env.token))
 	require.NoError(t, err, "a hub published behind TLS must be able to ask for a secure cookie")
 
-	_, err = env.client.UpdateSetting(ctx, authedReq(&leapmuxv1.UpdateSettingRequest{
+	_, err = env.client.UpdateSetting(authedReq(ctx, &leapmuxv1.UpdateSettingRequest{
 		Key: settings.KeySessionDurationSeconds.Name(), PartialJson: "3600",
 	}, env.token))
 	require.NoError(t, err)
@@ -750,17 +754,17 @@ func TestAdminSettingsService_UpdateReportsRestart(t *testing.T) {
 	env := setupAdminSettingsTest(t, &config.Config{})
 	ctx := context.Background()
 
-	hot, err := env.client.UpdateSetting(ctx, authedReq(&leapmuxv1.UpdateSettingRequest{
+	hot, err := env.client.UpdateSetting(authedReq(ctx, &leapmuxv1.UpdateSettingRequest{
 		Key: settings.KeyTimeouts.Name(), PartialJson: `{"api_seconds":11}`,
 	}, env.token))
 	require.NoError(t, err)
-	assert.False(t, hot.Msg.GetRestart(), "a hot key applies within the snapshot TTL")
+	assert.False(t, hot.GetRestart(), "a hot key applies within the snapshot TTL")
 
-	restart, err := env.client.UpdateSetting(ctx, authedReq(&leapmuxv1.UpdateSettingRequest{
+	restart, err := env.client.UpdateSetting(authedReq(ctx, &leapmuxv1.UpdateSettingRequest{
 		Key: settings.KeyQueueBudget.Name(), PartialJson: `{"relay_bytes":0}`,
 	}, env.token))
 	require.NoError(t, err)
-	assert.True(t, restart.Msg.GetRestart(), "queue_budget is restart-class")
+	assert.True(t, restart.GetRestart(), "queue_budget is restart-class")
 }
 
 // TestAdminSettingsService_UpdateSettingSecretRequiresASecretField pins
@@ -771,7 +775,7 @@ func TestAdminSettingsService_UpdateSettingSecretRequiresASecretField(t *testing
 	env := setupAdminSettingsTest(t, &config.Config{})
 	ctx := context.Background()
 
-	_, err := env.client.UpdateSettingSecret(ctx, authedReq(&leapmuxv1.UpdateSettingSecretRequest{
+	_, err := env.client.UpdateSettingSecret(authedReq(ctx, &leapmuxv1.UpdateSettingSecretRequest{
 		Key: settings.KeySMTP.Name(), PartialJson: `{"host":"evil.example"}`,
 	}, env.token))
 	require.Error(t, err)
@@ -781,7 +785,7 @@ func TestAdminSettingsService_UpdateSettingSecretRequiresASecretField(t *testing
 	value := settingValueByKey(t, env, settings.KeySMTP.Name())
 	assert.False(t, value.GetCustomized(), "the refused write must store nothing")
 
-	_, err = env.client.UpdateSettingSecret(ctx, authedReq(&leapmuxv1.UpdateSettingSecretRequest{
+	_, err = env.client.UpdateSettingSecret(authedReq(ctx, &leapmuxv1.UpdateSettingSecretRequest{
 		Key: settings.KeySMTP.Name(), PartialJson: `{"password":"hunter2"}`,
 	}, env.token))
 	require.NoError(t, err)
@@ -797,7 +801,7 @@ func TestAdminSettingsService_ResetSettingsIsOneTransaction(t *testing.T) {
 	env := setupAdminSettingsTest(t, &config.Config{})
 	ctx := context.Background()
 
-	_, err := env.client.UpdateSettings(ctx, authedReq(&leapmuxv1.UpdateSettingsRequest{
+	_, err := env.client.UpdateSettings(authedReq(ctx, &leapmuxv1.UpdateSettingsRequest{
 		Writes: []*leapmuxv1.SettingWrite{
 			{Key: captcha.RecaptchaV3Key.Name(), PartialJson: `{"site_key":"site","min_score":0.5}`, SecretPartialJson: `{"secret_key":"api-secret"}`},
 			{Key: captcha.TurnstileKey.Name(), PartialJson: `{"site_key":"ts-site"}`, SecretPartialJson: `{"secret_key":"ts-secret"}`},
@@ -808,7 +812,7 @@ func TestAdminSettingsService_ResetSettingsIsOneTransaction(t *testing.T) {
 
 	// The hub refuses to clear the provider rows while the selection stands,
 	// and BOTH rows survive.
-	_, err = env.client.ResetSettings(ctx, authedReq(&leapmuxv1.ResetSettingsRequest{
+	_, err = env.client.ResetSettings(authedReq(ctx, &leapmuxv1.ResetSettingsRequest{
 		Keys: []string{captcha.TurnstileKey.Name(), captcha.RecaptchaV3Key.Name()},
 	}, env.token))
 	require.Error(t, err)
@@ -818,13 +822,13 @@ func TestAdminSettingsService_ResetSettingsIsOneTransaction(t *testing.T) {
 	assert.True(t, settingValueByKey(t, env, captcha.RecaptchaV3Key.Name()).GetCustomized())
 
 	// The selection joins the same batch, and the whole set clears at once.
-	got, err := env.client.ResetSettings(ctx, authedReq(&leapmuxv1.ResetSettingsRequest{
+	got, err := env.client.ResetSettings(authedReq(ctx, &leapmuxv1.ResetSettingsRequest{
 		Keys: []string{captcha.CaptchaSelectedKey.Name(), captcha.TurnstileKey.Name(), captcha.RecaptchaV3Key.Name()},
 	}, env.token))
 	require.NoError(t, err)
-	require.Len(t, got.Msg.GetValues(), 3, "the reply reports every key the request listed, in request order")
-	assert.Equal(t, captcha.CaptchaSelectedKey.Name(), got.Msg.GetValues()[0].GetKey())
-	for _, v := range got.Msg.GetValues() {
+	require.Len(t, got.GetValues(), 3, "the reply reports every key the request listed, in request order")
+	assert.Equal(t, captcha.CaptchaSelectedKey.Name(), got.GetValues()[0].GetKey())
+	for _, v := range got.GetValues() {
 		assert.Falsef(t, v.GetCustomized(), "%s must be back at its default", v.GetKey())
 	}
 }
@@ -835,17 +839,17 @@ func TestAdminSettingsService_ResetSettingsArgumentChecks(t *testing.T) {
 	env := setupAdminSettingsTest(t, &config.Config{})
 	ctx := context.Background()
 
-	_, err := env.client.ResetSettings(ctx, authedReq(&leapmuxv1.ResetSettingsRequest{}, env.token))
+	_, err := env.client.ResetSettings(authedReq(ctx, &leapmuxv1.ResetSettingsRequest{}, env.token))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "keys is required")
 
-	_, err = env.client.ResetSettings(ctx, authedReq(&leapmuxv1.ResetSettingsRequest{
+	_, err = env.client.ResetSettings(authedReq(ctx, &leapmuxv1.ResetSettingsRequest{
 		Keys: []string{"no.such.key"},
 	}, env.token))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown setting key")
 
-	_, err = env.client.ResetSettings(ctx, authedReq(&leapmuxv1.ResetSettingsRequest{
+	_, err = env.client.ResetSettings(authedReq(ctx, &leapmuxv1.ResetSettingsRequest{
 		Keys: []string{settings.KeyTimeouts.Name(), settings.KeyTimeouts.Name()},
 	}, env.token))
 	require.Error(t, err)
@@ -867,7 +871,7 @@ func TestAdminSettingsService_UpdateSettingsArgumentChecks(t *testing.T) {
 	// A key with no secret fields: session_duration_seconds is a scalar.
 	noSecrets := settings.KeySessionDurationSeconds.Name()
 
-	_, err := env.client.UpdateSettings(ctx, authedReq(&leapmuxv1.UpdateSettingsRequest{
+	_, err := env.client.UpdateSettings(authedReq(ctx, &leapmuxv1.UpdateSettingsRequest{
 		Writes: []*leapmuxv1.SettingWrite{{Key: noSecrets, SecretPartialJson: `{"password":"hunter2"}`}},
 	}, env.token))
 	require.Error(t, err)
@@ -875,7 +879,7 @@ func TestAdminSettingsService_UpdateSettingsArgumentChecks(t *testing.T) {
 	assert.Contains(t, err.Error(), "has no secret fields")
 
 	// The single-key verb refuses the same input in the same words.
-	_, singleErr := env.client.UpdateSettingSecret(ctx, authedReq(&leapmuxv1.UpdateSettingSecretRequest{
+	_, singleErr := env.client.UpdateSettingSecret(authedReq(ctx, &leapmuxv1.UpdateSettingSecretRequest{
 		Key: noSecrets, PartialJson: `{"password":"hunter2"}`,
 	}, env.token))
 	require.Error(t, singleErr)
@@ -897,7 +901,7 @@ func TestAdminSettingsService_UpdateSettingsArgumentChecks(t *testing.T) {
 		{"empty document", &leapmuxv1.SettingWrite{Key: noSecrets, PartialJson: `{}`}, "specifies no field"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := env.client.UpdateSettings(ctx, authedReq(&leapmuxv1.UpdateSettingsRequest{
+			_, err := env.client.UpdateSettings(authedReq(ctx, &leapmuxv1.UpdateSettingsRequest{
 				Writes: []*leapmuxv1.SettingWrite{tc.write},
 			}, env.token))
 			require.Error(t, err)
@@ -928,7 +932,7 @@ func TestAdminSettingsService_EffectiveRedactsTheRulesOwnValue(t *testing.T) {
 		}))
 	ctx := context.Background()
 
-	_, err := env.client.UpdateSetting(ctx, authedReq(&leapmuxv1.UpdateSettingRequest{
+	_, err := env.client.UpdateSetting(authedReq(ctx, &leapmuxv1.UpdateSettingRequest{
 		Key:         settings.KeySMTP.Name(),
 		PartialJson: `{"host":"stored.example","from_address":"hub@example.com","password":"stored-secret"}`,
 	}, env.token))
@@ -995,14 +999,14 @@ func TestAdminSettingsService_ResetSettingsRunsEachKeysAfterResetStep(t *testing
 	ctx := context.Background()
 
 	// A batch of keys that have no step runs nothing.
-	_, err := env.client.ResetSettings(ctx, authedReq(&leapmuxv1.ResetSettingsRequest{
+	_, err := env.client.ResetSettings(authedReq(ctx, &leapmuxv1.ResetSettingsRequest{
 		Keys: []string{settings.KeySignupEnabled.Name(), settings.KeyTimeouts.Name()},
 	}, env.token))
 	require.NoError(t, err)
 	assert.Zero(t, calls, "no key in that batch carries a post-reset step")
 
 	// The same batch with the ALTCHA key in it runs its step once.
-	_, err = env.client.ResetSettings(ctx, authedReq(&leapmuxv1.ResetSettingsRequest{
+	_, err = env.client.ResetSettings(authedReq(ctx, &leapmuxv1.ResetSettingsRequest{
 		Keys: []string{settings.KeySignupEnabled.Name(), captcha.AltchaKey.Name()},
 	}, env.token))
 	require.NoError(t, err)
@@ -1016,7 +1020,7 @@ func TestAdminSettingsService_ResetSettingsReportsAStepFailure(t *testing.T) {
 	env := setupAdminSettingsTestWithProvisioner(t, &config.Config{},
 		func(context.Context) error { return errors.New("keystore unavailable") })
 
-	_, err := env.client.ResetSettings(context.Background(), authedReq(&leapmuxv1.ResetSettingsRequest{
+	_, err := env.client.ResetSettings(authedReq(context.Background(), &leapmuxv1.ResetSettingsRequest{
 		Keys: []string{settings.KeySignupEnabled.Name(), captcha.AltchaKey.Name()},
 	}, env.token))
 	require.Error(t, err)

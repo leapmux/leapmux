@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -57,12 +57,12 @@ func TestListMyAPITokens_ReportsTheAccountsOwnCredentials(t *testing.T) {
 	laptop := seedAPIToken(t, env, "alice@laptop", "workspace:read")
 	ciBot := seedAPIToken(t, env, "ci-bot", "admin:read admin:users admin:settings admin:workers")
 
-	resp, err := env.client.ListMyAPITokens(context.Background(), authedReq(&leapmuxv1.ListMyAPITokensRequest{}, env.token))
+	resp, err := env.client.ListMyAPITokens(authedReq(context.Background(), &leapmuxv1.ListMyAPITokensRequest{}, env.token))
 	require.NoError(t, err)
-	require.Len(t, resp.Msg.GetTokens(), 2)
+	require.Len(t, resp.GetTokens(), 2)
 
 	byID := map[string]*leapmuxv1.MyAPIToken{}
-	for _, tok := range resp.Msg.GetTokens() {
+	for _, tok := range resp.GetTokens() {
 		byID[tok.GetId()] = tok
 	}
 	require.Contains(t, byID, laptop)
@@ -89,12 +89,12 @@ func TestListMyAPITokens_LeaksNoSecret(t *testing.T) {
 	env := setupUserTest(t)
 	seedAPIToken(t, env, "alice@laptop", "workspace:read")
 
-	resp, err := env.client.ListMyAPITokens(context.Background(), authedReq(&leapmuxv1.ListMyAPITokensRequest{}, env.token))
+	resp, err := env.client.ListMyAPITokens(authedReq(context.Background(), &leapmuxv1.ListMyAPITokensRequest{}, env.token))
 	require.NoError(t, err)
 
 	// Serialize the WHOLE response and search it, so this covers a field added
 	// to the message later without anybody remembering to extend it.
-	raw, err := protojson.Marshal(resp.Msg)
+	raw, err := protojson.Marshal(resp)
 	require.NoError(t, err)
 	body := string(raw)
 	for _, forbidden := range []string{"SECRET-HASH", "REFRESH-HASH", "secretHash", "refreshHash", "secret_hash", "refresh_hash"} {
@@ -132,10 +132,10 @@ func TestListMyAPITokens_IsScopedToTheCaller(t *testing.T) {
 		SecretHash: []byte("x"), ExpiresAt: &expires,
 	}))
 
-	resp, err := env.client.ListMyAPITokens(context.Background(), authedReq(&leapmuxv1.ListMyAPITokensRequest{}, env.token))
+	resp, err := env.client.ListMyAPITokens(authedReq(context.Background(), &leapmuxv1.ListMyAPITokensRequest{}, env.token))
 	require.NoError(t, err)
-	require.Len(t, resp.Msg.GetTokens(), 1)
-	assert.Equal(t, mine, resp.Msg.GetTokens()[0].GetId())
+	require.Len(t, resp.GetTokens(), 1)
+	assert.Equal(t, mine, resp.GetTokens()[0].GetId())
 }
 
 // TestRevokeMyAPIToken_NeedsNoElevation is deliberate, and stated so it
@@ -149,7 +149,7 @@ func TestRevokeMyAPIToken_NeedsNoElevation(t *testing.T) {
 	env := setupUserTest(t)
 	tokenID := seedAPIToken(t, env, "alice@laptop", "workspace:read")
 
-	_, err := env.client.RevokeMyAPIToken(ctx, authedReq(&leapmuxv1.RevokeMyAPITokenRequest{Id: tokenID}, env.token))
+	_, err := env.client.RevokeMyAPIToken(authedReq(ctx, &leapmuxv1.RevokeMyAPITokenRequest{Id: tokenID}, env.token))
 	require.NoError(t, err, "revocation must work on a session that proved nothing")
 
 	row, err := env.store.APITokens().GetByID(ctx, tokenID)
@@ -157,9 +157,9 @@ func TestRevokeMyAPIToken_NeedsNoElevation(t *testing.T) {
 	assert.NotNil(t, row.RevokedAt)
 
 	// It leaves the listing.
-	resp, err := env.client.ListMyAPITokens(ctx, authedReq(&leapmuxv1.ListMyAPITokensRequest{}, env.token))
+	resp, err := env.client.ListMyAPITokens(authedReq(ctx, &leapmuxv1.ListMyAPITokensRequest{}, env.token))
 	require.NoError(t, err)
-	assert.Empty(t, resp.Msg.GetTokens())
+	assert.Empty(t, resp.GetTokens())
 }
 
 // TestRevokeMyAPIToken_RefusesAnotherUsersToken pins that the owner check
@@ -182,11 +182,11 @@ func TestRevokeMyAPIToken_RefusesAnotherUsersToken(t *testing.T) {
 		SecretHash: []byte("x"), ExpiresAt: &expires,
 	}))
 
-	_, err := env.client.RevokeMyAPIToken(ctx, authedReq(&leapmuxv1.RevokeMyAPITokenRequest{Id: victimToken}, env.token))
+	_, err := env.client.RevokeMyAPIToken(authedReq(ctx, &leapmuxv1.RevokeMyAPITokenRequest{Id: victimToken}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 
-	_, missingErr := env.client.RevokeMyAPIToken(ctx, authedReq(&leapmuxv1.RevokeMyAPITokenRequest{Id: "no-such-token"}, env.token))
+	_, missingErr := env.client.RevokeMyAPIToken(authedReq(ctx, &leapmuxv1.RevokeMyAPITokenRequest{Id: "no-such-token"}, env.token))
 	require.Error(t, missingErr)
 	assert.Equal(t, connect.CodeOf(err), connect.CodeOf(missingErr),
 		"a token that belongs to somebody else must be indistinguishable from one that does not exist")
@@ -207,9 +207,9 @@ func TestRevokeMyAPIToken_TwiceIsNotFound(t *testing.T) {
 	env := setupUserTest(t)
 	tokenID := seedAPIToken(t, env, "alice@laptop", "workspace:read")
 
-	_, err := env.client.RevokeMyAPIToken(ctx, authedReq(&leapmuxv1.RevokeMyAPITokenRequest{Id: tokenID}, env.token))
+	_, err := env.client.RevokeMyAPIToken(authedReq(ctx, &leapmuxv1.RevokeMyAPITokenRequest{Id: tokenID}, env.token))
 	require.NoError(t, err)
-	_, err = env.client.RevokeMyAPIToken(ctx, authedReq(&leapmuxv1.RevokeMyAPITokenRequest{Id: tokenID}, env.token))
+	_, err = env.client.RevokeMyAPIToken(authedReq(ctx, &leapmuxv1.RevokeMyAPITokenRequest{Id: tokenID}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 }
@@ -254,10 +254,10 @@ func TestDisconnectApp_TakesEveryInstallationOfThatAppAndNothingElse(t *testing.
 	otherApp := registerSecondApp(t, env)
 	survivor := seedAPITokenForApp(t, env, otherApp, "alice@laptop", "workspace:read")
 
-	resp, err := env.client.DisconnectApp(ctx,
-		authedReq(&leapmuxv1.DisconnectAppRequest{ClientId: oauthapp.ControlCLIClientID}, env.token))
+	resp, err := env.client.DisconnectApp(authedReq(ctx,
+		&leapmuxv1.DisconnectAppRequest{ClientId: oauthapp.ControlCLIClientID}, env.token))
 	require.NoError(t, err)
-	assert.EqualValues(t, 2, resp.Msg.GetRevokedCredentialCount(),
+	assert.EqualValues(t, 2, resp.GetRevokedCredentialCount(),
 		"a disconnect must take every installation of the app it names")
 
 	for _, tokenID := range []string{laptop, desktop} {
@@ -300,8 +300,8 @@ func TestDisconnectApp_IsScopedToTheCaller(t *testing.T) {
 		InstallationName: "victim-laptop", GrantedScopes: "workspace:read", SecretHash: []byte("x"),
 	}))
 
-	_, err := env.client.DisconnectApp(ctx,
-		authedReq(&leapmuxv1.DisconnectAppRequest{ClientId: oauthapp.ControlCLIClientID}, env.token))
+	_, err := env.client.DisconnectApp(authedReq(ctx,
+		&leapmuxv1.DisconnectAppRequest{ClientId: oauthapp.ControlCLIClientID}, env.token))
 	require.NoError(t, err)
 
 	row, err := env.store.APITokens().GetByID(ctx, mine)
@@ -324,15 +324,15 @@ func TestDisconnectApp_AnAccountThatHoldsNothingSucceeds(t *testing.T) {
 	ctx := context.Background()
 	env := setupUserTest(t)
 
-	resp, err := env.client.DisconnectApp(ctx,
-		authedReq(&leapmuxv1.DisconnectAppRequest{ClientId: oauthapp.ControlCLIClientID}, env.token))
+	resp, err := env.client.DisconnectApp(authedReq(ctx,
+		&leapmuxv1.DisconnectAppRequest{ClientId: oauthapp.ControlCLIClientID}, env.token))
 	require.NoError(t, err)
-	assert.EqualValues(t, 0, resp.Msg.GetRevokedCredentialCount())
+	assert.EqualValues(t, 0, resp.GetRevokedCredentialCount())
 
-	unknown, err := env.client.DisconnectApp(ctx,
-		authedReq(&leapmuxv1.DisconnectAppRequest{ClientId: "no-such-app"}, env.token))
+	unknown, err := env.client.DisconnectApp(authedReq(ctx,
+		&leapmuxv1.DisconnectAppRequest{ClientId: "no-such-app"}, env.token))
 	require.NoError(t, err, "an unknown client_id must not confirm whether the app exists")
-	assert.EqualValues(t, 0, unknown.Msg.GetRevokedCredentialCount())
+	assert.EqualValues(t, 0, unknown.GetRevokedCredentialCount())
 }
 
 // TestDisconnectApp_RefusesAnEmptyClientID. Empty is the value that would take
@@ -344,7 +344,7 @@ func TestDisconnectApp_RefusesAnEmptyClientID(t *testing.T) {
 	env := setupUserTest(t)
 	mine := seedAPIToken(t, env, "alice@laptop", "workspace:read")
 
-	_, err := env.client.DisconnectApp(ctx, authedReq(&leapmuxv1.DisconnectAppRequest{}, env.token))
+	_, err := env.client.DisconnectApp(authedReq(ctx, &leapmuxv1.DisconnectAppRequest{}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
@@ -364,10 +364,10 @@ func TestDisconnectApp_NeedsNoElevation(t *testing.T) {
 	seedAPIToken(t, env, "alice@laptop", "workspace:read")
 
 	// env.token is a plain session with no elevation window.
-	resp, err := env.client.DisconnectApp(ctx,
-		authedReq(&leapmuxv1.DisconnectAppRequest{ClientId: oauthapp.ControlCLIClientID}, env.token))
+	resp, err := env.client.DisconnectApp(authedReq(ctx,
+		&leapmuxv1.DisconnectAppRequest{ClientId: oauthapp.ControlCLIClientID}, env.token))
 	require.NoError(t, err, "disconnecting must not demand a proven factor")
-	assert.EqualValues(t, 1, resp.Msg.GetRevokedCredentialCount())
+	assert.EqualValues(t, 1, resp.GetRevokedCredentialCount())
 }
 
 // TestListMyAPITokens_StatesWhetherSomebodyVouchedForTheApp pins the vouch on
@@ -403,12 +403,12 @@ func TestListMyAPITokens_StatesWhetherSomebodyVouchedForTheApp(t *testing.T) {
 	seedAPITokenForApp(t, env, plainApp, "alice@laptop", "workspace:read")
 	seedAPIToken(t, env, "alice@laptop", "workspace:read") // the built-in CLI
 
-	resp, err := env.client.ListMyAPITokens(ctx,
-		authedReq(&leapmuxv1.ListMyAPITokensRequest{}, env.token))
+	resp, err := env.client.ListMyAPITokens(authedReq(ctx,
+		&leapmuxv1.ListMyAPITokensRequest{}, env.token))
 	require.NoError(t, err)
 
 	verifiedByClient := map[string]bool{}
-	for _, row := range resp.Msg.GetTokens() {
+	for _, row := range resp.GetTokens() {
 		verifiedByClient[row.GetClientId()] = row.GetClientVerified()
 	}
 	assert.True(t, verifiedByClient[vouchedApp], "an administrator vouched; the list states it")
@@ -454,7 +454,7 @@ func TestDisconnectApp_SpendsOutstandingOneShotGrants(t *testing.T) {
 	}, time.Now().UTC())
 	require.NoError(t, err)
 
-	_, err = env.client.DisconnectApp(ctx, authedReq(&leapmuxv1.DisconnectAppRequest{
+	_, err = env.client.DisconnectApp(authedReq(ctx, &leapmuxv1.DisconnectAppRequest{
 		ClientId: oauthapp.ControlCLIClientID,
 	}, env.token))
 	require.NoError(t, err)

@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/sections"
@@ -302,14 +302,14 @@ func AvailabilityConnectError(err error) error {
 	}
 	var taken *FieldTakenError
 	if errors.As(err, &taken) {
-		return connect.NewError(connect.CodeAlreadyExists, taken)
+		return connect.NewError(connect.CodeAlreadyExists, taken.Error()).WithCause(taken)
 	}
 	// A refused conditional mint is the resend cooldown, not a fault: the
 	// caller asked again too soon and the live code is still valid.
 	if errors.Is(err, ErrVerificationCooldown) {
-		return connect.NewError(connect.CodeResourceExhausted, err)
+		return connect.NewError(connect.CodeResourceExhausted, err.Error()).WithCause(err)
 	}
-	return connect.NewError(connect.CodeInternal, err)
+	return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 }
 
 // verifyPendingEmailToken validates the verification code submitted by
@@ -339,15 +339,15 @@ func AvailabilityConnectError(err error) error {
 func verifyPendingEmailToken(ctx context.Context, st store.Store, userID, submitted string, now time.Time) (*store.User, error) {
 	normalized := verifycode.Normalize(submitted)
 	if normalized == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid verification code"))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "invalid verification code")
 	}
 
 	user, err := st.Users().ConsumeVerificationAttempt(ctx, userID, now.UTC(), maxVerificationAttempts)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no pending email change"))
+			return nil, connect.Errorf(connect.CodeFailedPrecondition, "no pending email change")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 
 	// The store's WHERE filter only checks pending_email_token; an
@@ -355,26 +355,26 @@ func verifyPendingEmailToken(ctx context.Context, st store.Store, userID, submit
 	// the normal SetPendingEmail path, but the guard here makes the
 	// promotion below safe.
 	if user.PendingEmail == "" {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no pending email change"))
+		return nil, connect.Errorf(connect.CodeFailedPrecondition, "no pending email change")
 	}
 
 	if int(user.PendingEmailAttempts) > maxVerificationAttempts {
-		return nil, connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("too many attempts; request a new code"))
+		return nil, connect.Errorf(connect.CodeResourceExhausted, "too many attempts; request a new code")
 	}
 
 	expired := user.PendingEmailExpiresAt == nil || !now.UTC().Before(*user.PendingEmailExpiresAt)
 	mismatch := subtle.ConstantTimeCompare([]byte(user.PendingEmailToken), []byte(normalized)) != 1
 	if expired || mismatch {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid or expired verification code"))
+		return nil, connect.Errorf(connect.CodeNotFound, "invalid or expired verification code")
 	}
 
 	if err := promotePendingEmail(ctx, st, user.ID, user.PendingEmail); err != nil {
-		return nil, connect.NewError(connect.CodeAlreadyExists, err)
+		return nil, connect.NewError(connect.CodeAlreadyExists, err.Error()).WithCause(err)
 	}
 
 	updatedUser, err := st.Users().GetByID(ctx, user.ID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	return updatedUser, nil
 }

@@ -7,7 +7,8 @@ import (
 	"log/slog"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/coder/quartz"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -39,11 +40,12 @@ type RegistrationResult struct {
 // client for the same reason Connect does: the gRPC protocol needs HTTP/2
 // trailers, which HTTP/1.1 has no way to carry.
 func Register(ctx context.Context, endpoint *hubtransport.Endpoint, registrationKey, version string, publicKey, mlkemPublicKey, slhdsaPublicKey []byte) (*RegistrationResult, error) {
-	client := leapmuxv1connect.NewWorkerConnectorServiceClient(
+	client := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
 		endpoint.HTTP2OnlyClient(),
 		endpoint.BaseURL(),
-		connect.WithGRPC(),
-	)
+		connecthttp.WithReadMaxBytes(0),
+		connecthttp.WithGRPC(),
+	)))
 	return registerWithClient(ctx, client, registrationKey, version, publicKey, mlkemPublicKey, slhdsaPublicKey, newDefaultRegisterRetry())
 }
 
@@ -86,26 +88,28 @@ func registerWithClient(
 	}
 
 	for {
-		req := connect.NewRequest(&leapmuxv1.RegisterRequest{
+		req := &leapmuxv1.RegisterRequest{
 			Version:         version,
 			PublicKey:       publicKey,
 			MlkemPublicKey:  mlkemPublicKey,
 			SlhdsaPublicKey: slhdsaPublicKey,
-		})
+		}
 		// The handler authenticates by reading the bearer key from the
 		// Authorization header — this is *not* the long-lived auth_token
-		// flow, that one is bound to a different RPC.
-		req.Header().Set("Authorization", "Bearer "+registrationKey)
+		// flow, that one is bound to a different RPC. The header is request
+		// metadata on the call's CallInfo, so it rides the call context.
+		callCtx, info := connect.NewClientContext(ctx)
+		info.RequestHeader().Set("Authorization", "Bearer "+registrationKey)
 
-		resp, err := registerOnce(ctx, client, req, retry.attemptTimeout)
+		resp, err := registerOnce(callCtx, client, req, retry.attemptTimeout)
 		if err == nil {
 			// The owner is not recorded here: the Hub delivers it on every Connect
 			// (WorkerIdentity), so the worker never caches a copy that could go stale
 			// or go missing.
-			slog.Info("worker registered", "worker_id", resp.Msg.GetWorkerId())
+			slog.Info("worker registered", "worker_id", resp.GetWorkerId())
 			return &RegistrationResult{
-				WorkerID:  resp.Msg.GetWorkerId(),
-				AuthToken: resp.Msg.GetAuthToken(),
+				WorkerID:  resp.GetWorkerId(),
+				AuthToken: resp.GetAuthToken(),
 			}, nil
 		}
 
@@ -159,9 +163,9 @@ const registerAttemptTimeout = 30 * time.Second
 func registerOnce(
 	ctx context.Context,
 	client leapmuxv1connect.WorkerConnectorServiceClient,
-	req *connect.Request[leapmuxv1.RegisterRequest],
+	req *leapmuxv1.RegisterRequest,
 	timeout time.Duration,
-) (*connect.Response[leapmuxv1.RegisterResponse], error) {
+) (*leapmuxv1.RegisterResponse, error) {
 	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	return client.Register(attemptCtx, req)

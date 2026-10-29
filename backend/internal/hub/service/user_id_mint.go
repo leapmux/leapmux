@@ -1,9 +1,7 @@
 package service
 
 import (
-	"errors"
-
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -19,7 +17,7 @@ import (
 func mintRowUserID(rowID string) (userid.UserID, error) {
 	uid, ok := userid.New(rowID)
 	if !ok {
-		return userid.UserID{}, connect.NewError(connect.CodeInternal, errors.New("user row has a blank id"))
+		return userid.UserID{}, connect.NewError(connect.CodeInternal, "user row has a blank id")
 	}
 	return uid, nil
 }

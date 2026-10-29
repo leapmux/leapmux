@@ -12,7 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -73,7 +74,7 @@ func startTestServer(t *testing.T, info controlipc.TokenInfo, router *controlipc
 
 	httpClient, baseURL := ipcClient(t, sockURL)
 	httpClient.Transport = &injectAuthHeader{token: rawToken, base: httpClient.Transport}
-	return rawToken, leapmuxv1connect.NewControlIPCServiceClient(httpClient, baseURL, connect.WithGRPC())
+	return rawToken, leapmuxv1connect.NewControlIPCServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, baseURL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
 }
 
 // injectAuthHeader is a small RoundTripper wrapper that adds the
@@ -106,7 +107,7 @@ func startTestServerNoAuth(t *testing.T, info controlipc.TokenInfo, router *cont
 	t.Cleanup(func() { _ = srv.Close() })
 
 	httpClient, baseURL := ipcClient(t, sockURL)
-	return leapmuxv1connect.NewControlIPCServiceClient(httpClient, baseURL, connect.WithGRPC())
+	return leapmuxv1connect.NewControlIPCServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, baseURL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
 }
 
 // ipcClient builds the client the CLI itself builds for a worker control-IPC
@@ -130,12 +131,12 @@ func TestServer_Whoami_HappyPath(t *testing.T) {
 	}
 	_, client := startTestServer(t, info, router)
 
-	resp, err := client.Whoami(context.Background(), connect.NewRequest(&leapmuxv1.WhoamiRequest{}))
+	resp, err := client.Whoami(context.Background(), &leapmuxv1.WhoamiRequest{})
 	require.NoError(t, err)
-	assert.Equal(t, "u-1", resp.Msg.GetUserId())
-	assert.Equal(t, "worker-A", resp.Msg.GetWorkerId())
-	assert.Equal(t, "agent-1", resp.Msg.GetTabId())
-	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, resp.Msg.GetTabType())
+	assert.Equal(t, "u-1", resp.GetUserId())
+	assert.Equal(t, "worker-A", resp.GetWorkerId())
+	assert.Equal(t, "agent-1", resp.GetTabId())
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, resp.GetTabType())
 }
 
 func TestServer_Whoami_RejectsMissingToken(t *testing.T) {
@@ -145,7 +146,7 @@ func TestServer_Whoami_RejectsMissingToken(t *testing.T) {
 	client := startTestServerNoAuth(t, controlipc.TokenInfo{
 		UserID: userid.MustNew("u-1"), WorkerID: "worker-A",
 	}, router)
-	_, err := client.Whoami(context.Background(), connect.NewRequest(&leapmuxv1.WhoamiRequest{}))
+	_, err := client.Whoami(context.Background(), &leapmuxv1.WhoamiRequest{})
 	require.Error(t, err)
 	// The auth middleware returns plain 401 — connect surfaces that as
 	// CodeUnknown via the unaryUnknownErrorAdapter, with the body
@@ -172,8 +173,8 @@ func TestServer_Whoami_RejectsWrongToken(t *testing.T) {
 		token: "wrong-token-not-the-real-one",
 		base:  httpClient.Transport,
 	}
-	client := leapmuxv1connect.NewControlIPCServiceClient(httpClient, baseURL, connect.WithGRPC())
-	_, err = client.Whoami(context.Background(), connect.NewRequest(&leapmuxv1.WhoamiRequest{}))
+	client := leapmuxv1connect.NewControlIPCServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, baseURL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	_, err = client.Whoami(context.Background(), &leapmuxv1.WhoamiRequest{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "401")
 }
@@ -190,13 +191,13 @@ func TestServer_CallInner_RoutesThroughRouter(t *testing.T) {
 	}
 	_, client := startTestServer(t, info, router)
 
-	resp, err := client.CallInner(context.Background(), connect.NewRequest(&leapmuxv1.CallInnerRequest{
+	resp, err := client.CallInner(context.Background(), &leapmuxv1.CallInnerRequest{
 		Method:         "worker.OpenAgent",
 		Payload:        []byte(`{"hello":"world"}`),
 		TargetWorkerId: "worker-A",
-	}))
+	})
 	require.NoError(t, err)
-	assert.Equal(t, []byte("local-resp"), resp.Msg.GetPayload())
+	assert.Equal(t, []byte("local-resp"), resp.GetPayload())
 	assert.Equal(t, "OpenAgent", disp.gotMethod)
 	assert.Equal(t, "u-1", disp.gotUserID.String())
 }
@@ -211,13 +212,13 @@ func TestServer_CallInner_AllowsFilesystemOnSpawningWorker(t *testing.T) {
 	info := controlipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkerID: "worker-A"}
 	_, client := startTestServer(t, info, router)
 
-	resp, err := client.CallInner(context.Background(), connect.NewRequest(&leapmuxv1.CallInnerRequest{
+	resp, err := client.CallInner(context.Background(), &leapmuxv1.CallInnerRequest{
 		Method:         "worker.ReadFile",
 		Payload:        []byte(`{"path":"/etc/hosts"}`),
 		TargetWorkerId: "worker-A", // same as spawning worker
-	}))
+	})
 	require.NoError(t, err)
-	assert.Equal(t, []byte("file-content"), resp.Msg.GetPayload())
+	assert.Equal(t, []byte("file-content"), resp.GetPayload())
 }
 
 func TestServer_StreamInner_DeliversFramesAndCancels(t *testing.T) {
@@ -234,26 +235,27 @@ func TestServer_StreamInner_DeliversFramesAndCancels(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	stream, err := client.StreamInner(ctx, connect.NewRequest(&leapmuxv1.StreamInnerRequest{
+	stream, err := client.StreamInner(ctx, &leapmuxv1.StreamInnerRequest{
 		Method:          "worker.WatchEvents",
 		Payload:         []byte(`{}`),
 		TargetWorkerId:  "worker-A",
 		ClientRequestId: "req-stream-1",
-	}))
+	})
 	require.NoError(t, err)
 
 	// Read the three frames the dispatcher emits, then cancel — the
 	// router treats stream lifetime as ctx-scoped (matches the
 	// production WatchEvents handler).
 	for i := 0; i < 3; i++ {
-		require.True(t, stream.Receive(), "expected frame %d", i)
+		msg, err := stream.Receive()
+		require.NoError(t, err, "expected frame %d", i)
 		switch i {
 		case 0:
-			assert.Equal(t, []byte("e1"), stream.Msg().GetPayload())
+			assert.Equal(t, []byte("e1"), msg.GetPayload())
 		case 1:
-			assert.Equal(t, []byte("e2"), stream.Msg().GetPayload())
+			assert.Equal(t, []byte("e2"), msg.GetPayload())
 		case 2:
-			assert.Equal(t, []byte("e3"), stream.Msg().GetPayload())
+			assert.Equal(t, []byte("e3"), msg.GetPayload())
 		}
 	}
 	cancel()
@@ -279,8 +281,8 @@ func TestServer_TokenRevokedAfterClose(t *testing.T) {
 	// Prove the server is up.
 	httpClient, baseURL := ipcClient(t, sockURL)
 	httpClient.Transport = &injectAuthHeader{token: rawToken, base: httpClient.Transport}
-	client := leapmuxv1connect.NewControlIPCServiceClient(httpClient, baseURL, connect.WithGRPC())
-	_, err = client.Whoami(context.Background(), connect.NewRequest(&leapmuxv1.WhoamiRequest{}))
+	client := leapmuxv1connect.NewControlIPCServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, baseURL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	_, err = client.Whoami(context.Background(), &leapmuxv1.WhoamiRequest{})
 	require.NoError(t, err)
 
 	// Close: the listener is torn down (and on POSIX the socket file
@@ -291,8 +293,8 @@ func TestServer_TokenRevokedAfterClose(t *testing.T) {
 	closed, closedBaseURL := ipcClient(t, sockURL)
 	closed.Timeout = 500 * time.Millisecond
 	closed.Transport = &injectAuthHeader{token: rawToken, base: closed.Transport}
-	closedClient := leapmuxv1connect.NewControlIPCServiceClient(closed, closedBaseURL, connect.WithGRPC())
-	_, err = closedClient.Whoami(context.Background(), connect.NewRequest(&leapmuxv1.WhoamiRequest{}))
+	closedClient := leapmuxv1connect.NewControlIPCServiceClient(connect.NewClient(connecthttp.NewTransport(closed, closedBaseURL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	_, err = closedClient.Whoami(context.Background(), &leapmuxv1.WhoamiRequest{})
 	assert.Error(t, err, "post-close dial must fail")
 }
 
@@ -342,17 +344,18 @@ func TestServer_StreamInner_AuthorizerLifecycle(t *testing.T) {
 	_, client := startTestServer(t, info, router)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	stream, err := client.StreamInner(ctx, connect.NewRequest(&leapmuxv1.StreamInnerRequest{
+	stream, err := client.StreamInner(ctx, &leapmuxv1.StreamInnerRequest{
 		Method:          "worker.WatchEvents",
 		Payload:         []byte(`{}`),
 		TargetWorkerId:  "worker-A",
 		ClientRequestId: "req-stream-life",
-	}))
+	})
 	require.NoError(t, err)
 
 	// Drain at least one frame so we know the dispatcher has been
 	// invoked and the registration must have happened.
-	require.True(t, stream.Receive(), "expected at least one frame")
+	_, err = stream.Receive()
+	require.NoError(t, err, "expected at least one frame")
 	cancel()
 	_ = stream.Close()
 

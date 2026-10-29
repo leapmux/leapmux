@@ -8,11 +8,9 @@ package hubrpc
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"net/http"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -34,11 +32,11 @@ type Descriptor struct {
 	Procedure string
 	// Invoke runs the unary call. Both in and out MUST be the proto
 	// types returned by NewRequest / NewResponse — Invoke casts them
-	// back to the concrete types so `connect.NewClient` gets typed
-	// generics. Authentication is wired through opts (caller supplies
-	// the right interceptor: bearer-per-call for the worker bridge,
-	// session-cookie for the CLI).
-	Invoke func(ctx context.Context, httpClient *http.Client, baseURL string, in, out proto.Message, opts ...connect.ClientOption) error
+	// back to the concrete types so the dispatch is typed. The caller
+	// builds client, since Connect v2 puts interceptors on the client
+	// and HTTP options on its transport: bearer-per-call for the worker
+	// bridge, session-cookie for the CLI.
+	Invoke func(ctx context.Context, client *connect.Client, in, out proto.Message) error
 }
 
 // Registry is the single source of truth for hub methods. Adding a
@@ -60,52 +58,47 @@ var Registry = map[string]Descriptor{
 	"GetWorker":       mk(leapmuxv1connect.WorkerManagementServiceGetWorkerProcedure, func() proto.Message { return &leapmuxv1.GetWorkerRequest{} }, func() proto.Message { return &leapmuxv1.GetWorkerResponse{} }, callTyped[leapmuxv1.GetWorkerRequest, leapmuxv1.GetWorkerResponse]),
 }
 
-// mk builds a Descriptor that closes the procedure URL into Invoke
-// so the registry entries stay one-line.
+// mk builds a Descriptor that closes the procedure URL and the unary
+// Spec into Invoke so the registry entries stay one-line.
 func mk(procedure string, newReq, newResp func() proto.Message, call typedCaller) Descriptor {
+	// Schema is left nil: connect v2 carries it as opaque pass-through
+	// metadata, and nothing on this path reads it.
+	spec := connect.Spec{StreamType: connect.StreamTypeUnary, Procedure: procedure}
 	return Descriptor{
 		NewRequest:  newReq,
 		NewResponse: newResp,
 		Procedure:   procedure,
-		Invoke: func(ctx context.Context, httpClient *http.Client, baseURL string, in, out proto.Message, opts ...connect.ClientOption) error {
-			return call(ctx, httpClient, baseURL+procedure, in, out, opts...)
+		Invoke: func(ctx context.Context, client *connect.Client, in, out proto.Message) error {
+			return call(ctx, client, spec, in, out)
 		},
 	}
 }
 
 // typedCaller is the shape of every callTyped[Req, Resp] instantiation.
-type typedCaller func(ctx context.Context, httpClient *http.Client, fullURL string, in, out proto.Message, opts ...connect.ClientOption) error
+type typedCaller func(ctx context.Context, client *connect.Client, spec connect.Spec, in, out proto.Message) error
 
-// callTyped is the generic body that constructs a typed
-// `connect.NewClient[*Req, *Resp]`, dispatches, and copies the response
-// back into `out` via proto.Merge. Each Registry entry instantiates
-// this with the concrete Req/Resp pair.
-func callTyped[Req, Resp any](ctx context.Context, httpClient *http.Client, fullURL string, in, out proto.Message, opts ...connect.ClientOption) error {
+// callTyped is the generic body that dispatches a unary call and leaves
+// the response in `out`. Each Registry entry instantiates this with the
+// concrete Req/Resp pair.
+func callTyped[Req, Resp any](ctx context.Context, client *connect.Client, spec connect.Spec, in, out proto.Message) error {
 	// Type parameters are `any` (proto.Message requires a pointer
 	// receiver, which Go generics can't express directly), so the
-	// runtime assertion happens through any().
+	// runtime assertion happens through any(). typedOut aliases out, so
+	// the call fills the caller's message directly.
 	typedIn, ok := any(in).(*Req)
 	if !ok {
 		return fmt.Errorf("hubrpc: request type mismatch for %T", in)
 	}
-	if _, ok := any(out).(*Resp); !ok {
+	typedOut, ok := any(out).(*Resp)
+	if !ok {
 		return fmt.Errorf("hubrpc: response type mismatch for %T", out)
 	}
-	client := connect.NewClient[Req, Resp](httpClient, fullURL, opts...)
-	req := connect.NewRequest(typedIn)
-	resp, err := client.CallUnary(ctx, req)
-	if err != nil {
-		return err
-	}
-	// proto.Merge handles the response copy without a Marshal /
-	// Unmarshal round-trip.
-	respMsg, ok := any(resp.Msg).(proto.Message)
-	if !ok {
-		return errors.New("hubrpc: response is not a proto.Message — generated client mismatch")
-	}
+	// CallUnary unmarshals into res, and unmarshal merges: reset first so
+	// a reused out cannot absorb fields from an earlier call. Resetting
+	// out rather than typedOut is the same object behind an interface
+	// Go can prove a proto.Message.
 	proto.Reset(out)
-	proto.Merge(out, respMsg)
-	return nil
+	return client.CallUnary(ctx, spec, typedIn, typedOut)
 }
 
 // Lookup returns the descriptor for method or an "not implemented"

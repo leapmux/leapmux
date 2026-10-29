@@ -14,7 +14,8 @@ import (
 
 	"github.com/leapmux/leapmux/internal/util/userid"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -437,17 +438,17 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 
 	// Register AuthService ConnectRPC routes.
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
-	opts := connect.WithInterceptors(interceptor)
 	authDeps := servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil))
 	authDeps.Keystore = ks
 	authSvc := service.NewAuthService(authDeps)
-	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer(interceptor)
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+	client := leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 	return server, client, st, ks, set
 }
 
@@ -472,10 +473,10 @@ type signupTokenCarrier interface{ GetSignupToken() string }
 func signupReq[T any, PT interface {
 	*T
 	signupTokenCarrier
-}](msg PT) *connect.Request[T] {
-	req := connect.NewRequest((*T)(msg))
-	req.Header().Set("Cookie", signupCookieHeader(msg.GetSignupToken()))
-	return req
+}](ctx context.Context, msg PT) (context.Context, *T) {
+	ctx, info := clientCallInfo(ctx)
+	info.RequestHeader().Set("Cookie", signupCookieHeader(msg.GetSignupToken()))
+	return ctx, (*T)(msg)
 }
 
 // insertPendingSignup creates a pending_oauth_signups row with encrypted tokens.
@@ -514,13 +515,13 @@ func TestGetPendingOAuthSignup_Success(t *testing.T) {
 
 	insertPendingSignup(t, st, ks, providerID, signupToken, "alice@example.com", "Alice", "sub-123", time.Now().Add(5*time.Minute).UTC())
 
-	resp, err := client.GetPendingOAuthSignup(context.Background(), signupReq(&leapmuxv1.GetPendingOAuthSignupRequest{
+	resp, err := client.GetPendingOAuthSignup(signupReq(context.Background(), &leapmuxv1.GetPendingOAuthSignupRequest{
 		SignupToken: signupToken,
 	}))
 	require.NoError(t, err)
-	assert.Equal(t, "alice@example.com", resp.Msg.GetEmail())
-	assert.Equal(t, "Alice", resp.Msg.GetDisplayName())
-	assert.Equal(t, "Test GitHub", resp.Msg.GetProviderName())
+	assert.Equal(t, "alice@example.com", resp.GetEmail())
+	assert.Equal(t, "Alice", resp.GetDisplayName())
+	assert.Equal(t, "Test GitHub", resp.GetProviderName())
 }
 
 func TestGetPendingOAuthSignup_InvalidToken(t *testing.T) {
@@ -528,7 +529,7 @@ func TestGetPendingOAuthSignup_InvalidToken(t *testing.T) {
 
 	_, client, _, _, _ := setupOAuthTestServerWithAuthService(t)
 
-	_, err := client.GetPendingOAuthSignup(context.Background(), signupReq(&leapmuxv1.GetPendingOAuthSignupRequest{
+	_, err := client.GetPendingOAuthSignup(signupReq(context.Background(), &leapmuxv1.GetPendingOAuthSignupRequest{
 		SignupToken: "nonexistent-token",
 	}))
 	require.Error(t, err)
@@ -545,7 +546,7 @@ func TestGetPendingOAuthSignup_ExpiredToken(t *testing.T) {
 	// Insert an already-expired pending signup.
 	insertPendingSignup(t, st, ks, providerID, signupToken, "expired@example.com", "Expired", "sub-expired", time.Now().Add(-1*time.Minute).UTC())
 
-	_, err := client.GetPendingOAuthSignup(context.Background(), signupReq(&leapmuxv1.GetPendingOAuthSignupRequest{
+	_, err := client.GetPendingOAuthSignup(signupReq(context.Background(), &leapmuxv1.GetPendingOAuthSignupRequest{
 		SignupToken: signupToken,
 	}))
 	require.Error(t, err)
@@ -563,17 +564,18 @@ func TestCompleteOAuthSignup_Success(t *testing.T) {
 
 	insertPendingSignup(t, st, ks, providerID, signupToken, "bob@example.com", "Bob", "sub-bob", time.Now().Add(5*time.Minute).UTC())
 
-	resp, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
+	callCtx, info := connect.NewClientContext(context.Background())
+	resp, err := client.CompleteOAuthSignup(signupReq(callCtx, &leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "bobuser",
 		DisplayName: "Bob User",
 	}))
 	require.NoError(t, err)
-	assert.Equal(t, "bobuser", resp.Msg.GetUser().GetUsername())
-	assert.Equal(t, "Bob User", resp.Msg.GetUser().GetDisplayName())
+	assert.Equal(t, "bobuser", resp.GetUser().GetUsername())
+	assert.Equal(t, "Bob User", resp.GetUser().GetDisplayName())
 
 	// Verify that the response sets the session cookie.
-	setCookie := resp.Header().Get("Set-Cookie")
+	setCookie := info.ResponseHeader().Get("Set-Cookie")
 	assert.Contains(t, setCookie, auth.CookieName+"=")
 
 	// Verify that the flow created the OAuth user link.
@@ -582,7 +584,7 @@ func TestCompleteOAuthSignup_Success(t *testing.T) {
 		ProviderSubject: "sub-bob",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, resp.Msg.GetUser().GetId(), link.UserID)
+	assert.Equal(t, resp.GetUser().GetId(), link.UserID)
 
 	// Verify that the flow consumed the pending signup.
 	_, err = st.PendingOAuthSignups().Get(context.Background(), signupToken)
@@ -605,14 +607,15 @@ func TestCompleteOAuthSignup_UsesConfiguredSessionDuration(t *testing.T) {
 	insertPendingSignup(t, st, ks, providerID, signupToken, "dana@example.com", "Dana", "sub-dana", time.Now().Add(5*time.Minute).UTC())
 
 	before := time.Now()
-	resp, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
+	callCtx, info := connect.NewClientContext(context.Background())
+	_, err := client.CompleteOAuthSignup(signupReq(callCtx, &leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "danauser",
 		DisplayName: "Dana User",
 	}))
 	require.NoError(t, err)
 
-	sessionID := sessionFromCookie(t, resp.Header().Get("Set-Cookie"))
+	sessionID := sessionFromCookie(t, info.ResponseHeader().Get("Set-Cookie"))
 	sess, err := st.Sessions().GetByID(context.Background(), sessionID, time.Now().UTC())
 	require.NoError(t, err)
 	hubtestutil.AssertSessionLifetime(t, before, configured, sess.ExpiresAt)
@@ -630,7 +633,7 @@ func TestCompleteOAuthSignup_UsesProviderEmail_IgnoresRequestEmail(t *testing.T)
 
 	// The request tries to override with a different email; the handler must
 	// ignore it.
-	resp, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
+	resp, err := client.CompleteOAuthSignup(signupReq(context.Background(), &leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "provideruser",
 		Email:       "attacker@evil.com",
@@ -638,7 +641,7 @@ func TestCompleteOAuthSignup_UsesProviderEmail_IgnoresRequestEmail(t *testing.T)
 	require.NoError(t, err)
 
 	// The user's email should be the provider's, not the attacker's.
-	user, err := st.Users().GetByID(context.Background(), resp.Msg.GetUser().GetId())
+	user, err := st.Users().GetByID(context.Background(), resp.GetUser().GetId())
 	require.NoError(t, err)
 	assert.Equal(t, "provider@example.com", user.Email, "email must come from provider, not request")
 }
@@ -656,14 +659,14 @@ func TestCompleteOAuthSignup_UntrustedProviderWithNoEmail_UsesRequestEmail(t *te
 	signupToken := id.Generate()
 	insertPendingSignup(t, st, ks, providerID, signupToken, "", "No Email", "sub-noemail", time.Now().Add(5*time.Minute).UTC())
 
-	resp, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
+	resp, err := client.CompleteOAuthSignup(signupReq(context.Background(), &leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "noemailuser",
 		Email:       "typed@example.com",
 	}))
 	require.NoError(t, err)
 
-	user, err := st.Users().GetByID(context.Background(), resp.Msg.GetUser().GetId())
+	user, err := st.Users().GetByID(context.Background(), resp.GetUser().GetId())
 	require.NoError(t, err)
 	assert.Equal(t, "typed@example.com", user.Email,
 		"the caller supplies the address the provider withheld")
@@ -681,14 +684,14 @@ func TestCompleteOAuthSignup_UntrustedProviderEmailBeatsRequestEmail(t *testing.
 	signupToken := id.Generate()
 	insertPendingSignup(t, st, ks, providerID, signupToken, "provider@example.com", "Provider", "sub-untrusted", time.Now().Add(5*time.Minute).UTC())
 
-	resp, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
+	resp, err := client.CompleteOAuthSignup(signupReq(context.Background(), &leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "untrusteduser",
 		Email:       "attacker@evil.com",
 	}))
 	require.NoError(t, err)
 
-	user, err := st.Users().GetByID(context.Background(), resp.Msg.GetUser().GetId())
+	user, err := st.Users().GetByID(context.Background(), resp.GetUser().GetId())
 	require.NoError(t, err)
 	assert.Equal(t, "provider@example.com", user.Email,
 		"a provider-supplied address is not substitutable")
@@ -717,7 +720,7 @@ func TestCompleteOAuthSignup_DuplicateUsername(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
+	_, err = client.CompleteOAuthSignup(signupReq(context.Background(), &leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "takenname",
 	}))
@@ -755,7 +758,7 @@ func TestCompleteOAuthSignup_DuplicateEmail(t *testing.T) {
 
 	// Provider has trust_email=0 and SMTP verification is off,
 	// so email goes directly to the email column unverified. Duplicate check should fire.
-	_, err = client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
+	_, err = client.CompleteOAuthSignup(signupReq(context.Background(), &leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "newuniqueuser",
 		Email:       "taken@example.com",
@@ -773,13 +776,13 @@ func TestCompleteOAuthSignup_TrustedProviderSetsEmailVerified(t *testing.T) {
 
 	insertPendingSignup(t, st, ks, providerID, signupToken, "trusted@example.com", "Trusted", "sub-trusted", time.Now().Add(5*time.Minute).UTC())
 
-	resp, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
+	resp, err := client.CompleteOAuthSignup(signupReq(context.Background(), &leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "trusteduser",
 	}))
 	require.NoError(t, err)
 
-	user, err := st.Users().GetByID(context.Background(), resp.Msg.GetUser().GetId())
+	user, err := st.Users().GetByID(context.Background(), resp.GetUser().GetId())
 	require.NoError(t, err)
 	assert.Equal(t, "trusted@example.com", user.Email)
 	assert.True(t, user.EmailVerified)
@@ -810,23 +813,23 @@ func TestCompleteOAuthSignup_UntrustedFailClosedWhenVerificationEmailFails(t *te
 	idpHandler.RegisterRoutes(mux)
 
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
-	opts := connect.WithInterceptors(interceptor)
 	authDeps := servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil))
 	authDeps.Keystore = ks
 	authDeps.Mail = &mailSenderDouble{err: errors.New("smtp down")}
 	authSvc := service.NewAuthService(authDeps)
-	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer(interceptor)
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+	client := leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 
 	providerID := createTestProviderWithTrustEmail(t, st, ks, false)
 	signupToken := id.Generate()
 	insertPendingSignup(t, st, ks, providerID, signupToken, "untrusted@example.com", "Untrusted", "sub-untrusted", time.Now().Add(5*time.Minute).UTC())
 
-	_, err = client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
+	_, err = client.CompleteOAuthSignup(signupReq(context.Background(), &leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "untrusteduser",
 	}))
@@ -847,15 +850,15 @@ func TestCompleteOAuthSignup_UntrustedWithSMTPOnUsesPendingEmail(t *testing.T) {
 
 	insertPendingSignup(t, st, ks, providerID, signupToken, "pending@example.com", "Pending", "sub-pending", time.Now().Add(5*time.Minute).UTC())
 
-	resp, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
+	resp, err := client.CompleteOAuthSignup(signupReq(context.Background(), &leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "pendingoauth",
 	}))
 	require.NoError(t, err)
-	assert.True(t, resp.Msg.GetEmailVerification().GetVerificationRequired())
-	assert.True(t, resp.Msg.GetEmailVerification().GetVerificationEmailSent())
+	assert.True(t, resp.GetEmailVerification().GetVerificationRequired())
+	assert.True(t, resp.GetEmailVerification().GetVerificationEmailSent())
 
-	user, err := st.Users().GetByID(context.Background(), resp.Msg.GetUser().GetId())
+	user, err := st.Users().GetByID(context.Background(), resp.GetUser().GetId())
 	require.NoError(t, err)
 	assert.Empty(t, user.Email)
 	assert.False(t, user.EmailVerified)
@@ -868,7 +871,7 @@ func TestCompleteOAuthSignup_InvalidToken(t *testing.T) {
 
 	_, client, _, _, _ := setupOAuthTestServerWithAuthService(t)
 
-	_, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
+	_, err := client.CompleteOAuthSignup(signupReq(context.Background(), &leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: "nonexistent-token",
 		Username:    "someuser",
 	}))
@@ -885,7 +888,7 @@ func TestCompleteOAuthSignup_InvalidUsername(t *testing.T) {
 
 	insertPendingSignup(t, st, ks, providerID, signupToken, "valid@example.com", "Valid", "sub-valid", time.Now().Add(5*time.Minute).UTC())
 
-	_, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
+	_, err := client.CompleteOAuthSignup(signupReq(context.Background(), &leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "", // empty username
 	}))
@@ -902,7 +905,7 @@ func TestCompleteOAuthSignup_RejectsSoloAlways(t *testing.T) {
 
 	insertPendingSignup(t, st, ks, providerID, signupToken, "new@example.com", "New", "sub-new", time.Now().Add(5*time.Minute).UTC())
 
-	_, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
+	_, err := client.CompleteOAuthSignup(signupReq(context.Background(), &leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "solo",
 	}))
@@ -922,7 +925,7 @@ func TestCompleteOAuthSignup_RejectsAdminInPublicSignup(t *testing.T) {
 	signupToken := id.Generate()
 	insertPendingSignup(t, st, ks, providerID, signupToken, "new@example.com", "New", "sub-new", time.Now().Add(5*time.Minute).UTC())
 
-	_, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
+	_, err := client.CompleteOAuthSignup(signupReq(context.Background(), &leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "admin",
 	}))
@@ -941,14 +944,14 @@ func TestCompleteOAuthSignup_TokenConsumedOnSuccess(t *testing.T) {
 	insertPendingSignup(t, st, ks, providerID, signupToken, "consume@example.com", "Consume", "sub-consume", time.Now().Add(5*time.Minute).UTC())
 
 	// First call succeeds.
-	_, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
+	_, err := client.CompleteOAuthSignup(signupReq(context.Background(), &leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "consumeuser",
 	}))
 	require.NoError(t, err)
 
 	// Second call with the same token fails.
-	_, err = client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
+	_, err = client.CompleteOAuthSignup(signupReq(context.Background(), &leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "anotheruser",
 	}))
@@ -965,13 +968,13 @@ func TestCompleteOAuthSignup_ReencryptsTokensWithActiveKeyVersion(t *testing.T) 
 
 	insertPendingSignup(t, st, ks, providerID, signupToken, "keyver@example.com", "KeyVer", "sub-keyver", time.Now().Add(5*time.Minute).UTC())
 
-	resp, err := client.CompleteOAuthSignup(context.Background(), signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
+	resp, err := client.CompleteOAuthSignup(signupReq(context.Background(), &leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: signupToken,
 		Username:    "keyveruser",
 	}))
 	require.NoError(t, err)
 
-	userID := resp.Msg.GetUser().GetId()
+	userID := resp.GetUser().GetId()
 
 	// Verify stored tokens use the active key version and can be decrypted
 	// with the user ID as AAD (not the signup token).

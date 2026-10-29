@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -106,9 +105,9 @@ func TestUnlinkOAuthProvider_ReadsTheProviderListOnceOutsideTheLock(t *testing.T
 		UserAuthGeneration: user.AuthGeneration,
 	})
 
-	_, err = svc.UnlinkOAuthProvider(acting, connect.NewRequest(&leapmuxv1.UnlinkOAuthProviderRequest{
+	_, err = svc.UnlinkOAuthProvider(acting, &leapmuxv1.UnlinkOAuthProviderRequest{
 		ProviderId: "okta",
-	}))
+	})
 	require.NoError(t, err, "a second enabled link remains, so the account keeps a login method")
 
 	assert.Equal(t, 1, counts.total, "one read serves both runs of the rule")

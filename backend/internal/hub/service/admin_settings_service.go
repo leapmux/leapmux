@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/settings"
@@ -99,7 +99,7 @@ func secretSetOf(desc settings.Descriptor, v any) map[string]bool {
 	return out
 }
 
-func (s *AdminSettingsService) ListSettings(ctx context.Context, _ *connect.Request[leapmuxv1.ListSettingsRequest]) (*connect.Response[leapmuxv1.ListSettingsResponse], error) {
+func (s *AdminSettingsService) ListSettings(ctx context.Context, _ *leapmuxv1.ListSettingsRequest) (*leapmuxv1.ListSettingsResponse, error) {
 	snap := s.set.Snapshot(ctx)
 	descrs := make([]*leapmuxv1.SettingDescriptor, 0)
 	values := make([]*leapmuxv1.SettingValue, 0)
@@ -110,10 +110,10 @@ func (s *AdminSettingsService) ListSettings(ctx context.Context, _ *connect.Requ
 		descrs = append(descrs, settingDescriptorToProto(desc))
 		values = append(values, s.settingValueToProto(snap, desc))
 	}
-	return connect.NewResponse(&leapmuxv1.ListSettingsResponse{
+	return &leapmuxv1.ListSettingsResponse{
 		Descriptors: descrs,
 		Values:      values,
-	}), nil
+	}, nil
 }
 
 // descriptorFor resolves one settings key for a write path, refusing an
@@ -121,11 +121,11 @@ func (s *AdminSettingsService) ListSettings(ctx context.Context, _ *connect.Requ
 // argument validation and its wording cannot drift between them.
 func (s *AdminSettingsService) descriptorFor(key string) (settings.Descriptor, error) {
 	if key == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("key is required"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "key is required")
 	}
 	desc, ok := s.set.Descriptor(key)
 	if !ok {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("unknown setting key "+key))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "unknown setting key "+key)
 	}
 	// The SAME test ListSettings applies. The doc comment on HiddenInSolo
 	// says that it takes the key out of the whole administration surface, but
@@ -138,7 +138,7 @@ func (s *AdminSettingsService) descriptorFor(key string) (settings.Descriptor, e
 	// key is unavailable "in solo mode" describes a hub they are not running.
 	if s.hidden(desc) {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
-			errors.New("setting key "+key+" is not administrable in "+s.deploymentName()+" mode"))
+			"setting key "+key+" is not administrable in "+s.deploymentName()+" mode")
 	}
 	return desc, nil
 }
@@ -180,51 +180,51 @@ func (s *AdminSettingsService) writeUnderElevation(ctx context.Context, write fu
 // halves of the row, so they call different Manager verbs. What they DO
 // share is descriptorFor, which is where an argument check belongs if it
 // must cover both.
-func (s *AdminSettingsService) UpdateSetting(ctx context.Context, req *connect.Request[leapmuxv1.UpdateSettingRequest]) (*connect.Response[leapmuxv1.UpdateSettingResponse], error) {
-	desc, err := s.descriptorFor(req.Msg.GetKey())
+func (s *AdminSettingsService) UpdateSetting(ctx context.Context, req *leapmuxv1.UpdateSettingRequest) (*leapmuxv1.UpdateSettingResponse, error) {
+	desc, err := s.descriptorFor(req.GetKey())
 	if err != nil {
 		return nil, err
 	}
 	if err := s.writeUnderElevation(ctx, func() error {
-		if err := s.set.Update(ctx, desc, json.RawMessage(req.Msg.GetPartialJson())); err != nil {
+		if err := s.set.Update(ctx, desc, json.RawMessage(req.GetPartialJson())); err != nil {
 			return settingWriteConnectError(err)
 		}
 		return nil
 	}); err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&leapmuxv1.UpdateSettingResponse{
+	return &leapmuxv1.UpdateSettingResponse{
 		Value: s.settingValueToProto(s.set.Snapshot(ctx), desc),
 		// The manager stores the write, but a restart-class key keeps its
 		// previous value in this process until it restarts. Report that here
 		// rather than leave the caller to look the descriptor up again.
 		Restart: desc.Propagation() == settings.PropagationRestart,
-	}), nil
+	}, nil
 }
 
-func (s *AdminSettingsService) UpdateSettingSecret(ctx context.Context, req *connect.Request[leapmuxv1.UpdateSettingSecretRequest]) (*connect.Response[leapmuxv1.UpdateSettingSecretResponse], error) {
-	desc, err := s.descriptorFor(req.Msg.GetKey())
+func (s *AdminSettingsService) UpdateSettingSecret(ctx context.Context, req *leapmuxv1.UpdateSettingSecretRequest) (*leapmuxv1.UpdateSettingSecretResponse, error) {
+	desc, err := s.descriptorFor(req.GetKey())
 	if err != nil {
 		return nil, err
 	}
 	if err := s.writeUnderElevation(ctx, func() error {
-		if err := s.set.UpdateSecret(ctx, desc, json.RawMessage(req.Msg.GetPartialJson())); err != nil {
+		if err := s.set.UpdateSecret(ctx, desc, json.RawMessage(req.GetPartialJson())); err != nil {
 			return settingWriteConnectError(err)
 		}
 		return nil
 	}); err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&leapmuxv1.UpdateSettingSecretResponse{
+	return &leapmuxv1.UpdateSettingSecretResponse{
 		Value: s.settingValueToProto(s.set.Snapshot(ctx), desc),
-	}), nil
+	}, nil
 }
 
 // UpdateSettings applies several keys' edits atomically.
-func (s *AdminSettingsService) UpdateSettings(ctx context.Context, req *connect.Request[leapmuxv1.UpdateSettingsRequest]) (*connect.Response[leapmuxv1.UpdateSettingsResponse], error) {
-	msgs := req.Msg.GetWrites()
+func (s *AdminSettingsService) UpdateSettings(ctx context.Context, req *leapmuxv1.UpdateSettingsRequest) (*leapmuxv1.UpdateSettingsResponse, error) {
+	msgs := req.GetWrites()
 	if len(msgs) == 0 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("writes is required"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "writes is required")
 	}
 	writes := make([]settings.KeyWrite, 0, len(msgs))
 	for _, w := range msgs {
@@ -259,11 +259,11 @@ func (s *AdminSettingsService) UpdateSettings(ctx context.Context, req *connect.
 	for _, w := range writes {
 		values = append(values, s.settingValueToProto(snap, w.Desc))
 	}
-	return connect.NewResponse(&leapmuxv1.UpdateSettingsResponse{Values: values}), nil
+	return &leapmuxv1.UpdateSettingsResponse{Values: values}, nil
 }
 
-func (s *AdminSettingsService) ResetSetting(ctx context.Context, req *connect.Request[leapmuxv1.ResetSettingRequest]) (*connect.Response[leapmuxv1.ResetSettingResponse], error) {
-	desc, err := s.descriptorFor(req.Msg.GetKey())
+func (s *AdminSettingsService) ResetSetting(ctx context.Context, req *leapmuxv1.ResetSettingRequest) (*leapmuxv1.ResetSettingResponse, error) {
+	desc, err := s.descriptorFor(req.GetKey())
 	if err != nil {
 		return nil, err
 	}
@@ -277,16 +277,16 @@ func (s *AdminSettingsService) ResetSetting(ctx context.Context, req *connect.Re
 	}); err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&leapmuxv1.ResetSettingResponse{
+	return &leapmuxv1.ResetSettingResponse{
 		Value: s.settingValueToProto(s.set.Snapshot(ctx), desc),
-	}), nil
+	}, nil
 }
 
 // ResetSettings clears several keys in ONE transaction.
-func (s *AdminSettingsService) ResetSettings(ctx context.Context, req *connect.Request[leapmuxv1.ResetSettingsRequest]) (*connect.Response[leapmuxv1.ResetSettingsResponse], error) {
-	keys := req.Msg.GetKeys()
+func (s *AdminSettingsService) ResetSettings(ctx context.Context, req *leapmuxv1.ResetSettingsRequest) (*leapmuxv1.ResetSettingsResponse, error) {
+	keys := req.GetKeys()
 	if len(keys) == 0 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("keys is required"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "keys is required")
 	}
 	descs := make([]settings.Descriptor, 0, len(keys))
 	for _, key := range keys {
@@ -311,7 +311,7 @@ func (s *AdminSettingsService) ResetSettings(ctx context.Context, req *connect.R
 	for _, desc := range descs {
 		values = append(values, s.settingValueToProto(snap, desc))
 	}
-	return connect.NewResponse(&leapmuxv1.ResetSettingsResponse{Values: values}), nil
+	return &leapmuxv1.ResetSettingsResponse{Values: values}, nil
 }
 
 // runAfterReset runs each reset key's post-reset step. Both reset handlers
@@ -329,7 +329,7 @@ func (s *AdminSettingsService) ResetSettings(ctx context.Context, req *connect.R
 func (s *AdminSettingsService) runAfterReset(ctx context.Context, descs []settings.Descriptor) error {
 	for _, desc := range descs {
 		if err := s.set.AfterReset(ctx, desc); err != nil {
-			return connect.NewError(connect.CodeInternal, err)
+			return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 		}
 	}
 	return nil
@@ -350,11 +350,11 @@ func (s *AdminSettingsService) runAfterReset(ctx context.Context, descs []settin
 func settingWriteConnectError(err error) error {
 	var undecryptable *settings.SecretUndecryptableError
 	if errors.As(err, &undecryptable) {
-		return connect.NewError(connect.CodeFailedPrecondition, err)
+		return connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
 	}
 	var invalid *settings.InvalidError
 	if errors.As(err, &invalid) {
-		return connect.NewError(connect.CodeInvalidArgument, err)
+		return connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
-	return connect.NewError(connect.CodeInternal, err)
+	return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 }

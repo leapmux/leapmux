@@ -3,12 +3,11 @@ package service
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	pwdhash "github.com/leapmux/leapmux/internal/hub/password"
@@ -46,11 +45,11 @@ import (
 // resend_cooldown.go.
 const accountRecoveryExpiry = time.Hour
 
-func (s *AuthService) RequestAccountRecovery(ctx context.Context, req *connect.Request[leapmuxv1.RequestAccountRecoveryRequest]) (*connect.Response[leapmuxv1.RequestAccountRecoveryResponse], error) {
+func (s *AuthService) RequestAccountRecovery(ctx context.Context, req *leapmuxv1.RequestAccountRecoveryRequest) (*leapmuxv1.RequestAccountRecoveryResponse, error) {
 	if s.cfg.SoloMode {
-		return connect.NewResponse(&leapmuxv1.RequestAccountRecoveryResponse{}), nil
+		return &leapmuxv1.RequestAccountRecoveryResponse{}, nil
 	}
-	identifier := req.Msg.GetIdentifier()
+	identifier := req.GetIdentifier()
 	var user *store.User
 	var err error
 	if strings.Contains(identifier, "@") {
@@ -58,15 +57,15 @@ func (s *AuthService) RequestAccountRecovery(ctx context.Context, req *connect.R
 	} else {
 		username, slugErr := validate.SanitizeSlug("username", identifier)
 		if slugErr != nil {
-			return connect.NewResponse(&leapmuxv1.RequestAccountRecoveryResponse{}), nil
+			return &leapmuxv1.RequestAccountRecoveryResponse{}, nil
 		}
 		user, err = s.store.Users().GetByUsername(ctx, username)
 	}
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return connect.NewResponse(&leapmuxv1.RequestAccountRecoveryResponse{}), nil
+			return &leapmuxv1.RequestAccountRecoveryResponse{}, nil
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	// Every miss path returns the same empty body as a hit. This code does
 	// NOT equalize the timing: the hit path sends SMTP mail synchronously,
@@ -76,7 +75,7 @@ func (s *AuthService) RequestAccountRecovery(ctx context.Context, req *connect.R
 	// per-account resend cooldown below.
 	targetEmail := user.Email
 	if targetEmail == "" {
-		return connect.NewResponse(&leapmuxv1.RequestAccountRecoveryResponse{}), nil
+		return &leapmuxv1.RequestAccountRecoveryResponse{}, nil
 	}
 	// No IsAdmin exemption here, unlike the auth interceptor's verification
 	// control: this predicate asks whether the hub trusts THIS address with a
@@ -89,7 +88,7 @@ func (s *AuthService) RequestAccountRecovery(ctx context.Context, req *connect.R
 	// administrator branch writes the new address straight to the email
 	// column and clears any pending row.
 	if !user.EmailVerified && s.emailVerificationRequired(ctx) {
-		return connect.NewResponse(&leapmuxv1.RequestAccountRecoveryResponse{}), nil
+		return &leapmuxv1.RequestAccountRecoveryResponse{}, nil
 	}
 	// Cooldown: a recent request keeps its link. Minting a fresh token on
 	// every request would flood the inbox and invalidate the link the
@@ -115,13 +114,13 @@ func (s *AuthService) RequestAccountRecovery(ctx context.Context, req *connect.R
 		Now:                        now,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	if !minted {
 		// A concurrent or recent request holds a live token: keep it (its
 		// email is on the way or already delivered) and answer the same
 		// empty body as every other path.
-		return connect.NewResponse(&leapmuxv1.RequestAccountRecoveryResponse{}), nil
+		return &leapmuxv1.RequestAccountRecoveryResponse{}, nil
 	}
 	if err := s.mail.Send(ctx, s.renderer.AccountRecoveryEmail(targetEmail, rawToken, accountRecoveryExpiry)); err != nil {
 		// Report the clear separately from the send. A log line that claims
@@ -145,9 +144,9 @@ func (s *AuthService) RequestAccountRecovery(ctx context.Context, req *connect.R
 			"user_id", user.ID, "err", err)
 		// Still return empty success so the response cannot enumerate accounts,
 		// but do not leave a live token after a failed send.
-		return connect.NewResponse(&leapmuxv1.RequestAccountRecoveryResponse{}), nil
+		return &leapmuxv1.RequestAccountRecoveryResponse{}, nil
 	}
-	return connect.NewResponse(&leapmuxv1.RequestAccountRecoveryResponse{}), nil
+	return &leapmuxv1.RequestAccountRecoveryResponse{}, nil
 }
 
 // chargeRecoveryAttempt spends one attempt of the shared budget on the row
@@ -156,7 +155,7 @@ func (s *AuthService) RequestAccountRecovery(ctx context.Context, req *connect.R
 // alternating between the two cannot exceed the cap.
 func (s *AuthService) chargeRecoveryAttempt(ctx context.Context, token string) (*store.User, error) {
 	if token == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("token is required"))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "token is required")
 	}
 	hashedToken := hashBrowserSecret(token)
 	// Charge one attempt against the row that holds this exact token. The
@@ -166,17 +165,17 @@ func (s *AuthService) chargeRecoveryAttempt(ctx context.Context, token string) (
 	charged, err := s.store.Users().ConsumeRecoveryAttemptByToken(ctx, hashedToken, now, maxAccountRecoveryAttempts)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid or expired recovery token"))
+			return nil, connect.Errorf(connect.CodeNotFound, "invalid or expired recovery token")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	// Attempt 6+ expires the token in SQL (sets expires_at = now). Refuse
 	// before any expensive work so the attempt budget is a hard cap, not soft.
 	if charged.PendingRecoveryAttempts > maxAccountRecoveryAttempts {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid or expired recovery token"))
+		return nil, connect.Errorf(connect.CodeNotFound, "invalid or expired recovery token")
 	}
 	if charged.PendingRecoveryExpiresAt != nil && now.After(*charged.PendingRecoveryExpiresAt) {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("recovery token expired"))
+		return nil, connect.Errorf(connect.CodeNotFound, "recovery token expired")
 	}
 	// The row's PendingRecoveryToken is already the hash the caller must
 	// bind at completion -- ConsumeRecoveryAttemptByToken selects the row
@@ -184,22 +183,22 @@ func (s *AuthService) chargeRecoveryAttempt(ctx context.Context, token string) (
 	return charged, nil
 }
 
-func (s *AuthService) CompleteAccountRecoveryPassword(ctx context.Context, req *connect.Request[leapmuxv1.CompleteAccountRecoveryPasswordRequest]) (*connect.Response[leapmuxv1.CompleteAccountRecoveryPasswordResponse], error) {
+func (s *AuthService) CompleteAccountRecoveryPassword(ctx context.Context, req *leapmuxv1.CompleteAccountRecoveryPasswordRequest) (*leapmuxv1.CompleteAccountRecoveryPasswordResponse, error) {
 	if err := rejectSolo(s.cfg.SoloMode, "account recovery"); err != nil {
 		return nil, err
 	}
-	if err := validate.ValidatePassword(req.Msg.GetNewPassword()); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	if err := validate.ValidatePassword(req.GetNewPassword()); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
-	user, err := s.chargeRecoveryAttempt(ctx, req.Msg.GetToken())
+	user, err := s.chargeRecoveryAttempt(ctx, req.GetToken())
 	if err != nil {
 		return nil, err
 	}
 	hashedToken := user.PendingRecoveryToken
 
-	hashed, err := pwdhash.Hash(req.Msg.GetNewPassword())
+	hashed, err := pwdhash.Hash(req.GetNewPassword())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 
 	uid, mintErr := mintRowUserID(user.ID)
@@ -213,25 +212,25 @@ func (s *AuthService) CompleteAccountRecoveryPassword(ctx context.Context, req *
 	if revoked != nil {
 		s.lifecycle.UserRevoked(user.ID, revoked.AuthGeneration)
 	}
-	return connect.NewResponse(&leapmuxv1.CompleteAccountRecoveryPasswordResponse{}), nil
+	return &leapmuxv1.CompleteAccountRecoveryPasswordResponse{}, nil
 }
 
-func (s *AuthService) BeginAccountRecoveryPasskey(ctx context.Context, req *connect.Request[leapmuxv1.BeginAccountRecoveryPasskeyRequest]) (*connect.Response[leapmuxv1.BeginAccountRecoveryPasskeyResponse], error) {
+func (s *AuthService) BeginAccountRecoveryPasskey(ctx context.Context, req *leapmuxv1.BeginAccountRecoveryPasskeyRequest) (*leapmuxv1.BeginAccountRecoveryPasskeyResponse, error) {
 	if err := rejectSolo(s.cfg.SoloMode, "account recovery"); err != nil {
 		return nil, err
 	}
-	token := req.Msg.GetToken()
+	token := req.GetToken()
 	if token == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("token is required"))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "token is required")
 	}
 	// Origin and WebAuthn preconditions run BEFORE the attempt charge: a
 	// FailedPrecondition cannot enroll, so it must not burn the shared
 	// budget that password completion also uses.
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
 	}
-	if err := wa.CheckOrigin(originFromRequest(req)); err != nil {
+	if err := wa.CheckOrigin(originFromRequest(ctx)); err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
 	// Charge before the ceremony starts, so the attempt cap covers the
@@ -243,31 +242,31 @@ func (s *AuthService) BeginAccountRecoveryPasskey(ctx context.Context, req *conn
 	if err != nil {
 		return nil, err
 	}
-	sessionID, optionsJSON, err := wa.BeginRecoveryRegistration(ctx, user.ID, originFromRequest(req), user.PendingRecoveryToken)
+	sessionID, optionsJSON, err := wa.BeginRecoveryRegistration(ctx, user.ID, originFromRequest(ctx), user.PendingRecoveryToken)
 	if err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
-	return connect.NewResponse(&leapmuxv1.BeginAccountRecoveryPasskeyResponse{
+	return &leapmuxv1.BeginAccountRecoveryPasskeyResponse{
 		SessionId:   sessionID,
 		OptionsJson: optionsJSON,
-	}), nil
+	}, nil
 }
 
-func (s *AuthService) FinishAccountRecoveryPasskey(ctx context.Context, req *connect.Request[leapmuxv1.FinishAccountRecoveryPasskeyRequest]) (*connect.Response[leapmuxv1.FinishAccountRecoveryPasskeyResponse], error) {
+func (s *AuthService) FinishAccountRecoveryPasskey(ctx context.Context, req *leapmuxv1.FinishAccountRecoveryPasskeyRequest) (*leapmuxv1.FinishAccountRecoveryPasskeyResponse, error) {
 	if err := rejectSolo(s.cfg.SoloMode, "account recovery"); err != nil {
 		return nil, err
 	}
-	if req.Msg.GetToken() == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("token is required"))
+	if req.GetToken() == "" {
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "token is required")
 	}
-	if req.Msg.GetSessionId() == "" || req.Msg.GetCredentialJson() == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session and credential are required"))
+	if req.GetSessionId() == "" || req.GetCredentialJson() == "" {
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "session and credential are required")
 	}
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
 	}
-	hashedToken := hashBrowserSecret(req.Msg.GetToken())
+	hashedToken := hashBrowserSecret(req.GetToken())
 	// Refuse a force-expired or reminted token BEFORE consuming the
 	// ceremony, so a dead link cannot burn a live session and a reminted
 	// token cannot hitchhike on a ceremony Begin charged under the
@@ -275,21 +274,21 @@ func (s *AuthService) FinishAccountRecoveryPasskey(ctx context.Context, req *con
 	live, err := s.store.Users().GetByLiveRecoveryToken(ctx, hashedToken, s.now().UTC())
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid or expired recovery token"))
+			return nil, connect.Errorf(connect.CodeNotFound, "invalid or expired recovery token")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	// Verify the attestation OUTSIDE the write transaction, the ordering
 	// VerifyRegistration states for the SQLite single-writer lock. Finish
 	// charges no attempt: the ceremony session it consumes is single-use,
 	// and only the captcha'd Begin could mint one. The session also binds
 	// the token hash Begin charged.
-	userID, cred, err := wa.VerifyRecoveryRegistration(ctx, req.Msg.GetSessionId(), req.Msg.GetCredentialJson(), hashedToken)
+	userID, cred, err := wa.VerifyRecoveryRegistration(ctx, req.GetSessionId(), req.GetCredentialJson(), hashedToken)
 	if err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
 	if userID != live.ID {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid or expired recovery token"))
+		return nil, connect.Errorf(connect.CodeNotFound, "invalid or expired recovery token")
 	}
 	uid, mintErr := mintRowUserID(userID)
 	if mintErr != nil {
@@ -305,7 +304,7 @@ func (s *AuthService) FinishAccountRecoveryPasskey(ctx context.Context, req *con
 	if revoked != nil {
 		s.lifecycle.UserRevoked(userID, revoked.AuthGeneration)
 	}
-	return connect.NewResponse(&leapmuxv1.FinishAccountRecoveryPasskeyResponse{}), nil
+	return &leapmuxv1.FinishAccountRecoveryPasskeyResponse{}, nil
 }
 
 // spendRecoveryToken spends the live recovery token inside the user-auth
@@ -331,7 +330,7 @@ func (s *AuthService) spendRecoveryToken(
 		})
 		if completeErr != nil {
 			if errors.Is(completeErr, store.ErrNotFound) {
-				return connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid or expired recovery token"))
+				return connect.Errorf(connect.CodeNotFound, "invalid or expired recovery token")
 			}
 			return completeErr
 		}
@@ -362,5 +361,5 @@ func recoveryTxError(err error) error {
 	if errors.As(err, &connectErr) {
 		return connectErr
 	}
-	return connect.NewError(connect.CodeInternal, err)
+	return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 }

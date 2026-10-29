@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -356,7 +356,7 @@ func (v *TokenValidator) lookupRowSecretHashes(ctx context.Context, kind BearerK
 func (v *TokenValidator) ValidateBearer(ctx context.Context, bearer string) (*UserInfo, error) {
 	kind, tokenID, secret, err := ParseBearer(bearer)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeUnauthenticated, err)
+		return nil, connect.NewError(connect.CodeUnauthenticated, err.Error()).WithCause(err)
 	}
 	loaded, err := v.loadBearer(ctx, kind, tokenID)
 	if err != nil {
@@ -400,9 +400,9 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 		api, err := v.store.APITokens().GetByID(ctx, tokenID)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
-				return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
+				return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken.Error()).WithCause(ErrInvalidToken)
 			}
-			return loadedBearer{}, connect.NewError(connect.CodeInternal, err)
+			return loadedBearer{}, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 		}
 		// The APP's own retirement, joined onto the row. A hub that died
 		// part-way through a disconnect would otherwise leave a live
@@ -430,7 +430,7 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 		if err != nil {
 			slog.WarnContext(ctx, "api token carries an unreadable grant",
 				"token_id", api.ID, "err", err)
-			return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
+			return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken.Error()).WithCause(ErrInvalidToken)
 		}
 		// The KIND's ceiling: a property of what kind of credential this is,
 		// at every validation rather than of the stage that happened to mint it.
@@ -456,7 +456,7 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 		if err != nil {
 			slog.WarnContext(ctx, "api token identifies an app whose registered scopes are unreadable",
 				"token_id", api.ID, "client_id", api.ClientID, "err", err)
-			return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
+			return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken.Error()).WithCause(ErrInvalidToken)
 		}
 		scopes = scopes.NarrowTo(clientCeiling)
 		elevation := NewElevation(api.ElevationProvenAt, api.ElevationExpiresAt)
@@ -521,9 +521,9 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 		del, err := v.store.DelegationTokens().GetByID(ctx, tokenID)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
-				return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
+				return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken.Error()).WithCause(ErrInvalidToken)
 			}
-			return loadedBearer{}, connect.NewError(connect.CodeInternal, err)
+			return loadedBearer{}, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 		}
 		if del.WorkerID == "" {
 			// A delegation row must always carry the worker that minted it: it
@@ -533,7 +533,7 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 			// singleflight leader, so the panic re-fires into every follower
 			// collapsed onto the same bearer key. Treat the malformed row as an
 			// invalid token (permanent, not a retryable 500) instead.
-			return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
+			return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken.Error()).WithCause(ErrInvalidToken)
 		}
 		// The same read-time narrowing the api_tokens branch performs, and
 		// here it carries the guarantee the deleted delegationAllowedProcedures
@@ -543,7 +543,7 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 		if err != nil {
 			slog.WarnContext(ctx, "delegation token carries an unreadable grant",
 				"token_id", del.ID, "err", err)
-			return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
+			return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken.Error()).WithCause(ErrInvalidToken)
 		}
 		return loadedBearer{
 			fields: validateRowFields{
@@ -565,7 +565,7 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 	// parseBearer rejects unknown kinds; this case is unreachable but
 	// kept as defence-in-depth so a future kind addition surfaces here
 	// instead of silently falling through.
-	return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
+	return loadedBearer{}, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken.Error()).WithCause(ErrInvalidToken)
 }
 
 // IsExpired treats expiry timestamps as exclusive upper limits: a credential
@@ -614,23 +614,23 @@ type validateRowFields struct {
 // access secret keeps matching -- so refresh-on-expiry is unaffected.
 func (v *TokenValidator) validateRow(ctx context.Context, f validateRowFields, secret string) (*UserInfo, error) {
 	if !hmac.Equal(v.HashSecret(secret), f.SecretHash) {
-		return nil, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
+		return nil, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken.Error()).WithCause(ErrInvalidToken)
 	}
 	if f.Revoked {
-		return nil, connect.NewError(connect.CodeUnauthenticated, ErrTokenRevoked)
+		return nil, connect.NewError(connect.CodeUnauthenticated, ErrTokenRevoked.Error()).WithCause(ErrTokenRevoked)
 	}
 	if f.ClientRevoked {
-		return nil, connect.NewError(connect.CodeUnauthenticated, ErrTokenRevoked)
+		return nil, connect.NewError(connect.CodeUnauthenticated, ErrTokenRevoked.Error()).WithCause(ErrTokenRevoked)
 	}
 	if f.Expired {
-		return nil, connect.NewError(connect.CodeUnauthenticated, ErrTokenExpired)
+		return nil, connect.NewError(connect.CodeUnauthenticated, ErrTokenExpired.Error()).WithCause(ErrTokenExpired)
 	}
 	user, err := v.loadUser(ctx, f.UserID)
 	if err != nil {
 		return nil, err
 	}
 	if f.AuthGeneration < user.UserAuthGeneration {
-		return nil, connect.NewError(connect.CodeUnauthenticated, ErrTokenRevoked)
+		return nil, connect.NewError(connect.CodeUnauthenticated, ErrTokenRevoked.Error()).WithCause(ErrTokenRevoked)
 	}
 	user.AuthenticatedAt = f.CreatedAt.UTC()
 	user.CredentialExpiresAt = DeadlineAt(f.ExpiresAt.UTC())
@@ -643,19 +643,20 @@ func (v *TokenValidator) loadUser(ctx context.Context, userID string) (*UserInfo
 	u, err := v.store.Users().GetByID(ctx, userID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("user not found"))
+			return nil, connect.Errorf(connect.CodeUnauthenticated, "user not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("query user: %w", err))
+		cause := fmt.Errorf("query user: %w", err)
+		return nil, connect.NewError(connect.CodeInternal, cause.Error()).WithCause(cause)
 	}
 	if u.DeletedAt != nil {
-		return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("user deleted"))
+		return nil, connect.Errorf(connect.CodeUnauthenticated, "user deleted")
 	}
 	// A blank users.id fails closed in the same shape as the two rejections
 	// above, rather than panicking: this runs per bearer validation, so corrupt
 	// store data must deny the request, not crash the handler goroutine.
 	id, ok := userid.New(u.ID)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("user not found"))
+		return nil, connect.Errorf(connect.CodeUnauthenticated, "user not found")
 	}
 	return &UserInfo{
 		ID:                 id,

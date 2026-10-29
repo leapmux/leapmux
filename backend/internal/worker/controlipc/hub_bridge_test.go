@@ -7,7 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/coder/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -59,14 +60,15 @@ type fakeWorkspaceService struct {
 	gotProto string
 }
 
-func (f *fakeWorkspaceService) ListTabs(ctx context.Context, req *connect.Request[leapmuxv1.ListTabsRequest]) (*connect.Response[leapmuxv1.ListTabsResponse], error) {
-	f.gotAuth = req.Header().Get("Authorization")
+func (f *fakeWorkspaceService) ListTabs(ctx context.Context, req *leapmuxv1.ListTabsRequest) (*leapmuxv1.ListTabsResponse, error) {
+	info, _ := connect.CallInfoForServerContext(ctx)
+	f.gotAuth = info.RequestHeader().Get("Authorization")
 	if proto, ok := requestProtoFrom(ctx); ok {
 		f.gotProto = proto
 	}
-	return connect.NewResponse(&leapmuxv1.ListTabsResponse{
+	return &leapmuxv1.ListTabsResponse{
 		Tabs: []*leapmuxv1.WorkspaceTab{{TabId: "t-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}},
-	}), nil
+	}, nil
 }
 
 // requestProtoKey carries the HTTP version down to the handler. ConnectRPC
@@ -131,8 +133,9 @@ func startHub(t *testing.T, newServer func(*testing.T, http.Handler) *httptest.S
 	workspaces := &fakeWorkspaceService{}
 	events := newUserEventsHandler()
 	mux := http.NewServeMux()
-	path, handler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaces)
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer()
+	leapmuxv1connect.RegisterWorkspaceServiceHandler(connectServer, workspaces)
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	mux.Handle(contracts.WSRouteUserEvents, events)
 	// The unary handler is wrapped so it sees the request's HTTP version; the
 	// WebSocket handler reads r.Proto itself.

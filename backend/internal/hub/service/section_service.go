@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
@@ -28,8 +28,8 @@ func NewSectionService(st store.Store) *SectionService {
 
 func (s *SectionService) ListSections(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.ListSectionsRequest],
-) (*connect.Response[leapmuxv1.ListSectionsResponse], error) {
+	req *leapmuxv1.ListSectionsRequest,
+) (*leapmuxv1.ListSectionsResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -37,7 +37,7 @@ func (s *SectionService) ListSections(
 
 	sections, err := s.store.WorkspaceSections().ListByUserID(ctx, user.ID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 
 	// ListSections is a pure READ. CreateUser seeds the default sections in the
@@ -50,7 +50,7 @@ func (s *SectionService) ListSections(
 
 	items, err := s.store.WorkspaceSectionItems().ListByUser(ctx, user.ID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 
 	protoSections := make([]*leapmuxv1.Section, len(sections))
@@ -67,36 +67,36 @@ func (s *SectionService) ListSections(
 		}
 	}
 
-	return connect.NewResponse(&leapmuxv1.ListSectionsResponse{
+	return &leapmuxv1.ListSectionsResponse{
 		Sections: protoSections,
 		Items:    protoItems,
-	}), nil
+	}, nil
 }
 
 func (s *SectionService) CreateSection(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.CreateSectionRequest],
-) (*connect.Response[leapmuxv1.CreateSectionResponse], error) {
+	req *leapmuxv1.CreateSectionRequest,
+) (*leapmuxv1.CreateSectionResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	name, err := validate.SanitizeName(req.Msg.GetName())
+	name, err := validate.SanitizeName(req.GetName())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("name: %w", err))
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, fmt.Errorf("name: %w", err))
 	}
 
 	// The same rule MoveSection applies, so a section cannot be created into a
 	// sidebar it could not then be moved to.
-	sidebar := req.Msg.GetSidebar()
+	sidebar := req.GetSidebar()
 	if sidebar != leapmuxv1.Sidebar_SIDEBAR_LEFT && sidebar != leapmuxv1.Sidebar_SIDEBAR_RIGHT {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("sidebar must be LEFT or RIGHT"))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "sidebar must be LEFT or RIGHT")
 	}
 
 	sections, err := s.store.WorkspaceSections().ListByUserID(ctx, user.ID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	position := nextSectionPosition(sections, sidebar)
 
@@ -109,13 +109,13 @@ func (s *SectionService) CreateSection(
 		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
 		Sidebar:     sidebar,
 	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 
 	// The whole row, because the SERVER computed the position. A client that
 	// got only the id would have to re-derive the lexorank rule to place the
 	// section in its own list, which is a second source of truth for the order.
-	return connect.NewResponse(&leapmuxv1.CreateSectionResponse{
+	return &leapmuxv1.CreateSectionResponse{
 		Section: sectionToProto(store.WorkspaceSection{
 			ID:          sectionID,
 			Name:        name,
@@ -123,21 +123,21 @@ func (s *SectionService) CreateSection(
 			SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
 			Sidebar:     sidebar,
 		}),
-	}), nil
+	}, nil
 }
 
 func (s *SectionService) RenameSection(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.RenameSectionRequest],
-) (*connect.Response[leapmuxv1.RenameSectionResponse], error) {
+	req *leapmuxv1.RenameSectionRequest,
+) (*leapmuxv1.RenameSectionResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	name, err := validate.SanitizeName(req.Msg.GetName())
+	name, err := validate.SanitizeName(req.GetName())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("name: %w", err))
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, fmt.Errorf("name: %w", err))
 	}
 
 	// Diagnose the two refusals apart BEFORE the write. The query carries its
@@ -147,35 +147,35 @@ func (s *SectionService) RenameSection(
 	// transaction here (only DeleteSection has one), so this is a read that
 	// precedes the update rather than one inside it; a section deleted in the
 	// window between them still lands on the rows == 0 branch below.
-	if err := s.requireCustomSection(ctx, user.ID, req.Msg.GetSectionId(), "rename"); err != nil {
+	if err := s.requireCustomSection(ctx, user.ID, req.GetSectionId(), "rename"); err != nil {
 		return nil, err
 	}
 
 	rows, err := s.store.WorkspaceSections().Rename(ctx, store.RenameWorkspaceSectionParams{
 		Name:   name,
-		ID:     req.Msg.GetSectionId(),
+		ID:     req.GetSectionId(),
 		UserID: user.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	if rows == 0 {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found"))
+		return nil, connect.Errorf(connect.CodeNotFound, "section not found")
 	}
 
-	return connect.NewResponse(&leapmuxv1.RenameSectionResponse{}), nil
+	return &leapmuxv1.RenameSectionResponse{}, nil
 }
 
 func (s *SectionService) DeleteSection(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.DeleteSectionRequest],
-) (*connect.Response[leapmuxv1.DeleteSectionResponse], error) {
+	req *leapmuxv1.DeleteSectionRequest,
+) (*leapmuxv1.DeleteSectionResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	sectionID := req.Msg.GetSectionId()
+	sectionID := req.GetSectionId()
 
 	// Same pre-flight as RenameSection: separate "gone" from "built-in" while
 	// the answer is still available. Inside the transaction the delete's own
@@ -273,15 +273,15 @@ func (s *SectionService) DeleteSection(
 		return nil
 	}); err != nil {
 		if notFound {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found"))
+			return nil, connect.Errorf(connect.CodeNotFound, "section not found")
 		}
 		if errors.Is(err, store.ErrSectionNotEmpty) {
-			return nil, connect.NewError(connect.CodeFailedPrecondition, store.ErrSectionNotEmpty)
+			return nil, connect.NewError(connect.CodeFailedPrecondition, store.ErrSectionNotEmpty.Error()).WithCause(store.ErrSectionNotEmpty)
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 
-	return connect.NewResponse(&leapmuxv1.DeleteSectionResponse{}), nil
+	return &leapmuxv1.DeleteSectionResponse{}, nil
 }
 
 // errSectionDeleteRollback is a sentinel used only inside DeleteSection
@@ -360,8 +360,8 @@ func requireWorkspaceSection(section *store.WorkspaceSection) error {
 		leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED:
 		return nil
 	default:
-		return connect.NewError(connect.CodeInvalidArgument,
-			fmt.Errorf("section %s cannot contain workspaces", section.ID))
+		return connect.Errorf(connect.CodeInvalidArgument,
+			"section %s cannot contain workspaces", section.ID)
 	}
 }
 
@@ -408,12 +408,12 @@ func requireOwnedSection(ctx context.Context, st store.Store, userID userid.User
 	section, err := st.WorkspaceSections().GetByID(ctx, sectionID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found"))
+			return nil, connect.Errorf(connect.CodeNotFound, "section not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	if !userID.Matches(section.UserID) {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found"))
+		return nil, connect.Errorf(connect.CodeNotFound, "section not found")
 	}
 	return section, nil
 }
@@ -443,9 +443,9 @@ func (s *SectionService) requireCustomSection(
 		return err
 	}
 	if section.SectionType != leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM {
-		return connect.NewError(
+		return connect.Errorf(
 			connect.CodeFailedPrecondition,
-			fmt.Errorf("cannot %s a built-in section", verb),
+			"cannot %s a built-in section", verb,
 		)
 	}
 	return nil
@@ -453,49 +453,49 @@ func (s *SectionService) requireCustomSection(
 
 func (s *SectionService) MoveSection(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.MoveSectionRequest],
-) (*connect.Response[leapmuxv1.MoveSectionResponse], error) {
+	req *leapmuxv1.MoveSectionRequest,
+) (*leapmuxv1.MoveSectionResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	sidebar := req.Msg.GetSidebar()
+	sidebar := req.GetSidebar()
 	if sidebar != leapmuxv1.Sidebar_SIDEBAR_LEFT && sidebar != leapmuxv1.Sidebar_SIDEBAR_RIGHT {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("sidebar must be LEFT or RIGHT"))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "sidebar must be LEFT or RIGHT")
 	}
 
-	if _, err := s.requireOwnedSection(ctx, user.ID, req.Msg.GetSectionId()); err != nil {
+	if _, err := s.requireOwnedSection(ctx, user.ID, req.GetSectionId()); err != nil {
 		return nil, err
 	}
 
 	if err := s.store.WorkspaceSections().UpdateSidebarPosition(ctx, store.UpdateWorkspaceSectionSidebarPositionParams{
 		Sidebar:  sidebar,
-		Position: req.Msg.GetPosition(),
-		ID:       req.Msg.GetSectionId(),
+		Position: req.GetPosition(),
+		ID:       req.GetSectionId(),
 		UserID:   user.ID,
 	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 
-	return connect.NewResponse(&leapmuxv1.MoveSectionResponse{}), nil
+	return &leapmuxv1.MoveSectionResponse{}, nil
 }
 
 func (s *SectionService) MoveWorkspace(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.MoveWorkspaceRequest],
-) (*connect.Response[leapmuxv1.MoveWorkspaceResponse], error) {
+	req *leapmuxv1.MoveWorkspaceRequest,
+) (*leapmuxv1.MoveWorkspaceResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	if err := s.store.RunInTransaction(ctx, func(tx store.Store) error {
-		workspaceID := req.Msg.GetWorkspaceId()
+		workspaceID := req.GetWorkspaceId()
 		if _, err := loadOwnedWorkspaceOr403(ctx, tx, workspaceID, user.ID, "only workspace owner can move workspace"); err != nil {
 			return err
 		}
-		destination, err := requireOwnedSection(ctx, tx, user.ID, req.Msg.GetSectionId())
+		destination, err := requireOwnedSection(ctx, tx, user.ID, req.GetSectionId())
 		if err != nil {
 			return err
 		}
@@ -511,14 +511,14 @@ func (s *SectionService) MoveWorkspace(
 		}
 		destinationArchived := destination.SectionType == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED
 		if currentlyArchived != destinationArchived {
-			return connect.NewError(connect.CodeFailedPrecondition,
-				fmt.Errorf("MoveWorkspace cannot move a workspace into or out of Archived"))
+			return connect.Errorf(connect.CodeFailedPrecondition,
+				"MoveWorkspace cannot move a workspace into or out of Archived")
 		}
 		if err := tx.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
 			UserID:      user.ID,
 			WorkspaceID: workspaceID,
 			SectionID:   destination.ID,
-			Position:    req.Msg.GetPosition(),
+			Position:    req.GetPosition(),
 		}); err != nil {
 			return err
 		}
@@ -528,8 +528,8 @@ func (s *SectionService) MoveWorkspace(
 		if errors.As(err, &connectErr) {
 			return nil, connectErr
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 
-	return connect.NewResponse(&leapmuxv1.MoveWorkspaceResponse{}), nil
+	return &leapmuxv1.MoveWorkspaceResponse{}, nil
 }

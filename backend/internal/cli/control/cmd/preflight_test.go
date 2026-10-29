@@ -3,11 +3,10 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -344,7 +343,7 @@ func TestIsWorkerUnreachable_ExistenceAuthClass(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			err := &codedRPCError{
 				Code:  "channel_open_failed",
-				Cause: connect.NewError(tc.code, errors.New("worker gone")),
+				Cause: connect.NewError(tc.code, "worker gone"),
 			}
 			assert.Equal(t, tc.want, isWorkerUnreachable(err))
 		})
@@ -360,7 +359,7 @@ func TestIsWorkerUnreachable_ExistenceAuthClass(t *testing.T) {
 func TestIsWorkerUnreachable_OnlyChannelOpenFailures(t *testing.T) {
 	other := &codedRPCError{
 		Code:  "unmarshal_failed",
-		Cause: connect.NewError(connect.CodeNotFound, errors.New("bytes")),
+		Cause: connect.NewError(connect.CodeNotFound, "bytes"),
 	}
 	assert.False(t, isWorkerUnreachable(other),
 		"non-channel-open coded errors must not be treated as worker-unreachable")
@@ -375,10 +374,10 @@ func TestIsWorkerUnreachable_OnlyChannelOpenFailures(t *testing.T) {
 // TestIsWorkerUnreachable_MatchesLocalIPCShape below, which is the case the old
 // comment here claimed to cover but did not.
 func TestIsWorkerUnreachable_PlainConnectErrorAlsoMatches(t *testing.T) {
-	err := connect.NewError(connect.CodeNotFound, errors.New("worker absent"))
+	err := connect.NewError(connect.CodeNotFound, "worker absent")
 	assert.True(t, isWorkerUnreachable(err))
 
-	transient := connect.NewError(connect.CodeInternal, errors.New("boom"))
+	transient := connect.NewError(connect.CodeInternal, "boom")
 	assert.False(t, isWorkerUnreachable(transient))
 }
 
@@ -403,7 +402,7 @@ func TestIsWorkerUnreachable_MatchesLocalIPCShape(t *testing.T) {
 			// Exactly what localIPCCallInnerBest builds for a relayed failure.
 			err := &codedRPCError{
 				Code:  "channel_open_failed",
-				Cause: connect.NewError(code, errors.New("relayed from the hub")),
+				Cause: connect.NewError(code, "relayed from the hub"),
 			}
 			assert.True(t, isWorkerUnreachable(err),
 				"the CRDT-only tombstone fallback must fire on local IPC too")
@@ -414,7 +413,7 @@ func TestIsWorkerUnreachable_MatchesLocalIPCShape(t *testing.T) {
 	// than silently tombstone a tab whose worker may be perfectly alive.
 	transient := &codedRPCError{
 		Code:  "rpc_failed",
-		Cause: connect.NewError(connect.CodeInternal, errors.New("boom")),
+		Cause: connect.NewError(connect.CodeInternal, "boom"),
 	}
 	assert.False(t, isWorkerUnreachable(transient))
 }

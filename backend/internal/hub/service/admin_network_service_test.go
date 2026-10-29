@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -66,24 +66,24 @@ func TestAdminNetworkService_ReportsTheLiveListeners(t *testing.T) {
 	require.NoError(t, set.Update(context.Background(), settings.KeyExtraListenAddresses,
 		json.RawMessage(`{"addresses":["*:4327","192.168.1.24:8080"]}`)))
 
-	resp, err := svc.GetListenStatus(context.Background(), connect.NewRequest(&leapmuxv1.GetListenStatusRequest{}))
+	resp, err := svc.GetListenStatus(context.Background(), &leapmuxv1.GetListenStatusRequest{})
 	require.NoError(t, err)
 
-	assert.Equal(t, "127.0.0.1:4327", resp.Msg.GetDefaultAddress(),
+	assert.Equal(t, "127.0.0.1:4327", resp.GetDefaultAddress(),
 		"-listen is reported read-only: it is a command-line option, never a setting")
-	assert.Equal(t, []string{"*:4327", "192.168.1.24:8080"}, resp.Msg.GetConfigured())
+	assert.Equal(t, []string{"*:4327", "192.168.1.24:8080"}, resp.GetConfigured())
 
-	require.Len(t, resp.Msg.GetBound(), 2)
-	assert.Equal(t, "*:4327", resp.Msg.GetBound()[0].GetAddress())
+	require.Len(t, resp.GetBound(), 2)
+	assert.Equal(t, "*:4327", resp.GetBound()[0].GetAddress())
 	// "merged" is what lets the panel say the -listen address is served by
 	// this one rather than gone.
-	assert.Equal(t, "merged", resp.Msg.GetBound()[0].GetSource())
-	assert.Empty(t, resp.Msg.GetBound()[0].GetError())
+	assert.Equal(t, "merged", resp.GetBound()[0].GetSource())
+	assert.Empty(t, resp.GetBound()[0].GetError())
 
 	// A configured address the hub could not bind is REPORTED, not dropped:
 	// the panel prints the operating system's reason beside it.
-	assert.Equal(t, "192.168.1.24:8080", resp.Msg.GetBound()[1].GetAddress())
-	assert.Equal(t, "address already in use", resp.Msg.GetBound()[1].GetError())
+	assert.Equal(t, "192.168.1.24:8080", resp.GetBound()[1].GetAddress())
+	assert.Equal(t, "address already in use", resp.GetBound()[1].GetError())
 }
 
 // The stored list is echoed CANONICALLY, so the picker matches an entry
@@ -93,23 +93,23 @@ func TestAdminNetworkService_CanonicalisesTheConfiguredAddresses(t *testing.T) {
 	require.NoError(t, set.Update(context.Background(), settings.KeyExtraListenAddresses,
 		json.RawMessage(`{"addresses":[":4327","[::0]:9000"]}`)))
 
-	resp, err := svc.GetListenStatus(context.Background(), connect.NewRequest(&leapmuxv1.GetListenStatusRequest{}))
+	resp, err := svc.GetListenStatus(context.Background(), &leapmuxv1.GetListenStatusRequest{})
 	require.NoError(t, err)
-	assert.Equal(t, []string{"*:4327", "[::]:9000"}, resp.Msg.GetConfigured())
+	assert.Equal(t, []string{"*:4327", "[::]:9000"}, resp.GetConfigured())
 }
 
 func TestAdminNetworkService_ReportsWhetherTheAccountHoldsAPassword(t *testing.T) {
 	svc, st, _ := newNetworkService(t, &config.Config{SoloMode: true}, fakeListenReporter{})
 
-	resp, err := svc.GetListenStatus(context.Background(), connect.NewRequest(&leapmuxv1.GetListenStatusRequest{}))
+	resp, err := svc.GetListenStatus(context.Background(), &leapmuxv1.GetListenStatusRequest{})
 	require.NoError(t, err)
-	assert.False(t, resp.Msg.GetPasswordSet(),
+	assert.False(t, resp.GetPasswordSet(),
 		"the bootstrapped account claims password_set with no hash behind it; the report must read the hash")
 
 	setSoloPasswordForTest(t, st)
-	resp, err = svc.GetListenStatus(context.Background(), connect.NewRequest(&leapmuxv1.GetListenStatusRequest{}))
+	resp, err = svc.GetListenStatus(context.Background(), &leapmuxv1.GetListenStatusRequest{})
 	require.NoError(t, err)
-	assert.True(t, resp.Msg.GetPasswordSet())
+	assert.True(t, resp.GetPasswordSet())
 }
 
 // The picker needs the machine's addresses, and it needs them stable: a list
@@ -117,13 +117,13 @@ func TestAdminNetworkService_ReportsWhetherTheAccountHoldsAPassword(t *testing.T
 func TestAdminNetworkService_ListsTheMachineInterfaces(t *testing.T) {
 	svc, _, _ := newNetworkService(t, &config.Config{SoloMode: true}, fakeListenReporter{})
 
-	resp, err := svc.GetListenStatus(context.Background(), connect.NewRequest(&leapmuxv1.GetListenStatusRequest{}))
+	resp, err := svc.GetListenStatus(context.Background(), &leapmuxv1.GetListenStatusRequest{})
 	require.NoError(t, err)
-	require.NotEmpty(t, resp.Msg.GetInterfaces(), "every machine has at least a loopback interface")
+	require.NotEmpty(t, resp.GetInterfaces(), "every machine has at least a loopback interface")
 
 	var names []string
 	sawLoopback := false
-	for _, iface := range resp.Msg.GetInterfaces() {
+	for _, iface := range resp.GetInterfaces() {
 		names = append(names, iface.GetName())
 		assert.NotEmpty(t, iface.GetAddresses(), "an interface with no address is omitted, never listed empty")
 		for _, addr := range iface.GetAddresses() {
@@ -139,9 +139,9 @@ func TestAdminNetworkService_ListsTheMachineInterfaces(t *testing.T) {
 	assert.True(t, sawLoopback, "the loopback address must be offered: it is the hub's default")
 	assert.IsIncreasing(t, names, "the picker must not reorder itself between openings")
 
-	second, err := svc.GetListenStatus(context.Background(), connect.NewRequest(&leapmuxv1.GetListenStatusRequest{}))
+	second, err := svc.GetListenStatus(context.Background(), &leapmuxv1.GetListenStatusRequest{})
 	require.NoError(t, err)
-	assert.Equal(t, len(resp.Msg.GetInterfaces()), len(second.Msg.GetInterfaces()))
+	assert.Equal(t, len(resp.GetInterfaces()), len(second.GetInterfaces()))
 }
 
 // stripZone removes an interface zone so net.ParseIP can read the literal.
@@ -159,10 +159,10 @@ func stripZone(ip string) string {
 func TestAdminNetworkService_ToleratesNoListenerSet(t *testing.T) {
 	svc, _, _ := newNetworkService(t, &config.Config{SoloMode: true, Listen: []string{"127.0.0.1:4327"}}, nil)
 
-	resp, err := svc.GetListenStatus(context.Background(), connect.NewRequest(&leapmuxv1.GetListenStatusRequest{}))
+	resp, err := svc.GetListenStatus(context.Background(), &leapmuxv1.GetListenStatusRequest{})
 	require.NoError(t, err)
-	assert.Empty(t, resp.Msg.GetBound())
-	assert.Equal(t, "127.0.0.1:4327", resp.Msg.GetDefaultAddress())
+	assert.Empty(t, resp.GetBound())
+	assert.Equal(t, "127.0.0.1:4327", resp.GetDefaultAddress())
 }
 
 // A machine whose interfaces cannot be read is an internal failure, not an
@@ -177,7 +177,7 @@ func TestAdminNetworkService_ReportsAnInterfaceReadFailure(t *testing.T) {
 		Interfaces: func() ([]net.Interface, error) { return nil, errors.New("no such device") },
 	})
 
-	_, err := svc.GetListenStatus(context.Background(), connect.NewRequest(&leapmuxv1.GetListenStatusRequest{}))
+	_, err := svc.GetListenStatus(context.Background(), &leapmuxv1.GetListenStatusRequest{})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
 }
@@ -196,9 +196,17 @@ func systemInfoForSolo(t *testing.T, listen service.ListenReporter, ctx context.
 	deps.Listen = listen
 	deps.SoloGate = auth.NewSoloGate(true, st)
 
-	resp, err := service.NewAuthService(deps).GetSystemInfo(ctx, connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	// A bare method call carries no CallInfo, and GetSystemInfo reads the
+	// request's Origin from one; callUnderServerInfo supplies the handle a
+	// transport would, over the peer-carrying context under test.
+	var resp *leapmuxv1.GetSystemInfoResponse
+	_, err := callUnderServerInfo(ctx, func(callCtx context.Context) error {
+		var callErr error
+		resp, callErr = service.NewAuthService(deps).GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
+		return callErr
+	})
 	require.NoError(t, err)
-	return resp.Msg
+	return resp
 }
 
 // SoloAccess gives each connection one exclusive access state.
@@ -262,11 +270,15 @@ func TestGetSystemInfo_TheSoloFieldsAreFalseOnAMultiUserHub(t *testing.T) {
 		{Addr: listenset.MustParse("*:4327"), Source: listenset.SourceListen},
 	}}
 
-	resp, err := service.NewAuthService(deps).GetSystemInfo(tcpCtx("192.168.1.24"),
-		connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	var resp *leapmuxv1.GetSystemInfoResponse
+	_, err := callUnderServerInfo(tcpCtx("192.168.1.24"), func(callCtx context.Context) error {
+		var callErr error
+		resp, callErr = service.NewAuthService(deps).GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
+		return callErr
+	})
 	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.SoloAccess_SOLO_ACCESS_UNSPECIFIED, resp.Msg.GetSoloAccess())
-	assert.False(t, resp.Msg.GetSoloPasswordSet())
+	assert.Equal(t, leapmuxv1.SoloAccess_SOLO_ACCESS_UNSPECIFIED, resp.GetSoloAccess())
+	assert.False(t, resp.GetSoloPasswordSet())
 }
 
 // And it does not ASK the gate at all.
@@ -286,8 +298,10 @@ func TestGetSystemInfo_DoesNotReadTheSoloAccountOnAMultiUserHub(t *testing.T) {
 	}}
 	deps.SoloGate = auth.NewSoloGate(false, counted)
 
-	_, err := service.NewAuthService(deps).GetSystemInfo(tcpCtx("192.168.1.24"),
-		connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	_, err := callUnderServerInfo(tcpCtx("192.168.1.24"), func(callCtx context.Context) error {
+		_, callErr := service.NewAuthService(deps).GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
+		return callErr
+	})
 	require.NoError(t, err)
 	assert.Zero(t, counted.soloLookups.Load(), "a multi-user hub has no solo account to look up")
 }

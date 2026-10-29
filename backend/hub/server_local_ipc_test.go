@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -42,7 +43,7 @@ func localIPCClientAt(t *testing.T, srv *Server, i int) leapmuxv1connect.AdminSe
 		Transport: &http.Transport{DialContext: locallisten.HTTPDialContext(dial)},
 		Timeout:   10 * time.Second,
 	}
-	return leapmuxv1connect.NewAdminSettingsServiceClient(httpClient, locallisten.LocalConnectURL)
+	return leapmuxv1connect.NewAdminSettingsServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, locallisten.LocalConnectURL, connecthttp.WithReadMaxBytes(0))))
 }
 
 // tcpClient dials one of the hub's TCP addresses, with keep-alives off so no
@@ -52,13 +53,13 @@ func tcpClient(addr string) leapmuxv1connect.AdminSettingsServiceClient {
 		Transport: &http.Transport{DisableKeepAlives: true},
 		Timeout:   10 * time.Second,
 	}
-	return leapmuxv1connect.NewAdminSettingsServiceClient(httpClient, "http://"+addr)
+	return leapmuxv1connect.NewAdminSettingsServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, "http://"+addr, connecthttp.WithReadMaxBytes(0))))
 }
 
 // listSettings runs one admin call carrying nothing at all: no cookie, no
 // bearer. Only a caller the solo rung admits can succeed.
 func listSettings(c leapmuxv1connect.AdminSettingsServiceClient) error {
-	_, err := c.ListSettings(context.Background(), connect.NewRequest(&leapmuxv1.ListSettingsRequest{}))
+	_, err := c.ListSettings(context.Background(), &leapmuxv1.ListSettingsRequest{})
 	return err
 }
 
@@ -83,16 +84,17 @@ func TestServer_TCPInitialSoloPasswordCreatesVerifiedSession(t *testing.T) {
 	require.NoError(t, srv.settings.Update(context.Background(), requestsource.KeyTrustedProxyRanges,
 		json.RawMessage(`["127.0.0.1"]`)))
 
-	request := connect.NewRequest(&leapmuxv1.SetInitialSoloPasswordRequest{
+	request := &leapmuxv1.SetInitialSoloPasswordRequest{
 		Password: "correct-horse-battery-staple",
-	})
-	request.Header().Set("Forwarded", "for=198.51.100.7;proto=https")
-	request.Header().Set("User-Agent", "setup-browser")
-	response, err := tcpAuthClient(base).SetInitialSoloPassword(context.Background(), request)
+	}
+	ctx, call := connect.NewClientContext(context.Background())
+	call.RequestHeader().Set("Forwarded", "for=198.51.100.7;proto=https")
+	call.RequestHeader().Set("User-Agent", "setup-browser")
+	response, err := tcpAuthClient(base).SetInitialSoloPassword(ctx, request)
 	require.NoError(t, err)
-	assert.Equal(t, usernames.Solo, response.Msg.GetUser().GetUsername())
+	assert.Equal(t, usernames.Solo, response.GetUser().GetUsername())
 
-	setCookie := response.Header().Get("Set-Cookie")
+	setCookie := call.ResponseHeader().Get("Set-Cookie")
 	// The trusted proxy verified HTTPS for this request, so the cookie is
 	// Secure and takes the __Host- name without anybody setting
 	// `secure_cookies`. The hub terminates no TLS itself, so the proxy's
@@ -110,13 +112,13 @@ func TestServer_TCPInitialSoloPasswordCreatesVerifiedSession(t *testing.T) {
 	assert.Equal(t, "198.51.100.7", session.IPAddress)
 	assert.Equal(t, "setup-browser", session.UserAgent)
 
-	adminRequest := connect.NewRequest(&leapmuxv1.ListSettingsRequest{})
-	adminRequest.Header().Set("Cookie", cookies[0].Name+"="+cookies[0].Value)
-	_, err = tcpClient(base).ListSettings(context.Background(), adminRequest)
+	adminRequest := &leapmuxv1.ListSettingsRequest{}
+	adminCtx, adminCall := connect.NewClientContext(context.Background())
+	adminCall.RequestHeader().Set("Cookie", cookies[0].Name+"="+cookies[0].Value)
+	_, err = tcpClient(base).ListSettings(adminCtx, adminRequest)
 	require.NoError(t, err, "the returned session must authorize the next protected RPC")
 
-	_, err = tcpAuthClient(base).SetInitialSoloPassword(context.Background(), connect.NewRequest(
-		&leapmuxv1.SetInitialSoloPasswordRequest{Password: "another-correct-password"}))
+	_, err = tcpAuthClient(base).SetInitialSoloPassword(context.Background(), &leapmuxv1.SetInitialSoloPasswordRequest{Password: "another-correct-password"})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 }
@@ -275,28 +277,28 @@ const loginBudgetAttempts = 10
 
 // attemptLogin presents a password the solo account does not have.
 func attemptLogin(c leapmuxv1connect.AuthServiceClient) error {
-	_, err := c.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
+	_, err := c.Login(context.Background(), &leapmuxv1.LoginRequest{
 		Username: usernames.Solo, Password: "not-the-password",
-	}))
+	})
 	return err
 }
 
 func tcpAuthClient(addr string) leapmuxv1connect.AuthServiceClient {
-	return leapmuxv1connect.NewAuthServiceClient(
+	return leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(
 		&http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: 10 * time.Second},
-		"http://"+addr)
+		"http://"+addr, connecthttp.WithReadMaxBytes(0))))
 }
 
 func localIPCAuthClient(t *testing.T, srv *Server) leapmuxv1connect.AuthServiceClient {
 	t.Helper()
 	dial, err := locallisten.Dialer(srv.localListenURLs[0])
 	require.NoError(t, err)
-	return leapmuxv1connect.NewAuthServiceClient(
+	return leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(
 		&http.Client{
 			Transport: &http.Transport{DialContext: locallisten.HTTPDialContext(dial)},
 			Timeout:   10 * time.Second,
 		},
-		locallisten.LocalConnectURL)
+		locallisten.LocalConnectURL, connecthttp.WithReadMaxBytes(0))))
 }
 
 // setSoloPasswordDirect stores a usable hash on the solo account, bypassing

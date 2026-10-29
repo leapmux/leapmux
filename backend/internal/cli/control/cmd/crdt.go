@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
-	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -104,15 +104,15 @@ func crdtBootstrapLocal(ctx context.Context, c *control.Client, workspaceIDs []s
 	if err != nil {
 		return nil, err
 	}
-	innerResp, err := ipc.CallInner(ctx, connect.NewRequest(innerReq))
+	innerResp, err := ipc.CallInner(ctx, innerReq)
 	if err != nil {
 		return nil, fmt.Errorf("crdt bootstrap (local IPC): %w", err)
 	}
-	if innerResp.Msg.GetIsError() {
-		return nil, fmt.Errorf("crdt bootstrap (local IPC): %s", innerResp.Msg.GetErrorMessage())
+	if innerResp.GetIsError() {
+		return nil, fmt.Errorf("crdt bootstrap (local IPC): %s", innerResp.GetErrorMessage())
 	}
 	var resp leapmuxv1.GetMaterializedResponse
-	if err := proto.Unmarshal(innerResp.Msg.GetPayload(), &resp); err != nil {
+	if err := proto.Unmarshal(innerResp.GetPayload(), &resp); err != nil {
 		return nil, fmt.Errorf("decode getmaterialized response: %w", err)
 	}
 	return resp.GetState(), nil
@@ -150,13 +150,19 @@ func streamWatchUserLocal(
 	if err != nil {
 		return err
 	}
-	stream, err := ipcStream.StreamInner(streamCtx, connect.NewRequest(streamReq))
+	stream, err := ipcStream.StreamInner(streamCtx, streamReq)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = stream.Close() }()
-	for stream.Receive() {
-		env := stream.Msg()
+	var streamErr error
+	for {
+		msg, err2 := stream.Receive()
+		if err2 != nil {
+			streamErr = err2
+			break
+		}
+		env := msg
 		if env.GetIsError() {
 			return errors.New(env.GetErrorMessage())
 		}
@@ -175,7 +181,10 @@ func streamWatchUserLocal(
 			return nil
 		}
 	}
-	return stream.Err()
+	if errors.Is(streamErr, io.EOF) {
+		streamErr = nil
+	}
+	return streamErr
 }
 
 // crdtSubmitBatch submits a single OpBatch through the appropriate

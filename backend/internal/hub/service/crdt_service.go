@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
@@ -48,8 +48,8 @@ func NewCRDTService(st store.Store, registry *crdt.Registry, logger *slog.Logger
 // SubmitOps validates the caller and forwards to the user manager.
 func (s *CRDTService) SubmitOps(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.SubmitOpsRequest],
-) (*connect.Response[leapmuxv1.SubmitOpsResponse], error) {
+	req *leapmuxv1.SubmitOpsRequest,
+) (*leapmuxv1.SubmitOpsResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -76,9 +76,9 @@ func (s *CRDTService) SubmitOps(
 	workerScope, err := s.scopeCache.Resolve(ctx, user)
 	if err != nil {
 		if errors.Is(err, auth.ErrDelegationMinterUnknown) {
-			return nil, connect.NewError(connect.CodePermissionDenied, err)
+			return nil, connect.NewError(connect.CodePermissionDenied, err.Error()).WithCause(err)
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	// This Get is where the session's tenant is spent: the manager it returns IS
 	// the tenant, so the SubmitInput below names none. PrincipalID and
@@ -86,19 +86,19 @@ func (s *CRDTService) SubmitOps(
 	// today -- they say WHO is writing, which a delegation bearer changes.
 	mgr, err := s.registry.Get(ctx, userID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get manager: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("get manager: %w", err))
 	}
 	results, err := mgr.Submit(ctx, crdt.SubmitInput{
-		Epoch:        req.Msg.GetEpoch(),
-		Batches:      req.Msg.GetBatches(),
+		Epoch:        req.GetEpoch(),
+		Batches:      req.GetBatches(),
 		PrincipalID:  user.ID.String(),
 		OriginClient: user.ID.String(),
 		WorkerScope:  submitWorkerBound(user, workerScope),
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
-	return connect.NewResponse(&leapmuxv1.SubmitOpsResponse{Results: results}), nil
+	return &leapmuxv1.SubmitOpsResponse{Results: results}, nil
 }
 
 // GetMaterialized returns a one-shot snapshot of the per-user CRDT
@@ -116,14 +116,14 @@ func (s *CRDTService) SubmitOps(
 // "denied" must check the ACL themselves.
 func (s *CRDTService) GetMaterialized(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.GetMaterializedRequest],
-) (*connect.Response[leapmuxv1.GetMaterializedResponse], error) {
+	req *leapmuxv1.GetMaterializedRequest,
+) (*leapmuxv1.GetMaterializedResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 	userID := user.ID.String()
-	allowed, err := resolveAllowedWorkspacesSetForUser(ctx, s.store, req.Msg.GetWorkspaceIds(), user)
+	allowed, err := resolveAllowedWorkspacesSetForUser(ctx, s.store, req.GetWorkspaceIds(), user)
 	if err != nil {
 		// Only a delegation-scope PermissionDenied is a genuine authorization
 		// failure; an uncoded transient store failure must surface as a
@@ -134,42 +134,42 @@ func (s *CRDTService) GetMaterialized(
 		if connect.CodeOf(err) == connect.CodePermissionDenied {
 			return nil, err
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	mgr, err := s.registry.Get(ctx, userID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get manager: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("get manager: %w", err))
 	}
 	state := mgr.Materialized(crdt.SubscriberFilter{WorkspaceIDs: allowed})
 	state.SubscriberClientId = presenceClientID(user)
-	return connect.NewResponse(&leapmuxv1.GetMaterializedResponse{State: state}), nil
+	return &leapmuxv1.GetMaterializedResponse{State: state}, nil
 }
 
 // UpdatePresence forwards the heartbeat to the manager.
 func (s *CRDTService) UpdatePresence(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.UpdatePresenceRequest],
-) (*connect.Response[leapmuxv1.UpdatePresenceResponse], error) {
+	req *leapmuxv1.UpdatePresenceRequest,
+) (*leapmuxv1.UpdatePresenceResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
-	allowed, err := auth.WorkspaceCanAccess(ctx, s.store, req.Msg.GetWorkspaceId(), user.ID)
+	allowed, err := auth.WorkspaceCanAccess(ctx, s.store, req.GetWorkspaceId(), user.ID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("authorize presence workspace: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("authorize presence workspace: %w", err))
 	}
 	if !allowed {
-		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("workspace access denied"))
+		return nil, connect.Errorf(connect.CodePermissionDenied, "workspace access denied")
 	}
 	mgr, err := s.registry.Get(ctx, user.ID.String())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get manager: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("get manager: %w", err))
 	}
 	clientID := presenceClientID(user)
-	if err := mgr.HeartbeatPresence(ctx, req.Msg.GetWorkspaceId(), clientID); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+	if err := mgr.HeartbeatPresence(ctx, req.GetWorkspaceId(), clientID); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
-	return connect.NewResponse(&leapmuxv1.UpdatePresenceResponse{}), nil
+	return &leapmuxv1.UpdatePresenceResponse{}, nil
 }
 
 // presenceClientID derives the hub-side identity for an authenticated user.
@@ -231,8 +231,8 @@ func resolveAllowedWorkspacesForUser(ctx context.Context, st store.Store, reques
 // workspace the user owns; non-empty narrows the set.
 func resolveAllowedWorkspaces(ctx context.Context, st store.Store, requested []string, userID userid.UserID) ([]string, error) {
 	if userID.IsZero() {
-		return nil, connect.NewError(connect.CodePermissionDenied,
-			fmt.Errorf("list accessible workspaces: user id required"))
+		return nil, connect.Errorf(connect.CodePermissionDenied,
+			"list accessible workspaces: user id required")
 	}
 	if len(requested) == 0 {
 		workspaces, err := st.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{

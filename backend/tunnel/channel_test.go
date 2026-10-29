@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"runtime"
@@ -12,7 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -42,24 +44,24 @@ type rollbackChannelService struct {
 }
 
 func (s *rollbackChannelService) GetWorkerHandshakeParams(
-	_ context.Context,
-	req *connect.Request[leapmuxv1.GetWorkerHandshakeParamsRequest],
-) (*connect.Response[leapmuxv1.GetWorkerHandshakeParamsResponse], error) {
+	ctx context.Context,
+	req *leapmuxv1.GetWorkerHandshakeParamsRequest,
+) (*leapmuxv1.GetWorkerHandshakeParamsResponse, error) {
 	s.mu.Lock()
-	s.paramsAuth = req.Header().Get("Authorization")
+	s.paramsAuth = requestAuth(ctx)
 	s.mu.Unlock()
-	return connect.NewResponse(&leapmuxv1.GetWorkerHandshakeParamsResponse{
+	return &leapmuxv1.GetWorkerHandshakeParamsResponse{
 		PublicKey:      s.publicKey,
 		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
-	}), nil
+	}, nil
 }
 
 func (s *rollbackChannelService) OpenChannel(
-	_ context.Context,
-	req *connect.Request[leapmuxv1.OpenChannelRequest],
-) (*connect.Response[leapmuxv1.OpenChannelResponse], error) {
+	ctx context.Context,
+	req *leapmuxv1.OpenChannelRequest,
+) (*leapmuxv1.OpenChannelResponse, error) {
 	s.mu.Lock()
-	s.openAuth = req.Header().Get("Authorization")
+	s.openAuth = requestAuth(ctx)
 	s.mu.Unlock()
 	resp := &leapmuxv1.OpenChannelResponse{
 		ChannelId:        "registered-channel",
@@ -69,18 +71,39 @@ func (s *rollbackChannelService) OpenChannel(
 	if !s.omitMaxMessageSize {
 		resp.MaxMessageSize = uint64(contracts.MaxMessageSize)
 	}
-	return connect.NewResponse(resp), nil
+	return resp, nil
 }
 
 func (s *rollbackChannelService) CloseChannel(
-	_ context.Context,
-	req *connect.Request[leapmuxv1.CloseChannelRequest],
-) (*connect.Response[leapmuxv1.CloseChannelResponse], error) {
+	ctx context.Context,
+	req *leapmuxv1.CloseChannelRequest,
+) (*leapmuxv1.CloseChannelResponse, error) {
 	s.mu.Lock()
-	s.closedChannel = req.Msg.GetChannelId()
-	s.closeAuth = req.Header().Get("Authorization")
+	s.closedChannel = req.GetChannelId()
+	s.closeAuth = requestAuth(ctx)
 	s.mu.Unlock()
-	return connect.NewResponse(&leapmuxv1.CloseChannelResponse{}), nil
+	return &leapmuxv1.CloseChannelResponse{}, nil
+}
+
+// requestAuth reads the Authorization header off the call's CallInfo:
+// Connect v2 carries request headers there, not on the request message.
+func requestAuth(ctx context.Context) string {
+	info, _ := connect.CallInfoForServerContext(ctx)
+	return info.RequestHeader().Get("Authorization")
+}
+
+// channelServiceServer serves service over Connect on an httptest server.
+// Connect v2 registers the service on a connect.Server and mounts it on a
+// mux, instead of returning one mount path and handler.
+func channelServiceServer(t *testing.T, service leapmuxv1connect.ChannelServiceHandler) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	connectServer := connect.NewServer()
+	leapmuxv1connect.RegisterChannelServiceHandler(connectServer, service)
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server
 }
 
 // Both halves of an initiator handshake must always come from the SAME encryption
@@ -157,10 +180,10 @@ func TestOpenChannelRollsBackRegisteredChannelAfterHandshakeFailure(t *testing.T
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 	service := &rollbackChannelService{publicKey: key.X25519Public}
-	path, handler := leapmuxv1connect.NewChannelServiceHandler(service)
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
-	require.NotEmpty(t, path)
+	// Connect v2 registers on a server instead of returning a mount
+	// path; the generated procedure constants are what Mount serves.
+	require.NotEmpty(t, leapmuxv1connect.ChannelServiceGetWorkerHandshakeParamsProcedure)
+	server := channelServiceServer(t, service)
 
 	_, err = OpenChannel(context.Background(), server.URL, "worker-1", &OpenChannelOptions{
 		LifetimeContext: context.Background(),
@@ -186,9 +209,7 @@ func TestOpenChannelSendsBearerOnEveryHubCall(t *testing.T) {
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 	service := &rollbackChannelService{publicKey: key.X25519Public}
-	_, handler := leapmuxv1connect.NewChannelServiceHandler(service)
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
+	server := channelServiceServer(t, service)
 
 	// Fails at handshake2 (the fake returns a bogus payload), which is AFTER all
 	// three connect calls have been made -- including the rollback close.
@@ -221,9 +242,7 @@ func TestOpenChannelRejectsIdentityMismatch(t *testing.T) {
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 	service := &rollbackChannelService{publicKey: key.X25519Public}
-	_, handler := leapmuxv1connect.NewChannelServiceHandler(service)
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
+	server := channelServiceServer(t, service)
 
 	_, err = OpenChannel(context.Background(), server.URL, "worker-1", &OpenChannelOptions{
 		LifetimeContext: context.Background(),
@@ -248,9 +267,7 @@ func TestOpenChannelAcceptsMatchingExpectedUserID(t *testing.T) {
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 	service := &rollbackChannelService{publicKey: key.X25519Public}
-	_, handler := leapmuxv1connect.NewChannelServiceHandler(service)
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
+	server := channelServiceServer(t, service)
 
 	_, err = OpenChannel(context.Background(), server.URL, "worker-1", &OpenChannelOptions{
 		LifetimeContext: context.Background(),
@@ -264,9 +281,7 @@ func TestOpenChannelRejectsMissingMaxMessageSize(t *testing.T) {
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 	service := &rollbackChannelService{publicKey: key.X25519Public, omitMaxMessageSize: true}
-	_, handler := leapmuxv1connect.NewChannelServiceHandler(service)
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
+	server := channelServiceServer(t, service)
 
 	_, err = OpenChannel(context.Background(), server.URL, "worker-1", &OpenChannelOptions{
 		LifetimeContext: context.Background(),
@@ -286,9 +301,7 @@ func TestOpenChannelRejectsOutOfBoundsMaxMessageSize(t *testing.T) {
 		rollbackChannelService: rollbackChannelService{publicKey: key.X25519Public},
 		size:                   1,
 	}
-	_, handler := leapmuxv1connect.NewChannelServiceHandler(stub)
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
+	server := channelServiceServer(t, stub)
 
 	_, err = OpenChannel(context.Background(), server.URL, "worker-1", &OpenChannelOptions{
 		LifetimeContext: context.Background(),
@@ -304,9 +317,7 @@ func TestOpenChannelRejectsAboveCeilingMaxMessageSize(t *testing.T) {
 		rollbackChannelService: rollbackChannelService{publicKey: key.X25519Public},
 		size:                   uint64(contracts.MaxConfigurableMessageSize + 1),
 	}
-	_, handler := leapmuxv1connect.NewChannelServiceHandler(stub)
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
+	server := channelServiceServer(t, stub)
 
 	_, err = OpenChannel(context.Background(), server.URL, "worker-1", &OpenChannelOptions{
 		LifetimeContext: context.Background(),
@@ -322,9 +333,7 @@ func TestOpenChannelAcceptsNonDefaultNegotiatedMaxMessageSize(t *testing.T) {
 		rollbackChannelService: rollbackChannelService{publicKey: key.X25519Public},
 		size:                   2 << 20,
 	}
-	_, handler := leapmuxv1connect.NewChannelServiceHandler(stub)
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
+	server := channelServiceServer(t, stub)
 
 	_, err = OpenChannel(context.Background(), server.URL, "worker-1", &OpenChannelOptions{
 		LifetimeContext: context.Background(),
@@ -342,13 +351,13 @@ type maxMessageSizeStub struct {
 
 func (s *maxMessageSizeStub) OpenChannel(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.OpenChannelRequest],
-) (*connect.Response[leapmuxv1.OpenChannelResponse], error) {
+	req *leapmuxv1.OpenChannelRequest,
+) (*leapmuxv1.OpenChannelResponse, error) {
 	resp, err := s.rollbackChannelService.OpenChannel(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	resp.Msg.MaxMessageSize = s.size
+	resp.MaxMessageSize = s.size
 	return resp, nil
 }
 
@@ -358,9 +367,7 @@ func TestOpenChannelOmitsAuthHeaderWithoutBearer(t *testing.T) {
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 	service := &rollbackChannelService{publicKey: key.X25519Public}
-	_, handler := leapmuxv1connect.NewChannelServiceHandler(service)
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
+	server := channelServiceServer(t, service)
 
 	_, err = OpenChannel(context.Background(), server.URL, "worker-1", &OpenChannelOptions{
 		LifetimeContext: context.Background(),

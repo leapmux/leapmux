@@ -1,9 +1,7 @@
 package service
 
 import (
-	"fmt"
-
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 )
 
 // rejectSolo refuses a surface that solo mode does not serve.
@@ -30,6 +28,6 @@ func rejectSolo(solo bool, subject string) error {
 	if !solo {
 		return nil
 	}
-	return connect.NewError(connect.CodeFailedPrecondition,
-		fmt.Errorf("solo mode does not provide %s", subject))
+	return connect.Errorf(connect.CodeFailedPrecondition,
+		"solo mode does not provide %s", subject)
 }

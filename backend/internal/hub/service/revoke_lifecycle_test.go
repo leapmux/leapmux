@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -19,25 +19,25 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
-// adminBearerReq wraps a message in a request that carries an API bearer
-// rather than the session cookie authedReq sends. A CLI operator
-// authenticates this way, and the two credential kinds take different paths
-// through the interceptor's cache -- so a case about the credential that
-// made the call has to be able to choose which one that is.
-func adminBearerReq[T any](msg *T, bearer string) *connect.Request[T] {
-	req := connect.NewRequest(msg)
-	req.Header().Set("Authorization", "Bearer "+bearer)
-	return req
+// adminBearerReq is authedReq's API-bearer twin: the same (ctx, req) pair,
+// carrying an API bearer rather than the session cookie authedReq sends. A
+// CLI operator authenticates this way, and the two credential kinds take
+// different paths through the interceptor's cache -- so a case about the
+// credential that made the call has to be able to choose which one that is.
+func adminBearerReq[T any](ctx context.Context, msg *T, bearer string) (context.Context, *T) {
+	ctx, info := clientCallInfo(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+bearer)
+	return ctx, msg
 }
 
 // seedRevocableUser creates one non-admin user and returns their id.
 func seedRevocableUser(t *testing.T, env *adminUserEnv, username string) string {
 	t.Helper()
-	created, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+	created, err := env.client.CreateUser(authedReq(context.Background(), &leapmuxv1.CreateUserRequest{
 		Username: username, Password: "password1",
 	}, env.token))
 	require.NoError(t, err)
-	return created.Msg.GetUser().GetId()
+	return created.GetUser().GetId()
 }
 
 // TestAdminUserService_RevokeSessionClosesThatSessionsChannels pins the
@@ -56,7 +56,7 @@ func TestAdminUserService_RevokeSessionClosesThatSessionsChannels(t *testing.T) 
 	sessionID, _, _, err := auth.Login(ctx, env.st, "carol", "password1", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
-	_, err = env.client.RevokeSession(ctx, authedReq(&leapmuxv1.RevokeSessionRequest{
+	_, err = env.client.RevokeSession(authedReq(ctx, &leapmuxv1.RevokeSessionRequest{
 		Id: sessionID,
 	}, env.token))
 	require.NoError(t, err)
@@ -93,11 +93,11 @@ func TestAdminUserService_RevokeSessionRefusalRunsNoEffect(t *testing.T) {
 	env := setupAdminUserTest(t)
 	ctx := context.Background()
 
-	_, err := env.client.RevokeSession(ctx, authedReq(&leapmuxv1.RevokeSessionRequest{}, env.token))
+	_, err := env.client.RevokeSession(authedReq(ctx, &leapmuxv1.RevokeSessionRequest{}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
-	_, err = env.client.RevokeSession(ctx, authedReq(&leapmuxv1.RevokeSessionRequest{
+	_, err = env.client.RevokeSession(authedReq(ctx, &leapmuxv1.RevokeSessionRequest{
 		Id: "no-such-session",
 	}, env.token))
 	require.Error(t, err)
@@ -118,16 +118,16 @@ func TestAdminUserService_RevokeAPITokenClosesThatBearer(t *testing.T) {
 	ctx := context.Background()
 
 	userID := seedRevocableUser(t, env, "carol")
-	issued, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+	issued, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 		UserId: userID, InstallationName: "carols-laptop"}, env.token))
 	require.NoError(t, err)
 
-	_, err = env.client.RevokeAPIToken(ctx, authedReq(&leapmuxv1.RevokeAPITokenRequest{
-		Id: issued.Msg.GetTokenId(),
+	_, err = env.client.RevokeAPIToken(authedReq(ctx, &leapmuxv1.RevokeAPITokenRequest{
+		Id: issued.GetTokenId(),
 	}, env.token))
 	require.NoError(t, err)
 
-	assert.Equal(t, []auth.BearerRef{auth.NewBearerRef(auth.BearerKindAPI, issued.Msg.GetTokenId())},
+	assert.Equal(t, []auth.BearerRef{auth.NewBearerRef(auth.BearerKindAPI, issued.GetTokenId())},
 		env.revocations.closedBearers(),
 		"the API path fires for the API row the caller gave")
 	assert.Empty(t, env.revocations.closedSessions(), "a bearer revoke touches no session")
@@ -135,8 +135,8 @@ func TestAdminUserService_RevokeAPITokenClosesThatBearer(t *testing.T) {
 
 	// A refused second revoke adds nothing: the row is already revoked, so
 	// the store reports zero rows and the effect must not run again.
-	_, err = env.client.RevokeAPIToken(ctx, authedReq(&leapmuxv1.RevokeAPITokenRequest{
-		Id: issued.Msg.GetTokenId(),
+	_, err = env.client.RevokeAPIToken(authedReq(ctx, &leapmuxv1.RevokeAPITokenRequest{
+		Id: issued.GetTokenId(),
 	}, env.token))
 	require.Error(t, err)
 	assert.Len(t, env.revocations.closedBearers(), 1, "an already-revoked row runs no second effect")
@@ -163,7 +163,7 @@ func TestAdminUserService_RevokeDelegationTokenClosesThatBearer(t *testing.T) {
 		ExpiresAt:        time.Now().Add(time.Hour),
 	}))
 
-	_, err := env.client.RevokeDelegationToken(ctx, authedReq(
+	_, err := env.client.RevokeDelegationToken(authedReq(ctx,
 		&leapmuxv1.AdminUserServiceRevokeDelegationTokenRequest{Id: tokenID}, env.token))
 	require.NoError(t, err)
 
@@ -222,12 +222,12 @@ func TestAdminUserService_RevokeUserSessionsReportsTheCommittedGeneration(t *tes
 	before, err := env.st.Users().GetByID(ctx, userID)
 	require.NoError(t, err)
 
-	resp, err := env.client.RevokeUserSessions(ctx, authedReq(&leapmuxv1.RevokeUserSessionsRequest{
+	resp, err := env.client.RevokeUserSessions(authedReq(ctx, &leapmuxv1.RevokeUserSessionsRequest{
 		Id: userID,
 	}, env.token))
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), resp.Msg.GetApiTokensRevoked())
-	assert.Equal(t, int64(1), resp.Msg.GetDelegationTokensRevoked())
+	assert.Equal(t, int64(1), resp.GetApiTokensRevoked())
+	assert.Equal(t, int64(1), resp.GetDelegationTokensRevoked())
 
 	after, err := env.st.Users().GetByID(ctx, userID)
 	require.NoError(t, err)

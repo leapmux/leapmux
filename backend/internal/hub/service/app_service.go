@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -107,13 +107,13 @@ func (s *AppService) requireElevatedOwner(ctx context.Context) (*auth.UserInfo, 
 // Elevated, like every write here. See requireElevatedOwner.
 func (s *AppService) RegisterApp(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.RegisterAppRequest],
-) (*connect.Response[leapmuxv1.RegisterAppResponse], error) {
+	req *leapmuxv1.RegisterAppRequest,
+) (*leapmuxv1.RegisterAppResponse, error) {
 	user, err := s.requireElevatedOwner(ctx)
 	if err != nil {
 		return nil, err
 	}
-	msg := req.Msg
+	msg := req
 
 	owner, source, err := s.resolveOwnership(msg.GetVisibility(), user)
 	if err != nil {
@@ -137,12 +137,12 @@ func (s *AppService) RegisterApp(
 	// point at), so the live count is zero and nobody has vouched for it.
 	row, err := s.store.OAuthClients().Create(ctx, params)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create app: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create app: %w", err))
 	}
-	return connect.NewResponse(&leapmuxv1.RegisterAppResponse{
+	return &leapmuxv1.RegisterAppResponse{
 		App:          appToProto(row, 0, ""),
 		ClientSecret: secret,
-	}), nil
+	}, nil
 }
 
 // ListApps pages the registrations the caller may EDIT.
@@ -152,8 +152,8 @@ func (s *AppService) RegisterApp(
 // an ordinary user's list holds their own apps alone.
 func (s *AppService) ListApps(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.ListAppsRequest],
-) (*connect.Response[leapmuxv1.ListAppsResponse], error) {
+	req *leapmuxv1.ListAppsRequest,
+) (*leapmuxv1.ListAppsResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -164,8 +164,8 @@ func (s *AppService) ListApps(
 		// limit of 0 reaches the queries as "return no rows", so an omitted
 		// field -- the proto3 default -- would give an empty page nobody could
 		// tell from an empty table.
-		PageParams:     NormalizePageParams(req.Msg.GetCursor(), int64(req.Msg.GetLimit())),
-		IncludeRevoked: req.Msg.GetIncludeRevoked(),
+		PageParams:     NormalizePageParams(req.GetCursor(), int64(req.GetLimit())),
+		IncludeRevoked: req.GetIncludeRevoked(),
 	}
 	// An administrator edits the hub-wide catalogue AND their own private
 	// apps; everybody else sees what they registered. One statement answers
@@ -173,7 +173,7 @@ func (s *AppService) ListApps(
 	// that names one reach narrows it: the administration panel asks for
 	// the catalogue alone, so an administrator's own private rows do not
 	// cross the wire only to be discarded by a panel that cannot draw them.
-	switch vis := req.Msg.GetVisibility(); vis {
+	switch vis := req.GetVisibility(); vis {
 	case leapmuxv1.AppVisibility_APP_VISIBILITY_UNSPECIFIED:
 		params.IncludeHubWide = user.IsAdmin
 	case leapmuxv1.AppVisibility_APP_VISIBILITY_PRIVATE:
@@ -181,16 +181,16 @@ func (s *AppService) ListApps(
 	case leapmuxv1.AppVisibility_APP_VISIBILITY_HUB_WIDE:
 		if !user.IsAdmin {
 			return nil, connect.NewError(connect.CodePermissionDenied,
-				errors.New("only an administrator may list the hub-wide catalogue"))
+				"only an administrator may list the hub-wide catalogue")
 		}
 		params.HubWideOnly = true
 	default:
-		return nil, connect.NewError(connect.CodeInvalidArgument,
-			fmt.Errorf("unknown app visibility: %s", vis))
+		return nil, connect.Errorf(connect.CodeInvalidArgument,
+			"unknown app visibility: %s", vis)
 	}
 	page, err := s.store.OAuthClients().List(ctx, params)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list apps: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("list apps: %w", err))
 	}
 
 	// ONE round trip for the whole page's live counts, and one lookup per
@@ -204,7 +204,7 @@ func (s *AppService) ListApps(
 		}
 		live, err = s.store.OAuthClients().CountLiveTokensByClients(ctx, ids)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("count app credentials: %w", err))
+			return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("count app credentials: %w", err))
 		}
 	}
 	verifiers := map[string]string{}
@@ -216,11 +216,11 @@ func (s *AppService) ListApps(
 		}
 		out = append(out, appToProto(&page.Rows[i], live[page.Rows[i].ClientID], verifier))
 	}
-	return connect.NewResponse(&leapmuxv1.ListAppsResponse{
+	return &leapmuxv1.ListAppsResponse{
 		Apps:                    out,
 		NextCursor:              page.NextCursor,
 		OpenRegistrationEnabled: settings.KeyOpenAppRegistration.Of(s.snapshot(ctx)),
-	}), nil
+	}, nil
 }
 
 // UpdateApp rewrites the editable fields.
@@ -234,13 +234,13 @@ func (s *AppService) ListApps(
 // editor chose. See requireElevatedOwner.
 func (s *AppService) UpdateApp(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.UpdateAppRequest],
-) (*connect.Response[leapmuxv1.UpdateAppResponse], error) {
+	req *leapmuxv1.UpdateAppRequest,
+) (*leapmuxv1.UpdateAppResponse, error) {
 	user, err := s.requireElevatedOwner(ctx)
 	if err != nil {
 		return nil, err
 	}
-	msg := req.Msg
+	msg := req
 	app, err := s.loadOwned(ctx, msg.GetClientId(), user)
 	if err != nil {
 		return nil, err
@@ -264,20 +264,20 @@ func (s *AppService) UpdateApp(
 		name := validate.CleanNameTo(msg.GetClientName(), clientNameByteLimit)
 		if name == "" {
 			return nil, connect.NewError(connect.CodeInvalidArgument,
-				errors.New("client_name cannot be empty"))
+				"client_name cannot be empty")
 		}
 		next.ClientName = name
 	}
 	if msg.ClientUri != nil {
 		uri := strings.TrimSpace(msg.GetClientUri())
 		if len(uri) > clientURIByteLimit {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("client_uri is too long"))
+			return nil, connect.NewError(connect.CodeInvalidArgument, "client_uri is too long")
 		}
 		next.ClientURI = uri
 	}
 	if msg.GetReplaceRedirectUris() {
 		if err := ValidateRedirectURIs(msg.GetRedirectUris()); err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 		}
 		next.RedirectURIs = JoinRedirectURIs(msg.GetRedirectUris())
 	}
@@ -310,14 +310,14 @@ func (s *AppService) UpdateApp(
 		// holds.
 		stored, err := scopes.Close().Storable()
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 		}
 		next.Scopes = stored
 	}
 	if msg.GetReplaceGrantTypes() {
 		grants, err := normalizeGrantTypes(msg.GetGrantTypes())
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 		}
 		next.GrantTypes = strings.Join(grants, " ")
 	}
@@ -329,7 +329,7 @@ func (s *AppService) UpdateApp(
 	// (authorizationCodeNeedsRedirect, which the registrations also run).
 	if authorizationCodeNeedsRedirect(strings.Fields(next.GrantTypes), ParseRedirectURIs(next.RedirectURIs)) {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
-			errors.New("the authorization_code grant needs at least one redirect URI"))
+			"the authorization_code grant needs at least one redirect URI")
 	}
 
 	// Update and the icon write run in ONE transaction, for the same reason
@@ -356,9 +356,9 @@ func (s *AppService) UpdateApp(
 		return err
 	}); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("no such app"))
+			return nil, connect.NewError(connect.CodeNotFound, "no such app")
 		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update app: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("update app: %w", err))
 	}
 
 	s.applyCeilingChange(ctx, app.ClientID, app.Scopes, next.Scopes)
@@ -374,9 +374,9 @@ func (s *AppService) UpdateApp(
 	if msg.GetReplaceIcon() {
 		updated.HasIcon = len(icon) > 0
 	}
-	return connect.NewResponse(&leapmuxv1.UpdateAppResponse{
+	return &leapmuxv1.UpdateAppResponse{
 		App: appToProto(&updated, s.liveCredentialCount(ctx, updated.ClientID), s.verifierName(ctx, &updated)),
-	}), nil
+	}, nil
 }
 
 // applyCeilingChange lands an edit to the app's registered permission ceiling
@@ -447,27 +447,27 @@ func (s *AppService) applyCeilingChange(ctx context.Context, clientID, oldScopes
 // multiplies every scope it holds. See requireElevatedOwner.
 func (s *AppService) SetAppElevationAllowed(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.SetAppElevationAllowedRequest],
-) (*connect.Response[leapmuxv1.SetAppElevationAllowedResponse], error) {
+	req *leapmuxv1.SetAppElevationAllowedRequest,
+) (*leapmuxv1.SetAppElevationAllowedResponse, error) {
 	user, err := s.requireElevatedOwner(ctx)
 	if err != nil {
 		return nil, err
 	}
-	app, err := s.loadOwned(ctx, req.Msg.GetClientId(), user)
+	app, err := s.loadOwned(ctx, req.GetClientId(), user)
 	if err != nil {
 		return nil, err
 	}
 	rows, err := s.store.OAuthClients().SetElevationAllowed(ctx, store.SetOAuthClientElevationAllowedParams{
 		ClientID:         app.ClientID,
-		ElevationAllowed: req.Msg.GetAllowed(),
+		ElevationAllowed: req.GetAllowed(),
 		CallerUserID:     user.ID,
 		CallerIsAdmin:    user.IsAdmin,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("set elevation allowed: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("set elevation allowed: %w", err))
 	}
 	if rows == 0 {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("no such app"))
+		return nil, connect.NewError(connect.CodeNotFound, "no such app")
 	}
 	// The 30-second validation cache holds the whole UserInfo, elevation
 	// included, so the row this write just changed is not what the next request
@@ -498,7 +498,7 @@ func (s *AppService) SetAppElevationAllowed(
 	// whose cached UserInfo can then run one window stale -- the same
 	// one-cache-window delay a failed read above already costs, and the flag
 	// is re-read at the next miss.
-	if req.Msg.GetAllowed() != app.ElevationAllowed {
+	if req.GetAllowed() != app.ElevationAllowed {
 		refs, refErr := s.store.OAuthClients().ListTokenRefs(ctx, app.ClientID)
 		if refErr != nil {
 			slog.WarnContext(ctx, "could not drop the cached credentials of an app whose elevation policy changed",
@@ -514,11 +514,11 @@ func (s *AppService) SetAppElevationAllowed(
 	}
 
 	updated := *app
-	updated.ElevationAllowed = req.Msg.GetAllowed()
+	updated.ElevationAllowed = req.GetAllowed()
 	updated.UpdatedAt = s.now()
-	return connect.NewResponse(&leapmuxv1.SetAppElevationAllowedResponse{
+	return &leapmuxv1.SetAppElevationAllowedResponse{
 		App: appToProto(&updated, s.liveCredentialCount(ctx, updated.ClientID), s.verifierName(ctx, &updated)),
-	}), nil
+	}, nil
 }
 
 // VerifyApp records an administrator's vouch, or withdraws one.
@@ -532,17 +532,17 @@ func (s *AppService) SetAppElevationAllowed(
 // requireElevatedOwner.
 func (s *AppService) VerifyApp(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.VerifyAppRequest],
-) (*connect.Response[leapmuxv1.VerifyAppResponse], error) {
+	req *leapmuxv1.VerifyAppRequest,
+) (*leapmuxv1.VerifyAppResponse, error) {
 	user, err := s.requireElevatedOwner(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if !user.IsAdmin {
 		return nil, connect.NewError(connect.CodePermissionDenied,
-			errors.New("only an administrator can verify an app"))
+			"only an administrator can verify an app")
 	}
-	app, err := s.load(ctx, req.Msg.GetClientId())
+	app, err := s.load(ctx, req.GetClientId())
 	if err != nil {
 		return nil, err
 	}
@@ -557,7 +557,7 @@ func (s *AppService) VerifyApp(
 	// at the column. Setting them from one branch is what keeps a caller from
 	// ever writing half of it.
 	params := store.SetOAuthClientVerifiedParams{ClientID: app.ClientID, CallerIsAdmin: user.IsAdmin}
-	if req.Msg.GetVerified() {
+	if req.GetVerified() {
 		now := s.now().UTC()
 		params.VerifiedAt, params.VerifiedBy = &now, user.ID.String()
 	}
@@ -567,23 +567,23 @@ func (s *AppService) VerifyApp(
 	// row that never took it -- the exact lie the sibling write verbs refuse.
 	rows, err := s.store.OAuthClients().SetVerified(ctx, params)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("set app verified: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("set app verified: %w", err))
 	}
 	if rows == 0 {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("no such app"))
+		return nil, connect.NewError(connect.CodeNotFound, "no such app")
 	}
 	updated := *app
 	updated.UpdatedAt = s.now()
-	if req.Msg.GetVerified() {
+	if req.GetVerified() {
 		updated.VerifiedAt = params.VerifiedAt
 		updated.VerifiedBy = params.VerifiedBy
 	} else {
 		updated.VerifiedAt = nil
 		updated.VerifiedBy = ""
 	}
-	return connect.NewResponse(&leapmuxv1.VerifyAppResponse{
+	return &leapmuxv1.VerifyAppResponse{
 		App: appToProto(&updated, s.liveCredentialCount(ctx, updated.ClientID), s.verifierName(ctx, &updated)),
-	}), nil
+	}, nil
 }
 
 // RevokeApp retires the app and takes every credential it holds.
@@ -596,13 +596,13 @@ func (s *AppService) VerifyApp(
 // retry a transaction, so running them inside would apply some of them twice.
 func (s *AppService) RevokeApp(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.RevokeAppRequest],
-) (*connect.Response[leapmuxv1.RevokeAppResponse], error) {
+	req *leapmuxv1.RevokeAppRequest,
+) (*leapmuxv1.RevokeAppResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
-	app, err := s.loadOwned(ctx, req.Msg.GetClientId(), user)
+	app, err := s.loadOwned(ctx, req.GetClientId(), user)
 	if err != nil {
 		return nil, err
 	}
@@ -612,7 +612,7 @@ func (s *AppService) RevokeApp(
 
 	refs, err := s.store.OAuthClients().ListTokenRefs(ctx, app.ClientID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list app credentials: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("list app credentials: %w", err))
 	}
 
 	var revoked int64
@@ -630,9 +630,9 @@ func (s *AppService) RevokeApp(
 		return err
 	}); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("no such app"))
+			return nil, connect.NewError(connect.CodeNotFound, "no such app")
 		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("revoke app: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("revoke app: %w", err))
 	}
 
 	// AFTER the commit, so a retried transaction cannot apply these twice.
@@ -643,7 +643,7 @@ func (s *AppService) RevokeApp(
 		ids = append(ids, ref.ID)
 	}
 	s.lifecycle.BearerRevokedBatch(auth.BearerKindAPI, ids)
-	return connect.NewResponse(&leapmuxv1.RevokeAppResponse{RevokedCredentialCount: revoked}), nil
+	return &leapmuxv1.RevokeAppResponse{RevokedCredentialCount: revoked}, nil
 }
 
 // DeleteApp hard-deletes a registration that never held a credential.
@@ -657,13 +657,13 @@ func (s *AppService) RevokeApp(
 // and one told "it holds four live credentials" can revoke instead.
 func (s *AppService) DeleteApp(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.DeleteAppRequest],
-) (*connect.Response[leapmuxv1.DeleteAppResponse], error) {
+	req *leapmuxv1.DeleteAppRequest,
+) (*leapmuxv1.DeleteAppResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
-	app, err := s.loadOwned(ctx, req.Msg.GetClientId(), user)
+	app, err := s.loadOwned(ctx, req.GetClientId(), user)
 	if err != nil {
 		return nil, err
 	}
@@ -676,29 +676,29 @@ func (s *AppService) DeleteApp(
 	// that states a table they have no surface for.
 	held, err := s.store.OAuthClients().CountTokens(ctx, app.ClientID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("count app credentials: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("count app credentials: %w", err))
 	}
 	if held > 0 {
 		live, err := s.store.OAuthClients().CountLiveTokens(ctx, app.ClientID)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("count live app credentials: %w", err))
+			return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("count live app credentials: %w", err))
 		}
 		// The two numbers say different things and the operator needs both:
 		// live credentials mean "revoke it instead", and revoked ones mean
 		// "this app has a history, so it cannot be erased".
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf(
-			"this app holds %d credential(s), %d of them live; revoke it instead of deleting it", held, live))
+		return nil, connect.Errorf(connect.CodeFailedPrecondition,
+			"this app holds %d credential(s), %d of them live; revoke it instead of deleting it", held, live)
 	}
 	rows, err := s.store.OAuthClients().Delete(ctx, store.OAuthClientOwnershipParams{
 		ClientID: app.ClientID, CallerUserID: user.ID, CallerIsAdmin: user.IsAdmin,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete app: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("delete app: %w", err))
 	}
 	if rows == 0 {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("no such app"))
+		return nil, connect.NewError(connect.CodeNotFound, "no such app")
 	}
-	return connect.NewResponse(&leapmuxv1.DeleteAppResponse{}), nil
+	return &leapmuxv1.DeleteAppResponse{}, nil
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -719,7 +719,7 @@ func (s *AppService) resolveOwnership(
 	if visibility == leapmuxv1.AppVisibility_APP_VISIBILITY_HUB_WIDE {
 		if !user.IsAdmin {
 			return "", 0, connect.NewError(connect.CodePermissionDenied,
-				errors.New("only an administrator can register a hub-wide app"))
+				"only an administrator can register a hub-wide app")
 		}
 		// An empty owner IS hub-wide. One column carries the whole visibility
 		// rule, so there is no second flag to disagree with it.
@@ -756,7 +756,7 @@ func (s *AppService) buildAppParams(
 		// The Connect surface answers one code with the core's own text: the
 		// distinction between invalid_redirect_uri and
 		// invalid_client_metadata is RFC 7591 vocabulary.
-		return store.CreateOAuthClientParams{}, "", connect.NewError(connect.CodeInvalidArgument, err)
+		return store.CreateOAuthClientParams{}, "", connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
 	return params, secret, nil
 }
@@ -773,8 +773,8 @@ func refuseAdminCeilingToNonAdmin(user *auth.UserInfo, scopes authscope.ScopeSet
 	}
 	if scope, found := firstAdminScope(scopes); found {
 		token, _ := authscope.Token(scope)
-		return connect.NewError(connect.CodePermissionDenied,
-			fmt.Errorf("your account is not a hub administrator, so an app you register cannot ask for %s", token))
+		return connect.Errorf(connect.CodePermissionDenied,
+			"your account is not a hub administrator, so an app you register cannot ask for %s", token)
 	}
 	return nil
 }
@@ -783,14 +783,14 @@ func refuseAdminCeilingToNonAdmin(user *auth.UserInfo, scopes authscope.ScopeSet
 // a live credential on a retired app must still be explainable.
 func (s *AppService) load(ctx context.Context, clientID string) (*store.OAuthClient, error) {
 	if strings.TrimSpace(clientID) == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("client_id is required"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "client_id is required")
 	}
 	app, err := s.store.OAuthClients().Get(ctx, clientID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("no such app"))
+			return nil, connect.NewError(connect.CodeNotFound, "no such app")
 		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get app: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("get app: %w", err))
 	}
 	return app, nil
 }
@@ -813,7 +813,7 @@ func (s *AppService) loadOwned(
 		return nil, err
 	}
 	if !assertAppOwner(app, user) {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("no such app"))
+		return nil, connect.NewError(connect.CodeNotFound, "no such app")
 	}
 	return app, nil
 }
@@ -831,7 +831,7 @@ func refuseBuiltInEdit(app *store.OAuthClient) error {
 		return nil
 	}
 	return connect.NewError(connect.CodeFailedPrecondition,
-		errors.New("this app ships with the hub; only its elevation setting can change"))
+		"this app ships with the hub; only its elevation setting can change")
 }
 
 // firstAdminScope reports the first hub-administration scope in a set, so a
@@ -854,19 +854,19 @@ func firstAdminScope(set authscope.ScopeSet) (leapmuxv1.Scope, bool) {
 // registering the readable half hides that.
 func scopesFromProto(wire []leapmuxv1.Scope) (authscope.ScopeSet, error) {
 	if len(wire) == 0 {
-		return authscope.ScopeSet{}, connect.NewError(connect.CodeInvalidArgument, errAppNeedsScope)
+		return authscope.ScopeSet{}, connect.NewError(connect.CodeInvalidArgument, errAppNeedsScope.Error()).WithCause(errAppNeedsScope)
 	}
 	set, ok := authscope.ScopesFromWire(wire)
 	if !ok {
 		return authscope.ScopeSet{}, connect.NewError(connect.CodeInvalidArgument,
-			errors.New("the requested permissions include one this hub cannot grant"))
+			"the requested permissions include one this hub cannot grant")
 	}
 	if set.IsUnscoped() {
 		// SCOPE_ALL is the explicit absence of a limit, which no registration
 		// may claim: an app's ceiling is what a consent screen shows, and
 		// "everything, including whatever is added later" cannot be shown.
 		return authscope.ScopeSet{}, connect.NewError(connect.CodeInvalidArgument,
-			errors.New("an app must specify the permissions it wants"))
+			"an app must specify the permissions it wants")
 	}
 	return set, nil
 }
@@ -883,13 +883,13 @@ func validateIcon(icon []byte, mediaType string) ([]byte, string, error) {
 	// maxIconBytes, shared with the RFC 7591 endpoint. Two caps on the same
 	// column would be two answers to one question.
 	if len(icon) > maxIconBytes {
-		return nil, "", connect.NewError(connect.CodeInvalidArgument,
-			fmt.Errorf("the icon is larger than %d bytes", maxIconBytes))
+		return nil, "", connect.Errorf(connect.CodeInvalidArgument,
+			"the icon is larger than %d bytes", maxIconBytes)
 	}
 	mediaType = strings.TrimSpace(mediaType)
 	if !isAllowedIconMediaType(mediaType) {
-		return nil, "", connect.NewError(connect.CodeInvalidArgument,
-			fmt.Errorf("the icon media type must be one of %s", strings.Join(AllowedIconMediaTypes(), ", ")))
+		return nil, "", connect.Errorf(connect.CodeInvalidArgument,
+			"the icon media type must be one of %s", strings.Join(AllowedIconMediaTypes(), ", "))
 	}
 	return icon, mediaType, nil
 }

@@ -11,7 +11,8 @@ import (
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -55,13 +56,14 @@ func shortSocketPath(t *testing.T) string {
 // newUnixSocketAuthClient brings up a real unix-domain listener
 // running an AuthServiceHandler behind the auth interceptor, then
 // returns a connect client dialled over it.
-func newUnixSocketAuthClient(t *testing.T, st store.Store, interceptor connect.Interceptor) leapmuxv1connect.AuthServiceClient {
+func newUnixSocketAuthClient(t *testing.T, st store.Store, interceptor connect.ServerInterceptor) leapmuxv1connect.AuthServiceClient {
 	t.Helper()
 
 	mux := http.NewServeMux()
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
-	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, connect.WithInterceptors(interceptor))
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer(interceptor)
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	ln, err := net.Listen("unix", shortSocketPath(t))
 	require.NoError(t, err)
@@ -86,7 +88,7 @@ func newUnixSocketAuthClient(t *testing.T, st store.Store, interceptor connect.I
 			},
 		},
 	}
-	return leapmuxv1connect.NewAuthServiceClient(httpClient, "http://unix")
+	return leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, "http://unix", connecthttp.WithReadMaxBytes(0))))
 }
 
 func TestLocalSocket_MultiUser_RejectsUnauthenticated(t *testing.T) {
@@ -99,7 +101,7 @@ func TestLocalSocket_MultiUser_RejectsUnauthenticated(t *testing.T) {
 	client := newUnixSocketAuthClient(t, st, interceptor)
 
 	// No cookie, no bearer — multi-user hub on a unix socket must reject.
-	_, err := client.GetCurrentUser(context.Background(), connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
+	_, err := client.GetCurrentUser(context.Background(), &leapmuxv1.GetCurrentUserRequest{})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -115,10 +117,10 @@ func TestLocalSocket_SoloMode_AutoAuths(t *testing.T) {
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, SoloUser: soloUser})
 	client := newUnixSocketAuthClient(t, st, interceptor)
 
-	resp, err := client.GetCurrentUser(context.Background(), connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
+	resp, err := client.GetCurrentUser(context.Background(), &leapmuxv1.GetCurrentUserRequest{})
 	require.NoError(t, err)
-	assert.Equal(t, "solo", resp.Msg.GetUser().GetUsername())
-	assert.True(t, resp.Msg.GetUser().GetIsAdmin())
+	assert.Equal(t, "solo", resp.GetUser().GetUsername())
+	assert.True(t, resp.GetUser().GetIsAdmin())
 }
 
 func TestLocalSocket_MultiUser_AcceptsBearer(t *testing.T) {
@@ -151,11 +153,11 @@ func TestLocalSocket_MultiUser_AcceptsBearer(t *testing.T) {
 		SecretHash:       tv.HashSecret(secret),
 	}))
 
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
-	resp, err := client.GetCurrentUser(context.Background(), req)
+	ctx, info := connect.NewClientContext(context.Background())
+	info.RequestHeader().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
+	resp, err := client.GetCurrentUser(ctx, &leapmuxv1.GetCurrentUserRequest{})
 	require.NoError(t, err)
-	assert.Equal(t, "admin", resp.Msg.GetUser().GetUsername())
+	assert.Equal(t, "admin", resp.GetUser().GetUsername())
 }
 
 func TestLocalSocket_MultiUser_RejectsRevokedBearer(t *testing.T) {
@@ -182,9 +184,9 @@ func TestLocalSocket_MultiUser_RejectsRevokedBearer(t *testing.T) {
 	_, err = st.APITokens().Revoke(context.Background(), tokenID)
 	require.NoError(t, err)
 
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
-	_, err = client.GetCurrentUser(context.Background(), req)
+	ctx, info := connect.NewClientContext(context.Background())
+	info.RequestHeader().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
+	_, err = client.GetCurrentUser(ctx, &leapmuxv1.GetCurrentUserRequest{})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }

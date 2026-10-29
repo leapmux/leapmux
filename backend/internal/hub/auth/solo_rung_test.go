@@ -6,7 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -58,9 +59,10 @@ func newSoloRungFixture(t *testing.T) soloRungFixture {
 	})
 	svc := service.NewAdminSettingsService(
 		servicetest.NewSettingsManager(t, st, nil), &config.Config{SoloMode: true}, st)
-	path, handler := leapmuxv1connect.NewAdminSettingsServiceHandler(svc, connect.WithInterceptors(interceptor))
+	connectServer := connect.NewServer(interceptor)
+	leapmuxv1connect.RegisterAdminSettingsServiceHandler(connectServer, svc)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, connectServer)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
@@ -69,17 +71,17 @@ func newSoloRungFixture(t *testing.T) soloRungFixture {
 		gate:   gate,
 		user:   soloUser,
 		server: server,
-		client: leapmuxv1connect.NewAdminSettingsServiceClient(server.Client(), server.URL),
+		client: leapmuxv1connect.NewAdminSettingsServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
 	}
 }
 
 // connectCall runs one Connect request carrying the given headers.
 func (f soloRungFixture) connectCall(headers map[string]string) error {
-	req := connect.NewRequest(&leapmuxv1.ListSettingsRequest{})
+	ctx, info := connect.NewClientContext(context.Background())
 	for name, value := range headers {
-		req.Header().Set(name, value)
+		info.RequestHeader().Set(name, value)
 	}
-	_, err := f.client.ListSettings(context.Background(), req)
+	_, err := f.client.ListSettings(ctx, &leapmuxv1.ListSettingsRequest{})
 	return err
 }
 

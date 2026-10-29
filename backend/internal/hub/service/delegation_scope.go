@@ -1,9 +1,7 @@
 package service
 
 import (
-	"errors"
-
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
@@ -78,5 +76,5 @@ func rejectDelegationBearer(user *auth.UserInfo, operation string) error {
 	if user == nil || !user.Credential.IsDelegation() {
 		return nil
 	}
-	return connect.NewError(connect.CodePermissionDenied, errors.New(operation+" is not allowed for delegation tokens"))
+	return connect.NewError(connect.CodePermissionDenied, operation+" is not allowed for delegation tokens")
 }

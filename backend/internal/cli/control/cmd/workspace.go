@@ -4,7 +4,6 @@ import (
 	"context"
 	"sync/atomic"
 
-	"connectrpc.com/connect"
 	"golang.org/x/sync/errgroup"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -28,7 +27,7 @@ func RunWhoami(rawCtx any, args []string) error {
 		if ipcErr != nil {
 			return control.EmitErrorWith("invalid_request", ipcErr)
 		}
-		resp, err := ipc.Whoami(context.Background(), connect.NewRequest(&leapmuxv1.WhoamiRequest{}))
+		resp, err := ipc.Whoami(context.Background(), &leapmuxv1.WhoamiRequest{})
 		if err != nil {
 			return control.EmitErrorWith("rpc_failed", err)
 		}
@@ -40,11 +39,11 @@ func RunWhoami(rawCtx any, args []string) error {
 		// carries the stable tab id instead -- `tab get --tab-id <id>` derives
 		// the workspace from it and stays correct across a tab move.
 		return control.EmitData(map[string]any{
-			"user_id":   resp.Msg.GetUserId(),
-			"username":  resp.Msg.GetUsername(),
-			"worker_id": resp.Msg.GetWorkerId(),
-			"tab_id":    resp.Msg.GetTabId(),
-			"tab_type":  tabTypeName(resp.Msg.GetTabType()),
+			"user_id":   resp.GetUserId(),
+			"username":  resp.GetUsername(),
+			"worker_id": resp.GetWorkerId(),
+			"tab_id":    resp.GetTabId(),
+			"tab_type":  tabTypeName(resp.GetTabType()),
 		})
 	}
 

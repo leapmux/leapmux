@@ -5,11 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"sync/atomic"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -216,20 +215,21 @@ func (s *AuthService) checkHasAnyUser(ctx context.Context) (bool, error) {
 // replaces anything already written for that name. The interceptor's slide
 // refresh does not touch a response that already carries a session cookie,
 // which is what keeps these two writers from overwriting each other.
-func (s *AuthService) setSessionCookie(ctx context.Context, h http.Header, sessionID string, expiresAt time.Time) {
+func (s *AuthService) setSessionCookie(ctx context.Context, h *connect.Header, sessionID string, expiresAt time.Time) {
 	h.Set("Set-Cookie", auth.BuildSessionCookie(sessionID, expiresAt, s.secureCookies(ctx)).String())
 }
 
-func (s *AuthService) Login(ctx context.Context, req *connect.Request[leapmuxv1.LoginRequest]) (*connect.Response[leapmuxv1.LoginResponse], error) {
-	token, user, expiresAt, err := auth.Login(ctx, s.store, req.Msg.GetUsername(), req.Msg.GetPassword(), s.sessionDuration(ctx))
+func (s *AuthService) Login(ctx context.Context, req *leapmuxv1.LoginRequest) (*leapmuxv1.LoginResponse, error) {
+	info := serverCallInfo(ctx)
+	token, user, expiresAt, err := auth.Login(ctx, s.store, req.GetUsername(), req.GetPassword(), s.sessionDuration(ctx))
 	if err != nil {
 		return nil, err
 	}
 
-	resp := connect.NewResponse(&leapmuxv1.LoginResponse{})
-	resp.Msg.User = userToProtoWithPasskeys(ctx, s.store, user)
-	resp.Msg.EmailVerification = emailVerificationToProto(s.loginVerificationOutcome(ctx, user))
-	s.setSessionCookie(ctx, resp.Header(), token, expiresAt)
+	resp := &leapmuxv1.LoginResponse{}
+	resp.User = userToProtoWithPasskeys(ctx, s.store, user)
+	resp.EmailVerification = emailVerificationToProto(s.loginVerificationOutcome(ctx, user))
+	s.setSessionCookie(ctx, info.ResponseHeader(), token, expiresAt)
 	return resp, nil
 }
 
@@ -237,10 +237,11 @@ var errInitialSoloPasswordAlreadySet = errors.New("the solo account already has 
 
 // SetInitialSoloPassword claims a passwordless solo account and creates an
 // elevated session. The password, session, and elevation commit together.
-func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *connect.Request[leapmuxv1.SetInitialSoloPasswordRequest]) (*connect.Response[leapmuxv1.SetInitialSoloPasswordResponse], error) {
+func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *leapmuxv1.SetInitialSoloPasswordRequest) (*leapmuxv1.SetInitialSoloPasswordResponse, error) {
+	info := serverCallInfo(ctx)
 	if !s.cfg.SoloMode {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			fmt.Errorf("initial solo password setup requires solo mode"))
+		return nil, connect.Errorf(connect.CodeFailedPrecondition,
+			"initial solo password setup requires solo mode")
 	}
 
 	user, err := s.store.Users().GetByUsername(ctx, usernames.Solo)
@@ -251,25 +252,25 @@ func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *connect.R
 	// setup screen. Answering Internal there gives the operator a 500 from the
 	// one screen the hub offers them, for a condition the hub can state.
 	if errors.Is(err, store.ErrNotFound) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			fmt.Errorf("the %q account does not exist; restart the hub in solo mode to create it", usernames.Solo))
+		return nil, connect.Errorf(connect.CodeFailedPrecondition,
+			"the %q account does not exist; restart the hub in solo mode to create it", usernames.Solo)
 	}
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get the solo account: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("get the solo account: %w", err))
 	}
 	if user.HasUsablePassword() {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errInitialSoloPasswordAlreadySet)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errInitialSoloPasswordAlreadySet.Error()).WithCause(errInitialSoloPasswordAlreadySet)
 	}
-	if err := validate.ValidatePassword(req.Msg.GetPassword()); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	if err := validate.ValidatePassword(req.GetPassword()); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
-	hashed, err := password.Hash(req.Msg.GetPassword())
+	hashed, err := password.Hash(req.GetPassword())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash the password: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("hash the password: %w", err))
 	}
 	uid, ok := userid.New(user.ID)
 	if !ok {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("the solo account has no user id"))
+		return nil, connect.Errorf(connect.CodeInternal, "the solo account has no user id")
 	}
 
 	snap := s.snap(ctx)
@@ -308,8 +309,9 @@ func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *connect.R
 		}); err != nil {
 			return fmt.Errorf("store the initial solo password: %w", err)
 		}
+		reqInfo := serverCallInfo(ctx)
 		sessionID, expiresAt, err = auth.CreateSession(ctx, tx, uid, settings.SessionDuration(snap), auth.SessionMeta{
-			UserAgent: req.Header().Get("User-Agent"),
+			UserAgent: reqInfo.RequestHeader().Get("User-Agent"),
 		})
 		if err != nil {
 			return err
@@ -337,41 +339,44 @@ func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *connect.R
 		return nil
 	})
 	if errors.Is(err, errInitialSoloPasswordAlreadySet) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errInitialSoloPasswordAlreadySet)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errInitialSoloPasswordAlreadySet.Error()).WithCause(errInitialSoloPasswordAlreadySet)
 	}
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 
 	s.lifecycle.UserInfoInvalidated(uid.String())
-	resp := connect.NewResponse(&leapmuxv1.SetInitialSoloPasswordResponse{
+	resp := &leapmuxv1.SetInitialSoloPasswordResponse{
 		User: userToProto(storedUser, 0),
 		// The deadline the transaction above stamped, so the client's
 		// elevation state comes from the reply that granted it rather than
 		// from a second round trip that can fail.
 		ElevationExpiresAt: timestamppb.New(elevationExpiresAt),
-	})
-	resp.Header().Set("Set-Cookie", auth.BuildSessionCookie(
+	}
+	info.ResponseHeader().Set("Set-Cookie", auth.BuildSessionCookie(
 		sessionID, expiresAt, settings.SecureCookiesFor(ctx, snap)).String())
 	return resp, nil
 }
 
-func (s *AuthService) Logout(ctx context.Context, req *connect.Request[leapmuxv1.LogoutRequest]) (*connect.Response[leapmuxv1.LogoutResponse], error) {
-	token := auth.SessionIDFromCookieHeader(req.Header().Get("Cookie"), s.secureCookies(ctx))
+func (s *AuthService) Logout(ctx context.Context, req *leapmuxv1.LogoutRequest) (*leapmuxv1.LogoutResponse, error) {
+	info := serverCallInfo(ctx)
+	token := auth.SessionIDFromCookieHeader(info.RequestHeader().Get("Cookie"), s.secureCookies(ctx))
 	if token != "" {
 		if _, err := s.store.Sessions().Delete(ctx, token); err != nil {
-			connectErr := connect.NewError(connect.CodeInternal, fmt.Errorf("delete session: %w", err))
-			connectErr.Meta().Set("Set-Cookie", auth.ClearSessionCookie(s.secureCookies(ctx)).String())
-			return nil, connectErr
+			// The clearing cookie rides the response header, which the
+			// transport writes alongside the error status: a logged-out
+			// client must drop its cookie even when the store delete failed.
+			info.ResponseHeader().Set("Set-Cookie", auth.ClearSessionCookie(s.secureCookies(ctx)).String())
+			return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("delete session: %w", err))
 		}
 		s.lifecycle.SessionRevoked(token)
 	}
-	resp := connect.NewResponse(&leapmuxv1.LogoutResponse{})
-	resp.Header().Set("Set-Cookie", auth.ClearSessionCookie(s.secureCookies(ctx)).String())
+	resp := &leapmuxv1.LogoutResponse{}
+	info.ResponseHeader().Set("Set-Cookie", auth.ClearSessionCookie(s.secureCookies(ctx)).String())
 	return resp, nil
 }
 
-func (s *AuthService) GetCurrentUser(ctx context.Context, req *connect.Request[leapmuxv1.GetCurrentUserRequest]) (*connect.Response[leapmuxv1.GetCurrentUserResponse], error) {
+func (s *AuthService) GetCurrentUser(ctx context.Context, req *leapmuxv1.GetCurrentUserRequest) (*leapmuxv1.GetCurrentUserResponse, error) {
 	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -379,7 +384,7 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *connect.Request[l
 
 	user, err := s.store.Users().GetByID(ctx, userInfo.ID.String())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 
 	// ONE count, for the number this REPORTS and for the step-up option rule
@@ -426,7 +431,7 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *connect.Request[l
 	linkedProviders, err := s.linkedProvidersFor(ctx, userInfo.ID)
 	if err != nil {
 		if elevatesOnlyThroughAProvider {
-			return nil, connect.NewError(connect.CodeInternal, err)
+			return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 		}
 		slog.WarnContext(ctx, "could not list the account's linked OAuth providers",
 			"user_id", user.ID, "err", err)
@@ -435,7 +440,7 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *connect.Request[l
 	userProto := userToProto(user, passkeyCount)
 	userProto.OauthProviders = linkedProviders
 	userProto.MayElevateThroughAProvider = elevatesOnlyThroughAProvider
-	return connect.NewResponse(&leapmuxv1.GetCurrentUserResponse{
+	return &leapmuxv1.GetCurrentUserResponse{
 		User: userProto,
 		// Reported, never sent: this runs on every page load.
 		EmailVerification: emailVerificationToProto(s.verificationStatusFor(ctx, user)),
@@ -443,7 +448,7 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *connect.Request[l
 		// that lapsed inside the auth cache's lifetime is reported as
 		// absent rather than as a deadline in the past.
 		ElevationExpiresAt: elevationExpiresAtProto(userInfo, s.now()),
-	}), nil
+	}, nil
 }
 
 // linkedProvidersFor lists the account's OAuth links, each with whether an
@@ -498,7 +503,8 @@ func (s *AuthService) linkedProvidersFor(ctx context.Context, userID userid.User
 	return out, nil
 }
 
-func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1.SignUpRequest]) (*connect.Response[leapmuxv1.SignUpResponse], error) {
+func (s *AuthService) SignUp(ctx context.Context, req *leapmuxv1.SignUpRequest) (*leapmuxv1.SignUpResponse, error) {
+	info := serverCallInfo(ctx)
 	if err := rejectSolo(s.cfg.SoloMode, "sign-up"); err != nil {
 		return nil, err
 	}
@@ -507,42 +513,42 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 	// signup is enabled globally.
 	hasUser, err := s.checkHasAnyUser(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
 	}
 	isSetupMode := !hasUser
 	if !isSetupMode && !s.signupEnabled(ctx) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("sign-up is disabled"))
+		return nil, connect.Errorf(connect.CodeFailedPrecondition, "sign-up is disabled")
 	}
 
-	username, err := validate.SanitizeSlug("username", req.Msg.GetUsername())
+	username, err := validate.SanitizeSlug("username", req.GetUsername())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
 	// This check rejects `solo` in every mode, and `admin` only outside setup
 	// mode.
 	// usernames.IsReservedForSignup states both rules and their reasons.
 	if usernames.IsReservedForSignup(username, isSetupMode) {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%q is a reserved username", username))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "%q is a reserved username", username)
 	}
-	displayName, err := validate.SanitizeDisplayName(req.Msg.GetDisplayName(), username)
+	displayName, err := validate.SanitizeDisplayName(req.GetDisplayName(), username)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("display name: %w", err))
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, fmt.Errorf("display name: %w", err))
 	}
-	pw := req.Msg.GetPassword()
+	pw := req.GetPassword()
 	if err := validate.ValidatePassword(pw); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
 
 	if err := CheckUsernameAvailable(ctx, s.store, username); err != nil {
 		return nil, AvailabilityConnectError(err)
 	}
-	if err := s.validateSignupEmail(ctx, req.Msg.GetEmail()); err != nil {
+	if err := s.validateSignupEmail(ctx, req.GetEmail()); err != nil {
 		return nil, err
 	}
-	email := req.Msg.GetEmail()
+	email := req.GetEmail()
 	hash, err := password.Hash(pw)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
 	}
 
 	if isSetupMode {
@@ -572,9 +578,9 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		}
 		sessionID, sessionExpires, err := auth.CreateSession(ctx, s.store, uid, s.sessionDuration(ctx))
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
+			return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 		}
-		resp := connect.NewResponse(&leapmuxv1.SignUpResponse{
+		resp := &leapmuxv1.SignUpResponse{
 			// A password sign-up carries no passkeys yet.
 			User: userToProto(createdUser, 0),
 			EmailVerification: emailVerificationToProto(verificationOutcome{
@@ -582,8 +588,8 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 				EmailSent:             true,
 				NextResendAvailableAt: &nextResend,
 			}),
-		})
-		s.setSessionCookie(ctx, resp.Header(), sessionID, sessionExpires)
+		}
+		s.setSessionCookie(ctx, info.ResponseHeader(), sessionID, sessionExpires)
 		s.hasAnyUser.Store(true)
 		return resp, nil
 	}
@@ -598,7 +604,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		IsAdmin:               false,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 
 	return s.signUpResponse(ctx, user)
@@ -611,15 +617,15 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 // auth.EmailVerificationFacts.Satisfied, so nothing blocks the administrator
 // -- but account recovery stays closed for that address until they verify it
 // from Preferences › Account.
-func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName, email, passwordHash string) (*connect.Response[leapmuxv1.SignUpResponse], error) {
+func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName, email, passwordHash string) (*leapmuxv1.SignUpResponse, error) {
 	// Re-check to handle the race condition where another request created a
 	// user between the initial check and now.
 	hasUser, err := s.store.Users().HasAny(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
 	}
 	if hasUser {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("sign-up is disabled"))
+		return nil, connect.Errorf(connect.CodeFailedPrecondition, "sign-up is disabled")
 	}
 
 	if email != "" {
@@ -637,7 +643,7 @@ func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName
 		IsAdmin:               true,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 
 	s.hasAnyUser.Store(true)
@@ -645,32 +651,33 @@ func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName
 }
 
 // signUpResponse creates a session, sets the cookie, and returns the SignUpResponse.
-func (s *AuthService) signUpResponse(ctx context.Context, user *store.User) (*connect.Response[leapmuxv1.SignUpResponse], error) {
+func (s *AuthService) signUpResponse(ctx context.Context, user *store.User) (*leapmuxv1.SignUpResponse, error) {
 	loginUID, err := mintRowUserID(user.ID)
 	if err != nil {
 		return nil, err
 	}
 	sessionID, expiresAt, err := auth.CreateSession(ctx, s.store, loginUID, s.sessionDuration(ctx))
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
 
-	resp := connect.NewResponse(&leapmuxv1.SignUpResponse{
+	resp := &leapmuxv1.SignUpResponse{
 		// Both callers are password sign-ups: no passkeys yet.
 		User: userToProto(user, 0),
-	})
-	s.setSessionCookie(ctx, resp.Header(), sessionID, expiresAt)
+	}
+	info := serverCallInfo(ctx)
+	s.setSessionCookie(ctx, info.ResponseHeader(), sessionID, expiresAt)
 	return resp, nil
 }
 
-func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[leapmuxv1.GetSystemInfoRequest]) (*connect.Response[leapmuxv1.GetSystemInfoResponse], error) {
+func (s *AuthService) GetSystemInfo(ctx context.Context, req *leapmuxv1.GetSystemInfoRequest) (*leapmuxv1.GetSystemInfoResponse, error) {
 	providers, _ := s.store.OAuthProviders().ListEnabled(ctx)
 
 	var setupRequired bool
 	if !s.cfg.SoloMode {
 		hasUser, err := s.checkHasAnyUser(ctx)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
+			return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
 		}
 		setupRequired = !hasUser
 	}
@@ -723,7 +730,7 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 
 	soloPasswordSet := s.soloGate.PasswordSet(ctx)
 
-	return connect.NewResponse(&leapmuxv1.GetSystemInfoResponse{
+	return &leapmuxv1.GetSystemInfoResponse{
 		SignupEnabled:   s.signupEnabled(ctx),
 		SoloMode:        s.cfg.SoloMode,
 		SetupRequired:   setupRequired,
@@ -735,14 +742,14 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 		OauthEnabled:    len(providers) > 0,
 		WorkerHubUrl:    workerHubURL,
 		EmailEnabled:    settings.KeySMTP.Of(snap).Enabled(),
-		PasskeyEnabled:  s.passkeysRunnableForOrigin(ctx, originFromRequest(req)),
+		PasskeyEnabled:  s.passkeysRunnableForOrigin(ctx, originFromRequest(ctx)),
 		CaptchaEnabled:  captchaEnabled,
 		SoloAccess:      s.soloAccess(ctx, soloPasswordSet),
 		SoloPasswordSet: soloPasswordSet,
 		AltchaAlgorithm: altchaAlgorithm,
 		CaptchaProvider: captchaProvider,
 		CaptchaSiteKey:  captchaSiteKey,
-	}), nil
+	}, nil
 }
 
 // GetAltchaChallenge issues a fresh ALTCHA challenge for the caller to
@@ -751,23 +758,23 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 // captcha is disabled; FailedPrecondition when another provider is
 // selected (those mint tokens client-side, so the caller is on a stale
 // snapshot and must re-fetch the system info).
-func (s *AuthService) GetAltchaChallenge(ctx context.Context, req *connect.Request[leapmuxv1.GetAltchaChallengeRequest]) (*connect.Response[leapmuxv1.GetAltchaChallengeResponse], error) {
+func (s *AuthService) GetAltchaChallenge(ctx context.Context, req *leapmuxv1.GetAltchaChallengeRequest) (*leapmuxv1.GetAltchaChallengeResponse, error) {
 	challengeJSON, err := s.captcha.AltchaChallengeJSON(ctx)
 	if err != nil {
 		if errors.Is(err, captcha.ErrProviderNotAltcha) {
-			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+			return nil, connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
-	return connect.NewResponse(&leapmuxv1.GetAltchaChallengeResponse{
+	return &leapmuxv1.GetAltchaChallengeResponse{
 		ChallengeJson: challengeJSON,
-	}), nil
+	}, nil
 }
 
-func (s *AuthService) GetOAuthProviders(ctx context.Context, req *connect.Request[leapmuxv1.GetOAuthProvidersRequest]) (*connect.Response[leapmuxv1.GetOAuthProvidersResponse], error) {
+func (s *AuthService) GetOAuthProviders(ctx context.Context, req *leapmuxv1.GetOAuthProvidersRequest) (*leapmuxv1.GetOAuthProvidersResponse, error) {
 	providers, err := s.store.OAuthProviders().ListEnabled(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 
 	// Sourced from cfg directly, not s.renderer.HubURL — the renderer is
@@ -787,9 +794,9 @@ func (s *AuthService) GetOAuthProviders(ctx context.Context, req *connect.Reques
 		})
 	}
 
-	return connect.NewResponse(&leapmuxv1.GetOAuthProvidersResponse{
+	return &leapmuxv1.GetOAuthProvidersResponse{
 		Providers: pbProviders,
-	}), nil
+	}, nil
 }
 
 // loadPendingOAuthSignup fetches and validates a pending OAuth signup by token.
@@ -799,18 +806,18 @@ func (s *AuthService) GetOAuthProviders(ctx context.Context, req *connect.Reques
 // than this function reading a second wall clock beside it.
 func loadPendingOAuthSignup(ctx context.Context, st store.Store, token string, now time.Time) (*store.PendingOAuthSignup, error) {
 	if token == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("signup_token is required"))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "signup_token is required")
 	}
 	pending, err := st.PendingOAuthSignups().Get(ctx, token)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("invalid or expired signup token"))
+			return nil, connect.Errorf(connect.CodeNotFound, "invalid or expired signup token")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	if auth.IsExpired(now, pending.ExpiresAt) {
 		_ = st.PendingOAuthSignups().Delete(ctx, token)
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("signup token expired"))
+		return nil, connect.Errorf(connect.CodeNotFound, "signup token expired")
 	}
 	return pending, nil
 }
@@ -827,12 +834,12 @@ func loadPendingOAuthSignup(ctx context.Context, st store.Store, token string, n
 // one is refused rather than admitted, for the same reason the callback
 // refuses a state row with no nonce.
 func errSignupStartedElsewhere() error {
-	return connect.NewError(connect.CodePermissionDenied,
-		fmt.Errorf("a different browser started this sign-up; start again from the sign-in page"))
+	return connect.Errorf(connect.CodePermissionDenied,
+		"a different browser started this sign-up; start again from the sign-in page")
 }
 
 // assertSignupBrowser checks the pending signup's browser binding.
-func (s *AuthService) assertSignupBrowser(ctx context.Context, header http.Header, pending *store.PendingOAuthSignup) error {
+func (s *AuthService) assertSignupBrowser(ctx context.Context, header *connect.Header, pending *store.PendingOAuthSignup) error {
 	presented := auth.OAuthSignupNonceFromHeader(header.Get("Cookie"), pending.Token, s.secureCookies(ctx))
 	if !browserSecretMatches(pending.NonceHash, presented) {
 		return errSignupStartedElsewhere()
@@ -840,14 +847,15 @@ func (s *AuthService) assertSignupBrowser(ctx context.Context, header http.Heade
 	return nil
 }
 
-func (s *AuthService) GetPendingOAuthSignup(ctx context.Context, req *connect.Request[leapmuxv1.GetPendingOAuthSignupRequest]) (*connect.Response[leapmuxv1.GetPendingOAuthSignupResponse], error) {
-	pending, err := loadPendingOAuthSignup(ctx, s.store, req.Msg.GetSignupToken(), s.now().UTC())
+func (s *AuthService) GetPendingOAuthSignup(ctx context.Context, req *leapmuxv1.GetPendingOAuthSignupRequest) (*leapmuxv1.GetPendingOAuthSignupResponse, error) {
+	info := serverCallInfo(ctx)
+	pending, err := loadPendingOAuthSignup(ctx, s.store, req.GetSignupToken(), s.now().UTC())
 	if err != nil {
 		return nil, err
 	}
 	// Refuse here as well as at Complete, so the wrong browser sees the
 	// refusal before it fills a username in rather than after.
-	if err := s.assertSignupBrowser(ctx, req.Header(), pending); err != nil {
+	if err := s.assertSignupBrowser(ctx, info.RequestHeader(), pending); err != nil {
 		return nil, err
 	}
 
@@ -857,26 +865,27 @@ func (s *AuthService) GetPendingOAuthSignup(ctx context.Context, req *connect.Re
 		providerName = provider.Name
 	}
 
-	return connect.NewResponse(&leapmuxv1.GetPendingOAuthSignupResponse{
+	return &leapmuxv1.GetPendingOAuthSignupResponse{
 		Email:        pending.Email,
 		DisplayName:  pending.DisplayName,
 		ProviderName: providerName,
-	}), nil
+	}, nil
 }
 
-func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Request[leapmuxv1.CompleteOAuthSignupRequest]) (*connect.Response[leapmuxv1.CompleteOAuthSignupResponse], error) {
-	signupToken := req.Msg.GetSignupToken()
+func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.CompleteOAuthSignupRequest) (*leapmuxv1.CompleteOAuthSignupResponse, error) {
+	info := serverCallInfo(ctx)
+	signupToken := req.GetSignupToken()
 	pending, err := loadPendingOAuthSignup(ctx, s.store, signupToken, s.now().UTC())
 	if err != nil {
 		return nil, err
 	}
-	if err := s.assertSignupBrowser(ctx, req.Header(), pending); err != nil {
+	if err := s.assertSignupBrowser(ctx, info.RequestHeader(), pending); err != nil {
 		return nil, err
 	}
 
-	username, err := validate.SanitizeSlug("username", req.Msg.GetUsername())
+	username, err := validate.SanitizeSlug("username", req.GetUsername())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
 	// OAuth completion is never setup mode: only an administrator can
 	// configure a provider, so an account already exists whenever a pending
@@ -892,10 +901,10 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	})
 	if err == nil {
 		_ = s.store.PendingOAuthSignups().Delete(ctx, signupToken)
-		return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("this identity is already linked to an account"))
+		return nil, connect.Errorf(connect.CodeAlreadyExists, "this identity is already linked to an account")
 	}
 	if !errors.Is(err, store.ErrNotFound) {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 
 	// Use the email from the pending signup (provider-reported, already validated
@@ -903,19 +912,19 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	// below when an untrusted provider supplied nothing; a provider-supplied
 	// address always wins, so the caller cannot substitute one.
 	email := pending.Email
-	rawDisplayName := req.Msg.GetDisplayName()
+	rawDisplayName := req.GetDisplayName()
 	if rawDisplayName == "" {
 		rawDisplayName = pending.DisplayName
 	}
 	displayName, err := validate.SanitizeDisplayName(rawDisplayName, username)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("display name: %w", err))
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, fmt.Errorf("display name: %w", err))
 	}
 
 	// Look up the provider's trust_email setting.
 	oauthProvider, provErr := s.store.OAuthProviders().GetByID(ctx, pending.ProviderID)
 	if provErr != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("lookup provider: %w", provErr))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("lookup provider: %w", provErr))
 	}
 	trustEmail := oauthProvider.TrustEmail
 
@@ -925,7 +934,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 
 	if trustEmail {
 		if email == "" {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("trusted OAuth provider returned no email"))
+			return nil, connect.Errorf(connect.CodeInvalidArgument, "trusted OAuth provider returned no email")
 		}
 		if err := CheckEmailAvailable(ctx, s.store, email, ""); err != nil {
 			return nil, AvailabilityConnectError(err)
@@ -945,7 +954,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		// when the provider gave nothing -- a provider-supplied address
 		// still wins, so the caller cannot substitute one.
 		if email == "" {
-			email = req.Msg.GetEmail()
+			email = req.GetEmail()
 		}
 		if err := s.validateSignupEmail(ctx, email); err != nil {
 			return nil, err
@@ -1017,10 +1026,10 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	}
 	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, s.store, finalUID, s.sessionDuration(ctx))
 	if sessionErr != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))
 	}
 
-	resp := connect.NewResponse(&leapmuxv1.CompleteOAuthSignupResponse{
+	resp := &leapmuxv1.CompleteOAuthSignupResponse{
 		// An OAuth sign-up carries no passkeys yet.
 		User: userToProto(finalUser, 0),
 		EmailVerification: emailVerificationToProto(verificationOutcome{
@@ -1028,13 +1037,13 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 			EmailSent:             emailSent,
 			NextResendAvailableAt: nextResend,
 		}),
-	})
-	s.setSessionCookie(ctx, resp.Header(), sessionID, expiresAt)
+	}
+	s.setSessionCookie(ctx, info.ResponseHeader(), sessionID, expiresAt)
 	// The pending row is consumed, so its browser binding has nothing left
 	// to bind. Add, never Set: setSessionCookie above owns the one
 	// Set-Cookie line for the session, and a Set here would delete it.
 	for _, c := range auth.ClearOAuthSignupNonceCookie(signupToken) {
-		resp.Header().Add("Set-Cookie", c.String())
+		info.ResponseHeader().Add("Set-Cookie", c.String())
 	}
 	return resp, nil
 }
@@ -1134,9 +1143,9 @@ func countPasskeysBestEffort(ctx context.Context, st store.Store, u *store.User)
 // misleads both the client and the operator. Everything else is Internal.
 func mapSignupCommitError(err error) error {
 	if errors.Is(err, store.ErrConflict) {
-		return connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("username or email already taken"))
+		return connect.Errorf(connect.CodeAlreadyExists, "username or email already taken")
 	}
-	return connect.NewError(connect.CodeInternal, err)
+	return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 }
 
 // validateSignupUsername enforces the username rules (reserved names plus
@@ -1146,7 +1155,7 @@ func mapSignupCommitError(err error) error {
 // usernames.IsReservedForSignup.
 func (s *AuthService) validateSignupUsername(ctx context.Context, username string, setupMode bool) error {
 	if usernames.IsReservedForSignup(username, setupMode) {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%q is a reserved username", username))
+		return connect.Errorf(connect.CodeInvalidArgument, "%q is a reserved username", username)
 	}
 	if err := CheckUsernameAvailable(ctx, s.store, username); err != nil {
 		return AvailabilityConnectError(err)
@@ -1162,12 +1171,12 @@ func (s *AuthService) validateSignupUsername(ctx context.Context, username strin
 func (s *AuthService) validateSignupEmail(ctx context.Context, email string) error {
 	if email == "" {
 		if s.emailVerificationRequired(ctx) {
-			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("email is required"))
+			return connect.Errorf(connect.CodeInvalidArgument, "email is required")
 		}
 		return nil
 	}
 	if err := validate.ValidateEmail(email); err != nil {
-		return connect.NewError(connect.CodeInvalidArgument, err)
+		return connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
 	if err := CheckEmailAvailable(ctx, s.store, email, ""); err != nil {
 		return AvailabilityConnectError(err)
@@ -1195,7 +1204,7 @@ func (s *AuthService) deliverSignupVerification(ctx context.Context, userID, ema
 		if rbErr := rollbackUnusableSignup(ctx, s.store, userID); rbErr != nil {
 			slog.ErrorContext(ctx, "sign-up rollback failed", "user_id", userID, "err", rbErr)
 		}
-		return connect.NewError(connect.CodeUnavailable, fmt.Errorf("sign-up failed: verification email could not be sent"))
+		return connect.Errorf(connect.CodeUnavailable, "sign-up failed: verification email could not be sent")
 	}
 	return nil
 }

@@ -11,7 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -33,8 +33,8 @@ import (
 // locked one is what they see when the state moved under them, so a drift
 // between the two reads as two different rules.
 func lastPasskeyNeedsPasswordError() error {
-	return connect.NewError(connect.CodeFailedPrecondition,
-		fmt.Errorf("cannot delete your only passkey; provide new_password or use DeactivatePasskeyAuth"))
+	return connect.Errorf(connect.CodeFailedPrecondition,
+		"cannot delete your only passkey; provide new_password or use DeactivatePasskeyAuth")
 }
 
 // deactivationNeedsPasswordError is the same rule for the other leg:
@@ -46,8 +46,8 @@ func lastPasskeyNeedsPasswordError() error {
 // which offers a remedy that this RPC IS -- inside it that clause reads as an
 // instruction to call the call that is already running.
 func deactivationNeedsPasswordError() error {
-	return connect.NewError(connect.CodeFailedPrecondition,
-		fmt.Errorf("cannot turn off passkey sign-in without a password; provide new_password"))
+	return connect.Errorf(connect.CodeFailedPrecondition,
+		"cannot turn off passkey sign-in without a password; provide new_password")
 }
 
 func rejectSoloPasskeyManagement(solo bool) error {
@@ -183,7 +183,7 @@ func (s *UserService) stepUpMutationAuth(ctx context.Context, p stepUpParams, us
 	// assertFirstCredentialWithoutPasswordAllowed the durable-identity one.
 	nothingToElevateWith, err := accountElevatesOnlyThroughAProvider(ctx, s.store, user)
 	if err != nil {
-		return stepUpAdmission{}, connect.NewError(connect.CodeInternal, err)
+		return stepUpAdmission{}, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	if nothingToElevateWith {
 		return stepUpAdmission{firstCredential: true}, admitFirstCredential(ctx, s.store, p.userInfo, user, now, p.firstCredentialWindow())
@@ -217,11 +217,11 @@ func assertFirstCredentialWithoutPasswordAllowed(ctx context.Context, tx store.S
 	}
 	uid, ok := userid.New(user.ID)
 	if !ok {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("invalid user id"))
+		return connect.Errorf(connect.CodeInternal, "invalid user id")
 	}
 	links, err := tx.OAuthUserLinks().ListByUser(ctx, uid)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, err)
+		return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	if len(links) > 0 {
 		return nil
@@ -231,8 +231,8 @@ func assertFirstCredentialWithoutPasswordAllowed(ctx context.Context, tx store.S
 	// FIRST password to act before adding a passkey they never asked for.
 	// One message, because both callers share one rule and a second wording
 	// would drift.
-	return connect.NewError(connect.CodeFailedPrecondition,
-		fmt.Errorf("verify your email or link an OAuth provider before setting this account's first password or passkey"))
+	return connect.Errorf(connect.CodeFailedPrecondition,
+		"verify your email or link an OAuth provider before setting this account's first password or passkey")
 }
 
 // firstCredentialAuthFreshness limits how long after an authentication a
@@ -312,8 +312,8 @@ func assertFirstCredentialAuthIsFresh(userInfo *auth.UserInfo, now time.Time, ma
 		// browser. Signing in there is a remedy BOTH kinds can act on, and it
 		// is the only remedy for an account whose durable identity is a
 		// verified email with no provider behind it.
-		return connect.NewError(connect.CodeFailedPrecondition,
-			fmt.Errorf("sign in from a browser to set this account's first password or passkey"))
+		return connect.Errorf(connect.CodeFailedPrecondition,
+			"sign in from a browser to set this account's first password or passkey")
 	}
 	if userInfo.AuthenticatedAt.IsZero() || now.Sub(userInfo.AuthenticatedAt) > maxAge {
 		// WITH the marker, because a prompt now resolves this. The two
@@ -447,7 +447,7 @@ func (s *UserService) runStepUpMutationTx(
 	var outcome stepUpMutationResult
 	peek, err := s.store.Users().GetByID(ctx, userInfo.ID.String())
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("query user: %w", err))
+		return wrappedConnectError(connect.CodeInternal, fmt.Errorf("query user: %w", err))
 	}
 	admission, err := s.stepUpMutationAuth(ctx, p, peek)
 	if err != nil {
@@ -563,7 +563,7 @@ func recheckStepUpUnderLock(
 	// with no step-up at all.
 	nothingToElevateWith, err := accountElevatesOnlyThroughAProvider(ctx, tx, locked)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, err)
+		return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	if !nothingToElevateWith {
 		return stepUpStateMovedError()
@@ -673,7 +673,7 @@ func recheckActingSessionUnderLock(
 		if errors.Is(err, store.ErrNotFound) {
 			return refuseIfSessionWasRevoked(ctx, tx, sessionID)
 		}
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("re-read the acting session: %w", err))
+		return wrappedConnectError(connect.CodeInternal, fmt.Errorf("re-read the acting session: %w", err))
 	}
 	if !auth.NewElevation(session.ElevationProvenAt, session.ElevationExpiresAt).IsCurrent(p.elevationInstant(now)) {
 		return stepUpStateMovedError()
@@ -712,7 +712,7 @@ func recheckActingAPITokenUnderLock(
 		if errors.Is(err, store.ErrNotFound) {
 			return stepUpStateMovedError()
 		}
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("re-read the acting credential: %w", err))
+		return wrappedConnectError(connect.CodeInternal, fmt.Errorf("re-read the acting credential: %w", err))
 	}
 	if row.RevokedAt != nil {
 		return stepUpStateMovedError()
@@ -736,7 +736,7 @@ func refuseIfSessionWasRevoked(ctx context.Context, tx store.Store, sessionID st
 	revoked, err := tx.RevocationEvents().SessionWasRevoked(ctx, sessionID)
 	if err != nil {
 		return connect.NewError(connect.CodeInternal,
-			fmt.Errorf("check whether the acting session was revoked: %w", err))
+			fmt.Errorf("check whether the acting session was revoked: %w", err).Error())
 	}
 	if revoked {
 		return stepUpStateMovedError()
@@ -789,18 +789,18 @@ func recheckCredentialEpochUnderLock(locked *store.User, userInfo *auth.UserInfo
 // they presented no longer matches the state the mutation would commit
 // against.
 func stepUpStateMovedError() error {
-	return connect.NewError(connect.CodeFailedPrecondition,
-		fmt.Errorf("account credentials changed; please retry"))
+	return connect.Errorf(connect.CodeFailedPrecondition,
+		"account credentials changed; please retry")
 }
 
-func (s *UserService) BeginPasskeyRegistration(ctx context.Context, req *connect.Request[leapmuxv1.BeginPasskeyRegistrationRequest]) (*connect.Response[leapmuxv1.BeginPasskeyRegistrationResponse], error) {
+func (s *UserService) BeginPasskeyRegistration(ctx context.Context, req *leapmuxv1.BeginPasskeyRegistrationRequest) (*leapmuxv1.BeginPasskeyRegistrationResponse, error) {
 	userInfo, err := s.passkeyManagementCaller(ctx)
 	if err != nil {
 		return nil, err
 	}
 	user, err := s.store.Users().GetByID(ctx, userInfo.ID.String())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	// Peek only: the ceremony writes nothing yet, so this refuses an
 	// un-elevated caller BEFORE the browser prompt rather than after it.
@@ -812,30 +812,30 @@ func (s *UserService) BeginPasskeyRegistration(ctx context.Context, req *connect
 	if err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
-	sessionID, optionsJSON, err := wa.BeginRegistration(ctx, user.ID, originFromRequest(req))
+	sessionID, optionsJSON, err := wa.BeginRegistration(ctx, user.ID, originFromRequest(ctx))
 	if err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
-	return connect.NewResponse(&leapmuxv1.BeginPasskeyRegistrationResponse{
+	return &leapmuxv1.BeginPasskeyRegistrationResponse{
 		SessionId:   sessionID,
 		OptionsJson: optionsJSON,
-	}), nil
+	}, nil
 }
 
-func (s *UserService) FinishPasskeyRegistration(ctx context.Context, req *connect.Request[leapmuxv1.FinishPasskeyRegistrationRequest]) (*connect.Response[leapmuxv1.FinishPasskeyRegistrationResponse], error) {
+func (s *UserService) FinishPasskeyRegistration(ctx context.Context, req *leapmuxv1.FinishPasskeyRegistrationRequest) (*leapmuxv1.FinishPasskeyRegistrationResponse, error) {
 	userInfo, err := s.passkeyManagementCaller(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if req.Msg.GetSessionId() == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id is required"))
+	if req.GetSessionId() == "" {
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "session_id is required")
 	}
-	if req.Msg.GetCredentialJson() == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("credential_json is required"))
+	if req.GetCredentialJson() == "" {
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "credential_json is required")
 	}
-	friendlyName, err := validatePasskeyFriendlyName(req.Msg.GetFriendlyName())
+	friendlyName, err := validatePasskeyFriendlyName(req.GetFriendlyName())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
 
 	var passkey *store.PasskeyCredential
@@ -857,7 +857,7 @@ func (s *UserService) FinishPasskeyRegistration(ctx context.Context, req *connec
 			if err != nil {
 				return err
 			}
-			verified, err = wa.VerifyRegistration(ctx, peek.ID, req.Msg.GetSessionId(), req.Msg.GetCredentialJson())
+			verified, err = wa.VerifyRegistration(ctx, peek.ID, req.GetSessionId(), req.GetCredentialJson())
 			return err
 		},
 		func(tx store.Store, user *store.User) (stepUpMutationResult, error) {
@@ -871,19 +871,19 @@ func (s *UserService) FinishPasskeyRegistration(ctx context.Context, req *connec
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
 
-	return connect.NewResponse(&leapmuxv1.FinishPasskeyRegistrationResponse{
+	return &leapmuxv1.FinishPasskeyRegistrationResponse{
 		Passkey: passkeyInfoToProto(ctx, passkey),
-	}), nil
+	}, nil
 }
 
-func (s *UserService) ListPasskeys(ctx context.Context, _ *connect.Request[leapmuxv1.ListPasskeysRequest]) (*connect.Response[leapmuxv1.ListPasskeysResponse], error) {
+func (s *UserService) ListPasskeys(ctx context.Context, _ *leapmuxv1.ListPasskeysRequest) (*leapmuxv1.ListPasskeysResponse, error) {
 	userInfo, err := s.passkeyManagementCaller(ctx)
 	if err != nil {
 		return nil, err
 	}
 	rows, err := s.store.PasskeyCredentials().ListByUser(ctx, userInfo.ID.String())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	// Surface an unconfigured hub instead of hiding it behind an empty
 	// list: the client cannot distinguish "no passkeys" from "passkeys cannot
@@ -896,25 +896,25 @@ func (s *UserService) ListPasskeys(ctx context.Context, _ *connect.Request[leapm
 	for i := range rows {
 		passkeys = append(passkeys, passkeyInfoToProto(ctx, &rows[i]))
 	}
-	return connect.NewResponse(&leapmuxv1.ListPasskeysResponse{Passkeys: passkeys, RpId: wa.RPID()}), nil
+	return &leapmuxv1.ListPasskeysResponse{Passkeys: passkeys, RpId: wa.RPID()}, nil
 }
 
-func (s *UserService) RenamePasskey(ctx context.Context, req *connect.Request[leapmuxv1.RenamePasskeyRequest]) (*connect.Response[leapmuxv1.RenamePasskeyResponse], error) {
+func (s *UserService) RenamePasskey(ctx context.Context, req *leapmuxv1.RenamePasskeyRequest) (*leapmuxv1.RenamePasskeyResponse, error) {
 	userInfo, err := s.passkeyManagementCaller(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if req.Msg.GetId() == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
+	if req.GetId() == "" {
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "id is required")
 	}
-	friendlyName, err := validatePasskeyFriendlyName(req.Msg.GetFriendlyName())
+	friendlyName, err := validatePasskeyFriendlyName(req.GetFriendlyName())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
 
 	var row *store.PasskeyCredential
 	if err := s.runStepUpMutationTx(ctx, entryStepUp(userInfo), nil, func(tx store.Store, user *store.User) (stepUpMutationResult, error) {
-		got, err := tx.PasskeyCredentials().GetByID(ctx, req.Msg.GetId())
+		got, err := tx.PasskeyCredentials().GetByID(ctx, req.GetId())
 		if err != nil {
 			return stepUpMutationResult{}, err
 		}
@@ -930,18 +930,18 @@ func (s *UserService) RenamePasskey(ctx context.Context, req *connect.Request[le
 	}); err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
-	return connect.NewResponse(&leapmuxv1.RenamePasskeyResponse{
+	return &leapmuxv1.RenamePasskeyResponse{
 		Passkey: passkeyInfoToProto(ctx, row),
-	}), nil
+	}, nil
 }
 
-func (s *UserService) DeletePasskey(ctx context.Context, req *connect.Request[leapmuxv1.DeletePasskeyRequest]) (*connect.Response[leapmuxv1.DeletePasskeyResponse], error) {
+func (s *UserService) DeletePasskey(ctx context.Context, req *leapmuxv1.DeletePasskeyRequest) (*leapmuxv1.DeletePasskeyResponse, error) {
 	userInfo, err := s.passkeyManagementCaller(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if req.Msg.GetId() == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
+	if req.GetId() == "" {
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "id is required")
 	}
 
 	// Hash the replacement password outside the transaction (Argon2 must
@@ -955,15 +955,15 @@ func (s *UserService) DeletePasskey(ctx context.Context, req *connect.Request[le
 		}
 		count, err := s.store.PasskeyCredentials().CountByUser(ctx, peek.ID)
 		if err != nil {
-			return connect.NewError(connect.CodeInternal, err)
+			return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 		}
 		if count > 1 {
 			return nil
 		}
-		if req.Msg.GetNewPassword() == "" {
+		if req.GetNewPassword() == "" {
 			return lastPasskeyNeedsPasswordError()
 		}
-		hashed, err := hashReplacementPassword(req.Msg.GetNewPassword())
+		hashed, err := hashReplacementPassword(req.GetNewPassword())
 		if err != nil {
 			return err
 		}
@@ -971,7 +971,7 @@ func (s *UserService) DeletePasskey(ctx context.Context, req *connect.Request[le
 		return nil
 	}
 	if err := s.runStepUpMutationTx(ctx, entryStepUp(userInfo), prepare, func(tx store.Store, user *store.User) (stepUpMutationResult, error) {
-		row, err := tx.PasskeyCredentials().GetByID(ctx, req.Msg.GetId())
+		row, err := tx.PasskeyCredentials().GetByID(ctx, req.GetId())
 		if err != nil {
 			return stepUpMutationResult{}, err
 		}
@@ -1005,10 +1005,10 @@ func (s *UserService) DeletePasskey(ctx context.Context, req *connect.Request[le
 	}); err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
-	return connect.NewResponse(&leapmuxv1.DeletePasskeyResponse{}), nil
+	return &leapmuxv1.DeletePasskeyResponse{}, nil
 }
 
-func (s *UserService) DeactivatePasskeyAuth(ctx context.Context, req *connect.Request[leapmuxv1.DeactivatePasskeyAuthRequest]) (*connect.Response[leapmuxv1.DeactivatePasskeyAuthResponse], error) {
+func (s *UserService) DeactivatePasskeyAuth(ctx context.Context, req *leapmuxv1.DeactivatePasskeyAuthRequest) (*leapmuxv1.DeactivatePasskeyAuthResponse, error) {
 	userInfo, err := s.passkeyManagementCaller(ctx)
 	if err != nil {
 		return nil, err
@@ -1029,10 +1029,10 @@ func (s *UserService) DeactivatePasskeyAuth(ctx context.Context, req *connect.Re
 		// other way to sign in. DeletePasskey states its own leg's rule the
 		// same way; the wording differs because that leg offers this RPC as a
 		// remedy and this one cannot offer itself.
-		if req.Msg.GetNewPassword() == "" {
+		if req.GetNewPassword() == "" {
 			return deactivationNeedsPasswordError()
 		}
-		hashed, err := hashReplacementPassword(req.Msg.GetNewPassword())
+		hashed, err := hashReplacementPassword(req.GetNewPassword())
 		if err != nil {
 			return err
 		}
@@ -1044,7 +1044,7 @@ func (s *UserService) DeactivatePasskeyAuth(ctx context.Context, req *connect.Re
 	}); err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
-	return connect.NewResponse(&leapmuxv1.DeactivatePasskeyAuthResponse{}), nil
+	return &leapmuxv1.DeactivatePasskeyAuthResponse{}, nil
 }
 
 // hashReplacementPassword validates and hashes a replacement password for
@@ -1052,11 +1052,11 @@ func (s *UserService) DeactivatePasskeyAuth(ctx context.Context, req *connect.Re
 // Argon2 must not hold the SQLite writer lock.
 func hashReplacementPassword(newPassword string) (string, error) {
 	if err := validate.ValidatePassword(newPassword); err != nil {
-		return "", connect.NewError(connect.CodeInvalidArgument, err)
+		return "", connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
 	hashed, err := password.Hash(newPassword)
 	if err != nil {
-		return "", connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
+		return "", wrappedConnectError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
 	}
 	return hashed, nil
 }
@@ -1270,13 +1270,13 @@ func mapPasskeyConnectError(ctx context.Context, err error) error {
 		return connectErr
 	}
 	if errors.Is(err, store.ErrNotFound) {
-		return connect.NewError(connect.CodeNotFound, err)
+		return connect.NewError(connect.CodeNotFound, err.Error()).WithCause(err)
 	}
 	switch classifyWebAuthnError(err) {
 	case webAuthnErrorClone:
 		// A clone warning is a security event, not a registration failure.
 		slog.WarnContext(ctx, "passkey clone warning during passkey management")
-		return credentialRejectedError(err)
+		return credentialRejectedError(ctx, err)
 	case webAuthnErrorCredential:
 		// CredentialRejectedHeader, because the rejected credential is the
 		// one the REQUEST carried and not the session that made it. Without
@@ -1291,11 +1291,11 @@ func mapPasskeyConnectError(ctx context.Context, err error) error {
 		// concurrency refusal on this surface is FailedPrecondition
 		// (stepUpStateMovedError), which takes the *connect.Error early
 		// return above.
-		return credentialRejectedError(err)
+		return credentialRejectedError(ctx, err)
 	case webAuthnErrorUnavailable:
-		return connect.NewError(connect.CodeFailedPrecondition, err)
+		return connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
 	case webAuthnErrorInfrastructure:
-		return connect.NewError(connect.CodeInternal, err)
+		return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
-	return connect.NewError(connect.CodeInternal, err)
+	return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 }

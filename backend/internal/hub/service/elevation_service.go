@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -71,16 +71,24 @@ func elevationRequiredError() error {
 // refusal of this kind. Replacing the cause left the sentinel true of five
 // refusals and false of the sixth, with nothing but the header to distinguish
 // them.
+// elevationRequiredErrorSaying is the same refusal with different wording,
+// for the one caller whose remedy the default sentence does not state.
+//
+// The refusal WRAPS errElevationRequired, which is also what decides the
+// ElevationRequiredHeader marker: see NewElevationResponseInterceptor. The
+// marker is not set here, because connect v2 carries no metadata on an
+// error and this function reaches no response header. Keying the marker on
+// the sentinel instead of on construction is a stronger contract than the
+// v1 marker-on-the-error was: every refusal of this kind carries it, and a
+// caller cannot forget to add it.
 func elevationRequiredErrorSaying(message string) error {
-	err := connect.NewError(connect.CodeFailedPrecondition,
-		fmt.Errorf("%w: %s", errElevationRequired, message))
-	// A machine-readable marker, so a client can distinguish THIS
-	// FailedPrecondition from every other one (an account with no password, a
-	// last passkey that needs a replacement) and open a step-up prompt for it
-	// alone. Matching the message text instead would break on the first
-	// rewording, and the wording is user-facing prose that somebody will reword.
-	err.Meta().Set(ElevationRequiredHeader, "1")
-	return err
+	// The message is what the caller reads; the wrapped sentinel travels as
+	// the cause, so errors.Is still answers and NewElevationResponseInterceptor
+	// can key the marker on it. connect.NewError takes a string and serializes
+	// only that, so the wrap has to be attached separately or the sentinel
+	// dissolves into prose.
+	cause := fmt.Errorf("%w: %s", errElevationRequired, message)
+	return connect.NewError(connect.CodeFailedPrecondition, cause.Error()).WithCause(cause)
 }
 
 // ElevationRequiredHeader marks a refusal whose remedy is "prove a factor
@@ -162,7 +170,7 @@ func (s *elevationSlide) deadline() (time.Time, bool) {
 
 // withElevationSlide installs the holder on a request context.
 //
-// NewElevationSlideInterceptor is the only caller, so a request that runs
+// NewElevationResponseInterceptor is the only caller, so a request that runs
 // outside a Connect chain records nothing. That is how the four CLI consent
 // routes opt out: each renders a whole HTML document to a top-level
 // navigation, and a browser navigation has no client waiting to read a header
@@ -181,10 +189,12 @@ func recordElevationSlide(ctx context.Context, until time.Time) {
 	}
 }
 
-// NewElevationSlideInterceptor reports the elevation deadline on the response
-// to each request that slid the window.
+// NewElevationResponseInterceptor writes the two headers that tell a client
+// about elevation on the response: the new deadline on a request that slid
+// the window, and ElevationRequiredHeader on a refusal whose remedy is
+// "prove a factor and retry".
 //
-// It exists because the slide is SILENT everywhere else. The hub extends the
+// The deadline report exists because the slide is SILENT everywhere else. The hub extends the
 // window on every restricted action and deliberately emits no user_info event
 // for it, since a cache still holding the shorter deadline fails closed -- so
 // a client that adopted a deadline of 14:00 and then renamed a passkey at
@@ -201,47 +211,84 @@ func recordElevationSlide(ctx context.Context, until time.Time) {
 //
 // UNARY only. No restricted verb is a stream, and a stream's response header
 // goes out with its first message -- long before a handler that slides
-// returns -- so there would be nothing left to write it on.
-// connect.UnaryInterceptorFunc passes both streaming halves through untouched.
-func NewElevationSlideInterceptor() connect.UnaryInterceptorFunc {
-	return func(next connect.UnaryFunc) connect.UnaryFunc {
-		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+// returns -- so there would be nothing left to write it on. Connect v2 hands
+// one interceptor every RPC, so the unary filter is a StreamType check.
+//
+// It writes BOTH elevation response headers: the slide deadline, and the
+// ElevationRequiredHeader marker on a refusal that wraps errElevationRequired.
+// The marker is response metadata rather than part of the error because
+// connect v2 carries no metadata on an error. Keying it on the sentinel here
+// is a stronger contract than v1's marker-on-the-error: every refusal of this
+// kind carries it, and a caller cannot forget to add it. A refusal that
+// deliberately carries no marker wraps no sentinel -- see
+// requireElevatableCredential.
+//
+// The two writes happen at different moments because connect v2 flushes a
+// CallInfo's response headers at the handler's first Send: a header written
+// after the handler returns never reaches a response that succeeded. The
+// deadline therefore goes out from a wrapped Send, where the sliding helper
+// has already committed and the header can still travel. A refused call never
+// sends, so the transport flushes after this chain returns and the same write
+// happens there instead, beside the marker only that path carries.
+func NewElevationResponseInterceptor() connect.ServerInterceptor {
+	return func(next connect.ServerFunc) connect.ServerFunc {
+		return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
+			if spec.StreamType != connect.StreamTypeUnary {
+				return next(ctx, spec, stream)
+			}
+			info := serverCallInfo(ctx)
 			ctx, slide := withElevationSlide(ctx)
-			resp, err := next(ctx, req)
-			until, slid := slide.deadline()
-			if !slid {
-				return resp, err
+			meta := &elevationMetadata{info: info, slide: slide}
+			err := next(ctx, spec, &elevationMetadataStream{ServerStream: stream, meta: meta})
+			if errors.Is(err, errElevationRequired) {
+				// A machine-readable marker, so a client can distinguish THIS
+				// FailedPrecondition from every other one (an account with no
+				// password, a last passkey that needs a replacement) and open
+				// a step-up prompt for it alone. Matching the message text
+				// instead would break on the first rewording.
+				info.ResponseHeader().Set(ElevationRequiredHeader, "1")
 			}
-			if err != nil {
-				return resp, reportDeadlineOnError(err, until)
-			}
-			if resp != nil {
-				resp.Header().Set(ElevationExpiresAtHeader, formatElevationDeadline(until))
-			}
-			return resp, nil
+			meta.writeDeadline()
+			return err
 		}
 	}
 }
 
-// reportDeadlineOnError carries the deadline on a failure that FOLLOWED a
-// slide.
+// elevationMetadata writes the slide deadline onto the response at most once.
 //
-// Every helper slides after its write commits, so a handler that fails later
-// still leaves a longer window behind, and the client must learn about it.
-// connect-go merges a connect.Error's metadata into the response header, which
-// is what makes an error path able to carry this at all.
-//
-// It touches a *connect.Error alone, and a plain error passes through
-// untouched. Wrapping one would decide its status code here, and
-// connect.CodeOf answers Unknown for a context.Canceled that connect-go itself
-// reports as Canceled. The auth interceptor's applyToError refuses the same
-// trade for the same reason.
-func reportDeadlineOnError(err error, until time.Time) error {
-	var connectErr *connect.Error
-	if errors.As(err, &connectErr) {
-		connectErr.Meta().Set(ElevationExpiresAtHeader, formatElevationDeadline(until))
-	}
-	return err
+// The mutex on elevationSlide already guards the recorded value; this one
+// guards the write, so a Send and the interceptor's own wrap-up cannot
+// double-write when a handler both sends and then fails.
+type elevationMetadata struct {
+	info         *connect.CallInfo
+	slide        *elevationSlide
+	deadlineOnce sync.Once
+}
+
+func (m *elevationMetadata) writeDeadline() {
+	m.deadlineOnce.Do(func() {
+		until, slid := m.slide.deadline()
+		if !slid {
+			return
+		}
+		// Every helper slides after its write commits, so a handler that
+		// fails later still leaves a longer window behind, and the client
+		// must learn about it.
+		m.info.ResponseHeader().Set(ElevationExpiresAtHeader, formatElevationDeadline(until))
+	})
+}
+
+// elevationMetadataStream writes the elevation deadline before the handler's
+// message goes out. Send is the handler's last act on a call that succeeds,
+// so the sliding helper has already recorded the new deadline by then.
+type elevationMetadataStream struct {
+	connect.ServerStream
+	meta *elevationMetadata
+}
+
+func (s *elevationMetadataStream) Send(msg any) error {
+	s.meta.writeDeadline()
+	return s.ServerStream.Send(msg)
 }
 
 // errElevationRequired is the SENTINEL every elevation refusal wraps, so
@@ -256,16 +303,16 @@ const elevationRequiredMessage = "verify your identity and try again"
 // verifyElevationPassword checks the password presented to ElevateSession.
 // Wrong password returns ErrInvalidCurrentPassword so the rate-limit
 // interceptor can count the failure.
-func verifyElevationPassword(user *store.User, currentPassword string) error {
+func verifyElevationPassword(ctx context.Context, user *store.User, currentPassword string) error {
 	if currentPassword == "" {
-		return credentialRejectedError(fmt.Errorf("%w", auth.ErrInvalidCurrentPassword))
+		return credentialRejectedError(ctx, fmt.Errorf("%w", auth.ErrInvalidCurrentPassword))
 	}
 	match, err := password.Verify(user.PasswordHash, currentPassword)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("verify password: %w", err))
+		return wrappedConnectError(connect.CodeInternal, fmt.Errorf("verify password: %w", err))
 	}
 	if !match {
-		return credentialRejectedError(fmt.Errorf("%w", auth.ErrInvalidCurrentPassword))
+		return credentialRejectedError(ctx, fmt.Errorf("%w", auth.ErrInvalidCurrentPassword))
 	}
 	return nil
 }
@@ -478,7 +525,7 @@ func requireElevatedActor(ctx context.Context, now time.Time) (*auth.UserInfo, e
 // skip it.
 func assertElevatedActor(userInfo *auth.UserInfo, now time.Time) error {
 	if userInfo == nil {
-		return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("not authenticated"))
+		return connect.Errorf(connect.CodeUnauthenticated, "not authenticated")
 	}
 	return requireElevation(userInfo, now)
 }
@@ -591,7 +638,7 @@ func refuseIfActingAuthorityMovedFrom(ctx context.Context, st store.Store, locke
 		var err error
 		locked, err = st.Users().GetByID(ctx, actor.ID.String())
 		if err != nil {
-			return connect.NewError(connect.CodeInternal, fmt.Errorf("re-read the acting account: %w", err))
+			return wrappedConnectError(connect.CodeInternal, fmt.Errorf("re-read the acting account: %w", err))
 		}
 	}
 	if err := recheckCredentialEpochUnderLock(locked, actor); err != nil {
@@ -605,7 +652,7 @@ func refuseIfActingAuthorityMovedFrom(ctx context.Context, st store.Store, locke
 		if errors.Is(err, store.ErrNotFound) {
 			return refuseIfSessionWasRevoked(ctx, st, sessionID)
 		}
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("re-read the acting session: %w", err))
+		return wrappedConnectError(connect.CodeInternal, fmt.Errorf("re-read the acting session: %w", err))
 	}
 	return nil
 }
@@ -831,7 +878,7 @@ func requireElevatableCredential(userInfo *auth.UserInfo) error {
 // moment somebody rewords one.
 func errCredentialNotElevatable() error {
 	return connect.NewError(connect.CodeFailedPrecondition,
-		errors.New("this credential cannot verify your identity; sign in from a browser to perform this action"))
+		"this credential cannot verify your identity; sign in from a browser to perform this action")
 }
 
 // requireElevatableSession returns the acting SESSION id, refusing every
@@ -941,9 +988,9 @@ func (s *UserService) grantElevation(ctx context.Context, userInfo *auth.UserInf
 	until, err := grantSessionElevation(ctx, s.store, s.lifecycle, sessionID, userInfo.ID, s.now())
 	switch {
 	case errors.Is(err, errElevationSessionEnded):
-		return time.Time{}, connect.NewError(connect.CodeUnauthenticated, err)
+		return time.Time{}, connect.NewError(connect.CodeUnauthenticated, err.Error()).WithCause(err)
 	case err != nil:
-		return time.Time{}, connect.NewError(connect.CodeInternal, err)
+		return time.Time{}, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	return until, nil
 }
@@ -975,36 +1022,36 @@ func (s *UserService) elevationCaller(ctx context.Context) (*auth.UserInfo, stri
 }
 
 // ElevateSession proves a password.
-func (s *UserService) ElevateSession(ctx context.Context, req *connect.Request[leapmuxv1.ElevateSessionRequest]) (*connect.Response[leapmuxv1.ElevateSessionResponse], error) {
+func (s *UserService) ElevateSession(ctx context.Context, req *leapmuxv1.ElevateSessionRequest) (*leapmuxv1.ElevateSessionResponse, error) {
 	userInfo, sessionID, err := s.elevationCaller(ctx)
 	if err != nil {
 		return nil, err
 	}
 	user, err := s.store.Users().GetByID(ctx, userInfo.ID.String())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("query user: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("query user: %w", err))
 	}
 	if !user.FirstCredentialExempt {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			fmt.Errorf("this account has no password; verify with a passkey or your identity provider instead"))
+		return nil, connect.Errorf(connect.CodeFailedPrecondition,
+			"this account has no password; verify with a passkey or your identity provider instead")
 	}
 	// Argon2 runs here, OUTSIDE any transaction: the write below takes the
 	// user-auth lock, which on SQLite is the single database writer lock
 	// (see auth.Login's comment on the same trade).
-	if err := verifyElevationPassword(user, req.Msg.GetCurrentPassword()); err != nil {
+	if err := verifyElevationPassword(ctx, user, req.GetCurrentPassword()); err != nil {
 		return nil, err
 	}
 	until, err := s.grantElevation(ctx, userInfo, sessionID)
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&leapmuxv1.ElevateSessionResponse{
+	return &leapmuxv1.ElevateSessionResponse{
 		ElevationExpiresAt: timestamppb.New(until),
-	}), nil
+	}, nil
 }
 
 // BeginPasskeyElevation starts the step-up assertion.
-func (s *UserService) BeginPasskeyElevation(ctx context.Context, req *connect.Request[leapmuxv1.BeginPasskeyElevationRequest]) (*connect.Response[leapmuxv1.BeginPasskeyElevationResponse], error) {
+func (s *UserService) BeginPasskeyElevation(ctx context.Context, req *leapmuxv1.BeginPasskeyElevationRequest) (*leapmuxv1.BeginPasskeyElevationResponse, error) {
 	// The PASSKEY factor is refused by mode, unlike the elevation surface
 	// around it. rejectSoloElevation reads the caller, because a solo hub with
 	// a password has real sessions to elevate -- but no account there can ever
@@ -1021,26 +1068,26 @@ func (s *UserService) BeginPasskeyElevation(ctx context.Context, req *connect.Re
 	}
 	user, err := s.store.Users().GetByID(ctx, userInfo.ID.String())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
-	sessionID, optionsJSON, err := wa.BeginElevation(ctx, user.ID, originFromRequest(req))
+	sessionID, optionsJSON, err := wa.BeginElevation(ctx, user.ID, originFromRequest(ctx))
 	if err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
-	return connect.NewResponse(&leapmuxv1.BeginPasskeyElevationResponse{
+	return &leapmuxv1.BeginPasskeyElevationResponse{
 		SessionId:   sessionID,
 		OptionsJson: optionsJSON,
-	}), nil
+	}, nil
 }
 
 // FinishPasskeyElevation verifies the step-up assertion and grants the
 // window. It reports elevation_expires_at, the same field the password path
 // reports, so a client has one success path.
-func (s *UserService) FinishPasskeyElevation(ctx context.Context, req *connect.Request[leapmuxv1.FinishPasskeyElevationRequest]) (*connect.Response[leapmuxv1.FinishPasskeyElevationResponse], error) {
+func (s *UserService) FinishPasskeyElevation(ctx context.Context, req *leapmuxv1.FinishPasskeyElevationRequest) (*leapmuxv1.FinishPasskeyElevationResponse, error) {
 	// Refused by mode, for the reason BeginPasskeyElevation states.
 	if err := rejectSoloPasskeyManagement(s.cfg.SoloMode); err != nil {
 		return nil, err
@@ -1049,15 +1096,15 @@ func (s *UserService) FinishPasskeyElevation(ctx context.Context, req *connect.R
 	if err != nil {
 		return nil, err
 	}
-	if req.Msg.GetSessionId() == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id is required"))
+	if req.GetSessionId() == "" {
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "session_id is required")
 	}
-	if req.Msg.GetCredentialJson() == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("credential_json is required"))
+	if req.GetCredentialJson() == "" {
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "credential_json is required")
 	}
 	user, err := s.store.Users().GetByID(ctx, userInfo.ID.String())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
@@ -1065,16 +1112,16 @@ func (s *UserService) FinishPasskeyElevation(ctx context.Context, req *connect.R
 	}
 	// This verifies the assertion OUTSIDE the elevation write, for the same
 	// reason the password path hashes outside it.
-	if err := wa.FinishElevation(ctx, user.ID, req.Msg.GetSessionId(), req.Msg.GetCredentialJson()); err != nil {
+	if err := wa.FinishElevation(ctx, user.ID, req.GetSessionId(), req.GetCredentialJson()); err != nil {
 		return nil, mapElevationAssertionError(ctx, user.ID, err)
 	}
 	until, err := s.grantElevation(ctx, userInfo, actingSessionID)
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&leapmuxv1.FinishPasskeyElevationResponse{
+	return &leapmuxv1.FinishPasskeyElevationResponse{
 		ElevationExpiresAt: timestamppb.New(until),
-	}), nil
+	}, nil
 }
 
 // mapElevationAssertionError classifies a failed step-up assertion.
@@ -1092,13 +1139,13 @@ func mapElevationAssertionError(ctx context.Context, userID string, err error) e
 	switch classifyWebAuthnError(err) {
 	case webAuthnErrorClone:
 		slog.WarnContext(ctx, "passkey clone warning during elevation", "user_id", userID)
-		return credentialRejectedError(err)
+		return credentialRejectedError(ctx, err)
 	case webAuthnErrorCredential:
-		return credentialRejectedError(fmt.Errorf("%w: %s", auth.ErrInvalidElevationAssertion, err.Error()))
+		return credentialRejectedError(ctx, fmt.Errorf("%w: %s", auth.ErrInvalidElevationAssertion, err.Error()))
 	case webAuthnErrorUnavailable:
-		return connect.NewError(connect.CodeFailedPrecondition, err)
+		return connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
 	default:
-		return connect.NewError(connect.CodeInternal, err)
+		return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 }
 
@@ -1114,7 +1161,7 @@ func mapElevationAssertionError(ctx context.Context, userID string, err error) e
 // the one operation that only REDUCES access as the one a command-line
 // credential could not perform -- so a user whose laptop credential file was
 // exposed could end its authority only by revoking the whole credential.
-func (s *UserService) DropElevation(ctx context.Context, _ *connect.Request[leapmuxv1.DropElevationRequest]) (*connect.Response[leapmuxv1.DropElevationResponse], error) {
+func (s *UserService) DropElevation(ctx context.Context, _ *leapmuxv1.DropElevationRequest) (*leapmuxv1.DropElevationResponse, error) {
 	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -1139,14 +1186,14 @@ func (s *UserService) DropElevation(ctx context.Context, _ *connect.Request[leap
 		}, s.now())
 	}
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("drop elevation: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("drop elevation: %w", err))
 	}
 	if n > 0 {
 		// A cached LONGER deadline fails open, so this invalidation is not
 		// an optimisation the way the grant's is -- it is the drop.
 		s.lifecycle.UserInfoInvalidated(userInfo.ID.String())
 	}
-	return connect.NewResponse(&leapmuxv1.DropElevationResponse{}), nil
+	return &leapmuxv1.DropElevationResponse{}, nil
 }
 
 // elevationExpiresAtProto reports the deadline a client should show, or nil when

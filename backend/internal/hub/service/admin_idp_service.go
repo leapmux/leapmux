@@ -2,10 +2,9 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/oauth"
@@ -67,29 +66,29 @@ func adminOAuthProviderToProto(p store.OAuthProviderSummary) *leapmuxv1.AdminOAu
 	}
 }
 
-func (s *AdminIdPService) AddOAuthProvider(ctx context.Context, req *connect.Request[leapmuxv1.AddOAuthProviderRequest]) (*connect.Response[leapmuxv1.AddOAuthProviderResponse], error) {
-	msg := req.Msg
+func (s *AdminIdPService) AddOAuthProvider(ctx context.Context, req *leapmuxv1.AddOAuthProviderRequest) (*leapmuxv1.AddOAuthProviderResponse, error) {
+	msg := req
 	if msg.GetProviderType() == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("provider_type is required (github, google, apple, oidc)"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "provider_type is required (github, google, apple, oidc)")
 	}
 	if msg.GetClientId() == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("client_id is required"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "client_id is required")
 	}
 	if msg.GetClientSecret() == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("client_secret is required"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "client_secret is required")
 	}
 
 	preset, ok := oauth.Presets[msg.GetProviderType()]
 	if !ok {
-		return nil, connect.NewError(connect.CodeInvalidArgument,
-			fmt.Errorf("unknown provider type: %s (supported: github, google, apple, oidc)", msg.GetProviderType()))
+		return nil, connect.Errorf(connect.CodeInvalidArgument,
+			"unknown provider type: %s (supported: github, google, apple, oidc)", msg.GetProviderType())
 	}
 	displayName := msg.GetName()
 	if displayName == "" {
 		displayName = preset.Name
 	}
 	if displayName == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("name is required for generic OIDC providers"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "name is required for generic OIDC providers")
 	}
 	storedType := preset.ProviderType
 	issuer := msg.GetIssuerUrl()
@@ -108,27 +107,27 @@ func (s *AdminIdPService) AddOAuthProvider(ctx context.Context, req *connect.Req
 		trustEmail = preset.TrustEmail
 	}
 	if trustEmail == nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("trust_email is required for generic OIDC providers"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "trust_email is required for generic OIDC providers")
 	}
 
 	// Issuer validation is conditional: OIDC-typed providers only; presets
 	// carry a known-good issuer.
 	if storedType == oauth.ProviderTypeOIDC {
 		if issuer == "" {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("issuer_url is required for OIDC providers"))
+			return nil, connect.NewError(connect.CodeInvalidArgument, "issuer_url is required for OIDC providers")
 		}
 		if err := oauth.ValidateIssuer(ctx, issuer); err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("issuer validation failed: %w", err))
+			return nil, wrappedConnectError(connect.CodeInvalidArgument, fmt.Errorf("issuer validation failed: %w", err))
 		}
 	}
 
 	if s.ks == nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("keystore is not configured"))
+		return nil, connect.NewError(connect.CodeInternal, "keystore is not configured")
 	}
 	providerID := id.Generate()
 	encryptedSecret, err := s.ks.Encrypt([]byte(msg.GetClientSecret()), keystore.ProviderAAD(providerID))
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("encrypt client secret: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("encrypt client secret: %w", err))
 	}
 	if err := writeUnderElevation(ctx, s.store, s.now, func() error {
 		if err := s.store.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
@@ -152,12 +151,12 @@ func (s *AdminIdPService) AddOAuthProvider(ctx context.Context, req *connect.Req
 	if err != nil {
 		return nil, storeConnectError(err, "get created provider")
 	}
-	return connect.NewResponse(&leapmuxv1.AddOAuthProviderResponse{
+	return &leapmuxv1.AddOAuthProviderResponse{
 		Provider: adminOAuthProviderToProto(created.OAuthProviderSummary),
-	}), nil
+	}, nil
 }
 
-func (s *AdminIdPService) ListOAuthProviders(ctx context.Context, _ *connect.Request[leapmuxv1.ListOAuthProvidersRequest]) (*connect.Response[leapmuxv1.ListOAuthProvidersResponse], error) {
+func (s *AdminIdPService) ListOAuthProviders(ctx context.Context, _ *leapmuxv1.ListOAuthProvidersRequest) (*leapmuxv1.ListOAuthProvidersResponse, error) {
 	providers, err := s.store.OAuthProviders().ListAll(ctx)
 	if err != nil {
 		return nil, storeConnectError(err, "list providers")
@@ -166,7 +165,7 @@ func (s *AdminIdPService) ListOAuthProviders(ctx context.Context, _ *connect.Req
 	for _, p := range providers {
 		out = append(out, adminOAuthProviderToProto(p))
 	}
-	return connect.NewResponse(&leapmuxv1.ListOAuthProvidersResponse{Providers: out}), nil
+	return &leapmuxv1.ListOAuthProvidersResponse{Providers: out}, nil
 }
 
 // requireOAuthProvider refuses an empty or unknown provider id.
@@ -198,39 +197,39 @@ func (s *AdminIdPService) requireOAuthProvider(ctx context.Context, id string) e
 // The count travels in the response either way. An operator who passes
 // force learns exactly how many accounts the removal locked out, and an
 // operator on a provider nobody depends on reads zero.
-func (s *AdminIdPService) RemoveOAuthProvider(ctx context.Context, req *connect.Request[leapmuxv1.RemoveOAuthProviderRequest]) (*connect.Response[leapmuxv1.RemoveOAuthProviderResponse], error) {
-	if err := s.requireOAuthProvider(ctx, req.Msg.GetId()); err != nil {
+func (s *AdminIdPService) RemoveOAuthProvider(ctx context.Context, req *leapmuxv1.RemoveOAuthProviderRequest) (*leapmuxv1.RemoveOAuthProviderResponse, error) {
+	if err := s.requireOAuthProvider(ctx, req.GetId()); err != nil {
 		return nil, err
 	}
-	orphaned, err := s.store.OAuthUserLinks().CountUsersOrphanedByProvider(ctx, req.Msg.GetId())
+	orphaned, err := s.store.OAuthUserLinks().CountUsersOrphanedByProvider(ctx, req.GetId())
 	if err != nil {
 		return nil, storeConnectError(err, "count users orphaned by provider")
 	}
-	if orphaned > 0 && !req.Msg.GetForce() {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			fmt.Errorf("%d user(s) have no other login method through provider %q; they will be locked out - set a password for them first, or pass force",
-				orphaned, req.Msg.GetId()))
+	if orphaned > 0 && !req.GetForce() {
+		return nil, connect.Errorf(connect.CodeFailedPrecondition,
+			"%d user(s) have no other login method through provider %q; they will be locked out - set a password for them first, or pass force",
+			orphaned, req.GetId())
 	}
 	if err := writeUnderElevation(ctx, s.store, s.now, func() error {
-		if err := s.store.OAuthProviders().Delete(ctx, req.Msg.GetId()); err != nil {
+		if err := s.store.OAuthProviders().Delete(ctx, req.GetId()); err != nil {
 			return storeConnectError(err, "delete provider")
 		}
 		return nil
 	}); err != nil {
 		return nil, err
 	}
-	s.cache.InvalidateProvider(req.Msg.GetId())
-	return connect.NewResponse(&leapmuxv1.RemoveOAuthProviderResponse{LockedOutUsers: orphaned}), nil
+	s.cache.InvalidateProvider(req.GetId())
+	return &leapmuxv1.RemoveOAuthProviderResponse{LockedOutUsers: orphaned}, nil
 }
 
-func (s *AdminIdPService) SetOAuthProviderEnabled(ctx context.Context, req *connect.Request[leapmuxv1.SetOAuthProviderEnabledRequest]) (*connect.Response[leapmuxv1.SetOAuthProviderEnabledResponse], error) {
-	if err := s.requireOAuthProvider(ctx, req.Msg.GetId()); err != nil {
+func (s *AdminIdPService) SetOAuthProviderEnabled(ctx context.Context, req *leapmuxv1.SetOAuthProviderEnabledRequest) (*leapmuxv1.SetOAuthProviderEnabledResponse, error) {
+	if err := s.requireOAuthProvider(ctx, req.GetId()); err != nil {
 		return nil, err
 	}
 	if err := writeUnderElevation(ctx, s.store, s.now, func() error {
 		if err := s.store.OAuthProviders().UpdateEnabled(ctx, store.UpdateOAuthProviderEnabledParams{
-			Enabled: req.Msg.GetEnabled(),
-			ID:      req.Msg.GetId(),
+			Enabled: req.GetEnabled(),
+			ID:      req.GetId(),
 		}); err != nil {
 			return storeConnectError(err, "update provider")
 		}
@@ -240,6 +239,6 @@ func (s *AdminIdPService) SetOAuthProviderEnabled(ctx context.Context, req *conn
 	}
 	// Unconditional, for both directions. A re-enable then rebuilds once on
 	// the next request, and one rule reads better than two.
-	s.cache.InvalidateProvider(req.Msg.GetId())
-	return connect.NewResponse(&leapmuxv1.SetOAuthProviderEnabledResponse{}), nil
+	s.cache.InvalidateProvider(req.GetId())
+	return &leapmuxv1.SetOAuthProviderEnabledResponse{}, nil
 }

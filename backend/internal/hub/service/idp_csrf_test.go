@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/assert"
@@ -445,7 +445,7 @@ func TestGetPendingOAuthSignup_WithoutBindingCookie_Refuses(t *testing.T) {
 	// The attack: a valid token, delivered to a browser that never started
 	// the flow, so it carries no binding cookie.
 	_, err := client.GetPendingOAuthSignup(context.Background(),
-		connect.NewRequest(&leapmuxv1.GetPendingOAuthSignupRequest{SignupToken: token}))
+		&leapmuxv1.GetPendingOAuthSignupRequest{SignupToken: token})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "different browser")
@@ -462,7 +462,7 @@ func TestCompleteOAuthSignup_WithoutBindingCookie_Refuses(t *testing.T) {
 		time.Now().Add(5*time.Minute).UTC())
 
 	_, err := client.CompleteOAuthSignup(ctx,
-		connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{SignupToken: token, Username: "victim"}))
+		&leapmuxv1.CompleteOAuthSignupRequest{SignupToken: token, Username: "victim"})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "different browser")
@@ -486,11 +486,12 @@ func TestCompleteOAuthSignup_WrongBindingCookie_Refuses(t *testing.T) {
 	insertPendingSignup(t, st, ks, providerID, token, "victim@example.com", "Victim", "sub-1",
 		time.Now().Add(5*time.Minute).UTC())
 
-	req := connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{SignupToken: token, Username: "victim"})
+	req := &leapmuxv1.CompleteOAuthSignupRequest{SignupToken: token, Username: "victim"}
 	wrong := auth.BuildOAuthSignupNonceCookie(token, "some-other-browsers-nonce", time.Minute, false)
-	req.Header().Set("Cookie", wrong.Name+"="+wrong.Value)
+	ctx, info := connect.NewClientContext(context.Background())
+	info.RequestHeader().Set("Cookie", wrong.Name+"="+wrong.Value)
 
-	_, err := client.CompleteOAuthSignup(context.Background(), req)
+	_, err := client.CompleteOAuthSignup(ctx, req)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
@@ -522,7 +523,7 @@ func TestCompleteOAuthSignup_UnboundRowRefuses(t *testing.T) {
 		ExpiresAt:       time.Now().Add(5 * time.Minute).UTC(),
 	}))
 
-	_, err = client.CompleteOAuthSignup(ctx, signupReq(&leapmuxv1.CompleteOAuthSignupRequest{
+	_, err = client.CompleteOAuthSignup(signupReq(ctx, &leapmuxv1.CompleteOAuthSignupRequest{
 		SignupToken: token, Username: "victim",
 	}))
 	require.Error(t, err, "an unbound row must refuse rather than skip the check")

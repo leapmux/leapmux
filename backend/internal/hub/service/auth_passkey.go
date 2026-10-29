@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
@@ -19,48 +19,49 @@ import (
 	"github.com/leapmux/leapmux/util/validate"
 )
 
-func (s *AuthService) BeginPasskeyLogin(ctx context.Context, req *connect.Request[leapmuxv1.BeginPasskeyLoginRequest]) (*connect.Response[leapmuxv1.BeginPasskeyLoginResponse], error) {
+func (s *AuthService) BeginPasskeyLogin(ctx context.Context, req *leapmuxv1.BeginPasskeyLoginRequest) (*leapmuxv1.BeginPasskeyLoginResponse, error) {
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
 	}
-	username, err := validate.SanitizeSlug("username", req.Msg.GetUsername())
+	username, err := validate.SanitizeSlug("username", req.GetUsername())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
 	user, err := s.store.Users().GetByUsername(ctx, username)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			// Same code/message as "no passkeys" so callers cannot enumerate.
-			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("passkey login is not available for this account"))
+			return nil, connect.Errorf(connect.CodeFailedPrecondition, "passkey login is not available for this account")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
-	sessionID, optionsJSON, err := wa.BeginLogin(ctx, user.ID, originFromRequest(req))
+	sessionID, optionsJSON, err := wa.BeginLogin(ctx, user.ID, originFromRequest(ctx))
 	if err != nil {
 		if classifyWebAuthnError(err) == webAuthnErrorUnavailable {
 			// An unserved origin gives the remediation. Everything else in
 			// this class answers with the same code and message as the
 			// missing-user path, so the error is not an enumeration oracle.
 			if errors.Is(err, hubwebauthn.ErrOriginNotAllowed) {
-				return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("passkey login is not available on this origin; open the hub through its configured URL"))
+				return nil, connect.Errorf(connect.CodeFailedPrecondition, "passkey login is not available on this origin; open the hub through its configured URL")
 			}
-			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("passkey login is not available for this account"))
+			return nil, connect.Errorf(connect.CodeFailedPrecondition, "passkey login is not available for this account")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
-	return connect.NewResponse(&leapmuxv1.BeginPasskeyLoginResponse{
+	return &leapmuxv1.BeginPasskeyLoginResponse{
 		SessionId:   sessionID,
 		OptionsJson: optionsJSON,
-	}), nil
+	}, nil
 }
 
-func (s *AuthService) FinishPasskeyLogin(ctx context.Context, req *connect.Request[leapmuxv1.FinishPasskeyLoginRequest]) (*connect.Response[leapmuxv1.FinishPasskeyLoginResponse], error) {
+func (s *AuthService) FinishPasskeyLogin(ctx context.Context, req *leapmuxv1.FinishPasskeyLoginRequest) (*leapmuxv1.FinishPasskeyLoginResponse, error) {
+	info := serverCallInfo(ctx)
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
 	}
-	user, passkeyCount, err := wa.FinishLogin(ctx, req.Msg.GetSessionId(), req.Msg.GetCredentialJson())
+	user, passkeyCount, err := wa.FinishLogin(ctx, req.GetSessionId(), req.GetCredentialJson())
 	if err != nil {
 		switch classifyWebAuthnError(err) {
 		case webAuthnErrorClone:
@@ -68,7 +69,7 @@ func (s *AuthService) FinishPasskeyLogin(ctx context.Context, req *connect.Reque
 			// it server-side and report it as itself, so it never counts
 			// against the login rate-limit budget.
 			slog.WarnContext(ctx, "passkey clone warning during login")
-			return nil, credentialRejectedError(err)
+			return nil, credentialRejectedError(ctx, err)
 		case webAuthnErrorCredential:
 			// The marker for the same reason the management surface carries
 			// it: the rejected credential is the assertion the REQUEST
@@ -76,7 +77,7 @@ func (s *AuthService) FinishPasskeyLogin(ctx context.Context, req *connect.Reque
 			// at /login holds no session to end -- and it is here so the rule
 			// is "a rejected credential always says so" rather than "except
 			// on the endpoints nobody checked".
-			return nil, credentialRejectedError(err)
+			return nil, credentialRejectedError(ctx, err)
 		case webAuthnErrorUnavailable:
 			// Same code Begin answers for the same state. These sentinels
 			// describe the hub and the origin, not the account, so the
@@ -84,15 +85,15 @@ func (s *AuthService) FinishPasskeyLogin(ctx context.Context, req *connect.Reque
 			// Unauthenticated does not reach them -- and reporting a hub
 			// misconfiguration as "authentication failed" tells the user to
 			// try another credential for something no credential can fix.
-			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+			return nil, connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
 		case webAuthnErrorInfrastructure:
 			// Store and infrastructure failures (keystore decrypt, session
 			// consume, sign-count update) are not credential failures, so
 			// they must not read as one in the anonymous client's response
 			// body.
-			return nil, connect.NewError(connect.CodeInternal, err)
+			return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	loginUID, mintErr := mintRowUserID(user.ID)
 	if mintErr != nil {
@@ -100,23 +101,23 @@ func (s *AuthService) FinishPasskeyLogin(ctx context.Context, req *connect.Reque
 	}
 	sessionID, expiresAt, err := auth.CreateSession(ctx, s.store, loginUID, s.sessionDuration(ctx))
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
-	resp := connect.NewResponse(&leapmuxv1.FinishPasskeyLoginResponse{
+	resp := &leapmuxv1.FinishPasskeyLoginResponse{
 		User:              userToProto(user, passkeyCount),
 		EmailVerification: emailVerificationToProto(s.loginVerificationOutcome(ctx, user)),
-	})
-	s.setSessionCookie(ctx, resp.Header(), sessionID, expiresAt)
+	}
+	s.setSessionCookie(ctx, info.ResponseHeader(), sessionID, expiresAt)
 	return resp, nil
 }
 
-func (s *AuthService) BeginPasskeySignUp(ctx context.Context, req *connect.Request[leapmuxv1.BeginPasskeySignUpRequest]) (*connect.Response[leapmuxv1.BeginPasskeySignUpResponse], error) {
+func (s *AuthService) BeginPasskeySignUp(ctx context.Context, req *leapmuxv1.BeginPasskeySignUpRequest) (*leapmuxv1.BeginPasskeySignUpResponse, error) {
 	if err := rejectSolo(s.cfg.SoloMode, "sign-up"); err != nil {
 		return nil, err
 	}
 	hasUser, err := s.checkHasAnyUser(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	isSetupMode := !hasUser
 	// The signup setting is an administrator's decision, and setup mode is
@@ -126,54 +127,55 @@ func (s *AuthService) BeginPasskeySignUp(ctx context.Context, req *connect.Reque
 	// an admin and promotes its address into the email column, exactly like
 	// signUpSetupMode.
 	if !isSetupMode && !s.signupEnabled(ctx) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("sign-up is disabled"))
+		return nil, connect.Errorf(connect.CodeFailedPrecondition, "sign-up is disabled")
 	}
 
-	username, err := validate.SanitizeSlug("username", req.Msg.GetUsername())
+	username, err := validate.SanitizeSlug("username", req.GetUsername())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
-	displayName, err := validate.SanitizeDisplayName(req.Msg.GetDisplayName(), username)
+	displayName, err := validate.SanitizeDisplayName(req.GetDisplayName(), username)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("display name: %w", err))
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, fmt.Errorf("display name: %w", err))
 	}
 	if err := s.validateSignupUsername(ctx, username, isSetupMode); err != nil {
 		return nil, err
 	}
-	if err := s.validateSignupEmail(ctx, req.Msg.GetEmail()); err != nil {
+	if err := s.validateSignupEmail(ctx, req.GetEmail()); err != nil {
 		return nil, err
 	}
-	email := req.Msg.GetEmail()
+	email := req.GetEmail()
 
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
 	}
 	sessionID, optionsJSON, err := wa.BeginSignUp(ctx, hubwebauthn.SignupDraft{
 		Username:    username,
 		Email:       email,
 		DisplayName: displayName,
-	}, originFromRequest(req))
+	}, originFromRequest(ctx))
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
-	return connect.NewResponse(&leapmuxv1.BeginPasskeySignUpResponse{
+	return &leapmuxv1.BeginPasskeySignUpResponse{
 		SessionId:   sessionID,
 		OptionsJson: optionsJSON,
-	}), nil
+	}, nil
 }
 
-func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *connect.Request[leapmuxv1.FinishPasskeySignUpRequest]) (*connect.Response[leapmuxv1.FinishPasskeySignUpResponse], error) {
+func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *leapmuxv1.FinishPasskeySignUpRequest) (*leapmuxv1.FinishPasskeySignUpResponse, error) {
+	info := serverCallInfo(ctx)
 	if s.cfg.SoloMode {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("passkey sign-up is not available"))
+		return nil, connect.Errorf(connect.CodeFailedPrecondition, "passkey sign-up is not available")
 	}
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
 	}
-	draft, cred, err := wa.FinishSignUp(ctx, req.Msg.GetSessionId(), req.Msg.GetCredentialJson())
+	draft, cred, err := wa.FinishSignUp(ctx, req.GetSessionId(), req.GetCredentialJson())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
 
 	// Re-check the controls at finish so an admin disable or a race on
@@ -187,11 +189,11 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *connect.Requ
 	// /setup and has no administrator.
 	hasUser, err := s.checkHasAnyUser(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
 	}
 	isFirstUser := !hasUser
 	if !isFirstUser && !s.signupEnabled(ctx) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("sign-up is disabled"))
+		return nil, connect.Errorf(connect.CodeFailedPrecondition, "sign-up is disabled")
 	}
 	if err := s.validateSignupUsername(ctx, draft.Username, isFirstUser); err != nil {
 		return nil, err
@@ -250,9 +252,9 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *connect.Requ
 	}
 	sessionID, sessionExpires, err := auth.CreateSession(ctx, s.store, loginUID, s.sessionDuration(ctx))
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
-	resp := connect.NewResponse(&leapmuxv1.FinishPasskeySignUpResponse{
+	resp := &leapmuxv1.FinishPasskeySignUpResponse{
 		// The ceremony just stored this account's single passkey.
 		User: userToProto(createdUser, 1),
 		EmailVerification: emailVerificationToProto(verificationOutcome{
@@ -260,8 +262,8 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *connect.Requ
 			EmailSent:             emailSent,
 			NextResendAvailableAt: nextResend,
 		}),
-	})
-	s.setSessionCookie(ctx, resp.Header(), sessionID, sessionExpires)
+	}
+	s.setSessionCookie(ctx, info.ResponseHeader(), sessionID, sessionExpires)
 	return resp, nil
 }
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -35,23 +35,23 @@ func TestListWorkers_RejectsMalformedCursor(t *testing.T) {
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew("u1")})
 
 	// Missing "_" delimiter -> store.ErrInvalidCursor -> InvalidArgument.
-	_, err := svc.ListWorkers(ctx, connect.NewRequest(&leapmuxv1.ListWorkersRequest{
+	_, err := svc.ListWorkers(ctx, &leapmuxv1.ListWorkersRequest{
 		Page: &leapmuxv1.PageRequest{Cursor: "no-underscore-timestamp"},
-	}))
+	})
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
 	// An unparseable timestamp half is also bad client input, not a server fault.
-	_, err = svc.ListWorkers(ctx, connect.NewRequest(&leapmuxv1.ListWorkersRequest{
+	_, err = svc.ListWorkers(ctx, &leapmuxv1.ListWorkersRequest{
 		Page: &leapmuxv1.PageRequest{Cursor: "not-a-time_abc"},
-	}))
+	})
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
 	// The empty first-page cursor stays valid: no error, an empty page, and no
 	// next cursor for a user with no workers.
-	resp, err := svc.ListWorkers(ctx, connect.NewRequest(&leapmuxv1.ListWorkersRequest{}))
+	resp, err := svc.ListWorkers(ctx, &leapmuxv1.ListWorkersRequest{})
 	require.NoError(t, err)
-	assert.Empty(t, resp.Msg.GetWorkers())
-	assert.False(t, resp.Msg.GetPage().GetHasMore())
+	assert.Empty(t, resp.GetWorkers())
+	assert.False(t, resp.GetPage().GetHasMore())
 }
 
 // seedWorkersForOwner inserts n worker rows for one owner and returns their
@@ -99,31 +99,31 @@ func TestListWorkers_CapsAnOversizedPageLimit(t *testing.T) {
 	svc := service.NewWorkerManagementService(st, workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil), nil)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: ownerID})
 
-	resp, err := svc.ListWorkers(ctx, connect.NewRequest(&leapmuxv1.ListWorkersRequest{
+	resp, err := svc.ListWorkers(ctx, &leapmuxv1.ListWorkersRequest{
 		Page: &leapmuxv1.PageRequest{Limit: 100000},
-	}))
+	})
 	require.NoError(t, err)
-	assert.Len(t, resp.Msg.GetWorkers(), service.MaxPageLimit,
+	assert.Len(t, resp.GetWorkers(), service.MaxPageLimit,
 		"an oversized limit is capped at the ceiling, not honoured")
-	assert.True(t, resp.Msg.GetPage().GetHasMore(), "the rows past the cap are still reachable")
-	require.NotEmpty(t, resp.Msg.GetPage().GetNextCursor(),
+	assert.True(t, resp.GetPage().GetHasMore(), "the rows past the cap are still reachable")
+	require.NotEmpty(t, resp.GetPage().GetNextCursor(),
 		"a capped page must say where the next one starts")
 
 	// The cap must not LOSE rows: the cursor reaches the remainder, and the
 	// two pages together are exactly what the test seeded.
-	next, err := svc.ListWorkers(ctx, connect.NewRequest(&leapmuxv1.ListWorkersRequest{
-		Page: &leapmuxv1.PageRequest{Limit: 100000, Cursor: resp.Msg.GetPage().GetNextCursor()},
-	}))
+	next, err := svc.ListWorkers(ctx, &leapmuxv1.ListWorkersRequest{
+		Page: &leapmuxv1.PageRequest{Limit: 100000, Cursor: resp.GetPage().GetNextCursor()},
+	})
 	require.NoError(t, err)
-	assert.Len(t, next.Msg.GetWorkers(), 1)
-	assert.False(t, next.Msg.GetPage().GetHasMore(), "the final page reports no more")
-	assert.Empty(t, next.Msg.GetPage().GetNextCursor())
+	assert.Len(t, next.GetWorkers(), 1)
+	assert.False(t, next.GetPage().GetHasMore(), "the final page reports no more")
+	assert.Empty(t, next.GetPage().GetNextCursor())
 
 	seen := make(map[string]bool, len(seeded))
-	for _, w := range resp.Msg.GetWorkers() {
+	for _, w := range resp.GetWorkers() {
 		seen[w.GetId()] = true
 	}
-	for _, w := range next.Msg.GetWorkers() {
+	for _, w := range next.GetWorkers() {
 		seen[w.GetId()] = true
 	}
 	assert.Len(t, seen, len(seeded), "paging the capped listing still returns every worker")
@@ -145,10 +145,10 @@ func TestListWorkers_OmittedLimitReturnsRows(t *testing.T) {
 	svc := service.NewWorkerManagementService(st, workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil), nil)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: ownerID})
 
-	resp, err := svc.ListWorkers(ctx, connect.NewRequest(&leapmuxv1.ListWorkersRequest{}))
+	resp, err := svc.ListWorkers(ctx, &leapmuxv1.ListWorkersRequest{})
 	require.NoError(t, err)
-	assert.Len(t, resp.Msg.GetWorkers(), 3, "an omitted limit takes the default, never zero")
-	assert.False(t, resp.Msg.GetPage().GetHasMore())
+	assert.Len(t, resp.GetWorkers(), 3, "an omitted limit takes the default, never zero")
+	assert.False(t, resp.GetPage().GetHasMore())
 }
 
 // TestNewWorkerManagementServiceRefusesAMissingCollaborator pins WHERE the

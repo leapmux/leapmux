@@ -9,7 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -53,19 +54,20 @@ func setupCaptchaAuthService(t *testing.T, solo bool) (leapmuxv1connect.AuthServ
 	authSvc := service.NewAuthService(authDeps)
 
 	mux := http.NewServeMux()
-	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc)
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer()
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	return leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL), ks, st, set
+	return leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))), ks, st, set
 }
 
 func TestGetAltchaChallenge_IssuesSignedChallenge(t *testing.T) {
 	client, _, _, _ := setupCaptchaAuthService(t, false)
 
-	resp, err := client.GetAltchaChallenge(context.Background(), connect.NewRequest(&leapmuxv1.GetAltchaChallengeRequest{}))
+	resp, err := client.GetAltchaChallenge(context.Background(), &leapmuxv1.GetAltchaChallengeRequest{})
 	require.NoError(t, err)
-	require.NotEmpty(t, resp.Msg.GetChallengeJson(), "enabled hub must hand out a challenge")
+	require.NotEmpty(t, resp.GetChallengeJson(), "enabled hub must hand out a challenge")
 
 	var challenge struct {
 		Parameters struct {
@@ -79,7 +81,7 @@ func TestGetAltchaChallenge_IssuesSignedChallenge(t *testing.T) {
 		} `json:"parameters"`
 		Signature string `json:"signature"`
 	}
-	require.NoError(t, json.Unmarshal([]byte(resp.Msg.GetChallengeJson()), &challenge))
+	require.NoError(t, json.Unmarshal([]byte(resp.GetChallengeJson()), &challenge))
 
 	assert.Equal(t, "PBKDF2/SHA-256", challenge.Parameters.Algorithm)
 	assert.Equal(t, 10000, challenge.Parameters.Cost)
@@ -93,9 +95,9 @@ func TestGetAltchaChallenge_IssuesSignedChallenge(t *testing.T) {
 func TestGetAltchaChallenge_SoloReturnsEmpty(t *testing.T) {
 	client, _, _, _ := setupCaptchaAuthService(t, true)
 
-	resp, err := client.GetAltchaChallenge(context.Background(), connect.NewRequest(&leapmuxv1.GetAltchaChallengeRequest{}))
+	resp, err := client.GetAltchaChallenge(context.Background(), &leapmuxv1.GetAltchaChallengeRequest{})
 	require.NoError(t, err)
-	assert.Empty(t, resp.Msg.GetChallengeJson(), "solo mode never arms captcha")
+	assert.Empty(t, resp.GetChallengeJson(), "solo mode never arms captcha")
 }
 
 func TestGetAltchaChallenge_NilCaptchaReportsDisabled(t *testing.T) {
@@ -105,13 +107,18 @@ func TestGetAltchaChallenge_NilCaptchaReportsDisabled(t *testing.T) {
 	// A nil captcha dependency means "subsystem absent": challenges stand
 	// down with an empty payload (the widget's stand-down signal), and
 	// system info reports captcha disabled — never a hard error.
-	resp, err := authSvc.GetAltchaChallenge(context.Background(), connect.NewRequest(&leapmuxv1.GetAltchaChallengeRequest{}))
+	resp, err := authSvc.GetAltchaChallenge(context.Background(), &leapmuxv1.GetAltchaChallengeRequest{})
 	require.NoError(t, err)
-	assert.Empty(t, resp.Msg.GetChallengeJson())
+	assert.Empty(t, resp.GetChallengeJson())
 
-	info, err := authSvc.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	var info *leapmuxv1.GetSystemInfoResponse
+	_, err = callUnderServerInfo(context.Background(), func(callCtx context.Context) error {
+		var callErr error
+		info, callErr = authSvc.GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
+		return callErr
+	})
 	require.NoError(t, err)
-	assert.False(t, info.Msg.GetCaptchaEnabled())
+	assert.False(t, info.GetCaptchaEnabled())
 }
 
 func TestGetSystemInfo_ReportsCaptchaState(t *testing.T) {
@@ -119,19 +126,19 @@ func TestGetSystemInfo_ReportsCaptchaState(t *testing.T) {
 
 	// Fresh install: defaults apply, and reporting them must NOT provision
 	// the signing secret (that is challenge issuance's job).
-	resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	resp, err := client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
 	require.NoError(t, err)
-	assert.True(t, resp.Msg.GetCaptchaEnabled())
-	assert.Equal(t, "PBKDF2/SHA-256", resp.Msg.GetAltchaAlgorithm())
+	assert.True(t, resp.GetCaptchaEnabled())
+	assert.Equal(t, "PBKDF2/SHA-256", resp.GetAltchaAlgorithm())
 
 	// First challenge provisions the row; a second system-info call still
 	// reports the (unchanged) effective state.
-	_, err = client.GetAltchaChallenge(context.Background(), connect.NewRequest(&leapmuxv1.GetAltchaChallengeRequest{}))
+	_, err = client.GetAltchaChallenge(context.Background(), &leapmuxv1.GetAltchaChallengeRequest{})
 	require.NoError(t, err)
 
-	resp, err = client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	resp, err = client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
 	require.NoError(t, err)
-	assert.True(t, resp.Msg.GetCaptchaEnabled())
+	assert.True(t, resp.GetCaptchaEnabled())
 }
 
 // failingCaptchaStub simulates a captcha-subsystem outage on the
@@ -160,20 +167,25 @@ func TestGetAltchaChallenge_FailsClosedWhenCaptchaUnreachable(t *testing.T) {
 	authDeps.Captcha = failingCaptchaStub{Config: captcha.DisabledConfig(), err: errors.New("settings snapshot unavailable")}
 	authSvc := service.NewAuthService(authDeps)
 
-	resp, err := authSvc.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	var resp *leapmuxv1.GetSystemInfoResponse
+	_, err := callUnderServerInfo(context.Background(), func(callCtx context.Context) error {
+		var callErr error
+		resp, callErr = authSvc.GetSystemInfo(callCtx, &leapmuxv1.GetSystemInfoRequest{})
+		return callErr
+	})
 	require.NoError(t, err)
-	assert.False(t, resp.Msg.GetCaptchaEnabled(), "the stub's config reports as-is")
+	assert.False(t, resp.GetCaptchaEnabled(), "the stub's config reports as-is")
 
-	_, err = authSvc.GetAltchaChallenge(context.Background(), connect.NewRequest(&leapmuxv1.GetAltchaChallengeRequest{}))
+	_, err = authSvc.GetAltchaChallenge(context.Background(), &leapmuxv1.GetAltchaChallengeRequest{})
 	require.Error(t, err, "challenge issuance fails honestly on the outage")
 }
 
 func TestGetSystemInfo_SoloReportsCaptchaDisabled(t *testing.T) {
 	client, _, _, _ := setupCaptchaAuthService(t, true)
 
-	resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	resp, err := client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
 	require.NoError(t, err)
-	assert.False(t, resp.Msg.GetCaptchaEnabled())
+	assert.False(t, resp.GetCaptchaEnabled())
 }
 
 // TestGetSystemInfo_ReportsExternalProvider pins the provider/site-key
@@ -190,9 +202,9 @@ func TestGetSystemInfo_ReportsExternalProvider(t *testing.T) {
 	}))
 	require.NoError(t, captcha.CaptchaSelectedKey.Set(context.Background(), set, "turnstile"))
 
-	resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	resp, err := client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
 	require.NoError(t, err)
-	assert.Equal(t, captcha.ProviderTurnstile, resp.Msg.GetCaptchaProvider())
-	assert.Equal(t, "1x00000000000000000000AA", resp.Msg.GetCaptchaSiteKey())
-	assert.Empty(t, resp.Msg.GetAltchaAlgorithm())
+	assert.Equal(t, captcha.ProviderTurnstile, resp.GetCaptchaProvider())
+	assert.Equal(t, "1x00000000000000000000AA", resp.GetCaptchaSiteKey())
+	assert.Empty(t, resp.GetAltchaAlgorithm())
 }

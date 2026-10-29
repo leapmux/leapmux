@@ -1,10 +1,9 @@
 package auth
 
 import (
-	"errors"
 	"fmt"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -372,7 +371,7 @@ func ScopeRequirementFor(procedure string) ScopeRequirement {
 // admin gate, the email gate, elevation -- still applies afterwards.
 func enforceScope(procedure string, userInfo *UserInfo) error {
 	if userInfo == nil {
-		return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("not authenticated"))
+		return connect.Errorf(connect.CodeUnauthenticated, "not authenticated")
 	}
 	if userInfo.Scopes.IsUnscoped() {
 		return nil
@@ -385,12 +384,12 @@ func enforceScope(procedure string, userInfo *UserInfo) error {
 		// The message stays uniform, so a denial never discloses WHICH of the
 		// four it was -- an app learns that it may not call the procedure, not
 		// whether the hub serves it at all.
-		return connect.NewError(connect.CodePermissionDenied,
-			fmt.Errorf("this app's authorization does not cover %s", procedure))
+		return connect.Errorf(connect.CodePermissionDenied,
+			"this app's authorization does not cover %s", procedure)
 	}
 	if !userInfo.Scopes.Allows(scope) {
 		return connect.NewError(connect.CodePermissionDenied,
-			errors.New(authscope.NotGrantedDenial(scope)))
+			authscope.NotGrantedDenial(scope))
 	}
 	return nil
 }

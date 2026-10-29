@@ -10,7 +10,8 @@ import (
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -40,15 +41,31 @@ func setupInterceptorTestServer(t *testing.T) leapmuxv1connect.AuthServiceClient
 
 	mux := http.NewServeMux()
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
-	interceptors := connect.WithInterceptors(interceptor)
+	connectServer := connect.NewServer(interceptor)
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
-	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
-	mux.Handle(path, handler)
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	connecthttp.Mount(mux, connectServer)
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	return leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+	return leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
+}
+
+// authedReq returns a context carrying the session cookie and the message
+// unchanged, so a client call takes the pair as its whole (ctx, req) argument
+// list: client.Foo(authedReq(ctx, msg, token)).
+func authedReq[T any](ctx context.Context, msg *T, token string) (context.Context, *T) {
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Cookie", auth.CookieName+"="+token)
+	return ctx, msg
+}
+
+// bearerReq is authedReq for an Authorization header value the caller builds.
+func bearerReq[T any](ctx context.Context, msg *T, authHeader string) (context.Context, *T) {
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", authHeader)
+	return ctx, msg
 }
 
 // loginAdmin logs in with the bootstrapped admin credentials and returns the
@@ -56,21 +73,22 @@ func setupInterceptorTestServer(t *testing.T) leapmuxv1connect.AuthServiceClient
 func loginAdmin(t *testing.T, client leapmuxv1connect.AuthServiceClient) string {
 	t.Helper()
 
-	resp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
+	ctx, info := connect.NewClientContext(context.Background())
+	_, err := client.Login(ctx, &leapmuxv1.LoginRequest{
 		Username: "admin",
 		Password: "admin123",
-	}))
+	})
 	require.NoError(t, err)
-	return hubtestutil.SessionFromCookie(t, resp.Header().Get("Set-Cookie"))
+	return hubtestutil.SessionFromCookie(t, info.ResponseHeader().Get("Set-Cookie"))
 }
 
 func TestInterceptor_PublicProcedure_NoTokenRequired(t *testing.T) {
 	client := setupInterceptorTestServer(t)
 
 	// GetSystemInfo is a public procedure -- it should succeed without a cookie.
-	resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	resp, err := client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
 	require.NoError(t, err)
-	assert.NotNil(t, resp.Msg)
+	assert.NotNil(t, resp)
 }
 
 func TestInterceptor_PrivateProcedure_NoCookie(t *testing.T) {
@@ -78,7 +96,7 @@ func TestInterceptor_PrivateProcedure_NoCookie(t *testing.T) {
 
 	// GetCurrentUser is a private procedure. Calling it without a session cookie
 	// should produce an Unauthenticated error.
-	_, err := client.GetCurrentUser(context.Background(), connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
+	_, err := client.GetCurrentUser(context.Background(), &leapmuxv1.GetCurrentUserRequest{})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -89,16 +107,13 @@ func TestInterceptor_PrivateProcedure_ValidCookie(t *testing.T) {
 	token := loginAdmin(t, client)
 
 	// Use the valid session ID in a cookie to call a private endpoint.
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Cookie", auth.CookieName+"="+token)
-
-	resp, err := client.GetCurrentUser(context.Background(), req)
+	resp, err := client.GetCurrentUser(authedReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, token))
 	require.NoError(t, err)
 
 	// The interceptor should have attached UserInfo to the context, allowing
 	// GetCurrentUser to return the admin user.
-	assert.Equal(t, "admin", resp.Msg.GetUser().GetUsername())
-	assert.True(t, resp.Msg.GetUser().GetIsAdmin())
+	assert.Equal(t, "admin", resp.GetUser().GetUsername())
+	assert.True(t, resp.GetUser().GetIsAdmin())
 }
 
 func TestInterceptor_SoloModeRejectsPasswordlessTCP(t *testing.T) {
@@ -113,17 +128,17 @@ func TestInterceptor_SoloModeRejectsPasswordlessTCP(t *testing.T) {
 
 	mux := http.NewServeMux()
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, SoloUser: soloUser})
-	interceptors := connect.WithInterceptors(interceptor)
+	connectServer := connect.NewServer(interceptor)
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{SoloMode: true}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
-	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
-	mux.Handle(path, handler)
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	connecthttp.Mount(mux, connectServer)
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+	client := leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 
-	_, err = client.GetCurrentUser(context.Background(), connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
+	_, err = client.GetCurrentUser(context.Background(), &leapmuxv1.GetCurrentUserRequest{})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -152,15 +167,15 @@ func TestInterceptor_SoloMode_YieldsToAPresentedBearer(t *testing.T) {
 
 	mux := http.NewServeMux()
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, SoloUser: soloUser, TokenValidator: tv})
-	interceptors := connect.WithInterceptors(interceptor)
+	connectServer := connect.NewServer(interceptor)
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{SoloMode: true}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
-	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
-	mux.Handle(path, handler)
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	connecthttp.Mount(mux, connectServer)
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+	client := leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 
 	soloRow, err := st.Users().GetByUsername(context.Background(), "solo")
 	require.NoError(t, err)
@@ -179,9 +194,8 @@ func TestInterceptor_SoloMode_YieldsToAPresentedBearer(t *testing.T) {
 		SecretHash:       tv.HashSecret(secret),
 	}))
 
-	narrow := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	narrow.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
-	_, err = client.GetCurrentUser(context.Background(), narrow)
+	_, err = client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{},
+		"Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
 		"the solo rung must yield to a presented bearer, so its grant binds instead of the account's unscoped authority")
@@ -189,9 +203,8 @@ func TestInterceptor_SoloMode_YieldsToAPresentedBearer(t *testing.T) {
 	// The yield is on the PRESENCE of a bearer, not its validity: a malformed
 	// one must be refused by the bearer rung, not fall back to solo -- falling
 	// back would make a broken credential stronger than a working one.
-	broken := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	broken.Header().Set("Authorization", "Bearer lmx_only-one-piece")
-	_, err = client.GetCurrentUser(context.Background(), broken)
+	_, err = client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{},
+		"Bearer lmx_only-one-piece"))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
 		"a malformed bearer must be refused, not answered as the solo user")
@@ -201,10 +214,7 @@ func TestInterceptor_PrivateProcedure_InvalidCookie(t *testing.T) {
 	client := setupInterceptorTestServer(t)
 
 	// Use a garbage session ID in a cookie on a private endpoint.
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Cookie", auth.CookieName+"=totally-invalid-token")
-
-	_, err := client.GetCurrentUser(context.Background(), req)
+	_, err := client.GetCurrentUser(authedReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, "totally-invalid-token"))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -215,10 +225,7 @@ func TestInterceptor_BearerTokenNotAccepted(t *testing.T) {
 	token := loginAdmin(t, client)
 
 	// Try using Bearer token in Authorization header — should NOT be accepted.
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Authorization", "Bearer "+token)
-
-	_, err := client.GetCurrentUser(context.Background(), req)
+	_, err := client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, "Bearer "+token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -239,15 +246,15 @@ func setupInterceptorTestServerWithBearerSupport(t *testing.T) (leapmuxv1connect
 
 	mux := http.NewServeMux()
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
-	interceptors := connect.WithInterceptors(interceptor)
+	connectServer := connect.NewServer(interceptor)
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
-	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
-	mux.Handle(path, handler)
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	connecthttp.Mount(mux, connectServer)
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	return leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL), st, tv
+	return leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))), st, tv
 }
 
 // adminUserID looks up the bootstrap admin user's id so tests can mint
@@ -274,12 +281,10 @@ func TestInterceptor_LeapMuxBearer_AcceptsValidToken(t *testing.T) {
 		SecretHash:       tv.HashSecret(secret),
 	}))
 
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
-
-	resp, err := client.GetCurrentUser(context.Background(), req)
+	resp, err := client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{},
+		"Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)))
 	require.NoError(t, err)
-	assert.Equal(t, "admin", resp.Msg.GetUser().GetUsername())
+	assert.Equal(t, "admin", resp.GetUser().GetUsername())
 }
 
 func TestInterceptor_LeapMuxBearer_RejectsWrongSecretAfterCacheWarm(t *testing.T) {
@@ -297,14 +302,12 @@ func TestInterceptor_LeapMuxBearer_RejectsWrongSecretAfterCacheWarm(t *testing.T
 		SecretHash:       tv.HashSecret(secret),
 	}))
 
-	validReq := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	validReq.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
-	_, err := client.GetCurrentUser(context.Background(), validReq)
+	_, err := client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{},
+		"Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)))
 	require.NoError(t, err)
 
-	wrongSecretReq := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	wrongSecretReq.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, "wrong-secret"))
-	_, err = client.GetCurrentUser(context.Background(), wrongSecretReq)
+	_, err = client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{},
+		"Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, "wrong-secret")))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -326,10 +329,8 @@ func TestInterceptor_LeapMuxBearer_RejectsRevoked(t *testing.T) {
 	_, err := st.APITokens().Revoke(context.Background(), tokenID)
 	require.NoError(t, err)
 
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
-
-	_, err = client.GetCurrentUser(context.Background(), req)
+	_, err = client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{},
+		"Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -337,10 +338,8 @@ func TestInterceptor_LeapMuxBearer_RejectsRevoked(t *testing.T) {
 func TestInterceptor_LeapMuxBearer_RejectsMalformed(t *testing.T) {
 	client, _, _ := setupInterceptorTestServerWithBearerSupport(t)
 
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Authorization", "Bearer lmx_only-one-piece")
-
-	_, err := client.GetCurrentUser(context.Background(), req)
+	_, err := client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{},
+		"Bearer lmx_only-one-piece"))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -348,10 +347,8 @@ func TestInterceptor_LeapMuxBearer_RejectsMalformed(t *testing.T) {
 func TestInterceptor_LeapMuxBearer_RejectsUnknownTokenID(t *testing.T) {
 	client, _, _ := setupInterceptorTestServerWithBearerSupport(t)
 
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, newTestTokenID(), "any"))
-
-	_, err := client.GetCurrentUser(context.Background(), req)
+	_, err := client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{},
+		"Bearer "+auth.FormatBearer(auth.BearerKindAPI, newTestTokenID(), "any")))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -373,13 +370,13 @@ func TestInterceptor_LeapMuxBearer_CacheEvictedOnRevoke(t *testing.T) {
 	mux := http.NewServeMux()
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
 	t.Cleanup(sc.Stop)
-	interceptors := connect.WithInterceptors(interceptor)
+	connectServer := connect.NewServer(interceptor)
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(sc, nil, nil)))
-	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
-	mux.Handle(path, handler)
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	connecthttp.Mount(mux, connectServer)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+	client := leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 
 	userID := adminUserID(t, st)
 	tokenID := newTestTokenID()
@@ -392,9 +389,7 @@ func TestInterceptor_LeapMuxBearer_CacheEvictedOnRevoke(t *testing.T) {
 	bearer := "Bearer " + auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
 
 	// Warm the bearer cache.
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Authorization", bearer)
-	_, err = client.GetCurrentUser(context.Background(), req)
+	_, err = client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, bearer))
 	require.NoError(t, err)
 
 	// Revoke + evict.
@@ -403,9 +398,7 @@ func TestInterceptor_LeapMuxBearer_CacheEvictedOnRevoke(t *testing.T) {
 	sc.EvictBearer(auth.NewBearerRef(auth.BearerKindAPI, tokenID))
 
 	// Next call must fail immediately, not 30s later.
-	req2 := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req2.Header().Set("Authorization", bearer)
-	_, err = client.GetCurrentUser(context.Background(), req2)
+	_, err = client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, bearer))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -433,10 +426,8 @@ func TestInterceptor_LeapMuxBearer_RejectsExpired(t *testing.T) {
 		ExpiresAt:        &pastExpiry,
 	}))
 
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
-
-	_, err := client.GetCurrentUser(context.Background(), req)
+	_, err := client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{},
+		"Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
 		"expired bearer must surface as Unauthenticated, got %v", err)
@@ -460,15 +451,11 @@ func TestInterceptor_LeapMuxBearer_CachedEntryExpiresWithCredential(t *testing.T
 	}))
 
 	bearer := "Bearer " + auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Authorization", bearer)
-	_, err := client.GetCurrentUser(context.Background(), req)
+	_, err := client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, bearer))
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
-		retry := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-		retry.Header().Set("Authorization", bearer)
-		_, err := client.GetCurrentUser(context.Background(), retry)
+		_, err := client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, bearer))
 		return connect.CodeOf(err) == connect.CodeUnauthenticated
 	}, time.Second, 10*time.Millisecond, "cached bearer must stop authenticating at its persisted expiry")
 }
@@ -507,10 +494,8 @@ func TestInterceptor_DelegationBearer_RejectsAccountProcedure(t *testing.T) {
 		ExpiresAt:     time.Now().Add(time.Hour),
 	}))
 
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret))
-
-	_, err := client.GetCurrentUser(context.Background(), req)
+	_, err := client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{},
+		"Bearer "+auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret)))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
 		"delegation bearers must not authenticate account-level procedures")
@@ -553,10 +538,8 @@ func TestInterceptor_DelegationBearer_RejectsRevoked(t *testing.T) {
 	_, err := st.DelegationTokens().Revoke(context.Background(), tokenID)
 	require.NoError(t, err)
 
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret))
-
-	_, err = client.GetCurrentUser(context.Background(), req)
+	_, err = client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{},
+		"Bearer "+auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret)))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -595,10 +578,8 @@ func TestInterceptor_DelegationBearer_RejectsExpired(t *testing.T) {
 		ExpiresAt:     time.Now().Add(-time.Minute), // already expired
 	}))
 
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret))
-
-	_, err := client.GetCurrentUser(context.Background(), req)
+	_, err := client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{},
+		"Bearer "+auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret)))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -618,10 +599,7 @@ func TestInterceptor_LeapMuxBearer_RejectsUnknownKindTag(t *testing.T) {
 	tokenID := newTestTokenID()
 	bogus := "lmx_z" + tokenID + "_anysecret"
 
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Authorization", "Bearer "+bogus)
-
-	_, err := client.GetCurrentUser(context.Background(), req)
+	_, err := client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, "Bearer "+bogus))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -639,12 +617,16 @@ func setupInterceptorTestServerWithCache(t *testing.T) (leapmuxv1connect.AuthSer
 	return setupSessionDurationTestServer(t, 0)
 }
 
+// authServiceWrap replaces the registered AuthService handler, so a test can
+// make one procedure fail without rebuilding the whole fixture.
+type authServiceWrap func(inner leapmuxv1connect.AuthServiceHandler) leapmuxv1connect.AuthServiceHandler
+
 // setupSessionDurationTestServer builds that server with a configured session
 // duration; zero leaves the setting's default. One settings manager feeds both
 // the service that stamps the first expiry at login and the interceptor that
 // slides it, so a test that pins a non-default duration exercises the whole
-// wiring rather than one half of it.
-func setupSessionDurationTestServer(t *testing.T, sessionDuration time.Duration) (leapmuxv1connect.AuthServiceClient, store.Store) {
+// wiring rather than one half of it. An optional wrap replaces the handler.
+func setupSessionDurationTestServer(t *testing.T, sessionDuration time.Duration, wrap ...authServiceWrap) (leapmuxv1connect.AuthServiceClient, store.Store) {
 	t.Helper()
 
 	st := hubtestutil.OpenTestStore(t)
@@ -662,15 +644,30 @@ func setupSessionDurationTestServer(t *testing.T, sessionDuration time.Duration)
 		Policy: servicetest.AuthPolicy(set),
 	})
 	t.Cleanup(sc.Stop)
-	interceptors := connect.WithInterceptors(interceptor)
+	connectServer := connect.NewServer(interceptor)
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, set, auth.NewCredentialLifecycleEffects(sc, nil, nil)))
-	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
-	mux.Handle(path, handler)
+	var handler leapmuxv1connect.AuthServiceHandler = authSvc
+	for _, w := range wrap {
+		handler = w(handler)
+	}
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, handler)
+	connecthttp.Mount(mux, connectServer)
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	return leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL), st
+	return leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))), st
+}
+
+// refusingAuthService answers GetCurrentUser with a refusal and delegates
+// every other procedure to the wrapped handler.
+type refusingAuthService struct {
+	leapmuxv1connect.AuthServiceHandler
+	err error
+}
+
+func (r *refusingAuthService) GetCurrentUser(context.Context, *leapmuxv1.GetCurrentUserRequest) (*leapmuxv1.GetCurrentUserResponse, error) {
+	return nil, r.err
 }
 
 func TestTouchSession_ThrottledWithinThreshold(t *testing.T) {
@@ -679,9 +676,7 @@ func TestTouchSession_ThrottledWithinThreshold(t *testing.T) {
 	token := loginAdmin(t, client)
 
 	// First authenticated request — triggers touchSession and updates last_active_at.
-	req1 := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req1.Header().Set("Cookie", auth.CookieName+"="+token)
-	_, err := client.GetCurrentUser(context.Background(), req1)
+	_, err := client.GetCurrentUser(authedReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, token))
 	require.NoError(t, err)
 
 	sess1, err := st.Sessions().GetByID(context.Background(), token, time.Now().UTC())
@@ -689,9 +684,7 @@ func TestTouchSession_ThrottledWithinThreshold(t *testing.T) {
 	t1 := sess1.LastActiveAt
 
 	// Second authenticated request immediately — should be throttled (no DB write).
-	req2 := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req2.Header().Set("Cookie", auth.CookieName+"="+token)
-	_, err = client.GetCurrentUser(context.Background(), req2)
+	_, err = client.GetCurrentUser(authedReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, token))
 	require.NoError(t, err)
 
 	sess2, err := st.Sessions().GetByID(context.Background(), token, time.Now().UTC())
@@ -725,13 +718,13 @@ func TestTouchSession_SlideRefreshesCookie(t *testing.T) {
 	token := loginAdmin(t, client)
 	backdateLastActive(t, st, token)
 
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Cookie", auth.CookieName+"="+token)
+	ctx, info := connect.NewClientContext(context.Background())
+	info.RequestHeader().Set("Cookie", auth.CookieName+"="+token)
 	before := time.Now()
-	resp, err := client.GetCurrentUser(context.Background(), req)
+	_, err := client.GetCurrentUser(ctx, &leapmuxv1.GetCurrentUserRequest{})
 	require.NoError(t, err)
 
-	setCookie := resp.Header().Get("Set-Cookie")
+	setCookie := info.ResponseHeader().Get("Set-Cookie")
 	require.NotEmpty(t, setCookie, "a slid session must re-issue its cookie")
 	parsed, err := http.ParseSetCookie(setCookie)
 	require.NoError(t, err)
@@ -747,6 +740,42 @@ func TestTouchSession_SlideRefreshesCookie(t *testing.T) {
 	require.NoError(t, err)
 	assert.WithinDuration(t, sess.ExpiresAt, parsed.Expires, time.Second,
 		"the cookie and the row must expire together, or one outlives the other silently")
+}
+
+// A slide must re-issue the cookie even when the call fails. The slide commits
+// to the row before the handler runs, and the throttle then blocks every other
+// request for a whole window, so a client whose calls keep failing would slide
+// the row again and again and never receive a cookie for it. The handler's
+// refusal must reach the caller with its code and message intact: the refresh
+// rides the response header and never touches the error.
+func TestTouchSession_FailedCallStillCarriesRefresh(t *testing.T) {
+	const configured = 36 * time.Hour
+	client, st := setupSessionDurationTestServer(t, configured,
+		func(inner leapmuxv1connect.AuthServiceHandler) leapmuxv1connect.AuthServiceHandler {
+			return &refusingAuthService{AuthServiceHandler: inner, err: connect.NewError(connect.CodePermissionDenied, "refused")}
+		})
+
+	token := loginAdmin(t, client)
+	backdateLastActive(t, st, token)
+
+	ctx, info := connect.NewClientContext(context.Background())
+	info.RequestHeader().Set("Cookie", auth.CookieName+"="+token)
+	before := time.Now()
+	_, err := client.GetCurrentUser(ctx, &leapmuxv1.GetCurrentUserRequest{})
+	require.Error(t, err, "the handler must refuse the call")
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
+		"the refresh must not alter the code the refusal carries")
+	assert.Contains(t, err.Error(), "refused",
+		"the refresh must not alter the message the refusal carries")
+
+	setCookie := info.ResponseHeader().Get("Set-Cookie")
+	require.NotEmpty(t, setCookie, "a failed call after a slide must still carry the refresh")
+	parsed, err := http.ParseSetCookie(setCookie)
+	require.NoError(t, err)
+	assert.Equal(t, auth.CookieName, parsed.Name)
+	assert.Equal(t, token, parsed.Value, "the refresh must re-issue the same session, not mint one")
+	assert.True(t, parsed.Expires.After(before.Add(configured)),
+		"the browser's copy must outlive the configured duration measured from this request")
 }
 
 // Login stamps the first expiry from the same configured duration. Without
@@ -786,12 +815,12 @@ func TestTouchSession_ThrottledRequestSendsNoCookie(t *testing.T) {
 
 	// No backdating: login stamped last_active_at, so this request is inside the
 	// throttle window and the conditional UPDATE matches no row.
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Cookie", auth.CookieName+"="+token)
-	resp, err := client.GetCurrentUser(context.Background(), req)
+	ctx, info := connect.NewClientContext(context.Background())
+	info.RequestHeader().Set("Cookie", auth.CookieName+"="+token)
+	_, err := client.GetCurrentUser(ctx, &leapmuxv1.GetCurrentUserRequest{})
 	require.NoError(t, err)
 
-	assert.Empty(t, resp.Header().Values("Set-Cookie"))
+	assert.Empty(t, info.ResponseHeader().Values("Set-Cookie"))
 }
 
 // Logout writes the clearing cookie itself. A refresh must not follow it: a
@@ -803,12 +832,12 @@ func TestLogout_SlideDoesNotResurrectCookie(t *testing.T) {
 	token := loginAdmin(t, client)
 	backdateLastActive(t, st, token)
 
-	logoutReq := connect.NewRequest(&leapmuxv1.LogoutRequest{})
-	logoutReq.Header().Set("Cookie", auth.CookieName+"="+token)
-	resp, err := client.Logout(context.Background(), logoutReq)
+	ctx, info := connect.NewClientContext(context.Background())
+	info.RequestHeader().Set("Cookie", auth.CookieName+"="+token)
+	_, err := client.Logout(ctx, &leapmuxv1.LogoutRequest{})
 	require.NoError(t, err)
 
-	values := resp.Header().Values("Set-Cookie")
+	values := info.ResponseHeader().Values("Set-Cookie")
 	require.Len(t, values, 1, "logout must answer with exactly one session cookie")
 	parsed, err := http.ParseSetCookie(values[0])
 	require.NoError(t, err)
@@ -833,12 +862,12 @@ func TestBearerRequest_SendsNoSessionCookie(t *testing.T) {
 		SecretHash:       tv.HashSecret(secret),
 	}))
 
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
-	resp, err := client.GetCurrentUser(context.Background(), req)
+	ctx, info := connect.NewClientContext(context.Background())
+	info.RequestHeader().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
+	_, err := client.GetCurrentUser(ctx, &leapmuxv1.GetCurrentUserRequest{})
 	require.NoError(t, err)
 
-	assert.Empty(t, resp.Header().Values("Set-Cookie"))
+	assert.Empty(t, info.ResponseHeader().Values("Set-Cookie"))
 }
 
 func TestLogout_EvictsSessionFromCache(t *testing.T) {
@@ -847,22 +876,16 @@ func TestLogout_EvictsSessionFromCache(t *testing.T) {
 	token := loginAdmin(t, client)
 
 	// Verify the session is valid.
-	req1 := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req1.Header().Set("Cookie", auth.CookieName+"="+token)
-	resp, err := client.GetCurrentUser(context.Background(), req1)
+	resp, err := client.GetCurrentUser(authedReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, token))
 	require.NoError(t, err)
-	assert.Equal(t, "admin", resp.Msg.GetUser().GetUsername())
+	assert.Equal(t, "admin", resp.GetUser().GetUsername())
 
 	// Logout — deletes session from DB and evicts from cache.
-	logoutReq := connect.NewRequest(&leapmuxv1.LogoutRequest{})
-	logoutReq.Header().Set("Cookie", auth.CookieName+"="+token)
-	_, err = client.Logout(context.Background(), logoutReq)
+	_, err = client.Logout(authedReq(context.Background(), &leapmuxv1.LogoutRequest{}, token))
 	require.NoError(t, err)
 
 	// Using the same token should now fail with Unauthenticated.
-	req2 := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req2.Header().Set("Cookie", auth.CookieName+"="+token)
-	_, err = client.GetCurrentUser(context.Background(), req2)
+	_, err = client.GetCurrentUser(authedReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -875,11 +898,9 @@ func TestAuthContextRegistry_RapidRequestsSucceed(t *testing.T) {
 	// Issue multiple rapid requests — the session cache should serve
 	// the cached UserInfo without repeated DB queries.
 	for i := 0; i < 5; i++ {
-		req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-		req.Header().Set("Cookie", auth.CookieName+"="+token)
-		resp, err := client.GetCurrentUser(context.Background(), req)
+		resp, err := client.GetCurrentUser(authedReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, token))
 		require.NoError(t, err)
-		assert.Equal(t, "admin", resp.Msg.GetUser().GetUsername())
+		assert.Equal(t, "admin", resp.GetUser().GetUsername())
 	}
 }
 
@@ -891,21 +912,15 @@ func TestAuthContextRegistry_EvictInvalidatesCache(t *testing.T) {
 	token := loginAdmin(t, client)
 
 	// Warm the session cache.
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Cookie", auth.CookieName+"="+token)
-	_, err := client.GetCurrentUser(context.Background(), req)
+	_, err := client.GetCurrentUser(authedReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, token))
 	require.NoError(t, err)
 
 	// Logout evicts from cache.
-	logoutReq := connect.NewRequest(&leapmuxv1.LogoutRequest{})
-	logoutReq.Header().Set("Cookie", auth.CookieName+"="+token)
-	_, err = client.Logout(context.Background(), logoutReq)
+	_, err = client.Logout(authedReq(context.Background(), &leapmuxv1.LogoutRequest{}, token))
 	require.NoError(t, err)
 
 	// The cached session must be gone — request should fail immediately.
-	req2 := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req2.Header().Set("Cookie", auth.CookieName+"="+token)
-	_, err = client.GetCurrentUser(context.Background(), req2)
+	_, err = client.GetCurrentUser(authedReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }

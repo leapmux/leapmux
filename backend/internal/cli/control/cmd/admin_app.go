@@ -5,8 +5,6 @@ import (
 	"flag"
 	"strings"
 
-	"connectrpc.com/connect"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/cli/control"
@@ -38,20 +36,20 @@ func RunAdminAppList(rawCtx any, args []string) error {
 			fs.BoolVar(&includeRevoked, "include-revoked", false, "include retired apps")
 		},
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AppService().ListApps(context.Background(), connect.NewRequest(&leapmuxv1.ListAppsRequest{
+			resp, err := c.AppService().ListApps(context.Background(), &leapmuxv1.ListAppsRequest{
 				Cursor: page.Cursor, Limit: int32(page.Limit), IncludeRevoked: includeRevoked,
-			}))
+			})
 			if err != nil {
 				return control.EmitErrorWith("rpc_failed", err)
 			}
-			rows := make([]map[string]any, 0, len(resp.Msg.GetApps()))
-			for _, app := range resp.Msg.GetApps() {
+			rows := make([]map[string]any, 0, len(resp.GetApps()))
+			for _, app := range resp.GetApps() {
 				rows = append(rows, adminAppJSON(app))
 			}
 			return control.EmitData(map[string]any{
 				"apps":                      rows,
-				"next_cursor":               resp.Msg.GetNextCursor(),
-				"open_registration_enabled": resp.Msg.GetOpenRegistrationEnabled(),
+				"next_cursor":               resp.GetNextCursor(),
+				"open_registration_enabled": resp.GetOpenRegistrationEnabled(),
 			})
 		},
 	})
@@ -132,7 +130,7 @@ func RunAdminAppRegister(rawCtx any, args []string) error {
 			if err != nil {
 				return err
 			}
-			resp, err := c.AppService().RegisterApp(context.Background(), connect.NewRequest(&leapmuxv1.RegisterAppRequest{
+			resp, err := c.AppService().RegisterApp(context.Background(), &leapmuxv1.RegisterAppRequest{
 				ClientName:       name,
 				ClientUri:        uri,
 				RedirectUris:     splitCommaList(redirect),
@@ -141,14 +139,14 @@ func RunAdminAppRegister(rawCtx any, args []string) error {
 				Visibility:       vis,
 				ClientType:       clientType,
 				ElevationAllowed: elevation,
-			}))
+			})
 			if err != nil {
 				return control.EmitErrorWith("register_failed", err)
 			}
-			out := adminAppJSON(resp.Msg.GetApp())
+			out := adminAppJSON(resp.GetApp())
 			// The ONLY time the hub emits this, so the envelope carries it and
 			// says so. A public client has none at all.
-			if secret := resp.Msg.GetClientSecret(); secret != "" {
+			if secret := resp.GetClientSecret(); secret != "" {
 				out["client_secret"] = secret
 				out["client_secret_note"] = "copy this now; the hub stores only its hash and cannot show it again"
 			}
@@ -200,11 +198,11 @@ func RunAdminAppUpdate(rawCtx any, args []string) error {
 				msg.ReplaceGrantTypes = true
 				msg.GrantTypes = splitCommaList(grants)
 			}
-			resp, err := c.AppService().UpdateApp(context.Background(), connect.NewRequest(msg))
+			resp, err := c.AppService().UpdateApp(context.Background(), msg)
 			if err != nil {
 				return control.EmitErrorWith("update_failed", err)
 			}
-			return control.EmitData(adminAppJSON(resp.Msg.GetApp()))
+			return control.EmitData(adminAppJSON(resp.GetApp()))
 		},
 	})
 }
@@ -223,11 +221,11 @@ func RunAdminAppSetElevation(rawCtx any, args []string, allowed bool) error {
 		BeforeDial: requireFlag(&clientID, "client-id"),
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AppService().SetAppElevationAllowed(context.Background(),
-				connect.NewRequest(&leapmuxv1.SetAppElevationAllowedRequest{ClientId: clientID, Allowed: allowed}))
+				&leapmuxv1.SetAppElevationAllowedRequest{ClientId: clientID, Allowed: allowed})
 			if err != nil {
 				return control.EmitErrorWith("update_failed", err)
 			}
-			return control.EmitData(adminAppJSON(resp.Msg.GetApp()))
+			return control.EmitData(adminAppJSON(resp.GetApp()))
 		},
 	})
 }
@@ -241,11 +239,11 @@ func RunAdminAppSetVerified(rawCtx any, args []string, verified bool) error {
 		BeforeDial: requireFlag(&clientID, "client-id"),
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AppService().VerifyApp(context.Background(),
-				connect.NewRequest(&leapmuxv1.VerifyAppRequest{ClientId: clientID, Verified: verified}))
+				&leapmuxv1.VerifyAppRequest{ClientId: clientID, Verified: verified})
 			if err != nil {
 				return control.EmitErrorWith("verify_failed", err)
 			}
-			return control.EmitData(adminAppJSON(resp.Msg.GetApp()))
+			return control.EmitData(adminAppJSON(resp.GetApp()))
 		},
 	})
 }
@@ -259,13 +257,13 @@ func RunAdminAppRevoke(rawCtx any, args []string) error {
 		BeforeDial: requireFlag(&clientID, "client-id"),
 		Run: func(c *control.Client, _ adminArgs) error {
 			resp, err := c.AppService().RevokeApp(context.Background(),
-				connect.NewRequest(&leapmuxv1.RevokeAppRequest{ClientId: clientID}))
+				&leapmuxv1.RevokeAppRequest{ClientId: clientID})
 			if err != nil {
 				return control.EmitErrorWith("revoke_failed", err)
 			}
 			return control.EmitData(map[string]any{
 				"revoked":                  clientID,
-				"revoked_credential_count": resp.Msg.GetRevokedCredentialCount(),
+				"revoked_credential_count": resp.GetRevokedCredentialCount(),
 			})
 		},
 	})
@@ -280,7 +278,7 @@ func RunAdminAppDelete(rawCtx any, args []string) error {
 		BeforeDial: requireFlag(&clientID, "client-id"),
 		Run: func(c *control.Client, _ adminArgs) error {
 			if _, err := c.AppService().DeleteApp(context.Background(),
-				connect.NewRequest(&leapmuxv1.DeleteAppRequest{ClientId: clientID})); err != nil {
+				&leapmuxv1.DeleteAppRequest{ClientId: clientID}); err != nil {
 				return control.EmitErrorWith("delete_failed", err)
 			}
 			return control.EmitData(map[string]any{"deleted": clientID})

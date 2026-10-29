@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -34,13 +35,13 @@ import (
 // for a proven factor while opening the hub to the world asked for nothing,
 // so every write verb here takes the same elevation window.
 
-// settingsWrite performs one write verb, authenticated by whichever credential
-// `authorize` stamps on the request.
+// settingsWrite performs one write verb on ctx, authenticated by whichever
+// credential `authorize` stamps on the request.
 //
 // Every call is a REAL write that succeeds on an elevated session, never a
 // deliberately malformed request: a refusal these tests could not tell from an
 // argument error would pass whether the gate existed or not.
-type settingsWrite func(env *adminSettingsEnv, authorize requestAuth) error
+type settingsWrite func(ctx context.Context, env *adminSettingsEnv, authorize requestAuth) error
 
 // requestAuth stamps a credential onto a request. Two exist: a session cookie
 // and an admin-scoped bearer, and the gate answers them differently on purpose.
@@ -54,10 +55,13 @@ func bearerAuth(bearer string) requestAuth {
 	return func(h interface{ Set(string, string) }) { h.Set("Authorization", "Bearer "+bearer) }
 }
 
-func authorized[T any](msg *T, authorize requestAuth) *connect.Request[T] {
-	req := connect.NewRequest(msg)
-	authorize(req.Header())
-	return req
+// authorized returns a context carrying the credential `authorize` stamps and
+// the message unchanged, so a client call takes the pair as its whole
+// (ctx, req) argument list.
+func authorized[T any](ctx context.Context, msg *T, authorize requestAuth) (context.Context, *T) {
+	ctx, info := clientCallInfo(ctx)
+	authorize(info.RequestHeader())
+	return ctx, msg
 }
 
 // settingsWriteVerbs is every write verb on the service, so a verb added
@@ -66,33 +70,33 @@ func authorized[T any](msg *T, authorize requestAuth) *connect.Request[T] {
 func settingsWriteVerbs() map[string]settingsWrite {
 	key := settings.KeySignupEnabled.Name()
 	return map[string]settingsWrite{
-		"UpdateSetting": func(env *adminSettingsEnv, authorize requestAuth) error {
-			_, err := env.client.UpdateSetting(context.Background(),
-				authorized(&leapmuxv1.UpdateSettingRequest{Key: key, PartialJson: `true`}, authorize))
+		"UpdateSetting": func(ctx context.Context, env *adminSettingsEnv, authorize requestAuth) error {
+			_, err := env.client.UpdateSetting(authorized(ctx,
+				&leapmuxv1.UpdateSettingRequest{Key: key, PartialJson: `true`}, authorize))
 			return err
 		},
-		"UpdateSettingSecret": func(env *adminSettingsEnv, authorize requestAuth) error {
-			_, err := env.client.UpdateSettingSecret(context.Background(),
-				authorized(&leapmuxv1.UpdateSettingSecretRequest{
+		"UpdateSettingSecret": func(ctx context.Context, env *adminSettingsEnv, authorize requestAuth) error {
+			_, err := env.client.UpdateSettingSecret(authorized(ctx,
+				&leapmuxv1.UpdateSettingSecretRequest{
 					Key: settings.KeySMTP.Name(), PartialJson: `{"password":"hunter2hunter2"}`,
 				}, authorize))
 			return err
 		},
-		"UpdateSettings": func(env *adminSettingsEnv, authorize requestAuth) error {
-			_, err := env.client.UpdateSettings(context.Background(),
-				authorized(&leapmuxv1.UpdateSettingsRequest{
+		"UpdateSettings": func(ctx context.Context, env *adminSettingsEnv, authorize requestAuth) error {
+			_, err := env.client.UpdateSettings(authorized(ctx,
+				&leapmuxv1.UpdateSettingsRequest{
 					Writes: []*leapmuxv1.SettingWrite{{Key: key, PartialJson: `true`}},
 				}, authorize))
 			return err
 		},
-		"ResetSetting": func(env *adminSettingsEnv, authorize requestAuth) error {
-			_, err := env.client.ResetSetting(context.Background(),
-				authorized(&leapmuxv1.ResetSettingRequest{Key: key}, authorize))
+		"ResetSetting": func(ctx context.Context, env *adminSettingsEnv, authorize requestAuth) error {
+			_, err := env.client.ResetSetting(authorized(ctx,
+				&leapmuxv1.ResetSettingRequest{Key: key}, authorize))
 			return err
 		},
-		"ResetSettings": func(env *adminSettingsEnv, authorize requestAuth) error {
-			_, err := env.client.ResetSettings(context.Background(),
-				authorized(&leapmuxv1.ResetSettingsRequest{Keys: []string{key}}, authorize))
+		"ResetSettings": func(ctx context.Context, env *adminSettingsEnv, authorize requestAuth) error {
+			_, err := env.client.ResetSettings(authorized(ctx,
+				&leapmuxv1.ResetSettingsRequest{Keys: []string{key}}, authorize))
 			return err
 		},
 	}
@@ -102,18 +106,17 @@ func TestAdminSettingsService_WriteGate(t *testing.T) {
 	for name, write := range settingsWriteVerbs() {
 		t.Run(name+" refuses an un-elevated session", func(t *testing.T) {
 			env := setupAdminSettingsTestUnelevated(t, &config.Config{})
-			err := write(env, cookieAuth(env.token))
+			ctx, info := connect.NewClientContext(context.Background())
+			err := write(ctx, env, cookieAuth(env.token))
 			require.Error(t, err)
 			assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-			var connectErr *connect.Error
-			require.ErrorAs(t, err, &connectErr)
-			assert.Equal(t, "1", connectErr.Meta().Get(service.ElevationRequiredHeader),
+			assert.Equal(t, "1", info.ResponseHeader().Get(service.ElevationRequiredHeader),
 				"the refusal must be the one a step-up prompt can clear")
 		})
 
 		t.Run(name+" admits an elevated session", func(t *testing.T) {
 			env := setupAdminSettingsTest(t, &config.Config{})
-			assert.NoError(t, write(env, cookieAuth(env.token)))
+			assert.NoError(t, write(context.Background(), env, cookieAuth(env.token)))
 		})
 
 		// The headless path takes the SAME rule. A command-line credential
@@ -123,7 +126,7 @@ func TestAdminSettingsService_WriteGate(t *testing.T) {
 		// for the hub's own security settings.
 		t.Run(name+" admits an elevated command-line credential", func(t *testing.T) {
 			env := setupAdminSettingsTest(t, &config.Config{})
-			assert.NoError(t, write(env, bearerAuth(env.elevatedAdminBearer(t))))
+			assert.NoError(t, write(context.Background(), env, bearerAuth(env.elevatedAdminBearer(t))))
 		})
 
 		// And the refusal is the one the CLI can ACT on: marked, so it runs
@@ -132,12 +135,11 @@ func TestAdminSettingsService_WriteGate(t *testing.T) {
 		t.Run(name+" tells an unelevated command-line credential to verify", func(t *testing.T) {
 			env := setupAdminSettingsTest(t, &config.Config{})
 			bearer, _ := env.adminBearer(t)
-			err := write(env, bearerAuth(bearer))
+			ctx, info := connect.NewClientContext(context.Background())
+			err := write(ctx, env, bearerAuth(bearer))
 			require.Error(t, err)
 			assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-			var connectErr *connect.Error
-			require.ErrorAs(t, err, &connectErr)
-			assert.Equal(t, "1", connectErr.Meta().Get(service.ElevationRequiredHeader))
+			assert.Equal(t, "1", info.ResponseHeader().Get(service.ElevationRequiredHeader))
 		})
 	}
 }
@@ -147,10 +149,10 @@ func TestAdminSettingsService_WriteGate(t *testing.T) {
 // a page.
 func TestAdminSettingsService_ListNeedsNoElevation(t *testing.T) {
 	env := setupAdminSettingsTestUnelevated(t, &config.Config{})
-	resp, err := env.client.ListSettings(context.Background(),
-		authedReq(&leapmuxv1.ListSettingsRequest{}, env.token))
+	resp, err := env.client.ListSettings(authedReq(context.Background(),
+		&leapmuxv1.ListSettingsRequest{}, env.token))
 	require.NoError(t, err)
-	assert.NotEmpty(t, resp.Msg.GetDescriptors())
+	assert.NotEmpty(t, resp.GetDescriptors())
 }
 
 // The same rule for a COMMAND-LINE credential, which is where it matters most:
@@ -178,7 +180,7 @@ func TestAdminSettingsService_WriteSlidesACredentialWindow(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 1, n)
 
-	_, err = env.client.UpdateSetting(ctx, authorized(&leapmuxv1.UpdateSettingRequest{
+	_, err = env.client.UpdateSetting(authorized(ctx, &leapmuxv1.UpdateSettingRequest{
 		Key: settings.KeySignupEnabled.Name(), PartialJson: `true`,
 	}, bearerAuth(bearer)))
 	require.NoError(t, err)
@@ -207,7 +209,7 @@ func TestAdminSettingsService_WriteSlidesTheElevationWindow(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 1, n)
 
-	_, err = env.client.UpdateSetting(ctx, authedReq(&leapmuxv1.UpdateSettingRequest{
+	_, err = env.client.UpdateSetting(authedReq(ctx, &leapmuxv1.UpdateSettingRequest{
 		Key: settings.KeySignupEnabled.Name(), PartialJson: `true`,
 	}, env.token))
 	require.NoError(t, err)
@@ -232,7 +234,7 @@ func TestAdminSettingsService_RefusedWriteDoesNotSlideTheWindow(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 1, n)
 
-	_, err = env.client.UpdateSetting(ctx, authedReq(&leapmuxv1.UpdateSettingRequest{
+	_, err = env.client.UpdateSetting(authedReq(ctx, &leapmuxv1.UpdateSettingRequest{
 		Key: "no_such_setting_key", PartialJson: `true`,
 	}, env.token))
 	require.Error(t, err)
@@ -251,7 +253,7 @@ func TestAdminSettingsService_RefusedWriteDoesNotSlideTheWindow(t *testing.T) {
 // arguments anyway.
 func TestAdminSettingsService_UnknownKeyIsReportedBeforeTheGate(t *testing.T) {
 	env := setupAdminSettingsTestUnelevated(t, &config.Config{})
-	_, err := env.client.UpdateSetting(context.Background(), authedReq(&leapmuxv1.UpdateSettingRequest{
+	_, err := env.client.UpdateSetting(authedReq(context.Background(), &leapmuxv1.UpdateSettingRequest{
 		Key: "no_such_setting_key", PartialJson: `true`,
 	}, env.token))
 	require.Error(t, err)
@@ -289,9 +291,9 @@ func TestAdminSettingsService_SoloModeWritesWithoutAFactor(t *testing.T) {
 
 	// public_url is a key solo READS (it is not HiddenInSolo), so the write
 	// below reaches the gate rather than the solo key filter.
-	resp, err := env.client.UpdateSetting(ctx, connect.NewRequest(&leapmuxv1.UpdateSettingRequest{
+	resp, err := env.client.UpdateSetting(ctx, &leapmuxv1.UpdateSettingRequest{
 		Key: settings.KeyPublicURL.Name(), PartialJson: `"https://hub.example.com"`,
-	}))
+	})
 	require.NoError(t, err, "a solo hub must be able to administer itself with no ceremony to prove a factor with")
 	require.NotNil(t, resp)
 
@@ -322,12 +324,12 @@ func setupAdminSettingsSoloEnv(t *testing.T) *adminSettingsEnv {
 
 	set := servicetest.NewSettingsManager(t, st, nil)
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, SoloUser: soloUser})
-	connectOpts := connect.WithInterceptors(interceptor, service.NewElevationSlideInterceptor())
 
 	mux := http.NewServeMux()
 	svc := service.NewAdminSettingsService(set, &config.Config{SoloMode: true}, st)
-	path, handler := leapmuxv1connect.NewAdminSettingsServiceHandler(svc, connectOpts)
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer(interceptor, service.NewElevationResponseInterceptor())
+	leapmuxv1connect.RegisterAdminSettingsServiceHandler(connectServer, svc)
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewUnstartedServer(mux)
 	server.Config.BaseContext = func(net.Listener) context.Context {
@@ -338,7 +340,7 @@ func setupAdminSettingsSoloEnv(t *testing.T) *adminSettingsEnv {
 	t.Cleanup(server.Close)
 
 	return &adminSettingsEnv{
-		client:  leapmuxv1connect.NewAdminSettingsServiceClient(server.Client(), server.URL, connect.WithGRPC()),
+		client:  leapmuxv1connect.NewAdminSettingsServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC()))),
 		st:      st,
 		set:     set,
 		adminID: soloUser.ID.String(),

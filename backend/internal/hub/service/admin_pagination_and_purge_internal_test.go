@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -123,11 +123,11 @@ func (c *fakePurgeCleanup) HardDeleteExpiredRegistrationKeysBefore(_ context.Con
 	return deleted, nil
 }
 
-func purgeRegistrationKeys(t *testing.T, cleanup *fakePurgeCleanup) (*connect.Response[leapmuxv1.PurgeExpiredRegistrationKeysResponse], error) {
+func purgeRegistrationKeys(t *testing.T, cleanup *fakePurgeCleanup) (*leapmuxv1.PurgeExpiredRegistrationKeysResponse, error) {
 	t.Helper()
 	svc := NewAdminWorkerService(fakePurgeStore{cleanup: cleanup}, nil)
 	return svc.PurgeExpiredRegistrationKeys(context.Background(),
-		connect.NewRequest(&leapmuxv1.PurgeExpiredRegistrationKeysRequest{}))
+		&leapmuxv1.PurgeExpiredRegistrationKeysRequest{})
 }
 
 // TestPurgeExpiredRegistrationKeysDrainsUntilAPassDeletesNothing pins the
@@ -143,7 +143,7 @@ func TestPurgeExpiredRegistrationKeysDrainsUntilAPassDeletesNothing(t *testing.T
 	cleanup := &fakePurgeCleanup{remaining: 7, batch: 3}
 	got, err := purgeRegistrationKeys(t, cleanup)
 	require.NoError(t, err)
-	assert.Equal(t, int64(7), got.Msg.GetPurged(), "every pass adds to the reported total")
+	assert.Equal(t, int64(7), got.GetPurged(), "every pass adds to the reported total")
 	assert.Equal(t, 4, cleanup.passes, "the drain ends on the pass that deletes nothing")
 
 	// ONE cutoff for the whole drain, computed before the first pass. A
@@ -164,7 +164,7 @@ func TestPurgeExpiredRegistrationKeysStopsOnAnEmptyBacklog(t *testing.T) {
 	cleanup := &fakePurgeCleanup{remaining: 0, batch: 1000}
 	got, err := purgeRegistrationKeys(t, cleanup)
 	require.NoError(t, err)
-	assert.Zero(t, got.Msg.GetPurged())
+	assert.Zero(t, got.GetPurged())
 	assert.Equal(t, 1, cleanup.passes, "an empty backlog costs one query, not a loop")
 }
 
@@ -183,7 +183,7 @@ func TestPurgeExpiredRegistrationKeysStopsAtTheRunawayCeiling(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, maxRegistrationKeyPurgeBatches, cleanup.passes,
 		"an endless backlog stops at the runaway ceiling")
-	assert.Equal(t, int64(maxRegistrationKeyPurgeBatches), got.Msg.GetPurged(),
+	assert.Equal(t, int64(maxRegistrationKeyPurgeBatches), got.GetPurged(),
 		"the total counts every pass that ran, ceiling included")
 }
 

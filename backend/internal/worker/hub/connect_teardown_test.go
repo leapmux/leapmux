@@ -7,7 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -51,13 +52,13 @@ type greetThenSilentConnector struct {
 }
 
 func (*greetThenSilentConnector) Register(
-	context.Context, *connect.Request[leapmuxv1.RegisterRequest],
-) (*connect.Response[leapmuxv1.RegisterResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, nil)
+	context.Context, *leapmuxv1.RegisterRequest,
+) (*leapmuxv1.RegisterResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "")
 }
 
 func (s *greetThenSilentConnector) Connect(
-	_ context.Context, stream *connect.BidiStream[leapmuxv1.ConnectRequest, leapmuxv1.ConnectResponse],
+	_ context.Context, stream leapmuxv1connect.WorkerConnectorServiceConnectServerStream,
 ) error {
 	greeted := false
 	for {
@@ -86,7 +87,9 @@ func startGreetThenSilentConnector(t *testing.T) (*greetThenSilentConnector, *ht
 
 	svc := &greetThenSilentConnector{streamEnd: make(chan error, 1)}
 	mux := http.NewServeMux()
-	mux.Handle(leapmuxv1connect.NewWorkerConnectorServiceHandler(svc))
+	srv := connect.NewServer()
+	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(srv, svc)
+	connecthttp.Mount(mux, srv, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewUnstartedServer(mux)
 	server.Config.Protocols = &http.Protocols{}

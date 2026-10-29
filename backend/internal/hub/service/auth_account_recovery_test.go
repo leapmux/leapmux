@@ -11,7 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -55,7 +56,6 @@ func setupAccountRecoveryAuthServiceWithClock(t *testing.T, sender mail.Sender, 
 	mux := http.NewServeMux()
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(sc.Stop)
-	opts := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(service.AuthServiceDeps{
 		Store:     st,
 		Config:    testConfig(),
@@ -64,12 +64,13 @@ func setupAccountRecoveryAuthServiceWithClock(t *testing.T, sender mail.Sender, 
 		Mail:      sender,
 		Renderer:  mail.Renderer{BaseURL: func() string { return "https://hub.example.com" }},
 	})
-	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer(interceptor)
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+	client := leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 	return client, st, authSvc
 }
 
@@ -100,9 +101,9 @@ func TestRequestAccountRecovery_UnknownUser_EmptySuccess(t *testing.T) {
 	sender := &mailSenderDouble{}
 	client, _ := setupAccountRecoveryAuthService(t, sender)
 
-	_, err := client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
+	_, err := client.RequestAccountRecovery(context.Background(), &leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "nobody@example.com",
-	}))
+	})
 	require.NoError(t, err)
 	assert.Empty(t, sender.snapshot())
 }
@@ -126,9 +127,9 @@ func TestRequestAccountRecovery_KnownUser_SendsMail(t *testing.T) {
 		FirstCredentialExempt: true,
 	}))
 
-	_, err = client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
+	_, err = client.RequestAccountRecovery(context.Background(), &leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "resetme@example.com",
-	}))
+	})
 	require.NoError(t, err)
 	require.Len(t, sender.snapshot(), 1)
 	assert.Equal(t, "resetme@example.com", sender.snapshot()[0].To)
@@ -142,10 +143,10 @@ func TestRequestAccountRecovery_KnownUser_SendsMail(t *testing.T) {
 	assert.NotEmpty(t, user.PendingRecoveryToken)
 	assert.NotNil(t, user.PendingRecoveryExpiresAt)
 
-	_, err = client.CompleteAccountRecoveryPassword(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryPasswordRequest{
+	_, err = client.CompleteAccountRecoveryPassword(context.Background(), &leapmuxv1.CompleteAccountRecoveryPasswordRequest{
 		Token:       token,
 		NewPassword: "newpass123",
-	}))
+	})
 	require.NoError(t, err)
 
 	user, err = st.Users().GetByID(context.Background(), userID)
@@ -175,9 +176,9 @@ func TestRequestAccountRecovery_MailFailure_ClearsToken(t *testing.T) {
 		FirstCredentialExempt: true,
 	}))
 
-	_, err = client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
+	_, err = client.RequestAccountRecovery(context.Background(), &leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "mailfail@example.com",
-	}))
+	})
 	require.NoError(t, err)
 
 	user, err := st.Users().GetByID(context.Background(), userID)
@@ -200,10 +201,10 @@ func TestCompleteAccountRecoveryPassword_InvalidToken_NotFound(t *testing.T) {
 		FirstCredentialExempt: true,
 	}))
 
-	_, err = client.CompleteAccountRecoveryPassword(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryPasswordRequest{
+	_, err = client.CompleteAccountRecoveryPassword(context.Background(), &leapmuxv1.CompleteAccountRecoveryPasswordRequest{
 		Token:       "not-a-real-token",
 		NewPassword: "newpass123",
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 
@@ -219,10 +220,10 @@ func TestCompleteAccountRecoveryPassword_EmptyToken_InvalidArgument(t *testing.T
 
 	client, _ := setupAccountRecoveryAuthService(t, mail.NewStubSender())
 
-	_, err := client.CompleteAccountRecoveryPassword(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryPasswordRequest{
+	_, err := client.CompleteAccountRecoveryPassword(context.Background(), &leapmuxv1.CompleteAccountRecoveryPasswordRequest{
 		Token:       "",
 		NewPassword: "newpass123",
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
@@ -245,18 +246,18 @@ func TestCompleteAccountRecoveryPassword_WeakPasswordDoesNotCharge(t *testing.T)
 		FirstCredentialExempt: true,
 	}))
 
-	_, err = client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
+	_, err = client.RequestAccountRecovery(context.Background(), &leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "weakpw@example.com",
-	}))
+	})
 	require.NoError(t, err)
 	require.Len(t, sender.snapshot(), 1)
 	token := extractAccountRecoveryToken(sender.snapshot()[0].Body)
 	require.NotEmpty(t, token)
 
-	_, err = client.CompleteAccountRecoveryPassword(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryPasswordRequest{
+	_, err = client.CompleteAccountRecoveryPassword(context.Background(), &leapmuxv1.CompleteAccountRecoveryPasswordRequest{
 		Token:       token,
 		NewPassword: "short",
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
@@ -265,10 +266,10 @@ func TestCompleteAccountRecoveryPassword_WeakPasswordDoesNotCharge(t *testing.T)
 	assert.Zero(t, user.PendingRecoveryAttempts, "password-format refusal must run before the attempt charge")
 	require.NotEmpty(t, user.PendingRecoveryToken)
 
-	_, err = client.CompleteAccountRecoveryPassword(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryPasswordRequest{
+	_, err = client.CompleteAccountRecoveryPassword(context.Background(), &leapmuxv1.CompleteAccountRecoveryPasswordRequest{
 		Token:       token,
 		NewPassword: "newpass123",
-	}))
+	})
 	require.NoError(t, err)
 }
 
@@ -306,19 +307,19 @@ func TestCompleteAccountRecoveryPassword_Success_WipesPasskeysAndSessions(t *tes
 		CreatedAt:   now,
 	}))
 
-	_, err = client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
+	_, err = client.RequestAccountRecovery(context.Background(), &leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "wipeme",
-	}))
+	})
 	require.NoError(t, err)
 	require.Len(t, sender.snapshot(), 1)
 	token := extractAccountRecoveryToken(sender.snapshot()[0].Body)
 	require.NotEmpty(t, token)
 	assertRecoveryTokenShape(t, token)
 
-	_, err = client.CompleteAccountRecoveryPassword(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryPasswordRequest{
+	_, err = client.CompleteAccountRecoveryPassword(context.Background(), &leapmuxv1.CompleteAccountRecoveryPasswordRequest{
 		Token:       token,
 		NewPassword: "newpass123",
-	}))
+	})
 	require.NoError(t, err)
 
 	count, err := st.PasskeyCredentials().CountByUser(context.Background(), userID)
@@ -357,9 +358,9 @@ func TestRequestAccountRecovery_PasswordlessAccount_SendsLink(t *testing.T) {
 		FirstCredentialExempt: false,
 	}))
 
-	_, err := client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
+	_, err := client.RequestAccountRecovery(context.Background(), &leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "passkeyonly",
-	}))
+	})
 	require.NoError(t, err)
 	require.Len(t, sender.snapshot(), 1)
 	assert.Equal(t, "passkeyonly@example.com", sender.snapshot()[0].To)
@@ -393,18 +394,18 @@ func TestCompleteAccountRecoveryPassword_SetsFirstPassword(t *testing.T) {
 	}))
 	seedPasskeyCredential(t, st, userID, "Lost Laptop")
 
-	_, err := client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
+	_, err := client.RequestAccountRecovery(context.Background(), &leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "recoverless@example.com",
-	}))
+	})
 	require.NoError(t, err)
 	require.Len(t, sender.snapshot(), 1)
 	token := extractAccountRecoveryToken(sender.snapshot()[0].Body)
 	require.NotEmpty(t, token)
 
-	_, err = client.CompleteAccountRecoveryPassword(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryPasswordRequest{
+	_, err = client.CompleteAccountRecoveryPassword(context.Background(), &leapmuxv1.CompleteAccountRecoveryPasswordRequest{
 		Token:       token,
 		NewPassword: "firstpass123",
-	}))
+	})
 	require.NoError(t, err)
 
 	row, err := st.Users().GetByID(context.Background(), userID)
@@ -440,9 +441,9 @@ func TestCompleteAccountRecoveryPassword_ExpiredToken_NotFound(t *testing.T) {
 		FirstCredentialExempt: true,
 	}))
 
-	_, err = client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
+	_, err = client.RequestAccountRecovery(context.Background(), &leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "expired@example.com",
-	}))
+	})
 	require.NoError(t, err)
 	require.Len(t, sender.snapshot(), 1)
 	token := extractAccountRecoveryToken(sender.snapshot()[0].Body)
@@ -462,10 +463,10 @@ func TestCompleteAccountRecoveryPassword_ExpiredToken_NotFound(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = client.CompleteAccountRecoveryPassword(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryPasswordRequest{
+	_, err = client.CompleteAccountRecoveryPassword(context.Background(), &leapmuxv1.CompleteAccountRecoveryPasswordRequest{
 		Token:       token,
 		NewPassword: "newpass123",
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 }
@@ -488,9 +489,9 @@ func TestCompleteAccountRecoveryPassword_AttemptLimitBlocksBeforeArgon2(t *testi
 		FirstCredentialExempt: true,
 	}))
 
-	_, err = client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
+	_, err = client.RequestAccountRecovery(context.Background(), &leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "attemptcap@example.com",
-	}))
+	})
 	require.NoError(t, err)
 	require.Len(t, sender.snapshot(), 1)
 	token := extractAccountRecoveryToken(sender.snapshot()[0].Body)
@@ -507,10 +508,10 @@ func TestCompleteAccountRecoveryPassword_AttemptLimitBlocksBeforeArgon2(t *testi
 
 	// Sixth Complete must refuse after Consume sets attempts>5, before a
 	// successful password change (password stays oldpass123).
-	_, err = client.CompleteAccountRecoveryPassword(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryPasswordRequest{
+	_, err = client.CompleteAccountRecoveryPassword(context.Background(), &leapmuxv1.CompleteAccountRecoveryPasswordRequest{
 		Token:       token,
 		NewPassword: "newpass123",
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 
@@ -528,9 +529,9 @@ func TestRequestAccountRecovery_InvalidUsername_EmptySuccess(t *testing.T) {
 	sender := &mailSenderDouble{}
 	client, _ := setupAccountRecoveryAuthService(t, sender)
 
-	_, err := client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
+	_, err := client.RequestAccountRecovery(context.Background(), &leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "!!!not-a-slug!!!",
-	}))
+	})
 	require.NoError(t, err)
 	assert.Empty(t, sender.snapshot())
 }
@@ -554,9 +555,9 @@ func TestRequestAccountRecovery_UsernameIsSanitized(t *testing.T) {
 		FirstCredentialExempt: true,
 	}))
 
-	_, err = client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
+	_, err = client.RequestAccountRecovery(context.Background(), &leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "ResetMe",
-	}))
+	})
 	require.NoError(t, err)
 	require.Len(t, sender.snapshot(), 1)
 }
@@ -586,9 +587,9 @@ func TestRequestAccountRecovery_CooldownKeepsPreviousLink(t *testing.T) {
 	}))
 
 	for i := 0; i < 2; i++ {
-		_, err := client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
+		_, err := client.RequestAccountRecovery(context.Background(), &leapmuxv1.RequestAccountRecoveryRequest{
 			Identifier: "cooldown@example.com",
-		}))
+		})
 		require.NoError(t, err)
 	}
 	require.Len(t, sender.snapshot(), 1, "cooldown must suppress the second send")
@@ -596,10 +597,10 @@ func TestRequestAccountRecovery_CooldownKeepsPreviousLink(t *testing.T) {
 	token := extractAccountRecoveryToken(sender.snapshot()[0].Body)
 	require.NotEmpty(t, token)
 	assertRecoveryTokenShape(t, token)
-	_, err := client.CompleteAccountRecoveryPassword(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryPasswordRequest{
+	_, err := client.CompleteAccountRecoveryPassword(context.Background(), &leapmuxv1.CompleteAccountRecoveryPasswordRequest{
 		Token:       token,
 		NewPassword: "freshpass123",
-	}))
+	})
 	require.NoError(t, err, "the first link must stay completable inside the cooldown window")
 }
 
@@ -625,9 +626,9 @@ func TestRequestAccountRecovery_BurnedBudgetKeepsCooldown(t *testing.T) {
 		FirstCredentialExempt: true,
 	}))
 
-	_, err := client.RequestAccountRecovery(ctx, connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
+	_, err := client.RequestAccountRecovery(ctx, &leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "burned@example.com",
-	}))
+	})
 	require.NoError(t, err)
 	require.Len(t, sender.snapshot(), 1)
 	token := extractAccountRecoveryToken(sender.snapshot()[0].Body)
@@ -642,9 +643,9 @@ func TestRequestAccountRecovery_BurnedBudgetKeepsCooldown(t *testing.T) {
 
 	// The link is expired, but it was issued seconds ago: the next request
 	// must answer the same empty success and send nothing.
-	_, err = client.RequestAccountRecovery(ctx, connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
+	_, err = client.RequestAccountRecovery(ctx, &leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "burned@example.com",
-	}))
+	})
 	require.NoError(t, err, "the response is uniform; only the mail differs")
 	require.Len(t, sender.snapshot(), 1, "burning the attempt budget must not reset the resend cooldown")
 }
@@ -670,12 +671,12 @@ func TestSignUp_MailFailureDoesNotLeakTransportDetails(t *testing.T) {
 		IsAdmin:               true,
 	}))
 
-	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	_, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username:    "leakcheck-user",
 		Password:    "hunter2abc",
 		DisplayName: "Leak Check",
 		Email:       "leakcheck@example.com",
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
 	assert.NotContains(t, err.Error(), "smtp.secret-relay.example")
@@ -721,9 +722,9 @@ func TestRequestAccountRecovery_AdminUnconfirmedAddressGetsNoLink(t *testing.T) 
 		EmailVerified: false, FirstCredentialExempt: true, IsAdmin: true,
 	}))
 
-	_, err = client.RequestAccountRecovery(ctx, connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
+	_, err = client.RequestAccountRecovery(ctx, &leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "unconfirmed@example.com",
-	}))
+	})
 	require.NoError(t, err, "the response is uniform; only the mail differs")
 	assert.Empty(t, sender.snapshot(), "no link to an address the hub never confirmed, administrator or not")
 
@@ -740,9 +741,9 @@ func TestRequestAccountRecovery_AdminUnconfirmedAddressGetsNoLink(t *testing.T) 
 		EmailVerified: true, FirstCredentialExempt: true, IsAdmin: true,
 	}))
 
-	_, err = client.RequestAccountRecovery(ctx, connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
+	_, err = client.RequestAccountRecovery(ctx, &leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "confirmed@example.com",
-	}))
+	})
 	require.NoError(t, err)
 	require.Len(t, sender.snapshot(), 1)
 	assert.Equal(t, "confirmed@example.com", sender.snapshot()[0].To)
@@ -774,9 +775,9 @@ func TestRequestAccountRecovery_UsesTheServiceClock(t *testing.T) {
 		Email: "clocked@example.com", EmailVerified: true, FirstCredentialExempt: true,
 	}))
 
-	_, err = client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
+	_, err = client.RequestAccountRecovery(context.Background(), &leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: "clocked@example.com",
-	}))
+	})
 	require.NoError(t, err)
 	require.Len(t, sender.snapshot(), 1)
 
@@ -822,19 +823,16 @@ func TestSoloRefusesEveryPathThatCanClearAPassword(t *testing.T) {
 		call func() error
 	}{
 		{"CompleteAccountRecoveryPassword", func() error {
-			_, err := svc.CompleteAccountRecoveryPassword(ctx, connect.NewRequest(
-				&leapmuxv1.CompleteAccountRecoveryPasswordRequest{Token: "t", NewPassword: "irrelevant-password"}))
+			_, err := svc.CompleteAccountRecoveryPassword(ctx, &leapmuxv1.CompleteAccountRecoveryPasswordRequest{Token: "t", NewPassword: "irrelevant-password"})
 			return err
 		}},
 		{"BeginAccountRecoveryPasskey", func() error {
-			_, err := svc.BeginAccountRecoveryPasskey(ctx, connect.NewRequest(
-				&leapmuxv1.BeginAccountRecoveryPasskeyRequest{Token: "t"}))
+			_, err := svc.BeginAccountRecoveryPasskey(ctx, &leapmuxv1.BeginAccountRecoveryPasskeyRequest{Token: "t"})
 			return err
 		}},
 		// The one that actually writes PlaceholderHash over a live password.
 		{"FinishAccountRecoveryPasskey", func() error {
-			_, err := svc.FinishAccountRecoveryPasskey(ctx, connect.NewRequest(
-				&leapmuxv1.FinishAccountRecoveryPasskeyRequest{Token: "t"}))
+			_, err := svc.FinishAccountRecoveryPasskey(ctx, &leapmuxv1.FinishAccountRecoveryPasskeyRequest{Token: "t"})
 			return err
 		}},
 	} {

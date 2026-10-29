@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"golang.org/x/oauth2"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -534,14 +534,14 @@ func RunAuthCredentials(rawCtx any, args []string) error {
 	out := make([]map[string]any, 0)
 	cursor := ""
 	for range maxCredentialPages {
-		resp, err := c.UserService().ListMyAPITokens(context.Background(), connect.NewRequest(&leapmuxv1.ListMyAPITokensRequest{
+		resp, err := c.UserService().ListMyAPITokens(context.Background(), &leapmuxv1.ListMyAPITokensRequest{
 			Cursor: cursor,
 			Limit:  credentialPageSize,
-		}))
+		})
 		if err != nil {
 			return control.EmitErrorWith("rpc_failed", err)
 		}
-		for _, tok := range resp.Msg.GetTokens() {
+		for _, tok := range resp.GetTokens() {
 			if seen[tok.GetId()] {
 				continue
 			}
@@ -572,7 +572,7 @@ func RunAuthCredentials(rawCtx any, args []string) error {
 			putTime(row, "expires", tok.GetExpiresAt())
 			out = append(out, row)
 		}
-		next := resp.Msg.GetNextCursor()
+		next := resp.GetNextCursor()
 		if next == "" || next == cursor {
 			break
 		}
@@ -755,10 +755,10 @@ func hubCheck(c *control.Client) (user *leapmuxv1.User, warning string, outcome 
 	ctx, cancel := context.WithTimeout(context.Background(), hubCheckTimeout)
 	defer cancel()
 	me, callErr := c.AuthService().GetCurrentUser(ctx,
-		connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
+		&leapmuxv1.GetCurrentUserRequest{})
 	switch {
 	case callErr == nil:
-		return me.Msg.GetUser(), "", hubCheckConfirmed, nil
+		return me.GetUser(), "", hubCheckConfirmed, nil
 	case hubRefusedCredential(callErr):
 		return nil, "", hubCheckRefused,
 			fmt.Errorf("the hub refused this credential: %w", callErr)

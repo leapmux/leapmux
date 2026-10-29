@@ -4,13 +4,16 @@ import (
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
+	"errors"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -77,21 +80,21 @@ func TestNewClientFromEnv_LocalWhoami(t *testing.T) {
 
 	ipc, err := c.ControlIPCService()
 	require.NoError(t, err)
-	resp, err := ipc.Whoami(context.Background(), connect.NewRequest(&leapmuxv1.WhoamiRequest{}))
+	resp, err := ipc.Whoami(context.Background(), &leapmuxv1.WhoamiRequest{})
 	require.NoError(t, err)
-	assert.Equal(t, "u-1", resp.Msg.GetUserId())
-	assert.Equal(t, "worker-A", resp.Msg.GetWorkerId())
-	assert.Equal(t, "term-1", resp.Msg.GetTabId())
-	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_TERMINAL, resp.Msg.GetTabType())
+	assert.Equal(t, "u-1", resp.GetUserId())
+	assert.Equal(t, "worker-A", resp.GetWorkerId())
+	assert.Equal(t, "term-1", resp.GetTabId())
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_TERMINAL, resp.GetTabType())
 }
 
 // TestNewClientFromEnv_LocalStreamingAttachesAuth covers the
 // server-streaming half of the per-agent IPC contract: the bearer
 // token must reach the IPC server on streaming RPCs too, not just
-// unary ones. `connect.UnaryInterceptorFunc` is a no-op on the
-// streaming path, so an AuthInterceptor built that way drops the
-// `X-LeapMux-Token` header and the IPC server's withAuth middleware
-// rejects the request with HTTP 401 — surfaced as
+// unary ones. A client interceptor that stamps the header only on
+// unary calls is a no-op on the streaming path, so the stream open
+// drops the `X-LeapMux-Token` header and the IPC server's withAuth
+// middleware rejects the request with HTTP 401 — surfaced as
 // "unauthenticated: HTTP status 401 Unauthorized" in the CLI. CRDT
 // bootstrap (`hub.WatchUser`) is the production path that exposed it
 // (`leapmux control tile list` fails on bootstrap), so we exercise
@@ -136,22 +139,31 @@ func TestNewClientFromEnv_LocalStreamingAttachesAuth(t *testing.T) {
 	require.NoError(t, err)
 	stream, err := ipc.StreamInner(
 		context.Background(),
-		connect.NewRequest(&leapmuxv1.StreamInnerRequest{
+		&leapmuxv1.StreamInnerRequest{
 			Method:          "worker.NoSuchMethod",
 			ClientRequestId: "rid-1",
-		}),
+		},
 	)
-	require.NoError(t, err, "stream construction returns nil even on transport failure; failures surface via Receive/Err")
+	require.NoError(t, err, "the stream must open; a refusal surfaces on Receive")
 	t.Cleanup(func() { _ = stream.Close() })
 
 	// Drain. The downstream router produces error envelopes for an
 	// unknown method, but those travel on a successful (non-401)
 	// stream — proving the auth header reached the server. A 401
 	// from withAuth short-circuits the request before any envelope
-	// is sent, surfacing as `stream.Err()` with code Unauthenticated.
-	for stream.Receive() {
+	// is sent, surfacing as a Receive error with code Unauthenticated.
+	var streamErr2 error
+	for {
+		_, err := stream.Receive()
+		if err != nil {
+			streamErr2 = err
+			break
+		}
 	}
-	streamErr := stream.Err()
+	if errors.Is(streamErr2, io.EOF) {
+		streamErr2 = nil
+	}
+	streamErr := streamErr2
 	if streamErr != nil {
 		assert.NotContains(t, streamErr.Error(), "HTTP status 401",
 			"streaming RPC must include the X-LeapMux-Token header that withAuth checks")
@@ -174,32 +186,29 @@ type fakeChannelHub struct {
 }
 
 func (f *fakeChannelHub) GetWorkerHandshakeParams(
-	context.Context,
-	*connect.Request[leapmuxv1.GetWorkerHandshakeParamsRequest],
-) (*connect.Response[leapmuxv1.GetWorkerHandshakeParamsResponse], error) {
-	return connect.NewResponse(&leapmuxv1.GetWorkerHandshakeParamsResponse{
+	context.Context, *leapmuxv1.GetWorkerHandshakeParamsRequest,
+) (*leapmuxv1.GetWorkerHandshakeParamsResponse, error) {
+	return &leapmuxv1.GetWorkerHandshakeParamsResponse{
 		PublicKey:      f.staticPub,
 		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC,
-	}), nil
+	}, nil
 }
 
 func (f *fakeChannelHub) OpenChannel(
-	context.Context,
-	*connect.Request[leapmuxv1.OpenChannelRequest],
-) (*connect.Response[leapmuxv1.OpenChannelResponse], error) {
-	return connect.NewResponse(&leapmuxv1.OpenChannelResponse{
+	context.Context, *leapmuxv1.OpenChannelRequest,
+) (*leapmuxv1.OpenChannelResponse, error) {
+	return &leapmuxv1.OpenChannelResponse{
 		ChannelId:        "ch-1",
 		UserId:           f.openUserID,
 		HandshakePayload: []byte("not-a-real-message2"),
 		MaxMessageSize:   uint64(contracts.MaxMessageSize),
-	}), nil
+	}, nil
 }
 
 func (f *fakeChannelHub) CloseChannel(
-	context.Context,
-	*connect.Request[leapmuxv1.CloseChannelRequest],
-) (*connect.Response[leapmuxv1.CloseChannelResponse], error) {
-	return connect.NewResponse(&leapmuxv1.CloseChannelResponse{}), nil
+	context.Context, *leapmuxv1.CloseChannelRequest,
+) (*leapmuxv1.CloseChannelResponse, error) {
+	return &leapmuxv1.CloseChannelResponse{}, nil
 }
 
 // bearerHeader reports what the client stamps on an outbound request, which
@@ -221,11 +230,12 @@ func startFakeChannelHub(t *testing.T, cliUserID, hubUserID string) *control.Cli
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	path, handler := leapmuxv1connect.NewChannelServiceHandler(&fakeChannelHub{
+	connectServer := connect.NewServer()
+	leapmuxv1connect.RegisterChannelServiceHandler(connectServer, &fakeChannelHub{
 		staticPub:  priv.PublicKey().Bytes(),
 		openUserID: hubUserID,
 	})
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	srv := hubtransporttest.NewServer(t, mux)
 	t.Cleanup(srv.Close)
 

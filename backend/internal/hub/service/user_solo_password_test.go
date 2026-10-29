@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -71,8 +71,7 @@ func TestChangePassword_SucceedsInSoloMode(t *testing.T) {
 	svc, st, _, soloUser := soloUserService(t)
 	ctx := auth.WithUser(context.Background(), soloUser)
 
-	_, err := svc.ChangePassword(ctx, connect.NewRequest(
-		&leapmuxv1.ChangePasswordRequest{NewPassword: "correct-horse-battery-staple"}))
+	_, err := svc.ChangePassword(ctx, &leapmuxv1.ChangePasswordRequest{NewPassword: "correct-horse-battery-staple"})
 	require.NoError(t, err)
 
 	user, err := st.Users().GetByUsername(ctx, usernames.Solo)
@@ -97,18 +96,17 @@ func TestGetCurrentUser_ReportsTheSoloAccountsPasswordFromTheHash(t *testing.T) 
 	deps.SoloGate = gate
 	authSvc := service.NewAuthService(deps)
 
-	before, err := authSvc.GetCurrentUser(ctx, connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
+	before, err := authSvc.GetCurrentUser(ctx, &leapmuxv1.GetCurrentUserRequest{})
 	require.NoError(t, err)
-	assert.False(t, before.Msg.GetUser().GetPasswordSet(),
+	assert.False(t, before.GetUser().GetPasswordSet(),
 		"a solo account with no hash holds no password, whatever the column claims")
 
-	_, err = svc.ChangePassword(ctx, connect.NewRequest(
-		&leapmuxv1.ChangePasswordRequest{NewPassword: "correct-horse-battery-staple"}))
+	_, err = svc.ChangePassword(ctx, &leapmuxv1.ChangePasswordRequest{NewPassword: "correct-horse-battery-staple"})
 	require.NoError(t, err)
 
-	after, err := authSvc.GetCurrentUser(ctx, connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
+	after, err := authSvc.GetCurrentUser(ctx, &leapmuxv1.GetCurrentUserRequest{})
 	require.NoError(t, err)
-	assert.True(t, after.Msg.GetUser().GetPasswordSet(),
+	assert.True(t, after.GetUser().GetPasswordSet(),
 		"the stored password must reach the row that offers to change it")
 }
 
@@ -117,13 +115,17 @@ func TestGetCurrentUser_ReportsTheSoloAccountsPasswordFromTheHash(t *testing.T) 
 // session when it sets the first password.
 func TestChangePassword_DoesNotCreateASoloSession(t *testing.T) {
 	svc, _, _, soloUser := soloUserService(t)
-	ctx := auth.WithUser(context.Background(), soloUser)
 
-	resp, err := svc.ChangePassword(ctx, connect.NewRequest(
-		&leapmuxv1.ChangePasswordRequest{NewPassword: "correct-horse-battery-staple"}))
+	// The response header rides the server CallInfo, so the call runs
+	// through callUnderServerInfo and the test reads the headers the handler
+	// set -- the same ones a transport would write to the client.
+	callInfo, err := callUnderServerInfo(context.Background(), func(ctx context.Context) error {
+		_, callErr := svc.ChangePassword(auth.WithUser(ctx, soloUser), &leapmuxv1.ChangePasswordRequest{NewPassword: "correct-horse-battery-staple"})
+		return callErr
+	})
 	require.NoError(t, err)
 
-	assert.Empty(t, resp.Header().Get("Set-Cookie"))
+	assert.Empty(t, callInfo.ResponseHeader().Get("Set-Cookie"))
 }
 
 // The OTHER identity kind, beside the synthetic solo one above: a real
@@ -164,10 +166,12 @@ func TestChangePassword_DoesNotHandASessionToAnOrdinaryCaller(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, info.Elevated(time.Now()), "precondition: the caller is elevated")
 
-	resp, err := svc.ChangePassword(auth.WithUser(context.Background(), info), connect.NewRequest(
-		&leapmuxv1.ChangePasswordRequest{NewPassword: "another-good-password"}))
+	callInfo, err := callUnderServerInfo(context.Background(), func(ctx context.Context) error {
+		_, callErr := svc.ChangePassword(auth.WithUser(ctx, info), &leapmuxv1.ChangePasswordRequest{NewPassword: "another-good-password"})
+		return callErr
+	})
 	require.NoError(t, err)
-	assert.Empty(t, resp.Header().Get("Set-Cookie"),
+	assert.Empty(t, callInfo.ResponseHeader().Get("Set-Cookie"),
 		"ChangePassword mints no session for any caller; a caller that already holds one keeps it")
 }
 
@@ -194,12 +198,12 @@ func TestPasskeyElevation_RefusedInSoloForARealSession(t *testing.T) {
 		Credential: auth.SessionCredential("ses_test"),
 	})
 
-	_, beginErr := svc.BeginPasskeyElevation(ctx, connect.NewRequest(&leapmuxv1.BeginPasskeyElevationRequest{}))
+	_, beginErr := svc.BeginPasskeyElevation(ctx, &leapmuxv1.BeginPasskeyElevationRequest{})
 	require.Error(t, beginErr)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(beginErr))
 	assert.Contains(t, beginErr.Error(), "solo mode")
 
-	_, finishErr := svc.FinishPasskeyElevation(ctx, connect.NewRequest(&leapmuxv1.FinishPasskeyElevationRequest{}))
+	_, finishErr := svc.FinishPasskeyElevation(ctx, &leapmuxv1.FinishPasskeyElevationRequest{})
 	require.Error(t, finishErr)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(finishErr))
 	assert.Contains(t, finishErr.Error(), "solo mode")

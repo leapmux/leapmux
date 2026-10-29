@@ -3,7 +3,7 @@ module github.com/leapmux/leapmux
 go 1.27.1
 
 require (
-	connectrpc.com/connect v1.20.0
+	connectrpc.com/connect/v2 v2.0.2
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/altcha-org/altcha-lib-go/v2 v2.0.0-20260725115309-2c4fc27a7b2d
 	github.com/aymanbagabas/go-pty v0.2.3

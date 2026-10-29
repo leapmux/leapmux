@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
@@ -29,11 +29,12 @@ func NewWorkerReconcilerService(st store.Store) *WorkerReconcilerService {
 // token and returns every owned-tab row for that worker.
 func (s *WorkerReconcilerService) ListOwnedTabsForWorker(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.ListOwnedTabsForWorkerRequest],
-) (*connect.Response[leapmuxv1.ListOwnedTabsForWorkerResponse], error) {
-	w, err := auth.AuthenticateWorkerBearer(ctx, s.store, req.Header().Get("Authorization"))
+	req *leapmuxv1.ListOwnedTabsForWorkerRequest,
+) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error) {
+	info := serverCallInfo(ctx)
+	w, err := auth.AuthenticateWorkerBearer(ctx, s.store, info.RequestHeader().Get("Authorization"))
 	if err != nil {
-		return nil, connect.NewError(connect.CodeUnauthenticated, err)
+		return nil, connect.NewError(connect.CodeUnauthenticated, err.Error()).WithCause(err)
 	}
 	// The bearer resolves the worker AND its registrant, so the owner axis is
 	// in hand here. It is bound in the query, because workspace_tab_owned is
@@ -50,14 +51,14 @@ func (s *WorkerReconcilerService) ListOwnedTabsForWorker(
 		// A worker row with a blank registrant cannot be scoped to an owner,
 		// so there is no answer to give -- and an empty, unscoped response is
 		// the one thing the reconciler must not act on.
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("worker %s has a blank registrant", w.ID))
+		return nil, connect.Errorf(connect.CodeInternal, "worker %s has a blank registrant", w.ID)
 	}
 	rows, err := s.store.WorkspaceTabIndex().ListOwnedByWorker(ctx, store.ListOwnedTabsByWorkerParams{
 		UserID:   registeredBy,
 		WorkerID: w.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list owned tabs: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("list owned tabs: %w", err))
 	}
 	out := make([]*leapmuxv1.WorkerTabState, 0, len(rows))
 	for _, r := range rows {
@@ -72,8 +73,8 @@ func (s *WorkerReconcilerService) ListOwnedTabsForWorker(
 			ArchiveState: r.ArchiveState,
 		})
 	}
-	return connect.NewResponse(&leapmuxv1.ListOwnedTabsForWorkerResponse{
+	return &leapmuxv1.ListOwnedTabsForWorkerResponse{
 		TabStates:   out,
 		OwnerUserId: registeredBy.String(),
-	}), nil
+	}, nil
 }

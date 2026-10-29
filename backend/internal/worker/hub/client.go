@@ -13,7 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/coder/quartz"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -81,7 +82,7 @@ type Client struct {
 	TabSyncProvider func() *leapmuxv1.WorkerTabInventory
 
 	mu           sync.Mutex
-	stream       *connect.BidiStreamForClient[leapmuxv1.ConnectRequest, leapmuxv1.ConnectResponse]
+	stream       *leapmuxv1connect.WorkerConnectorServiceConnectClientStream
 	writer       *sendq.Writer[*leapmuxv1.ConnectRequest]
 	connCancel   context.CancelFunc // cancel function for current connection context
 	lastSendTime time.Time          // last time a message was ENQUEUED (for idle heartbeat)
@@ -142,15 +143,17 @@ func New(endpoint *hubtransport.Endpoint, opts ...ClientOption) *Client {
 	httpClient := endpoint.HTTP2OnlyClient()
 	connectURL := endpoint.BaseURL()
 	c := &Client{
-		connector: leapmuxv1connect.NewWorkerConnectorServiceClient(
+		connector: leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
 			httpClient,
 			connectURL,
-			connect.WithGRPC(),
-		),
-		reconciler: leapmuxv1connect.NewWorkerReconcilerServiceClient(
+			connecthttp.WithReadMaxBytes(0),
+			connecthttp.WithGRPC(),
+		))),
+		reconciler: leapmuxv1connect.NewWorkerReconcilerServiceClient(connect.NewClient(connecthttp.NewTransport(
 			httpClient,
 			connectURL,
-		),
+			connecthttp.WithReadMaxBytes(0),
+		))),
 		endpoint: endpoint,
 		clock:    quartz.NewReal(),
 	}
@@ -364,13 +367,14 @@ func (c *Client) ListOwnedTabsForWorker(ctx context.Context) (*leapmuxv1.ListOwn
 	if token == "" {
 		return nil, errors.New("hub client: no auth token (call Connect first)")
 	}
-	req := connect.NewRequest(&leapmuxv1.ListOwnedTabsForWorkerRequest{})
-	req.Header().Set("Authorization", "Bearer "+token)
+	req := &leapmuxv1.ListOwnedTabsForWorkerRequest{}
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+token)
 	resp, err := c.reconciler.ListOwnedTabsForWorker(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	return resp.Msg, nil
+	return resp, nil
 }
 
 // Connect establishes the bidirectional streaming connection to the Hub.
@@ -379,13 +383,23 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 	c.authToken = authToken
 	c.mu.Unlock()
 
+	// Seed the CallInfo BEFORE deriving connCtx below. The stream opens on
+	// connCtx, and connect reads the request header off the CallInfo that
+	// context carries; seeding on the parent instead puts the bearer on a
+	// context the stream never sees, and the hub rejects the worker as
+	// unauthenticated.
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+authToken)
+
 	// Create a connection-scoped context so that write failures can
 	// cancel the connection and trigger immediate reconnection.
 	connCtx, connCancel := context.WithCancel(ctx)
 	defer connCancel()
 
-	stream := c.connector.Connect(connCtx)
-	stream.RequestHeader().Set("Authorization", "Bearer "+authToken)
+	stream, err := c.connector.Connect(connCtx)
+	if err != nil {
+		return err
+	}
 
 	// Send an initial heartbeat INLINE on the stream before the writer exists.
 	// ConnectRPC with gRPC protocol only sends HTTP/2 headers on the first
@@ -393,7 +407,7 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 	//
 	// When the Hub refuses before that write finishes (fenced registry, worker
 	// cap, …), Send wraps io.EOF and Receive carries the real status — see
-	// connect.BidiStreamForClient.Send. Surface that status so reconnect logic
+	// connect.ClientStream.Send. Surface that status so reconnect logic
 	// sees Unavailable/ResourceExhausted instead of a bare Unknown/EOF.
 	if err := stream.Send(&leapmuxv1.ConnectRequest{
 		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
@@ -443,7 +457,7 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 
 	connectedAt := c.clock.Now(hubConnectTimestampTag)
 	c.mu.Lock()
-	c.stream = stream
+	c.stream = &stream
 	c.writer = writer
 	c.connCancel = connCancel
 	c.lastSendTime = connectedAt
@@ -621,11 +635,11 @@ const workerIdentityTimeout = 10 * time.Second
 // same way.
 func (c *Client) closeStreamOnCancel(
 	ctx context.Context,
-	stream *connect.BidiStreamForClient[leapmuxv1.ConnectRequest, leapmuxv1.ConnectResponse],
+	stream leapmuxv1connect.WorkerConnectorServiceConnectClientStream,
 ) {
 	<-ctx.Done()
-	_ = stream.CloseRequest()
-	_ = stream.CloseResponse()
+	_ = stream.CloseSend()
+	_ = stream.Close()
 }
 
 // watchForIdentity force-closes the connection if the Hub does not deliver

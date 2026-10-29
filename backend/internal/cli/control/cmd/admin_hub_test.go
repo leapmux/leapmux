@@ -12,7 +12,8 @@ import (
 	"sync"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -63,67 +64,67 @@ type fakeAdminHub struct {
 }
 
 func (h *fakeAdminHub) ListSettings(
-	context.Context, *connect.Request[leapmuxv1.ListSettingsRequest],
-) (*connect.Response[leapmuxv1.ListSettingsResponse], error) {
+	context.Context, *leapmuxv1.ListSettingsRequest,
+) (*leapmuxv1.ListSettingsResponse, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.listCalls++
-	return connect.NewResponse(&leapmuxv1.ListSettingsResponse{
+	return &leapmuxv1.ListSettingsResponse{
 		Descriptors: h.descriptors,
 		Values:      h.values,
-	}), nil
+	}, nil
 }
 
 func (h *fakeAdminHub) UpdateSetting(
-	_ context.Context, req *connect.Request[leapmuxv1.UpdateSettingRequest],
-) (*connect.Response[leapmuxv1.UpdateSettingResponse], error) {
+	_ context.Context, req *leapmuxv1.UpdateSettingRequest,
+) (*leapmuxv1.UpdateSettingResponse, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.updated = append(h.updated, req.Msg)
-	return connect.NewResponse(&leapmuxv1.UpdateSettingResponse{
-		Value:   &leapmuxv1.SettingValue{Key: req.Msg.GetKey(), EffectiveJson: req.Msg.GetPartialJson()},
+	h.updated = append(h.updated, req)
+	return &leapmuxv1.UpdateSettingResponse{
+		Value:   &leapmuxv1.SettingValue{Key: req.GetKey(), EffectiveJson: req.GetPartialJson()},
 		Restart: h.restart,
-	}), nil
+	}, nil
 }
 
 func (h *fakeAdminHub) UpdateSettings(
-	_ context.Context, req *connect.Request[leapmuxv1.UpdateSettingsRequest],
-) (*connect.Response[leapmuxv1.UpdateSettingsResponse], error) {
+	_ context.Context, req *leapmuxv1.UpdateSettingsRequest,
+) (*leapmuxv1.UpdateSettingsResponse, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.updatedMany = append(h.updatedMany, req.Msg)
-	values := make([]*leapmuxv1.SettingValue, 0, len(req.Msg.GetWrites()))
-	for _, w := range req.Msg.GetWrites() {
+	h.updatedMany = append(h.updatedMany, req)
+	values := make([]*leapmuxv1.SettingValue, 0, len(req.GetWrites()))
+	for _, w := range req.GetWrites() {
 		values = append(values, &leapmuxv1.SettingValue{Key: w.GetKey()})
 	}
-	return connect.NewResponse(&leapmuxv1.UpdateSettingsResponse{Values: values}), nil
+	return &leapmuxv1.UpdateSettingsResponse{Values: values}, nil
 }
 
 func (h *fakeAdminHub) ResetSettings(
-	_ context.Context, req *connect.Request[leapmuxv1.ResetSettingsRequest],
-) (*connect.Response[leapmuxv1.ResetSettingsResponse], error) {
+	_ context.Context, req *leapmuxv1.ResetSettingsRequest,
+) (*leapmuxv1.ResetSettingsResponse, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.resetKeys = append(h.resetKeys, req.Msg.GetKeys())
+	h.resetKeys = append(h.resetKeys, req.GetKeys())
 	if h.resetErr != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, h.resetErr)
+		return nil, connect.NewError(connect.CodeInvalidArgument, h.resetErr.Error()).WithCause(h.resetErr)
 	}
-	values := make([]*leapmuxv1.SettingValue, 0, len(req.Msg.GetKeys()))
-	for _, key := range req.Msg.GetKeys() {
+	values := make([]*leapmuxv1.SettingValue, 0, len(req.GetKeys()))
+	for _, key := range req.GetKeys() {
 		values = append(values, &leapmuxv1.SettingValue{Key: key})
 	}
-	return connect.NewResponse(&leapmuxv1.ResetSettingsResponse{Values: values}), nil
+	return &leapmuxv1.ResetSettingsResponse{Values: values}, nil
 }
 
 func (h *fakeAdminHub) SetUserAdmin(
-	_ context.Context, req *connect.Request[leapmuxv1.SetUserAdminRequest],
-) (*connect.Response[leapmuxv1.SetUserAdminResponse], error) {
+	_ context.Context, req *leapmuxv1.SetUserAdminRequest,
+) (*leapmuxv1.SetUserAdminResponse, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.setAdmin = append(h.setAdmin, req.Msg)
-	return connect.NewResponse(&leapmuxv1.SetUserAdminResponse{
-		User: &leapmuxv1.AdminUser{Id: "u-1", Username: req.Msg.GetUsername(), IsAdmin: req.Msg.GetIsAdmin()},
-	}), nil
+	h.setAdmin = append(h.setAdmin, req)
+	return &leapmuxv1.SetUserAdminResponse{
+		User: &leapmuxv1.AdminUser{Id: "u-1", Username: req.GetUsername(), IsAdmin: req.GetIsAdmin()},
+	}, nil
 }
 
 // ResetPassword answers with the SUBJECT, in the shape the hub does: it
@@ -135,15 +136,15 @@ func (h *fakeAdminHub) SetUserAdmin(
 // own request would print an empty string for one of them, and this stub is
 // what makes that visible.
 func (h *fakeAdminHub) ResetPassword(
-	_ context.Context, req *connect.Request[leapmuxv1.ResetPasswordRequest],
-) (*connect.Response[leapmuxv1.ResetPasswordResponse], error) {
+	_ context.Context, req *leapmuxv1.ResetPasswordRequest,
+) (*leapmuxv1.ResetPasswordResponse, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.resetPasswords = append(h.resetPasswords, req.Msg)
+	h.resetPasswords = append(h.resetPasswords, req)
 	if h.resetPasswordErr != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, h.resetPasswordErr)
+		return nil, connect.NewError(connect.CodeInvalidArgument, h.resetPasswordErr.Error()).WithCause(h.resetPasswordErr)
 	}
-	userID, username := req.Msg.GetId(), req.Msg.GetUsername()
+	userID, username := req.GetId(), req.GetUsername()
 	if userID == "" {
 		userID = "u-7"
 	}
@@ -152,32 +153,32 @@ func (h *fakeAdminHub) ResetPassword(
 	}
 	// The two counts differ, so a verb that prints one under the other
 	// key fails instead of matching by luck.
-	return connect.NewResponse(&leapmuxv1.ResetPasswordResponse{
+	return &leapmuxv1.ResetPasswordResponse{
 		UserId: userID, Username: username,
 		ApiTokensRevoked: 4, DelegationTokensRevoked: 2,
-	}), nil
+	}, nil
 }
 
 func (h *fakeAdminHub) IssueAPIToken(
-	_ context.Context, req *connect.Request[leapmuxv1.IssueAPITokenRequest],
-) (*connect.Response[leapmuxv1.IssueAPITokenResponse], error) {
+	_ context.Context, req *leapmuxv1.IssueAPITokenRequest,
+) (*leapmuxv1.IssueAPITokenResponse, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.issuedTokens = append(h.issuedTokens, req.Msg)
-	return connect.NewResponse(&leapmuxv1.IssueAPITokenResponse{
+	h.issuedTokens = append(h.issuedTokens, req)
+	return &leapmuxv1.IssueAPITokenResponse{
 		TokenId: "t-1", AccessToken: "lmx_a_x", RefreshToken: "lmx_r_x",
-	}), nil
+	}, nil
 }
 
 func (h *fakeAdminHub) RemoveOAuthProvider(
-	_ context.Context, req *connect.Request[leapmuxv1.RemoveOAuthProviderRequest],
-) (*connect.Response[leapmuxv1.RemoveOAuthProviderResponse], error) {
+	_ context.Context, req *leapmuxv1.RemoveOAuthProviderRequest,
+) (*leapmuxv1.RemoveOAuthProviderResponse, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.removedProviders = append(h.removedProviders, req.Msg)
-	return connect.NewResponse(&leapmuxv1.RemoveOAuthProviderResponse{
+	h.removedProviders = append(h.removedProviders, req)
+	return &leapmuxv1.RemoveOAuthProviderResponse{
 		LockedOutUsers: h.lockedOutUsers,
-	}), nil
+	}, nil
 }
 
 // The takers below read a recording and clear it, so a test that runs two
@@ -255,9 +256,12 @@ func startAdminHub(t *testing.T, hub *fakeAdminHub) string {
 	t.Setenv("LEAPMUX_CONTROL_SOCK", "")
 
 	mux := http.NewServeMux()
-	mux.Handle(leapmuxv1connect.NewAdminSettingsServiceHandler(hub))
-	mux.Handle(leapmuxv1connect.NewAdminUserServiceHandler(hub))
-	mux.Handle(leapmuxv1connect.NewAdminIdPServiceHandler(hub))
+	server := connect.NewServer()
+	leapmuxv1connect.RegisterAdminSettingsServiceHandler(server, hub)
+	leapmuxv1connect.RegisterAdminUserServiceHandler(server, hub)
+	leapmuxv1connect.RegisterAdminIdPServiceHandler(server, hub)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
+
 	srv := hubtransporttest.NewServer(t, mux)
 	t.Cleanup(srv.Close)
 	return srv.URL

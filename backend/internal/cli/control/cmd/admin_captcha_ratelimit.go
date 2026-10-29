@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 
-	"connectrpc.com/connect"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/hub/captcha"
@@ -42,13 +41,13 @@ func updateSettingJSON(c *control.Client, key string, value any) (*leapmuxv1.Set
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.AdminSettingsService().UpdateSetting(context.Background(), connect.NewRequest(&leapmuxv1.UpdateSettingRequest{
+	resp, err := c.AdminSettingsService().UpdateSetting(context.Background(), &leapmuxv1.UpdateSettingRequest{
 		Key: key, PartialJson: string(doc),
-	}))
+	})
 	if err != nil {
 		return nil, err
 	}
-	return resp.Msg.GetValue(), nil
+	return resp.GetValue(), nil
 }
 
 // adminUpdateSetting merges one partial document onto one settings key.
@@ -100,13 +99,13 @@ func captchaSettingKeys() []string {
 func RunAdminCaptchaShow(rawCtx any, args []string) error {
 	return adminVerb(rawCtx, args, adminVerbSpec{
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminSettingsService().ListSettings(context.Background(), connect.NewRequest(&leapmuxv1.ListSettingsRequest{}))
+			resp, err := c.AdminSettingsService().ListSettings(context.Background(), &leapmuxv1.ListSettingsRequest{})
 			if err != nil {
 				return control.EmitErrorWith("rpc_failed", err)
 			}
 			wanted := captchaSettingKeys()
 			values := map[string]any{}
-			for _, v := range resp.Msg.GetValues() {
+			for _, v := range resp.GetValues() {
 				if slices.Contains(wanted, v.GetKey()) {
 					values[v.GetKey()] = settingValueJSON(v)
 				}
@@ -175,12 +174,12 @@ func readCaptchaState(c *control.Client) (captchaState, error) {
 		secretSet:       map[string]bool{},
 		altchaAlgorithm: captcha.DefaultAltchaSettings().Algorithm,
 	}
-	resp, err := c.AdminSettingsService().ListSettings(context.Background(), connect.NewRequest(&leapmuxv1.ListSettingsRequest{}))
+	resp, err := c.AdminSettingsService().ListSettings(context.Background(), &leapmuxv1.ListSettingsRequest{})
 	if err != nil {
 		return out, err
 	}
 	found := false
-	for _, v := range resp.Msg.GetValues() {
+	for _, v := range resp.GetValues() {
 		if v.GetKey() == captcha.CaptchaSelectedKey.Name() {
 			var alias string
 			if err := json.Unmarshal([]byte(v.GetEffectiveJson()), &alias); err != nil {
@@ -452,7 +451,7 @@ func RunAdminCaptchaSet(rawCtx any, args []string) error {
 				return control.EmitError("invalid_request", "nothing to set (pass --provider or a tuning flag)")
 			}
 			if _, err := c.AdminSettingsService().UpdateSettings(context.Background(),
-				connect.NewRequest(&leapmuxv1.UpdateSettingsRequest{Writes: writes})); err != nil {
+				&leapmuxv1.UpdateSettingsRequest{Writes: writes}); err != nil {
 				return control.EmitErrorWith("captcha_set_failed", err)
 			}
 			return control.EmitData(map[string]any{
@@ -519,12 +518,12 @@ func RunAdminCaptchaReset(rawCtx any, args []string) error {
 			// destroyed the selection and two provider rows before
 			// answering that it reset nothing.
 			resp, err := c.AdminSettingsService().ResetSettings(context.Background(),
-				connect.NewRequest(&leapmuxv1.ResetSettingsRequest{Keys: keys}))
+				&leapmuxv1.ResetSettingsRequest{Keys: keys})
 			if err != nil {
 				return control.EmitErrorWith("reset_failed", err)
 			}
-			reset := make([]string, 0, len(resp.Msg.GetValues()))
-			for _, v := range resp.Msg.GetValues() {
+			reset := make([]string, 0, len(resp.GetValues()))
+			for _, v := range resp.GetValues() {
 				reset = append(reset, v.GetKey())
 			}
 			return control.EmitData(map[string]any{"reset": reset})
@@ -581,12 +580,12 @@ func (t *rateLimitTarget) resolve(adminArgs) error {
 func RunAdminRateLimitList(rawCtx any, args []string) error {
 	return adminVerb(rawCtx, args, adminVerbSpec{
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminSettingsService().ListSettings(context.Background(), connect.NewRequest(&leapmuxv1.ListSettingsRequest{}))
+			resp, err := c.AdminSettingsService().ListSettings(context.Background(), &leapmuxv1.ListSettingsRequest{})
 			if err != nil {
 				return control.EmitErrorWith("rpc_failed", err)
 			}
 			rows := make([]map[string]any, 0)
-			for _, v := range resp.Msg.GetValues() {
+			for _, v := range resp.GetValues() {
 				if strings.HasPrefix(v.GetKey(), ratelimit.SettingKeyPrefix) {
 					rows = append(rows, settingValueJSON(v))
 				}
@@ -665,11 +664,11 @@ func RunAdminRateLimitReset(rawCtx any, args []string) error {
 		},
 		BeforeDial: target.resolve,
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminSettingsService().ResetSetting(context.Background(), connect.NewRequest(&leapmuxv1.ResetSettingRequest{Key: target.Key}))
+			resp, err := c.AdminSettingsService().ResetSetting(context.Background(), &leapmuxv1.ResetSettingRequest{Key: target.Key})
 			if err != nil {
 				return control.EmitErrorWith("reset_failed", err)
 			}
-			return control.EmitData(settingValueJSON(resp.Msg.GetValue()))
+			return control.EmitData(settingValueJSON(resp.GetValue()))
 		},
 	})
 }

@@ -7,7 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -59,9 +60,9 @@ func setupAdminWorkerTest(t *testing.T) *adminWorkerEnv {
 	// harness does not build, and Apply skips the ones it was not given.
 	effects := service.NewWorkerDeregisterEffects(auth.NewDelegationScopeCache(st), nil, nil)
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
-	opts := connect.WithInterceptors(interceptor)
-	path, handler := leapmuxv1connect.NewAdminWorkerServiceHandler(service.NewAdminWorkerService(st, effects), opts)
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer(interceptor)
+	leapmuxv1connect.RegisterAdminWorkerServiceHandler(connectServer, service.NewAdminWorkerService(st, effects))
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewUnstartedServer(mux)
 	server.EnableHTTP2 = true
@@ -69,7 +70,7 @@ func setupAdminWorkerTest(t *testing.T) *adminWorkerEnv {
 	t.Cleanup(server.Close)
 
 	return &adminWorkerEnv{
-		client: leapmuxv1connect.NewAdminWorkerServiceClient(server.Client(), server.URL, connect.WithGRPC()),
+		client: leapmuxv1connect.NewAdminWorkerServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC()))),
 		st:     st,
 		token:  session,
 		userID: admin.ID,
@@ -80,23 +81,23 @@ func TestAdminWorkerService_DeregisterAndGet(t *testing.T) {
 	env := setupAdminWorkerTest(t)
 	ctx := context.Background()
 
-	_, err := env.client.GetWorker(ctx, authedReq(&leapmuxv1.AdminWorkerServiceGetWorkerRequest{}, env.token))
+	_, err := env.client.GetWorker(authedReq(ctx, &leapmuxv1.AdminWorkerServiceGetWorkerRequest{}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "id is required")
 
-	_, err = env.client.DeregisterWorker(ctx, authedReq(&leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{}, env.token))
+	_, err = env.client.DeregisterWorker(authedReq(ctx, &leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
-	_, err = env.client.DeregisterWorker(ctx, authedReq(&leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{
+	_, err = env.client.DeregisterWorker(authedReq(ctx, &leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{
 		Id: "missing",
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "not found or not active")
 
-	_, err = env.client.ListWorkers(ctx, authedReq(&leapmuxv1.AdminWorkerServiceListWorkersRequest{
+	_, err = env.client.ListWorkers(authedReq(ctx, &leapmuxv1.AdminWorkerServiceListWorkersRequest{
 		UserId:   env.userID,
 		Username: "admin",
 	}, env.token))
@@ -106,26 +107,26 @@ func TestAdminWorkerService_DeregisterAndGet(t *testing.T) {
 
 	worker := storetest.SeedWorker(t, env.st, env.userID)
 
-	got, err := env.client.GetWorker(ctx, authedReq(&leapmuxv1.AdminWorkerServiceGetWorkerRequest{
+	got, err := env.client.GetWorker(authedReq(ctx, &leapmuxv1.AdminWorkerServiceGetWorkerRequest{
 		Id: worker.ID,
 	}, env.token))
 	require.NoError(t, err)
-	assert.Equal(t, worker.ID, got.Msg.GetWorker().GetId())
-	assert.Equal(t, "admin", got.Msg.GetWorker().GetOwnerUsername())
+	assert.Equal(t, worker.ID, got.GetWorker().GetId())
+	assert.Equal(t, "admin", got.GetWorker().GetOwnerUsername())
 
-	_, err = env.client.DeregisterWorker(ctx, authedReq(&leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{
+	_, err = env.client.DeregisterWorker(authedReq(ctx, &leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{
 		Id: worker.ID,
 	}, env.token))
 	require.NoError(t, err)
 
-	got, err = env.client.GetWorker(ctx, authedReq(&leapmuxv1.AdminWorkerServiceGetWorkerRequest{
+	got, err = env.client.GetWorker(authedReq(ctx, &leapmuxv1.AdminWorkerServiceGetWorkerRequest{
 		Id: worker.ID,
 	}, env.token))
 	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, got.Msg.GetWorker().GetStatus())
-	assert.Equal(t, "admin", got.Msg.GetWorker().GetOwnerUsername())
+	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, got.GetWorker().GetStatus())
+	assert.Equal(t, "admin", got.GetWorker().GetOwnerUsername())
 
-	_, err = env.client.DeregisterWorker(ctx, authedReq(&leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{
+	_, err = env.client.DeregisterWorker(authedReq(ctx, &leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{
 		Id: worker.ID,
 	}, env.token))
 	require.Error(t, err)
@@ -171,25 +172,25 @@ func TestAdminWorkerService_PurgeExpiredRegistrationKeysDrainsEveryBatch(t *test
 		ExpiresAt: time.Now().UTC().Add(time.Hour),
 	}))
 
-	got, err := env.client.PurgeExpiredRegistrationKeys(ctx,
-		authedReq(&leapmuxv1.PurgeExpiredRegistrationKeysRequest{}, env.token))
+	got, err := env.client.PurgeExpiredRegistrationKeys(authedReq(ctx,
+		&leapmuxv1.PurgeExpiredRegistrationKeysRequest{}, env.token))
 	require.NoError(t, err)
-	assert.Equal(t, int64(expiredRegistrationKeys), got.Msg.GetPurged(),
+	assert.Equal(t, int64(expiredRegistrationKeys), got.GetPurged(),
 		"a backlog larger than one batch is cleared in one call")
 
 	// The backlog is gone from the table, not merely counted as gone.
-	remaining, err := env.client.ListRegistrationKeys(ctx, authedReq(&leapmuxv1.ListRegistrationKeysRequest{
+	remaining, err := env.client.ListRegistrationKeys(authedReq(ctx, &leapmuxv1.ListRegistrationKeysRequest{
 		IncludeExpired: true,
 	}, env.token))
 	require.NoError(t, err)
-	require.Len(t, remaining.Msg.GetKeys(), 1)
-	assert.Equal(t, liveKey, remaining.Msg.GetKeys()[0].GetId(), "an unexpired key survives the purge")
+	require.Len(t, remaining.GetKeys(), 1)
+	assert.Equal(t, liveKey, remaining.GetKeys()[0].GetId(), "an unexpired key survives the purge")
 
 	// Idempotent: a second call finds nothing and reports zero.
-	got, err = env.client.PurgeExpiredRegistrationKeys(ctx,
-		authedReq(&leapmuxv1.PurgeExpiredRegistrationKeysRequest{}, env.token))
+	got, err = env.client.PurgeExpiredRegistrationKeys(authedReq(ctx,
+		&leapmuxv1.PurgeExpiredRegistrationKeysRequest{}, env.token))
 	require.NoError(t, err)
-	assert.Zero(t, got.Msg.GetPurged())
+	assert.Zero(t, got.GetPurged())
 }
 
 // TestAdminWorkerService_GetWorkerReportsADeletedOwner pins the case
@@ -211,34 +212,34 @@ func TestAdminWorkerService_GetWorkerReportsADeletedOwner(t *testing.T) {
 	victim := storetest.SeedUser(t, env.st, "victim")
 	worker := storetest.SeedWorker(t, env.st, victim.ID)
 
-	live, err := env.client.GetWorker(ctx, authedReq(&leapmuxv1.AdminWorkerServiceGetWorkerRequest{
+	live, err := env.client.GetWorker(authedReq(ctx, &leapmuxv1.AdminWorkerServiceGetWorkerRequest{
 		Id: worker.ID,
 	}, env.token))
 	require.NoError(t, err)
-	assert.Equal(t, "victim", live.Msg.GetWorker().GetOwnerUsername())
-	assert.False(t, live.Msg.GetWorker().GetOwnerDeleted())
+	assert.Equal(t, "victim", live.GetWorker().GetOwnerUsername())
+	assert.False(t, live.GetWorker().GetOwnerDeleted())
 
 	require.NoError(t, env.st.Users().Delete(ctx, victim.ID))
 
-	deleted, err := env.client.GetWorker(ctx, authedReq(&leapmuxv1.AdminWorkerServiceGetWorkerRequest{
+	deleted, err := env.client.GetWorker(authedReq(ctx, &leapmuxv1.AdminWorkerServiceGetWorkerRequest{
 		Id: worker.ID,
 	}, env.token))
 	require.NoError(t, err, "the worker row outlives its owner and stays inspectable")
-	assert.True(t, deleted.Msg.GetWorker().GetOwnerDeleted(),
+	assert.True(t, deleted.GetWorker().GetOwnerDeleted(),
 		"a soft-deleted owner is reported as deleted")
-	assert.Empty(t, deleted.Msg.GetWorker().GetOwnerUsername(),
+	assert.Empty(t, deleted.GetWorker().GetOwnerUsername(),
 		"a soft-deleted owner's username is freed, so it is not a handle the surface may print")
-	assert.Equal(t, victim.ID, deleted.Msg.GetWorker().GetRegisteredBy(),
+	assert.Equal(t, victim.ID, deleted.GetWorker().GetRegisteredBy(),
 		"the owner id stays, which is the only stable handle left")
 
-	listed, err := env.client.ListWorkers(ctx, authedReq(&leapmuxv1.AdminWorkerServiceListWorkersRequest{
+	listed, err := env.client.ListWorkers(authedReq(ctx, &leapmuxv1.AdminWorkerServiceListWorkersRequest{
 		UserId: victim.ID,
 	}, env.token))
 	require.NoError(t, err)
-	require.Len(t, listed.Msg.GetWorkers(), 1)
-	assert.Equal(t, deleted.Msg.GetWorker().GetOwnerDeleted(), listed.Msg.GetWorkers()[0].GetOwnerDeleted(),
+	require.Len(t, listed.GetWorkers(), 1)
+	assert.Equal(t, deleted.GetWorker().GetOwnerDeleted(), listed.GetWorkers()[0].GetOwnerDeleted(),
 		"the single-row read and the listing report one projection")
-	assert.Equal(t, deleted.Msg.GetWorker().GetOwnerUsername(), listed.Msg.GetWorkers()[0].GetOwnerUsername())
+	assert.Equal(t, deleted.GetWorker().GetOwnerUsername(), listed.GetWorkers()[0].GetOwnerUsername())
 }
 
 // TestAdminWorkerService_ListWorkersCapsAnOversizedPageLimit pins the
@@ -261,18 +262,18 @@ func TestAdminWorkerService_ListWorkersCapsAnOversizedPageLimit(t *testing.T) {
 		}))
 	}
 
-	page, err := env.client.ListWorkers(ctx, authedReq(&leapmuxv1.AdminWorkerServiceListWorkersRequest{
+	page, err := env.client.ListWorkers(authedReq(ctx, &leapmuxv1.AdminWorkerServiceListWorkersRequest{
 		Limit: 100000,
 	}, env.token))
 	require.NoError(t, err)
-	assert.Len(t, page.Msg.GetWorkers(), service.MaxPageLimit,
+	assert.Len(t, page.GetWorkers(), service.MaxPageLimit,
 		"an oversized limit is capped, not honoured")
-	require.NotEmpty(t, page.Msg.GetNextCursor(), "a capped page says where the next one starts")
+	require.NotEmpty(t, page.GetNextCursor(), "a capped page says where the next one starts")
 
-	next, err := env.client.ListWorkers(ctx, authedReq(&leapmuxv1.AdminWorkerServiceListWorkersRequest{
-		Limit: 100000, Cursor: page.Msg.GetNextCursor(),
+	next, err := env.client.ListWorkers(authedReq(ctx, &leapmuxv1.AdminWorkerServiceListWorkersRequest{
+		Limit: 100000, Cursor: page.GetNextCursor(),
 	}, env.token))
 	require.NoError(t, err)
-	assert.Len(t, next.Msg.GetWorkers(), 1)
-	assert.Empty(t, next.Msg.GetNextCursor())
+	assert.Len(t, next.GetWorkers(), 1)
+	assert.Empty(t, next.GetNextCursor())
 }

@@ -9,7 +9,7 @@ import (
 
 	"log/slog"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
@@ -112,9 +112,9 @@ func resolveAdminUser(ctx context.Context, st store.Store, id, username string) 
 	user, err := ResolveUserSelector(ctx, st, id, username)
 	switch {
 	case errors.Is(err, ErrNoUserSelector):
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id or username is required"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "id or username is required")
 	case errors.Is(err, ErrAmbiguousUserSelector):
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	case err != nil && id != "":
 		return nil, storeConnectError(err, "get user by id")
 	case err != nil:
@@ -134,7 +134,7 @@ func resolveAdminUserFilter(ctx context.Context, st store.Store, uid, username s
 		return nil, nil
 	}
 	if uid != "" && username != "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id and username are mutually exclusive"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "user_id and username are mutually exclusive")
 	}
 	if uid != "" {
 		user, err := st.Users().GetByIDIncludeDeleted(ctx, uid)
@@ -156,9 +156,9 @@ func resolveAdminUserFilter(ctx context.Context, st store.Store, uid, username s
 func storeConnectError(err error, op string) error {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		return connect.NewError(connect.CodeNotFound, fmt.Errorf("%s: not found", op))
+		return connect.Errorf(connect.CodeNotFound, "%s: not found", op)
 	case errors.Is(err, store.ErrConflict):
-		return connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("%s: conflict", op))
+		return connect.Errorf(connect.CodeAlreadyExists, "%s: conflict", op)
 	case errors.Is(err, store.ErrInvalidCursor):
 		// A stale or truncated cursor is the caller's to fix, and the fix
 		// is not obvious from the parse error alone. ErrInvalidCursor is
@@ -167,11 +167,11 @@ func storeConnectError(err error, op string) error {
 		// classifies the same sentinel as InvalidArgument, so the two
 		// admin surfaces disagreed.
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(
-			"%s: %w (pass the cursor printed at the end of the previous page, or omit it to start from the first page)", op, err))
+			"%s: %w (pass the cursor printed at the end of the previous page, or omit it to start from the first page)", op, err).Error())
 	case errors.Is(err, store.ErrInvalidArgument):
-		return connect.NewError(connect.CodeInvalidArgument, err)
+		return connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	default:
-		return connect.NewError(connect.CodeInternal, err)
+		return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 }
 
@@ -186,18 +186,18 @@ func storeConnectError(err error, op string) error {
 // email at all.
 func userConflictError(err error, username, email string) error {
 	if !errors.Is(err, store.ErrConflict) {
-		return connect.NewError(connect.CodeInternal, err)
+		return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	switch {
 	case username != "" && email != "":
-		return connect.NewError(connect.CodeAlreadyExists,
-			fmt.Errorf("username %q is already taken or email %q is already in use", username, email))
+		return connect.Errorf(connect.CodeAlreadyExists,
+			"username %q is already taken or email %q is already in use", username, email)
 	case email != "":
-		return connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("email %q is already in use", email))
+		return connect.Errorf(connect.CodeAlreadyExists, "email %q is already in use", email)
 	case username != "":
-		return connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("username %q is already taken", username))
+		return connect.Errorf(connect.CodeAlreadyExists, "username %q is already taken", username)
 	default:
-		return connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("conflicting user record: %w", err))
+		return wrappedConnectError(connect.CodeAlreadyExists, fmt.Errorf("conflicting user record: %w", err))
 	}
 }
 
@@ -219,7 +219,7 @@ func revokeByID(ctx context.Context, id, op, notFoundFormat string, verb func(co
 		return storeConnectError(err, op)
 	}
 	if n == 0 {
-		return connect.NewError(connect.CodeNotFound, fmt.Errorf(notFoundFormat, id))
+		return wrappedConnectError(connect.CodeNotFound, fmt.Errorf(notFoundFormat, id))
 	}
 	return nil
 }
@@ -284,7 +284,7 @@ func NormalizePageParams(cursor string, limit int64) store.PageParams {
 // across every admin handler.
 func requireField(value, name string) error {
 	if value == "" {
-		return connect.NewError(connect.CodeInvalidArgument, errors.New(name+" is required"))
+		return connect.NewError(connect.CodeInvalidArgument, name+" is required")
 	}
 	return nil
 }
@@ -312,13 +312,13 @@ func adminSessionToProto(s store.ActiveSession) *leapmuxv1.AdminSession {
 	}
 }
 
-func (s *AdminUserService) ListUsers(ctx context.Context, req *connect.Request[leapmuxv1.ListUsersRequest]) (*connect.Response[leapmuxv1.ListUsersResponse], error) {
+func (s *AdminUserService) ListUsers(ctx context.Context, req *leapmuxv1.ListUsersRequest) (*leapmuxv1.ListUsersResponse, error) {
 	params := store.ListAllUsersParams{
-		PageParams: NormalizePageParams(req.Msg.GetCursor(), req.Msg.GetLimit()),
+		PageParams: NormalizePageParams(req.GetCursor(), req.GetLimit()),
 	}
 	var page store.Page[store.User]
 	var err error
-	if q := req.Msg.GetQuery(); q != "" {
+	if q := req.GetQuery(); q != "" {
 		page, err = s.store.Users().Search(ctx, store.SearchUsersParams{
 			Query:      &q,
 			PageParams: params.PageParams,
@@ -333,15 +333,15 @@ func (s *AdminUserService) ListUsers(ctx context.Context, req *connect.Request[l
 	for _, u := range page.Rows {
 		users = append(users, adminUserToProto(&u))
 	}
-	return connect.NewResponse(&leapmuxv1.ListUsersResponse{Users: users, NextCursor: page.NextCursor}), nil
+	return &leapmuxv1.ListUsersResponse{Users: users, NextCursor: page.NextCursor}, nil
 }
 
-func (s *AdminUserService) GetUser(ctx context.Context, req *connect.Request[leapmuxv1.GetUserRequest]) (*connect.Response[leapmuxv1.GetUserResponse], error) {
-	user, err := resolveAdminUser(ctx, s.store, req.Msg.GetId(), req.Msg.GetUsername())
+func (s *AdminUserService) GetUser(ctx context.Context, req *leapmuxv1.GetUserRequest) (*leapmuxv1.GetUserResponse, error) {
+	user, err := resolveAdminUser(ctx, s.store, req.GetId(), req.GetUsername())
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&leapmuxv1.GetUserResponse{User: adminUserToProto(user)}), nil
+	return &leapmuxv1.GetUserResponse{User: adminUserToProto(user)}, nil
 }
 
 // Creating an account is creating durable new authority: this verb takes a
@@ -349,30 +349,30 @@ func (s *AdminUserService) GetUser(ctx context.Context, req *connect.Request[lea
 // that reaches it does not need to defeat any ceiling -- it makes a fresh
 // administrator and signs in as them. See
 // requireElevatedSessionForDurableAuthority.
-func (s *AdminUserService) CreateUser(ctx context.Context, req *connect.Request[leapmuxv1.CreateUserRequest]) (*connect.Response[leapmuxv1.CreateUserResponse], error) {
+func (s *AdminUserService) CreateUser(ctx context.Context, req *leapmuxv1.CreateUserRequest) (*leapmuxv1.CreateUserResponse, error) {
 	actor, err := requireElevatedSessionForDurableAuthority(ctx, s.now())
 	if err != nil {
 		return nil, err
 	}
-	msg := req.Msg
+	msg := req
 	username, err := validate.SanitizeSlug("username", msg.GetUsername())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
 	if usernames.IsReservedSystem(username) {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("username %q is reserved", username))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "username %q is reserved", username)
 	}
 	if err := validate.ValidatePassword(msg.GetPassword()); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
 	displayName, err := validate.SanitizeDisplayName(msg.GetDisplayName(), username)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("display name: %w", err))
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, fmt.Errorf("display name: %w", err))
 	}
 	email := msg.GetEmail()
 	if email != "" {
 		if err := validate.ValidateEmail(email); err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 		}
 	}
 	// When the hub requires verification, an email-less unverified
@@ -397,7 +397,7 @@ func (s *AdminUserService) CreateUser(ctx context.Context, req *connect.Request[
 		IsAdmin:       msg.GetIsAdmin(),
 		EmailVerified: msg.GetEmailVerified(),
 	}).Satisfied(settings.EmailVerificationEffective(s.set.Snapshot(ctx))) {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("email is required when the hub requires email verification"))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "email is required when the hub requires email verification")
 	}
 
 	// Pre-check availability so the hub reports a collision as a collision;
@@ -411,7 +411,7 @@ func (s *AdminUserService) CreateUser(ctx context.Context, req *connect.Request[
 
 	hashed, err := password.Hash(msg.GetPassword())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
 	}
 	// EmailVerified is what the operator asked for, and nothing forces it:
 	// the column records whether somebody confirmed the address, and an
@@ -440,7 +440,7 @@ func (s *AdminUserService) CreateUser(ctx context.Context, req *connect.Request[
 	if err != nil {
 		return nil, storeConnectError(err, "get created user")
 	}
-	return connect.NewResponse(&leapmuxv1.CreateUserResponse{User: adminUserToProto(created)}), nil
+	return &leapmuxv1.CreateUserResponse{User: adminUserToProto(created)}, nil
 }
 
 // resolveEmailVerified decides what email_verified becomes after an admin
@@ -510,8 +510,8 @@ func resolveEmailVerified(user *store.User, msg *leapmuxv1.UpdateUserRequest) (v
 // a cleared pending address only needs the acting credential's own proven
 // factor, and refusing a bearer for those would break
 // `leapmux control admin user update --display-name` for no gain.
-func (s *AdminUserService) UpdateUser(ctx context.Context, req *connect.Request[leapmuxv1.UpdateUserRequest]) (*connect.Response[leapmuxv1.UpdateUserResponse], error) {
-	msg := req.Msg
+func (s *AdminUserService) UpdateUser(ctx context.Context, req *leapmuxv1.UpdateUserRequest) (*leapmuxv1.UpdateUserResponse, error) {
+	msg := req
 	user, err := resolveAdminUser(ctx, s.store, msg.GetId(), msg.GetUsername())
 	if err != nil {
 		return nil, err
@@ -521,7 +521,7 @@ func (s *AdminUserService) UpdateUser(ctx context.Context, req *connect.Request[
 	updateEmailVerified := msg.EmailVerified != nil
 	clearPending := msg.GetClearPendingEmail()
 	if !updateDisplayName && !updateEmail && !updateEmailVerified && !clearPending {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("no fields to update"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "no fields to update")
 	}
 	var actor *auth.UserInfo
 	if updateEmail || updateEmailVerified {
@@ -537,12 +537,12 @@ func (s *AdminUserService) UpdateUser(ctx context.Context, req *connect.Request[
 	if updateDisplayName {
 		sanitizedDisplayName, err = validate.SanitizeDisplayName(msg.GetDisplayName(), user.Username)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("display name: %w", err))
+			return nil, wrappedConnectError(connect.CodeInvalidArgument, fmt.Errorf("display name: %w", err))
 		}
 	}
 	if updateEmail && msg.GetEmail() != "" {
 		if err := validate.ValidateEmail(msg.GetEmail()); err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 		}
 	}
 	emailVerifiedAfter, applyEmailVerified := resolveEmailVerified(user, msg)
@@ -564,7 +564,7 @@ func (s *AdminUserService) UpdateUser(ctx context.Context, req *connect.Request[
 		EmailVerified: emailVerifiedAfter,
 	}).Satisfied(settings.EmailVerificationEffective(s.set.Snapshot(ctx))) {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
-			errors.New("cannot clear the email of an unverified account while the hub requires email verification"))
+			"cannot clear the email of an unverified account while the hub requires email verification")
 	}
 
 	err = commitUnderElevation(ctx, s.store, actor, s.now, func() error {
@@ -623,13 +623,13 @@ func (s *AdminUserService) UpdateUser(ctx context.Context, req *connect.Request[
 		if errors.As(err, &connectErr) {
 			return nil, connectErr
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	updated, err := s.store.Users().GetByID(ctx, user.ID)
 	if err != nil {
 		return nil, storeConnectError(err, "get updated user")
 	}
-	return connect.NewResponse(&leapmuxv1.UpdateUserResponse{User: adminUserToProto(updated)}), nil
+	return &leapmuxv1.UpdateUserResponse{User: adminUserToProto(updated)}, nil
 }
 
 // Deleting an account is irreversible, so it takes the elevation window.
@@ -643,18 +643,18 @@ func (s *AdminUserService) UpdateUser(ctx context.Context, req *connect.Request[
 // delete` is a documented headless verb; the admin scope that admits a
 // credential here was itself granted at a browser consent that demanded a
 // proven factor.
-func (s *AdminUserService) DeleteUser(ctx context.Context, req *connect.Request[leapmuxv1.DeleteUserRequest]) (*connect.Response[leapmuxv1.DeleteUserResponse], error) {
+func (s *AdminUserService) DeleteUser(ctx context.Context, req *leapmuxv1.DeleteUserRequest) (*leapmuxv1.DeleteUserResponse, error) {
 	actor, err := requireElevatedActor(ctx, s.now())
 	if err != nil {
 		return nil, err
 	}
-	user, err := resolveAdminUser(ctx, s.store, req.Msg.GetId(), req.Msg.GetUsername())
+	user, err := resolveAdminUser(ctx, s.store, req.GetId(), req.GetUsername())
 	if err != nil {
 		return nil, err
 	}
-	if user.IsAdmin && !req.Msg.GetForce() {
-		return nil, connect.NewError(connect.CodeInvalidArgument,
-			fmt.Errorf("user %q is an admin; pass force to confirm deletion", user.Username))
+	if user.IsAdmin && !req.GetForce() {
+		return nil, connect.Errorf(connect.CodeInvalidArgument,
+			"user %q is an admin; pass force to confirm deletion", user.Username)
 	}
 	delUID, err := mintRowUserID(user.ID)
 	if err != nil {
@@ -702,7 +702,7 @@ func (s *AdminUserService) DeleteUser(ctx context.Context, req *connect.Request[
 		if errors.As(err, &connectErr) {
 			return nil, connectErr
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	// AFTER the commit, never inside it. SendDeregister persists a
 	// notification row and moves worker-manager state, so a rollback after
@@ -718,7 +718,7 @@ func (s *AdminUserService) DeleteUser(ctx context.Context, req *connect.Request[
 				"user_id", user.ID, "worker_id", workerID, "error", err)
 		}
 	}
-	return connect.NewResponse(&leapmuxv1.DeleteUserResponse{}), nil
+	return &leapmuxv1.DeleteUserResponse{}, nil
 }
 
 // issuedByAnotherPerson reports whether somebody OTHER than the account owner
@@ -767,12 +767,12 @@ func (s *AdminUserService) liveWorkerIDs(ctx context.Context, owner userid.UserI
 
 // Granting administration is creating durable new authority. See
 // requireElevatedSessionForDurableAuthority.
-func (s *AdminUserService) SetUserAdmin(ctx context.Context, req *connect.Request[leapmuxv1.SetUserAdminRequest]) (*connect.Response[leapmuxv1.SetUserAdminResponse], error) {
+func (s *AdminUserService) SetUserAdmin(ctx context.Context, req *leapmuxv1.SetUserAdminRequest) (*leapmuxv1.SetUserAdminResponse, error) {
 	actor, err := requireElevatedSessionForDurableAuthority(ctx, s.now())
 	if err != nil {
 		return nil, err
 	}
-	user, err := resolveAdminUser(ctx, s.store, req.Msg.GetId(), req.Msg.GetUsername())
+	user, err := resolveAdminUser(ctx, s.store, req.GetId(), req.GetUsername())
 	if err != nil {
 		return nil, err
 	}
@@ -782,10 +782,10 @@ func (s *AdminUserService) SetUserAdmin(ctx context.Context, req *connect.Reques
 	// to the account. Recovery needs the offline
 	// `leapmux recover bootstrap create-admin`, which itself refuses while
 	// any administrator remains. So the caller must state the intent.
-	if user.IsAdmin && !req.Msg.GetIsAdmin() {
-		if actor.ID.String() == user.ID && !req.Msg.GetForce() {
+	if user.IsAdmin && !req.GetIsAdmin() {
+		if actor.ID.String() == user.ID && !req.GetForce() {
 			return nil, connect.NewError(connect.CodeInvalidArgument,
-				errors.New("this removes your own administrator access; pass force to confirm"))
+				"this removes your own administrator access; pass force to confirm")
 		}
 	}
 	// ONE write, because email_verified is no longer this verb's business.
@@ -801,7 +801,7 @@ func (s *AdminUserService) SetUserAdmin(ctx context.Context, req *connect.Reques
 	if err := commitUnderElevation(ctx, s.store, actor, s.now, func() error {
 		if err := s.store.RunInTransaction(ctx, func(tx store.Store) error {
 			if err := tx.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{
-				IsAdmin: req.Msg.GetIsAdmin(),
+				IsAdmin: req.GetIsAdmin(),
 				ID:      user.ID,
 			}); err != nil {
 				return storeConnectError(err, "update admin flag")
@@ -812,7 +812,7 @@ func (s *AdminUserService) SetUserAdmin(ctx context.Context, req *connect.Reques
 			if errors.As(err, &connectErr) {
 				return connectErr
 			}
-			return connect.NewError(connect.CodeInternal, err)
+			return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 		}
 		return nil
 	}); err != nil {
@@ -822,7 +822,7 @@ func (s *AdminUserService) SetUserAdmin(ctx context.Context, req *connect.Reques
 	if err != nil {
 		return nil, storeConnectError(err, "get updated user")
 	}
-	return connect.NewResponse(&leapmuxv1.SetUserAdminResponse{User: adminUserToProto(updated)}), nil
+	return &leapmuxv1.SetUserAdminResponse{User: adminUserToProto(updated)}, nil
 }
 
 // ResetPassword sets a new password for a user who cannot supply the old
@@ -846,22 +846,22 @@ func (s *AdminUserService) SetUserAdmin(ctx context.Context, req *connect.Reques
 // Setting an account's password without the old one is creating durable new
 // authority: it is account takeover by design, which is why it is an admin
 // verb at all. See requireElevatedSessionForDurableAuthority.
-func (s *AdminUserService) ResetPassword(ctx context.Context, req *connect.Request[leapmuxv1.ResetPasswordRequest]) (*connect.Response[leapmuxv1.ResetPasswordResponse], error) {
+func (s *AdminUserService) ResetPassword(ctx context.Context, req *leapmuxv1.ResetPasswordRequest) (*leapmuxv1.ResetPasswordResponse, error) {
 	actor, err := requireElevatedSessionForDurableAuthority(ctx, s.now())
 	if err != nil {
 		return nil, err
 	}
-	msg := req.Msg
+	msg := req
 	user, err := resolveAdminUser(ctx, s.store, msg.GetId(), msg.GetUsername())
 	if err != nil {
 		return nil, err
 	}
 	if err := validate.ValidatePassword(msg.GetPassword()); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
 	hashed, err := password.Hash(msg.GetPassword())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
 	}
 	uid, err := mintRowUserID(user.ID)
 	if err != nil {
@@ -902,21 +902,21 @@ func (s *AdminUserService) ResetPassword(ctx context.Context, req *connect.Reque
 		if errors.As(err, &connectErr) {
 			return nil, connectErr
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	// AFTER the commit, the half RevokeCredentialsAfterRotation leaves to
 	// its caller.
 	s.lifecycle.UserRevoked(user.ID, committedGeneration)
-	return connect.NewResponse(&leapmuxv1.ResetPasswordResponse{
+	return &leapmuxv1.ResetPasswordResponse{
 		UserId:                  user.ID,
 		Username:                user.Username,
 		ApiTokensRevoked:        apiCount,
 		DelegationTokensRevoked: delegationCount,
-	}), nil
+	}, nil
 }
 
-func (s *AdminUserService) ListUserSessions(ctx context.Context, req *connect.Request[leapmuxv1.ListUserSessionsRequest]) (*connect.Response[leapmuxv1.ListUserSessionsResponse], error) {
-	user, err := resolveAdminUser(ctx, s.store, req.Msg.GetId(), req.Msg.GetUsername())
+func (s *AdminUserService) ListUserSessions(ctx context.Context, req *leapmuxv1.ListUserSessionsRequest) (*leapmuxv1.ListUserSessionsResponse, error) {
+	user, err := resolveAdminUser(ctx, s.store, req.GetId(), req.GetUsername())
 	if err != nil {
 		return nil, err
 	}
@@ -926,7 +926,7 @@ func (s *AdminUserService) ListUserSessions(ctx context.Context, req *connect.Re
 	}
 	page, err := s.store.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{
 		UserID:     uid,
-		PageParams: NormalizePageParams(req.Msg.GetCursor(), req.Msg.GetLimit()),
+		PageParams: NormalizePageParams(req.GetCursor(), req.GetLimit()),
 	}, s.now().UTC())
 	if err != nil {
 		return nil, storeConnectError(err, "list user sessions")
@@ -944,12 +944,12 @@ func (s *AdminUserService) ListUserSessions(ctx context.Context, req *connect.Re
 			UserAgent:    sess.UserAgent,
 		}))
 	}
-	return connect.NewResponse(&leapmuxv1.ListUserSessionsResponse{Sessions: sessions, NextCursor: page.NextCursor}), nil
+	return &leapmuxv1.ListUserSessionsResponse{Sessions: sessions, NextCursor: page.NextCursor}, nil
 }
 
-func (s *AdminUserService) ListSessions(ctx context.Context, req *connect.Request[leapmuxv1.ListSessionsRequest]) (*connect.Response[leapmuxv1.ListSessionsResponse], error) {
+func (s *AdminUserService) ListSessions(ctx context.Context, req *leapmuxv1.ListSessionsRequest) (*leapmuxv1.ListSessionsResponse, error) {
 	page, err := s.store.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
-		PageParams: NormalizePageParams(req.Msg.GetCursor(), req.Msg.GetLimit()),
+		PageParams: NormalizePageParams(req.GetCursor(), req.GetLimit()),
 	}, s.now().UTC())
 	if err != nil {
 		return nil, storeConnectError(err, "list sessions")
@@ -958,23 +958,23 @@ func (s *AdminUserService) ListSessions(ctx context.Context, req *connect.Reques
 	for _, sess := range page.Rows {
 		sessions = append(sessions, adminSessionToProto(sess))
 	}
-	return connect.NewResponse(&leapmuxv1.ListSessionsResponse{Sessions: sessions, NextCursor: page.NextCursor}), nil
+	return &leapmuxv1.ListSessionsResponse{Sessions: sessions, NextCursor: page.NextCursor}, nil
 }
 
-func (s *AdminUserService) RevokeSession(ctx context.Context, req *connect.Request[leapmuxv1.RevokeSessionRequest]) (*connect.Response[leapmuxv1.RevokeSessionResponse], error) {
+func (s *AdminUserService) RevokeSession(ctx context.Context, req *leapmuxv1.RevokeSessionRequest) (*leapmuxv1.RevokeSessionResponse, error) {
 	// Sessions().Revoke, not Delete: the two remove the same row, and the
 	// event kind is what tells a step-up mutation waiting on the user-auth
 	// lock that its acting session was TAKEN AWAY rather than signed out.
-	if err := revokeByID(ctx, req.Msg.GetId(), "revoke session", "session not found: %s",
+	if err := revokeByID(ctx, req.GetId(), "revoke session", "session not found: %s",
 		s.store.Sessions().Revoke); err != nil {
 		return nil, err
 	}
-	s.lifecycle.SessionRevoked(req.Msg.GetId())
-	return connect.NewResponse(&leapmuxv1.RevokeSessionResponse{}), nil
+	s.lifecycle.SessionRevoked(req.GetId())
+	return &leapmuxv1.RevokeSessionResponse{}, nil
 }
 
-func (s *AdminUserService) RevokeUserSessions(ctx context.Context, req *connect.Request[leapmuxv1.RevokeUserSessionsRequest]) (*connect.Response[leapmuxv1.RevokeUserSessionsResponse], error) {
-	user, err := resolveAdminUser(ctx, s.store, req.Msg.GetId(), req.Msg.GetUsername())
+func (s *AdminUserService) RevokeUserSessions(ctx context.Context, req *leapmuxv1.RevokeUserSessionsRequest) (*leapmuxv1.RevokeUserSessionsResponse, error) {
+	user, err := resolveAdminUser(ctx, s.store, req.GetId(), req.GetUsername())
 	if err != nil {
 		return nil, err
 	}
@@ -989,35 +989,35 @@ func (s *AdminUserService) RevokeUserSessions(ctx context.Context, req *connect.
 		return err
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	// AFTER the commit, the half RevokeCredentialsAfterRotation leaves to
 	// its caller.
 	s.lifecycle.UserRevoked(user.ID, committedGeneration)
-	return connect.NewResponse(&leapmuxv1.RevokeUserSessionsResponse{
+	return &leapmuxv1.RevokeUserSessionsResponse{
 		ApiTokensRevoked:        apiCount,
 		DelegationTokensRevoked: delegationCount,
-	}), nil
+	}, nil
 }
 
-func (s *AdminUserService) PurgeExpiredSessions(ctx context.Context, _ *connect.Request[leapmuxv1.PurgeExpiredSessionsRequest]) (*connect.Response[leapmuxv1.PurgeExpiredSessionsResponse], error) {
+func (s *AdminUserService) PurgeExpiredSessions(ctx context.Context, _ *leapmuxv1.PurgeExpiredSessionsRequest) (*leapmuxv1.PurgeExpiredSessionsResponse, error) {
 	n, err := s.store.Cleanup().HardDeleteExpiredSessions(ctx, s.now().UTC())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("purge expired sessions: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("purge expired sessions: %w", err))
 	}
-	return connect.NewResponse(&leapmuxv1.PurgeExpiredSessionsResponse{Purged: n}), nil
+	return &leapmuxv1.PurgeExpiredSessionsResponse{Purged: n}, nil
 }
 
-func (s *AdminUserService) ListAPITokens(ctx context.Context, req *connect.Request[leapmuxv1.ListAPITokensRequest]) (*connect.Response[leapmuxv1.ListAPITokensResponse], error) {
-	userFilter, err := resolveAdminUserFilter(ctx, s.store, req.Msg.GetUserId(), req.Msg.GetUsername())
+func (s *AdminUserService) ListAPITokens(ctx context.Context, req *leapmuxv1.ListAPITokensRequest) (*leapmuxv1.ListAPITokensResponse, error) {
+	userFilter, err := resolveAdminUserFilter(ctx, s.store, req.GetUserId(), req.GetUsername())
 	if err != nil {
 		return nil, err
 	}
 	page, err := s.store.APITokens().ListAll(ctx, store.ListAllAPITokensParams{
 		UserID:         userFilter,
-		ClientID:       req.Msg.GetClientId(),
-		PageParams:     NormalizePageParams(req.Msg.GetCursor(), req.Msg.GetLimit()),
-		IncludeRevoked: req.Msg.GetIncludeRevoked(),
+		ClientID:       req.GetClientId(),
+		PageParams:     NormalizePageParams(req.GetCursor(), req.GetLimit()),
+		IncludeRevoked: req.GetIncludeRevoked(),
 	})
 	if err != nil {
 		return nil, storeConnectError(err, "list api tokens")
@@ -1026,7 +1026,7 @@ func (s *AdminUserService) ListAPITokens(ctx context.Context, req *connect.Reque
 	for _, t := range page.Rows {
 		tokens = append(tokens, apiTokenToProto(t))
 	}
-	return connect.NewResponse(&leapmuxv1.ListAPITokensResponse{Tokens: tokens, NextCursor: page.NextCursor}), nil
+	return &leapmuxv1.ListAPITokensResponse{Tokens: tokens, NextCursor: page.NextCursor}, nil
 }
 
 func apiTokenToProto(t store.APITokenWithOwner) *leapmuxv1.AdminAPIToken {
@@ -1055,8 +1055,8 @@ func apiTokenToProto(t store.APITokenWithOwner) *leapmuxv1.AdminAPIToken {
 	}
 }
 
-func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *connect.Request[leapmuxv1.IssueAPITokenRequest]) (*connect.Response[leapmuxv1.IssueAPITokenResponse], error) {
-	msg := req.Msg
+func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *leapmuxv1.IssueAPITokenRequest) (*leapmuxv1.IssueAPITokenResponse, error) {
+	msg := req
 	// The SAME (id | username) selector every sibling verb takes. A third
 	// spelling of "which user" is one an operator has to remember per verb.
 	user, err := resolveAdminUser(ctx, s.store, msg.GetUserId(), msg.GetUsername())
@@ -1072,7 +1072,7 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *connect.Reque
 	// accepted and stored as visible junk.
 	installationName := normalizeInstallationName(msg.GetInstallationName())
 	if installationName == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("installation_name is required"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "installation_name is required")
 	}
 	// EMPTY identifies the built-in service-account registration, which runs no
 	// flow. It exists so this out-of-band credential still identifies an app,
@@ -1092,26 +1092,26 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *connect.Reque
 	app, err := s.store.OAuthClients().Get(ctx, clientID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeInvalidArgument,
-				fmt.Errorf("no app is registered under client_id %s", clientID))
+			return nil, connect.Errorf(connect.CodeInvalidArgument,
+				"no app is registered under client_id %s", clientID)
 		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("load app: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("load app: %w", err))
 	}
 	if app.RevokedAt != nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			errors.New("this app is retired; issue the credential under a live registration instead"))
+			"this app is retired; issue the credential under a live registration instead")
 	}
 	appCeiling, err := authscope.Parse(app.Scopes)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal,
-			fmt.Errorf("app %s carries an unreadable scope ceiling: %w", clientID, err))
+			fmt.Errorf("app %s carries an unreadable scope ceiling: %w", clientID, err).Error())
 	}
 	owner, err := mintRowUserID(user.ID)
 	if err != nil {
 		return nil, err
 	}
 	if s.validator == nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("token validator is not configured"))
+		return nil, connect.NewError(connect.CodeInternal, "token validator is not configured")
 	}
 	actor, err := requireElevatedActor(ctx, s.now())
 	if err != nil {
@@ -1120,8 +1120,8 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *connect.Reque
 
 	secs := msg.GetTtlSeconds()
 	if secs < 0 || secs > MaxAPITokenTTLSeconds {
-		return nil, connect.NewError(connect.CodeInvalidArgument,
-			fmt.Errorf("ttl_seconds must be between 0 and %d (got %d)", MaxAPITokenTTLSeconds, secs))
+		return nil, connect.Errorf(connect.CodeInvalidArgument,
+			"ttl_seconds must be between 0 and %d (got %d)", MaxAPITokenTTLSeconds, secs)
 	}
 	// The grant. EMPTY means "everything except the admin scopes", which
 	// is what a headless service account needs and what the control CLI's own
@@ -1138,12 +1138,12 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *connect.Reque
 	// validation -- a credential that reports a width it does not have, which
 	// is the exact failure the other refusals exist to prevent.
 	if !appCeiling.Contains(granted) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			fmt.Errorf("app %s is not registered for every permission this credential asks for", app.ClientName))
+		return nil, connect.Errorf(connect.CodeFailedPrecondition,
+			"app %s is not registered for every permission this credential asks for", app.ClientName)
 	}
 	grantedString, err := granted.Storable()
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	// ttl_seconds picks WHICH KIND of credential this is, and the two kinds
 	// are exclusive.
@@ -1205,33 +1205,33 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *connect.Reque
 	// was asked: the envelope is the one record an operator captures, and an
 	// empty request takes the non-admin default -- reporting the request made
 	// a ~14-permission credential read as `scopes: null`.
-	return connect.NewResponse(&leapmuxv1.IssueAPITokenResponse{
+	return &leapmuxv1.IssueAPITokenResponse{
 		TokenId:       minted.TokenID,
 		AccessToken:   minted.Pair.AccessBearer,
 		RefreshToken:  minted.RefreshBearer(),
 		ClientId:      clientID,
 		GrantedScopes: granted.SortedTokens(),
-	}), nil
+	}, nil
 }
 
-func (s *AdminUserService) RevokeAPIToken(ctx context.Context, req *connect.Request[leapmuxv1.RevokeAPITokenRequest]) (*connect.Response[leapmuxv1.RevokeAPITokenResponse], error) {
-	if err := revokeByID(ctx, req.Msg.GetId(), "revoke api token", "token %s not found or already revoked",
+func (s *AdminUserService) RevokeAPIToken(ctx context.Context, req *leapmuxv1.RevokeAPITokenRequest) (*leapmuxv1.RevokeAPITokenResponse, error) {
+	if err := revokeByID(ctx, req.GetId(), "revoke api token", "token %s not found or already revoked",
 		s.store.APITokens().Revoke); err != nil {
 		return nil, err
 	}
-	s.lifecycle.BearerRevoked(auth.BearerKindAPI, req.Msg.GetId())
-	return connect.NewResponse(&leapmuxv1.RevokeAPITokenResponse{}), nil
+	s.lifecycle.BearerRevoked(auth.BearerKindAPI, req.GetId())
+	return &leapmuxv1.RevokeAPITokenResponse{}, nil
 }
 
-func (s *AdminUserService) ListDelegationTokens(ctx context.Context, req *connect.Request[leapmuxv1.ListDelegationTokensRequest]) (*connect.Response[leapmuxv1.ListDelegationTokensResponse], error) {
-	userFilter, err := resolveAdminUserFilter(ctx, s.store, req.Msg.GetUserId(), req.Msg.GetUsername())
+func (s *AdminUserService) ListDelegationTokens(ctx context.Context, req *leapmuxv1.ListDelegationTokensRequest) (*leapmuxv1.ListDelegationTokensResponse, error) {
+	userFilter, err := resolveAdminUserFilter(ctx, s.store, req.GetUserId(), req.GetUsername())
 	if err != nil {
 		return nil, err
 	}
 	page, err := s.store.DelegationTokens().ListAll(ctx, store.ListAllDelegationTokensParams{
 		UserID:         userFilter,
-		PageParams:     NormalizePageParams(req.Msg.GetCursor(), req.Msg.GetLimit()),
-		IncludeRevoked: req.Msg.GetIncludeRevoked(),
+		PageParams:     NormalizePageParams(req.GetCursor(), req.GetLimit()),
+		IncludeRevoked: req.GetIncludeRevoked(),
 	})
 	if err != nil {
 		return nil, storeConnectError(err, "list delegation tokens")
@@ -1240,7 +1240,7 @@ func (s *AdminUserService) ListDelegationTokens(ctx context.Context, req *connec
 	for _, t := range page.Rows {
 		tokens = append(tokens, delegationTokenToProto(t))
 	}
-	return connect.NewResponse(&leapmuxv1.ListDelegationTokensResponse{Tokens: tokens, NextCursor: page.NextCursor}), nil
+	return &leapmuxv1.ListDelegationTokensResponse{Tokens: tokens, NextCursor: page.NextCursor}, nil
 }
 
 func delegationTokenToProto(t store.DelegationTokenWithOwner) *leapmuxv1.AdminDelegationToken {
@@ -1259,14 +1259,14 @@ func delegationTokenToProto(t store.DelegationTokenWithOwner) *leapmuxv1.AdminDe
 	}
 }
 
-func (s *AdminUserService) RevokeDelegationToken(ctx context.Context, req *connect.Request[leapmuxv1.AdminUserServiceRevokeDelegationTokenRequest]) (*connect.Response[leapmuxv1.AdminUserServiceRevokeDelegationTokenResponse], error) {
-	if err := revokeByID(ctx, req.Msg.GetId(), "revoke delegation token",
+func (s *AdminUserService) RevokeDelegationToken(ctx context.Context, req *leapmuxv1.AdminUserServiceRevokeDelegationTokenRequest) (*leapmuxv1.AdminUserServiceRevokeDelegationTokenResponse, error) {
+	if err := revokeByID(ctx, req.GetId(), "revoke delegation token",
 		"delegation token %s not found or already revoked",
 		s.store.DelegationTokens().Revoke); err != nil {
 		return nil, err
 	}
-	s.lifecycle.BearerRevoked(auth.BearerKindDelegation, req.Msg.GetId())
-	return connect.NewResponse(&leapmuxv1.AdminUserServiceRevokeDelegationTokenResponse{}), nil
+	s.lifecycle.BearerRevoked(auth.BearerKindDelegation, req.GetId())
+	return &leapmuxv1.AdminUserServiceRevokeDelegationTokenResponse{}, nil
 }
 
 // resolveIssuedScopes decides the grant an administrator's out-of-band
@@ -1287,16 +1287,16 @@ func resolveIssuedScopes(tokens []string, owner *store.User, actor *auth.UserInf
 	if len(tokens) > 0 {
 		parsed, err := authscope.Parse(strings.Join(tokens, " "))
 		if err != nil {
-			return authscope.ScopeSet{}, connect.NewError(connect.CodeInvalidArgument, err)
+			return authscope.ScopeSet{}, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 		}
 		requested = parsed
 	}
 	if !owner.IsAdmin {
 		if scope, found := firstAdminScope(requested); found {
 			token, _ := authscope.Token(scope)
-			return authscope.ScopeSet{}, connect.NewError(connect.CodeFailedPrecondition,
-				fmt.Errorf("user %s is not an administrator, so a credential for them cannot carry %s",
-					owner.Username, token))
+			return authscope.ScopeSet{}, connect.Errorf(connect.CodeFailedPrecondition,
+				"user %s is not an administrator, so a credential for them cannot carry %s",
+				owner.Username, token)
 		}
 	}
 	// Closed BEFORE the ceiling check, not only at the return. Close() adds the
@@ -1318,7 +1318,7 @@ func resolveIssuedScopes(tokens []string, owner *store.User, actor *auth.UserInf
 	// first call has nothing to point at.
 	if actor != nil && !actor.Scopes.Contains(requested) {
 		return authscope.ScopeSet{}, connect.NewError(connect.CodePermissionDenied,
-			errors.New("this credential cannot issue a credential wider than itself"))
+			"this credential cannot issue a credential wider than itself")
 	}
 	// Closed here, at the mint, so the stored set is the one every check reads.
 	return requested, nil

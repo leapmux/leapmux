@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -53,10 +53,11 @@ func TestIssueAPIToken_CannotMintACredentialWiderThanItself(t *testing.T) {
 		return auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
 	}
 	issue := func(bearer string, scopes []string) error {
-		req := connect.NewRequest(&leapmuxv1.IssueAPITokenRequest{
+		req := &leapmuxv1.IssueAPITokenRequest{
 			Username: "admin", InstallationName: "ci-bot", Scopes: scopes,
-		})
-		req.Header().Set("Authorization", "Bearer "+bearer)
+		}
+		ctx, info := connect.NewClientContext(ctx)
+		info.RequestHeader().Set("Authorization", "Bearer "+bearer)
 		_, err := env.client.IssueAPIToken(ctx, req)
 		return err
 	}

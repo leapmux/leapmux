@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -61,15 +61,15 @@ func TestWorkspaceServiceDeleteWorkspaceFansOutToOwnersWorkersOnly(t *testing.T)
 
 	svc := service.NewWorkspaceService(st, nil, nil)
 	authCtx := auth.WithUser(ctx, &auth.UserInfo{ID: userid.MustNew(owner.ID)})
-	resp, err := svc.DeleteWorkspace(authCtx, connect.NewRequest(&leapmuxv1.DeleteWorkspaceRequest{WorkspaceId: workspaceID}))
+	resp, err := svc.DeleteWorkspace(authCtx, &leapmuxv1.DeleteWorkspaceRequest{WorkspaceId: workspaceID})
 	require.NoError(t, err)
-	require.Len(t, resp.Msg.GetWorkerTabs(), 1,
+	require.Len(t, resp.GetWorkerTabs(), 1,
 		"a stranger's worker must not be swept into the owner's workspace deletion")
-	assert.Equal(t, ownerWorker.ID, resp.Msg.GetWorkerTabs()[0].GetWorkerId())
+	assert.Equal(t, ownerWorker.ID, resp.GetWorkerTabs()[0].GetWorkerId())
 	// The tabs travel with the worker, read inside the delete transaction. That
 	// is what removed the caller's own pre-delete read -- and with it a race, a
 	// swallowed error, and a projection subset that hid tabs entirely.
-	assert.NotEmpty(t, resp.Msg.GetWorkerTabs()[0].GetTabs(),
+	assert.NotEmpty(t, resp.GetWorkerTabs()[0].GetTabs(),
 		"the response must name the tabs the worker has to tear down")
 }
 
@@ -94,10 +94,10 @@ func TestWorkspaceService_ListWorkspaces_DelegationSeesTheOwnersWorkspaces(t *te
 		Credential: auth.DelegationCredential("test-delegation", "worker-mint"),
 	})
 
-	resp, err := svc.ListWorkspaces(ctx, connect.NewRequest(&leapmuxv1.ListWorkspacesRequest{}))
+	resp, err := svc.ListWorkspaces(ctx, &leapmuxv1.ListWorkspacesRequest{})
 	require.NoError(t, err)
-	ids := make([]string, 0, len(resp.Msg.GetWorkspaces()))
-	for _, ws := range resp.Msg.GetWorkspaces() {
+	ids := make([]string, 0, len(resp.GetWorkspaces()))
+	for _, ws := range resp.GetWorkspaces() {
 		ids = append(ids, ws.GetId())
 	}
 	assert.ElementsMatch(t, []string{wsA, wsB}, ids,
@@ -115,20 +115,20 @@ func TestWorkspaceService_GetWorkspace_NonOwnerIsDenied(t *testing.T) {
 	svc := service.NewWorkspaceService(st, nil, nil)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(other.ID)})
 
-	_, err := svc.GetWorkspace(ctx, connect.NewRequest(&leapmuxv1.GetWorkspaceRequest{
+	_, err := svc.GetWorkspace(ctx, &leapmuxv1.GetWorkspaceRequest{
 		WorkspaceId: wsID,
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
 		"a non-owner must be denied access to someone else's workspace")
 
 	// The owner still reads it.
 	ownerCtx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(owner.ID)})
-	resp, err := svc.GetWorkspace(ownerCtx, connect.NewRequest(&leapmuxv1.GetWorkspaceRequest{
+	resp, err := svc.GetWorkspace(ownerCtx, &leapmuxv1.GetWorkspaceRequest{
 		WorkspaceId: wsID,
-	}))
+	})
 	require.NoError(t, err)
-	assert.Equal(t, wsID, resp.Msg.GetWorkspace().GetId())
+	assert.Equal(t, wsID, resp.GetWorkspace().GetId())
 }
 
 func TestWorkspaceService_LocateTile_FindsByWorkspaceRoot(t *testing.T) {
@@ -146,9 +146,9 @@ func TestWorkspaceService_LocateTile_FindsByWorkspaceRoot(t *testing.T) {
 	svc := service.NewWorkspaceService(st, env.registry, nil)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID)})
 
-	resp, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: "root-1"}))
+	resp, err := svc.LocateTile(ctx, &leapmuxv1.LocateTileRequest{TileId: "root-1"})
 	require.NoError(t, err)
-	assert.Equal(t, ws, resp.Msg.GetWorkspaceId())
+	assert.Equal(t, ws, resp.GetWorkspaceId())
 }
 
 // TestWorkspaceService_LocateTile_WalksUpToOwningWorkspace pins the
@@ -174,9 +174,9 @@ func TestWorkspaceService_LocateTile_WalksUpToOwningWorkspace(t *testing.T) {
 	svc := service.NewWorkspaceService(st, env.registry, nil)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID)})
 
-	resp, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: "leaf-1"}))
+	resp, err := svc.LocateTile(ctx, &leapmuxv1.LocateTileRequest{TileId: "leaf-1"})
 	require.NoError(t, err)
-	assert.Equal(t, ws, resp.Msg.GetWorkspaceId())
+	assert.Equal(t, ws, resp.GetWorkspaceId())
 }
 
 func TestWorkspaceService_LocateTile_RejectsEmptyTileID(t *testing.T) {
@@ -188,7 +188,7 @@ func TestWorkspaceService_LocateTile_RejectsEmptyTileID(t *testing.T) {
 	svc := service.NewWorkspaceService(st, env.registry, nil)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID)})
 
-	_, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: ""}))
+	_, err := svc.LocateTile(ctx, &leapmuxv1.LocateTileRequest{TileId: ""})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
@@ -206,7 +206,7 @@ func TestWorkspaceService_LocateTile_NotFoundForUnknownTile(t *testing.T) {
 	svc := service.NewWorkspaceService(st, env.registry, nil)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID)})
 
-	_, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: "ghost"}))
+	_, err := svc.LocateTile(ctx, &leapmuxv1.LocateTileRequest{TileId: "ghost"})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 }
@@ -234,7 +234,7 @@ func TestWorkspaceService_LocateTile_TransientManagerErrorIsRetryable(t *testing
 	svc := service.NewWorkspaceService(st, registry, nil)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(user.ID)})
 
-	_, err := svc.LocateTile(ctx, connect.NewRequest(&leapmuxv1.LocateTileRequest{TileId: "missing"}))
+	_, err := svc.LocateTile(ctx, &leapmuxv1.LocateTileRequest{TileId: "missing"})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err),
 		"an unresolved tile plus a transient manager failure must be retryable Internal, not NotFound")
@@ -357,9 +357,9 @@ func TestWorkspaceService_SetWorkspaceArchiveState_TransitionsAndGroupsWorkers(t
 	svc := service.NewWorkspaceService(st, nil, nudges)
 	authCtx := auth.WithUser(ctx, &auth.UserInfo{ID: owner})
 	archive := func(state leapmuxv1.WorkspaceArchiveState) {
-		_, err := svc.SetWorkspaceArchiveState(authCtx, connect.NewRequest(&leapmuxv1.SetWorkspaceArchiveStateRequest{
+		_, err := svc.SetWorkspaceArchiveState(authCtx, &leapmuxv1.SetWorkspaceArchiveStateRequest{
 			WorkspaceId: workspaceID, ArchiveState: state,
-		}))
+		})
 		require.NoError(t, err)
 	}
 
@@ -427,12 +427,12 @@ func TestWorkspaceService_SetWorkspaceArchiveState_HonorsAnExplicitDestination(t
 	authCtx := auth.WithUser(ctx, &auth.UserInfo{ID: owner})
 
 	// Unarchive straight into the custom section, at a chosen rank.
-	_, err := svc.SetWorkspaceArchiveState(authCtx, connect.NewRequest(&leapmuxv1.SetWorkspaceArchiveStateRequest{
+	_, err := svc.SetWorkspaceArchiveState(authCtx, &leapmuxv1.SetWorkspaceArchiveStateRequest{
 		WorkspaceId:          workspaceID,
 		ArchiveState:         leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE,
 		DestinationSectionId: customID,
 		Position:             "q",
-	}))
+	})
 	require.NoError(t, err)
 	item, err := st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{UserID: owner, WorkspaceID: workspaceID})
 	require.NoError(t, err)
@@ -440,11 +440,11 @@ func TestWorkspaceService_SetWorkspaceArchiveState_HonorsAnExplicitDestination(t
 	assert.Equal(t, "q", item.Position, "an explicit rank is used verbatim, so a drop keeps its place")
 
 	// A destination on the WRONG side is refused, and nothing moves.
-	_, err = svc.SetWorkspaceArchiveState(authCtx, connect.NewRequest(&leapmuxv1.SetWorkspaceArchiveStateRequest{
+	_, err = svc.SetWorkspaceArchiveState(authCtx, &leapmuxv1.SetWorkspaceArchiveStateRequest{
 		WorkspaceId:          workspaceID,
 		ArchiveState:         leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE,
 		DestinationSectionId: archivedID,
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	item, err = st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{UserID: owner, WorkspaceID: workspaceID})
@@ -455,11 +455,11 @@ func TestWorkspaceService_SetWorkspaceArchiveState_HonorsAnExplicitDestination(t
 	// and the sidebar move share requireWorkspaceSection, so neither can start
 	// accepting a section type the other refuses.
 	filesID := sectionIDOfType(t, st, user.ID, leapmuxv1.SectionType_SECTION_TYPE_FILES)
-	_, err = svc.SetWorkspaceArchiveState(authCtx, connect.NewRequest(&leapmuxv1.SetWorkspaceArchiveStateRequest{
+	_, err = svc.SetWorkspaceArchiveState(authCtx, &leapmuxv1.SetWorkspaceArchiveStateRequest{
 		WorkspaceId:          workspaceID,
 		ArchiveState:         leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE,
 		DestinationSectionId: filesID,
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
@@ -467,11 +467,11 @@ func TestWorkspaceService_SetWorkspaceArchiveState_HonorsAnExplicitDestination(t
 	// the parameter cannot be used to probe which section ids exist.
 	stranger := seedUserWithSections(t, st, "archive-destination-stranger")
 	strangerSection := sectionIDOfType(t, st, stranger.ID, leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS)
-	_, err = svc.SetWorkspaceArchiveState(authCtx, connect.NewRequest(&leapmuxv1.SetWorkspaceArchiveStateRequest{
+	_, err = svc.SetWorkspaceArchiveState(authCtx, &leapmuxv1.SetWorkspaceArchiveStateRequest{
 		WorkspaceId:          workspaceID,
 		ArchiveState:         leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE,
 		DestinationSectionId: strangerSection,
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 	item, err = st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{UserID: owner, WorkspaceID: workspaceID})
@@ -479,10 +479,10 @@ func TestWorkspaceService_SetWorkspaceArchiveState_HonorsAnExplicitDestination(t
 	assert.Equal(t, customID, item.SectionID, "no refused destination moves the workspace")
 
 	// No destination keeps the built-in behaviour.
-	_, err = svc.SetWorkspaceArchiveState(authCtx, connect.NewRequest(&leapmuxv1.SetWorkspaceArchiveStateRequest{
+	_, err = svc.SetWorkspaceArchiveState(authCtx, &leapmuxv1.SetWorkspaceArchiveStateRequest{
 		WorkspaceId:  workspaceID,
 		ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-	}))
+	})
 	require.NoError(t, err)
 	item, err = st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{UserID: owner, WorkspaceID: workspaceID})
 	require.NoError(t, err)
@@ -518,10 +518,10 @@ func TestWorkspaceService_SetWorkspaceArchiveState_ConcurrentMovesGetDistinctRan
 		require.NoError(t, st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
 			UserID: owner, WorkspaceID: workspaceID, SectionID: inProgressID, Position: "n",
 		}))
-		_, err := svc.SetWorkspaceArchiveState(authCtx, connect.NewRequest(&leapmuxv1.SetWorkspaceArchiveStateRequest{
+		_, err := svc.SetWorkspaceArchiveState(authCtx, &leapmuxv1.SetWorkspaceArchiveStateRequest{
 			WorkspaceId:  workspaceID,
 			ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		}))
+		})
 		require.NoError(t, err)
 		item, err := st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{
 			UserID: owner, WorkspaceID: workspaceID,
@@ -551,10 +551,10 @@ func TestWorkspaceService_SetWorkspaceArchiveState_RefusesForeignWorkspace(t *te
 	svc := service.NewWorkspaceService(st, nil, nil)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(stranger.ID)})
 
-	_, err := svc.SetWorkspaceArchiveState(ctx, connect.NewRequest(&leapmuxv1.SetWorkspaceArchiveStateRequest{
+	_, err := svc.SetWorkspaceArchiveState(ctx, &leapmuxv1.SetWorkspaceArchiveStateRequest{
 		WorkspaceId:  workspaceID,
 		ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
@@ -628,10 +628,10 @@ func TestWorkspaceService_SetWorkspaceArchiveState_RollsBackTransactionFailures(
 			}, nil, nudges)
 			ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: owner})
 
-			_, err := svc.SetWorkspaceArchiveState(ctx, connect.NewRequest(&leapmuxv1.SetWorkspaceArchiveStateRequest{
+			_, err := svc.SetWorkspaceArchiveState(ctx, &leapmuxv1.SetWorkspaceArchiveStateRequest{
 				WorkspaceId:  workspaceID,
 				ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-			}))
+			})
 			require.Error(t, err)
 			assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
 			item, getErr := base.WorkspaceSectionItems().Get(context.Background(), store.GetWorkspaceSectionItemParams{
@@ -656,10 +656,10 @@ func TestWorkspaceService_RenameWorkspace_RenamesALiveWorkspace(t *testing.T) {
 
 	svc := service.NewWorkspaceService(st, nil, nil)
 	authCtx := auth.WithUser(ctx, &auth.UserInfo{ID: userid.MustNew(user.ID)})
-	_, err := svc.RenameWorkspace(authCtx, connect.NewRequest(&leapmuxv1.RenameWorkspaceRequest{
+	_, err := svc.RenameWorkspace(authCtx, &leapmuxv1.RenameWorkspaceRequest{
 		WorkspaceId: workspaceID,
 		Title:       "after",
-	}))
+	})
 	require.NoError(t, err)
 
 	ws, err := st.Workspaces().GetByID(ctx, workspaceID)
@@ -680,10 +680,10 @@ func TestWorkspaceService_RenameWorkspace_RenamesAnUnplacedWorkspace(t *testing.
 
 	svc := service.NewWorkspaceService(st, nil, nil)
 	authCtx := auth.WithUser(ctx, &auth.UserInfo{ID: userid.MustNew(user.ID)})
-	_, err := svc.RenameWorkspace(authCtx, connect.NewRequest(&leapmuxv1.RenameWorkspaceRequest{
+	_, err := svc.RenameWorkspace(authCtx, &leapmuxv1.RenameWorkspaceRequest{
 		WorkspaceId: workspaceID,
 		Title:       "after",
-	}))
+	})
 	require.NoError(t, err)
 
 	ws, err := st.Workspaces().GetByID(ctx, workspaceID)
@@ -703,10 +703,10 @@ func TestWorkspaceService_RenameWorkspace_RefusesArchived(t *testing.T) {
 
 	svc := service.NewWorkspaceService(st, nil, nil)
 	authCtx := auth.WithUser(ctx, &auth.UserInfo{ID: userid.MustNew(user.ID)})
-	_, err := svc.RenameWorkspace(authCtx, connect.NewRequest(&leapmuxv1.RenameWorkspaceRequest{
+	_, err := svc.RenameWorkspace(authCtx, &leapmuxv1.RenameWorkspaceRequest{
 		WorkspaceId: workspaceID,
 		Title:       "after",
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err),
 		"the workspace is well-formed and owned; only its state forbids the write")
@@ -737,10 +737,10 @@ func TestWorkspaceService_RenameWorkspace_AllowedAgainAfterUnarchive(t *testing.
 
 	svc := service.NewWorkspaceService(st, nil, nil)
 	authCtx := auth.WithUser(ctx, &auth.UserInfo{ID: userid.MustNew(user.ID)})
-	_, err := svc.RenameWorkspace(authCtx, connect.NewRequest(&leapmuxv1.RenameWorkspaceRequest{
+	_, err := svc.RenameWorkspace(authCtx, &leapmuxv1.RenameWorkspaceRequest{
 		WorkspaceId: workspaceID,
 		Title:       "after",
-	}))
+	})
 	require.NoError(t, err)
 
 	ws, err := st.Workspaces().GetByID(ctx, workspaceID)
@@ -766,10 +766,10 @@ func TestWorkspaceService_RenameWorkspace_ArchivedForAnotherUserDoesNotBlock(t *
 
 	svc := service.NewWorkspaceService(st, nil, nil)
 	authCtx := auth.WithUser(ctx, &auth.UserInfo{ID: userid.MustNew(owner.ID)})
-	_, err := svc.RenameWorkspace(authCtx, connect.NewRequest(&leapmuxv1.RenameWorkspaceRequest{
+	_, err := svc.RenameWorkspace(authCtx, &leapmuxv1.RenameWorkspaceRequest{
 		WorkspaceId: workspaceID,
 		Title:       "after",
-	}))
+	})
 	require.NoError(t, err)
 
 	ws, err := st.Workspaces().GetByID(ctx, workspaceID)
@@ -790,9 +790,9 @@ func TestWorkspaceService_DeleteWorkspace_StillWorksOnAnArchivedWorkspace(t *tes
 
 	svc := service.NewWorkspaceService(st, nil, nil)
 	authCtx := auth.WithUser(ctx, &auth.UserInfo{ID: userid.MustNew(user.ID)})
-	_, err := svc.DeleteWorkspace(authCtx, connect.NewRequest(&leapmuxv1.DeleteWorkspaceRequest{
+	_, err := svc.DeleteWorkspace(authCtx, &leapmuxv1.DeleteWorkspaceRequest{
 		WorkspaceId: workspaceID,
-	}))
+	})
 	require.NoError(t, err)
 
 	_, getErr := st.Workspaces().GetByID(ctx, workspaceID)

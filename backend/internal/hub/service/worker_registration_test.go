@@ -14,7 +14,8 @@ import (
 
 	"github.com/leapmux/leapmux/internal/util/userid"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -91,12 +92,11 @@ func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config, seed regKeySeed) *r
 	mux := http.NewServeMux()
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(sc.Stop)
-	opts := connect.WithInterceptors(interceptor)
+	connectServer := connect.NewServer(interceptor)
 
 	mailer := &mailSenderDouble{}
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(sc, nil, nil)))
-	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
-	mux.Handle(authPath, authHandler)
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
 
 	connectorSvc := service.NewWorkerConnectorService(st, wMgr, cMgr, service.NewHubEventBroadcaster(cMgr), pendingReqs, nil, nil, sendq.NewMaxBytesPoolForTest())
 	// Both halves of max_workers_per_user, wired from one value exactly as
@@ -107,21 +107,20 @@ func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config, seed regKeySeed) *r
 	limits := settings.KeyLimits.Of(set.Snapshot(context.Background()))
 	connectorSvc.SetMaxWorkersPerUser(limits.MaxWorkersPerUser)
 	wMgr.SetMaxWorkersPerUser(limits.MaxWorkersPerUser)
-	connectorPath, connectorHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(connectorSvc, opts)
-	mux.Handle(connectorPath, connectorHandler)
+	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(connectServer, connectorSvc)
 
 	notif := notifier.New(st, wMgr, pendingReqs, func() time.Duration { return settings.DefaultTimeouts.APITimeout() })
 	mgmtSvc := service.NewWorkerManagementService(st, wMgr, service.NewHubEventBroadcaster(cMgr), notif, mailer, mail.Renderer{}, set, nil)
-	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(mgmtSvc, opts)
-	mux.Handle(mgmtPath, mgmtHandler)
+	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer, mgmtSvc)
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
 	return &regKeyEnv{
-		mgmtClient:      leapmuxv1connect.NewWorkerManagementServiceClient(server.Client(), server.URL),
-		connectorClient: leapmuxv1connect.NewWorkerConnectorServiceClient(server.Client(), server.URL),
-		authClient:      leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL),
+		mgmtClient:      leapmuxv1connect.NewWorkerManagementServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
+		connectorClient: leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
+		authClient:      leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
 		store:           st,
 		mailer:          mailer,
 		server:          server,
@@ -132,11 +131,12 @@ func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config, seed regKeySeed) *r
 
 func (e *regKeyEnv) login(t *testing.T, username, password string) string {
 	t.Helper()
-	resp, err := e.authClient.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
+	ctx, info := connect.NewClientContext(context.Background())
+	_, err := e.authClient.Login(ctx, &leapmuxv1.LoginRequest{
 		Username: username, Password: password,
-	}))
+	})
 	require.NoError(t, err)
-	return sessionFromCookie(t, resp.Header().Get("Set-Cookie"))
+	return sessionFromCookie(t, info.ResponseHeader().Get("Set-Cookie"))
 }
 
 func (e *regKeyEnv) adminID(t *testing.T) string {
@@ -167,13 +167,13 @@ func (e *regKeyEnv) serveOverUnixSocket(t *testing.T, name string) *http.Client 
 	return httpClient
 }
 
-func (e *regKeyEnv) registerWithKey(t *testing.T, key string) (*connect.Response[leapmuxv1.RegisterResponse], error) {
+func (e *regKeyEnv) registerWithKey(t *testing.T, key string) (*leapmuxv1.RegisterResponse, error) {
 	t.Helper()
-	req := connect.NewRequest(&leapmuxv1.RegisterRequest{Version: "v"})
+	ctx, info := connect.NewClientContext(context.Background())
 	if key != "" {
-		req.Header().Set("Authorization", "Bearer "+key)
+		info.RequestHeader().Set("Authorization", "Bearer "+key)
 	}
-	return e.connectorClient.Register(context.Background(), req)
+	return e.connectorClient.Register(ctx, &leapmuxv1.RegisterRequest{Version: "v"})
 }
 
 func TestCreateRegistrationKey_RequiresAuth(t *testing.T) {
@@ -181,7 +181,7 @@ func TestCreateRegistrationKey_RequiresAuth(t *testing.T) {
 
 	env := setupRegKeyEnv(t)
 
-	_, err := env.mgmtClient.CreateRegistrationKey(context.Background(), connect.NewRequest(&leapmuxv1.CreateRegistrationKeyRequest{}))
+	_, err := env.mgmtClient.CreateRegistrationKey(context.Background(), &leapmuxv1.CreateRegistrationKeyRequest{})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -192,12 +192,12 @@ func TestCreateRegistrationKey_ReturnsKeyAndExpiry(t *testing.T) {
 	env := setupRegKeyEnv(t)
 	token := env.login(t, "admin", "admin123")
 
-	resp, err := env.mgmtClient.CreateRegistrationKey(context.Background(), authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	resp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(), &leapmuxv1.CreateRegistrationKeyRequest{}, token))
 	require.NoError(t, err)
-	assert.NotEmpty(t, resp.Msg.GetRegistrationKey())
-	require.NotNil(t, resp.Msg.GetExpiresAt())
+	assert.NotEmpty(t, resp.GetRegistrationKey())
+	require.NotNil(t, resp.GetExpiresAt())
 
-	expiresAt := resp.Msg.GetExpiresAt().AsTime()
+	expiresAt := resp.GetExpiresAt().AsTime()
 	delta := time.Until(expiresAt)
 	// Should be ~5 min from now; allow generous slack for clock + RPC.
 	assert.Greater(t, delta, 4*time.Minute)
@@ -220,14 +220,14 @@ func TestRegister_HappyPath_ReturnsCredentialsAndConsumesKey(t *testing.T) {
 	env := setupRegKeyEnv(t)
 	token := env.login(t, "admin", "admin123")
 
-	createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(), authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(), &leapmuxv1.CreateRegistrationKeyRequest{}, token))
 	require.NoError(t, err)
-	key := createResp.Msg.GetRegistrationKey()
+	key := createResp.GetRegistrationKey()
 
 	regResp, err := env.registerWithKey(t, key)
 	require.NoError(t, err)
-	assert.NotEmpty(t, regResp.Msg.GetWorkerId())
-	assert.NotEmpty(t, regResp.Msg.GetAuthToken())
+	assert.NotEmpty(t, regResp.GetWorkerId())
+	assert.NotEmpty(t, regResp.GetAuthToken())
 
 	// A second Register with the same key must fail — the key was
 	// soft-deleted as part of the consume txn.
@@ -238,7 +238,7 @@ func TestRegister_HappyPath_ReturnsCredentialsAndConsumesKey(t *testing.T) {
 	// Worker row exists and has registered_by = key.created_by. The response does
 	// not carry the owner -- the Hub delivers it on connect (WorkerIdentity) instead
 	// of at registration, so the DB row is the only place to assert it.
-	w, err := env.store.Workers().GetByID(context.Background(), regResp.Msg.GetWorkerId())
+	w, err := env.store.Workers().GetByID(context.Background(), regResp.GetWorkerId())
 	require.NoError(t, err)
 	assert.NotEmpty(t, w.RegisteredBy, "the worker row must record the key creator as its owner")
 }
@@ -259,10 +259,10 @@ func TestRegister_RefusesBeyondThePerUserWorkerCap(t *testing.T) {
 
 	register := func(t *testing.T) error {
 		t.Helper()
-		createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(),
-			authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+		createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
+			&leapmuxv1.CreateRegistrationKeyRequest{}, token))
 		require.NoError(t, err)
-		_, err = env.registerWithKey(t, createResp.Msg.GetRegistrationKey())
+		_, err = env.registerWithKey(t, createResp.GetRegistrationKey())
 		return err
 	}
 
@@ -307,14 +307,14 @@ func TestRegister_WorkerCapCountsOnlyLiveWorkers(t *testing.T) {
 
 	register := func(t *testing.T) (string, error) {
 		t.Helper()
-		createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(),
-			authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+		createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
+			&leapmuxv1.CreateRegistrationKeyRequest{}, token))
 		require.NoError(t, err)
-		resp, err := env.registerWithKey(t, createResp.Msg.GetRegistrationKey())
+		resp, err := env.registerWithKey(t, createResp.GetRegistrationKey())
 		if err != nil {
 			return "", err
 		}
-		return resp.Msg.GetWorkerId(), nil
+		return resp.GetWorkerId(), nil
 	}
 
 	first, err := register(t)
@@ -334,9 +334,9 @@ func TestRegister_AtomicConsume_RaceProducesOneWinner(t *testing.T) {
 	env := setupRegKeyEnv(t)
 	token := env.login(t, "admin", "admin123")
 
-	createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(), authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(), &leapmuxv1.CreateRegistrationKeyRequest{}, token))
 	require.NoError(t, err)
-	key := createResp.Msg.GetRegistrationKey()
+	key := createResp.GetRegistrationKey()
 
 	// Two goroutines race to consume the same key. Exactly one must win.
 	const racers = 4
@@ -376,9 +376,9 @@ func TestExtendRegistrationKey_RejectsExpired(t *testing.T) {
 	env := setupRegKeyEnv(t)
 	token := env.login(t, "admin", "admin123")
 
-	createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(), authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(), &leapmuxv1.CreateRegistrationKeyRequest{}, token))
 	require.NoError(t, err)
-	key := createResp.Msg.GetRegistrationKey()
+	key := createResp.GetRegistrationKey()
 
 	// Force-expire by soft-deleting the row directly via the store.
 	_, err = env.store.RegistrationKeys().SoftDelete(context.Background(), store.SoftDeleteRegistrationKeyParams{
@@ -387,7 +387,7 @@ func TestExtendRegistrationKey_RejectsExpired(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = env.mgmtClient.ExtendRegistrationKey(context.Background(), authedReq(&leapmuxv1.ExtendRegistrationKeyRequest{
+	_, err = env.mgmtClient.ExtendRegistrationKey(authedReq(context.Background(), &leapmuxv1.ExtendRegistrationKeyRequest{
 		RegistrationKey: key,
 	}, token))
 	require.Error(t, err)
@@ -401,12 +401,12 @@ func TestExtendRegistrationKey_RejectsTooEarly(t *testing.T) {
 	env := setupRegKeyEnv(t)
 	token := env.login(t, "admin", "admin123")
 
-	createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(), authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(), &leapmuxv1.CreateRegistrationKeyRequest{}, token))
 	require.NoError(t, err)
-	key := createResp.Msg.GetRegistrationKey()
+	key := createResp.GetRegistrationKey()
 
 	// Just-minted key has ~5min remaining, well above the 2-min buffer.
-	_, err = env.mgmtClient.ExtendRegistrationKey(context.Background(), authedReq(&leapmuxv1.ExtendRegistrationKeyRequest{
+	_, err = env.mgmtClient.ExtendRegistrationKey(authedReq(context.Background(), &leapmuxv1.ExtendRegistrationKeyRequest{
 		RegistrationKey: key,
 	}, token))
 	require.Error(t, err)
@@ -420,9 +420,9 @@ func TestExtendRegistrationKey_AcceptsInsideBuffer(t *testing.T) {
 	env := setupRegKeyEnv(t)
 	token := env.login(t, "admin", "admin123")
 
-	createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(), authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(), &leapmuxv1.CreateRegistrationKeyRequest{}, token))
 	require.NoError(t, err)
-	key := createResp.Msg.GetRegistrationKey()
+	key := createResp.GetRegistrationKey()
 
 	// Push the key inside the extend window: 90s remaining < 2min buffer.
 	rows, err := env.store.RegistrationKeys().Extend(context.Background(), store.ExtendRegistrationKeyParams{
@@ -433,12 +433,12 @@ func TestExtendRegistrationKey_AcceptsInsideBuffer(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
 
-	resp, err := env.mgmtClient.ExtendRegistrationKey(context.Background(), authedReq(&leapmuxv1.ExtendRegistrationKeyRequest{
+	resp, err := env.mgmtClient.ExtendRegistrationKey(authedReq(context.Background(), &leapmuxv1.ExtendRegistrationKeyRequest{
 		RegistrationKey: key,
 	}, token))
 	require.NoError(t, err)
-	require.NotNil(t, resp.Msg.GetExpiresAt())
-	delta := time.Until(resp.Msg.GetExpiresAt().AsTime())
+	require.NotNil(t, resp.GetExpiresAt())
+	delta := time.Until(resp.GetExpiresAt().AsTime())
 	assert.Greater(t, delta, 4*time.Minute, "extension should restore ~5min TTL")
 }
 
@@ -448,9 +448,9 @@ func TestExtendRegistrationKey_RejectsOtherUsersKey(t *testing.T) {
 	env := setupRegKeyEnv(t)
 	adminToken := env.login(t, "admin", "admin123")
 
-	createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(), authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, adminToken))
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(), &leapmuxv1.CreateRegistrationKeyRequest{}, adminToken))
 	require.NoError(t, err)
-	key := createResp.Msg.GetRegistrationKey()
+	key := createResp.GetRegistrationKey()
 
 	// Bring up a second user. We seed directly via the store helper —
 	// SignUp is disabled in this test config, and that's fine; the
@@ -462,7 +462,7 @@ func TestExtendRegistrationKey_RejectsOtherUsersKey(t *testing.T) {
 	// RegistrationKeys().GetOwned: cross-user access is indistinguishable
 	// from "no such key", which deliberately closes the oracle on whether
 	// a key id corresponds to *some* other user's row.
-	_, err = env.mgmtClient.ExtendRegistrationKey(context.Background(), authedReq(&leapmuxv1.ExtendRegistrationKeyRequest{
+	_, err = env.mgmtClient.ExtendRegistrationKey(authedReq(context.Background(), &leapmuxv1.ExtendRegistrationKeyRequest{
 		RegistrationKey: key,
 	}, otherToken))
 	require.Error(t, err)
@@ -481,9 +481,9 @@ func TestExtendRegistrationKey_DoesNotResurrectConsumedKey(t *testing.T) {
 	env := setupRegKeyEnv(t)
 	token := env.login(t, "admin", "admin123")
 
-	createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(), authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(), &leapmuxv1.CreateRegistrationKeyRequest{}, token))
 	require.NoError(t, err)
-	key := createResp.Msg.GetRegistrationKey()
+	key := createResp.GetRegistrationKey()
 
 	// Push the key inside the extend window so the service-level
 	// buffer check passes.
@@ -505,7 +505,7 @@ func TestExtendRegistrationKey_DoesNotResurrectConsumedKey(t *testing.T) {
 	// Extend now races a dead row. The handler's SELECT would have
 	// observed the live state pre-Consume; the UPDATE must refuse to
 	// revive it.
-	_, err = env.mgmtClient.ExtendRegistrationKey(context.Background(), authedReq(&leapmuxv1.ExtendRegistrationKeyRequest{
+	_, err = env.mgmtClient.ExtendRegistrationKey(authedReq(context.Background(), &leapmuxv1.ExtendRegistrationKeyRequest{
 		RegistrationKey: key,
 	}, token))
 	require.Error(t, err)
@@ -523,11 +523,11 @@ func TestDeleteRegistrationKey_SoftDeletes(t *testing.T) {
 	env := setupRegKeyEnv(t)
 	token := env.login(t, "admin", "admin123")
 
-	createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(), authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(), &leapmuxv1.CreateRegistrationKeyRequest{}, token))
 	require.NoError(t, err)
-	key := createResp.Msg.GetRegistrationKey()
+	key := createResp.GetRegistrationKey()
 
-	_, err = env.mgmtClient.DeleteRegistrationKey(context.Background(), authedReq(&leapmuxv1.DeleteRegistrationKeyRequest{
+	_, err = env.mgmtClient.DeleteRegistrationKey(authedReq(context.Background(), &leapmuxv1.DeleteRegistrationKeyRequest{
 		RegistrationKey: key,
 	}, token))
 	require.NoError(t, err)
@@ -544,13 +544,13 @@ func TestEmailRegistrationInstructions_RequiresVerifiedEmail(t *testing.T) {
 	env := setupRegKeyEnv(t)
 	token := env.login(t, "admin", "admin123")
 
-	createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(), authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(), &leapmuxv1.CreateRegistrationKeyRequest{}, token))
 	require.NoError(t, err)
 
 	// admin user is created without a verified email by CreateTestAdmin,
 	// so the precondition check should reject.
-	_, err = env.mgmtClient.EmailRegistrationInstructions(context.Background(), authedReq(&leapmuxv1.EmailRegistrationInstructionsRequest{
-		RegistrationKey: createResp.Msg.GetRegistrationKey(),
+	_, err = env.mgmtClient.EmailRegistrationInstructions(authedReq(context.Background(), &leapmuxv1.EmailRegistrationInstructionsRequest{
+		RegistrationKey: createResp.GetRegistrationKey(),
 		Command:         "leapmux worker --hub http://x --registration-key abc",
 	}, token))
 	require.Error(t, err)
@@ -577,11 +577,11 @@ func TestEmailRegistrationInstructions_RejectsWhenSMTPUnconfigured(t *testing.T)
 		ID:            env.adminID(t),
 	}))
 
-	createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(), authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(), &leapmuxv1.CreateRegistrationKeyRequest{}, token))
 	require.NoError(t, err)
 
-	_, err = env.mgmtClient.EmailRegistrationInstructions(context.Background(), authedReq(&leapmuxv1.EmailRegistrationInstructionsRequest{
-		RegistrationKey: createResp.Msg.GetRegistrationKey(),
+	_, err = env.mgmtClient.EmailRegistrationInstructions(authedReq(context.Background(), &leapmuxv1.EmailRegistrationInstructionsRequest{
+		RegistrationKey: createResp.GetRegistrationKey(),
 		Command:         "leapmux worker --hub http://x --registration-key abc",
 	}, token))
 	require.Error(t, err)
@@ -603,12 +603,12 @@ func TestEmailRegistrationInstructions_SendsToVerifiedAddress(t *testing.T) {
 		ID:            env.adminID(t),
 	}))
 
-	createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(), authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(), &leapmuxv1.CreateRegistrationKeyRequest{}, token))
 	require.NoError(t, err)
 
 	cmd := "leapmux worker --hub http://x --registration-key abc"
-	_, err = env.mgmtClient.EmailRegistrationInstructions(context.Background(), authedReq(&leapmuxv1.EmailRegistrationInstructionsRequest{
-		RegistrationKey: createResp.Msg.GetRegistrationKey(),
+	_, err = env.mgmtClient.EmailRegistrationInstructions(authedReq(context.Background(), &leapmuxv1.EmailRegistrationInstructionsRequest{
+		RegistrationKey: createResp.GetRegistrationKey(),
 		Command:         cmd,
 	}, token))
 	require.NoError(t, err)
@@ -627,13 +627,13 @@ func TestDeregisterWorker_AllowsManuallyRegisteredWorker(t *testing.T) {
 
 	// Mint a key, then consume it via Register — the resulting worker
 	// row has auto_registered=false.
-	createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(), authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(), &leapmuxv1.CreateRegistrationKeyRequest{}, token))
 	require.NoError(t, err)
-	regResp, err := env.registerWithKey(t, createResp.Msg.GetRegistrationKey())
+	regResp, err := env.registerWithKey(t, createResp.GetRegistrationKey())
 	require.NoError(t, err)
-	workerID := regResp.Msg.GetWorkerId()
+	workerID := regResp.GetWorkerId()
 
-	_, err = env.mgmtClient.DeregisterWorker(context.Background(), authedReq(&leapmuxv1.DeregisterWorkerRequest{
+	_, err = env.mgmtClient.DeregisterWorker(authedReq(context.Background(), &leapmuxv1.DeregisterWorkerRequest{
 		WorkerId: workerID,
 	}, token))
 	require.NoError(t, err)
@@ -666,7 +666,7 @@ func TestDeregisterWorker_RefusesAutoRegisteredWorker(t *testing.T) {
 		AutoRegistered:  true,
 	}))
 
-	_, err := env.mgmtClient.DeregisterWorker(context.Background(), authedReq(&leapmuxv1.DeregisterWorkerRequest{
+	_, err := env.mgmtClient.DeregisterWorker(authedReq(context.Background(), &leapmuxv1.DeregisterWorkerRequest{
 		WorkerId: workerID,
 	}, token))
 	require.Error(t, err)
@@ -698,17 +698,17 @@ func TestRegister_OverUnixSocket_StillRequiresValidKey(t *testing.T) {
 	// The gRPC-over-h2c client used by `leapmux worker --hub unix:...` dials the
 	// hub the same way it would in production.
 	httpClient := env.serveOverUnixSocket(t, "hub")
-	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(httpClient, "http://localhost", connect.WithGRPC())
-	authClient := leapmuxv1connect.NewAuthServiceClient(httpClient, "http://localhost")
-	mgmtClient := leapmuxv1connect.NewWorkerManagementServiceClient(httpClient, "http://localhost")
+	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	authClient := leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, "http://localhost", connecthttp.WithReadMaxBytes(0))))
+	mgmtClient := leapmuxv1connect.NewWorkerManagementServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, "http://localhost", connecthttp.WithReadMaxBytes(0))))
 
 	register := func(t *testing.T, key string) error {
 		t.Helper()
-		req := connect.NewRequest(&leapmuxv1.RegisterRequest{Version: "v"})
+		ctx, info := connect.NewClientContext(context.Background())
 		if key != "" {
-			req.Header().Set("Authorization", "Bearer "+key)
+			info.RequestHeader().Set("Authorization", "Bearer "+key)
 		}
-		_, err := connectorClient.Register(context.Background(), req)
+		_, err := connectorClient.Register(ctx, &leapmuxv1.RegisterRequest{Version: "v"})
 		return err
 	}
 
@@ -725,15 +725,16 @@ func TestRegister_OverUnixSocket_StillRequiresValidKey(t *testing.T) {
 	})
 
 	t.Run("valid bearer registers a worker", func(t *testing.T) {
-		loginResp, err := authClient.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
+		loginCtx, loginInfo := connect.NewClientContext(context.Background())
+		_, err := authClient.Login(loginCtx, &leapmuxv1.LoginRequest{
 			Username: "admin", Password: "admin123",
-		}))
+		})
 		require.NoError(t, err)
-		token := sessionFromCookie(t, loginResp.Header().Get("Set-Cookie"))
+		token := sessionFromCookie(t, loginInfo.ResponseHeader().Get("Set-Cookie"))
 
-		createResp, err := mgmtClient.CreateRegistrationKey(context.Background(), authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+		createResp, err := mgmtClient.CreateRegistrationKey(authedReq(context.Background(), &leapmuxv1.CreateRegistrationKeyRequest{}, token))
 		require.NoError(t, err)
-		key := createResp.Msg.GetRegistrationKey()
+		key := createResp.GetRegistrationKey()
 
 		err = register(t, key)
 		require.NoError(t, err, "valid key over unix socket must register the worker")
@@ -765,23 +766,27 @@ func TestConnect_SendsWorkerIdentityFirst(t *testing.T) {
 
 	// Register a worker so it has an auth token and a recorded owner.
 	token := env.login(t, "admin", "admin123")
-	createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(),
-		authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
+		&leapmuxv1.CreateRegistrationKeyRequest{}, token))
 	require.NoError(t, err)
-	regResp, err := env.registerWithKey(t, createResp.Msg.GetRegistrationKey())
+	regResp, err := env.registerWithKey(t, createResp.GetRegistrationKey())
 	require.NoError(t, err)
 
-	worker, err := env.store.Workers().GetByID(context.Background(), regResp.Msg.GetWorkerId())
+	worker, err := env.store.Workers().GetByID(context.Background(), regResp.GetWorkerId())
 	require.NoError(t, err)
 	require.NotEmpty(t, worker.RegisteredBy)
 
-	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(
-		env.serveOverUnixSocket(t, "hub-identity"), "http://localhost", connect.WithGRPC())
+	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
+		env.serveOverUnixSocket(t, "hub-identity"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	stream := connectorClient.Connect(ctx)
-	stream.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
+	streamCtx, streamInfo := connect.NewClientContext(ctx)
+	streamInfo.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
+	stream, err := connectorClient.Connect(streamCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// ConnectRPC only sends headers on the first Send, so the worker speaks first.
 	require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
 		Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}},
@@ -793,7 +798,7 @@ func TestConnect_SendsWorkerIdentityFirst(t *testing.T) {
 		"the FIRST message on the stream must be WorkerIdentity, not the heartbeat echo")
 	assert.Equal(t, worker.RegisteredBy, first.GetWorkerIdentity().GetRegisteredBy(),
 		"the Hub must name the worker's recorded owner")
-	require.NoError(t, stream.CloseRequest())
+	require.NoError(t, stream.CloseSend())
 }
 
 // A Connect handler can clear the shutdown interceptor -- a one-shot check --
@@ -812,17 +817,17 @@ func TestConnect_FencedRegistryRefusesWithUnavailable(t *testing.T) {
 	env := setupRegKeyEnv(t)
 
 	token := env.login(t, "admin", "admin123")
-	createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(),
-		authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
+		&leapmuxv1.CreateRegistrationKeyRequest{}, token))
 	require.NoError(t, err)
-	regResp, err := env.registerWithKey(t, createResp.Msg.GetRegistrationKey())
-	require.NoError(t, err)
-
-	worker, err := env.store.Workers().GetByID(context.Background(), regResp.Msg.GetWorkerId())
+	regResp, err := env.registerWithKey(t, createResp.GetRegistrationKey())
 	require.NoError(t, err)
 
-	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(
-		env.serveOverUnixSocket(t, "hub-fenced"), "http://localhost", connect.WithGRPC())
+	worker, err := env.store.Workers().GetByID(context.Background(), regResp.GetWorkerId())
+	require.NoError(t, err)
+
+	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
+		env.serveOverUnixSocket(t, "hub-fenced"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
 
 	// The Hub has begun shutting down. The interceptor is NOT installed on this
 	// fixture, which is exactly the window under test: the request is already
@@ -831,8 +836,12 @@ func TestConnect_FencedRegistryRefusesWithUnavailable(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	stream := connectorClient.Connect(ctx)
-	stream.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
+	streamCtx, streamInfo := connect.NewClientContext(ctx)
+	streamInfo.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
+	stream, err := connectorClient.Connect(streamCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// ConnectRPC documents that when the server returns an error, the client's
 	// first Send may wrap io.EOF and Receive carries the real status. Fencing
 	// is the cheapest refuse path (no greeting enqueue), so on a fast runner
@@ -852,7 +861,7 @@ func TestConnect_FencedRegistryRefusesWithUnavailable(t *testing.T) {
 		"a Hub that is going away is Unavailable; Internal would read as a worker-side fault")
 	assert.Nil(t, env.wMgr.ConnForTrustedPath(worker.ID),
 		"the refused connection must never be published")
-	require.NoError(t, stream.CloseRequest())
+	require.NoError(t, stream.CloseSend())
 }
 
 // The regression this cap exists to close, end to end.
@@ -879,16 +888,16 @@ func TestConnect_RefusesWhenTheAccountIsAtItsLiveWorkerCap(t *testing.T) {
 
 	register := func(t *testing.T) *leapmuxv1.RegisterResponse {
 		t.Helper()
-		createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(),
-			authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+		createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
+			&leapmuxv1.CreateRegistrationKeyRequest{}, token))
 		require.NoError(t, err)
-		resp, err := env.registerWithKey(t, createResp.Msg.GetRegistrationKey())
+		resp, err := env.registerWithKey(t, createResp.GetRegistrationKey())
 		require.NoError(t, err)
-		return resp.Msg
+		return resp
 	}
 
-	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(
-		env.serveOverUnixSocket(t, "hub-worker-cap"), "http://localhost", connect.WithGRPC())
+	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
+		env.serveOverUnixSocket(t, "hub-worker-cap"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -901,16 +910,20 @@ func TestConnect_RefusesWhenTheAccountIsAtItsLiveWorkerCap(t *testing.T) {
 			EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
 		}},
 	}
-	type workerStream = connect.BidiStreamForClient[leapmuxv1.ConnectRequest, leapmuxv1.ConnectResponse]
+	type workerStream = leapmuxv1connect.WorkerConnectorServiceConnectClientStream
 
 	// openStream starts a Connect stream and returns the Hub's first frame. The
 	// worker speaks first because ConnectRPC only sends headers on the first Send.
 	// When the Hub refuses immediately, Send may wrap io.EOF; Receive carries
-	// the status (see BidiStreamForClient.Send docs).
-	openStream := func(t *testing.T, authToken string) (*workerStream, *leapmuxv1.ConnectResponse, error) {
+	// the status (the generated client stream's Send documents this).
+	openStream := func(t *testing.T, authToken string) (workerStream, *leapmuxv1.ConnectResponse, error) {
 		t.Helper()
-		stream := connectorClient.Connect(ctx)
-		stream.RequestHeader().Set("Authorization", "Bearer "+authToken)
+		streamCtx, streamInfo := connect.NewClientContext(ctx)
+		streamInfo.RequestHeader().Set("Authorization", "Bearer "+authToken)
+		stream, err := connectorClient.Connect(streamCtx)
+		if err != nil {
+			return workerStream{}, nil, err
+		}
 		if err := stream.Send(heartbeat); err != nil && !errors.Is(err, io.EOF) {
 			return stream, nil, err
 		}
@@ -925,7 +938,7 @@ func TestConnect_RefusesWhenTheAccountIsAtItsLiveWorkerCap(t *testing.T) {
 	// sending is what makes this a seam instead of a hope: the Hub replies from
 	// the same handler turn that resets the timer, so the test never depends on
 	// how long the steps after it take.
-	awaitHeartbeat := func(t *testing.T, stream *workerStream) {
+	awaitHeartbeat := func(t *testing.T, stream workerStream) {
 		t.Helper()
 		for {
 			frame, err := stream.Receive()
@@ -996,10 +1009,10 @@ func TestConnect_RefusesWhenTheAccountIsAtItsLiveWorkerCap(t *testing.T) {
 		"the operator-facing key has to be in the message, or nobody knows what to raise")
 	assert.Nil(t, env.wMgr.ConnForTrustedPath(second.GetWorkerId()),
 		"the refused connection must never be published")
-	require.NoError(t, secondStream.CloseRequest())
+	require.NoError(t, secondStream.CloseSend())
 
 	// The disconnect -- not the deregistration -- is what gives the slot back.
-	require.NoError(t, firstStream.CloseRequest())
+	require.NoError(t, firstStream.CloseSend())
 	testutil.AssertEventually(t, func() bool {
 		return !env.wMgr.OnlineForTrustedPath(first.GetWorkerId())
 	})
@@ -1007,5 +1020,5 @@ func TestConnect_RefusesWhenTheAccountIsAtItsLiveWorkerCap(t *testing.T) {
 	thirdStream, greeting, err := openStream(t, second.GetAuthToken())
 	require.NoError(t, err, "a freed slot must be usable")
 	assert.NotNil(t, greeting.GetWorkerIdentity())
-	require.NoError(t, thirdStream.CloseRequest())
+	require.NoError(t, thirdStream.CloseSend())
 }

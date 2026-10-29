@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -106,15 +107,16 @@ func setupElevationTest(t *testing.T) *elevationEnv {
 		auth.NewCredentialLifecycleEffects(contexts, recorder, nil), mail.NewStubSender(), mail.Renderer{}, nil)
 
 	mux := http.NewServeMux()
-	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, connect.WithInterceptors(interceptor))
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer(interceptor)
+	leapmuxv1connect.RegisterUserServiceHandler(connectServer, userSvc)
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	server := httptest.NewUnstartedServer(mux)
 	server.EnableHTTP2 = true
 	server.StartTLS()
 	t.Cleanup(server.Close)
 
 	return &elevationEnv{
-		client:   leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL, connect.WithGRPC()),
+		client:   leapmuxv1connect.NewUserServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC()))),
 		store:    st,
 		token:    token,
 		userID:   userID,
@@ -140,26 +142,26 @@ func TestElevateSession_InvalidatesTheCacheWithoutSigningTheUserOut(t *testing.T
 
 	// WARM the cache with the pre-elevation UserInfo. Without this the test
 	// proves nothing: a cold cache would re-read the row anyway.
-	_, err := env.client.ListUserSettings(ctx, authedReq(&leapmuxv1.ListUserSettingsRequest{}, env.token))
+	_, err := env.client.ListUserSettings(authedReq(ctx, &leapmuxv1.ListUserSettingsRequest{}, env.token))
 	require.NoError(t, err)
 
 	// A sensitive action on the warm cache: refused, because the session is
 	// not elevated.
-	_, err = env.client.ChangePassword(ctx, authedReq(&leapmuxv1.ChangePasswordRequest{
+	_, err = env.client.ChangePassword(authedReq(ctx, &leapmuxv1.ChangePasswordRequest{
 		NewPassword: "newpass123",
 	}, env.token))
 	require.Error(t, err)
 	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 
-	resp, err := env.client.ElevateSession(ctx, authedReq(&leapmuxv1.ElevateSessionRequest{
+	resp, err := env.client.ElevateSession(authedReq(ctx, &leapmuxv1.ElevateSessionRequest{
 		CurrentPassword: "testpass",
 	}, env.token))
 	require.NoError(t, err)
-	require.NotNil(t, resp.Msg.GetElevationExpiresAt())
+	require.NotNil(t, resp.GetElevationExpiresAt())
 
 	// (1) The next validation RE-READS: the same call the hub refused a
 	// moment ago now lands, inside the auth cache's TTL.
-	_, err = env.client.ChangePassword(ctx, authedReq(&leapmuxv1.ChangePasswordRequest{
+	_, err = env.client.ChangePassword(authedReq(ctx, &leapmuxv1.ChangePasswordRequest{
 		NewPassword: "newpass123",
 	}, env.token))
 	require.NoError(t, err, "the grant must reach the next request through the warm cache")
@@ -181,10 +183,10 @@ func TestElevateSession_GrantTearsNothingDown(t *testing.T) {
 	ctx := context.Background()
 	env := setupElevationTest(t)
 
-	_, err := env.client.ListUserSettings(ctx, authedReq(&leapmuxv1.ListUserSettingsRequest{}, env.token))
+	_, err := env.client.ListUserSettings(authedReq(ctx, &leapmuxv1.ListUserSettingsRequest{}, env.token))
 	require.NoError(t, err)
 
-	_, err = env.client.ElevateSession(ctx, authedReq(&leapmuxv1.ElevateSessionRequest{
+	_, err = env.client.ElevateSession(authedReq(ctx, &leapmuxv1.ElevateSessionRequest{
 		CurrentPassword: "testpass",
 	}, env.token))
 	require.NoError(t, err)
@@ -214,19 +216,19 @@ func TestDropElevation_InvalidatesTheCacheImmediately(t *testing.T) {
 	ctx := context.Background()
 	env := setupElevationTest(t)
 
-	_, err := env.client.ElevateSession(ctx, authedReq(&leapmuxv1.ElevateSessionRequest{
+	_, err := env.client.ElevateSession(authedReq(ctx, &leapmuxv1.ElevateSessionRequest{
 		CurrentPassword: "testpass",
 	}, env.token))
 	require.NoError(t, err)
 
 	// Warm the cache with the ELEVATED UserInfo.
-	_, err = env.client.ListUserSettings(ctx, authedReq(&leapmuxv1.ListUserSettingsRequest{}, env.token))
+	_, err = env.client.ListUserSettings(authedReq(ctx, &leapmuxv1.ListUserSettingsRequest{}, env.token))
 	require.NoError(t, err)
 
-	_, err = env.client.DropElevation(ctx, authedReq(&leapmuxv1.DropElevationRequest{}, env.token))
+	_, err = env.client.DropElevation(authedReq(ctx, &leapmuxv1.DropElevationRequest{}, env.token))
 	require.NoError(t, err)
 
-	_, err = env.client.ChangePassword(ctx, authedReq(&leapmuxv1.ChangePasswordRequest{
+	_, err = env.client.ChangePassword(authedReq(ctx, &leapmuxv1.ChangePasswordRequest{
 		NewPassword: "newpass123",
 	}, env.token))
 	require.Error(t, err, "the drop must take effect before the auth cache would expire")
@@ -247,19 +249,16 @@ func TestDropElevation_InvalidatesTheCacheImmediately(t *testing.T) {
 func TestElevateSession_WrongFactorDoesNotReadAsADeadSession(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
+	ctx, info := connect.NewClientContext(context.Background())
 	env := setupElevationTest(t)
 
-	_, err := env.client.ElevateSession(ctx, authedReq(&leapmuxv1.ElevateSessionRequest{
+	_, err := env.client.ElevateSession(authedReq(ctx, &leapmuxv1.ElevateSessionRequest{
 		CurrentPassword: "definitely-not-the-password",
 	}, env.token))
 	require.Error(t, err)
 	require.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
 		"a rejected credential is what Unauthenticated means; the marker says which one")
-
-	var connectErr *connect.Error
-	require.ErrorAs(t, err, &connectErr)
-	assert.Equal(t, "1", connectErr.Meta().Get(service.CredentialRejectedHeader),
+	assert.Equal(t, "1", info.ResponseHeader().Get(service.CredentialRejectedHeader),
 		"without the marker a browser signs the user out of the session it is verifying")
 
 	// The session really is still alive.
@@ -268,10 +267,9 @@ func TestElevateSession_WrongFactorDoesNotReadAsADeadSession(t *testing.T) {
 
 	// An EMPTY password takes the same path: a client must not be signed out
 	// for submitting an empty prompt either.
-	_, err = env.client.ElevateSession(ctx, authedReq(&leapmuxv1.ElevateSessionRequest{}, env.token))
+	_, err = env.client.ElevateSession(authedReq(ctx, &leapmuxv1.ElevateSessionRequest{}, env.token))
 	require.Error(t, err)
-	require.ErrorAs(t, err, &connectErr)
-	assert.Equal(t, "1", connectErr.Meta().Get(service.CredentialRejectedHeader))
+	assert.Equal(t, "1", info.ResponseHeader().Get(service.CredentialRejectedHeader))
 
 	// And the refusal granted nothing.
 	row, err := env.store.Sessions().GetByID(ctx, env.token, time.Now().UTC())
@@ -302,8 +300,9 @@ func TestElevateSession_RefusesABearer(t *testing.T) {
 	// The bearer path is not wired into this env's interceptor, so drive the
 	// refusal through the handler's own guard instead: a session-less
 	// credential has nothing to stamp.
-	req := connect.NewRequest(&leapmuxv1.ElevateSessionRequest{CurrentPassword: "testpass"})
-	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
+	req := &leapmuxv1.ElevateSessionRequest{CurrentPassword: "testpass"}
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
 	_, err = env.client.ElevateSession(ctx, req)
 	require.Error(t, err)
 	assert.Contains(t, []connect.Code{connect.CodeUnauthenticated, connect.CodeFailedPrecondition},

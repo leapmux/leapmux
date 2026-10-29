@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
@@ -753,23 +753,26 @@ func (m *Manager) resolve(ctx context.Context, op Operation) (effectiveLimit, er
 	}, nil
 }
 
-// NewInterceptor returns a unary interceptor enforcing per-user limits on
+// NewInterceptor returns a server interceptor enforcing per-user limits on
 // the routed procedures. It must be chained inside (after) the auth
 // interceptor: it reads the authenticated user from the context, and for
 // unauthenticated calls it stands down and lets auth produce the error.
-func NewInterceptor(m *Manager) connect.UnaryInterceptorFunc {
-	return func(next connect.UnaryFunc) connect.UnaryFunc {
-		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			spec, ok := procedureOperations[req.Spec().Procedure]
+//
+// The gate keys on the procedure alone, so Connect v2's uniform ServerFunc
+// carries everything it needs and the request message stays unread.
+func NewInterceptor(m *Manager) connect.ServerInterceptor {
+	return func(next connect.ServerFunc) connect.ServerFunc {
+		return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
+			op, ok := procedureOperations[spec.Procedure]
 			if !ok {
-				return next(ctx, req)
+				return next(ctx, spec, stream)
 			}
-			budgetKey, ok := budgetKeyFor(ctx, m, spec)
+			budgetKey, ok := budgetKeyFor(ctx, m, op)
 			if !ok {
-				return next(ctx, req)
+				return next(ctx, spec, stream)
 			}
 
-			att, allowed, retryAfter, err := m.allow(ctx, spec, budgetKey)
+			att, allowed, retryAfter, err := m.allow(ctx, op, budgetKey)
 			if err != nil {
 				// Config unreachable: fail closed for safety, same as the
 				// captcha interceptor — but with an honest code, so
@@ -777,18 +780,17 @@ func NewInterceptor(m *Manager) connect.UnaryInterceptorFunc {
 				// enforced lockout (both surface as ResourceExhausted
 				// otherwise). The handler would likely fail on the same
 				// store anyway.
-				return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("rate limit unavailable, try again"))
+				return connect.Errorf(connect.CodeUnavailable, "rate limit unavailable, try again")
 			}
 			if !allowed {
-				return nil, connect.NewError(connect.CodeResourceExhausted,
-					fmt.Errorf("too many attempts; try again in %s", formatWindow(retryAfter)))
+				return connect.Errorf(connect.CodeResourceExhausted,
+					"too many attempts; try again in %s", formatWindow(retryAfter))
 			}
 
 			// A panicking handler must not leak the reservation: complete
 			// runs on the unwind with a non-countable error (the panic is
 			// not a credential failure), and the panic continues up to
 			// net/http's per-connection recover exactly as before.
-			var resp connect.AnyResponse
 			var handlerErr error
 			func() {
 				defer func() {
@@ -797,10 +799,10 @@ func NewInterceptor(m *Manager) connect.UnaryInterceptorFunc {
 						panic(r)
 					}
 				}()
-				resp, handlerErr = next(ctx, req)
+				handlerErr = next(ctx, spec, stream)
 			}()
 			m.complete(att, handlerErr)
-			return resp, handlerErr
+			return handlerErr
 		}
 	}
 }

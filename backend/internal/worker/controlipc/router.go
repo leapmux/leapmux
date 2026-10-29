@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"google.golang.org/grpc/codes"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -100,7 +100,7 @@ func (r *Router) CallInner(ctx context.Context, info TokenInfo, method string, p
 			return r.dispatchLocal(ctx, info, bare, payload), nil
 		}
 		if r.CrossWorker == nil {
-			return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("cross-worker client not configured"))
+			return nil, connect.Errorf(connect.CodeUnimplemented, "cross-worker client not configured")
 		}
 		out, err := r.CrossWorker.CallInner(ctx, targetWorkerID, r.UserID, bare, payload)
 		if err != nil {
@@ -109,7 +109,7 @@ func (r *Router) CallInner(ctx context.Context, info TokenInfo, method string, p
 		return &leapmuxv1.CallInnerResponse{Payload: out}, nil
 	case namespaceHub:
 		if r.Hub == nil {
-			return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("hub client not configured"))
+			return nil, connect.Errorf(connect.CodeUnimplemented, "hub client not configured")
 		}
 		out, err := r.Hub.CallInner(ctx, r.UserID, stripNamespace(method), payload)
 		if err != nil {
@@ -117,7 +117,7 @@ func (r *Router) CallInner(ctx context.Context, info TokenInfo, method string, p
 		}
 		return &leapmuxv1.CallInnerResponse{Payload: out}, nil
 	default:
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unknown method namespace: %s", method))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "unknown method namespace: %s", method)
 	}
 }
 
@@ -127,9 +127,9 @@ func (r *Router) CallInner(ctx context.Context, info TokenInfo, method string, p
 func relayError(err error) error {
 	// Preserve upstream codes. A plain error has CodeUnknown and maps to CodeInternal.
 	if code := connect.CodeOf(err); code != connect.CodeUnknown {
-		return connect.NewError(code, err)
+		return connect.NewError(code, err.Error()).WithCause(err)
 	}
-	return connect.NewError(connect.CodeInternal, err)
+	return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 }
 
 // withLocalStream creates one synthetic stream ID and releases its subscriptions after dispatch.
@@ -186,7 +186,7 @@ func (r *Router) StreamInner(ctx context.Context, info TokenInfo, method string,
 			return r.streamLocal(streamCtx, info, bare, payload, entry, onMsg)
 		}
 		if r.CrossWorker == nil {
-			return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("cross-worker client not configured"))
+			return connect.Errorf(connect.CodeUnimplemented, "cross-worker client not configured")
 		}
 		return r.CrossWorker.StreamInner(streamCtx, targetWorkerID, r.UserID, bare, payload, func(m *leapmuxv1.InnerStreamMessage) {
 			_ = onMsg(&leapmuxv1.StreamInnerEnvelope{
@@ -203,20 +203,20 @@ func (r *Router) StreamInner(ctx context.Context, info TokenInfo, method string,
 		})
 	case namespaceHub:
 		if r.HubStreams == nil {
-			return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("hub streamer not configured"))
+			return connect.Errorf(connect.CodeUnimplemented, "hub streamer not configured")
 		}
 		bare := stripNamespace(method)
 		return r.HubStreams.StreamHub(streamCtx, r.UserID, bare, payload, func(p []byte) error {
 			return onMsg(&leapmuxv1.StreamInnerEnvelope{Payload: p})
 		})
 	default:
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unknown method namespace: %s", method))
+		return connect.Errorf(connect.CodeInvalidArgument, "unknown method namespace: %s", method)
 	}
 }
 
 func (r *Router) streamLocal(ctx context.Context, info TokenInfo, method string, payload []byte, entry *streamCancelEntry, onMsg func(*leapmuxv1.StreamInnerEnvelope) error) error {
 	if r.LocalDispatcher == nil {
-		return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("local dispatcher not configured"))
+		return connect.Errorf(connect.CodeUnimplemented, "local dispatcher not configured")
 	}
 	var collector *streamCollector
 	r.withLocalStream(info, func(streamID string) {

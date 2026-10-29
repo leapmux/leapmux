@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"golang.org/x/sync/singleflight"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -60,18 +60,20 @@ var ErrElevationUnsupported = errors.New("this credential cannot be verified in 
 // caller report the hub's own refusal, which states what the command needs.
 var ErrElevationNeedsAPerson = errors.New("this command needs a person to verify their identity in a browser, and nothing here can show the prompt")
 
-// NeedsElevation reports whether a hub error is the marked refusal.
+// NeedsElevation reports whether a hub refusal is the marked one.
 //
 // The MARKER, never the message. The wording is user-facing prose that somebody
 // will reword, and matching it would break on the first edit; the code alone is
 // too broad, because a FailedPrecondition also means "this account has no
 // password" and half a dozen other things a step-up cannot fix.
-func NeedsElevation(err error) bool {
-	var connectErr *connect.Error
-	if !errors.As(err, &connectErr) {
+//
+// The marker rides the RESPONSE header and not the error, so the response
+// header is a parameter: connect v2 carries no metadata on an error.
+func NeedsElevation(err error, responseHeader *connect.Header) bool {
+	if err == nil {
 		return false
 	}
-	return connectErr.Meta().Get(ElevationRequiredHeader) != ""
+	return responseHeader.Get(ElevationRequiredHeader) != ""
 }
 
 // elevateFlight collapses concurrent step-ups of the SAME credential.

@@ -7,7 +7,7 @@ import (
 	"net/netip"
 	"sort"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
@@ -113,11 +113,11 @@ func NewAdminNetworkService(deps AdminNetworkServiceDeps) *AdminNetworkService {
 // GetListenStatus reports the machine's interfaces and the hub's live
 // listeners.
 func (s *AdminNetworkService) GetListenStatus(
-	ctx context.Context, _ *connect.Request[leapmuxv1.GetListenStatusRequest],
-) (*connect.Response[leapmuxv1.GetListenStatusResponse], error) {
+	ctx context.Context, _ *leapmuxv1.GetListenStatusRequest,
+) (*leapmuxv1.GetListenStatusResponse, error) {
 	ifaces, err := s.machineInterfaces()
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("read network interfaces: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("read network interfaces: %w", err))
 	}
 
 	// The stored list, read back through the same key the panel writes, so
@@ -150,7 +150,7 @@ func (s *AdminNetworkService) GetListenStatus(
 			Error:   b.Err,
 		})
 	}
-	return connect.NewResponse(out), nil
+	return out, nil
 }
 
 // machineInterfaces lists the interfaces an address can be bound to.

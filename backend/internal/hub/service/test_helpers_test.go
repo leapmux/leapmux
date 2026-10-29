@@ -3,11 +3,12 @@ package service_test
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"sync"
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
@@ -60,10 +61,48 @@ func (m *mailSenderDouble) last() *mail.Message {
 	return &out
 }
 
-func authedReq[T any](msg *T, token string) *connect.Request[T] {
-	req := connect.NewRequest(msg)
-	req.Header().Set("Cookie", auth.CookieName+"="+token)
-	return req
+// probeStream is the unused ServerStream of a probe call: the handler under
+// test reads and writes no messages.
+type probeStream struct{}
+
+func (probeStream) Receive(any) error  { return io.EOF }
+func (probeStream) SendHeaders() error { return nil }
+func (probeStream) Send(any) error     { return nil }
+
+// callUnderServerInfo runs fn the way a transport would: through
+// connect.Server.Call, which attaches the server CallInfo that response
+// headers ride to base. It returns that CallInfo so a test can read the
+// headers fn set. A bare method call carries no CallInfo, so no header would
+// be written or observable at all.
+func callUnderServerInfo(base context.Context, fn func(ctx context.Context) error) (*connect.CallInfo, error) {
+	const procedure = "/leapmux.v1.test/Probe"
+	srv := connect.NewServer()
+	srv.Register(connect.Method{
+		Spec:    connect.Spec{Procedure: procedure, StreamType: connect.StreamTypeUnary},
+		Handler: func(ctx context.Context, _ connect.Spec, _ connect.ServerStream) error { return fn(ctx) },
+	})
+	info := &connect.CallInfo{}
+	err := srv.Call(base, procedure, info, probeStream{})
+	return info, err
+}
+
+// clientCallInfo returns the client CallInfo a call on ctx will use: the
+// handle the caller already seeded, so the caller keeps reading the response
+// through it, or a fresh one attached to the returned context.
+func clientCallInfo(ctx context.Context) (context.Context, *connect.CallInfo) {
+	if info, ok := connect.CallInfoForClientContext(ctx); ok {
+		return ctx, info
+	}
+	return connect.NewClientContext(ctx)
+}
+
+// authedReq returns a context carrying the session cookie and the message
+// unchanged, so a client call takes the pair as its whole (ctx, req)
+// argument list: client.Foo(authedReq(ctx, msg, token)).
+func authedReq[T any](ctx context.Context, msg *T, token string) (context.Context, *T) {
+	ctx, info := clientCallInfo(ctx)
+	info.RequestHeader().Set("Cookie", auth.CookieName+"="+token)
+	return ctx, msg
 }
 
 func sessionFromCookie(t *testing.T, setCookie string) string {

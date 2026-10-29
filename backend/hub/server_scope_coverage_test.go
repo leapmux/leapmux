@@ -200,13 +200,14 @@ func TestWellKnownMetadataRefusesWithoutAnAddress(t *testing.T) {
 //   - A PACKAGE-QUALIFIED CONSTANT (service.IdPCompleteSignupPath) is one too.
 //     It is spelled that way because two packages must agree on the value, and
 //     it must not escape this record for being tidier than a literal.
-//   - A BARE LOCAL VARIABLE is how a Connect service mounts itself
-//     (`path, handler := NewXServiceHandler(...)`), and those are covered by
-//     the descriptor walk above instead. They are skipped here.
+//   - A BARE LOCAL VARIABLE is skipped here. That is not where the Connect
+//     services live: they register on the connect server, and connecthttp.Mount
+//     installs their procedures in one call this scan does not read. Those are
+//     covered by the descriptor walk above instead.
 //
 // The limit that leaves: a hand-written route assigned to a local variable
-// first would read as a Connect mount and escape. Nothing does that today, and
-// the reverse direction below catches its consequence -- an entry that names a
+// first would escape this record. Nothing does that today, and the
+// reverse direction below catches its consequence -- an entry that names a
 // route the scan no longer finds fails.
 //
 // It walks the whole module because a route can be mounted from any package

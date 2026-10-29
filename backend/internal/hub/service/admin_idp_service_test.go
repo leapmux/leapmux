@@ -8,7 +8,8 @@ import (
 	"sync"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -76,10 +77,10 @@ func setupAdminOAuthTestUnelevated(t *testing.T) *adminOAuthEnv {
 
 	mux := http.NewServeMux()
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
-	opts := connect.WithInterceptors(interceptor)
 	cache := &recordingProviderCache{}
-	path, handler := leapmuxv1connect.NewAdminIdPServiceHandler(service.NewAdminIdPService(st, ks, cache), opts)
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer(interceptor, service.NewElevationResponseInterceptor())
+	leapmuxv1connect.RegisterAdminIdPServiceHandler(connectServer, service.NewAdminIdPService(st, ks, cache))
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewUnstartedServer(mux)
 	server.EnableHTTP2 = true
@@ -87,7 +88,7 @@ func setupAdminOAuthTestUnelevated(t *testing.T) *adminOAuthEnv {
 	t.Cleanup(server.Close)
 
 	return &adminOAuthEnv{
-		client:  leapmuxv1connect.NewAdminIdPServiceClient(server.Client(), server.URL, connect.WithGRPC()),
+		client:  leapmuxv1connect.NewAdminIdPServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC()))),
 		st:      st,
 		ks:      ks,
 		token:   session,
@@ -100,49 +101,49 @@ func TestAdminIdPService_AddListRemoveGithub(t *testing.T) {
 	env := setupAdminOAuthTest(t)
 	ctx := context.Background()
 
-	_, err := env.client.AddOAuthProvider(ctx, authedReq(&leapmuxv1.AddOAuthProviderRequest{
+	_, err := env.client.AddOAuthProvider(authedReq(ctx, &leapmuxv1.AddOAuthProviderRequest{
 		ClientId: "c1", ClientSecret: "s1",
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "provider_type is required")
 
-	_, err = env.client.AddOAuthProvider(ctx, authedReq(&leapmuxv1.AddOAuthProviderRequest{
+	_, err = env.client.AddOAuthProvider(authedReq(ctx, &leapmuxv1.AddOAuthProviderRequest{
 		ProviderType: "github", ClientSecret: "s1",
 	}, env.token))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "client_id is required")
 
-	_, err = env.client.AddOAuthProvider(ctx, authedReq(&leapmuxv1.AddOAuthProviderRequest{
+	_, err = env.client.AddOAuthProvider(authedReq(ctx, &leapmuxv1.AddOAuthProviderRequest{
 		ProviderType: "github", ClientId: "c1",
 	}, env.token))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "client_secret is required")
 
-	_, err = env.client.AddOAuthProvider(ctx, authedReq(&leapmuxv1.AddOAuthProviderRequest{
+	_, err = env.client.AddOAuthProvider(authedReq(ctx, &leapmuxv1.AddOAuthProviderRequest{
 		ProviderType: "nope", ClientId: "c1", ClientSecret: "s1",
 	}, env.token))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown provider type")
 
-	added, err := env.client.AddOAuthProvider(ctx, authedReq(&leapmuxv1.AddOAuthProviderRequest{
+	added, err := env.client.AddOAuthProvider(authedReq(ctx, &leapmuxv1.AddOAuthProviderRequest{
 		ProviderType: "github",
 		ClientId:     "gh-client",
 		ClientSecret: "gh-secret",
 	}, env.token))
 	require.NoError(t, err)
-	prov := added.Msg.GetProvider()
+	prov := added.GetProvider()
 	require.NotNil(t, prov)
 	assert.Equal(t, "github", prov.GetProviderType())
 	assert.Equal(t, "gh-client", prov.GetClientId())
 	assert.True(t, prov.GetEnabled())
-	assert.NotContains(t, added.Msg.String(), "gh-secret")
+	assert.NotContains(t, added.String(), "gh-secret")
 
-	listed, err := env.client.ListOAuthProviders(ctx, authedReq(&leapmuxv1.ListOAuthProvidersRequest{}, env.token))
+	listed, err := env.client.ListOAuthProviders(authedReq(ctx, &leapmuxv1.ListOAuthProvidersRequest{}, env.token))
 	require.NoError(t, err)
-	require.Len(t, listed.Msg.GetProviders(), 1)
-	assert.Equal(t, "gh-client", listed.Msg.GetProviders()[0].GetClientId())
-	assert.NotContains(t, listed.Msg.String(), "gh-secret")
+	require.Len(t, listed.GetProviders(), 1)
+	assert.Equal(t, "gh-client", listed.GetProviders()[0].GetClientId())
+	assert.NotContains(t, listed.String(), "gh-secret")
 
 	stored, err := env.st.OAuthProviders().GetByID(ctx, prov.GetId())
 	require.NoError(t, err)
@@ -150,25 +151,25 @@ func TestAdminIdPService_AddListRemoveGithub(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "gh-secret", string(plain))
 
-	_, err = env.client.RemoveOAuthProvider(ctx, authedReq(&leapmuxv1.RemoveOAuthProviderRequest{}, env.token))
+	_, err = env.client.RemoveOAuthProvider(authedReq(ctx, &leapmuxv1.RemoveOAuthProviderRequest{}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "id is required")
 
-	_, err = env.client.RemoveOAuthProvider(ctx, authedReq(&leapmuxv1.RemoveOAuthProviderRequest{
+	_, err = env.client.RemoveOAuthProvider(authedReq(ctx, &leapmuxv1.RemoveOAuthProviderRequest{
 		Id: "missing",
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 
-	_, err = env.client.RemoveOAuthProvider(ctx, authedReq(&leapmuxv1.RemoveOAuthProviderRequest{
+	_, err = env.client.RemoveOAuthProvider(authedReq(ctx, &leapmuxv1.RemoveOAuthProviderRequest{
 		Id: prov.GetId(),
 	}, env.token))
 	require.NoError(t, err)
 
-	listed, err = env.client.ListOAuthProviders(ctx, authedReq(&leapmuxv1.ListOAuthProvidersRequest{}, env.token))
+	listed, err = env.client.ListOAuthProviders(authedReq(ctx, &leapmuxv1.ListOAuthProvidersRequest{}, env.token))
 	require.NoError(t, err)
-	assert.Empty(t, listed.Msg.GetProviders())
+	assert.Empty(t, listed.GetProviders())
 }
 
 // TestAdminIdPService_OIDCRefusals pins the two refusals a generic OIDC
@@ -186,7 +187,7 @@ func TestAdminIdPService_OIDCRefusals(t *testing.T) {
 	ctx := context.Background()
 
 	add := func(req *leapmuxv1.AddOAuthProviderRequest) error {
-		_, err := env.client.AddOAuthProvider(ctx, authedReq(req, env.token))
+		_, err := env.client.AddOAuthProvider(authedReq(ctx, req, env.token))
 		return err
 	}
 	oidc := func() *leapmuxv1.AddOAuthProviderRequest {
@@ -234,10 +235,10 @@ func TestAdminIdPService_OIDCRefusals(t *testing.T) {
 	require.NoError(t, add(&leapmuxv1.AddOAuthProviderRequest{
 		ProviderType: "github", Name: "github", ClientId: "gh", ClientSecret: "ghs-preset-secret",
 	}))
-	listed, err := env.client.ListOAuthProviders(ctx, authedReq(&leapmuxv1.ListOAuthProvidersRequest{}, env.token))
+	listed, err := env.client.ListOAuthProviders(authedReq(ctx, &leapmuxv1.ListOAuthProvidersRequest{}, env.token))
 	require.NoError(t, err)
-	require.Len(t, listed.Msg.GetProviders(), 1)
-	assert.NotContains(t, listed.Msg.GetProviders()[0].String(), "ghs-preset-secret",
+	require.Len(t, listed.GetProviders(), 1)
+	assert.NotContains(t, listed.GetProviders()[0].String(), "ghs-preset-secret",
 		"the client secret never crosses back")
 }
 
@@ -247,40 +248,40 @@ func TestAdminIdPService_SetEnabledAndRemove(t *testing.T) {
 	env := setupAdminOAuthTest(t)
 	ctx := context.Background()
 
-	added, err := env.client.AddOAuthProvider(ctx, authedReq(&leapmuxv1.AddOAuthProviderRequest{
+	added, err := env.client.AddOAuthProvider(authedReq(ctx, &leapmuxv1.AddOAuthProviderRequest{
 		ProviderType: "github", Name: "github", ClientId: "gh", ClientSecret: "ghs",
 	}, env.token))
 	require.NoError(t, err)
-	id := added.Msg.GetProvider().GetId()
-	require.True(t, added.Msg.GetProvider().GetEnabled(), "a new provider starts enabled")
+	id := added.GetProvider().GetId()
+	require.True(t, added.GetProvider().GetEnabled(), "a new provider starts enabled")
 
 	enabledNow := func() bool {
-		listed, err := env.client.ListOAuthProviders(ctx, authedReq(&leapmuxv1.ListOAuthProvidersRequest{}, env.token))
+		listed, err := env.client.ListOAuthProviders(authedReq(ctx, &leapmuxv1.ListOAuthProvidersRequest{}, env.token))
 		require.NoError(t, err)
-		require.Len(t, listed.Msg.GetProviders(), 1)
-		return listed.Msg.GetProviders()[0].GetEnabled()
+		require.Len(t, listed.GetProviders(), 1)
+		return listed.GetProviders()[0].GetEnabled()
 	}
 
-	_, err = env.client.SetOAuthProviderEnabled(ctx, authedReq(&leapmuxv1.SetOAuthProviderEnabledRequest{
+	_, err = env.client.SetOAuthProviderEnabled(authedReq(ctx, &leapmuxv1.SetOAuthProviderEnabledRequest{
 		Id: id, Enabled: false,
 	}, env.token))
 	require.NoError(t, err)
 	assert.False(t, enabledNow(), "disabling removes the login method for every user")
 
-	_, err = env.client.SetOAuthProviderEnabled(ctx, authedReq(&leapmuxv1.SetOAuthProviderEnabledRequest{
+	_, err = env.client.SetOAuthProviderEnabled(authedReq(ctx, &leapmuxv1.SetOAuthProviderEnabledRequest{
 		Id: id, Enabled: true,
 	}, env.token))
 	require.NoError(t, err)
 	assert.True(t, enabledNow())
 
-	_, err = env.client.RemoveOAuthProvider(ctx, authedReq(&leapmuxv1.RemoveOAuthProviderRequest{Id: id}, env.token))
+	_, err = env.client.RemoveOAuthProvider(authedReq(ctx, &leapmuxv1.RemoveOAuthProviderRequest{Id: id}, env.token))
 	require.NoError(t, err)
-	listed, err := env.client.ListOAuthProviders(ctx, authedReq(&leapmuxv1.ListOAuthProvidersRequest{}, env.token))
+	listed, err := env.client.ListOAuthProviders(authedReq(ctx, &leapmuxv1.ListOAuthProvidersRequest{}, env.token))
 	require.NoError(t, err)
-	assert.Empty(t, listed.Msg.GetProviders())
+	assert.Empty(t, listed.GetProviders())
 
 	// An unknown id is the caller's selector, not a hub fault.
-	_, err = env.client.SetOAuthProviderEnabled(ctx, authedReq(&leapmuxv1.SetOAuthProviderEnabledRequest{
+	_, err = env.client.SetOAuthProviderEnabled(authedReq(ctx, &leapmuxv1.SetOAuthProviderEnabledRequest{
 		Id: "no-such-provider", Enabled: false,
 	}, env.token))
 	require.Error(t, err)
@@ -318,11 +319,11 @@ func linkUser(t *testing.T, env *adminOAuthEnv, username string, passwordSet boo
 // addProvider adds a preset provider and returns its id.
 func addProvider(t *testing.T, env *adminOAuthEnv, name string) string {
 	t.Helper()
-	added, err := env.client.AddOAuthProvider(context.Background(), authedReq(&leapmuxv1.AddOAuthProviderRequest{
+	added, err := env.client.AddOAuthProvider(authedReq(context.Background(), &leapmuxv1.AddOAuthProviderRequest{
 		ProviderType: "github", Name: name, ClientId: "c-" + name, ClientSecret: "s-" + name,
 	}, env.token))
 	require.NoError(t, err)
-	return added.Msg.GetProvider().GetId()
+	return added.GetProvider().GetId()
 }
 
 // TestAdminIdPService_RemoveRefusesToLockAccountsOut pins the guard on
@@ -348,7 +349,7 @@ func TestAdminIdPService_RemoveRefusesToLockAccountsOut(t *testing.T) {
 	linkUser(t, env, "has-password", true, primary)
 	linkUser(t, env, "two-links", false, primary, backup)
 
-	_, err := env.client.RemoveOAuthProvider(ctx, authedReq(&leapmuxv1.RemoveOAuthProviderRequest{
+	_, err := env.client.RemoveOAuthProvider(authedReq(ctx, &leapmuxv1.RemoveOAuthProviderRequest{
 		Id: primary,
 	}, env.token))
 	require.Error(t, err)
@@ -356,21 +357,21 @@ func TestAdminIdPService_RemoveRefusesToLockAccountsOut(t *testing.T) {
 	assert.Contains(t, err.Error(), "1 user(s) have no other login method")
 	assert.Contains(t, err.Error(), "or pass force")
 
-	listed, err := env.client.ListOAuthProviders(ctx, authedReq(&leapmuxv1.ListOAuthProvidersRequest{}, env.token))
+	listed, err := env.client.ListOAuthProviders(authedReq(ctx, &leapmuxv1.ListOAuthProvidersRequest{}, env.token))
 	require.NoError(t, err)
-	assert.Len(t, listed.Msg.GetProviders(), 2, "the refused removal deletes nothing")
+	assert.Len(t, listed.GetProviders(), 2, "the refused removal deletes nothing")
 
 	// force admits the removal, and reports exactly what it cost.
-	removed, err := env.client.RemoveOAuthProvider(ctx, authedReq(&leapmuxv1.RemoveOAuthProviderRequest{
+	removed, err := env.client.RemoveOAuthProvider(authedReq(ctx, &leapmuxv1.RemoveOAuthProviderRequest{
 		Id: primary, Force: true,
 	}, env.token))
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), removed.Msg.GetLockedOutUsers())
+	assert.Equal(t, int64(1), removed.GetLockedOutUsers())
 
-	listed, err = env.client.ListOAuthProviders(ctx, authedReq(&leapmuxv1.ListOAuthProvidersRequest{}, env.token))
+	listed, err = env.client.ListOAuthProviders(authedReq(ctx, &leapmuxv1.ListOAuthProvidersRequest{}, env.token))
 	require.NoError(t, err)
-	require.Len(t, listed.Msg.GetProviders(), 1)
-	assert.Equal(t, backup, listed.Msg.GetProviders()[0].GetId())
+	require.Len(t, listed.GetProviders(), 1)
+	assert.Equal(t, backup, listed.GetProviders()[0].GetId())
 }
 
 // TestAdminIdPService_RemoveAllowedWhenNobodyIsOrphaned pins the other
@@ -382,11 +383,11 @@ func TestAdminIdPService_RemoveAllowedWhenNobodyIsOrphaned(t *testing.T) {
 
 	t.Run("no linked users at all", func(t *testing.T) {
 		id := addProvider(t, env, "unused")
-		removed, err := env.client.RemoveOAuthProvider(ctx, authedReq(&leapmuxv1.RemoveOAuthProviderRequest{
+		removed, err := env.client.RemoveOAuthProvider(authedReq(ctx, &leapmuxv1.RemoveOAuthProviderRequest{
 			Id: id,
 		}, env.token))
 		require.NoError(t, err)
-		assert.Zero(t, removed.Msg.GetLockedOutUsers())
+		assert.Zero(t, removed.GetLockedOutUsers())
 	})
 
 	t.Run("every linked user keeps a password or another link", func(t *testing.T) {
@@ -395,11 +396,11 @@ func TestAdminIdPService_RemoveAllowedWhenNobodyIsOrphaned(t *testing.T) {
 		linkUser(t, env, "safe-password", true, id)
 		linkUser(t, env, "safe-two-links", false, id, other)
 
-		removed, err := env.client.RemoveOAuthProvider(ctx, authedReq(&leapmuxv1.RemoveOAuthProviderRequest{
+		removed, err := env.client.RemoveOAuthProvider(authedReq(ctx, &leapmuxv1.RemoveOAuthProviderRequest{
 			Id: id,
 		}, env.token))
 		require.NoError(t, err)
-		assert.Zero(t, removed.Msg.GetLockedOutUsers(), "no force needed, and nothing was lost")
+		assert.Zero(t, removed.GetLockedOutUsers(), "no force needed, and nothing was lost")
 	})
 }
 
@@ -437,22 +438,22 @@ func TestAdminIdPService_EvictsTheProviderCache(t *testing.T) {
 	env := setupAdminOAuthTest(t)
 	ctx := context.Background()
 
-	added, err := env.client.AddOAuthProvider(ctx, authedReq(&leapmuxv1.AddOAuthProviderRequest{
+	added, err := env.client.AddOAuthProvider(authedReq(ctx, &leapmuxv1.AddOAuthProviderRequest{
 		ProviderType: "github", ClientId: "gh-client", ClientSecret: "gh-secret",
 	}, env.token))
 	require.NoError(t, err)
-	id := added.Msg.GetProvider().GetId()
+	id := added.GetProvider().GetId()
 	require.NotEmpty(t, id)
 	// An add rebuilds on demand, so only remove and disable are pinned here.
 	env.cache.taken()
 
-	_, err = env.client.SetOAuthProviderEnabled(ctx, authedReq(&leapmuxv1.SetOAuthProviderEnabledRequest{
+	_, err = env.client.SetOAuthProviderEnabled(authedReq(ctx, &leapmuxv1.SetOAuthProviderEnabledRequest{
 		Id: id, Enabled: false,
 	}, env.token))
 	require.NoError(t, err)
 	assert.Equal(t, []string{id}, env.cache.taken(), "a disabled provider's built instance must go")
 
-	_, err = env.client.RemoveOAuthProvider(ctx, authedReq(&leapmuxv1.RemoveOAuthProviderRequest{
+	_, err = env.client.RemoveOAuthProvider(authedReq(ctx, &leapmuxv1.RemoveOAuthProviderRequest{
 		Id: id,
 	}, env.token))
 	require.NoError(t, err)
@@ -489,23 +490,23 @@ func TestAdminIdPService_WritesNeedAProvenFactor(t *testing.T) {
 
 	// The id an elevated fixture already holds, so Remove and SetEnabled
 	// address a provider that exists. Add needs none.
-	type oauthWrite func(env *adminOAuthEnv, providerID string, authorize requestAuth) error
+	type oauthWrite func(ctx context.Context, env *adminOAuthEnv, providerID string, authorize requestAuth) error
 
 	writes := map[string]oauthWrite{
-		"AddOAuthProvider": func(env *adminOAuthEnv, _ string, authorize requestAuth) error {
-			_, err := env.client.AddOAuthProvider(ctx, authorized(&leapmuxv1.AddOAuthProviderRequest{
+		"AddOAuthProvider": func(ctx context.Context, env *adminOAuthEnv, _ string, authorize requestAuth) error {
+			_, err := env.client.AddOAuthProvider(authorized(ctx, &leapmuxv1.AddOAuthProviderRequest{
 				ProviderType: "github", Name: "second", ClientId: "gh2", ClientSecret: "ghs2",
 			}, authorize))
 			return err
 		},
-		"SetOAuthProviderEnabled": func(env *adminOAuthEnv, providerID string, authorize requestAuth) error {
-			_, err := env.client.SetOAuthProviderEnabled(ctx, authorized(&leapmuxv1.SetOAuthProviderEnabledRequest{
+		"SetOAuthProviderEnabled": func(ctx context.Context, env *adminOAuthEnv, providerID string, authorize requestAuth) error {
+			_, err := env.client.SetOAuthProviderEnabled(authorized(ctx, &leapmuxv1.SetOAuthProviderEnabledRequest{
 				Id: providerID, Enabled: false,
 			}, authorize))
 			return err
 		},
-		"RemoveOAuthProvider": func(env *adminOAuthEnv, providerID string, authorize requestAuth) error {
-			_, err := env.client.RemoveOAuthProvider(ctx, authorized(&leapmuxv1.RemoveOAuthProviderRequest{
+		"RemoveOAuthProvider": func(ctx context.Context, env *adminOAuthEnv, providerID string, authorize requestAuth) error {
+			_, err := env.client.RemoveOAuthProvider(authorized(ctx, &leapmuxv1.RemoveOAuthProviderRequest{
 				Id: providerID,
 			}, authorize))
 			return err
@@ -520,19 +521,18 @@ func TestAdminIdPService_WritesNeedAProvenFactor(t *testing.T) {
 			env := setupAdminOAuthTest(t)
 			id := addProvider(t, env, "seeded")
 
-			err := write(env, id, cookieAuth(env.unelevatedSession(t)))
+			callCtx, info := connect.NewClientContext(context.Background())
+			err := write(callCtx, env, id, cookieAuth(env.unelevatedSession(t)))
 			require.Error(t, err, "a write on this surface must not land without a proven factor")
 			assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-			var connectErr *connect.Error
-			require.ErrorAs(t, err, &connectErr)
-			assert.Equal(t, "1", connectErr.Meta().Get(service.ElevationRequiredHeader),
+			assert.Equal(t, "1", info.ResponseHeader().Get(service.ElevationRequiredHeader),
 				"the refusal must be the one a step-up prompt can clear")
 		})
 
 		t.Run(name+" admits an elevated session", func(t *testing.T) {
 			env := setupAdminOAuthTest(t)
 			id := addProvider(t, env, "seeded")
-			assert.NoError(t, write(env, id, cookieAuth(env.token)))
+			assert.NoError(t, write(context.Background(), env, id, cookieAuth(env.token)))
 		})
 	}
 
@@ -541,7 +541,7 @@ func TestAdminIdPService_WritesNeedAProvenFactor(t *testing.T) {
 	// already see is not that.
 	t.Run("ListOAuthProviders needs no elevation", func(t *testing.T) {
 		env := setupAdminOAuthTestUnelevated(t)
-		_, err := env.client.ListOAuthProviders(ctx, authedReq(&leapmuxv1.ListOAuthProvidersRequest{}, env.token))
+		_, err := env.client.ListOAuthProviders(authedReq(ctx, &leapmuxv1.ListOAuthProvidersRequest{}, env.token))
 		assert.NoError(t, err)
 	})
 }
