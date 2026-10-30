@@ -52,19 +52,6 @@ func OpenToolSpanWithParent(sink ToolSpanServices, content agent.MessageContent,
 	return err
 }
 
-// ScheduleOrCancelServerErrorAutoRetry schedules a server-error automatic
-// retry when retry is true, or cancels any pending one otherwise. The queue
-// derives the deadline from its durable backoff; the provider supplies no
-// instant of its own. The payload is defensively copied because the caller's
-// buffer may be reused by the stdout reader before the schedule is consumed.
-func ScheduleOrCancelServerErrorAutoRetry(sink agent.AutoRetryWriter, retry bool, payload []byte) {
-	if !retry {
-		sink.CancelServerErrorRetry()
-		return
-	}
-	sink.ScheduleServerErrorRetry(append([]byte(nil), payload...))
-}
-
 // TurnEndedWithoutRetryableFailure is the cancellation reason of a turn end
 // that leaves no retryable failure: a completed turn, an interrupted one, or a
 // failure that the provider does not mark as retryable.

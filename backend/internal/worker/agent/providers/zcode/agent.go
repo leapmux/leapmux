@@ -189,8 +189,8 @@ type Agent struct {
 	// turn's generation content, its tool calls and its cleanup; several records
 	// coexist while a background turn runs beside the user's. Guarded by a.Mu.
 	turns map[string]*zcodeTurnState
-	// inputAdmissions retains native ownership until the matching send resolves.
-	// Native events can precede both its receipt and the sender's next instruction.
+	// inputAdmissions retains native ownership across in-flight sends and uncertain
+	// compaction receipts until a matching start or session retirement.
 	inputAdmissions map[string]*zcodeInputAdmission
 	// foregroundTurnID is the key in turns of the user's own turn, empty while
 	// the user runs none. A background start never replaces it. Guarded by a.Mu.
@@ -306,6 +306,7 @@ type zcodeTurnState struct {
 	background bool
 	// compacting identifies this owner as a manual compaction.
 	compacting bool
+	compaction *zcodeCompactionRetry
 	// foregroundExecutionID is the turn.started foregroundExecutionId, recorded
 	// for background turns too: a runtime turn states the user execution it
 	// belongs to.
@@ -366,10 +367,12 @@ type zcodeAcceptedModelResponse struct {
 }
 
 type zcodeInputAdmission struct {
-	compacting bool
-	epoch      uint64
-	sessionID  string
-	owner      *zcodeTurnState
+	compaction       *zcodeCompactionRetry
+	dispatchFinished bool
+	compacting       bool
+	epoch            uint64
+	sessionID        string
+	owner            *zcodeTurnState
 }
 
 var _ agent.Agent = (*Agent)(nil)
@@ -392,93 +395,206 @@ func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) e
 	return a.sendInputForSession(nil, content, attachments)
 }
 
+var errZCodeCompactionUnresolved = errors.New("ZCode has not confirmed the previous compaction; wait for it to finish or clear the context before starting another compaction")
+
 // CompactContext starts ZCode's native asynchronous context summary.
 // The state.updated completion closes the queue turn after this RPC accepts it.
-func (a *Agent) CompactContext() error {
-	retryWriter := a.sink.CaptureAutoRetry()
-	a.Mu.Lock()
-	if a.StoppedLocked() {
-		a.Mu.Unlock()
-		return fmt.Errorf("agent is stopped")
+func (a *Agent) CompactContext() (compactErr error) {
+	inputID := id.Short()
+	admission, err := a.admitZCodeCompaction(inputID)
+	if err != nil {
+		return err
 	}
-	sessionID := a.sessionID
-	if sessionID == "" {
-		a.Mu.Unlock()
-		return fmt.Errorf("agent has no ZCode session")
-	}
-	if a.turnActive || a.compactionSessionID != "" {
-		a.Mu.Unlock()
-		return agent.ErrAgentBusy
-	}
-	a.compactionSessionID = sessionID
-	a.compactionGeneration++
-	generation := a.compactionGeneration
-	a.compactionRetry = &zcodeCompactionRetry{generation: generation, apply: func() { providerkit.ApplyTurnFailure(retryWriter, providerkit.CompactionEnd(), nil) }}
-	a.Mu.Unlock()
-	a.PublishTurnActive()
+	sessionID, generation := admission.sessionID, admission.compaction.generation
+	defer func() { a.finishZCodeInputAdmission(inputID, admission, compactErr) }()
 
 	raw, err := a.sendZCodeRequest(MethodSessionCompact, map[string]any{
 		"sessionId": sessionID,
-		"inputId":   id.Short(),
+		"inputId":   inputID,
 	}, a.APITimeout())
 	if err != nil {
-		a.finishZCodeCompactionGeneration(sessionID, generation)
+		deliveryErr := err
 		var responseErr *zcodeError
-		if errors.Is(err, agent.ErrInputSessionChanged) {
-			return err
+		if !errors.Is(err, agent.ErrInputSessionChanged) && !errors.As(err, &responseErr) {
+			deliveryErr = fmt.Errorf("%w: ZCode did not confirm session/compact delivery: %v", agent.ErrDeliveryUncertain, err)
 		}
-		if errors.As(err, &responseErr) {
-			return err
-		}
-		return fmt.Errorf("%w: ZCode did not confirm session/compact delivery: %v", agent.ErrDeliveryUncertain, err)
+		a.abortZCodeCompactionAdmission(sessionID, generation, errors.Is(deliveryErr, agent.ErrDeliveryUncertain))
+		return deliveryErr
 	}
+
 	var ack struct {
 		Compact struct {
 			State string `json:"state"`
 		} `json:"compact"`
 	}
 	if json.Unmarshal(raw, &ack) != nil || (ack.Compact.State != "accepted" && ack.Compact.State != "already_running") {
-		a.finishZCodeCompactionGeneration(sessionID, generation)
+		a.abortZCodeCompactionAdmission(sessionID, generation, true)
 		return fmt.Errorf("%w: ZCode returned no valid compaction receipt", agent.ErrDeliveryUncertain)
 	}
+	a.noteZCodeCompactionReceipt(sessionID, generation, ack.Compact.State)
 	return nil
+}
+
+// admitZCodeCompaction serializes activity admission with completion claims.
+// The caller waits for the native receipt only after this releases dispatchMu.
+func (a *Agent) admitZCodeCompaction(inputID string) (*zcodeInputAdmission, error) {
+	a.dispatchMu.Lock()
+	defer a.unlockZCodeDispatch()
+	a.Mu.Lock()
+	if a.StoppedLocked() {
+		a.Mu.Unlock()
+		return nil, fmt.Errorf("agent is stopped")
+	}
+	if a.sessionID == "" {
+		a.Mu.Unlock()
+		return nil, fmt.Errorf("agent has no ZCode session")
+	}
+	if a.turnActive || a.compactionSessionID != "" {
+		a.Mu.Unlock()
+		return nil, agent.ErrAgentBusy
+	}
+	if a.compactionRetry != nil {
+		a.Mu.Unlock()
+		return nil, errZCodeCompactionUnresolved
+	}
+	a.compactionSessionID = a.sessionID
+	a.compactionGeneration++
+	a.compactionRetry = &zcodeCompactionRetry{generation: a.compactionGeneration, inputID: inputID, admissionRevision: a.stateRevision}
+	if a.inputAdmissions == nil {
+		a.inputAdmissions = make(map[string]*zcodeInputAdmission)
+	}
+	admission := &zcodeInputAdmission{sessionID: a.sessionID, epoch: a.sessionEpoch, compacting: true, compaction: a.compactionRetry}
+	a.inputAdmissions[inputID] = admission
+	a.Mu.Unlock()
+	a.PublishTurnActive()
+	return admission, nil
 }
 
 // finishZCodeCompaction ends the live compaction and releases its pending manual request.
 // A completion from a replaced session cannot change the current session.
 func (a *Agent) finishZCodeCompaction(sessionID string) {
-	a.finishZCodeCompactionGeneration(sessionID, 0)
+	a.finishZCodeCompactionObservation(zcodeStatePatch{SessionID: sessionID})
 }
 
-func (a *Agent) finishZCodeCompactionGeneration(sessionID string, generation uint64) {
+func (a *Agent) finishZCodeCompactionObservation(notif zcodeStatePatch) {
+	a.dispatchMu.Lock()
+	defer a.unlockZCodeDispatch()
+	a.finishZCodeCompactionObservedLocked(notif)
+}
+
+// The caller holds dispatchMu through the claim, writer capture, and activity
+// publication. The final state handler runs after settings release that mutex.
+func (a *Agent) finishZCodeCompactionObservedLocked(notif zcodeStatePatch) {
 	a.Mu.Lock()
-	if generation != 0 && generation != a.compactionGeneration {
+	if a.sessionChanging || (notif.SessionID != "" && notif.SessionID != a.sessionID) || (notif.revisionKnown && notif.Revision < a.stateRevision) {
 		a.Mu.Unlock()
 		return
 	}
-	if sessionID != "" && sessionID != a.sessionID {
-		a.Mu.Unlock()
-		return
-	}
-	pending := a.compactionSessionID != "" && (sessionID == "" || a.compactionSessionID == sessionID)
-	var apply func()
-	if pending {
-		a.compactionSessionID = ""
-		if !a.turnActive {
-			a.cancelStoppedZCodeTurnLocked()
-		}
-		if retry := a.compactionRetry; retry != nil && retry.generation == a.compactionGeneration && (retry.owner == nil || retry.turnEnded) {
-			apply = retry.apply
-			a.compactionRetry = nil
+	retry := a.compactionRetry
+	if retry != nil {
+		previous := retry.pendingFinal
+		if previous == nil || !previous.revisionKnown || (notif.revisionKnown && notif.Revision >= previous.Revision) {
+			copy := notif
+			retry.pendingFinal = &copy
 		}
 	}
 	a.Mu.Unlock()
+	a.finishZCodeCompactionRecordedLocked(retry)
+}
+
+// Retained final states already passed observation-time validation. A settings
+// observation that advances the session revision cannot revoke that evidence.
+// The caller holds dispatchMu, and the record pointer identifies its lifetime.
+func (a *Agent) finishZCodeCompactionRecordedLocked(retry *zcodeCompactionRetry) {
+	a.Mu.Lock()
+	if retry != a.compactionRetry {
+		a.Mu.Unlock()
+		return
+	}
+	if retry != nil {
+		final := retry.pendingFinal
+		if final == nil || (retry.receiptState == "" && retry.owner == nil) {
+			a.Mu.Unlock()
+			return
+		}
+		// A newly accepted compaction increments the native revision before its
+		// final state. An already_running receipt instead joins existing work.
+		if final.revisionKnown && final.Revision <= retry.admissionRevision && retry.receiptState != "already_running" {
+			if retry.receiptState != "" || retry.owner != nil {
+				retry.pendingFinal = nil
+			}
+			a.Mu.Unlock()
+			return
+		}
+		retry.pendingFinal = nil
+		retry.stateEnded = true
+	}
+	pending := a.compactionSessionID != ""
+	a.compactionSessionID = ""
+	if !a.turnActive {
+		a.cancelStoppedZCodeTurnLocked()
+	}
+	apply := a.claimZCodeCompactionRetryLocked(retry) && !a.StoppedLocked() && !a.ProcessExitedLocked()
+	a.Mu.Unlock()
 	a.endZCodeCompaction()
-	if apply != nil {
-		apply()
+	if apply {
+		providerkit.ApplyTurnFailure(a.sink.CaptureAutoRetry(), providerkit.CompactionEnd(), nil)
 	}
 	if pending {
 		a.PublishTurnActive()
+	}
+}
+
+func (a *Agent) noteZCodeCompactionReceipt(sessionID string, generation uint64, state string) {
+	a.dispatchMu.Lock()
+	defer a.unlockZCodeDispatch()
+	a.Mu.Lock()
+	retry := a.compactionRetry
+	if sessionID != a.sessionID || retry == nil || retry.generation != generation {
+		a.Mu.Unlock()
+		return
+	}
+	retry.receiptState = state
+	a.Mu.Unlock()
+	a.finishZCodeCompactionRecordedLocked(retry)
+}
+
+// A refused or unconfirmed request without a native owner releases admission
+// without a completion verdict. An uncertain request retains its identity, so a
+// delayed native start can restore the manual operation's lifetime.
+func (a *Agent) abortZCodeCompactionAdmission(sessionID string, generation uint64, uncertain bool) {
+	a.dispatchMu.Lock()
+	defer a.unlockZCodeDispatch()
+	a.Mu.Lock()
+	retry := a.compactionRetry
+	if sessionID != a.sessionID || generation != a.compactionGeneration || retry == nil || retry.owner != nil {
+		a.Mu.Unlock()
+		return
+	}
+	if !uncertain {
+		a.compactionRetry = nil
+	}
+	a.compactionSessionID = ""
+	if !a.turnActive {
+		a.cancelStoppedZCodeTurnLocked()
+	}
+	a.Mu.Unlock()
+	a.endZCodeCompaction()
+	a.PublishTurnActive()
+}
+
+func (a *Agent) finishZCodeInputAdmission(inputID string, admission *zcodeInputAdmission, sendErr error) {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if a.inputAdmissions[inputID] != admission {
+		return
+	}
+	admission.dispatchFinished = true
+	// An uncertain receipt cannot disprove a later start for this input ID.
+	retain := admission.compacting && admission.owner == nil &&
+		(errors.Is(sendErr, agent.ErrDeliveryUncertain) || (sendErr == nil && admission.compaction != nil))
+	if !retain {
+		delete(a.inputAdmissions, inputID)
 	}
 }
 
@@ -508,7 +624,7 @@ func zcodeRunsCompaction(content string, attachments []*leapmuxv1.Attachment) bo
 // watchZCodeTurn starts immediately so a turn that never reports a start is
 // still reconciled. A receipt whose session was replaced while the send was in
 // flight folds no revision and creates no owner on the replacement.
-func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) sendInputForSession(expected *string, content string, attachments []*leapmuxv1.Attachment) (sendErr error) {
 	a.Mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.sessionID); err != nil {
 		a.Mu.Unlock()
@@ -557,11 +673,7 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 	admission := &zcodeInputAdmission{sessionID: sessionID, epoch: identity.epoch, compacting: zcodeRunsCompaction(content, attachments)}
 	a.inputAdmissions[inputID] = admission
 	a.Mu.Unlock()
-	defer func() {
-		a.Mu.Lock()
-		delete(a.inputAdmissions, inputID)
-		a.Mu.Unlock()
-	}()
+	defer func() { a.finishZCodeInputAdmission(inputID, admission, sendErr) }()
 	// The app-server's session/send schema rejects delivery hints such as
 	// requestedDelivery with -32602.
 	params := map[string]any{

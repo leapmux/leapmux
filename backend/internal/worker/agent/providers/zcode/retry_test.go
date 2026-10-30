@@ -73,18 +73,6 @@ const (
 	zcodeTurnFailedNetwork1234   = `{"method":"session/event","params":{"sessionId":"sess-1","seq":12,"type":"turn.failed","payload":{"error":{"type":"unknown_error","attribution":{"source":"provider","reason":"network_error","errorPhase":"stream","exceptionKind":"provider_business","providerId":"builtin:zai-coding-plan","modelId":"GLM-5.3","providerKind":"anthropic","transport":"sse","providerErrorCode":"1234","retryable":true},"code":"model_request_failed","message":"[1234][Internal network failure, error id: 20260815232705c4d5e6f708192a3b4c5d6e7f80910a2b, please try again later.][20260815232705c4d5e6f708192a3b4c5d6e7f80910a2b]","underlyingErrorMessage":"[1234][Internal network failure, error id: 20260815232705c4d5e6f708192a3b4c5d6e7f80910a2b, please try again later.][20260815232705c4d5e6f708192a3b4c5d6e7f80910a2b]"},"turnPhase":"processing_input","inputId":"in1"}}}`
 )
 
-// zcodeFrameSessionID reads the session of a captured session/event line.
-func zcodeFrameSessionID(t *testing.T, line string) string {
-	t.Helper()
-	var frame struct {
-		Params struct {
-			SessionID string `json:"sessionId"`
-		} `json:"params"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(line), &frame))
-	return frame.Params.SessionID
-}
-
 // Each turn.failed applies exactly one verdict, after the turn-end row. ZCode
 // states `retryable` only inside the attribution.
 func TestHandleZCodeOutput_TurnFailed_SchedulesAutoRetryOnlyWhenRetryable(t *testing.T) {
@@ -222,7 +210,7 @@ func TestHandleZCodeOutput_TurnFailed_StatesAStopAsInterrupted(t *testing.T) {
 			a.Mu.Lock()
 			a.lastSeq = metadata.Seq - 2
 			a.Mu.Unlock()
-			a.HandleOutput(zcodeTurnEventLineForSession(t, metadata.SessionID, metadata.Seq-1, metadata.TurnID, contracts.ZCodeEventModelStreaming, `{"kind":"text_delta","delta":"Hello"}`))
+			a.HandleOutput(zcodeTurnEventLineForSession(t, metadata.SessionID, metadata.Seq-1, metadata.TurnID, contracts.ZCodeEventModelStreaming, `{"kind":"text_delta","assistantMessageId":"message","delta":"Hello"}`))
 
 			a.HandleOutput([]byte(tc.frame))
 
@@ -359,4 +347,83 @@ func zcodePrepareCapturedTurn(t *testing.T, a *Agent, line string, preceding int
 	a.Mu.Lock()
 	a.lastSeq = frame.Seq - preceding
 	a.Mu.Unlock()
+}
+
+func TestZCodeRetainedRetryRejectsANewerForeground(t *testing.T) {
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodePrepareCapturedTurn(t, a, zcodeTurnFailed500, 1)
+	a.PublishTurnActive()
+	sink.PersistErr = assert.AnError
+	a.HandleOutput([]byte(zcodeTurnFailed500))
+	require.True(t, agent.OutputQueueFor(a.sink).HasPending())
+	metadata := zcodeCapturedFrameMetadata(t, zcodeTurnFailed500)
+	a.HandleOutput(zcodeTurnEventLineForSession(t, metadata.SessionID, metadata.Seq+1, "new-turn", contracts.ZCodeEventTurnStarted, `{"inputId":"new-input"}`))
+	sink.PersistErr = nil
+	require.NoError(t, agent.FlushPendingOutput(a.sink))
+	assert.Zero(t, sink.AutoScheduleCount())
+	// The fake records stale calls too; the worker accepts the newest sequence.
+	states, sequences := sink.TurnStates(), sink.TurnSeqs()
+	var latest uint64
+	var effective agent.TurnState
+	for i, seq := range sequences {
+		if seq > latest {
+			latest, effective = seq, states[i]
+		}
+	}
+	assert.True(t, effective.Active)
+}
+
+func TestZCodeIDLessEndPreservesANewerForeground(t *testing.T) {
+	for _, identity := range []string{"old input", "unknown input", "no input", "duplicate input"} {
+		t.Run(identity, func(t *testing.T) {
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			zcodePrepareCapturedTurn(t, a, zcodeTurnFailed500, 1)
+			a.Mu.Lock()
+			old := a.foregroundZCodeTurnLocked()
+			a.stopWindow.open(a.Clock().Now(), agent.StopContext{}, old.id, old.generation)
+			generation := a.stopWindow.generation
+			a.Mu.Unlock()
+			a.endStoppedZCodeTurn(generation)
+			inputID := "new-input"
+			if identity == "duplicate input" {
+				inputID = "in1"
+			}
+			a.createProvisionalZCodeTurn(a.sessionID, inputID, 0)
+			a.Mu.Lock()
+			current := a.foregroundZCodeTurnLocked()
+			a.Mu.Unlock()
+			require.NotNil(t, current)
+			before := providerkittest.TurnEndAndRetryOps(sink.Timeline())
+			var frame map[string]any
+			require.NoError(t, json.Unmarshal([]byte(zcodeTurnFailed500), &frame))
+			payload := frame["params"].(map[string]any)["payload"].(map[string]any)
+			if identity == "unknown input" {
+				payload["inputId"] = "unknown"
+			}
+			if identity == "no input" {
+				delete(payload, "inputId")
+			}
+			raw, err := json.Marshal(frame)
+			require.NoError(t, err)
+			a.HandleOutput(raw)
+			a.Mu.Lock()
+			got := a.foregroundZCodeTurnLocked()
+			oldFinalized := old.finalized
+			a.Mu.Unlock()
+			assert.Same(t, current, got)
+			assert.True(t, a.PublishTurnActive().Active)
+			assert.Equal(t, identity == "old input", oldFinalized)
+			assert.Equal(t, before, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+			assert.Zero(t, sink.AutoScheduleCount())
+			ends := zcodeNativeTurnEndRows(t, sink.Messages())
+			if identity == "old input" {
+				require.Len(t, ends, 1)
+				assert.False(t, ends[0].TurnEnd)
+			} else {
+				assert.Empty(t, ends)
+			}
+		})
+	}
 }

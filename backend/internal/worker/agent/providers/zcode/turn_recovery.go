@@ -879,8 +879,9 @@ type zcodeTurnSettlement struct {
 	// persistEnd records this owner's outcome after its scopes and tools close.
 	// Nil settles identity without persisting a row or touching buffered work.
 	persistEnd func(closed int, publishTurnEnd bool)
-	// afterForeground retains retry ownership until the actual settlement claim.
-	afterForeground func()
+	// afterSettlement receives the foreground claim after output submission.
+	// Historical owners can retire state without changing a newer turn's retry.
+	afterSettlement func(foreground bool)
 }
 
 // settleZCodeTurn runs the shared turn-settlement transition: reset retry and
@@ -950,8 +951,8 @@ func (a *Agent) settleZCodeTurn(owner *zcodeTurnState, settle zcodeTurnSettlemen
 		if background {
 			a.finalizeZCodeToolsWhenIdle()
 		}
-		if foreground && settle.afterForeground != nil {
-			settle.afterForeground()
+		if settle.afterSettlement != nil {
+			settle.afterSettlement(foreground)
 		}
 		a.PublishTurnActive()
 	}()
@@ -1006,7 +1007,7 @@ func (a *Agent) zcodeRecoverySettlement(owner *zcodeTurnState, completion agent.
 		textCompletion:  completion,
 		callCompletion:  completion,
 		persistEnd:      func(_ int, publish bool) { record(publish) },
-		afterForeground: a.captureZCodeRetryVerdict(owner, providerkit.TurnFailure{}, evidence),
+		afterSettlement: a.captureZCodeRetryVerdict(owner, providerkit.TurnFailure{}, evidence),
 	}
 }
 
@@ -1054,7 +1055,7 @@ func (a *Agent) settleZCodeTurnLost(owner *zcodeTurnState, state *zcodeTurnRecov
 	a.settleZCodeTurn(owner, zcodeTurnSettlement{
 		textCompletion:  agent.MessageCompletionError,
 		callCompletion:  agent.MessageCompletionError,
-		afterForeground: a.captureZCodeRetryVerdict(owner, providerkit.TurnFailure{}, nil),
+		afterSettlement: a.captureZCodeRetryVerdict(owner, providerkit.TurnFailure{}, nil),
 		persistEnd: func(int, bool) {
 			a.sink.PersistLeapMuxNotification(map[string]interface{}{
 				contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,

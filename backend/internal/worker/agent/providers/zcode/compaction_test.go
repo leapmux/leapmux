@@ -2,6 +2,7 @@ package zcode
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -185,7 +186,7 @@ func startZCodeManualCompaction(t *testing.T, a *Agent, stdin *zcodeRecordedStdi
 
 // The final state reason of a manual compaction ends it with one verdict that
 // cancels the server-error retry, whatever the outcome. The verdict follows
-// the release of the queue, as a turn end's verdict does.
+// the turn-end row and precedes the release of the queue.
 func TestZCodeManualCompactionEndCancelsTheServerErrorRetry(t *testing.T) {
 	t.Parallel()
 	for _, reason := range []string{contracts.ZCodeStateReasonSessionCompacted, contracts.ZCodeStateReasonSessionCompactFailed, contracts.ZCodeStateReasonSessionCompactCancelled} {
@@ -195,13 +196,13 @@ func TestZCodeManualCompactionEndCancelsTheServerErrorRetry(t *testing.T) {
 			sink := &agenttest.Sink{}
 			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
 			startZCodeManualCompaction(t, a, stdin)
-			a.HandleOutput(zcodeStateLine(t, ScopeSession, reason, `{"status":"idle"}`))
+			a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, reason, `{"status":"idle"}`))
 			assert.Equal(t, zcodeCompactionEnd, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
 			active, published := sink.LastTurnActive()
 			require.True(t, published)
 			assert.False(t, active)
 			// A repeated final reason finds no pending compaction.
-			a.HandleOutput(zcodeStateLine(t, ScopeSession, reason, `{"status":"idle"}`))
+			a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, reason, `{"status":"idle"}`))
 			assert.Equal(t, zcodeCompactionEnd, providerkittest.TurnEndAndRetryOps(sink.Timeline()), "the compaction applies one verdict")
 			assert.Zero(t, sink.AutoScheduleCount())
 		})
@@ -226,7 +227,7 @@ func TestZCodeTurnInsideManualCompactionAppliesTheCompactionVerdictOnce(t *testi
 		assert.Equal(t, []string{"turn_end"}, providerkittest.TurnEndAndRetryOpNames(sink.Timeline()), "the pending compaction keeps the verdict")
 		active, _ := sink.LastTurnActive()
 		assert.True(t, active, "the compaction still holds the queue")
-		a.HandleOutput(zcodeStateLine(t, ScopeSession, contracts.ZCodeStateReasonSessionCompactFailed, `{"status":"idle"}`))
+		a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, contracts.ZCodeStateReasonSessionCompactFailed, `{"status":"idle"}`))
 		assert.Equal(t, providerkittest.TurnEndThen(providerkit.CompactionEnd()), providerkittest.TurnEndAndRetryOps(sink.Timeline()))
 		assert.Zero(t, sink.AutoScheduleCount())
 	})
@@ -238,7 +239,7 @@ func TestZCodeTurnInsideManualCompactionAppliesTheCompactionVerdictOnce(t *testi
 		a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
 		inputID := startZCodeManualCompaction(t, a, stdin)
 		a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnStarted, `{"turnNumber":1,"input":"/compact","inputId":"`+inputID+`"}`))
-		a.HandleOutput(zcodeStateLine(t, ScopeSession, contracts.ZCodeStateReasonSessionCompactFailed, `{"status":"idle"}`))
+		a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, contracts.ZCodeStateReasonSessionCompactFailed, `{"status":"idle"}`))
 		assert.Empty(t, providerkittest.TurnEndAndRetryOps(sink.Timeline()), "the running turn keeps the verdict")
 		active, _ := sink.LastTurnActive()
 		assert.True(t, active, "the turn still holds the queue")
@@ -256,7 +257,7 @@ func TestZCodeTurnInsideManualCompactionAppliesTheCompactionVerdictOnce(t *testi
 		a.afterFunc = timer.afterFunc
 		inputID := startZCodeManualCompaction(t, a, stdin)
 		a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnStarted, `{"turnNumber":1,"input":"/compact","inputId":"`+inputID+`"}`))
-		a.HandleOutput(zcodeStateLine(t, ScopeSession, contracts.ZCodeStateReasonSessionCompacted, `{"status":"idle"}`))
+		a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, contracts.ZCodeStateReasonSessionCompacted, `{"status":"idle"}`))
 		answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
 		require.NoError(t, a.Interrupt(agent.StopContext{}))
 		require.Equal(t, 1, timer.armed)
@@ -278,7 +279,7 @@ func TestZCodeTypedCompactCommandEndsWithTheCompactionVerdict(t *testing.T) {
 			stdin := &zcodeRecordedStdin{}
 			sink := &agenttest.Sink{}
 			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
-			answerZCodeRequest(t, a, stdin, MethodSessionSend, `{"accepted":true}`)
+			answerZCodeRequest(t, a, stdin, MethodSessionSend, `{"sessionId":"sess-1","accepted":true,"stateRevision":0}`)
 			require.NoError(t, a.SendInput(input, nil))
 			var params struct {
 				InputID string `json:"inputId"`
@@ -311,7 +312,7 @@ func TestZCodeInputThatIsNoCompactCommandKeepsItsOwnVerdict(t *testing.T) {
 			stdin := &zcodeRecordedStdin{}
 			sink := &agenttest.Sink{}
 			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
-			answerZCodeRequest(t, a, stdin, MethodSessionSend, `{"accepted":true}`)
+			answerZCodeRequest(t, a, stdin, MethodSessionSend, `{"sessionId":"sess-1","accepted":true,"stateRevision":0}`)
 			require.NoError(t, a.SendInput(tc.input, tc.attachments))
 			var params struct {
 				InputID string `json:"inputId"`
@@ -344,7 +345,7 @@ func TestZCodeTurnAfterManualCompactionAppliesItsOwnVerdict(t *testing.T) {
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
 	inputID := startZCodeManualCompaction(t, a, stdin)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnStarted, `{"turnNumber":1,"input":"/compact","inputId":"`+inputID+`"}`))
-	a.HandleOutput(zcodeStateLine(t, ScopeSession, contracts.ZCodeStateReasonSessionCompacted, `{"status":"idle"}`))
+	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, contracts.ZCodeStateReasonSessionCompacted, `{"status":"idle"}`))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnCompleted, `{"response":"","resultType":"success"}`))
 	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventTurnStarted, `{"turnNumber":2,"input":"Continue.","inputId":"next"}`))
 	a.HandleOutput(zcodeCompactionTurnFailed500(t, 4))
@@ -376,6 +377,434 @@ func TestZCodeManualCompactionThatDoesNotStartAppliesNoVerdict(t *testing.T) {
 			tc.answer(t, a, stdin)
 			require.Error(t, a.CompactContext())
 			assert.Empty(t, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+		})
+	}
+}
+
+func TestZCodeManualCompactionOrderedRetryAuthority(t *testing.T) {
+	for _, order := range []string{"no turn", "turn first", "state first"} {
+		for _, retained := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/retained=%t", order, retained), func(t *testing.T) {
+				stdin := &zcodeRecordedStdin{}
+				sink := &agenttest.ControlSink{}
+				a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+				a.sink = agent.NewOrderedProviderServices(agent.OutputQueueFor(a.sink), a.sink)
+				inputID := startZCodeManualCompaction(t, a, stdin)
+				if order != "no turn" {
+					a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnStarted, `{"inputId":"`+inputID+`"}`))
+				}
+				if retained {
+					sink.PersistErr = assert.AnError
+				}
+				endState := func() {
+					a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, contracts.ZCodeStateReasonSessionCompactFailed, `{"status":"idle"}`))
+				}
+				if order == "state first" {
+					endState()
+				}
+				if order != "no turn" {
+					a.HandleOutput(zcodeCompactionTurnFailed500(t, 2))
+				}
+				if order != "state first" {
+					endState()
+				}
+				sink.PersistErr = nil
+				require.NoError(t, agent.FlushPendingOutput(a.sink))
+				want := []string{"cancel_server_error", "idle"}
+				if order != "no turn" {
+					want = []string{"turn_end", "cancel_server_error", "idle"}
+				}
+				assert.Equal(t, want, providerkittest.TurnEndRetryAndIdleOpNames(sink.Operations()))
+				assert.Zero(t, sink.AutoScheduleCount())
+				active, _ := sink.LastTurnActive()
+				assert.False(t, active)
+			})
+		}
+	}
+}
+
+func TestZCodePendingCompactionDoesNotClaimAnotherInput(t *testing.T) {
+	stdin := &zcodeRecordedStdin{}
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	startZCodeManualCompaction(t, a, stdin)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnStarted, `{"inputId":"unrelated"}`))
+	a.HandleOutput(zcodeCompactionTurnFailed500(t, 2))
+	assert.Equal(t, []string{"turn_end", "schedule_server_error"}, providerkittest.TurnEndAndRetryOpNames(sink.Timeline()))
+	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, contracts.ZCodeStateReasonSessionCompactFailed, `{"status":"idle"}`))
+	assert.Equal(t, []string{"turn_end", "schedule_server_error"}, providerkittest.TurnEndAndRetryOpNames(sink.Timeline()))
+}
+
+func TestZCodeUncertainTypedInputRetainsCompactionIdentity(t *testing.T) {
+	for _, input := range []string{"/compact", "ordinary input"} {
+		t.Run(input, func(t *testing.T) {
+			stdin := &zcodeRecordedStdin{}
+			sink := &agenttest.Sink{}
+			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+			answerZCodeRequest(t, a, stdin, MethodSessionSend, `{}`)
+			require.ErrorIs(t, a.SendInput(input, nil), agent.ErrDeliveryUncertain)
+			var params struct {
+				InputID string `json:"inputId"`
+			}
+			require.NoError(t, json.Unmarshal(waitZCodeRequest(t, stdin, MethodSessionSend).Params, &params))
+			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnStarted, `{"inputId":"`+params.InputID+`"}`))
+			a.HandleOutput(zcodeCompactionTurnFailed500(t, 2))
+			want := []string{"turn_end", "schedule_server_error"}
+			if input == "/compact" {
+				want = []string{"turn_end", "cancel_server_error"}
+			}
+			assert.Equal(t, want, providerkittest.TurnEndAndRetryOpNames(sink.Timeline()))
+			assert.Empty(t, a.inputAdmissions)
+		})
+	}
+}
+
+func TestZCodeManualCompactionRetainsDelayedStartIdentity(t *testing.T) {
+	for _, receipt := range []string{`{"compact":{"state":"accepted"}}`, `{}`} {
+		for _, order := range []string{"state before start", "turn before state", "state before end"} {
+			t.Run(receipt+order, func(t *testing.T) {
+				stdin := &zcodeRecordedStdin{}
+				sink := &agenttest.ControlSink{}
+				a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+				answerZCodeRequest(t, a, stdin, MethodSessionCompact, receipt)
+				err := a.CompactContext()
+				if receipt == `{}` {
+					require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
+				} else {
+					require.NoError(t, err)
+				}
+				var params struct {
+					InputID string `json:"inputId"`
+				}
+				require.NoError(t, json.Unmarshal(waitZCodeRequest(t, stdin, MethodSessionCompact).Params, &params))
+				endState := func() {
+					a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, contracts.ZCodeStateReasonSessionCompactFailed, `{"status":"idle"}`))
+				}
+				if order == "state before start" {
+					endState()
+				}
+				a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnStarted, `{"inputId":"`+params.InputID+`"}`))
+				if order == "state before end" {
+					endState()
+				}
+				a.HandleOutput(zcodeCompactionTurnFailed500(t, 2))
+				if order == "turn before state" {
+					assert.True(t, a.PublishTurnActive().Active)
+					assert.Equal(t, []string{"turn_end"}, providerkittest.TurnEndAndRetryOpNames(sink.Timeline()))
+					endState()
+				}
+				var cancels int
+				for _, entry := range sink.Operations() {
+					if entry.Op == "cancel_server_error" {
+						cancels++
+					}
+				}
+				assert.Equal(t, 1, cancels)
+				assert.Zero(t, sink.AutoScheduleCount())
+				assert.False(t, a.PublishTurnActive().Active)
+				assert.Empty(t, a.inputAdmissions)
+			})
+		}
+	}
+}
+
+func TestZCodeCompactionIgnoresStaleFinalState(t *testing.T) {
+	stdin := &zcodeRecordedStdin{}
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	a.stateRevision = 10
+	startZCodeManualCompaction(t, a, stdin)
+	a.handleZCodeStateUpdated(json.RawMessage(`{"scope":"session","sessionId":"sess-1","revision":7,"reason":"session_compacted","patch":{"status":"idle"}}`))
+	assert.True(t, a.PublishTurnActive().Active)
+	assert.Empty(t, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+}
+
+func TestZCodeCompactionFinalStateWaitsForAdmission(t *testing.T) {
+	for _, receipt := range []string{"refused", "accepted", "already_running"} {
+		t.Run(receipt, func(t *testing.T) {
+			stdin := &zcodeRecordedStdin{}
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+			done := make(chan error, 1)
+			go func() { done <- a.CompactContext() }()
+			request := waitZCodeRequest(t, stdin, MethodSessionCompact)
+			a.handleZCodeStateUpdated(json.RawMessage(`{"scope":"session","sessionId":"sess-1","revision":1,"reason":"session_compacted","patch":{"status":"idle"}}`))
+			assert.Empty(t, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+			if receipt == "refused" {
+				a.HandleOutput(zcodeErrorReplyLine(t, zcodeSentRequestID(t, request), -32603, "refused"))
+				require.Error(t, zcodeTestReceive(t, done))
+				assert.Empty(t, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+			} else {
+				a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(`{"compact":{"state":"`+receipt+`"}}`)))
+				require.NoError(t, zcodeTestReceive(t, done))
+				assert.Equal(t, zcodeCompactionEnd, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+			}
+		})
+	}
+}
+
+func TestZCodeCompactionReceiptReconcilesEqualAdmissionRevision(t *testing.T) {
+	for _, receipt := range []string{"accepted", "already_running"} {
+		t.Run(receipt, func(t *testing.T) {
+			stdin := &zcodeRecordedStdin{}
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+			a.stateRevision = 10
+			done := make(chan error, 1)
+			go func() { done <- a.CompactContext() }()
+			request := waitZCodeRequest(t, stdin, MethodSessionCompact)
+			a.handleZCodeStateUpdated(json.RawMessage(`{"scope":"session","sessionId":"sess-1","revision":10,"reason":"session_compacted","patch":{"status":"idle"}}`))
+			assert.Empty(t, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+			a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(`{"compact":{"state":"`+receipt+`"}}`)))
+			require.NoError(t, zcodeTestReceive(t, done))
+			if receipt == "accepted" {
+				assert.True(t, a.PublishTurnActive().Active)
+				assert.Empty(t, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+				a.handleZCodeStateUpdated(json.RawMessage(`{"scope":"session","sessionId":"sess-1","revision":11,"reason":"session_compacted","patch":{"status":"idle"}}`))
+			}
+			assert.Equal(t, zcodeCompactionEnd, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+			assert.False(t, a.PublishTurnActive().Active)
+		})
+	}
+}
+
+func TestZCodeCompactionRetainedFinalSurvivesNewerSettings(t *testing.T) {
+	stdin := &zcodeRecordedStdin{}
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	a.stateRevision = 10
+	done := make(chan error, 1)
+	go func() { done <- a.CompactContext() }()
+	request := waitZCodeRequest(t, stdin, MethodSessionCompact)
+	a.handleZCodeStateUpdated(json.RawMessage(`{"scope":"session","sessionId":"sess-1","revision":10,"reason":"session_compacted","patch":{"status":"idle"}}`))
+	a.handleZCodeStateUpdated(json.RawMessage(`{"scope":"session","sessionId":"sess-1","revision":11,"reason":"settings_updated","patch":{}}`))
+	a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(`{"compact":{"state":"already_running"}}`)))
+	require.NoError(t, zcodeTestReceive(t, done))
+	assert.Equal(t, zcodeCompactionEnd, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+	assert.False(t, a.PublishTurnActive().Active)
+}
+
+type zcodeCompactionAdmissionSink struct {
+	*agenttest.ControlSink
+	onActive func()
+}
+
+func (sink *zcodeCompactionAdmissionSink) SetTurnState(state agent.TurnState, seq uint64) {
+	if state.Active && sink.onActive != nil {
+		sink.onActive()
+	}
+	sink.ControlSink.SetTurnState(state, seq)
+}
+
+func TestZCodeCompactionAdmissionSerializesActivityPublication(t *testing.T) {
+	stdin := &zcodeRecordedStdin{}
+	sink := &zcodeCompactionAdmissionSink{ControlSink: &agenttest.ControlSink{}}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	serialized := false
+	sink.onActive = func() {
+		if a.dispatchMu.TryLock() {
+			a.dispatchMu.Unlock()
+		} else {
+			serialized = true
+		}
+	}
+	startZCodeManualCompaction(t, a, stdin)
+	assert.True(t, serialized, "a completion claim must not interleave with admission publication")
+}
+
+func TestZCodeBackgroundStartPreservesForegroundCompactionAdmission(t *testing.T) {
+	stdin := &zcodeRecordedStdin{}
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	answerZCodeRequest(t, a, stdin, MethodSessionSend, `{}`)
+	require.ErrorIs(t, a.SendInput("/compact", nil), agent.ErrDeliveryUncertain)
+	var params struct {
+		InputID string `json:"inputId"`
+	}
+	require.NoError(t, json.Unmarshal(waitZCodeRequest(t, stdin, MethodSessionSend).Params, &params))
+	admission := a.inputAdmissions[params.InputID]
+	require.NotNil(t, admission)
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "background", contracts.ZCodeEventTurnStarted, `{"inputId":"`+params.InputID+`","inputSource":"goal-continuation"}`))
+	assert.Same(t, admission, a.inputAdmissions[params.InputID])
+	assert.Nil(t, admission.owner, "the background turn cannot consume foreground admission")
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "background", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 3, "foreground", contracts.ZCodeEventTurnStarted, `{"inputId":"`+params.InputID+`"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 4, "foreground", contracts.ZCodeEventTurnFailed, `{"error":{"code":"model_request_failed","attribution":{"source":"provider","reason":"server_error","retryable":true,"statusCode":500}}}`))
+	assert.Equal(t, providerkittest.TurnEndThen(providerkit.CompactionEnd()), providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+	assert.Zero(t, sink.AutoScheduleCount())
+}
+
+func TestZCodeManualCompactionPreservesStartBeforeUncertainReceipt(t *testing.T) {
+	stdin := &zcodeRecordedStdin{}
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	done := make(chan error, 1)
+	go func() { done <- a.CompactContext() }()
+	request := waitZCodeRequest(t, stdin, MethodSessionCompact)
+	var params struct {
+		InputID string `json:"inputId"`
+	}
+	require.NoError(t, json.Unmarshal(request.Params, &params))
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnStarted, `{"inputId":"`+params.InputID+`"}`))
+	a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(`{}`)))
+	require.ErrorIs(t, zcodeTestReceive(t, done), agent.ErrDeliveryUncertain)
+	assert.True(t, a.PublishTurnActive().Active)
+	a.HandleOutput(zcodeCompactionTurnFailed500(t, 2))
+	assert.Equal(t, []string{"turn_end"}, providerkittest.TurnEndAndRetryOpNames(sink.Timeline()))
+	assert.True(t, a.PublishTurnActive().Active)
+	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, contracts.ZCodeStateReasonSessionCompactFailed, `{"status":"idle"}`))
+	assert.Equal(t, providerkittest.TurnEndThen(providerkit.CompactionEnd()), providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+	assert.False(t, a.PublishTurnActive().Active)
+}
+
+func TestZCodeSessionReplacementRetiresUnresolvedCompactionAdmissions(t *testing.T) {
+	for _, manual := range []bool{false, true} {
+		t.Run(fmt.Sprintf("manual=%t", manual), func(t *testing.T) {
+			stdin := &zcodeRecordedStdin{}
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+			method := MethodSessionSend
+			if manual {
+				method = MethodSessionCompact
+			}
+			answerZCodeRequest(t, a, stdin, method, `{}`)
+			var err error
+			if manual {
+				err = a.CompactContext()
+			} else {
+				err = a.SendInput("/compact", nil)
+			}
+			require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
+			require.NotEmpty(t, a.inputAdmissions)
+			var replacement zcodeStateSnapshot
+			replacement.Session.SessionID = "replacement"
+			a.adoptCompleteZCodeSessionSnapshot(replacement, true)
+			assert.Empty(t, a.inputAdmissions)
+			assert.Nil(t, a.compactionRetry)
+			assert.Empty(t, a.compactionSessionID)
+			assert.Empty(t, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+		})
+	}
+}
+
+func TestZCodeUnresolvedManualCompactionRejectsAReplacement(t *testing.T) {
+	for _, ordinary := range []bool{false, true} {
+		t.Run(fmt.Sprintf("ordinary=%t", ordinary), func(t *testing.T) {
+			stdin := &zcodeRecordedStdin{}
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+			answerZCodeRequest(t, a, stdin, MethodSessionCompact, `{}`)
+			require.ErrorIs(t, a.CompactContext(), agent.ErrDeliveryUncertain)
+			unresolved := a.compactionRetry
+			require.NotNil(t, unresolved)
+			var params struct {
+				InputID string `json:"inputId"`
+			}
+			require.NoError(t, json.Unmarshal(waitZCodeRequest(t, stdin, MethodSessionCompact).Params, &params))
+			seq := int64(1)
+			if ordinary {
+				a.HandleOutput(zcodeTurnEventLine(t, seq, "ordinary", contracts.ZCodeEventTurnStarted, `{"inputId":"ordinary-input"}`))
+				a.HandleOutput(zcodeTurnEventLine(t, seq+1, "ordinary", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
+				seq += 2
+			}
+			requests := 0
+			zcodeRespondToRequestsForTest(t, a, func(request zcodeSentRequest) json.RawMessage {
+				if request.Method != MethodSessionCompact {
+					return nil
+				}
+				requests++
+				return json.RawMessage(`{"compact":{"state":"accepted"}}`)
+			})
+			err := a.CompactContext()
+			require.ErrorContains(t, err, "previous compaction")
+			assert.NotErrorIs(t, err, agent.ErrAgentBusy, "unresolved ownership must not report active work to the queue")
+			assert.Zero(t, requests)
+			assert.Same(t, unresolved, a.compactionRetry)
+			before := providerkittest.TurnEndAndRetryOps(sink.Timeline())
+			a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, contracts.ZCodeStateReasonSessionCompacted, `{"status":"idle"}`))
+			assert.Equal(t, before, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+			a.HandleOutput(zcodeTurnEventLine(t, seq, "old-manual", contracts.ZCodeEventTurnStarted, `{"inputId":"`+params.InputID+`"}`))
+			a.HandleOutput(zcodeTurnEventLine(t, seq+1, "old-manual", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
+			assert.Nil(t, a.compactionRetry)
+			require.NoError(t, a.CompactContext())
+			assert.Equal(t, 1, requests)
+		})
+	}
+}
+
+func TestZCodeLocallyStoppedCompactionWaitsForNativeFinalState(t *testing.T) {
+	stdin := &zcodeRecordedStdin{}
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	startZCodeManualCompaction(t, a, stdin)
+	a.Mu.Lock()
+	a.stopWindow.open(a.Clock().Now(), agent.StopContext{}, "", a.compactionGeneration)
+	generation := a.stopWindow.generation
+	a.Mu.Unlock()
+	a.endStoppedZCodeTurn(generation)
+	assert.False(t, a.PublishTurnActive().Active)
+	assert.Equal(t, zcodeCompactionEnd, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+	require.NotNil(t, a.compactionRetry)
+	requests := 0
+	zcodeRespondToRequestsForTest(t, a, func(request zcodeSentRequest) json.RawMessage {
+		if request.Method != MethodSessionCompact {
+			return nil
+		}
+		requests++
+		return json.RawMessage(`{"compact":{"state":"accepted"}}`)
+	})
+	require.ErrorContains(t, a.CompactContext(), "previous compaction")
+	assert.Zero(t, requests)
+	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, contracts.ZCodeStateReasonSessionCompactCancelled, `{"status":"idle"}`))
+	assert.Nil(t, a.compactionRetry)
+	assert.Equal(t, zcodeCompactionEnd, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+	require.NoError(t, a.CompactContext())
+	assert.Equal(t, 1, requests)
+}
+
+func TestZCodeHistoricalCompactionStartPreservesANewerForeground(t *testing.T) {
+	for _, localStop := range []bool{false, true} {
+		t.Run(fmt.Sprintf("local-stop=%t", localStop), func(t *testing.T) {
+			stdin := &zcodeRecordedStdin{}
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+			inputID := startZCodeManualCompaction(t, a, stdin)
+			if localStop {
+				a.Mu.Lock()
+				a.stopWindow.open(a.Clock().Now(), agent.StopContext{}, "", a.compactionGeneration)
+				generation := a.stopWindow.generation
+				a.Mu.Unlock()
+				a.endStoppedZCodeTurn(generation)
+			} else {
+				a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, contracts.ZCodeStateReasonSessionCompacted, `{"status":"idle"}`))
+			}
+			a.createProvisionalZCodeTurn("sess-1", "new-input", 8)
+			a.Mu.Lock()
+			current := a.foregroundZCodeTurnLocked()
+			a.Mu.Unlock()
+			require.NotNil(t, current)
+			before := providerkittest.TurnEndAndRetryOps(sink.Timeline())
+			a.HandleOutput(zcodeTurnEventLine(t, 1, "old-manual", contracts.ZCodeEventTurnStarted, `{"inputId":"`+inputID+`"}`))
+			a.Mu.Lock()
+			assert.Same(t, current, a.foregroundZCodeTurnLocked())
+			historical := a.turns["old-manual"]
+			historicalSettled := historical != nil && historical.settled
+			a.Mu.Unlock()
+			require.NotNil(t, historical)
+			assert.True(t, historicalSettled)
+			a.HandleOutput(zcodeTurnEventLine(t, 2, "old-manual", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
+			assert.Equal(t, before, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+			a.Mu.Lock()
+			assert.Same(t, current, a.foregroundZCodeTurnLocked())
+			a.Mu.Unlock()
+			assert.True(t, a.PublishTurnActive().Active)
+			ends := zcodeNativeTurnEndRows(t, sink.Messages())
+			require.Len(t, ends, 1)
+			assert.False(t, ends[0].TurnEnd, "the native divider belongs to historical output")
+			if localStop {
+				a.handleZCodeStateUpdated(json.RawMessage(`{"scope":"session","sessionId":"sess-1","revision":9,"reason":"session_compact_cancelled","patch":{"status":"idle"}}`))
+				assert.Nil(t, a.compactionRetry)
+			}
 		})
 	}
 }

@@ -421,7 +421,7 @@ func TestCapturedKeyedRetryCleanupSurvivesANewerTurn(t *testing.T) {
 
 func TestCapturedKeyedRetryCleanupRejectsReplacedSessionsAndProviders(t *testing.T) {
 	t.Parallel()
-	for _, replacement := range []string{"session", "same ID session", "provider", "cleanup", "activity"} {
+	for _, replacement := range []string{"session", "same ID session", "same ID adoption", "provider", "cleanup", "activity"} {
 		t.Run(replacement, func(t *testing.T) {
 			t.Parallel()
 			clock := testutil.NewQuartzMock(t)
@@ -439,6 +439,8 @@ func TestCapturedKeyedRetryCleanupRejectsReplacedSessionsAndProviders(t *testing
 				if replacement == "same ID session" {
 					sink.UpdateSessionID("session-a")
 				}
+			case "same ID adoption":
+				sink.AdoptNativeSession("session-a")
 			case "provider":
 				newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 			case "cleanup":
@@ -513,7 +515,7 @@ func TestCapturedAutoRetryThroughTurnAdmitsOnlyItsExactCompletion(t *testing.T) 
 	}{
 		{"active", true}, {"idle", true}, {"new-active-without-idle", false},
 		{"next-turn", false}, {"repeated-idle", false}, {"same-publisher-reset", false},
-		{"session-round-trip", false}, {"cleanup", false}, {"sink-replacement", false},
+		{"session-round-trip", false}, {"same-id-adoption", false}, {"cleanup", false}, {"sink-replacement", false},
 		{"strict-capture", false}, {"zero-sequence", false},
 	} {
 		t.Run(test.transition, func(t *testing.T) {
@@ -545,6 +547,8 @@ func TestCapturedAutoRetryThroughTurnAdmitsOnlyItsExactCompletion(t *testing.T) 
 			case "session-round-trip":
 				sink.UpdateSessionID("session-b")
 				sink.UpdateSessionID("session-a")
+			case "same-id-adoption":
+				sink.AdoptNativeSession("session-a")
 			case "cleanup":
 				svc.Output.CleanupAgent(agentID, CleanupContextCleared)
 			case "sink-replacement":

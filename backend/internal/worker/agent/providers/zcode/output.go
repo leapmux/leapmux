@@ -92,8 +92,8 @@ func (a *Agent) dispatchZCodeEventLocked(event zcodeEventEnvelope) {
 		}
 		a.Mu.Unlock()
 		if owner == nil {
-			// An unknown turn id, or an id-less event with zero or several
-			// unsettled owners: the event identifies no owner, so it settles nothing
+			// An unknown identity, or an identity-free event with zero or several
+			// nonfinalized owners: the event identifies no owner, so it settles nothing
 			// and touches nothing.
 			slog.Debug("zcode turn-scoped event has no owner", "agent_id", a.AgentID(), "type", event.Type, "turn_id", event.TurnID)
 			return
@@ -324,8 +324,9 @@ func zcodeEventToolCallID(event zcodeEventEnvelope) string {
 // has no owner and the event is ignored. A payload that identifies one tool call
 // falls back to the turn recorded on that call, so a late result still reaches
 // the turn that opened it. An event that identifies neither turn nor call uses the
-// sole unsettled owner when exactly one exists, and has no owner at all when
-// zero or several do: routing it would be a guess.
+// unique input ID when the payload supplies one. Without an identity, only a
+// sole nonfinalized owner can receive the event. Historical owners awaiting a
+// native end still make that fallback ambiguous.
 func (a *Agent) resolveZCodeTurnLocked(event zcodeEventEnvelope, toolCallID string) *zcodeTurnState {
 	if event.TurnID != "" {
 		return a.turns[event.TurnID]
@@ -344,9 +345,26 @@ func (a *Agent) resolveZCodeTurnLocked(event zcodeEventEnvelope, toolCallID stri
 			return matched
 		}
 	}
+	var input struct {
+		InputID string `json:"inputId"`
+	}
+	if json.Unmarshal(event.Payload, &input) == nil && input.InputID != "" {
+		var matched *zcodeTurnState
+		for _, turn := range a.turns {
+			if turn.finalized || turn.inputID != input.InputID {
+				continue
+			}
+			if matched != nil {
+				return nil
+			}
+			matched = turn
+		}
+		// A supplied input identity cannot fall back to a different foreground.
+		return matched
+	}
 	var sole *zcodeTurnState
 	for _, turn := range a.turns {
-		if turn.settled {
+		if turn.finalized {
 			continue
 		}
 		if sole != nil {
@@ -411,6 +429,9 @@ func (a *Agent) clearZCodeTurnsLocked() {
 		a.stopZCodeTurnWatcherLocked(owner)
 	}
 	clear(a.turns)
+	clear(a.inputAdmissions)
+	a.compactionRetry = nil
+	a.compactionSessionID = ""
 	a.foregroundTurnID = ""
 	a.refreshTurnActiveLocked()
 }
@@ -430,7 +451,10 @@ func (a *Agent) createZCodeTurnLocked(initial zcodeTurnState) *zcodeTurnState {
 	initial.toolInvocationIDs = make(map[string]struct{})
 	initial.invocationsByNativeID = make(map[string]map[string]*zcodeToolInvocation)
 	owner := &initial
-	if !owner.background {
+	if !owner.background && !owner.settled {
+		if retry := a.compactionRetry; retry != nil && retry.inputID != owner.inputID {
+			retry.superseded = true
+		}
 		a.replaceForegroundZCodeTurnLocked(owner)
 	}
 	a.turns[owner.id] = owner
@@ -502,12 +526,24 @@ func (a *Agent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 	canonicalRequired := event.archive || event.replayUncertain
 
 	a.Mu.Lock()
+	admission := a.inputAdmissions[payload.InputID]
+	if background || admission == nil || admission.sessionID != a.sessionID || admission.epoch != a.sessionEpoch {
+		admission = nil
+	}
+	var compaction *zcodeCompactionRetry
+	if admission != nil {
+		compaction = admission.compaction
+	}
+	if compaction == nil && !background && a.compactionRetry != nil && a.compactionRetry.inputID == payload.InputID {
+		compaction = a.compactionRetry
+	}
+	historical := compaction != nil && (compaction.verdictApplied || compaction.superseded || compaction != a.compactionRetry)
 	// A provisional foreground owner (one sendInputForSession created before
 	// the native start) adopts the native turn ID and execution ID while
 	// preserving its generation and input identity. Adoption requires a
 	// matching inputId: a start that identifies no input cannot be identified as
 	// the provisional turn's own.
-	if !background && payload.InputID != "" {
+	if !background && !historical && payload.InputID != "" {
 		if prev := a.foregroundZCodeTurnLocked(); prev != nil && strings.HasPrefix(prev.id, "#turn-") && prev.inputID == payload.InputID {
 			if event.TurnID != "" && !a.adoptZCodeTurnIDLocked(prev, event.TurnID) {
 				a.Mu.Unlock()
@@ -530,6 +566,9 @@ func (a *Agent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 	turn := a.createZCodeTurnLocked(zcodeTurnState{
 		id:                    event.TurnID,
 		background:            background,
+		settled:               historical,
+		compacting:            compaction != nil || (admission != nil && admission.compacting),
+		compaction:            compaction,
 		foregroundExecutionID: payload.ForegroundExecutionID,
 		acceptedAt:            a.Clock().Now(),
 		admissionRevision:     a.stateRevision,
@@ -537,18 +576,25 @@ func (a *Agent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 		inputID:               payload.InputID,
 		canonicalRequired:     canonicalRequired,
 	})
-	if admission := a.inputAdmissions[payload.InputID]; admission != nil && admission.sessionID == a.sessionID && admission.epoch == a.sessionEpoch {
+	if admission != nil {
 		admission.owner = turn
-		turn.compacting = admission.compacting
+		if admission.dispatchFinished {
+			delete(a.inputAdmissions, payload.InputID)
+		}
 	}
 	a.bindZCodeCompactionOwnerLocked(turn)
 	a.refreshTurnActiveLocked()
 	a.Mu.Unlock()
+	if turn.compaction != nil {
+		a.finishZCodeCompactionRecordedLocked(turn.compaction)
+	}
 	a.PublishTurnActive()
 	// A steer that ZCode moved to the ordinary queue runs as this turn's prompt.
-	a.observeZCodeSteerTurnStart(payload.InputID)
+	if !historical {
+		a.observeZCodeSteerTurnStart(payload.InputID)
+	}
 
-	if !background {
+	if !background && !historical {
 		a.resetZCodeTurnProgress(turn)
 	}
 	slog.Debug("zcode turn started", "agent_id", a.AgentID(), "turn", payload.TurnNumber, "input_source", payload.InputSource)
@@ -715,8 +761,6 @@ type zcodeTurnEnd struct {
 	// with: error, or interrupted when the failure reports a cancellation. A
 	// turn.completed leaves it unset and derives its own outcomes from cancelled.
 	failedCompletion agent.MessageCompletion
-	// failure retains the classified verdict through deferred canonical settlement.
-	failure providerkit.TurnFailure
 }
 
 // zcodeTurnDivider freezes native output and presentation metadata at receipt.
@@ -784,7 +828,7 @@ func (a *Agent) finishZCodeTurn(event zcodeEventEnvelope, owner *zcodeTurnState,
 	if raw == nil {
 		settle = zcodeTurnSettlement{}
 	}
-	settle.afterForeground = a.captureZCodeRetryVerdict(owner, end.failure, raw)
+	settle.afterSettlement = a.captureZCodeRetryVerdict(owner, end.failure, raw)
 	if raw != nil && canonicalRequired {
 		a.queueZCodeNativeSettlement(owner, settle, source)
 		return

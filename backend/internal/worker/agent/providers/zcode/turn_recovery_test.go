@@ -1635,12 +1635,12 @@ type zcodeCanonicalRetryWriter struct {
 	sink *zcodeCanonicalEndSink
 }
 
-func (writer zcodeCanonicalRetryWriter) CancelServerErrorRetry() {
+func (writer zcodeCanonicalRetryWriter) CancelServerErrorRetry(reason string) {
 	writer.sink.retryMu.Lock()
 	writer.sink.retryCancels++
 	writer.sink.order = append(writer.sink.order, "retry")
 	writer.sink.retryMu.Unlock()
-	writer.AutoRetryWriter.CancelServerErrorRetry()
+	writer.AutoRetryWriter.CancelServerErrorRetry(reason)
 }
 func (sink *zcodeCanonicalEndSink) PersistWorkerNotification(content agent.MessageContent) (bool, error) {
 	stored, err := sink.ControlSink.PersistWorkerNotification(content)
@@ -1653,6 +1653,9 @@ func (sink *zcodeCanonicalEndSink) PersistWorkerNotification(content agent.Messa
 }
 func (sink *zcodeCanonicalEndSink) CaptureAutoRetry() agent.AutoRetryWriter {
 	return zcodeCanonicalRetryWriter{AutoRetryWriter: sink.ControlSink.CaptureAutoRetry(), sink: sink}
+}
+func (sink *zcodeCanonicalEndSink) CaptureAutoRetryThroughTurn(seq uint64) agent.AutoRetryWriter {
+	return zcodeCanonicalRetryWriter{AutoRetryWriter: sink.ControlSink.CaptureAutoRetryThroughTurn(seq), sink: sink}
 }
 func (sink *zcodeCanonicalEndSink) SetTurnState(state agent.TurnState, seq uint64) {
 	sink.ControlSink.SetTurnState(state, seq)
@@ -2095,4 +2098,38 @@ func TestZCodeNativeEnd_PreservesToolsOfALocallySettledOwner(t *testing.T) {
 	a.Mu.Unlock()
 	assert.True(t, open)
 	assert.Equal(t, "Bash", a.sink.GetSpanType(zcodeTestSpanID(t, &sink.Sink, "tool-A")))
+}
+
+func TestZCodeDeferredFailureRetainsForegroundRetryAuthority(t *testing.T) {
+	for _, change := range []string{"republish", "background", "new foreground", "shutdown"} {
+		t.Run(change, func(t *testing.T) {
+			a, sink, stdin := zcodeCanonicalReplayFixtureWithClock(t, quartz.NewReal(), false)
+			a.sink = agent.NewOrderedProviderServices(agent.OutputQueueFor(a.sink), a.sink)
+			a.PublishTurnActive()
+			a.HandleOutput(zcodeTurnEventLine(t, 5, "turn-A", contracts.ZCodeEventTurnFailed,
+				`{"error":{"code":"model_request_failed","message":"Provider returned a server error.","attribution":{"source":"provider","reason":"server_error","statusCode":500,"retryable":true}}}`))
+			request := waitZCodeRequest(t, stdin, MethodSessionMessages)
+			switch change {
+			case "republish":
+				a.PublishTurnActive()
+			case "background":
+				a.HandleOutput(zcodeTurnEventLine(t, 6, "background", contracts.ZCodeEventTurnStarted, `{"inputSource":"background_task"}`))
+				a.HandleOutput(zcodeTurnEventLine(t, 7, "background", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
+			case "shutdown":
+				a.NoteIntentionalStop()
+			case "new foreground":
+				a.HandleOutput(zcodeTurnEventLine(t, 6, "turn-B", contracts.ZCodeEventTurnStarted, `{"inputId":"new"}`))
+			}
+			a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), zcodeCanonicalMessages()))
+			waitZCodeCanonicalEnd(t, sink)
+			// Wait for the dispatch that stored the divider to finish retry bookkeeping.
+			a.dispatchMu.Lock()
+			a.unlockZCodeDispatch()
+			want := 1
+			if change == "new foreground" || change == "shutdown" {
+				want = 0
+			}
+			assert.Equal(t, want, sink.AutoScheduleCount())
+		})
+	}
 }
