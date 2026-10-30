@@ -128,6 +128,12 @@ func indexRowOf(owned *OwnedTab, rendered *RenderedTab) (TabIndexRow, bool) {
 	if owned == nil {
 		return TabIndexRow{}, false
 	}
+	return indexRow(owned, rendered != nil), true
+}
+
+// indexRow is the one place that copies an owned tab's fields into its index
+// row; rendered states whether the tab renders.
+func indexRow(owned *OwnedTab, rendered bool) TabIndexRow {
 	return TabIndexRow{
 		WorkspaceID: owned.WorkspaceID,
 		TabType:     owned.TabType,
@@ -135,8 +141,8 @@ func indexRowOf(owned *OwnedTab, rendered *RenderedTab) (TabIndexRow, bool) {
 		WorkerID:    owned.WorkerID,
 		TileID:      owned.TileID,
 		Position:    owned.Position,
-		Rendered:    rendered != nil,
-	}, true
+		Rendered:    rendered,
+	}
 }
 
 // DiffProjection returns the write plan to take the index from `prev`
@@ -171,15 +177,7 @@ func indexRowsOf(p *Projection) (map[string]TabIndexRow, map[string]string) {
 	rows := make(map[string]TabIndexRow, len(p.OwnedTabs))
 	owners := make(map[string]string, len(p.OwnedTabs))
 	for _, t := range p.OwnedTabs {
-		rows[t.TabID] = TabIndexRow{
-			WorkspaceID: t.WorkspaceID,
-			TabType:     t.TabType,
-			TabID:       t.TabID,
-			WorkerID:    t.WorkerID,
-			TileID:      t.TileID,
-			Position:    t.Position,
-			Rendered:    rendered[t.TabID],
-		}
+		rows[t.TabID] = indexRow(t, rendered[t.TabID])
 		owners[t.TabID] = t.UserID
 	}
 	return rows, owners

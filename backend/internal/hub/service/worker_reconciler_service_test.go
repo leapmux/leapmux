@@ -27,10 +27,10 @@ import (
 // workspace_tab_owned is keyed by (user_id, tab_id) and nothing ties a row's
 // owner to the registrant of the worker it names, so two owners' rows can
 // legitimately reference one worker (each row sits in a workspace its own
-// user owns, which the composite workspace key requires). The response must carry only the
-// registrant's rows AND announce that scope: the reconciler on the other end
-// reaps every LOCAL row the list omits, so an unannounced narrowing would tell
-// it to destroy every other owner's live file tabs.
+// user owns, which the composite workspace key requires). The response must
+// carry only the registrant's rows AND announce that scope: the reconciler on
+// the other end reaps every LOCAL row the list omits, so an unannounced
+// narrowing would tell it to destroy every other owner's live file tabs.
 func TestListOwnedTabsForWorker_ScopedToRegistrant(t *testing.T) {
 	t.Parallel()
 

@@ -481,7 +481,7 @@ func (h *OAuthServerHandler) handleTokenDeviceCode(w http.ResponseWriter, r *htt
 // answerElevationPoll finishes a step-up poll: it reports the window the
 // approval stamped, and spends the grant.
 func (h *OAuthServerHandler) answerElevationPoll(w http.ResponseWriter, r *http.Request, row *store.DeviceAuthorization, deviceCode string) {
-	// The approval FLAG is not the answer, so this reads the credential itself.
+	// The APPROVED state is not the answer, so this reads the credential itself.
 	// An approval whose elevation never committed leaves the row approved with
 	// no window; answering "elevated" there tells the client to retry a command
 	// the hub refuses again, with no error the user can act on. The check runs

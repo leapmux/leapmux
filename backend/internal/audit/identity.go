@@ -85,8 +85,9 @@ var identityComparisonSites = map[string]string{
 	// tenant's row. (The derived workspace_tab_owned rows were the other half of
 	// that reach; they now take their owner from the committing tenant, and a
 	// composite foreign key ties each row to a workspace its own user owns, so
-	// this is the layer that still needs the check.) Matches rather than `!=` for the usual reason: a blank-tenant
-	// manager must not match a blank-tenant payload.
+	// this is the layer that still needs the check.) Matches rather than `!=`
+	// for the usual reason: a blank-tenant manager must not match a
+	// blank-tenant payload.
 	"internal/hub/crdt.(*Manager).requireOwnState": "TestBootstrapRefusesAStatePayloadNamingAnotherTenant",
 
 	// ---- hub/store ----

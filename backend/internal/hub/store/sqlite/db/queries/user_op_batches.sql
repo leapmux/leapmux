@@ -69,9 +69,8 @@ SELECT COUNT(*) FROM user_op_batches WHERE user_id = ?;
 -- permanently ahead of wall time -- and a time the database assigns comes
 -- from the database server, a different machine under Postgres/MySQL. A sweep
 -- on wall-clock time would then delete rows whose HLC a live cursor still
--- passes, and
--- ListUserOpBatchesAfter would silently return the surviving later rows,
--- shipping a delta with a hole in it. Batched via LIMIT; the caller drains
+-- passes, and ListUserOpBatchesAfter would silently return the surviving later
+-- rows, shipping a delta with a hole in it. Batched via LIMIT; the caller drains
 -- until a pass deletes nothing. The LIMIT is a hard literal rather than a bind,
 -- and the batching FORM is the one thing the three dialects genuinely diverge on
 -- (rowid here, the full primary key in postgres, a bare DELETE ... LIMIT in

@@ -117,9 +117,11 @@ func (n *Notifier) SendDeregister(ctx context.Context, workerID string) error {
 	return nil
 }
 
-// DeliverOnConnect tells a just-connected DEREGISTERING worker to stop. It
-// also re-establishes the in-memory deregistering mark, which a hub restart
-// loses while deregistering_at survives.
+// DeliverOnConnect tells a just-connected worker to stop when it is
+// DEREGISTERING, or when it was deleted with its user while it connected. The
+// caller reads the worker after it registers the connection. It also
+// re-establishes the in-memory deregistering mark, which a hub restart loses
+// while deregistering_at survives.
 func (n *Notifier) DeliverOnConnect(ctx context.Context, worker *store.Worker) {
 	n.workerMgr.MarkDeregistering(worker.ID)
 	conn := n.workerMgr.ConnForTrustedPath(worker.ID)

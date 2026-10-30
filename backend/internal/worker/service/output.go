@@ -2500,9 +2500,10 @@ func (h *OutputHandler) evictOldestFinishedLocked(ctx context.Context, reg agent
 // reports whether it changed anything. The caller holds cache.Mu.
 //
 // `reg` carries the handle the write goes through, and the eviction this can force
-// goes through the same one -- so a merge frame's whole set of writes lands in one
-// transaction. A single write that needs no transaction passes the view the caller
-// already holds.
+// goes through the same one. Every caller passes a transaction view, so the
+// eviction and the write commit together: a KindCreate or KindDetail event gets
+// its own transaction, and a merge frame's whole set of writes lands in one.
+// upsertTodoLocked never opens a transaction itself, so nothing nests.
 func (h *OutputHandler) upsertTodoLocked(ctx context.Context, reg agentTodoView, kind todoevents.EventKind, item todoevents.Item) (bool, error) {
 	cache := reg.cache
 	if item.ID == "" {

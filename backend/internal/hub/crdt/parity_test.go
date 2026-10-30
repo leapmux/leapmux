@@ -208,9 +208,10 @@ func TestParity_ManyPermutationsConverge(t *testing.T) {
 // ListTabs, and the CLI turns a `--tab-id` into a `--tile-id` through them
 // before emitting SetTabRegister(tile_id). `validateTabPlacement` accepts only
 // a live LEAF, so every rendered tile must BE one — and must be the tab's own
-// tile_id, not a relabelled stand-in. Relabelling is not hypothetical: an earlier frontend
-// projection remapped a collapsed SPLIT's tabs onto the parent's node id, which
-// is what made a tab render on no tile at all when a grid was closed beside it.
+// tile_id, not a relabelled stand-in. Relabelling is not hypothetical: an
+// earlier frontend projection remapped a collapsed SPLIT's tabs onto the
+// parent's node id, which is what made a tab render on no tile at all when a
+// grid was closed beside it.
 // Both sides now report the raw tile_id (see the collapse cases in
 // testdata/crdt_projection_conformance.json); porting a remap here would break
 // `tab open --after-tab` in a way no existing test noticed.

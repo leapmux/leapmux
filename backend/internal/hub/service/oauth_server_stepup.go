@@ -157,8 +157,8 @@ func (h *OAuthServerHandler) elevateGrantedToken(ctx context.Context, tx store.S
 // credentialElevationIsCurrent reports whether the credential a step-up grant
 // identifies carries an elevation window that admits a sensitive action NOW.
 //
-// The token stage calls it before it answers "elevated", because the approval
-// FLAG on the grant row is not enough to answer from. A row can be approved
+// The token stage calls it before it answers "elevated", because the APPROVED
+// state of the grant row is not enough to answer from. A row can be approved
 // with no window -- a hub that died between the two writes left exactly that
 // shape before the approval became one transaction -- and reporting success
 // there tells the CLI to retry a command the hub refuses again, with no error

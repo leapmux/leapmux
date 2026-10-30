@@ -361,12 +361,30 @@ func (s *WorkerConnectorService) Connect(
 		}
 	}()
 
+	// Read the worker again, now that Register made the connection reachable,
+	// and decide on the DEREGISTER delivery from this read, never from the
+	// authentication read above. A deregistration, or a deletion with the
+	// worker's user, can commit between that read and Register. Its
+	// SendDeregister then finds no connection and tells nobody.
+	//   - A change that commits before this read shows here, and Connect tells
+	//     the worker.
+	//   - A change that commits after this read runs its SendDeregister after
+	//     Register, so SendDeregister finds the connection and tells the
+	//     worker.
+	// A change that commits before this read can also run its SendDeregister
+	// after Register. The worker then receives DEREGISTER twice, which is
+	// harmless: it shuts down once.
+	current, err := s.store.Workers().GetByIDIncludeDeleted(ctx, worker.ID)
+	if err != nil {
+		return wrappedConnectError(connect.CodeInternal, fmt.Errorf("read worker after register: %w", err))
+	}
+
 	// Update last seen.
 	if err := s.store.Workers().UpdateLastSeen(ctx, worker.ID); err != nil {
 		slog.Warn("failed to update worker last seen", "worker_id", worker.ID, "error", err)
 	}
 
-	slog.Info("worker connected", "worker_id", worker.ID, "status", worker.Status)
+	slog.Info("worker connected", "worker_id", worker.ID, "status", current.Status)
 	// exitReason names WHY the handler is returning, set on every exit path
 	// below so "worker disconnected" says what ended the stream rather than
 	// only that it ended. It exists because the quiet exits are the ones an
@@ -382,7 +400,8 @@ func (s *WorkerConnectorService) Connect(
 	}()
 
 	// A deregistering worker is told to stop on every connect: its persisted
-	// deregistering_at is the intent, and this connection is the delivery.
+	// deregistering_at is the intent, and this connection is the delivery. A
+	// worker deleted with its user while it connected is told to stop too.
 	// The delivery runs beside the main loop rather than before it, because
 	// the DEREGISTER instruction reaches the wire through the loop's drain and
 	// its acknowledgement through the loop's receive (pending.Complete only
@@ -390,11 +409,11 @@ func (s *WorkerConnectorService) Connect(
 	// returns, whatever its outcome. An ACTIVE worker starts no delivery
 	// goroutine.
 	var notifyDone chan struct{} // nil for a normal worker: a nil select case blocks forever
-	if s.notifier != nil && worker.Status == leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING {
+	if s.notifier != nil && current.Status != leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE {
 		notifyDone = make(chan struct{})
 		go func() {
 			defer close(notifyDone)
-			s.notifier.DeliverOnConnect(ctx, worker)
+			s.notifier.DeliverOnConnect(ctx, current)
 		}()
 	}
 

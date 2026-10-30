@@ -218,31 +218,31 @@ func (s *Suite) testWorkers(t *testing.T) {
 	})
 
 	t.Run("list admin status=deleted surfaces soft-deleted workers", func(t *testing.T) {
-		// Pins the deleted_at-split that the two-query ListAdmin collapse relies
-		// on: the status=nil half filters `deleted_at IS NULL` (hides deleted); the
-		// status-set half drops deleted_at entirely so WORKER_STATUS_DELETED can
-		// surface soft-deleted rows. A regression that applied deleted_at IS NULL
-		// to the status=DELETED case would silently return zero rows here while
-		// every other status-filter test still passed.
+		// Pins how ListAdmin splits on deleted_at. A nil status reads the live
+		// listing, which filters `deleted_at IS NULL` and hides deleted workers.
+		// WORKER_STATUS_DELETED reads the deleted listing, which filters
+		// `deleted_at IS NOT NULL`. A regression that sent the DELETED case to the
+		// live listing would silently return zero rows here, while every other
+		// status-filter test still passed.
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "deleted-status-user")
 		alive := SeedWorker(t, st, user.ID)
 		dead := SeedWorker(t, st, user.ID)
 		require.NoError(t, st.Workers().MarkDeleted(ctx, dead.ID))
 
-		// No status filter: deleted workers are hidden (the status=nil half).
+		// No status filter: the live listing hides the deleted worker.
 		page, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{PageParams: store.PageParams{Limit: 10}})
 		require.NoError(t, err)
 		require.Len(t, page.Rows, 1)
 		assert.Equal(t, alive.ID, page.Rows[0].ID)
 
-		// status=DELETED: the status-set half surfaces the soft-deleted row.
+		// status=DELETED: the deleted listing surfaces only the soft-deleted row.
 		page, err = st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
 			Status:     ptrconv.Ptr(leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED),
 			PageParams: store.PageParams{Limit: 10},
 		})
 		require.NoError(t, err)
-		require.Len(t, page.Rows, 1, "status=DELETED must surface soft-deleted workers (no deleted_at filter)")
+		require.Len(t, page.Rows, 1, "status=DELETED must surface the soft-deleted worker, and only it")
 		assert.Equal(t, dead.ID, page.Rows[0].ID)
 	})
 
@@ -543,7 +543,8 @@ func (s *Suite) testWorkers(t *testing.T) {
 		user := SeedUser(t, st, "init-status-user")
 		worker := SeedWorker(t, st, user.ID)
 
-		// SQLite creates workers with DEFAULT 1 (WORKER_STATUS_ACTIVE).
+		// A new row has a NULL deregistering_at and a NULL deleted_at, which
+		// derive WORKER_STATUS_ACTIVE.
 		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE, worker.Status)
 	})
 

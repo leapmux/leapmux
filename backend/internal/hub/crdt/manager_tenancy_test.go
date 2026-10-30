@@ -103,8 +103,9 @@ func TestSubmitRefusesABlankTenantManager(t *testing.T) {
 // rows were the sharper half of that radius until service.txTabIndexWriter
 // began stamping the committing tenant and workspace_tab_owned gained a
 // foreign key whose chain reaches users(id); before those, a blank payload
-// produced blank-owner rows the store could not delete, so the worker reconciler kept their agents and
-// terminals alive with no API able to clear them.
+// produced blank-owner rows the store could not delete, so the worker
+// reconciler kept their agents and terminals alive with no API able to clear
+// them.
 //
 // Named by internal/audit.identityComparisonSites for
 // internal/hub/crdt.(*Manager).requireOwnState.

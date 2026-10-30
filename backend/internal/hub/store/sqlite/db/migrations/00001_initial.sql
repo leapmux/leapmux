@@ -263,19 +263,20 @@ CREATE INDEX idx_workspace_section_items_section ON workspace_section_items(sect
 
 -- CRDT op-batch journal. The per-user CRDT manager appends every committed
 -- batch here in the same transaction that updates the in-memory state and
--- the derived tab index. One row
--- per OpBatch (not per CrdtOp); ops within a batch share a contiguous
--- canonical HLC range anchored at (physical_ms, logical) with op_count
--- ops, so the last op's logical = logical + op_count - 1.
+-- the derived tab index. One row per OpBatch (not per CrdtOp); ops within a
+-- batch share a contiguous canonical HLC range anchored at
+-- (physical_ms, logical) with op_count ops, so the last op's
+-- logical = logical + op_count - 1.
 --
 -- The table stores no HLC client id: one clock (crdt.CanonicalClockID) stamps
 -- every canonical HLC of a user, so (physical_ms, logical) is unique within a
 -- user, and the reader rebuilds each HLC's client id from that constant.
 --
 -- Compaction periodically drops rows whose batch's last canonical HLC <=
--- compaction_watermark; each batch's dedup row is written to
--- user_recent_batch_ids at commit, so a retry stays idempotent for DedupTTL
--- after compaction deletes the journal row.
+-- op_retention_watermark, which lags compaction_watermark by OpRetentionTTL;
+-- each batch's dedup row is written to user_recent_batch_ids at commit, so a
+-- retry stays idempotent for DedupTTL after compaction deletes the journal
+-- row.
 CREATE TABLE user_op_batches (
     user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     physical_ms   BIGINT NOT NULL,                  -- first op's canonical_hlc.physical (= last op's; ops in a batch share physical_ms)

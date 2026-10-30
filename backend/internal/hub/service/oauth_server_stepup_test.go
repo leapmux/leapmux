@@ -356,7 +356,7 @@ func TestCLIStepUp_AFailedElevationRollsBackTheApproval(t *testing.T) {
 	assert.Equal(t, "authorization_pending", body["error"])
 }
 
-// The poll reports the CREDENTIAL's window, never the grant's approval flag.
+// The poll reports the CREDENTIAL's window, never the grant's APPROVED state.
 //
 // The approved-with-no-window shape is what a hub that dies between two writes
 // leaves behind, and a restore or a manual repair can write it too. Answering

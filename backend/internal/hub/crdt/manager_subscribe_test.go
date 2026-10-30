@@ -929,9 +929,10 @@ func TestSubscribeWithACL_CompactionDuringScan_StillResumes(t *testing.T) {
 	// decideResume gained a wall-clock floor (cursor.physical >= now - TTL)
 	// alongside the stored-watermark floor, because the cleanup job sweeps op
 	// batches by HLC physical against a cutoff that advances with real time,
-	// and a dormant account's stored floor stops advancing. Since max_hlc <= now, any cursor the stored floor could
-	// invalidate mid-scan (cursor <= max_hlc - TTL) was already below the
-	// wall-clock floor (now - TTL) at decide time, so it never reaches the scan.
+	// and a dormant account's stored floor stops advancing. Since
+	// max_hlc <= now, any cursor the stored floor could invalidate mid-scan
+	// (cursor <= max_hlc - TTL) was already below the wall-clock floor
+	// (now - TTL) at decide time, so it never reaches the scan.
 	//
 	// The post-scan re-check therefore survives as defence-in-depth and for the
 	// epoch arm, not for compaction. What is still worth pinning here is the

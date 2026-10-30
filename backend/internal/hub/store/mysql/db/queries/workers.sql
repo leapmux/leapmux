@@ -24,7 +24,10 @@ LIMIT ?;
 -- deregistering_at rather than restarting the stale-deregistration clock.
 -- IF rather than the CASE the sqlite and postgres twins use: sqlc's MySQL
 -- engine types a CASE WHEN parameter from the CASE result, a DATETIME, and
--- would generate a timestamp field for a boolean flag.
+-- would generate a timestamp field for a boolean flag. The flag stays untyped
+-- (interface{}), because sqlc's MySQL engine has no boolean CAST to type it
+-- with; the wrapper binds a bool, and TestGeneratedInterfaceParamsAreAllowlisted
+-- lists the field.
 UPDATE workers
 SET deregistering_at = IF(sqlc.arg(deregistering), COALESCE(deregistering_at, NOW(3)), NULL)
 WHERE id = sqlc.arg(id) AND deleted_at IS NULL;
@@ -66,6 +69,12 @@ SELECT public_key, mlkem_public_key, slhdsa_public_key FROM workers WHERE id = ?
 -- them are fed from a single typed Go param field by the generated code, so the
 -- cursor predicate uses narg rather than hand-doubled `?` pairs with opaque
 -- ColumnN fields.
+--
+-- The two include flags stay untyped (interface{}) here, unlike their sqlite
+-- and postgres twins: those type them through CAST(... AS BOOLEAN) and
+-- ::boolean, and sqlc's MySQL engine has no boolean CAST to type them with.
+-- The dialect wrapper binds a bool, and TestGeneratedInterfaceParamsAreAllowlisted
+-- lists both fields.
 
 -- ListWorkersAdminLive: user_id=none, live workers in the included states.
 -- name: ListWorkersAdminLive :many
