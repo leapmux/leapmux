@@ -3,13 +3,18 @@
 package codewhale
 
 import (
+	"bufio"
+	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -18,7 +23,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/stretchr/testify/require"
 )
 
 // clearCodewhaleLaunchCache drops every memoized answer of the production
@@ -38,6 +46,8 @@ func clearCodewhaleLaunchCache() {
 // port reservation, the listening line, the health poll and the thread routes.
 
 const (
+	// Ownership fixtures pass their prebound socket as descriptor 3.
+	fakeProcessListenerFDEnv = "LEAPMUX_TEST_CODEWHALE_LISTENER_FD"
 	// fakeProcessWantEnv confirms the re-exec.
 	fakeProcessWantEnv = "LEAPMUX_TEST_CODEWHALE_RUNTIME"
 	// fakeProcessScenarioEnv selects a behavior:
@@ -159,7 +169,7 @@ func runFakeRuntimeProcess(args []string) int {
 		fmt.Fprintf(os.Stderr, "Error: Failed to bind 127.0.0.1:%s: Address already in use (os error 48)\n", port)
 		return 1
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:"+port)
+	listener, err := fakeRuntimeListener(port)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: Failed to bind 127.0.0.1:%s: %v\n", port, err)
 		return 1
@@ -174,6 +184,110 @@ func runFakeRuntimeProcess(args []string) int {
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	<-signals
 	return 0
+}
+
+// The parent retains its socket while the child starts. The fixture must use
+// that socket rather than attempt another bind on the same port.
+func TestFakeRuntimeUsesInheritedListener(t *testing.T) {
+	t.Parallel()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	file, err := listener.(*net.TCPListener).File()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = file.Close() })
+	port := fmt.Sprint(listener.Addr().(*net.TCPAddr).Port)
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperCodewhaleRuntime$", "--", "app-server", "--http", "--host", "127.0.0.1", "--port", port)
+	cmd.Env = append(os.Environ(), fakeProcessWantEnv+"=1", fakeProcessScenarioEnv+"=", fakeProcessRecordEnv+"=", envRuntimeDir+"="+t.TempDir(), envRuntimeToken+"=orphan", fakeProcessListenerFDEnv+"=3")
+	cmd.ExtraFiles = []*os.File{file}
+	startFakeRuntimeProcess(t, cmd, "http://"+listener.Addr().String())
+}
+
+func fakeRuntimeListener(port string) (net.Listener, error) {
+	descriptor := os.Getenv(fakeProcessListenerFDEnv)
+	if descriptor == "" {
+		return net.Listen("tcp", "127.0.0.1:"+port)
+	}
+	if descriptor != "3" {
+		return nil, errors.New("the fake runtime inherited an unsupported listener descriptor")
+	}
+	file := os.NewFile(3, "codewhale-runtime-listener")
+	listener, err := net.FileListener(file)
+	// FileListener duplicates the descriptor; the inherited copy is no longer needed.
+	closeErr := file.Close()
+	if err != nil {
+		return nil, err
+	}
+	if closeErr != nil {
+		_ = listener.Close()
+		return nil, closeErr
+	}
+	return listener, nil
+}
+
+// startFakeRuntimeProcess owns startup, health verification, and process cleanup.
+// A process identity alone cannot prove that the runtime finished startup.
+func startFakeRuntimeProcess(t *testing.T, cmd *exec.Cmd, expectedAddress string) {
+	t.Helper()
+	waiter := providerkit.NewListenWaiter(listeningLinePattern)
+	stdout, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stdout.Close() })
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	require.NoError(t, cmd.Start())
+	finished := make(chan struct{})
+	var stdoutErr error
+	var waitErr error
+	t.Cleanup(func() {
+		waitCompletedBeforeCleanup := false
+		select {
+		case <-finished:
+			waitCompletedBeforeCleanup = true
+		default:
+		}
+		_ = cmd.Process.Kill()
+		<-finished
+		if t.Failed() {
+			t.Logf("runtime wait completed before cleanup: %t. Exit: %v. Stdout: %v. Stderr: %s", waitCompletedBeforeCleanup, waitErr, stdoutErr, stderr.String())
+		}
+	})
+	go func() {
+		defer close(finished)
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			waiter.Observe(scanner.Bytes())
+		}
+		stdoutErr = scanner.Err()
+		// Wait closes StdoutPipe, so it must follow the completed reads.
+		waitErr = cmd.Wait()
+	}()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	address, err := waiter.Wait(ctx, quartz.NewReal(), finished, 30*time.Second)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		<-finished
+		t.Fatalf("the fake runtime did not start: %v. Exit: %v. Stdout: %v. Stderr: %s", err, waitErr, stdoutErr, stderr.String())
+	}
+	require.Equal(t, expectedAddress, address)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address+routeHealth, nil)
+	require.NoError(t, err)
+	response, err := http.DefaultClient.Do(request)
+	require.NoError(t, err)
+	defer func() { _ = response.Body.Close() }()
+	require.Equal(t, http.StatusOK, response.StatusCode)
+}
+
+func TestFakeRuntimeRejectsUnsupportedListenerDescriptors(t *testing.T) {
+	for _, descriptor := range []string{"0", "-1", "4", "invalid", "9223372036854775807"} {
+		t.Run(descriptor, func(t *testing.T) {
+			t.Setenv(fakeProcessListenerFDEnv, descriptor)
+			listener, err := fakeRuntimeListener("0")
+			require.ErrorContains(t, err, "unsupported listener descriptor")
+			require.Nil(t, listener)
+		})
+	}
 }
 
 // fakeProcessServer is the runtime API the fake process serves.

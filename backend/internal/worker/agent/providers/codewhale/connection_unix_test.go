@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,38 +20,31 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/util/procutil"
 )
 
-// orphanRuntime starts the fake runtime process as a runtime an earlier worker
-// left behind: in a group of its own, on a port, with nobody waiting for it.
-// leader controls whether the process leads its own group, which is what lets a
-// group kill reach it.
+// orphanRuntime models a runtime that an earlier worker left running. The fixture
+// retains its listener through startup and reaps the process during cleanup.
+// leader selects whether the runtime leads a separate process session.
 func orphanRuntime(t *testing.T, leader bool) (*exec.Cmd, int) {
 	t.Helper()
-	port, err := providerkit.ReserveLoopbackPort()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	cmd := exec.Command(os.Args[0], "-test.run=TestHelperCodewhaleRuntime", "--", "app-server", "--http", "--host", "127.0.0.1", "--port", strconv.Itoa(port))
-	cmd.Env = append(os.Environ(), fakeProcessWantEnv+"=1", envRuntimeDir+"="+t.TempDir(), envRuntimeToken+"=orphan")
+	t.Cleanup(func() { _ = listener.Close() })
+	file, err := listener.(*net.TCPListener).File()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = file.Close() })
+	port := listener.Addr().(*net.TCPAddr).Port
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperCodewhaleRuntime$", "--", "app-server", "--http", "--host", "127.0.0.1", "--port", strconv.Itoa(port))
+	cmd.Env = append(os.Environ(), fakeProcessWantEnv+"=1", fakeProcessScenarioEnv+"=", fakeProcessRecordEnv+"=", envRuntimeDir+"="+t.TempDir(), envRuntimeToken+"=orphan", fakeProcessListenerFDEnv+"=3")
+	// ExtraFiles starts at descriptor 3. Keep the socket bound through startup.
+	cmd.ExtraFiles = []*os.File{file}
 	if leader {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	}
-	require.NoError(t, cmd.Start())
-	exited := make(chan struct{})
-	go func() {
-		_ = cmd.Wait()
-		close(exited)
-	}()
-	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
-		<-exited
-	})
-	// The runtime is up once its identity reads back.
-	require.Eventually(t, func() bool {
-		_, ok := processIdentity(context.Background(), int32(cmd.Process.Pid))
-		return ok
-	}, 30*time.Second, 10*time.Millisecond)
+	startFakeRuntimeProcess(t, cmd, "http://"+listener.Addr().String())
+	require.NoError(t, file.Close())
+	require.NoError(t, listener.Close())
 	return cmd, port
 }
 
