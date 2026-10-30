@@ -134,7 +134,7 @@ describe('PROVIDER_WIRE_TOKENS', () => {
     ['session.task_complete', 'copilot-protocol events'],
     ['session.event', 'copilot-protocol methods'],
     ['assistant.fusion_step', 'copilot-protocol eventPrefixes'],
-    ['question.asked', 'opencode-protocol events'],
+    ['question.asked', 'native-questions events'],
     ['session.created', 'zcode-protocol events'],
     ['interaction/requestUserInput', 'zcode-protocol methods'],
     ['plan_approval', 'zcode-protocol interactions'],

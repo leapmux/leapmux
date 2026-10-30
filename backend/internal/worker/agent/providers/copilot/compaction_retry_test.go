@@ -9,6 +9,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
@@ -35,6 +36,49 @@ func newCopilotCompactionAgent(t *testing.T) (*Agent, *agenttest.Sink, *agenttes
 	stdin := &agenttest.Stdin{}
 	a.SetStdinForTest(stdin)
 	return a, sink, stdin
+}
+
+func TestCopilotRetryPrecedesTurnRelease(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []struct {
+		name     string
+		retained bool
+		failed   bool
+	}{{"success", false, false}, {"retained success", true, false}, {"failure", false, true}, {"retained failure", true, true}} {
+		t.Run(scenario.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink := newNativeCopilotForEvents(t)
+			a.sink = agent.NewOrderedProviderServices(agent.OutputQueueFor(a.sink), a.sink)
+			a.HandleOutput([]byte(copilotTurnStartFrame(a.currentNativeSessionID())))
+			op := "cancel_server_error"
+			if scenario.failed {
+				a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionError, copilotQueryServerError))
+				op = "schedule_server_error"
+			}
+			if scenario.retained {
+				sink.PersistErr = assert.AnError
+			}
+			a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionIdle, map[string]any{}))
+			sink.PersistErr = nil
+			require.NoError(t, agent.FlushPendingOutput(a.sink))
+			assert.Equal(t, []string{"turn_end", op, "idle"}, providerkittest.TurnEndRetryAndIdleOpNames(sink.Operations()))
+			if scenario.failed {
+				assert.Equal(t, 1, sink.AutoScheduleCount())
+			} else {
+				assert.Zero(t, sink.AutoScheduleCount())
+			}
+		})
+	}
+}
+
+func TestCopilotCompactionVerdictPrecedesTurnRelease(t *testing.T) {
+	t.Parallel()
+	a, sink, stdin := newCopilotCompactionAgent(t)
+	a.sink = agent.NewOrderedProviderServices(agent.OutputQueueFor(a.sink), a.sink)
+	require.NoError(t, a.CompactContext())
+	answerCopilotCompaction(t, a, stdin, `"result":{"success":true}`)
+	require.Eventually(t, func() bool { return sink.AutoCancelCount() == 1 }, 30*time.Second, time.Millisecond)
+	assert.Equal(t, []string{"cancel_server_error", "idle"}, providerkittest.TurnEndRetryAndIdleOpNames(sink.Operations()))
 }
 
 // copilotCompactRequestRe finds the request ID of the session.history.compact

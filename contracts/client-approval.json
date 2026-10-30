@@ -1,0 +1,6 @@
+{
+  "_readme": "LeapMux owns this approval option. Providers use it to answer each eligible native permission once. Each provider keeps its native deny rules and request exceptions. The Worker settings and browser permission preset use this one key.",
+  "options": {
+    "AutoApprove": "autoApprove"
+  }
+}

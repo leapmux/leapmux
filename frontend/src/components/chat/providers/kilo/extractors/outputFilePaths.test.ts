@@ -105,3 +105,22 @@ describe('native path ownership and preview preservation', () => {
     expect(JSON.stringify(frame)).toBe(before)
   })
 })
+
+describe('native output path completion status', () => {
+  it.each([
+    [
+      'completed',
+      [path],
+    ],
+    [
+      'failed',
+      [path],
+    ],
+    ['pending', []],
+    ['in_progress', []],
+    ['cancelled', []],
+  ])('validates the native %s status before exposing a path', (status, expected) => {
+    const pathsFor = outputFilePathFixture(AgentProvider.KILO, frame, options)
+    expect(pathsFor({ ...frame, status })).toEqual(expected)
+  })
+})

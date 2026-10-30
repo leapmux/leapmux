@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/modelvendor"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -209,6 +210,14 @@ const (
 	copilotTurnEndCompactionApplied
 )
 
+type copilotTurnEnd struct {
+	failure    copilotTurnFailure
+	autoSwitch copilotAutoSwitch
+	aborted    bool
+	observedAt time.Time
+	verdict    copilotTurnEndVerdict
+}
+
 // applyNativeTurnVerdict applies the one verdict of a root turn end. The
 // caller holds outputMu and has persisted the turn end, so the retry
 // operations follow that row.
@@ -216,16 +225,16 @@ const (
 // An accepted switch to the Auto model cancels the usage-limit retry for every
 // root turn, a compaction's model turn included: the retry no longer has a
 // purpose once the Auto model serves the session.
-func (a *Agent) applyNativeTurnVerdict(failure copilotTurnFailure, autoSwitch copilotAutoSwitch, aborted bool, observedAt time.Time, verdict copilotTurnEndVerdict) {
-	if !aborted && autoSwitch.accepted() {
-		a.sink.CancelUsageLimitRetry(copilotAutoModelReason)
+func applyNativeTurnVerdict(writer agent.AutoRetryWriter, end copilotTurnEnd) {
+	if !end.aborted && end.autoSwitch.accepted() {
+		writer.CancelUsageLimitRetry(copilotAutoModelReason)
 	}
-	switch verdict {
+	switch end.verdict {
 	case copilotTurnEndClassified:
-		providerkit.ApplyTurnFailure(a.sink, copilotTurnVerdict(failure, autoSwitch, aborted, observedAt), failure.frame)
+		providerkit.ApplyTurnFailure(writer, copilotTurnVerdict(end.failure, end.autoSwitch, end.aborted, end.observedAt), end.failure.frame)
 	case copilotTurnEndCompaction:
 		// A compaction never schedules a retry, whatever its outcome.
-		providerkit.ApplyTurnFailure(a.sink, providerkit.CompactionEnd(), nil)
+		providerkit.ApplyTurnFailure(writer, providerkit.CompactionEnd(), nil)
 	case copilotTurnEndCompactionApplied:
 		// An earlier end of the same compaction applied its one verdict.
 	}

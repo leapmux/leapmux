@@ -5,11 +5,11 @@ package kilo
 import (
 	"testing"
 
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode/opencodetest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/kilo/kilotest"
 )
 
 func TestKiloPinsTheQuestionToolFlag(t *testing.T) {
-	opencodetest.AssertPinsTheQuestionToolFlag(t, kiloQuestionToolEnv,
+	kilotest.AssertPinsTheQuestionToolFlag(t, kiloQuestionToolEnv,
 		func(t *testing.T, envFile string) { installFakeKiloACP(t, "", envFile) },
 		Start, "kilo-question-flag")
 }

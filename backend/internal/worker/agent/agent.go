@@ -58,6 +58,9 @@ type AutoRetrySchedule struct {
 	// SourcePayload is the provider's own report of the failure. The accepted
 	// retry keeps it as supplemental content.
 	SourcePayload []byte
+	// Key identifies a native fallback whose completion can remove only that
+	// fallback. Empty retains the ordinary unkeyed scheduling authority.
+	Key string
 }
 
 // TurnState is what a provider reports about its turn: whether one runs, and
@@ -468,6 +471,13 @@ type CapturedGoalWriter interface {
 	ClearGoal() error
 }
 
+// QueueStateReconciler synchronizes native execution state and retained output
+// for its whole owned tree before any root or child queue claims a new item.
+// The runtime must complete retry cleanup before it publishes idle or returns.
+type QueueStateReconciler interface {
+	ReconcileBeforeDispatch(context.Context) error
+}
+
 // AutoRetryServices schedules and cancels the automatic retries that the
 // input queue owns. Each method states its own kind, so a provider cannot ask
 // for a kind that is not a retry kind, and a server-error retry carries no
@@ -477,6 +487,17 @@ type AutoRetryServices interface {
 	// CaptureAutoRetry retains the current provider owner before an output
 	// queue can delay the operation.
 	CaptureAutoRetry() AutoRetryWriter
+	// CaptureAutoRetryThroughTurn also admits the captured owner through its
+	// exact inactive publication at completionSeq. Reserve that sequence when
+	// the turn ends, before asynchronous work starts. A newer publication
+	// rejects turn-scoped operations. Keyed cleanup keeps its native-session
+	// lifetime. Zero keeps the strict CaptureAutoRetry turn lifetime.
+	CaptureAutoRetryThroughTurn(completionSeq uint64) AutoRetryWriter
+	// CaptureAutoRetryOperation freezes authority for an operation that the caller
+	// places in the output queue. The operation applies directly without queuing
+	// another effect. The caller must freeze apply's inputs before capture.
+	// A nil apply returns nil.
+	CaptureAutoRetryOperation(completionSeq uint64, apply func(AutoRetryWriter)) func() error
 }
 
 // AutoRetryWriter applies retry operations for one captured provider owner.
@@ -490,11 +511,18 @@ type AutoRetryWriter interface {
 	// ScheduleUsageLimitRetry asks for a retry a jittered moment after the
 	// provider's usage limit resets at resetAt.
 	ScheduleUsageLimitRetry(resetAt time.Time, sourcePayload []byte)
+	// ScheduleUsageLimitRetryWithKey records a native owner's fallback while
+	// the native turn may remain active. Scheduling requires the captured turn.
+	ScheduleUsageLimitRetryWithKey(key string, resetAt time.Time, sourcePayload []byte)
 	// ScheduleServerErrorRetry asks for a retry after the queue's durable
 	// server-error backoff.
 	ScheduleServerErrorRetry(sourcePayload []byte)
 	// CancelUsageLimitRetry removes the pending usage-limit retry.
 	CancelUsageLimitRetry(reason string)
+	// CancelUsageLimitRetryWithKey removes only this key's queued fallback.
+	// Its captured provider and native session must remain current, but its
+	// original turn may have ended or been replaced by a newer turn.
+	CancelUsageLimitRetryWithKey(key, reason string)
 	// CancelServerErrorRetry removes the pending server-error retry and ends
 	// its backoff cycle.
 	CancelServerErrorRetry(reason string)

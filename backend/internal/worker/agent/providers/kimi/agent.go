@@ -61,6 +61,9 @@ type Agent struct {
 	attachedAt time.Time
 	// turnActive is true while the MAIN agent runs a turn, whoever started it.
 	turnActive bool
+	// stopRequested identifies the native turn the user asked to stop. Its
+	// identity also suppresses a quota verdict awaiting its usage read.
+	stopRequested *kimiTurnStop
 	// turnSteerable is true while the running main turn takes a steer: a
 	// tracked prompt started it (kimiOriginTakesSteer).
 	turnSteerable bool

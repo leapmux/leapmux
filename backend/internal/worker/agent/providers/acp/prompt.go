@@ -70,10 +70,10 @@ func (b *Base) sendPreparedPromptForSession(expected *string, content string, at
 		}
 	}
 	err = b.sendOwnedPromptDetachedLocked(sessionID, target, content, attachments, releaseOperation)
-	if err != nil {
+	if err != nil && !errors.Is(err, agent.ErrDeliveryUncertain) {
 		b.finishUnsentPrompt(sessionID)
 	}
-	if err == nil {
+	if err == nil || errors.Is(err, agent.ErrDeliveryUncertain) {
 		transferred = true
 	}
 	return err
@@ -92,21 +92,25 @@ func (b *Base) claimPromptLocked(expected *string) (string, error) {
 	if b.StoppedLocked() {
 		return "", fmt.Errorf("agent is stopped")
 	}
-	if b.promptActive {
+	if b.promptActive || b.clientWork != nil {
 		return "", agent.ErrAgentBusy
 	}
 	b.promptActive = true
+	b.startConversationLocked(false)
 	return b.sessionID, nil
 }
 
 func (b *Base) finishPromptRequest(sessionID string, response json.RawMessage, err error) {
 	b.turnMu.Lock()
 	target := b.promptTarget
+	b.Mu.Lock()
+	conversation := b.promptConversation
+	b.Mu.Unlock()
 	b.turnMu.Unlock()
-	b.finishOwnedPromptRequest(sessionID, target, response, err)
+	b.finishOwnedPromptRequest(sessionID, target, conversation, response, err)
 }
 
-func (b *Base) finishOwnedPromptRequest(sessionID string, target *acpTranscriptTarget, response json.RawMessage, err error) {
+func (b *Base) finishOwnedPromptRequest(sessionID string, target *acpTranscriptTarget, conversation *Conversation, response json.RawMessage, err error) {
 	b.sessionMu.RLock()
 	defer b.sessionMu.RUnlock()
 	b.Mu.Lock()
@@ -115,15 +119,10 @@ func (b *Base) finishOwnedPromptRequest(sessionID string, target *acpTranscriptT
 	if !current {
 		return
 	}
-	b.turnMu.Lock()
-	b.Mu.Lock()
-	ownsPrompt := b.promptTarget == target && !b.promptOutputDrained
-	b.Mu.Unlock()
-	b.turnMu.Unlock()
+	stopped, ownsPrompt := b.finishConversationAdmission(sessionID, target, conversation)
 	if !ownsPrompt {
 		return
 	}
-	stopped := b.IsStopped() || b.acpInterruptRequested()
 	var ending PromptEnding
 	if b.hooks.PromptEnded != nil {
 		ending = b.hooks.PromptEnded(err, stopped)
@@ -133,7 +132,7 @@ func (b *Base) finishOwnedPromptRequest(sessionID string, target *acpTranscriptT
 	b.sessionUpdates.mu.Lock()
 	b.turnMu.Lock()
 	b.Mu.Lock()
-	ownsPrompt = b.promptTarget == target && !b.promptOutputDrained
+	ownsPrompt = b.promptConversation == conversation && b.promptTarget == target && !b.promptOutputDrained
 	b.Mu.Unlock()
 	if !ownsPrompt {
 		b.turnMu.Unlock()
@@ -148,7 +147,10 @@ func (b *Base) finishOwnedPromptRequest(sessionID string, target *acpTranscriptT
 	b.sessionUpdates.mu.Unlock()
 	switch {
 	case err == nil && response != nil:
-		textCompletion, incomplete := b.turnOutputCompletions()
+		textCompletion, incomplete := agent.MessageCompletionComplete, agent.MessageCompletionError
+		if stopped {
+			textCompletion, incomplete = agent.MessageCompletionInterrupted, agent.MessageCompletionInterrupted
+		}
 		b.finishRootSnapshot(turn, textCompletion, incomplete, RootTranscriptPromptEnded, func(writer agent.TranscriptServices, count int) {
 			b.persistPromptResponseTo(writer, response, count, sessionID)
 		})
@@ -160,11 +162,7 @@ func (b *Base) finishOwnedPromptRequest(sessionID string, target *acpTranscriptT
 	if stopped {
 		b.releaseAwaitedTerminals()
 	}
-	verdict := TurnVerdict{}
-	if ending.Retry != nil {
-		verdict = *ending.Retry
-	}
-	b.endTurn(sessionID, verdict)
+	b.endTurn(sessionID, ending.Retry)
 }
 
 // SendPromptDetached keeps validation and the write in the captured root session.
@@ -224,7 +222,7 @@ func (b *Base) sendPromptDetachedLocked(sessionID, content string, attachments [
 			return err
 		}
 	}
-	return b.SendDetachedRequest(MethodSessionPrompt, params, handle)
+	return b.SendDetachedRequestWithUncertainDelivery(MethodSessionPrompt, params, handle)
 }
 
 // preparePromptBlocks keeps the provider's validation on the original bytes.
@@ -269,7 +267,7 @@ func (b *Base) SendChildPromptDetached(target ChildSessionTarget, content string
 	if err != nil {
 		return fmt.Errorf("marshal ACP prompt params: %w", err)
 	}
-	return b.SendDetachedRequest(MethodSessionPrompt, params, handle)
+	return b.SendDetachedRequestWithUncertainDelivery(MethodSessionPrompt, params, handle)
 }
 
 func (a *Base) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {

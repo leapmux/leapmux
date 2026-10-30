@@ -98,9 +98,10 @@ func (a *Agent) finishFastagentPrompt(err error, stopped bool) acp.PromptEnding 
 	ending := a.retryChildArchives(err, stopped)
 	a.Mu.Lock()
 	text, raw := a.lastChunkText, a.lastChunkRaw
+	a.lastChunkText, a.lastChunkRaw = "", nil
 	a.Mu.Unlock()
 	verdict := fastagentTurnFailure(err, stopped, text, raw, a.agentClock().Now())
-	ending.Retry = &verdict
+	ending.Retry = verdict
 	return ending
 }
 
@@ -128,7 +129,7 @@ func fastagentTurnFailure(err error, stopped bool, text string, raw json.RawMess
 	payload := responseErr.WireJSON()
 	switch responseErr.Code {
 	case fastagentInternalErrorCode:
-		return acp.TurnVerdict{Failure: fastagentInternalFailure(fastagentErrorDetails(responseErr.Data), observedAt), Payload: payload}
+		return acp.TurnVerdict{Failure: fastagentInternalFailure(responseErr.Data, observedAt), Payload: payload}
 	case fastagentGoogleErrorCode:
 		return acp.TurnVerdict{Failure: fastagentGoogleFailure(responseErr.Data, observedAt), Payload: payload}
 	}
@@ -169,9 +170,19 @@ func fastagentTransportFailure(tail string) bool {
 	return false
 }
 
-// fastagentInternalFailure classifies the details of a -32603 failure.
-func fastagentInternalFailure(details string, observedAt time.Time) providerkit.TurnFailure {
-	verdict, vendorDecided := modelvendor.ClassifyError(details, observedAt)
+// fastagentInternalFailure reads both the plain exception text and its decoded
+// JSON. The plain text supplies anchored transport evidence; the full object
+// preserves vendor fields beside details.
+func fastagentInternalFailure(data json.RawMessage, observedAt time.Time) providerkit.TurnFailure {
+	details := providerkit.StringField(data, "details")
+	if details == "" {
+		details, _ = providerkit.RawString(data)
+	}
+	texts := []string{details}
+	if json.Valid(data) {
+		texts = append(texts, string(data))
+	}
+	verdict, vendorDecided := modelvendor.ClassifyErrors(texts, observedAt)
 	switch {
 	case vendorDecided && verdict.Definitive:
 		return verdict.Failure
@@ -200,14 +211,4 @@ func fastagentGoogleFailure(data json.RawMessage, observedAt time.Time) provider
 		return providerkit.TurnFailure{Kind: providerkit.TurnFailureRateLimited, Cause: "Google reported a 429"}
 	}
 	return providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable}
-}
-
-// fastagentErrorDetails reads str(exc) of a -32603 failure: data.details, or
-// data itself when fast-agent sent the text as a bare string.
-func fastagentErrorDetails(data json.RawMessage) string {
-	if details := providerkit.StringField(data, "details"); details != "" {
-		return details
-	}
-	text, _ := providerkit.RawString(data)
-	return text
 }

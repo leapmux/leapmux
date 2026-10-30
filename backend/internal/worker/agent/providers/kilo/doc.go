@@ -1,3 +1,2 @@
-// Package kilo implements the Kilo provider. Kilo is a fork of OpenCode, so the
-// provider builds on the OpenCode family base of package opencode.
+// Package kilo implements Kilo ACP session control and its native HTTP protocol.
 package kilo

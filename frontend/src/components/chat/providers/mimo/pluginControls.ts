@@ -3,7 +3,7 @@ import { buildDenyResponse } from '~/utils/controlResponse'
 
 import { withElicitationResponse } from '../../controls/elicitationResponse'
 import { sendSelectedOptionResponse } from '../../controls/types'
-import { extractOpenCodeQuestions, sendOpenCodeQuestionRejectResponse, sendOpenCodeQuestionResponse } from '../openCodeQuestions'
+import { extractNativeQuestions, sendNativeQuestionRejectResponse, sendNativeQuestionResponse } from '../nativeQuestions'
 import { mimoIsQuestionRequest } from './askUserQuestion'
 import { mimoControlResponseSummary } from './controlResponse'
 import { mimoElicitation } from './elicitation'
@@ -18,11 +18,11 @@ export const mimoControls: ProviderControlCapability = {
   // MiMo uses OpenCode's question tool. The shared OpenCode question protocol reads and answers it.
   askUserQuestion: {
     isRequest: mimoIsQuestionRequest,
-    extractQuestions: extractOpenCodeQuestions,
+    extractQuestions: extractNativeQuestions,
     sendAnswer: (request, sendControlResponse, questions, answerState) =>
-      sendOpenCodeQuestionResponse(sendControlResponse, request.requestId, questions, answerState),
+      sendNativeQuestionResponse(sendControlResponse, request.requestId, questions, answerState),
     sendReject: (request, sendControlResponse) =>
-      sendOpenCodeQuestionRejectResponse(sendControlResponse, request.requestId),
+      sendNativeQuestionRejectResponse(sendControlResponse, request.requestId),
   },
   elicitation: mimoElicitation,
   // The composer sends a rejection, with the typed words as the reason. A plan the

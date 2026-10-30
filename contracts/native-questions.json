@@ -1,0 +1,12 @@
+{
+  "_readme": "Native question events and answer fields shared by current Kilo and MiMo integrations. HTTP routes remain provider-owned. Go struct tags are checked against answerFields by provider tests.",
+  "events": {
+    "QuestionAsked": "question.asked",
+    "QuestionReplied": "question.replied",
+    "QuestionRejected": "question.rejected"
+  },
+  "answerFields": {
+    "Answers": "answers",
+    "Rejected": "rejected"
+  }
+}

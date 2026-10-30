@@ -27,10 +27,9 @@ const (
 	// that Gemini appended. A long retry wait lasts hours, so a second of
 	// delay before the stop costs nothing.
 	geminiDebugLogPollInterval = time.Second
-	// geminiDebugLogMaxSize caps the debug log. The follower empties the file
-	// once it has read this much, so the log of a long session takes no disk
-	// space beyond the cap.
-	geminiDebugLogMaxSize = 4 << 20
+	// geminiDebugLogMaxReadBytes caps the bytes read in one poll. The writer keeps
+	// its file open, so truncating an active log could discard an unread append.
+	geminiDebugLogMaxReadBytes = 4 << 20
 	// geminiDebugLogMaxLine caps one line that the follower delivers. A line
 	// that grows past it without an end is dropped.
 	geminiDebugLogMaxLine = 64 << 10
@@ -47,6 +46,15 @@ type geminiDebugLog struct {
 	closed bool
 	cancel context.CancelFunc
 	done   chan struct{}
+	readMu sync.Mutex
+	offset int64
+	lines  geminiDebugLineReader
+	epoch  uint64
+}
+
+type geminiDebugLogLine struct {
+	text  string
+	epoch uint64
 }
 
 // newGeminiDebugLog creates the private directory of one debug log.
@@ -68,7 +76,7 @@ func (l *geminiDebugLog) env() string {
 // line ending. observe runs on the follower's goroutine. A line reaches
 // observe once Gemini ends it. follow does nothing after close or a second
 // time.
-func (l *geminiDebugLog) follow(clock quartz.Clock, observe func(line string)) {
+func (l *geminiDebugLog) follow(clock quartz.Clock, observe func(geminiDebugLogLine)) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.closed || l.cancel != nil {
@@ -81,76 +89,111 @@ func (l *geminiDebugLog) follow(clock quartz.Clock, observe func(line string)) {
 	go func() {
 		defer close(done)
 		defer ticker.Stop()
-		var offset int64
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				offset = l.readFrom(offset, observe)
+				l.poll(observe)
 			}
 		}
 	}()
 }
 
-// readFrom delivers the complete lines after offset and returns the offset
-// after the last of them. An unfinished line waits for the next read. Once the
-// follower has read geminiDebugLogMaxSize, it empties the file and reads it
-// from its start again. Gemini appends to the file, so its next line lands at
-// the new end. A line that Gemini appends between the read and the emptying
-// is lost.
-func (l *geminiDebugLog) readFrom(offset int64, observe func(line string)) int64 {
+// poll reads a snapshot of the appended bytes in fixed-size chunks. Delivery
+// runs after readMu releases, so an observer can reset the idle log safely.
+func (l *geminiDebugLog) poll(observe func(geminiDebugLogLine)) {
+	lines := l.readLines()
+	for _, line := range lines {
+		observe(line)
+	}
+}
+
+func (l *geminiDebugLog) readLines() []geminiDebugLogLine {
+	l.readMu.Lock()
+	defer l.readMu.Unlock()
 	file, err := os.Open(l.path)
 	if err != nil {
 		// Gemini creates the file at its first message.
-		return offset
+		return nil
 	}
 	// The file is open for reading only, so its close states nothing.
 	defer func() { _ = file.Close() }()
-	if info, err := file.Stat(); err != nil {
-		return offset
-	} else if info.Size() < offset {
-		offset = 0
-	}
-	if _, err := file.Seek(offset, io.SeekStart); err != nil {
-		return offset
-	}
-	// One poll interval of debug output is small, so the read takes the rest of
-	// the file. An emptying then loses no line that Gemini wrote before it.
-	data, err := io.ReadAll(file)
+	info, err := file.Stat()
 	if err != nil {
-		return offset
+		return nil
 	}
-	offset += int64(deliverGeminiDebugLogLines(data, observe))
-	if offset >= geminiDebugLogMaxSize {
-		if err := os.Truncate(l.path, 0); err != nil {
-			slog.Warn("empty the Gemini debug log", "path", l.path, "error", err)
-			return offset
+	if info.Size() < l.offset {
+		l.offset, l.lines = 0, geminiDebugLineReader{}
+		l.epoch++
+	}
+	if _, err := file.Seek(l.offset, io.SeekStart); err != nil {
+		return nil
+	}
+	remaining := min(info.Size()-l.offset, int64(geminiDebugLogMaxReadBytes))
+	var lines []geminiDebugLogLine
+	var buffer [32 << 10]byte
+	for remaining > 0 {
+		count, err := file.Read(buffer[:min(int64(len(buffer)), remaining)])
+		if count > 0 {
+			l.offset += int64(count)
+			remaining -= int64(count)
+			l.lines.feed(buffer[:count], func(line string) { lines = append(lines, geminiDebugLogLine{text: line, epoch: l.epoch}) })
 		}
-		offset = 0
-	}
-	return offset
-}
-
-// deliverGeminiDebugLogLines passes each complete line of data to observe, and
-// returns how many bytes it consumed. It keeps an unfinished line for the next
-// read, unless the line already passed geminiDebugLogMaxLine, which it drops.
-func deliverGeminiDebugLogLines(data []byte, observe func(line string)) int {
-	consumed := 0
-	for {
-		end := bytes.IndexByte(data[consumed:], '\n')
-		if end < 0 {
+		if err != nil || count == 0 {
 			break
 		}
-		if line := data[consumed : consumed+end]; len(line) <= geminiDebugLogMaxLine {
-			observe(string(bytes.TrimSuffix(line, []byte{'\r'})))
+	}
+	return lines
+}
+
+// preparePrompt runs before native dispatch. It discards idle output and advances the delivery
+// epoch, so an already collected batch cannot acquire the next prompt.
+func (l *geminiDebugLog) preparePrompt() uint64 {
+	l.readMu.Lock()
+	defer l.readMu.Unlock()
+	l.offset, l.lines = 0, geminiDebugLineReader{}
+	l.epoch++
+	if err := os.Truncate(l.path, 0); err != nil && !os.IsNotExist(err) {
+		// A failed trim must not replay the previous prompt's unread bytes.
+		if info, statErr := os.Stat(l.path); statErr == nil {
+			l.offset = info.Size()
 		}
-		consumed += end + 1
+		slog.Warn("empty the idle Gemini debug log", "path", l.path, "error", err)
 	}
-	if len(data)-consumed > geminiDebugLogMaxLine {
-		consumed = len(data)
+	return l.epoch
+}
+
+type geminiDebugLineReader struct {
+	pending    []byte
+	discarding bool
+}
+
+// feed retains at most one limited unfinished line. Once a line exceeds the
+// limit, its entire suffix stays discarded through the next newline.
+func (reader *geminiDebugLineReader) feed(data []byte, observe func(string)) {
+	for len(data) > 0 {
+		end := bytes.IndexByte(data, '\n')
+		segment := data
+		if end >= 0 {
+			segment = data[:end]
+		}
+		if !reader.discarding {
+			if len(reader.pending)+len(segment) > geminiDebugLogMaxLine {
+				reader.pending, reader.discarding = nil, true
+			} else {
+				reader.pending = append(reader.pending, segment...)
+			}
+		}
+		if end < 0 {
+			return
+		}
+		if !reader.discarding {
+			observe(string(bytes.TrimSuffix(reader.pending, []byte{'\r'})))
+		}
+		reader.pending, reader.discarding = reader.pending[:0], false
+		data = data[end+1:]
 	}
-	return consumed
 }
 
 // close stops the follower, waits for its last delivery, and removes the

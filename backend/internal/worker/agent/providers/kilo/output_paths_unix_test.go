@@ -5,13 +5,13 @@ package kilo
 import (
 	"testing"
 
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode/opencodetest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/kilo/kilotest"
 )
 
 func TestKiloNativeOutputPathPreservesPreviewWithoutSavedText(t *testing.T) {
-	opencodetest.AssertNativeOutputPathDoesNotSaveText(t, "kilo", Start)
+	kilotest.AssertNativeOutputPathDoesNotSaveText(t, "kilo", Start)
 }
 
 func TestHelperProcessCompleteToolOutputFile(*testing.T) {
-	opencodetest.ServeCompleteToolOutputFileRPC()
+	kilotest.ServeCompleteToolOutputFileRPC()
 }

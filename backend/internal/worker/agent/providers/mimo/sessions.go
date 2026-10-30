@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/opencodestore"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode/opencodestore"
 )
 
 // MiMo Code is a fork of OpenCode, and its session database keeps OpenCode's

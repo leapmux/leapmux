@@ -25,17 +25,7 @@ type codebuddyErrorInfo struct {
 // numericCode returns the business code, and false when the entry states no
 // numeric code. An absent code is not the quota code 0.
 func (info *codebuddyErrorInfo) numericCode() (int64, bool) {
-	code, err := strconv.ParseInt(string(info.Code), 10, 64)
-	return code, err == nil
-}
-
-// stringCode returns the code when the entry states it as a string.
-func (info *codebuddyErrorInfo) stringCode() string {
-	var code string
-	if json.Unmarshal(info.Code, &code) != nil {
-		return ""
-	}
-	return code
+	return providerkit.RawInt64(info.Code)
 }
 
 // The categories that CodeBuddy derives from a status when the error states
@@ -150,23 +140,10 @@ func codebuddyVendorVerdict(result resultMessage, info *codebuddyErrorInfo, obse
 		texts = append(texts, result.Errors[0])
 	}
 	if info != nil {
-		texts = append(texts, info.Details, info.stringCode())
+		code, _ := providerkit.RawString(info.Code)
+		texts = append(texts, info.Details, code)
 	}
-	var indicative modelvendor.Verdict
-	found := false
-	for _, text := range texts {
-		verdict, ok := modelvendor.ClassifyError(text, observedAt)
-		if !ok {
-			continue
-		}
-		if verdict.Definitive {
-			return verdict, true
-		}
-		if !found {
-			indicative, found = verdict, true
-		}
-	}
-	return indicative, found
+	return modelvendor.ClassifyErrors(texts, observedAt)
 }
 
 // firstErrorInfo returns the first entry of errors_info that is not null, as

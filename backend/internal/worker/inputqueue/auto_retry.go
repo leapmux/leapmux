@@ -9,6 +9,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"slices"
+	"strings"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -72,6 +73,16 @@ func validateSchedule(kind leapmuxv1.AgentInputKind, sourcePayload []byte, attac
 	}
 	if len(sourcePayload) != 0 {
 		return fmt.Errorf("%w: only an automatic retry carries a source payload", ErrInvalidInput)
+	}
+	return nil
+}
+
+func validateAutoRetryKey(kind leapmuxv1.AgentInputKind, key string) error {
+	if key == "" {
+		return nil
+	}
+	if !IsAutoRetryKind(kind) || strings.TrimSpace(key) == "" || !validateIdentity(key) {
+		return fmt.Errorf("%w: automatic retry key is invalid", ErrInvalidInput)
 	}
 	return nil
 }
@@ -148,7 +159,10 @@ func (m *Manager) ScheduleAutoRetry(ctx context.Context, agentID string, schedul
 		var snapshot Snapshot
 		var err error
 		snapshot, scheduled, err = m.store.scheduleAutoRetry(ctx, agentID, schedule)
-		return snapshot, true, err
+		if err == nil && scheduled.applied {
+			m.enqueueScheduledAutoRetryLocked(agentID, scheduled)
+		}
+		return snapshot, scheduled.applied, err
 	})
 	if errors.Is(err, errProviderOwnerReplaced) {
 		logIgnoredAutoRetryRequest(agentID, "schedule", schedule.Kind)
@@ -157,7 +171,9 @@ func (m *Manager) ScheduleAutoRetry(ctx context.Context, agentID string, schedul
 	if err != nil {
 		return err
 	}
-	logScheduledAutoRetry(agentID, scheduled)
+	if !scheduled.applied {
+		return nil
+	}
 	// A schedule whose deadline already passed (a provider reset instant in
 	// the past) joins the immediate group and may dispatch at once.
 	m.drainIfReleased(agentID, snapshot)
@@ -174,6 +190,9 @@ func (m *Manager) CancelAutoRetry(ctx context.Context, agentID string, kind leap
 		var snapshot Snapshot
 		var err error
 		snapshot, removed, err = m.store.cancelAutoRetries(ctx, agentID, kind)
+		if err == nil {
+			m.enqueueRemovedAutoRetriesLocked(agentID, reason, removed)
+		}
 		return snapshot, len(removed) > 0, err
 	})
 	if errors.Is(err, errProviderOwnerReplaced) {
@@ -183,8 +202,33 @@ func (m *Manager) CancelAutoRetry(ctx context.Context, agentID string, kind leap
 	if err != nil {
 		return err
 	}
-	logRemovedAutoRetries(agentID, reason, removed)
 	m.drainIfReleased(agentID, snapshot)
+	return nil
+}
+
+// CancelUsageLimitRetryWithKey removes the queued fallback of one native
+// owner. A different owner or explicit user intent remains untouched.
+func (m *Manager) CancelUsageLimitRetryWithKey(ctx context.Context, agentID, key, reason string, admission agent.AutoRetryAdmission) error {
+	var removed []autoRetryRow
+	snapshot, err := m.mutateAdmitted(agentID, admission, func() (Snapshot, bool, error) {
+		var snapshot Snapshot
+		var err error
+		snapshot, removed, err = m.store.cancelUsageRetryWithKey(ctx, agentID, key)
+		if err == nil {
+			m.enqueueRemovedAutoRetriesLocked(agentID, reason, removed)
+		}
+		return snapshot, len(removed) > 0, err
+	})
+	if errors.Is(err, errProviderOwnerReplaced) {
+		logIgnoredAutoRetryRequest(agentID, "cancel keyed usage retry", leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if len(removed) > 0 {
+		m.drainIfReleased(agentID, snapshot)
+	}
 	return nil
 }
 
@@ -200,12 +244,14 @@ func (m *Manager) CancelAutoRetries(ctx context.Context, agentID string, reason 
 		var snapshot Snapshot
 		var err error
 		snapshot, removed, err = m.store.cancelAutoRetries(ctx, agentID, autoRetryKinds...)
+		if err == nil {
+			m.enqueueRemovedAutoRetriesLocked(agentID, reason, removed)
+		}
 		return snapshot, len(removed) > 0, err
 	})
 	if err != nil {
 		return err
 	}
-	logRemovedAutoRetries(agentID, reason, removed)
 	return nil
 }
 
@@ -230,16 +276,17 @@ const (
 	autoRetryReasonUserDeleted = "the user deleted the retry"
 )
 
-// autoRetryRow is what the log states about one automatic-retry row.
+// autoRetryRow carries the metadata for retry logs and conditional cancellation.
 type autoRetryRow struct {
 	id          string
 	kind        leapmuxv1.AgentInputKind
 	state       leapmuxv1.AgentInputState
 	scheduledAt *time.Time
+	key         string
 }
 
 func autoRetryRowOf(item StoredItem) autoRetryRow {
-	return autoRetryRow{id: item.ID, kind: item.Kind, state: item.State, scheduledAt: item.ScheduledAt}
+	return autoRetryRow{id: item.ID, kind: item.Kind, state: item.State, scheduledAt: item.ScheduledAt, key: item.AutoRetryKey}
 }
 
 // scheduledAutoRetry states what one schedule did to the pending row of its
@@ -249,6 +296,7 @@ func autoRetryRowOf(item StoredItem) autoRetryRow {
 // replaced: nil for a new row, and for a pending row whose edit cleared its
 // schedule.
 type scheduledAutoRetry struct {
+	applied             bool
 	row                 autoRetryRow
 	rescheduled         bool
 	previousScheduledAt *time.Time
@@ -259,20 +307,25 @@ type scheduledAutoRetry struct {
 // process restart replaces it. The queue changes nothing for such a request.
 var errProviderOwnerReplaced = errors.New("the provider owner that asked was replaced")
 
-func logScheduledAutoRetry(agentID string, scheduled scheduledAutoRetry) {
+// enqueueScheduledAutoRetryLocked retains the log before its snapshot can
+// reach an observer. The caller holds this agent's coordinator lock.
+// The coordinator inventory never removes or replaces an entry.
+func (m *Manager) enqueueScheduledAutoRetryLocked(agentID string, scheduled scheduledAutoRetry) {
 	attributes := []any{"agent_id", agentID, "kind", scheduled.row.kind.String(), "input_id", scheduled.row.id,
 		"scheduled_at", formatAutoRetryDeadline(scheduled.row.scheduledAt)}
 	if !scheduled.rescheduled {
-		slog.Info("automatic retry scheduled", attributes...)
+		m.enqueueLogLocked(m.coordinator(agentID), slog.LevelInfo, "automatic retry scheduled", attributes...)
 		return
 	}
-	slog.Info("automatic retry rescheduled",
+	m.enqueueLogLocked(m.coordinator(agentID), slog.LevelInfo, "automatic retry rescheduled",
 		append(attributes, "previous_scheduled_at", formatAutoRetryDeadline(scheduled.previousScheduledAt))...)
 }
 
-func logRemovedAutoRetries(agentID, reason string, removed []autoRetryRow) {
+// enqueueRemovedAutoRetriesLocked retains removals in commit order. The caller
+// holds this agent's coordinator lock, as enqueueScheduledAutoRetryLocked does.
+func (m *Manager) enqueueRemovedAutoRetriesLocked(agentID, reason string, removed []autoRetryRow) {
 	for _, row := range removed {
-		slog.Info("automatic retry removed", "agent_id", agentID, "kind", row.kind.String(), "input_id", row.id,
+		m.enqueueLogLocked(m.coordinator(agentID), slog.LevelInfo, "automatic retry removed", "agent_id", agentID, "kind", row.kind.String(), "input_id", row.id,
 			"state", row.state.String(), "scheduled_at", formatAutoRetryDeadline(row.scheduledAt), "reason", reason)
 	}
 }

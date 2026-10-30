@@ -679,9 +679,9 @@ func (q *openCodeQuestions) handleEvent(ctx context.Context, data []byte) {
 		return
 	}
 	switch event.Type {
-	case contracts.OpenCodeEventQuestionAsked:
+	case contracts.NativeQuestionEventQuestionAsked:
 		q.publish(ctx, event.Properties)
-	case contracts.OpenCodeEventQuestionReplied, contracts.OpenCodeEventQuestionRejected:
+	case contracts.NativeQuestionEventQuestionReplied, contracts.NativeQuestionEventQuestionRejected:
 		// Answered somewhere else -- another client of the same daemon, or LeapMux
 		// itself. Either way the card is stale now.
 		q.withdraw(event.Properties)
@@ -789,7 +789,7 @@ func (q *openCodeQuestions) publish(ctx context.Context, properties json.RawMess
 	payload, err := json.Marshal(struct {
 		Type       string          `json:"type"`
 		Properties json.RawMessage `json:"properties"`
-	}{Type: contracts.OpenCodeEventQuestionAsked, Properties: properties})
+	}{Type: contracts.NativeQuestionEventQuestionAsked, Properties: properties})
 	if err != nil {
 		slog.Error("Build an OpenCode question payload", "agent_id", q.agentID, "error", err)
 		return ""
@@ -905,7 +905,7 @@ func (q *openCodeQuestions) answer(ctx context.Context, raw []byte) (bool, error
 //
 // A Go struct tag cannot hold a constant, so the two field names are literals here
 // and TestOpenCodeAnswerTagsMatchTheContract pins them to
-// contracts/opencode-protocol.json, which the browser reads the same names from. A
+// contracts/native-questions.json, which the browser reads the same names from. A
 // rename on one side alone used to leave `Answers` nil, so `reply` never ran and the
 // daemon's question tool blocked for the rest of the session with nothing logged.
 type openCodeAnswerResult struct {

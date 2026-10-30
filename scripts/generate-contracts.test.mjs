@@ -1842,6 +1842,7 @@ describe('generate', () => {
       'backend/generated/contracts/captcha.go',
       'backend/generated/contracts/chat-history.go',
       'backend/generated/contracts/claude-protocol.go',
+      'backend/generated/contracts/client-approval.go',
       'backend/generated/contracts/cline-protocol.go',
       'backend/generated/contracts/codebuddy-protocol.go',
       'backend/generated/contracts/codewhale-protocol.go',
@@ -1862,6 +1863,7 @@ describe('generate', () => {
       'backend/generated/contracts/grok-protocol.go',
       'backend/generated/contracts/headers.go',
       'backend/generated/contracts/junie-protocol.go',
+      'backend/generated/contracts/kilo-protocol.go',
       'backend/generated/contracts/kimi-protocol.go',
       'backend/generated/contracts/kiro-protocol.go',
       'backend/generated/contracts/letta-protocol.go',
@@ -1869,6 +1871,7 @@ describe('generate', () => {
       'backend/generated/contracts/mcp-elicitation.go',
       'backend/generated/contracts/mimo-protocol.go',
       'backend/generated/contracts/muse-protocol.go',
+      'backend/generated/contracts/native-questions.go',
       'backend/generated/contracts/ohmypi-protocol.go',
       'backend/generated/contracts/opencode-protocol.go',
       'backend/generated/contracts/pi-protocol.go',
@@ -1897,6 +1900,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/captcha.ts',
       'frontend/src/generated/contracts/chat-history.ts',
       'frontend/src/generated/contracts/claude-protocol.ts',
+      'frontend/src/generated/contracts/client-approval.ts',
       'frontend/src/generated/contracts/cline-protocol.ts',
       'frontend/src/generated/contracts/codebuddy-protocol.ts',
       'frontend/src/generated/contracts/codewhale-protocol.ts',
@@ -1917,6 +1921,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/grok-protocol.ts',
       'frontend/src/generated/contracts/headers.ts',
       'frontend/src/generated/contracts/junie-protocol.ts',
+      'frontend/src/generated/contracts/kilo-protocol.ts',
       'frontend/src/generated/contracts/kimi-protocol.ts',
       'frontend/src/generated/contracts/kiro-protocol.ts',
       'frontend/src/generated/contracts/letta-protocol.ts',
@@ -1924,6 +1929,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/mcp-elicitation.ts',
       'frontend/src/generated/contracts/mimo-protocol.ts',
       'frontend/src/generated/contracts/muse-protocol.ts',
+      'frontend/src/generated/contracts/native-questions.ts',
       'frontend/src/generated/contracts/ohmypi-protocol.ts',
       'frontend/src/generated/contracts/opencode-protocol.ts',
       'frontend/src/generated/contracts/pi-protocol.ts',
@@ -2064,7 +2070,7 @@ describe('generate', () => {
     expect(kinds).toContain('{ literal: "session.idle", match: "name", source: "copilot-protocol events" },')
     expect(kinds).toContain('{ literal: "session.canvas.", match: "prefix", source: "copilot-protocol eventPrefixes" },')
     expect(kinds).toContain('{ literal: "compact_boundary", match: "name", source: "claude-protocol systemSubtypes" },')
-    expect(kinds).toContain('{ literal: "question.asked", match: "name", source: "opencode-protocol events" },')
+    expect(kinds).toContain('{ literal: "question.asked", match: "name", source: "native-questions events" },')
     // A tool name is not a frame kind, so the Copilot tool table stays out.
     expect(kinds).not.toContain('source: "copilot-protocol tools"')
   })

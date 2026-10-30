@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -187,17 +189,79 @@ func TestKeyedChildTurnEndReplayKeepsTheNativeResultAndOneCompletion(t *testing.
 
 func TestKeyedNativeTurnEndReplaySurvivesSinkReplacementAndKeepsSessionsSeparate(t *testing.T) {
 	t.Parallel()
+	ctx := testutil.DeadlineContext(t)
 	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
-	writer := &testResponseWriter{channelID: "native-durable-turn-replay"}
+	firstDelivered, secondDelivered := make(chan struct{}), make(chan struct{})
+	blocked, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce, blockOnce sync.Once
+	releaseWatcher := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseWatcher()
+	var delivered atomic.Int32
+	var armed atomic.Bool
+	writer := &turnAdmissionWatchingWriter{testResponseWriter: &testResponseWriter{channelID: "native-durable-turn-replay"}, onEvent: func(event *leapmuxv1.AgentEvent) {
+		if event.GetTurnEnd() != nil {
+			switch delivered.Add(1) {
+			case 1:
+				close(firstDelivered)
+			case 2:
+				close(secondDelivered)
+			}
+		}
+		if status := event.GetStatusChange(); armed.Load() && status != nil && status.Status == leapmuxv1.AgentStatus_AGENT_STATUS_STARTING {
+			blockOnce.Do(func() { close(blocked) })
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		}
+	}}
 	registerAgentWatch(svc, writer.channelID, ownerID, leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
 	sink.UpdateSessionID("native-session-a")
 	content := agent.MessageContent{Original: []byte(`{"type":"result"}`), AgentSessionID: "native-session-a", IdempotencyKey: "native-turn:0"}
 	require.NoError(t, sink.PersistTurnEnd(content, agent.SpanInfo{}))
+	select {
+	case <-firstDelivered:
+	case <-ctx.Done():
+		t.Fatal("session A's completion was not delivered")
+	}
+	// Force another drainer to own watcher delivery while B commits. Persistence
+	// returns after enqueueing, even when a concurrent watcher send is blocked.
+	armed.Store(true)
+	statusDone := make(chan struct{})
+	go func() {
+		defer close(statusDone)
+		svc.Watchers.BroadcastAgentEvent(ownerID, &leapmuxv1.AgentEvent{AgentId: ownerID, Event: &leapmuxv1.AgentEvent_StatusChange{StatusChange: &leapmuxv1.AgentStatusChange{AgentId: ownerID, Status: leapmuxv1.AgentStatus_AGENT_STATUS_STARTING}}})
+	}()
+	select {
+	case <-blocked:
+	case <-ctx.Done():
+		t.Fatal("the watcher drainer did not reach the held status event")
+	}
 	replacement := newTestRootOutputSink(t, svc.Output, ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	require.NoError(t, replacement.PersistTurnEnd(content, agent.SpanInfo{}))
 	content.AgentSessionID = "native-session-b"
 	replacement.UpdateSessionID(content.AgentSessionID)
 	require.NoError(t, replacement.PersistTurnEnd(content, agent.SpanInfo{}))
+	assert.Equal(t, int32(1), delivered.Load(), "B's durable completion waits behind the active watcher drainer")
+	rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: ownerID})
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	for _, sessionID := range []string{"native-session-a", "native-session-b"} {
+		stored, err := svc.Queries.HasAgentTurnEnd(ctx, db.HasAgentTurnEndParams{AgentID: ownerID, AgentSessionID: sessionID, IdempotencyKey: content.IdempotencyKey})
+		require.NoError(t, err)
+		assert.True(t, stored)
+	}
+	releaseWatcher()
+	select {
+	case <-secondDelivered:
+	case <-ctx.Done():
+		t.Fatal("session B's completion was not delivered after the watcher resumed")
+	}
+	select {
+	case <-statusDone:
+	case <-ctx.Done():
+		t.Fatal("the status broadcaster did not finish")
+	}
 	var turns int
 	for _, stream := range writer.streamsSnapshot() {
 		if decodeWatchAgentEvent(t, stream).GetTurnEnd() != nil {
@@ -205,9 +269,6 @@ func TestKeyedNativeTurnEndReplaySurvivesSinkReplacementAndKeepsSessionsSeparate
 		}
 	}
 	assert.Equal(t, 2, turns)
-	rows, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: ownerID})
-	require.NoError(t, err)
-	assert.Len(t, rows, 2)
 }
 
 func TestFailedNativeTurnEndClaimPublishesNoCompletionAndAcceptsTheNextValidAttempt(t *testing.T) {

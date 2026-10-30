@@ -136,7 +136,7 @@ describe('openCodeToolCallAdapterFor subagent launches', () => {
 // `question` tool: an ordinary tool call whose `rawInput` carries the questions.
 // It is NOT the `question.asked` control payload the frontend's own OpenCode
 // control surface expects, and nothing over ACP answers it -- see the constant's
-// own note in `toolPresentation.ts`.
+// own note in the native question control payload.
 const KILO_QUESTION_INPUT = {
   questions: [
     {
@@ -1104,5 +1104,26 @@ describe('openCodeToolCallAdapterFor refused calls', () => {
     const feedback = 'The user rejected permission to use this specific tool call with the following feedback: Keep it.'
     expect(acpToolCall(failedQuestion({ error: feedback }), openCodeToolCallAdapterFor({ refusals: OPENCODE_REFUSED_TOOL_ERRORS }), undefined).status).toBe('declined')
     expect(acpToolCall(failedQuestion({ error: `question: ${feedback}` }), openCodeToolCallAdapterFor({ refusals: OPENCODE_REFUSED_TOOL_ERRORS }), undefined).status).toBe('failed')
+  })
+})
+
+describe('openCodeToolCallAdapterFor provider vocabulary', () => {
+  // OpenCode runs a different tool set behind the same wire format, so its rows must
+  // not take Kilo's names.
+  it('leaves an OpenCode row alone', () => {
+    const call = acpToolCall(
+      {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'oc-tool',
+        status: 'pending',
+        kind: 'other',
+        title: 'semantic_search',
+      },
+      openCodeToolCallAdapterFor({ refusals: OPENCODE_REFUSED_TOOL_ERRORS }),
+      undefined,
+    )
+    // The shared build narrows the protocol's own `other` to the kind of the card it
+    // draws. Kilo's table would have said `search`; OpenCode has no such tool.
+    expect(call.kind).toBe('mcp')
   })
 })

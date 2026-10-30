@@ -34,7 +34,7 @@ type outstandingControlRequest struct {
 	wireID           json.RawMessage
 	cancelAnswer     any
 	approveAnswer    any
-	pending          bool // A standing approval owns the response until delivery finishes.
+	response         *controlResponseClaim
 	retired          bool // A withdrawal or standing approval retired this instance.
 	published        bool // The sink accepted this publication.
 	publicationErr   error
@@ -143,7 +143,7 @@ func (b *JSONRPCProcess) publishRegisteredControl(sink agent.ControlServices, re
 	record.payload = nil
 	record.publicationErr = err
 	record.published = err == nil
-	ownsFailure := err != nil && b.outstandingControls[requestID] == record && !record.pending
+	ownsFailure := err != nil && b.outstandingControls[requestID] == record && record.response == nil
 	if ownsFailure {
 		delete(b.outstandingControls, requestID)
 	}
@@ -178,7 +178,6 @@ func (b *JSONRPCProcess) WithdrawControlRequest(sink agent.ControlServices, requ
 		record.retired = true
 	}
 	delete(b.outstandingControls, requestID)
-	b.withdrawGeneration++
 	b.outstandingMu.Unlock()
 	if record != nil {
 		sink.CancelControlRequestInstance(requestID, record.instanceID)
@@ -194,9 +193,9 @@ func (b *JSONRPCProcess) WithdrawControlRequest(sink agent.ControlServices, requ
 // It differs from WithdrawControlRequest in one precondition: the request must
 // still be REGISTERED. A provider that learns of a withdrawal from a broad event --
 // Grok Build states that an interaction resolved, whoever resolved it -- cannot
-// tell that event from the echo of an answer the reader already sent. That answer
-// removed the record in SendRawInput, so a withdrawal keyed on the record alone
-// never cancels a card the reader just decided.
+// tell that event from the echo of an answer the reader already sent. A user
+// response retains its claim through delivery. A conditional withdrawal during
+// that claim cancels the card only if delivery definitely failed.
 func (b *JSONRPCProcess) WithdrawOutstandingControlRequest(sink agent.ControlServices, requestID string) bool {
 	return b.withdrawControlPublication(sink, requestID, nil)
 }
@@ -224,9 +223,13 @@ func (b *JSONRPCProcess) withdrawControlPublication(sink agent.ControlServices, 
 		b.outstandingMu.Unlock()
 		return false
 	}
-	record.retired = true
 	delete(b.outstandingControls, requestID)
-	b.withdrawGeneration++
+	if record.response != nil && record.response.owner == controlResponseUser {
+		record.response.withdrawalSink = sink
+		b.outstandingMu.Unlock()
+		return false
+	}
+	record.retired = true
 	b.outstandingMu.Unlock()
 	sink.CancelControlRequestInstance(requestID, record.instanceID)
 	return true
@@ -240,16 +243,20 @@ func (b *JSONRPCProcess) withdrawControlPublication(sink agent.ControlServices, 
 // rest of the session and the thinking indicator never stopped.
 func (b *JSONRPCProcess) WithdrawAllControlRequests(sink agent.ControlServices) {
 	b.outstandingMu.Lock()
-	outstanding := b.outstandingControls
-	for _, record := range outstanding {
+	var outstanding []controlResponseWrite
+	for requestID, record := range b.outstandingControls {
 		record.retired = true
+		var answer any
+		if record.response == nil {
+			answer = record.cancelAnswer
+		}
+		outstanding = append(outstanding, controlResponseWrite{requestID: requestID, record: record, answer: answer})
 	}
 	b.outstandingControls = nil
-	b.withdrawGeneration++
 	b.outstandingMu.Unlock()
-	for requestID, record := range outstanding {
-		b.answerWithdrawnControl(requestID, record)
-		sink.CancelControlRequestInstance(requestID, record.instanceID)
+	for _, write := range outstanding {
+		b.answerWithdrawnControl(write)
+		sink.CancelControlRequestInstance(write.requestID, write.record.instanceID)
 	}
 }
 
@@ -262,112 +269,38 @@ func (b *JSONRPCProcess) WithdrawAllControlRequests(sink agent.ControlServices) 
 // costs the reader their only control if that next step then fails.
 func (b *JSONRPCProcess) AnswerOutstandingControlRequests(sink agent.ControlServices) {
 	b.outstandingMu.Lock()
-	answerable := make(map[string]*outstandingControlRequest)
+	var answerable []controlResponseWrite
 	for requestID, record := range b.outstandingControls {
-		if record.cancelAnswer == nil || record.pending {
+		if record.cancelAnswer == nil || record.response != nil {
 			continue
 		}
-		answerable[requestID] = record
+		answerable = append(answerable, controlResponseWrite{requestID: requestID, record: record, answer: record.cancelAnswer})
 		record.retired = true
 		delete(b.outstandingControls, requestID)
 	}
-	if len(answerable) > 0 {
-		b.withdrawGeneration++
-	}
 	b.outstandingMu.Unlock()
-	for requestID, record := range answerable {
-		b.answerWithdrawnControl(requestID, record)
-		sink.CancelControlRequestInstance(requestID, record.instanceID)
+	for _, write := range answerable {
+		b.answerWithdrawnControl(write)
+		sink.CancelControlRequestInstance(write.requestID, write.record.instanceID)
 	}
 }
 
-// answerWithdrawnControl sends the provider the record's own cancel answer.
-// A record that carries none releases nothing, so it sends nothing.
-func (b *JSONRPCProcess) answerWithdrawnControl(requestID string, record *outstandingControlRequest) {
-	if record.cancelAnswer == nil || record.pending {
+// answerWithdrawnControl sends the captured cancel answer. Response ownership
+// was decided under outstandingMu; it must not be read again during delivery.
+func (b *JSONRPCProcess) answerWithdrawnControl(write controlResponseWrite) {
+	if write.answer == nil {
 		return
 	}
-	if err := b.SendResponse(record.wireID, record.cancelAnswer); err != nil {
-		slog.Warn("cancel outstanding control request", "agent_id", b.agentID, "request_id", requestID, "error", err)
+	if err := b.SendResponse(write.record.wireID, write.answer); err != nil {
+		slog.Warn("cancel outstanding control request", "agent_id", b.agentID, "request_id", write.requestID, "error", err)
 	}
 }
 
-// SendRawInputToOutstandingRequest is SendRawInput for a provider whose EVERY JSON-RPC
-// control request registers through the publishers above. It refuses a JSON-RPC
-// response whose request the registry no longer holds, with ErrControlRequestNotPending,
-// and writes nothing. Every other frame passes to SendRawInput unchanged.
-//
-// SendRawInput writes such a response anyway, so a reader answer that arrives after a
-// withdrawal or a standing approval reached the provider as a second answer to a closed
-// request. A provider that publishes through a registry of its own (CodeWhale, Copilot,
-// ZCode, Pi) cannot use this method, because its open requests are not in this registry.
+// SendRawInputToOutstandingRequest refuses a response whose registered request
+// is absent or already claimed. Requests, notifications and non-JSON frames pass
+// through unchanged. Registered responses share one delivery ownership path.
 func (b *JSONRPCProcess) SendRawInputToOutstandingRequest(data []byte, stop agent.StopContext) error {
-	// A response carries an id and no method. A request, a notification, and a frame
-	// that is not JSON at all go to SendRawInput, which decides about them as before.
-	var frame struct {
-		ID     json.RawMessage `json:"id"`
-		Method *string         `json:"method"`
-	}
-	if json.Unmarshal(data, &frame) != nil || frame.Method != nil || !RawPresent(frame.ID) {
-		return b.SendRawInput(data, stop)
-	}
-	restore, open := b.takeOutstandingControl(data)
-	if !open {
-		return ErrControlRequestNotPending
-	}
-	err := b.writeRawFrame(data)
-	if err != nil && !errors.Is(err, agent.ErrDeliveryUncertain) {
-		restore()
-	}
-	return err
-}
-
-// takeOutstandingControl removes the record that one outgoing frame answers, and
-// returns the function that puts it back. open reports whether the frame answered a
-// request that the registry held.
-//
-// Every control response reaches the provider through SendRawInput, so reading the id
-// there is what keeps the registry to the requests that are still open. A frame that
-// answers nothing (a notification, a prompt) carries no id and changes nothing.
-//
-// It runs BEFORE the write, because a withdrawal can run during the write -- a
-// provider that reports an interaction resolved, whoever resolved it -- and a record
-// still present then cancels the card that the reader just answered.
-//
-// restore puts the record back for a write that certainly delivered nothing, so a
-// later withdrawal still reaches the request. It does nothing when any withdrawal
-// ran in between: a withdrawal of every request (Stop) must not see a request that it
-// retired come back.
-func (b *JSONRPCProcess) takeOutstandingControl(raw []byte) (restore func(), open bool) {
-	nothing := func() {}
-	wireID, _, found := agent.ExtractJSONRPCID(raw)
-	if !found {
-		return nothing, false
-	}
-	identity, valid := agent.NewControlRequestIdentity(wireID)
-	if !valid {
-		return nothing, false
-	}
-	b.outstandingMu.Lock()
-	record, open := b.outstandingControls[identity.Key]
-	if !open || record.pending {
-		b.outstandingMu.Unlock()
-		return nothing, false
-	}
-	delete(b.outstandingControls, identity.Key)
-	generation := b.withdrawGeneration
-	b.outstandingMu.Unlock()
-	return func() {
-		b.outstandingMu.Lock()
-		defer b.outstandingMu.Unlock()
-		if b.withdrawGeneration != generation || b.outstandingControls[identity.Key] != nil {
-			return
-		}
-		if b.outstandingControls == nil {
-			b.outstandingControls = make(map[string]*outstandingControlRequest)
-		}
-		b.outstandingControls[identity.Key] = record
-	}, true
+	return b.sendRawControlResponse(data, true)
 }
 
 // MCPElicitationCancelAnswer is the action the Model Context Protocol defines for an

@@ -182,8 +182,8 @@ type Agent struct {
 	rateLimitBucketOrder []string
 	// retryTextLocation is the zone of the local time in Codex's usage-limit
 	// message. Codex writes that time in the local zone of its own process,
-	// which runs on this machine, so nil reads as time.Local. A test sets it
-	// before it feeds output, and nothing changes it later.
+	// captured after the launch profile. It is set under Mu before the thread
+	// handshake, then remains immutable. Nil means the native zone is unknown.
 	retryTextLocation *time.Location
 }
 

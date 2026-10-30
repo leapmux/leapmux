@@ -164,6 +164,42 @@ func newMuseRetryAgent(t *testing.T, sessionID, turnID string, clockAt time.Time
 	return a, sink
 }
 
+func TestMuseStopIntentPrecedesConcurrentFailure(t *testing.T) {
+	t.Parallel()
+	for _, refused := range []bool{false, true} {
+		t.Run(map[bool]string{false: "accepted", true: "refused"}[refused], func(t *testing.T) {
+			t.Parallel()
+			failure := museProbe(t, "a 500 after the provider attempts is transient")
+			session, turn := museFrameIdentity(t, failure.frame)
+			a, sink := newMuseRetryAgent(t, session, turn, time.Time{})
+			a.SetStdinForTest(&museTestPeer{agent: a, reply: func(method string, raw json.RawMessage) agenttest.RPCReply {
+				assert.Equal(t, methodTurnInterrupt, method)
+				a.HandleOutput([]byte(failure.frame))
+				if refused {
+					return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32000,"message":"interruption refused"}`)}
+				}
+				var params map[string]any
+				require.NoError(t, json.Unmarshal(raw, &params))
+				result, err := json.Marshal(map[string]any{"commandId": params["commandId"], "status": "accepted"})
+				require.NoError(t, err)
+				return agenttest.RPCReply{Result: result}
+			}})
+			err := a.Interrupt(agent.StopContext{})
+			if refused {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Zero(t, sink.AutoScheduleCount())
+			assert.Equal(t, providerkittest.TurnEndThen(providerkit.TurnFailure{}), providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+			a.startTurn(session, "next-turn")
+			feed(t, a, contracts.MuseMethodTurnCompleted, map[string]any{"sessionId": session, "turnId": "next-turn", "terminal": contracts.MuseTurnOutcomeFailed,
+				"error": map[string]any{"kind": "server", "message": "service unavailable", "retryable": true}})
+			assert.Equal(t, 1, sink.AutoScheduleCount(), "the next turn was not stopped")
+		})
+	}
+}
+
 // Each probed completion gives the verdict that the MSP fields and the vendor
 // text imply, at the emission time of the frame.
 func TestMuseTurnVerdict(t *testing.T) {
@@ -180,7 +216,7 @@ func TestMuseTurnVerdict(t *testing.T) {
 	}
 }
 
-// The emission stamp bounds the reset when it is a positive integer. Any other
+// The emission stamp limits the reset when it is a positive integer. Any other
 // stamp reads the agent clock.
 func TestMuseCompletionObservedAt(t *testing.T) {
 	t.Parallel()
@@ -329,7 +365,7 @@ func TestMuseTurnEndEdgeCases(t *testing.T) {
 			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, ResetAt: museUnixMilli(emittedAtMs + 60_000), Cause: "Muse reported an exhausted tierLimit quota (the provider states when to retry)"},
 		},
 		{
-			// The frame states no emission, so the agent clock bounds the reset.
+			// The frame states no emission, so the agent clock limits the reset.
 			// The wall clock is past this reset, so only the agent clock admits it.
 			name:    "a frame without emittedAtMs reads the agent clock",
 			params:  museFailedParams(quotaError(emittedAtMs + 60_000)),
@@ -358,7 +394,7 @@ func TestMuseTurnEndEdgeCases(t *testing.T) {
 			want: museNotRetryable,
 		},
 		{
-			name:   "an unknown terminal is not retryable",
+			name:   "an unknown outcome is not retryable",
 			params: map[string]any{"sessionId": "session", "turnId": "turn", "terminal": "futureFinal", "error": map[string]any{"kind": "modelError", "message": "API error 500", "retryable": true}}, emitted: emittedAtMs,
 			want: museNotRetryable,
 		},
@@ -438,6 +474,33 @@ func TestMuseReplayedCompletionDecidesOnce(t *testing.T) {
 	a.HandleOutput([]byte(failure.frame))
 	a.HandleOutput([]byte(failure.frame))
 	assert.Equal(t, providerkittest.TurnEndThen(failure.want), providerkittest.TurnEndAndRetryOps(recording.Timeline()))
+}
+
+func TestMuseStoppedFinalizationKeepsItsVerdictAfterANewerTurnStarts(t *testing.T) {
+	t.Parallel()
+	failure := museProbe(t, "a 500 after the provider attempts is transient")
+	session, turn := museFrameIdentity(t, failure.frame)
+	a, recording := newMuseRetryAgent(t, session, turn, time.Time{})
+	sink := &finalizationSink{Sink: recording, failEnd: 1}
+	a.sink = agent.NewProviderServices(sink)
+	a.sessions[session].sink = a.sink
+	a.SetStdinForTest(&museTestPeer{agent: a, reply: func(_ string, raw json.RawMessage) agenttest.RPCReply {
+		var params map[string]any
+		require.NoError(t, json.Unmarshal(raw, &params))
+		result, err := json.Marshal(map[string]any{"commandId": params["commandId"], "status": "accepted"})
+		require.NoError(t, err)
+		return agenttest.RPCReply{Result: result}
+	}})
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+	a.HandleOutput([]byte(failure.frame))
+	assert.Empty(t, providerkittest.TurnEndAndRetryOps(recording.Timeline()))
+	a.startTurn(session, "next-turn")
+	a.HandleOutput([]byte(failure.frame))
+	a.HandleOutput([]byte(failure.frame))
+	assert.Equal(t, providerkittest.TurnEndThen(providerkit.TurnFailure{}), providerkittest.TurnEndAndRetryOps(recording.Timeline()))
+	feed(t, a, contracts.MuseMethodTurnCompleted, map[string]any{"sessionId": session, "turnId": "next-turn", "terminal": contracts.MuseTurnOutcomeFailed,
+		"error": map[string]any{"kind": "server", "message": "service unavailable", "retryable": true}})
+	assert.Equal(t, 1, recording.AutoScheduleCount())
 }
 
 // A replayed completion of a turn that already ended decides nothing.

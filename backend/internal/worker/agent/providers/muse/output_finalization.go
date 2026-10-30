@@ -65,6 +65,13 @@ func (a *Agent) captureFinalization(state *sessionState, id, turnID string, raw 
 		state.completed = make(map[string]turnCompletionState)
 	}
 	state.completed[turnID] = turnCompletionCaptured
+	if verdict != nil && (state.stopRequestedTurnID == turnID || a.IntentionalStopRequested()) {
+		stopped := providerkit.TurnFailure{}
+		verdict = &stopped
+	}
+	if state.stopRequestedTurnID == turnID {
+		state.stopRequestedTurnID = ""
+	}
 	var items []*itemState
 	for _, item := range state.items {
 		if len(item.raw) > 0 && item.params.Item.TurnID != nil && *item.params.Item.TurnID == turnID {

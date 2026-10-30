@@ -14,16 +14,22 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"unicode/utf8"
 )
 
 const Argument = "--leapmux-internal-env-probe"
+
+// MetadataKey identifies the encoded snapshot in a launch preamble.
+const MetadataKey = "native_env"
 
 const responsePrefix = "\x00__LEAPMUX_NATIVE_ENV__\x00"
 
 var variableName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 type Request struct {
-	Variables []string `json:"variables"`
+	// MetadataPrefix selects one-line preamble output instead of NUL framing.
+	MetadataPrefix string   `json:"metadataPrefix,omitempty"`
+	Variables      []string `json:"variables"`
 	// PathVariables maps an environment variable to the characters its consumer trims.
 	// Resolved paths preserve dot segments for the operating system's file lookup.
 	PathVariables map[string]string `json:"pathVariables,omitempty"`
@@ -31,11 +37,15 @@ type Request struct {
 
 type Snapshot struct {
 	Values     map[string]string `json:"values"`
+	Present    map[string]bool   `json:"present"`
 	WorkingDir string            `json:"workingDir"`
 	Paths      map[string]string `json:"paths,omitempty"`
 }
 
 func (r Request) Validate() error {
+	if strings.ContainsAny(r.MetadataPrefix, "\r\n\x00") {
+		return fmt.Errorf("the metadata prefix must contain no line break or zero byte")
+	}
 	for _, name := range r.Variables {
 		if !variableName.MatchString(name) {
 			return fmt.Errorf("environment variable %q is not a plain identifier", name)
@@ -107,19 +117,25 @@ func Run(args []string, stdout, stderr io.Writer) (exitCode int, handled bool) {
 	}
 	snapshot, err := capture(request)
 	if err == nil {
-		_, err = io.WriteString(stdout, responsePrefix)
-	}
-	if err == nil {
-		err = json.NewEncoder(stdout).Encode(snapshot)
-	}
-	if err == nil {
-		_, err = io.WriteString(stdout, "\x00")
+		err = writeProbeSnapshot(snapshot, request.MetadataPrefix, stdout)
 	}
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "the internal environment probe could not complete")
 		return 1, true
 	}
 	return 0, true
+}
+
+func writeProbeSnapshot(snapshot Snapshot, prefix string, output io.Writer) error {
+	raw, err := encodeSnapshot(snapshot, prefix)
+	if err != nil {
+		return err
+	}
+	count, err := output.Write(raw)
+	if err == nil && count != len(raw) {
+		return io.ErrShortWrite
+	}
+	return err
 }
 
 func capture(request Request) (Snapshot, error) {
@@ -129,13 +145,23 @@ func capture(request Request) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	snapshot := Snapshot{Values: map[string]string{}, WorkingDir: workingDir, Paths: map[string]string{}}
+	if !utf8.ValidString(workingDir) {
+		return Snapshot{}, fmt.Errorf("the native working directory is not UTF-8")
+	}
+	snapshot := Snapshot{Values: map[string]string{}, Present: map[string]bool{}, WorkingDir: workingDir, Paths: map[string]string{}}
 	for _, name := range request.Variables {
-		snapshot.Values[name] = os.Getenv(name)
+		value, present := os.LookupEnv(name)
+		if !utf8.ValidString(value) {
+			return Snapshot{}, fmt.Errorf("native environment variable %q is not UTF-8", name)
+		}
+		snapshot.Values[name], snapshot.Present[name] = value, present
 	}
 	for name, cutset := range request.PathVariables {
-		value := os.Getenv(name)
-		snapshot.Values[name] = value
+		value, present := os.LookupEnv(name)
+		if !utf8.ValidString(value) {
+			return Snapshot{}, fmt.Errorf("native environment variable %q is not UTF-8", name)
+		}
+		snapshot.Values[name], snapshot.Present[name] = value, present
 		value = strings.Trim(value, cutset)
 		if value == "" {
 			snapshot.Paths[name] = ""
@@ -186,12 +212,49 @@ func Decode(output []byte) (Snapshot, error) {
 	if end < 0 {
 		return Snapshot{}, fmt.Errorf("the native environment response is incomplete")
 	}
+	return decodeSnapshot(data[:end])
+}
+
+// DecodeMetadata reads the snapshot value stored under MetadataKey.
+func DecodeMetadata(value string) (Snapshot, error) {
+	data, err := requestEncoding.DecodeString(value)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("the native environment metadata is invalid")
+	}
+	return decodeSnapshot(data)
+}
+
+func decodeSnapshot(data []byte) (Snapshot, error) {
 	var snapshot Snapshot
-	if err := json.Unmarshal(data[:end], &snapshot); err != nil {
+	if !utf8.Valid(data) {
+		return Snapshot{}, fmt.Errorf("the native environment response is not UTF-8")
+	}
+	if err := json.Unmarshal(data, &snapshot); err != nil {
 		return Snapshot{}, fmt.Errorf("the native environment response is invalid")
 	}
-	if snapshot.Values == nil || !filepath.IsAbs(snapshot.WorkingDir) {
+	if snapshot.Values == nil || snapshot.Present == nil || !filepath.IsAbs(snapshot.WorkingDir) {
 		return Snapshot{}, fmt.Errorf("the native environment response has no process context")
 	}
+	if len(snapshot.Values) != len(snapshot.Present) {
+		return Snapshot{}, fmt.Errorf("the native environment response has inconsistent presence values")
+	}
+	for name, value := range snapshot.Values {
+		present, exists := snapshot.Present[name]
+		if !exists || (!present && value != "") {
+			return Snapshot{}, fmt.Errorf("the native environment response has inconsistent presence values")
+		}
+	}
 	return snapshot, nil
+}
+
+func encodeSnapshot(snapshot Snapshot, metadataPrefix string) ([]byte, error) {
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return nil, err
+	}
+	if metadataPrefix != "" {
+		return []byte(metadataPrefix + MetadataKey + "=" + requestEncoding.EncodeToString(data) + "\n"), nil
+	}
+	output := append([]byte(responsePrefix), data...)
+	return append(output, '\n', 0), nil
 }

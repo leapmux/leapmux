@@ -1,8 +1,7 @@
 /**
  * Kilo vocabulary that only the frontend interprets.
  *
- * Kilo shares OpenCode's wire format, but not every error. Each table here is Kilo's
- * own, and the OpenCode family adapter reads it beside OpenCode's.
+ * Each table belongs to Kilo's protocol reader.
  */
 
 /**
@@ -25,7 +24,7 @@
  * (`KiloQuestionTool.dismissedResult`, `packages/opencode/src/kilocode/tool/question.ts`),
  * and Kilo's `plan_exit` asks no question.
  *
- * `OpenCodeFamilyRefusals` in `opencode/extractors/toolCall.ts` states why the exact
+ * `KiloRefusals` in `extractors/toolCall.ts` states why the exact
  * message is the one native signal.
  */
 export const KILO_REFUSED_TOOL_ERRORS = {
@@ -36,4 +35,12 @@ export const KILO_REFUSED_TOOL_ERRORS = {
     'The user rejected permission to use this specific tool call with the following feedback: ',
     'The user has specified a rule which prevents you from using this specific tool call. Here are some of the relevant rules ',
   ],
+} as const
+
+/** Fields of Kilo tool-result metadata interpreted by the browser. */
+export const KILO_TOOL_OUTPUT_FIELD = {
+  Metadata: 'metadata',
+  Output: 'output',
+  Truncated: 'truncated',
+  OutputPath: 'outputPath',
 } as const

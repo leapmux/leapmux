@@ -126,8 +126,11 @@ func TestKiroCompactionFinishEndsLiveStateAndKeepsItsRow(t *testing.T) {
 func TestKiroInterruptDuringACompactionEndsLiveState(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
+	work := a.BeginClientWork()
+	require.NotNil(t, work)
+	sessionID := a.CurrentSessionID()
 	a.stateMu.Lock()
-	a.compaction = compactionState{id: 7, lastID: 7}
+	a.compaction = compactionState{id: 7, lastID: 7, sessionID: sessionID, work: work}
 	a.stateMu.Unlock()
 	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	values := sink.SessionInfoValues(contracts.SessionInfoKeyCompaction)

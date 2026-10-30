@@ -1,0 +1,19 @@
+{
+  "_readme": "Kilo 7.8.18 event and attachment vocabulary consumed by the worker and browser. Shared questions use native-questions.json, and LeapMux client approval uses client-approval.json. The audio MIME subset belongs to Kilo; the worker also verifies the target model and Google adapter.",
+  "events": {
+    "SessionStatus": "session.status",
+    "SessionCompacted": "session.compacted"
+  },
+  "statusTypes": {
+    "Retry": "retry"
+  },
+  "audioMimeTypes": [
+    "Wav",
+    "Mpeg",
+    "Mp3",
+    "Aac",
+    "Ogg",
+    "Flac",
+    "Webm"
+  ]
+}

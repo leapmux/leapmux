@@ -220,19 +220,26 @@ func (a *Agent) rejectNativeInput(revision uint64) {
 	providerkit.PublishTurnStateTo(a.sink, state, sequence)
 }
 
-// releaseNativeTurn makes the root turn idle at its session.idle. ended is
-// false when no turn was active. verdict states the retry verdict of the turn
-// end. A turn that belongs to a manual compaction claims the verdict of that
-// compaction in the same critical section, so the reply of the compaction
-// cannot apply it a second time.
-func (a *Agent) releaseNativeTurn() (ended bool, verdict copilotTurnEndVerdict) {
+// copilotTurnEnding retains a turn's retry policy and its later publication.
+type copilotTurnEnding struct {
+	ended    bool
+	verdict  copilotTurnEndVerdict
+	state    agent.TurnState
+	sequence uint64
+}
+
+// releaseNativeTurn captures the ending at session.idle. The caller stores
+// final output and applies the retry verdict before publishing the state.
+// A compaction's model turn claims its verdict in this critical section, so
+// the compaction reply cannot apply it again.
+func (a *Agent) releaseNativeTurn() copilotTurnEnding {
 	a.stateMu.Lock()
-	ended = a.active
+	ended := a.active
 	compaction := a.turnCompaction
 	a.active = false
 	a.turnCompaction = 0
 	a.activityRevision++
-	verdict = copilotTurnEndClassified
+	verdict := copilotTurnEndClassified
 	if ended && compaction != 0 {
 		verdict = copilotTurnEndCompactionApplied
 		if a.claimCompactionVerdictLocked(compaction) {
@@ -242,8 +249,7 @@ func (a *Agent) releaseNativeTurn() (ended bool, verdict copilotTurnEndVerdict) 
 	state := a.nativeTurnStateLocked()
 	sequence := a.turnOrder.NextTurnSeq()
 	a.stateMu.Unlock()
-	providerkit.PublishTurnStateTo(a.sink, state, sequence)
-	return ended, verdict
+	return copilotTurnEnding{ended: ended, verdict: verdict, state: state, sequence: sequence}
 }
 
 // claimCompactionVerdictLocked reports whether the caller applies the retry
@@ -263,16 +269,15 @@ func (a *Agent) clearNativeCompaction() {
 	a.stateMu.Unlock()
 }
 
-// finishNativeCompaction ends the manual compaction of revision. It reports
-// whether the caller applies the retry verdict of that compaction: this call
-// ended the compaction, no model turn of the compaction still runs, and no
-// turn end applied the verdict first. A model turn that outlives the reply
-// applies the verdict at its own end, after its turn-end row.
-func (a *Agent) finishNativeCompaction(revision uint64) bool {
+// finishNativeCompaction ends the manual compaction of revision. A delivered
+// request applies its one retry verdict before releasing the queue, unless a
+// model turn already applied it or still runs. A model turn that outlives the
+// reply applies the verdict at its own end, after its turn-end row.
+func (a *Agent) finishNativeCompaction(revision uint64, applyRetryVerdict bool) {
 	a.stateMu.Lock()
 	if a.compactingRevision != revision {
 		a.stateMu.Unlock()
-		return false
+		return
 	}
 	a.compactingRevision = 0
 	if a.activityRevision == revision {
@@ -283,8 +288,10 @@ func (a *Agent) finishNativeCompaction(revision uint64) bool {
 	state := a.nativeTurnStateLocked()
 	sequence := a.turnOrder.NextTurnSeq()
 	a.stateMu.Unlock()
+	if applies && applyRetryVerdict {
+		providerkit.ApplyTurnFailure(a.sink.CaptureAutoRetryThroughTurn(sequence), providerkit.CompactionEnd(), nil)
+	}
 	providerkit.PublishTurnStateTo(a.sink, state, sequence)
-	return applies
 }
 
 // copilotBlobAttachments encodes attachments as the inline `blob` attachments of
@@ -338,7 +345,7 @@ func (a *Agent) CompactContext() error {
 	// retry verdict applies.
 	params, err := json.Marshal(map[string]any{"sessionId": sessionID, "trigger": "manual"})
 	if err != nil {
-		a.finishNativeCompaction(revision)
+		a.finishNativeCompaction(revision, false)
 		return fmt.Errorf("encode Copilot compaction request: %w", err)
 	}
 	err = a.SendDetachedRequest("session.history.compact", params, func(raw json.RawMessage, requestErr error) {
@@ -346,32 +353,31 @@ func (a *Agent) CompactContext() error {
 	})
 	if err != nil {
 		providerkit.EndCompaction(a.sink)
-		a.finishNativeCompaction(revision)
+		a.finishNativeCompaction(revision, false)
 		return providerkit.ClassifyJSONRPCDeliveryError("session.history.compact", err)
 	}
 	return nil
 }
 
 // endNativeCompaction handles the reply to the session.history.compact request
-// of revision, which sessionID sent. It reports a failed compaction, releases
-// the queue, and then applies the compaction's retry verdict. A compaction never
-// schedules a retry, whatever its outcome (CompactionEnd). The verdict follows
-// the release, as it does at a root turn end. A reply that arrives after the
+// of revision, which sessionID sent. It reports a failed compaction and applies
+// its retry verdict before releasing the queue. A compaction never schedules
+// a retry, whatever its outcome (CompactionEnd). A reply that arrives after the
 // process stopped or the session changed applies no verdict, as a turn that
 // ends on those paths applies none.
 func (a *Agent) endNativeCompaction(revision uint64, sessionID string, raw json.RawMessage, requestErr error) {
 	a.sessionMu.RLock()
 	defer a.sessionMu.RUnlock()
+	a.outputMu.Lock()
+	defer a.outputMu.Unlock()
 	if a.IsStopped() || a.currentNativeSessionID() != sessionID {
-		a.finishNativeCompaction(revision)
+		a.finishNativeCompaction(revision, false)
 		return
 	}
 	if err := copilotCompactionFailure(raw, requestErr); err != nil {
 		a.reportNativeCompactionError(err)
 	}
-	if a.finishNativeCompaction(revision) {
-		providerkit.ApplyTurnFailure(a.sink, providerkit.CompactionEnd(), nil)
-	}
+	a.finishNativeCompaction(revision, true)
 }
 
 // copilotCompactionFailure returns the failure that the reply to

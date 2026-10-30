@@ -6,7 +6,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
 )
 
 // Kilo changes its session goal through a user-message slash command, the same
@@ -69,7 +68,7 @@ func (a *Agent) hasGoalCommand() bool {
 // a repeated report, including the unchanged first report after a resume,
 // writes nothing.
 func (a *Agent) observeKiloGoal(eventType string, properties json.RawMessage) {
-	if eventType != opencode.EventSessionUpdated {
+	if eventType != EventSessionUpdated {
 		return
 	}
 	var envelope struct {

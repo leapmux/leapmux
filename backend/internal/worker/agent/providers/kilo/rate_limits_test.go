@@ -10,16 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode/opencodetest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/kilo/kilotest"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // nativeProviderUsage is the answer of Kilo 7.8.16's provider-usage route for
@@ -156,7 +154,7 @@ func rateLimitStates(t *testing.T, sink *agenttest.Sink) []map[string]any {
 // usageDaemon serves the provider-usage route with the answers that a test
 // sets, and counts its reads.
 type usageDaemon struct {
-	daemon *opencodetest.FakeDaemon
+	daemon *kilotest.FakeDaemon
 	status atomic.Int32
 	body   atomic.Value
 	reads  atomic.Int32
@@ -164,7 +162,7 @@ type usageDaemon struct {
 
 func newUsageDaemon(t *testing.T, body string) *usageDaemon {
 	t.Helper()
-	d := &usageDaemon{daemon: opencodetest.NewFakeDaemon(t, opencode.EventRoute, opencode.QuestionRoot)}
+	d := &usageDaemon{daemon: kilotest.NewFakeDaemon(t, EventRoute, QuestionRoot)}
 	d.status.Store(http.StatusOK)
 	d.body.Store(body)
 	d.daemon.HandleFunc(kiloProviderUsageRoute, func(w http.ResponseWriter, r *http.Request) {
@@ -187,7 +185,7 @@ func newUsageAgent(t *testing.T, daemon *usageDaemon) (*Agent, *agenttest.Sink) 
 	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "kilo-usage", ProviderName: "kilo", Ctx: ctx, Clock: testutil.NewQuartzMock(t)})
 	a.SetSinkForTest(agent.NewProviderServices(sink))
 	a.SetSessionIDForTest("session-1")
-	*a.HooksForTest() = opencode.FamilyHooks(&a.FamilyBase)
+	*a.HooksForTest() = kiloHooks(a)
 	go a.refreshUsageLoop()
 	a.BeginQuestionsForTest(ctx, a.Sink(), "kilo-usage", daemon.daemon.Server.URL)
 	return a, sink
@@ -209,7 +207,7 @@ func TestKiloReadsThePlanUsageAfterEachTurn(t *testing.T) {
 	a, sink := newUsageAgent(t, daemon)
 	testutil.RequireEventually(t, func() bool { return len(rateLimitStates(t, sink)) == 1 })
 	daemon.body.Store(`{"items":[]}`)
-	a.TurnEnded()
+	a.HooksForTest().PromptEnded(nil, false)
 	testutil.RequireEventually(t, func() bool { return len(rateLimitStates(t, sink)) == 2 })
 	assert.Empty(t, rateLimitStates(t, sink)[1], "a report without plans clears the windows")
 }
@@ -233,12 +231,12 @@ func TestKiloKeepsTheLastPlanUsageWhenAReadFails(t *testing.T) {
 		reads := daemon.reads.Load()
 		daemon.status.Store(int32(failure.status))
 		daemon.body.Store(failure.body)
-		a.TurnEnded()
+		a.HooksForTest().PromptEnded(nil, false)
 		testutil.RequireEventually(t, func() bool { return daemon.reads.Load() > reads })
 	}
 	daemon.status.Store(http.StatusOK)
 	daemon.body.Store(`{"items":[{"id":"later","windows":[{"id":"w","used":5,"limit":10}]}]}`)
-	a.TurnEnded()
+	a.HooksForTest().PromptEnded(nil, false)
 	testutil.RequireEventually(t, func() bool { return len(rateLimitStates(t, sink)) >= 2 })
 	states := rateLimitStates(t, sink)
 	require.Len(t, states, 2, "no failed read published a state")

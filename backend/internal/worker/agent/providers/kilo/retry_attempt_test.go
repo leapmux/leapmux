@@ -8,7 +8,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,7 +24,7 @@ func TestKiloRetryAttempt(t *testing.T) {
 			a.SetSinkForTest(agent.NewModelProgressResetSink(agent.NewProviderServices(sink)))
 			a.SetSessionIDForTest("test-session")
 			a.SetPromptActiveForTest(true)
-			*a.HooksForTest() = opencode.FamilyHooks(&a.FamilyBase)
+			*a.HooksForTest() = kiloHooks(a)
 			return func(frame []byte) {
 				var envelope struct {
 					Method string                            `json:"method"`

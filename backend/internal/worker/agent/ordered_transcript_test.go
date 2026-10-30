@@ -320,6 +320,97 @@ func TestOrderedProviderServicesForwardEachCancellationReason(t *testing.T) {
 	assert.Equal(t, "the turn ended", sink.LastAutoCancelReason())
 }
 
+func TestOrderedCapturedAutoRetryWaitsForRetainedTranscript(t *testing.T) {
+	t.Parallel()
+	var queue agent.OutputQueue
+	sink := &agenttest.Sink{PersistErr: assert.AnError}
+	services := agent.NewOrderedProviderServices(&queue, agent.NewProviderServices(sink))
+	services.SetTurnState(agent.TurnState{Active: true}, 1)
+	require.Error(t, services.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"end":true}`)}, agent.SpanInfo{}))
+	writer := services.CaptureAutoRetry()
+	writer.ScheduleServerErrorRetry([]byte(`{"failure":true}`))
+	assert.Zero(t, sink.AutoScheduleCount(), "capturing a writer cannot bypass the transcript queue")
+	sink.PersistErr = nil
+	require.NoError(t, queue.Flush())
+	assert.Equal(t, 1, sink.AutoScheduleCount())
+}
+
+func TestOrderedKeyedRetryEffectsWaitForRetainedTranscript(t *testing.T) {
+	t.Parallel()
+	var queue agent.OutputQueue
+	sink := &agenttest.Sink{PersistErr: assert.AnError}
+	services := agent.NewOrderedProviderServices(&queue, agent.NewProviderServices(sink))
+	services.SetTurnState(agent.TurnState{Active: true}, 1)
+	require.Error(t, services.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"end":true}`)}, agent.SpanInfo{}))
+	writer := services.CaptureAutoRetry()
+	payload := []byte(`{"failure":"original"}`)
+	resetAt := time.Unix(1700000000, 0)
+	writer.ScheduleUsageLimitRetryWithKey("native:A", resetAt, payload)
+	payload[0] = 'x'
+	writer.CancelUsageLimitRetryWithKey("native:A", "native completed")
+	assert.Zero(t, sink.AutoScheduleCount())
+	assert.Zero(t, sink.AutoCancelCount())
+	sink.PersistErr = nil
+	require.NoError(t, queue.Flush())
+	assert.JSONEq(t, `{"failure":"original"}`, string(sink.LastAutoSchedule().SourcePayload))
+	var effects []agenttest.TimelineEntry
+	for _, operation := range sink.Operations() {
+		if operation.Op == "turn_end_stored" || operation.Op == "schedule_usage_limit" || operation.Op == "cancel_usage_limit" {
+			effects = append(effects, operation)
+		}
+	}
+	assert.Equal(t, []agenttest.TimelineEntry{
+		{Op: "turn_end_stored"},
+		{Op: "schedule_usage_limit", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, Key: "native:A", ResetAt: resetAt},
+		{Op: "cancel_usage_limit", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, Key: "native:A", Reason: "native completed"},
+	}, effects)
+}
+
+func TestOrderedRetryAfterQueuedIdleKeepsItsOriginalOwner(t *testing.T) {
+	t.Parallel()
+	var queue agent.OutputQueue
+	sink := &agenttest.Sink{PersistErr: assert.AnError}
+	services := agent.NewOrderedProviderServices(&queue, agent.NewProviderServices(sink))
+	services.SetTurnState(agent.TurnState{Active: true}, 1)
+	require.Error(t, services.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"end":true}`)}, agent.SpanInfo{}))
+	services.SetTurnState(agent.TurnState{}, 2)
+	services.ScheduleServerErrorRetry([]byte(`{"failure":true}`))
+	sink.PersistErr = nil
+	require.NoError(t, queue.Flush())
+	assert.Equal(t, 1, sink.AutoScheduleCount(), "the verdict belongs to this exact completion even when its idle was queued")
+}
+
+func TestOrderedRetryCannotFollowANewerActivePublication(t *testing.T) {
+	t.Parallel()
+	var queue agent.OutputQueue
+	sink := &agenttest.Sink{PersistErr: assert.AnError}
+	services := agent.NewOrderedProviderServices(&queue, agent.NewProviderServices(sink))
+	services.SetTurnState(agent.TurnState{Active: true}, 1)
+	require.Error(t, services.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"end":true}`)}, agent.SpanInfo{}))
+	services.ScheduleServerErrorRetry([]byte(`{"old":true}`))
+	services.SetTurnState(agent.TurnState{}, 2)
+	services.SetTurnState(agent.TurnState{Active: true}, 3)
+	sink.PersistErr = nil
+	require.NoError(t, queue.Flush())
+	assert.Zero(t, sink.AutoScheduleCount(), "the next start supersedes queued work even if the preceding idle never executed")
+}
+
+func TestOrderedCapturedCompletionRejectsAStartThatOvertakesQueuedIdle(t *testing.T) {
+	t.Parallel()
+	var queue agent.OutputQueue
+	sink := &agenttest.Sink{PersistErr: assert.AnError}
+	services := agent.NewOrderedProviderServices(&queue, agent.NewProviderServices(sink))
+	services.SetTurnState(agent.TurnState{Active: true}, 1)
+	require.Error(t, services.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"end":true}`)}, agent.SpanInfo{}))
+	services.SetTurnState(agent.TurnState{}, 2)
+	writer := services.CaptureAutoRetry()
+	writer.ScheduleServerErrorRetry([]byte(`{"old":true}`))
+	services.SetTurnState(agent.TurnState{Active: true}, 3)
+	sink.PersistErr = nil
+	require.NoError(t, queue.Flush())
+	assert.Zero(t, sink.AutoScheduleCount())
+}
+
 type batchMutationSink struct {
 	*agenttest.Sink
 	duringCapture func()
@@ -663,4 +754,39 @@ func TestTranscriptWriteReceiptPublishesItsOriginalAuthorityAfterCapture(t *test
 	assert.Equal(t, session, afterSession)
 	require.Len(t, sink.Messages(), 2)
 	assert.True(t, sink.Messages()[1].TranscriptOnly)
+}
+
+func TestCapturedAutoRetryOperationRunsAtItsReservedPosition(t *testing.T) {
+	t.Parallel()
+	var queue, nested agent.OutputQueue
+	sink := &agenttest.Sink{PersistErr: assert.AnError}
+	services := agent.NewOrderedProviderServices(&queue, agent.NewOrderedProviderServices(&nested, agent.NewProviderServices(sink)))
+	services.SetTurnState(agent.TurnState{Active: true}, 1)
+	require.True(t, agent.OutputRetained(services.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"end":true}`)}, agent.SpanInfo{})))
+	calls := 0
+	operation := services.CaptureAutoRetryOperation(2, func(writer agent.AutoRetryWriter) { calls++; writer.CancelServerErrorRetry("manual completion") })
+	require.NotNil(t, operation)
+	queue.Append(agent.OutputWrite{Label: "manual retry operation", Run: operation})
+	services.SetTurnState(agent.TurnState{}, 2)
+	services.ScheduleServerErrorRetry([]byte(`{"later":true}`))
+	require.NoError(t, nested.Flush(), "capturing the operation must not append work to the nested queue")
+	sink.PersistErr = nil
+	require.NoError(t, queue.Flush())
+	require.NoError(t, nested.Flush())
+	require.Equal(t, 1, calls)
+	assert.Equal(t, 1, sink.AutoCancelCount())
+	require.Equal(t, 1, sink.AutoScheduleCount())
+	assert.Equal(t, []string{"turn_end", "cancel_server_error", "schedule_server_error"}, func() []string {
+		var operations []string
+		for _, entry := range sink.Operations() {
+			switch entry.Op {
+			case "turn_end_stored":
+				operations = append(operations, "turn_end")
+			case "cancel_server_error", "schedule_server_error":
+				operations = append(operations, entry.Op)
+			}
+		}
+		return operations
+	}())
+	assert.Nil(t, services.CaptureAutoRetryOperation(0, nil))
 }

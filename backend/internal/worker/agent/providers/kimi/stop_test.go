@@ -159,3 +159,33 @@ func TestKimiInterrupt(t *testing.T) {
 		assert.Len(t, rig.fake.routes(), before)
 	})
 }
+
+func TestKimiStopIntentPrecedesConcurrentFailure(t *testing.T) {
+	t.Parallel()
+	for _, refused := range []bool{false, true} {
+		t.Run(map[bool]string{false: "accepted", true: "refused"}[refused], func(t *testing.T) {
+			t.Parallel()
+			rig := newKimiTestRig(t, agent.Options{})
+			rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 0, "origin": map[string]any{"kind": contracts.KimiOriginUser}})
+			reply := fakeKapReply{BeforeReply: func() {
+				rig.feed(t, map[string]any{"type": contracts.KimiEventTurnEnded, "turnId": 0, "reason": contracts.KimiTurnEndFailed,
+					"error": map[string]any{"code": "provider.overloaded", "message": "the model is overloaded"}})
+			}}
+			if refused {
+				reply.Code, reply.Msg = 40401, "no running turn"
+			}
+			rig.fake.reply("POST "+kimiSessionPath("session_1", kimiActionAbort), reply)
+			err := rig.agent.Interrupt(agent.StopContext{})
+			if refused {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Zero(t, rig.sink.AutoScheduleCount(), "the user stopped this turn before its failure completed")
+			rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 1, "origin": map[string]any{"kind": contracts.KimiOriginUser}})
+			rig.feed(t, map[string]any{"type": contracts.KimiEventTurnEnded, "turnId": 1, "reason": contracts.KimiTurnEndFailed,
+				"error": map[string]any{"code": "provider.overloaded", "message": "the model is overloaded"}})
+			assert.Equal(t, 1, rig.sink.AutoScheduleCount(), "a later turn keeps its own retry")
+		})
+	}
+}

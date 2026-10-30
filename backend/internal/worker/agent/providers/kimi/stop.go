@@ -27,11 +27,20 @@ import (
 // kimiStopStepTimeout limits each native stop step.
 const kimiStopStepTimeout = 2 * time.Second
 
-// Interrupt aborts the main agent's running turn. A turn that is not running
-// needs nothing.
+type kimiTurnStop struct {
+	sessionID string
+	turnID    int64
+}
+
+// Interrupt aborts the main agent's running turn. An idle session sends no
+// abort, but its most recent turn can still await a quota read. The stop intent
+// prevents that read from scheduling a retry.
 func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.Mu.Lock()
 	sessionID, active := a.sessionID, a.turnActive
+	if run := a.runs[kimiMainAgentID]; run != nil {
+		a.stopRequested = &kimiTurnStop{sessionID: sessionID, turnID: run.turnID}
+	}
 	a.Mu.Unlock()
 	if !active {
 		return nil

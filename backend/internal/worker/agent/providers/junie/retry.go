@@ -159,17 +159,14 @@ func (a *Agent) clearJunieFailure() {
 // base drops the prompt's verdict, and the turn's own marker reads the record
 // (observeJunieTurnEnd).
 //
-// One window stays open: this hook runs before the base stores the prompt's
-// end, so a waiting turn that fails and ends inside that store applies no
-// verdict, and the prompt's verdict lacks the turn's failure. Junie's own
-// retries keep a failing turn running for tens of seconds, and the store
-// takes milliseconds.
+// The base retains a queued turn's own completion and immutable verdict even
+// when its marker arrives while the prompt's end is being stored.
 func (a *Agent) finishJuniePrompt(err error, stopped bool) acp.PromptEnding {
 	a.Mu.Lock()
 	record := a.failureRecord
 	a.Mu.Unlock()
 	verdict := junieTurnVerdict(err, stopped, record, a.clockOrReal().Now())
-	return acp.PromptEnding{Retry: &verdict}
+	return acp.PromptEnding{Retry: verdict}
 }
 
 // junieTurnVerdict is the retry verdict of one turn end, with the frame that

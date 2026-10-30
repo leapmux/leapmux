@@ -36,6 +36,8 @@ func TestRunCapturesOnlyRequestedNativeValues(t *testing.T) {
 	assert.Equal(t, cwd, snapshot.WorkingDir)
 	assert.Equal(t, os.Getenv("LEAPMUX_PROBE_VALUE"), snapshot.Values["LEAPMUX_PROBE_VALUE"])
 	assert.Empty(t, snapshot.Values["LEAPMUX_PROBE_UNSET"])
+	assert.False(t, snapshot.Present["LEAPMUX_PROBE_UNSET"])
+	assert.True(t, snapshot.Present["LEAPMUX_PROBE_VALUE"])
 	assert.NotContains(t, snapshot.Values, "LEAPMUX_PROBE_SECRET")
 	assert.Equal(t, cwd+string(filepath.Separator)+"./child/../file", snapshot.Paths["LEAPMUX_PROBE_PATH"])
 }
@@ -138,4 +140,85 @@ func TestRootedReadPathPreservesNativeSegments(t *testing.T) {
 	assert.Equal(t, cwd+string(filepath.Separator)+"child/../file", rootedReadPath("child/../file", cwd))
 	absolute := cwd + string(filepath.Separator) + "link/../file"
 	assert.Equal(t, absolute, rootedReadPath(absolute, cwd))
+}
+
+func TestRunDistinguishesUnsetAndEmptyNativeValues(t *testing.T) {
+	const name = "LEAPMUX_PROBE_PRESENCE"
+	t.Setenv(name, "")
+	args, err := (Request{Variables: []string{name}}).Arguments()
+	require.NoError(t, err)
+	capture := func() string {
+		t.Helper()
+		var output, diagnostic bytes.Buffer
+		code, handled := Run(args, &output, &diagnostic)
+		require.True(t, handled)
+		require.Zero(t, code, diagnostic.String())
+		return output.String()
+	}
+	empty := capture()
+	require.NoError(t, os.Unsetenv(name))
+	unset := capture()
+	assert.NotEqual(t, empty, unset, "native consumers distinguish an unset value from an explicitly empty value")
+}
+
+func TestRunMetadataKeepsNativeValuesOnOneLine(t *testing.T) {
+	const prefix = "__LEAPMUX_META_test__ "
+	t.Setenv("LEAPMUX_PROBE_METADATA", "日本語\nline\r\n%$'")
+	args, err := (Request{Variables: []string{"LEAPMUX_PROBE_METADATA"}, MetadataPrefix: prefix}).Arguments()
+	require.NoError(t, err)
+	var output, diagnostic bytes.Buffer
+	code, handled := Run(args, &output, &diagnostic)
+	require.True(t, handled)
+	require.Zero(t, code, diagnostic.String())
+	require.Equal(t, 1, strings.Count(output.String(), "\n"))
+	require.True(t, strings.HasPrefix(output.String(), prefix+MetadataKey+"="))
+	value := strings.TrimSuffix(strings.TrimPrefix(output.String(), prefix+MetadataKey+"="), "\n")
+	snapshot, err := DecodeMetadata(value)
+	require.NoError(t, err)
+	assert.Equal(t, os.Getenv("LEAPMUX_PROBE_METADATA"), snapshot.Values["LEAPMUX_PROBE_METADATA"])
+	assert.True(t, snapshot.Present["LEAPMUX_PROBE_METADATA"])
+	assert.NotEmpty(t, snapshot.WorkingDir)
+}
+
+func TestMetadataRejectsInvalidFramingAndPresence(t *testing.T) {
+	t.Parallel()
+	for _, prefix := range []string{"line\nnext", "line\rnext", "line\x00next"} {
+		_, err := (Request{MetadataPrefix: prefix}).Arguments()
+		assert.Error(t, err)
+	}
+	for _, value := range []string{"", "e30=", "e31", encodedRequest(`{}`), encodedRequest(`{"values":{},"present":{},"workingDir":"relative"}`), encodedRequest(`{"values":{"A":"value"},"present":{"A":false},"workingDir":"/"}`), encodedRequest(`{"values":{"A":""},"present":{},"workingDir":"/"}`)} {
+		_, err := DecodeMetadata(value)
+		assert.Error(t, err, value)
+	}
+}
+
+type shortProbeWriter struct{}
+
+func (shortProbeWriter) Write(data []byte) (int, error) { return len(data) - 1, nil }
+
+func TestRunRejectsAProbeOutputThatWasOnlyPartlyWritten(t *testing.T) {
+	t.Parallel()
+	for _, prefix := range []string{"", "__LEAPMUX_META_test__ "} {
+		args, err := (Request{MetadataPrefix: prefix}).Arguments()
+		require.NoError(t, err)
+		var diagnostic bytes.Buffer
+		code, handled := Run(args, shortProbeWriter{}, &diagnostic)
+		assert.True(t, handled)
+		assert.Equal(t, 1, code)
+		assert.Contains(t, diagnostic.String(), "could not complete")
+	}
+}
+
+func TestRunRejectsANativeValueThatJSONCannotPreserve(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows converts an invalid UTF-8 value before native capture")
+	}
+	t.Setenv("LEAPMUX_PROBE_INVALID", string([]byte{255}))
+	args, err := (Request{Variables: []string{"LEAPMUX_PROBE_INVALID"}}).Arguments()
+	require.NoError(t, err)
+	var output, diagnostic bytes.Buffer
+	code, handled := Run(args, &output, &diagnostic)
+	assert.True(t, handled)
+	assert.Equal(t, 1, code)
+	assert.Empty(t, output.String())
 }

@@ -195,7 +195,7 @@ func (a *Agent) handlePromptEnded(err error, stopped bool) acp.PromptEnding {
 	if !manual {
 		return a.finishQwenPrompt(err, stopped)
 	}
-	ending := acp.PromptEnding{Retry: &acp.TurnVerdict{Failure: providerkit.CompactionEnd()}}
+	ending := acp.PromptEnding{Retry: acp.TurnVerdict{Failure: providerkit.CompactionEnd()}}
 	responseError, failed := providerkit.AsJSONRPCResponseError(err)
 	if !stopped && failed && responseError.Code == qwenInternalErrorCode &&
 		providerkit.StringField(responseError.Data, "details") == qwenCompressNotBeneficial {

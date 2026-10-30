@@ -673,6 +673,36 @@ func (m *Manager) lockRegistration(agentID string) (*agentRegistration, func()) 
 	return entry, unlock
 }
 
+// ReconcileQueueState runs native synchronization without a lifecycle lock.
+// An old runtime's success cannot acknowledge a replacement registration.
+func (m *Manager) ReconcileQueueState(ctx context.Context, agentID string) error {
+	entry, release := m.lockRegistration(agentID)
+	m.mu.RLock()
+	current := entry != nil && !entry.exiting
+	provider := entry.providerOrNil()
+	m.mu.RUnlock()
+	release()
+	if !current || provider == nil {
+		return fmt.Errorf("%w: %s", ErrAgentNotFound, agentID)
+	}
+	reconciler, ok := provider.(QueueStateReconciler)
+	if !ok {
+		return fmt.Errorf("the agent %s cannot synchronize native queue state", agentID)
+	}
+	if err := reconciler.ReconcileBeforeDispatch(ctx); err != nil {
+		return err
+	}
+	latest, release := m.lockRegistration(agentID)
+	m.mu.RLock()
+	current = latest == entry && !entry.exiting
+	m.mu.RUnlock()
+	release()
+	if !current {
+		return fmt.Errorf("%w: the agent %s changed during native synchronization", ErrAgentNotFound, agentID)
+	}
+	return nil
+}
+
 // SendRawInput writes raw bytes directly to the specified agent's stdin
 // without wrapping in a UserInputMessage.
 func (m *Manager) SendRawInput(agentID string, data []byte, stop StopContext) error {

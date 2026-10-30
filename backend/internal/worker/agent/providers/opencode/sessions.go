@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/opencodestore"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode/opencodestore"
 )
 
 // opencodeDataDir is where OpenCode keeps its data, following the `xdg-basedir`

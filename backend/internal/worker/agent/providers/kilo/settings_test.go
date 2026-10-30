@@ -7,9 +7,6 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -17,8 +14,9 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp/acptest"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode/opencodetest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/kilo/kilotest"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // The fake server follows Kilo's own rules (packages/opencode/src/acp/service.ts of Kilo):
@@ -53,7 +51,7 @@ func newKiloSwitchAgent(t *testing.T, server *acptest.ModelSwitchServer) (*Agent
 	ag, requests := acptest.NewAgentForRPCWithRequestResponder(t,
 		func() *Agent {
 			a := &Agent{}
-			*a.HooksForTest() = opencode.FamilyHooks(&a.FamilyBase)
+			*a.HooksForTest() = kiloHooks(a)
 			return a
 		},
 		func(a *Agent) *acp.Base { return &a.Base },
@@ -123,7 +121,7 @@ func newSwarmAgent(t *testing.T, swarm bool) (*Agent, *agenttest.Sink) {
 	a := newAgent(swarm)
 	a.AttachPeerForTest(ctx, cancel, &agenttest.Stdin{}, "kilo-swarm", "session-1")
 	a.SetSinkForTest(agent.NewProviderServices(sink))
-	*a.HooksForTest() = opencode.FamilyHooks(&a.FamilyBase)
+	*a.HooksForTest() = kiloHooks(a)
 	return a, sink
 }
 
@@ -143,9 +141,9 @@ func TestKiloSwarmChangeRestartsTheAgent(t *testing.T) {
 }
 
 // configDaemon serves Kilo's configuration route with body.
-func configDaemon(t *testing.T, status int, body string) *opencodetest.FakeDaemon {
+func configDaemon(t *testing.T, status int, body string) *kilotest.FakeDaemon {
 	t.Helper()
-	daemon := opencodetest.NewFakeDaemon(t, opencode.EventRoute, opencode.QuestionRoot)
+	daemon := kilotest.NewFakeDaemon(t, EventRoute, QuestionRoot)
 	daemon.HandleFunc(kiloConfigRoute, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(status)
 		_, _ = fmt.Fprint(w, body)

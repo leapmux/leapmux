@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"regexp"
 	"strconv"
@@ -66,7 +67,7 @@ func (a *Agent) finishGeminiPrompt(err error, stopped bool) acp.PromptEnding {
 	default:
 		verdict = geminiTurnFailure(err, stopped, a.Clock().Now())
 	}
-	return acp.PromptEnding{Retry: &verdict}
+	return acp.PromptEnding{Retry: verdict}
 }
 
 // geminiLongWait is the retry wait that made LeapMux stop the turn.
@@ -79,14 +80,21 @@ type geminiLongWait struct {
 // clearGeminiRetryState forgets the long wait and the reader's stop, when a
 // prompt starts or a context clear replaces the session.
 func (a *Agent) clearGeminiRetryState() {
+	conversation, preparedAt := a.CurrentConversation(), a.Clock().Now()
+	var epoch uint64
+	if a.debugLog != nil {
+		epoch = a.debugLog.preparePrompt()
+	}
 	a.retryMu.Lock()
 	a.longWait, a.userStopRequested = nil, false
+	a.retryWarnings = geminiRetryWarningReader{}
+	a.retryEpoch, a.retryPreparedAt, a.retryConversation = epoch, preparedAt, conversation
 	a.retryMu.Unlock()
 }
 
 // Interrupt stops the running turn for the reader. It records the stop first,
 // so the turn's verdict schedules no retry, also after a long wait. LeapMux's
-// own stop for a long wait calls Base.Interrupt and records nothing.
+// own stop for a long wait uses a separate conversation cancellation.
 func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.noteUserStop()
 	return a.Base.Interrupt(stop)
@@ -107,15 +115,28 @@ func (a *Agent) noteUserStop() {
 	a.retryMu.Unlock()
 }
 
-// observeGeminiDebugLog reads one line of Gemini CLI's debug log. Gemini states
+// observeGeminiDebugLogLine reads one line of Gemini CLI's debug log. Gemini states
 // a retry wait of its own nowhere on the ACP stream, only in the warning that
 // it writes before the wait (geminiDebugLog).
-func (a *Agent) observeGeminiDebugLog(line string) {
-	message, delay, ok := a.retryWarnings.read(line)
+func (a *Agent) observeGeminiDebugLogLine(line geminiDebugLogLine) {
+	a.retryMu.Lock()
+	if line.epoch != a.retryEpoch {
+		a.retryMu.Unlock()
+		return
+	}
+	message, delay, ok := a.retryWarnings.read(line.text)
+	emitted, prepared, conversation := a.retryWarnings.emittedAt, a.retryPreparedAt, a.retryConversation
+	a.retryMu.Unlock()
 	if !ok {
 		return
 	}
-	a.stopForLongRetryWait(message, delay)
+	// Native timestamps have millisecond precision. An older buffered write and
+	// a fresh warning in the preparation millisecond have indistinguishable times.
+	// That millisecond supplies no proof that this prompt emitted the warning.
+	if emitted.IsZero() || !emitted.After(prepared) || emitted.After(a.Clock().Now()) {
+		return
+	}
+	a.stopForLongRetryWait(conversation, message, delay, emitted)
 }
 
 // closeDebugLog stops reading the debug log and removes it. An agent that a
@@ -132,12 +153,9 @@ func (a *Agent) closeDebugLog() {
 // error states, up to twice, which is about 19 hours for the Code Assist
 // quota (retryWithBackoff of chunk-DKZARV6U.js), and a restart loses that
 // wait. It acts once per prompt.
-func (a *Agent) stopForLongRetryWait(message string, delay time.Duration) {
-	if !a.PromptActive() {
-		return
-	}
+func (a *Agent) stopForLongRetryWait(conversation *acp.Conversation, message string, delay time.Duration, emittedAt time.Time) {
 	observedAt := a.Clock().Now()
-	failure, ok := providerkit.LongRetryWaitFailure(observedAt.Add(delay), observedAt)
+	failure, ok := providerkit.LongRetryWaitFailure(emittedAt.Add(delay), observedAt)
 	if !ok {
 		return
 	}
@@ -145,16 +163,25 @@ func (a *Agent) stopForLongRetryWait(message string, delay time.Duration) {
 	if err != nil {
 		return
 	}
-	a.retryMu.Lock()
-	recorded := a.longWait != nil
-	if !recorded {
-		a.longWait = &geminiLongWait{failure: failure, payload: payload}
-	}
-	a.retryMu.Unlock()
-	if recorded {
-		return
-	}
-	if err := a.Base.Interrupt(agent.NewStopContext(nil)); err != nil {
+	_, err = a.CancelConversation(conversation, func() func(error) {
+		a.retryMu.Lock()
+		defer a.retryMu.Unlock()
+		if a.retryConversation != conversation || a.longWait != nil {
+			return nil
+		}
+		record := &geminiLongWait{failure: failure, payload: payload}
+		a.longWait = record
+		return func(err error) {
+			if err != nil && !errors.Is(err, agent.ErrDeliveryUncertain) {
+				a.retryMu.Lock()
+				if a.longWait == record {
+					a.longWait = nil
+				}
+				a.retryMu.Unlock()
+			}
+		}
+	})
+	if err != nil {
 		slog.Warn("stop the Gemini turn for its long retry wait", "agent_id", a.AgentID(), "reset_at", failure.ResetAt, "error", err)
 	}
 }
@@ -165,8 +192,9 @@ func (a *Agent) stopForLongRetryWait(message string, delay time.Duration) {
 // first line with the time and the level, `[<ISO time>] [WARN] `. The message
 // can span lines, so the warning ends at the line that holds the delay.
 var (
-	geminiRetryWarningStartRe = regexp.MustCompile(`^\[[^\]]*\] \[WARN\] Attempt \d+ failed: `)
+	geminiRetryWarningStartRe = regexp.MustCompile(`^\[([^\]]*)\] \[WARN\] Attempt \d+ failed: `)
 	geminiRetryWarningEndRe   = regexp.MustCompile(`\. Retrying after (\d{1,12})ms\.\.\.$`)
+	geminiDebugRecordStartRe  = regexp.MustCompile(`^\[[^\]]*\] \[[A-Z]+\] `)
 )
 
 // geminiRetryWarningMaxLines caps the lines of one warning that the reader
@@ -176,15 +204,25 @@ const geminiRetryWarningMaxLines = 64
 // geminiRetryWarningReader joins the lines of one retry warning.
 type geminiRetryWarningReader struct {
 	// pending holds the lines of a warning whose delay has not arrived.
-	pending []string
+	pending   []string
+	emittedAt time.Time
 }
 
 // read takes one line of the debug log. It returns the failure message and
 // the delay of the warning that the line completes.
 func (r *geminiRetryWarningReader) read(line string) (message string, delay time.Duration, ok bool) {
-	switch start := geminiRetryWarningStartRe.FindStringIndex(line); {
+	switch start := geminiRetryWarningStartRe.FindStringSubmatchIndex(line); {
 	case start != nil:
+		emitted, err := time.Parse(time.RFC3339Nano, line[start[2]:start[3]])
+		if err != nil {
+			r.pending, r.emittedAt = nil, time.Time{}
+			return "", 0, false
+		}
+		r.emittedAt = emitted
 		r.pending = append(r.pending[:0], line[start[1]:])
+	case geminiDebugRecordStartRe.MatchString(line):
+		r.pending, r.emittedAt = nil, time.Time{}
+		return "", 0, false
 	case len(r.pending) == 0:
 		return "", 0, false
 	case len(r.pending) >= geminiRetryWarningMaxLines:

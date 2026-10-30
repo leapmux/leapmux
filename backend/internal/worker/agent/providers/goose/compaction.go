@@ -164,11 +164,11 @@ func (a *Agent) finishGoosePrompt(err error, stopped bool) acp.PromptEnding {
 	a.Mu.Unlock()
 	if !compact {
 		verdict := gooseTurnFailure(err, stopped, last, a.Clock().Now())
-		return acp.PromptEnding{Retry: &verdict}
+		return acp.PromptEnding{Retry: verdict}
 	}
 	if err == nil && !stopped {
 		providerkit.PersistCompactionEnded(a.Sink(), providerkit.CompactionEndCompleted, "")
 	}
 	providerkit.EndCompaction(a.Sink())
-	return acp.PromptEnding{Retry: &acp.TurnVerdict{Failure: providerkit.CompactionEnd()}}
+	return acp.PromptEnding{Retry: acp.TurnVerdict{Failure: providerkit.CompactionEnd()}}
 }

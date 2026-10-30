@@ -1925,7 +1925,7 @@ func TestTurnEndRetiresTheMainAgentsRequests(t *testing.T) {
 
 	feed(a,
 		statusEvent(t, contracts.MiMoStatusTypeBusy),
-		eventJSON(t, contracts.OpenCodeEventQuestionAsked, map[string]any{"id": "que_1", "sessionID": testSessionID,
+		eventJSON(t, contracts.NativeQuestionEventQuestionAsked, map[string]any{"id": "que_1", "sessionID": testSessionID,
 			"questions": []any{map[string]any{"question": "Pick", "header": "Pick", "options": []any{map[string]any{"label": "A"}}}}}),
 		eventJSON(t, contracts.MiMoEventPermissionAsked, map[string]any{"id": "per_1", "sessionID": testSessionID, "permission": "bash"}),
 		statusEvent(t, contracts.MiMoStatusTypeIdle),

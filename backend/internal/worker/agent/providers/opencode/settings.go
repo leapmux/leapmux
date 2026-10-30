@@ -19,10 +19,7 @@ import (
 // session rule update only appends rules, so it cannot switch one off again.
 // LeapMux is the client here, so it answers the requests itself while the
 // option is on.
-var AutoApproveGroup = agent.SelectGroup(contracts.OpenCodeOptionAutoApprove, "Auto-approve", agent.OptionOrderPermissionMode, "false", []agent.OptionDef{
-	{Id: "false", Name: "Off", Description: "Ask before each tool call that no rule allows", Default: true},
-	{Id: "true", Name: "On", Description: "Approve each permission request once, as the --auto option does. Explicit deny rules still apply."},
-})
+var AutoApproveGroup = providerkit.ClientAutoApproveGroup()
 
 // acpPermissionKindAllowAlways is the ACP kind of a permission option that
 // allows the call always. Only the worker reads it, so it stays out of the
@@ -31,7 +28,7 @@ const acpPermissionKindAllowAlways = "allow_always"
 
 // autoApproveFromOptions reads the launch value of the Auto-approve option.
 func autoApproveFromOptions(options optionmap.Map) (bool, error) {
-	return options.Bool(contracts.OpenCodeOptionAutoApprove)
+	return options.Bool(contracts.ClientApprovalOptionAutoApprove)
 }
 
 // localOptionGroups reports the Auto-approve option with its current value,
@@ -50,7 +47,7 @@ func (b *FamilyBase) localOptionGroups() []*leapmuxv1.AvailableOptionGroup {
 // applyLocalOption applies a new Auto-approve value at once. The base then
 // approves each request that already waits (Base.UpdateSettings).
 func (b *FamilyBase) applyLocalOption(id, value string) (bool, error) {
-	if id != contracts.OpenCodeOptionAutoApprove {
+	if id != contracts.ClientApprovalOptionAutoApprove {
 		return false, nil
 	}
 	autoApprove, err := optionmap.Map{id: value}.Bool(id)

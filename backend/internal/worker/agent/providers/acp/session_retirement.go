@@ -198,12 +198,15 @@ func (b *Base) withdrawTurnControls() {
 //     no turn takes no cancel, because session/cancel ends a prompt turn and
 //     there is none.
 //
-// The answers go FIRST, because the agent blocks on them, and a cancel that
-// arrives while one is open stops nothing until the block is released. The stop
+// The answers normally go first, because the agent blocks on them. Providers
+// that require cancellation first select CancelBeforeControlWithdrawal. The stop
 // is noted BEFORE the cancel goes out, so a result that the agent sends the
 // instant it receives one is already known to belong to a stop.
 func (b *Base) releaseOutgoingSession(sessionID string) error {
 	b.noteACPInterruptRequested()
+	if conversation := b.CurrentConversation(); conversation != nil {
+		return b.interruptConversation(conversation)
+	}
 	if b.hooks.CancelBeforeControlWithdrawal && b.PromptActive() {
 		if err := b.sendSessionCancel(sessionID); err != nil {
 			return err

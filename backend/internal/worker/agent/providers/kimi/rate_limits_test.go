@@ -2,6 +2,7 @@ package kimi
 
 import (
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -463,6 +464,83 @@ func TestKimiUsageReadWithNoPendingLimitMakesNoRetryCall(t *testing.T) {
 	rig := newKimiPlanRigAt(t)
 	rig.agent.refreshUsage()
 	assert.Len(t, rig.fake.requestsTo("GET "+kimiRouteManagedUsage), 1)
+	assert.Zero(t, rig.sink.AutoScheduleCount())
+	assert.Zero(t, rig.sink.AutoCancelCount())
+}
+
+func TestKimiStopIntentSuppressesADeferredUsageVerdict(t *testing.T) {
+	t.Parallel()
+	for _, failedRead := range []bool{false, true} {
+		t.Run(map[bool]string{false: "a stated reset", true: "a failed usage read"}[failedRead], func(t *testing.T) {
+			t.Parallel()
+			rig := newKimiPlanRigAt(t)
+			gate := newKimiUsageGate()
+			release := sync.OnceFunc(func() { close(gate.release) })
+			t.Cleanup(release)
+			var answer any = kimiUsageAnswer(1)
+			if failedRead {
+				answer = map[string]any{"kind": "error", "message": "usage unavailable"}
+			}
+			rig.fake.reply("GET "+kimiRouteManagedUsage, gate.reply(answer))
+			failFiveHour(t, rig, 0)
+			gate.waitEntered(t)
+			require.NoError(t, rig.agent.Interrupt(agent.StopContext{}))
+			release()
+			waitForKimiUsageRead(t, rig)
+			assert.Zero(t, rig.sink.AutoScheduleCount())
+			assert.Equal(t, []kimiRetryOp{{op: "cancel_server_error"}}, kimiOpsAfterLastTurnEnd(t, rig.sink))
+			failFiveHour(t, rig, 1)
+			waitForKimiUsageRead(t, rig)
+			assert.Equal(t, 1, rig.sink.AutoScheduleCount(), "the next turn has its own stop identity")
+		})
+	}
+}
+
+func TestKimiUsageVerdictFollowsRetainedOutputThroughItsOwnIdle(t *testing.T) {
+	t.Parallel()
+	for _, releaseFirst := range []bool{false, true} {
+		t.Run(map[bool]string{false: "usage after storage recovery", true: "usage before storage recovery"}[releaseFirst], func(t *testing.T) {
+			t.Parallel()
+			rig := newKimiPlanRigAt(t)
+			gate := newKimiUsageGate()
+			release := sync.OnceFunc(func() { close(gate.release) })
+			t.Cleanup(release)
+			rig.fake.reply("GET "+kimiRouteManagedUsage, gate.reply(kimiUsageAnswer(1)))
+			rig.sink.PersistErr = assert.AnError
+			failFiveHour(t, rig, 0)
+			gate.waitEntered(t)
+			if releaseFirst {
+				release()
+				waitForKimiUsageRead(t, rig)
+				assert.Zero(t, rig.sink.AutoScheduleCount(), "a completed read still waits for the retained turn-end row")
+			}
+			rig.sink.PersistErr = nil
+			require.NoError(t, agent.FlushPendingOutput(rig.agent.sink))
+			if !releaseFirst {
+				release()
+				waitForKimiUsageRead(t, rig)
+			}
+			assert.Equal(t, []kimiRetryOp{{op: "schedule_usage_limit", resetAt: kimiFiveHourResetAt}, {op: "cancel_server_error"}}, kimiOpsAfterLastTurnEnd(t, rig.sink))
+			assert.Equal(t, 1, rig.sink.AutoScheduleCount())
+		})
+	}
+}
+
+func TestKimiQueuedUsageVerdictCannotFollowANewerTurn(t *testing.T) {
+	t.Parallel()
+	rig := newKimiPlanRigAt(t)
+	gate := newKimiUsageGate()
+	release := sync.OnceFunc(func() { close(gate.release) })
+	t.Cleanup(release)
+	rig.fake.reply("GET "+kimiRouteManagedUsage, gate.reply(kimiUsageAnswer(1)))
+	rig.sink.PersistErr = assert.AnError
+	failFiveHour(t, rig, 0)
+	gate.waitEntered(t)
+	release()
+	waitForKimiUsageRead(t, rig)
+	rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 1, "origin": map[string]any{"kind": contracts.KimiOriginUser}})
+	rig.sink.PersistErr = nil
+	require.NoError(t, agent.FlushPendingOutput(rig.agent.sink))
 	assert.Zero(t, rig.sink.AutoScheduleCount())
 	assert.Zero(t, rig.sink.AutoCancelCount())
 }

@@ -279,7 +279,7 @@ func (b *Base) finishRootSnapshot(turn acpTurnSnapshot, textCompletion, toolComp
 // can allow another turn or session to replace this snapshot's owner.
 func (b *Base) captureRootSnapshotLocked(turn *acpTurnSnapshot, allTurns bool) {
 	turn.sessionID = b.sessionID
-	turn.interrupted = b.interruptRequested
+	turn.interrupted = b.interruptRequested || b.promptConversation.internallyInterrupted()
 	turn.cleanupCaptured = true
 	if capture := b.hooks.CaptureTurnOutputCleanup; capture != nil && (allTurns || !b.agentTurnQueued) {
 		turn.cleanup = capture()
@@ -341,9 +341,12 @@ func (b *Base) persistRootFailure(writer agent.TranscriptServices, err error) {
 }
 
 func (b *Base) sendOwnedPromptDetachedLocked(sessionID string, target *acpTranscriptTarget, content string, attachments []*leapmuxv1.Attachment, releaseOperation func()) error {
+	b.Mu.Lock()
+	conversation := b.promptConversation
+	b.Mu.Unlock()
 	return b.sendPromptDetachedLocked(sessionID, content, attachments, target, func(response json.RawMessage, err error) {
 		defer releaseOperation()
-		b.finishOwnedPromptRequest(sessionID, target, response, err)
+		b.finishOwnedPromptRequest(sessionID, target, conversation, response, err)
 	})
 }
 

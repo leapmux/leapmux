@@ -14,8 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode/opencodetest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/kilo/kilotest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -64,9 +63,9 @@ func kiloStoredPage(created time.Time, daemonError string) string {
 // mock clock at now, and a fake daemon. The daemon answers the read of the
 // newest stored message with page. The first prompt is active and prepared,
 // as SendInput leaves it.
-func newKiloRetryAgent(t *testing.T, now time.Time, page string) (*Agent, *agenttest.Sink, *agenttest.Stdin, *opencodetest.FakeDaemon) {
+func newKiloRetryAgent(t *testing.T, now time.Time, page string) (*Agent, *agenttest.Sink, *agenttest.Stdin, *kilotest.FakeDaemon) {
 	t.Helper()
-	daemon := opencodetest.NewFakeDaemon(t, opencode.EventRoute, opencode.QuestionRoot)
+	daemon := kilotest.NewFakeDaemon(t, EventRoute, QuestionRoot)
 	daemon.HandleFunc("/session/"+kiloRetrySession+"/message", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, page)
 	})
@@ -82,7 +81,7 @@ func newKiloRetryAgent(t *testing.T, now time.Time, page string) (*Agent, *agent
 	a.SetSessionIDForTest(kiloRetrySession)
 	sink := &agenttest.Sink{}
 	a.SetSinkForTest(agent.NewProviderServices(sink))
-	*a.HooksForTest() = opencode.FamilyHooks(&a.FamilyBase)
+	*a.HooksForTest() = kiloHooks(a)
 	a.BeginQuestionsForTest(ctx, a.Sink(), "test-agent", daemon.Server.URL)
 	a.SetPromptActiveForTest(true)
 	a.HooksForTest().PromptPrepared()
@@ -274,9 +273,9 @@ func TestKiloMemberFailure(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			var failure opencode.DaemonError
+			var failure DaemonError
 			require.NoError(t, json.Unmarshal([]byte(tc.failure), &failure))
-			verdict, decides := kiloMemberFailure(failure)
+			verdict, decides := kiloGatewayFailure(failure)
 			assert.Equal(t, tc.decides, decides)
 			if tc.decides {
 				assert.Equal(t, providerkit.TurnFailureNotRetryable, verdict.Kind)
@@ -287,13 +286,8 @@ func TestKiloMemberFailure(t *testing.T) {
 	}
 }
 
-// Every start path builds the agent through newAgent, which binds the hook.
-func TestKiloBindsItsMemberFailure(t *testing.T) {
+func TestKiloGatewayFailurePrecedesTheGenericRecipe(t *testing.T) {
 	t.Parallel()
-	a := newAgent(false)
-	require.NotNil(t, a.MemberFailure)
-	_, decides := a.MemberFailure(opencode.DaemonError{Data: opencode.DaemonErrorData{
-		ResponseBody: `{"error":{"code":"PROMOTION_MODEL_LIMIT_REACHED"}}`,
-	}})
-	assert.True(t, decides)
+	failure := DaemonError{Data: DaemonErrorData{StatusCode: 429, ResponseBody: `{"error":{"code":"PROMOTION_MODEL_LIMIT_REACHED"}}`}}
+	assert.Equal(t, providerkit.TurnFailureNotRetryable, classifyDaemonError(failure, time.Now()).Kind)
 }

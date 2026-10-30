@@ -2,10 +2,13 @@ package kilo
 
 import (
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 )
 
 // kiloSteerState holds the detached prompts that share one active turn.
@@ -40,7 +43,7 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	err := a.SendPromptDetached(sessionID, content, attachments, func(response json.RawMessage, err error) {
 		a.finishKiloSteer(sessionID, response, err, true)
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, agent.ErrDeliveryUncertain) {
 		a.finishKiloSteer(sessionID, nil, err, false)
 	}
 	return err
@@ -65,21 +68,29 @@ func (a *Agent) finishKiloSteer(sessionID string, response json.RawMessage, err 
 	}
 	a.steers.mu.Unlock()
 
-	if reportFailure {
-		a.ReportSteerFailure(err)
+	if leaseErr := a.WithSessionID(func(currentSessionID string) error {
+		if currentSessionID != sessionID {
+			return nil
+		}
+		if reportFailure {
+			a.ReportSteerFailure(err)
+		}
+		if !last || !ownsTurn {
+			return nil
+		}
+		// The steer's end is the turn's end when the prompt ended first, so it
+		// decides the turn's verdict as a prompt end does. While the prompt still
+		// runs, the base keeps the verdict with the queued turn, or drops it with a
+		// turn that left no row, and the prompt's own end decides. Either response
+		// order thus applies one verdict.
+		verdict := a.TurnEndVerdict(err, a.IsStopped())
+		if len(end) == 0 {
+			a.EndAgentTurnWithoutRowWithVerdict(verdict, acp.MergeQueuedTurnIntoPrompt)
+			return nil
+		}
+		a.EndAgentTurnWithVerdict(end, verdict)
+		return nil
+	}); leaseErr != nil {
+		slog.Debug("ignore Kilo steer completion without a current session", "agent_id", a.AgentID(), "error", leaseErr)
 	}
-	if !last || !ownsTurn || a.CurrentSessionID() != sessionID {
-		return
-	}
-	// The steer's end is the turn's end when the prompt ended first, so it
-	// decides the turn's verdict as a prompt end does. While the prompt still
-	// runs, the base keeps the verdict with the queued turn, or drops it with a
-	// turn that left no row, and the prompt's own end decides. Either response
-	// order thus applies one verdict.
-	verdict := a.TurnEndVerdict(err, a.IsStopped())
-	if len(end) == 0 {
-		a.EndAgentTurnWithoutRowWithVerdict(verdict)
-		return
-	}
-	a.EndAgentTurnWithVerdict(end, verdict)
 }

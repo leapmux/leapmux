@@ -194,6 +194,13 @@ func (b *FamilyBase) noteUserStop() {
 	b.daemonMu.Unlock()
 }
 
+// ClearContext records the user's intent before replacing the session. A failed
+// replacement must not retain the automatic retry of an earlier long wait.
+func (b *FamilyBase) ClearContext() (string, error) {
+	b.noteUserStop()
+	return b.Base.ClearContext()
+}
+
 // SteerInput sends the steer as a second prompt on the running session.
 //
 // A refusal reaches the READER, not the log alone. The steer is something the reader

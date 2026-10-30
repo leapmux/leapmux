@@ -141,14 +141,14 @@ const (
 	ompAgentEndMiMo400       = `{"type":"agent_end","messages":[{"role":"assistant","content":[],"api":"openai-completions","provider":"xiaomi-token-plan-sgp","model":"mimo-v2.6-pro","stopReason":"error","timestamp":1792177755143,"errorStatus":400,"errorId":400,"errorMessage":"400 data:{\"error\":{\"code\":\"400\",\"message\":\"Request failed\",\"param\":\"Connection prematurely closed BEFORE response\",\"type\":\"\"}}\n\n\nraw-http-request=/Users/trustin/.omp/logs/http-400-requests/1792177755143-3g4p3lfjmwwi0.json"}],"isTerminal":true,"yielded":true}`
 )
 
-// ompAgentEndWithError renders a terminal agent_end whose assistant message
+// ompAgentEndWithError renders a final agent_end whose assistant message
 // failed with an errorId and an errorStatus. The text states no vendor
 // sentence, so only the omp fields decide.
 func ompAgentEndWithError(errorID int64, errorStatus int) string {
 	return fmt.Sprintf(`{"type":"agent_end","messages":[{"role":"assistant","content":[],"stopReason":"error","timestamp":1793150670954,"errorStatus":%d,"errorId":%d,"errorMessage":"the request failed"}],"isTerminal":true,"yielded":true}`, errorStatus, errorID)
 }
 
-// The terminal agent_end applies one verdict after its divider, and the retry
+// The final agent_end applies one verdict after its divider, and the retry
 // carries that frame.
 func TestATerminalAgentEndAppliesItsVerdictAfterTheDivider(t *testing.T) {
 	t.Parallel()
@@ -350,7 +350,7 @@ func TestOmpTurnFailure(t *testing.T) {
 			false, time.Time{}, providerkit.TurnFailureNotRetryable, 0, time.Time{},
 		},
 		{
-			"an absent isTerminal reads as terminal",
+			"an absent isTerminal reads as final",
 			`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorId":135168,"errorStatus":500,"errorMessage":"500 Internal server error"}]}`,
 			false, time.Time{}, providerkit.TurnFailureTransient, 0, time.Time{},
 		},

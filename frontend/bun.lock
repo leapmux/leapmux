@@ -81,6 +81,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "@milkdown/ctx@7.22.1": "patches/@milkdown%2Fctx@7.22.1.patch",
+  },
   "overrides": {
     "@types/hast": "^3.0.5",
     "nan": "^2.29.0",

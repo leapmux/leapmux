@@ -1,13 +1,14 @@
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it, vi } from 'vitest'
-import { OPENCODE_EVENT, OPENCODE_OPTION } from '~/generated/contracts/opencode-protocol'
+import { CLIENT_APPROVAL_OPTION } from '~/generated/contracts/client-approval'
+import { NATIVE_QUESTION_EVENT } from '~/generated/contracts/native-questions'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { assembledMessageRow } from '~/test-support/assembledMessages'
 import { providerQuotableText, providerToolCall } from '~/test-support/toolCallFixture'
 import { createControlAnswerState } from '../../controls/types'
 import { acpResultDivider } from '../acp/extractors/resultDivider'
 import { acpTextContent, describeACPProviderBasics, renderACPRow, renderACPToolPair } from '../acp/testUtils'
-import { sendOpenCodeQuestionResponse } from '../openCodeQuestions'
+import { sendNativeQuestionResponse } from '../nativeQuestions'
 import { providerFor } from '../registry'
 
 import { input } from '../testUtils'
@@ -71,7 +72,7 @@ describe('opencode classify', () => {
 
   it('maps bypass to the family Auto-approve option and offers no smart preset', () => {
     expect(plugin.controls?.permissionPresets?.bypass).toEqual({
-      sets: { [OPENCODE_OPTION.AutoApprove]: 'true' },
+      sets: { [CLIENT_APPROVAL_OPTION.AutoApprove]: 'true' },
     })
     expect(plugin.controls?.permissionPresets?.smart).toBeUndefined()
   })
@@ -850,7 +851,7 @@ describe('the opencode permission sender', () => {
   })
 })
 
-describe('sendOpenCodeQuestionResponse', () => {
+describe('sendNativeQuestionResponse', () => {
   function decode(bytes: Uint8Array): Record<string, unknown> {
     return JSON.parse(new TextDecoder().decode(bytes))
   }
@@ -861,7 +862,7 @@ describe('sendOpenCodeQuestionResponse', () => {
       captured = content
     })
 
-    await sendOpenCodeQuestionResponse(onRespond, 'que_1', [
+    await sendNativeQuestionResponse(onRespond, 'que_1', [
       {
         question: 'Action?',
         options: [
@@ -904,14 +905,14 @@ describe('sendOpenCodeQuestionResponse', () => {
  *
  * The daemon's ACP stream carries no question at all: its adapter handles four event
  * types and none is a question, so the worker reads the daemon's HTTP event stream
- * for these. See openCodeQuestions in the Go worker.
+ * for these. See nativeQuestions in the Go worker.
  */
 describe('opencode question recognition', () => {
   const capability = () => providerFor(AgentProvider.OPENCODE)?.controls?.askUserQuestion
 
-  // The exact payload openCodeQuestions.publish stores.
+  // The exact payload nativeQuestions.publish stores.
   const published = {
-    type: OPENCODE_EVENT.QuestionAsked,
+    type: NATIVE_QUESTION_EVENT.QuestionAsked,
     properties: {
       id: 'que_1',
       sessionID: 'ses_9',
@@ -950,7 +951,7 @@ describe('opencode question recognition', () => {
     [
       'a settled question',
       {
-        type: OPENCODE_EVENT.QuestionReplied,
+        type: NATIVE_QUESTION_EVENT.QuestionReplied,
         properties: { requestID: 'que_1' },
       },
     ],

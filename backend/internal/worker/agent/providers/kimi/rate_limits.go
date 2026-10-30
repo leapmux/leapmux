@@ -144,6 +144,7 @@ func kimiExhaustedResetAt(usages kimiPlanUsages) time.Time {
 // context clear replaced the turn that failed.
 type kimiPendingUsageLimit struct {
 	seq       uint64
+	turnID    int64
 	sessionID string
 	model     string
 	failure   providerkit.TurnFailure
@@ -158,15 +159,14 @@ type kimiPendingUsageLimit struct {
 // on a model of the plan. It reports whether it stored the verdict. The caller
 // applies every other verdict at once.
 //
-// The caller runs it after the turn flag clears. The captured writer then
-// belongs to the idle state that follows the turn, which the next turn start
-// retires, so the sink also refuses a verdict that outlives its turn.
-func (a *Agent) deferUsageLimit(failure providerkit.TurnFailure, payload []byte) bool {
+// The caller reserves the completion sequence while it clears the turn flag. The writer
+// keeps the original authority through that exact inactive publication. Its
+// operations wait behind retained transcript rows, and a newer publication
+// rejects them.
+func (a *Agent) deferUsageLimit(failure providerkit.TurnFailure, payload []byte, writer agent.AutoRetryWriter) bool {
 	if failure.Kind != providerkit.TurnFailureUsageLimited || !failure.ResetAt.IsZero() {
 		return false
 	}
-	// Capture the writer outside a.Mu, as every other sink call runs.
-	writer := a.sink.CaptureAutoRetry()
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 	if !a.catalog.managed(a.settings.model) {
@@ -179,6 +179,9 @@ func (a *Agent) deferUsageLimit(failure providerkit.TurnFailure, payload []byte)
 		failure:   failure,
 		payload:   slices.Clone(payload),
 		writer:    writer,
+	}
+	if run := a.runs[kimiMainAgentID]; run != nil {
+		a.pendingUsageLimit.turnID = run.turnID
 	}
 	return true
 }
@@ -247,12 +250,17 @@ func (a *Agent) settleUsageLimit(pending *kimiPendingUsageLimit, resetAt time.Ti
 	defer a.dispatchMu.Unlock()
 	a.Mu.Lock()
 	current := pending.seq == a.usageTurnSeq && pending.sessionID == a.sessionID && pending.model == a.settings.model
+	stopped := a.stopRequested != nil && a.stopRequested.sessionID == pending.sessionID && a.stopRequested.turnID == pending.turnID
 	a.Mu.Unlock()
 	if !current {
 		slog.Debug("kimi dropped the usage limit of a replaced turn", "agent_id", a.AgentID(), "session_id", pending.sessionID, "model", pending.model)
 		return
 	}
 	failure := pending.failure
+	if stopped || a.IntentionalStopRequested() {
+		providerkit.ApplyTurnFailure(pending.writer, providerkit.TurnFailure{}, nil)
+		return
+	}
 	if !resetAt.IsZero() {
 		failure = providerkit.WithResetHint(failure, resetAt, a.clock.Now())
 	}

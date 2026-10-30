@@ -5,7 +5,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -27,5 +26,5 @@ func TestHandleKiloOutput_ConfigOptionUpdateRefreshesModelsGenerically(t *testin
 	assert.True(t, agent.AvailableModelsForTest()[1].IsDefault)
 	// The `mode` config option carries the primary agent for Kilo; the runtime update
 	// syncs it alongside the model (code -> plan).
-	assert.Equal(t, opencode.PrimaryAgentPlan, agent.CurrentPrimaryAgentForTest())
+	assert.Equal(t, PrimaryAgentPlan, agent.CurrentPrimaryAgentForTest())
 }

@@ -1697,6 +1697,7 @@ func (a *Agent) beginTurn() {
 	}
 	a.turnEpoch++
 	a.turnActive = true
+	a.retryStopRequested = false
 	a.interruptRequests = nil
 	a.turnFailure = nil
 	a.TurnToolUses = 0

@@ -39,3 +39,10 @@ func DetachFromTerminal(cmd *exec.Cmd) {
 	cmd.SysProcAttr.Foreground = false
 	cmd.SysProcAttr.Setctty = false
 }
+
+// DetachManagedService starts a service in an independent Unix session.
+// Callers must not attach a ProcessOwner or a cancellation context that
+// terminates the service.
+func DetachManagedService(cmd *exec.Cmd) {
+	DetachFromTerminal(cmd)
+}

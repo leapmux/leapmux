@@ -6,10 +6,9 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
-
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode/opencodestore/opencodestoretest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/opencodestore/opencodestoretest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -35,7 +34,7 @@ func TestKiloDBPath(t *testing.T) {
 		t.Parallel()
 		data := t.TempDir()
 		agenttest.WriteFixtureFile(t, filepath.Join(data, "kilo", "kilo.db"), "")
-		agenttest.WriteFixtureFile(t, filepath.Join(data, "kilo", "opencode.db"), "")
+		agenttest.WriteFixtureFile(t, filepath.Join(data, "kilo", "db"), "")
 
 		q := agent.StoredSessionQuery{HomeDir: testutil.NativeAbsPath("/home/dev"), Getenv: agenttest.FixtureEnv(map[string]string{"XDG_DATA_HOME": data})}
 		assert.Equal(t, filepath.Join(data, "kilo", "kilo.db"), kiloDBPath(q),
@@ -45,10 +44,10 @@ func TestKiloDBPath(t *testing.T) {
 	t.Run("falls back to the pre-fork name", func(t *testing.T) {
 		t.Parallel()
 		data := t.TempDir()
-		agenttest.WriteFixtureFile(t, filepath.Join(data, "kilo", "opencode.db"), "")
+		agenttest.WriteFixtureFile(t, filepath.Join(data, "kilo", "db"), "")
 
 		q := agent.StoredSessionQuery{HomeDir: testutil.NativeAbsPath("/home/dev"), Getenv: agenttest.FixtureEnv(map[string]string{"XDG_DATA_HOME": data})}
-		assert.Equal(t, filepath.Join(data, "kilo", "opencode.db"), kiloDBPath(q))
+		assert.Equal(t, filepath.Join(data, "kilo", "db"), kiloDBPath(q))
 	})
 
 	t.Run("names the current file when neither exists", func(t *testing.T) {

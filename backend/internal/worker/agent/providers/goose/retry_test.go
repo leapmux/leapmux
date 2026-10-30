@@ -3,6 +3,7 @@ package goose
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -368,4 +369,41 @@ func TestGooseObserverIgnoresAMalformedUpdate(t *testing.T) {
 	assert.Equal(t, gooseUpdateText(t, gooseNetworkUpdate), last.text)
 	assert.JSONEq(t, gooseNetworkUpdate, string(last.update))
 	assert.Equal(t, gooseLastMessage{}, a.takeGooseLastMessage(), "the take clears the record")
+}
+
+func TestGooseStreamedMessageSnapshotSurvivesTheNextMessage(t *testing.T) {
+	t.Parallel()
+	a := newGooseRetryAgent(t, &agenttest.Sink{}, gooseCapturedAt)
+	chunk := json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"abcdefgh"},"messageId":"many"}`)
+	for range 4096 {
+		a.observeGooseSessionUpdate("s1", nil, chunk)
+	}
+	first := a.takeGooseLastMessage()
+	require.Equal(t, strings.Repeat("abcdefgh", 4096), first.text)
+	assert.JSONEq(t, string(chunk), string(first.update))
+	assert.Equal(t, gooseLastMessage{}, a.takeGooseLastMessage())
+	a.observeGooseSessionUpdate("s1", nil, json.RawMessage(gooseSuccessUpdate))
+	second := a.takeGooseLastMessage()
+	assert.Equal(t, "pong", second.text)
+	assert.Equal(t, strings.Repeat("abcdefgh", 4096), first.text)
+	a.observeGooseSessionUpdate("s1", nil, chunk)
+	a.observeGooseSessionUpdate("s1", nil, json.RawMessage(gooseSuccessUpdate))
+	assert.Equal(t, "pong", a.takeGooseLastMessage().text, "a new message ID replaces the previous text")
+}
+
+func BenchmarkGooseStreamedMessage(b *testing.B) {
+	for _, chunks := range []int{256, 1024, 4096} {
+		b.Run(fmt.Sprint(chunks), func(b *testing.B) {
+			a := &Agent{}
+			chunk := json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"abcdefgh"},"messageId":"many"}`)
+			b.ReportAllocs()
+			b.SetBytes(int64(chunks * 8))
+			for b.Loop() {
+				for range chunks {
+					a.observeGooseSessionUpdate("", nil, chunk)
+				}
+				a.takeGooseLastMessage()
+			}
+		})
+	}
 }

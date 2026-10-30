@@ -3,7 +3,7 @@ import type { PermissionOption } from '~/components/chat/model/controlPrompt'
 import { KIND_ALLOW_ALWAYS, KIND_REJECT_ONCE } from '~/components/chat/model/controlPrompt'
 import { ACP_PERMISSION_KIND } from '~/generated/contracts/acp-protocol'
 import { MIMO_CONTROL_FIELD, MIMO_EVENT, MIMO_PERMISSION_REPLY, MIMO_TOOL } from '~/generated/contracts/mimo-protocol'
-import { OPENCODE_EVENT } from '~/generated/contracts/opencode-protocol'
+import { NATIVE_QUESTION_EVENT } from '~/generated/contracts/native-questions'
 import { isObject, pickObject, pickString, stringArray } from '~/lib/jsonPick'
 import { getToolName } from '~/utils/controlResponse'
 import { MIMO_FORCED_ASK_PERMISSIONS } from './protocol'
@@ -74,7 +74,7 @@ function planDetails(payload: Record<string, unknown>): string[] {
 export function mimoExtractControl(input: ControlExtractionInput): ExtractedControlRequest | null {
   const { payload } = input
   const type = pickString(payload, 'type')
-  if (type === OPENCODE_EVENT.QuestionAsked && getToolName(payload) === MIMO_TOOL.PlanExit) {
+  if (type === NATIVE_QUESTION_EVENT.QuestionAsked && getToolName(payload) === MIMO_TOOL.PlanExit) {
     // The worker reads the plan file the approval gives, and states the text beside
     // the event, so the banner draws the plan it asks about.
     const plan = pickString(payload, MIMO_CONTROL_FIELD.Plan)

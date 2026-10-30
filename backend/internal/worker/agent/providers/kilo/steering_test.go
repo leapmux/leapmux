@@ -14,7 +14,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp/acptest"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -53,7 +52,7 @@ func TestKiloSteersThroughTheFamily(t *testing.T) {
 	_, steers := any(&Agent{}).(agent.InputSteerer)
 	assert.True(t, steers, "Kilo steers through the family's second session/prompt")
 	ag := &Agent{}
-	*ag.HooksForTest() = opencode.FamilyHooks(&ag.FamilyBase)
+	*ag.HooksForTest() = kiloHooks(ag)
 	assert.True(t, ag.SupportsSteering(),
 		"every OpenCode-family provider steers with a second session/prompt")
 }
@@ -164,4 +163,63 @@ func TestKiloSteerFailedWriteReleasesItsTurn(t *testing.T) {
 	require.Error(t, a.SteerInput("guide the turn", nil))
 	a.FinishPromptRequestForTest("session-1", json.RawMessage(`{"stopReason":"end_turn"}`), nil)
 	assert.False(t, a.PromptActive(), "a failed detached write leaves no turn behind")
+}
+
+func TestKiloStaleSteerFailureCannotReportIntoAReplacementSession(t *testing.T) {
+	t.Parallel()
+	a, _ := acptest.NewAgentForRPC(t, func() *Agent { return &Agent{} }, func(a *Agent) *acp.Base { return &a.Base })
+	sink := &agenttest.ControlSink{}
+	a.SetSinkForTest(agent.NewProviderServices(sink))
+	a.steers = kiloSteerState{sessionID: "session-1", pending: 1, ownsTurn: true}
+	a.SetSessionIDForTest("replacement")
+	a.finishKiloSteer("session-1", nil, assert.AnError, true)
+	assert.Empty(t, sink.Notifications())
+}
+
+type kiloSteerEndBarrier struct {
+	*agenttest.Sink
+	entered chan struct{}
+	release <-chan struct{}
+}
+
+func (sink *kiloSteerEndBarrier) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
+	close(sink.entered)
+	<-sink.release
+	return sink.Sink.PersistTurnEnd(content, span)
+}
+
+func TestKiloSteerCompletionKeepsItsSessionLeaseUntilItsEndIsStored(t *testing.T) {
+	t.Parallel()
+	a, _ := acptest.NewAgentForRPC(t, func() *Agent { return &Agent{} }, func(a *Agent) *acp.Base { return &a.Base })
+	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock)
+	sink := &kiloSteerEndBarrier{Sink: &agenttest.Sink{}, entered: make(chan struct{}), release: release}
+	a.SetSinkForTest(agent.NewProviderServices(sink))
+	require.True(t, a.BeginAgentTurn())
+	a.steers = kiloSteerState{sessionID: "session-1", pending: 1, ownsTurn: true}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.finishKiloSteer("session-1", json.RawMessage(`{"stopReason":"end_turn"}`), nil, false)
+	}()
+	select {
+	case <-sink.entered:
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the steer did not reach its turn-end write")
+	}
+	locked := a.SessionMuForTest().TryLock()
+	if locked {
+		a.SessionMuForTest().Unlock()
+	}
+	assert.False(t, locked, "a context clear cannot replace the session during completion")
+	unblock()
+	select {
+	case <-done:
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the steer did not finish its turn-end write")
+	}
+	require.True(t, a.SessionMuForTest().TryLock())
+	a.SessionMuForTest().Unlock()
+	assert.False(t, a.PromptActive())
 }

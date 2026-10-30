@@ -131,7 +131,7 @@ func publishOne(t *testing.T, base *JSONRPCProcess, sink *agenttest.ControlSink)
 // that the provider reports during the write -- Grok Build reports that an
 // interaction resolved, whoever resolved it -- must not cancel the card that the
 // reader just answered.
-func TestSendRawInputRetiresTheRecordBeforeTheWrite(t *testing.T) {
+func TestSendRawInputClaimsTheResponseBeforeTheWrite(t *testing.T) {
 	t.Parallel()
 	stdin := newGatedStdin(0, nil)
 	sink := &agenttest.ControlSink{}
@@ -188,8 +188,8 @@ func TestSendRawInputDoesNotRestoreARecordThatAWithdrawalOutran(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{}}`), agent.StopContext{}) }()
 	<-stdin.entered
-	// On its own goroutine: a withdrawal that still found the record would queue
-	// its cancel answer behind the held write, and wait for it.
+	// A forced withdrawal retires the card but leaves the claimed response
+	// to its original writer. It must not wait or send a second answer.
 	withdrawn := make(chan struct{})
 	go func() {
 		base.WithdrawAllControlRequests(sink)
@@ -313,7 +313,7 @@ func TestStandingApprovalKeepsTheControlAfterDefiniteWriteFailure(t *testing.T) 
 		base.outstandingMu.Lock()
 		defer base.outstandingMu.Unlock()
 		record := base.outstandingControls["jsonrpc:1"]
-		return record != nil && !record.pending
+		return record != nil && record.response == nil
 	}, time.Second, time.Millisecond)
 	assert.Empty(t, sink.CanceledControls())
 }

@@ -217,6 +217,37 @@ func TestAutoRetryPartialIndexOrdinals(t *testing.T) {
 		"a queued retry conflicts with a FAILED row of the same kind, so cancellation must delete the row")
 }
 
+func TestAutoRetryKeyKindOrdinals(t *testing.T) {
+	t.Parallel()
+	usage := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT
+	server := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR
+	declarations := statementsOfMigration(t)
+	_, table, found := strings.Cut(declarations, "CREATE TABLE agent_input_queue_items (")
+	require.True(t, found)
+	table, _, found = strings.Cut(table, "\n);")
+	require.True(t, found)
+	assert.Contains(t, table, fmt.Sprintf("CHECK (auto_retry_key = '' OR kind IN (%d, %d))", usage, server))
+	store := integerEnumStore(t)
+	var initial string
+	require.NoError(t, store.QueryRowContext(t.Context(), `SELECT auto_retry_key FROM agent_input_queue_items WHERE id = 'enum-input'`).Scan(&initial))
+	assert.Empty(t, initial, "ordinary input defaults to unkeyed ownership")
+	for ordinal := int32(1); ordinal <= lastDeclaredOrdinal(t, leapmuxv1.AgentInputKind_name); ordinal++ {
+		kind := leapmuxv1.AgentInputKind(ordinal)
+		_, err := store.ExecContext(t.Context(), `UPDATE agent_input_queue_items SET kind = ?, auto_retry_key = '' WHERE id = 'enum-input'`, kind)
+		require.NoError(t, err, "every declared input kind permits an empty key")
+		_, err = store.ExecContext(t.Context(), `UPDATE agent_input_queue_items SET auto_retry_key = 'native-owner' WHERE id = 'enum-input'`)
+		if kind == usage || kind == server {
+			require.NoError(t, err)
+			_, err = store.ExecContext(t.Context(), `UPDATE agent_input_queue_items SET kind = ? WHERE id = 'enum-input'`, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE)
+			assert.ErrorContains(t, err, "CHECK constraint failed", "reclassification must release native ownership in the same statement")
+		} else {
+			assert.ErrorContains(t, err, "CHECK constraint failed")
+		}
+	}
+	_, err := store.ExecContext(t.Context(), `UPDATE agent_input_queue_items SET auto_retry_key = NULL WHERE id = 'enum-input'`)
+	assert.ErrorContains(t, err, "NOT NULL constraint failed")
+}
+
 // The tie CHECK binds follow_up text to follow_up_kind: a queued kind without
 // its text, and a text without its kind, each fails at the storage boundary
 // instead of reaching finalization as a value nobody chose.

@@ -26,8 +26,8 @@ type TurnVerdict struct {
 type PromptEnding struct {
 	NoteWritten bool
 	EndFrame    json.RawMessage
-	// Retry is the turn's retry verdict. Nil means NotRetryable.
-	Retry *TurnVerdict
+	// Retry is the turn's retry verdict. Its zero value means NotRetryable.
+	Retry TurnVerdict
 }
 
 // Hooks is what one ACP provider changes about the shared base. The Configure
@@ -362,8 +362,15 @@ func (b *Base) Sink() agent.ProviderServices {
 	return b.sink
 }
 
-// PromptActive reports whether a session/prompt runs now.
+// PromptActive reports whether conversation or client work keeps the input queue busy.
 func (b *Base) PromptActive() bool {
+	b.Mu.Lock()
+	defer b.Mu.Unlock()
+	return b.promptActive || b.clientWork != nil
+}
+
+// ConversationActive reports whether a native conversation turn runs now.
+func (b *Base) ConversationActive() bool {
 	b.Mu.Lock()
 	defer b.Mu.Unlock()
 	return b.promptActive

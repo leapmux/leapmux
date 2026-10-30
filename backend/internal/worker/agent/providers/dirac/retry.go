@@ -170,7 +170,7 @@ func (a *Agent) answerDiracFailedRequest(line *providerkit.ParsedLine) (any, boo
 	}
 	record.failure = failure
 	rejectID, ok := diracRejectOnceOption(dialog)
-	if !ok || a.compactionPrompt || record.sibling != diracSiblingNone || !diracLeapMuxRetries(failure) {
+	if !ok || a.compactionPrompt || record.sibling != diracSiblingNone || failure.RetryDisposition() == providerkit.RetryNone {
 		return nil, false
 	}
 	return map[string]any{"outcome": map[string]string{"outcome": contracts.ACPPermissionOutcomeSelected, "optionId": rejectID}}, true
@@ -189,20 +189,6 @@ func diracRejectOnceOption(dialog diracDialog) (string, bool) {
 		}
 	}
 	return rejectID, rejectID != ""
-}
-
-// diracLeapMuxRetries reports whether LeapMux retries the failure itself, so
-// the dialog's reject is LeapMux's to give.
-func diracLeapMuxRetries(failure providerkit.TurnFailure) bool {
-	switch failure.Kind {
-	case providerkit.TurnFailureTransient, providerkit.TurnFailureRateLimited:
-		return true
-	case providerkit.TurnFailureUsageLimited:
-		return !failure.ResetAt.IsZero() || failure.Window == providerkit.UsageWindowWeekOrLess
-	case providerkit.TurnFailureNotRetryable, providerkit.TurnFailureBillingBlocked:
-		return false
-	}
-	return false
 }
 
 // diracFailedRequestAnswered marks the failed-request card declined once the
@@ -281,6 +267,6 @@ func (a *Agent) diracTurnFailure(err error, stopped bool) acp.TurnVerdict {
 func (a *Agent) finishDiracPrompt(err error, stopped bool) acp.PromptEnding {
 	ending := a.hydrateSubagentArchives(err, stopped)
 	verdict := a.diracTurnFailure(err, stopped)
-	ending.Retry = &verdict
+	ending.Retry = verdict
 	return ending
 }

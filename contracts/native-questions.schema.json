@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "native-questions.schema.json",
+  "title": "Native question vocabulary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "events",
+    "answerFields"
+  ],
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "events": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "QuestionAsked",
+        "QuestionReplied",
+        "QuestionRejected"
+      ],
+      "properties": {
+        "QuestionAsked": {
+          "type": "string",
+          "minLength": 1
+        },
+        "QuestionReplied": {
+          "type": "string",
+          "minLength": 1
+        },
+        "QuestionRejected": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "answerFields": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "Answers",
+        "Rejected"
+      ],
+      "properties": {
+        "Answers": {
+          "type": "string",
+          "minLength": 1
+        },
+        "Rejected": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

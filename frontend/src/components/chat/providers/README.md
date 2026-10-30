@@ -62,11 +62,10 @@ the name sent each reader to the wrong layer. They are `extractors/` now.
 Codex item carries the arguments and result data. The request frame and the result
 frame differ only in status -- so reading the row and reading the call are one read, and
 `extractors/row.ts` does both. A second module there would be a boundary the data does
-not have. Kilo has none either, and for a different reason: its `extractors/` directory
-holds only the reader of output file paths, and the OpenCode family adapter reads its
-calls. An Agent Client Protocol member with no adapter has none for a third reason: the
-shared build in `acp/` reads its calls. Every other provider sends the two halves
-separately.
+not have. Kilo owns its tool-call adapter and output-file-path reader in its own
+`extractors/` directory. An Agent Client Protocol member with no adapter has no
+`extractors/toolCall.ts`: the shared build in `acp/` reads its calls. Every other
+provider sends the two halves separately.
 
 **Codex has no `toolKinds.ts`, because it sends no tool name.** The item TYPE is its
 whole tool identity, and `CodexToolFacts.type` says so at its declaration. Three facts
@@ -95,9 +94,9 @@ A member reaches `createACPProvider` through one of three entries:
 - `createACPProvider` itself, after which the member calls `registerProvider`. A
   member that changes the built plugin before it registers it needs this entry, for
   example to compose its own transcript.
-- `registerOpenCodeProtocolProvider.ts`, which wraps `registerACPProvider` for the
-  OpenCode family. Those members store the plan-mode axis in an option group instead
-  of `permissionMode`, and they share one tool-call adapter factory.
+- `registerOpenCodeProtocolProvider.ts`, which wraps `registerACPProvider` for
+  OpenCode. Kilo calls `registerACPProvider` with its own parser and control hooks.
+  Both store the plan-mode axis in an option group instead of `permissionMode`.
 
 Run this command from `frontend/` to list the members:
 
@@ -124,8 +123,8 @@ OpenCode. The worker drives MiMo's own HTTP server and persists its native event
 `mimo/` reads MiMo's message parts and not session updates. Two tool names also mean
 something different than in OpenCode: `task` is the to-do tool, and `actor` starts a
 subagent.
-The plugin shares one thing with OpenCode, the question vocabulary in
-`~/generated/contracts/opencode-protocol`, because MiMo kept OpenCode's question tool.
+MiMo and Kilo share the native question vocabulary in
+`~/generated/contracts/native-questions`. Each provider owns its HTTP routes.
 
 **Oh My Pi shares no code with Pi**, although omp began as a fork of Pi. Its RPC
 events, commands and session files differ from Pi's, so `ohmypi/` reads omp's own
@@ -134,19 +133,16 @@ frames, and the worker drives omp through a package of its own.
 The shared build in `acp/extractors/toolCall.ts` reads the calls of every family
 member. A member that knows more about its own calls supplies an `ACPToolCallAdapter`,
 and the shared build answers everything that the adapter does not. A member takes one
-of four shapes.
+of three shapes.
 
 - **No adapter.** The member passes no `toolCallAdapter`, and the shared build alone
   reads each of its calls.
 - **Its own module.** The member exports `<provider>ToolCallAdapter` from its
   `extractors/toolCall.ts` and passes it as `toolCallAdapter`.
-- **A factory.** OpenCode exports `openCodeToolCallAdapterFor`. It takes the
-  vocabulary of one daemon (`OpenCodeFamilyVocabulary`) and returns the adapter. The
-  vocabulary holds the daemon's refusal errors and, optionally, a `ToolKind` lookup.
-  OpenCode supplies `OPENCODE_REFUSED_TOOL_ERRORS` from `opencode/protocol.ts`.
-- **Tables alone.** Kilo has no `extractors/toolCall.ts`. It supplies `kiloToolKind`
-  from `toolKinds.ts` and `KILO_REFUSED_TOOL_ERRORS` from `protocol.ts`, and
-  `registerOpenCodeProtocolProvider` passes both to `openCodeToolCallAdapterFor`.
+- **A factory.** Kilo exports `kiloToolCallAdapterFor`. Its `KiloToolVocabulary`
+  supplies the provider's refusal errors and an optional `ToolKind` lookup.
+  Kilo's registration supplies `KILO_REFUSED_TOOL_ERRORS` and `kiloToolKind` from
+  its own modules. OpenCode's registration uses its separate factory and vocabulary.
 
 ### The adapter contract
 
@@ -189,13 +185,14 @@ pictures stay the pictures of the original `rawInput`.
 
 **A post-condition wraps the whole build.** The wrapper is where a rule that holds for
 EVERY row of one provider belongs, because the build inside it has a dozen returns.
-Five adapters hold one:
+These adapters apply one:
 
 - Cursor's adapter calls a private `cursorToolCall`, then applies two rules to the
   answer. One rule reads the refused call that `rawOutput` reports. The other reads the
   protocol failure in `rawOutput.error`.
-- OpenCode's factory wraps `openCodeToolCall` for OpenCode and Kilo. A failed update
-  whose `rawOutput.error` is one of that daemon's refusal errors reads as declined.
+- Kilo's factory wraps `kiloToolCall`. OpenCode's factory wraps `openCodeToolCall`.
+  Each reads a failed update as declined when `rawOutput.error` matches its own
+  provider's refusal vocabulary.
 - Gemini CLI's adapter wraps `geminiToolCall`. A failed update whose text is exactly
   the sentence of a canceled call reads as declined.
 - Qwen Code's adapter wraps `qwenToolCall`. A failed update whose text is exactly the

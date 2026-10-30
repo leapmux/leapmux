@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,4 +90,32 @@ func TestHelperCodexConcurrentStartup(t *testing.T) {
 		}
 	}
 	os.Exit(0)
+}
+
+func TestCodexRetryTextUsesTheNativeLaunchTimezone(t *testing.T) {
+	// This test changes the Worker's timezone and installs a fake CLI, so it cannot run in parallel.
+	previous := time.Local
+	time.Local = time.UTC
+	t.Cleanup(func() { time.Local = previous })
+	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
+		Binary: "codex", HelperRun: "TestHelperCodexConcurrentStartup", WantEnv: "LEAPMUX_TEST_CODEX_STARTUP",
+		Env: []string{"LEAPMUX_TEST_CODEX_THREAD_REFUSED=false"},
+	})
+	directory := t.TempDir()
+	counter := filepath.Join(directory, "profile-runs")
+	shell := filepath.Join(directory, "timezone-shell")
+	quotedCounter := "'" + strings.ReplaceAll(counter, "'", "'\\''") + "'"
+	// Executable discovery runs the shell before the actual provider launch.
+	// Different zones make a snapshot from that earlier run insufficient.
+	profile := "#!/bin/sh\nif [ -e " + quotedCounter + " ]; then\nexport TZ=Asia/Seoul\nelse\nexport TZ=UTC\nfi\nprintf . >> " + quotedCounter + "\nexec /bin/sh \"$@\"\n"
+	require.NoError(t, os.WriteFile(shell, []byte(profile), 0o700))
+	started, err := Start(t.Context(), agent.Options{AgentID: "timezone", WorkingDir: directory, Shell: shell, StartupTimeout: 30 * time.Second}, agent.NewProviderServices(&agenttest.Sink{}))
+	require.NoError(t, err)
+	t.Cleanup(func() { started.Stop(); _ = started.Wait() })
+	a := started.(*Agent)
+	failure := codexUsageLimitFailure(codexTurnOutcome{message: "Try again at Nov 2nd, 2026 3:00 PM."}, codexUsageLimitSources{textLocation: a.retryTextLocation}, time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC))
+	assert.Equal(t, time.Date(2026, 11, 2, 6, 1, 0, 0, time.UTC), failure.ResetAt)
+	runs, err := os.ReadFile(counter)
+	require.NoError(t, err)
+	assert.Equal(t, "..", string(runs), "timezone capture must not add another shell invocation")
 }

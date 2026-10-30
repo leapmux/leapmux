@@ -279,15 +279,8 @@ func acpAnswerDaemonError(err error) (DaemonError, json.RawMessage, bool) {
 		// Data of another shape states no error name, and the message still decides.
 		_ = json.Unmarshal(rpcErr.Data, &data)
 	}
-	raw, marshalErr := json.Marshal(struct {
-		Code    int             `json:"code"`
-		Message string          `json:"message"`
-		Data    json.RawMessage `json:"data,omitempty"`
-	}{rpcErr.Code, rpcErr.Message, rpcErr.Data})
-	if marshalErr != nil {
-		raw = nil
-	}
-	return DaemonError{Name: data.ErrorName, Data: DaemonErrorData{Message: rpcErr.Message}}, raw, true
+
+	return DaemonError{Name: data.ErrorName, Data: DaemonErrorData{Message: rpcErr.Message}}, rpcErr.WireJSON(), true
 }
 
 // classifyDaemonError applies the family recipe to the error of a failed turn.
@@ -314,18 +307,13 @@ func classifyDaemonError(failure DaemonError, member func(DaemonError) (provider
 		}
 	}
 	data := failure.Data
+	vendor, matched := modelvendor.ClassifyErrors([]string{data.Message, data.ResponseBody}, observedAt)
+	if matched && vendor.Definitive {
+		return vendor.Failure
+	}
 	var indicative *providerkit.TurnFailure
-	for _, text := range []string{data.Message, data.ResponseBody} {
-		verdict, ok := modelvendor.ClassifyError(text, observedAt)
-		if !ok {
-			continue
-		}
-		if verdict.Definitive {
-			return verdict.Failure
-		}
-		if indicative == nil {
-			indicative = &verdict.Failure
-		}
+	if matched {
+		indicative = &vendor.Failure
 	}
 	bodyType := zenErrorType(data.ResponseBody)
 	switch {

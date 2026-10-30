@@ -63,10 +63,13 @@ const (
 )
 
 type sessionState struct {
-	subscriptionLock     chan struct{}
-	controls             map[string]controlState
-	sink                 agent.ProviderServices
-	turnID               string
+	subscriptionLock chan struct{}
+	controls         map[string]controlState
+	sink             agent.ProviderServices
+	turnID           string
+	// stopRequestedTurnID identifies the exact turn the user asked to stop.
+	// Finalization captures this intent even when the native failure wins.
+	stopRequestedTurnID  string
 	items                map[string]*itemState
 	itemIndex            *nativeItemIndex
 	completed            map[string]turnCompletionState

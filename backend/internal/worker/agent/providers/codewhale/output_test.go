@@ -829,6 +829,68 @@ func TestAFailedTurnDuringAStopIsNotRetryable(t *testing.T) {
 	assert.Equal(t, providerkit.TurnEndedWithoutRetryableFailure, sink.LastAutoCancelReason())
 }
 
+func TestCodewhaleStopIntentPrecedesConcurrentFailure(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusOK, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+			rt := newFakeRuntime(t)
+			a, sink := newTestAgent(t, rt)
+			turnID := codewhaleFrameTurnID(t, codewhaleTurnFailed500)
+			a.HandleOutput(turnStartedEvent(1, turnID))
+			rt.handle(http.MethodPost, turnPath(testThreadID, turnID, turnRouteInterrupt), func(w http.ResponseWriter, _ *http.Request) {
+				a.HandleOutput([]byte(codewhaleTurnFailed500))
+				writeFakeJSON(w, status, map[string]any{"id": turnID})
+			})
+			err := a.Interrupt(agent.StopContext{})
+			if status == http.StatusOK {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+			assert.Zero(t, sink.AutoScheduleCount(), "the user stopped this work before its failure completed")
+			assert.Equal(t, []string{"turn_end", "cancel_server_error"}, providerkittest.TurnEndAndRetryOpNames(sink.Timeline()))
+			a.HandleOutput(turnStartedEvent(100, "next-turn"))
+			a.HandleOutput(failedTurnCompletedEvent(101, "next-turn", codewhaleServerError))
+			assert.Equal(t, 1, sink.AutoScheduleCount(), "the old interrupt cannot suppress another turn")
+		})
+	}
+}
+
+func TestCodewhaleRetryPrecedesTurnRelease(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []struct {
+		name     string
+		retained bool
+		failed   bool
+	}{{"success", false, false}, {"retained success", true, false}, {"failure", false, true}, {"retained failure", true, true}} {
+		t.Run(scenario.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink := newTestAgent(t, nil)
+			a.sink = agent.NewOrderedProviderServices(agent.OutputQueueFor(a.sink), a.sink)
+			a.HandleOutput(turnStartedEvent(1, codewhaleFrameTurnID(t, codewhaleTurnFailed500)))
+			if scenario.retained {
+				sink.PersistErr = assert.AnError
+			}
+			op := "cancel_server_error"
+			if scenario.failed {
+				a.HandleOutput([]byte(codewhaleTurnFailed500))
+				op = "schedule_server_error"
+			} else {
+				a.HandleOutput(turnCompletedEvent(2, codewhaleFrameTurnID(t, codewhaleTurnFailed500), contracts.CodewhaleTurnStatusCompleted))
+			}
+			sink.PersistErr = nil
+			require.NoError(t, agent.FlushPendingOutput(a.sink))
+			assert.Equal(t, []string{"turn_end", op, "idle"}, providerkittest.TurnEndRetryAndIdleOpNames(sink.Operations()))
+			if scenario.failed {
+				assert.Equal(t, 1, sink.AutoScheduleCount())
+			} else {
+				assert.Zero(t, sink.AutoScheduleCount())
+			}
+		})
+	}
+}
+
 // codewhaleTurnFailure reads Codewhale's error text in the order of the
 // classifier recipe.
 func TestCodewhaleTurnFailure(t *testing.T) {

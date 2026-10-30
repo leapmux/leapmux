@@ -1,4 +1,5 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from './helpers/nativeScenario'
+import { execFileSync } from 'node:child_process'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import ts from 'typescript'
@@ -9,6 +10,21 @@ import { createTranscriptGuard, runTranscriptGuard } from './helpers/transcriptG
 import * as workspaceHelpers from './helpers/workspace'
 import { processTest } from './process-control-fixtures'
 import { cliSkipFixture, createProviderProcessTest, createProviderTest } from './provider-fixture-factory'
+
+// Structural fixture checks must never launch an installed provider.
+vi.mock('node:child_process', async importOriginal => ({
+  ...await importOriginal<typeof import('node:child_process')>(),
+  execFileSync: vi.fn(() => { throw new Error('The fixture audit must not run a native command.') }),
+}))
+
+// Installed binaries are input to this structural audit, rather than a machine prerequisite.
+vi.mock('./helpers/binaryOnPath', async importOriginal => ({
+  ...await importOriginal<typeof import('./helpers/binaryOnPath')>(),
+  findBinary: vi.fn(() => process.execPath),
+  lookupBinary: vi.fn(() => ({ path: process.execPath, skipReason: null })),
+  missingBinaryReason: vi.fn(() => null),
+  versionOutput: vi.fn(() => null),
+}))
 
 // Use real Playwright registration without the shared browser lifecycle. Browser specs exercise that lifecycle.
 vi.mock('./fixtures', async () => {
@@ -179,6 +195,7 @@ const UNIT_FIXTURES = {
 type ScenarioModule = Record<string, unknown> & { nativeContext: (fixtures: NativeContextFixtures) => Promise<ManagedNativeScenarioContext> }
 
 describe('provider test objects', () => {
+  let nativeCommandCalls: unknown[][] = []
   let objects: ProviderTestObject[] = []
   /** The scenario module of each test object, in the order of `objects`. */
   let scenarioModules: ScenarioModule[] = []
@@ -187,6 +204,12 @@ describe('provider test objects', () => {
   beforeAll(async () => {
     objects = await providerTestObjects()
     scenarioModules = await Promise.all(objects.map(async object => await import(`./${object.scenarioDirectory}/scenarios.ts`) as ScenarioModule))
+    // Vitest clears mock calls before each test, so retain the import-time observation here.
+    nativeCommandCalls = vi.mocked(execFileSync).mock.calls.map(args => [...args])
+  })
+
+  it('imports every fixture without launching a native command', () => {
+    expect(nativeCommandCalls).toEqual([])
   })
 
   it('gives every provider exactly one test object', () => {

@@ -44,6 +44,45 @@ func newStoreFixture(t *testing.T) (*sql.DB, *Store) {
 	return database, NewStore(database, nil)
 }
 
+func TestStoreRecoverRejectsAnIterationFailureBeforeChangingAnyAgent(t *testing.T) {
+	t.Parallel()
+	database, store := newStoreFixture(t)
+	require.NoError(t, gendb.New(database).CreateAgent(t.Context(), gendb.CreateAgentParams{
+		ID: "agent-z", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	for _, agentID := range []string{"agent-1", "agent-z"} {
+		_, _, err := store.TurnStarted(t.Context(), agentID, false)
+		require.NoError(t, err)
+	}
+	_, err := database.ExecContext(t.Context(), `ALTER TABLE agents RENAME TO recovery_agents`)
+	require.NoError(t, err)
+	_, err = database.ExecContext(t.Context(), `CREATE VIEW agents AS
+		SELECT id, CASE WHEN id = 'agent-z' THEN abs(-9223372036854775808) ELSE closed_at END AS closed_at,
+			workspace_archived FROM recovery_agents`)
+	require.NoError(t, err)
+	// The first agent is readable. The second fails during iteration, after
+	// QueryContext succeeds. Rows.Close cannot report that retained error.
+	rows, err := database.QueryContext(t.Context(), `
+		SELECT q.agent_id FROM agent_input_queue_state q JOIN agents a ON a.id = q.agent_id
+		WHERE a.closed_at IS NULL ORDER BY q.agent_id`)
+	require.NoError(t, err)
+	require.True(t, rows.Next())
+	var firstID string
+	require.NoError(t, rows.Scan(&firstID))
+	require.Equal(t, "agent-1", firstID)
+	require.False(t, rows.Next())
+	require.ErrorContains(t, rows.Err(), "integer overflow")
+	require.NoError(t, rows.Close())
+	snapshots, err := store.Recover(t.Context())
+	assert.ErrorContains(t, err, "integer overflow")
+	assert.Empty(t, snapshots, "recovery must not publish a truncated successful result")
+	for _, agentID := range []string{"agent-1", "agent-z"} {
+		var active bool
+		require.NoError(t, database.QueryRowContext(t.Context(), `SELECT active_turn FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&active))
+		assert.True(t, active, "enumeration must finish before recovery changes %s", agentID)
+	}
+}
+
 func TestStoreAcceptKeepsTheProviderSteeringStateReportedDuringDispatch(t *testing.T) {
 	for _, steerable := range []bool{false, true} {
 		t.Run(fmt.Sprint(steerable), func(t *testing.T) {

@@ -101,5 +101,8 @@
   },
   "ignoreScripts": [
     "macos-alias"
-  ]
+  ],
+  "patchedDependencies": {
+    "@milkdown/ctx@7.22.1": "patches/@milkdown%2Fctx@7.22.1.patch"
+  }
 }

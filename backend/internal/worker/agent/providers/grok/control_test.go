@@ -10,6 +10,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
@@ -476,7 +477,7 @@ func TestGrokTurnEndClearsTheChecks(t *testing.T) {
 // and elicitation.
 func TestGrokElicitCompleteAcceptsTheURLElicitation(t *testing.T) {
 	t.Parallel()
-	a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+	a, sink, requests := newGrokAgent(t, agent.Options{}, nil)
 
 	request := frame(t, map[string]any{
 		"id": 11, "method": contracts.GrokMethodMcpElicit,
@@ -491,7 +492,11 @@ func TestGrokElicitCompleteAcceptsTheURLElicitation(t *testing.T) {
 		"method": "_x.ai/mcp/elicit_complete",
 		"params": map[string]any{"sessionId": grokTestSession, "serverName": "drive", "elicitationId": "flow-7"},
 	}))
-	require.Len(t, sink.CanceledControls(), 1, "the completion withdrew the card")
+	testutil.RequireEventually(t, func() bool { return len(sink.CanceledControls()) == 1 })
+	syncPeer(t, a)
+	assert.Equal(t, 1, answerCount(t, requests(), 11), "the native request receives one completion answer")
+	answers := agenttest.JSONRPCResultsByID(t, rawLines(requests()))
+	assert.JSONEq(t, `{"action":"accept"}`, answers["11"])
 }
 
 // A completion that names another server completes nothing.

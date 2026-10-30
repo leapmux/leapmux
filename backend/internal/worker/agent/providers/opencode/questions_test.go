@@ -21,14 +21,14 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode/opencodetest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/kilo/kilotest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // bridgeFakeDaemon starts a question bridge against daemon, with sink as its
 // services.
-func bridgeFakeDaemon(t *testing.T, daemon *opencodetest.FakeDaemon, sink agent.ControlServices) (*openCodeQuestions, context.Context) {
+func bridgeFakeDaemon(t *testing.T, daemon *kilotest.FakeDaemon, sink agent.ControlServices) (*openCodeQuestions, context.Context) {
 	t.Helper()
 	questions := &openCodeQuestions{}
 	questions.Configure(sink)
@@ -40,10 +40,10 @@ func bridgeFakeDaemon(t *testing.T, daemon *opencodetest.FakeDaemon, sink agent.
 
 func TestOpenCodeQuestions_PublishesAnAskedQuestion(t *testing.T) {
 	t.Parallel()
-	daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)
+	daemon := kilotest.NewFakeDaemon(t, EventRoute, QuestionRoot)
 	sink := &agenttest.ControlSink{}
 	bridgeFakeDaemon(t, daemon, sink)
-	daemon.Send(opencodetest.AskedEvent(opencodetest.FakeQuestion))
+	daemon.Send(kilotest.AskedEvent(kilotest.FakeQuestion))
 
 	var published []agenttest.ControlRequestRecord
 	require.Eventually(t, func() bool {
@@ -53,7 +53,7 @@ func TestOpenCodeQuestions_PublishesAnAskedQuestion(t *testing.T) {
 	assert.Equal(t, "opencode-question:que_1", published[0].RequestID)
 	// The payload is the shape the browser plugin reads: the event type beside the
 	// question's own properties.
-	assert.JSONEq(t, `{"type":"`+contracts.OpenCodeEventQuestionAsked+`","properties":`+opencodetest.FakeQuestion+`}`, string(published[0].Payload))
+	assert.JSONEq(t, `{"type":"`+contracts.NativeQuestionEventQuestionAsked+`","properties":`+kilotest.FakeQuestion+`}`, string(published[0].Payload))
 }
 
 // The stored request must carry NO top-level `id`. restoreControlResponseID reads a
@@ -63,10 +63,10 @@ func TestOpenCodeQuestions_PublishesAnAskedQuestion(t *testing.T) {
 // seeing only a refusal.
 func TestOpenCodeQuestions_PublishedPayloadDoesNotWithholdTheAnswer(t *testing.T) {
 	t.Parallel()
-	daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)
+	daemon := kilotest.NewFakeDaemon(t, EventRoute, QuestionRoot)
 	sink := &agenttest.ControlSink{}
 	bridgeFakeDaemon(t, daemon, sink)
-	daemon.Send(opencodetest.AskedEvent(opencodetest.FakeQuestion))
+	daemon.Send(kilotest.AskedEvent(kilotest.FakeQuestion))
 
 	var published []agenttest.ControlRequestRecord
 	require.Eventually(t, func() bool {
@@ -98,10 +98,10 @@ func TestOpenCodeQuestions_AnswersThroughTheDaemonRoute(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)
+			daemon := kilotest.NewFakeDaemon(t, EventRoute, QuestionRoot)
 			sink := &agenttest.ControlSink{}
 			questions, ctx := bridgeFakeDaemon(t, daemon, sink)
-			daemon.Send(opencodetest.AskedEvent(opencodetest.FakeQuestion))
+			daemon.Send(kilotest.AskedEvent(kilotest.FakeQuestion))
 			require.Eventually(t, func() bool {
 				return len(sink.PublishedControls()) == 1
 			}, 3*time.Second, 5*time.Millisecond, "the question reaches the reader")
@@ -126,7 +126,7 @@ func TestOpenCodeQuestions_AnswersThroughTheDaemonRoute(t *testing.T) {
 // would swallow every permission decision the same agent makes.
 func TestOpenCodeQuestions_LeavesEveryOtherFrameToTheStream(t *testing.T) {
 	t.Parallel()
-	daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)
+	daemon := kilotest.NewFakeDaemon(t, EventRoute, QuestionRoot)
 	questions, ctx := bridgeFakeDaemon(t, daemon, &agenttest.ControlSink{})
 	for _, frame := range []string{
 		`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"optionId":"once"}}}`,
@@ -145,10 +145,10 @@ func TestOpenCodeQuestions_LeavesEveryOtherFrameToTheStream(t *testing.T) {
 // would retire a card whose question the daemon still blocks on.
 func TestOpenCodeQuestions_ReportsARefusedAnswer(t *testing.T) {
 	t.Parallel()
-	daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)
+	daemon := kilotest.NewFakeDaemon(t, EventRoute, QuestionRoot)
 	sink := &agenttest.ControlSink{}
 	questions, ctx := bridgeFakeDaemon(t, daemon, sink)
-	daemon.Send(opencodetest.AskedEvent(opencodetest.FakeQuestion))
+	daemon.Send(kilotest.AskedEvent(kilotest.FakeQuestion))
 	require.Eventually(t, func() bool {
 		return len(sink.PublishedControls()) == 1
 	}, 3*time.Second, 5*time.Millisecond, "the question reaches the reader")
@@ -166,10 +166,10 @@ func TestOpenCodeQuestions_ReportsARefusedAnswer(t *testing.T) {
 // to the stdio stream, where it would be written as a response to nothing.
 func TestOpenCodeQuestions_RefusesAnUnreadableAnswer(t *testing.T) {
 	t.Parallel()
-	daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)
+	daemon := kilotest.NewFakeDaemon(t, EventRoute, QuestionRoot)
 	sink := &agenttest.ControlSink{}
 	questions, ctx := bridgeFakeDaemon(t, daemon, sink)
-	daemon.Send(opencodetest.AskedEvent(opencodetest.FakeQuestion))
+	daemon.Send(kilotest.AskedEvent(kilotest.FakeQuestion))
 	require.Eventually(t, func() bool {
 		return len(sink.PublishedControls()) == 1
 	}, 3*time.Second, 5*time.Millisecond, "the question reaches the reader")
@@ -182,13 +182,13 @@ func TestOpenCodeQuestions_RefusesAnUnreadableAnswer(t *testing.T) {
 
 func TestOpenCodeQuestions_WithdrawsASettledQuestion(t *testing.T) {
 	t.Parallel()
-	for _, event := range []string{contracts.OpenCodeEventQuestionReplied, contracts.OpenCodeEventQuestionRejected} {
+	for _, event := range []string{contracts.NativeQuestionEventQuestionReplied, contracts.NativeQuestionEventQuestionRejected} {
 		t.Run(event, func(t *testing.T) {
 			t.Parallel()
-			daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)
+			daemon := kilotest.NewFakeDaemon(t, EventRoute, QuestionRoot)
 			sink := &agenttest.ControlSink{}
 			bridgeFakeDaemon(t, daemon, sink)
-			daemon.Send(opencodetest.AskedEvent(opencodetest.FakeQuestion))
+			daemon.Send(kilotest.AskedEvent(kilotest.FakeQuestion))
 			require.Eventually(t, func() bool {
 				return len(sink.PublishedControls()) == 1
 			}, 3*time.Second, 5*time.Millisecond, "the question reaches the reader")
@@ -206,10 +206,10 @@ func TestOpenCodeQuestions_WithdrawsASettledQuestion(t *testing.T) {
 // and the event path both reach the record, and only the one that takes it acts.
 func TestOpenCodeQuestions_WithdrawsOnlyOnce(t *testing.T) {
 	t.Parallel()
-	daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)
+	daemon := kilotest.NewFakeDaemon(t, EventRoute, QuestionRoot)
 	sink := &agenttest.ControlSink{}
 	questions, ctx := bridgeFakeDaemon(t, daemon, sink)
-	daemon.Send(opencodetest.AskedEvent(opencodetest.FakeQuestion))
+	daemon.Send(kilotest.AskedEvent(kilotest.FakeQuestion))
 	require.Eventually(t, func() bool {
 		return len(sink.PublishedControls()) == 1
 	}, 3*time.Second, 5*time.Millisecond, "the question reaches the reader")
@@ -217,7 +217,7 @@ func TestOpenCodeQuestions_WithdrawsOnlyOnce(t *testing.T) {
 	handled, err := questions.answer(ctx, []byte(`{"jsonrpc":"2.0","id":"opencode-question:que_1","result":{"answers":[["Inspect"]]}}`))
 	require.NoError(t, err)
 	require.True(t, handled)
-	daemon.Send("data: {\"id\":\"evt_2\",\"type\":\"" + contracts.OpenCodeEventQuestionReplied + "\",\"properties\":{\"requestID\":\"que_1\"}}\n\n")
+	daemon.Send("data: {\"id\":\"evt_2\",\"type\":\"" + contracts.NativeQuestionEventQuestionReplied + "\",\"properties\":{\"requestID\":\"que_1\"}}\n\n")
 
 	require.Eventually(t, func() bool {
 		return len(daemon.Answers()) == 1
@@ -232,7 +232,7 @@ func TestOpenCodeQuestions_WithdrawsOnlyOnce(t *testing.T) {
 // so the family can read what the daemon stated while no connection was open.
 func TestOpenCodeQuestions_ReportsEachConnection(t *testing.T) {
 	t.Parallel()
-	daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)
+	daemon := kilotest.NewFakeDaemon(t, EventRoute, QuestionRoot)
 	questions := &openCodeQuestions{}
 	questions.Configure(&agenttest.ControlSink{})
 	var connections atomic.Int32
@@ -246,8 +246,8 @@ func TestOpenCodeQuestions_ReportsEachConnection(t *testing.T) {
 
 func TestOpenCodeQuestions_PublishesAQuestionRaisedBeforeItConnected(t *testing.T) {
 	t.Parallel()
-	daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)
-	daemon.SetPending(opencodetest.FakeQuestion)
+	daemon := kilotest.NewFakeDaemon(t, EventRoute, QuestionRoot)
+	daemon.SetPending(kilotest.FakeQuestion)
 	sink := &agenttest.ControlSink{}
 	bridgeFakeDaemon(t, daemon, sink)
 
@@ -267,8 +267,8 @@ func TestOpenCodeQuestions_PublishesAQuestionRaisedBeforeItConnected(t *testing.
 // and a click on one of its options reached a daemon that refuses it.
 func TestOpenCodeQuestions_RetiresACardTheDaemonNoLongerHolds(t *testing.T) {
 	t.Parallel()
-	daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)
-	daemon.SetPending(opencodetest.FakeQuestion)
+	daemon := kilotest.NewFakeDaemon(t, EventRoute, QuestionRoot)
+	daemon.SetPending(kilotest.FakeQuestion)
 	sink := &agenttest.ControlSink{}
 	questions, ctx := bridgeFakeDaemon(t, daemon, sink)
 	require.Eventually(t, func() bool {
@@ -292,8 +292,8 @@ func TestOpenCodeQuestions_RetiresACardTheDaemonNoLongerHolds(t *testing.T) {
 // each time the daemon was busy.
 func TestOpenCodeQuestions_KeepsEveryCardWhenTheListIsUnreadable(t *testing.T) {
 	t.Parallel()
-	daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)
-	daemon.SetPending(opencodetest.FakeQuestion)
+	daemon := kilotest.NewFakeDaemon(t, EventRoute, QuestionRoot)
+	daemon.SetPending(kilotest.FakeQuestion)
 	sink := &agenttest.ControlSink{}
 	questions, ctx := bridgeFakeDaemon(t, daemon, sink)
 	require.Eventually(t, func() bool {
@@ -310,12 +310,12 @@ func TestOpenCodeQuestions_KeepsEveryCardWhenTheListIsUnreadable(t *testing.T) {
 // A reader who will never see the question must not leave the turn blocked on it.
 func TestOpenCodeQuestions_RejectsAQuestionItCannotPublish(t *testing.T) {
 	t.Parallel()
-	daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)
+	daemon := kilotest.NewFakeDaemon(t, EventRoute, QuestionRoot)
 	sink := &agenttest.ControlSink{PublicationError: assert.AnError}
 	bridgeFakeDaemon(t, daemon, sink)
-	daemon.Send(opencodetest.AskedEvent(opencodetest.FakeQuestion))
+	daemon.Send(kilotest.AskedEvent(kilotest.FakeQuestion))
 
-	var answers []opencodetest.FakeAnswer
+	var answers []kilotest.FakeAnswer
 	require.Eventually(t, func() bool {
 		answers = daemon.Answers()
 		return len(answers) == 1
@@ -327,13 +327,13 @@ func TestOpenCodeQuestions_RejectsAQuestionItCannotPublish(t *testing.T) {
 // The daemon dies with the agent, so a card it left behind is retired here or never.
 func TestOpenCodeQuestions_RetiresEveryCardWhenTheAgentStops(t *testing.T) {
 	t.Parallel()
-	daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)
+	daemon := kilotest.NewFakeDaemon(t, EventRoute, QuestionRoot)
 	sink := &agenttest.ControlSink{}
 	questions := &openCodeQuestions{}
 	questions.Configure(sink)
 	ctx, cancel := context.WithCancel(context.Background())
 	questions.beginAt(ctx, testutil.NewQuartzMock(t), "agent-1", daemon.Server.URL)
-	daemon.Send(opencodetest.AskedEvent(opencodetest.FakeQuestion))
+	daemon.Send(kilotest.AskedEvent(kilotest.FakeQuestion))
 	require.Eventually(t, func() bool {
 		return len(sink.PublishedControls()) == 1
 	}, 3*time.Second, 5*time.Millisecond, "the question reaches the reader")
@@ -351,10 +351,10 @@ func TestOpenCodeQuestions_RetiresEveryCardWhenTheAgentStops(t *testing.T) {
 // reader that dropped the joining newline would concatenate two tokens.
 func TestOpenCodeQuestions_ReadsAMultiLineEvent(t *testing.T) {
 	t.Parallel()
-	daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)
+	daemon := kilotest.NewFakeDaemon(t, EventRoute, QuestionRoot)
 	sink := &agenttest.ControlSink{}
 	bridgeFakeDaemon(t, daemon, sink)
-	whole := `{"id":"evt_1","type":"` + contracts.OpenCodeEventQuestionAsked + `","properties":` + opencodetest.FakeQuestion + `}`
+	whole := `{"id":"evt_1","type":"` + contracts.NativeQuestionEventQuestionAsked + `","properties":` + kilotest.FakeQuestion + `}`
 	var indented bytes.Buffer
 	require.NoError(t, json.Indent(&indented, []byte(whole), "", "  "))
 	var event strings.Builder
@@ -377,10 +377,10 @@ func TestOpenCodeQuestions_DiscardsAnEventThatTheStreamCutOff(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	questions := &openCodeQuestions{}
 	questions.Configure(sink)
-	second := strings.ReplaceAll(opencodetest.FakeQuestion, "que_1", "que_2")
-	cut := strings.TrimSuffix(opencodetest.AskedEvent(second), "\n\n")
+	second := strings.ReplaceAll(kilotest.FakeQuestion, "que_1", "que_2")
+	cut := strings.TrimSuffix(kilotest.AskedEvent(second), "\n\n")
 
-	err := questions.readEvents(context.Background(), strings.NewReader(opencodetest.AskedEvent(opencodetest.FakeQuestion)+cut))
+	err := questions.readEvents(context.Background(), strings.NewReader(kilotest.AskedEvent(kilotest.FakeQuestion)+cut))
 
 	require.NoError(t, err, "a stream that ends is no failure")
 	published := sink.PublishedControls()
@@ -444,7 +444,7 @@ func TestOpenCodeQuestions_DiscoversTheServerOfARunningProcess(t *testing.T) {
 	// search. A sequential test runs before any parallel test resumes, which is what
 	// keeps this test's own daemon the only one alive. In production the subject is
 	// the launched daemon, which serves one.
-	daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)
+	daemon := kilotest.NewFakeDaemon(t, EventRoute, QuestionRoot)
 	questions := &openCodeQuestions{}
 	questions.Configure(&agenttest.ControlSink{})
 
@@ -466,7 +466,7 @@ func TestOpenCodeQuestions_SkipsAPortThatIsNotTheDaemon(t *testing.T) {
 		other := httptest.NewServer(decoy)
 		t.Cleanup(other.Close)
 	}
-	daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)
+	daemon := kilotest.NewFakeDaemon(t, EventRoute, QuestionRoot)
 	questions := &openCodeQuestions{}
 	questions.Configure(&agenttest.ControlSink{})
 
@@ -615,7 +615,7 @@ func TestOpenCodeDescendants_IncludesTheProcessItself(t *testing.T) {
 func TestOpenCodePidPorts_ReadsTheProcessOwnListeningSockets(t *testing.T) {
 	// Sequential for the reason the search tests above state: the subject process is
 	// this one, so another test's server is an equally correct answer.
-	daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)
+	daemon := kilotest.NewFakeDaemon(t, EventRoute, QuestionRoot)
 	_, portText, err := net.SplitHostPort(strings.TrimPrefix(daemon.Server.URL, "http://"))
 	require.NoError(t, err)
 	port, err := strconv.Atoi(portText)
@@ -643,7 +643,7 @@ func TestOpenCodeDescendants_TolerateAnAbsentProcess(t *testing.T) {
 func TestOpenCodeAnswersAQuestionThroughTheBridge(t *testing.T) {
 	t.Parallel()
 	a := &Agent{}
-	opencodetest.AssertAnswersAQuestionThroughTheBridge(t, a, EventRoute, QuestionRoot,
+	kilotest.AssertAnswersAQuestionThroughTheBridge(t, a, EventRoute, QuestionRoot,
 		func(ctx context.Context, sink agent.ControlServices, baseURL string) {
 			a.SetContextForTest(ctx)
 			a.BeginQuestionsForTest(ctx, sink, "agent-1", baseURL)
@@ -652,5 +652,5 @@ func TestOpenCodeAnswersAQuestionThroughTheBridge(t *testing.T) {
 
 func TestOpenCodeRcMarkerNeverReachesTheDaemon(t *testing.T) {
 	t.Parallel()
-	opencodetest.AssertRcMarkerNeverReachesTheDaemon(t, "opencode", "OPENCODE_CLIENT", openCodeQuestionToolEnv, ACPArgs())
+	kilotest.AssertRcMarkerNeverReachesTheDaemon(t, "opencode", "OPENCODE_CLIENT", openCodeQuestionToolEnv, ACPArgs())
 }

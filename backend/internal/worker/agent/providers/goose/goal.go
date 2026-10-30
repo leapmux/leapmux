@@ -90,10 +90,10 @@ func (a *Agent) observeGooseSessionUpdate(sessionID string, _ agent.ProviderServ
 	defer a.Mu.Unlock()
 	if a.lastMessageID != message.MessageID {
 		a.lastMessageID = message.MessageID
-		a.lastMessageText = ""
+		a.lastMessageText.Reset()
 		a.lastMessageInference = false
 	}
-	a.lastMessageText += message.Content.Text
+	a.lastMessageText.WriteString(message.Content.Text)
 	if providerkit.RawPresent(message.Meta.Goose.Inference) {
 		a.lastMessageInference = true
 	}
@@ -114,8 +114,9 @@ type gooseLastMessage struct {
 func (a *Agent) takeGooseLastMessage() gooseLastMessage {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
-	last := gooseLastMessage{text: a.lastMessageText, inference: a.lastMessageInference, update: a.lastMessageUpdate}
-	a.lastMessageID, a.lastMessageText, a.lastMessageInference, a.lastMessageUpdate = "", "", false, nil
+	last := gooseLastMessage{text: a.lastMessageText.String(), inference: a.lastMessageInference, update: a.lastMessageUpdate}
+	a.lastMessageText.Reset()
+	a.lastMessageID, a.lastMessageInference, a.lastMessageUpdate = "", false, nil
 	return last
 }
 

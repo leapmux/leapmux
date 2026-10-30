@@ -1071,13 +1071,129 @@ func usageVerdict(resetAt time.Time) TurnVerdict {
 	return TurnVerdict{Failure: providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, ResetAt: resetAt, Cause: "usage"}}
 }
 
+// retryAuthorityBarrier pauses before the complete capture operation, whether
+// a caller captures explicitly or reaches it through a direct retry method.
+type retryAuthorityBarrier struct {
+	agent.ProviderServices
+	once    sync.Once
+	entered chan struct{}
+	release <-chan struct{}
+}
+
+func (sink *retryAuthorityBarrier) pause() {
+	sink.once.Do(func() {
+		close(sink.entered)
+		<-sink.release
+	})
+}
+
+func (sink *retryAuthorityBarrier) OutputQueue() *agent.OutputQueue {
+	return agent.OutputQueueFor(sink.ProviderServices)
+}
+
+func (sink *retryAuthorityBarrier) CaptureAutoRetry() agent.AutoRetryWriter {
+	sink.pause()
+	return sink.ProviderServices.CaptureAutoRetry()
+}
+
+func (sink *retryAuthorityBarrier) CaptureAutoRetryThroughTurn(sequence uint64) agent.AutoRetryWriter {
+	sink.pause()
+	return sink.ProviderServices.CaptureAutoRetryThroughTurn(sequence)
+}
+
+func (sink *retryAuthorityBarrier) ScheduleUsageLimitRetry(resetAt time.Time, payload []byte) {
+	sink.pause()
+	sink.ProviderServices.ScheduleUsageLimitRetry(resetAt, payload)
+}
+
+func (sink *retryAuthorityBarrier) ScheduleUsageLimitRetryWithKey(key string, resetAt time.Time, payload []byte) {
+	sink.pause()
+	sink.ProviderServices.ScheduleUsageLimitRetryWithKey(key, resetAt, payload)
+}
+
+func (sink *retryAuthorityBarrier) ScheduleServerErrorRetry(payload []byte) {
+	sink.pause()
+	sink.ProviderServices.ScheduleServerErrorRetry(payload)
+}
+
+func (sink *retryAuthorityBarrier) CancelServerErrorRetry(reason string) {
+	sink.pause()
+	sink.ProviderServices.CancelServerErrorRetry(reason)
+}
+
+func (sink *retryAuthorityBarrier) CancelUsageLimitRetry(reason string) {
+	sink.pause()
+	sink.ProviderServices.CancelUsageLimitRetry(reason)
+}
+
+func (sink *retryAuthorityBarrier) CancelUsageLimitRetryWithKey(key, reason string) {
+	sink.pause()
+	sink.ProviderServices.CancelUsageLimitRetryWithKey(key, reason)
+}
+
+func TestAgentTurnVerdictCannotCaptureAuthorityFromAReplacementSession(t *testing.T) {
+	t.Parallel()
+	for _, withRow := range []bool{false, true} {
+		for _, verdict := range []struct {
+			name  string
+			value TurnVerdict
+		}{{"transient", transientVerdict()}, {"billing", billingVerdict()}, {"completed", TurnVerdict{}},
+			{"usage", usageVerdict(time.Date(2026, 10, 31, 0, 0, 0, 0, time.UTC))}} {
+			t.Run(fmt.Sprintf("%s/row=%t", verdict.name, withRow), func(t *testing.T) {
+				t.Parallel()
+				a, _ := newTestAgentForRPCWithResponder(t, func(method string) agenttest.RPCReply {
+					if method == MethodSessionNew {
+						return agenttest.RPCReply{Result: json.RawMessage(`{"sessionId":"replacement-session"}`)}
+					}
+					return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+				})
+				sink := &agenttest.Sink{}
+				sink.UpdateSessionID(a.CurrentSessionID())
+				release := make(chan struct{})
+				unblock := sync.OnceFunc(func() { close(release) })
+				t.Cleanup(unblock)
+				ordered := agent.NewOrderedProviderServices(nil, agent.NewProviderServices(sink))
+				barrier := &retryAuthorityBarrier{ProviderServices: ordered, entered: make(chan struct{}), release: release}
+				a.sink = barrier
+				a.wireTurnActive()
+				require.True(t, a.BeginAgentTurn())
+				finished := make(chan struct{})
+				go func() {
+					defer close(finished)
+					if withRow {
+						a.EndAgentTurnWithVerdict(json.RawMessage(agentTurnEndFrame), verdict.value)
+					} else {
+						a.EndAgentTurnWithoutRowWithVerdict(verdict.value, MergeQueuedTurnIntoPrompt)
+					}
+				}()
+				select {
+				case <-barrier.entered:
+				case <-testutil.DeadlineContext(t).Done():
+					t.Fatal("the verdict did not reach its authority capture")
+				}
+				newSession, err := a.ClearContext()
+				require.NoError(t, err)
+				require.Equal(t, "replacement-session", newSession)
+				unblock()
+				select {
+				case <-finished:
+				case <-testutil.DeadlineContext(t).Done():
+					t.Fatal("the old verdict did not finish")
+				}
+				assert.Zero(t, sink.AutoScheduleCount())
+				assert.Zero(t, sink.AutoCancelCount(), "the old turn cannot cancel the replacement session's retry")
+			})
+		}
+	}
+}
+
 func TestTurnVerdict_TheAgentTurnVerdictDecidesWhenItsEndArrivesBeforeThePromptEnd(t *testing.T) {
 	t.Parallel()
 	out := &agenttest.Stdin{}
 	b, sink := newACPTurnBase(t, out)
 	b.hooks.PromptEnded = func(error, bool) PromptEnding {
 		retry := usageVerdict(time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC))
-		return PromptEnding{Retry: &retry}
+		return PromptEnding{Retry: retry}
 	}
 	require.NoError(t, b.SendInput("hi", nil))
 	require.True(t, b.BeginAgentTurn())
@@ -1126,7 +1242,7 @@ func TestTurnVerdict_TheAgentTurnVerdictDecidesWhenItsEndArrivesAfterThePromptEn
 	b, sink := newACPTurnBase(t, out)
 	b.hooks.PromptEnded = func(error, bool) PromptEnding {
 		retry := usageVerdict(time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC))
-		return PromptEnding{Retry: &retry}
+		return PromptEnding{Retry: retry}
 	}
 	require.NoError(t, b.SendInput("hi", nil))
 	require.True(t, b.BeginAgentTurn())
@@ -1148,7 +1264,7 @@ func TestTurnVerdict_EndWithNoAgentTurnAppliesNothing(t *testing.T) {
 	b, sink := newACPTurnBase(t, &agenttest.Stdin{})
 
 	assert.False(t, b.EndAgentTurnWithVerdict(json.RawMessage(agentTurnEndFrame), transientVerdict()))
-	assert.False(t, b.EndAgentTurnWithoutRowWithVerdict(transientVerdict()))
+	assert.False(t, b.EndAgentTurnWithoutRowWithVerdict(transientVerdict(), MergeQueuedTurnIntoPrompt))
 
 	assert.Empty(t, sink.Timeline())
 }
@@ -1158,7 +1274,7 @@ func TestTurnVerdict_EndWithoutRowAppliesTheVerdictOfAnActiveAgentTurn(t *testin
 	b, sink := newACPTurnBase(t, &agenttest.Stdin{})
 	require.True(t, b.AdmitAgentTurn())
 
-	assert.True(t, b.EndAgentTurnWithoutRowWithVerdict(transientVerdict()))
+	assert.True(t, b.EndAgentTurnWithoutRowWithVerdict(transientVerdict(), MergeQueuedTurnIntoPrompt))
 
 	ops, _ := retryOps(sink.Timeline())
 	assert.Equal(t, []string{"schedule_server_error"}, opNames(ops))
@@ -1171,12 +1287,12 @@ func TestTurnVerdict_EndWithoutRowThatDropsAQueuedTurnLeavesThePromptToDecide(t 
 	b, sink := newACPTurnBase(t, out)
 	b.hooks.PromptEnded = func(error, bool) PromptEnding {
 		retry := transientVerdict()
-		return PromptEnding{Retry: &retry}
+		return PromptEnding{Retry: retry}
 	}
 	require.NoError(t, b.SendInput("hi", nil))
 	require.True(t, b.BeginAgentTurn())
 
-	assert.False(t, b.EndAgentTurnWithoutRowWithVerdict(billingVerdict()), "dropping a queued turn ends nothing")
+	assert.False(t, b.EndAgentTurnWithoutRowWithVerdict(billingVerdict(), MergeQueuedTurnIntoPrompt), "dropping a queued turn ends nothing")
 	ops, _ := retryOps(sink.Timeline())
 	assert.Empty(t, ops)
 
@@ -1184,6 +1300,32 @@ func TestTurnVerdict_EndWithoutRowThatDropsAQueuedTurnLeavesThePromptToDecide(t 
 	testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
 	ops, _ = retryOps(sink.Timeline())
 	assert.Equal(t, []string{"schedule_server_error"}, opNames(ops), "the prompt's own verdict decides")
+}
+
+func TestTurnVerdict_QueuedCompletionKeepsItsPayloadWithoutAnEndRow(t *testing.T) {
+	t.Parallel()
+	for _, withoutRow := range []bool{false, true} {
+		t.Run(fmt.Sprint("without row ", withoutRow), func(t *testing.T) {
+			t.Parallel()
+			b, sink := newACPTurnBase(t, &agenttest.Stdin{})
+			require.NoError(t, b.SendInput("hi", nil))
+			require.True(t, b.BeginAgentTurn())
+			verdict := transientVerdict()
+			verdict.Payload = json.RawMessage(`{"source":"queued"}`)
+			if withoutRow {
+				assert.False(t, b.EndAgentTurnWithoutRowWithVerdict(verdict, RetainQueuedTurn))
+			} else {
+				assert.False(t, b.EndAgentTurnWithVerdict(nil, verdict))
+			}
+			verdict.Payload[0] = '!'
+			assert.Zero(t, sink.AutoScheduleCount())
+			b.HandleJSONRPCResponseForTest(promptResponse(1))
+			testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
+			require.Equal(t, 1, sink.AutoScheduleCount())
+			assert.JSONEq(t, `{"source":"queued"}`, string(sink.LastAutoSchedule().SourcePayload))
+			assert.Zero(t, sink.AutoCancelCount())
+		})
+	}
 }
 
 func opNames(ops []agenttest.TimelineEntry) []string {
@@ -1205,6 +1347,6 @@ func TestTurnVerdict_InterruptRequestedHoldsUntilTheAgentTurnEnds(t *testing.T) 
 	b.noteACPInterruptRequested()
 	assert.True(t, b.InterruptRequested(), "the stop of the agent turn holds while it runs")
 
-	assert.True(t, b.EndAgentTurnWithoutRowWithVerdict(TurnVerdict{}))
+	assert.True(t, b.EndAgentTurnWithoutRowWithVerdict(TurnVerdict{}, MergeQueuedTurnIntoPrompt))
 	assert.False(t, b.InterruptRequested(), "the turn's end removes the note")
 }

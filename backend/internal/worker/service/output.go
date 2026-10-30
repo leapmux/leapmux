@@ -303,9 +303,10 @@ type OutputHandler struct {
 	// service facet, and the input queue owns the item. Set via
 	// SetAutoRetryFuncs in service.New; nil in tests that build an
 	// OutputHandler directly, where a request is logged and dropped.
-	scheduleAutoRetry  func(agentID string, schedule agent.AutoRetrySchedule)
-	cancelAutoRetry    func(agentID string, kind leapmuxv1.AgentInputKind, reason string, admission agent.AutoRetryAdmission)
-	cancelAllAutoRetry func(agentID string, reason string)
+	scheduleAutoRetry     func(agentID string, schedule agent.AutoRetrySchedule)
+	cancelAutoRetry       func(agentID string, kind leapmuxv1.AgentInputKind, reason string, admission agent.AutoRetryAdmission)
+	cancelKeyedUsageRetry func(agentID, key, reason string, admission agent.AutoRetryAdmission)
+	cancelAllAutoRetry    func(agentID string, reason string)
 
 	// supportsSteering answers whether the running provider can add the queue
 	// head to an active turn. Set via SetSupportsSteeringFunc in service.New;
@@ -431,18 +432,20 @@ func (h *OutputHandler) ResetSpanTracker(agentID string) {
 	h.trackers.reset(agentID)
 }
 
-// SetAutoRetryFuncs wires the automatic-retry callbacks the input queue owns:
-// one schedule request per provider report, one kind-scoped cancellation for a
-// provider's own cancel, and one both-kinds cancellation for lifecycle
-// cleanup. Each cancellation carries the reason that the queue logs for each
-// retry it removes. Call before any agent output is processed.
+// SetAutoRetryFuncs connects retry scheduling and cancellation to the input queue.
+// Provider callbacks cancel one retry kind or one native key.
+// Lifecycle cleanup cancels both retry kinds.
+// Each cancellation supplies a reason for the removal log.
+// Call before any agent output is processed.
 func (h *OutputHandler) SetAutoRetryFuncs(
 	schedule func(agentID string, schedule agent.AutoRetrySchedule),
 	cancel func(agentID string, kind leapmuxv1.AgentInputKind, reason string, admission agent.AutoRetryAdmission),
+	cancelKeyedUsage func(agentID, key, reason string, admission agent.AutoRetryAdmission),
 	cancelAll func(agentID string, reason string),
 ) {
 	h.scheduleAutoRetry = schedule
 	h.cancelAutoRetry = cancel
+	h.cancelKeyedUsageRetry = cancelKeyedUsage
 	h.cancelAllAutoRetry = cancelAll
 }
 
@@ -462,6 +465,12 @@ func (h *OutputHandler) cancelAutoRetryKind(agentID string, kind leapmuxv1.Agent
 		return
 	}
 	h.cancelAutoRetry(agentID, kind, reason, admission)
+}
+
+func (h *OutputHandler) cancelUsageRetryWithKey(agentID, key, reason string, admission agent.AutoRetryAdmission) {
+	if h.cancelKeyedUsageRetry != nil {
+		h.cancelKeyedUsageRetry(agentID, key, reason, admission)
+	}
 }
 
 // cancelAllAutoRetries removes every pending retry of one agent. Runtime
@@ -1950,12 +1959,20 @@ func (s *agentOutputSink) ScheduleUsageLimitRetry(resetAt time.Time, sourcePaylo
 	s.CaptureAutoRetry().ScheduleUsageLimitRetry(resetAt, sourcePayload)
 }
 
+func (s *agentOutputSink) ScheduleUsageLimitRetryWithKey(key string, resetAt time.Time, sourcePayload []byte) {
+	s.CaptureAutoRetry().ScheduleUsageLimitRetryWithKey(key, resetAt, sourcePayload)
+}
+
 func (s *agentOutputSink) ScheduleServerErrorRetry(sourcePayload []byte) {
 	s.CaptureAutoRetry().ScheduleServerErrorRetry(sourcePayload)
 }
 
 func (s *agentOutputSink) CancelUsageLimitRetry(reason string) {
 	s.CaptureAutoRetry().CancelUsageLimitRetry(reason)
+}
+
+func (s *agentOutputSink) CancelUsageLimitRetryWithKey(key, reason string) {
+	s.CaptureAutoRetry().CancelUsageLimitRetryWithKey(key, reason)
 }
 
 func (s *agentOutputSink) CancelServerErrorRetry(reason string) {

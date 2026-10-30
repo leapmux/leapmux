@@ -244,8 +244,8 @@ func TestMiMoAnswerTagsMatchTheContract(t *testing.T) {
 		field string
 		want  string
 	}{
-		{"Answers", contracts.OpenCodeAnswerFieldAnswers},
-		{"Rejected", contracts.OpenCodeAnswerFieldRejected},
+		{"Answers", contracts.NativeQuestionAnswerFieldAnswers},
+		{"Rejected", contracts.NativeQuestionAnswerFieldRejected},
 	} {
 		field, found := result.Type.FieldByName(tt.field)
 		require.True(t, found, "the answer result has no field %s", tt.field)

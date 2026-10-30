@@ -361,3 +361,67 @@ func TestFastagentObserverClaimsNothingAndSkipsEmptyChunks(t *testing.T) {
 	defer a.Mu.Unlock()
 	assert.Equal(t, fastagentSuccessText, a.lastChunkText)
 }
+
+func TestFastagentDecodedExceptionJSONKeepsVendorEvidence(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		data  string
+		want  providerkit.TurnFailureKind
+		reset time.Time
+	}{
+		{data: `{"error":{"type":"overloaded_error","message":"Overloaded"}}`, want: providerkit.TurnFailureTransient},
+		{data: `{"details":"Overloaded","error":{"type":"overloaded_error"}}`, want: providerkit.TurnFailureTransient},
+		{data: `{"details":"Failed","error":{"code":"insufficient_quota"}}`, want: providerkit.TurnFailureBillingBlocked},
+		{data: `{"details":"Retry later","error":{"code":"usage_limit_reached","resets_at":1793268000}}`, want: providerkit.TurnFailureUsageLimited, reset: time.Unix(1793268000, 0).UTC()},
+		{data: `{"details":"peer closed connection without sending complete message body","error":{"code":"insufficient_quota"}}`, want: providerkit.TurnFailureBillingBlocked},
+		{data: `{"error":{"code":"insufficient_quota"}}`, want: providerkit.TurnFailureBillingBlocked},
+		{data: `{"error":{"code":"usage_limit_reached","resets_at":1793268000}}`, want: providerkit.TurnFailureUsageLimited, reset: time.Unix(1793268000, 0).UTC()},
+		{data: `{"details":"peer closed connection without sending complete message body"}`, want: providerkit.TurnFailureTransient},
+		{data: `"peer closed connection without sending complete message body"`, want: providerkit.TurnFailureTransient},
+		{data: `{"message":"peer closed connection without sending complete message body"}`},
+		{data: `{}`}, {data: `null`}, {data: `[]`}, {data: `true`}, {data: `0`}, {data: `{"broken"`},
+	} {
+		t.Run(tc.data, func(t *testing.T) {
+			t.Parallel()
+			err := &providerkit.JSONRPCResponseError{Code: fastagentInternalErrorCode, Message: "Internal error", Data: json.RawMessage(tc.data)}
+			verdict := fastagentTurnFailure(err, false, "", nil, fastagentObservedAt)
+			assert.Equal(t, tc.want, verdict.Failure.Kind)
+			assert.Equal(t, tc.reset, verdict.Failure.ResetAt)
+			if json.Valid([]byte(tc.data)) {
+				assert.JSONEq(t, string(err.WireJSON()), string(verdict.Payload))
+			}
+		})
+	}
+}
+
+func TestFastagentPromptEndReleasesItsRecordedChunk(t *testing.T) {
+	t.Parallel()
+	for _, stopped := range []bool{false, true} {
+		t.Run(fmt.Sprint("stopped ", stopped), func(t *testing.T) {
+			t.Parallel()
+			a, _ := newFastagentRetryAgent(t, agenttest.RPCReply{})
+			raw := json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"` + fastagentAnthropic529Text + `"}}`)
+			a.observeFastagentSessionUpdate(a.CurrentSessionID(), nil, raw)
+			ending := a.finishFastagentPrompt(nil, stopped)
+			a.Mu.Lock()
+			assert.Empty(t, a.lastChunkText)
+			assert.Empty(t, a.lastChunkRaw)
+			a.Mu.Unlock()
+			if !stopped {
+				assert.Equal(t, providerkit.TurnFailureTransient, ending.Retry.Failure.Kind)
+				assert.JSONEq(t, string(raw), string(ending.Retry.Payload))
+			}
+		})
+	}
+}
+
+func TestFastagentObjectExceptionAppliesItsVerdictAfterTheErrorRow(t *testing.T) {
+	t.Parallel()
+	reply := agenttest.RPCReply{Error: json.RawMessage(`{"code":-32603,"message":"Internal error","data":{"error":{"type":"overloaded_error"}}}`)}
+	a, sink := newFastagentRetryAgent(t, reply)
+	runFastagentPrompt(t, a)
+	row, retries := fastagentRetryTimeline(t, sink.Timeline())
+	assert.Equal(t, "leapmux_notification", row)
+	require.Equal(t, []string{"schedule_server_error"}, retries)
+	assert.JSONEq(t, string(reply.Error), string(sink.LastAutoSchedule().SourcePayload))
+}

@@ -13,29 +13,30 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
-func TestDeliverGeminiDebugLogLines(t *testing.T) {
+func TestGeminiDebugLineReader(t *testing.T) {
 	t.Parallel()
 	oversized := strings.Repeat("x", geminiDebugLogMaxLine+1)
 	for _, tc := range []struct {
-		name         string
-		data         string
-		wantLines    []string
-		wantConsumed int
+		name        string
+		data        string
+		wantLines   []string
+		wantPending string
 	}{
-		{name: "complete lines", data: "first\nsecond\n", wantLines: []string{"first", "second"}, wantConsumed: 13},
-		{name: "an unfinished line waits", data: "first\nsec", wantLines: []string{"first"}, wantConsumed: 6},
-		{name: "a CRLF ending", data: "first\r\n", wantLines: []string{"first"}, wantConsumed: 7},
-		{name: "an empty line", data: "\n", wantLines: []string{""}, wantConsumed: 1},
-		{name: "an oversized line is dropped", data: oversized + "\nnext\n", wantLines: []string{"next"}, wantConsumed: len(oversized) + 6},
-		{name: "an unfinished oversized line is dropped", data: oversized, wantConsumed: len(oversized)},
+		{name: "complete lines", data: "first\nsecond\n", wantLines: []string{"first", "second"}},
+		{name: "an unfinished line waits", data: "first\nsec", wantLines: []string{"first"}, wantPending: "sec"},
+		{name: "a CRLF ending", data: "first\r\n", wantLines: []string{"first"}},
+		{name: "an empty line", data: "\n", wantLines: []string{""}},
+		{name: "an oversized line is dropped", data: oversized + "\nnext\n", wantLines: []string{"next"}},
+		{name: "an unfinished oversized line is dropped", data: oversized},
 		{name: "no data", data: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			var lines []string
-			consumed := deliverGeminiDebugLogLines([]byte(tc.data), func(line string) { lines = append(lines, line) })
+			var reader geminiDebugLineReader
+			reader.feed([]byte(tc.data), func(line string) { lines = append(lines, line) })
 			assert.Equal(t, tc.wantLines, lines)
-			assert.Equal(t, tc.wantConsumed, consumed)
+			assert.Equal(t, tc.wantPending, string(reader.pending))
 		})
 	}
 }
@@ -46,10 +47,10 @@ type geminiDebugLogRecorder struct {
 	lines []string
 }
 
-func (r *geminiDebugLogRecorder) observe(line string) {
+func (r *geminiDebugLogRecorder) observe(line geminiDebugLogLine) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.lines = append(r.lines, line)
+	r.lines = append(r.lines, line.text)
 }
 
 func (r *geminiDebugLogRecorder) recorded() []string {
@@ -65,6 +66,47 @@ func appendGeminiDebugLog(t *testing.T, path, text string) {
 	_, err = file.WriteString(text)
 	require.NoError(t, err)
 	require.NoError(t, file.Close())
+}
+
+func TestGeminiDebugLogKeepsAnAppendDuringDelivery(t *testing.T) {
+	t.Parallel()
+	log, err := newGeminiDebugLog()
+	require.NoError(t, err)
+	t.Cleanup(log.close)
+	appendGeminiDebugLog(t, log.path, strings.Repeat("x", geminiDebugLogMaxReadBytes)+"\n")
+	var recorded []string
+	appended := false
+	observe := func(line geminiDebugLogLine) {
+		recorded = append(recorded, line.text)
+		if !appended {
+			appended = true
+			appendGeminiDebugLog(t, log.path, "later\n")
+		}
+	}
+	// The first short line causes a delivery while the old follower still
+	// owns the active log's size check and subsequent truncation.
+	file, err := os.OpenFile(log.path, os.O_WRONLY, 0)
+	require.NoError(t, err)
+	_, err = file.WriteAt([]byte("first\n"), 0)
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+	log.poll(observe)
+	log.poll(observe)
+	assert.Equal(t, []string{"first", "later"}, recorded)
+}
+
+func TestGeminiDebugLogDiscardsTheWholeOversizedLine(t *testing.T) {
+	t.Parallel()
+	log, err := newGeminiDebugLog()
+	require.NoError(t, err)
+	t.Cleanup(log.close)
+	appendGeminiDebugLog(t, log.path, strings.Repeat("x", geminiDebugLogMaxLine+1))
+	var recorded []string
+	observe := func(line geminiDebugLogLine) { recorded = append(recorded, line.text) }
+	log.poll(observe)
+	appendGeminiDebugLog(t, log.path, geminiLongWaitWarning+"\nnext\n")
+	log.poll(observe)
+	assert.Equal(t, []string{"next"}, recorded, "the warning-shaped suffix still belongs to the dropped line")
 }
 
 // The follower delivers each line once Gemini ends it, from the first poll
@@ -90,32 +132,48 @@ func TestGeminiDebugLogFollowsTheLinesThatGeminiAppends(t *testing.T) {
 	assert.Equal(t, []string{geminiLongWaitWarning, "second"}, recorder.recorded())
 }
 
-// The follower empties the file once it has read the cap, and goes on to read
-// what Gemini appends after that.
-func TestGeminiDebugLogEmptiesTheFileAtItsCap(t *testing.T) {
+// One poll has a fixed byte limit and leaves the active writer's file intact.
+func TestGeminiDebugLogLimitsOnePollWithoutTruncatingTheFile(t *testing.T) {
 	t.Parallel()
 	log, err := newGeminiDebugLog()
 	require.NoError(t, err)
 	t.Cleanup(log.close)
-	clock := testutil.NewQuartzMock(t)
-	recorder := &geminiDebugLogRecorder{}
-	log.follow(clock, recorder.observe)
 	line := strings.Repeat("d", 1023) + "\n"
-	lines := geminiDebugLogMaxSize / len(line)
-	appendGeminiDebugLog(t, log.path, strings.Repeat(line, lines+1))
-
-	clock.Advance(geminiDebugLogPollInterval).MustWait(testutil.DeadlineContext(t))
-	testutil.RequireEventually(t, func() bool {
-		info, err := os.Stat(log.path)
-		return err == nil && info.Size() == 0
-	})
+	count := geminiDebugLogMaxReadBytes / len(line)
+	appendGeminiDebugLog(t, log.path, strings.Repeat(line, count+1))
+	var recorded []string
+	observe := func(line geminiDebugLogLine) { recorded = append(recorded, line.text) }
+	log.poll(observe)
+	assert.Equal(t, int64(geminiDebugLogMaxReadBytes), log.offset)
+	assert.Len(t, recorded, count)
+	info, err := os.Stat(log.path)
+	require.NoError(t, err)
+	assert.Equal(t, int64((count+1)*len(line)), info.Size())
 	appendGeminiDebugLog(t, log.path, "after the cap\n")
-	clock.Advance(geminiDebugLogPollInterval).MustWait(testutil.DeadlineContext(t))
-	testutil.RequireEventually(t, func() bool {
-		recorded := recorder.recorded()
-		return len(recorded) > 0 && recorded[len(recorded)-1] == "after the cap"
-	})
-	assert.Len(t, recorder.recorded(), lines+2, "the read that passed the cap delivered every line that Gemini wrote before it")
+	log.poll(observe)
+	assert.Len(t, recorded, count+2)
+	assert.Equal(t, "after the cap", recorded[len(recorded)-1])
+}
+
+func TestGeminiDebugLogPreparationDiscardsOnlyTheOldEpoch(t *testing.T) {
+	t.Parallel()
+	log, err := newGeminiDebugLog()
+	require.NoError(t, err)
+	t.Cleanup(log.close)
+	appendGeminiDebugLog(t, log.path, "old\nunfinished")
+	old := log.readLines()
+	require.Len(t, old, 1)
+	assert.Equal(t, "old", old[0].text)
+	epoch := log.preparePrompt()
+	info, err := os.Stat(log.path)
+	require.NoError(t, err)
+	assert.Zero(t, info.Size())
+	appendGeminiDebugLog(t, log.path, "new\n")
+	newLines := log.readLines()
+	require.Len(t, newLines, 1)
+	assert.Equal(t, "new", newLines[0].text)
+	assert.Equal(t, epoch, newLines[0].epoch)
+	assert.NotEqual(t, old[0].epoch, newLines[0].epoch)
 }
 
 // Close stops the follower and removes the log's directory. A second close,

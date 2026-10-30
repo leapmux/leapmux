@@ -2,6 +2,7 @@ import type { ProviderPermissionPresets } from '../providerSettings'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ampPermissionPresets } from './amp/permissionPresets'
 import { claudePermissionPresets } from './claude/permissionPresets'
+import { clientAutoApprovePermissionPresets } from './clientApproval'
 import { clinePermissionPresets } from './cline/permissionPresets'
 import { codebuddyPermissionPresets } from './codebuddy/permissionPresets'
 import { codewhalePermissionPresets } from './codewhale/permissionPresets'
@@ -23,7 +24,6 @@ import { lettaPermissionPresets } from './letta/permissionPresets'
 import { mimoPermissionPresets } from './mimo/permissionPresets'
 import { musePermissionPresets } from './muse/permissionPresets'
 import { ohMyPiPermissionPresets } from './ohmypi/permissionPresets'
-import { openCodePermissionPresets } from './openCodePermissionPresets'
 import { qoderPermissionPresets } from './qoder/permissionPresets'
 import { qwenPermissionPresets } from './qwen/permissionPresets'
 import { reasonixPermissionPresets } from './reasonix/permissionPresets'
@@ -36,8 +36,8 @@ export const PROVIDER_PERMISSION_PRESETS = {
   [AgentProvider.CODEX]: codexPermissionPresets,
   [AgentProvider.CURSOR]: cursorPermissionPresets,
   [AgentProvider.GITHUB_COPILOT]: copilotPermissionPresets,
-  [AgentProvider.KILO]: openCodePermissionPresets,
-  [AgentProvider.OPENCODE]: openCodePermissionPresets,
+  [AgentProvider.KILO]: clientAutoApprovePermissionPresets,
+  [AgentProvider.OPENCODE]: clientAutoApprovePermissionPresets,
   [AgentProvider.GOOSE]: goosePermissionPresets,
   [AgentProvider.PI]: undefined,
   [AgentProvider.REASONIX]: reasonixPermissionPresets,

@@ -1187,6 +1187,9 @@ func (h *OutputHandler) recordTurnActive(agentID, rootAgentID string, active boo
 	if changed {
 		previous := h.scopeLocked(st, rootAgentID)
 		st.scope = &activityScope{publisher: previous.publisher}
+		if !active {
+			st.scope.previousScope = previous
+		}
 		st.turnSteerable = false
 	}
 	scope := st.scope

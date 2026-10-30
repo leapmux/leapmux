@@ -2,6 +2,7 @@ package acp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -10,6 +11,28 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
+
+// QueuedTurnCompletionPolicy decides whether completed queued work keeps its
+// own retry verdict or merges into the preceding prompt.
+type QueuedTurnCompletionPolicy uint8
+
+const (
+	// MergeQueuedTurnIntoPrompt discards a queued work reservation.
+	MergeQueuedTurnIntoPrompt QueuedTurnCompletionPolicy = iota
+	// RetainQueuedTurn keeps a completed native conversation turn.
+	RetainQueuedTurn
+)
+
+type acpAgentTurnCompletion struct {
+	frame      json.RawMessage
+	verdict    TurnVerdict
+	withoutRow bool
+}
+
+func newAgentTurnCompletion(frame json.RawMessage, verdict TurnVerdict, withoutRow bool) *acpAgentTurnCompletion {
+	verdict.Payload = append(json.RawMessage(nil), verdict.Payload...)
+	return &acpAgentTurnCompletion{frame: append(json.RawMessage(nil), frame...), verdict: verdict, withoutRow: withoutRow}
+}
 
 // PrepareSteer stores buffered output before the queue reserves the steer's position.
 // A native refusal can leave this harmless segment boundary in the transcript.
@@ -63,13 +86,16 @@ func (b *Base) BeginAgentTurn() bool {
 		b.turnMu.Unlock()
 		return false
 	case b.promptActive:
+		interrupted := b.interruptRequested || b.promptConversation.internallyInterrupted()
 		b.agentTurnQueued = true
+		b.startConversationLocked(true)
 		sessionID := b.sessionID
 		drained := b.promptOutputDrained
 		b.Mu.Unlock()
 		var turn acpTurnSnapshot
 		if !drained {
 			turn = b.markPromptBoundaryLocked()
+			turn.interrupted = interrupted
 		}
 		target := b.openRootTranscriptLocked(sessionID, true, b.promptTarget)
 		b.rootTarget = target
@@ -83,9 +109,13 @@ func (b *Base) BeginAgentTurn() bool {
 		b.endPromptOutput(turn)
 		return true
 	}
+	if b.clientWork != nil {
+		b.clientWork.ownsRetryVerdict = false
+	}
 	b.promptActive = true
 	b.promptOutputDrained = false
 	b.agentTurnActive = true
+	b.startConversationLocked(false)
 	sessionID := b.sessionID
 	b.Mu.Unlock()
 	turn := b.takeUnownedOutputLocked()
@@ -117,7 +147,7 @@ func (b *Base) BeginAgentTurn() bool {
 func (b *Base) AdmitAgentTurn() bool {
 	b.turnMu.Lock()
 	b.Mu.Lock()
-	if b.promptActive {
+	if b.promptActive || b.clientWork != nil {
 		b.Mu.Unlock()
 		b.turnMu.Unlock()
 		return false
@@ -125,6 +155,7 @@ func (b *Base) AdmitAgentTurn() bool {
 	b.promptActive = true
 	b.promptOutputDrained = false
 	b.agentTurnActive = true
+	b.startConversationLocked(false)
 	sessionID := b.sessionID
 	b.Mu.Unlock()
 	turn := b.takeUnownedOutputLocked()
@@ -143,7 +174,11 @@ func (b *Base) AdmitAgentTurn() bool {
 // endPromptOutput stores the text of the running prompt that the boundary took,
 // because an agent turn now waits behind the prompt. See BeginAgentTurn.
 func (b *Base) endPromptOutput(turn acpTurnSnapshot) {
-	b.main().persistBufferedText(turn, agent.MessageCompletionComplete)
+	completion := agent.MessageCompletionComplete
+	if turn.interrupted {
+		completion = agent.MessageCompletionInterrupted
+	}
+	b.main().persistBufferedText(turn, completion)
 }
 
 // persistUnownedText stores the text that takeUnownedOutputLocked took when a
@@ -241,15 +276,14 @@ func (b *Base) EndAgentTurnWithVerdict(frame json.RawMessage, verdict TurnVerdic
 	b.turnMu.Lock()
 	b.Mu.Lock()
 	if b.agentTurnQueued {
-		b.queuedAgentTurnEnd = append(json.RawMessage(nil), frame...)
-		b.queuedAgentTurnVerdict = verdict
+		b.queuedAgentTurnCompletion = newAgentTurnCompletion(frame, verdict, false)
 		b.Mu.Unlock()
 		b.turnMu.Unlock()
 		return false
 	}
 	active := b.agentTurnActive
 	sessionID := b.sessionID
-	stopped := b.interruptRequested
+	stopped := b.interruptRequested || b.conversation.internallyInterrupted()
 	b.agentTurnActive = false
 	b.Mu.Unlock()
 	if !active {
@@ -275,34 +309,39 @@ func (b *Base) EndAgentTurnWithVerdict(frame json.RawMessage, verdict TurnVerdic
 // EndAgentTurnWithoutRow ends the turn that BeginAgentTurn recorded with a
 // zero verdict (NotRetryable). See EndAgentTurnWithoutRowWithVerdict.
 func (b *Base) EndAgentTurnWithoutRow() {
-	b.EndAgentTurnWithoutRowWithVerdict(TurnVerdict{})
+	b.EndAgentTurnWithoutRowWithVerdict(TurnVerdict{}, MergeQueuedTurnIntoPrompt)
 }
 
 // EndAgentTurnWithoutRowWithVerdict ends the turn that BeginAgentTurn recorded,
-// for work of the agent's own that is no conversation turn and keeps no record
-// of its end: Kiro compacts its context through a request, and the request's
-// response is the only end. The turn state goes idle, so the worker's queue
-// releases the next message, but no turn-end row joins the transcript. The
+// when the native protocol supplies no turn-end row. Junie ends a
+// steer-started conversation turn through an empty completion marker.
+// The turn state goes idle, so the worker's queue releases the next message,
+// but no turn-end row joins the transcript. The
 // text and the tool calls that the work left open are stored as a turn end
 // stores them.
 //
-// An agent turn that is still queued behind a prompt of LeapMux's is dropped:
-// the work ended before its turn could begin. Its turn set a boundary on the
-// prompt's output (see BeginAgentTurn), and a turn that never runs takes
-// nothing after that boundary. So the boundary goes, and the prompt's end
-// stores the whole output, with the prompt's own count of finished tools. When
-// the prompt's end already took its part of the output, the rest is the
-// work's, and this stores it. With no agent turn it does nothing.
+// queuedPolicy decides whether completed work merges into the preceding prompt
+// or keeps its own verdict. RetainQueuedTurn preserves a real conversation
+// turn whose native protocol supplies no turn-end row. MergeQueuedTurnIntoPrompt
+// discards a queued work reservation and leaves the prompt's verdict to decide.
 //
-// A queued agent turn that it drops applies no verdict, because the prompt's
-// own end decides.
-func (b *Base) EndAgentTurnWithoutRowWithVerdict(verdict TurnVerdict) (ended bool) {
+// Merging removes the queued turn's output boundary when the prompt has not
+// taken its output yet. The prompt then stores the whole output with its own
+// finished-tool count. If the prompt already took its output, this method
+// stores the remaining work output. With no agent turn, it does nothing.
+func (b *Base) EndAgentTurnWithoutRowWithVerdict(verdict TurnVerdict, queuedPolicy QueuedTurnCompletionPolicy) (ended bool) {
 	b.turnMu.Lock()
 	b.Mu.Lock()
 	if b.agentTurnQueued {
+		if queuedPolicy == RetainQueuedTurn {
+			b.queuedAgentTurnCompletion = newAgentTurnCompletion(nil, verdict, true)
+			b.Mu.Unlock()
+			b.turnMu.Unlock()
+			return false
+		}
 		b.agentTurnQueued = false
-		b.queuedAgentTurnEnd = nil
-		b.queuedAgentTurnVerdict = TurnVerdict{}
+		b.queuedAgentTurnCompletion = nil
+		b.conversation = b.promptConversation
 		b.Mu.Unlock()
 		drained := !b.dropPromptBoundaryLocked()
 		var turn acpTurnSnapshot
@@ -348,25 +387,23 @@ func (b *Base) storeWorkOutput(turn acpTurnSnapshot) {
 // takeQueuedAgentTurn hands the busy state of the turn that just ended to the
 // agent turn queued behind it, and reports whether one was. The fields of the
 // ended turn go, as they go at any turn end, and promptActive stays, so no
-// idle state is published between the two turns. end is the queued turn's
-// own end frame when it arrived before this. verdict is the retry verdict that
-// the queued turn's end carried.
-func (b *Base) takeQueuedAgentTurn(sessionID string) (end json.RawMessage, verdict TurnVerdict, queued bool) {
+// idle state is published between the two turns. completion is the queued turn's
+// own completion when it arrived before this, including its retry verdict.
+func (b *Base) takeQueuedAgentTurn(sessionID string) (completion *acpAgentTurnCompletion, queued bool) {
 	b.Mu.Lock()
 	defer b.Mu.Unlock()
 	if !b.agentTurnQueued || b.sessionID != sessionID {
-		return nil, TurnVerdict{}, false
+		return nil, false
 	}
-	end = b.queuedAgentTurnEnd
-	verdict = b.queuedAgentTurnVerdict
+	completion = b.queuedAgentTurnCompletion
 	b.agentTurnQueued = false
-	b.queuedAgentTurnEnd = nil
-	b.queuedAgentTurnVerdict = TurnVerdict{}
+	b.queuedAgentTurnCompletion = nil
 	b.agentTurnActive = true
+	b.promptConversation = b.conversation
 	b.promptOutputDrained = false
 	b.steerRunID = ""
 	b.interruptRequested = false
-	return end, verdict, true
+	return completion, true
 }
 
 // endTurn reports the turn of sessionID as over, applying verdict to the
@@ -384,6 +421,9 @@ func (b *Base) takeQueuedAgentTurn(sessionID string) (end json.RawMessage, verdi
 // providerkit frame queue for a reader-side write is no option either: it drops
 // a frame when the queue is full, and this frame is the reader's own message.
 func (b *Base) endTurn(sessionID string, verdict TurnVerdict) {
+	// Capture before validating the native session. A context clear that wins
+	// during capture must not lend its replacement authority to this verdict.
+	writer := b.sink.CaptureAutoRetry()
 	b.Mu.Lock()
 	current := b.sessionID == sessionID
 	b.Mu.Unlock()
@@ -393,7 +433,7 @@ func (b *Base) endTurn(sessionID string, verdict TurnVerdict) {
 	if b.handoffQueuedAgentTurn(sessionID) {
 		return
 	}
-	providerkit.ApplyTurnFailure(b.sink, verdict.Failure, verdict.Payload)
+	providerkit.ApplyTurnFailure(writer, verdict.Failure, verdict.Payload)
 	if b.schedulePendingFollowUp(sessionID) {
 		return
 	}
@@ -443,10 +483,18 @@ func (b *Base) reportFollowUpFailure(sessionID string, err error) {
 		return
 	}
 	slog.Error("acp follow-up prompt failed", "provider", b.ProviderName(), "agent_id", b.AgentID(), "error", err)
+	uncertain := errors.Is(err, agent.ErrDeliveryUncertain)
+	message := fmt.Sprintf("the message sent during the turn could not start a new turn: %v", err)
+	if uncertain {
+		message = fmt.Sprintf("LeapMux could not confirm delivery of the message sent during the turn: %v", err)
+	}
 	b.sink.PersistLeapMuxNotification(map[string]any{
 		contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
-		contracts.NotificationFieldError: fmt.Sprintf("the message sent during the turn could not start a new turn: %v", err),
+		contracts.NotificationFieldError: message,
 	})
+	if uncertain {
+		return
+	}
 	if !b.clearActivePromptForSession(sessionID) {
 		b.handoffQueuedAgentTurn(sessionID)
 	}
@@ -500,6 +548,7 @@ func (b *Base) continueWithPromptForBatch(sessionID, content string, attachments
 	b.interruptRequested = false
 	b.agentTurnActive = false
 	b.promptOutputDrained = false
+	b.startConversationLocked(false)
 	b.Mu.Unlock()
 	// The turn that ended drained its output, so what the buffer holds now came
 	// after that turn and before this prompt.
@@ -517,10 +566,10 @@ func (b *Base) continueWithPromptForBatch(sessionID, content string, attachments
 		b.hooks.PromptPrepared()
 	}
 	err := b.sendOwnedPromptDetachedLocked(sessionID, target, content, attachments, releaseOperation)
-	if err != nil {
+	if err != nil && !errors.Is(err, agent.ErrDeliveryUncertain) {
 		b.finishUnsentPrompt(sessionID)
 	}
-	if err == nil {
+	if err == nil || errors.Is(err, agent.ErrDeliveryUncertain) {
 		transferred = true
 	}
 	return err

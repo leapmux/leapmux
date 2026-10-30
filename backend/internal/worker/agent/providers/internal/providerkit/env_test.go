@@ -194,6 +194,7 @@ func TestFinalizeAgentEnvScrubsTheQwenShellContext(t *testing.T) {
 func TestFinalizeAgentEnvScrubsTheSessionOfEachHarness(t *testing.T) {
 	t.Parallel()
 	for harness, keys := range map[string][]string{
+		"OpenCode 2": {"OPENCODE", "OPENCODE_SESSION_ID"},
 		"Grok Build": {"GROK_SESSION_ID"},
 		"Kiro":       {"KIRO_SESSION_ID"},
 		"Oh My Pi":   {"AGENT", "PI_SESSION_FILE"},
@@ -237,6 +238,24 @@ func TestFinalizeAgentEnv_StripsAnInheritedHelperVariable(t *testing.T) {
 	}, agent.Options{})
 	assert.False(t, envutil.HasKey(out, contracts.EnvAgentHelper))
 	assert.Contains(t, out, "PATH=/usr/bin")
+}
+
+func TestStripInheritedAgentContextKeepsUserEnvironmentWithoutAssigningAnAgent(t *testing.T) {
+	t.Parallel()
+	keep := []string{"PATH=/user/bin", "HOME=/user/home", "OPENAI_API_KEY=user-auth", "OPENCODE_CONFIG=/user/opencode.json", "LEAPMUX_CONFIG_DIR=/user/leapmux", "GIT_OPTIONAL_LOCKS=1"}
+	inherited := append(append([]string{}, keep...),
+		"OPENCODE=1", "OPENCODE_SESSION_ID=parent-session", "LEAPMUX_WORKER=1", "LEAPMUX_CONTROL_TAB_ID=parent-tab",
+		contracts.EnvAgentHelper+"=/private/parent-helper.json", "CLINE_SANDBOX=1", "CLINE_DATA_DIR=/private/sandbox")
+	original := append([]string{}, inherited...)
+	actual := StripInheritedAgentContext(inherited)
+	assert.ElementsMatch(t, keep, actual)
+	assert.Equal(t, original, inherited, "the same profile environment remains available for session construction")
+	assert.Empty(t, StripInheritedAgentContext(nil))
+	finalized := FinalizeAgentEnv(inherited, agent.Options{ExtraEnv: []string{"LEAPMUX_CONTROL_TAB_ID=fresh-tab"}})
+	assert.Contains(t, finalized, "LEAPMUX_WORKER=1")
+	assert.Contains(t, finalized, "GIT_OPTIONAL_LOCKS=0")
+	assert.Contains(t, finalized, "LEAPMUX_CONTROL_TAB_ID=fresh-tab")
+	assert.NotContains(t, finalized, "LEAPMUX_CONTROL_TAB_ID=parent-tab")
 }
 
 // `cline --data-dir` and an inherited CLINE_SANDBOX=1 put Cline in a sandbox.

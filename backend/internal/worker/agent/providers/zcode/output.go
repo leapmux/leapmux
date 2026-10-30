@@ -702,6 +702,9 @@ func (a *Agent) handleZCodeTurnFailed(event zcodeEventEnvelope, owner *zcodeTurn
 
 // zcodeTurnEnd is what one turn end states beside its event.
 type zcodeTurnEnd struct {
+	// failure is the conversation turn's retry verdict. Its zero value cancels
+	// the server-error retry after a completed or interrupted turn.
+	failure providerkit.TurnFailure
 	// toolCallCount is ZCode's own count of the turn's calls, or 0 when the event
 	// states none. A stopped turn states 0 for a call that the stop cut.
 	toolCallCount int32

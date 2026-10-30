@@ -152,6 +152,32 @@ func TestMiMoInterruptedTurnCancelsTheServerErrorRetry(t *testing.T) {
 	assert.Equal(t, []string{"turn_end", "cancel_server_error", "notification"}, mimoRetryTimeline(sink))
 }
 
+func TestMiMoStopIntentPrecedesConcurrentFailure(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{200, 500} {
+		t.Run(map[int]string{200: "accepted", 500: "refused"}[status], func(t *testing.T) {
+			t.Parallel()
+			a, sink, server := newSinkTestAgent(t)
+			useMockClock(t, a)
+			feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy))
+			gate := holdAbortReplies(t, server, 1)[0]
+			result := startInterrupt(a)
+			awaitAbortArrival(t, gate)
+			feed(a, inTestSession(t, mimoXiaomiServerError), statusEvent(t, contracts.MiMoStatusTypeIdle))
+			assert.Zero(t, sink.AutoScheduleCount(), "a pending user stop suppresses the retry before its HTTP reply")
+			gate.reply <- status
+			err := awaitInterrupt(t, result)
+			if status == 200 {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+			feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy), inTestSession(t, mimoXiaomiServerError), statusEvent(t, contracts.MiMoStatusTypeIdle))
+			assert.Equal(t, 1, sink.AutoScheduleCount(), "the old response cannot change the next turn's retry")
+		})
+	}
+}
+
 // A subagent's failure stays the subagent's. The main turn ends well.
 func TestMiMoSubagentFailureLeavesTheMainTurnNotRetryable(t *testing.T) {
 	t.Parallel()

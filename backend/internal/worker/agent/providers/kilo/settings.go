@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -99,7 +100,7 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 			return agent.RestartRequiredSettings(options)
 		}
 	}
-	return a.FamilyBase.UpdateSettings(options)
+	return a.updateClientSettings(options)
 }
 
 // readSwarmConfig reads whether Kilo's own configuration turns Kilo Swarm
@@ -129,4 +130,100 @@ func (a *Agent) readSwarmConfig(ctx context.Context) {
 		// The frontend reads a changed option catalog from a status broadcast.
 		a.Sink().BroadcastStatusActive(a.CurrentSessionID())
 	}
+}
+
+// AutoApproveGroup defines Kilo's client approval option.
+//
+// Kilo implements its `--auto` mode in its own client. The
+// client answers each permission request once, and a request that a rule
+// denies never reaches it. The daemon has no such mode to switch on, and its
+// session rule update only appends rules, so it cannot switch one off again.
+// LeapMux is the client here, so it answers the requests itself while the
+// option is on.
+var AutoApproveGroup = providerkit.ClientAutoApproveGroup()
+
+// acpPermissionKindAllowAlways is the ACP kind of a permission option that
+// allows the call always. Only the worker reads it, so it stays out of the
+// shared ACP contract.
+const acpPermissionKindAllowAlways = "allow_always"
+
+// autoApproveFromOptions reads the launch value of the Auto-approve option.
+func autoApproveFromOptions(options optionmap.Map) (bool, error) {
+	return options.Bool(contracts.ClientApprovalOptionAutoApprove)
+}
+
+// localOptionGroups reports the current client approval and Swarm settings.
+func (b *Agent) localOptionGroups() []*leapmuxv1.AvailableOptionGroup {
+	b.Mu.Lock()
+	autoApprove := b.autoApprove
+	b.Mu.Unlock()
+	groups := []*leapmuxv1.AvailableOptionGroup{providerkit.LiveGroup(AutoApproveGroup, strconv.FormatBool(autoApprove))}
+	groups = append(groups, b.swarmOptionGroups()...)
+	return groups
+}
+
+// applyLocalOption applies a new Auto-approve value at once. The base then
+// approves each request that already waits (Base.UpdateSettings).
+func (b *Agent) applyLocalOption(id, value string) (bool, error) {
+	if id != contracts.ClientApprovalOptionAutoApprove {
+		return false, nil
+	}
+	autoApprove, err := optionmap.Map{id: value}.Bool(id)
+	if err != nil {
+		return true, err
+	}
+	b.setAutoApprove(autoApprove)
+	return true, nil
+}
+
+// setAutoApprove sets the value of the Auto-approve option.
+func (b *Agent) setAutoApprove(autoApprove bool) {
+	b.Mu.Lock()
+	b.autoApprove = autoApprove
+	b.Mu.Unlock()
+}
+
+// UpdateSettings refuses an Auto-approve value that is neither true nor
+// false before any other setting changes. A failed local write would ask the
+// service for a restart, and the restart would refuse the same value.
+func (b *Agent) updateClientSettings(options optionmap.Map) agent.SettingsApplyResult {
+	if _, err := autoApproveFromOptions(options); err != nil {
+		return b.SettingsSnapshot()
+	}
+	return b.Base.UpdateSettings(options)
+}
+
+// withAutoApprove runs claim while Auto-approve is on. The claim runs under
+// the settings lock, so a change of the option cannot pass between the check
+// and the approval.
+func (b *Agent) withAutoApprove(claim func()) {
+	b.Mu.Lock()
+	defer b.Mu.Unlock()
+	if b.autoApprove && !b.StoppedLocked() {
+		claim()
+	}
+}
+
+// permissionOffersAlways reports whether Auto-approve may answer a permission
+// request: the request must offer an option that allows the call always.
+//
+// Kilo offers no such option for a request that it reserves for a person: a
+// batch of skill shell commands, or a command that leaves the sandbox. Kilo's
+// own `--auto` does not approve those either. Only requests that offer an
+// always-allow option are eligible for automatic approval.
+func permissionOffersAlways(line *providerkit.ParsedLine) bool {
+	var request struct {
+		Options []struct {
+			Kind string `json:"kind"`
+		} `json:"options"`
+	}
+	if json.Unmarshal(line.Params, &request) != nil {
+		return false
+	}
+	for _, option := range request.Options {
+		if option.Kind == acpPermissionKindAllowAlways {
+			return true
+		}
+	}
+	return false
 }

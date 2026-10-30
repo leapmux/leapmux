@@ -3,6 +3,9 @@ package service
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,16 +16,220 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
 
 // childRoutingTestProvider keeps the real parser and supplies the routes this fixture exercises.
 type childRoutingTestProvider struct{ agent.Provider }
+
+type childReconciliationRuntime struct {
+	agent.Agent
+	reconcile func(context.Context) error
+	send      func(string) error
+}
+
+func (runtime *childReconciliationRuntime) ReconcileBeforeDispatch(ctx context.Context) error {
+	return runtime.reconcile(ctx)
+}
+
+func (runtime *childReconciliationRuntime) SendChildInput(key, _ string, _ []*leapmuxv1.Attachment) error {
+	return runtime.send(key)
+}
+
+func (runtime *childReconciliationRuntime) SteerChildInput(key, text string, attachments []*leapmuxv1.Attachment) error {
+	return runtime.SendChildInput(key, text, attachments)
+}
+
+func (*childReconciliationRuntime) ActiveChildTurnState(string) agent.TurnState {
+	return agent.TurnState{}
+}
+
+func TestQueuedNativeChildReconcilesThroughItsPhysicalOwner(t *testing.T) {
+	t.Parallel()
+	for _, depth := range []int{1, 2} {
+		for _, nativeActive := range []bool{false, true} {
+			t.Run(fmt.Sprintf("depth=%d/active=%t", depth, nativeActive), func(t *testing.T) {
+				t.Parallel()
+				ctx := testutil.DeadlineContext(t)
+				provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
+				registry := registryWithRegistration(t, provider, func(registration *agent.Registration) {
+					registration.ReconcileBeforeQueueDispatch = true
+					registration.Plugin = childRoutingTestProvider{Provider: registration.Plugin}
+				})
+				svc, _, _ := setupTestService(t, withRegistry(registry))
+				const ownerID = "root-1"
+				require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+					ID: ownerID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: provider,
+				}))
+				var sink = newTestRootOutputSink(t, svc.Output, ownerID, provider)
+				var childID, key string
+				for level := range depth {
+					key = fmt.Sprintf("native-child-%d", level)
+					var err error
+					childID, err = sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: key, ProviderChildKey: key, Title: "child task"})
+					require.NoError(t, err)
+					sink = sink.ChildSink(childID)
+				}
+				route, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(ctx, childID)
+				require.NoError(t, err)
+				require.Equal(t, ownerID, route.OwnerAgentID)
+				entered, release := make(chan struct{}), make(chan struct{})
+				delivered := make(chan string, 1)
+				var releaseOnce sync.Once
+				releaseNative := func() { releaseOnce.Do(func() { close(release) }) }
+				t.Cleanup(releaseNative)
+				var calls atomic.Int32
+				svc.Agents.PutAgentForTest(ownerID, &childReconciliationRuntime{
+					Agent: agenttest.IdleAgent{},
+					reconcile: func(ctx context.Context) error {
+						calls.Add(1)
+						close(entered)
+						select {
+						case <-release:
+						case <-ctx.Done():
+							return ctx.Err()
+						}
+						if nativeActive {
+							_, err := svc.InputQueue.TurnStarted(ctx, childID, false)
+							return err
+						}
+						return nil
+					},
+					send: func(key string) error { delivered <- key; return nil },
+				})
+				var launches atomic.Int32
+				svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
+					launches.Add(1)
+					return nil, assert.AnError
+				}
+				_, err = svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
+					ID: "child-input", AgentID: childID, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "Continue",
+				})
+				require.NoError(t, err)
+				select {
+				case <-entered:
+				case <-delivered:
+					t.Fatal("child input reached its owner before native reconciliation")
+				case <-ctx.Done():
+					t.Fatal("child input did not reach its physical owner's reconciliation")
+				}
+				snapshot, err := svc.InputQueue.Snapshot(ctx, childID)
+				require.NoError(t, err)
+				require.Len(t, snapshot.Items, 1)
+				assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, snapshot.Items[0].State)
+				assert.Zero(t, snapshot.Items[0].ReservedSeq)
+				messages, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: childID})
+				require.NoError(t, err)
+				assert.Empty(t, messages)
+				releaseNative()
+				if nativeActive {
+					require.Eventually(t, func() bool {
+						current, err := svc.InputQueue.Snapshot(ctx, childID)
+						return err == nil && current.ActiveTurn && len(current.Items) == 1 && current.Items[0].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED
+					}, inputQueueWait, 10*time.Millisecond)
+					assert.Empty(t, delivered)
+				} else {
+					select {
+					case actual := <-delivered:
+						assert.Equal(t, key, actual)
+					case <-ctx.Done():
+						t.Fatal("the reconciled idle child did not receive its input")
+					}
+				}
+				assert.Equal(t, int32(1), calls.Load())
+				assert.Zero(t, launches.Load())
+				assert.False(t, svc.Agents.HasAgent(childID))
+			})
+		}
+	}
+}
+
+func TestRecoveredNativeChildResumesItsOwnerWithoutReleasingOwnerPause(t *testing.T) {
+	t.Parallel()
+	ctx := testutil.DeadlineContext(t)
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
+	registry := registryWithRegistration(t, provider, func(registration *agent.Registration) {
+		registration.ReconcileBeforeQueueDispatch = true
+		registration.Plugin = childRoutingTestProvider{Provider: registration.Plugin}
+	})
+	svc, _, _ := setupTestService(t, withRegistry(registry))
+	// Assert the child-first order below so recovery cannot depend on
+	// visiting the owner first.
+	const ownerID = "~owner"
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: ownerID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: provider,
+	}))
+	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{ID: ownerID, AgentSessionID: "session-owner"}))
+	sink := newTestRootOutputSink(t, svc.Output, ownerID, provider)
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "native-child", Title: "child task"})
+	require.NoError(t, err)
+	require.Less(t, childID, ownerID)
+	_, err = svc.InputQueue.SetPaused(ctx, ownerID, true)
+	require.NoError(t, err)
+	_, err = inputqueue.NewStore(svc.DB, nil).Enqueue(ctx, inputqueue.NewItem{
+		ID: "child-input", AgentID: childID, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "Continue",
+	})
+	require.NoError(t, err)
+	_, err = svc.InputQueue.TurnStarted(ctx, childID, false)
+	require.NoError(t, err)
+	require.NoError(t, svc.InputQueue.RecoverState(ctx))
+	var mu sync.Mutex
+	var starts []agent.Options
+	var reconciliations atomic.Int32
+	delivered := make(chan string, 1)
+	start := startWith(svc.Agents, func(ctx context.Context, options agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+		mu.Lock()
+		starts = append(starts, options)
+		mu.Unlock()
+		if options.AgentID != ownerID {
+			return nil, fmt.Errorf("unexpected child process start: %s", options.AgentID)
+		}
+		runtime, err := claudetest.StartSilent(ctx, options, sink)
+		if err != nil {
+			return nil, err
+		}
+		return &childReconciliationRuntime{Agent: runtime,
+			reconcile: func(context.Context) error { reconciliations.Add(1); return nil },
+			send:      func(key string) error { delivered <- key; return nil },
+		}, nil
+	})
+	svc.startAgentFn, svc.startBackgroundAgentFn = start, start
+	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(ownerID) })
+	runSweep(t, svc)
+	var snapshot inputqueue.Snapshot
+	require.Eventually(t, func() bool {
+		var err error
+		snapshot, err = svc.InputQueue.Snapshot(ctx, childID)
+		return err == nil && (snapshot.Paused || len(snapshot.Items) == 0)
+	}, inputQueueWait, 10*time.Millisecond)
+	assert.False(t, snapshot.Paused, "owner startup must not strand the interrupted child queue")
+	assert.Empty(t, snapshot.Items)
+	select {
+	case key := <-delivered:
+		assert.Equal(t, "native-child", key)
+	default:
+		t.Error("the recovered child input never reached its physical owner")
+	}
+	mu.Lock()
+	actualStarts := append([]agent.Options(nil), starts...)
+	mu.Unlock()
+	require.Len(t, actualStarts, 1)
+	assert.Equal(t, ownerID, actualStarts[0].AgentID)
+	assert.Equal(t, "session-owner", actualStarts[0].ResumeSessionID)
+	assert.Equal(t, int32(2), reconciliations.Load(), "recovery and the later claim each synchronize the owner")
+	ownerQueue, err := svc.InputQueue.Snapshot(ctx, ownerID)
+	require.NoError(t, err)
+	assert.True(t, ownerQueue.Paused)
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL, ownerQueue.PauseReason)
+	assert.False(t, svc.Agents.HasAgent(childID))
+}
 
 func (childRoutingTestProvider) ChildCapabilities(optionmap.Map) agent.ChildCapabilities {
 	return agent.ChildCapabilities{AcceptsMessages: true, AcceptsInterrupt: true}

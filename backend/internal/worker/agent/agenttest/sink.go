@@ -78,18 +78,17 @@ type Sink struct {
 	// RequeueErr makes RequeueDroppedInput return an error instead of recording the call.
 	// The provider must report that the queue refused the input.
 	// Set this field at construction. Reads require no lock.
-	RequeueErr error
-	// turnLifecycle interleaves the turn-end envelope with the turn-flag
-	// transitions, which the two slices above cannot show apart. See
-	// TurnLifecycle.
-	turnLifecycle      []string
+	RequeueErr         error
 	reservedColorSpans []SpanOpen
 	// tracker is the REAL span engine. Delegating to it is what keeps this
 	// double from drifting from the behavior it stands in for.
 	tracker        spantrack.SpanTracker
 	resetSpanCount int
 	turnSeqs       []uint64
-	statusActives  []string
+	// turnPublicationSeq tracks accepted ownership. turnSeqs records every
+	// publication attempt, including a stale sequence, for diagnostics.
+	turnPublicationSeq *uint64
+	statusActives      []string
 	// goals records each UpsertGoal in arrival order. goalClears counts ClearGoal calls.
 	// Both fields retain neutral GoalUpdate values.
 	// A parser test can check the meaning without reading native protocol bytes.
@@ -101,7 +100,8 @@ type Sink struct {
 	// the whole distinction the flag exists to carry.
 	goalClearSnapshots      []bool
 	goalCapabilityPublishes int
-	// timeline records every persist and retry operation in call order.
+	// timeline records output attempts, completed writes, retry operations, and
+	// lifecycle effects in one order. The query methods select their own views.
 	timeline         []TimelineEntry
 	autoSchedules    []agent.AutoRetrySchedule
 	autoCancels      []autoRetryCancel
@@ -168,12 +168,19 @@ type nativeMessageIdentity struct{ sessionID, key string }
 
 // TimelineEntry records one sink operation in call order.
 type TimelineEntry struct {
-	// Op names the operation: "message", "turn_end", "notification",
-	// "leapmux_notification", "schedule_usage_limit", "schedule_server_error",
-	// "cancel_usage_limit", or "cancel_server_error".
+	// Op identifies the operation. A turn_end records a write attempt, and
+	// turn_end_stored records its successful completion.
 	Op string
+	// Active is the published state of a turn_active operation.
+	Active bool
+	// Count is the number of inputs in a steer outcome operation.
+	Count int
+	// InputID identifies the input of a requeue operation.
+	InputID string
 	// Kind is the retry kind for retry operations, zero otherwise.
 	Kind leapmuxv1.AgentInputKind
+	// Key identifies the native retry owner, empty for unkeyed operations.
+	Key string
 	// Reason is the cancellation reason, empty for non-cancel operations.
 	Reason string
 	// ResetAt is the reset instant for a usage-limit schedule, zero otherwise.
@@ -446,7 +453,7 @@ func (s *Sink) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo)
 		s.turnEndKeys[identity] = struct{}{}
 	}
 	content.WriteReceipt.RecordStoredWrite(true)
-	s.turnLifecycle = append(s.turnLifecycle, "turn_end")
+	s.timeline = append(s.timeline, TimelineEntry{Op: "turn_end_stored"})
 	return nil
 }
 
@@ -455,14 +462,20 @@ func (s *Sink) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo)
 func (s *Sink) SetTurnState(state agent.TurnState, seq uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	previousActive := len(s.TurnActiveCalls) > 0 && s.TurnActiveCalls[len(s.TurnActiveCalls)-1]
-	if s.transcriptScope == nil || previousActive != state.Active {
-		s.transcriptScope = &testTranscriptScope{active: state.Active}
+	if s.turnPublicationSeq == nil || seq > *s.turnPublicationSeq {
+		previous := s.transcriptScope
+		if previous == nil || previous.active != state.Active {
+			s.transcriptScope = &testTranscriptScope{active: state.Active}
+			if previous != nil && previous.active && !state.Active {
+				s.transcriptScope.previousScope = previous
+			}
+		}
+		s.turnPublicationSeq = &seq
 	}
 	s.TurnActiveCalls = append(s.TurnActiveCalls, state.Active)
 	s.turnStates = append(s.turnStates, state)
 	s.turnSeqs = append(s.turnSeqs, seq)
-	s.turnLifecycle = append(s.turnLifecycle, fmt.Sprintf("turn_active:%t", state.Active))
+	s.timeline = append(s.timeline, TimelineEntry{Op: "turn_active", Active: state.Active})
 }
 
 // RequeuedInput is one input that a provider handed back through
@@ -487,7 +500,7 @@ func (s *Sink) RequeueDroppedInput(dropID, content string, attachments []*leapmu
 	defer s.mu.Unlock()
 	active := len(s.TurnActiveCalls) > 0 && s.TurnActiveCalls[len(s.TurnActiveCalls)-1]
 	s.requeuedInputs = append(s.requeuedInputs, RequeuedInput{DropID: dropID, Content: content, Attachments: attachments, TurnActive: active})
-	s.turnLifecycle = append(s.turnLifecycle, "requeue:"+dropID)
+	s.timeline = append(s.timeline, TimelineEntry{Op: "requeue", InputID: dropID})
 	return nil
 }
 
@@ -529,21 +542,21 @@ func (s *Sink) ReportSteersEchoed(count int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.steerEchoReports = append(s.steerEchoReports, SteerEchoReport{Outcome: agent.SteerOutcomeEchoed, Count: count})
-	s.turnLifecycle = append(s.turnLifecycle, fmt.Sprintf("steer-echoed:%d", count))
+	s.timeline = append(s.timeline, TimelineEntry{Op: "steer_echoed", Count: count})
 }
 
 func (s *Sink) ReportSteersDropped(count int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.steerEchoReports = append(s.steerEchoReports, SteerEchoReport{Outcome: agent.SteerOutcomeDropped, Count: count})
-	s.turnLifecycle = append(s.turnLifecycle, fmt.Sprintf("steer-dropped:%d", count))
+	s.timeline = append(s.timeline, TimelineEntry{Op: "steer_dropped", Count: count})
 }
 
 func (s *Sink) ReportSteersUncertain(count int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.steerEchoReports = append(s.steerEchoReports, SteerEchoReport{Outcome: agent.SteerOutcomeUncertain, Count: count})
-	s.turnLifecycle = append(s.turnLifecycle, fmt.Sprintf("steer-uncertain:%d", count))
+	s.timeline = append(s.timeline, TimelineEntry{Op: "steer_uncertain", Count: count})
 }
 
 // SteerEchoReports returns a copy of the reports in call order.
@@ -585,7 +598,8 @@ func (s *Sink) TurnSeqs() []uint64 {
 	return append([]uint64(nil), s.turnSeqs...)
 }
 
-// TurnLifecycle returns turn-end envelopes, flag changes, and returned input in their combined arrival order.
+// TurnLifecycle returns stored turn ends, turn publications, and lifecycle
+// effects in their combined arrival order. Failed write attempts stay out.
 //
 // Every provider must preserve this order.
 // PersistTurnEnd supplies the finished turn's tool count to the Worker activity latch.
@@ -595,7 +609,22 @@ func (s *Sink) TurnSeqs() []uint64 {
 func (s *Sink) TurnLifecycle() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]string(nil), s.turnLifecycle...)
+	var lifecycle []string
+	for _, entry := range s.timeline {
+		switch entry.Op {
+		case "turn_end_stored":
+			lifecycle = append(lifecycle, "turn_end")
+		case "turn_active":
+			lifecycle = append(lifecycle, fmt.Sprintf("turn_active:%t", entry.Active))
+		case "requeue":
+			lifecycle = append(lifecycle, "requeue:"+entry.InputID)
+		case "steer_echoed", "steer_dropped", "steer_uncertain":
+			lifecycle = append(lifecycle, fmt.Sprintf("%s:%d", strings.ReplaceAll(entry.Op, "_", "-"), entry.Count))
+		case "reset_spans":
+			lifecycle = append(lifecycle, entry.Op)
+		}
+	}
+	return lifecycle
 }
 
 // TurnActives returns the published turn states in order.
@@ -725,7 +754,7 @@ func (s *Sink) CloseSpan(spanID string) {
 func (s *Sink) ResetSpans() {
 	s.mu.Lock()
 	s.resetSpanCount++
-	s.turnLifecycle = append(s.turnLifecycle, "reset_spans")
+	s.timeline = append(s.timeline, TimelineEntry{Op: "reset_spans"})
 	s.mu.Unlock()
 	s.tracker.Reset()
 }
@@ -1041,25 +1070,48 @@ func (s *Sink) GoalClears() int {
 
 // CaptureAutoRetry freezes the fake's publication owner like the worker sink.
 func (s *Sink) CaptureAutoRetry() agent.AutoRetryWriter {
-	content := s.CaptureMessage(agent.MessageContent{}, agent.SpanInfo{})
-	return &capturedAutoRetryWriter{owner: content.Publication.Owner().(*testTranscriptOwner)}
+	return s.CaptureAutoRetryThroughTurn(0)
 }
 
-type capturedAutoRetryWriter struct{ owner *testTranscriptOwner }
+func (s *Sink) CaptureAutoRetryOperation(completionSeq uint64, apply func(agent.AutoRetryWriter)) func() error {
+	if apply == nil {
+		return nil
+	}
+	writer := s.CaptureAutoRetryThroughTurn(completionSeq)
+	return func() error { apply(writer); return nil }
+}
 
-func (writer *capturedAutoRetryWriter) schedule(kind leapmuxv1.AgentInputKind, resetAt time.Time, payload []byte) {
+func (s *Sink) CaptureAutoRetryThroughTurn(completionSeq uint64) agent.AutoRetryWriter {
+	content := s.CaptureMessage(agent.MessageContent{}, agent.SpanInfo{})
+	return &capturedAutoRetryWriter{owner: content.Publication.Owner().(*testTranscriptOwner), completionSeq: completionSeq}
+}
+
+type capturedAutoRetryWriter struct {
+	owner         *testTranscriptOwner
+	completionSeq uint64
+}
+
+func (writer *capturedAutoRetryWriter) currentLocked() bool {
+	owner, sink := writer.owner, writer.owner.sink
+	if !owner.currentSessionLocked() {
+		return false
+	}
+	if writer.completionSeq != 0 && sink.turnPublicationSeq != nil && *sink.turnPublicationSeq > writer.completionSeq {
+		return false
+	}
+	if sink.transcriptScope == owner.key.scope {
+		return true
+	}
+	return writer.completionSeq != 0 && sink.turnPublicationSeq != nil && *sink.turnPublicationSeq == writer.completionSeq &&
+		sink.transcriptScope != nil && !sink.transcriptScope.active && sink.transcriptScope.previousScope == owner.key.scope
+}
+
+func (writer *capturedAutoRetryWriter) schedule(kind leapmuxv1.AgentInputKind, key string, resetAt time.Time, payload []byte) {
 	sink := writer.owner.sink
 	sink.mu.Lock()
 	defer sink.mu.Unlock()
-	if writer.owner.currentLocked() {
-		sink.autoSchedules = append(sink.autoSchedules, agent.AutoRetrySchedule{
-			Kind: kind, ResetAt: resetAt, SourcePayload: slices.Clone(payload),
-		})
-		op := "schedule_server_error"
-		if kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT {
-			op = "schedule_usage_limit"
-		}
-		sink.timeline = append(sink.timeline, TimelineEntry{Op: op, Kind: kind, ResetAt: resetAt})
+	if writer.currentLocked() {
+		sink.recordAutoScheduleLocked(agent.AutoRetrySchedule{Kind: kind, Key: key, ResetAt: resetAt, SourcePayload: payload})
 	}
 }
 
@@ -1067,38 +1119,51 @@ func (writer *capturedAutoRetryWriter) cancel(kind leapmuxv1.AgentInputKind, rea
 	sink := writer.owner.sink
 	sink.mu.Lock()
 	defer sink.mu.Unlock()
-	if writer.owner.currentLocked() {
-		sink.autoCancels = append(sink.autoCancels, autoRetryCancel{kind: kind, reason: reason})
-		op := "cancel_server_error"
-		if kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT {
-			op = "cancel_usage_limit"
-		}
-		sink.timeline = append(sink.timeline, TimelineEntry{Op: op, Kind: kind, Reason: reason})
+	if writer.currentLocked() {
+		sink.recordAutoCancelLocked(kind, "", reason)
 	}
 }
 
 func (writer *capturedAutoRetryWriter) ScheduleUsageLimitRetry(resetAt time.Time, payload []byte) {
-	writer.schedule(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, resetAt, payload)
+	writer.schedule(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, "", resetAt, payload)
+}
+
+func (writer *capturedAutoRetryWriter) ScheduleUsageLimitRetryWithKey(key string, resetAt time.Time, payload []byte) {
+	writer.schedule(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, key, resetAt, payload)
 }
 
 func (writer *capturedAutoRetryWriter) ScheduleServerErrorRetry(payload []byte) {
-	writer.schedule(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, time.Time{}, payload)
+	writer.schedule(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, "", time.Time{}, payload)
 }
 
 func (writer *capturedAutoRetryWriter) CancelUsageLimitRetry(reason string) {
 	writer.cancel(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, reason)
 }
 
+func (writer *capturedAutoRetryWriter) CancelUsageLimitRetryWithKey(key, reason string) {
+	sink := writer.owner.sink
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if writer.owner.currentSessionLocked() {
+		sink.recordAutoCancelLocked(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, key, reason)
+	}
+}
+
 func (writer *capturedAutoRetryWriter) CancelServerErrorRetry(reason string) {
 	writer.cancel(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, reason)
 }
 
-// The four retry methods record the request that the production sink sends,
+// The retry methods record the request that the production sink sends,
 // so a provider test asserts the kind, the instant, the payload, and the
 // reason of a cancellation.
 func (s *Sink) ScheduleUsageLimitRetry(resetAt time.Time, sourcePayload []byte) {
 	s.recordAutoSchedule(agent.AutoRetrySchedule{
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, ResetAt: resetAt, SourcePayload: sourcePayload,
+	})
+}
+func (s *Sink) ScheduleUsageLimitRetryWithKey(key string, resetAt time.Time, sourcePayload []byte) {
+	s.recordAutoSchedule(agent.AutoRetrySchedule{
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, Key: key, ResetAt: resetAt, SourcePayload: sourcePayload,
 	})
 }
 func (s *Sink) ScheduleServerErrorRetry(sourcePayload []byte) {
@@ -1109,33 +1174,48 @@ func (s *Sink) ScheduleServerErrorRetry(sourcePayload []byte) {
 func (s *Sink) CancelUsageLimitRetry(reason string) {
 	s.recordAutoCancel(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, reason)
 }
+func (s *Sink) CancelUsageLimitRetryWithKey(key, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recordAutoCancelLocked(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, key, reason)
+}
 func (s *Sink) CancelServerErrorRetry(reason string) {
 	s.recordAutoCancel(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, reason)
 }
 func (s *Sink) recordAutoSchedule(schedule agent.AutoRetrySchedule) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.recordAutoScheduleLocked(schedule)
+}
+
+func (s *Sink) recordAutoScheduleLocked(schedule agent.AutoRetrySchedule) {
+	schedule.SourcePayload = slices.Clone(schedule.SourcePayload)
 	s.autoSchedules = append(s.autoSchedules, schedule)
 	op := "schedule_server_error"
 	if schedule.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT {
 		op = "schedule_usage_limit"
 	}
-	s.timeline = append(s.timeline, TimelineEntry{Op: op, Kind: schedule.Kind, ResetAt: schedule.ResetAt})
+	s.timeline = append(s.timeline, TimelineEntry{Op: op, Kind: schedule.Kind, Key: schedule.Key, ResetAt: schedule.ResetAt})
 }
 func (s *Sink) recordAutoCancel(kind leapmuxv1.AgentInputKind, reason string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.autoCancels = append(s.autoCancels, autoRetryCancel{kind: kind, reason: reason})
+	s.recordAutoCancelLocked(kind, "", reason)
+}
+
+func (s *Sink) recordAutoCancelLocked(kind leapmuxv1.AgentInputKind, key, reason string) {
+	s.autoCancels = append(s.autoCancels, autoRetryCancel{kind: kind, key: key, reason: reason})
 	op := "cancel_server_error"
 	if kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT {
 		op = "cancel_usage_limit"
 	}
-	s.timeline = append(s.timeline, TimelineEntry{Op: op, Kind: kind, Reason: reason})
+	s.timeline = append(s.timeline, TimelineEntry{Op: op, Kind: kind, Key: key, Reason: reason})
 }
 
 // autoRetryCancel records one cancellation request: the retry kind and the
 // reason that the provider gave for the log.
 type autoRetryCancel struct {
+	key    string
 	kind   leapmuxv1.AgentInputKind
 	reason string
 }
@@ -1663,8 +1743,25 @@ func (s *Sink) appendTimeline(entry TimelineEntry) {
 	s.timeline = append(s.timeline, entry)
 }
 
-// Timeline returns every persist and retry operation in call order.
+// Timeline returns transcript write attempts and retry operations in call order.
+// Operations includes the additional storage-completion and lifecycle events.
 func (s *Sink) Timeline() []TimelineEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var timeline []TimelineEntry
+	for _, entry := range s.timeline {
+		switch entry.Op {
+		case "turn_end_stored", "turn_active", "requeue", "steer_echoed", "steer_dropped", "steer_uncertain", "reset_spans":
+			continue
+		}
+		timeline = append(timeline, entry)
+	}
+	return timeline
+}
+
+// Operations returns every recorded operation, including turn publications and
+// successful turn-end writes, in their combined arrival order.
+func (s *Sink) Operations() []TimelineEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(s.timeline)
@@ -1861,6 +1958,16 @@ func (s *Sink) LastAutoCancel() leapmuxv1.AgentInputKind {
 	return s.autoCancels[len(s.autoCancels)-1].kind
 }
 
+// LastAutoCancelKey returns the native owner of the last cancellation request.
+func (s *Sink) LastAutoCancelKey() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.autoCancels) == 0 {
+		return ""
+	}
+	return s.autoCancels[len(s.autoCancels)-1].key
+}
+
 // LastAutoCancelReason returns the reason of the last cancellation request.
 func (s *Sink) LastAutoCancelReason() string {
 	s.mu.Lock()
@@ -1943,14 +2050,23 @@ func (nop) PublishGoalCapabilities()                                            
 func (nop) GoalWriterFor(agent.CapturedTranscript) (agent.CapturedGoalWriter, error) {
 	return nil, errors.New("the nop sink captures no goal authority")
 }
-func (nop) CaptureAutoRetry() agent.AutoRetryWriter               { return nop{} }
-func (nop) ScheduleUsageLimitRetry(time.Time, []byte)             {}
-func (nop) ScheduleServerErrorRetry([]byte)                       {}
-func (nop) CancelUsageLimitRetry(string)                          {}
-func (nop) CancelServerErrorRetry(string)                         {}
-func (nop) EnsureChildAgent(agent.ChildAgentSpec) (string, error) { return "", nil }
-func (nop) ChildSpawnSpan(string) (string, error)                 { return "", nil }
-func (nop) ChildSink(string) agent.ProviderServices               { return Nop() }
+func (nop) CaptureAutoRetryOperation(_ uint64, apply func(agent.AutoRetryWriter)) func() error {
+	if apply == nil {
+		return nil
+	}
+	return func() error { apply(nop{}); return nil }
+}
+func (nop) CaptureAutoRetry() agent.AutoRetryWriter                  { return nop{} }
+func (nop) CaptureAutoRetryThroughTurn(uint64) agent.AutoRetryWriter { return nop{} }
+func (nop) ScheduleUsageLimitRetryWithKey(string, time.Time, []byte) {}
+func (nop) ScheduleUsageLimitRetry(time.Time, []byte)                {}
+func (nop) ScheduleServerErrorRetry([]byte)                          {}
+func (nop) CancelUsageLimitRetryWithKey(string, string)              {}
+func (nop) CancelUsageLimitRetry(string)                             {}
+func (nop) CancelServerErrorRetry(string)                            {}
+func (nop) EnsureChildAgent(agent.ChildAgentSpec) (string, error)    { return "", nil }
+func (nop) ChildSpawnSpan(string) (string, error)                    { return "", nil }
+func (nop) ChildSink(string) agent.ProviderServices                  { return Nop() }
 func (nop) AcquireChildSink(string) agent.ChildSinkLease {
 	return agent.ChildSinkLease{Sink: Nop(), CaptureMessage: func(content agent.MessageContent, _ agent.SpanInfo) agent.MessageContent { return content.Clone() }, Cleanup: func() bool { return true }}
 }

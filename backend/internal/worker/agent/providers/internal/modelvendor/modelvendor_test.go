@@ -156,7 +156,7 @@ func TestClassifyError(t *testing.T) {
 			definitive: true,
 		},
 		{
-			name:       "a Gemini quota of zero is terminal",
+			name:       "a Gemini quota of zero is not retryable",
 			text:       `{"error":{"code":429,"message":"You exceeded your current quota, please check your plan and billing details.\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, model: gemini-2.5-pro\nPlease retry in 33.6s.","status":"RESOURCE_EXHAUSTED"}}`,
 			want:       providerkit.TurnFailure{Kind: providerkit.TurnFailureBillingBlocked},
 			definitive: true,
@@ -427,5 +427,38 @@ func TestClassifyErrorIsDeterministic(t *testing.T) {
 	for range 50 {
 		again, _ := ClassifyError(text, at("2026-07-14T10:00:00Z"))
 		assert.Equal(t, first, again)
+	}
+}
+
+func TestClassifyErrorsPreservesSeparateEvidenceAndPrecedence(t *testing.T) {
+	t.Parallel()
+	observed := at("2026-10-28T09:00:00Z")
+	for _, tc := range []struct {
+		label               string
+		texts               []string
+		want                providerkit.TurnFailureKind
+		definitive, matched bool
+		reset               time.Time
+	}{
+		{label: "empty"},
+		{label: "a definitive zero kind still decides", texts: []string{"You've reached your concurrent request limit.", `{"code":"insufficient_quota"}`}, want: providerkit.TurnFailureNotRetryable, definitive: true, matched: true},
+		{label: "unrecognized", texts: []string{"", "bad request"}},
+		{label: "later definitive beats earlier indicative", texts: []string{`{"code":"overloaded_error"}`, `{"code":"insufficient_quota"}`}, want: providerkit.TurnFailureBillingBlocked, definitive: true, matched: true},
+		{label: "first indicative wins", texts: []string{`{"code":"overloaded_error"}`, `{"code":"rate_limit_exceeded"}`}, want: providerkit.TurnFailureTransient, matched: true},
+		{label: "first definitive billing wins", texts: []string{`{"code":"insufficient_quota"}`, `{"code":"usage_limit_reached","resets_in_seconds":3600}`}, want: providerkit.TurnFailureBillingBlocked, definitive: true, matched: true},
+		{label: "first definitive reset wins", texts: []string{`{"code":"usage_limit_reached","resets_in_seconds":3600}`, `{"code":"insufficient_quota"}`}, want: providerkit.TurnFailureUsageLimited, definitive: true, matched: true, reset: observed.Add(time.Hour)},
+		{label: "separate fields cannot manufacture a reset", texts: []string{`{"code":"usage_limit_reached"}`, `{"resets_in_seconds":3600}`}, want: providerkit.TurnFailureUsageLimited, matched: true},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			t.Parallel()
+			got, matched := ClassifyErrors(tc.texts, observed)
+			assert.Equal(t, tc.matched, matched)
+			assert.Equal(t, tc.definitive, got.Definitive)
+			assert.Equal(t, tc.want, got.Failure.Kind)
+			assert.Equal(t, tc.reset, got.Failure.ResetAt)
+			if matched {
+				assert.NotEmpty(t, got.Failure.Cause)
+			}
+		})
 	}
 }

@@ -138,6 +138,64 @@ func (svc *Service) queueChildRouteRow(childAgentID string) (db.AgentBackgroundT
 	return row, nil
 }
 
+func (a *agentInputQueueAdapter) reconciliationAgent(ctx context.Context, agentID string) (db.Agent, bool, error) {
+	row, err := a.svc.Queries.GetAgentByID(ctx, agentID)
+	if err != nil {
+		return db.Agent{}, false, queueReadError(err)
+	}
+	registration, found := a.svc.Agents.Registry().Registration(row.AgentProvider)
+	return row, found && registration.ReconcileBeforeQueueDispatch, nil
+}
+
+func (a *agentInputQueueAdapter) RequiresQueueReconciliation(ctx context.Context, agentID string) (bool, error) {
+	_, required, err := a.reconciliationAgent(ctx, agentID)
+	return required, err
+}
+
+func (a *agentInputQueueAdapter) ReconcileBeforeDispatch(ctx context.Context, request inputqueue.QueueReconciliationRequest) (bool, error) {
+	agentID := request.AgentID
+	row, required, err := a.reconciliationAgent(ctx, agentID)
+	if err != nil || !required {
+		return false, err
+	}
+	if row.ClosedAt.Valid || row.WorkspaceArchived {
+		return false, nil
+	}
+	targetIsRoot := !row.ParentAgentID.Valid
+	if !targetIsRoot {
+		route, err := a.svc.queueChildRouteRow(agentID)
+		if err != nil {
+			return false, err
+		}
+		row, required, err = a.reconciliationAgent(ctx, route.OwnerAgentID)
+		if err != nil {
+			return false, err
+		}
+		if !required || row.ParentAgentID.Valid || row.ClosedAt.Valid || row.WorkspaceArchived {
+			return false, agent.ErrAgentNotFound
+		}
+		agentID = row.ID
+	}
+	if a.svc.agentStartupFailed(&row) {
+		if targetIsRoot && request.InputID != "" && request.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CLEAR_CONTEXT {
+			return false, nil
+		}
+		return false, errAgentStartupFailed
+	}
+	if !a.svc.Agents.AgentAlive(agentID) {
+		if a.svc.Agents.HasAgent(agentID) {
+			return false, agent.ErrAgentNotFound
+		}
+		if err := a.svc.ensureAgentRunning(agentID, resumeStoredSession, queuedStart); err != nil {
+			return false, err
+		}
+	}
+	if err := a.svc.Agents.ReconcileQueueState(ctx, agentID); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqueue.DispatchResult, error) {
 	svc := a.svc
 	spanLines := svc.Output.snapshotPassthroughSpanLines(item.AgentID)

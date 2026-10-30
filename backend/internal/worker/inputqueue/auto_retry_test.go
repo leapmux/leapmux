@@ -20,6 +20,38 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
+func TestAutoRetryCancelledBeforeTurnReleaseCannotDispatchWhenMature(t *testing.T) {
+	t.Parallel()
+	clock, dispatcher, _, manager, _ := newDeadlineFixture(t)
+	_, err := manager.TurnStarted(t.Context(), "agent-1", false)
+	require.NoError(t, err)
+	require.NoError(t, manager.ScheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
+	}))
+	item := pendingRetry(t, manager, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR)
+	require.NotNil(t, item.ScheduledAt)
+	require.NotEmpty(t, item.ReorderGroup)
+	before, err := manager.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+	advanceClock(t, clock, item.ScheduledAt.Sub(clock.Now()))
+	waitForDrainToSettle(t, manager, "agent-1")
+	matured, err := manager.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+	require.Len(t, matured.Items, 1)
+	assert.Empty(t, matured.Items[0].ReorderGroup, "the retry matured into the immediate group while the provider kept the queue occupied")
+	assert.Greater(t, matured.Revision, before.Revision, "the maturity callback recorded the transition")
+	assert.True(t, matured.ActiveTurn)
+	assert.Empty(t, dispatchedIDs(dispatcher))
+	require.NoError(t, manager.CancelAutoRetry(t.Context(), "agent-1", item.Kind, "the compaction ended", nil))
+	_, err = manager.TurnEnded(t.Context(), "agent-1")
+	require.NoError(t, err)
+	waitForDrainToSettle(t, manager, "agent-1")
+	assert.Empty(t, dispatchedIDs(dispatcher))
+	snapshot, err := manager.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+	assert.Empty(t, snapshot.Items)
+}
+
 // Automatic-retry scheduling: the queue owns the item, the deadline policy,
 // and the server-error backoff. One pending item per kind, a fresh ID per
 // cycle, and resets exactly on success-shaped endings.
@@ -927,7 +959,7 @@ func (lease *retryTestLease) Release() {
 
 func TestAutoRetryAdmissionReleasesBeforeObserversAndOnEveryExit(t *testing.T) {
 	t.Parallel()
-	for _, operation := range []string{"schedule", "cancel without a row", "store failure", "retired owner", "stopped manager"} {
+	for _, operation := range []string{"schedule", "cancel without a row", "keyed cancel without a row", "invalid keyed cancel", "store failure", "retired owner", "stopped manager"} {
 		t.Run(operation, func(t *testing.T) {
 			t.Parallel()
 			database, store := newStoreFixture(t)
@@ -957,12 +989,19 @@ func TestAutoRetryAdmissionReleasesBeforeObserversAndOnEveryExit(t *testing.T) {
 			}
 			kind := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT
 			var err error
-			if operation == "cancel without a row" {
+			switch operation {
+			case "keyed cancel without a row":
+				err = manager.CancelUsageLimitRetryWithKey(t.Context(), "agent-1", "native:A", "the turn ended", admission)
+			case "invalid keyed cancel":
+				err = manager.CancelUsageLimitRetryWithKey(t.Context(), "agent-1", "", "the turn ended", admission)
+			case "cancel without a row":
 				err = manager.CancelAutoRetry(t.Context(), "agent-1", kind, "the turn ended", admission)
-			} else {
+			default:
 				err = manager.ScheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{Kind: kind, ResetAt: time.Now().Add(time.Hour), Admission: admission})
 			}
 			switch operation {
+			case "invalid keyed cancel":
+				require.ErrorIs(t, err, ErrInvalidInput)
 			case "store failure":
 				require.ErrorContains(t, err, "refuse retry")
 			case "stopped manager":

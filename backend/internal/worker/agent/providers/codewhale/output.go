@@ -246,17 +246,21 @@ func (a *Agent) completeTurn(end codewhaleTurnEnd) {
 		slog.Error("codewhale persist turn end", "agent_id", a.AgentID(), "error", err)
 	}
 	a.sink.ResetSpans()
-	if a.markTurnFinished(turnID) {
-		a.PublishTurnActive()
-	}
+	finished := a.markTurnFinished(turnID)
+	a.Mu.Lock()
+	stopRequested := a.interruptRequestedTurnID == turnID && turnID != ""
+	a.Mu.Unlock()
 	// Every turn end applies one verdict. A turn that did not fail cancels the
 	// server-error retry. A manual compaction's turn ends on the compaction
 	// verdict, whatever its outcome, so it never schedules a retry.
 	verdict := providerkit.CompactionEnd()
 	if !compactionTurn {
-		verdict = codewhaleTurnFailure(payload.Turn.Status, failure, a.IntentionalStopRequested(), a.clock.Now())
+		verdict = codewhaleTurnFailure(payload.Turn.Status, failure, stopRequested || a.IntentionalStopRequested(), a.clock.Now())
 	}
 	providerkit.ApplyTurnFailure(a.sink, verdict, env.raw)
+	if finished {
+		a.PublishTurnActive()
+	}
 	a.refreshContextUsage()
 }
 

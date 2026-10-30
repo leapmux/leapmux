@@ -78,8 +78,8 @@ const junieSteerMethod = "_session/steering"
 //
 // Junie sends the marker in a turn of LeapMux's too, and the marker of an
 // agent turn can arrive while that turn still waits behind a prompt of
-// LeapMux's, which drops the turn. Neither marker ends an agent turn, so the
-// prompt's own end decides, from the same recorded failure.
+// LeapMux's. That queued completion keeps its verdict until the prompt ends.
+// A marker in LeapMux's own turn leaves its prompt response to decide.
 func (a *Agent) observeJunieTurnEnd(_ string, metadata map[string]json.RawMessage) {
 	if !providerkit.RawBool(metadata["lastRequestComplete"]) {
 		return
@@ -88,7 +88,7 @@ func (a *Agent) observeJunieTurnEnd(_ string, metadata map[string]json.RawMessag
 	record := a.failureRecord
 	a.Mu.Unlock()
 	verdict := junieTurnVerdict(nil, a.IsStopped() || a.InterruptRequested(), record, a.clockOrReal().Now())
-	a.EndAgentTurnWithoutRowWithVerdict(verdict)
+	a.EndAgentTurnWithoutRowWithVerdict(verdict, acp.RetainQueuedTurn)
 }
 
 // SteerInput injects text into the running turn through Junie's own

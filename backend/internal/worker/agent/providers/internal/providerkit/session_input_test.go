@@ -19,7 +19,7 @@ func TestSlashCommand(t *testing.T) {
 		{name: "a command with arguments", content: "/compact keep the plan", wantName: "compact", wantArgs: "keep the plan", wantOK: true},
 		{name: "surrounding white space", content: "  /smol \n", wantName: "smol", wantOK: true},
 		{name: "a line break before the arguments", content: "/compact\nkeep the plan", wantName: "compact", wantArgs: "keep the plan", wantOK: true},
-		{name: "a message that names the command later", content: "please /compact"},
+		{name: "a message that mentions the command later", content: "please /compact"},
 		{name: "a slash with no name", content: "/ compact"},
 		{name: "a lone slash", content: "/"},
 		{name: "an empty message", content: ""},

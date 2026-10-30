@@ -33,10 +33,10 @@ func TestControlApprovalAdmissionFailureAnswersAFailedPublication(t *testing.T) 
 	base, sink, output := approvalProcess(t)
 	handle := approvalHandle(base, "jsonrpc:1")
 	base.outstandingMu.Lock()
-	handle.record.pending = true
+	handle.record.response = newControlResponseClaim(controlResponseApproval)
 	handle.record.publicationErr = errors.New("publication failed while approval waited for admission")
 	base.outstandingMu.Unlock()
-	base.releaseControlApprovals([]controlApprovalWrite{{requestID: handle.RequestID, record: handle.record}})
+	base.releaseControlApprovals([]controlResponseWrite{{requestID: handle.RequestID, record: handle.record, claim: handle.record.response}})
 	require.NoError(t, base.SendResponse([]byte(`"marker"`), map[string]any{}))
 	assert.Contains(t, output.String(), `"error":{"code":-32603`)
 	assert.False(t, base.OutstandingControlForTest(handle.RequestID))
@@ -48,8 +48,8 @@ func TestUnpublishedApprovalAdmissionFailureNeverReopensTheRecord(t *testing.T) 
 	base := &JSONRPCProcess{}
 	identity, ok := agent.NewControlRequestIdentity([]byte(`1`))
 	require.True(t, ok)
-	record := base.registerControl(identity, &outstandingControlRequest{pending: true, publishOnFailure: true})
-	base.releaseControlApprovals([]controlApprovalWrite{{requestID: identity.Key, record: record}})
+	record := base.registerControl(identity, &outstandingControlRequest{response: newControlResponseClaim(controlResponseApproval), publishOnFailure: true})
+	base.releaseControlApprovals([]controlResponseWrite{{requestID: identity.Key, record: record, claim: record.response}})
 	assert.False(t, base.OutstandingControlForTest(identity.Key), "the caller republishes after refusal; no sweep can claim an intermediate open record")
 }
 
@@ -67,7 +67,7 @@ func TestUnpublishedApprovalIsPendingBeforeDispatch(t *testing.T) {
 		base.outstandingMu.Lock()
 		defer base.outstandingMu.Unlock()
 		record := base.outstandingControls["jsonrpc:3"]
-		return record != nil && record.pending && record.publishOnFailure
+		return record != nil && record.response != nil && record.publishOnFailure
 	}, 30*time.Second, time.Millisecond)
 	// The unrelated request in approvalProcess must not enter this test's sweep.
 	base.outstandingMu.Lock()

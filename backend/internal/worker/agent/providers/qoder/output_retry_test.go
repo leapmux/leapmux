@@ -196,7 +196,7 @@ func TestQoderResultFailure(t *testing.T) {
 		{name: "a numeric code in a string decides nothing", line: line(`{"type":"result","is_error":true,"errors":["x"],"error_code":"10500"}`), want: providerkit.TurnFailure{}},
 		{name: "a null code decides nothing", line: line(`{"type":"result","is_error":true,"errors":["x"],"error_code":null}`), want: providerkit.TurnFailure{}},
 		{name: "an absent code decides nothing", line: line(`{"type":"result","is_error":true,"errors":["x"]}`), want: providerkit.TurnFailure{}},
-		{name: "a terminal reason is not retryable", line: line(`{"type":"result","is_error":true,"errors":["Operation aborted"],"error_code":10500,"terminal_reason":"aborted_streaming"}`), want: providerkit.TurnFailure{}},
+		{name: "a native terminal_reason prevents retry", line: line(`{"type":"result","is_error":true,"errors":["Operation aborted"],"error_code":10500,"terminal_reason":"aborted_streaming"}`), want: providerkit.TurnFailure{}},
 		{name: "a malformed result is not retryable", line: line(`{"type":"result","is_error":true,"error_code":10500,"errors":[7]}`), want: providerkit.TurnFailure{}},
 		{
 			name: "a definitive vendor verdict wins over a transient code",

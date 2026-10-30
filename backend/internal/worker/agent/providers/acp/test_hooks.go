@@ -121,6 +121,11 @@ func (b *Base) SetPermissionModeForTest(v string) {
 // SetPromptActiveForTest sets whether a session/prompt runs.
 func (b *Base) SetPromptActiveForTest(v bool) {
 	b.promptActive = v
+	if v {
+		b.startConversationLocked(false)
+	} else {
+		b.conversation, b.promptConversation = nil, nil
+	}
 }
 
 // SetReapplySettingsForTest sets the step that ClearContext runs after session/new to apply the settings again.

@@ -316,6 +316,9 @@ CREATE TABLE agent_input_queue_items (
     -- The provider source bytes an automatic retry carries into the accepted
     -- transcript's supplemental content. Empty for ordinary input.
     source_payload  BLOB NOT NULL DEFAULT X'',
+    -- A native retry owner can cancel only its own automatic retry.
+    -- TestAutoRetryKeyKindOrdinals pins the two AgentInputKind literals.
+    auto_retry_key  TEXT NOT NULL DEFAULT '' CHECK (auto_retry_key = '' OR kind IN (5, 8)),
     -- AgentInputState ordinal. TestEnumColumnChecksMatchTheirProtoRanges pins the range.
     state           INTEGER NOT NULL DEFAULT 1 CHECK (typeof(state) = 'integer') CHECK (state BETWEEN 1 AND 5),
     error           TEXT NOT NULL DEFAULT '',
@@ -333,7 +336,7 @@ CREATE UNIQUE INDEX idx_agent_input_queue_one_edit
 -- and 8 is AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR. SQLite forbids a bound
 -- parameter in the WHERE clause of a partial index, so the ordinals are
 -- spelled here and pinned by TestAutoRetryPartialIndexOrdinals. A row that
--- returns to QUEUED first removes the newer pending row of its kind
+-- returns to QUEUED first resolves the pending peer of its kind
 -- (absorbQueuedAutoRetry and dropQueuedAutoRetry in inputqueue/store.go).
 CREATE UNIQUE INDEX idx_agent_input_queue_one_auto_retry_kind
     ON agent_input_queue_items(agent_id, kind)

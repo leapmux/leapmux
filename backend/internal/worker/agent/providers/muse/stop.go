@@ -16,6 +16,9 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	turn := ""
 	if state != nil {
 		turn = state.turnID
+		if turn != "" {
+			state.stopRequestedTurnID = turn
+		}
 	}
 	a.stateMu.Unlock()
 	if turn == "" {

@@ -1468,7 +1468,7 @@ tasks:
     desc: Auto-fix backend lint violations
     cmds:
       - task: prepare-backend
-      - cd backend && go tool golangci-lint run --fix ./...
+      - cd backend && go tool golangci-lint run --allow-serial-runners --fix ./...
 
   lint-fix-desktop:
     desc: Auto-fix desktop lint violations

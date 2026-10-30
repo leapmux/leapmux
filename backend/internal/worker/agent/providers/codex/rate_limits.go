@@ -398,8 +398,8 @@ type codexRateLimitUpdate struct {
 	carriedWindow bool
 	// bucket is the reading of the updated bucket after the merge.
 	bucket codexRateLimitReading
-	// otherBucketBlocks reports that another bucket holds a used-up window that
-	// its credits do not serve.
+	// otherBucketBlocks reports that another bucket holds a used-up window,
+	// regardless of its credits.
 	otherBucketBlocks bool
 }
 
@@ -462,29 +462,29 @@ func codexWindowToType(mins int) string {
 // of the Codex process and truncates it to the minute.
 var codexRetryTextPattern = regexp.MustCompile(`\b[Tt]ry again at (?:([A-Z][a-z]{2}) ([1-9]|[12][0-9]|3[01])(?:st|nd|rd|th), ([0-9]{4}) )?(1[0-2]|[1-9]):([0-5][0-9]) ([AP]M)\b`)
 
-// codexRetryTextSlack is how long past the stated minute the retry waits. The
-// text drops the seconds of the real reset, which lies inside that minute.
+// codexRetryTextSlack is the nominal local minute whose seconds the text
+// omits. The parser waits until every possible instant in that minute ends.
 const codexRetryTextSlack = 60 * time.Second
 
-// parseCodexRetryText reads the retry time of a usage-limit message in
-// location, the local zone of the Codex process, and returns it in UTC. A
-// message without a date states a time of the local day of now. It returns
-// false for a message that states no valid time.
-//
-// The turn frame states no time of its own, so the day comes from now. A
-// failure that Codex states just before local midnight and that LeapMux reads
-// just after it reads the time on the new day, about a day late. The window is
-// the seconds between the failure and its handling, and the reset of the
-// merged `codex` bucket, when a snapshot stated one, decides before this text.
-func parseCodexRetryText(message string, location *time.Location, now time.Time) (time.Time, bool) {
+// codexRetryTextObservation retains the native zone and the interval in which
+// Codex could have formatted its failure. A missing zone is unknown.
+type codexRetryTextObservation struct {
+	location    *time.Location
+	startedAt   *time.Time
+	completedAt *time.Time
+}
+
+// parseCodexRetryText reads the stated local minute and returns the instant
+// after every possible reset in that minute. Undated text requires a native
+// interval that proves one local calendar date. Explicit dates need no interval.
+func parseCodexRetryText(message string, observation codexRetryTextObservation, now time.Time) (time.Time, bool) {
 	match := codexRetryTextPattern.FindStringSubmatch(message)
-	if match == nil {
+	if match == nil || observation.location == nil {
 		return time.Time{}, false
 	}
-	if location == nil {
-		location = time.Local
-	}
-	year, month, day := now.In(location).Date()
+	location := observation.location
+	var year, day int
+	var month time.Month
 	if match[1] != "" {
 		parsedMonth, err := time.Parse("Jan", match[1])
 		if err != nil {
@@ -493,6 +493,17 @@ func parseCodexRetryText(message string, location *time.Location, now time.Time)
 		month = parsedMonth.Month()
 		day, _ = strconv.Atoi(match[2])
 		year, _ = strconv.Atoi(match[3])
+	} else {
+		if observation.startedAt == nil || observation.completedAt == nil || observation.startedAt.After(*observation.completedAt) || observation.completedAt.After(now) {
+			return time.Time{}, false
+		}
+		year, month, day = observation.startedAt.In(location).Date()
+		if !codexIntervalHasOneDate(*observation.startedAt, *observation.completedAt, location) {
+			return time.Time{}, false
+		}
+	}
+	if year < 1 || year > 9999 {
+		return time.Time{}, false
 	}
 	hour, _ := strconv.Atoi(match[4])
 	minute, _ := strconv.Atoi(match[5])
@@ -500,12 +511,95 @@ func parseCodexRetryText(message string, location *time.Location, now time.Time)
 	if match[6] == "PM" {
 		hour += 12
 	}
-	stated := time.Date(year, month, day, hour, minute, 0, 0, location)
-	// time.Date normalizes a day that the month lacks, such as Feb 30th.
-	if statedYear, statedMonth, statedDay := stated.Date(); statedYear != year || statedMonth != month || statedDay != day {
+	// UTC carries the local calendar fields for offset arithmetic here.
+	civil := time.Date(year, month, day, hour, minute, 0, 0, time.UTC)
+	if civil.Year() != year || civil.Month() != month || civil.Day() != day {
 		return time.Time{}, false
 	}
-	return stated.Add(codexRetryTextSlack).UTC(), true
+	return codexLocalMinuteEnd(civil, location)
+}
+
+// codexIntervalHasOneDate checks every offset period. A backward transition
+// can return to the starting date after the clock already crossed midnight.
+func codexIntervalHasOneDate(first, last time.Time, location *time.Location) bool {
+	year, month, day := first.In(location).Date()
+	hasDate := func(instant time.Time) bool {
+		y, m, d := instant.In(location).Date()
+		return y == year && m == month && d == day
+	}
+	for cursor := first; ; {
+		if !hasDate(cursor) {
+			return false
+		}
+		_, end := codexZonePeriod(cursor, location)
+		if end.IsZero() || end.After(last) {
+			return hasDate(last)
+		}
+		if !end.After(cursor) || !hasDate(end.Add(-time.Nanosecond)) {
+			return false
+		}
+		cursor = end
+	}
+}
+
+// codexZonePeriod corrects Go's approximate footer end after the final
+// transition of a leap year. Go reports January 1 plus 365 days there.
+// The validated native footer keeps each UTC transition inside its own year,
+// so this period continues through December 31 to the next UTC year.
+func codexZonePeriod(cursor time.Time, location *time.Location) (time.Time, time.Time) {
+	begin, end := cursor.In(location).ZoneBounds()
+	utc := cursor.UTC()
+	year := utc.Year()
+	if !end.IsZero() && !end.After(cursor) && utc.Month() == time.December && utc.Day() == 31 {
+		lastDay := time.Date(year, time.December, 31, 0, 0, 0, 0, time.UTC)
+		if end.Equal(lastDay) && time.Date(year, time.March, 0, 0, 0, 0, 0, time.UTC).Day() == 29 {
+			end = time.Date(year+1, time.January, 1, 0, 0, 0, 0, time.UTC)
+		}
+	}
+	return begin, end
+}
+
+// codexLocalMinuteEnd finds the latest end of the stated minute across all
+// applicable offsets. A repeated minute waits for its later occurrence.
+func codexLocalMinuteEnd(civil time.Time, location *time.Location) (time.Time, bool) {
+	// Chrono's FixedOffset accepts only offsets strictly between -24h and +24h.
+	// A larger offset cannot produce a formatted Codex retry minute.
+	const maximumOffset = 24*time.Hour - time.Second
+	first, limit := civil.Add(-maximumOffset), civil.Add(maximumOffset+codexRetryTextSlack)
+	var latest time.Time
+	found := false
+	for cursor := first; cursor.Before(limit); {
+		_, offset := cursor.In(location).Zone()
+		begin, end := codexZonePeriod(cursor, location)
+		periodEnd := limit
+		if !end.IsZero() && end.Before(periodEnd) {
+			periodEnd = end
+		}
+		if !periodEnd.After(cursor) {
+			return time.Time{}, false
+		}
+		if offset > -24*60*60 && offset < 24*60*60 {
+			candidate := civil.Add(-time.Duration(offset) * time.Second)
+			candidateEnd := candidate.Add(codexRetryTextSlack)
+			if candidate.Before(cursor) {
+				candidate = cursor
+			}
+			if !begin.IsZero() && candidate.Before(begin) {
+				candidate = begin
+			}
+			if candidateEnd.After(periodEnd) {
+				candidateEnd = periodEnd
+			}
+			local := candidate.In(location)
+			if candidate.Before(candidateEnd) && local.Year() == civil.Year() && local.Month() == civil.Month() && local.Day() == civil.Day() && local.Hour() == civil.Hour() && local.Minute() == civil.Minute() {
+				if !found || candidateEnd.After(latest) {
+					latest, found = candidateEnd, true
+				}
+			}
+		}
+		cursor = periodEnd
+	}
+	return latest.UTC(), found
 }
 
 // codexUsageLimitSources holds where a turn that failed with
@@ -514,8 +608,7 @@ type codexUsageLimitSources struct {
 	// bucketReset is the latest reset of a used-up window of the merged `codex`
 	// bucket that lies after now, or nil.
 	bucketReset *time.Time
-	// textLocation is the zone of the local time in the message. Nil reads as
-	// time.Local.
+	// textLocation is the captured native zone. Nil means the zone is unknown.
 	textLocation *time.Location
 }
 
@@ -525,14 +618,14 @@ type codexUsageLimitSources struct {
 // message. Each instant goes through providerkit.WithResetHint. With neither
 // instant, the verdict states no window, so the turn end only cancels the
 // server-error retry and keeps a usage-limit retry that a snapshot scheduled.
-func codexUsageLimitFailure(message string, sources codexUsageLimitSources, now time.Time) providerkit.TurnFailure {
+func codexUsageLimitFailure(outcome codexTurnOutcome, sources codexUsageLimitSources, now time.Time) providerkit.TurnFailure {
 	failure := providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, Cause: "Codex reported usageLimitExceeded"}
 	if sources.bucketReset != nil {
 		if hinted := providerkit.WithResetHint(failure, *sources.bucketReset, now); !hinted.ResetAt.IsZero() {
 			return hinted
 		}
 	}
-	if resetAt, ok := parseCodexRetryText(message, sources.textLocation, now); ok {
+	if resetAt, ok := parseCodexRetryText(outcome.message, codexRetryTextObservation{location: sources.textLocation, startedAt: outcome.startedAt, completedAt: outcome.completedAt}, now); ok {
 		return providerkit.WithResetHint(failure, resetAt, now)
 	}
 	return failure

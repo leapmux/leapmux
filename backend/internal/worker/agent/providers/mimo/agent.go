@@ -80,6 +80,10 @@ type Agent struct {
 	permissionPolicy string
 
 	turnActive bool
+	// retryStopRequested keeps user intent separate from confirmed native
+	// interruption. A failed abort can leave an error row but cannot retry work
+	// that the user asked to stop. The next turn clears this intent.
+	retryStopRequested bool
 	// interruptRequests records each stop attempt of the current turn.
 	// A true value confirms HTTP acceptance or native abort evidence.
 	// A failed request removes only its own pending attempt.

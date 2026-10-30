@@ -379,7 +379,7 @@ export const NODE_TEST_FILES = [
   'src/components/chat/providers/mimo/extractControl.test.ts',
   'src/components/chat/providers/mimo/extractors/read.test.ts',
   'src/components/chat/providers/mimo/extractors/search.test.ts',
-  'src/components/chat/providers/openCodeQuestions.test.ts',
+  'src/components/chat/providers/nativeQuestions.test.ts',
   'src/components/chat/providers/opencode/controlResponse.test.ts',
   'src/components/chat/providers/pi/askUserQuestion.test.ts',
   'src/components/chat/providers/pi/extractors/execute.test.ts',

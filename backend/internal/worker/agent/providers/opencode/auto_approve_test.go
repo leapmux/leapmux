@@ -131,24 +131,24 @@ func TestAutoApproveChangesDuringASession(t *testing.T) {
 	require.Empty(t, permissionAnswers(t, a, stdin))
 
 	// Turning the option on approves the request that already waits.
-	a.UpdateSettings(optionmap.Map{contracts.OpenCodeOptionAutoApprove: "true"})
+	a.UpdateSettings(optionmap.Map{contracts.ClientApprovalOptionAutoApprove: "true"})
 	assert.JSONEq(t, approvedOnce, permissionAnswers(t, a, stdin)["7"])
-	assert.Equal(t, "true", optionids.GroupByID(a.OptionGroups(), contracts.OpenCodeOptionAutoApprove).GetCurrentValue())
+	assert.Equal(t, "true", optionids.GroupByID(a.OptionGroups(), contracts.ClientApprovalOptionAutoApprove).GetCurrentValue())
 
 	// Turning it off asks the reader again.
-	a.UpdateSettings(optionmap.Map{contracts.OpenCodeOptionAutoApprove: "false"})
+	a.UpdateSettings(optionmap.Map{contracts.ClientApprovalOptionAutoApprove: "false"})
 	requestPermission(a, 8, familyPermissionOptions)
 	assert.NotContains(t, permissionAnswers(t, a, stdin), "8")
 	assert.Len(t, sink.PublishedControls(), 2)
-	assert.Equal(t, "false", optionids.GroupByID(a.OptionGroups(), contracts.OpenCodeOptionAutoApprove).GetCurrentValue())
+	assert.Equal(t, "false", optionids.GroupByID(a.OptionGroups(), contracts.ClientApprovalOptionAutoApprove).GetCurrentValue())
 }
 
 func TestAutoApproveRefusesAnInvalidValue(t *testing.T) {
 	t.Parallel()
 	a, _, _ := newAutoApproveAgent(t, true)
-	result := a.UpdateSettings(optionmap.Map{contracts.OpenCodeOptionAutoApprove: "yes"})
-	assert.Equal(t, "true", result.ConfirmedOptions()[contracts.OpenCodeOptionAutoApprove], "the refusal keeps the running value and the process")
-	assert.Equal(t, "true", optionids.GroupByID(a.OptionGroups(), contracts.OpenCodeOptionAutoApprove).GetCurrentValue())
+	result := a.UpdateSettings(optionmap.Map{contracts.ClientApprovalOptionAutoApprove: "yes"})
+	assert.Equal(t, "true", result.ConfirmedOptions()[contracts.ClientApprovalOptionAutoApprove], "the refusal keeps the running value and the process")
+	assert.Equal(t, "true", optionids.GroupByID(a.OptionGroups(), contracts.ClientApprovalOptionAutoApprove).GetCurrentValue())
 }
 
 func TestAutoApproveLocalOption(t *testing.T) {
@@ -156,18 +156,18 @@ func TestAutoApproveLocalOption(t *testing.T) {
 	b := &FamilyBase{}
 	groups := b.localOptionGroups()
 	require.Len(t, groups, 1)
-	assert.Equal(t, contracts.OpenCodeOptionAutoApprove, groups[0].GetId())
+	assert.Equal(t, contracts.ClientApprovalOptionAutoApprove, groups[0].GetId())
 	assert.Equal(t, "false", groups[0].GetCurrentValue())
 	assert.Equal(t, []string{"false", "true"}, optionIDs(groups[0]))
 
 	handled, err := b.applyLocalOption("model", "true")
 	assert.False(t, handled, "another group belongs to the session")
 	require.NoError(t, err)
-	handled, err = b.applyLocalOption(contracts.OpenCodeOptionAutoApprove, "maybe")
+	handled, err = b.applyLocalOption(contracts.ClientApprovalOptionAutoApprove, "maybe")
 	assert.True(t, handled)
 	require.Error(t, err)
 	assert.Equal(t, "false", b.localOptionGroups()[0].GetCurrentValue())
-	handled, err = b.applyLocalOption(contracts.OpenCodeOptionAutoApprove, "true")
+	handled, err = b.applyLocalOption(contracts.ClientApprovalOptionAutoApprove, "true")
 	assert.True(t, handled)
 	require.NoError(t, err)
 	assert.Equal(t, "true", b.localOptionGroups()[0].GetCurrentValue())
@@ -209,14 +209,14 @@ func TestPermissionOffersAlways(t *testing.T) {
 
 func TestStartRefusesAnInvalidAutoApprove(t *testing.T) {
 	t.Parallel()
-	_, err := Start(t.Context(), agent.Options{AgentID: "opencode-invalid", Options: map[string]string{contracts.OpenCodeOptionAutoApprove: "yes"}}, agent.NewProviderServices(&agenttest.Sink{}))
+	_, err := Start(t.Context(), agent.Options{AgentID: "opencode-invalid", Options: map[string]string{contracts.ClientApprovalOptionAutoApprove: "yes"}}, agent.NewProviderServices(&agenttest.Sink{}))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "auto-approve")
 }
 
 func TestRegistrationServesAutoApprove(t *testing.T) {
 	t.Parallel()
-	group := optionids.GroupByID(Registration().OptionGroups, contracts.OpenCodeOptionAutoApprove)
+	group := optionids.GroupByID(Registration().OptionGroups, contracts.ClientApprovalOptionAutoApprove)
 	assert.Same(t, AutoApproveGroup, group)
 	assert.Equal(t, "false", group.GetDefaultValue())
 	assert.True(t, group.GetMutable())

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -14,6 +15,141 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSink_RetrySchedulesKeepTheirPayload(t *testing.T) {
+	t.Parallel()
+	for _, captured := range []bool{false, true} {
+		t.Run(map[bool]string{false: "direct", true: "captured"}[captured], func(t *testing.T) {
+			t.Parallel()
+			sink := &Sink{}
+			var writer agent.AutoRetryWriter = sink
+			if captured {
+				writer = sink.CaptureAutoRetry()
+			}
+			payload := []byte(`{"failure":"original"}`)
+			writer.ScheduleServerErrorRetry(payload)
+			payload[0] = 'x'
+			assert.JSONEq(t, `{"failure":"original"}`, string(sink.LastAutoSchedule().SourcePayload))
+		})
+	}
+}
+
+func TestSink_KeyedSchedulesKeepTheirOwnerAndPayload(t *testing.T) {
+	t.Parallel()
+	for _, captured := range []bool{false, true} {
+		t.Run(map[bool]string{false: "direct", true: "captured"}[captured], func(t *testing.T) {
+			t.Parallel()
+			sink := &Sink{}
+			var writer agent.AutoRetryWriter = sink
+			if captured {
+				writer = sink.CaptureAutoRetry()
+			}
+			payload := []byte(`{"failure":"original"}`)
+			resetAt := time.Unix(1700000000, 0)
+			writer.ScheduleUsageLimitRetryWithKey("native:A", resetAt, payload)
+			payload[0] = 'x'
+			assert.JSONEq(t, `{"failure":"original"}`, string(sink.LastAutoSchedule().SourcePayload))
+			assert.Equal(t, "native:A", sink.LastAutoSchedule().Key)
+			writer.CancelUsageLimitRetryWithKey("native:A", "native completion")
+			assert.Equal(t, "native:A", sink.LastAutoCancelKey())
+			assert.Equal(t, []TimelineEntry{
+				{Op: "schedule_usage_limit", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, Key: "native:A", ResetAt: resetAt},
+				{Op: "cancel_usage_limit", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, Key: "native:A", Reason: "native completion"},
+			}, sink.Timeline())
+		})
+	}
+}
+
+func TestSink_KeyedCleanupUsesSessionAuthorityAcrossTurns(t *testing.T) {
+	t.Parallel()
+	for _, replacement := range []string{"turn", "session", "same ID session"} {
+		t.Run(replacement, func(t *testing.T) {
+			t.Parallel()
+			sink := &Sink{}
+			sink.UpdateSessionID("session-a")
+			sink.SetTurnState(agent.TurnState{Active: true}, 1)
+			writer := sink.CaptureAutoRetryThroughTurn(2)
+			sink.SetTurnState(agent.TurnState{Active: true}, 3)
+			if replacement != "turn" {
+				sink.UpdateSessionID("session-b")
+				if replacement == "same ID session" {
+					sink.UpdateSessionID("session-a")
+				}
+			}
+			writer.ScheduleUsageLimitRetryWithKey("native:A", time.Unix(1700000000, 0), []byte(`{"late":true}`))
+			writer.CancelUsageLimitRetryWithKey("native:A", "native completion")
+			assert.Zero(t, sink.AutoScheduleCount(), "a new turn rejects old scheduling authority")
+			if replacement == "turn" {
+				assert.Equal(t, 1, sink.AutoCancelCount())
+				assert.Equal(t, "native:A", sink.LastAutoCancelKey())
+			} else {
+				assert.Zero(t, sink.AutoCancelCount(), "a replaced native session rejects cleanup")
+			}
+		})
+	}
+}
+
+func TestSink_OperationViewsKeepAttemptsAndStoredLifecycleDistinct(t *testing.T) {
+	t.Parallel()
+	sink := &Sink{}
+	sink.SetTurnState(agent.TurnState{Active: true}, 1)
+	sink.PersistErr = assert.AnError
+	require.ErrorIs(t, sink.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"end":"failed write"}`)}, agent.SpanInfo{}), assert.AnError)
+	sink.PersistErr = nil
+	require.NoError(t, sink.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"end":"stored"}`)}, agent.SpanInfo{}))
+	sink.CancelServerErrorRetry("the turn ended")
+	sink.SetTurnState(agent.TurnState{}, 2)
+	sink.ResetSpans()
+	sink.ReportSteersEchoed(1)
+	require.NoError(t, sink.RequeueDroppedInput("input", "text", nil))
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false", "reset_spans", "steer-echoed:1", "requeue:input"}, sink.TurnLifecycle())
+	assert.Equal(t, []TimelineEntry{{Op: "turn_end"}, {Op: "turn_end"}, {
+		Op: "cancel_server_error", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, Reason: "the turn ended",
+	}}, sink.Timeline())
+	assert.Equal(t, []TimelineEntry{
+		{Op: "turn_active", Active: true}, {Op: "turn_end"}, {Op: "turn_end"}, {Op: "turn_end_stored"},
+		{Op: "cancel_server_error", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, Reason: "the turn ended"},
+		{Op: "turn_active"}, {Op: "reset_spans"}, {Op: "steer_echoed", Count: 1}, {Op: "requeue", InputID: "input"},
+	}, sink.Operations())
+	copy := sink.Operations()
+	copy[0].Op = "changed"
+	assert.Equal(t, "turn_active", sink.Operations()[0].Op)
+}
+
+func TestSink_CapturedRetryRecordingKeepsBothKindsAndRejectsReplacedOwners(t *testing.T) {
+	t.Parallel()
+	for _, replacement := range []string{"none", "session", "turn"} {
+		t.Run(replacement, func(t *testing.T) {
+			t.Parallel()
+			sink := &Sink{}
+			sink.SetTurnState(agent.TurnState{Active: true}, 1)
+			writer := sink.CaptureAutoRetry()
+			switch replacement {
+			case "session":
+				sink.UpdateSessionID("replacement")
+			case "turn":
+				sink.SetTurnState(agent.TurnState{}, 2)
+			}
+			reset := time.Unix(1700000000, 0)
+			writer.ScheduleUsageLimitRetry(reset, []byte(`{"usage":true}`))
+			writer.ScheduleServerErrorRetry([]byte(`{"server":true}`))
+			writer.CancelUsageLimitRetry("usage lifted")
+			writer.CancelServerErrorRetry("turn ended")
+			if replacement != "none" {
+				assert.Zero(t, sink.AutoScheduleCount())
+				assert.Zero(t, sink.AutoCancelCount())
+				assert.Empty(t, sink.Timeline())
+				return
+			}
+			assert.Equal(t, []TimelineEntry{
+				{Op: "schedule_usage_limit", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, ResetAt: reset},
+				{Op: "schedule_server_error", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR},
+				{Op: "cancel_usage_limit", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, Reason: "usage lifted"},
+				{Op: "cancel_server_error", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, Reason: "turn ended"},
+			}, sink.Timeline())
+		})
+	}
+}
 
 func TestSink_CapturedMessagesRetainTheirHistoricalPublication(t *testing.T) {
 	t.Parallel()

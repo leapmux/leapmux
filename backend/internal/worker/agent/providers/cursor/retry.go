@@ -73,9 +73,9 @@ func (a *Agent) finishCursorPrompt(err error, stopped bool) acp.PromptEnding {
 	a.lastChunkText, a.lastChunkRaw = "", nil
 	a.Mu.Unlock()
 	if stopped || err != nil {
-		return acp.PromptEnding{Retry: &acp.TurnVerdict{}}
+		return acp.PromptEnding{Retry: acp.TurnVerdict{}}
 	}
-	return acp.PromptEnding{Retry: &acp.TurnVerdict{Failure: cursorTurnFailure(text), Payload: raw}}
+	return acp.PromptEnding{Retry: acp.TurnVerdict{Failure: cursorTurnFailure(text), Payload: raw}}
 }
 
 // cursorTurnFailure classifies the last root chunk of a prompt.

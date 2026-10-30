@@ -733,9 +733,11 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 	if err := json.Unmarshal(params, &parsed); err == nil {
 		if turnRaw, ok := parsed["turn"]; ok {
 			var turn struct {
-				ID     string `json:"id"`
-				Status string `json:"status"`
-				Error  struct {
+				ID          string          `json:"id"`
+				Status      string          `json:"status"`
+				StartedAt   json.RawMessage `json:"startedAt"`
+				CompletedAt json.RawMessage `json:"completedAt"`
+				Error       struct {
 					Message        string          `json:"message"`
 					CodexErrorInfo json.RawMessage `json:"codexErrorInfo"`
 				} `json:"error"`
@@ -743,9 +745,11 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 			if json.Unmarshal(turnRaw, &turn) == nil {
 				turnID = turn.ID
 				outcome = codexTurnOutcome{
-					status:    turn.Status,
-					message:   turn.Error.Message,
-					errorInfo: decodeCodexErrorInfo(turn.Error.CodexErrorInfo),
+					status:      turn.Status,
+					startedAt:   decodeCodexTurnTime(turn.StartedAt),
+					completedAt: decodeCodexTurnTime(turn.CompletedAt),
+					message:     turn.Error.Message,
+					errorInfo:   decodeCodexErrorInfo(turn.Error.CodexErrorInfo),
 				}
 			}
 		}
@@ -1013,14 +1017,30 @@ func (info codexErrorInfo) retryableStatus() bool {
 // codexTurnOutcome is what the retry verdict reads from one turn/completed of
 // the main thread.
 type codexTurnOutcome struct {
-	status    string
-	errorInfo codexErrorInfo
-	message   string
+	status      string
+	startedAt   *time.Time
+	completedAt *time.Time
+	errorInfo   codexErrorInfo
+	message     string
 	// stopRequested records that LeapMux asked Codex to interrupt the turn.
 	stopRequested bool
 	// compaction records that the turn ran a compaction that CompactContext
 	// requested.
 	compaction bool
+}
+
+// decodeCodexTurnTime reads one optional native timestamp without discarding
+// the outcome when that field is malformed. Retry dates use four-digit years.
+func decodeCodexTurnTime(raw json.RawMessage) *time.Time {
+	seconds, ok := providerkit.RawInt64(raw)
+	if !ok {
+		return nil
+	}
+	instant := time.Unix(seconds, 0).UTC()
+	if instant.Year() < 1 || instant.Year() > 9999 {
+		return nil
+	}
+	return &instant
 }
 
 // hasInterruptCall reports whether LeapMux sent turn/interrupt for the turn.
@@ -1083,7 +1103,7 @@ func codexTurnFailure(outcome codexTurnOutcome, usage codexUsageLimitSources, no
 	transient := providerkit.TurnFailure{Kind: providerkit.TurnFailureTransient, Cause: "Codex reported " + kind}
 	switch kind {
 	case codexErrorUsageLimitExceeded:
-		return codexUsageLimitFailure(outcome.message, usage, now)
+		return codexUsageLimitFailure(outcome, usage, now)
 	case codexErrorServerOverloaded, codexErrorInternalServerError, codexErrorFlexUnavailable, codexErrorResponseStreamDisconnected:
 		return transient
 	case codexErrorHTTPConnectionFailed, codexErrorResponseStreamConnectionFailed, codexErrorResponseTooManyFailedAttempts:

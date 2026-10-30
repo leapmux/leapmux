@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -242,6 +243,124 @@ func TestGeminiRetryWarningReaderDropsAWarningThatNeverEnds(t *testing.T) {
 	assert.Empty(t, reader.pending)
 }
 
+func TestGeminiRetryWarningReaderRejectsUnrelatedLogRecords(t *testing.T) {
+	t.Parallel()
+	var reader geminiRetryWarningReader
+	_, _, ok := reader.read(geminiWarnLine("Attempt 1 failed: unfinished"))
+	require.False(t, ok)
+	_, _, ok = reader.read("[2026-10-28T09:00:00.001Z] [INFO] a different record")
+	require.False(t, ok)
+	_, _, ok = reader.read("a suffix. Retrying after 81331625ms...")
+	assert.False(t, ok)
+}
+
+func TestGeminiPromptStartDiscardsAnUnfinishedWarning(t *testing.T) {
+	t.Parallel()
+	a, stdin := newGeminiStopAgent(t, &agenttest.Sink{})
+	observeGeminiDebugLog(a, geminiWarnLine("Attempt 1 failed: unfinished"))
+	a.FinishPromptRequestForTest(geminiReplaySessionID, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+	a.SetPromptActiveForTest(true)
+	a.HooksForTest().PromptPrepared()
+	observeGeminiDebugLog(a, "a suffix. Retrying after 81331625ms...")
+	assert.Zero(t, geminiSessionCancels(stdin), "the old warning must not stop the next prompt")
+}
+
+func TestGeminiDelayedWarningRetainsItsNativeDeadline(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a, _ := newGeminiStopAgent(t, sink)
+	emitted := time.Date(2026, 10, 29, 8, 17, 13, 654000000, time.UTC)
+	a.Clock().(*quartz.Mock).Set(emitted.Add(2 * time.Minute))
+	observeGeminiDebugLog(a, geminiLongWaitWarning)
+	a.FinishPromptRequestForTest(geminiReplaySessionID, json.RawMessage(`{"stopReason":"cancelled"}`), nil)
+	require.Equal(t, 1, sink.AutoScheduleCount())
+	assert.Equal(t, emitted.Add(geminiLongWaitDelay), sink.LastAutoSchedule().ResetAt)
+}
+
+func TestGeminiFailedInternalStopKeepsTheNativeVerdict(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newGeminiRetryAgent(t, sink)
+	a.SetStdinForTest(agenttest.FailingStdin{})
+	observeGeminiDebugLog(a, geminiPromptLongWaitWarning)
+	assert.False(t, a.InterruptRequestedForTest(), "a zero-byte failure did not interrupt the turn")
+	a.FinishPromptRequestForTest(geminiReplaySessionID, nil, &providerkit.JSONRPCResponseError{Code: 503, Message: "overloaded"})
+	_, retries := geminiRetryTimeline(t, sink.Timeline())
+	assert.Equal(t, []string{"schedule_server_error"}, geminiRetryOps(retries))
+}
+
+func TestGeminiWarningTimestampRequiresUnambiguousPromptOwnership(t *testing.T) {
+	t.Parallel()
+	prepared := time.Date(2026, 10, 28, 9, 0, 0, 123456789, time.UTC)
+	for _, tc := range []struct {
+		label, timestamp string
+		cancel           bool
+	}{
+		{"older warning", "2026-10-28T09:00:00.122Z", false},
+		{"ambiguous preparation millisecond", "2026-10-28T09:00:00.123Z", false},
+		{"unambiguous current warning", "2026-10-28T09:00:00.124Z", true},
+		{"future warning", "2026-10-28T09:00:00.126Z", false},
+		{"invalid timestamp", "invalid", false},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			t.Parallel()
+			a, stdin := newGeminiStopAgent(t, &agenttest.Sink{})
+			clock := a.Clock().(*quartz.Mock)
+			clock.Set(prepared).MustWait(testutil.DeadlineContext(t))
+			a.clearGeminiRetryState()
+			clock.Set(time.Date(2026, 10, 28, 9, 0, 0, 125000000, time.UTC)).MustWait(testutil.DeadlineContext(t))
+			observeGeminiDebugLog(a, "["+tc.timestamp+"] [WARN] Attempt 1 failed: capacity exhausted. Retrying after 81331625ms...")
+			assert.Equal(t, tc.cancel, geminiSessionCancels(stdin) == 1)
+		})
+	}
+}
+
+func TestGeminiObsoleteLogEpochCannotAcquireTheNewPrompt(t *testing.T) {
+	t.Parallel()
+	a, stdin := newGeminiStopAgent(t, &agenttest.Sink{})
+	log, err := newGeminiDebugLog()
+	require.NoError(t, err)
+	t.Cleanup(log.close)
+	a.debugLog = log
+	a.clearGeminiRetryState()
+	// Keep the timestamp independently eligible. Epoch ownership must hold
+	// even when a clock change makes an old record look recent.
+	appendGeminiDebugLog(t, log.path, "[2026-10-28T09:00:01.000Z] [WARN] Attempt 1 failed: capacity exhausted. Retrying after 81331625ms...\n")
+	old := log.readLines()
+	require.Len(t, old, 1)
+	a.FinishPromptRequestForTest(geminiReplaySessionID, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+	a.SetPromptActiveForTest(true)
+	a.Clock().(*quartz.Mock).Set(geminiObservedAt.Add(500 * time.Millisecond)).MustWait(testutil.DeadlineContext(t))
+	a.clearGeminiRetryState()
+	a.Clock().(*quartz.Mock).Set(geminiObservedAt.Add(2 * time.Second)).MustWait(testutil.DeadlineContext(t))
+	a.observeGeminiDebugLogLine(old[0])
+	assert.Zero(t, geminiSessionCancels(stdin))
+	assert.True(t, a.PromptActive())
+}
+
+func TestGeminiFailedContextClearSuppressesThePriorLongWait(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a, _ := newGeminiStopAgent(t, sink)
+	observeGeminiDebugLog(a, geminiPromptLongWaitWarning)
+	a.SetStdinForTest(agenttest.FailingStdin{})
+	_, err := a.ClearContext()
+	require.Error(t, err)
+	a.FinishPromptRequestForTest(geminiReplaySessionID, json.RawMessage(`{"stopReason":"cancelled"}`), nil)
+	assert.Zero(t, sink.AutoScheduleCount(), "the user's context-clear intent overrides the prior automatic stop")
+}
+
+// This warning uses the pinned prompt clock. The captured warning above keeps
+// its original timestamp for parser and delayed-delivery tests.
+const geminiPromptLongWaitWarning = "[2026-10-28T09:00:00.000Z] [WARN] Attempt 1 failed: " + geminiCapacityDelayMessage + ". Retrying after 81331625ms..."
+
+func observeGeminiDebugLog(a *Agent, text string) {
+	a.retryMu.Lock()
+	epoch := a.retryEpoch
+	a.retryMu.Unlock()
+	a.observeGeminiDebugLogLine(geminiDebugLogLine{text: text, epoch: epoch})
+}
+
 // newGeminiStopAgent builds the agent of newGeminiRetryAgent with a stdin that
 // records the frames that a stop writes.
 func newGeminiStopAgent(t *testing.T, sink *agenttest.Sink) (*Agent, *agenttest.Stdin) {
@@ -264,9 +383,9 @@ func TestGeminiLongRetryWaitStopsTheTurnAndSchedulesTheReset(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a, stdin := newGeminiStopAgent(t, sink)
 
-	a.observeGeminiDebugLog(geminiLongWaitWarning)
+	observeGeminiDebugLog(a, geminiPromptLongWaitWarning)
 	require.Equal(t, 1, geminiSessionCancels(stdin), "the long wait stops the turn")
-	a.observeGeminiDebugLog(geminiLongWaitWarning)
+	observeGeminiDebugLog(a, geminiPromptLongWaitWarning)
 	require.Equal(t, 1, geminiSessionCancels(stdin), "a second warning stops nothing more")
 	a.FinishPromptRequestForTest(geminiReplaySessionID, json.RawMessage(`{"stopReason":"cancelled"}`), nil)
 
@@ -287,7 +406,7 @@ func TestGeminiShortRetryWaitStopsNothing(t *testing.T) {
 	}{
 		"a per-minute delay":       {warning: geminiWarnLine("Attempt 1 failed: " + geminiPleaseRetryMessage + ". Retrying after 34070ms..."), promptActive: true},
 		"a delay of ten minutes":   {warning: geminiWarnLine("Attempt 1 failed: x. Retrying after 600000ms..."), promptActive: true},
-		"a long wait with no turn": {warning: geminiLongWaitWarning},
+		"a long wait with no turn": {warning: geminiPromptLongWaitWarning},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -295,7 +414,7 @@ func TestGeminiShortRetryWaitStopsNothing(t *testing.T) {
 			a, stdin := newGeminiStopAgent(t, sink)
 			a.SetPromptActiveForTest(tc.promptActive)
 
-			a.observeGeminiDebugLog(tc.warning)
+			observeGeminiDebugLog(a, tc.warning)
 
 			assert.Zero(t, geminiSessionCancels(stdin))
 			a.retryMu.Lock()
@@ -319,7 +438,7 @@ func TestGeminiReaderStopAfterALongWaitSchedulesNoRetry(t *testing.T) {
 			t.Parallel()
 			sink := &agenttest.Sink{}
 			a, _ := newGeminiStopAgent(t, sink)
-			a.observeGeminiDebugLog(geminiLongWaitWarning)
+			observeGeminiDebugLog(a, geminiPromptLongWaitWarning)
 			require.NoError(t, stop(a))
 			a.FinishPromptRequestForTest(geminiReplaySessionID, json.RawMessage(`{"stopReason":"cancelled"}`), nil)
 
@@ -343,7 +462,7 @@ func TestGeminiNewPromptForgetsTheLastRetryWait(t *testing.T) {
 			t.Parallel()
 			sink := &agenttest.Sink{}
 			a, _ := newGeminiStopAgent(t, sink)
-			a.observeGeminiDebugLog(geminiLongWaitWarning)
+			observeGeminiDebugLog(a, geminiPromptLongWaitWarning)
 			a.FinishPromptRequestForTest(geminiReplaySessionID, json.RawMessage(`{"stopReason":"cancelled"}`), nil)
 			a.noteUserStop()
 			firstPrompt := len(sink.Timeline())
@@ -363,9 +482,9 @@ func TestGeminiNewPromptForgetsTheLastRetryWait(t *testing.T) {
 func newGeminiRetryAgent(t *testing.T, sink *agenttest.Sink) *Agent {
 	t.Helper()
 	clock := testutil.NewQuartzMock(t)
-	clock.Set(geminiObservedAt)
+	clock.Set(geminiObservedAt.Add(-time.Second))
 	a := &Agent{}
-	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "gemini-1", ProviderName: "gemini", Clock: clock})
+	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "gemini-1", ProviderName: "gemini", Clock: clock, Ctx: t.Context()})
 	hooks := a.configure(context.Background(), agent.Options{HomeDir: t.TempDir(), WorkingDir: t.TempDir()}, agent.NewProviderServices(sink))
 	// The start keeps the sink of the hooks as the agent's own.
 	a.SetSinkForTest(hooks.Sink)
@@ -373,6 +492,8 @@ func newGeminiRetryAgent(t *testing.T, sink *agenttest.Sink) *Agent {
 	*a.HooksForTest() = hooks
 	a.SetSessionIDForTest(geminiReplaySessionID)
 	a.SetPromptActiveForTest(true)
+	a.clearGeminiRetryState()
+	clock.Set(geminiObservedAt)
 	return a
 }
 

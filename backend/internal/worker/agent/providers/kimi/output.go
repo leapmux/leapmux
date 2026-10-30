@@ -212,6 +212,7 @@ func (a *Agent) handleTurnStarted(event kimiEvent) {
 	}
 	a.Mu.Lock()
 	a.turnActive = true
+	a.stopRequested = nil
 	a.turnSteerable = kimiOriginTakesSteer(payload.Origin.Kind)
 	a.TurnToolUses = 0
 	// A new main turn replaces the turn that a pending usage limit belongs to.
@@ -308,7 +309,7 @@ const (
 	kimiErrorCodeOverloaded = "provider.overloaded"
 	kimiErrorCodeAPI        = "provider.api_error"
 	kimiErrorCodeRateLimit  = "provider.rate_limit"
-	// kimiErrorNameQuotaExhausted names both the 5-hour limit of the plan and a
+	// kimiErrorNameQuotaExhausted identifies both the 5-hour limit of the plan and a
 	// suspended account, under the code provider.api_error and the status 429.
 	// Only the message tells the two apart.
 	kimiErrorNameQuotaExhausted = "APIProviderQuotaExhaustedError"
@@ -412,25 +413,33 @@ func (a *Agent) handleTurnEnded(event kimiEvent) {
 	a.sink.ResetSpans()
 
 	a.Mu.Lock()
+	stopped := a.stopRequested != nil && a.stopRequested.sessionID == a.sessionID && a.stopRequested.turnID == payload.TurnID
 	a.turnActive = false
 	a.turnSteerable = false
 	run.turnActive = false
+	state := agent.TurnState{Active: a.manualCompactionActive}
+	completionSeq := a.NextTurnSeq()
 	a.Mu.Unlock()
-	a.PublishTurnActive()
 
 	observedAt := a.clock.Now()
 	if payload.Time > 0 {
 		observedAt = time.UnixMilli(payload.Time).UTC()
 	}
 	failure := kimiTurnFailure(payload, observedAt)
+	if stopped || a.IntentionalStopRequested() {
+		failure = providerkit.TurnFailure{}
+	}
 	// The record precedes the read that the turn end requests, so that read
 	// takes it. A verdict that the read cannot complete applies now.
-	deferred := a.deferUsageLimit(failure, event.Raw)
-	// The turn used the plan, so its windows moved.
-	a.requestUsageRefresh()
+	writer := a.sink.CaptureAutoRetryThroughTurn(completionSeq)
+	deferred := a.deferUsageLimit(failure, event.Raw, writer)
 	if !deferred {
-		providerkit.ApplyTurnFailure(a.sink, failure, event.Raw)
+		providerkit.ApplyTurnFailure(writer, failure, event.Raw)
 	}
+	providerkit.PublishTurnStateTo(a.sink, state, completionSeq)
+	// The record precedes the read, and every immediate verdict precedes the
+	// publication that lets the input queue dispatch another item.
+	a.requestUsageRefresh()
 }
 
 // kimiWithContextUsage adds the last context readout to a turn end's metadata,
@@ -819,7 +828,7 @@ func (a *Agent) handleCompactionBlocked(event kimiEvent) {
 // handleCompactionFinished releases the queue after a manual result.
 //
 // The end of a manual compaction then applies its one verdict, after the
-// stored end and the release, as a main turn end applies its verdict. A
+// stored end and before the release, as a main turn end applies its verdict. A
 // compaction never schedules a retry, whatever its outcome (CompactionEnd).
 // The flag allows one verdict for each manual compaction, so a repeated end
 // applies none.
@@ -843,8 +852,8 @@ func (a *Agent) handleCompactionFinished(event kimiEvent) {
 	a.manualCompactionActive = false
 	a.Mu.Unlock()
 	if manual {
-		a.PublishTurnActive()
 		providerkit.ApplyTurnFailure(a.sink, providerkit.CompactionEnd(), nil)
+		a.PublishTurnActive()
 	}
 }
 

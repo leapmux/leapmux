@@ -308,7 +308,7 @@ func (a *Agent) onWorkingStateChanged(payload []byte, target droidOutputTarget) 
 		if childSessionID != "" {
 			a.armChildTurn(childSessionID)
 		} else {
-			a.startTurn()
+			a.startNativeTurn()
 		}
 	case contracts.DroidWorkingStateIdle:
 		if childSessionID != "" {
@@ -318,9 +318,18 @@ func (a *Agent) onWorkingStateChanged(payload []byte, target droidOutputTarget) 
 			// error record. A record that remains belongs to a turn that Droid
 			// will not complete, so no later turn end may read it.
 			a.Mu.Lock()
+			generation := a.nativeTurnGeneration
+			if a.pendingTurnError != nil {
+				generation = a.pendingTurnError.generation
+			} else if generation == 0 {
+				generation = a.turnGeneration
+			}
+			// Repeated idle notifications keep this owner after the first one
+			// consumes an error whose turn had no completion notification.
+			a.nativeTurnGeneration = generation
 			a.pendingTurnError = nil
 			a.Mu.Unlock()
-			a.endTurn()
+			a.endTurnGeneration(generation)
 		}
 	}
 }
@@ -348,6 +357,11 @@ func (a *Agent) onCreateMessage(payload []byte, target droidOutputTarget) {
 	}
 	if msg.Role == "user" {
 		if target.childSessionID == "" {
+			a.Mu.Lock()
+			if a.turnActive && msg.ID != "" && msg.ID == a.turnInputID {
+				a.nativeTurnGeneration = a.turnGeneration
+			}
+			a.Mu.Unlock()
 			a.onSteerEcho(msg.ID, target)
 		}
 		// The queue stores reader input. Child registration stores the parent's prompt.
@@ -379,7 +393,7 @@ func (a *Agent) onSteerEcho(messageID string, target droidOutputTarget) {
 		return
 	}
 	// A queued steer can start after the previous turn ends. Keep the queue occupied before the echo removes its item.
-	a.startTurn()
+	a.startNativeTurn()
 	a.persistRemainingGeneration(target, agent.MessageCompletionComplete)
 	a.flushPendingToolCalls(target)
 	a.steers.Settle(target.sink)
@@ -779,15 +793,20 @@ func (a *Agent) onAgentTurnCompleted(payload []byte, target droidOutputTarget) {
 	a.Mu.Lock()
 	turnError := a.pendingTurnError
 	a.pendingTurnError = nil
+	generation := a.turnGeneration
 	interrupted := a.interruptRequested
+	if turnError != nil {
+		generation = turnError.generation
+		interrupted = turnError.interruptRequested || generation == a.turnGeneration && interrupted
+	}
+	a.nativeTurnGeneration = generation
 	a.Mu.Unlock()
 	errorMessage := ""
 	if turnError != nil {
 		errorMessage = turnError.message
-		interrupted = interrupted || turnError.interruptRequested
 	}
 	providerkit.ApplyTurnFailure(target.sink, droidTurnFailure(n.Reason, errorMessage, interrupted, a.agentClock().Now()), payload)
-	a.endTurn()
+	a.endTurnGeneration(generation)
 	a.refreshContextUsage()
 }
 
@@ -848,6 +867,7 @@ func (a *Agent) persistTurnEnd(payload []byte, target droidOutputTarget) {
 func (a *Agent) onError(payload []byte, target droidOutputTarget) {
 	target.state.turnErrorSeen = true
 	mainTurnActive := false
+	var generation uint64
 	if target.childSessionID == "" {
 		a.retryResolution.Reset()
 		var notification struct {
@@ -856,8 +876,10 @@ func (a *Agent) onError(payload []byte, target droidOutputTarget) {
 		decoded := json.Unmarshal(payload, &notification) == nil
 		a.Mu.Lock()
 		mainTurnActive = a.turnActive
-		if mainTurnActive && decoded {
+		generation = a.turnGeneration
+		if decoded && (mainTurnActive || a.pendingTurnError != nil) {
 			a.recordTurnErrorLocked(notification.Message)
+			generation = a.pendingTurnError.generation
 		}
 		a.Mu.Unlock()
 	}
@@ -869,7 +891,7 @@ func (a *Agent) onError(payload []byte, target droidOutputTarget) {
 		return
 	}
 	if mainTurnActive {
-		a.endTurn()
+		a.endTurnGeneration(generation)
 	}
 }
 

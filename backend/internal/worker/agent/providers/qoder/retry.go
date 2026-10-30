@@ -68,9 +68,8 @@ func qoderResultFailure(raw []byte, interrupted bool, observedAt time.Time) prov
 	if vendorMatched && vendor.Definitive {
 		return vendor.Failure
 	}
-	number, isNumber := qoderNumericCode(result.ErrorCode)
-	var text string
-	isText := json.Unmarshal(result.ErrorCode, &text) == nil
+	number, isNumber := providerkit.RawInt64(result.ErrorCode)
+	text, isText := providerkit.RawString(result.ErrorCode)
 	switch {
 	case isNumber && qoderBillingCodes[number]:
 		return providerkit.TurnFailure{Kind: providerkit.TurnFailureBillingBlocked, Cause: "Qoder reported billing code " + strconv.FormatInt(number, 10)}
@@ -88,11 +87,4 @@ func qoderResultFailure(raw []byte, interrupted bool, observedAt time.Time) prov
 		return providerkit.TurnFailure{Kind: providerkit.TurnFailureTransient, Cause: "Qoder reported a transient failure"}
 	}
 	return providerkit.TurnFailure{}
-}
-
-// qoderNumericCode reads a numeric error code. A string, a null, and an
-// absent code give false.
-func qoderNumericCode(code json.RawMessage) (int64, bool) {
-	number, err := strconv.ParseInt(string(code), 10, 64)
-	return number, err == nil
 }

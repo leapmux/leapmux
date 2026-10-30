@@ -189,8 +189,9 @@ func (r *AgentResumer) Start(ctx context.Context) {
 	r.done = done
 	go func() {
 		defer close(done)
-		// Recovered queue dispatch shares the resume sweep's owner and shutdown
-		// preconditions. It must not start a process before either is true.
+		// Recovered queue reconciliation and dispatch share the resume sweep's
+		// owner and shutdown preconditions. Native state synchronizes before a
+		// recovered fallback is claimed or the process-resume sweep begins.
 		if err := r.svc.InputQueue.DrainRecovered(ctx); err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {
 			slog.Warn("drain recovered agent input queues failed", "error", err)
 		}

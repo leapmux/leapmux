@@ -50,7 +50,7 @@ func TestACPTurnActive_ThePublishFollowsALaterSinkWrap(t *testing.T) {
 	b, sink := newACPTurnBase(t, agenttest.NopStdin(&out))
 	b.sink = &swallowingSink{ProviderServices: agent.NewProviderServices(sink)}
 
-	b.publishTurnActive(true, 1)
+	b.publishTurnActive(agent.TurnState{Active: true}, 1)
 
 	assert.Empty(t, sink.TurnActives(),
 		"the hook re-reads b.sink, so the wrap installed after wireTurnActive is honored")

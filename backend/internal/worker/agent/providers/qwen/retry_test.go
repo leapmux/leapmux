@@ -192,7 +192,7 @@ func TestQwenTurnFailure(t *testing.T) {
 			wantKind: providerkit.TurnFailureRateLimited,
 		},
 		{
-			// A 4xx that names an overload is the client's fault.
+			// A 4xx that states an overload is the client's fault.
 			name:     "an overload wording after a 4xx is not retryable",
 			response: `{"jsonrpc":"2.0","id":3,"error":{"code":-32603,"message":"Internal error","data":{"details":"413 The request overloaded the context window."}}}`,
 			wantKind: providerkit.TurnFailureNotRetryable,

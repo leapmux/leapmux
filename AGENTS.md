@@ -194,8 +194,8 @@ and becomes a second source of truth.
 - **The compiler enforces the boundary.** A provider imports `agent`, so `agent`
   cannot import a provider, and only `providers/**` can import
   `providers/internal/*`. `providers/imports_test.go` states the only edges
-  between providers: the ACP family imports `acp`, Kilo builds on `opencode`,
-  and OpenCode, Kilo, ZCode and MiMo Code read `opencode/opencodestore`.
+  between providers: the ACP family imports `acp`. Fork session readers share
+  `providers/internal/opencodestore`.
   `TestShippedBinaryLinksNoTestSupport` (`cmd/leapmux`) keeps the test-support
   packages (`agenttest`, `acptest`, `claudetest`, …) out of the shipped binary.
 - **Test a provider in its own package.** The shared suites live in

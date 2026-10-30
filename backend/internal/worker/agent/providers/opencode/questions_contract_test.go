@@ -11,7 +11,7 @@ import (
 
 // The browser writes this envelope from the generated contract table, and a Go
 // struct tag cannot hold a constant. Without this test a rename in
-// contracts/opencode-protocol.json would move the browser and leave the worker
+// contracts/native-questions.json would move the browser and leave the worker
 // decoding the old name: `Answers` stays nil, `reply` never runs, and the daemon's
 // question tool blocks for the rest of the session with nothing logged.
 func TestOpenCodeAnswerTagsMatchTheContract(t *testing.T) {
@@ -20,8 +20,8 @@ func TestOpenCodeAnswerTagsMatchTheContract(t *testing.T) {
 		field string
 		want  string
 	}{
-		{"Answers", contracts.OpenCodeAnswerFieldAnswers},
-		{"Rejected", contracts.OpenCodeAnswerFieldRejected},
+		{"Answers", contracts.NativeQuestionAnswerFieldAnswers},
+		{"Rejected", contracts.NativeQuestionAnswerFieldRejected},
 	} {
 		typ := reflect.TypeOf(openCodeAnswerResult{})
 		field, found := typ.FieldByName(tt.field)

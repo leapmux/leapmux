@@ -56,6 +56,7 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 // The caller holds a.Mu. Attempt IDs continue across turns, so an old failure
 // cannot remove a later turn's stop.
 func (a *Agent) noteInterruptLocked() uint64 {
+	a.retryStopRequested = true
 	a.interruptAttempt++
 	if a.interruptRequests == nil {
 		a.interruptRequests = make(map[uint64]bool)

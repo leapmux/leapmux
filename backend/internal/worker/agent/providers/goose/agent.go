@@ -3,6 +3,7 @@ package goose
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -38,7 +39,7 @@ type Agent struct {
 	// lastMessageUpdate is the raw update of its last chunk. PromptPrepared
 	// and PromptEnded clear all four (takeGooseLastMessage).
 	lastMessageID        string
-	lastMessageText      string
+	lastMessageText      strings.Builder
 	lastMessageInference bool
 	lastMessageUpdate    json.RawMessage
 	// compaction marks the running prompt when it runs Goose's compaction, and

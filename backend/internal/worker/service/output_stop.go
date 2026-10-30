@@ -12,6 +12,9 @@ import (
 // activityScope owns one turn between changed turn publications or process changes.
 // agentActivity.mu guards every field. Repeated turn publications keep the scope.
 type activityScope struct {
+	// previousScope identifies only the active scope that this inactive
+	// publication completed. New turns and process resets carry no predecessor.
+	previousScope     *activityScope
 	publisher         any
 	attempts          map[*stopAttempt]struct{}
 	controlsStopped   bool

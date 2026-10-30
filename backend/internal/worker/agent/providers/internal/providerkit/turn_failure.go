@@ -60,28 +60,62 @@ type TurnFailure struct {
 // accepts: 31 days.
 const maxRetryDelay = 31 * 24 * time.Hour
 
-// ApplyTurnFailure applies one verdict to the automatic-retry queue. The
-// payload is defensively copied because the caller's buffer may be reused.
+// RetryDisposition identifies the automatic retry that a failure schedules.
+type RetryDisposition uint8
+
+const (
+	// RetryNone schedules no automatic retry.
+	RetryNone RetryDisposition = iota
+	// RetryServerError schedules the retry for a transient failure.
+	RetryServerError
+	// RetryUsageLimit schedules the retry at the stated reset instant.
+	RetryUsageLimit
+)
+
+// RetryDisposition reports which retry the queue schedules for this failure.
+func (failure TurnFailure) RetryDisposition() RetryDisposition {
+	switch failure.Kind {
+	case TurnFailureNotRetryable, TurnFailureBillingBlocked:
+		return RetryNone
+	case TurnFailureTransient, TurnFailureRateLimited:
+		return RetryServerError
+	case TurnFailureUsageLimited:
+		if !failure.ResetAt.IsZero() {
+			return RetryUsageLimit
+		}
+		if failure.Window == UsageWindowWeekOrLess {
+			return RetryServerError
+		}
+	}
+	return RetryNone
+}
+
+// ApplyTurnFailure applies one verdict to the automatic-retry queue. A
+// scheduling operation owns a copy of the payload; cancellation uses none.
 func ApplyTurnFailure(writer agent.AutoRetryWriter, failure TurnFailure, payload []byte) {
-	p := append([]byte(nil), payload...)
+	switch failure.RetryDisposition() {
+	case RetryNone:
+		// Only cancellation outcomes reach the handling below.
+	case RetryServerError:
+		writer.ScheduleServerErrorRetry(append([]byte(nil), payload...))
+		return
+	case RetryUsageLimit:
+		writer.ScheduleUsageLimitRetry(failure.ResetAt, append([]byte(nil), payload...))
+		writer.CancelServerErrorRetry("the turn ended on a usage limit that lifts at a stated time")
+		return
+	}
 	switch failure.Kind {
 	case TurnFailureNotRetryable:
 		writer.CancelServerErrorRetry(cmp.Or(failure.Cause, TurnEndedWithoutRetryableFailure))
-	case TurnFailureTransient, TurnFailureRateLimited:
-		writer.ScheduleServerErrorRetry(p)
 	case TurnFailureUsageLimited:
-		if !failure.ResetAt.IsZero() {
-			writer.ScheduleUsageLimitRetry(failure.ResetAt, p)
-			writer.CancelServerErrorRetry("the turn ended on a usage limit that lifts at a stated time")
-		} else if failure.Window == UsageWindowWeekOrLess {
-			writer.ScheduleServerErrorRetry(p)
-		} else {
-			writer.CancelServerErrorRetry("the turn ended on a usage limit that states no reset within a week")
-		}
+		writer.CancelServerErrorRetry("the turn ended on a usage limit that states no reset within a week")
 	case TurnFailureBillingBlocked:
 		reason := failure.Cause + ", which only a billing or plan change lifts"
 		writer.CancelUsageLimitRetry(reason)
 		writer.CancelServerErrorRetry(reason)
+	case TurnFailureTransient, TurnFailureRateLimited:
+		// These kinds always schedule above.
+		return
 	}
 }
 

@@ -53,7 +53,7 @@ describe('exerciseModelError', () => {
     errorRows.events = []
   })
 
-  function context(): NativeScenarioContext {
+  function context(consumed: number[] = [0], queued: unknown[][] = []): NativeScenarioContext {
     const row = {
       errorRows: true,
       first: () => row,
@@ -67,12 +67,13 @@ describe('exerciseModelError', () => {
         },
       },
       modelScript: {
-        queue: async () => 0,
+        queue: async (...steps: unknown[]) => {
+          queued.push(steps)
+          return 0
+        },
         prompt: (text: string) => text,
         waitForSteps: async () => ({
-          requests: [
-            record({ stepIndex: 0 }),
-          ],
+          requests: consumed.map(stepIndex => record({ stepIndex })),
         }),
       },
     } as unknown as NativeScenarioContext
@@ -82,6 +83,63 @@ describe('exerciseModelError', () => {
     await exerciseModelError(context(), { queueAfterFailure: 'paused' })
     expect(errorRows.checks).toEqual([1, 1])
     expect(errorRows.events).toEqual(['idle', 'reload', 'idle', 'answer'])
+  })
+
+  it('scripts every ordinary failed attempt before checking the transcript', async () => {
+    const queued: unknown[][] = []
+    const error = { status: 400, message: 'refused' }
+    const answered: unknown[] = []
+    const failed = await exerciseModelError(context([2, 0, 1], queued), {
+      queueAfterFailure: 'paused',
+      attempts: 3,
+      error,
+      answerFailure: async (failure) => {
+        answered.push(failure)
+        errorRows.events.push('answer failure')
+      },
+    })
+    expect(queued).toEqual([
+      [
+        { error },
+        { error },
+        { error },
+      ],
+    ])
+    expect(failed.map(request => request.stepIndex)).toEqual([0, 1, 2])
+    expect(answered).toEqual([error])
+    expect(errorRows.events).toEqual([
+      'answer failure',
+      'idle',
+      'reload',
+      'idle',
+      'answer',
+    ])
+  })
+
+  it('rejects an ordinary turn whose failed attempts were not all consumed', async () => {
+    await expect(exerciseModelError(context([0]), { queueAfterFailure: 'paused', attempts: 2 }))
+      .rejects
+      .toMatchObject({
+        actual: [0],
+        expected: [0, 1],
+      })
+    expect(errorRows.events).toEqual([])
+    expect(errorRows.checks).toEqual([])
+  })
+
+  it.each([
+    0,
+    -1,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+  ])('refuses %s ordinary attempts before sending a prompt', async (attempts) => {
+    const queued: unknown[][] = []
+    await expect(exerciseModelError(context([], queued), { queueAfterFailure: 'paused', attempts }))
+      .rejects
+      .toThrow('positive whole number of attempts')
+    expect(queued).toEqual([])
+    expect(errorRows.events).toEqual([])
   })
 
   it.each(['live', 'stored'])('rejects duplicate errors in the %s transcript', async (phase) => {

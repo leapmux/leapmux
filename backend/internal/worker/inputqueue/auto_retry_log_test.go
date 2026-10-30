@@ -369,3 +369,163 @@ func TestAutoRetryLogStatesAnIgnoredRequestAtTheDebugLevel(t *testing.T) {
 	assert.Equal(t, "the usage limit lifted", removed[0]["reason"])
 	assert.Len(t, retryLogEntries(t, logs, "automatic retry request ignored"), 2)
 }
+
+func lifecycleRetryLogs(t *testing.T, logs *testutil.LogBuffer) []map[string]string {
+	t.Helper()
+	var entries []map[string]string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if line == "" {
+			continue
+		}
+		fields := parseLogLine(t, line)
+		if strings.HasPrefix(fields["msg"], "automatic retry ") {
+			entries = append(entries, fields)
+		}
+	}
+	return entries
+}
+
+func TestAutoRetryLogKeepsCommitOrderWhenAnObserverMutatesTheRetry(t *testing.T) {
+	for _, operation := range []string{"cancel one", "cancel both", "delete", "retire", "reschedule"} {
+		t.Run(operation, func(t *testing.T) {
+			logs := testutil.CaptureDefaultLogger(t)
+			clock, _, _, manager, _ := newDeadlineFixture(t)
+			fired := false
+			var first SnapshotItem
+			manager.observer = &reentryQueueObserver{changed: func(snapshot Snapshot) {
+				if fired || len(snapshot.Items) == 0 {
+					return
+				}
+				fired = true
+				first = snapshot.Items[0]
+				switch operation {
+				case "cancel one":
+					require.NoError(t, manager.CancelAutoRetry(t.Context(), "agent-1", usageLimitRetry, "observer cancellation", nil))
+				case "cancel both":
+					require.NoError(t, manager.CancelAutoRetries(t.Context(), "agent-1", "observer cancellation"))
+				case "delete":
+					_, err := manager.Delete(t.Context(), "agent-1", first.ID)
+					require.NoError(t, err)
+				case "retire":
+					require.NoError(t, manager.RetireAgent(t.Context(), "agent-1"))
+				case "reschedule":
+					require.NoError(t, manager.ScheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{Kind: usageLimitRetry, ResetAt: clock.Now().Add(2 * time.Hour)}))
+				}
+			}}
+			require.NoError(t, manager.ScheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{Kind: usageLimitRetry, ResetAt: clock.Now().Add(time.Hour)}))
+			require.True(t, fired)
+			entries := lifecycleRetryLogs(t, logs)
+			require.Len(t, entries, 2)
+			assert.Equal(t, "automatic retry scheduled", entries[0]["msg"])
+			assert.Equal(t, first.ID, entries[0]["input_id"])
+			assert.Equal(t, first.ID, entries[1]["input_id"])
+			snapshot, err := manager.Snapshot(t.Context(), "agent-1")
+			require.NoError(t, err)
+			if operation == "reschedule" {
+				assert.Equal(t, "automatic retry rescheduled", entries[1]["msg"])
+				assert.Equal(t, formattedDeadline(t, first), entries[1]["previous_scheduled_at"])
+				require.Len(t, snapshot.Items, 1)
+				assert.Equal(t, formattedDeadline(t, snapshot.Items[0]), entries[1]["scheduled_at"])
+			} else {
+				assert.Equal(t, "automatic retry removed", entries[1]["msg"])
+				assert.Empty(t, snapshot.Items)
+			}
+		})
+	}
+}
+
+func TestAutoRetryRemovalLogPrecedesAnObserversReplacementSchedule(t *testing.T) {
+	logs := testutil.CaptureDefaultLogger(t)
+	clock, _, _, manager, _ := newDeadlineFixture(t)
+	require.NoError(t, manager.ScheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{Kind: usageLimitRetry, ResetAt: clock.Now().Add(time.Hour)}))
+	original := pendingRetry(t, manager, usageLimitRetry)
+	logs.Reset()
+	fired := false
+	manager.observer = &reentryQueueObserver{changed: func(snapshot Snapshot) {
+		if fired || len(snapshot.Items) != 0 {
+			return
+		}
+		fired = true
+		require.NoError(t, manager.ScheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{Kind: usageLimitRetry, ResetAt: clock.Now().Add(2 * time.Hour)}))
+	}}
+	require.NoError(t, manager.CancelAutoRetry(t.Context(), "agent-1", usageLimitRetry, "replace", nil))
+	replacement := pendingRetry(t, manager, usageLimitRetry)
+	require.NotEqual(t, original.ID, replacement.ID)
+	entries := lifecycleRetryLogs(t, logs)
+	require.Len(t, entries, 2)
+	assert.Equal(t, "automatic retry removed", entries[0]["msg"])
+	assert.Equal(t, original.ID, entries[0]["input_id"])
+	assert.Equal(t, "replace", entries[0]["reason"])
+	assert.Equal(t, "automatic retry scheduled", entries[1]["msg"])
+	assert.Equal(t, replacement.ID, entries[1]["input_id"])
+}
+
+func TestKeyedAutoRetryCleanupKeepsAnObserversReplacement(t *testing.T) {
+	logs := testutil.CaptureDefaultLogger(t)
+	clock, dispatcher, _, manager, store := newDeadlineFixture(t)
+	require.NoError(t, manager.ScheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{
+		Kind: usageLimitRetry, Key: "native:A", ResetAt: clock.Now().Add(time.Hour),
+	}))
+	original := pendingRetry(t, manager, usageLimitRetry)
+	logs.Reset()
+	admission := &retryTestAdmission{}
+	publications := 0
+	manager.observer = &reentryQueueObserver{changed: func(snapshot Snapshot) {
+		publications++
+		assert.False(t, admission.held.Load(), "observer delivery must release retry admission")
+		if len(snapshot.Items) == 0 {
+			require.NoError(t, manager.ScheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{
+				Kind: usageLimitRetry, Key: "native:B", ResetAt: clock.Now().Add(2 * time.Hour),
+			}))
+		}
+	}}
+	require.NoError(t, manager.CancelUsageLimitRetryWithKey(t.Context(), "agent-1", "native:A", "native A completed", admission))
+	replacement := pendingRetry(t, manager, usageLimitRetry)
+	require.NotEqual(t, original.ID, replacement.ID)
+	assert.Equal(t, "native:B", storedItem(t, store, replacement.ID).AutoRetryKey)
+	entries := lifecycleRetryLogs(t, logs)
+	require.Len(t, entries, 2)
+	assert.Equal(t, "automatic retry removed", entries[0]["msg"])
+	assert.Equal(t, original.ID, entries[0]["input_id"])
+	assert.Equal(t, "native A completed", entries[0]["reason"])
+	assert.Equal(t, "automatic retry scheduled", entries[1]["msg"])
+	assert.Equal(t, replacement.ID, entries[1]["input_id"])
+	assert.Equal(t, 2, publications)
+	before, err := manager.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+	logs.Reset()
+	require.NoError(t, manager.CancelUsageLimitRetryWithKey(t.Context(), "agent-1", "native:A", "late completion", admission))
+	after, err := manager.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
+	assert.Equal(t, 2, publications)
+	assert.Empty(t, lifecycleRetryLogs(t, logs))
+	assert.Empty(t, dispatchedIDs(dispatcher))
+	assert.Equal(t, int32(2), admission.acquired.Load())
+	assert.Equal(t, int32(2), admission.released.Load())
+}
+
+func TestKeyedAutoRetryScheduleKeepsUnkeyedIntentWithoutPublishing(t *testing.T) {
+	logs := testutil.CaptureDefaultLogger(t)
+	clock, dispatcher, observer, manager, _ := newDeadlineFixture(t)
+	require.NoError(t, manager.ScheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{
+		Kind: usageLimitRetry, ResetAt: clock.Now().Add(time.Hour),
+	}))
+	before, err := manager.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+	observer.mu.Lock()
+	publications := len(observer.snapshots)
+	observer.mu.Unlock()
+	logs.Reset()
+	require.NoError(t, manager.ScheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{
+		Kind: usageLimitRetry, Key: "native:A", ResetAt: clock.Now().Add(-time.Hour),
+	}))
+	after, err := manager.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
+	observer.mu.Lock()
+	assert.Len(t, observer.snapshots, publications)
+	observer.mu.Unlock()
+	assert.Empty(t, lifecycleRetryLogs(t, logs))
+	assert.Empty(t, dispatchedIDs(dispatcher))
+}

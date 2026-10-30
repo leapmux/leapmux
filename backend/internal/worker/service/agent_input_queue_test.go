@@ -802,6 +802,71 @@ func TestQueuedClearDropsTheClearedSession(t *testing.T) {
 		"a cold start after the clear resumes the session that the clear ended")
 }
 
+func TestQueuedClearAfterFailedNativeStartupStillRecovers(t *testing.T) {
+	t.Parallel()
+	for _, failureSource := range []string{"persisted", "in memory"} {
+		t.Run(failureSource, func(t *testing.T) {
+			t.Parallel()
+			clock := testutil.NewQuartzMock(t)
+			registry := registryWithQueueReconciliation(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+			svc, _, _ := setupTestService(t, withRegistry(registry), withClock(clock))
+			const agentID = "agent-1"
+			seedOpenAgent(t, svc, agentID, true)
+			if failureSource == "persisted" {
+				require.NoError(t, svc.Queries.SetAgentStartupError(t.Context(), db.SetAgentStartupErrorParams{ID: agentID, StartupError: "the native session was rejected"}))
+			} else {
+				handle := svc.AgentStartup.begin(agentID, func() {})
+				require.NotNil(t, handle)
+				svc.AgentStartup.fail(handle, "the native session was rejected")
+				svc.AgentStartup.finishEntry(handle)
+				require.Empty(t, requireAgentRow(t, svc, agentID).StartupError, "only the startup registry supplies this failure")
+			}
+			row := requireAgentRow(t, svc, agentID)
+			require.True(t, svc.agentStartupFailed(&row))
+			var mu sync.Mutex
+			var launches []string
+			var reconciliations atomic.Int32
+			start := startWith(svc.Agents, func(ctx context.Context, options agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+				mu.Lock()
+				launches = append(launches, options.ResumeSessionID)
+				mu.Unlock()
+				runtime, err := claudetest.StartSilent(ctx, options, sink)
+				if err != nil {
+					return nil, err
+				}
+				return &queueReconciliationAgent{Agent: runtime, reconcile: func(context.Context) error {
+					reconciliations.Add(1)
+					return nil
+				}}, nil
+			})
+			svc.startAgentFn, svc.startBackgroundAgentFn = start, start
+			t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
+			_, err := inputqueue.NewStore(svc.DB, clock).Enqueue(t.Context(), inputqueue.NewItem{
+				ID: "clear", AgentID: agentID, Text: "/clear", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CLEAR_CONTEXT,
+			})
+			require.NoError(t, err)
+			require.NoError(t, svc.InputQueue.RecoverState(t.Context()))
+			runSweep(t, svc)
+			var snapshot inputqueue.Snapshot
+			require.Eventually(t, func() bool {
+				var err error
+				snapshot, err = svc.InputQueue.Snapshot(t.Context(), agentID)
+				return err == nil && (len(snapshot.Items) == 0 || snapshot.Paused)
+			}, inputQueueWait, 10*time.Millisecond)
+			assert.Empty(t, snapshot.Items, "clear must reach context recovery rather than stay queued behind a failed-session synchronization")
+			assert.False(t, snapshot.Paused)
+			mu.Lock()
+			assert.Equal(t, []string{""}, launches, "clear must start a fresh session exactly once")
+			mu.Unlock()
+			assert.Zero(t, reconciliations.Load(), "the rejected old session must not be resumed")
+			row = requireAgentRow(t, svc, agentID)
+			assert.False(t, svc.agentStartupFailed(&row))
+			assert.Empty(t, row.StartupError)
+
+		})
+	}
+}
+
 // TestQueuedClearKeepsTheSessionThatItsLaunchStates pins the order of the
 // clear: it forgets the cleared session BEFORE the launch, so a launch that
 // states its new session at once, as most providers do, keeps that session.

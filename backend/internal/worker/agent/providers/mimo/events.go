@@ -325,9 +325,9 @@ func (a *Agent) dispatchEvent(data []byte) {
 		a.handlePermissionAsked(event.Properties)
 	case eventPermissionReplied:
 		a.handlePermissionReplied(event)
-	case contracts.OpenCodeEventQuestionAsked:
+	case contracts.NativeQuestionEventQuestionAsked:
 		a.handleQuestionAsked(event.Properties)
-	case contracts.OpenCodeEventQuestionReplied, contracts.OpenCodeEventQuestionRejected:
+	case contracts.NativeQuestionEventQuestionReplied, contracts.NativeQuestionEventQuestionRejected:
 		a.handleQuestionSettled(event)
 	case eventBashInteractiveAsked:
 		a.handleBashInteractiveAsked(event.Properties)

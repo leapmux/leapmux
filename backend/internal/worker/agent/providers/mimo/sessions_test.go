@@ -8,7 +8,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode/opencodestore/opencodestoretest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/opencodestore/opencodestoretest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

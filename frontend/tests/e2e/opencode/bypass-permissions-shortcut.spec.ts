@@ -1,7 +1,7 @@
 import { existsSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { expect } from '@playwright/test'
-import { OPENCODE_OPTION } from '../../../src/generated/contracts/opencode-protocol'
+import { CLIENT_APPROVAL_OPTION } from '../../../src/generated/contracts/client-approval'
 import { exerciseBypassPermissions } from '../helpers/nativeBypassPermissions'
 import { exerciseMidTurnBypass } from '../helpers/nativeMidTurnBypass'
 import { nativeOptionValue } from '../helpers/nativeScenario'
@@ -23,7 +23,7 @@ opencodeTest('offers Bypass and runs an outside-directory command without a prom
   await waitForNativeSettingsHydrated(page)
   await expectPermissionShortcuts(page, { smart: 'absent', bypass: 'offered' })
   await exerciseBypassPermissions(context, {
-    settingsProof: agent => expect(nativeOptionValue(agent, OPENCODE_OPTION.AutoApprove)).toBe('true'),
+    settingsProof: agent => expect(nativeOptionValue(agent, CLIENT_APPROVAL_OPTION.AutoApprove)).toBe('true'),
     commandProof: (target, pass) => {
       const outside = pass === 1
         ? file

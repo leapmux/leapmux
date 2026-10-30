@@ -8,11 +8,11 @@ package opencode
 import (
 	"testing"
 
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode/opencodetest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/kilo/kilotest"
 )
 
 func TestOpenCodeFamilyPinsTheQuestionToolFlag(t *testing.T) {
-	opencodetest.AssertPinsTheQuestionToolFlag(t, openCodeQuestionToolEnv,
+	kilotest.AssertPinsTheQuestionToolFlag(t, openCodeQuestionToolEnv,
 		func(t *testing.T, envFile string) { installFakeOpenCodeACP(t, "", envFile) },
 		Start, "opencode-question-flag")
 }

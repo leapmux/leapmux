@@ -60,3 +60,19 @@ func TestAssignCmdRecordsThePidAsPgid(t *testing.T) {
 	err = owner.Wait()
 	require.Error(t, err, "Terminate must kill the Setsid child")
 }
+
+func TestDetachManagedServicePreservesAttributesAndStartsAnIndependentSession(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command("/bin/sh", "-c", "exit 0")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Noctty: true, Pgid: 1, Foreground: true}
+	original := cmd.SysProcAttr
+	DetachManagedService(cmd)
+	DetachManagedService(cmd)
+	assert.Same(t, original, cmd.SysProcAttr)
+	assert.True(t, cmd.SysProcAttr.Setsid)
+	assert.False(t, cmd.SysProcAttr.Setpgid)
+	assert.False(t, cmd.SysProcAttr.Noctty)
+	assert.False(t, cmd.SysProcAttr.Foreground)
+	assert.Zero(t, cmd.SysProcAttr.Pgid)
+	require.NoError(t, cmd.Run())
+}

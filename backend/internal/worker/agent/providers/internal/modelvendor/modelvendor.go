@@ -45,7 +45,7 @@ const (
 )
 
 // ClassifyError reads vendor error text and returns a verdict. observedAt is
-// the instant the failure happened, which bounds every reset instant. It
+// the instant the failure happened, which limits every reset instant. It
 // returns false when no rule matches. The precedence is A > C > B > D > E,
 // and a blocked account decides right after rule C.
 func ClassifyError(text string, observedAt time.Time) (Verdict, bool) {
@@ -66,6 +66,27 @@ func ClassifyError(text string, observedAt time.Time) (Verdict, bool) {
 		}
 	}
 	return Verdict{}, false
+}
+
+// ClassifyErrors reads separate error texts in their original order. The
+// first definitive verdict wins; otherwise the first indicative verdict wins.
+// Separate strings cannot combine a code in one field with a reset in another.
+func ClassifyErrors(texts []string, observedAt time.Time) (Verdict, bool) {
+	var first Verdict
+	found := false
+	for _, text := range texts {
+		verdict, ok := ClassifyError(text, observedAt)
+		if !ok {
+			continue
+		}
+		if verdict.Definitive {
+			return verdict, true
+		}
+		if !found {
+			first, found = verdict, true
+		}
+	}
+	return first, found
 }
 
 // --- Normalization ---
@@ -357,7 +378,7 @@ var (
 	dashScopeRe     = regexp.MustCompile(`#token-limit`)
 	geminiQuotaRe   = regexp.MustCompile(`Quota exceeded for metric|\bRESOURCE_EXHAUSTED\b|ai\.google\.dev/gemini-api/docs/rate-limits`)
 	// geminiZeroQuotaRe matches a Gemini quota of zero, which Gemini CLI
-	// 0.65.0 reads as terminal (TerminalQuotaError): no wait lifts it.
+	// 0.65.0 treats as not retryable (TerminalQuotaError): no wait lifts it.
 	geminiZeroQuotaRe = regexp.MustCompile(`Quota exceeded for metric[^\n]*\blimit:\s*0(?:[^0-9.]|\.[^0-9]|$)`)
 	// zaiBillingCodes are the Z.AI codes of a billing or account block.
 	zaiBillingCodes = []string{"1113", "1309", "1311", "1313", "1314", "1315"}

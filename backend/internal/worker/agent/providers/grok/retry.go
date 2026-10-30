@@ -73,10 +73,10 @@ func (a *Agent) finishGrokPrompt(err error, stopped bool) acp.PromptEnding {
 	a.lastFailureType, a.compactionPrompt = "", false
 	a.stateMu.Unlock()
 	if compaction {
-		return acp.PromptEnding{Retry: &acp.TurnVerdict{Failure: providerkit.CompactionEnd()}}
+		return acp.PromptEnding{Retry: acp.TurnVerdict{Failure: providerkit.CompactionEnd()}}
 	}
 	failure, payload := grokTurnFailure(err, stopped, failureType, a.Clock().Now())
-	return acp.PromptEnding{Retry: &acp.TurnVerdict{Failure: failure, Payload: payload}}
+	return acp.PromptEnding{Retry: acp.TurnVerdict{Failure: failure, Payload: payload}}
 }
 
 // clearGrokPromptState forgets the error_type of a failed request that no

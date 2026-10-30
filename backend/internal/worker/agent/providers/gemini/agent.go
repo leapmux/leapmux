@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"sync"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
@@ -26,9 +27,11 @@ type Agent struct {
 	longWait *geminiLongWait
 	// userStopRequested records a stop that the reader asked for.
 	userStopRequested bool
-	// retryWarnings reads Gemini's retry warnings from its debug log. Only the
-	// debug log's follower goroutine uses it.
-	retryWarnings geminiRetryWarningReader
+	// retryMu also protects the warning parser and its original prompt identity.
+	retryWarnings     geminiRetryWarningReader
+	retryEpoch        uint64
+	retryPreparedAt   time.Time
+	retryConversation *acp.Conversation
 	// debugLog is the debug log of the process, which Start creates. It is nil
 	// for an agent that a test builds without Start.
 	debugLog *geminiDebugLog

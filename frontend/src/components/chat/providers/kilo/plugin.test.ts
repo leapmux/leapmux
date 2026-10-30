@@ -1,12 +1,12 @@
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it, vi } from 'vitest'
-import { OPENCODE_OPTION } from '~/generated/contracts/opencode-protocol'
+import { CLIENT_APPROVAL_OPTION } from '~/generated/contracts/client-approval'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerToolCall } from '~/test-support/toolCallFixture'
 import { createControlAnswerState } from '../../controls/types'
 import { acpResultDivider } from '../acp/extractors/resultDivider'
 import { acpTextContent, describeACPProviderBasics, renderACPRow, renderACPToolPair } from '../acp/testUtils'
-import { sendOpenCodeQuestionResponse } from '../openCodeQuestions'
+import { sendNativeQuestionResponse } from '../nativeQuestions'
 import { providerFor } from '../registry'
 
 import { input } from '../testUtils'
@@ -37,7 +37,7 @@ describe('kilo classify', () => {
 
   it('maps bypass to the family Auto-approve option and offers no smart preset', () => {
     expect(plugin.controls?.permissionPresets?.bypass).toEqual({
-      sets: { [OPENCODE_OPTION.AutoApprove]: 'true' },
+      sets: { [CLIENT_APPROVAL_OPTION.AutoApprove]: 'true' },
     })
     expect(plugin.controls?.permissionPresets?.smart).toBeUndefined()
   })
@@ -548,7 +548,7 @@ describe('the kilo permission sender', () => {
   })
 })
 
-describe('kilo sendOpenCodeQuestionResponse', () => {
+describe('kilo sendNativeQuestionResponse', () => {
   function decode(bytes: Uint8Array): Record<string, unknown> {
     return JSON.parse(new TextDecoder().decode(bytes))
   }
@@ -559,7 +559,7 @@ describe('kilo sendOpenCodeQuestionResponse', () => {
       captured = content
     })
 
-    await sendOpenCodeQuestionResponse(onRespond, 'que_1', [
+    await sendNativeQuestionResponse(onRespond, 'que_1', [
       {
         question: 'Action?',
         options: [

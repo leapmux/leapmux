@@ -106,7 +106,8 @@ func TestBuildShellWrappedCommand_Fish(t *testing.T) {
 	assert.Equal(t, "-l", cmd.Args[2])
 	assert.Equal(t, "-c", cmd.Args[3])
 	assert.Contains(t, cmd.Args[4], "unset CLAUDECODE")
-	assert.Contains(t, cmd.Args[4], "exec 'claude'")
+	assert.Contains(t, cmd.Args[4], "exec /bin/sh -c ")
+	assert.Contains(t, cmd.Args[4], "claude")
 	// No conditional (no env gate)
 	assert.NotContains(t, cmd.Args[4], "LEAPMUX_TEST_GATE_A")
 }
@@ -117,22 +118,14 @@ func TestBuildShellWrappedCommand_Tcsh_Interactive(t *testing.T) {
 		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, testEnvGate("--model", "opus"), "/tmp",
 	)
 	assert.Equal(t, "/bin/tcsh", cmd.Path)
-	require.Len(t, cmd.Args, 3) // tcsh -ic <cmd>
+	require.Len(t, cmd.Args, 4) // tcsh -ic <cmd>
 	assert.Equal(t, "-ic", cmd.Args[1])
-	assert.Contains(t, cmd.Args[2], "echo '"+delimiter+"'")
-	// `unsetenv`, not `unset`: csh's `unset` removes a SHELL variable, so the key would
-	// survive into the launched agent's environment.
-	assert.Contains(t, cmd.Args[2], "unsetenv CLAUDECODE")
-	assert.NotContains(t, cmd.Args[2], "unset CLAUDECODE")
-	assert.Contains(t, cmd.Args[2], "exec 'claude'")
-	// csh's own conditional. `[ -n "$VAR" ]` on an unset name is a hard error there
-	// ("VAR: Undefined variable."), which killed every env-gated launch.
-	assert.NotContains(t, cmd.Args[2], `[ -n "$`)
-	assert.Contains(t, cmd.Args[2], "endif")
-	assert.Contains(t, cmd.Args[2], "if ( $?LEAPMUX_TEST_GATE_B ) then")
-	// The guard and the read it guards must be on SEPARATE lines: csh substitutes a
-	// whole line's variables before it evaluates any of that line.
-	assert.NotContains(t, cmd.Args[2], `$?LEAPMUX_TEST_GATE_B && `)
+	assert.True(t, strings.HasPrefix(cmd.Args[2], "exec /bin/sh -c "))
+	assert.Contains(t, cmd.Args[3], delimiter)
+	assert.Contains(t, cmd.Args[3], "unset CLAUDECODE")
+	assert.Contains(t, cmd.Args[3], "LEAPMUX_TEST_GATE_B")
+	assert.Contains(t, cmd.Args[3], "--model")
+	assert.Contains(t, cmd.Args[3], "opus")
 }
 
 func TestBuildShellWrappedCommand_Tcsh_NonInteractive(t *testing.T) {
@@ -141,7 +134,7 @@ func TestBuildShellWrappedCommand_Tcsh_NonInteractive(t *testing.T) {
 		[]string{"CLAUDECODE"}, []string{"--output-format", "stream-json"}, testEnvGate("--model", "opus"), "/tmp",
 	)
 	assert.Equal(t, "/bin/tcsh", cmd.Path)
-	require.Len(t, cmd.Args, 3) // tcsh -c <cmd>
+	require.Len(t, cmd.Args, 4) // tcsh -c <cmd>
 	assert.Equal(t, "-c", cmd.Args[1])
 }
 
@@ -151,11 +144,11 @@ func TestBuildShellWrappedCommand_Csh(t *testing.T) {
 		[]string{"CLAUDECODE"}, []string{"--verbose"}, testEnvGate("--model", "opus"), "/tmp",
 	)
 	assert.Equal(t, "/bin/csh", cmd.Path)
-	require.Len(t, cmd.Args, 3) // csh -ic <cmd>
+	require.Len(t, cmd.Args, 4) // csh -ic <cmd>
 	assert.Equal(t, "-ic", cmd.Args[1])
-	assert.Contains(t, cmd.Args[2], "unsetenv CLAUDECODE")
-	assert.NotContains(t, cmd.Args[2], "unset CLAUDECODE")
-	assert.Contains(t, cmd.Args[2], "exec 'claude'")
+	assert.True(t, strings.HasPrefix(cmd.Args[2], "exec /bin/sh -c "))
+	assert.Contains(t, cmd.Args[3], "unset CLAUDECODE")
+	assert.Contains(t, cmd.Args[3], "claude")
 }
 
 // A csh launch with no probe emits no conditional at all, so the simple path must stay
@@ -166,9 +159,10 @@ func TestBuildShellWrappedCommand_Csh_NoProbeEmitsNoConditional(t *testing.T) {
 		[]string{"CLAUDECODE"}, []string{"app-server", "--stdio"}, nil, "/tmp",
 	)
 	assert.Empty(t, meta)
-	assert.Equal(t,
-		"unsetenv CLAUDECODE; echo '"+delimiter+"' && exec '/usr/local/bin/node' 'app-server' '--stdio'",
-		cmd.Args[2])
+	assert.True(t, strings.HasPrefix(cmd.Args[2], "exec /bin/sh -c "))
+	assert.Contains(t, cmd.Args[3], delimiter)
+	assert.NotContains(t, cmd.Args[3], "if ")
+	assert.NotContains(t, cmd.Args[3], "endif")
 }
 
 func TestBuildShellWrappedCommand_Nu_Interactive(t *testing.T) {
@@ -181,7 +175,7 @@ func TestBuildShellWrappedCommand_Nu_Interactive(t *testing.T) {
 	assert.Equal(t, "-i", cmd.Args[1])
 	assert.Equal(t, "-l", cmd.Args[2])
 	assert.Equal(t, "-c", cmd.Args[3])
-	assert.Contains(t, cmd.Args[4], "echo '"+delimiter+"'")
+	assert.Contains(t, cmd.Args[4], "print '"+delimiter+"'")
 	assert.Contains(t, cmd.Args[4], "hide-env CLAUDECODE")
 	assert.Contains(t, cmd.Args[4], `^"claude"`)
 	assert.NotContains(t, cmd.Args[4], "exec")
@@ -664,8 +658,8 @@ func TestBuildShellWrappedCommand_EveryDialectSetsTheSetEnvEntries(t *testing.T)
 		want  []string
 	}{
 		{"/bin/bash", []string{"export LEAPMUX_TEST_PORT='4321' && ", "export LEAPMUX_TEST_PATH='/tmp/a b' && "}},
-		{"/usr/bin/fish", []string{"export LEAPMUX_TEST_PORT='4321' && "}},
-		{"/bin/tcsh", []string{"setenv LEAPMUX_TEST_PORT '4321'; ", "setenv LEAPMUX_TEST_PATH '/tmp/a b'; "}},
+		{"/usr/bin/fish", []string{"exec /bin/sh -c ", "export LEAPMUX_TEST_PORT="}},
+		{"/bin/tcsh", []string{"export LEAPMUX_TEST_PORT=", "export LEAPMUX_TEST_PATH="}},
 		{"/usr/bin/nu", []string{`$env.LEAPMUX_TEST_PORT = "4321"; `, `$env.LEAPMUX_TEST_PATH = "/tmp/a b"; `}},
 		{"/usr/bin/pwsh", []string{"$env:LEAPMUX_TEST_PORT = '4321'; ", "$env:LEAPMUX_TEST_PATH = '/tmp/a b'; "}},
 	}
@@ -795,9 +789,8 @@ func TestBuildShellWrappedCommand_TheEnvGateReadsTheSetEnvValue(t *testing.T) {
 	}
 }
 
-// csh sets an environment variable with setenv, and a real tcsh proves that
-// the value reaches the program on both paths: the simple one, and the
-// multi-line gate that reads the value the wrapper set.
+// The csh profile hands its environment to one non-login POSIX launcher.
+// The program observes the pinned value on both conditional argument paths.
 func TestBuildShellWrappedCommand_CshSetsTheSetEnvValue(t *testing.T) {
 	requireShell(t, "/bin/tcsh")
 	for _, tc := range []struct {

@@ -103,6 +103,12 @@ type Base struct {
 
 	// These fields describe ACP turns and do not belong to the JSON-RPC transport.
 	promptActive bool
+	// Conversation identities remain stable across turn-state publications.
+	// Mu protects their state, including pending internal cancellation.
+	conversation, promptConversation *Conversation
+	// clientWork keeps manual work busy independently of native conversation turns.
+	// Mu protects the capability and its retry verdict ownership.
+	clientWork *ClientWork
 	// interruptRequested records that the reader stopped the current turn.
 	// A later tool result then reports that stop instead of the provider's original status.
 	// Cursor and Reasonix send `failed` for a cancelled command.
@@ -111,21 +117,19 @@ type Base struct {
 	// b.Mu protects the field. See noteACPInterruptRequested.
 	interruptRequested bool
 	// agentTurnActive records a turn that the agent starts through BeginAgentTurn, without a session/prompt from LeapMux.
-	// promptActive also becomes true, so every active-turn check reads one flag.
+	// promptActive also becomes true, so native conversation checks share one flag.
 	// b.Mu protects the field.
 	agentTurnActive bool
 	// agentTurnQueued records an agent turn that starts before the base processes the preceding prompt's end.
 	// The prompt's end transfers the busy state to that turn. See BeginAgentTurn.
-	// queuedAgentTurnEnd holds the agent turn's end frame when that frame arrives before the prompt's end.
-	// queuedAgentTurnVerdict holds the retry verdict that the agent turn's end carried.
+	// queuedAgentTurnCompletion holds a completed queued turn until the prompt ends.
 	// b.Mu protects these fields.
-	agentTurnQueued        bool
-	queuedAgentTurnEnd     json.RawMessage
-	queuedAgentTurnVerdict TurnVerdict
-	publishTurnActive      func(active bool, seq uint64)
-	steerMethod            string
-	steerRunID             string
-	urlElicitations        map[string]acpURLElicitation
+	agentTurnQueued           bool
+	queuedAgentTurnCompletion *acpAgentTurnCompletion
+	publishTurnActive         func(state agentapi.TurnState, seq uint64)
+	steerMethod               string
+	steerRunID                string
+	urlElicitations           map[string]acpURLElicitation
 	// closesSessions records that the initialize response advertised
 	// session/close, which a context clear sends for the session that it
 	// replaced. Guarded by b.Mu.
@@ -483,7 +487,8 @@ func (b *Base) ClearContext() (string, error) {
 	outgoingSessionID := b.CurrentSessionID()
 	if outgoingSessionID != "" {
 		if err := b.releaseOutgoingSession(outgoingSessionID); err != nil {
-			slog.Warn("acp cancel the turn of the outgoing session", "provider", b.ProviderName(), "agent_id", b.AgentID(), "error", err)
+			b.sessionMu.Unlock()
+			return "", fmt.Errorf("cancel the outgoing session: %w", err)
 		}
 	}
 	// Host terminals belong to the outgoing session. Release the current set
@@ -595,6 +600,7 @@ func (b *Base) newSessionLocked() (sessionID string, resp json.RawMessage, outgo
 			// Keeping it would mark every completed tool row in the next turn as Interrupted.
 			// ClearContext reaches this path without calling clearActivePrompt.
 			b.resetTurnStateLocked()
+			b.clientWork = nil
 			// Every option payload after this point is newer than resp, which the
 			// ClearContext refresh reads last. See applySessionRefresh.
 			b.options.markSessionStart()
@@ -1330,11 +1336,8 @@ func buildACPSessionRequest(resumeSessionID, workingDir, newMethod, resumeMethod
 // The turn flag controls input-queue dispatch alongside the queue's other conditions.
 // A decorator that changes SetTurnState must receive these calls, or later input can stay queued without a report.
 func (b *Base) wireTurnActive() {
-	b.publishTurnActive = func(active bool, seq uint64) {
-		b.Mu.Lock()
-		steerable := active && b.steersLocked()
-		b.Mu.Unlock()
-		providerkit.PublishTurnStateTo(b.sink, agentapi.TurnState{Active: active, Steerable: steerable}, seq)
+	b.publishTurnActive = func(state agentapi.TurnState, seq uint64) {
+		providerkit.PublishTurnStateTo(b.sink, state, seq)
 	}
 }
 
@@ -1346,22 +1349,15 @@ func (b *Base) steersLocked() bool {
 	return b.steerMethod != "" || b.hooks.SteersByOwnRoute
 }
 
-// notePromptActive publishes the turn state from promptActive, the single source.
-// Call it after every critical section that writes promptActive.
+// notePromptActive publishes native conversation and manual work state.
+// Call it after every critical section that changes either owner.
 //
 // The method reads the field again instead of accepting a supplied value.
 // A caller therefore cannot publish a value that differs from the field.
 // Only a missing call can make them differ.
 // Never call it while holding b.Mu, because the hook broadcasts and a slow transport can block that broadcast.
 func (b *Base) notePromptActive() {
-	if b.publishTurnActive == nil {
-		return
-	}
-	b.Mu.Lock()
-	active := b.promptActive
-	seq := b.NextTurnSeq()
-	b.Mu.Unlock()
-	b.publishTurnActive(active, seq)
+	b.PublishTurnActive()
 }
 
 // SupportsSteering reports whether the agent supports an advertised steer method or a provider-owned route through Hooks.SteersByOwnRoute.
@@ -1456,6 +1452,9 @@ func (b *Base) Wait() error {
 	if b.hooks.AfterWaitCleanup != nil {
 		b.hooks.AfterWaitCleanup()
 	}
+	b.Mu.Lock()
+	b.clientWork = nil
+	b.Mu.Unlock()
 	return err
 }
 
@@ -1486,13 +1485,14 @@ func (b *Base) noteACPInterruptRequested() {
 func (b *Base) acpInterruptRequested() bool {
 	b.Mu.Lock()
 	defer b.Mu.Unlock()
-	return b.interruptRequested
+	return b.interruptRequested || b.conversation.internallyInterrupted()
 }
 
 // clearActivePrompt resets the provider-local active-turn state.
 func (b *Base) clearActivePrompt() {
 	b.Mu.Lock()
 	b.resetTurnStateLocked()
+	b.clientWork = nil
 	b.Mu.Unlock()
 	b.notePromptActive()
 }
@@ -1528,10 +1528,10 @@ func (b *Base) resetTurnStateLocked() {
 	b.promptOutputDrained = false
 	b.agentTurnActive = false
 	b.agentTurnQueued = false
-	b.queuedAgentTurnEnd = nil
-	b.queuedAgentTurnVerdict = TurnVerdict{}
+	b.queuedAgentTurnCompletion = nil
 	b.steerRunID = ""
 	b.interruptRequested = false
+	b.conversation, b.promptConversation = nil, nil
 }
 
 // extractACPChunkText reads the text field from an ACP content envelope.
@@ -3499,13 +3499,19 @@ func (b *Base) Interrupt(stop agentapi.StopContext) error {
 	}
 	b.Mu.Lock()
 	sessionID := b.sessionID
+	conversation := b.conversation
+	if b.promptActive {
+		b.interruptRequested = true
+	}
 	b.Mu.Unlock()
 	if sessionID == "" {
 		return nil
 	}
 	// Record the stop before sending the cancel.
 	// A result sent immediately after the provider receives the cancel then already belongs to the stopped turn.
-	b.noteACPInterruptRequested()
+	if conversation != nil {
+		return b.interruptConversation(conversation)
+	}
 	if b.hooks.CancelBeforeControlWithdrawal {
 		if err := b.cancelSession(); err != nil {
 			return err
@@ -3623,17 +3629,6 @@ func (b *Base) handleACPOutput(line *providerkit.ParsedLine) {
 			slog.Error("acp persist notification", "agent_id", b.AgentID(), "method", line.Method, "error", err)
 		}
 	}
-}
-
-// PublishTurnActive implements Agent for every ACP provider.
-// The base already publishes promptActive through one method, and this method supplies the interface entry.
-func (b *Base) PublishTurnActive() agentapi.TurnState {
-	b.Mu.Lock()
-	active := b.promptActive
-	steerable := active && b.steersLocked()
-	b.Mu.Unlock()
-	b.notePromptActive()
-	return agentapi.TurnState{Active: active, Steerable: steerable}
 }
 
 // IsCurrentSession reports whether this agent currently serves sessionID.

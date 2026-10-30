@@ -512,6 +512,58 @@ func TestAgentResume_ResumesTheSessionTheRowPointsAt(t *testing.T) {
 		"the sweep started a BLANK session; the handshake's new session id would overwrite the only pointer to this conversation")
 }
 
+func TestAgentResume_ReconciliationKeepsTheStoredSessionWithoutNewMessages(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	registry := registryWithQueueReconciliation(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	svc, _, _ := setupTestService(t, withRegistry(registry), withClock(clock))
+	const agentID = "agent-1"
+	seedOpenAgent(t, svc, agentID, false)
+	_, err := createMessageRow(t.Context(), svc.Queries, db.CreateMessageParams{
+		ID: "message", AgentID: agentID, Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content: []byte("hello"), ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, CreatedAt: sqltime.NewSQLiteTime(clock.Now()),
+	})
+	require.NoError(t, err)
+	require.NoError(t, svc.Queries.UpdateAgentSessionID(t.Context(), db.UpdateAgentSessionIDParams{AgentSessionID: "session-abc", ID: agentID}))
+	hasMessages, err := svc.Queries.HasUserMessages(t.Context(), agentID)
+	require.NoError(t, err)
+	require.False(t, hasMessages, "the stored session begins after the local message high-water mark")
+	require.NoError(t, svc.InputQueue.ScheduleAutoRetry(t.Context(), agentID, agent.AutoRetrySchedule{
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, Key: "native:A", ResetAt: clock.Now().Add(time.Hour),
+	}))
+	_, err = svc.InputQueue.TurnStarted(t.Context(), agentID, false)
+	require.NoError(t, err)
+	require.NoError(t, svc.InputQueue.RecoverState(t.Context()))
+	var mu sync.Mutex
+	var launches []string
+	var reconciliations atomic.Int32
+	start := startWith(svc.Agents, func(ctx context.Context, options agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+		mu.Lock()
+		launches = append(launches, options.ResumeSessionID)
+		mu.Unlock()
+		runtime, err := claudetest.StartSilent(ctx, options, sink)
+		if err != nil {
+			return nil, err
+		}
+		return &queueReconciliationAgent{Agent: runtime, reconcile: func(ctx context.Context) error {
+			reconciliations.Add(1)
+			return svc.InputQueue.CancelUsageLimitRetryWithKey(ctx, agentID, "native:A", "native A completed", nil)
+		}}, nil
+	})
+	svc.startAgentFn, svc.startBackgroundAgentFn = start, start
+	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
+	runSweep(t, svc)
+	mu.Lock()
+	assert.Equal(t, []string{"session-abc"}, launches)
+	mu.Unlock()
+	assert.Equal(t, int32(1), reconciliations.Load())
+	snapshot, err := svc.InputQueue.Snapshot(t.Context(), agentID)
+	require.NoError(t, err)
+	assert.Empty(t, snapshot.Items)
+	assert.False(t, snapshot.Paused)
+}
+
 // TestAgentResume_ResumesTheSessionThatTheRowHoldsAtTheStart pins that the
 // sweep resumes the session that the row holds when the start begins, and not
 // the session that the sweep read for its skip decision.

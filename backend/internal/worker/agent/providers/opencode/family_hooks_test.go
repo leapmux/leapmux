@@ -13,7 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode/opencodetest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/kilo/kilotest"
 )
 
 func TestFamilyHooksReportEachTurnEnd(t *testing.T) {
@@ -35,7 +35,7 @@ func TestFamilyHooksReportEachTurnEnd(t *testing.T) {
 
 func TestDaemonReadyRunsOnceTheAddressIsKnown(t *testing.T) {
 	t.Parallel()
-	daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)
+	daemon := kilotest.NewFakeDaemon(t, EventRoute, QuestionRoot)
 	daemon.HandleFunc("/member/route", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, `{"answer":42}`)
 	})

@@ -1,6 +1,6 @@
 import type { ElicitationRequest } from '../../model/controlPrompt'
 import { MCP_ELICITATION_MODE } from '~/generated/contracts/mcp-elicitation'
-import { OPENCODE_EVENT } from '~/generated/contracts/opencode-protocol'
+import { NATIVE_QUESTION_EVENT } from '~/generated/contracts/native-questions'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { MIMO_QUESTION_KEY } from './protocol'
 
@@ -22,7 +22,7 @@ import { MIMO_QUESTION_KEY } from './protocol'
  * Undefined for any other request.
  */
 export function mimoElicitation(payload: Record<string, unknown>): ElicitationRequest | undefined {
-  if (pickString(payload, 'type') !== OPENCODE_EVENT.QuestionAsked)
+  if (pickString(payload, 'type') !== NATIVE_QUESTION_EVENT.QuestionAsked)
     return undefined
   const questions = pickObject(payload, 'properties')?.questions
   if (!Array.isArray(questions) || questions.length !== 1)

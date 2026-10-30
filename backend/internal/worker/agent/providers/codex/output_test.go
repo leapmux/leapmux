@@ -206,6 +206,7 @@ func newCodexAgentWithSinkAndClock(sink agentapi.ProviderServices, clock quartz.
 		sink:               sink,
 		threadID:           "main-thread",
 		turnRetrySupported: true,
+		retryTextLocation:  time.Local,
 	}
 	a.sink = agentapi.NewModelProgressResetSink(a.sink)
 	return a
@@ -2352,6 +2353,7 @@ func TestHandleCodexOutput_AUsageLimitTurnReadsTheTimeInTheMessage(t *testing.T)
 				"method": "turn/completed",
 				"params": map[string]any{"threadId": "main-thread", "turn": map[string]any{
 					"id": "turn-1", "status": "failed", "items": []any{},
+					"startedAt": tc.now.Add(-time.Second).Unix(), "completedAt": tc.now.Unix(),
 					"error": map[string]any{"message": tc.message, "codexErrorInfo": "usageLimitExceeded", "additionalDetails": nil},
 				}},
 			})
@@ -2528,15 +2530,15 @@ func TestParseCodexRetryText(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, ok := parseCodexRetryText(tc.message, seoul, now)
+			got, ok := parseCodexRetryText(tc.message, codexRetryTextObservation{location: seoul, startedAt: &now, completedAt: &now}, now)
 			assert.Equal(t, tc.ok, ok)
 			assert.True(t, tc.want.Equal(got), "got %v, want %v", got, tc.want)
 		})
 	}
 
-	t.Run("a nil zone reads as the local zone", func(t *testing.T) {
+	t.Run("an explicit local zone uses its own calendar", func(t *testing.T) {
 		t.Parallel()
-		got, ok := parseCodexRetryText("or try again at Nov 2nd, 2026 3:00 PM.", nil, now)
+		got, ok := parseCodexRetryText("or try again at Nov 2nd, 2026 3:00 PM.", codexRetryTextObservation{location: time.Local}, now)
 		require.True(t, ok)
 		assert.True(t, time.Date(2026, 11, 2, 15, 1, 0, 0, time.Local).Equal(got))
 	})
@@ -4923,4 +4925,93 @@ func TestHandleCodexOutput_SubagentAutoReviewRoutesToTheChildTranscript(t *testi
 	child := sink.Child("child-of-spawn-1")
 	require.Equal(t, 1, child.NotificationCount())
 	assert.JSONEq(t, review, string(child.LastNotification().Content))
+}
+
+func TestCodexRetryTextResolvesRepeatedAndMissingLocalMinutes(t *testing.T) {
+	t.Parallel()
+	newYork, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+	lordHowe, err := time.LoadLocation("Australia/Lord_Howe")
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		label    string
+		location *time.Location
+		now      time.Time
+		text     string
+		want     time.Time
+		ok       bool
+	}{
+		{"before a repeated hour waits for its later occurrence", newYork, time.Date(2026, 11, 1, 5, 15, 0, 0, time.UTC), "Try again at 1:30 AM.", time.Date(2026, 11, 1, 6, 31, 0, 0, time.UTC), true},
+		{"inside the second repeated hour", newYork, time.Date(2026, 11, 1, 6, 15, 0, 0, time.UTC), "Try again at 1:30 AM.", time.Date(2026, 11, 1, 6, 31, 0, 0, time.UTC), true},
+		{"after both occurrences remains a past reset", newYork, time.Date(2026, 11, 1, 7, 0, 0, 0, time.UTC), "Try again at 1:30 AM.", time.Date(2026, 11, 1, 6, 31, 0, 0, time.UTC), true},
+		{"an explicit date also resolves both occurrences", newYork, time.Date(2026, 10, 30, 0, 0, 0, 0, time.UTC), "Try again at Nov 1st, 2026 1:30 AM.", time.Date(2026, 11, 1, 6, 31, 0, 0, time.UTC), true},
+		{"a thirty minute change", lordHowe, time.Date(2026, 4, 4, 14, 30, 0, 0, time.UTC), "Try again at 1:45 AM.", time.Date(2026, 4, 4, 15, 16, 0, 0, time.UTC), true},
+		{"a missing local minute", newYork, time.Date(2026, 3, 8, 6, 0, 0, 0, time.UTC), "Try again at 2:30 AM.", time.Time{}, false},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			t.Parallel()
+			got, ok := parseCodexRetryText(tc.text, codexRetryTextObservation{location: tc.location, startedAt: &tc.now, completedAt: &tc.now}, tc.now)
+			assert.Equal(t, tc.ok, ok)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestCodexUsageLimitTextUsesTheNativeCalendarDate(t *testing.T) {
+	t.Parallel()
+	observed := time.Date(2026, 10, 29, 0, 0, 1, 0, time.UTC)
+	previousStart := observed.Add(-31 * time.Second).Unix()
+	previousEnd := observed.Add(-2 * time.Second).Unix()
+	currentStart, currentEnd := observed.Add(-time.Second).Unix(), observed.Unix()
+	for _, tc := range []struct {
+		label              string
+		now                time.Time
+		started, completed any
+		includeTimes       bool
+		text               string
+		wantReset          time.Time
+	}{
+		{label: "delayed handling after midnight keeps the previous native date", started: previousStart, completed: previousEnd, includeTimes: true},
+		{label: "a new native day can still state a late reset", started: currentStart, completed: currentEnd, includeTimes: true, wantReset: time.Date(2026, 10, 30, 0, 0, 0, 0, time.UTC)},
+		{label: "a native interval spanning midnight proves no date", started: previousStart, completed: currentEnd, includeTimes: true},
+		{label: "missing native times prove no date"},
+		{label: "null native times prove no date", includeTimes: true},
+		{label: "completion alone proves no date", completed: currentEnd, includeTimes: true},
+		{label: "an unreadable start preserves the usage verdict", started: "not a timestamp", completed: currentEnd, includeTimes: true},
+		{label: "a fractional start preserves the usage verdict", started: 1.5, completed: currentEnd, includeTimes: true},
+		{label: "a reversed interval proves no date", started: currentEnd, completed: currentStart, includeTimes: true},
+		{label: "future native timestamps prove no date", started: currentEnd + 1, completed: currentEnd + 2, includeTimes: true},
+		{label: "an explicit date needs no inferred day", started: previousStart, completed: currentEnd, includeTimes: true, text: "Try again at Oct 30th, 2026 3:00 PM.", wantReset: time.Date(2026, 10, 30, 15, 1, 0, 0, time.UTC)},
+		{label: "zero is a valid native Unix timestamp", now: time.Unix(1, 0).UTC(), started: int64(0), completed: int64(0), includeTimes: true, text: "Try again at 3:00 PM.", wantReset: time.Date(1970, 1, 1, 15, 1, 0, 0, time.UTC)},
+		{label: "negative native Unix timestamps remain valid", now: time.Unix(-1800, 0).UTC(), started: int64(-3600), completed: int64(-1800), includeTimes: true, text: "Try again at 11:45 PM.", wantReset: time.Date(1969, 12, 31, 23, 46, 0, 0, time.UTC)},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			t.Parallel()
+			now := tc.now
+			if now.IsZero() {
+				now = observed
+			}
+			text := tc.text
+			if text == "" {
+				text = "Try again at 11:59 PM."
+			}
+			sink := &agenttest.Sink{}
+			a := newCodexAgentAt(t, agentapi.NewProviderServices(sink), now)
+			a.retryTextLocation = time.UTC
+			turn := map[string]any{"id": "turn-1", "status": "failed", "items": []any{}, "error": map[string]any{"message": text, "codexErrorInfo": "usageLimitExceeded"}}
+			if tc.includeTimes {
+				turn["startedAt"], turn["completedAt"] = tc.started, tc.completed
+			}
+			frame, err := json.Marshal(map[string]any{"method": "turn/completed", "params": map[string]any{"threadId": "main-thread", "turn": turn}})
+			require.NoError(t, err)
+			handleCodexOutput(a, providerkit.ParseLine(frame))
+			want := []agenttest.TimelineEntry{codexTurnEndRow, codexServerErrorCancelledForNoReset}
+			if !tc.wantReset.IsZero() {
+				want = []agenttest.TimelineEntry{codexTurnEndRow, codexUsageLimitScheduledAt(tc.wantReset), codexServerErrorCancelledForAStatedReset}
+			}
+			assert.Equal(t, want, sink.Timeline())
+			require.Len(t, sink.Messages(), 1)
+			assert.True(t, sink.Messages()[0].TurnEnd)
+		})
+	}
 }

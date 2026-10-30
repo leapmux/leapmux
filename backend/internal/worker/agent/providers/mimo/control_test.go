@@ -32,7 +32,7 @@ func permissionAskedEvent(t *testing.T, id, sessionID, messageID string) []byte 
 
 func questionAskedEvent(t *testing.T, id, sessionID string) []byte {
 	t.Helper()
-	return eventJSON(t, contracts.OpenCodeEventQuestionAsked, map[string]any{
+	return eventJSON(t, contracts.NativeQuestionEventQuestionAsked, map[string]any{
 		"id": id, "sessionID": sessionID,
 		"questions": []any{map[string]any{"question": "Which database?", "header": "Database",
 			"options": []any{map[string]any{"label": "SQLite"}, map[string]any{"label": "Postgres"}}}},
@@ -42,7 +42,7 @@ func questionAskedEvent(t *testing.T, id, sessionID string) []byte {
 
 func planAskedEvent(t *testing.T, id, planPath string) []byte {
 	t.Helper()
-	return eventJSON(t, contracts.OpenCodeEventQuestionAsked, map[string]any{
+	return eventJSON(t, contracts.NativeQuestionEventQuestionAsked, map[string]any{
 		"id": id, "sessionID": testSessionID,
 		"questions": []any{map[string]any{"key": mimoQuestionKeyPlanExit, "question": "Approve the plan?",
 			"params":  map[string]string{"plan": planPath},
@@ -55,7 +55,7 @@ func planAskedEvent(t *testing.T, id, planPath string) []byte {
 // question with MiMo's three answers, no free text, and no tool call.
 func elicitationAskedEvent(t *testing.T, id string) []byte {
 	t.Helper()
-	return eventJSON(t, contracts.OpenCodeEventQuestionAsked, map[string]any{
+	return eventJSON(t, contracts.NativeQuestionEventQuestionAsked, map[string]any{
 		"id": id, "sessionID": testSessionID,
 		"questions": []any{map[string]any{"key": "mcp_elicitation", "header": "docs", "question": "docs\n\nProceed?",
 			"options": []any{
@@ -223,11 +223,11 @@ func TestUnreadableRequestsAreDropped(t *testing.T) {
 	feed(a,
 		eventJSON(t, contracts.MiMoEventPermissionAsked, map[string]any{"sessionID": testSessionID, "permission": "bash"}),
 		eventJSON(t, contracts.MiMoEventPermissionAsked, "not an object"),
-		eventJSON(t, contracts.OpenCodeEventQuestionAsked, map[string]any{"sessionID": testSessionID, "questions": []any{}}),
-		eventJSON(t, contracts.OpenCodeEventQuestionAsked, []string{"not", "an", "object"}),
+		eventJSON(t, contracts.NativeQuestionEventQuestionAsked, map[string]any{"sessionID": testSessionID, "questions": []any{}}),
+		eventJSON(t, contracts.NativeQuestionEventQuestionAsked, []string{"not", "an", "object"}),
 		eventJSON(t, eventBashInteractiveAsked, map[string]any{"sessionID": testSessionID, "command": "vim"}),
 		eventJSON(t, eventPermissionReplied, map[string]any{"sessionID": testSessionID}),
-		eventJSON(t, contracts.OpenCodeEventQuestionRejected, "not an object"),
+		eventJSON(t, contracts.NativeQuestionEventQuestionRejected, "not an object"),
 	)
 	assert.Zero(t, sink.PublishedControlCount())
 	assert.Empty(t, sink.CanceledControls())
@@ -340,9 +340,9 @@ func TestSettledRequestsRetireTheirCards(t *testing.T) {
 		questionAskedEvent(t, "que_1", testSessionID),
 		questionAskedEvent(t, "que_2", testSessionID),
 		eventJSON(t, eventPermissionReplied, map[string]any{"sessionID": testSessionID, "requestID": "per_1", "reply": "once"}),
-		eventJSON(t, contracts.OpenCodeEventQuestionReplied, map[string]any{"sessionID": testSessionID, "requestID": "que_1", "answers": [][]string{{"SQLite"}}}),
-		eventJSON(t, contracts.OpenCodeEventQuestionRejected, map[string]any{"sessionID": testSessionID, "requestID": "que_2"}),
-		eventJSON(t, contracts.OpenCodeEventQuestionRejected, map[string]any{"sessionID": testSessionID, "requestID": "que_9"}),
+		eventJSON(t, contracts.NativeQuestionEventQuestionReplied, map[string]any{"sessionID": testSessionID, "requestID": "que_1", "answers": [][]string{{"SQLite"}}}),
+		eventJSON(t, contracts.NativeQuestionEventQuestionRejected, map[string]any{"sessionID": testSessionID, "requestID": "que_2"}),
+		eventJSON(t, contracts.NativeQuestionEventQuestionRejected, map[string]any{"sessionID": testSessionID, "requestID": "que_9"}),
 	)
 	assert.Equal(t, []string{"mimo-permission:per_1", "mimo-question:que_1", "mimo-question:que_2"}, sink.CanceledControls(),
 		"another client's answer retires the card, and an unknown request retires nothing")
@@ -513,7 +513,7 @@ func TestExecuteControlReply(t *testing.T) {
 			for _, control := range a.controls {
 				event := eventPermissionReplied
 				if control.kind != controlPermission {
-					event = contracts.OpenCodeEventQuestionReplied
+					event = contracts.NativeQuestionEventQuestionReplied
 				}
 				feed(a, eventJSON(t, event, map[string]any{"sessionID": testSessionID, "requestID": control.nativeID}))
 			}

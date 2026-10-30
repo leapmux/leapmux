@@ -56,6 +56,9 @@ func droidTurnFailure(reason, errorMessage string, interrupted bool, observedAt 
 // droidTurnError is what the error notifications of one main turn stated, for
 // the retry verdict of that turn's agent_turn_completed.
 type droidTurnError struct {
+	// generation identifies the turn that emitted the error, even after the
+	// error releases that turn and the queue admits its next input.
+	generation uint64
 	// message is the message of the turn's last error notification.
 	message string
 	// interruptRequested records that the user had stopped the turn when an
@@ -67,9 +70,11 @@ type droidTurnError struct {
 // turn. A record that no completion consumed yet belongs to the same turn, so
 // it keeps a stop that an earlier error of the turn noted. The caller holds Mu.
 func (a *Agent) recordTurnErrorLocked(message string) {
+	generation := a.turnGeneration
 	interrupted := a.interruptRequested
 	if a.pendingTurnError != nil {
-		interrupted = interrupted || a.pendingTurnError.interruptRequested
+		generation = a.pendingTurnError.generation
+		interrupted = a.pendingTurnError.interruptRequested || generation == a.turnGeneration && interrupted
 	}
-	a.pendingTurnError = &droidTurnError{message: message, interruptRequested: interrupted}
+	a.pendingTurnError = &droidTurnError{generation: generation, message: message, interruptRequested: interrupted}
 }

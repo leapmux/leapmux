@@ -1616,7 +1616,7 @@ func claudeRateLimitResume(status string, resetsAt *int64, usingOverage bool, ov
 }
 
 // claudeRateLimitLiftedReason states, for the log, which rate_limit_event
-// cancelled the usage-limit retry. It names the status that claudeRateLimitResume
+// cancelled the usage-limit retry. It identifies the status that claudeRateLimitResume
 // read: the overage status while the overage allowance serves the requests,
 // and the window's own status otherwise.
 func claudeRateLimitLiftedReason(rateLimitType, status string, usingOverage bool, overageStatus string) string {
@@ -1904,7 +1904,7 @@ type claudeTurnSignals struct {
 const claudeAPIErrorPrefix = "API Error"
 
 // claudeTurnFailure classifies the `result` that ends a root turn. observedAt
-// bounds a reset instant that the text states. The stages run in this order, and
+// limits a reset instant that the text states. The stages run in this order, and
 // the first that decides wins:
 //
 //  1. A compaction turn ends on the compaction verdict, whatever its outcome.

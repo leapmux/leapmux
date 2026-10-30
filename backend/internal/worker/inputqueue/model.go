@@ -1,6 +1,7 @@
 package inputqueue
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -199,6 +200,9 @@ type StoredItem struct {
 	ItemMetadata
 	Text          string
 	SourcePayload []byte
+	// AutoRetryKey belongs to one native fallback, independently of its source bytes.
+	// Empty means the item has no conditional native owner. The wire omits it.
+	AutoRetryKey string
 }
 
 type DispatchItem struct {
@@ -304,6 +308,8 @@ type NewItem struct {
 	// SourcePayload is the provider source an automatic retry carries into the
 	// accepted transcript's supplemental content. Empty for ordinary input.
 	SourcePayload []byte
+	// AutoRetryKey gives a native fallback its conditional cleanup identity.
+	AutoRetryKey string
 }
 
 type PreparedDispatch struct {
@@ -384,6 +390,22 @@ func (e *DeliveryError) Unwrap() error {
 		return nil
 	}
 	return e.Err
+}
+
+// QueueReconciliationRequest identifies the input whose native state is read.
+// Recovery of an interrupted turn can omit InputID and use unspecified Kind.
+type QueueReconciliationRequest struct {
+	AgentID string
+	InputID string
+	Kind    leapmuxv1.AgentInputKind
+}
+
+// DispatchReconciler selects agents whose native state must synchronize before
+// input is claimed. Policy lookup never starts a runtime or changes the queue.
+// True from ReconcileBeforeDispatch reports actual native synchronization.
+type DispatchReconciler interface {
+	RequiresQueueReconciliation(context.Context, string) (bool, error)
+	ReconcileBeforeDispatch(context.Context, QueueReconciliationRequest) (bool, error)
 }
 
 type Dispatcher interface {

@@ -154,7 +154,7 @@ func TestDiracLeapMuxRetriesOnlyWhatItSchedules(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tc.want, diracLeapMuxRetries(tc.failure))
+			assert.Equal(t, tc.want, tc.failure.RetryDisposition() != providerkit.RetryNone)
 		})
 	}
 }

@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { KILO_REFUSED_TOOL_ERRORS } from './kilo/protocol'
 import { OPENCODE_REFUSED_TOOL_ERRORS } from './opencode/protocol'
 import { registerOpenCodeProtocolProvider } from './registerOpenCodeProtocolProvider'
 
@@ -28,7 +27,7 @@ describe('registerOpenCodeProtocolProvider', () => {
 
   it('omits the path reader when the provider supplies none', () => {
     registration.mockClear()
-    registerOpenCodeProtocolProvider({ provider: AgentProvider.KILO, defaultPrimaryAgent: 'code', refusals: KILO_REFUSED_TOOL_ERRORS })
+    registerOpenCodeProtocolProvider({ provider: AgentProvider.OPENCODE, defaultPrimaryAgent: 'build', refusals: OPENCODE_REFUSED_TOOL_ERRORS })
     expect(registration.mock.calls[0]?.[0]).not.toHaveProperty('outputFilePaths')
   })
 })

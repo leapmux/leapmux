@@ -11,15 +11,14 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/leapmux/leapmux/internal/util/testutil"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // installFakeKiloACP puts a fake `kilo` on PATH. `envFile`, when given, makes the
@@ -117,7 +116,7 @@ func TestStartKilo_NewSessionHandshakeReadsConfigOptionModels(t *testing.T) {
 	require.NotNil(t, optionids.GroupByID(groups, agent.OptionIDPrimaryAgent))
 }
 
-// Kilo starts through the OpenCode family, so it takes FamilyHooks and steers
+// Kilo installs its own startup hooks and steers
 // with a second session/prompt, as OpenCode does.
 func TestStartKilo_TheFamilyStartSteers(t *testing.T) {
 	installFakeKiloACP(t, "")

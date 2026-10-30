@@ -219,7 +219,7 @@ func (a *Agent) observeConversationUpdate(fields map[string]json.RawMessage) {
 // come from the preparation of the turn, and the end of the prompt still
 // settles it.
 func (a *Agent) handleTurnStart() {
-	if !a.PromptActive() {
+	if !a.ConversationActive() {
 		a.beginAgentTurn()
 	}
 }
@@ -370,7 +370,7 @@ func (a *Agent) handleDisplayError(raw json.RawMessage) {
 	if message == "" {
 		return
 	}
-	if a.PromptActive() && !a.AgentTurnActive() {
+	if a.ConversationActive() && !a.AgentTurnActive() {
 		a.stateMu.Lock()
 		held := a.turns.heldError
 		a.turns.heldError = message
@@ -407,7 +407,7 @@ func (a *Agent) handlePromptEnded(err error, stopped bool) acp.PromptEnding {
 	if held != "" && !statedByPrompt {
 		a.persistAgentError(held)
 	}
-	ending := acp.PromptEnding{Retry: &acp.TurnVerdict{Failure: failure, Payload: payload}}
+	ending := acp.PromptEnding{Retry: acp.TurnVerdict{Failure: failure, Payload: payload}}
 	// The failed prompt writes the native error turn end as its divider, so
 	// the reader sees why the turn ended beside the error itself, whichever
 	// note states that error.

@@ -29,11 +29,15 @@ func seedScheduledRetries(t *testing.T, svc *Service, agentID string) {
 	t.Helper()
 	ctx := context.Background()
 	seedAgent(t, svc, agentID)
+	// These lifecycle fixtures retain their ordinary input. Pause before any
+	// enqueue so no provider startup competes with their explicit output sink.
+	_, err := svc.InputQueue.SetPaused(ctx, agentID, true)
+	require.NoError(t, err)
 	require.NoError(t, svc.InputQueue.ScheduleAutoRetry(ctx, agentID, retrySchedule(
 		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, time.Now().Add(time.Hour))))
 	require.NoError(t, svc.InputQueue.ScheduleAutoRetry(ctx, agentID, retrySchedule(
 		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, time.Time{})))
-	_, err := svc.InputQueue.Enqueue(ctx, queueTextItem(agentID, "ordinary"))
+	_, err = svc.InputQueue.Enqueue(ctx, queueTextItem(agentID, "ordinary"))
 	require.NoError(t, err)
 }
 
@@ -155,6 +159,11 @@ func TestAProviderCancellationStatesItsReasonInTheLog(t *testing.T) {
 	logs := testutil.CaptureDefaultLogger(t)
 	svc, _, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
+	var starts atomic.Int32
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
+		starts.Add(1)
+		return nil, assert.AnError
+	}
 	seedScheduledRetries(t, svc, "agent-1")
 	sink, err := svc.Output.NewRootSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	require.NoError(t, err)
@@ -175,6 +184,7 @@ func TestAProviderCancellationStatesItsReasonInTheLog(t *testing.T) {
 		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
 		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 	}, kinds, "the server-error retry and the ordinary input stay")
+	assert.Zero(t, starts.Load(), "the fixture must not start a competing provider")
 }
 
 // retryRemovalLines returns each captured "automatic retry removed" line of
@@ -364,6 +374,230 @@ func TestCapturedAutoRetryLeaseProtectsTheOwnerUntilRelease(t *testing.T) {
 	assert.Nil(t, writer.Acquire(), "a released writer cannot renew an expired owner")
 }
 
+func TestCapturedKeyedRetryCleanupSurvivesANewerTurn(t *testing.T) {
+	t.Parallel()
+	for _, pendingKey := range []string{"native:A", "native:B", ""} {
+		t.Run("pending="+pendingKey, func(t *testing.T) {
+			t.Parallel()
+			clock := testutil.NewQuartzMock(t)
+			svc, _, _ := setupTestService(t, withClock(clock))
+			const agentID = "agent-1"
+			seedAgent(t, svc, agentID)
+			sink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+			svc.Output.NoteAgentProcessStarted(agentID)
+			sink.UpdateSessionID("session-a")
+			sink.SetTurnState(agent.TurnState{Active: true}, 1)
+			writer := sink.CaptureAutoRetryThroughTurn(2)
+			writer.ScheduleUsageLimitRetryWithKey("native:A", clock.Now().Add(time.Hour), []byte(`{"source":"A"}`))
+			sink.SetTurnState(agent.TurnState{Active: true}, 3)
+			if pendingKey != "native:A" {
+				current := sink.CaptureAutoRetry()
+				if pendingKey == "" {
+					current.ScheduleUsageLimitRetry(clock.Now().Add(2*time.Hour), []byte(`{"source":"user"}`))
+				} else {
+					current.ScheduleUsageLimitRetryWithKey(pendingKey, clock.Now().Add(2*time.Hour), []byte(`{"source":"B"}`))
+				}
+			}
+			before, err := svc.InputQueue.Snapshot(t.Context(), agentID)
+			require.NoError(t, err)
+			require.Len(t, before.Items, 1)
+			writer.ScheduleUsageLimitRetryWithKey("native:stale", clock.Now().Add(3*time.Hour), []byte(`{"source":"stale"}`))
+			unchanged, err := svc.InputQueue.Snapshot(t.Context(), agentID)
+			require.NoError(t, err)
+			assert.Equal(t, before, unchanged, "a later turn rejects an old schedule")
+			writer.CancelUsageLimitRetryWithKey("native:A", "native A completed")
+			after, err := svc.InputQueue.Snapshot(t.Context(), agentID)
+			require.NoError(t, err)
+			assert.True(t, after.ActiveTurn, "keyed cleanup must not end the newer native turn")
+			if pendingKey == "native:A" {
+				assert.Empty(t, after.Items)
+				assert.Greater(t, after.Revision, before.Revision)
+			} else {
+				assert.Equal(t, before, after, "B or unkeyed intent survives A cleanup")
+			}
+		})
+	}
+}
+
+func TestCapturedKeyedRetryCleanupRejectsReplacedSessionsAndProviders(t *testing.T) {
+	t.Parallel()
+	for _, replacement := range []string{"session", "same ID session", "provider", "cleanup", "activity"} {
+		t.Run(replacement, func(t *testing.T) {
+			t.Parallel()
+			clock := testutil.NewQuartzMock(t)
+			svc, _, _ := setupTestService(t, withClock(clock))
+			const agentID = "agent-1"
+			seedAgent(t, svc, agentID)
+			sink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+			svc.Output.NoteAgentProcessStarted(agentID)
+			sink.UpdateSessionID("session-a")
+			sink.SetTurnState(agent.TurnState{Active: true}, 1)
+			writer := sink.CaptureAutoRetry()
+			switch replacement {
+			case "session", "same ID session":
+				sink.UpdateSessionID("session-b")
+				if replacement == "same ID session" {
+					sink.UpdateSessionID("session-a")
+				}
+			case "provider":
+				newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+			case "cleanup":
+				svc.Output.CleanupAgent(agentID, CleanupContextCleared)
+			case "activity":
+				svc.Output.ForgetActivity(agentID)
+				svc.Output.activityFor(agentID, agentID)
+			}
+			require.NoError(t, svc.InputQueue.ScheduleAutoRetry(t.Context(), agentID, agent.AutoRetrySchedule{
+				Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, Key: "native:A", ResetAt: clock.Now().Add(time.Hour),
+			}))
+			before, err := svc.InputQueue.Snapshot(t.Context(), agentID)
+			require.NoError(t, err)
+			writer.CancelUsageLimitRetryWithKey("native:A", "old native completion")
+			after, err := svc.InputQueue.Snapshot(t.Context(), agentID)
+			require.NoError(t, err)
+			assert.Equal(t, before, after)
+		})
+	}
+}
+
+func TestCapturedKeyedRetryCleanupSurvivesAScopeReset(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	svc, _, _ := setupTestService(t, withClock(clock))
+	const agentID = "agent-1"
+	seedAgent(t, svc, agentID)
+	sink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	svc.Output.NoteAgentProcessStarted(agentID)
+	sink.SetTurnState(agent.TurnState{Active: true}, 1)
+	writer := sink.CaptureAutoRetry()
+	writer.ScheduleUsageLimitRetryWithKey("native:A", clock.Now().Add(time.Hour), []byte(`{"source":"A"}`))
+	before, err := svc.InputQueue.Snapshot(t.Context(), agentID)
+	require.NoError(t, err)
+	require.Len(t, before.Items, 1)
+	svc.Output.resetAgentActivity(agentID)
+	writer.CancelUsageLimitRetryWithKey("native:A", "native A completed")
+	after, err := svc.InputQueue.Snapshot(t.Context(), agentID)
+	require.NoError(t, err)
+	assert.Empty(t, after.Items)
+}
+
+func TestCapturedKeyedRetryLeaseProtectsItsSessionAcrossTurns(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, _ := setupBgTaskTestWithService(t)
+	sink.SetTurnState(agent.TurnState{Active: true}, 1)
+	writer := sink.CaptureAutoRetry().(*capturedAutoRetryWriter)
+	sink.SetTurnState(agent.TurnState{Active: true}, 3)
+	admission := &capturedAutoRetryKeyAdmission{owner: writer.owner}
+	lease := admission.Acquire()
+	require.NotNil(t, lease)
+	mutation := svc.Output.transcriptMutationMutex(agentID)
+	locked := mutation.TryLock()
+	if locked {
+		mutation.Unlock()
+	}
+	assert.False(t, locked, "session cleanup must wait for the admitted key mutation")
+	lease.Release()
+	lease.Release()
+	locked = mutation.TryLock()
+	require.True(t, locked)
+	mutation.Unlock()
+	sink.UpdateSessionID("replacement")
+	assert.Nil(t, admission.Acquire())
+}
+
+func TestCapturedAutoRetryThroughTurnAdmitsOnlyItsExactCompletion(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		transition string
+		allowed    bool
+	}{
+		{"active", true}, {"idle", true}, {"new-active-without-idle", false},
+		{"next-turn", false}, {"repeated-idle", false}, {"same-publisher-reset", false},
+		{"session-round-trip", false}, {"cleanup", false}, {"sink-replacement", false},
+		{"strict-capture", false}, {"zero-sequence", false},
+	} {
+		t.Run(test.transition, func(t *testing.T) {
+			t.Parallel()
+			clock := testutil.NewQuartzMock(t)
+			svc, _, _ := setupTestService(t, withClock(clock))
+			const agentID = "agent-1"
+			seedAgent(t, svc, agentID)
+			sink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+			svc.Output.NoteAgentProcessStarted(agentID)
+			sink.UpdateSessionID("session-a")
+			sink.SetTurnState(agent.TurnState{Active: true}, 1)
+			writer := sink.CaptureAutoRetryThroughTurn(2)
+			switch test.transition {
+			case "active":
+			case "idle":
+				sink.SetTurnState(agent.TurnState{}, 2)
+			case "new-active-without-idle":
+				sink.SetTurnState(agent.TurnState{Active: true}, 3)
+			case "next-turn":
+				sink.SetTurnState(agent.TurnState{}, 2)
+				sink.SetTurnState(agent.TurnState{Active: true}, 3)
+			case "repeated-idle":
+				sink.SetTurnState(agent.TurnState{}, 2)
+				sink.SetTurnState(agent.TurnState{}, 3)
+			case "same-publisher-reset":
+				sink.SetTurnState(agent.TurnState{}, 2)
+				svc.Output.resetAgentActivity(agentID)
+			case "session-round-trip":
+				sink.UpdateSessionID("session-b")
+				sink.UpdateSessionID("session-a")
+			case "cleanup":
+				svc.Output.CleanupAgent(agentID, CleanupContextCleared)
+			case "sink-replacement":
+				newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+			case "strict-capture":
+				writer = sink.CaptureAutoRetry()
+				sink.SetTurnState(agent.TurnState{}, 2)
+			case "zero-sequence":
+				writer = sink.CaptureAutoRetryThroughTurn(0)
+				sink.SetTurnState(agent.TurnState{}, 2)
+			}
+			require.NoError(t, svc.InputQueue.ScheduleAutoRetry(t.Context(), agentID,
+				retrySchedule(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, time.Time{})))
+			before, err := svc.InputQueue.Snapshot(t.Context(), agentID)
+			require.NoError(t, err)
+			writer.CancelServerErrorRetry("the completed turn ended the retry cycle")
+			writer.ScheduleUsageLimitRetry(clock.Now().Add(time.Hour), []byte(`{"source":"captured"}`))
+			after, err := svc.InputQueue.Snapshot(t.Context(), agentID)
+			require.NoError(t, err)
+			if !test.allowed {
+				assert.Equal(t, before, after)
+				assert.Equal(t, int64(20000), storedServerErrorDelay(t, svc, agentID))
+				return
+			}
+			require.Len(t, after.Items, 1)
+			assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, after.Items[0].Kind)
+			assert.Equal(t, int64(10000), storedServerErrorDelay(t, svc, agentID))
+		})
+	}
+}
+
+func TestCapturedCompletionRetryLeaseProtectsItsInactiveOwner(t *testing.T) {
+	t.Parallel()
+	svc, _, agentID, _ := setupBgTaskTestWithService(t)
+	sink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	svc.Output.NoteAgentProcessStarted(agentID)
+	sink.SetTurnState(agent.TurnState{Active: true}, 1)
+	writer := sink.CaptureAutoRetryThroughTurn(2).(*capturedAutoRetryWriter)
+	sink.SetTurnState(agent.TurnState{}, 2)
+	lease := writer.Acquire()
+	require.NotNil(t, lease)
+	mutation := svc.Output.transcriptMutationMutex(agentID)
+	locked := mutation.TryLock()
+	if locked {
+		mutation.Unlock()
+	}
+	assert.False(t, locked)
+	lease.Release()
+	lease.Release()
+	sink.SetTurnState(agent.TurnState{Active: true}, 3)
+	assert.Nil(t, writer.Acquire())
+}
+
 // serverErrorRetryRows counts the AUTO_RETRY_SERVER_ERROR items of the queue.
 func serverErrorRetryRows(t *testing.T, svc *Service, agentID string) int {
 	t.Helper()
@@ -455,4 +689,49 @@ func TestAProviderRetryWaitsForTheTurnEndThatPrecedesIt(t *testing.T) {
 	assert.Equal(t, messagesBefore+1, messageRows(t, svc, agentID))
 	assert.Equal(t, 1, serverErrorRetryRows(t, svc, agentID))
 	assert.Equal(t, int64(20000), storedServerErrorDelay(t, svc, agentID), "the delay doubled exactly once")
+}
+
+func TestCapturedAutoRetryOperationKeepsItsOriginalAuthority(t *testing.T) {
+	t.Parallel()
+	for _, transition := range []string{"active", "own idle", "new turn", "new session"} {
+		t.Run(transition, func(t *testing.T) {
+			t.Parallel()
+			clock := testutil.NewQuartzMock(t)
+			svc, _, _ := setupTestService(t, withClock(clock))
+			const agentID = "agent-1"
+			seedAgent(t, svc, agentID)
+			sink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+			svc.Output.NoteAgentProcessStarted(agentID)
+			sink.UpdateSessionID("original")
+			sink.SetTurnState(agent.TurnState{Active: true}, 1)
+			resetAt := clock.Now().Add(time.Hour)
+			operation := sink.CaptureAutoRetryOperation(2, func(writer agent.AutoRetryWriter) {
+				writer.CancelServerErrorRetry("the original operation completed")
+				writer.ScheduleUsageLimitRetry(resetAt, []byte(`{"source":"operation"}`))
+			})
+			require.NotNil(t, operation)
+			switch transition {
+			case "active":
+			case "own idle":
+				sink.SetTurnState(agent.TurnState{}, 2)
+			case "new turn":
+				sink.SetTurnState(agent.TurnState{Active: true}, 3)
+			case "new session":
+				sink.UpdateSessionID("replacement")
+			}
+			require.NoError(t, svc.InputQueue.ScheduleAutoRetry(t.Context(), agentID, retrySchedule(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, time.Time{})))
+			before, err := svc.InputQueue.Snapshot(t.Context(), agentID)
+			require.NoError(t, err)
+			require.NoError(t, operation())
+			after, err := svc.InputQueue.Snapshot(t.Context(), agentID)
+			require.NoError(t, err)
+			if transition == "new turn" || transition == "new session" {
+				assert.Equal(t, before, after)
+				return
+			}
+			require.Len(t, after.Items, 1)
+			assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, after.Items[0].Kind)
+			assert.Equal(t, int64(10000), storedServerErrorDelay(t, svc, agentID))
+		})
+	}
 }

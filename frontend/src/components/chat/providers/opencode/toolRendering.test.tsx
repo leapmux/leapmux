@@ -8,10 +8,9 @@ import { renderACPToolPair } from '../acp/testUtils'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import './plugin'
-import '../kilo/plugin'
 import '../testMocks'
 
-describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol renderer (%s)', (provider) => {
+describe.each([AgentProvider.OPENCODE])('opencode protocol renderer (%s)', (provider) => {
   it('renders a native subagent report through the shared agent body', () => {
     const { container } = renderACPToolPair(provider, {
       title: 'task',

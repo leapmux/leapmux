@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -353,6 +354,55 @@ func newJunieSteeredAgent(t *testing.T) (*Agent, *agenttest.Sink, string) {
 	return a, sink, sessionID
 }
 
+type junieTurnEndBarrier struct {
+	*agenttest.Sink
+	entered chan struct{}
+	release <-chan struct{}
+}
+
+func (sink *junieTurnEndBarrier) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
+	close(sink.entered)
+	<-sink.release
+	return sink.Sink.PersistTurnEnd(content, span)
+}
+
+func TestJunieQueuedFailureDuringPromptPersistenceKeepsItsVerdict(t *testing.T) {
+	t.Parallel()
+	a, sink, sessionID := newJunieSteeredAgent(t)
+	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock)
+	barrier := &junieTurnEndBarrier{Sink: sink, entered: make(chan struct{}), release: release}
+	a.SetSinkForTest(agent.NewOrderedProviderServices(&agent.OutputQueue{}, agent.NewProviderServices(barrier)))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.FinishPromptRequestForTest(sessionID, json.RawMessage(junieCancelledResult), nil)
+	}()
+	select {
+	case <-barrier.entered:
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the prompt did not reach its turn-end write")
+	}
+	a.HandleOutput([]byte(junie503Failure))
+	marker := junieSessionUpdateParams(sessionID, "agent_message_chunk", "", map[string]any{"lastRequestComplete": true})
+	a.HandleSessionUpdateForTest(marker)
+	assert.Zero(t, sink.AutoScheduleCount())
+	unblock()
+	select {
+	case <-done:
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the prompt did not finish its queued handoff")
+	}
+
+	assert.False(t, a.PromptActive())
+	require.Equal(t, 1, sink.AutoScheduleCount())
+	assert.Zero(t, sink.AutoCancelCount())
+	assert.JSONEq(t, string(junieLineUpdate(t, junie503Failure)), string(sink.LastAutoSchedule().SourcePayload))
+	a.HandleSessionUpdateForTest(marker)
+	assert.Equal(t, 1, sink.AutoScheduleCount(), "a repeated marker applies no second verdict")
+}
+
 // The failure of a steer-started turn can arrive before the response of the
 // prompt that the turn waits behind. That failure belongs to the agent turn:
 // the prompt's end hands the busy state over without a verdict, and the turn's
@@ -373,7 +423,7 @@ func TestJunieSteerStartedTurnKeepsItsFailureThroughThePromptEnd(t *testing.T) {
 }
 
 // When the steer-started turn ends before the prompt's response, the base
-// drops that turn, and the prompt's end decides from the turn's failure.
+// retains that turn's completion and applies its verdict after the prompt ends.
 func TestJunieSteerStartedTurnThatEndsFirstDecidesAtThePromptEnd(t *testing.T) {
 	t.Parallel()
 	a, sink, sessionID := newJunieSteeredAgent(t)

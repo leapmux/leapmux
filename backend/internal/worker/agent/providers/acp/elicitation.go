@@ -1,9 +1,7 @@
 package acp
 
 import (
-	"encoding/json"
 	"maps"
-	"slices"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -11,7 +9,6 @@ import (
 
 type acpURLElicitation struct {
 	requestID          string
-	wireID             json.RawMessage
 	publication        providerkit.PublishedControlRequest
 	pendingPublication bool
 }
@@ -31,7 +28,7 @@ func (b *Base) RememberURLElicitation(matchKey string, line *providerkit.ParsedL
 	if b.urlElicitations == nil {
 		b.urlElicitations = make(map[string]acpURLElicitation)
 	}
-	entry := acpURLElicitation{requestID: identity.Key, wireID: slices.Clone(line.ID), pendingPublication: true}
+	entry := acpURLElicitation{requestID: identity.Key, pendingPublication: true}
 	if previous := b.urlElicitations[matchKey]; previous.requestID == identity.Key {
 		entry.publication = previous.publication
 	}
@@ -61,7 +58,7 @@ func (b *Base) bindURLElicitation(line *providerkit.ParsedLine, publication prov
 
 // SendRawInput delegates each answer and releases URL records that the transport no longer owns.
 func (b *Base) SendRawInput(data []byte, stop agent.StopContext) error {
-	err := b.JSONRPCProcess.SendRawInput(data, stop)
+	err := b.SendRawInputToOutstandingRequest(data, stop)
 	b.forgetResolvedURLElicitations()
 	return err
 }
@@ -87,11 +84,9 @@ func (b *Base) forgetResolvedURLElicitations() {
 func (b *Base) CompleteURLElicitation(matchKey string, answer any) bool {
 	b.Mu.Lock()
 	entry, found := b.urlElicitations[matchKey]
-	delete(b.urlElicitations, matchKey)
 	b.Mu.Unlock()
-	if !found || !b.WithdrawPublishedControlRequest(b.sink, entry.publication) {
+	if !found {
 		return false
 	}
-	b.SendResponseDetached(entry.wireID, answer, "complete an ACP URL elicitation")
-	return true
+	return b.AnswerPublishedControlRequest(b.sink, entry.publication, answer, func(error) { b.forgetResolvedURLElicitations() })
 }

@@ -10,7 +10,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -27,7 +26,7 @@ func newKiloAgentWithSink(sink agent.ProviderServices) *Agent {
 	a.SetSinkForTest(sink)
 	a.SetSessionIDForTest("test-session")
 	a.HooksForTest().ModeChannel = acp.ModeChannelPrimaryAgent
-	a.HooksForTest().PrimaryAgentHiddenFilter = opencode.IsHiddenPrimaryAgent
+	a.HooksForTest().PrimaryAgentHiddenFilter = IsHiddenPrimaryAgent
 	a.SetSinkForTest(agent.NewModelProgressResetSink(a.Sink()))
 	return a
 }

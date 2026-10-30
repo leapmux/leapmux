@@ -161,7 +161,7 @@ func TestPromptEndingRetry_TheVerdictFollowsTheRowThatEndsTheTurn(t *testing.T) 
 			b, sink := newACPTurnBase(t, &agenttest.Stdin{})
 			b.hooks.PromptEnded = func(error, bool) PromptEnding {
 				retry := transientVerdict()
-				return PromptEnding{Retry: &retry}
+				return PromptEnding{Retry: retry}
 			}
 			require.NoError(t, b.SendInput("hi", nil))
 
@@ -180,12 +180,12 @@ func TestPromptEndingRetry_TheVerdictFollowsTheRowThatEndsTheTurn(t *testing.T) 
 	}
 }
 
-func TestPromptEndingRetry_ANilVerdictCancelsTheServerErrorRetry(t *testing.T) {
+func TestPromptEndingRetry_AnOmittedVerdictCancelsTheServerErrorRetry(t *testing.T) {
 	t.Parallel()
 	for name, hook := range map[string]func(error, bool) PromptEnding{
-		"no hook":        nil,
-		"a nil verdict":  func(error, bool) PromptEnding { return PromptEnding{} },
-		"a zero verdict": func(error, bool) PromptEnding { return PromptEnding{Retry: &TurnVerdict{}} },
+		"no hook":            nil,
+		"an omitted verdict": func(error, bool) PromptEnding { return PromptEnding{} },
+		"a zero verdict":     func(error, bool) PromptEnding { return PromptEnding{Retry: TurnVerdict{}} },
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -211,7 +211,7 @@ func TestPromptEndingRetry_AStoppedPromptAppliesTheVerdictThatItsHookReturns(t *
 	b.hooks.PromptEnded = func(_ error, stopped bool) PromptEnding {
 		sawStopped = stopped
 		retry := usageVerdict(resetAt)
-		return PromptEnding{Retry: &retry}
+		return PromptEnding{Retry: retry}
 	}
 	require.NoError(t, b.SendInput("hi", nil))
 	b.noteACPInterruptRequested()

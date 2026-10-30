@@ -8,7 +8,6 @@
   "required": [
     "_readme",
     "events",
-    "answerFields",
     "statusTypes",
     "audioMimeTypes"
   ],
@@ -128,13 +127,7 @@
     "events": {
       "$ref": "#/$defs/table"
     },
-    "answerFields": {
-      "$ref": "#/$defs/table"
-    },
     "statusTypes": {
-      "$ref": "#/$defs/table"
-    },
-    "options": {
       "$ref": "#/$defs/table"
     },
     "audioMimeTypes": {

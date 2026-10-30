@@ -4,17 +4,15 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp/acptest"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestKiloFamilyHooksKeepNativeChildIdentityAcrossRename(t *testing.T) {
@@ -22,7 +20,7 @@ func TestKiloFamilyHooksKeepNativeChildIdentityAcrossRename(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := &Agent{}
 	a.SetSinkForTest(agent.NewProviderServices(sink))
-	*a.HooksForTest() = opencode.FamilyHooks(&a.FamilyBase)
+	*a.HooksForTest() = kiloHooks(a)
 	a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"kilo-native-call","title":"task","kind":"think","status":"pending","rawInput":{}}`))
 	empty, found := sink.BackgroundTask("kilo-native-call")
 	require.True(t, found)
@@ -67,7 +65,7 @@ func newKiloAgentForRPC(t *testing.T) (*Agent, func() []agenttest.RecordedReques
 		func() *Agent {
 			a := &Agent{}
 			a.HooksForTest().ModeChannel = acp.ModeChannelPrimaryAgent
-			a.HooksForTest().PrimaryAgentHiddenFilter = opencode.IsHiddenPrimaryAgent
+			a.HooksForTest().PrimaryAgentHiddenFilter = IsHiddenPrimaryAgent
 			return a
 		},
 		func(a *Agent) *acp.Base { return &a.Base },
@@ -79,7 +77,7 @@ func newKiloAgentForRPCWithResponder(t *testing.T, respond func(method string) a
 		func() *Agent {
 			a := &Agent{}
 			a.HooksForTest().ModeChannel = acp.ModeChannelPrimaryAgent
-			a.HooksForTest().PrimaryAgentHiddenFilter = opencode.IsHiddenPrimaryAgent
+			a.HooksForTest().PrimaryAgentHiddenFilter = IsHiddenPrimaryAgent
 			return a
 		},
 		func(a *Agent) *acp.Base { return &a.Base },
@@ -152,15 +150,15 @@ func TestKiloConfigurePrimaryAgentsUsesSessionCurrentMode(t *testing.T) {
 	t.Parallel()
 
 	agent := &Agent{}
-	agent.HooksForTest().PrimaryAgentHiddenFilter = opencode.IsHiddenPrimaryAgent
+	agent.HooksForTest().PrimaryAgentHiddenFilter = IsHiddenPrimaryAgent
 	err := agent.ConfigurePrimaryAgentsForTest([]acp.ModeInfo{
 		{ID: PrimaryAgentCode, Name: PrimaryAgentCode},
-		{ID: opencode.PrimaryAgentPlan, Name: opencode.PrimaryAgentPlan},
-		{ID: opencode.HiddenCompaction, Name: opencode.HiddenCompaction},
-	}, opencode.PrimaryAgentPlan, "", fallbackKiloPrimaryAgents(), PrimaryAgentCode)
+		{ID: PrimaryAgentPlan, Name: PrimaryAgentPlan},
+		{ID: HiddenCompaction, Name: HiddenCompaction},
+	}, PrimaryAgentPlan, "", fallbackKiloPrimaryAgents(), PrimaryAgentCode)
 	require.NoError(t, err)
 
-	require.Equal(t, opencode.PrimaryAgentPlan, agent.CurrentPrimaryAgentForTest())
+	require.Equal(t, PrimaryAgentPlan, agent.CurrentPrimaryAgentForTest())
 	require.Len(t, agent.AvailablePrimaryAgentsForTest(), 2)
 }
 
@@ -172,12 +170,12 @@ func TestKiloConfigurePrimaryAgentsDropsHiddenCurrentMode(t *testing.T) {
 	t.Parallel()
 
 	agent := &Agent{}
-	agent.HooksForTest().PrimaryAgentHiddenFilter = opencode.IsHiddenPrimaryAgent
+	agent.HooksForTest().PrimaryAgentHiddenFilter = IsHiddenPrimaryAgent
 	err := agent.ConfigurePrimaryAgentsForTest([]acp.ModeInfo{
 		{ID: PrimaryAgentCode, Name: PrimaryAgentCode},
-		{ID: opencode.PrimaryAgentPlan, Name: opencode.PrimaryAgentPlan},
-		{ID: opencode.HiddenCompaction, Name: opencode.HiddenCompaction},
-	}, opencode.HiddenCompaction, "", fallbackKiloPrimaryAgents(), PrimaryAgentCode)
+		{ID: PrimaryAgentPlan, Name: PrimaryAgentPlan},
+		{ID: HiddenCompaction, Name: HiddenCompaction},
+	}, HiddenCompaction, "", fallbackKiloPrimaryAgents(), PrimaryAgentCode)
 	require.NoError(t, err)
 
 	require.Equal(t, PrimaryAgentCode, agent.CurrentPrimaryAgentForTest(),
@@ -191,15 +189,15 @@ func TestKiloConfigurePrimaryAgentsRestoresSavedPrimaryAgent(t *testing.T) {
 	agent, requests := newKiloAgentForRPC(t)
 	err := agent.ConfigurePrimaryAgentsForTest([]acp.ModeInfo{
 		{ID: PrimaryAgentCode, Name: PrimaryAgentCode},
-		{ID: opencode.PrimaryAgentPlan, Name: opencode.PrimaryAgentPlan},
-	}, PrimaryAgentCode, opencode.PrimaryAgentPlan, fallbackKiloPrimaryAgents(), PrimaryAgentCode)
+		{ID: PrimaryAgentPlan, Name: PrimaryAgentPlan},
+	}, PrimaryAgentCode, PrimaryAgentPlan, fallbackKiloPrimaryAgents(), PrimaryAgentCode)
 	require.NoError(t, err)
 
-	require.Equal(t, opencode.PrimaryAgentPlan, agent.CurrentPrimaryAgentForTest())
+	require.Equal(t, PrimaryAgentPlan, agent.CurrentPrimaryAgentForTest())
 	recorded := requests()
 	require.Len(t, recorded, 1)
 	require.Equal(t, acp.MethodSessionSetMode, recorded[0].Method)
-	require.Equal(t, opencode.PrimaryAgentPlan, recorded[0].Params["modeId"])
+	require.Equal(t, PrimaryAgentPlan, recorded[0].Params["modeId"])
 }
 
 func TestKiloConfigurePrimaryAgentsIgnoresUnknownSavedPrimaryAgent(t *testing.T) {
@@ -208,7 +206,7 @@ func TestKiloConfigurePrimaryAgentsIgnoresUnknownSavedPrimaryAgent(t *testing.T)
 	agent, requests := newKiloAgentForRPC(t)
 	err := agent.ConfigurePrimaryAgentsForTest([]acp.ModeInfo{
 		{ID: PrimaryAgentCode, Name: PrimaryAgentCode},
-		{ID: opencode.PrimaryAgentPlan, Name: opencode.PrimaryAgentPlan},
+		{ID: PrimaryAgentPlan, Name: PrimaryAgentPlan},
 	}, PrimaryAgentCode, "unknown", fallbackKiloPrimaryAgents(), PrimaryAgentCode)
 	require.NoError(t, err)
 
@@ -237,13 +235,13 @@ func TestKiloUpdateSettingsSendsSessionSetMode(t *testing.T) {
 	a, requests := newKiloAgentForRPC(t)
 	a.SetAvailablePrimaryAgentsForTest([]*leapmuxv1.AvailableOption{
 		{Id: PrimaryAgentCode, Name: PrimaryAgentCode},
-		{Id: opencode.PrimaryAgentPlan, Name: opencode.PrimaryAgentPlan},
+		{Id: PrimaryAgentPlan, Name: PrimaryAgentPlan},
 	})
 	a.SetCurrentPrimaryAgentForTest(PrimaryAgentCode)
 
-	updated := a.UpdateSettings(map[string]string{agent.OptionIDPrimaryAgent: opencode.PrimaryAgentPlan})
+	updated := a.UpdateSettings(map[string]string{agent.OptionIDPrimaryAgent: PrimaryAgentPlan})
 	require.True(t, updated.AppliedLive)
-	require.Equal(t, opencode.PrimaryAgentPlan, a.CurrentPrimaryAgentForTest())
+	require.Equal(t, PrimaryAgentPlan, a.CurrentPrimaryAgentForTest())
 	recorded := requests()
 	require.Len(t, recorded, 1)
 	require.Equal(t, acp.MethodSessionSetMode, recorded[0].Method)
@@ -256,10 +254,10 @@ func TestKiloCurrentSettingsExposesPrimaryAgent(t *testing.T) {
 	a.HooksForTest().ModeChannel = acp.ModeChannelPrimaryAgent
 	a.SetModelForTest("openai/gpt-5")
 	a.SetAvailableModelsForTest([]*agent.ModelInfo{{Id: "openai/gpt-5", DisplayName: "GPT-5"}})
-	a.SetCurrentPrimaryAgentForTest(opencode.PrimaryAgentPlan)
+	a.SetCurrentPrimaryAgentForTest(PrimaryAgentPlan)
 	groups := a.OptionGroups()
 	require.Equal(t, "openai/gpt-5", optionids.CurrentValue(groups, agent.OptionIDModel))
-	require.Equal(t, opencode.PrimaryAgentPlan, optionids.CurrentValue(groups, agent.OptionIDPrimaryAgent))
+	require.Equal(t, PrimaryAgentPlan, optionids.CurrentValue(groups, agent.OptionIDPrimaryAgent))
 }
 
 func TestKiloAvailablePrimaryAgentGroupFallsBack(t *testing.T) {

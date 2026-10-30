@@ -85,6 +85,9 @@ type Agent struct {
 	// Interrupt addresses it.
 	turnID         string
 	compactionLive bool
+	// interruptRequestedTurnID keeps the user's stop intent with its native
+	// turn, even when a model failure precedes the interrupt's HTTP reply.
+	interruptRequestedTurnID string
 	// compactionEndedTurn prevents a delayed compact reply from restarting a completed indicator.
 	compactionEndedTurn string
 	// compactionTurnID is the turn that runs a manual compaction, or "". The
@@ -187,6 +190,7 @@ func (a *Agent) markTurnStarted(turnID string) bool {
 		return false
 	}
 	a.turnID = turnID
+	a.interruptRequestedTurnID = ""
 	a.TurnToolUses = 0
 	return true
 }
@@ -343,11 +347,15 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 //
 // The runtime settles the turn itself: the pending approvals and questions end
 // as cancelled, the running tools fail, and the turn completes as interrupted.
-// Each of those arrives as an event, so this method changes no state.
+// Each of those arrives as an event. The local stop intent suppresses a retry
+// even when the turn fails before the runtime processes the interrupt.
 func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.Mu.Lock()
 	stopped := a.StoppedLocked()
 	threadID, turnID := a.threadID, a.turnID
+	if !stopped && threadID != "" && turnID != "" {
+		a.interruptRequestedTurnID = turnID
+	}
 	a.Mu.Unlock()
 	if stopped {
 		return fmt.Errorf("agent is stopped")

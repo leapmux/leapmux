@@ -86,9 +86,9 @@ type Process struct {
 	// Queue admission can hold Mu. Never acquire Mu while stdinMu is held.
 	stdinMu sync.Mutex
 	// stdinQueue sends every outbound frame to one writer goroutine, which serializes writes.
-	// Base.Interrupt and codex.Agent.Interrupt send an answer before a cancel.
-	// A cancel that precedes its answer can leave the native request blocked.
-	// First-in, first-out (FIFO) order preserves this requirement for both synchronous and detached writes.
+	// Some providers require an answer before cancellation. Others require cancellation first.
+	// First-in, first-out (FIFO) order preserves the provider's selected order
+	// for both synchronous and detached writes, including batches of protocol frames.
 	//
 	// The queue also caps the cost of an unresponsive child.
 	// A reply cannot block the stdout reader on a child that does not read stdin.

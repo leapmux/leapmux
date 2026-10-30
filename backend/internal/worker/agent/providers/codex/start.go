@@ -110,8 +110,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		StripEnvKeys: []string{"CODEX_CI"},
 		// Enable the features that LeapMux requires for each app-server process.
 		// Code mode interruption must cancel nested tools as well as the model turn.
-		BaseArgs:   codexBaseArgs(),
-		WorkingDir: opts.WorkingDir,
+		BaseArgs:    codexBaseArgs(),
+		EnvMetadata: codexNativeEnvMetadata(),
+		WorkingDir:  opts.WorkingDir,
 	})
 
 	cmd.Env = envutil.FilterEnv(cmd.Environ(), "CODEX_CI", "CODEX_THREAD_ID")
@@ -126,9 +127,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 
-	// Every setting that the reader reads is set here, before the reader starts. The
-	// reader reads the permission settings to decide a standing approval, so a write
-	// after `go ReadOutputLoop` would race it.
+	// Initialize permission settings before the reader starts. The reader uses
+	// them to decide standing approvals. Preamble-derived timezone state is set
+	// under Mu after initialization, before the thread handshake.
 	a := &Agent{
 		JSONRPCProcess:    providerkit.JSONRPCProcess{Process: providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "codex", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel)},
 		model:             opts.Model(),
@@ -170,6 +171,10 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		cleanup()
 		return nil, a.FormatStartupError("initialize", err)
 	}
+
+	// The initialize response proves that the reader consumed the launch preamble.
+	// Load its native timezone before thread resume can deliver conversation output.
+	a.loadRetryTextLocation()
 
 	// 2. Send "initialized" notification.
 	if err := a.SendNotification("initialized", nil); err != nil {

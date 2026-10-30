@@ -307,9 +307,9 @@ func (env agentEndEnvelope) lastAssistantMessage() *agentEndMessage {
 	return nil
 }
 
-// terminal reports whether the run is omp's last for the prompt. An absent
-// isTerminal reads as terminal.
-func (env agentEndEnvelope) terminal() bool {
+// isFinalRun reports whether the run is omp's last for the prompt. An absent
+// isTerminal reads as final.
+func (env agentEndEnvelope) isFinalRun() bool {
 	return env.IsTerminal == nil || *env.IsTerminal
 }
 
@@ -326,7 +326,7 @@ type autoRetryEndEnvelope struct {
 var ompRequestedWaitRe = regexp.MustCompile(`^Provider requested (\d+)ms wait, exceeds retry\.maxDelayMs`)
 
 // handleAutoRetryEnd records the end of the requested wait that made omp give
-// up, for the terminal agent_end that follows. omp computes the wait when it
+// up, for the final agent_end that follows. omp computes the wait when it
 // emits the frame, and the frame carries no time of its own, so the wait counts
 // from the moment the worker reads the frame.
 //
@@ -472,7 +472,7 @@ func ompErrorFlags(message *agentEndMessage) uint32 {
 // states no timestamp of its own.
 func ompTurnFailure(env agentEndEnvelope, stopped bool, retryDeadline, fallback time.Time) providerkit.TurnFailure {
 	last := env.lastAssistantMessage()
-	if stopped || !env.terminal() || last == nil || last.StopReason != contracts.OhMyPiStopReasonError {
+	if stopped || !env.isFinalRun() || last == nil || last.StopReason != contracts.OhMyPiStopReasonError {
 		return providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable}
 	}
 	observedAt := fallback

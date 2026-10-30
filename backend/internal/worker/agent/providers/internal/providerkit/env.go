@@ -13,8 +13,8 @@ import (
 // agentIdentityEnvScrubKeys lists the environment variables that coding-agent harnesses
 // set in the processes that they start, to mark the session identity, the nesting, the
 // sandbox state, or distributed tracing. The harnesses are:
-//   - Claude Code, Codex, Pi, Oh My Pi, Codewhale, MiMo Code, Amp and Cline.
-//   - The ACP agents OpenCode, Kilo, Goose, Grok Build, Qwen Code and Kiro.
+//   - Claude Code, Codex, OpenCode, Pi, Oh My Pi, Codewhale, MiMo Code, Amp and Cline.
+//   - The ACP agents Kilo, Goose, Grok Build, Qwen Code and Kiro.
 //
 // A LeapMux worker can itself run inside one of these harnesses, for example when a
 // developer runs the tests from a Claude Code, Codex or Pi terminal. The values then
@@ -49,8 +49,8 @@ var agentIdentityEnvScrubKeys = []string{
 	// Codex (thread id, sandbox + network-proxy markers, rollout trace root).
 	"CODEX_THREAD_ID", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED",
 	"CODEX_NETWORK_PROXY_ACTIVE", "CODEX_NETWORK_ALLOW_LOCAL_BINDING", "CODEX_ROLLOUT_TRACE_ROOT",
-	// OpenCode (ACP) run identity.
-	"OPENCODE_RUN_ID", "OPENCODE_PROCESS_ROLE", "_EXTENSION_OPENCODE_PORT",
+	// OpenCode shell, session and run identity.
+	"OPENCODE", "OPENCODE_SESSION_ID", "OPENCODE_RUN_ID", "OPENCODE_PROCESS_ROLE", "_EXTENSION_OPENCODE_PORT",
 	// Kilo (ACP) run identity (OpenCode fork).
 	"KILO_RUN_ID", "KILO_PROCESS_ROLE",
 	// Goose (ACP) -- injected session/terminal markers (no rc marker of its own).
@@ -156,6 +156,25 @@ func scrubSandboxData(env []string) []string {
 	return env
 }
 
+const workerMarkerEnvKey = "LEAPMUX_WORKER"
+
+// StripInheritedAgentContext removes the caller's harness, sandbox and control
+// context without assigning a new agent identity. Shared service initialization
+// uses this environment; individual sessions add their own fresh context later.
+func StripInheritedAgentContext(env []string) []string {
+	// Both scrubs must run before the ExtraEnv append so opts.ExtraEnv's
+	// fresh LEAPMUX_CONTROL_* values aren't stripped. The sandbox scrub runs
+	// first, because it reads the sandbox marker that the identity scrub removes.
+	env = scrubSandboxData(env)
+	env = envutil.FilterEnv(env, agentIdentityEnvScrubKeys...)
+	env = envutil.StripByPrefix(env, "LEAPMUX_CONTROL_")
+	// The provider-helper variable is LeapMux's own (see agent.HelperFunc). An
+	// inherited copy points at ANOTHER agent's helper, so it never passes. A
+	// provider whose CLI starts a helper adds its own value after this call.
+	env = envutil.FilterEnv(env, contracts.EnvAgentHelper, workerMarkerEnvKey)
+	return env
+}
+
 // FinalizeAgentEnv applies the env-mutations every spawned agent
 // process needs in one place: strips inherited agent-harness identity
 // vars (see agentIdentityEnvScrubKeys) so a worker launched from inside
@@ -187,21 +206,12 @@ func scrubSandboxData(env []string) []string {
 // etc.) go BEFORE this call so they survive both the identity scrub and
 // the LEAPMUX_CONTROL_* strip and stack with the marker.
 func FinalizeAgentEnv(env []string, opts agent.Options) []string {
-	// Both scrubs must run before the ExtraEnv append so opts.ExtraEnv's
-	// fresh LEAPMUX_CONTROL_* values aren't stripped. The sandbox scrub runs
-	// first, because it reads the sandbox marker that the identity scrub removes.
-	env = scrubSandboxData(env)
-	env = envutil.FilterEnv(env, agentIdentityEnvScrubKeys...)
-	env = envutil.StripByPrefix(env, "LEAPMUX_CONTROL_")
-	// The provider-helper variable is LeapMux's own (see agent.HelperFunc). An
-	// inherited copy points at ANOTHER agent's helper, so it never passes. A
-	// provider whose CLI starts a helper adds its own value after this call.
-	env = envutil.FilterEnv(env, contracts.EnvAgentHelper)
+	env = StripInheritedAgentContext(env)
 	// PinEnv, not append: every caller hands us an inherited environment, and a
 	// worker launched from a LeapMux terminal or agent already carries both of
 	// these -- so appending would layer a second entry rather than replace the
 	// inherited one. See envutil.PinEnv.
-	env = envutil.PinEnv(env, "LEAPMUX_WORKER=1", gitutil.GitOptionalLocksOff)
+	env = envutil.PinEnv(env, workerMarkerEnvKey+"=1", gitutil.GitOptionalLocksOff)
 	if len(opts.ExtraEnv) == 0 {
 		return env
 	}

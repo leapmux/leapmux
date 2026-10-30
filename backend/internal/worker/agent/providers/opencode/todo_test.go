@@ -3,7 +3,7 @@ package opencode
 import (
 	"testing"
 
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode/opencodetest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/kilo/kilotest"
 	"github.com/leapmux/leapmux/internal/worker/todoevents"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -36,5 +36,5 @@ func TestOpenCodeFamilyTodoReplayAndMalformedResults(t *testing.T) {
 
 func TestOpenCodeFamilyNativeTodoResults(t *testing.T) {
 	t.Parallel()
-	opencodetest.AssertReadsTheFamilyTodoResult(t, Registration().Plugin)
+	kilotest.AssertReadsTheFamilyTodoResult(t, Registration().Plugin)
 }

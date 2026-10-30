@@ -1060,7 +1060,7 @@ func TestKiroTurnFailure(t *testing.T) {
 			wantKind: providerkit.TurnFailureUsageLimited, wantWindow: providerkit.UsageWindowWeekOrLess,
 		},
 		{
-			name:     "a usage limit of no named window states none",
+			name:     "a usage limit of no stated window states none",
 			response: kiroTranslatedResponse("You've reached your usage limit. Thanks for using Kiro - please return soon to continue building.", "UsageLimitReachedError", "CLIENT_ERROR"),
 			wantKind: providerkit.TurnFailureUsageLimited, wantWindow: providerkit.UsageWindowUnstated,
 		},

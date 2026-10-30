@@ -30,6 +30,41 @@ func newKimiOutputRig(t *testing.T) *kimiOutputRig {
 	return &kimiOutputRig{agent: newOfflineKimiAgent(t, sink), sink: sink}
 }
 
+func TestKimiRetryPrecedesTurnRelease(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []struct {
+		name     string
+		retained bool
+		failed   bool
+	}{{"success", false, false}, {"retained success", true, false}, {"failure", false, true}, {"retained failure", true, true}} {
+		t.Run(scenario.name, func(t *testing.T) {
+			t.Parallel()
+			rig := newKimiOutputRig(t)
+			rig.agent.sink = agent.NewOrderedProviderServices(agent.OutputQueueFor(rig.agent.sink), rig.agent.sink)
+			rig.startTurn(t, 0, contracts.KimiOriginUser)
+			if scenario.retained {
+				rig.sink.PersistErr = assert.AnError
+			}
+			op := "cancel_server_error"
+			if scenario.failed {
+				rig.feed(t, map[string]any{"type": contracts.KimiEventTurnEnded, "turnId": 0, "reason": contracts.KimiTurnEndFailed,
+					"error": map[string]any{"code": "provider.overloaded", "message": "the model is overloaded"}})
+				op = "schedule_server_error"
+			} else {
+				rig.feed(t, map[string]any{"type": contracts.KimiEventTurnEnded, "turnId": 0, "reason": contracts.KimiTurnEndCompleted})
+			}
+			rig.sink.PersistErr = nil
+			require.NoError(t, agent.FlushPendingOutput(rig.agent.sink))
+			assert.Equal(t, []string{"turn_end", op, "idle"}, providerkittest.TurnEndRetryAndIdleOpNames(rig.sink.Operations()))
+			if scenario.failed {
+				assert.Equal(t, 1, rig.sink.AutoScheduleCount())
+			} else {
+				assert.Zero(t, rig.sink.AutoScheduleCount())
+			}
+		})
+	}
+}
+
 func (r *kimiOutputRig) feed(t *testing.T, payload map[string]any) {
 	t.Helper()
 	r.agent.HandleOutput(kimiEventFrame(t, "session_1", payload))

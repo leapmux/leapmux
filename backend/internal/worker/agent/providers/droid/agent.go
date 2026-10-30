@@ -42,9 +42,19 @@ type Agent struct {
 
 	sessionID  string
 	turnActive bool
-	compaction *droidCompaction
-	settings   droidSettings
-	catalog    droidCatalog
+	// turnGeneration identifies admitted main input, including input that the
+	// native runtime has queued behind the preceding turn's final notifications.
+	turnGeneration uint64
+	// turnInputID is the client-supplied identity of admitted ordinary input.
+	// Its native user-message echo can establish ownership before any working state.
+	turnInputID string
+	// nativeTurnGeneration owns native activity until a working-state update or
+	// matching input echo identifies another turn. Trailing idle notifications
+	// keep their original owner.
+	nativeTurnGeneration uint64
+	compaction           *droidCompaction
+	settings             droidSettings
+	catalog              droidCatalog
 	// interruptRequested records that the user stopped the running main turn,
 	// so the failure that ends it does not retry. Interrupt sets it, and the
 	// next main turn start clears it.
@@ -298,7 +308,7 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		QueuePlacement: droidQueueEndOfTurn,
 	}
 	if !steer {
-		a.startTurn()
+		a.startTurnForInput(params.MessageID)
 	}
 	id := a.nextRequestID()
 	var ticket providerkit.SteerTicket
@@ -347,12 +357,18 @@ func (a *Agent) agentClock() quartz.Clock {
 // state publishes nothing, so a frame that is not a turn signal moves nothing.
 // A turn that starts clears the stop of the turn before it.
 func (a *Agent) startTurn() {
+	a.startTurnForInput("")
+}
+
+func (a *Agent) startTurnForInput(inputID string) {
 	a.Mu.Lock()
 	if a.turnActive {
 		a.Mu.Unlock()
 		return
 	}
 	a.turnActive = true
+	a.turnGeneration++
+	a.turnInputID = inputID
 	a.interruptRequested = false
 	seq := a.NextTurnSeq()
 	steerable := a.compaction == nil
@@ -360,11 +376,29 @@ func (a *Agent) startTurn() {
 	a.orderedSink().SetTurnState(agent.TurnState{Active: true, Steerable: steerable}, seq)
 }
 
+// startNativeTurn associates native activity with the admitted main turn.
+// Repeated working states keep its stop request and generation unchanged.
+func (a *Agent) startNativeTurn() {
+	a.startTurn()
+	a.Mu.Lock()
+	a.nativeTurnGeneration = a.turnGeneration
+	a.Mu.Unlock()
+}
+
 // endTurn marks no turn active and publishes the flag. A repeat of the
 // current state publishes nothing.
 func (a *Agent) endTurn() {
 	a.Mu.Lock()
-	if !a.turnActive {
+	generation := a.turnGeneration
+	a.Mu.Unlock()
+	a.endTurnGeneration(generation)
+}
+
+// endTurnGeneration releases only the input that owned the native ending.
+// A later admitted input can already occupy the queue when that ending arrives.
+func (a *Agent) endTurnGeneration(generation uint64) {
+	a.Mu.Lock()
+	if !a.turnActive || a.turnGeneration != generation {
 		a.Mu.Unlock()
 		return
 	}

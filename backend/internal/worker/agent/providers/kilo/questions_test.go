@@ -5,14 +5,13 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode/opencodetest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/kilo/kilotest"
 )
 
 func TestKiloAnswersAQuestionThroughTheBridge(t *testing.T) {
 	t.Parallel()
 	a := &Agent{}
-	opencodetest.AssertAnswersAQuestionThroughTheBridge(t, a, opencode.EventRoute, opencode.QuestionRoot,
+	kilotest.AssertAnswersAQuestionThroughTheBridge(t, a, EventRoute, QuestionRoot,
 		func(ctx context.Context, sink agent.ControlServices, baseURL string) {
 			a.SetContextForTest(ctx)
 			a.BeginQuestionsForTest(ctx, sink, "agent-1", baseURL)
@@ -21,5 +20,5 @@ func TestKiloAnswersAQuestionThroughTheBridge(t *testing.T) {
 
 func TestKiloRcMarkerNeverReachesTheDaemon(t *testing.T) {
 	t.Parallel()
-	opencodetest.AssertRcMarkerNeverReachesTheDaemon(t, "kilo", "KILO_CLIENT", kiloQuestionToolEnv, opencode.ACPArgs())
+	kilotest.AssertRcMarkerNeverReachesTheDaemon(t, "kilo", "KILO_CLIENT", kiloQuestionToolEnv, ACPArgs())
 }

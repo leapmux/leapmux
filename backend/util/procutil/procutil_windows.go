@@ -31,6 +31,18 @@ func HideConsoleWindow(cmd *exec.Cmd) {
 // Windows has no POSIX controlling terminal or job-control signal (SIGTTIN).
 func DetachFromTerminal(*exec.Cmd) {}
 
+// DetachManagedService requests a new process group and Job breakaway.
+// Nested breakaway can leave an ancestor Job association even when Start
+// succeeds. The child must verify that no Job owns it before starting service
+// work. Callers must propagate Start failures and must not attach a ProcessOwner
+// or a cancellation context that terminates the service.
+func DetachManagedService(cmd *exec.Cmd) {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_BREAKAWAY_FROM_JOB | windows.CREATE_NEW_PROCESS_GROUP
+}
+
 // JobObject wraps a Win32 job configured with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
 // The job owns its assigned process and that process's descendants.
 // Closing the handle or calling Terminate ends those processes.

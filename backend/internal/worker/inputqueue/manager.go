@@ -201,6 +201,9 @@ type Manager struct {
 	mu           sync.Mutex
 	coordinators map[string]*coordinator
 
+	// recoveryMu serializes recovery passes while native synchronization runs.
+	// It is independent of queue operations and lifecycle admission.
+	recoveryMu  sync.Mutex
 	lifecycleMu sync.Mutex
 	activity    sync.WaitGroup
 	stopped     bool
@@ -554,11 +557,11 @@ func (m *Manager) Delete(ctx context.Context, agentID, inputID string) (Snapshot
 		var snapshot Snapshot
 		var err error
 		snapshot, deleted, err = m.store.Delete(ctx, agentID, inputID)
+		if err == nil && IsAutoRetryKind(deleted.Kind) {
+			m.enqueueRemovedAutoRetriesLocked(agentID, autoRetryReasonUserDeleted, []autoRetryRow{autoRetryRowOf(deleted)})
+		}
 		return snapshot, err
 	}))
-	if err == nil && IsAutoRetryKind(deleted.Kind) {
-		logRemovedAutoRetries(agentID, autoRetryReasonUserDeleted, []autoRetryRow{autoRetryRowOf(deleted)})
-	}
 	return snapshot, err
 }
 
@@ -663,7 +666,26 @@ func (m *Manager) Retry(ctx context.Context, agentID, inputID string, confirmUnc
 		return Snapshot{}, err
 	}
 	m.enqueueSnapshotLocked(c, snapshot)
-	prepared, snapshot, err := m.store.PrepareRetry(ctx, agentID)
+	m.unlockAndPublish(c)
+	c.mu.Lock()
+	readiness, err := m.reconcileBeforeClaimLocked(ctx, c, dispatchPreparation{AgentID: agentID, Mode: dispatchRetry})
+	if err != nil || !readiness.Ready {
+		m.unlockAndPublish(c)
+		return readiness.Snapshot, err
+	}
+	if m.isStopped() {
+		m.unlockAndPublish(c)
+		return Snapshot{}, ErrManagerStopped
+	}
+	prepared, snapshot, err := m.store.prepare(ctx, readiness.preparation(dispatchPreparation{AgentID: agentID, Mode: dispatchRetry}))
+	if errors.Is(err, ErrNotHead) && readiness.Candidate.InputID != "" {
+		snapshot, err = m.store.Snapshot(ctx, agentID)
+		m.unlockAndPublish(c)
+		if err == nil {
+			m.drainIfReleased(agentID, snapshot)
+		}
+		return snapshot, err
+	}
 	if err != nil || prepared == nil {
 		m.unlockAndPublish(c)
 		if err == nil {
@@ -710,6 +732,16 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 	}
 	defer m.endActivity()
 	c := m.coordinator(agentID)
+	c.mu.Lock()
+	readiness, err := m.reconcileBeforeClaimLocked(ctx, c, dispatchPreparation{AgentID: agentID, InputID: inputID, Mode: dispatchSteering})
+	if err != nil || !readiness.Ready {
+		m.unlockAndPublish(c)
+		return readiness.Snapshot, err
+	}
+	m.unlockAndPublish(c)
+	if m.isStopped() {
+		return Snapshot{}, ErrManagerStopped
+	}
 	if m.dispatcher == nil || !m.dispatcher.SupportsSteering(agentID) {
 		return Snapshot{}, ErrSteeringUnsupported
 	}
@@ -717,7 +749,7 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 	m.dispatcher.PrepareSteer(agentID)
 	c.mu.Lock()
 	c.steerPolicy = policy
-	prepared, snapshot, err := m.store.PrepareSteer(ctx, agentID, inputID, policy.RowAtEcho)
+	prepared, snapshot, err := m.store.prepare(ctx, readiness.preparation(dispatchPreparation{AgentID: agentID, InputID: inputID, Mode: dispatchSteering, RowAtEcho: policy.RowAtEcho}))
 	if err != nil {
 		m.unlockAndPublish(c)
 		return Snapshot{}, err
@@ -1101,13 +1133,13 @@ func (m *Manager) RetireAgent(ctx context.Context, agentID string) error {
 	stopMaturityLocked(c)
 	snapshot, removed, err := m.store.cancelAutoRetries(ctx, agentID, autoRetryKinds...)
 	if err == nil && len(removed) > 0 {
+		m.enqueueRemovedAutoRetriesLocked(agentID, autoRetryReasonAgentClosed, removed)
 		m.enqueueSnapshotLocked(c, snapshot)
 	}
 	m.unlockAndPublish(c)
 	if err != nil {
 		return err
 	}
-	logRemovedAutoRetries(agentID, autoRetryReasonAgentClosed, removed)
 	return nil
 }
 
@@ -1118,6 +1150,8 @@ func (m *Manager) RecoverState(ctx context.Context) error {
 		return ErrManagerStopped
 	}
 	defer m.endActivity()
+	m.recoveryMu.Lock()
+	defer m.recoveryMu.Unlock()
 	snapshots, err := m.store.Recover(ctx)
 	if err != nil {
 		return err
@@ -1127,9 +1161,7 @@ func (m *Manager) RecoverState(ctx context.Context) error {
 	m.lifecycleMu.Lock()
 	if !m.stopped {
 		for _, snapshot := range snapshots {
-			if !snapshot.Paused {
-				m.recovered[snapshot.AgentID] = struct{}{}
-			}
+			m.recovered[snapshot.AgentID] = struct{}{}
 		}
 	}
 	m.lifecycleMu.Unlock()
@@ -1149,23 +1181,18 @@ func (m *Manager) DrainRecovered(ctx context.Context) error {
 		return ErrManagerStopped
 	}
 	defer m.endActivity()
-	m.lifecycleMu.Lock()
-	agentIDs := make([]string, 0, len(m.recovered))
-	for agentID := range m.recovered {
-		agentIDs = append(agentIDs, agentID)
-	}
-	m.lifecycleMu.Unlock()
-	var drainErr error
-	for _, agentID := range agentIDs {
-		// The hold ends here on every path. AgentResumer.Start calls this once,
-		// so an agent left in the set after a failed read would refuse every
-		// drain for the life of the process.
-		m.lifecycleMu.Lock()
-		delete(m.recovered, agentID)
-		m.lifecycleMu.Unlock()
+	m.recoveryMu.Lock()
+	defer m.recoveryMu.Unlock()
+	drainErr := m.reconcileRecovered(ctx)
+	for _, agentID := range m.recoveredAgentIDs() {
 		c := m.coordinator(agentID)
 		c.mu.Lock()
 		snapshot, err := m.store.Snapshot(ctx, agentID)
+		// Keep the hold through native sync, pause release and this final read.
+		// Remove it on failures too; the durable pause records the failure.
+		m.lifecycleMu.Lock()
+		delete(m.recovered, agentID)
+		m.lifecycleMu.Unlock()
 		if err == nil {
 			m.rearmMaturityLocked(c, snapshot)
 		}
@@ -1245,10 +1272,30 @@ func (m *Manager) drain(agentID string, c *coordinator) {
 		// recorded before it is spent. Only one that arrives during the provider
 		// call carries news that this loop still misses.
 		c.drainAgain = false
+		// Native state may outlive this Worker. Synchronize it before claiming a
+		// fallback or reserving transcript order, without holding the queue lock.
+		readiness, reconcileErr := m.reconcileBeforeClaimLocked(context.Background(), c, dispatchPreparation{AgentID: agentID, Mode: dispatchAutomatic})
+		if reconcileErr != nil || m.isStopped() {
+			c.draining = false
+			c.drainAgain = false
+			m.unlockAndPublish(c)
+			return
+		}
+		if !readiness.Ready {
+			m.rearmMaturityLocked(c, readiness.Snapshot)
+			if m.stopRoundAndPublish(c) {
+				return
+			}
+			continue
+		}
 		// The steer-row policy decides the reservation: a question answer that
 		// the active turn steers holds its row for the provider's echo, exactly
 		// as a manual steer does.
-		prepared, snapshot, err := m.store.PrepareDispatch(context.Background(), agentID, m.dispatcher.SteerPolicy(agentID).RowAtEcho)
+		prepared, snapshot, err := m.store.prepare(context.Background(), readiness.preparation(dispatchPreparation{AgentID: agentID, Mode: dispatchAutomatic, RowAtEcho: m.dispatcher.SteerPolicy(agentID).RowAtEcho}))
+		if errors.Is(err, ErrNotHead) && readiness.Candidate.InputID != "" {
+			m.unlockAndPublish(c)
+			continue
+		}
 		if err != nil {
 			m.enqueueFailureLocked(c, "agent input queue prepare failed", "agent_id", agentID, "error", err)
 			c.draining = false

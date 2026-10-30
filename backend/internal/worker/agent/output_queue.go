@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -31,9 +32,10 @@ type OutputWrite struct {
 
 // OutputTicket records whether one submitted write completed successfully.
 type OutputTicket struct {
-	write OutputWrite
-	done  atomic.Bool
-	queue atomic.Pointer[OutputQueue]
+	write           OutputWrite
+	done            atomic.Bool
+	queue           atomic.Pointer[OutputQueue]
+	synchronization *outputSynchronization
 }
 
 // Done reports whether this submitted operation completed successfully.
@@ -45,31 +47,193 @@ func (ticket *OutputTicket) Queue() *OutputQueue { return ticket.queue.Load() }
 func (queue *OutputQueue) executes(ticket *OutputTicket) bool {
 	queue.mu.Lock()
 	defer queue.mu.Unlock()
-	return queue.running && len(queue.pending) != 0 && queue.pending[0] == ticket
+	return queue.flushState.inFlight() && len(queue.pending) != 0 && queue.pending[0] == ticket
 }
 
 // OutputQueue keeps native writes, generated rows and dependent effects in submission order.
 // Failed writes remain at the head. No callback runs with mu held.
 type OutputQueue struct {
-	running   bool
-	idle      chan struct{}
-	mu        sync.Mutex
-	pending   []*OutputTicket
-	readyWake *OutputTicket
-	retry     *outputRetry
+	mu                sync.Mutex
+	pending           []*OutputTicket
+	readyWake         *OutputTicket
+	retry             *outputRetry
+	flushState        *outputFlushState
+	readinessChanged  chan struct{}
+	readinessRevision uint64
+}
+
+type outputFlushState struct {
+	done              chan struct{}
+	err               error
+	readinessRevision uint64
+}
+
+// The queue mutex resolves each synchronization outcome exactly once.
+type outputSynchronization struct {
+	done chan struct{}
+	err  error
+}
+
+func (result *outputSynchronization) resolveLocked(err error) {
+	select {
+	case <-result.done:
+		return
+	default:
+		result.err = err
+		close(result.done)
+	}
+}
+
+func (queue *OutputQueue) resolveSynchronization(result *outputSynchronization, err error) {
+	queue.mu.Lock()
+	defer queue.mu.Unlock()
+	result.resolveLocked(err)
+}
+
+func (state *outputFlushState) inFlight() bool {
+	if state == nil {
+		return false
+	}
+	select {
+	case <-state.done:
+		return false
+	default:
+		return true
+	}
 }
 
 // Append admits a complete batch before any of its callbacks can run.
 func (queue *OutputQueue) Append(writes ...OutputWrite) []*OutputTicket {
+	queue.mu.Lock()
+	defer queue.mu.Unlock()
+	return queue.appendLocked(writes...)
+}
+
+func (queue *OutputQueue) appendLocked(writes ...OutputWrite) []*OutputTicket {
 	tickets := make([]*OutputTicket, len(writes))
 	for i, write := range writes {
 		tickets[i] = &OutputTicket{write: write}
 		tickets[i].queue.Store(queue)
 	}
-	queue.mu.Lock()
-	queue.pending = append(queue.pending, tickets...)
-	queue.mu.Unlock()
+	if len(tickets) != 0 {
+		queue.pending = append(queue.pending, tickets...)
+		queue.notifyReadinessLocked()
+	}
 	return tickets
+}
+
+// Synchronize waits until a private marker reaches the head of this queue.
+// It does not wait for later writes. Cancellation removes only that marker.
+// Call it outside provider locks and outside callbacks draining this queue.
+func (queue *OutputQueue) Synchronize(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("output synchronization requires a context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	owner := NewOutputOwner()
+	result := &outputSynchronization{done: make(chan struct{})}
+	queue.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		queue.mu.Unlock()
+		return err
+	}
+	ticket := queue.appendLocked(OutputWrite{Owner: owner, Label: "synchronize output", Run: func() error { queue.resolveSynchronization(result, nil); return nil }})[0]
+	ticket.synchronization = result
+	state, claimed := queue.claimFlushLocked()
+	queue.mu.Unlock()
+	defer queue.ClearOwner(owner)
+	for {
+		if claimed {
+			go func(current *outputFlushState) { _ = queue.drain(current) }(state)
+		}
+		select {
+		case <-result.done:
+			return result.err
+		case <-ctx.Done():
+			select {
+			case <-result.done:
+				return result.err
+			default:
+				queue.resolveSynchronization(result, ctx.Err())
+				return result.err
+			}
+		case <-state.done:
+		}
+		select {
+		case <-result.done:
+			return result.err
+		default:
+		}
+
+		queue.mu.Lock()
+		// A readiness publisher can finish another drain before this waiter runs.
+		// Observe its result rather than silently retrying a retained real failure.
+		if latest := queue.flushState; latest != nil && latest != state {
+			state, claimed = latest, false
+			queue.mu.Unlock()
+			continue
+		}
+		if errors.Is(state.err, ErrOutputInFlight) && queue.readinessRevision == state.readinessRevision {
+			changed := queue.watchReadinessLocked()
+			queue.mu.Unlock()
+			select {
+			case <-result.done:
+				return result.err
+			case <-ctx.Done():
+				queue.resolveSynchronization(result, ctx.Err())
+				return result.err
+			case <-changed:
+			}
+			queue.mu.Lock()
+			if latest := queue.flushState; latest != nil && latest != state {
+				state, claimed = latest, false
+				queue.mu.Unlock()
+				continue
+			}
+		}
+		select {
+		case <-result.done:
+			queue.mu.Unlock()
+			return result.err
+		default:
+		}
+		state, claimed = queue.claimFlushLocked()
+		queue.mu.Unlock()
+	}
+}
+
+func (queue *OutputQueue) claimFlushLocked() (*outputFlushState, bool) {
+	if queue.flushState.inFlight() {
+		return queue.flushState, false
+	}
+	if len(queue.pending) == 0 {
+		return nil, false
+	}
+	state := &outputFlushState{done: make(chan struct{}), readinessRevision: queue.readinessRevision}
+	queue.flushState = state
+	queue.notifyChangeLocked()
+	return state, true
+}
+
+func (queue *OutputQueue) notifyReadinessLocked() {
+	queue.readinessRevision++
+	queue.notifyChangeLocked()
+}
+
+func (queue *OutputQueue) notifyChangeLocked() {
+	if queue.readinessChanged != nil {
+		close(queue.readinessChanged)
+		queue.readinessChanged = nil
+	}
+}
+
+func (queue *OutputQueue) watchReadinessLocked() <-chan struct{} {
+	if queue.readinessChanged == nil {
+		queue.readinessChanged = make(chan struct{})
+	}
+	return queue.readinessChanged
 }
 
 // FlushAfterReady publishes one readiness transition before attempting a flush.
@@ -77,7 +241,7 @@ func (queue *OutputQueue) Append(writes ...OutputWrite) []*OutputTicket {
 // Only the current head can wake an existing drainer that observed unready data.
 func (queue *OutputQueue) FlushAfterReady(tickets ...*OutputTicket) error {
 	queue.mu.Lock()
-	if queue.running && len(queue.pending) != 0 {
+	if queue.flushState.inFlight() && len(queue.pending) != 0 {
 		for _, ticket := range tickets {
 			if queue.pending[0] == ticket {
 				queue.readyWake = ticket
@@ -85,30 +249,32 @@ func (queue *OutputQueue) FlushAfterReady(tickets ...*OutputTicket) error {
 			}
 		}
 	}
+	queue.notifyReadinessLocked()
 	queue.mu.Unlock()
 	return queue.Flush()
 }
 
 // Flush attempts pending writes until the queue is empty or a write fails.
 // A concurrent or reentrant flush returns ErrOutputInFlight without waiting for the callback.
-func (queue *OutputQueue) Flush() (err error) {
+func (queue *OutputQueue) Flush() error {
 	queue.mu.Lock()
-	if queue.running {
-		queue.mu.Unlock()
-		return ErrOutputInFlight
-	}
-	if len(queue.pending) == 0 {
-		queue.mu.Unlock()
+	state, claimed := queue.claimFlushLocked()
+	queue.mu.Unlock()
+	if state == nil {
 		return nil
 	}
-	queue.running = true
-	queue.idle = make(chan struct{})
-	queue.mu.Unlock()
+	if !claimed {
+		return ErrOutputInFlight
+	}
+	return queue.drain(state)
+}
+
+func (queue *OutputQueue) drain(state *outputFlushState) (err error) {
 	finished := false
 	defer func() {
 		if !finished {
 			queue.mu.Lock()
-			queue.finishLocked()
+			queue.finishLocked(state, err)
 			queue.mu.Unlock()
 		}
 		if err != nil && !errors.Is(err, ErrOutputInFlight) {
@@ -119,7 +285,7 @@ func (queue *OutputQueue) Flush() (err error) {
 		queue.mu.Lock()
 		if len(queue.pending) == 0 {
 			queue.pending = nil
-			queue.finishLocked()
+			queue.finishLocked(state, nil)
 			finished = true
 			queue.mu.Unlock()
 			return nil
@@ -146,7 +312,7 @@ func (queue *OutputQueue) Flush() (err error) {
 			}
 			// Finish under the same lock as the readiness check. A publisher
 			// then either wakes this drainer or starts the next one itself.
-			queue.finishLocked()
+			queue.finishLocked(state, writeErr)
 			finished = true
 			queue.mu.Unlock()
 			return writeErr
@@ -161,17 +327,33 @@ func (queue *OutputQueue) Flush() (err error) {
 	}
 }
 
-func (queue *OutputQueue) finishLocked() {
-	queue.running = false
+func (queue *OutputQueue) finishLocked(state *outputFlushState, err error) {
 	queue.readyWake = nil
-	close(queue.idle)
+	if err != nil && !errors.Is(err, ErrOutputInFlight) {
+		for _, ticket := range queue.pending {
+			if ticket.synchronization != nil {
+				ticket.synchronization.resolveLocked(err)
+			}
+		}
+	}
+	state.err = err
+	state.readinessRevision = queue.readinessRevision
+	close(state.done)
+	queue.forgetFinishedFlushLocked()
+	queue.notifyChangeLocked()
+}
+
+func (queue *OutputQueue) forgetFinishedFlushLocked() {
+	if len(queue.pending) == 0 && !queue.flushState.inFlight() {
+		queue.flushState = nil
+	}
 }
 
 // HasPending reports queued writes or a callback that still runs.
 func (queue *OutputQueue) HasPending() bool {
 	queue.mu.Lock()
 	defer queue.mu.Unlock()
-	return queue.running || len(queue.pending) != 0
+	return queue.flushState.inFlight() || len(queue.pending) != 0
 }
 
 // HasOwner reports whether this buffer still owns a pending write.
@@ -221,8 +403,12 @@ func (queue *OutputQueue) ClearOwner(owner *OutputOwner) {
 			kept = append(kept, ticket)
 		}
 	}
+	if len(kept) != len(queue.pending) {
+		queue.notifyReadinessLocked()
+	}
 	clear(queue.pending[len(kept):])
 	queue.pending = kept
+	queue.forgetFinishedFlushLocked()
 }
 
 // MoveOwnerTo transfers this owner's pending writes after the destination's existing writes.
@@ -232,8 +418,8 @@ func (queue *OutputQueue) MoveOwnerTo(owner *OutputOwner, destination *OutputQue
 		return
 	}
 	queue.mu.Lock()
-	for queue.running {
-		idle := queue.idle
+	for queue.flushState.inFlight() {
+		idle := queue.flushState.done
 		queue.mu.Unlock()
 		<-idle
 		queue.mu.Lock()
@@ -244,6 +430,8 @@ func (queue *OutputQueue) MoveOwnerTo(owner *OutputOwner, destination *OutputQue
 				ticket.write.Owner = destinationOwner
 			}
 		}
+		queue.notifyReadinessLocked()
+		queue.forgetFinishedFlushLocked()
 		queue.mu.Unlock()
 		return
 	}
@@ -258,10 +446,17 @@ func (queue *OutputQueue) MoveOwnerTo(owner *OutputOwner, destination *OutputQue
 			kept = append(kept, ticket)
 		}
 	}
+	if len(moved) != 0 {
+		queue.notifyReadinessLocked()
+	}
 	clear(queue.pending[len(kept):])
 	queue.pending = kept
+	queue.forgetFinishedFlushLocked()
 	queue.mu.Unlock()
 	destination.mu.Lock()
 	destination.pending = append(destination.pending, moved...)
+	if len(moved) != 0 {
+		destination.notifyReadinessLocked()
+	}
 	destination.mu.Unlock()
 }

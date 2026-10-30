@@ -93,6 +93,7 @@ func newRetryTestAgent(t *testing.T, sessionID string, now time.Time) (*Agent, *
 		AgentID: "test-agent", ProviderName: "opencode", Ctx: t.Context(), Clock: clock, Stdin: stdin,
 	})
 	a.SetSessionIDForTest(sessionID)
+	a.SetPromptActiveForTest(true)
 	a.HooksForTest().PromptPrepared()
 	return a, sink, peer, clock, stdin
 }
@@ -551,24 +552,40 @@ func TestOpenCodeUserStopAfterALongWaitSchedulesNothing(t *testing.T) {
 	now := mustTime(t, "2026-10-28T00:56:46Z")
 	// The reader stops through Interrupt, or through the raw session/cancel
 	// that the worker service also reads as a stop.
-	for name, stop := range map[string]func(a *Agent) error{
-		"through Interrupt": func(a *Agent) error { return a.Interrupt(agent.StopContext{}) },
-		"through a raw session/cancel": func(a *Agent) error {
+	for name, tc := range map[string]struct {
+		stop    func(*Agent) error
+		cancels int
+	}{
+		"through Interrupt": {stop: func(a *Agent) error { return a.Interrupt(agent.StopContext{}) }, cancels: 1},
+		"through a raw session/cancel": {stop: func(a *Agent) error {
 			return a.SendRawInput([]byte(`{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"`+fixtureS500Session+`"}}`), agent.StopContext{})
-		},
+		}, cancels: 2},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			a, sink, _, _, stdin := newRetryTestAgent(t, fixtureS500Session, now)
 			observeAssistant(t, a, fixtureS500Session, "msg_waiting", now)
 			feedFrame(t, a, longWaitRetry(now.Add(5*time.Hour)))
-			require.NoError(t, stop(a))
-			assert.Equal(t, 2, sessionCancels(stdin))
+			require.NoError(t, tc.stop(a))
+			assert.Equal(t, tc.cancels, sessionCancels(stdin))
 
 			a.FinishPromptRequestForTest(fixtureS500Session, json.RawMessage(fixtureOKACP), nil)
 			assert.Equal(t, []string{"notification", "turn_end", "cancel_server_error"}, retryTimeline(sink))
 		})
 	}
+}
+
+func TestOpenCodeFailedContextClearSuppressesThePriorLongWait(t *testing.T) {
+	t.Parallel()
+	now := mustTime(t, "2026-10-28T00:56:46Z")
+	a, sink, _, _, _ := newRetryTestAgent(t, fixtureS500Session, now)
+	observeAssistant(t, a, fixtureS500Session, "msg_waiting", now)
+	feedFrame(t, a, longWaitRetry(now.Add(5*time.Hour)))
+	a.SetStdinForTest(agenttest.FailingStdin{})
+	_, err := a.ClearContext()
+	require.Error(t, err)
+	a.FinishPromptRequestForTest(fixtureS500Session, json.RawMessage(fixtureOKACP), nil)
+	assert.Zero(t, sink.AutoScheduleCount(), "the user's context-clear intent overrides the prior automatic stop")
 }
 
 // The next prompt starts without the long wait or the stop of the one before.

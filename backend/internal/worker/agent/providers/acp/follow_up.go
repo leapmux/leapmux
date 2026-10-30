@@ -33,9 +33,13 @@ func newACPFollowUpPrompt(sessionID, content string, attachments []*leapmuxv1.At
 // turn's end already arrived, it ends that turn too, with the retry verdict
 // that the end carried.
 func (b *Base) handoffQueuedAgentTurn(sessionID string) bool {
-	end, verdict, queued := b.takeQueuedAgentTurn(sessionID)
-	if queued && end != nil {
-		b.EndAgentTurnWithVerdict(end, verdict)
+	completion, queued := b.takeQueuedAgentTurn(sessionID)
+	if queued && completion != nil {
+		if completion.withoutRow {
+			b.EndAgentTurnWithoutRowWithVerdict(completion.verdict, RetainQueuedTurn)
+		} else {
+			b.EndAgentTurnWithVerdict(completion.frame, completion.verdict)
+		}
 	}
 	return queued
 }

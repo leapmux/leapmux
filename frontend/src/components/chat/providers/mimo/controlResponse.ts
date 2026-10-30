@@ -1,7 +1,7 @@
 import type { ControlResponseSummary } from '../../model/controlResponse'
 import type { PersistedControlResponse } from '../../persistedControlResponse'
 import { MIMO_EVENT } from '~/generated/contracts/mimo-protocol'
-import { OPENCODE_ANSWER_FIELD, OPENCODE_EVENT } from '~/generated/contracts/opencode-protocol'
+import { NATIVE_QUESTION_ANSWER_FIELD, NATIVE_QUESTION_EVENT } from '~/generated/contracts/native-questions'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { CONTROL_DECISION_WORDS, controlBehaviorDisplay, controlDecisionWords, joinAnswerLines, label, labeledAnswerLine, labelOrNull } from '../../persistedControlResponse'
 import { MIMO_PERMISSION_OPTIONS, mimoExtractControl } from './extractControl'
@@ -13,9 +13,9 @@ function permissionOptionWords(optionId: string): string | null {
 
 /** The answer lines of one question request, labeled by each question's header. */
 function questionAnswerText(request: Record<string, unknown> | undefined, result: Record<string, unknown>): string | null {
-  if (result[OPENCODE_ANSWER_FIELD.Rejected] === true)
+  if (result[NATIVE_QUESTION_ANSWER_FIELD.Rejected] === true)
     return 'Dismissed'
-  const rawAnswers = result[OPENCODE_ANSWER_FIELD.Answers]
+  const rawAnswers = result[NATIVE_QUESTION_ANSWER_FIELD.Answers]
   const answers: unknown[] = Array.isArray(rawAnswers)
     ? rawAnswers
     : []
@@ -62,8 +62,8 @@ export function mimoControlResponseSummary(cr: PersistedControlResponse): Contro
       return label(CONTROL_DECISION_WORDS.permission.deny)
     return labelOrNull(permissionOptionWords(pickString(outcome, 'optionId')))
   }
-  if (type === OPENCODE_EVENT.QuestionAsked && mimoExtractControl({ payload: cr.request ?? {} })?.kind === 'plan') {
-    return result[OPENCODE_ANSWER_FIELD.Rejected] === true
+  if (type === NATIVE_QUESTION_EVENT.QuestionAsked && mimoExtractControl({ payload: cr.request ?? {} })?.kind === 'plan') {
+    return result[NATIVE_QUESTION_ANSWER_FIELD.Rejected] === true
       ? label(CONTROL_DECISION_WORDS.plan.deny)
       : null
   }

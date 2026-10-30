@@ -31,8 +31,9 @@ const (
 // providerTree, and "." is the composition root.
 //
 // Only the ACP family shares code between providers. The ACP providers import
-// the base in acp, Kilo builds on the OpenCode family base, and OpenCode, Kilo,
-// ZCode and MiMo Code read the OpenCode-family session store. Every other edge
+// the base in acp. Kilo owns its native HTTP protocol.
+// Fork session readers share an internal store rather than a concrete provider.
+// Every other edge
 // between providers is a provider-specific shape that leaked into another
 // provider.
 var allowedProviderImports = map[string][]string{
@@ -61,22 +62,22 @@ var allowedProviderImports = map[string][]string{
 	"goose":                  {"acp"},
 	"grok":                   {"acp"},
 	"junie":                  {"acp"},
-	"kilo":                   {"acp", "opencode", "opencode/opencodestore"},
+	"kilo":                   {"acp"},
 	"kimi":                   nil,
 	"letta":                  nil,
 	"kiro":                   {"acp"},
-	"mimo":                   {"opencode/opencodestore"},
+	"mimo":                   nil,
 	"ohmypi":                 nil,
-	"opencode":               {"acp", "opencode/opencodestore"},
-	"opencode/opencodestore": nil,
-	"opencode/opencodestore/opencodestoretest": nil,
-	"opencode/opencodetest":                    {"acp"},
-	"pi":                                       nil,
-	"qoder":                                    nil,
-	"qwen":                                     {"acp"},
-	"reasonix":                                 {"acp"},
-	"zcode":                                    {"opencode/opencodestore"},
-	"zcode/zcodetest":                          nil,
+	"opencode":               {"acp"},
+	"internal/opencodestore": nil,
+	"internal/opencodestore/opencodestoretest": nil,
+	"kilo/kilotest":   {"acp"},
+	"pi":              nil,
+	"qoder":           nil,
+	"qwen":            {"acp"},
+	"reasonix":        {"acp"},
+	"zcode":           nil,
+	"zcode/zcodetest": nil,
 
 	"internal/providerkit":                       nil,
 	"internal/providerkit/providerkittest":       nil,

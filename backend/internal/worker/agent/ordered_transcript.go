@@ -548,6 +548,9 @@ func (writer orderedTranscript) PersistWorkerNotification(content MessageContent
 type orderedProviderServices struct {
 	ProviderServices
 	transcript orderedTranscript
+	// latestTurnSeq includes queued inactive publications. A later start can
+	// overtake them, so retry admission needs the submitted sequence as well.
+	latestTurnSeq atomic.Uint64
 }
 
 // NewOrderedProviderServices orders transcript writes and their dependent lifecycle effects.
@@ -599,20 +602,12 @@ func (services *orderedProviderServices) submitEffect(label string, effect func(
 	}
 }
 
-func (services *orderedProviderServices) after(label string, effect func()) {
-	captured := services.CaptureMessage(MessageContent{}, SpanInfo{})
-	err := services.transcript.submit(label, func() error {
-		if captured.Publication == nil || captured.Publication.Owner().IsCurrent() {
-			effect()
-		}
-		return nil
-	})
-	if err != nil && !errors.Is(err, ErrOutputInFlight) {
-		slog.Error("retain dependent output effect", "effect", label, "error", err)
-	}
-}
-
 func (services *orderedProviderServices) SetTurnState(state TurnState, seq uint64) {
+	for previous := services.latestTurnSeq.Load(); seq > previous; previous = services.latestTurnSeq.Load() {
+		if services.latestTurnSeq.CompareAndSwap(previous, seq) {
+			break
+		}
+	}
 	if state.Active {
 		services.ProviderServices.SetTurnState(state, seq)
 		return
@@ -638,22 +633,90 @@ func (services *orderedProviderServices) ReportSteersUncertain(count int) {
 	services.submitEffect("report uncertain steer", services.CaptureSteerReport(count, SteerOutcomeUncertain))
 }
 func (services *orderedProviderServices) ScheduleUsageLimitRetry(resetAt time.Time, sourcePayload []byte) {
-	sourcePayload = slices.Clone(sourcePayload)
-	writer := services.CaptureAutoRetry()
-	services.after("schedule usage-limit retry", func() { writer.ScheduleUsageLimitRetry(resetAt, sourcePayload) })
+	services.CaptureAutoRetry().ScheduleUsageLimitRetry(resetAt, sourcePayload)
+}
+func (services *orderedProviderServices) ScheduleUsageLimitRetryWithKey(key string, resetAt time.Time, sourcePayload []byte) {
+	services.CaptureAutoRetry().ScheduleUsageLimitRetryWithKey(key, resetAt, sourcePayload)
 }
 func (services *orderedProviderServices) ScheduleServerErrorRetry(sourcePayload []byte) {
-	sourcePayload = slices.Clone(sourcePayload)
-	writer := services.CaptureAutoRetry()
-	services.after("schedule server-error retry", func() { writer.ScheduleServerErrorRetry(sourcePayload) })
+	services.CaptureAutoRetry().ScheduleServerErrorRetry(sourcePayload)
 }
 func (services *orderedProviderServices) CancelUsageLimitRetry(reason string) {
-	writer := services.CaptureAutoRetry()
-	services.after("cancel usage-limit retry", func() { writer.CancelUsageLimitRetry(reason) })
+	services.CaptureAutoRetry().CancelUsageLimitRetry(reason)
+}
+func (services *orderedProviderServices) CancelUsageLimitRetryWithKey(key, reason string) {
+	services.CaptureAutoRetry().CancelUsageLimitRetryWithKey(key, reason)
 }
 func (services *orderedProviderServices) CancelServerErrorRetry(reason string) {
-	writer := services.CaptureAutoRetry()
-	services.after("cancel server-error retry", func() { writer.CancelServerErrorRetry(reason) })
+	services.CaptureAutoRetry().CancelServerErrorRetry(reason)
+}
+
+func (services *orderedProviderServices) CaptureAutoRetryOperation(completionSeq uint64, apply func(AutoRetryWriter)) func() error {
+	return services.ProviderServices.CaptureAutoRetryOperation(completionSeq, apply)
+}
+
+func (services *orderedProviderServices) CaptureAutoRetry() AutoRetryWriter {
+	return services.CaptureAutoRetryThroughTurn(services.latestTurnSeq.Load())
+}
+
+func (services *orderedProviderServices) CaptureAutoRetryThroughTurn(completionSeq uint64) AutoRetryWriter {
+	inner := services.ProviderServices.CaptureAutoRetryThroughTurn(completionSeq)
+	if ordered, ok := inner.(*orderedAutoRetryWriter); ok && ordered.services.transcript.queue == services.transcript.queue {
+		inner = ordered.inner
+	}
+	return &orderedAutoRetryWriter{services: services, inner: inner}
+}
+
+// orderedAutoRetryWriter keeps observation-time authority while every later
+// operation still follows the transcript rows in the same output queue.
+type orderedAutoRetryWriter struct {
+	services *orderedProviderServices
+	inner    AutoRetryWriter
+}
+
+func (writer *orderedAutoRetryWriter) ScheduleUsageLimitRetry(resetAt time.Time, payload []byte) {
+	payload = slices.Clone(payload)
+	writer.services.submitEffect("schedule usage-limit retry", func() error {
+		writer.inner.ScheduleUsageLimitRetry(resetAt, payload)
+		return nil
+	})
+}
+
+func (writer *orderedAutoRetryWriter) ScheduleUsageLimitRetryWithKey(key string, resetAt time.Time, payload []byte) {
+	payload = slices.Clone(payload)
+	writer.services.submitEffect("schedule keyed usage-limit retry", func() error {
+		writer.inner.ScheduleUsageLimitRetryWithKey(key, resetAt, payload)
+		return nil
+	})
+}
+
+func (writer *orderedAutoRetryWriter) ScheduleServerErrorRetry(payload []byte) {
+	payload = slices.Clone(payload)
+	writer.services.submitEffect("schedule server-error retry", func() error {
+		writer.inner.ScheduleServerErrorRetry(payload)
+		return nil
+	})
+}
+
+func (writer *orderedAutoRetryWriter) CancelUsageLimitRetry(reason string) {
+	writer.services.submitEffect("cancel usage-limit retry", func() error {
+		writer.inner.CancelUsageLimitRetry(reason)
+		return nil
+	})
+}
+
+func (writer *orderedAutoRetryWriter) CancelUsageLimitRetryWithKey(key, reason string) {
+	writer.services.submitEffect("cancel keyed usage-limit retry", func() error {
+		writer.inner.CancelUsageLimitRetryWithKey(key, reason)
+		return nil
+	})
+}
+
+func (writer *orderedAutoRetryWriter) CancelServerErrorRetry(reason string) {
+	writer.services.submitEffect("cancel server-error retry", func() error {
+		writer.inner.CancelServerErrorRetry(reason)
+		return nil
+	})
 }
 
 // ChildSink gives each child a stable queue and retains the child's original writer.

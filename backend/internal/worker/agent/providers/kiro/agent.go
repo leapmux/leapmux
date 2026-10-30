@@ -95,7 +95,7 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	if err := providerkit.TextOnlySteer("Kiro", attachments); err != nil {
 		return err
 	}
-	if !a.PromptActive() {
+	if !a.ConversationActive() {
 		return agent.ErrNoActiveTurn
 	}
 	ticket := a.steers.Add("")
@@ -154,6 +154,9 @@ const kiroCompactMethod = "_kiro/session/compact"
 // compactionState follows a context compaction that LeapMux asked for.
 // Guarded by Agent.stateMu.
 type compactionState struct {
+	// sessionID and work retain the original manual operation.
+	sessionID string
+	work      *acp.ClientWork
 	// id identifies the compaction that Kiro did not answer yet, and it is 0
 	// when none runs.
 	id uint64
@@ -169,46 +172,57 @@ type compactionState struct {
 // CompactContext asks Kiro to compact the context.
 //
 // Kiro compacts outside any turn: the request starts no turn marker, and its
-// response is the end. The input queue records the dispatch as a turn, so the
-// turn opens here and closes when the response arrives, and a "compacting"
-// notice shows meanwhile. Kiro states the summary itself, and the response
+// response is the end. A separate manual hold keeps the input queue busy
+// until the response arrives, and a "compacting" notice shows meanwhile.
+// Native conversation turns keep their own output and completion. Kiro states the summary itself, and the response
 // states a compaction that it refused or found nothing for.
 //
 // It returns once the request is written: a compaction takes as long as a
 // model call.
 func (a *Agent) CompactContext() error {
-	if a.PromptActive() {
-		return agent.ErrAgentBusy
-	}
-	a.stateMu.Lock()
-	if a.compaction.id != 0 {
-		a.stateMu.Unlock()
-		return fmt.Errorf("a Kiro context compaction is already pending")
-	}
-	id := a.compaction.lastID + 1
-	a.compaction = compactionState{id: id, lastID: id}
-	a.stateMu.Unlock()
-	if !a.BeginAgentTurn() {
-		a.dropCompaction(id)
-		return agent.ErrAgentBusy
-	}
-	// No start row: the manual compaction is live state until Kiro answers.
-	providerkit.PublishCompaction(a.Sink(), "manual")
-	err := a.WithSessionID(func(sessionID string) error {
-		params, err := json.Marshal(map[string]string{"sessionId": sessionID})
-		if err != nil {
-			return fmt.Errorf("marshal the Kiro compaction: %w", err)
+	return a.WithSessionID(func(sessionID string) error {
+		if a.PromptActive() {
+			return agent.ErrAgentBusy
 		}
-		return a.SendDetachedRequest(kiroCompactMethod, params, func(response json.RawMessage, err error) {
-			a.finishCompaction(id, response, err)
-		})
+		a.stateMu.Lock()
+		if a.compaction.id != 0 {
+			a.stateMu.Unlock()
+			return fmt.Errorf("a Kiro context compaction is already pending")
+		}
+		id := a.compaction.lastID + 1
+		a.compaction = compactionState{id: id, lastID: id, sessionID: sessionID}
+		a.stateMu.Unlock()
+		work := a.BeginClientWork()
+		if work == nil {
+			a.dropCompaction(id)
+			return agent.ErrAgentBusy
+		}
+		a.stateMu.Lock()
+		current := a.compaction.id == id
+		if current {
+			a.compaction.work = work
+		}
+		a.stateMu.Unlock()
+		if !current {
+			endCompactionWork(work)
+			return fmt.Errorf("the Kiro compaction was stopped before its request was sent")
+		}
+		// No start row: the manual compaction is live state until Kiro answers.
+		providerkit.PublishCompaction(a.Sink(), "manual")
+		params, err := json.Marshal(map[string]string{"sessionId": sessionID})
+		if err == nil {
+			err = a.SendDetachedRequest(kiroCompactMethod, params, func(response json.RawMessage, err error) {
+				a.finishCompaction(id, response, err)
+			})
+		}
+		if err != nil {
+			if dropped, ok := a.dropCompaction(id); ok {
+				endCompactionWork(dropped.work)
+			}
+			return err
+		}
+		return nil
 	})
-	if err != nil {
-		a.dropCompaction(id)
-		a.endCompactionTurn()
-		return err
-	}
-	return nil
 }
 
 // Interrupt stops the running turn.
@@ -220,14 +234,25 @@ func (a *Agent) CompactContext() error {
 // nothing. Kiro can still finish the summary, and then states it in its own
 // report.
 func (a *Agent) Interrupt(stop agent.StopContext) error {
-	err := a.Base.Interrupt(stop)
 	a.stateMu.Lock()
-	running := a.compaction.id
+	pending := a.compaction
 	a.stateMu.Unlock()
-	if a.dropCompaction(running) {
-		providerkit.EndCompaction(a.Sink())
-		a.persistStatus("Stopped waiting for the context compaction")
-		a.endCompactionTurn()
+	err := a.Base.Interrupt(stop)
+	if pending.id == 0 {
+		return err
+	}
+	if leaseErr := a.WithSessionID(func(sessionID string) error {
+		if pending.sessionID != sessionID {
+			return nil
+		}
+		if dropped, ok := a.dropCompaction(pending.id); ok {
+			providerkit.EndCompaction(a.Sink())
+			a.persistStatus("Stopped waiting for the context compaction")
+			endCompactionWork(dropped.work)
+		}
+		return nil
+	}); leaseErr != nil {
+		slog.Debug("ignore Kiro compaction stop without a current session", "agent_id", a.AgentID(), "error", leaseErr)
 	}
 	return err
 }
@@ -248,24 +273,24 @@ func (a *Agent) refreshContextUsage(sessionID string) {
 	}
 }
 
-// endCompactionTurn ends the turn that a manual compaction held, with no
-// turn-end row. A compaction's end schedules no retry, whatever its outcome: a
-// failed compaction leaves the task where the last turn left it, so no retry
-// may resume it.
-func (a *Agent) endCompactionTurn() {
-	a.EndAgentTurnWithoutRowWithVerdict(acp.TurnVerdict{Failure: providerkit.CompactionEnd()})
+// endCompactionWork releases only the manual operation. Its end schedules no
+// retry, whatever its outcome: a failed compaction leaves the previous task
+// unchanged, so an automatic retry must not resume it.
+func endCompactionWork(work *acp.ClientWork) {
+	work.End(acp.TurnVerdict{Failure: providerkit.CompactionEnd()})
 }
 
-// dropCompaction forgets the compaction id, and reports whether it was the
-// running one.
-func (a *Agent) dropCompaction(id uint64) bool {
+// dropCompaction takes the matching manual operation. Its identity never
+// transfers to a later native turn or compaction.
+func (a *Agent) dropCompaction(id uint64) (compactionState, bool) {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
 	if id == 0 || a.compaction.id != id {
-		return false
+		return compactionState{}, false
 	}
+	dropped := a.compaction
 	a.compaction = compactionState{lastID: a.compaction.lastID}
-	return true
+	return dropped, true
 }
 
 // kiroCompactReply is Kiro's answer to a compaction.
@@ -280,43 +305,47 @@ type kiroCompactReply struct {
 // changes nothing: its turn already ended, and a later turn is not its own.
 func (a *Agent) finishCompaction(id uint64, response json.RawMessage, err error) {
 	a.stateMu.Lock()
-	if a.compaction.id != id {
-		a.stateMu.Unlock()
-		slog.Debug("kiro answered a compaction that LeapMux dropped", "agent_id", a.AgentID(), "error", err)
-		return
-	}
-	summarized := a.compaction.summarized
-	a.compaction = compactionState{lastID: a.compaction.lastID}
-	sessionID := a.CurrentSessionID()
+	pending := a.compaction
 	a.stateMu.Unlock()
-	defer a.endCompactionTurn()
-	// Every end of the manual compaction ends its live state first: Kiro
-	// answers with a bare result and sends no end frame of its own, so this
-	// row is the stored end.
-	providerkit.EndCompaction(a.Sink())
-	if a.IsStopped() {
+	if pending.id != id || pending.sessionID == "" {
 		return
 	}
-	if err != nil {
-		a.persistAgentError(fmt.Sprintf("Kiro could not compact the context: %v", err))
-		return
-	}
-	var reply kiroCompactReply
-	if jsonErr := json.Unmarshal(response, &reply); jsonErr != nil {
-		a.persistAgentError(fmt.Sprintf("Kiro answered the compaction with an unreadable reply: %v", jsonErr))
-		return
-	}
-	switch {
-	case !reply.Success:
-		// Kiro refuses while a turn or another compaction runs, and when the
-		// model call fails.
-		a.persistStatus("Kiro did not compact the context")
-	case !summarized:
-		// Kiro succeeds with no report when the conversation holds nothing to
-		// summarize.
-		a.persistStatus("The conversation had nothing to compact")
-	default:
-		a.refreshContextUsage(sessionID)
+	if leaseErr := a.WithSessionID(func(sessionID string) error {
+		if sessionID != pending.sessionID {
+			return nil
+		}
+		completed, ok := a.dropCompaction(id)
+		if !ok {
+			slog.Debug("kiro answered a compaction that LeapMux dropped", "agent_id", a.AgentID(), "error", err)
+			return nil
+		}
+		defer endCompactionWork(completed.work)
+		// Kiro supplies no native end frame for manual compaction.
+		providerkit.EndCompaction(a.Sink())
+		if a.IsStopped() {
+			return nil
+		}
+		if err != nil {
+			a.persistAgentError(fmt.Sprintf("Kiro could not compact the context: %v", err))
+			return nil
+		}
+		var reply kiroCompactReply
+		if jsonErr := json.Unmarshal(response, &reply); jsonErr != nil {
+			a.persistAgentError(fmt.Sprintf("Kiro answered the compaction with an unreadable reply: %v", jsonErr))
+			return nil
+		}
+		switch {
+		case !reply.Success:
+			// Kiro refuses during native execution or when the model call fails.
+			a.persistStatus("Kiro did not compact the context")
+		case !completed.summarized:
+			a.persistStatus("The conversation had nothing to compact")
+		default:
+			a.refreshContextUsage(sessionID)
+		}
+		return nil
+	}); leaseErr != nil {
+		slog.Debug("ignore Kiro compaction completion without a current session", "agent_id", a.AgentID(), "error", leaseErr)
 	}
 }
 

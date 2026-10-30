@@ -6,7 +6,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
 )
 
 const PrimaryAgentCode = "code"
@@ -14,28 +13,31 @@ const PrimaryAgentCode = "code"
 func fallbackKiloPrimaryAgents() []*leapmuxv1.AvailableOption {
 	return []*leapmuxv1.AvailableOption{
 		{Id: PrimaryAgentCode, Name: providerkit.TitleCaseID(PrimaryAgentCode, "")},
-		{Id: opencode.PrimaryAgentPlan, Name: providerkit.TitleCaseID(opencode.PrimaryAgentPlan, "")},
+		{Id: PrimaryAgentPlan, Name: providerkit.TitleCaseID(PrimaryAgentPlan, "")},
 	}
 }
 
-// kiloStaticOptionGroups holds Kilo's static primary-agent group, the family's
-// Auto-approve group and Kilo Swarm. Registration gives these groups to both
+// kiloStaticOptionGroups holds Kilo's static primary-agent group, client
+// approval group and Kilo Swarm. Registration gives these groups to both
 // the registry and the ACP start.
-var kiloStaticOptionGroups = append(acp.StaticSecondaryGroup(acp.ModeChannelPrimaryAgent, fallbackKiloPrimaryAgents()), opencode.AutoApproveGroup, kiloSwarmGroup)
+var kiloStaticOptionGroups = append(acp.StaticSecondaryGroup(acp.ModeChannelPrimaryAgent, fallbackKiloPrimaryAgents()), AutoApproveGroup, kiloSwarmGroup)
 
 // kiloLocator finds the Kilo CLI on the user's PATH.
 var kiloLocator = launch.Binaries("kilo")
 
 // Registration states everything the worker knows about Kilo before any of
-// its agents runs. Kilo shares OpenCode's registration shape.
+// its agents runs.
 func Registration() agent.Registration {
-	return opencode.FamilyRegistration(opencode.FamilyRegistrationSpec{
-		Provider:     leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
-		Plugin:       kiloProvider{},
-		Start:        Start,
-		Locator:      kiloLocator,
-		OptionGroups: kiloStaticOptionGroups,
-		EnvModelKey:  "LEAPMUX_KILO_DEFAULT_MODEL",
-		EnvEffortKey: "LEAPMUX_KILO_DEFAULT_EFFORT",
-	})
+	return agent.Registration{
+		Provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, Plugin: kiloProvider{}, Start: Start, Locator: kiloLocator,
+		OptionGroups: kiloStaticOptionGroups, AdditionalOptionIDs: []string{agent.OptionIDEffort},
+		EnvModelKey: "LEAPMUX_KILO_DEFAULT_MODEL", EnvEffortKey: "LEAPMUX_KILO_DEFAULT_EFFORT",
+	}
 }
+
+const (
+	PrimaryAgentPlan  = "plan"
+	HiddenCompaction  = "compaction"
+	kiloHiddenTitle   = "title"
+	kiloHiddenSummary = "summary"
+)

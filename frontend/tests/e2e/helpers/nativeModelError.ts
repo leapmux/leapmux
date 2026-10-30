@@ -86,13 +86,7 @@ export async function exerciseModelError(
   await options.prepare?.()
   const marker = nativeErrorMarker()
   const error = options.error ?? { status: 400, code: 'invalid_request_error', message: marker }
-  // Validate the count before the turn starts, so a bad count fails here and not in a native retry loop.
-  failedTurnRequests([], 0, attempts)
-  const stepIndex = await context.modelScript.queue(...Array.from({ length: attempts }, () => ({ error })))
-  await sendMessage(context.page, context.modelScript.prompt('Run the native model error probe.'))
-  const status = await context.modelScript.waitForSteps(stepIndex + attempts)
-  const failed = failedTurnRequests(status.requests, stepIndex, attempts)
-  expect(failed.map(request => request.stepIndex)).toEqual(Array.from({ length: attempts }, (_, offset) => stepIndex + offset))
+  const failed = await runFailedModelAttempts(context, { error, attempts, prompt: 'Run the native model error probe.' })
   await options.answerFailure?.(error)
   // The idle wait requires the visible thinking indicator to clear, so no second indicator check follows.
   await waitForAgentIdle(context.page)
@@ -135,18 +129,32 @@ export async function exerciseTransientModelFailure(
   options: TransientModelFailureOptions,
 ): Promise<MockModelRequestRecord[]> {
   await options.prepare?.()
-  // Validate the count before the turn starts, so a bad count fails here and not in a native retry loop.
-  failedTurnRequests([], 0, options.attempts)
-  const stepIndex = await context.modelScript.queue(...Array.from({ length: options.attempts }, () => ({ error: options.error })))
-  await sendMessage(context.page, context.modelScript.prompt('Run the native transient failure probe.'))
-  const status = await context.modelScript.waitForSteps(stepIndex + options.attempts)
-  const failed = failedTurnRequests(status.requests, stepIndex, options.attempts)
-  expect(failed.map(request => request.stepIndex)).toEqual(Array.from({ length: options.attempts }, (_, offset) => stepIndex + offset))
+  const failed = await runFailedModelAttempts(context, {
+    error: options.error,
+    attempts: options.attempts,
+    prompt: 'Run the native transient failure probe.',
+  })
   await pauseQueueUnlessPaused(context.page)
   await options.answerFailure?.(options.error)
   await waitForAgentIdle(context.page)
   await deleteAutoRetryRow(context.page, options.retryKind ?? 'server error')
   await resumePausedQueue(context.page)
   await sendNativeAnswer(context, 'Reply once after the native transient failure.', `RECOVERED${nativeErrorMarker()}`)
+  return failed
+}
+
+/** Script and consume the exact failed attempts before a scenario checks the resulting turn. */
+async function runFailedModelAttempts(
+  context: NativeScenarioContext,
+  options: { error: MockModelError, attempts: number, prompt: string },
+): Promise<MockModelRequestRecord[]> {
+  const { error, attempts, prompt } = options
+  // Validate before sending a prompt, so an invalid count cannot enter a native retry loop.
+  failedTurnRequests([], 0, attempts)
+  const stepIndex = await context.modelScript.queue(...Array.from({ length: attempts }, () => ({ error })))
+  await sendMessage(context.page, context.modelScript.prompt(prompt))
+  const status = await context.modelScript.waitForSteps(stepIndex + attempts)
+  const failed = failedTurnRequests(status.requests, stepIndex, attempts)
+  expect(failed.map(request => request.stepIndex)).toEqual(Array.from({ length: attempts }, (_, offset) => stepIndex + offset))
   return failed
 }

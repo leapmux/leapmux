@@ -2575,6 +2575,79 @@ ${CODEX_PERMISSION_PRESET_KINDS.map(preset).join('\n')}
  */
 export const PROVIDER_PROTOCOLS = [
   {
+    name: 'native-questions',
+    goPrefix: 'NativeQuestion',
+    tsPrefix: 'NATIVE_QUESTION',
+    title: 'Native questions',
+    preamble: 'Native questions vocabulary comes from its contract. Routes remain provider-owned.',
+    tables: [
+      {
+        key: 'events',
+        goTable: 'Event',
+        tsTable: 'EVENT',
+        doc: 'events vocabulary consumed by worker and browser',
+        tsType: 'NativeQuestionEvent',
+        frameKind: 'name',
+      },
+      {
+        key: 'answerFields',
+        goTable: 'AnswerField',
+        tsTable: 'ANSWER_FIELD',
+        doc: 'answerFields vocabulary consumed by worker and browser',
+        tsType: 'NativeQuestionAnswerField',
+        goTagPin: 'backend/internal/worker/agent/providers/kilo/questions_contract_test.go',
+      },
+    ],
+  },
+  {
+    name: 'kilo-protocol',
+    goPrefix: 'Kilo',
+    tsPrefix: 'KILO',
+    title: 'Kilo',
+    preamble: 'Kilo vocabulary comes from its contract. Routes remain provider-owned.',
+    tables: [
+      {
+        key: 'events',
+        goTable: 'Event',
+        tsTable: 'EVENT',
+        doc: 'events vocabulary consumed by worker and browser',
+        tsType: 'KiloEvent',
+        frameKind: 'name',
+      },
+      {
+        key: 'statusTypes',
+        goTable: 'StatusType',
+        tsTable: 'STATUS_TYPE',
+        doc: 'statusTypes vocabulary consumed by worker and browser',
+        tsType: 'KiloStatusType',
+      },
+      {
+        key: 'audioMimeTypes',
+        goTable: 'AudioMIME',
+        tsTable: 'AUDIO_MIME',
+        doc: 'audioMimeTypes vocabulary consumed by worker and browser',
+        subsetOf: 'attachment-media.audioMimeTypes',
+      },
+    ],
+  },
+  {
+    name: 'client-approval',
+    goPrefix: 'ClientApproval',
+    tsPrefix: 'CLIENT_APPROVAL',
+    title: 'LeapMux client approval',
+    preamble: 'LeapMux owns this approval option. Each provider keeps its native request eligibility and deny rules.',
+    tables: [
+      {
+        key: 'options',
+        goTable: 'Option',
+        tsTable: 'OPTION',
+        tsType: 'ClientApprovalOptionID',
+        owner: 'LeapMux chose these',
+        doc: 'client approval option keys used by worker settings and browser presets',
+      },
+    ],
+  },
+  {
     name: 'commandcode-protocol',
     goPrefix: 'CommandCode',
     tsPrefix: 'COMMAND_CODE',
@@ -3579,22 +3652,7 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'OpenCodeStatusType',
         doc: 'status.type values of session.status that both sides read',
       },
-      {
-        key: 'answerFields',
-        goTable: 'AnswerField',
-        tsTable: 'ANSWER_FIELD',
-        tsType: 'OpenCodeAnswerField',
-        goTagPin: 'backend/internal/worker/agent/providers/opencode/questions_contract_test.go',
-        doc: 'fields of the answer envelope the browser writes and the worker reads',
-      },
-      {
-        key: 'options',
-        goTable: 'Option',
-        tsTable: 'OPTION',
-        tsType: 'OpenCodeOptionID',
-        owner: 'LeapMux chose these',
-        doc: 'option keys for the family settings both sides address',
-      },
+
     ],
   },
   {

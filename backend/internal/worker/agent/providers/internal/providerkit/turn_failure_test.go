@@ -414,7 +414,7 @@ func TestRetryAfterInstant(t *testing.T) {
 			wantOK:  false,
 		},
 		{
-			name:    "out of bounds",
+			name:    "a delay above the maximum",
 			headers: map[string]string{"retry-after": "9999999999"},
 			wantOK:  false,
 		},
@@ -434,5 +434,64 @@ func TestRetryAfterInstant(t *testing.T) {
 				assert.Equal(t, observedAt.Add(tt.wantAdd), got)
 			}
 		})
+	}
+}
+
+type retryPayloadRecorder struct{ payload []byte }
+
+func (w *retryPayloadRecorder) ScheduleServerErrorRetry(payload []byte) { w.payload = payload }
+func (w *retryPayloadRecorder) ScheduleUsageLimitRetry(_ time.Time, payload []byte) {
+	w.payload = payload
+}
+func (w *retryPayloadRecorder) ScheduleUsageLimitRetryWithKey(_ string, _ time.Time, payload []byte) {
+	w.payload = payload
+}
+func (*retryPayloadRecorder) CancelUsageLimitRetryWithKey(string, string) {}
+func (*retryPayloadRecorder) CancelServerErrorRetry(string)               {}
+func (*retryPayloadRecorder) CancelUsageLimitRetry(string)                {}
+
+func TestApplyTurnFailureCancellationDoesNotCopyAnUnusedPayload(t *testing.T) {
+	payload := make([]byte, 1024*1024)
+	writer := &retryPayloadRecorder{}
+	for _, failure := range []TurnFailure{
+		{}, {Kind: TurnFailureUsageLimited}, {Kind: TurnFailureUsageLimited, Window: UsageWindowLonger}, {Kind: TurnFailureBillingBlocked, Cause: "billing"}, {Kind: TurnFailureKind(-1)},
+	} {
+		small := testing.AllocsPerRun(10, func() { ApplyTurnFailure(writer, failure, nil) })
+		large := testing.AllocsPerRun(10, func() { ApplyTurnFailure(writer, failure, payload) })
+		assert.Equal(t, small, large, "cancellation must allocate no copy of an unused payload: %+v", failure)
+	}
+}
+
+func TestApplyTurnFailureSchedulingOwnsItsPayload(t *testing.T) {
+	t.Parallel()
+	for _, failure := range []TurnFailure{
+		{Kind: TurnFailureTransient}, {Kind: TurnFailureRateLimited}, {Kind: TurnFailureUsageLimited, Window: UsageWindowWeekOrLess}, {Kind: TurnFailureUsageLimited, ResetAt: time.Unix(1, 0)},
+	} {
+		writer := &retryPayloadRecorder{}
+		payload := []byte(`{"original":true}`)
+		ApplyTurnFailure(writer, failure, payload)
+		payload[0] = '!'
+		assert.JSONEq(t, `{"original":true}`, string(writer.payload))
+	}
+}
+
+func TestTurnFailureRetryDisposition(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		failure TurnFailure
+		want    RetryDisposition
+	}{
+		{TurnFailure{}, RetryNone},
+		{TurnFailure{Kind: TurnFailureKind(-1)}, RetryNone},
+		{TurnFailure{Kind: TurnFailureKind(100)}, RetryNone},
+		{TurnFailure{Kind: TurnFailureTransient}, RetryServerError},
+		{TurnFailure{Kind: TurnFailureRateLimited}, RetryServerError},
+		{TurnFailure{Kind: TurnFailureUsageLimited, ResetAt: time.Unix(1, 0), Window: UsageWindowLonger}, RetryUsageLimit},
+		{TurnFailure{Kind: TurnFailureUsageLimited, Window: UsageWindowWeekOrLess}, RetryServerError},
+		{TurnFailure{Kind: TurnFailureUsageLimited, Window: UsageWindowLonger}, RetryNone},
+		{TurnFailure{Kind: TurnFailureUsageLimited}, RetryNone},
+		{TurnFailure{Kind: TurnFailureBillingBlocked, ResetAt: time.Unix(1, 0)}, RetryNone},
+	} {
+		assert.Equal(t, tc.want, tc.failure.RetryDisposition(), "%+v", tc.failure)
 	}
 }

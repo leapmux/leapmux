@@ -26,6 +26,9 @@ type StartFunc func(ctx context.Context, opts Options, sink ProviderServices) (A
 // static catalog, and its option policy. Each provider states one Registration,
 // and NewRegistry collects them; nothing mutates a Registration after that.
 type Registration struct {
+	// ReconcileBeforeQueueDispatch requires native execution synchronization
+	// before queued input is claimed. False keeps ordinary process behavior.
+	ReconcileBeforeQueueDispatch bool
 	// ShutdownGrace permits the native relay to drain before forced process cleanup.
 	// Zero selects the common process grace.
 	ShutdownGrace time.Duration

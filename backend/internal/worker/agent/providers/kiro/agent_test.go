@@ -11,6 +11,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
@@ -574,13 +575,17 @@ func TestKiroInterruptWithoutACompactionLeavesKirosTurnToItsMarker(t *testing.T)
 func TestKiroTurnOfKirosOwnDuringACompactionKeepsTheCompactionTurn(t *testing.T) {
 	t.Parallel()
 	release, closeRelease := releaseOnce(t)
-	a, _, _ := newKiroAgent(t, agent.Options{}, heldCompaction(t, release, `{"success":false}`))
+	a, sink, _ := newKiroAgent(t, agent.Options{}, heldCompaction(t, release, `{"success":false}`))
 	require.NoError(t, a.CompactContext())
 
 	a.HandleOutput(turnStart(t))
 	a.HandleOutput(messageChunk(t, "A workflow finished.", agentInitiated))
 	a.HandleOutput(turnEnd(t, "end_turn"))
 
+	assert.Len(t, turnEnds(sink.Messages()), 1, "native work keeps its own divider during manual compaction")
+	a.HandleOutput(turnStart(t))
+	a.HandleOutput(turnEnd(t, "end_turn"))
+	assert.Len(t, turnEnds(sink.Messages()), 2, "a second native turn keeps a separate divider even without a chunk")
 	assert.True(t, a.PromptActive(), "only the answer of the compaction ends the turn that it holds")
 	closeRelease()
 	waitForIdle(t, a)
@@ -762,4 +767,91 @@ func kiroAssembledTexts(t *testing.T, sink *agenttest.ControlSink) []string {
 		}
 	}
 	return texts
+}
+
+func TestKiroCompactionCompletionDoesNotDrainAnActiveNativeTurn(t *testing.T) {
+	t.Parallel()
+	release, closeRelease := releaseOnce(t)
+	a, sink, _ := newKiroAgent(t, agent.Options{}, heldCompaction(t, release, `{"success":false}`))
+	require.NoError(t, a.CompactContext())
+	a.stateMu.Lock()
+	id := a.compaction.id
+	a.stateMu.Unlock()
+	a.HandleOutput(turnStart(t))
+	a.HandleOutput(messageChunk(t, "The native turn still runs.", agentInitiated))
+	a.finishCompaction(id, json.RawMessage(`{"success":false}`), nil)
+	assert.True(t, a.AgentTurnActive(), "the manual reply owns no native conversation turn")
+	assert.True(t, a.PromptActive())
+	assert.Empty(t, turnEnds(sink.Messages()))
+	for _, message := range sink.Messages() {
+		assert.NotContains(t, string(message.Content), "The native turn still runs.", "manual completion must not finalize native text")
+	}
+	a.HandleOutput(turnEnd(t, "end_turn"))
+	assert.False(t, a.PromptActive())
+	assert.Len(t, turnEnds(sink.Messages()), 1)
+	closeRelease()
+}
+
+func TestKiroCompactionCallbackCannotReportIntoAReplacementSession(t *testing.T) {
+	t.Parallel()
+	release, closeRelease := releaseOnce(t)
+	a, sink, _ := newKiroAgent(t, agent.Options{}, heldCompaction(t, release, `{"success":false}`))
+	require.NoError(t, a.CompactContext())
+	a.stateMu.Lock()
+	id := a.compaction.id
+	a.stateMu.Unlock()
+	// A session swap installs its new ID before the provider reset runs.
+	a.SetSessionIDForTest("replacement")
+	a.finishCompaction(id, json.RawMessage(`{"success":false}`), nil)
+	assert.Empty(t, statusTexts(sink))
+	closeRelease()
+}
+
+type kiroCompactionReplyBarrier struct {
+	*agenttest.ControlSink
+	entered chan struct{}
+	release <-chan struct{}
+}
+
+func (sink *kiroCompactionReplyBarrier) PersistLeapMuxNotification(notice map[string]any) {
+	if notice[contracts.NotificationFieldText] == "Kiro did not compact the context" {
+		close(sink.entered)
+		<-sink.release
+	}
+	sink.ControlSink.PersistLeapMuxNotification(notice)
+}
+
+func TestKiroCompactionCompletionKeepsItsOriginalSessionLease(t *testing.T) {
+	t.Parallel()
+	nativeReply, releaseNative := releaseOnce(t)
+	a, sink, _ := newKiroAgent(t, agent.Options{}, heldCompaction(t, nativeReply, `{"success":false}`))
+	require.NoError(t, a.CompactContext())
+	a.stateMu.Lock()
+	id := a.compaction.id
+	a.stateMu.Unlock()
+	release, unblock := releaseOnce(t)
+	barrier := &kiroCompactionReplyBarrier{ControlSink: sink, entered: make(chan struct{}), release: release}
+	a.SetSinkForTest(agent.NewProviderServices(barrier))
+	done := make(chan struct{})
+	go func() { defer close(done); a.finishCompaction(id, json.RawMessage(`{"success":false}`), nil) }()
+	select {
+	case <-barrier.entered:
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the manual reply did not reach its status write")
+	}
+	locked := a.SessionMuForTest().TryLock()
+	if locked {
+		a.SessionMuForTest().Unlock()
+	}
+	assert.False(t, locked, "a context clear cannot replace the session while its manual reply is being reported")
+	unblock()
+	select {
+	case <-done:
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the manual reply did not finish")
+	}
+	require.True(t, a.SessionMuForTest().TryLock())
+	a.SessionMuForTest().Unlock()
+	assert.False(t, a.PromptActive())
+	releaseNative()
 }

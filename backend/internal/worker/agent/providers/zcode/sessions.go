@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode/opencodestore"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/opencodestore"
 )
 
 // The native preparation command resolves the app-server's shared database.

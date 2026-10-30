@@ -23,22 +23,19 @@ type JSONRPCProcess struct {
 	Correlator[int64]
 	nextReqID atomic.Int64
 	// A nil encoder selects newline framing. Native Copilot selects Content-Length framing.
+	// Encoders run during registry admission and must not wait or acquire process locks.
 	FrameMessage func([]byte) []byte
 
-	// outstandingMu guards outstandingControls and withdrawGeneration.
+	// outstandingMu guards outstandingControls.
 	// It also protects each record's mutable state.
 	outstandingMu sync.Mutex
 	// outstandingControls holds unanswered control requests by LeapMux request ID.
-	// Publication adds an entry. An answer or withdrawal removes it.
-	// A failed write restores the entry only when no bytes reached the provider.
+	// Publication adds an entry. A response claim retains it until delivery settles.
+	// A definite failed write leaves an unwithdrawn request answerable.
 	// These rules keep native requests and browser controls consistent.
 	outstandingControls map[string]*outstandingControlRequest
-	// withdrawGeneration distinguishes withdrawal from an answer during publication.
-	// Both paths remove a request. Only withdrawal increments this counter.
-	// A presence check alone can cancel a control that the reader already answered.
-	withdrawGeneration uint64
-	approvalMu         sync.Mutex
-	approvalQueue      chan *controlApprovalBatch
+	approvalMu          sync.Mutex
+	approvalQueue       chan *controlApprovalBatch
 }
 
 // frameJSONRPCMessage supplies the same framing for waiting and detached writes.
@@ -57,18 +54,11 @@ func (b *JSONRPCProcess) writeJSONRPCMessage(data []byte) error {
 	return b.WriteStdin(b.frameJSONRPCMessage(data))
 }
 
-// SendRawInput preserves provider JSON inside the selected frame and removes its answered control.
-// Remove the control before the write because withdrawal can occur during that write.
-// A write that delivers no bytes restores the control for another answer.
-// ErrDeliveryUncertain leaves it removed because the provider can already hold the answer.
-// Restoring it in that case can send a second answer to a retired request.
+// SendRawInput preserves provider JSON and claims each registered control response.
+// Providers with their own registry may forward an unregistered response. A
+// response already claimed here cannot be answered by another writer.
 func (b *JSONRPCProcess) SendRawInput(data []byte, stop agent.StopContext) error {
-	restore, _ := b.takeOutstandingControl(data)
-	err := b.writeRawFrame(data)
-	if err != nil && !errors.Is(err, agent.ErrDeliveryUncertain) {
-		restore()
-	}
-	return err
+	return b.sendRawControlResponse(data, false)
 }
 
 func (b *JSONRPCProcess) writeRawFrame(data []byte) error {
@@ -191,6 +181,18 @@ func (b *JSONRPCProcess) sendRequest(ctx context.Context, method string, params 
 }
 
 func (b *JSONRPCProcess) SendDetachedRequest(method string, params json.RawMessage, handle func(json.RawMessage, error)) error {
+	return b.sendDetachedRequest(method, params, handle, false)
+}
+
+// SendDetachedRequestWithUncertainDelivery retains response ownership after a
+// partial write. The caller must retain its pending operation when the error
+// wraps ErrDeliveryUncertain. The callback still receives the eventual result
+// or process failure, so a possibly accepted request cannot be dispatched twice.
+func (b *JSONRPCProcess) SendDetachedRequestWithUncertainDelivery(method string, params json.RawMessage, handle func(json.RawMessage, error)) error {
+	return b.sendDetachedRequest(method, params, handle, true)
+}
+
+func (b *JSONRPCProcess) sendDetachedRequest(method string, params json.RawMessage, handle func(json.RawMessage, error), retainUncertain bool) error {
 	reqID := b.nextReqID.Add(1)
 	ch, release, err := b.Register(reqID)
 	if err != nil {
@@ -201,9 +203,10 @@ func (b *JSONRPCProcess) SendDetachedRequest(method string, params json.RawMessa
 		release()
 		return &jsonRPCRequestNotSentError{cause: fmt.Errorf("marshal request: %w", err)}
 	}
-	if err := b.writeJSONRPCMessage(data); err != nil {
+	writeErr := b.writeJSONRPCMessage(data)
+	if writeErr != nil && (!retainUncertain || !errors.Is(writeErr, agent.ErrDeliveryUncertain)) {
 		release()
-		return jsonRPCRequestWriteError(err)
+		return jsonRPCRequestWriteError(writeErr)
 	}
 	go func() {
 		defer release()
@@ -213,6 +216,9 @@ func (b *JSONRPCProcess) SendDetachedRequest(method string, params json.RawMessa
 		}
 		handle(resp, err)
 	}()
+	if writeErr != nil {
+		return jsonRPCRequestWriteError(writeErr)
+	}
 	return nil
 }
 
@@ -463,6 +469,14 @@ func (b *JSONRPCProcess) OutstandingControlForTest(requestID string) bool {
 	defer b.outstandingMu.Unlock()
 	_, ok := b.outstandingControls[requestID]
 	return ok
+}
+
+// ControlResponsePendingForTest reports an in-flight response to a registered request.
+func (b *JSONRPCProcess) ControlResponsePendingForTest(requestID string) bool {
+	b.outstandingMu.Lock()
+	defer b.outstandingMu.Unlock()
+	record := b.outstandingControls[requestID]
+	return record != nil && record.response != nil
 }
 
 // OutstandingControlCountForTest returns how many control requests the

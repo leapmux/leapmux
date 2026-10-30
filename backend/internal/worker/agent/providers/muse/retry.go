@@ -49,7 +49,7 @@ type museTurnError struct {
 
 // decodeMuseTurnError reads the error of a turn/completed. It returns false
 // when the completion states none, as a synthesized host death does: that
-// terminal carries only a reason. Each field reads on its own, so one malformed
+// completion carries only a reason. Each field reads on its own, so one malformed
 // field does not discard the others.
 func decodeMuseTurnError(raw json.RawMessage) (museTurnError, bool) {
 	var fields struct {
@@ -82,7 +82,7 @@ func decodeMuseTurnError(raw json.RawMessage) (museTurnError, bool) {
 // the completion.
 //
 // The order:
-//  1. A terminal other than failed, a cancelled turn included, gives NotRetryable.
+//  1. An outcome other than failed, a cancelled turn included, gives NotRetryable.
 //  2. A definitive vendor verdict on the message.
 //  3. A quota failure gives a usage-limit retry at its reset, when that reset is
 //     plausible, and the window rule otherwise.

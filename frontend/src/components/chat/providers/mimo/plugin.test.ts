@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { MCP_ELICITATION_ACTION } from '~/generated/contracts/mcp-elicitation'
 import { MIMO_DEFAULT_MODE, MIMO_MODE, MIMO_OPTION, MIMO_PERMISSION_POLICY, MIMO_STATUS_TYPE, MIMO_TOOL } from '~/generated/contracts/mimo-protocol'
-import { OPENCODE_EVENT } from '~/generated/contracts/opencode-protocol'
+import { NATIVE_QUESTION_EVENT } from '~/generated/contracts/native-questions'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { assembledMessageRow } from '~/test-support/assembledMessages'
 import { mimoFrame, openingFrame, parsedFrame, statusFrame, TEST_SESSION, toolFrame } from '~/test-support/mimoFixtures'
@@ -102,7 +102,7 @@ describe('mimo plugin controls', () => {
 
   it('routes a question to the question card and a plan approval to the plan card', () => {
     const question = {
-      type: OPENCODE_EVENT.QuestionAsked,
+      type: NATIVE_QUESTION_EVENT.QuestionAsked,
       properties: {
         id: 'que_1',
         questions: [
@@ -114,7 +114,7 @@ describe('mimo plugin controls', () => {
     // The browser reads the tool name the worker recorded, not the question key,
     // so the key here is only the one MiMo sends.
     const plan = {
-      type: OPENCODE_EVENT.QuestionAsked,
+      type: NATIVE_QUESTION_EVENT.QuestionAsked,
       properties: {
         id: 'que_2',
         questions: [
@@ -131,7 +131,7 @@ describe('mimo plugin controls', () => {
 
   describe('an MCP elicitation', () => {
     const elicitation = {
-      type: OPENCODE_EVENT.QuestionAsked,
+      type: NATIVE_QUESTION_EVENT.QuestionAsked,
       properties: {
         id: 'que_3',
         questions: [
@@ -184,7 +184,7 @@ describe('mimo plugin controls', () => {
 
     it('leaves the saved answer to a question in the question words', () => {
       const question = {
-        type: OPENCODE_EVENT.QuestionAsked,
+        type: NATIVE_QUESTION_EVENT.QuestionAsked,
         properties: {
           id: 'que_1',
           questions: [
@@ -213,7 +213,7 @@ describe('mimo plugin controls', () => {
   // the ones the shared OpenCode question wire reads and writes.
   describe('a question', () => {
     const question = {
-      type: OPENCODE_EVENT.QuestionAsked,
+      type: NATIVE_QUESTION_EVENT.QuestionAsked,
       properties: {
         id: 'que_1',
         questions: [

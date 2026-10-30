@@ -1,6 +1,6 @@
 import type { ControlResponseSummary } from '../../model/controlResponse'
 import type { PersistedControlResponse } from '../../persistedControlResponse'
-import { OPENCODE_EVENT } from '~/generated/contracts/opencode-protocol'
+import { NATIVE_QUESTION_EVENT } from '~/generated/contracts/native-questions'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { firstNonEmpty, joinAnswerLines, labeledAnswerLine, labelOrNull } from '../../persistedControlResponse'
 import { acpControlResponseSummary } from '../acp/controlResponse'
@@ -59,7 +59,7 @@ function isOpencodeQuestionResponse(response: Record<string, unknown> | undefine
  * labeled by position rather than the missing question headers.
  */
 export function openCodeControlResponseSummary(cr: PersistedControlResponse): ControlResponseSummary | null {
-  if (pickString(cr.request, 'type', '') === OPENCODE_EVENT.QuestionAsked || isOpencodeQuestionResponse(cr.response))
+  if (pickString(cr.request, 'type', '') === NATIVE_QUESTION_EVENT.QuestionAsked || isOpencodeQuestionResponse(cr.response))
     return labelOrNull(openCodeQuestionAnswersText(cr.request, cr.response))
   return acpControlResponseSummary(cr)
 }

@@ -565,11 +565,13 @@ func (a *Agent) endNativeTurn(raw []byte, aborted bool, observedAt time.Time) {
 	// The records belong to the turn that ends here. An idle that ends no turn
 	// drops them too, so a later turn cannot read them.
 	failure, autoSwitch := a.takeNativeTurnFailure()
-	ended, verdict := a.releaseNativeTurn()
-	if !ended {
+	ending := a.releaseNativeTurn()
+	defer providerkit.PublishTurnStateTo(a.sink, ending.state, ending.sequence)
+	if !ending.ended {
 		// Idle before a turn or after its end supplies no new transcript boundary.
 		return
 	}
+	writer := a.sink.CaptureAutoRetryThroughTurn(ending.sequence)
 	// A segment the runtime never finished ends with the turn. It reads as interrupted
 	// only when the turn was: a turn that ended by itself and left a segment open
 	// produced all the text it was going to.
@@ -589,7 +591,8 @@ func (a *Agent) endNativeTurn(raw []byte, aborted bool, observedAt time.Time) {
 	if err := a.sink.PersistTurnEnd(agent.WithToolUseCount(content, uses), agent.SpanInfo{}); err != nil {
 		slog.Error("Persist Copilot turn end", "agent_id", a.AgentID(), "error", err)
 	}
-	a.applyNativeTurnVerdict(failure, autoSwitch, aborted, observedAt, verdict)
+	applyNativeTurnVerdict(writer, copilotTurnEnd{failure: failure, autoSwitch: autoSwitch,
+		aborted: aborted, observedAt: observedAt, verdict: ending.verdict})
 }
 
 // closeOpenNativeTools ends every call the runtime started and never finished.

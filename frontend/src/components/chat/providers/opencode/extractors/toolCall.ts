@@ -108,7 +108,7 @@ function openCodeRefusal(facts: ACPToolFacts, refusals: OpenCodeFamilyRefusals):
 const REGISTRY_ID = /^[a-z0-9_-]+$/
 
 /** Each question the call asked, or an empty list for a call that asked none. */
-function openCodeQuestions(args: Record<string, unknown>): QuestionPrompt[] {
+function nativeQuestions(args: Record<string, unknown>): QuestionPrompt[] {
   return questionsFromRecords(
     args.questions,
     (question) => {
@@ -233,7 +233,7 @@ function openCodeToolCall(facts: ACPToolFacts, extraKinds: OpenCodeFamilyToolKin
   }
 
   if (toolName === OPENCODE_TOOL_NAMES.QUESTION) {
-    const questions = openCodeQuestions(args)
+    const questions = nativeQuestions(args)
     const header = questions[0]?.header || questions[0]?.question || 'Question'
     const asked = {
       ...named,

@@ -3,15 +3,13 @@ package kilo
 import (
 	"context"
 	"encoding/json"
-	"sync/atomic"
 	"testing"
-	"time"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp/acptest"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode/opencodetest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/kilo/kilotest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,7 +30,7 @@ func kiloGoalEvent(t *testing.T, sessionID string, metadata any) (string, json.R
 		"info":      map[string]any{"id": sessionID, "metadata": metadata},
 	})
 	require.NoError(t, err)
-	return opencode.EventSessionUpdated, properties
+	return EventSessionUpdated, properties
 }
 
 // The statuses and the fallbacks come from Kilo's own GoalState.read
@@ -103,7 +101,7 @@ func TestKiloGoal_ReportsTheNativeGoalFromSessionMetadata(t *testing.T) {
 			sink := &agenttest.Sink{}
 			a := newKiloGoalAgent(sink)
 			eventType, properties := kiloGoalEvent(t, "session-1", map[string]any{"kilo.goal": testCase.goal})
-			a.MemberEvents(eventType, properties)
+			a.observeKiloGoal(eventType, properties)
 			goal, ok := sink.LastGoal()
 			require.True(t, ok, "the native metadata report must reach the goal")
 			assert.Equal(t, testCase.want, goal)
@@ -127,7 +125,7 @@ func TestKiloGoal_ClearsWhenTheMetadataHoldsNoGoal(t *testing.T) {
 		sink := &agenttest.Sink{}
 		a := newKiloGoalAgent(sink)
 		eventType, properties := kiloGoalEvent(t, "session-1", metadata)
-		a.MemberEvents(eventType, properties)
+		a.observeKiloGoal(eventType, properties)
 		assert.Equal(t, 1, sink.GoalClears(), "metadata %v must clear the goal", metadata)
 		assert.Empty(t, sink.Goals())
 	}
@@ -142,7 +140,7 @@ func TestKiloGoal_IgnoresAReportOfAnotherSession(t *testing.T) {
 	eventType, properties := kiloGoalEvent(t, "session-2", map[string]any{
 		"kilo.goal": map[string]any{"text": "Another session goal", "status": "active"},
 	})
-	a.MemberEvents(eventType, properties)
+	a.observeKiloGoal(eventType, properties)
 	assert.Empty(t, sink.Goals())
 	assert.Zero(t, sink.GoalClears())
 }
@@ -153,25 +151,19 @@ func TestKiloGoal_IgnoresAReportOfAnotherSession(t *testing.T) {
 // pauses it with a reason, and line 120 clears it.
 func TestKiloGoal_ReportsThroughTheDaemonBridge(t *testing.T) {
 	t.Parallel()
-	daemon := opencodetest.NewFakeDaemon(t, opencode.EventRoute, opencode.QuestionRoot)
+	daemon := kilotest.NewFakeDaemon(t, EventRoute, QuestionRoot)
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	sink := &agenttest.Sink{}
 	a := newAgent(true)
 	a.SetSinkForTest(agent.NewProviderServices(sink))
 	a.SetSessionIDForTest("session-1")
-	var reports atomic.Int64
-	inner := a.MemberEvents
-	a.MemberEvents = func(eventType string, properties json.RawMessage) {
-		inner(eventType, properties)
-		reports.Add(1)
-	}
 	a.BeginQuestionsForTest(ctx, a.Sink(), "agent-1", daemon.Server.URL)
 	daemon.Send("data: {\"type\":\"session.updated\",\"properties\":{\"sessionID\":\"session-other\",\"info\":{\"id\":\"session-other\",\"metadata\":{\"kilo.goal\":{\"text\":\"Another session goal\",\"status\":\"active\"}}}}}\n\n")
 	daemon.Send("data: {\"type\":\"session.updated\",\"properties\":{\"sessionID\":\"session-1\",\"info\":{\"id\":\"session-1\",\"metadata\":{\"kilo.goal\":{\"text\":\"GOAL-PROBE reply with the single word OK\",\"status\":\"active\",\"active\":true}}}}}\n\n")
 	daemon.Send("data: {\"type\":\"session.updated\",\"properties\":{\"sessionID\":\"session-1\",\"info\":{\"id\":\"session-1\",\"metadata\":{\"kilo.goal\":{\"text\":\"GOAL-PROBE reply with the single word OK\",\"status\":\"paused\",\"active\":false,\"reason\":\"No successful action or explicit completion report. Review the conversation before resuming.\"}}}}}\n\n")
 	daemon.Send("data: {\"type\":\"session.updated\",\"properties\":{\"sessionID\":\"session-1\",\"info\":{\"id\":\"session-1\",\"metadata\":{}}}}\n\n")
-	require.Eventually(t, func() bool { return reports.Load() == 3 }, time.Second, time.Millisecond)
+	testutil.RequireEventually(t, func() bool { return sink.GoalClears() == 1 }, "the native goal sequence reaches its final update")
 	goal, ok := sink.LastGoal()
 	require.True(t, ok)
 	assert.Equal(t, agent.GoalUpdate{

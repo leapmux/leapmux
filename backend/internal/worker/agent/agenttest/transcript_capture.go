@@ -73,7 +73,10 @@ func (nopSessionObservationWriter) PublishSessionInfo(map[string]interface{}) bo
 func (nopSessionObservationWriter) Retire()                                        {}
 
 type testSessionFact struct{ id string }
-type testTranscriptScope struct{ active bool }
+type testTranscriptScope struct {
+	active        bool
+	previousScope *testTranscriptScope
+}
 type testTranscriptKey struct {
 	session   *testSessionFact
 	sessionID string

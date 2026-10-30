@@ -676,6 +676,10 @@ func New(cfg Config) *Service {
 			logAutoRetryError("cancel an automatic retry", agentID,
 				svc.InputQueue.CancelAutoRetry(bgCtx(), agentID, kind, reason, admission), "kind", kind.String(), "reason", reason)
 		},
+		func(agentID, key, reason string, admission agent.AutoRetryAdmission) {
+			logAutoRetryError("cancel a keyed usage-limit retry", agentID,
+				svc.InputQueue.CancelUsageLimitRetryWithKey(bgCtx(), agentID, key, reason, admission), "reason", reason)
+		},
 		func(agentID string, reason string) {
 			logAutoRetryError("cancel the automatic retries", agentID,
 				svc.InputQueue.CancelAutoRetries(bgCtx(), agentID, reason), "reason", reason)

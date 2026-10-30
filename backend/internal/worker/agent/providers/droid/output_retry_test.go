@@ -234,6 +234,114 @@ func TestDroidProbeQuotaRunWithAQueuedPromptIsABillingBlock(t *testing.T) {
 	}), providerkittest.TurnEndAndRetryOps(sink.Timeline()))
 }
 
+func TestDroidLateCompletionKeepsQueuedTurnActive(t *testing.T) {
+	t.Parallel()
+	const session = "8081e52d-5b5f-43bb-993b-1ec1c2a6666b"
+	a, _ := newDroidRetryAgent(t, session, zaiUsageLimitObservedAt)
+	lines := droidFixtureLines(t, "probe_429_quota.jsonl")
+	errorAt := slices.IndexFunc(lines, func(line string) bool { return strings.Contains(line, `"notification":{"type":"error"`) })
+	require.Positive(t, errorAt)
+	for _, line := range lines[:errorAt+1] {
+		a.HandleOutput([]byte(line))
+	}
+	require.NoError(t, a.SendInput("the next task", nil))
+	for _, line := range lines[errorAt+1:] {
+		a.HandleOutput([]byte(line))
+	}
+
+	a.Mu.Lock()
+	active := a.turnActive
+	a.Mu.Unlock()
+	require.True(t, active, "the preceding turn's completion and idle notifications cannot release admitted input")
+	assert.ErrorIs(t, a.SendInput("another task", nil), agent.ErrAgentBusy)
+}
+
+func TestDroidLateCompletionDoesNotConsumeTheNextTurnsStop(t *testing.T) {
+	t.Parallel()
+	const session = "8d96b98f-856e-4f8e-8784-0144e850c3fa"
+	a, sink := newDroidRetryAgent(t, session, zaiUsageLimitObservedAt)
+	require.NoError(t, a.SendInput("first task", nil))
+	a.HandleOutput([]byte(droidOverloadedError))
+	require.NoError(t, a.SendInput("second task", nil))
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+	a.HandleOutput([]byte(droidUnavailableTurnEnd))
+
+	assert.Equal(t, providerkittest.TurnEndThen(providerkit.TurnFailure{
+		Kind: providerkit.TurnFailureTransient, Cause: "Droid reported that the model provider is unavailable",
+	}), providerkittest.TurnEndAndRetryOps(sink.Timeline()), "the first task was not stopped")
+	a.Mu.Lock()
+	active, interrupted := a.turnActive, a.interruptRequested
+	a.Mu.Unlock()
+	assert.True(t, active, "the second task remains admitted")
+	assert.True(t, interrupted, "the stop still belongs to the second task")
+	a.HandleOutput(droidAuditNotification(t, session, []byte(`{"type":"droid_working_state_changed","newState":"thinking"}`)))
+	a.HandleOutput([]byte(droidOverloadedError))
+	a.HandleOutput([]byte(droidUnavailableTurnEnd))
+	timeline := providerkittest.TurnEndAndRetryOps(sink.Timeline())
+	require.Len(t, timeline, 4)
+	assert.Equal(t, providerkittest.TurnEndThen(providerkit.TurnFailure{}), timeline[2:], "native activity cannot erase the admitted task's stop")
+}
+
+func TestDroidInputEchoOwnsAnIdleOnlyEndingAfterAnEarlierTurn(t *testing.T) {
+	t.Parallel()
+	const session = "main-session"
+	a, _ := newDroidRetryAgent(t, session, zaiUsageLimitObservedAt)
+	a.HandleOutput(droidAuditNotification(t, session, []byte(`{"type":"droid_working_state_changed","newState":"thinking"}`)))
+	a.HandleOutput(droidAuditNotification(t, session, []byte(`{"type":"agent_turn_completed","reason":"completed"}`)))
+	a.HandleOutput(droidAuditNotification(t, session, []byte(`{"type":"droid_working_state_changed","newState":"idle"}`)))
+	require.NoError(t, a.SendInput("second task", nil))
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+	echoLastDroidInput(t, a, session)
+	a.HandleOutput(droidAuditNotification(t, session, []byte(`{"type":"droid_working_state_changed","newState":"idle"}`)))
+	require.NoError(t, a.SendInput("third task", nil), "the native echo identifies which input the idle state ends")
+}
+
+func echoLastDroidInput(t *testing.T, a *Agent, session string) {
+	t.Helper()
+	var input droidEnvelope
+	for _, frame := range a.StdinForTest().(*bufferStdin).frames() {
+		var request droidEnvelope
+		require.NoError(t, json.Unmarshal([]byte(frame), &request))
+		if request.Method == droidMethodAddUserMessage {
+			input = request
+		}
+	}
+	require.NotEmpty(t, input.ID)
+	a.HandleOutput(droidAuditNotification(t, session, droidInputEcho(t, input)))
+}
+
+func TestDroidRepeatedErrorKeepsItsOriginalTurn(t *testing.T) {
+	t.Parallel()
+	const session = "8d96b98f-856e-4f8e-8784-0144e850c3fa"
+	a, sink := newDroidRetryAgent(t, session, zaiUsageLimitObservedAt)
+	require.NoError(t, a.SendInput("first task", nil))
+	a.HandleOutput([]byte(droidOverloadedError))
+	require.NoError(t, a.SendInput("second task", nil))
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+	a.HandleOutput([]byte(droidOverloadedError))
+	a.HandleOutput([]byte(droidUnavailableTurnEnd))
+	assert.ErrorIs(t, a.SendInput("third task", nil), agent.ErrAgentBusy)
+	assert.Equal(t, providerkittest.TurnEndThen(providerkit.TurnFailure{
+		Kind: providerkit.TurnFailureTransient, Cause: "Droid reported that the model provider is unavailable",
+	}), providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+}
+
+func TestDroidRepeatedIdleAfterAnErrorKeepsUnstartedQueuedInputActive(t *testing.T) {
+	t.Parallel()
+	const session = "8d96b98f-856e-4f8e-8784-0144e850c3fa"
+	a, _ := newDroidRetryAgent(t, session, zaiUsageLimitObservedAt)
+	require.NoError(t, a.SendInput("first task", nil))
+	a.HandleOutput([]byte(droidOverloadedError))
+	require.NoError(t, a.SendInput("second task", nil))
+	for range 2 {
+		a.HandleOutput(droidAuditNotification(t, session, []byte(`{"type":"droid_working_state_changed","newState":"idle"}`)))
+	}
+	assert.ErrorIs(t, a.SendInput("third task", nil), agent.ErrAgentBusy)
+	echoLastDroidInput(t, a, session)
+	a.HandleOutput(droidAuditNotification(t, session, []byte(`{"type":"droid_working_state_changed","newState":"idle"}`)))
+	require.NoError(t, a.SendInput("third task", nil), "the queued turn ends after its own native echo")
+}
+
 // A failure that Droid reports after the user stopped the turn won the race
 // against the interrupt. The user asked to stop, so the failure must not
 // re-send the stopped prompt.

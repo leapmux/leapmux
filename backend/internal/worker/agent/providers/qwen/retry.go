@@ -61,7 +61,7 @@ func (a *Agent) finishQwenPrompt(err error, stopped bool) acp.PromptEnding {
 	clock := a.clock
 	a.stateMu.Unlock()
 	failure, payload := qwenTurnFailure(err, stopped, clock.Now())
-	return acp.PromptEnding{Retry: &acp.TurnVerdict{Failure: failure, Payload: payload}}
+	return acp.PromptEnding{Retry: acp.TurnVerdict{Failure: failure, Payload: payload}}
 }
 
 // qwenTurnFailure classifies the end of one prompt. observedAt is the instant

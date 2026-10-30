@@ -22,3 +22,6 @@
 *.ttf binary
 *.otf binary
 *.eot binary
+
+# Unified diff context markers precede tabs and blank lines in dependency patches.
+frontend/patches/*.patch -whitespace

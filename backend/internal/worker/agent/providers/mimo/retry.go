@@ -123,18 +123,13 @@ func responseOf(failure mimoError) mimoResponse {
 // with no reset instant, into a usage limit that lifts at that deadline.
 func mimoTurnFailure(failure mimoError, observedAt time.Time) providerkit.TurnFailure {
 	response := responseOf(failure)
+	vendor, matched := modelvendor.ClassifyErrors([]string{failure.Data.Message, response.body}, observedAt)
+	if matched && vendor.Definitive {
+		return vendor.Failure
+	}
 	var indicative *providerkit.TurnFailure
-	for _, text := range []string{failure.Data.Message, response.body} {
-		verdict, ok := modelvendor.ClassifyError(text, observedAt)
-		if !ok {
-			continue
-		}
-		if verdict.Definitive {
-			return verdict.Failure
-		}
-		if indicative == nil {
-			indicative = &verdict.Failure
-		}
+	if matched {
+		indicative = &vendor.Failure
 	}
 	body := decodeGatewayError(response.body)
 	switch {
@@ -185,7 +180,10 @@ func (a *Agent) applyTurnVerdict(epoch uint64, failure *mimoFailure) {
 	if !a.decideTurnVerdict(epoch) {
 		return
 	}
-	if failure == nil {
+	a.Mu.Lock()
+	stopped := a.turnEpoch == epoch && a.retryStopRequested
+	a.Mu.Unlock()
+	if failure == nil || stopped || a.IntentionalStopRequested() {
 		providerkit.ApplyTurnFailure(a.sink, providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable}, nil)
 		return
 	}

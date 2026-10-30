@@ -207,7 +207,7 @@ func (a *Agent) handleQuestionAsked(properties json.RawMessage) {
 			a.sink.UpdatePlan(compressed, compression, providerkit.ExtractPlanTitle(plan))
 		}
 	}
-	payload, err := controlPayload(contracts.OpenCodeEventQuestionAsked, properties, header, plan)
+	payload, err := controlPayload(contracts.NativeQuestionEventQuestionAsked, properties, header, plan)
 	if err != nil {
 		slog.Error("mimo marshal question", "agent_id", a.AgentID(), "error", err)
 		a.rejectQuestionLater(asked.ID)
@@ -771,7 +771,7 @@ func controlKindOfPayload(payload []byte) (mimoControlKind, bool) {
 	switch stored.Type {
 	case contracts.MiMoEventPermissionAsked:
 		return controlPermission, true
-	case contracts.OpenCodeEventQuestionAsked:
+	case contracts.NativeQuestionEventQuestionAsked:
 		if stored.Request.ToolName == contracts.MiMoToolPlanExit {
 			return controlPlan, true
 		}

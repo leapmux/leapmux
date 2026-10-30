@@ -1,14 +1,15 @@
 import type { ProviderTranscriptCapability } from './capabilities'
 import type { OpenCodeFamilyVocabulary } from './opencode/extractors/toolCall'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { OPENCODE_AUDIO_MIME, OPENCODE_EVENT } from '~/generated/contracts/opencode-protocol'
+import { NATIVE_QUESTION_EVENT } from '~/generated/contracts/native-questions'
+import { OPENCODE_AUDIO_MIME } from '~/generated/contracts/opencode-protocol'
 import { registerACPProvider } from './acp/registerACPProvider'
+import { clientAutoApprovePermissionPresets } from './clientApproval'
+import { extractNativeQuestions, sendNativeQuestionRejectResponse, sendNativeQuestionResponse } from './nativeQuestions'
 import { openCodeControlResponseSummary } from './opencode/controlResponse'
 import { openCodeExtractControl } from './opencode/extractControl'
 import { openCodeToolCallAdapterFor } from './opencode/extractors/toolCall'
 import { openCodeNativeNotifications } from './openCodeEvents'
-import { openCodePermissionPresets } from './openCodePermissionPresets'
-import { extractOpenCodeQuestions, sendOpenCodeQuestionRejectResponse, sendOpenCodeQuestionResponse } from './openCodeQuestions'
 
 /**
  * What one provider of the family supplies: its identity, and the vocabulary the shared
@@ -51,7 +52,7 @@ export function registerOpenCodeProtocolProvider(opts: OpenCodeProtocolOptions):
     // Each daemon uses its own permission option IDs, including requests that supply no options.
     extractControl: openCodeExtractControl,
     planValue: PLAN_PRIMARY_AGENT,
-    permissionPresets: openCodePermissionPresets,
+    permissionPresets: clientAutoApprovePermissionPresets,
     attachments: {
       text: true,
       image: true,
@@ -63,12 +64,12 @@ export function registerOpenCodeProtocolProvider(opts: OpenCodeProtocolOptions):
     // The backend's questionRequestContext hook also supplies one family implementation.
     controlResponseDisplay: openCodeControlResponseSummary,
     questionHandling: {
-      isRequest: payload => payload?.type === OPENCODE_EVENT.QuestionAsked,
-      extractQuestions: extractOpenCodeQuestions,
+      isRequest: payload => payload?.type === NATIVE_QUESTION_EVENT.QuestionAsked,
+      extractQuestions: extractNativeQuestions,
       sendAnswer: (request, sendControlResponse, questions, answerState) =>
-        sendOpenCodeQuestionResponse(sendControlResponse, request.requestId, questions, answerState),
+        sendNativeQuestionResponse(sendControlResponse, request.requestId, questions, answerState),
       sendReject: (request, sendControlResponse) =>
-        sendOpenCodeQuestionRejectResponse(sendControlResponse, request.requestId),
+        sendNativeQuestionRejectResponse(sendControlResponse, request.requestId),
     },
   })
 }

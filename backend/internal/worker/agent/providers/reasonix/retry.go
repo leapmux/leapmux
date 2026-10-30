@@ -106,7 +106,7 @@ func (a *Agent) finishReasonixPrompt(err error, stopped bool) acp.PromptEnding {
 	a.failureRecord = nil
 	a.Mu.Unlock()
 	failure := reasonixTurnFailure(err, stopped, record, a.Clock().Now())
-	verdict := &acp.TurnVerdict{Failure: failure}
+	verdict := acp.TurnVerdict{Failure: failure}
 	if record != nil {
 		verdict.Payload = record.frame
 	} else if responseErr, ok := providerkit.AsJSONRPCResponseError(err); ok {

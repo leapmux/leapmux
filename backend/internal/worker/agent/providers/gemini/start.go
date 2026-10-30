@@ -34,7 +34,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 			return a.configure(ctx, opts, services)
 		},
 		AfterHandshake: func(a *Agent, result *acp.SessionResult, opts agent.Options) error {
-			a.debugLog.follow(a.Clock(), a.observeGeminiDebugLog)
+			a.debugLog.follow(a.Clock(), a.observeGeminiDebugLogLine)
 			return a.ApplyPermissionModeStartup(result, opts, contracts.GeminiModeDefault, opts.Model())
 		},
 	})
