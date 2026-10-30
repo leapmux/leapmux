@@ -16,12 +16,12 @@ func TestShellOutputCommandDistinguishesExecutionFromInputEcho(t *testing.T) {
 		line, err := TestShellOutputCommand(marker)
 		require.NoError(t, err)
 		assert.NotContains(t, line, marker, "input echo must not satisfy the output assertion")
-		var args []string
+		args := []string{"-c", line}
 		if runtime.GOOS == "windows" {
-			args = []string{"/D", "/Q"}
+			args = []string{"/D", "/Q", "/C", line}
 		}
+		// Command mode avoids sending ConPTY's Enter sequence through a pipe.
 		cmd := exec.CommandContext(t.Context(), TestShell(), args...)
-		cmd.Stdin = strings.NewReader(line + TestShellEnter() + "exit" + TestShellEnter())
 		output, err := cmd.CombinedOutput()
 		require.NoError(t, err, "%s", output)
 		assert.Contains(t, string(output), marker)

@@ -279,8 +279,10 @@ func (b *Base) HandleSessionUpdateForTest(params json.RawMessage) {
 	b.handleACPSessionUpdate(params)
 }
 
-// HandleUpdateForTest dispatches one session update, as the reader does.
+// HandleUpdateForTest dispatches one session update and flushes retained registry
+// effects after dispatch, as the reader does.
 func (b *Base) HandleUpdateForTest(update json.RawMessage) {
+	defer b.FlushRegistryObservations()
 	b.handleACPUpdate(update)
 }
 
