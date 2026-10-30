@@ -16,6 +16,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -150,7 +151,7 @@ func newFakeKapState() *fakeKap {
 	return &fakeKap{
 		overrides: make(map[string][]fakeKapReply),
 		sessions:  make(map[string]*fakeKapSession),
-		version:   "2.0.2",
+		version:   "2.4.0",
 		features:  []map[string]string{{"name": kimiFeatureGoal, "state": "active"}},
 		models: []map[string]any{
 			{
@@ -374,6 +375,33 @@ func (f *fakeKap) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		writeFakeKapEnvelope(w, status, scripted.Code, scripted.Msg, scripted.Data)
 		return
+	}
+	if request.Method == http.MethodPost {
+		if strings.Contains(request.Path, "/approvals/") || strings.Contains(request.Path, "/questions/") {
+			writeFakeKapEnvelope(w, http.StatusNotFound, 40400, "the control route does not exist", nil)
+			return
+		}
+		if strings.Contains(request.Path, "/interactions/") {
+			var reply struct {
+				Kind      string          `json:"kind"`
+				Decision  string          `json:"decision"`
+				Answers   json.RawMessage `json:"answers"`
+				Dismissed bool            `json:"dismissed"`
+			}
+			valid := json.Unmarshal(request.Body, &reply) == nil
+			switch reply.Kind {
+			case contracts.KimiInteractionKindApproval:
+				valid = valid && (reply.Decision == contracts.KimiDecisionApproved || reply.Decision == contracts.KimiDecisionRejected || reply.Decision == contracts.KimiDecisionCancelled)
+			case contracts.KimiInteractionKindQuestion:
+				valid = valid && (reply.Dismissed != (len(reply.Answers) != 0))
+			default:
+				valid = false
+			}
+			if !valid {
+				writeFakeKapEnvelope(w, http.StatusBadRequest, 40001, "the interaction body is invalid", nil)
+				return
+			}
+		}
 	}
 	data := f.defaultReply(request)
 	writeFakeKapEnvelope(w, http.StatusOK, kimiCodeOK, "success", data)
@@ -654,6 +682,13 @@ func (r *kimiTestRig) feed(t *testing.T, payload map[string]any) {
 // payload's own `type` repeated on the frame.
 func kimiEventFrame(t *testing.T, sessionID string, payload map[string]any) []byte {
 	t.Helper()
+	if payload["type"] == contracts.KimiFrameInteraction {
+		payload["session_id"] = sessionID
+		data, err := json.Marshal(payload)
+		require.NoError(t, err)
+		return data
+	}
+
 	if _, ok := payload["agentId"]; !ok {
 		payload["agentId"] = kimiMainAgentID
 	}

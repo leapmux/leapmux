@@ -4,12 +4,12 @@ import type { ProcessRow } from '../helpers/processTree'
 import { Buffer } from 'node:buffer'
 import { randomUUID } from 'node:crypto'
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from 'node:fs'
-import { basename, isAbsolute, join } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
-import { requireBinary } from '../helpers/binaryOnPath'
+import { findBinaryOnPath, requireBinary } from '../helpers/binaryOnPath'
 import { withCleanupSync } from '../helpers/cleanup'
 import { MCP_ECHO_SERVER_NAME } from '../helpers/mcpEchoServer'
 import { assertPrivateNativePath } from '../helpers/nativePrivatePath'
@@ -86,7 +86,7 @@ export interface KimiCatalogCapture {
   runtimeExecutable: string
   runtimeInvocation: string
   wrapperExecutable: string
-  nativeIsScript: boolean
+  runtimeArgsPrefix: readonly string[]
 }
 
 export interface KimiCatalogReceipt {
@@ -122,6 +122,50 @@ export function readKimiNativeHeader(executable: string, io: KimiNativeHeaderIO 
   }, () => io.close(descriptor))
 }
 
+/** Read a shell launcher without retaining more than 64 KiB of its source. */
+function readKimiShellLauncher(executable: string): string {
+  const limit = 64 * 1024
+  const descriptor = openSync(executable, 'r')
+  return withCleanupSync(() => {
+    const buffer = Buffer.alloc(limit + 1)
+    let length = 0
+    while (length < buffer.length) {
+      const count = readSync(descriptor, buffer, length, buffer.length - length, length)
+      if (count === 0)
+        break
+      length += count
+    }
+    if (length > limit)
+      throw new Error('The native Kimi shell launcher exceeds its size limit.')
+    return buffer.subarray(0, length).toString('utf8')
+  }, () => closeSync(descriptor))
+}
+
+/** Resolve the exact Node payload while the capture still starts the original npm launcher. */
+function kimiNpmRuntime(executable: string, environment: NodeJS.ProcessEnv) {
+  const source = readKimiShellLauncher(executable)
+  const calls = [
+    ...source.matchAll(/^\s*exec\s+(node|"\$basedir\/node")\s+"\$basedir\/([^"$`\r\n]+)"\s+"\$@"\s*$/gm),
+  ]
+  const targets = new Set(calls.map(call => resolve(dirname(executable), call[2]!)))
+  if (targets.size !== 1)
+    throw new Error('The native Kimi shell launcher must identify one JavaScript entry point.')
+  const script = [...targets][0]!
+  if (!statSync(script).isFile())
+    throw new Error('The native Kimi launcher payload must be a regular file.')
+  const localNode = calls.some(call => call[1] !== 'node')
+    ? findBinaryOnPath('node', dirname(executable))
+    : null
+  if (!localNode && !calls.some(call => call[1] === 'node'))
+    throw new Error('The native Kimi shell launcher requires a local Node executable that is unavailable.')
+  const interpreter = localNode ?? requireBinary('node', 'The Kimi catalog capture requires the Node interpreter of its private environment', environment)
+  return {
+    runtimeExecutable: realpathSync(interpreter),
+    runtimeInvocation: localNode ?? 'node',
+    runtimeArgsPrefix: [script],
+  }
+}
+
 /** Pass the real native process bytes through unchanged and capture its actual private ready line. */
 export function createKimiCatalogCapture(directory: string, launch: NativeStartupLaunch, environment: NodeJS.ProcessEnv = {}): KimiCatalogCapture {
   if (launch.binaryName !== 'kimi' || !launch.executable)
@@ -133,13 +177,22 @@ export function createKimiCatalogCapture(directory: string, launch: NativeStartu
   const absoluteInterpreter = /^#!(\S+)$/.exec(firstLine)?.[1]
   const absoluteJavaScript = absoluteInterpreter !== undefined && isAbsolute(absoluteInterpreter)
     && ['node', 'node.exe', 'bun', 'bun.exe'].includes(basename(absoluteInterpreter).toLowerCase())
-  const nativeIsScript = envNode || absoluteJavaScript
-  if (firstLine.startsWith('#!') && !nativeIsScript)
+  const shell = absoluteInterpreter !== undefined && isAbsolute(absoluteInterpreter)
+    && ['sh', 'bash', 'dash'].includes(basename(absoluteInterpreter).toLowerCase())
+  if (firstLine.startsWith('#!') && !envNode && !absoluteJavaScript && !shell)
     throw new Error('The native Kimi CLI header uses an unsupported or relative JavaScript interpreter.')
-  // `requireBinary` throws the reason of the lookup, so a mise shim on the private search path states its cause.
   const interpreter = envNode
     ? requireBinary('node', 'The Kimi catalog capture requires the Node interpreter of its private environment', environment)
     : absoluteJavaScript ? absoluteInterpreter : executable
+  const runtime = shell
+    ? kimiNpmRuntime(executable, environment)
+    : {
+        runtimeExecutable: realpathSync(interpreter),
+        runtimeInvocation: envNode ? 'node' : interpreter,
+        runtimeArgsPrefix: envNode || absoluteJavaScript
+          ? [executable]
+          : [],
+      }
   const capture = {
     directory,
     scriptPath: join(directory, 'kimi-catalog.cjs'),
@@ -149,10 +202,8 @@ export function createKimiCatalogCapture(directory: string, launch: NativeStartu
     launchArgs: [
       ...launch.args ?? [],
     ],
-    runtimeExecutable: realpathSync(interpreter),
-    runtimeInvocation: envNode ? 'node' : interpreter,
+    ...runtime,
     wrapperExecutable: realpathSync(process.execPath),
-    nativeIsScript,
   }
   const source = `
 const { spawn } = require('node:child_process');
@@ -288,7 +339,7 @@ export function parseKimiCatalogReceipt(value: unknown, capture: Pick<KimiCatalo
 export interface KimiCatalogOwner {
   workerExecutable: string
   workerDataDir: string
-  capture: Pick<KimiCatalogCapture, 'executable' | 'scriptPath' | 'runtimeExecutable' | 'runtimeInvocation' | 'wrapperExecutable' | 'nativeIsScript' | 'launchArgs'>
+  capture: Pick<KimiCatalogCapture, 'executable' | 'scriptPath' | 'runtimeExecutable' | 'runtimeInvocation' | 'wrapperExecutable' | 'runtimeArgsPrefix' | 'launchArgs'>
 }
 
 function exactRuntimeCommand(command: string, executable: string, args: readonly string[], invocation = executable): boolean {
@@ -326,9 +377,7 @@ export async function assertKimiCatalogOwnership(
   if (receipt.executable !== capture.executable)
     throw new Error('The captured Kimi native CLI differs from its actual launch.')
   const nativeArgs = [
-    ...(capture.nativeIsScript
-      ? [capture.executable]
-      : []),
+    ...capture.runtimeArgsPrefix,
     ...receipt.argv,
   ]
   const wrapperArgs = [
@@ -420,7 +469,6 @@ export function assertKimiShellCatalog(tools: readonly KimiCatalogTool[]): void 
     'select_tools',
     'Skill',
     'TodoList',
-    'EnterPlanMode',
     'ExitPlanMode',
     'CreateGoal',
     'GetGoal',

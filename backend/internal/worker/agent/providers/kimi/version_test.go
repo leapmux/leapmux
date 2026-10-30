@@ -44,25 +44,26 @@ func TestKimiVersionLess(t *testing.T) {
 func TestCheckKimiVersion(t *testing.T) {
 	t.Parallel()
 
-	version, err := checkKimiVersion(kimiVersionFromCLI, "2.0.2")
+	version, err := checkKimiVersion(kimiVersionFromCLI, "2.4.0")
 	require.NoError(t, err)
-	assert.Equal(t, kimiVersion{2, 0, 2}, version)
+	assert.Equal(t, kimiVersion{2, 4, 0}, version)
 
-	_, err = checkKimiVersion(kimiVersionFromCLI, "2.0.0")
-	require.NoError(t, err, "the first 2.x release is the minimum")
+	_, err = checkKimiVersion(kimiVersionFromCLI, "2.3.99")
+	require.ErrorIs(t, err, errKimiUnsupportedVersion)
+	assert.NotContains(t, err.Error(), "legacy Python", "an older Kimi Code release is not the Python CLI")
 
 	_, err = checkKimiVersion(kimiVersionFromCLI, "kimi, version 1.5.0")
-	require.ErrorIs(t, err, errKimiLegacyCLI)
+	require.ErrorIs(t, err, errKimiUnsupportedVersion)
 	assert.Contains(t, err.Error(), "1.5.0")
 	assert.Contains(t, err.Error(), "legacy Python kimi-cli")
 
 	_, err = checkKimiVersion(kimiVersionFromCLI, "Usage: kimi [OPTIONS]\nmore help")
-	require.ErrorIs(t, err, errKimiLegacyCLI)
+	require.ErrorIs(t, err, errKimiUnsupportedVersion)
 	assert.Contains(t, err.Error(), "`kimi --version` printed \"Usage: kimi [OPTIONS]\"")
 	assert.NotContains(t, err.Error(), "more help", "the error quotes only the first line")
 
 	_, err = checkKimiVersion(kimiVersionFromServer, "")
-	require.ErrorIs(t, err, errKimiLegacyCLI)
+	require.ErrorIs(t, err, errKimiUnsupportedVersion)
 	assert.Contains(t, err.Error(), "the server stated the version \"\"", "the error states where the version came from")
 }
 

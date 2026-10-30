@@ -66,6 +66,12 @@ func (a *Agent) handleFrame(frame kimiFrame) {
 		slog.Debug("ignore a Kimi frame from another session", "agent_id", a.AgentID(), "session_id", frame.SessionID, "type", frame.Type)
 		return
 	}
+	if frame.Type == contracts.KimiFrameInteraction {
+		if frame.SessionID != "" {
+			a.handleInteraction(frame.Raw)
+		}
+		return
+	}
 	event, ok := parseKimiEvent(frame)
 	if !ok {
 		slog.Debug("kimi frame carried no event", "agent_id", a.AgentID(), "type", frame.Type)
@@ -204,15 +210,6 @@ func (a *Agent) dispatchEvent(event kimiEvent) {
 		a.handleTaskStarted(event)
 	case contracts.KimiEventTaskTerminated:
 		a.handleTaskTerminated(event)
-	case contracts.KimiEventApprovalRequested:
-		a.handleApprovalRequested(event)
-	case contracts.KimiEventApprovalResolved:
-		a.handleApprovalResolved(event)
-	case contracts.KimiEventQuestionRequested:
-		a.handleQuestionRequested(event)
-	case contracts.KimiEventQuestionAnswered, contracts.KimiEventQuestionDismissed:
-		a.handleQuestionResolved(event)
-
 	case contracts.KimiEventSubagentStarted, contracts.KimiEventSubagentSuspended:
 		// A subagent's own turn.started reports that it runs. A swarm member that
 		// a rate limit suspended keeps its row Running: the swarm runs it again in
@@ -241,8 +238,8 @@ func (a *Agent) dispatchEvent(event kimiEvent) {
 		// The turn it starts states the cron origin and the prompt, and that
 		// turn.started is what the transcript records.
 	case contracts.KimiEventPermissionApprovalRequested, contracts.KimiEventPermissionApprovalResolved:
-		// The engine's own copies of the approval events. The server's
-		// event.approval.* pair is the actionable one.
+		// Engine records describe approvals. Separate interaction frames own
+		// the controls that a client can answer.
 	case contracts.KimiEventPlanRevision:
 		// A plan file revision. The plan reaches LeapMux through its approval.
 	case contracts.KimiEventMcpServerStatus,

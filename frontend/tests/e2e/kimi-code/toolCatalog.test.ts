@@ -334,7 +334,7 @@ const ownershipCapture: KimiCatalogOwner['capture'] = {
   runtimeExecutable: '/native/node',
   runtimeInvocation: '/native/node',
   wrapperExecutable: '/native/node',
-  nativeIsScript: true,
+  runtimeArgsPrefix: [launch.executable],
 }
 
 /** Pure ownership tests supply the observed executable for each exact fixture PID. */
@@ -477,7 +477,7 @@ describe('assertKimiShellCatalog', () => {
     expect(() => assertKimiShellCatalog([
       tool(),
       tool({ name: 'Read', active: false }),
-      tool({ name: 'EnterPlanMode', active: false }),
+      tool({ name: 'WebSearch', active: false }),
     ])).not.toThrow()
   })
 
@@ -557,12 +557,129 @@ function fixture(nativeSource: string, beforeStart?: (capture: KimiCatalogCaptur
 }
 
 describe('createKimiCatalogCapture', () => {
+  it('keeps a standalone executable independent of a Node lookup', () => {
+    const executable = join(directory, 'standalone-kimi')
+    writeFileSync(executable, Buffer.from([0xCF, 0xFA, 0xED, 0xFE, 0]), { mode: 0o700 })
+    const emptyPath = join(directory, 'without-node')
+    mkdirSync(emptyPath)
+    const capture = createKimiCatalogCapture(join(directory, 'standalone-wrapper'), { binaryName: 'kimi', executable }, { PATH: emptyPath, HOME: directory })
+    expect(capture).toMatchObject({
+      executable: realpathSync(executable),
+      runtimeExecutable: realpathSync(executable),
+      runtimeInvocation: realpathSync(executable),
+      runtimeArgsPrefix: [],
+    })
+  })
+
+  it('identifies the JavaScript payload of a standard npm shell launcher', () => {
+    const script = join(directory, 'main.mjs')
+    writeFileSync(script, '#!/usr/bin/env node\nNative script body.\n', { mode: 0o700 })
+    const launcher = join(directory, 'kimi')
+    writeFileSync(launcher, `#!/bin/sh\nbasedir=$(dirname "$0")\n${
+      '# launcher metadata\n'.repeat(40)
+    }if [ -x "$basedir/node" ]; then\nexec "$basedir/node" "$basedir/main.mjs" "$@"\nelse\nexec node "$basedir/main.mjs" "$@"\nfi\n`, { mode: 0o700 })
+    const environment = { PATH: process.env.PATH, HOME: directory }
+    const interpreter = findBinary('node', environment)
+    if (!interpreter)
+      throw new Error('The controlled launcher test requires the installed Node executable.')
+    const capture = createKimiCatalogCapture(join(directory, 'npm-wrapper'), { binaryName: 'kimi', executable: launcher }, environment)
+    expect(capture).toMatchObject({
+      executable: realpathSync(launcher),
+      runtimeExecutable: realpathSync(interpreter),
+      runtimeArgsPrefix: [
+        realpathSync(script),
+      ],
+    })
+  })
+
+  it('rejects a shell launcher whose branches select different payloads', () => {
+    const launcher = join(directory, 'ambiguous-kimi')
+    writeFileSync(launcher, '#!/bin/sh\nexec node "$basedir/first.mjs" "$@"\nexec node "$basedir/second.mjs" "$@"\n', { mode: 0o700 })
+    expect(() => createKimiCatalogCapture(join(directory, 'ambiguous-wrapper'), { binaryName: 'kimi', executable: launcher }))
+      .toThrow('one JavaScript entry point')
+  })
+
+  it('uses the local Node executable before another executable on PATH', () => {
+    const script = join(directory, 'main.mjs')
+    writeFileSync(script, 'Native script body.\n')
+    const localNode = join(directory, 'node')
+    writeFileSync(localNode, 'Local interpreter.\n', { mode: 0o700 })
+    const pathDirectory = join(directory, 'path')
+    mkdirSync(pathDirectory)
+    writeFileSync(join(pathDirectory, 'node'), 'PATH interpreter.\n', { mode: 0o700 })
+    const launcher = join(directory, 'local-kimi')
+    writeFileSync(launcher, '#!/bin/sh\nif [ -x "$basedir/node" ]; then\nexec "$basedir/node" "$basedir/main.mjs" "$@"\nelse\nexec node "$basedir/main.mjs" "$@"\nfi\n', { mode: 0o700 })
+    const capture = createKimiCatalogCapture(join(directory, 'local-node-wrapper'), { binaryName: 'kimi', executable: launcher }, { PATH: pathDirectory, HOME: directory })
+    expect(capture).toMatchObject({
+      executable: realpathSync(launcher),
+      runtimeExecutable: realpathSync(localNode),
+      runtimeInvocation: localNode,
+      runtimeArgsPrefix: [script],
+    })
+  })
+
+  it('accepts a shell launcher exactly at its read limit', () => {
+    const script = join(directory, 'main.mjs')
+    writeFileSync(script, 'Native script body.\n')
+    writeFileSync(join(directory, 'node'), 'Local interpreter.\n', { mode: 0o700 })
+    const source = '#!/bin/sh\nexec "$basedir/node" "$basedir/main.mjs" "$@"\n#'
+    const launcher = join(directory, 'limit-kimi')
+    writeFileSync(launcher, source.padEnd(64 * 1024, '#'), { mode: 0o700 })
+    const capture = createKimiCatalogCapture(join(directory, 'limit-wrapper'), { binaryName: 'kimi', executable: launcher }, { PATH: directory, HOME: directory })
+    expect(capture.runtimeArgsPrefix).toEqual([script])
+    expect(capture.runtimeExecutable).toBe(realpathSync(join(directory, 'node')))
+  })
+
+  it('reports an absent PATH interpreter for an npm launcher', () => {
+    const script = join(directory, 'main.mjs')
+    writeFileSync(script, 'Native script body.\n')
+    const launcher = join(directory, 'without-node-kimi')
+    writeFileSync(launcher, '#!/bin/sh\nexec node "$basedir/main.mjs" "$@"\n', { mode: 0o700 })
+    const emptyPath = join(directory, 'empty-path')
+    mkdirSync(emptyPath)
+    expect(() => createKimiCatalogCapture(join(directory, 'without-node-wrapper'), { binaryName: 'kimi', executable: launcher }, { PATH: emptyPath, HOME: directory }))
+      .toThrow('The Kimi catalog capture requires the Node interpreter of its private environment')
+  })
+
+  it('rejects a shell launcher without a JavaScript entry point', () => {
+    const launcher = join(directory, 'empty-kimi')
+    writeFileSync(launcher, '#!/bin/sh\n', { mode: 0o700 })
+    expect(() => createKimiCatalogCapture(join(directory, 'empty-wrapper'), { binaryName: 'kimi', executable: launcher }))
+      .toThrow('one JavaScript entry point')
+  })
+
+  it('rejects a launcher payload that is a directory', () => {
+    mkdirSync(join(directory, 'main.mjs'))
+    const launcher = join(directory, 'directory-payload-kimi')
+    writeFileSync(launcher, '#!/bin/sh\nexec node "$basedir/main.mjs" "$@"\n', { mode: 0o700 })
+    expect(() => createKimiCatalogCapture(join(directory, 'directory-payload-wrapper'), { binaryName: 'kimi', executable: launcher }))
+      .toThrow('The native Kimi launcher payload must be a regular file.')
+  })
+
+  it('rejects a shell launcher that exceeds its read limit', () => {
+    const launcher = join(directory, 'large-kimi')
+    writeFileSync(launcher, `#!/bin/sh\n${'#'.repeat(64 * 1024)}`, { mode: 0o700 })
+    expect(() => createKimiCatalogCapture(join(directory, 'large-wrapper'), { binaryName: 'kimi', executable: launcher }))
+      .toThrow('size limit')
+  })
+
+  it('refuses a missing local interpreter when the launcher has no PATH fallback', () => {
+    const script = join(directory, 'main.mjs')
+    writeFileSync(script, '#!/usr/bin/env node\nNative script body.\n', { mode: 0o700 })
+    const launcher = join(directory, 'local-only-kimi')
+    writeFileSync(launcher, '#!/bin/sh\nexec "$basedir/node" "$basedir/main.mjs" "$@"\n', { mode: 0o700 })
+    expect(() => createKimiCatalogCapture(join(directory, 'local-wrapper'), { binaryName: 'kimi', executable: launcher }))
+      .toThrow('local Node executable that is unavailable')
+  })
+
   it('identifies an absolute JavaScript interpreter from the native CLI header', () => {
     const interpreter = realpathSync(process.execPath)
     const script = join(directory, 'absolute-native-cli.mjs')
     writeFileSync(script, `#!${interpreter}\nNative script body.\n`, { mode: 0o700 })
     const capture = createKimiCatalogCapture(join(directory, 'absolute-wrapper'), { binaryName: 'kimi', executable: script })
-    expect(capture.nativeIsScript).toBe(true)
+    expect(capture.runtimeArgsPrefix).toEqual([
+      realpathSync(script),
+    ])
     expect(capture.runtimeExecutable).toBe(interpreter)
     expect(capture.executable).toBe(realpathSync(script))
   })
@@ -575,7 +692,9 @@ describe('createKimiCatalogCapture', () => {
     const script = join(directory, 'env-native-cli.mjs')
     writeFileSync(script, '#!/usr/bin/env node\nNative script body.\n', { mode: 0o700 })
     const capture = createKimiCatalogCapture(join(directory, 'env-wrapper'), { binaryName: 'kimi', executable: script }, environment)
-    expect(capture.nativeIsScript).toBe(true)
+    expect(capture.runtimeArgsPrefix).toEqual([
+      realpathSync(script),
+    ])
     expect(capture.runtimeExecutable).toBe(realpathSync(interpreter))
   })
 

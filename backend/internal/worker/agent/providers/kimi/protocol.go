@@ -3,6 +3,8 @@ package kimi
 import (
 	"fmt"
 	"regexp"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 // kimiPromptReply is the data of POST /sessions/{id}/prompts.
@@ -32,10 +34,20 @@ const (
 // the version before it starts the server.
 const kimiBinaryName = "kimi"
 
-// kimiMinimumVersion is the first Kimi Code release that ships the kap-server
-// this provider speaks. Every earlier `kimi` is the legacy Python kimi-cli,
-// whose `web` command is a different program.
-var kimiMinimumVersion = kimiVersion{major: 2}
+const (
+	kimiInteractionPending = "pending"
+	kimiInteractionEnded   = "ended"
+)
+
+// kimiMinimumVersion is the release that supplies native interaction frames.
+// The end-to-end install probe reads the same contract.
+var kimiMinimumVersion = func() kimiVersion {
+	version, ok := parseKimiVersion(contracts.KimiVersionMinimum)
+	if !ok {
+		panic("the Kimi Code protocol contract specifies an invalid minimum version")
+	}
+	return version
+}()
 
 // kimiNoAutoUpdateEnv turns off the update that Kimi Code starts from main(): a
 // native (single-file) install swaps in a payload that an earlier TUI run staged,
@@ -105,11 +117,12 @@ func kimiItemPath(sessionID, collection, itemID, action string) string {
 // every request with HTTP 200 and states the outcome in `code`.
 const (
 	kimiCodeOK = 0
-	// kimiCodeAlreadyResolved answers an approval that another path resolved.
-	kimiCodeAlreadyResolved = 40902
-	// kimiCodeQuestionDismissed is the code a SUCCESSFUL dismissal returns. It is
-	// not an error, however it reads.
-	kimiCodeQuestionDismissed = 40909
+	// kimiCodeInteractionEnded reports an interaction that another path resolved.
+	kimiCodeInteractionEnded = 40902
+	// kimiCodeInteractionNotFound reports an interaction the server no longer holds.
+	kimiCodeInteractionNotFound = 40404
+	// kimiCodeSessionNotFound reports a session whose interactions cannot be answered.
+	kimiCodeSessionNotFound = 40401
 	// kimiCodeGoalExists refuses a goal while another one exists.
 	kimiCodeGoalExists = 40913
 	// kimiCodeGoalNotFound refuses a goal control for a session that has no goal.
@@ -167,7 +180,6 @@ const (
 const (
 	kimiActionAbort   = ":abort"
 	kimiActionCompact = ":compact"
-	kimiActionDismiss = ":dismiss"
 	kimiActionCancel  = ":cancel"
 )
 

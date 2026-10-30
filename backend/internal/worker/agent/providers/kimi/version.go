@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -68,8 +69,8 @@ func parseKimiVersion(output string) (kimiVersion, bool) {
 	return kimiVersion{major: parts[0], minor: parts[1], patch: parts[2]}, true
 }
 
-// errKimiLegacyCLI reports a `kimi` that is not Kimi Code 2.x.
-var errKimiLegacyCLI = errors.New("the `kimi` on this machine is not Kimi Code 2.0 or later")
+// errKimiUnsupportedVersion reports a CLI or server older than the protocol contract.
+var errKimiUnsupportedVersion = fmt.Errorf("the `kimi` on this machine must be Kimi Code %s or later", contracts.KimiVersionMinimum)
 
 // The two sources of a version that checkKimiVersion reads.
 const (
@@ -77,20 +78,23 @@ const (
 	kimiVersionFromServer = "the server stated the version"
 )
 
-// checkKimiVersion refuses a version that is not Kimi Code 2.0 or later. source
+// checkKimiVersion requires the release in the protocol contract. source
 // states where the version came from, for the error message.
 func checkKimiVersion(source, output string) (kimiVersion, error) {
 	version, ok := parseKimiVersion(output)
 	if !ok {
 		return kimiVersion{}, fmt.Errorf("%w: %s %q, which states no release number; "+
-			"the legacy Python kimi-cli also installs a `kimi` program, so install Kimi Code 2.0 or later and "+
-			"make sure it comes first on PATH", errKimiLegacyCLI, source, firstLine(output))
+			"the legacy Python kimi-cli also installs a `kimi` program, so install Kimi Code %s or later and "+
+			"make sure it comes first on PATH", errKimiUnsupportedVersion, source, firstLine(output), contracts.KimiVersionMinimum)
 	}
 	if version.less(kimiMinimumVersion) {
-		return version, fmt.Errorf("%w: it reports version %s, which is the legacy Python kimi-cli; "+
-			"install Kimi Code %s or later and make sure it comes first on PATH",
-			errKimiLegacyCLI, version, kimiMinimumVersion)
+		detail := ""
+		if version.major < 2 {
+			detail = ", the legacy Python kimi-cli"
+		}
+		return version, fmt.Errorf("%w: it reports version %s%s; install Kimi Code %s or later and make sure it comes first on PATH", errKimiUnsupportedVersion, version, detail, kimiMinimumVersion)
 	}
+
 	return version, nil
 }
 

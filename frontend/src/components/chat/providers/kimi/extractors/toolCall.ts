@@ -400,11 +400,7 @@ export const KIMI_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<KimiToolFacts> = 
     ? { durationMs: args.timeout * 1000 }
     : {}),
   // The mode the switch lands in, which the tool name states.
-  switch_mode: (_args, facts): ToolRequestByKind['switch_mode'] => ({
-    mode: facts.toolName === KIMI_TOOL.EnterPlanMode
-      ? 'plan'
-      : 'default',
-  }),
+  switch_mode: (): ToolRequestByKind['switch_mode'] => ({ mode: 'default' }),
   // A notice the agent sends the user.
   message: (args): ToolRequestByKind['message'] => ({ text: pickString(args, 'message') || pickString(args, 'body') || pickString(args, 'title') }),
 }

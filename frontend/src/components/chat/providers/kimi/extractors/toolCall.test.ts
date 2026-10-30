@@ -680,8 +680,11 @@ describe('kimi task, trigger and wait calls', () => {
 })
 
 describe('kimi mode, message and report calls', () => {
-  it('reads the mode each half of the plan-mode switch lands in', () => {
-    expect(resultCall(KIMI_TOOL.EnterPlanMode, {}, 'Entered plan mode.')?.request).toStrictEqual({ mode: 'plan' })
+  it('keeps the removed model-entry tool uncategorized', () => {
+    expect(resultCall('EnterPlanMode', {}, 'Tool not found')?.kind).toBe('other')
+  })
+
+  it('reads the native exit from Plan mode', () => {
     // An ExitPlanMode that proposes no plan is an ordinary switch back.
     const exit = resultCall(KIMI_TOOL.ExitPlanMode, {}, 'Exited plan mode.')
     expect(exit?.kind).toBe('switch_mode')

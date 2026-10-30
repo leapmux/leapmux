@@ -1,9 +1,10 @@
 import type { ControlResponseSummary } from '../../model/controlResponse'
 import type { PersistedControlResponse } from '../../persistedControlResponse'
-import { KIMI_ANSWER_KIND, KIMI_APPROVAL_SCOPE, KIMI_DECISION, KIMI_DISPLAY, KIMI_EVENT, KIMI_GOAL_MODE, KIMI_PLAN_LABEL, KIMI_REPLY } from '~/generated/contracts/kimi-protocol'
+import { KIMI_ANSWER_KIND, KIMI_APPROVAL_SCOPE, KIMI_DECISION, KIMI_DISPLAY, KIMI_GOAL_MODE, KIMI_INTERACTION_KIND, KIMI_PLAN_LABEL, KIMI_REPLY } from '~/generated/contracts/kimi-protocol'
 import { isObject, pickObject, pickString, stringArray } from '~/lib/jsonPick'
 import { CONTROL_DECISION_WORDS, feedbackOrLabel, joinAnswerLines, label } from '../../persistedControlResponse'
 import { kimiQuestionRecords } from './askUserQuestion'
+import { kimiInteractionRequest } from './protocol'
 
 /** The names Kimi's own UI gives the permission modes a goal can start in. */
 const KIMI_GOAL_MODE_LABELS: ReadonlyMap<string, string> = new Map([
@@ -24,14 +25,16 @@ export function kimiControlResponseSummary(cr: PersistedControlResponse): Contro
   const native = pickObject(pickObject(cr.response, 'response'), 'response')
   if (!native)
     return null
-  switch (pickString(cr.request, 'type')) {
-    case KIMI_EVENT.ApprovalRequested:
-      return kimiApprovalSummary(cr.request ?? {}, native)
-    case KIMI_EVENT.QuestionRequested:
-      return kimiQuestionSummary(cr.request ?? {}, native)
-    default:
-      return null
-  }
+  const request = cr.request ?? {}
+  const kind = pickString(native, KIMI_REPLY.Kind)
+  if (kind !== pickString(request, 'kind'))
+    return null
+  const approval = kimiInteractionRequest(request, KIMI_INTERACTION_KIND.Approval)
+  if (approval)
+    return kimiApprovalSummary(approval, native)
+  return kimiInteractionRequest(request, KIMI_INTERACTION_KIND.Question)
+    ? kimiQuestionSummary(request, native)
+    : null
 }
 
 function kimiApprovalSummary(request: Record<string, unknown>, native: Record<string, unknown>): ControlResponseSummary | null {
@@ -77,7 +80,7 @@ function kimiApprovalSummary(request: Record<string, unknown>, native: Record<st
 }
 
 function kimiQuestionSummary(request: Record<string, unknown>, native: Record<string, unknown>): ControlResponseSummary | null {
-  if (native[KIMI_REPLY.Dismiss] === true)
+  if (native[KIMI_REPLY.Dismissed] === true)
     return label('Dismissed')
   const answers = pickObject(native, KIMI_REPLY.Answers)
   if (!answers)

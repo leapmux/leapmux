@@ -25,14 +25,20 @@ describe('kimiFixtures', () => {
     expect(result).not.toHaveProperty('truncated')
   })
 
-  it('keeps both native session identity fields in server control requests', () => {
+  it('keeps native interaction identity separate from the nested control request', () => {
     const approval = kimiApprovalRequest('Bash', { command: 'printf 42' })
     const question = kimiQuestionRequest([
       { id: 'question_1', prompt: 'Choose a color.' },
     ])
     expect(approval.session_id).toBe('session_1')
     expect(question.session_id).toBe('session_1')
-    expect(approval.sessionId).toBe('session_1')
-    expect(question.sessionId).toBe('session_1')
+    expect(approval.type).toBe('interaction')
+    expect(question.kind).toBe('question')
+    expect(approval.request.tool_name).toBe('Bash')
+    expect(question.request.questions).toEqual([
+      { id: 'question_1', prompt: 'Choose a color.' },
+    ])
+    expect(approval).not.toHaveProperty('sessionId')
+    expect(question).not.toHaveProperty('sessionId')
   })
 })

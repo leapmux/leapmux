@@ -1217,7 +1217,7 @@ const TOOL_VOCABULARY = {
       name: 'Read',
       arguments: { path },
     }),
-    enterPlanMode: id => ({ id, name: 'EnterPlanMode', arguments: {} }),
+    enterPlanMode: null,
     // Kimi's `ExitPlanMode` states no plan. It raises the plan file, so the
     // operation above cannot carry the plan that its caller passes.
     exitPlanMode: null,

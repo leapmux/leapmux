@@ -369,8 +369,9 @@ func TestKimiReconnectReadsBackTheStatusTheStreamMissed(t *testing.T) {
 	current := agent.CurrentOptions(rig.agent.OptionGroups())
 	assert.Equal(t, contracts.KimiModePlan, current[agent.OptionIDPermissionMode])
 	assert.Equal(t, kimiSwarmOn, current[kimiOptionSwarmMode])
-	assert.Empty(t, rig.fake.requestsTo("GET "+kimiSessionPath("session_1", "/snapshot")),
-		"the server replayed every durable event, so nothing needs the snapshot")
+	waitFor(t, func() bool {
+		return len(rig.fake.requestsTo("GET "+kimiSessionPath("session_1", "/snapshot"))) == 1
+	}, "unsequenced controls require a snapshot even after complete durable replay")
 }
 
 // resyncAfterAGap closes the event socket, and the server answers the
@@ -415,14 +416,14 @@ func TestKimiResyncRestoresWhatTheStreamCouldNotReplay(t *testing.T) {
 			require.NoError(t, json.Unmarshal(control.Payload, &payload))
 			byID[control.RequestID] = payload
 		}
-		assert.Equal(t, contracts.KimiEventApprovalRequested, byID["approval_9"]["type"], "the request reads as the event it replaces")
-		assert.Equal(t, kimiMainAgentID, byID["approval_9"]["agentId"])
-		assert.Equal(t, "session_1", byID["approval_9"]["sessionId"])
-		assert.Equal(t, contracts.KimiEventQuestionRequested, byID["question_9"]["type"])
-		assert.Equal(t, "agent-0", byID["question_9"]["agentId"])
+		assert.Equal(t, contracts.KimiFrameInteraction, byID["approval_9"]["type"], "the request reads as the event it replaces")
+		assert.Equal(t, kimiMainAgentID, byID["approval_9"]["agent_id"])
+		assert.Equal(t, "session_1", byID["approval_9"]["session_id"])
+		assert.Equal(t, contracts.KimiFrameInteraction, byID["question_9"]["type"])
+		assert.Equal(t, "agent-0", byID["question_9"]["agent_id"])
 
 		require.NoError(t, rig.agent.SendRawInput(answerFor(t, rig, "approval_9", "allow", nil, nil), agent.StopContext{}), "the user can answer it")
-		assert.Len(t, rig.fake.requestsTo("POST "+kimiItemPath("session_1", "approvals", "approval_9", "")), 1)
+		assert.Len(t, rig.fake.requestsTo("POST "+kimiItemPath("session_1", "interactions", "approval_9", "")), 1)
 	})
 
 	t.Run("withdraws a request the server resolved during the gap", func(t *testing.T) {

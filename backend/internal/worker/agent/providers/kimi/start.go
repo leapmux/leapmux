@@ -17,8 +17,8 @@ import (
 
 var _ agent.StartFunc = Start
 
-// kimiVersionProbeTimeout limits `kimi --version`, which starts a login shell
-// and a Node process and prints one line.
+// kimiVersionProbeTimeout limits `kimi --version`, which runs the installed CLI
+// through the configured shell and prints one line.
 const kimiVersionProbeTimeout = 60 * time.Second
 
 // Start launches `kimi web`, connects to it, and opens the agent's session.
@@ -77,7 +77,7 @@ func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderSer
 	if err != nil {
 		cleanup()
 		if errors.Is(err, providerkit.ErrServerExited) {
-			return nil, a.FormatStartupError("server start", fmt.Errorf("%w; the program named `kimi` must be Kimi Code 2.0 or later", err))
+			return nil, a.FormatStartupError("server start", fmt.Errorf("%w; the program named `kimi` must be Kimi Code %s or later", err, contracts.KimiVersionMinimum))
 		}
 		return nil, a.FormatStartupError("server start", err)
 	}

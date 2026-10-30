@@ -363,10 +363,11 @@ func TestKimiUnlinkedAgentEvents(t *testing.T) {
 	t.Run("a control request never waits for a link", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiOutputRig(t)
-		rig.feed(t, map[string]any{"type": contracts.KimiEventApprovalRequested, "agentId": "agent-4", "agent_id": "agent-4",
-			"approval_id": "approval_1", "tool_name": contracts.KimiToolBash, "tool_input_display": map[string]any{"kind": "command", "command": "ls"}})
+		request := approvalEvent("approval_1", map[string]any{"kind": "command", "command": "ls"})
+		request["agent_id"] = "agent-4"
+		rig.feed(t, request)
 		assert.Equal(t, 1, rig.sink.PublishedControlCount())
-		rig.feed(t, map[string]any{"type": contracts.KimiEventApprovalResolved, "agentId": "agent-4", "approval_id": "approval_1"})
+		rig.feed(t, map[string]any{"type": contracts.KimiFrameInteraction, "kind": contracts.KimiInteractionKindApproval, "status": kimiInteractionEnded, "outcome": "cancelled", "agent_id": "agent-4", "interaction_id": "approval_1"})
 		assert.Equal(t, []string{"approval_1"}, rig.sink.CanceledControls())
 	})
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/coder/quartz"
 	"github.com/coder/websocket"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -41,7 +42,7 @@ import (
 // context, and Wait joins the goroutines. The process context ends after native
 // exit, but it does not control this independent stream context.
 
-// kimiFrame is one WebSocket frame: an event, an ack, a ping, or the hello.
+// kimiFrame is one WebSocket frame, including native control interactions.
 type kimiFrame struct {
 	Type      string          `json:"type"`
 	ID        string          `json:"id,omitempty"`
@@ -53,6 +54,22 @@ type kimiFrame struct {
 	Code      int             `json:"code,omitempty"`
 	Msg       string          `json:"msg,omitempty"`
 	Payload   json.RawMessage `json:"payload,omitempty"`
+	// Raw preserves the complete native interaction frame, whose request is
+	// outside the payload used by durable events.
+	Raw json.RawMessage `json:"-"`
+}
+
+func (f *kimiFrame) UnmarshalJSON(data []byte) error {
+	type wireFrame kimiFrame
+	var decoded wireFrame
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*f = kimiFrame(decoded)
+	if f.Type == contracts.KimiFrameInteraction {
+		f.Raw = append(json.RawMessage(nil), data...)
+	}
+	return nil
 }
 
 // kimiCursor is the position of one session's durable event stream.

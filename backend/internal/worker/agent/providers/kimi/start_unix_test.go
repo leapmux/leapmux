@@ -180,7 +180,7 @@ func TestKimiStartReportsAFailedResume(t *testing.T) {
 func TestKimiStartRefusesTheLegacyCLI(t *testing.T) {
 	argsFile := installFakeKimi(t, kimiHelperVersionEnv+"=kimi, version 1.5.0")
 	_, _, err := startKimiForTest(t, agent.Options{})
-	require.ErrorIs(t, err, errKimiLegacyCLI)
+	require.ErrorIs(t, err, errKimiUnsupportedVersion)
 	assert.Contains(t, err.Error(), "1.5.0")
 	args, readErr := os.ReadFile(argsFile)
 	require.NoError(t, readErr)
@@ -191,7 +191,7 @@ func TestKimiStartReportsAServerThatExitsBeforeItIsReady(t *testing.T) {
 	installFakeKimi(t, kimiHelperScenarioEnv+"=exit-early")
 	_, _, err := startKimiForTest(t, agent.Options{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "Kimi Code 2.0 or later")
+	assert.Contains(t, err.Error(), "Kimi Code "+kimiMinimumVersion.String()+" or later")
 }
 
 func TestKimiStartRefusesAServerWithNoModel(t *testing.T) {
@@ -280,7 +280,7 @@ func readKimiHelperChildIdentity(t *testing.T, pidFile string) procutil.ProcessI
 func TestKimiStartReportsAServerThatStatesNoVersion(t *testing.T) {
 	installFakeKimi(t, kimiHelperScenarioEnv+"=legacy-server")
 	_, _, err := startKimiForTest(t, agent.Options{})
-	require.ErrorContains(t, err, errKimiLegacyCLI.Error(), "the server's own version is checked too")
+	require.ErrorContains(t, err, errKimiUnsupportedVersion.Error(), "the server's own version is checked too")
 	assert.Contains(t, err.Error(), kimiVersionFromServer)
 }
 
@@ -396,7 +396,7 @@ func runFakeKimiVersion(scenario string) int {
 	}
 	version := os.Getenv(kimiHelperVersionEnv)
 	if version == "" {
-		version = "2.0.2"
+		version = "2.4.0"
 	}
 	fmt.Println(version)
 	return 0
@@ -413,7 +413,7 @@ func TestLaunchPinsTheUpdaterOffForTheVersionProbeAndTheServer(t *testing.T) {
 		Binary:  kimiBinaryName,
 		Start:   Start,
 		Pins:    []string{"KIMI_CODE_NO_AUTO_UPDATE=1"},
-		Answers: map[string]string{"--version": "kimi-code 2.1.1"},
+		Answers: map[string]string{"--version": "kimi-code 2.4.0"},
 		Runs:    2,
 	})
 }

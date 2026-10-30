@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { KIMI_PLAN_FILE_CAPTURE, occurrences } from './planScenario'
+import { KIMI_PLAN_FILE_CAPTURE, kimiPlanModeFromInstructions } from './planScenario'
 
 describe('KIMI_PLAN_FILE_CAPTURE', () => {
   it('captures the plan file path and stops at its .md suffix', () => {
@@ -12,18 +12,15 @@ describe('KIMI_PLAN_FILE_CAPTURE', () => {
   })
 })
 
-describe('occurrences', () => {
+describe('kimiPlanModeFromInstructions', () => {
   it.each([
-    ['revise', 'revis', 1],
-    ['revise and revision', 'revis', 2],
-    ['no match', 'revis', 0],
-    ['', 'revis', 0],
-    ['aaaa', 'aa', 2],
-  ])('counts the separate occurrences in %j of %j', (text, needle, count) => {
-    expect(occurrences(text, needle)).toBe(count)
-  })
-
-  it('refuses an empty needle, which every position would match', () => {
-    expect(() => occurrences('text', '')).toThrow('occurrences needs a needle that is not empty')
+    ['', undefined],
+    ['Plan mode is a read-only planning state.', undefined],
+    ['Plan mode is active: the user turned it on.', true],
+    ['Plan mode is no longer active. Restrictions no longer apply.', false],
+    ['Plan mode is active: review first.\nPlan mode is no longer active.', false],
+    ['Plan mode is no longer active.\nPlan mode is active: review again.', true],
+  ])('reads the latest explicit disclosure in %j', (text, expected) => {
+    expect(kimiPlanModeFromInstructions(text)).toBe(expected)
   })
 })

@@ -147,7 +147,7 @@ func (a *Agent) runSink(run *kimiRun) agent.ProviderServices {
 // control request: the user answers it on the main agent's tab, and a tool call
 // parked on it must never wait for a link.
 func (a *Agent) holdForLink(event kimiEvent) bool {
-	if event.AgentID == kimiMainAgentID || !kimiEventWaitsForLink(event.Type) {
+	if event.AgentID == kimiMainAgentID {
 		return false
 	}
 	if _, linked := a.children.childOf(event.AgentID); linked {
@@ -162,19 +162,6 @@ func (a *Agent) holdForLink(event kimiEvent) bool {
 	}
 	run.pending = append(run.pending, event)
 	return true
-}
-
-// kimiEventWaitsForLink reports whether an event of an unlinked subagent waits
-// for the link. A control request and its resolution do not.
-func kimiEventWaitsForLink(eventType string) bool {
-	switch eventType {
-	case contracts.KimiEventApprovalRequested, contracts.KimiEventApprovalResolved,
-		contracts.KimiEventQuestionRequested, contracts.KimiEventQuestionAnswered,
-		contracts.KimiEventQuestionDismissed:
-		return false
-	default:
-		return true
-	}
 }
 
 // replayPending dispatches the events a subagent sent before its spawn linked

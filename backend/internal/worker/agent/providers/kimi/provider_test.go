@@ -41,7 +41,7 @@ func TestKimiPlanModeControl(t *testing.T) {
 	t.Parallel()
 
 	p := kimiProvider{}
-	assert.Equal(t, agent.PlanModeControlEnter, p.PlanModeControl(contracts.KimiToolEnterPlanMode))
+	assert.Equal(t, agent.PlanModeControlNone, p.PlanModeControl("EnterPlanMode"), "the native runtime requires the user to enter Plan mode")
 	assert.Equal(t, agent.PlanModeControlExit, p.PlanModeControl(contracts.KimiToolExitPlanMode))
 	assert.Equal(t, agent.PlanModeControlNone, p.PlanModeControl(contracts.KimiToolBash))
 

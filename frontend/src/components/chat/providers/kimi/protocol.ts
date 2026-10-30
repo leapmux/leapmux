@@ -1,4 +1,4 @@
-import { KIMI_EVENT } from '~/generated/contracts/kimi-protocol'
+import { KIMI_EVENT, KIMI_FRAME } from '~/generated/contracts/kimi-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 
 /**
@@ -52,6 +52,13 @@ export function kimiEventData(parsed: unknown, type: string): Record<string, unk
  */
 export function kimiDisplay(data: Record<string, unknown> | null | undefined, key: 'display' | 'tool_input_display' = 'display'): Record<string, unknown> | undefined {
   return pickObject(data, key, undefined)
+}
+
+/** Read the nested request of a native control interaction of the given kind. */
+export function kimiInteractionRequest(payload: Record<string, unknown>, kind: string): Record<string, unknown> | undefined {
+  return pickString(payload, 'type') === KIMI_FRAME.Interaction && pickString(payload, 'kind') === kind
+    ? pickObject(payload, 'request', undefined)
+    : undefined
 }
 
 /** The `system_trigger` name a goal's continuation turn carries. */
