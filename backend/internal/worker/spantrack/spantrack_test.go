@@ -1131,3 +1131,18 @@ func TestSpanTracker_ParentOf(t *testing.T) {
 	tracker.CloseSpan("span-A")
 	assert.Empty(t, tracker.ParentOf("span-B"), "the last close clears the chain")
 }
+
+func TestSpanTracker_FreezePreservesIndependentGeometry(t *testing.T) {
+	t.Parallel()
+	tracker := &SpanTracker{}
+	tracker.OpenSpan("parent", "")
+	tracker.OpenSpan("child", "parent")
+	depth, lines, color := tracker.Snapshot("parent", "child", true)
+	frozen := tracker.Freeze()
+	tracker.Reset()
+	tracker.OpenSpan("replacement", "")
+	actualDepth, actualLines, actualColor := frozen.Snapshot("parent", "child", true)
+	assert.Equal(t, depth, actualDepth)
+	assert.Equal(t, lines, actualLines)
+	assert.Equal(t, color, actualColor)
+}

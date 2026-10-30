@@ -2727,6 +2727,24 @@ describe('extracted handleAgentEvent branch handlers', () => {
 })
 
 describe('wireSessionInfoToUpdates', () => {
+  it('preserves explicit zero token usage from the Worker', () => {
+    expect(wireSessionInfoToUpdates({
+      context_usage: {
+        input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        output_tokens: 0,
+        context_tokens: 0,
+      },
+    }).contextUsage).toEqual({
+      inputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      outputTokens: 0,
+      contextTokens: 0,
+    })
+  })
+
   it('returns an empty object for undefined or empty payloads', () => {
     expect(wireSessionInfoToUpdates(undefined)).toEqual({})
     expect(wireSessionInfoToUpdates({})).toEqual({})

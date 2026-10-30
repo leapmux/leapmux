@@ -14,6 +14,12 @@ import (
 )
 
 type pendingControl struct {
+	working         bool
+	announcements   uint64
+	ingressReady    bool
+	epoch           uint64
+	prepared        bool
+	captured        agent.CapturedTranscript
 	payload         json.RawMessage
 	wireID          json.RawMessage
 	wireKey         string
@@ -81,7 +87,7 @@ func oncePermissionResult(options []zcodePermissionOption) json.RawMessage {
 
 func (a *Agent) canBypassControlLocked(record *pendingControl) bool {
 	_, unresolved := a.unresolvedSettings[agent.OptionIDPermissionMode]
-	return !a.StoppedLocked() && a.modeObserved && a.planObserved && !unresolved && a.permissionModeLocked() == contracts.ZCodeModeYolo &&
+	return a.zcodeControlLifetimeCurrentLocked(record) && a.modeObserved && a.planObserved && !unresolved && a.permissionModeLocked() == contracts.ZCodeModeYolo &&
 		record.ownerSessionID == a.sessionID && record.sessionID == a.sessionID && record.wireKey != "" && len(record.automaticReply) > 0 && !record.automaticFailed
 }
 
@@ -105,7 +111,7 @@ func (a *Agent) approvePendingPermissions() {
 	claimed := make(map[string]*pendingControl)
 	publish := make(map[string]*pendingControl)
 	for requestID, record := range a.pendingControls {
-		if !record.ready || record.answering {
+		if !record.ready || record.answering || !a.zcodeControlLifetimeCurrentLocked(record) {
 			continue
 		}
 		if a.canBypassControlLocked(record) {
@@ -123,7 +129,7 @@ func (a *Agent) approvePendingPermissions() {
 	}
 	for requestID, record := range claimed {
 		a.Mu.Lock()
-		current := a.pendingControls[requestID] == record && record.sessionID == a.sessionID && !a.StoppedLocked()
+		current := a.pendingControls[requestID] == record && a.zcodeControlLifetimeCurrentLocked(record)
 		a.Mu.Unlock()
 		if !current {
 			continue
@@ -173,7 +179,7 @@ func (a *Agent) sendControlOrRaw(data []byte, stop agent.StopContext) error {
 		a.Mu.Unlock()
 		return fmt.Errorf("the ZCode control request is no longer pending")
 	}
-	if record.ownerSessionID != a.sessionID {
+	if !a.zcodeControlLifetimeCurrentLocked(record) {
 		a.Mu.Unlock()
 		return agent.ErrInputSessionChanged
 	}

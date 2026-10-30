@@ -118,9 +118,9 @@ func TestACPModelSwitchPersistsTheRestoredThoughtLevelAfterANotification(t *test
 		"the last persisted refresh must carry the level that the session runs, not the level that the server reset to")
 }
 
-// A switch that no notification disturbs persists nothing itself: the worker persists the
-// settled state. The extra refresh of the previous test must stay conditional.
-func TestACPModelSwitchPersistsNothingWithoutANotification(t *testing.T) {
+// A successful switch publishes its final values even when no native notification
+// arrives, so an older publication cannot overwrite the caller's requested values.
+func TestACPModelSwitchPublishesItsFinalValuesWithoutANotification(t *testing.T) {
 	server := switchServer("low", "medium", "high")
 	server.Reset = func(string, string) string { return "low" }
 	ag, sink, _ := newSwitchAgent(t, server, false)
@@ -128,5 +128,7 @@ func TestACPModelSwitchPersistsNothingWithoutANotification(t *testing.T) {
 
 	require.True(t, ag.UpdateSettings(map[string]string{agent.OptionIDModel: "model-b", testThinkingEffort: "high"}).AppliedLive)
 
-	assert.Equal(t, before, sink.SettingsRefreshCount())
+	assert.Equal(t, before+1, sink.SettingsRefreshCount())
+	assert.Equal(t, "model-b", sink.LastSettingsRefresh().Model)
+	assert.Equal(t, "high", sink.LastSettingsRefresh().Options[testThinkingEffort])
 }

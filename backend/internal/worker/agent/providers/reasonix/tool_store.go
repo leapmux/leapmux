@@ -154,12 +154,28 @@ func (r *reasonixToolSource) ResetRecords() {
 // The location that locate reports is the session's DEFAULT transcript. Only this path
 // reads the store, and the sidecar that it reads can point the session at a different
 // file.
-func (r *reasonixToolSource) ReadSupplements(ctx context.Context, _ string, pending map[string]agent.MessageContent, _ bool) (map[string][]byte, error) {
-	path := reasonixToolStorePath(r.query, r.sessionID(), r.workingDir)
+func (r *reasonixToolSource) ReadSupplements(ctx context.Context, location tooltranscript.Location, pending map[string]agent.MessageContent, _ bool) (map[string][]byte, error) {
+	path := reasonixToolStorePath(r.query, location.SessionKey, r.workingDir)
 	r.mu.Lock()
 	cache := r.cache
 	r.mu.Unlock()
 	return readReasonixToolSupplements(ctx, path, pending, cache)
+}
+
+func (r *reasonixToolSource) CaptureSupplement(location tooltranscript.Location, content agent.MessageContent, _ agent.SpanInfo) tooltranscript.SupplementReader {
+	id := acp.ToolCallID(content.Original)
+	if id == "" {
+		return nil
+	}
+	path := reasonixToolStorePath(r.query, location.SessionKey, r.workingDir)
+	r.mu.Lock()
+	cache := r.cache
+	r.mu.Unlock()
+	pending := map[string]agent.MessageContent{id: content.Clone()}
+	return func(ctx context.Context, _ bool) ([]byte, error) {
+		records, err := readReasonixToolSupplements(ctx, path, pending, cache)
+		return records[id], err
+	}
 }
 
 // reasonixResultMatches verifies that the saved result produced the protocol text.

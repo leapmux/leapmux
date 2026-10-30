@@ -1,8 +1,10 @@
+import type { MockModelUsage } from '../helpers/mockModelScript'
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
 import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import type { ProviderAgent } from '../helpers/workspace'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ampToolUseID } from '../helpers/ampSurface'
+import { resolveMockModelUsage } from '../helpers/mockModelScript'
 import { managedNativeContext, nativeAgentById } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
@@ -19,6 +21,7 @@ export const AMP_AGENT: ProviderAgent = { provider: AgentProvider.AMP, prefix: '
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
   const context = managedNativeContext(fixtures, AMP_AGENT)
   context.readToolResult = ampToolResultReader(context)
+  context.contextUsageTokens = ampContextUsageTokens
   context.resolveToolRowId = async ({ callId, agentId }) => {
     const agent = await nativeAgentById(context, agentId)
     if (!agent?.agentSessionId)
@@ -26,6 +29,12 @@ export async function nativeContext(fixtures: NativeContextFixtures): Promise<Ma
     return ampToolUseID(agent.agentSessionId, callId)
   }
   return context
+}
+
+/** Amp counts input and cache tokens in its context size. */
+export function ampContextUsageTokens(usage: MockModelUsage): number {
+  const { inputTokens, cacheReadTokens, cacheWriteTokens } = resolveMockModelUsage(usage)
+  return Math.max(inputTokens, cacheReadTokens + cacheWriteTokens)
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */

@@ -3,7 +3,6 @@ package agenttest
 import (
 	"sync"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
@@ -22,13 +21,6 @@ type ControlRequestRecord struct {
 	NonBlocking bool
 }
 
-// PlanUpdateRecord captures a single UpdatePlan call.
-type PlanUpdateRecord struct {
-	Content     []byte
-	Compression leapmuxv1.ContentCompression
-	Title       string
-}
-
 // ControlSink adds control-request and plan records to Sink.
 // It keeps its own worker-notification collection also.
 type ControlSink struct {
@@ -38,7 +30,6 @@ type ControlSink struct {
 	publishedControls []ControlRequestRecord
 	canceledControls  []string
 	PublicationError  error
-	planUpdates       []PlanUpdateRecord
 	notifications     []map[string]interface{}
 }
 
@@ -96,16 +87,6 @@ func (s *ControlSink) ResetCanceledControls() {
 	s.canceledControls = nil
 }
 
-func (s *ControlSink) UpdatePlan(content []byte, compression leapmuxv1.ContentCompression, title string) {
-	s.crMu.Lock()
-	defer s.crMu.Unlock()
-	s.planUpdates = append(s.planUpdates, PlanUpdateRecord{
-		Content:     append([]byte(nil), content...),
-		Compression: compression,
-		Title:       title,
-	})
-}
-
 func (s *ControlSink) PersistWorkerNotification(content agent.MessageContent) (bool, error) {
 	return s.persistWorkerNotification(content, s.PersistLeapMuxNotification)
 }
@@ -137,18 +118,6 @@ func (s *ControlSink) LastPublishedControl() ControlRequestRecord {
 	s.crMu.Lock()
 	defer s.crMu.Unlock()
 	return s.publishedControls[len(s.publishedControls)-1]
-}
-
-func (s *ControlSink) PlanUpdateCount() int {
-	s.crMu.Lock()
-	defer s.crMu.Unlock()
-	return len(s.planUpdates)
-}
-
-func (s *ControlSink) LastPlanUpdate() PlanUpdateRecord {
-	s.crMu.Lock()
-	defer s.crMu.Unlock()
-	return s.planUpdates[len(s.planUpdates)-1]
 }
 
 // Notifications returns a snapshot of every PersistLeapMuxNotification

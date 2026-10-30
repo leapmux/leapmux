@@ -256,6 +256,11 @@ func (p *Process) WriteStdin(data []byte) error {
 	}
 }
 
+// EnqueueStdin admits a frame without waiting for the underlying write.
+// Callers can check their own authority and enqueue under one state lock,
+// then wait for the returned result after releasing that lock.
+func (p *Process) EnqueueStdin(data []byte) (<-chan error, error) { return p.enqueueStdinResult(data) }
+
 // enqueueStdinResult reports delivery without waiting or discarding queue refusals.
 func (p *Process) enqueueStdinResult(data []byte) (<-chan error, error) {
 	p.stdinMu.Lock()

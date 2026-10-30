@@ -2609,49 +2609,95 @@ describe('createMockModelServer', () => {
   // pair onto its own protocol: Anthropic states the uncached input beside the
   // buckets, while the OpenAI wires keep the inclusive input and state the
   // buckets in their own slots.
-  it('maps the cache counts into the usage response of each protocol', async () => {
+  it.each([
+    [
+      {
+        inputTokens: 10,
+        cacheReadTokens: 2,
+        cacheWriteTokens: 3,
+        outputTokens: 4,
+      },
+      10,
+      4,
+      2,
+      3,
+      5,
+      14,
+    ],
+    [
+      { cacheReadTokens: 3 },
+      3,
+      1,
+      3,
+      0,
+      0,
+      4,
+    ],
+    [
+      { cacheReadTokens: 2, cacheWriteTokens: 3 },
+      5,
+      1,
+      2,
+      3,
+      0,
+      6,
+    ],
+  ])('maps cache counts into each protocol for %j', async (usage, input, output, cacheRead, cacheWrite, ordinary, total) => {
     const server = await startServer()
-    const usage = { inputTokens: 10, cacheReadTokens: 2, cacheWriteTokens: 3, outputTokens: 4 }
     await registerScenario(server, 'cache-usage', {
-      steps: [{ text: 'Answered.', usage }, { text: 'Answered.', usage }, { text: 'Answered.', usage }],
+      steps: [
+        { text: 'Answered.', usage },
+        { text: 'Answered.', usage },
+        { text: 'Answered.', usage },
+      ],
     })
     const prompt = mockScenarioPrompt('cache-usage', 'Answer once.')
 
     const completion = await chat(server, prompt, false)
     expect((await completion.json()).usage).toEqual({
-      prompt_tokens: 10,
-      completion_tokens: 4,
-      total_tokens: 14,
-      prompt_tokens_details: { cached_tokens: 2 },
-      cache_creation_input_tokens: 3,
+      prompt_tokens: input,
+      completion_tokens: output,
+      total_tokens: total,
+      prompt_tokens_details: { cached_tokens: cacheRead },
+      cache_creation_input_tokens: cacheWrite,
     })
 
     const responses = await fetch(`${server.url}/v1/responses`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ stream: false, input: [{ role: 'user', content: prompt }] }),
+      body: JSON.stringify({
+        stream: false,
+        input: [
+          { role: 'user', content: prompt },
+        ],
+      }),
     })
     expect((await responses.json()).usage).toEqual({
-      input_tokens: 10,
-      input_tokens_details: { cached_tokens: 2 },
-      output_tokens: 4,
+      input_tokens: input,
+      input_tokens_details: { cached_tokens: cacheRead },
+      output_tokens: output,
       output_tokens_details: { reasoning_tokens: 0 },
-      total_tokens: 14,
-      cache_creation_input_tokens: 3,
+      total_tokens: total,
+      cache_creation_input_tokens: cacheWrite,
     })
 
     const anthropic = await fetch(`${server.url}/v1/messages`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ stream: false, messages: [{ role: 'user', content: prompt }] }),
+      body: JSON.stringify({
+        stream: false,
+        messages: [
+          { role: 'user', content: prompt },
+        ],
+      }),
     })
     // The Anthropic wire's input_tokens is the UNcached input: the mock subtracts
     // the buckets so the client's own total lands back on the scripted 10.
     expect((await anthropic.json()).usage).toEqual({
-      input_tokens: 5,
-      output_tokens: 4,
-      cache_read_input_tokens: 2,
-      cache_creation_input_tokens: 3,
+      input_tokens: ordinary,
+      output_tokens: output,
+      cache_read_input_tokens: cacheRead,
+      cache_creation_input_tokens: cacheWrite,
     })
   })
 

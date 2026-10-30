@@ -63,7 +63,8 @@ func TestZCodeOpenSession_ReplacesTheCompleteAccountCatalog(t *testing.T) {
 func TestZCodeSettingsSnapshot_CannotAdoptARetiredSession(t *testing.T) {
 	t.Parallel()
 	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
-	_, applied := a.applyStateSnapshot(json.RawMessage(`{"session":{"sessionId":"retired"},"runtime":{"eventSeq":999},"settings":{"model":{"current":{"providerId":"old","modelId":"A"}}}}`))
+	_, applied, err := a.settleZCodeSettingsSnapshot(zcodeSettingsRequestIdentityForTest(a), nil, json.RawMessage(`{"session":{"sessionId":"retired"},"runtime":{"eventSeq":999},"settings":{"model":{"current":{"providerId":"old","modelId":"A"}}}}`))
+	require.ErrorIs(t, err, errNoZCodeSession)
 	assert.False(t, applied)
 	assert.Equal(t, "sess-1", a.sessionID)
 	assert.Zero(t, a.lastSeq)
@@ -462,4 +463,164 @@ func TestZCodeAccountCatalog_MarksTheGenerationOnlyAfterBothReadsSucceed(t *test
 	a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, read), json.RawMessage(`{}`)))
 	require.True(t, <-done)
 	assert.Equal(t, 1, state.catalogGeneration)
+}
+
+func TestZCodeCompleteCatalog_ControlsEveryModelSelection(t *testing.T) {
+	t.Parallel()
+	for _, available := range []string{`[]`, `[{"ref":{"providerId":"personal:p","modelId":"B"}}]`} {
+		t.Run(available, func(t *testing.T) {
+			t.Parallel()
+			a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
+			a.catalog = zcodeTestCatalog(t, `{"provider":{"personal:p":{"kind":"anthropic","options":{"apiKey":"k"},"models":{"A":{"reasoning":{"default":"high","levels":["high"]}},"B":{}}}}}`)
+			zcodeApplySettings(t, a, `{"model":{"current":{"providerId":"personal:p","modelId":"A"}}}`)
+			var catalog []zcodeAvailableModel
+			require.NoError(t, json.Unmarshal([]byte(available), &catalog))
+			a.Mu.Lock()
+			a.replaceZCodeLiveModelsLocked(catalog, zcodeModelRef{ProviderID: "personal:p", ModelID: "A"})
+			_, found := a.resolveZCodeModelIDLocked("personal:p/A")
+			a.Mu.Unlock()
+			assert.False(t, found, "complete native membership excludes a configured overlay model")
+			models, current, _ := a.zcodeModelsForUI()
+			assert.Equal(t, "personal:p/A", current)
+			assert.Len(t, models, len(catalog))
+			snapshot := a.SettingsSnapshot()
+			assert.Equal(t, agent.OptionSettlementUnresolved, snapshot.Settlements[agent.OptionIDModel].State)
+			a.Mu.Lock()
+			_, published := a.confirmedZCodeSettingsLocked()[agent.OptionIDModel]
+			a.Mu.Unlock()
+			assert.False(t, published, "an unavailable current model must not be confirmed")
+			zcodeApplySettings(t, a, `{"model":{"current":{"providerId":"personal:p","modelId":"A"}}}`)
+			assert.Equal(t, agent.OptionSettlementUnresolved, a.SettingsSnapshot().Settlements[agent.OptionIDModel].State, "a partial observation does not restore catalog membership")
+		})
+	}
+}
+
+func TestZCodeSendInput_RequiresAnAvailableModelChoice(t *testing.T) {
+	t.Parallel()
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+	a.Mu.Lock()
+	a.model = "personal:p/A"
+	a.replaceZCodeLiveModelsLocked([]zcodeAvailableModel{}, zcodeModelRef{ProviderID: "personal:p", ModelID: "A"})
+	a.Mu.Unlock()
+	sends := 0
+	zcodeRespondToRequestsForTest(t, a, func(request zcodeSentRequest) json.RawMessage {
+		if request.Method == MethodSessionSend {
+			sends++
+			return json.RawMessage(`{"sessionId":"sess-1","accepted":true,"stateRevision":0}`)
+		}
+		return nil
+	})
+	err := a.SendInput("hello", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "select an available model")
+	assert.Zero(t, sends)
+	assert.Empty(t, a.turns)
+}
+
+func TestZCodeCompleteCatalog_EveryDisplayedNativeIDIsSelectable(t *testing.T) {
+	t.Parallel()
+	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
+	a.catalog.accountProviderIDs = map[string]string{"builtin:legacy": "account:current"}
+	a.Mu.Lock()
+	a.replaceZCodeLiveModelsLocked([]zcodeAvailableModel{{Ref: zcodeModelRef{ProviderID: "builtin:legacy", ModelID: "native"}}}, zcodeModelRef{ProviderID: "builtin:legacy", ModelID: "native"})
+	a.Mu.Unlock()
+	models, _, _ := a.zcodeModelsForUI()
+	require.Len(t, models, 1)
+	a.Mu.Lock()
+	resolved, available := a.resolveZCodeModelIDLocked(models[0].Id)
+	a.Mu.Unlock()
+	assert.True(t, available, "a displayed native identity must remain selectable when it is also a configuration alias")
+	assert.Equal(t, models[0].Id, resolved)
+}
+
+func TestZCodeCompleteCatalog_DisabledModelsRemainUnavailableUntilACompleteRefresh(t *testing.T) {
+	t.Parallel()
+	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
+	a.catalog = zcodeTestCatalog(t, `{"provider":{"personal:p":{"kind":"anthropic","options":{"apiKey":"k"},"models":{"A":{},"B":{}}}}}`)
+	zcodeApplySettings(t, a, `{"model":{"current":{"providerId":"personal:p","modelId":"A"}}}`)
+	var available []zcodeAvailableModel
+	require.NoError(t, json.Unmarshal([]byte(`[{"ref":{"providerId":"personal:p","modelId":"A"},"disabledReason":"Sign in to use this model"},{"ref":{"providerId":"personal:p","modelId":"B"}}]`), &available))
+	a.Mu.Lock()
+	a.replaceZCodeLiveModelsLocked(available, zcodeModelRef{ProviderID: "personal:p", ModelID: "A"})
+	a.Mu.Unlock()
+	sends := 0
+	zcodeRespondToRequestsForTest(t, a, func(request zcodeSentRequest) json.RawMessage {
+		if request.Method == MethodSessionSend {
+			sends++
+			return json.RawMessage(`{"sessionId":"sess-1","accepted":true,"stateRevision":0}`)
+		}
+		return nil
+	})
+	check := func() {
+		t.Helper()
+		models, current, _ := a.zcodeModelsForUI()
+		assert.Equal(t, "personal:p/A", current)
+		if assert.Len(t, models, 1) {
+			assert.Equal(t, "personal:p/B", models[0].Id)
+		}
+		a.Mu.Lock()
+		_, composite := a.resolveZCodeModelIDLocked("personal:p/A")
+		_, bare := a.resolveZCodeModelIDLocked("A")
+		unavailable := a.zcodeCurrentModelUnavailableLocked()
+		_, confirmed := a.confirmedZCodeSettingsLocked()[agent.OptionIDModel]
+		a.Mu.Unlock()
+		assert.False(t, composite)
+		assert.False(t, bare)
+		assert.True(t, unavailable)
+		assert.False(t, confirmed)
+		assert.Equal(t, agent.OptionSettlementUnresolved, a.SettingsSnapshot().Settlements[agent.OptionIDModel].State)
+	}
+	check()
+	zcodeApplySettings(t, a, `{"model":{"current":{"providerId":"personal:p","modelId":"A"},"available":[{"ref":{"providerId":"personal:p","modelId":"A"}}]}}`)
+	check()
+	require.ErrorIs(t, a.SendInput("hello", nil), errZCodeModelSelectionRequired)
+	assert.Zero(t, sends)
+	available[0].DisabledReason = ""
+	a.Mu.Lock()
+	a.replaceZCodeLiveModelsLocked(available, zcodeModelRef{ProviderID: "personal:p", ModelID: "A"})
+	a.Mu.Unlock()
+	assert.Equal(t, agent.OptionSettlementConfirmed, a.SettingsSnapshot().Settlements[agent.OptionIDModel].State)
+	models, current, _ := a.zcodeModelsForUI()
+	assert.Len(t, models, 2)
+	assert.Equal(t, "personal:p/A", current)
+}
+
+func TestZCodeOpenSession_CompleteCatalogControlsRuntimeOverlaySelection(t *testing.T) {
+	t.Parallel()
+	for _, resumeID := range []string{"", "sess-1"} {
+		for _, available := range []string{`[]`, `[{"ref":{"providerId":"personal:p","modelId":"B"}}]`} {
+			t.Run(resumeID+available, func(t *testing.T) {
+				t.Parallel()
+				stdin := &zcodeRecordedStdin{}
+				a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+				require.Nil(t, a.account)
+				a.catalog = zcodeTestCatalog(t, `{"provider":{"personal:p":{"kind":"anthropic","options":{"apiKey":"k"},"models":{"A":{},"B":{}}}}}`)
+				zcodeApplySettings(t, a, `{"model":{"current":{"providerId":"personal:p","modelId":"A"}}}`)
+				done := make(chan error, 1)
+				go func() { done <- a.openSession(resumeID, zcodeTestRPCTimeout) }()
+				method := MethodSessionCreate
+				if resumeID != "" {
+					method = MethodSessionResume
+				}
+				request := zcodeNthRequest(t, stdin, method, 1)
+				a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(`{"session":{"sessionId":"sess-1"},"settings":{"model":{"current":{"providerId":"personal:p","modelId":"A"},"available":`+available+`}}}`)))
+				require.NoError(t, <-done)
+				a.Mu.Lock()
+				_, selectable := a.resolveZCodeModelIDLocked("personal:p/A")
+				a.Mu.Unlock()
+				assert.False(t, selectable, "a complete catalog must exclude the disk-only model")
+				models, current, _ := a.zcodeModelsForUI()
+				assert.Equal(t, "personal:p/A", current, "preserve the native current model")
+				if available == `[]` {
+					assert.Empty(t, models)
+				} else {
+					require.Len(t, models, 1)
+					assert.Equal(t, "personal:p/B", models[0].Id)
+				}
+				assert.Equal(t, agent.OptionSettlementUnresolved, a.SettingsSnapshot().Settlements[agent.OptionIDModel].State)
+				assert.Empty(t, stdin.RequestsFor(MethodSetModel), "startup must require an explicit model choice")
+			})
+		}
+	}
 }

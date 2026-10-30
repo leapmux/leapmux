@@ -476,10 +476,10 @@ describe('createMockAgentEnvironment', () => {
   })
 
   it('writes a Codewhale configuration that reaches the mock and nothing else', async () => {
-    const { env, homeDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
+    const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
 
     expect(env).toMatchObject({
-      CODEWHALE_HOME: join(homeDir, '.codewhale'),
+      CODEWHALE_HOME: join(directory, 'cw'),
       CODEWHALE_TELEMETRY: '0',
       CODEWHALE_NO_UPDATE_CHECK: '1',
       CODEWHALE_ALLOW_SHELL: '1',
@@ -1363,7 +1363,7 @@ describe('createMockAgentEnvironment updater switches', () => {
     expect(json(homeDir, '.kiro', 'settings', 'cli.json')).toMatchObject({ 'app.disableAutoupdates': true })
     // Grok, Codewhale and Codex keep the key in TOML.
     expect(text(homeDir, '.grok', 'config.toml')).toMatch(/^\[cli\]\nauto_update = false$/m)
-    expect(text(homeDir, '.codewhale', 'config.toml')).toMatch(/^\[update\]\ncheck_for_updates = false$/m)
+    expect(text(env.CODEWHALE_HOME!, 'config.toml')).toMatch(/^\[update\]\ncheck_for_updates = false$/m)
     expect(text(homeDir, '.codex', 'config.toml')).toMatch(/^check_for_update_on_startup = false$/m)
   })
 

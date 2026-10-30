@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/tooltranscript"
@@ -30,10 +31,10 @@ type cursorToolSource struct {
 	// resolveStorePath reports the store file of the session that runs now. The
 	// transcript calls it for every agent message.
 	resolveStorePath func() string
-	// observeRecord copies provider data that belongs in another transcript.
+	// captureRecordObserver retains the session generation before the native read.
 	// Cursor's ACP stream omits the subagent report, but its store keeps it in
 	// the completed Task record.
-	observeRecord func(toolCallID string, record cursorToolRecord)
+	captureRecordObserver func() func(toolCallID string, record cursorToolRecord)
 }
 
 func newCursorToolTranscript(ctx context.Context, services agent.ProviderServices, storePath func() string) *tooltranscript.Transcript {
@@ -44,9 +45,9 @@ func newCursorToolTranscriptWithObserver(
 	ctx context.Context,
 	services agent.ProviderServices,
 	storePath func() string,
-	observe func(toolCallID string, record cursorToolRecord),
+	captureObserver func() func(toolCallID string, record cursorToolRecord),
 ) *tooltranscript.Transcript {
-	source := &cursorToolSource{store: &cursorToolStore{}, resolveStorePath: storePath, observeRecord: observe}
+	source := &cursorToolSource{store: &cursorToolStore{}, resolveStorePath: storePath, captureRecordObserver: captureObserver}
 	// The store holds one database handle for the session's store file. The agent's
 	// context ending is what releases it, because the transcript has no teardown call.
 	context.AfterFunc(ctx, source.store.reset)
@@ -64,19 +65,43 @@ func (c *cursorToolSource) ResetRecords() { c.store.reset() }
 
 func (c *cursorToolSource) ToolCallID(original []byte) string { return acp.ToolCallID(original) }
 
-func (c *cursorToolSource) ReadSupplements(ctx context.Context, path string, pending map[string]agent.MessageContent, _ bool) (map[string][]byte, error) {
+func (c *cursorToolSource) ReadSupplements(ctx context.Context, location tooltranscript.Location, pending map[string]agent.MessageContent, _ bool) (map[string][]byte, error) {
+	var observe func(string, cursorToolRecord)
+	if c.captureRecordObserver != nil {
+		observe = c.captureRecordObserver()
+	}
+	if observe != nil && (c.resolveStorePath == nil || c.resolveStorePath() != location.Path) {
+		observe = nil
+	}
+	return readCursorToolSupplements(ctx, c.store, location.Path, pending, observe)
+}
+
+func (c *cursorToolSource) CaptureSupplement(location tooltranscript.Location, content agent.MessageContent, _ agent.SpanInfo) tooltranscript.SupplementReader {
+	id := acp.ToolCallID(content.Original)
+	if id == "" {
+		return nil
+	}
+	store, path := c.store, location.Path
+	pending := map[string]agent.MessageContent{id: content.Clone()}
+	return func(ctx context.Context, _ bool) ([]byte, error) {
+		records, err := readCursorToolSupplements(ctx, store, path, pending, nil)
+		return records[id], err
+	}
+}
+
+func readCursorToolSupplements(ctx context.Context, store *cursorToolStore, path string, pending map[string]agent.MessageContent, observe func(string, cursorToolRecord)) (map[string][]byte, error) {
 	ids := make([]string, 0, len(pending))
 	for id := range pending {
 		ids = append(ids, id)
 	}
-	records, err := c.store.read(ctx, path, ids)
+	records, err := store.read(ctx, path, ids)
 	if err != nil {
 		return nil, err
 	}
 	out := make(map[string][]byte, len(records))
 	for id, record := range records {
-		if c.observeRecord != nil {
-			c.observeRecord(id, record)
+		if observe != nil {
+			observe(id, record)
 		}
 		supplement, err := cursorToolSupplement(pending[id].Original, record)
 		if err != nil {
@@ -107,12 +132,16 @@ func cursorToolSupplement(original []byte, record cursorToolRecord) ([]byte, err
 	return json.Marshal(supplement)
 }
 
-func (a *Agent) observeCursorTaskRecord(toolCallID string, record cursorToolRecord) {
+func (a *Agent) observeCursorTaskRecord(generation uint64, toolCallID string, record cursorToolRecord) {
 	report := cursorTaskReport(record.content)
 	if toolCallID == "" || report == "" {
 		return
 	}
 	a.Mu.Lock()
+	if generation != a.taskReportGeneration {
+		a.Mu.Unlock()
+		return
+	}
 	if _, native := a.nativeTasks[bgtask.NormalizeRowKey(toolCallID)]; native {
 		a.Mu.Unlock()
 		return
@@ -123,7 +152,7 @@ func (a *Agent) observeCursorTaskRecord(toolCallID string, record cursorToolReco
 	allowed := state.extensionSeen
 	a.Mu.Unlock()
 	if allowed {
-		a.persistReadyCursorTaskReport(toolCallID, report)
+		a.persistReadyCursorTaskReport(generation, toolCallID, report)
 	}
 }
 
@@ -133,30 +162,55 @@ func (a *Agent) noteCursorTaskExtension(toolCallID string) {
 		a.Mu.Unlock()
 		return
 	}
+	generation := a.taskReportGeneration
 	state := a.cursorTaskReportStateLocked(toolCallID)
 	state.extensionSeen = true
 	a.taskReports[toolCallID] = state
 	report := state.report
 	a.Mu.Unlock()
 	if report != "" {
-		a.persistReadyCursorTaskReport(toolCallID, report)
+		a.persistReadyCursorTaskReport(generation, toolCallID, report)
 	}
 }
 
-func (a *Agent) persistReadyCursorTaskReport(toolCallID, report string) {
-	_, err := a.Sink().PersistChildSubagentReport(agent.ChildSubagentReportWrite{
-		RowKey: bgtask.NormalizeRowKey(toolCallID),
-		Write: agent.SubagentReportWrite{
-			ReportID: toolCallID,
-			Report:   agent.SubagentReport{Label: "Cursor subagent", Text: report},
-		},
-	})
+func (a *Agent) persistReadyCursorTaskReport(generation uint64, toolCallID, report string) {
+	captured, present, err := agent.CaptureChildSubagentReport(a.Sink(), agent.ChildSubagentReportWrite{RowKey: bgtask.NormalizeRowKey(toolCallID), Write: agent.SubagentReportWrite{ReportID: toolCallID, Report: agent.SubagentReport{Label: "Cursor subagent", Text: report}}})
 	if err != nil {
+		slog.Warn("cursor task report capture failed", "agent_id", a.AgentID(), "tool_call_id", toolCallID, "error", err)
+		return
+	}
+	if !present {
+		return
+	}
+	expected := cursorTaskReportState{extensionSeen: true, report: report}
+	a.Mu.Lock()
+	current := generation == a.taskReportGeneration && a.taskReports[toolCallID] == expected
+	if _, native := a.nativeTasks[bgtask.NormalizeRowKey(toolCallID)]; native {
+		current = false
+	}
+	var batch *agent.CapturedTranscriptBatch
+	if current {
+		batch, err = agent.ReserveCapturedTranscriptBatch(captured.TranscriptWriter())
+	}
+	a.Mu.Unlock()
+	if !current {
+		return
+	}
+	if err != nil {
+		slog.Warn("cursor task report admission failed", "agent_id", a.AgentID(), "tool_call_id", toolCallID, "error", err)
+		return
+	}
+	err = batch.Prepare(func() []agent.CapturedTranscriptOperation {
+		return []agent.CapturedTranscriptOperation{captured.NotificationOperation(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX)}
+	})
+	if !agent.OutputRetained(err) {
 		slog.Warn("cursor task report persist failed", "agent_id", a.AgentID(), "tool_call_id", toolCallID, "error", err)
 		return
 	}
 	a.Mu.Lock()
-	a.taskReports[toolCallID] = cursorTaskReportState{extensionSeen: true}
+	if generation == a.taskReportGeneration && a.taskReports[toolCallID] == expected {
+		a.taskReports[toolCallID] = cursorTaskReportState{extensionSeen: true}
+	}
 	a.Mu.Unlock()
 }
 
@@ -193,4 +247,11 @@ func cursorTaskReport(content json.RawMessage) string {
 		}
 	}
 	return text
+}
+
+func (a *Agent) captureCursorTaskRecordObserver() func(string, cursorToolRecord) {
+	a.Mu.Lock()
+	generation := a.taskReportGeneration
+	a.Mu.Unlock()
+	return func(id string, record cursorToolRecord) { a.observeCursorTaskRecord(generation, id, record) }
 }

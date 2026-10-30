@@ -29,9 +29,12 @@ vi.mock('@playwright/test', async (importOriginal) => {
   const check = (value: unknown) => {
     if (typeof value === 'object' && value !== null && 'cardProbe' in value) {
       return {
-        toContainText: async (text: string) => {
-          card.events.push(`card-contains:${text}`)
-          expect(card.text).toContain(text)
+        toContainText: async (text: string | RegExp) => {
+          card.events.push('card-check')
+          if (typeof text === 'string')
+            expect(card.text).toContain(text)
+          else
+            expect(card.text).toMatch(text)
         },
       }
     }
@@ -75,6 +78,33 @@ beforeEach(() => {
 })
 
 describe('usageMarkers', () => {
+  it.each([
+    [
+      { inputTokens: 0 },
+      1,
+    ],
+    [
+      { outputTokens: 0 },
+      1,
+    ],
+    [
+      { cacheReadTokens: 2, cacheWriteTokens: 3 },
+      6,
+    ],
+    [
+      { cacheReadTokens: 0 },
+      2,
+    ],
+    [
+      { cacheWriteTokens: 0 },
+      2,
+    ],
+  ] as const)('uses the wire defaults for partial counts %j', (usage, total) => {
+    expect(usageMarkers(usage)).toEqual([
+      formatTokenCount(total),
+    ])
+  })
+
   // The marker block every context-usage spec scripts. A default of 1/1 would
   // print one repeated figure and prove nothing about which count moved.
   it('marks the combined figure the card prints', () => {
@@ -105,10 +135,10 @@ describe('usageMarkers', () => {
 
   it('still marks when only one count is scripted', () => {
     expect(usageMarkers({ inputTokens: 12000 })).toEqual([
-      formatTokenCount(12000),
+      formatTokenCount(12001),
     ])
     expect(usageMarkers({ outputTokens: 40 })).toEqual([
-      formatTokenCount(40),
+      formatTokenCount(41),
     ])
   })
 
@@ -116,13 +146,27 @@ describe('usageMarkers', () => {
   // figure sums the normalized breakdown -- ordinary input plus the two buckets
   // plus output -- so a consistent fixture marks input + output.
   it('marks the normalized total of a cache-inclusive usage block', () => {
-    expect(usageMarkers({ inputTokens: 10, cacheReadTokens: 2, cacheWriteTokens: 3, outputTokens: 4 }))
-      .toEqual([formatTokenCount(14)])
+    expect(usageMarkers({
+      inputTokens: 10,
+      cacheReadTokens: 2,
+      cacheWriteTokens: 3,
+      outputTokens: 4,
+    }))
+      .toEqual([
+        formatTokenCount(14),
+      ])
   })
 
   it('clamps an over-full cache breakdown to zero ordinary input', () => {
-    expect(usageMarkers({ inputTokens: 10, cacheReadTokens: 8, cacheWriteTokens: 5, outputTokens: 4 }))
-      .toEqual([formatTokenCount(17)])
+    expect(usageMarkers({
+      inputTokens: 10,
+      cacheReadTokens: 8,
+      cacheWriteTokens: 5,
+      outputTokens: 4,
+    }))
+      .toEqual([
+        formatTokenCount(17),
+      ])
   })
 })
 
@@ -175,7 +219,44 @@ describe('parseContextRow', () => {
   })
 })
 
+describe('usageMarkers native reader', () => {
+  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY])('refuses an invalid native count %s', (value) => {
+    expect(() => usageMarkers({ inputTokens: 1 }, () => value)).toThrow('invalid token count')
+  })
+
+  it('requires a stated usage field before it calls a native reader', () => {
+    let calls = 0
+    expect(usageMarkers({}, () => {
+      calls++
+      return 100
+    })).toEqual([])
+    expect(calls).toBe(0)
+  })
+})
+
 describe('exerciseContextUsage', () => {
+  it('preserves a native zero before and after reload', async () => {
+    card.text = 'Context 0 / 128.0k'
+    const context = usageContext({
+      contextUsageTokens: () => 0,
+    })
+    await exerciseContextUsage(context, {
+      usage: { outputTokens: 40 },
+    })
+    expect(card.events.filter(event => event === 'card-check')).toHaveLength(2)
+  })
+
+  it('uses the native context reader before and after reload', async () => {
+    card.text = 'Context 100 / 128.0k'
+    const context = usageContext({
+      contextUsageTokens: usage => usage.inputTokens ?? 1,
+    })
+    await exerciseContextUsage(context, {
+      usage: { inputTokens: 100, outputTokens: 40 },
+    })
+    expect(card.events.filter(event => event === 'card-check')).toHaveLength(2)
+  })
+
   it('scripts the usage on one answer, requires the card to state it, and closes the card', async () => {
     const context = usageContext()
     const usage = await exerciseContextUsage(context)
@@ -189,11 +270,11 @@ describe('exerciseContextUsage', () => {
       'steps:1',
       'idle',
       'open-card',
-      `card-contains:${formatTokenCount(12_040)}`,
+      'card-check',
       'key:Escape',
       'reload',
       'open-card',
-      `card-contains:${formatTokenCount(12_040)}`,
+      'card-check',
       'key:Escape',
     ])
   })
@@ -237,7 +318,7 @@ describe('exerciseContextUsage', () => {
     expect(card.events.slice(-4)).toEqual([
       'reload',
       'open-card',
-      `card-contains:${formatTokenCount(12_040)}`,
+      'card-check',
       'key:Escape',
     ])
   })
@@ -252,7 +333,7 @@ describe('exerciseContextUsage', () => {
     ])
     expect(usage).not.toBe(input)
     expect(usage).not.toBe(SCRIPTED_CONTEXT_USAGE)
-    expect(card.events.filter(event => event === 'card-contains:24.1k')).toHaveLength(2)
+    expect(card.events.filter(event => event === 'card-check')).toHaveLength(2)
   })
 
   it('returns a copy that a caller cannot use to change the scripted usage', async () => {
@@ -264,13 +345,39 @@ describe('exerciseContextUsage', () => {
   it('fails when the card states another total', async () => {
     card.text = `Context ${formatTokenCount(1)} / ${formatTokenCount(128_000)}`
     // The card must state the scripted input total, 12.0k.
-    await expect(exerciseContextUsage(usageContext())).rejects.toThrow('to contain \'12.0k\'')
+    await expect(exerciseContextUsage(usageContext())).rejects.toMatchObject({
+      actual: card.text,
+      expected: /Context\s*12\.0k\s*\//,
+    })
   })
 })
 
 describe('expectContextUsage', () => {
+  it.each([
+    [
+      'Context 100 / 128.0k',
+      { inputTokens: 0, outputTokens: 0 },
+      /Context\s*0\s*\//,
+    ],
+    [
+      'Context 1000 / 128.0k',
+      { inputTokens: 100, outputTokens: 0 },
+      /Context\s*100\s*\//,
+    ],
+  ])('requires the exact context count in %s', async (text, usage, pattern) => {
+    card.text = text
+    await expect(expectContextUsage(usageContext().page, usage)).rejects.toMatchObject({ actual: text, expected: pattern })
+  })
+
   it('refuses a usage block that states no count, before it opens the card', async () => {
     await expect(expectContextUsage(usageContext().page, { contextWindow: 128_000 })).rejects.toThrow('states a token count')
     expect(card.events).toEqual([])
+  })
+
+  it('checks the card for an explicit cache-only usage block', async () => {
+    card.text = 'Context 6 / 128.0k'
+    await expectContextUsage(usageContext().page, { cacheReadTokens: 2, cacheWriteTokens: 3 })
+    expect(card.events).toContain('open-card')
+    expect(card.events).toContain('card-check')
   })
 })

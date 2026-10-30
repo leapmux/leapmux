@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 
@@ -74,16 +76,37 @@ type zcodeToolSource struct {
 	// parent's. See zcodeOutputFileCache.
 	outputFiles *zcodeOutputFileCache
 
-	mu       sync.Mutex
-	requests map[string]zcodeToolLookup
+	mu                sync.Mutex
+	requests          map[string]zcodeToolLookup
+	requestGeneration uint64
+	canFinalize       func() bool
+	canFinalizeChild  func(string) bool
 }
 
-func newZCodeToolTranscript(ctx context.Context, services agent.ProviderServices, resolveLocation func() zcodeToolStoreLocation) *tooltranscript.Transcript {
+type zcodeToolTranscriptPolicy struct {
+	canFinalizeRoot  func() bool
+	canFinalizeChild func(string) bool
+}
+
+func newZCodeToolTranscript(ctx context.Context, services agent.ProviderServices, resolveLocation func() zcodeToolStoreLocation, policy *zcodeToolTranscriptPolicy) *tooltranscript.Transcript {
 	store := &zcodeToolStore{}
 	// The store holds one database handle for the agent. The agent's context ending
 	// is what releases it, because the transcript itself has no teardown call.
-	context.AfterFunc(ctx, store.close)
-	return tooltranscript.New(ctx, services, newZCodeToolSource(store, resolveLocation))
+	context.AfterFunc(ctx, store.retire)
+	source := newZCodeToolSource(store, resolveLocation)
+	if policy != nil {
+		source.canFinalize = policy.canFinalizeRoot
+		source.canFinalizeChild = policy.canFinalizeChild
+	}
+	return tooltranscript.New(ctx, services, source)
+}
+
+func (z *zcodeToolSource) AuthorityIsCurrent(owner agent.TranscriptOwner) bool {
+	return owner != nil && owner.IsSessionCurrent()
+}
+
+func (z *zcodeToolSource) CanFinalizeTurn() bool {
+	return z.canFinalize == nil || z.canFinalize()
 }
 
 func newZCodeToolSource(store *zcodeToolStore, resolveLocation func() zcodeToolStoreLocation) *zcodeToolSource {
@@ -99,12 +122,12 @@ func (z *zcodeToolSource) ProviderName() string { return "ZCode" }
 
 func (z *zcodeToolSource) Locate(string) tooltranscript.Location {
 	location := z.resolveLocation()
-	return tooltranscript.Location{SessionKey: location.sessionID, Path: location.databasePath, Ready: location.databasePath != ""}
+	return tooltranscript.Location{SessionKey: location.sessionID, Path: location.databasePath, OutputFileRoot: location.outputFileRoot, Ready: location.databasePath != ""}
 }
 
 func (z *zcodeToolSource) ToolCallID(original []byte) string {
 	ref, valid := zcodeToolReferenceFrom(original)
-	if valid && (ref.Kind == contracts.ZCodeToolKindResult || ref.Kind == contracts.ZCodeToolKindError) {
+	if valid {
 		return ref.ToolCallID
 	}
 	return ""
@@ -112,7 +135,7 @@ func (z *zcodeToolSource) ToolCallID(original []byte) string {
 
 func (z *zcodeToolSource) ObserveMessage(content agent.MessageContent, span agent.SpanInfo) {
 	ref, valid := zcodeToolReferenceFrom(content.Original)
-	if !valid || ref.Kind != contracts.ZCodeToolKindScheduled || ref.ToolCallID != span.SpanID {
+	if !valid || ref.Kind != contracts.ZCodeToolKindScheduled {
 		return
 	}
 	lookup, valid := ref.lookup(zcodeToolLookup{})
@@ -120,7 +143,11 @@ func (z *zcodeToolSource) ObserveMessage(content agent.MessageContent, span agen
 		return
 	}
 	z.mu.Lock()
-	z.requests[ref.ToolCallID] = lookup
+	if lookup.callID == "" {
+		lookup.callID = ref.ToolCallID
+	}
+	lookup = zcodeCapturedToolLookup(content, span.SpanID, lookup)
+	z.requests[span.SpanID] = lookup
 	z.mu.Unlock()
 }
 
@@ -141,6 +168,7 @@ func (z *zcodeToolSource) FinishTurn() { z.clearRequests() }
 // turn end wait for whatever another transcript was reading.
 func (z *zcodeToolSource) clearRequests() {
 	z.mu.Lock()
+	z.requestGeneration++
 	clear(z.requests)
 	z.mu.Unlock()
 	z.outputFiles.drop()
@@ -149,47 +177,114 @@ func (z *zcodeToolSource) clearRequests() {
 // NewChild builds a source on the SAME store, which is how each child transcript
 // shares the agent's one database handle. It gets its OWN output file cache, because a
 // child's turn ends the instant its Agent result lands and the parent's has not.
-func (z *zcodeToolSource) NewChild(_ string, _ agent.ProviderServices) tooltranscript.Source {
-	return newZCodeToolSource(z.store, z.resolveLocation)
-}
-
-// ReadSupplements asks the agent for the store location again rather than reading what
-// locate reported. The transcript calls locate on the reader goroutine, so a field that
-// held that answer would be one more value that two goroutines share, and the one this
-// read needs is the current one.
-func (z *zcodeToolSource) ReadSupplements(ctx context.Context, _ string, pending map[string]agent.MessageContent, final bool) (map[string][]byte, error) {
-	location := z.resolveLocation()
-	z.mu.Lock()
-	lookups := make(map[string]zcodeToolLookup)
-	for id, original := range pending {
-		ref, valid := zcodeToolReferenceFrom(original.Original)
-		if !valid || ref.ToolCallID != id {
-			continue
-		}
-		if lookup, valid := ref.lookup(z.requests[id]); valid {
-			lookups[id] = lookup
+func (z *zcodeToolSource) NewChild(childID string, services agent.ProviderServices) tooltranscript.Source {
+	resolveParent := z.resolveLocation
+	resolve := resolveParent
+	if services != nil {
+		resolve = func() zcodeToolStoreLocation {
+			location := resolveParent()
+			location.sessionID = services.MessageSessionID()
+			return location
 		}
 	}
+	child := newZCodeToolSource(z.store, resolve)
+	child.canFinalizeChild = z.canFinalizeChild
+	if canFinalize := z.canFinalizeChild; canFinalize != nil {
+		child.canFinalize = func() bool { return canFinalize(childID) }
+	}
+	return child
+}
+
+// ReadSupplements uses the accepted row's complete native lookup location.
+// A delayed read never selects the replacement session or artifact directory.
+type zcodeToolRead struct {
+	original []byte
+	lookup   zcodeToolLookup
+}
+
+func captureZCodeToolRead(content agent.MessageContent, spanID string, previous zcodeToolLookup) (zcodeToolRead, bool) {
+	ref, valid := zcodeToolReferenceFrom(content.Original)
+	if !valid {
+		return zcodeToolRead{}, false
+	}
+	previous = zcodeCapturedToolLookup(content, spanID, previous)
+	if previous.callID == "" {
+		previous.callID = ref.ToolCallID
+	}
+	lookup, valid := ref.lookup(previous)
+	if !valid {
+		return zcodeToolRead{}, false
+	}
+	return zcodeToolRead{original: slices.Clone(content.Original), lookup: lookup}, true
+}
+
+func (z *zcodeToolSource) CaptureSupplement(location tooltranscript.Location, content agent.MessageContent, span agent.SpanInfo) tooltranscript.SupplementReader {
+	id := span.SpanID
+	z.mu.Lock()
+	previous := z.requests[id]
 	z.mu.Unlock()
-	records, readErr := readZCodeToolRecords(ctx, z.store, z.outputFiles, location, lookups)
-	out := make(map[string][]byte)
-	answered := make([]string, 0, len(records))
+	read, valid := captureZCodeToolRead(content, id, previous)
+	if !valid {
+		return nil
+	}
+	store := z.store
+	outputFiles := &zcodeOutputFileCache{}
+	reads := map[string]zcodeToolRead{id: read}
+	return func(ctx context.Context, final bool) ([]byte, error) {
+		supplements, err := readZCodeToolSupplements(ctx, store, outputFiles, location, reads, final)
+		return supplements[id], err
+	}
+}
+
+func readZCodeToolSupplements(ctx context.Context, store *zcodeToolStore, outputFiles *zcodeOutputFileCache, captured tooltranscript.Location, reads map[string]zcodeToolRead, final bool) (map[string][]byte, error) {
+	location := zcodeToolStoreLocation{databasePath: captured.Path, outputFileRoot: captured.OutputFileRoot, sessionID: captured.SessionKey}
+	lookups := make(map[string]zcodeToolLookup, len(reads))
+	for id, read := range reads {
+		lookups[id] = read.lookup
+	}
+	records, readErr := readZCodeToolRecords(ctx, store, outputFiles, location, lookups)
+	out := make(map[string][]byte, len(records))
 	for id, record := range records {
 		if !record.ready && !final {
 			continue
 		}
-		supplement, err := zcodeToolResultSupplement(pending[id].Original, record)
+		supplement, err := zcodeToolResultSupplement(reads[id].original, record)
 		if err != nil {
 			readErr = errors.Join(readErr, err)
 			continue
 		}
 		out[id] = supplement
-		answered = append(answered, id)
 	}
-	if len(answered) > 0 {
+	return out, readErr
+}
+
+func (z *zcodeToolSource) ReadSupplements(ctx context.Context, captured tooltranscript.Location, pending map[string]agent.MessageContent, final bool) (map[string][]byte, error) {
+	bindings := make(map[string]zcodeToolLookup, len(pending))
+	z.mu.Lock()
+	generation := z.requestGeneration
+	for id := range pending {
+		if previous, exists := z.requests[id]; exists {
+			bindings[id] = previous
+		}
+	}
+	z.mu.Unlock()
+	reads := make(map[string]zcodeToolRead, len(pending))
+	for id, content := range pending {
+		if read, valid := captureZCodeToolRead(content, id, bindings[id]); valid {
+			reads[id] = read
+		}
+	}
+	out, readErr := readZCodeToolSupplements(ctx, z.store, z.outputFiles, captured, reads, final)
+	if len(out) > 0 {
 		z.mu.Lock()
-		for _, id := range answered {
-			delete(z.requests, id)
+		if z.requestGeneration == generation {
+			for id := range out {
+				previous, capturedBinding := bindings[id]
+				current, exists := z.requests[id]
+				if capturedBinding && exists && current == previous {
+					delete(z.requests, id)
+				}
+			}
 		}
 		z.mu.Unlock()
 	}
@@ -214,4 +309,61 @@ func zcodeToolResultSupplement(original []byte, record zcodeToolRecord) ([]byte,
 		return nil, fmt.Errorf("ZCode tool supplement exceeds the message size limit")
 	}
 	return encoded, nil
+}
+
+func zcodeCapturedToolLookup(content agent.MessageContent, spanID string, previous zcodeToolLookup) zcodeToolLookup {
+	var fields map[string]json.RawMessage
+	var captured contracts.ZCodeInvocationMetadata
+	if json.Unmarshal(content.Metadata, &fields) != nil || json.Unmarshal(fields[contracts.ZCodeWorkerMetadataInvocation], &captured) != nil || captured.SpanID != spanID || captured.CallID == "" {
+		return previous
+	}
+	return zcodeToolLookup{callID: captured.CallID, messageID: captured.MessageID, sessionID: captured.SessionID, toolName: captured.ToolName}
+}
+
+// canFinalizeZCodeTools keeps native lookup state until all concurrent work ends.
+func (a *Agent) canFinalizeZCodeTools() bool {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	for _, owner := range a.turns {
+		if !owner.settled || a.hasActiveZCodeToolLocked(owner) {
+			return false
+		}
+	}
+	a.children.mu.Lock()
+	defer a.children.mu.Unlock()
+	for _, child := range a.children.spawns {
+		if child.childAgentID != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func (a *Agent) canFinalizeZCodeChildTools(childID string) bool {
+	a.children.mu.Lock()
+	defer a.children.mu.Unlock()
+	for _, child := range a.children.spawns {
+		if child.childAgentID == childID {
+			return false
+		}
+	}
+	return true
+}
+
+func (a *Agent) finalizeZCodeToolsWhenIdle() {
+	if a.toolTranscript == nil || !a.canFinalizeZCodeTools() {
+		return
+	}
+	if err := a.toolTranscript.FinalizePending(); err != nil && !errors.Is(err, agent.ErrOutputInFlight) {
+		slog.Warn("zcode final tool enrichment failed", "agent_id", a.AgentID(), "error", err)
+	}
+}
+
+func (a *Agent) reapZCodeSettledTurns() {
+	a.Mu.Lock()
+	for _, owner := range a.turns {
+		a.dropZCodeTurnLocked(owner)
+	}
+	a.Mu.Unlock()
+	a.finalizeZCodeToolsWhenIdle()
 }

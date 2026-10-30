@@ -25,10 +25,10 @@ func TestJunieToolTranscriptReportsInitialAndLaterNativePaths(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, initial)
 	// ACP content can omit AgentSessionID. The tracker's location still owns this pending row.
-	later, err := source.ReadSupplements(t.Context(), location.Path, map[string]agent.MessageContent{fixture.callID: {Original: fixture.original}}, false)
+	later, err := source.ReadSupplements(t.Context(), location, map[string]agent.MessageContent{fixture.callID: {Original: fixture.original}}, false)
 	require.NoError(t, err)
 	assert.True(t, agent.JSONCanonicalEqual(initial, later[fixture.callID]), "initial and later recovery must retain the same exact native receipt")
-	foreign, err := source.ReadSupplements(t.Context(), location.Path, map[string]agent.MessageContent{fixture.callID: {Original: fixture.original, AgentSessionID: "session-foreign"}}, false)
+	foreign, err := source.ReadSupplements(t.Context(), location, map[string]agent.MessageContent{fixture.callID: {Original: fixture.original, AgentSessionID: "session-foreign"}}, false)
 	require.Error(t, err)
 	assert.Empty(t, foreign)
 	none, err := source.InitialSupplement(t.Context(), location.Path, []byte(`{"completion":"complete"}`), agent.SpanInfo{Closing: true})

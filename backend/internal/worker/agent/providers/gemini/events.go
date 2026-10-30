@@ -121,6 +121,10 @@ func (a *Agent) observeNativeMode(sessionID string, record json.RawMessage) {
 	if sessionID != a.CurrentSessionID() {
 		return
 	}
+	a.applyNativeModeRecord(sessionID, record)
+}
+
+func (a *Agent) applyNativeModeRecord(sessionID string, record json.RawMessage) {
 	var tool struct {
 		geminiToolIdentity
 		ResultDisplay string `json:"resultDisplay"`
@@ -138,21 +142,28 @@ func (a *Agent) observeNativeMode(sessionID string, record json.RawMessage) {
 	if json.Unmarshal(tool.Result, &parts) != nil {
 		return
 	}
-	a.modeMu.Lock()
-	defer a.modeMu.Unlock()
-	key := sessionID + "\x00" + tool.ID
-	mode, tracked := a.modeCalls[key]
-	if tracked {
-		delete(a.modeCalls, key)
+	notify := func() func() {
+		a.modeMu.Lock()
+		defer a.modeMu.Unlock()
+		key := sessionID + "\x00" + tool.ID
+		mode, tracked := a.modeCalls[key]
+		if tracked {
+			delete(a.modeCalls, key)
+		}
+		if !tracked || tool.Status != "success" || mode.generation != a.modeGeneration {
+			return nil
+		}
+		valid := len(parts) == 1 && tool.Name == contracts.GeminiToolEnterPlanMode && mode.value == contracts.GeminiModePlan && parts[0].FunctionResponse.Response.Output == "Switching to Plan mode."
+		valid = valid || tool.Name == contracts.GeminiToolExitPlanMode && mode.value == contracts.GeminiModeDefault && strings.HasPrefix(tool.ResultDisplay, "Plan approved: ")
+		if valid {
+			return a.ObserveCurrentModeForSession(sessionID, mode.value)
+		}
+		return nil
+	}()
+	if notify != nil {
+		notify()
 	}
-	if !tracked || tool.Status != "success" || mode.generation != a.modeGeneration {
-		return
-	}
-	valid := len(parts) == 1 && tool.Name == contracts.GeminiToolEnterPlanMode && mode.value == contracts.GeminiModePlan && parts[0].FunctionResponse.Response.Output == "Switching to Plan mode."
-	valid = valid || tool.Name == contracts.GeminiToolExitPlanMode && mode.value == contracts.GeminiModeDefault && strings.HasPrefix(tool.ResultDisplay, "Plan approved: ")
-	if valid {
-		a.ObserveCurrentMode(mode.value)
-	}
+
 }
 
 func (a *Agent) resetNativeModes() {

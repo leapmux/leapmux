@@ -43,6 +43,7 @@ import {
   matchesRequest,
   MAX_SCENARIO_REQUEST_RECORDS,
   parseScenarioSpec,
+  resolveMockModelUsage,
   resolveStepCaptures,
   selectScenarioID,
   stopReasonToken,
@@ -1357,7 +1358,10 @@ async function writeAnthropicMessage(response: ServerResponse, requestBody: unkn
       content: [],
       stop_reason: null,
       stop_sequence: null,
-      usage: { ...anthropicUsage(step), output_tokens: 0 },
+      usage: {
+        ...anthropicUsage(step),
+        output_tokens: 0,
+      },
     },
   })
   let index = 0
@@ -1428,7 +1432,7 @@ async function writeAnthropicMessage(response: ServerResponse, requestBody: unkn
   writeSSEEvent(response, {
     type: 'message_delta',
     delta: { stop_reason: stopReason, stop_sequence: null },
-    usage: { output_tokens: step.usage?.outputTokens ?? 1 },
+    usage: { output_tokens: resolveMockModelUsage(step.usage).outputTokens },
   })
   writeSSEEvent(response, { type: 'message_stop' })
   response.end()
@@ -1596,14 +1600,13 @@ function streamRequested(body: unknown): boolean {
  * name that OpenAI-compatible proxies pass through.
  */
 function usage(inputKey: string, outputKey: string, step?: MockModelStep): Record<string, unknown> {
-  const input = step?.usage?.inputTokens ?? 1
-  const output = step?.usage?.outputTokens ?? 1
+  const { inputTokens: input, outputTokens: output, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite } = resolveMockModelUsage(step?.usage)
   return {
     [inputKey]: input,
     [outputKey]: output,
     total_tokens: input + output,
-    prompt_tokens_details: { cached_tokens: step?.usage?.cacheReadTokens ?? 0 },
-    cache_creation_input_tokens: step?.usage?.cacheWriteTokens ?? 0,
+    prompt_tokens_details: { cached_tokens: cacheRead },
+    cache_creation_input_tokens: cacheWrite,
   }
 }
 
@@ -1614,15 +1617,14 @@ function usage(inputKey: string, outputKey: string, step?: MockModelStep): Recor
  * rides the Anthropic-style extension name.
  */
 function responseUsage(step?: MockModelStep): Record<string, unknown> {
-  const input = step?.usage?.inputTokens ?? 1
-  const output = step?.usage?.outputTokens ?? 1
+  const { inputTokens: input, outputTokens: output, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite } = resolveMockModelUsage(step?.usage)
   return {
     input_tokens: input,
-    input_tokens_details: { cached_tokens: step?.usage?.cacheReadTokens ?? 0 },
+    input_tokens_details: { cached_tokens: cacheRead },
     output_tokens: output,
     output_tokens_details: { reasoning_tokens: 0 },
     total_tokens: input + output,
-    cache_creation_input_tokens: step?.usage?.cacheWriteTokens ?? 0,
+    cache_creation_input_tokens: cacheWrite,
   }
 }
 
@@ -1634,10 +1636,7 @@ function responseUsage(step?: MockModelStep): Record<string, unknown> {
  * malformed step whose buckets exceed its input clamps the wire input to zero.
  */
 function anthropicUsage(step?: MockModelStep): Record<string, number> {
-  const input = step?.usage?.inputTokens ?? 1
-  const output = step?.usage?.outputTokens ?? 1
-  const cacheRead = step?.usage?.cacheReadTokens ?? 0
-  const cacheWrite = step?.usage?.cacheWriteTokens ?? 0
+  const { inputTokens: input, outputTokens: output, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite } = resolveMockModelUsage(step?.usage)
   return {
     input_tokens: Math.max(0, input - cacheRead - cacheWrite),
     output_tokens: output,

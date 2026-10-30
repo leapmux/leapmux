@@ -2,6 +2,7 @@ package zcode
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
@@ -122,7 +123,7 @@ func TestZCodeSubagent_ToolCallsLandInTheChildTranscript(t *testing.T) {
 	// The parent holds the spawn card only.
 	parentMessages := sink.Messages()
 	require.Len(t, parentMessages, 1)
-	assert.Equal(t, "spawn-1", parentMessages[0].SpanID)
+	assert.Equal(t, zcodeTestSpanID(t, sink, "spawn-1"), parentMessages[0].SpanID)
 	assert.Equal(t, contracts.ZCodeToolNameAgent, parentMessages[0].SpanType)
 	assert.True(t, parentMessages[0].NoSpan, "a spawn owns no rail: its work is in the child transcript")
 
@@ -135,14 +136,14 @@ func TestZCodeSubagent_ToolCallsLandInTheChildTranscript(t *testing.T) {
 	// The spawn prompt opens the transcript, as the user's instruction to the child.
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, childMessages[0].Source)
 	assert.Contains(t, string(childMessages[0].Content), "count the files")
-	assert.Equal(t, "sub-1", childMessages[1].SpanID)
+	assert.Equal(t, zcodeTestSpanID(t, sink, "sub-1"), childMessages[1].SpanID)
 	assert.Equal(t, contracts.ZCodeToolNameBash, childMessages[1].SpanType)
 
-	// The registry row is keyed by the SPAWN's tool call, which is the span the
-	// parent's card owns, and it carries the child linkage that makes the row open a tab.
+	// The registry row uses the native child session key and retains the child
+	// linkage that opens its transcript.
 	rows := sink.BackgroundTasks()
 	require.Len(t, rows, 1)
-	assert.Equal(t, "spawn-1", rows[0].RowKey)
+	assert.Equal(t, "sess_subagent_agent-1", rows[0].RowKey)
 	assert.Equal(t, bgtask.KindSubagent, rows[0].Kind)
 	assert.Equal(t, bgtask.StatusRunning, rows[0].Status)
 	assert.Equal(t, "file census", rows[0].Title)
@@ -158,7 +159,7 @@ func TestZCodeSubagent_ResultClosesTheChildSpanInTheChildTranscript(t *testing.T
 	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventToolUpdated, zcodeSubagentResult))
 
 	child := sink.Child(sink.ChildAgentIDs()[0])
-	assert.Equal(t, []string{"sub-1"}, child.ClosedSpans())
+	assert.Equal(t, []string{zcodeTestSpanID(t, sink, "sub-1")}, child.ClosedSpans())
 	assert.Empty(t, sink.ClosedSpans(), "the parent never opened that span")
 	require.Len(t, child.Messages(), 3)
 	assert.True(t, child.Messages()[2].Closing)
@@ -192,7 +193,7 @@ func TestZCodeSubagent_SpawnResultClosesTheRegistryRowAndTheChild(t *testing.T) 
 	require.Len(t, reports, 1)
 	assert.Equal(t, "1 file", reports[0]["text"])
 
-	_, stillOpen := a.children.child("spawn-1")
+	_, stillOpen := a.children.child(zcodeTestSpanID(t, sink, "spawn-1"))
 	assert.False(t, stillOpen, "the child index is dropped with the spawn it belonged to")
 }
 
@@ -210,7 +211,7 @@ func TestZCodeSubagent_BackgroundLaunchIsNotAChildReport(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, bgtask.StatusRunning, rows[0].Status,
 		"the Agent result acknowledges launch; the background lifecycle closes the row later")
-	_, stillOpen := a.children.child("spawn-1")
+	_, stillOpen := a.children.child(zcodeTestSpanID(t, sink, "spawn-1"))
 	assert.True(t, stillOpen)
 	child := sink.Child(rows[0].ChildAgentID)
 	assert.Empty(t, child.LeapMuxNotifications())
@@ -311,7 +312,7 @@ func TestZCodeSubagent_LifecycleAndAgentResultPersistOneReport(t *testing.T) {
 	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
-		`{"agentId":"agent-1","agentType":"Explore","parentToolCallId":"spawn-1","status":"completed","message":"1 file"}`))
+		`{"agentId":"agent-1","agentType":"Explore","childSessionId":"sess_subagent_agent-1","parentToolCallId":"spawn-1","status":"completed","message":"1 file"}`))
 	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventToolUpdated, zcodeSpawnResult))
 
 	rows := sink.BackgroundTasks()
@@ -376,9 +377,8 @@ func TestZCodeSubagent_AFailedSpawnClosesTheRowAsFailed(t *testing.T) {
 	assert.Equal(t, bgtask.StatusFailed, rows[0].Status)
 }
 
-// Without a parent tool call there is nothing to attach a transcript to. The row
-// stays in the parent rather than being dropped, because a lost tool call is worse
-// than a misplaced one.
+// Without a parent invocation or native child identity, the update cannot
+// identify a transcript. Its row stays in the parent.
 func TestZCodeSubagent_AnUnattachableUpdateStaysInTheParent(t *testing.T) {
 	t.Parallel()
 
@@ -389,7 +389,7 @@ func TestZCodeSubagent_AnUnattachableUpdateStaysInTheParent(t *testing.T) {
 		`{"kind":"scheduled","toolCallId":"orphan-1","toolName":"Bash","source":"subagent","input":{"command":"ls"}}`))
 
 	require.Len(t, sink.Messages(), 1)
-	assert.Equal(t, "orphan-1", sink.Messages()[0].SpanID)
+	assert.Equal(t, zcodeTestSpanID(t, sink, "orphan-1"), sink.Messages()[0].SpanID)
 	assert.Empty(t, sink.ChildAgentIDs())
 }
 
@@ -471,7 +471,7 @@ func TestZCodeSubagent_ABatchSummaryClosesInTheChildTranscript(t *testing.T) {
 		`{"kind":"batch","toolCallIds":["sub-1"],"successCount":1}`))
 
 	child := sink.Child(sink.ChildAgentIDs()[0])
-	assert.Equal(t, []string{"sub-1"}, child.ClosedSpans())
+	assert.Equal(t, []string{zcodeTestSpanID(t, sink, "sub-1")}, child.ClosedSpans())
 	assert.Empty(t, sink.ClosedSpans(), "the parent never opened that span")
 }
 
@@ -516,7 +516,7 @@ func TestZCodeSubagent_RowIsTitledFromTheSpawnNotTheFirstCommand(t *testing.T) {
 	assert.Equal(t, "file census", rows[0].Title)
 }
 
-// After a worker restart the resumed session replays no history, so `a.toolCalls` is
+// After a worker restart the resumed session replays no history, so `a.toolInvocations` is
 // empty and a spawn's own `result` carries no `toolName`. The row's CHILD linkage is
 // what says this tool call owns a subagent -- a tool-name check would leave the
 // registry row Running for good and never clean up the child transcript.
@@ -528,13 +528,13 @@ func TestZCodeSubagent_AResumedSpawnResultStillClosesTheRow(t *testing.T) {
 	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	// The state a resume leaves behind: the durable row exists, the in-memory caches do
 	// not.
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-1", ProviderChildKey: "spawn-1", Title: "file census"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "stored-spawn-span", ProviderChildKey: "native-child", Title: "file census"})
 	require.NoError(t, err)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
-		RowKey: "spawn-1", Kind: bgtask.KindSubagent, Title: "file census",
+		RowKey: "native-child", Kind: bgtask.KindSubagent, Title: "file census",
 		Status: bgtask.StatusRunning, ChildAgentID: childID,
 	}))
-	a.children.rememberChild("spawn-1", "", childID)
+	a.HandleOutput(zcodeEventLine(t, 0, contracts.ZCodeEventSessionUpdated, `{"agentId":"native-agent","parentToolCallId":"spawn-1","childSessionId":"native-child","status":"running"}`))
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
 		`{"kind":"result","toolCallId":"spawn-1","result":{"success":true}}`))
@@ -616,9 +616,8 @@ func TestZCodeSubagent_TheBackgroundTaskAndToolPathsShareOneTranscript(t *testin
 	assert.Equal(t, sink.ChildAgentIDs()[0], rows[0].ChildAgentID)
 }
 
-// A background subagent task with no tool-call id keys its row on the child session,
-// which the tool.updated path never sees. Creating a transcript there would mint a
-// second one that nothing can reach or tear down.
+// A background task without a tool-call ID records its registry row but does not
+// create a transcript.
 func TestZCodeSubagent_ABackgroundTaskWithNoToolCallIDCreatesNoTranscript(t *testing.T) {
 	t.Parallel()
 
@@ -704,6 +703,7 @@ func newZCodeBackgroundChild(t *testing.T) (*Agent, *agenttest.ControlSink, *zco
 	sink := &agenttest.ControlSink{}
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	zcodeStartTestTurn(t, a, `{"turnNumber":1}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("running")))
 	return a, sink, stdin
@@ -739,10 +739,10 @@ func TestZCodeInterruptChildCancelsTheBackgroundTask(t *testing.T) {
 				a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, req), json.RawMessage(
 					`{"cancelled":true,"snapshot":{"taskId":"agent_1","toolCallId":"spawn-1","taskKind":"subagent","status":"cancelled"}}`)))
 			}()
-			require.NoError(t, a.InterruptChild("spawn-1", agent.StopContext{}))
+			require.NoError(t, a.InterruptChild(zcodeTestSubagentKey(t, a, "spawn-1"), agent.StopContext{}))
 			req := waitZCodeRequest(t, stdin, MethodSessionCancelBackgroundTask)
 			assert.JSONEq(t, `{"sessionId":"sess-1","taskId":"agent_1"}`, string(req.Params))
-			row, ok := sink.BackgroundTask("spawn-1")
+			row, ok := sink.BackgroundTask("sess_subagent_agent_1")
 			require.True(t, ok)
 			assert.Equal(t, bgtask.StatusInterrupted, row.Status)
 		})
@@ -754,7 +754,7 @@ func TestZCodeCancelledSubagentWithoutAnInterruptIsStopped(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newZCodeBackgroundChild(t)
 	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("cancelled")))
-	row, ok := sink.BackgroundTask("spawn-1")
+	row, ok := sink.BackgroundTask("sess_subagent_agent_1")
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusStopped, row.Status)
 }
@@ -767,7 +767,7 @@ func TestZCodeInterruptChildRefusals(t *testing.T) {
 		t.Parallel()
 		a, _, stdin := newZCodeBackgroundChild(t)
 		answerZCodeRequest(t, a, stdin, MethodSessionCancelBackgroundTask, `{"cancelled":false,"reason":"background_task_not_running","status":"completed","taskId":"agent_1"}`)
-		require.NoError(t, a.InterruptChild("spawn-1", agent.StopContext{}))
+		require.NoError(t, a.InterruptChild(zcodeTestSubagentKey(t, a, "spawn-1"), agent.StopContext{}))
 	})
 	for name, answer := range map[string]func(a *Agent, stdin *zcodeRecordedStdin){
 		"a refused cancel": func(a *Agent, stdin *zcodeRecordedStdin) {
@@ -784,9 +784,9 @@ func TestZCodeInterruptChildRefusals(t *testing.T) {
 			t.Parallel()
 			a, sink, stdin := newZCodeBackgroundChild(t)
 			answer(a, stdin)
-			require.Error(t, a.InterruptChild("spawn-1", agent.StopContext{}))
+			require.Error(t, a.InterruptChild(zcodeTestSubagentKey(t, a, "spawn-1"), agent.StopContext{}))
 			a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("cancelled")))
-			row, ok := sink.BackgroundTask("spawn-1")
+			row, ok := sink.BackgroundTask("sess_subagent_agent_1")
 			require.True(t, ok)
 			assert.Equal(t, bgtask.StatusStopped, row.Status, "the refused interrupt leaves no mark")
 		})
@@ -803,7 +803,7 @@ func TestZCodeInterruptChildWithoutABackgroundTask(t *testing.T) {
 	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventToolUpdated, zcodeSubagentScheduled))
-	require.ErrorIs(t, a.InterruptChild("spawn-1", agent.StopContext{}), agent.ErrChildOperationUnsupported)
+	require.ErrorIs(t, a.InterruptChild(zcodeTestSubagentKey(t, a, "spawn-1"), agent.StopContext{}), agent.ErrChildOperationUnsupported)
 	err := a.InterruptChild("spawn-unknown", agent.StopContext{})
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, agent.ErrChildOperationUnsupported)
@@ -884,7 +884,7 @@ func TestZCodeBackgroundSubagentEndsAfterItsReport(t *testing.T) {
 	a.HandleOutput(zcodeEventLine(t, 6, contracts.ZCodeEventSessionUpdated, zcodeBackgroundLifecycleEnd))
 
 	requireOneEndWithoutRebirth(t, calls.snapshot())
-	row, ok := sink.BackgroundTask("spawn-1")
+	row, ok := sink.BackgroundTask("sess_subagent_agent_1")
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	assert.Len(t, sink.ChildAgentIDs(), 1, "one subagent has one transcript")
@@ -898,7 +898,7 @@ func TestZCodeBackgroundSubagentEndsOnceWhenTheLifecycleComesFirst(t *testing.T)
 	a.HandleOutput(zcodeEventLine(t, 5, contracts.ZCodeEventSessionUpdated, zcodeBackgroundLifecycleEnd))
 	a.HandleOutput(zcodeEventLine(t, 6, contracts.ZCodeEventSessionUpdated, zcodeBackgroundSubagentTask("completed")))
 	requireOneEndWithoutRebirth(t, calls.snapshot())
-	row, ok := sink.BackgroundTask("spawn-1")
+	row, ok := sink.BackgroundTask("sess_subagent_agent_1")
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 }
@@ -932,10 +932,10 @@ func TestZCodeInterruptedSubagentEndsAsInterrupted(t *testing.T) {
 			`{"agentId":"agent_1","agentType":"general-purpose","background":true,"parentToolCallId":"spawn-1","status":"stopped","error":"Background agent task stopped."}`))
 		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, req), json.RawMessage(`{"cancelled":true}`)))
 	}()
-	require.NoError(t, a.InterruptChild("spawn-1", agent.StopContext{}))
+	require.NoError(t, a.InterruptChild(zcodeTestSubagentKey(t, a, "spawn-1"), agent.StopContext{}))
 
 	requireOneEndWithoutRebirth(t, calls.snapshot())
-	row, ok := sink.BackgroundTask("spawn-1")
+	row, ok := sink.BackgroundTask("sess_subagent_agent_1")
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusInterrupted, row.Status)
 	childIDs := sink.ChildAgentIDs()
@@ -946,4 +946,121 @@ func TestZCodeInterruptedSubagentEndsAsInterrupted(t *testing.T) {
 	require.NoError(t, json.Unmarshal(messages[len(messages)-1].Content, &last))
 	assert.Equal(t, "Background agent task stopped.", last[contracts.AssembledMessageFieldText])
 	assert.Equal(t, string(agent.MessageCompletionInterrupted), last[contracts.AssembledMessageFieldCompletion])
+}
+
+func TestZCodeSubagents_RepeatedNativeSpawnIDsKeepSeparateChildren(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	sequence := int64(0)
+	for index, turnID := range []string{"foreground", "background"} {
+		source := ""
+		if index > 0 {
+			source = "background_task"
+		}
+		sequence++
+		a.HandleOutput(zcodeTurnEventLine(t, sequence, turnID, contracts.ZCodeEventTurnStarted, fmt.Sprintf(`{"turnNumber":%d,"inputSource":%q}`, index+1, source)))
+		sequence++
+		a.HandleOutput(zcodeTurnEventLine(t, sequence, turnID, contracts.ZCodeEventToolUpdated, fmt.Sprintf(`{"kind":"scheduled","toolCallId":"spawn","assistantMessageId":"message-%d","toolName":"Agent","input":{"prompt":"Inspect."}}`, index)))
+		sequence++
+		a.HandleOutput(zcodeTurnEventLine(t, sequence, turnID, contracts.ZCodeEventSessionUpdated, fmt.Sprintf(`{"agentId":"agent-%d","parentToolCallId":"spawn","childSessionId":"child-%d","status":"running"}`, index, index)))
+	}
+	require.Len(t, sink.ChildAgentIDs(), 2)
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 2)
+	rootRows := sink.Messages()
+	require.Len(t, rootRows, 2)
+	assert.NotEqual(t, rootRows[0].SpanID, rootRows[1].SpanID)
+	for _, row := range rows {
+		assert.Contains(t, []string{"child-0", "child-1"}, row.RowKey)
+		span, err := sink.ChildSpawnSpan(row.ChildAgentID)
+		require.NoError(t, err)
+		assert.Contains(t, []string{rootRows[0].SpanID, rootRows[1].SpanID}, span)
+	}
+}
+
+func TestZCodeSubagents_RestartRecoversTheOriginalSpawnSpan(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn", contracts.ZCodeEventTurnStarted, `{"turnNumber":1}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "turn", contracts.ZCodeEventToolUpdated, `{"kind":"scheduled","toolCallId":"spawn","assistantMessageId":"native-message","toolName":"Agent","input":{"prompt":"Inspect."}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 3, "turn", contracts.ZCodeEventSessionUpdated, `{"agentId":"child-agent","parentToolCallId":"spawn","childSessionId":"child-session","status":"running"}`))
+	originalSpan := sink.Messages()[0].SpanID
+	originalChild := sink.ChildAgentIDs()[0]
+	replacement := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	replacement.HandleOutput(zcodeTurnEventLine(t, 1, "turn", contracts.ZCodeEventTurnStarted, `{"turnNumber":1}`))
+	replacement.HandleOutput(zcodeTurnEventLine(t, 2, "turn", contracts.ZCodeEventSessionUpdated, `{"agentId":"child-agent","parentToolCallId":"spawn","childSessionId":"child-session","status":"running"}`))
+	replacement.HandleOutput(zcodeTurnEventLine(t, 3, "turn", contracts.ZCodeEventToolUpdated, `{"kind":"result","toolCallId":"spawn","result":{"content":"Done."}}`))
+	assert.Equal(t, []string{originalChild}, sink.ChildAgentIDs())
+	rows := sink.Messages()
+	require.Len(t, rows, 2)
+	assert.True(t, rows[1].Closing)
+	assert.Equal(t, originalSpan, rows[1].SpanID, "a restarted owner must close the stored opening span")
+}
+
+func TestZCodeSubagents_BackgroundToolsOutliveTheirParentTurn(t *testing.T) {
+	t.Parallel()
+	for _, nativeResult := range []bool{true, false} {
+		t.Run(fmt.Sprintf("native result %t", nativeResult), func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			a.HandleOutput(zcodeTurnEventLine(t, 1, "parent", contracts.ZCodeEventTurnStarted, `{"turnNumber":1}`))
+			a.HandleOutput(zcodeTurnEventLine(t, 2, "parent", contracts.ZCodeEventToolUpdated, zcodeSpawnScheduled))
+			a.HandleOutput(zcodeTurnEventLine(t, 3, "parent", contracts.ZCodeEventToolUpdated, zcodeSubagentScheduled))
+			child := sink.Child(sink.ChildAgentIDs()[0])
+			childSpan := zcodeTestSpanID(t, sink, "sub-1")
+			a.HandleOutput(zcodeTurnEventLine(t, 4, "parent", contracts.ZCodeEventToolUpdated, `{"kind":"result","toolCallId":"spawn-1","result":{"success":true,"content":"Async agent launched successfully.\nagentId: agent-1"}}`))
+			a.HandleOutput(zcodeTurnEventLine(t, 5, "parent", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
+			assert.Empty(t, child.ClosedSpans(), "the parent end must leave its background child's tool open")
+			assert.Equal(t, "Bash", child.GetSpanType(childSpan))
+			a.HandleOutput(zcodeTurnEventLine(t, 6, "parent", contracts.ZCodeEventToolUpdated, `{"kind":"progress","toolCallId":"sub-1","outputBytes":17,"stdoutTail":"still running"}`))
+			updates := child.ProgressUpdates()
+			require.NotEmpty(t, updates)
+			assert.Contains(t, updates, agent.OutputExactTotalProgress(childSpan, 17))
+			sequence := int64(7)
+			if nativeResult {
+				a.HandleOutput(zcodeTurnEventLine(t, sequence, "parent", contracts.ZCodeEventToolUpdated, zcodeSubagentResult))
+				sequence++
+			}
+			a.HandleOutput(zcodeTurnEventLine(t, sequence, "parent", contracts.ZCodeEventToolUpdated, `{"kind":"scheduled","toolCallId":"tool_subagent_agent-1_next","toolName":"Read","source":"subagent","agentId":"agent-1","childSessionId":"sess_subagent_agent-1","parentToolCallId":"spawn-1","input":{"path":"README.md"}}`))
+			nextSpan := zcodeTestSpanID(t, sink, "tool_subagent_agent-1_next")
+			assert.Equal(t, "Read", child.GetSpanType(nextSpan), "new child work still routes through the finalized parent owner")
+			a.HandleOutput(zcodeTurnEventLine(t, sequence+1, "parent", contracts.ZCodeEventSessionUpdated, `{"agentId":"agent-1","parentToolCallId":"spawn-1","childSessionId":"sess_subagent_agent-1","status":"completed","message":"Done."}`))
+			assert.ElementsMatch(t, []string{childSpan, nextSpan}, child.ClosedSpans())
+			a.Mu.Lock()
+			assert.Empty(t, a.turns)
+			assert.Empty(t, a.toolInvocations)
+			a.Mu.Unlock()
+		})
+	}
+}
+
+func TestZCodeSubagent_ReportFreeLifecycleWaitsForTheForegroundResult(t *testing.T) {
+	t.Parallel()
+	a, sink := spawnAZCodeSubagent(t)
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	childID := rows[0].ChildAgentID
+	spanID := zcodeTestSpanID(t, &sink.Sink, "spawn-1")
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventToolUpdated, zcodeSubagentResult))
+	a.HandleOutput(zcodeEventLine(t, 4, contracts.ZCodeEventSessionUpdated,
+		`{"agentId":"agent-1","agentType":"Explore","childSessionId":"sess_subagent_agent-1","parentToolCallId":"spawn-1","status":"completed","totalToolUseCount":1,"totalTokens":3}`))
+	assert.False(t, a.children.hasEnded(spanID), "the foreground Agent call still owns its child report")
+	routed, present := a.children.child(spanID)
+	assert.True(t, present)
+	assert.Equal(t, childID, routed)
+	a.HandleOutput(zcodeEventLine(t, 5, contracts.ZCodeEventToolUpdated, zcodeSpawnResult))
+	rows = sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, "sess_subagent_agent-1", rows[0].RowKey)
+	assert.Equal(t, childID, rows[0].ChildAgentID)
+	assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
+	child := sink.Child(childID)
+	reports := child.LeapMuxNotifications()
+	require.Len(t, reports, 1)
+	assert.Equal(t, "1 file", reports[0][contracts.NotificationFieldText])
+	assert.True(t, a.children.hasEnded(spanID))
+	assert.Len(t, sink.ChildAgentIDs(), 1, "completion must not create a replacement child")
 }

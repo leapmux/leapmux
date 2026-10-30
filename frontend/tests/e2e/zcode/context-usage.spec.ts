@@ -1,9 +1,11 @@
 import { expect } from '@playwright/test'
 import { CONTEXT_USAGE_FIELD } from '../../../src/generated/contracts/session-info'
 import { withCleanup } from '../helpers/cleanup'
-import { exerciseContextUsage } from '../helpers/contextUsage'
+import { exerciseContextUsage, readContextRow } from '../helpers/contextUsage'
 import { watchAgentContextUsage } from '../helpers/contextUsageEvents'
-import { currentNativeAgent } from '../helpers/nativeScenario'
+import { currentNativeAgent, nativeAgentById } from '../helpers/nativeScenario'
+import { retryUntilPass } from '../helpers/retryUntilPass'
+import { sendMessage, visibleOnly } from '../helpers/ui'
 import { zcodeTest } from '../zcode-fixtures'
 
 zcodeTest('shows the context usage that the model reports', async ({ native }) => {
@@ -21,7 +23,13 @@ zcodeTest('counts cache-inclusive input without double counting the cache bucket
   const watch = await watchAgentContextUsage(native.leapmuxServer, agent.id)
   await withCleanup(async () => {
     await exerciseContextUsage(native, {
-      usage: { inputTokens: 10_000, cacheReadTokens: 2_000, cacheWriteTokens: 3_000, outputTokens: 500, contextWindow: 128_000 },
+      usage: {
+        inputTokens: 10_000,
+        cacheReadTokens: 2_000,
+        cacheWriteTokens: 3_000,
+        outputTokens: 500,
+        contextWindow: 128_000,
+      },
     })
     await expect.poll(() => watch.readings().at(-1)).toMatchObject({
       [CONTEXT_USAGE_FIELD.InputTokens]: 8_000,
@@ -31,4 +39,22 @@ zcodeTest('counts cache-inclusive input without double counting the cache bucket
       [CONTEXT_USAGE_FIELD.ContextTokens]: 10_500,
     })
   }, async () => watch.cancel())
+})
+
+zcodeTest('clears old native usage before another request and after reload', async ({ native }) => {
+  await exerciseContextUsage(native)
+  const before = await currentNativeAgent(native)
+  await sendMessage(native.page, '/clear')
+  await expect(visibleOnly(native.page.getByText('Context cleared', { exact: true })).first()).toBeVisible()
+  await retryUntilPass(async () => {
+    const current = await nativeAgentById(native, before.id)
+    expect(current?.agentSessionId ?? '').not.toBe('')
+    expect(current?.agentSessionId).not.toBe(before.agentSessionId)
+  })
+  expect((await readContextRow(native.page))?.tokens ?? 0).toBe(0)
+  await native.page.reload()
+  expect((await readContextRow(native.page))?.tokens ?? 0).toBe(0)
+  await exerciseContextUsage(native, {
+    usage: { inputTokens: 24_000, outputTokens: 80 },
+  })
 })

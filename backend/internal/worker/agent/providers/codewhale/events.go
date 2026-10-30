@@ -198,6 +198,9 @@ func (a *Agent) dispatchAdmittedFrame(env codewhaleEnvelope) {
 		a.handleTurnCompleted(env)
 	case eventTurnUsage:
 		a.handleTurnUsage(env)
+	case eventTurnProviderRequest:
+		// This diagnostic receipt repeats request observations and reported usage.
+		// turn.usage and turn.completed supply the usage that LeapMux reports.
 	case eventTurnSteered:
 		a.handleSteerDelivered(env)
 	case contracts.CodewhaleEventTurnSteerDropped:

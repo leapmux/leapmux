@@ -48,7 +48,7 @@ func (initial *InitialUserMessage) Persist(writer TranscriptServices, content Me
 	created := write == nil
 	if created {
 		write = &initialUserMessageWrite{queue: queue, owner: NewOutputOwner()}
-		write.ticket = queue.Append(OutputWrite{Owner: write.owner, ScopeID: "initial-user-message", RetainedBytes: len(content.Original) + len(content.Supplemental) + len(content.Metadata), Label: "persist the initial user message", Run: func() error {
+		tickets, reservationErr := writer.ReserveTranscriptOutput(queue, OutputWrite{Owner: write.owner, ScopeID: "initial-user-message", RetainedBytes: len(content.Original) + len(content.Supplemental) + len(content.Metadata), Label: "persist the initial user message", Run: func() error {
 			if !write.ready.Load() {
 				return ErrOutputInFlight
 			}
@@ -66,7 +66,12 @@ func (initial *InitialUserMessage) Persist(writer TranscriptServices, content Me
 			}
 			initial.release(write)
 			return nil
-		}})[0]
+		}})
+		if reservationErr != nil {
+			initial.mu.Unlock()
+			return reservationErr
+		}
+		write.ticket = tickets[0]
 		initial.pending = write
 	}
 	initial.mu.Unlock()

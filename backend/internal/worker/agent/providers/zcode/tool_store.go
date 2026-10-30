@@ -57,8 +57,9 @@ type zcodeOutputFileReference struct {
 // opens. They read different sessions out of the SAME database file, and the
 // mutex below is what lets them share the one handle.
 type zcodeToolStore struct {
-	mu   sync.Mutex
-	path string
+	mu      sync.Mutex
+	retired bool
+	path    string
 	// file identifies the open database by INODE, not by name. ZCode's database
 	// path never changes within one agent, so a path comparison alone could never
 	// notice a store the runtime deleted and recreated at that same path -- and the
@@ -147,10 +148,19 @@ func (s *zcodeToolStore) handle(ctx context.Context, path string) (*sql.DB, erro
 	return db, nil
 }
 
-// close releases the handle. The agent's context ending is what calls it.
+// close releases the cached handle without ending the store's lifetime.
 func (s *zcodeToolStore) close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.closeLocked()
+}
+
+// retire keeps final reads available after the agent's context ends.
+// Each later read owns a temporary handle and closes it before releasing mu.
+func (s *zcodeToolStore) retire() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.retired = true
 	s.closeLocked()
 }
 
@@ -172,6 +182,11 @@ func readZCodeToolRecords(ctx context.Context, store *zcodeToolStore, outputFile
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	defer func() {
+		if store.retired {
+			store.closeLocked()
+		}
+	}()
 	db, err := store.handle(ctx, location.databasePath)
 	if errors.Is(err, sessionstore.ErrAbsent) {
 		return nil, nil

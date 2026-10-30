@@ -854,6 +854,66 @@ describe('the Amp actor', () => {
     expect(mock.inferences[0]?.userText).toBe('LEAPMUXE2ESCENARIO:s1 hello')
   })
 
+  it.each([
+    [undefined, 1, 1, 0, 0, 1],
+    [
+      { inputTokens: 100 },
+      100,
+      1,
+      0,
+      0,
+      100,
+    ],
+    [
+      { outputTokens: 40 },
+      1,
+      40,
+      0,
+      0,
+      1,
+    ],
+    [
+      { inputTokens: 0, outputTokens: 0 },
+      0,
+      0,
+      0,
+      0,
+      0,
+    ],
+    [
+      {
+        inputTokens: 10,
+        outputTokens: 4,
+        cacheReadTokens: 2,
+        cacheWriteTokens: 3,
+      },
+      5,
+      4,
+      2,
+      3,
+      10,
+    ],
+  ] as const)('reports literal partial usage %j', async (usage, input, output, read, write, total) => {
+    mock = await startMock([
+      {
+        text: 'Usage recorded.',
+        ...(usage
+          ? { usage }
+          : {}),
+      },
+    ])
+    const { client } = await openThread(mock)
+    client.request('client_append_user_msg', userMessage('LEAPMUXE2ESCENARIO:usage partial'))
+    await expect.poll(() => client.notifications('agent_state').at(-1)?.state).toBe('idle')
+    expect(client.messages()[1]?.usage).toMatchObject({
+      inputTokens: input,
+      outputTokens: output,
+      cacheReadInputTokens: read,
+      cacheCreationInputTokens: write,
+      totalInputTokens: total,
+    })
+  })
+
   it('reports the usage of the scripted answer', async () => {
     mock = await startMock([
       {

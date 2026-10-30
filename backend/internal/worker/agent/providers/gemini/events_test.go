@@ -3,6 +3,7 @@ package gemini
 import (
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -462,5 +463,82 @@ func TestGeminiSessionUpdateHandlerConsumesOnlyIdleConversation(t *testing.T) {
 		idle := &Agent{}
 		idle.SetSessionIDForTest(geminiReplaySessionID)
 		assert.False(t, idle.handleSessionUpdate(geminiReplaySessionID, nil, json.RawMessage(update)), "an idle state update: %s", update)
+	}
+}
+
+func TestGeminiNativeModeRead_CannotChangeAReplacementSession(t *testing.T) {
+	t.Parallel()
+	a := &Agent{}
+	a.SetPromptActiveForTest(true)
+	a.SetSinkForTest(agent.NewProviderServices(&agenttest.Sink{}))
+	a.SetSessionIDForTest("old")
+	a.SetAvailableModesForTest(geminiModes())
+	a.HooksForTest().ModeChannel = acp.ModeChannelPermissionMode
+	a.SetPermissionModeForTest(contracts.GeminiModeDefault)
+	a.handleSessionUpdate("old", nil, json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"enter_plan_mode__call","status":"in_progress"}`))
+	a.SetSessionIDForTest("replacement")
+	a.applyNativeModeRecord("old", json.RawMessage(`{"id":"enter_plan_mode__call","name":"enter_plan_mode","status":"success","result":[{"functionResponse":{"response":{"output":"Switching to Plan mode."}}}]}`))
+	assert.Equal(t, contracts.GeminiModeDefault, a.PermissionModeForTest())
+}
+
+type geminiModeRefreshSink struct {
+	*agenttest.Sink
+	once     atomic.Bool
+	callback func()
+}
+
+func (sink *geminiModeRefreshSink) PersistSettingsRefresh(refresh optionmap.Map) {
+	if sink.once.CompareAndSwap(false, true) {
+		sink.callback()
+	}
+	sink.Sink.PersistSettingsRefresh(refresh)
+}
+
+func TestGeminiNativeModeRead_ReleasesItsMutexBeforeSettingsPublication(t *testing.T) {
+	t.Parallel()
+	for _, republishes := range []bool{false, true} {
+		name := "optimistic user edit"
+		if republishes {
+			name = "native publication"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &geminiModeRefreshSink{Sink: &agenttest.Sink{}}
+			a := &Agent{}
+			a.SetPromptActiveForTest(true)
+			a.SetSinkForTest(agent.NewProviderServices(sink))
+			a.SetSessionIDForTest("root")
+			a.SetAvailableModesForTest(geminiModes())
+			a.HooksForTest().ModeChannel = acp.ModeChannelPermissionMode
+			a.SetPermissionModeForTest(contracts.GeminiModeDefault)
+			a.HooksForTest().ModeSetter = func(mode string, acknowledged func(string)) error {
+				require.True(t, a.observeModeSetterReply("root", mode, json.RawMessage(`{}`), nil, acknowledged))
+				return nil
+			}
+			sink.callback = func() {
+				if !a.modeMu.TryLock() {
+					assert.Fail(t, "the native observer held its mutex through a settings callback")
+					return
+				}
+				a.modeMu.Unlock()
+				a.resetNativeModes()
+				if !republishes {
+					sink.Sink.PersistSettingsRefresh(optionmap.Map{agent.OptionIDPermissionMode: contracts.GeminiModeYolo})
+				}
+				result := a.UpdateSettings(optionmap.Map{agent.OptionIDPermissionMode: contracts.GeminiModeYolo})
+				assert.Equal(t, contracts.GeminiModeYolo, result.ConfirmedOptions()[agent.OptionIDPermissionMode])
+				// The other case models the service caller: requested and confirmed
+				// values agree, so it has no correction to persist.
+				if republishes {
+					a.BroadcastSettingsRefresh()
+				}
+			}
+			a.handleSessionUpdate("root", nil, json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"enter_plan_mode__call","status":"in_progress"}`))
+			a.observeNativeMode("root", json.RawMessage(`{"id":"enter_plan_mode__call","name":"enter_plan_mode","status":"success","result":[{"functionResponse":{"response":{"output":"Switching to Plan mode."}}}]}`))
+			assert.True(t, sink.once.Load())
+			assert.Equal(t, contracts.GeminiModeYolo, a.PermissionModeForTest())
+			assert.Equal(t, contracts.GeminiModeYolo, sink.LastSettingsRefresh().PermissionMode)
+		})
 	}
 }

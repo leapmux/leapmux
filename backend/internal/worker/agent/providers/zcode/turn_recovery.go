@@ -8,12 +8,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // Per-turn reconciliation watcher.
 //
-// A turn can stall without a terminal event: the app-server drops it, the
+// A turn can stall without a turn-end event: the app-server drops it, the
 // stream breaks, or the agent process restarts. watchZCodeTurn polls
 // session/read after a quiet interval and reconciles the turn's state from the
 // snapshot: advancing watermarks prove liveness, a prompt boundary settles it,
@@ -39,16 +42,12 @@ const (
 	zcodeTurnRecoveryFreezeLimit = 10 * time.Minute
 )
 
-// Prompt-boundary reasons on a state.updated patch.
-const (
-	zcodeStateReasonPromptCompleted = "prompt_completed"
-	zcodeStateReasonPromptFailed    = "prompt_failed"
-)
-
 // zcodeProjectionState is the projection block a session/read reply and a
 // state patch carry. It is the liveness watermark set for the recovery watcher.
 type zcodeProjectionState struct {
 	ContextUsed     int64  `json:"contextUsed"`
+	ContextWindow   int64  `json:"contextWindow"`
+	Status          string `json:"status"`
 	TotalTokenCount int64  `json:"totalTokenCount"`
 	TurnCount       int    `json:"turnCount"`
 	CurrentTurnID   string `json:"currentTurnId"`
@@ -61,6 +60,7 @@ type zcodeTurnRecoveryWatermark struct {
 	totalTokenCount int64
 	turnCount       int
 	currentTurnID   string
+	ownerEventSeq   int64
 }
 
 // equals reports whether two watermarks are identical.
@@ -68,10 +68,10 @@ func (w zcodeTurnRecoveryWatermark) equals(other zcodeTurnRecoveryWatermark) boo
 	return w == other
 }
 
-// zcodeTurnRecoveryState is the per-turn watcher bookkeeping. It is stored on
-// the Agent (not on zcodeTurnState) so the watcher goroutine can hold a
-// cancellable handle independently of the owner's lifetime under a.Mu.
+// zcodeTurnRecoveryState belongs to one stable turn owner. The watcher retains
+// that owner until cancellation, even after the owner leaves the native-ID index.
 type zcodeTurnRecoveryState struct {
+	sessionID string
 	// cancel stops the watcher goroutine. Set when the watcher starts and
 	// called at settlement, stop, or session replacement.
 	cancel context.CancelFunc
@@ -87,9 +87,8 @@ type zcodeTurnRecoveryState struct {
 	// boundary records the attributed prompt-boundary patch, once one is
 	// proven. Guarded by a.Mu.
 	boundary *zcodePromptBoundaryEvidence
-	// recoverGeneration is the replay generation at watcher start. An
-	// obsolete watcher cancels itself. Guarded by a.Mu.
-	recoverGeneration uint64
+	// wake schedules a received native end without waiting for the quiet interval.
+	wake chan struct{}
 }
 
 // zcodePromptBoundaryEvidence is the attributed prompt-boundary patch of one
@@ -108,30 +107,35 @@ type zcodePromptBoundaryEvidence struct {
 // a.Mu is already held. The watcher polls session/read after each quiet
 // interval and reconciles the turn's state.
 func (a *Agent) startZCodeTurnWatcherLocked(owner *zcodeTurnState) {
-	if owner == nil || owner.settled {
+	if owner == nil || owner.finalized || (owner.settled && owner.pendingNative == nil) {
 		return
 	}
-	if a.recoverWatchers == nil {
-		a.recoverWatchers = map[string]*zcodeTurnRecoveryState{}
-	}
-	if existing := a.recoverWatchers[owner.id]; existing != nil && existing.cancel != nil {
+	if owner.recovery != nil {
 		return
 	}
 	ctx, cancel := context.WithCancel(a.Context())
 	state := &zcodeTurnRecoveryState{
-		cancel:            cancel,
-		recoverGeneration: a.replay.generation,
+		cancel:    cancel,
+		sessionID: a.sessionID,
+		wake:      make(chan struct{}, 1),
 	}
-	a.recoverWatchers[owner.id] = state
+	owner.recovery = state
 	go a.runZCodeTurnWatcher(ctx, owner, state)
 }
 
 // stopZCodeTurnWatcher cancels the watcher for one owner.
-func (a *Agent) stopZCodeTurnWatcher(turnID string) {
+func (a *Agent) stopZCodeTurnWatcher(owner *zcodeTurnState) {
 	a.Mu.Lock()
-	state := a.recoverWatchers[turnID]
-	delete(a.recoverWatchers, turnID)
+	a.stopZCodeTurnWatcherLocked(owner)
 	a.Mu.Unlock()
+}
+
+func (a *Agent) stopZCodeTurnWatcherLocked(owner *zcodeTurnState) {
+	if owner == nil {
+		return
+	}
+	state := owner.recovery
+	owner.recovery = nil
 	if state != nil && state.cancel != nil {
 		state.cancel()
 	}
@@ -141,25 +145,23 @@ func (a *Agent) stopZCodeTurnWatcher(turnID string) {
 // ClearContext call it.
 func (a *Agent) stopAllZCodeTurnWatchers() {
 	a.Mu.Lock()
-	watchers := a.recoverWatchers
-	a.recoverWatchers = nil
-	a.Mu.Unlock()
-	for _, state := range watchers {
-		if state != nil && state.cancel != nil {
-			state.cancel()
-		}
+	defer a.Mu.Unlock()
+	for _, owner := range a.turns {
+		a.stopZCodeTurnWatcherLocked(owner)
 	}
 }
 
 // runZCodeTurnWatcher is the watcher loop. It waits the quiet interval on the
-// agent's clock and runs one recovery cycle. A settled or lost turn ends the
-// loop; cancellation also ends it.
+// agent's clock and runs one recovery cycle. Final settlement ends the loop.
+// Cancellation and process exit also end it.
 func (a *Agent) runZCodeTurnWatcher(ctx context.Context, owner *zcodeTurnState, state *zcodeTurnRecoveryState) {
-	defer state.cancel()
+	defer a.finishZCodeTurnWatcher(owner, state)
 	for {
 		timer := a.Clock().NewTimer(zcodeTurnRecoveryQuietInterval, zcodeTurnRecoveryTimerTag)
 		select {
 		case <-timer.C:
+		case <-state.wake:
+			timer.Stop()
 		case <-ctx.Done():
 			timer.Stop()
 			return
@@ -169,10 +171,38 @@ func (a *Agent) runZCodeTurnWatcher(ctx context.Context, owner *zcodeTurnState, 
 		}
 		settled, err := a.checkZCodeTurnRecovery(ctx, owner, state)
 		if err != nil {
-			slog.Warn("zcode turn recovery check failed", "agent_id", a.AgentID(), "turn_id", owner.id, "error", err)
+			slog.Warn("zcode turn recovery check failed", "agent_id", a.AgentID(), "turn_generation", owner.generation, "error", err)
 		}
 		if settled {
 			return
+		}
+	}
+}
+
+// finishZCodeTurnWatcher hands off a native end that arrived while the old
+// watcher decided to exit. Detachment and rearming share the owner mutex.
+func (a *Agent) finishZCodeTurnWatcher(owner *zcodeTurnState, state *zcodeTurnRecoveryState) {
+	state.cancel()
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if owner.recovery != state {
+		return
+	}
+	owner.recovery = nil
+	if owner.pendingNative == nil || owner.finalized || a.turns[owner.id] != owner ||
+		state.sessionID != a.sessionID || a.sessionChanging || a.StoppedLocked() || a.Context().Err() != nil {
+		return
+	}
+	select {
+	case <-a.ProcessDone():
+		return
+	default:
+	}
+	a.startZCodeTurnWatcherLocked(owner)
+	if next := owner.recovery; next != nil {
+		select {
+		case next.wake <- struct{}{}:
+		default:
 		}
 	}
 }
@@ -185,53 +215,41 @@ const zcodeTurnRecoveryTimerTag = "zcode-turn-recovery"
 // is settled and the watcher can stop.
 func (a *Agent) checkZCodeTurnRecovery(ctx context.Context, owner *zcodeTurnState, state *zcodeTurnRecoveryState) (bool, error) {
 	a.Mu.Lock()
-	sessionID := a.sessionID
-	stopped := a.StoppedLocked()
+	identity := a.captureZCodeObservationIdentityLocked()
+	current := a.currentZCodeRecoveryLocked(owner, state)
 	a.Mu.Unlock()
-	if sessionID == "" || stopped {
+	if !current {
 		return true, nil
 	}
-
-	raw, err := a.sendZCodeRequestContext(ctx, MethodSessionRead, map[string]any{"sessionId": sessionID}, a.APITimeout())
+	if a.zcodeNativeSettlementPending(owner) {
+		return a.checkZCodeNativeSettlement(ctx, owner, state)
+	}
+	snap, err := a.readZCodeSession(ctx, identity)
+	a.Mu.Lock()
+	current = a.currentZCodeRecoveryLocked(owner, state)
+	a.Mu.Unlock()
+	if !current || ctx.Err() != nil {
+		return true, nil
+	}
+	if a.zcodeNativeSettlementPending(owner) {
+		return a.checkZCodeNativeSettlement(ctx, owner, state)
+	}
 	if err != nil {
 		if zcodeIsMethodNotFound(err) {
 			return true, nil
 		}
 		return false, err
 	}
-
-	var snap zcodeSessionReadSnapshot
-	if err := json.Unmarshal(raw, &snap); err != nil {
-		return false, fmt.Errorf("decode session/read: %w", err)
-	}
-
-	// If the snapshot reports a gap against the dispatch cursor, complete
-	// replay BEFORE applying the observation. Otherwise the snapshot could
-	// justify settlement while undelivered events still hold the real end.
-	// The snapshot's own eventSeq counts: a gap it reports exists whether or
-	// not the live watermark ever saw the missing events.
-	a.dispatchMu.Lock()
-	high := a.replay.highWatermark
-	a.Mu.Lock()
-	cursor := a.lastSeq
-	a.Mu.Unlock()
-	a.dispatchMu.Unlock()
-	snapshotSeq := int64(0)
-	if snap.Runtime != nil {
-		snapshotSeq = snap.Runtime.EventSeq
-	}
-	if high > cursor || snapshotSeq > cursor {
-		if err := a.replayZCodeEvents(ctx); err != nil {
-			return false, err
-		}
-	}
-
-	return a.applyZCodeRecoverySnapshot(owner, state, snap)
+	return a.applyZCodeRecoverySnapshotContext(ctx, owner, state, snap)
 }
 
 // zcodeSessionReadSnapshot is the subset of a session/read reply the recovery
 // watcher reads.
 type zcodeSessionReadSnapshot struct {
+	identity *zcodeSessionObservationIdentity
+	Session  *struct {
+		SessionID string `json:"sessionId"`
+	} `json:"session"`
 	Runtime    *zcodeRuntimeState     `json:"runtime"`
 	Projection *zcodeProjectionState  `json:"projection"`
 	Settings   *zcodeSettingsSnapshot `json:"settings"`
@@ -240,22 +258,72 @@ type zcodeSessionReadSnapshot struct {
 // applyZCodeRecoverySnapshot folds one session/read reply into the watcher's
 // state and decides whether the turn settles. It returns true when settled.
 func (a *Agent) applyZCodeRecoverySnapshot(owner *zcodeTurnState, state *zcodeTurnRecoveryState, snap zcodeSessionReadSnapshot) (bool, error) {
+	return a.applyZCodeRecoverySnapshotContext(a.Context(), owner, state, snap)
+}
+
+func (a *Agent) applyZCodeRecoverySnapshotContext(ctx context.Context, owner *zcodeTurnState, state *zcodeTurnRecoveryState, snap zcodeSessionReadSnapshot) (bool, error) {
+
+	a.dispatchMu.Lock()
+	defer a.unlockZCodeDispatch()
 	now := a.Clock().Now()
 
 	a.Mu.Lock()
-	// Adopt the native turn ID on a provisional owner.
-	if owner.id == "" || strings.HasPrefix(owner.id, "#turn-") {
-		if snap.Runtime != nil && snap.Runtime.ActiveTurnID != "" {
-			if existing := a.turns[snap.Runtime.ActiveTurnID]; existing == nil || existing == owner {
-				if strings.HasPrefix(owner.id, "#turn-") || owner.id == "" {
-					// Re-key the owner under its native ID.
-					delete(a.turns, owner.id)
-					owner.id = snap.Runtime.ActiveTurnID
-					a.turns[owner.id] = owner
-					if !owner.background {
-						a.foregroundTurnID = owner.id
-					}
+	if !a.currentZCodeRecoveryLocked(owner, state) || ctx.Err() != nil {
+		a.Mu.Unlock()
+		return true, nil
+	}
+	if owner.pendingNative != nil {
+		a.Mu.Unlock()
+		a.unlockZCodeDispatch()
+		settled, err := a.checkZCodeNativeSettlement(ctx, owner, state)
+		a.dispatchMu.Lock()
+		return settled, err
+	}
+	if !a.zcodeReadObservationCurrentLocked(snap.identity, snap.Runtime) {
+		a.Mu.Unlock()
+		return false, nil
+	}
+	// A runtime turn may precede this queued input. Only the persisted user
+	// anchor links a missing start event to the accepted input.
+	if (owner.id == "" || strings.HasPrefix(owner.id, "#turn-")) && owner.inputID != "" && snap.Projection != nil && snap.Projection.CurrentTurnID != "" && snap.Projection.TurnCount > 0 {
+		sessionID, inputID, previousSeq := a.sessionID, owner.inputID, owner.lastEventSeq
+		a.Mu.Unlock()
+		a.unlockZCodeDispatch()
+		messages, readErr := func() ([]zcodeNativeMessage, error) {
+			defer a.dispatchMu.Lock()
+			return a.fetchZCodeSessionMessages(ctx, sessionID, 0)
+		}()
+		a.Mu.Lock()
+		if !a.currentZCodeRecoveryLocked(owner, state) || owner.lastEventSeq != previousSeq {
+			current := a.currentZCodeRecoveryLocked(owner, state)
+			a.Mu.Unlock()
+			return !current, nil
+		}
+		if ctx.Err() != nil {
+			a.Mu.Unlock()
+			return true, nil
+		}
+		if !a.zcodeReadObservationCurrentLocked(snap.identity, snap.Runtime) {
+			a.Mu.Unlock()
+			return false, nil
+		}
+		a.Mu.Unlock()
+		gap := a.zcodeReplayHasGapLocked()
+		a.Mu.Lock()
+		if gap {
+			a.Mu.Unlock()
+			return false, nil
+		}
+		if readErr != nil {
+			a.Mu.Unlock()
+			return false, readErr
+		}
+		for _, message := range messages {
+			if message.Info.Role == "user" && message.Info.ID != "" && message.Info.Anchor.SourceCommandID == inputID && message.Info.Anchor.TurnID == snap.Projection.CurrentTurnID {
+				if a.adoptZCodeTurnIDLocked(owner, message.Info.Anchor.TurnID) {
+					owner.anchorMessageID = message.Info.ID
 				}
+				break
 			}
 		}
 	}
@@ -270,8 +338,16 @@ func (a *Agent) applyZCodeRecoverySnapshot(owner *zcodeTurnState, state *zcodeTu
 		totalTokenCount: projection.TotalTokenCount,
 		turnCount:       projection.TurnCount,
 		currentTurnID:   projection.CurrentTurnID,
+		ownerEventSeq:   owner.lastEventSeq,
+	}
+	if snap.Projection == nil || projection.CurrentTurnID != owner.id {
+		watermark = state.lastWatermark
+		watermark.ownerEventSeq = owner.lastEventSeq
 	}
 	advanced := !watermark.equals(state.lastWatermark)
+	if watermark.ownerEventSeq != state.lastWatermark.ownerEventSeq {
+		state.idleSnapshots = 0
+	}
 	state.lastWatermark = watermark
 	if advanced {
 		state.frozenSince = now
@@ -279,29 +355,41 @@ func (a *Agent) applyZCodeRecoverySnapshot(owner *zcodeTurnState, state *zcodeTu
 		state.frozenSince = now
 	}
 
-	// Idle snapshot tracking.
-	activeTurnID := ""
-	if snap.Runtime != nil {
-		activeTurnID = snap.Runtime.ActiveTurnID
-	}
-	if activeTurnID == "" {
+	// Only a complete native read that identifies this exact turn can confirm idle.
+	boundary := state.boundary
+	confirmed := snap.Runtime != nil && snap.Projection != nil &&
+		snap.Runtime.stateRevisionKnown && snap.Runtime.eventSeqKnown &&
+		snap.Runtime.StateRevision >= 0 && snap.Runtime.EventSeq >= 0 &&
+		snap.Runtime.ActiveTurnID == "" && projection.CurrentTurnID == owner.id &&
+		(projection.Status == "idle" || projection.Status == "error") &&
+		snap.Runtime.StateRevision >= owner.admissionRevision && snap.Runtime.EventSeq >= owner.lastEventSeq &&
+		(boundary == nil || snap.Runtime.StateRevision >= boundary.revision)
+	if confirmed {
 		state.idleSnapshots++
 	} else {
 		state.idleSnapshots = 0
 	}
 
+	provisional := (owner.id == "" || strings.HasPrefix(owner.id, "#turn-"))
+	waitingForNative := provisional && snap.Runtime != nil && snap.Runtime.activeTurnIDKnown && snap.Runtime.ActiveTurnID != "" && snap.Runtime.ActiveTurnID != owner.id
+	if waitingForNative {
+		state.frozenSince = time.Time{}
+	}
 	hasActiveTool := a.hasActiveZCodeToolLocked(owner)
+	if hasActiveTool {
+		state.frozenSince = now
+	}
 	settled := owner.settled
 	a.Mu.Unlock()
 
 	if settled {
-		a.stopZCodeTurnWatcher(owner.id)
+		a.stopZCodeTurnWatcher(owner)
 		return true, nil
 	}
 
 	// A frozen watermark past the freeze limit, with no active tool, surfaces
 	// the error path. A tool running or a watermark advance resets the clock.
-	if !advanced && !hasActiveTool && !state.frozenSince.IsZero() {
+	if !waitingForNative && !advanced && !hasActiveTool && !state.frozenSince.IsZero() {
 		if now.Sub(state.frozenSince) >= zcodeTurnRecoveryFreezeLimit {
 			a.settleZCodeTurnLost(owner, state)
 			return true, nil
@@ -310,22 +398,57 @@ func (a *Agent) applyZCodeRecoverySnapshot(owner *zcodeTurnState, state *zcodeTu
 
 	// Local settlement requires an attributed boundary AND two idle snapshots
 	// AND no active tool. Two idle snapshots alone establish only inactivity.
-	a.Mu.Lock()
-	boundary := state.boundary
-	a.Mu.Unlock()
 	if boundary != nil && state.idleSnapshots >= 2 && !hasActiveTool {
-		a.settleZCodeTurnFromRecovery(owner, state, boundary)
+		confirmedBoundary := *boundary
+		confirmedBoundary.reason = contracts.ZCodeStateReasonPromptCompleted
+		if projection.Status == "error" {
+			confirmedBoundary.reason = contracts.ZCodeStateReasonPromptFailed
+		}
+		a.Mu.Lock()
+		sessionID := a.sessionID
+		selection := &zcodeTurnState{id: owner.id, anchorMessageID: owner.anchorMessageID, acceptedAt: owner.acceptedAt}
+		observedOwnerSeq := owner.lastEventSeq
+		a.Mu.Unlock()
+		// The read loop must deliver this RPC's reply, so no dispatch lock crosses it.
+		a.unlockZCodeDispatch()
+		messages, err := func() ([]zcodeNativeMessage, error) {
+			defer a.dispatchMu.Lock()
+			return a.fetchZCodeFinalMessages(ctx, sessionID, selection)
+		}()
+		a.Mu.Lock()
+		current := a.currentZCodeRecoveryLocked(owner, state) && a.sessionID == sessionID && ctx.Err() == nil
+		unchanged := owner.lastEventSeq == observedOwnerSeq && a.zcodeReadObservationCurrentLocked(snap.identity, snap.Runtime) && owner.pendingNative == nil
+		a.Mu.Unlock()
+		if !current {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if !unchanged || a.zcodeReplayHasGapLocked() {
+			return false, nil
+		}
+		if err := a.applyZCodeRecoveredMessagesLocked(owner, messages); err != nil {
+			return false, err
+		}
+		a.settleZCodeTurnFromRecovery(owner, state, &confirmedBoundary)
 		return true, nil
 	}
 
 	return false, nil
 }
 
+func (a *Agent) currentZCodeRecoveryLocked(owner *zcodeTurnState, state *zcodeTurnRecoveryState) bool {
+	return owner != nil && state != nil && !owner.finalized && (!owner.settled || owner.pendingNative != nil) && !a.StoppedLocked() &&
+		a.sessionID != "" && state.sessionID == a.sessionID &&
+		a.turns[owner.id] == owner && owner.recovery == state
+}
+
 // hasActiveZCodeToolLocked reports whether any tool call of the owner is still
 // open. The caller holds a.Mu.
 func (a *Agent) hasActiveZCodeToolLocked(owner *zcodeTurnState) bool {
-	for id := range owner.toolCallIDs {
-		tc := a.toolCalls[id]
+	for id := range owner.toolInvocationIDs {
+		tc := a.toolInvocations[id]
 		if tc != nil && !tc.final && len(tc.lastFrame) > 0 {
 			return true
 		}
@@ -344,8 +467,6 @@ func (a *Agent) hasActiveZCodeToolLocked(owner *zcodeTurnState) bool {
 //   - The patch revision is >= the owner's admissionRevision.
 //   - projection.currentTurnId equals the owner's native ID when both are
 //     present.
-//   - projection.turnCount advanced beyond the owner's baselineTurnCount.
-//   - Any input identity matches the owner's inputID.
 //
 // An ID-less boundary is usable only for one unambiguous unsettled owner. A
 // background boundary is not evidence for the foreground watcher. Ambiguous
@@ -358,15 +479,11 @@ func (a *Agent) attributeZCodePromptBoundaryLocked(owner *zcodeTurnState, reason
 	if revision > 0 && owner.admissionRevision > 0 && revision < owner.admissionRevision {
 		return nil
 	}
-	// When both sides name a turn, they must agree.
+	// When both sides identify a turn, they must agree.
 	if projection.CurrentTurnID != "" && owner.id != "" && !strings.HasPrefix(owner.id, "#turn-") {
 		if projection.CurrentTurnID != owner.id {
 			return nil
 		}
-	}
-	// The turn counter must have advanced past this turn's baseline.
-	if owner.baselineTurnCount > 0 && projection.TurnCount > 0 && projection.TurnCount <= owner.baselineTurnCount {
-		return nil
 	}
 	// A background boundary is not evidence for the foreground watcher.
 	if owner.background && a.foregroundTurnID == owner.id {
@@ -407,7 +524,7 @@ func (a *Agent) recordZCodePromptBoundary(owner *zcodeTurnState, evidence *zcode
 		return
 	}
 	a.Mu.Lock()
-	state := a.recoverWatchers[owner.id]
+	state := owner.recovery
 	if state != nil && state.boundary == nil {
 		state.boundary = evidence
 	}
@@ -418,18 +535,31 @@ func (a *Agent) recordZCodePromptBoundary(owner *zcodeTurnState, evidence *zcode
 // prompt_failed state patch. It attributes the boundary to a turn owner and
 // records it as recovery evidence.
 func (a *Agent) handleZCodePromptBoundary(notif zcodeStatePatch, body zcodeStatePatchBody) {
-	if notif.Reason != zcodeStateReasonPromptCompleted && notif.Reason != zcodeStateReasonPromptFailed {
+	a.dispatchMu.Lock()
+	defer a.unlockZCodeDispatch()
+	a.Mu.Lock()
+	current := !a.StoppedLocked() && (notif.SessionID == "" || notif.SessionID == a.sessionID)
+	a.Mu.Unlock()
+	if !current {
+		return
+	}
+
+	if notif.Reason != contracts.ZCodeStateReasonPromptCompleted && notif.Reason != contracts.ZCodeStateReasonPromptFailed {
 		return
 	}
 	var projection zcodeProjectionState
 	if body.Projection != nil {
 		projection = *body.Projection
 	}
-	raw := notif.Patch
+	params := notif.raw
+	if len(params) == 0 {
+		params, _ = json.Marshal(notif)
+	}
+	raw := zcodeEventEnvelope{Type: contracts.ZCodeMethodStateUpdated, Payload: params}.persistBytes()
 
 	a.Mu.Lock()
 	// Try each unsettled owner; attribute only when evidence is unambiguous.
-	// An ID-ful boundary (projection names the turn) goes to that owner.
+	// An ID-ful boundary (projection identifies the turn) goes to that owner.
 	if projection.CurrentTurnID != "" {
 		if owner := a.turns[projection.CurrentTurnID]; owner != nil {
 			evidence := a.attributeZCodePromptBoundaryLocked(owner, notif.Reason, notif.Revision, projection, raw)
@@ -437,6 +567,8 @@ func (a *Agent) handleZCodePromptBoundary(notif zcodeStatePatch, body zcodeState
 			a.recordZCodePromptBoundary(owner, evidence)
 			return
 		}
+		a.Mu.Unlock()
+		return
 	}
 	// ID-less boundary: try the sole unsettled owner.
 	sole := a.attributeZCodePromptBoundaryForUnsettledLocked(notif.Reason, notif.Revision, projection, raw)
@@ -465,9 +597,18 @@ type zcodeNativeMessage struct {
 
 // zcodeNativeMessageInfo identifies one native message.
 type zcodeNativeMessageInfo struct {
-	ID   string                 `json:"id"`
-	Role string                 `json:"role"`
-	Time zcodeNativeMessageTime `json:"time"`
+	ID       string                 `json:"id"`
+	Role     string                 `json:"role"`
+	Time     zcodeNativeMessageTime `json:"time"`
+	ParentID string                 `json:"parentID"`
+	Anchor   struct {
+		TurnID          string `json:"turnId"`
+		SourceCommandID string `json:"sourceCommandId"`
+	} `json:"anchor"`
+	Semantics struct {
+		Kind string `json:"kind"`
+	} `json:"semantics"`
+	Finish string `json:"finish"`
 }
 
 // zcodeNativeMessageTime carries the message's creation timestamp.
@@ -475,8 +616,8 @@ type zcodeNativeMessageTime struct {
 	Created float64 `json:"created"`
 }
 
-// zcodeNativePart is one part of a native message. Part IDs only order and
-// deduplicate; the text aggregates into the scope of the parent message.
+// zcodeNativePart is one part of a native message. Native part order determines
+// text order. Part IDs deduplicate repeated parts.
 type zcodeNativePart struct {
 	ID   string `json:"id"`
 	Type string `json:"type"`
@@ -489,54 +630,39 @@ const (
 	zcodeNativePartTypeReasoning = "reasoning"
 )
 
-// reconcileZCodeFinalMessages fetches the owner's final assistant messages and
-// emits only the proven missing suffix of each scope.
+// fetchZCodeFinalMessages fetches and selects the owner's native assistant messages.
+// The caller revalidates ownership before comparing and emitting missing suffixes.
 //
-// Window policy: request limit 200 (newest 200). Select messages starting
-// after anchorMessageID when known. If the window is full and the anchor or
-// expected final assistant message is absent, retry with no limit. If the
-// full read still lacks required evidence, FAIL rather than treating a
-// truncated prefix as complete.
-//
-// Part IDs order and deduplicate. Text aggregates into zcodeTextScope,
-// reasoning into zcodeReasoningScope. Comparison and emission run under
-// dispatchMu so live output cannot interleave.
-func (a *Agent) reconcileZCodeFinalMessages(ctx context.Context, owner *zcodeTurnState) error {
-	if owner == nil {
-		return nil
+// Request the newest 200 messages. Retry without a limit when the required
+// user-message anchor is absent or an unanchored window is full.
+// Reject a full read that still lacks the required user-message anchor.
+// Native part order determines text order. Part IDs deduplicate repeated parts.
+func (a *Agent) fetchZCodeFinalMessages(ctx context.Context, sessionID string, owner *zcodeTurnState) ([]zcodeNativeMessage, error) {
+	if owner == nil || sessionID == "" {
+		return nil, fmt.Errorf("no native owner for message reconciliation")
 	}
-	a.Mu.Lock()
-	sessionID := a.sessionID
-	a.Mu.Unlock()
-	if sessionID == "" {
-		return fmt.Errorf("no session for message reconciliation")
-	}
-
-	// Phase 1: fetch the bounded window (outside the lock).
+	// Phase 1: fetch the limited window (outside the lock).
 	messages, err := a.fetchZCodeSessionMessages(ctx, sessionID, zcodeRecoveredMessageWindow)
 	if err != nil {
-		return fmt.Errorf("session/messages: %w", err)
+		return nil, fmt.Errorf("session/messages: %w", err)
 	}
 
 	// Phase 2: select owner messages and check for truncation.
-	selected, truncated := selectZCodeOwnerMessages(owner, messages)
+	selected, truncated := selectZCodeOwnerMessages(owner, messages, false)
 
 	// Phase 3: if truncated and the anchor is absent, retry unlimited.
 	if truncated {
 		allMessages, err := a.fetchZCodeSessionMessages(ctx, sessionID, 0)
 		if err != nil {
-			return fmt.Errorf("session/messages (full): %w", err)
+			return nil, fmt.Errorf("session/messages (full): %w", err)
 		}
-		selected, truncated = selectZCodeOwnerMessages(owner, allMessages)
+		selected, truncated = selectZCodeOwnerMessages(owner, allMessages, true)
 		if truncated {
-			return fmt.Errorf("session/messages lacks the anchor for turn %s after a full read", owner.id)
+			return nil, fmt.Errorf("session/messages lacks the anchor for turn %s after a full read", owner.id)
 		}
 	}
 
-	// Phase 4: aggregate parts and compare with retained content under dispatchMu.
-	a.dispatchMu.Lock()
-	defer a.dispatchMu.Unlock()
-	return a.applyZCodeRecoveredMessagesLocked(owner, selected)
+	return selected, nil
 }
 
 // fetchZCodeSessionMessages asks the app-server for the session's messages.
@@ -563,11 +689,11 @@ func (a *Agent) fetchZCodeSessionMessages(ctx context.Context, sessionID string,
 //
 // With an anchor: messages starting after anchorMessageID. Provisional
 // accepted turn (no anchor): assistant messages with info.time.created >=
-// acceptedAt. Resumed owner without anchor: returns nothing until a replay
-// establishes the anchor.
+// acceptedAt. An exact native turn anchor also proves ownership without a local
+// acceptance time, including after resume.
 //
 // truncated is true when the window may have cut the owner's messages.
-func selectZCodeOwnerMessages(owner *zcodeTurnState, messages []zcodeNativeMessage) (selected []zcodeNativeMessage, truncated bool) {
+func selectZCodeOwnerMessages(owner *zcodeTurnState, messages []zcodeNativeMessage, complete bool) (selected []zcodeNativeMessage, truncated bool) {
 	if owner == nil {
 		return nil, false
 	}
@@ -575,7 +701,7 @@ func selectZCodeOwnerMessages(owner *zcodeTurnState, messages []zcodeNativeMessa
 		// Messages after the anchor.
 		found := false
 		for _, msg := range messages {
-			if found {
+			if found && zcodeMessageBelongsToOwner(owner, msg) {
 				selected = append(selected, msg)
 			}
 			if msg.Info.ID == owner.anchorMessageID {
@@ -583,22 +709,36 @@ func selectZCodeOwnerMessages(owner *zcodeTurnState, messages []zcodeNativeMessa
 			}
 		}
 		if !found {
-			return nil, len(messages) >= zcodeRecoveredMessageWindow
+			return nil, true
 		}
 		return selected, false
 	}
-	// No anchor.
-	if owner.acceptedAt.IsZero() {
-		// Resumed owner without anchor: emit nothing until anchored.
-		return nil, false
-	}
-	// Provisional accepted turn: assistant messages created at or after acceptance.
+	// An exact native turn anchor proves ownership independently of local timing.
+	// Timestamp fallback requires a known local acceptance.
 	for _, msg := range messages {
-		if msg.Info.Role == "assistant" && msg.Info.Time.Created >= float64(owner.acceptedAt.UnixMilli())/1000.0 {
+		if !zcodeMessageBelongsToOwner(owner, msg) {
+			continue
+		}
+		if msg.Info.Anchor.TurnID != "" || (!owner.acceptedAt.IsZero() && msg.Info.Time.Created >= float64(owner.acceptedAt.UnixMilli())) {
 			selected = append(selected, msg)
 		}
 	}
-	return selected, false
+	return selected, !complete && len(messages) >= zcodeRecoveredMessageWindow
+}
+
+func zcodeMessageBelongsToOwner(owner *zcodeTurnState, message zcodeNativeMessage) bool {
+	info := message.Info
+	if info.Role != "assistant" || info.Finish == "stream_recovery_discarded" ||
+		(info.Semantics.Kind != "" && info.Semantics.Kind != "assistant_response") {
+		return false
+	}
+	if info.Anchor.TurnID != "" {
+		return owner.id != "" && !strings.HasPrefix(owner.id, "#turn-") && info.Anchor.TurnID == owner.id
+	}
+	if owner.anchorMessageID != "" {
+		return info.ParentID == owner.anchorMessageID
+	}
+	return info.ParentID == "" && !owner.acceptedAt.IsZero()
 }
 
 // applyZCodeRecoveredMessagesLocked aggregates native parts into scopes and
@@ -606,86 +746,122 @@ func selectZCodeOwnerMessages(owner *zcodeTurnState, messages []zcodeNativeMessa
 //
 // A non-prefix rewrite is a reconciliation conflict: it is surfaced as an
 // error and nothing is appended.
+type zcodeRecoveredScope struct {
+	scopeID string
+	kind    agent.AssembledMessageKind
+	suffix  string
+}
+
 func (a *Agent) applyZCodeRecoveredMessagesLocked(owner *zcodeTurnState, messages []zcodeNativeMessage) error {
 	a.Mu.Lock()
-	if owner.contentByScope == nil {
-		owner.contentByScope = map[string]string{}
+	retained := make(map[string]*zcodeScopeContent, len(owner.contentByScope))
+	for scope, content := range owner.contentByScope {
+		if content != nil {
+			retained[scope] = &zcodeScopeContent{observed: append([]byte(nil), content.observed...), submitted: content.submitted}
+		}
 	}
+	responses := append([]zcodeAcceptedModelResponse(nil), owner.acceptedResponses...)
 	a.Mu.Unlock()
-
-	for _, msg := range messages {
-		textScope := zcodeTextScope(msg.Info.ID)
-		reasoningScope := zcodeReasoningScope(msg.Info.ID)
-		var textParts, reasoningParts []string
-		seenPartIDs := map[string]struct{}{}
-		for _, part := range msg.Parts {
-			// Deduplicate by part ID.
-			if part.ID != "" {
-				if _, seen := seenPartIDs[part.ID]; seen {
-					continue
-				}
-				seenPartIDs[part.ID] = struct{}{}
-			}
-			switch part.Type {
-			case zcodeNativePartTypeText:
-				textParts = append(textParts, part.Text)
-			case zcodeNativePartTypeReasoning:
-				reasoningParts = append(reasoningParts, part.Text)
-			}
+	if len(responses) > len(messages) {
+		return fmt.Errorf("reconciliation conflict: native messages lack %d accepted responses", len(responses)-len(messages))
+	}
+	for index, response := range responses {
+		message := messages[index]
+		if response.messageID != "" && response.messageID != message.Info.ID {
+			return fmt.Errorf("reconciliation conflict: accepted response %s differs from native message %s", response.messageID, message.Info.ID)
 		}
-		textAggregate := strings.Join(textParts, "")
-		reasoningAggregate := strings.Join(reasoningParts, "")
-
-		if err := a.emitZCodeRecoveredScopeLocked(owner, textScope, textAggregate); err != nil {
+		aggregate, _, _ := zcodeNativeMessageText(message)
+		if response.text != aggregate {
+			return fmt.Errorf("reconciliation conflict: native message %s differs from its accepted response", message.Info.ID)
+		}
+		scope := zcodeTextScope(message.Info.ID)
+		if _, err := zcodeRecoveredSuffix(scope, retained[scope].text(), aggregate); err != nil {
 			return err
 		}
-		if err := a.emitZCodeRecoveredScopeLocked(owner, reasoningScope, reasoningAggregate); err != nil {
-			return err
+		retained[scope] = &zcodeScopeContent{observed: []byte(aggregate), submitted: len(aggregate)}
+	}
+	var scopes []zcodeRecoveredScope
+	seenScopes := make(map[string]bool)
+	for _, message := range messages {
+		text, reasoning, presence := zcodeNativeMessageText(message)
+		candidates := []struct {
+			present   bool
+			scopeID   string
+			kind      agent.AssembledMessageKind
+			aggregate string
+		}{
+			{presence[0], zcodeTextScope(message.Info.ID), agent.AssembledMessageKindText, text},
+			{presence[1], zcodeReasoningScope(message.Info.ID), agent.AssembledMessageKindReasoning, reasoning},
 		}
+		for _, candidate := range candidates {
+			seenScopes[candidate.scopeID] = true
+			if !candidate.present && retained[candidate.scopeID].text() == "" {
+				continue
+			}
+			suffix, err := zcodeRecoveredSuffix(candidate.scopeID, retained[candidate.scopeID].text(), candidate.aggregate)
+			if err != nil {
+				return err
+			}
+			scopes = append(scopes, zcodeRecoveredScope{scopeID: candidate.scopeID, kind: candidate.kind, suffix: suffix})
+			submitted := 0
+			if content := retained[candidate.scopeID]; content != nil {
+				submitted = content.submitted
+			}
+			retained[candidate.scopeID] = &zcodeScopeContent{observed: []byte(candidate.aggregate), submitted: submitted}
+		}
+	}
+	for scope, content := range retained {
+		if content.text() != "" && !seenScopes[scope] {
+			return fmt.Errorf("reconciliation conflict: native messages lack retained scope %s", scope)
+		}
+	}
+	// Validate the complete candidate before any recovered byte becomes visible.
+	a.Mu.Lock()
+	owner.contentByScope = retained
+	a.Mu.Unlock()
+	for _, scope := range scopes {
+		a.appendZCodeRecoveredScope(owner, scope)
 	}
 	return nil
 }
 
-// emitZCodeRecoveredScopeLocked compares one scope's native aggregate with the
-// owner's retained content and emits only the proven missing suffix. A
-// non-prefix rewrite is a conflict. The caller holds dispatchMu.
-func (a *Agent) emitZCodeRecoveredScopeLocked(owner *zcodeTurnState, scopeID, aggregate string) error {
-	if aggregate == "" {
-		return nil
-	}
-	a.Mu.Lock()
-	retained := owner.contentByScope[scopeID]
-	a.Mu.Unlock()
-
-	if retained == "" {
-		// No delivered content: emit the full aggregate.
-		if a.recoverEmitContent != nil {
-			a.recoverEmitContent(owner, scopeID, aggregate)
+// zcodeNativeMessageText aggregates each native part once, preserving part order.
+func zcodeNativeMessageText(message zcodeNativeMessage) (string, string, [2]bool) {
+	var text, reasoning strings.Builder
+	var presence [2]bool
+	seen := make(map[string]struct{})
+	for _, part := range message.Parts {
+		if part.ID != "" {
+			if _, duplicate := seen[part.ID]; duplicate {
+				continue
+			}
+			seen[part.ID] = struct{}{}
 		}
-		a.Mu.Lock()
-		owner.contentByScope[scopeID] = aggregate
-		a.Mu.Unlock()
-		return nil
+		switch part.Type {
+		case zcodeNativePartTypeText:
+			presence[0] = true
+			text.WriteString(part.Text)
+		case zcodeNativePartTypeReasoning:
+			presence[1] = true
+			reasoning.WriteString(part.Text)
+		}
 	}
+	return text.String(), reasoning.String(), presence
+}
 
-	// Retained content must be a prefix of the native aggregate. If it is not,
-	// the native data rewrote history: a reconciliation conflict.
+func zcodeRecoveredSuffix(scopeID, retained, aggregate string) (string, error) {
 	if !strings.HasPrefix(aggregate, retained) {
-		return fmt.Errorf("reconciliation conflict for scope %s: retained %d bytes are not a prefix of the %d-byte native aggregate",
-			scopeID, len(retained), len(aggregate))
+		return "", fmt.Errorf("reconciliation conflict for scope %s: retained %d bytes are not a prefix of the %d-byte native aggregate", scopeID, len(retained), len(aggregate))
 	}
+	return aggregate[len(retained):], nil
+}
 
-	suffix := aggregate[len(retained):]
-	if suffix == "" {
-		return nil
+func (a *Agent) appendZCodeRecoveredScope(owner *zcodeTurnState, scope zcodeRecoveredScope) {
+	if scope.suffix == "" {
+		return
 	}
-	if a.recoverEmitContent != nil {
-		a.recoverEmitContent(owner, scopeID, suffix)
-	}
-	a.Mu.Lock()
-	owner.contentByScope[scopeID] = aggregate
-	a.Mu.Unlock()
-	return nil
+	a.generationBuffer.Append(scope.scopeID, scope.kind, scope.suffix, providerkit.JoinVerbatim)
+	a.zcodeProgressSinkForTurn(owner).ReportProgress(agent.ModelTextProgress(scope.scopeID, scope.suffix))
 }
 
 // --- settlement ---
@@ -700,16 +876,11 @@ type zcodeTurnSettlement struct {
 	// completed turn, whose text finished while a lost call failed.
 	textCompletion agent.MessageCompletion
 	callCompletion agent.MessageCompletion
-	// turnEnd persists the turn-end row from the calls the transition closed:
-	// the native divider with its tool count, or the attributed prompt-boundary
-	// evidence. nil states that the end carries no persistable content: the
-	// transition settles the owner and drops it, touching no scope, tool, span
-	// or row.
-	turnEnd func(closed int)
-	// backgroundEnd records a background turn's outcome beside the turn rather
-	// than as the user's turn end: the native notification, or the recovery
-	// evidence. Every settlement that persists a turn end sets it.
-	backgroundEnd func()
+	// persistEnd records this owner's outcome after its scopes and tools close.
+	// Nil settles identity without persisting a row or touching buffered work.
+	persistEnd func(closed int, publishTurnEnd bool)
+	// afterForeground retains retry ownership until the actual settlement claim.
+	afterForeground func()
 }
 
 // settleZCodeTurn runs the shared turn-settlement transition: reset retry and
@@ -725,11 +896,23 @@ func (a *Agent) settleZCodeTurn(owner *zcodeTurnState, settle zcodeTurnSettlemen
 		return
 	}
 	background := owner.background
-	if !background {
-		a.retryResolution.Reset()
-	}
 	a.Mu.Lock()
-	if !background {
+	if owner.finalized || a.turns[owner.id] != owner {
+		a.Mu.Unlock()
+		return
+	}
+	foreground := !background && a.foregroundTurnID == owner.id && !owner.settled
+	publishTurnEnd := foreground
+	for _, other := range a.turns {
+		if other != owner && (!other.settled || a.hasActiveZCodeToolLocked(other)) {
+			publishTurnEnd = false
+			break
+		}
+	}
+	owner.finalized = true
+	owner.settlementWriting = true
+	a.stopZCodeTurnWatcherLocked(owner)
+	if foreground {
 		a.stopCancelledRequest = false
 	}
 	// The turn reported its own end, so the stop's window has nothing left to
@@ -741,7 +924,7 @@ func (a *Agent) settleZCodeTurn(owner *zcodeTurnState, settle zcodeTurnSettlemen
 	if a.stopWindow.turnID == owner.id {
 		a.cancelStoppedZCodeTurnLocked()
 	}
-	if !background {
+	if foreground {
 		// The approved exit runs inside the turn that asked for it. A stored plan-exit
 		// mode that the turn end finds was never released, and no later event is its
 		// exit.
@@ -753,17 +936,32 @@ func (a *Agent) settleZCodeTurn(owner *zcodeTurnState, settle zcodeTurnSettlemen
 	}
 	a.refreshTurnActiveLocked()
 	a.Mu.Unlock()
-	// Deferred, for two reasons at once. It runs on EVERY path, including the
-	// two early returns below -- a background turn, and a turn whose end carries
-	// no persistable content -- and a turn that published no clear would latch
-	// the agent busy for the life of the process. And it runs AFTER the turn-end
-	// row, which hands this turn's tool-call count to the activity latch: the
-	// clear is what produces the settle edge that spends the count, so
-	// publishing it first would settle the agent with no count and ring the
-	// completion sound for a turn that used no tool.
-	defer a.PublishTurnActive()
+	defer func() {
+		a.Mu.Lock()
+		owner.settlementWriting = false
+		// A finalized owner retained for background children needs only identity.
+		clear(owner.contentByScope)
+		owner.acceptedResponses = nil
+		owner.currentAssistantMessageID = ""
+		owner.pendingNative = nil
+		owner.canonicalRequired = false
+		a.dropZCodeTurnLocked(owner)
+		a.Mu.Unlock()
+		if background {
+			a.finalizeZCodeToolsWhenIdle()
+		}
+		if foreground && settle.afterForeground != nil {
+			settle.afterForeground()
+		}
+		a.PublishTurnActive()
+	}()
+	if foreground {
+		a.retryResolution.Reset()
+	}
+	// The finalizer publishes inactivity after the row and retry bookkeeping.
+	// That publication can release queued input into the next foreground.
 
-	if settle.turnEnd == nil {
+	if settle.persistEnd == nil {
 		// The end carries no persistable content: the owner settles and drops,
 		// and no scope, tool, span or row is touched.
 		a.Mu.Lock()
@@ -775,42 +973,27 @@ func (a *Agent) settleZCodeTurn(owner *zcodeTurnState, settle zcodeTurnSettlemen
 	a.flushZCodeGenerationForTurn(owner, settle.textCompletion)
 	closed := a.persistIncompleteZCodeToolsForTurn(owner, settle.callCompletion)
 
-	if background {
-		a.Mu.Lock()
-		a.dropZCodeTurnLocked(owner)
-		a.Mu.Unlock()
-		settle.backgroundEnd()
-		return
-	}
-
-	// Recover any tool call that never reached a final update (an aborted turn), so
-	// the next turn's progress deltas are not measured against a dead stream.
-	a.ResetCumulativeOutput()
-	a.sink.ReportProgress(agent.ResetModelProgress())
-	settle.turnEnd(closed)
-	a.sink.ResetSpans()
-
-	a.Mu.Lock()
-	// Any batch summary that could still reference these arrived within the turn, so the
-	// marks are spent. A record that holds nothing else goes with them, which is what
-	// keeps the map's size capped at one turn's calls rather than at the session's.
-	// Only this turn's own calls are touched: another turn's records stay as they are.
-	for id := range owner.toolCallIDs {
-		tc := a.toolCalls[id]
-		if tc == nil {
-			continue
-		}
-		tc.final = false
-		if tc.name == "" && tc.input == nil {
-			delete(a.toolCalls, id)
-		}
-	}
-	a.dropZCodeTurnLocked(owner)
-	a.Mu.Unlock()
+	a.resetZCodeTurnProgress(owner)
+	settle.persistEnd(closed, publishTurnEnd)
+	a.resetZCodeSpansWhenIdle()
 
 	// The app-server's own reading is authoritative, and reading it takes an RPC --
 	// which the read loop must stay free to deliver, so it cannot run inline here.
-	go a.refreshZCodeUsageFromSession()
+	a.scheduleZCodeUsageRefresh()
+}
+
+// resetZCodeSpansWhenIdle retains span state until every overlapping owner ends.
+// A locally stopped owner can still hold a running tool that needs its span.
+func (a *Agent) resetZCodeSpansWhenIdle() {
+	a.Mu.Lock()
+	for _, owner := range a.turns {
+		if !owner.settled || a.hasActiveZCodeToolLocked(owner) {
+			a.Mu.Unlock()
+			return
+		}
+	}
+	a.Mu.Unlock()
+	a.sink.ResetSpans()
 }
 
 // zcodeRecoverySettlement settles a recovered turn: its scopes and tools close
@@ -818,22 +1001,36 @@ func (a *Agent) settleZCodeTurn(owner *zcodeTurnState, settle zcodeTurnSettlemen
 // row. It NEVER fabricates a native turn.completed frame or divider; the
 // evidence is the patch that proves the turn ended.
 func (a *Agent) zcodeRecoverySettlement(owner *zcodeTurnState, completion agent.MessageCompletion, evidence []byte) zcodeTurnSettlement {
-	record := func() { a.persistZCodeRecoveryEvidence(owner, evidence) }
+	record := func(publish bool) { a.persistZCodeRecoveryEvidenceForOwner(owner, completion, evidence, publish) }
 	return zcodeTurnSettlement{
 		textCompletion: completion,
 		callCompletion: completion,
-		turnEnd:        func(int) { record() },
-		backgroundEnd:  record,
+		persistEnd:     func(_ int, publish bool) { record(publish) },
 	}
 }
 
 // persistZCodeRecoveryEvidence stores the attributed prompt-boundary patch as
 // the turn-end evidence.
-func (a *Agent) persistZCodeRecoveryEvidence(owner *zcodeTurnState, evidence []byte) {
+func (a *Agent) persistZCodeRecoveryEvidence(owner *zcodeTurnState, completion agent.MessageCompletion, evidence []byte) {
+	a.persistZCodeRecoveryEvidenceForOwner(owner, completion, evidence, true)
+}
+
+func (a *Agent) persistZCodeRecoveryEvidenceForOwner(owner *zcodeTurnState, completion agent.MessageCompletion, evidence []byte, publish bool) {
 	if len(evidence) == 0 {
 		return
 	}
-	if err := a.sink.PersistTurnEnd(agent.MessageContent{Original: evidence}, agent.SpanInfo{}); err != nil {
+	content := agent.MessageContent{Original: evidence, Completion: completion}
+	if owner.background {
+		a.persistZCodeBackgroundTurnEnd(owner, evidence, completion)
+		return
+	}
+	var err error
+	if publish {
+		err = a.zcodeProgressSinkForTurn(owner).PersistTurnEnd(content, agent.SpanInfo{})
+	} else {
+		err = a.zcodeProgressSinkForTurn(owner).PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{})
+	}
+	if err != nil {
 		slog.Error("zcode persist recovery evidence", "agent_id", a.AgentID(), "turn_id", owner.id, "error", err)
 	}
 }
@@ -841,9 +1038,9 @@ func (a *Agent) persistZCodeRecoveryEvidence(owner *zcodeTurnState, evidence []b
 // settleZCodeTurnFromRecovery settles a turn from the attributed boundary
 // evidence.
 func (a *Agent) settleZCodeTurnFromRecovery(owner *zcodeTurnState, state *zcodeTurnRecoveryState, boundary *zcodePromptBoundaryEvidence) {
-	a.stopZCodeTurnWatcher(owner.id)
+	a.stopZCodeTurnWatcher(owner)
 	completion := agent.MessageCompletionComplete
-	if boundary.reason == zcodeStateReasonPromptFailed {
+	if boundary.reason == contracts.ZCodeStateReasonPromptFailed {
 		completion = agent.MessageCompletionError
 	}
 	a.settleZCodeTurn(owner, a.zcodeRecoverySettlement(owner, completion, boundary.raw))
@@ -852,17 +1049,138 @@ func (a *Agent) settleZCodeTurnFromRecovery(owner *zcodeTurnState, state *zcodeT
 // settleZCodeTurnLost settles a turn whose watermarks froze past the limit.
 // It surfaces the error path: the turn is lost and the user sees the outcome.
 func (a *Agent) settleZCodeTurnLost(owner *zcodeTurnState, state *zcodeTurnRecoveryState) {
-	a.stopZCodeTurnWatcher(owner.id)
+	a.stopZCodeTurnWatcher(owner)
+	a.settleZCodeTurn(owner, zcodeTurnSettlement{
+		textCompletion: agent.MessageCompletionError,
+		callCompletion: agent.MessageCompletionError,
+		persistEnd: func(int, bool) {
+			a.sink.PersistLeapMuxNotification(map[string]interface{}{
+				contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
+				contracts.NotificationFieldError: "ZCode stopped reporting progress, and its native state could not confirm that this turn ended.",
+			})
+		},
+	})
+}
+
+// zcodePendingNativeSettlement is immutable after the first native end arrives.
+// Its source retains publication authority; retries do not refresh that authority.
+type zcodePendingNativeSettlement struct {
+	settlement zcodeTurnSettlement
+	source     agent.MessageContent
+	receivedAt time.Time
+}
+
+func (a *Agent) queueZCodeNativeSettlement(owner *zcodeTurnState, settle zcodeTurnSettlement, source agent.MessageContent) {
 	a.Mu.Lock()
-	boundary := state.boundary
-	a.Mu.Unlock()
-	var evidence []byte
-	completion := agent.MessageCompletionError
-	if boundary != nil {
-		evidence = boundary.raw
-		if boundary.reason == zcodeStateReasonPromptCompleted {
-			completion = agent.MessageCompletionComplete
+	if a.turns[owner.id] != owner || owner.finalized {
+		a.Mu.Unlock()
+		return
+	}
+	if owner.pendingNative == nil {
+		owner.pendingNative = &zcodePendingNativeSettlement{settlement: settle, source: agent.MessageContent{AgentSessionID: source.AgentSessionID, Publication: source.Publication}, receivedAt: a.Clock().Now()}
+	}
+	if a.stopWindow.turnID == owner.id {
+		a.cancelStoppedZCodeTurnLocked()
+	}
+	a.startZCodeTurnWatcherLocked(owner)
+	state := owner.recovery
+	if state != nil {
+		select {
+		case state.wake <- struct{}{}:
+		default:
 		}
 	}
-	a.settleZCodeTurn(owner, a.zcodeRecoverySettlement(owner, completion, evidence))
+	a.Mu.Unlock()
+}
+
+func (a *Agent) zcodeNativeSettlementPending(owner *zcodeTurnState) bool {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	return owner.pendingNative != nil
+}
+
+// checkZCodeNativeSettlement uses the received native end as completion proof.
+// Unlike idle recovery, it needs no second inference from session/read.
+func (a *Agent) checkZCodeNativeSettlement(ctx context.Context, owner *zcodeTurnState, state *zcodeTurnRecoveryState) (bool, error) {
+	a.Mu.Lock()
+	current := a.currentZCodeRecoveryLocked(owner, state)
+	pending := owner.pendingNative
+	identity := a.captureZCodeObservationIdentityLocked()
+	through := owner.lastEventSeq
+	expired := pending != nil && a.Clock().Now().Sub(pending.receivedAt) >= zcodeTurnRecoveryFreezeLimit
+	a.Mu.Unlock()
+	if !current || ctx.Err() != nil {
+		return true, nil
+	}
+	if pending == nil {
+		return false, nil
+	}
+	if expired {
+		return a.expireZCodeNativeSettlement(ctx, owner, state, pending)
+	}
+	if err := a.ensureZCodeReplayThrough(ctx, identity.sessionID, through, identity.epoch); err != nil {
+		return false, err
+	}
+	a.dispatchMu.Lock()
+	defer a.unlockZCodeDispatch()
+	a.Mu.Lock()
+	current = a.currentZCodeRecoveryLocked(owner, state) && owner.pendingNative == pending && a.zcodeSessionLifetimeCurrentLocked(identity)
+	sessionID := a.sessionID
+	selection := &zcodeTurnState{id: owner.id, anchorMessageID: owner.anchorMessageID, acceptedAt: owner.acceptedAt}
+	observedSeq := owner.lastEventSeq
+	a.Mu.Unlock()
+	if !current || ctx.Err() != nil {
+		return true, nil
+	}
+	a.unlockZCodeDispatch()
+	messages, err := func() ([]zcodeNativeMessage, error) {
+		defer a.dispatchMu.Lock()
+		return a.fetchZCodeFinalMessages(ctx, sessionID, selection)
+	}()
+	a.Mu.Lock()
+	current = a.currentZCodeRecoveryLocked(owner, state) && owner.pendingNative == pending && a.zcodeSessionLifetimeCurrentLocked(identity)
+	unchanged := owner.lastEventSeq == observedSeq
+	a.Mu.Unlock()
+	if !current || ctx.Err() != nil {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !unchanged || a.zcodeReplayHasGapLocked() {
+		return false, nil
+	}
+	if err := a.applyZCodeRecoveredMessagesLocked(owner, messages); err != nil {
+		return false, err
+	}
+	a.settleZCodeTurn(owner, pending.settlement)
+	return true, nil
+}
+
+func (a *Agent) expireZCodeNativeSettlement(ctx context.Context, owner *zcodeTurnState, state *zcodeTurnRecoveryState, pending *zcodePendingNativeSettlement) (bool, error) {
+	a.dispatchMu.Lock()
+	defer a.unlockZCodeDispatch()
+	a.Mu.Lock()
+	current := a.currentZCodeRecoveryLocked(owner, state) && owner.pendingNative == pending && ctx.Err() == nil
+	a.Mu.Unlock()
+	if !current {
+		return true, nil
+	}
+	settle := pending.settlement
+	settle.textCompletion, settle.callCompletion = agent.MessageCompletionError, agent.MessageCompletionError
+	nativeEnd := settle.persistEnd
+	settle.persistEnd = func(closed int, publish bool) {
+		if nativeEnd != nil {
+			nativeEnd(closed, publish)
+		}
+		encoded, err := json.Marshal(map[string]any{contracts.NotificationFieldType: contracts.NotificationTypeAgentError, contracts.NotificationFieldError: "ZCode ended this turn, but LeapMux could not restore all of its output."})
+		if err == nil {
+			_, err = a.zcodeProgressSinkForTurn(owner).PersistWorkerNotification(agent.MessageContent{Original: encoded})
+		}
+		if err != nil {
+			slog.Error("zcode persist output restoration failure", "agent_id", a.AgentID(), "error", err)
+		}
+	}
+	a.settleZCodeTurn(owner, settle)
+	return true, nil
 }

@@ -15,32 +15,9 @@ import (
 // The marker prevents distinct live comparison pointers from sharing a zero-size address.
 type catalogComparisonIdentity struct{ marker byte }
 
-type catalogSource struct {
-	sink      *agentOutputSink
-	publisher *agentOutputSink
-	session   *nativeSessionFact
-}
-
 type catalogOperation struct {
-	source     catalogSource
+	source     nativeSessionSource
 	comparison *catalogComparisonIdentity
-}
-
-// lockCatalogSource follows the same root lease order as NewRootSink.
-// The caller acquires catalogMu before these leases and releases all locks before callbacks.
-func (source catalogSource) lockCatalogSource() func() {
-	mutation := source.sink.h.transcriptMutationMutex(source.sink.rootAgentID)
-	mutation.RLock()
-	source.sink.h.rootSinkMu.RLock()
-	return func() {
-		source.sink.h.rootSinkMu.RUnlock()
-		mutation.RUnlock()
-	}
-}
-
-func (source catalogSource) currentLocked() bool {
-	return source.sink.currentSettingsSource() && source.sink.registeredCurrent() && source.sink.turnPublisherSink() == source.publisher &&
-		source.sink.currentMessageSessionFact() == source.session
 }
 
 func (sink *agentOutputSink) beginCatalogOperation() *catalogOperation {
@@ -49,10 +26,26 @@ func (sink *agentOutputSink) beginCatalogOperation() *catalogOperation {
 	}
 	sink.catalogMu.Lock()
 	defer sink.catalogMu.Unlock()
-	source := catalogSource{sink: sink, publisher: sink.turnPublisherSink()}
-	release := source.lockCatalogSource()
+	source := nativeSessionSource{sink: sink, publisher: sink.turnPublisherSink()}
+	release := source.lock()
 	defer release()
 	source.session = sink.currentMessageSessionFact()
+	return sink.beginCatalogOperationLocked(source)
+}
+
+func (sink *agentOutputSink) beginCatalogOperationFrom(source nativeSessionSource) *catalogOperation {
+	if source.sink != sink {
+		return nil
+	}
+	sink.catalogMu.Lock()
+	defer sink.catalogMu.Unlock()
+	release := source.lock()
+	defer release()
+	return sink.beginCatalogOperationLocked(source)
+}
+
+// beginCatalogOperationLocked requires catalogMu and the source leases.
+func (sink *agentOutputSink) beginCatalogOperationLocked(source nativeSessionSource) *catalogOperation {
 	if !source.currentLocked() {
 		return nil
 	}
@@ -65,7 +58,7 @@ func (operation *catalogOperation) restart() bool {
 	sink := operation.source.sink
 	sink.catalogMu.Lock()
 	defer sink.catalogMu.Unlock()
-	release := operation.source.lockCatalogSource()
+	release := operation.source.lock()
 	defer release()
 	if !operation.source.currentLocked() {
 		return false
@@ -83,7 +76,7 @@ func (operation *catalogOperation) state() catalogAdmissionResult {
 	sink := operation.source.sink
 	sink.catalogMu.Lock()
 	defer sink.catalogMu.Unlock()
-	release := operation.source.lockCatalogSource()
+	release := operation.source.lock()
 	defer release()
 	if !operation.source.currentLocked() {
 		return catalogExpired
@@ -253,7 +246,7 @@ func sameCatalogRowInputs(first, second db.Agent) bool {
 func (sink *agentOutputSink) admitCatalog(operation *catalogOperation, prepared catalogPreparation, request catalogRequest, publishAfterFailure bool) (result catalogAdmissionResult, failure catalogFailure) {
 	sink.catalogMu.Lock()
 	defer sink.catalogMu.Unlock()
-	release := operation.source.lockCatalogSource()
+	release := operation.source.lock()
 	defer release()
 	if !operation.currentLocked() {
 		if operation.source.currentLocked() {
@@ -404,7 +397,11 @@ type settingsRefreshPreparation struct {
 }
 
 func (sink *agentOutputSink) PersistSettingsRefresh(refresh optionmap.Map) {
-	settlement, accepted := sink.settleSettingsRefresh(refresh)
+	sink.persistSettingsRefresh(refresh, sink.beginCatalogOperation())
+}
+
+func (sink *agentOutputSink) persistSettingsRefresh(refresh optionmap.Map, operation *catalogOperation) {
+	settlement, accepted := sink.settleSettingsRefresh(refresh, operation)
 	if !accepted {
 		return
 	}
@@ -424,8 +421,7 @@ func (sink *agentOutputSink) PersistSettingsRefresh(refresh optionmap.Map) {
 
 // settleSettingsRefresh samples startup outside every source and comparison lock.
 // Its original query handle keeps actual compare-and-swap adapters and errors intact.
-func (sink *agentOutputSink) settleSettingsRefresh(refresh optionmap.Map) (settlement settingsRefreshSettlement, accepted bool) {
-	operation := sink.beginCatalogOperation()
+func (sink *agentOutputSink) settleSettingsRefresh(refresh optionmap.Map, operation *catalogOperation) (settlement settingsRefreshSettlement, accepted bool) {
 	if operation == nil {
 		return settingsRefreshSettlement{}, false
 	}
@@ -474,7 +470,7 @@ func (sink *agentOutputSink) settleSettingsRefresh(refresh optionmap.Map) (settl
 func (sink *agentOutputSink) admitSettingsRefresh(operation *catalogOperation, prepared settingsRefreshPreparation) (optionsCASResult, settingsRefreshSettlement, catalogFailure, bool) {
 	sink.catalogMu.Lock()
 	defer sink.catalogMu.Unlock()
-	release := operation.source.lockCatalogSource()
+	release := operation.source.lock()
 	defer release()
 	if !operation.currentLocked() {
 		return optionsCASResult{}, settingsRefreshSettlement{}, catalogFailure{}, operation.source.currentLocked()

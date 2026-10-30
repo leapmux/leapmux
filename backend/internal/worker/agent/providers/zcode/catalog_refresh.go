@@ -3,11 +3,8 @@ package zcode
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
-
-	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
 // registryRefreshReason is the reason every provider registry refresh states.
@@ -128,9 +125,9 @@ func (a *Agent) runZCodeCatalogRefreshPass() error {
 // refreshZCodeModelCatalog reads the unrestricted model list of the active
 // session. Native session/read and setter replies contain only the current model.
 func (a *Agent) refreshZCodeModelCatalog() error {
-	a.sessionLifecycleMu.Lock()
+	a.lockZCodeSessionLifecycle()
 	changed, err := a.readZCodeModelCatalog()
-	a.sessionLifecycleMu.Unlock()
+	a.unlockZCodeSessionLifecycle()
 	if changed {
 		a.sink.PersistSettingsRefresh(nil)
 	}
@@ -164,44 +161,4 @@ func (a *Agent) readZCodeModelCatalog() (bool, error) {
 	providerID, modelID, _ := splitZCodeModelID(a.model)
 	a.replaceZCodeLiveModelsLocked(snap.Settings.Model.Available, zcodeModelRef{ProviderID: providerID, ModelID: modelID})
 	return true, nil
-}
-
-// repairUnavailableZCodeModel runs the one repair stage of a start: a current
-// model that the complete nonempty live catalog no longer holds is replaced by
-// the first live model, with that model's reasoning default, through the bounded
-// reasoning-level ladder.
-//
-// The stage runs outside sessionLifecycleMu (the setter takes it after its RPC)
-// and at most once per agent. An explicitly empty catalog or a failed repair
-// makes no further setter call and marks the model unresolved.
-func (a *Agent) repairUnavailableZCodeModel(timeout time.Duration) {
-	a.Mu.Lock()
-	if a.modelRepairAttempted {
-		a.Mu.Unlock()
-		return
-	}
-	a.modelRepairAttempted = true
-	if !a.liveCatalogComplete {
-		// No complete native catalog states absence, so there is nothing to repair.
-		a.Mu.Unlock()
-		return
-	}
-	if len(a.liveModelOrder) == 0 {
-		// The catalog is explicitly empty: it manufactures no model from stale
-		// legacy files.
-		a.Mu.Unlock()
-		a.markSettingUnresolved(agent.OptionIDModel)
-		return
-	}
-	if _, ok := a.resolveZCodeModelIDLocked(a.model); ok {
-		// The persisted selection is still live.
-		a.Mu.Unlock()
-		return
-	}
-	first := a.liveModelOrder[0]
-	a.Mu.Unlock()
-	if _, err := a.applyZCodeModel(first, "", timeout); err != nil {
-		slog.Warn("zcode unavailable-model repair failed", "agent_id", a.AgentID(), "model", first, "error", err)
-		a.markSettingUnresolved(agent.OptionIDModel)
-	}
 }

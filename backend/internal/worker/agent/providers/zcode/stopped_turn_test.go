@@ -3,6 +3,8 @@ package zcode
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -148,11 +150,11 @@ func TestZCodeStoppedTurn_ToolAndModelEventsRefreshAndProveAnIgnoredStop(t *test
 	a.stopWindow.armedAt = time.Now().Add(-zcodeStopIgnoredGrace - time.Second)
 	a.Mu.Unlock()
 
-	a.HandleOutput(zcodeTurnEventLine(t, 2, "turn-user", contracts.ZCodeEventModelStreaming,
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn-user", contracts.ZCodeEventModelStreaming,
 		`{"kind":"text_delta","assistantMessageId":"m1","delta":"still going"}`))
 	assert.Equal(t, 2, timer.armed, "the model stream of the stopped turn restarts the window")
 
-	a.HandleOutput(zcodeTurnEventLine(t, 3, "turn-user", contracts.ZCodeEventToolUpdated,
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "turn-user", contracts.ZCodeEventToolUpdated,
 		`{"toolCallId":"call-1","toolName":"bash"}`))
 	assert.Equal(t, 3, timer.armed, "a tool update of the stopped turn restarts the window")
 
@@ -573,7 +575,7 @@ func TestZCodeStoppedTurn_LateToolResultRoutesToTheStoppedOwner(t *testing.T) {
 
 	var closing *agenttest.Message
 	for i, row := range sink.Messages() {
-		if row.Closing && row.SpanID == "t-1" {
+		if row.Closing && row.SpanID == zcodeTestSpanID(t, sink, "t-1") {
 			closing = &sink.Messages()[i]
 		}
 	}
@@ -582,6 +584,52 @@ func TestZCodeStoppedTurn_LateToolResultRoutesToTheStoppedOwner(t *testing.T) {
 		"the background turn is still running, so the chat must not read idle")
 	assert.Equal(t, len("bg out"), a.generationBuffer.RetainedTextLenForTest(zcodeTextScope("m-bg")),
 		"the stop settles the stopped owner only; the background turn's output stays buffered")
+}
+
+func TestZCodeStoppedTurn_LateNativeEndPreservesTheNextForegroundTurn(t *testing.T) {
+	t.Parallel()
+	for _, openOldTool := range []bool{false, true} {
+		t.Run(fmt.Sprintf("open_old_tool_%t", openOldTool), func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			stdin := &zcodeRecordedStdin{}
+			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+			timer := &zcodeCapturedTimer{}
+			a.afterFunc = timer.afterFunc
+			t.Cleanup(a.cancelStoppedZCodeTurn)
+			a.HandleOutput(zcodeTurnEventLine(t, 0, "old", contracts.ZCodeEventTurnStarted, `{"turnNumber":1}`))
+			if openOldTool {
+				a.HandleOutput(zcodeTurnEventLine(t, 0, "old", contracts.ZCodeEventToolUpdated,
+					`{"kind":"scheduled","toolCallId":"old-call","toolName":"Bash","input":{"command":"pwd"}}`))
+			}
+			answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
+			require.NoError(t, a.Interrupt(agent.StopContext{}))
+			require.NotNil(t, timer.fire)
+			timer.fire()
+			a.HandleOutput(zcodeTurnEventLine(t, 0, "new", contracts.ZCodeEventTurnStarted, `{"turnNumber":2}`))
+			a.HandleOutput(zcodeTurnEventLine(t, 0, "new", contracts.ZCodeEventModelStreaming,
+				`{"assistantMessageId":"new-message","kind":"text_delta","delta":"new output"}`))
+			a.HandleOutput(zcodeTurnEventLine(t, 0, "new", contracts.ZCodeEventToolUpdated,
+				`{"kind":"scheduled","toolCallId":"new-call","toolName":"Bash","input":{"command":"pwd"}}`))
+			a.Mu.Lock()
+			a.pendingExitMode = "edit"
+			a.stopCancelledRequest = true
+			a.Mu.Unlock()
+			a.HandleOutput(zcodeTurnEventLine(t, 0, "old", contracts.ZCodeEventTurnCompleted,
+				`{"resultType":"cancelled","toolCallCount":0}`))
+			dividers := zcodeNativeTurnEndRows(t, sink.Messages())
+			require.Len(t, dividers, 1, "the late native end must still persist its divider")
+			assert.False(t, dividers[0].TurnEnd, "the historical end cannot settle the new foreground")
+			assert.GreaterOrEqual(t, agenttest.MessageToolUseCount(t, dividers[0]), 0)
+			assert.Equal(t, "Bash", a.sink.GetSpanType(zcodeTestSpanID(t, sink, "new-call")), "the next turn must retain its span")
+			assert.True(t, a.PublishTurnActive().Active)
+			assert.Equal(t, len("new output"), a.generationBuffer.RetainedTextLenForTest(zcodeTextScope("new-message")))
+			a.Mu.Lock()
+			assert.Equal(t, "edit", a.pendingExitMode)
+			assert.True(t, a.stopCancelledRequest, "the old turn cannot consume the new turn's cancellation")
+			a.Mu.Unlock()
+		})
+	}
 }
 
 // Only the watched turn's own traffic extends the silence window. An ID-less
@@ -656,4 +704,64 @@ func TestZCodeStoppedTurn_CompactionProgressExtendsACompactionWindow(t *testing.
 	a.refreshStoppedZCodeTurn(zcodeEventEnvelope{Type: contracts.ZCodeEventSessionUpdated,
 		Payload: json.RawMessage(`{"strategy":"local_tool_result_clear"}`)})
 	assert.Equal(t, 3, timer.armed, "a microcompact boundary is the compaction's own progress")
+}
+
+type zcodeHeldInterruptedPrefixSink struct {
+	*agenttest.ControlSink
+	entered chan struct{}
+	release chan struct{}
+	blocked atomic.Bool
+}
+
+func (sink *zcodeHeldInterruptedPrefixSink) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	_, _, completion, assembled := agenttest.DecodeAssembledMessage(content.Original)
+	if assembled && completion == agent.MessageCompletionInterrupted && sink.blocked.CompareAndSwap(false, true) {
+		close(sink.entered)
+		<-sink.release
+	}
+	return sink.ControlSink.PersistMessage(source, content, span)
+}
+
+func TestZCodeStoppedTurn_SerializesInterruptedPrefixAcceptanceWithTheLateResponse(t *testing.T) {
+	t.Parallel()
+	sink := &zcodeHeldInterruptedPrefixSink{ControlSink: &agenttest.ControlSink{}, entered: make(chan struct{}), release: make(chan struct{})}
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn", contracts.ZCodeEventTurnStarted, `{"turnNumber":1}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "turn", contracts.ZCodeEventModelStreaming, `{"kind":"text_delta","assistantMessageId":"message","delta":"hello "}`))
+	timer := &zcodeCapturedTimer{}
+	a.afterFunc = timer.afterFunc
+	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+	stopped := make(chan struct{})
+	go func() { timer.fire(); close(stopped) }()
+	<-sink.entered
+	if acquired := a.dispatchMu.TryLock(); acquired {
+		a.dispatchMu.Unlock()
+		assert.False(t, acquired, "prefix submission must serialize with native response acceptance")
+	}
+	responded := make(chan struct{})
+	go func() {
+		a.HandleOutput(zcodeTurnEventLine(t, 3, "turn", contracts.ZCodeEventSessionUpdated, `{"content":"hello world","querySource":"main_turn","stopReason":"stop"}`))
+		close(responded)
+	}()
+	close(sink.release)
+	<-stopped
+	<-responded
+	prefixes, responses := 0, 0
+	for _, row := range sink.Messages() {
+		if _, text, _, ok := agenttest.DecodeAssembledMessage(row.Content); ok {
+			prefixes++
+			assert.Equal(t, "hello ", text)
+		}
+		if strings.Contains(string(row.Content), `"content":"hello world"`) {
+			responses++
+			assert.Contains(t, string(row.SupplementalContent), `"acceptedPrefix":"hello "`)
+		}
+	}
+	assert.Equal(t, 1, prefixes)
+	assert.Equal(t, 1, responses)
+	notifications := sink.PersistedNotifications()
+	require.Len(t, notifications, 1)
+	assert.JSONEq(t, `{"type":"`+contracts.NotificationTypeInterrupted+`"}`, string(notifications[0].Content))
 }

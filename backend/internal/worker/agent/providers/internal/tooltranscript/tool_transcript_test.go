@@ -4,14 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -44,6 +47,25 @@ func TestToolTranscriptUsesClosingSpansAcrossProtocols(t *testing.T) {
 			assert.JSONEq(t, `{"recovered":true}`, string(result.SupplementalContent))
 		})
 	}
+}
+
+func TestToolTranscriptKeepsSpanIdentitySeparateFromTheNativeToolID(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	transcript, source := newTestToolTranscript(t, agent.NewProviderServices(sink), func(pending map[string]agent.MessageContent, _ bool) map[string][]byte {
+		assert.Contains(t, pending, "invocation-span")
+		return map[string][]byte{"invocation-span": []byte(`{"recovered":true}`)}
+	})
+	source.callIDHook = func([]byte) string { return "native-call" }
+	transcript.UpdateSessionID("native-session")
+	original := []byte(`{"toolCallId":"native-call"}`)
+	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: original}, agent.SpanInfo{SpanID: "invocation-span", Closing: true}))
+	require.NoError(t, transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"done":true}`)}, agent.SpanInfo{}))
+	row := sink.Messages()[0]
+	assert.Equal(t, original, row.Content)
+	assert.Equal(t, "invocation-span", row.SpanID)
+	assert.JSONEq(t, `{"recovered":true}`, string(row.SupplementalContent))
 }
 
 // newTestToolTranscript builds a transcript whose supplement reader a test controls.
@@ -102,13 +124,14 @@ func TestToolTranscriptKeepsAPendingResultTheRowRefused(t *testing.T) {
 	sink := &agenttest.Sink{}
 	sink.UpdateSessionID("session-1")
 	var passes atomic.Int64
-	transcript, _ := newTestToolTranscript(t, agent.NewProviderServices(sink), func(pending map[string]agent.MessageContent, _ bool) map[string][]byte {
+	transcript, source := newTestToolTranscript(t, agent.NewProviderServices(sink), func(pending map[string]agent.MessageContent, _ bool) map[string][]byte {
 		if len(pending) == 0 {
 			return nil
 		}
 		passes.Add(1)
 		return map[string][]byte{"call": []byte(`{"recovered":true}`)}
 	})
+	source.callIDHook = func([]byte) string { return "" }
 	// The row does not exist yet, so the first pass cannot enrich it.
 	span := agent.SpanInfo{SpanID: "other", Closing: true}
 	content := transcript.CaptureMessage(agent.MessageContent{Original: []byte(`{"toolCallId":"call"}`), WriteReceipt: agent.NewTranscriptWriteReceipt()}, span)
@@ -147,20 +170,19 @@ func TestToolTranscriptCleanupDropsTheChildTranscript(t *testing.T) {
 	childPasses.Store(0)
 
 	transcript.CleanupChildAgent("child-1")
+	require.NoError(t, transcript.WaitForRetirementsForTest(testutil.DeadlineContext(t)))
 	transcript.mu.Lock()
 	remaining := len(transcript.children)
 	retired := len(transcript.retired)
 	transcript.mu.Unlock()
 	assert.Zero(t, remaining)
-	assert.Equal(t, 1, retired, "the cleanup retires the child rather than dropping it")
-	// The cleanup runs on the goroutine that drains the provider's stdout, and it runs
-	// once per finished subagent, so it must read the provider's store ZERO times.
-	assert.Zero(t, childPasses.Load(), "the cleanup must not read the provider's store")
+	assert.Zero(t, retired, "completed native enrichment releases the retired child")
+	assert.Equal(t, int64(1), childPasses.Swap(0), "the child queue performs one final native read")
 
 	require.NoError(t, transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"done":true}`)}, agent.SpanInfo{}))
 	// EXACTLY one: the turn end owes the retired child its final pass, and a count
 	// rather than a lower limit is what refuses a cleanup that re-enters or recurses.
-	assert.Equal(t, int64(1), childPasses.Swap(0), "the turn end drains the retired child exactly once")
+	assert.Zero(t, childPasses.Swap(0), "the parent end must not repeat completed child enrichment")
 
 	require.NoError(t, transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"done":true}`)}, agent.SpanInfo{}))
 	assert.Zero(t, childPasses.Load(), "a second turn end must not re-run a pass for a drained child")
@@ -198,12 +220,13 @@ func TestToolTranscriptCleanupFlushesWhatTheChildStillHolds(t *testing.T) {
 	))
 
 	transcript.CleanupChildAgent("child-1")
+	require.NoError(t, transcript.WaitForRetirementsForTest(testutil.DeadlineContext(t)))
 
 	childRecorder := sink.Child("child-1")
 	rows := childRecorder.Messages()
 	require.Len(t, rows, 1)
-	assert.NotContains(t, string(rows[0].SupplementalContent), "recovered",
-		"the cleanup itself must not read the provider's store, because it runs on the stdout reader")
+	assert.Contains(t, string(rows[0].SupplementalContent), "recovered",
+		"the child's queue recovers its final result without waiting for the parent to end")
 
 	require.NoError(t, transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"done":true}`)}, agent.SpanInfo{}))
 
@@ -256,6 +279,7 @@ func TestToolTranscriptDroppingAChildDrainsAndClosesItOnEveryPath(t *testing.T) 
 			require.True(t, ok)
 
 			tc.drop(transcript)
+			require.NoError(t, transcript.WaitForRetirementsForTest(testutil.DeadlineContext(t)))
 
 			childRecorder := sink.Child("child-1")
 			rows := childRecorder.Messages()
@@ -271,23 +295,28 @@ func TestToolTranscriptDroppingAChildDrainsAndClosesItOnEveryPath(t *testing.T) 
 	}
 }
 
-// A source with no child hook has no child transcript, so the wrapped sink serves the
-// child directly and no goroutine opens for it.
-func TestToolTranscriptChildSinkWithoutAChildSourceDelegates(t *testing.T) {
+// A child with no native reader still retains its lifetime and exact original bytes.
+func TestToolTranscriptChildSinkWithoutAChildSourcePreservesItsLifetime(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	transcript, _ := newTestToolTranscript(t, agent.NewProviderServices(sink), func(map[string]agent.MessageContent, bool) map[string][]byte { return nil })
-	// A row written through the transcript's child sink lands in the wrapped sink's
-	// child, so the transcript added no layer of its own.
+	// The lifecycle wrapper adds no native supplement or interim reader.
 	row := []byte(`{"type":"text","text":"child row"}`)
 	require.NoError(t, transcript.ChildSink("child-1").PersistMessage(
 		leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: row}, agent.SpanInfo{}))
 	messages := sink.Child("child-1").Messages()
 	require.Len(t, messages, 1)
 	assert.JSONEq(t, string(row), string(messages[0].Content))
+	assert.Empty(t, messages[0].SupplementalContent)
 	transcript.mu.Lock()
-	defer transcript.mu.Unlock()
-	assert.Empty(t, transcript.children)
+	child := transcript.children["child-1"]
+	transcript.mu.Unlock()
+	require.NotNil(t, child)
+	child.mu.Lock()
+	assert.False(t, child.started)
+	child.mu.Unlock()
+	transcript.CleanupChildAgent("child-1")
+	require.NoError(t, transcript.WaitForRetirementsForTest(testutil.DeadlineContext(t)))
 }
 
 // blockingToolSource holds one interim read until a test releases it, and records the
@@ -313,7 +342,7 @@ func (b *blockingToolSource) Locate(sessionID string) Location {
 
 func (b *blockingToolSource) ToolCallID([]byte) string { return "call" }
 
-func (b *blockingToolSource) ReadSupplements(_ context.Context, _ string, _ map[string]agent.MessageContent, final bool) (map[string][]byte, error) {
+func (b *blockingToolSource) ReadSupplements(_ context.Context, _ Location, _ map[string]agent.MessageContent, final bool) (map[string][]byte, error) {
 	b.mu.Lock()
 	b.inRead++
 	b.overlap = b.overlap || b.inRead > 1
@@ -327,6 +356,10 @@ func (b *blockingToolSource) ReadSupplements(_ context.Context, _ string, _ map[
 	b.inRead--
 	b.mu.Unlock()
 	return nil, nil
+}
+
+func (b *blockingToolSource) CaptureSupplement(Location, agent.MessageContent, agent.SpanInfo) SupplementReader {
+	return nil
 }
 
 func (b *blockingToolSource) record() ([]bool, bool) {
@@ -574,8 +607,19 @@ func (t *testToolSource) ToolCallID(original []byte) string {
 	return t.callIDHook(original)
 }
 
-func (t *testToolSource) ReadSupplements(ctx context.Context, _ string, pending map[string]agent.MessageContent, final bool) (map[string][]byte, error) {
+func (t *testToolSource) ReadSupplements(ctx context.Context, _ Location, pending map[string]agent.MessageContent, final bool) (map[string][]byte, error) {
 	return t.readHook(ctx, pending, final), nil
+}
+
+func (t *testToolSource) CaptureSupplement(_ Location, content agent.MessageContent, span agent.SpanInfo) SupplementReader {
+	hook := t.readHook
+	if hook == nil {
+		return nil
+	}
+	captured := content.Clone()
+	return func(ctx context.Context, final bool) ([]byte, error) {
+		return hook(ctx, map[string]agent.MessageContent{span.SpanID: captured}, final)[span.SpanID], nil
+	}
 }
 
 func (t *testToolSource) NewChild(childID string, services agent.ProviderServices) Source {
@@ -832,7 +876,7 @@ func TestCapturedToolTranscriptMessageObserverCanStartAReplacementTurn(t *testin
 	case <-time.After(30 * time.Second):
 		t.Fatal("the nested message did not finish after the observer returned")
 	}
-	assert.NoError(t, <-callbackResult)
+	assert.ErrorIs(t, <-callbackResult, agent.ErrOutputInFlight, "reentrant output is admitted behind its original observer")
 	transcript.mu.Lock()
 	current := transcript.pending["call"]
 	transcript.mu.Unlock()
@@ -1040,7 +1084,12 @@ func TestToolTranscriptEqualBytesDoNotReplaceCommittedRowIdentity(t *testing.T) 
 	writer := &reentrantToolWriter{ProviderServices: agent.NewProviderServices(sink)}
 	transcript, _ := newTestToolTranscript(t, writer, func(map[string]agent.MessageContent, bool) map[string][]byte { return nil })
 	original := []byte(`{"toolCallId":"call","same":true}`)
-	writer.messageHook = func() { persistClosingToolRow(t, transcript, original) }
+	writer.messageHook = func() {
+		err := transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+			agent.MessageContent{Original: original}, agent.SpanInfo{SpanID: "call", Closing: true})
+		assert.True(t, agent.OutputRetained(err))
+		assert.ErrorIs(t, err, agent.ErrOutputInFlight)
+	}
 	persistClosingToolRow(t, transcript, original)
 	written, err := transcript.EnrichToolSpan("call", func([]byte) ([]byte, error) { return []byte(`{"new_frame":true}`), nil })
 	require.NoError(t, err)
@@ -1053,7 +1102,7 @@ func TestToolTranscriptEqualBytesDoNotReplaceCommittedRowIdentity(t *testing.T) 
 	sequence, committed := transcript.pending["call"].content.WriteReceipt.StoredMessageSequence()
 	transcript.mu.Unlock()
 	assert.True(t, committed)
-	assert.Equal(t, int64(2), sequence, "the delayed first return must not replace the newer pending row")
+	assert.Equal(t, int64(2), sequence, "the pending tool must identify the last committed row")
 }
 
 func TestToolTranscriptSettledObservationCapturesOwnershipBeforeBuild(t *testing.T) {
@@ -1278,4 +1327,684 @@ func TestToolTranscriptRetainedObservationReceiptAllowsFinalBoundaryReentry(t *t
 	assert.JSONEq(t, `{"winner":"stored","retained":true}`, string(rows[0].SupplementalContent))
 	assert.Equal(t, int64(2), rows[0].SupplementalRevision)
 	assert.Empty(t, transcript.PendingSpanIDsForTest())
+}
+
+type childCleanupAuthority struct {
+	agent.ProviderServices
+	child             *agenttest.Sink
+	cleanupCount      atomic.Int64
+	enrichedAtCleanup atomic.Bool
+}
+
+func (sink *childCleanupAuthority) AcquireChildSink(childID string) agent.ChildSinkLease {
+	lease := sink.ProviderServices.AcquireChildSink(childID)
+	cleanup := lease.Cleanup
+	lease.Cleanup = func() bool {
+		if cleanup == nil || !cleanup() {
+			return false
+		}
+		rows := sink.child.Messages()
+		sink.enrichedAtCleanup.Store(len(rows) == 1 && len(rows[0].SupplementalContent) > 0)
+		sink.cleanupCount.Add(1)
+		return true
+	}
+	return lease
+}
+
+func (sink *childCleanupAuthority) CleanupChildAgent(string) {
+	rows := sink.child.Messages()
+	sink.enrichedAtCleanup.Store(len(rows) == 1 && len(rows[0].SupplementalContent) > 0)
+	sink.cleanupCount.Add(1)
+	sink.child.UpdateSessionID("retired-child")
+}
+
+func TestToolTranscript_OrdersChildRetirementAfterItsRetainedResult(t *testing.T) {
+	t.Parallel()
+	raw := &agenttest.Sink{}
+	rawChild := raw.Child("child")
+	rawChild.UpdateSessionID("native-child")
+	authority := &childCleanupAuthority{ProviderServices: agent.NewProviderServices(raw), child: rawChild}
+	transcript, source := newTestToolTranscript(t, authority, func(map[string]agent.MessageContent, bool) map[string][]byte { return nil })
+	source.childHook = func(string, agent.ProviderServices) Source {
+		return &testToolSource{locateHook: source.locateHook, readHook: func(_ context.Context, pending map[string]agent.MessageContent, _ bool) map[string][]byte {
+			out := make(map[string][]byte)
+			for span := range pending {
+				out[span] = []byte(`{"recovered":true}`)
+			}
+			return out
+		}}
+	}
+	child := transcript.ChildSink("child").(*Transcript)
+	// Only the final native read can recover this result.
+	child.closeSupplementWorker()
+	queue := agent.OutputQueueFor(child)
+	var released atomic.Bool
+	blocker := queue.Append(agent.OutputWrite{Label: "hold the child result", Run: func() error {
+		if !released.Load() {
+			return agent.ErrOutputInFlight
+		}
+		return nil
+	}})[0]
+	require.ErrorIs(t, queue.Flush(), agent.ErrOutputInFlight)
+	err := child.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"toolCallId":"call","result":"done"}`)}, agent.SpanInfo{SpanID: "call", Closing: true})
+	require.True(t, agent.OutputRetained(err))
+	transcript.CleanupChildAgent("child")
+	assert.Zero(t, authority.cleanupCount.Load(), "physical cleanup must preserve the queued row's authority")
+	require.NoError(t, transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"done":true}`)}, agent.SpanInfo{}))
+	assert.Equal(t, 1, raw.MessageCount(), "the root queue must continue while child storage is retained")
+	assert.Zero(t, authority.cleanupCount.Load())
+	released.Store(true)
+	err = queue.FlushAfterReady(blocker)
+	assert.True(t, err == nil || errors.Is(err, agent.ErrOutputInFlight))
+	require.NoError(t, transcript.WaitForRetirementsForTest(testutil.DeadlineContext(t)))
+	require.Len(t, rawChild.Messages(), 1)
+	assert.JSONEq(t, `{"recovered":true}`, string(rawChild.Messages()[0].SupplementalContent))
+	assert.Equal(t, int64(1), authority.cleanupCount.Load())
+	assert.True(t, authority.enrichedAtCleanup.Load(), "native enrichment must finish before cleanup retires the child")
+	assert.Empty(t, transcript.retired)
+}
+
+type resumedChildToolSource struct {
+	*testToolSource
+	running      *atomic.Bool
+	observed     chan struct{}
+	observedOnce sync.Once
+}
+
+func (source *resumedChildToolSource) CanFinalizeTurn() bool { return !source.running.Load() }
+func (source *resumedChildToolSource) ObserveMessage(content agent.MessageContent, _ agent.SpanInfo) {
+	var payload struct {
+		Record string `json:"record"`
+	}
+	if json.Unmarshal(content.Original, &payload) == nil && payload.Record == "new" {
+		source.observedOnce.Do(func() { close(source.observed) })
+	}
+}
+
+func TestToolTranscript_ResumesAChildWhileItsOldResultIsRetained(t *testing.T) {
+	t.Parallel()
+	raw := &agenttest.Sink{}
+	rawChild := raw.Child("child")
+	rawChild.UpdateSessionID("native-child")
+	authority := &childCleanupAuthority{ProviderServices: agent.NewProviderServices(raw), child: rawChild}
+	root, source := newTestToolTranscript(t, authority, func(map[string]agent.MessageContent, bool) map[string][]byte { return nil })
+	var running, released atomic.Bool
+	observed := make(chan struct{})
+	source.childHook = func(string, agent.ProviderServices) Source {
+		return &resumedChildToolSource{testToolSource: &testToolSource{locateHook: source.locateHook, readHook: func(_ context.Context, pending map[string]agent.MessageContent, _ bool) map[string][]byte {
+			out := make(map[string][]byte)
+			for span, content := range pending {
+				var record struct {
+					Record string `json:"record"`
+				}
+				if json.Unmarshal(content.Original, &record) == nil {
+					out[span] = []byte(`{"native":"` + record.Record + `"}`)
+				}
+			}
+			return out
+		}}, running: &running, observed: observed}
+	}
+	old := root.ChildSink("child").(*Transcript)
+	old.closeSupplementWorker()
+	queue := agent.OutputQueueFor(old)
+	blocker := queue.Append(agent.OutputWrite{Label: "hold the old invocation", Run: func() error {
+		if !released.Load() {
+			return agent.ErrOutputInFlight
+		}
+		return nil
+	}})[0]
+	require.ErrorIs(t, queue.Flush(), agent.ErrOutputInFlight)
+	err := old.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"toolCallId":"same","record":"old"}`)}, agent.SpanInfo{SpanID: "old-span", Closing: true})
+	require.True(t, agent.OutputRetained(err))
+	root.CleanupChildAgent("child")
+	running.Store(true)
+	resumed := root.ChildSink("child")
+	require.NotNil(t, resumed)
+	resumed.SetTurnState(agent.TurnState{Active: true}, 1)
+	owner := resumed.CaptureMessage(agent.MessageContent{}, agent.SpanInfo{}).Publication.Owner()
+	err = resumed.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"toolCallId":"same","record":"new"}`)}, agent.SpanInfo{SpanID: "new-span", Closing: true})
+	require.True(t, agent.OutputRetained(err))
+	released.Store(true)
+	err = queue.FlushAfterReady(blocker)
+	assert.True(t, err == nil || errors.Is(err, agent.ErrOutputInFlight))
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case <-observed:
+	case <-ctx.Done():
+		t.Error("the new invocation's output waits for that invocation to end")
+	}
+	assert.True(t, owner.IsCurrent(), "old cleanup must preserve the resumed invocation's publication")
+	assert.Zero(t, authority.cleanupCount.Load(), "the old lifetime must not clean up the resumed lifetime")
+	rows := rawChild.Messages()
+	if assert.Len(t, rows, 2) {
+		assert.JSONEq(t, `{"native":"old"}`, string(rows[0].SupplementalContent))
+	}
+	// Release the old implementation's blocked policy after recording the regression.
+	running.Store(false)
+	_ = queue.FlushAfterReady(blocker)
+	require.NoError(t, root.WaitForRetirementsForTest(testutil.DeadlineContext(t)))
+}
+
+type countedChildAcquisitions struct {
+	agent.ProviderServices
+	count atomic.Int64
+}
+
+func (services *countedChildAcquisitions) AcquireChildSink(id string) agent.ChildSinkLease {
+	services.count.Add(1)
+	return services.ProviderServices.AcquireChildSink(id)
+}
+
+func TestToolTranscript_ConcurrentChildLookupsPublishOneLease(t *testing.T) {
+	t.Parallel()
+	raw := &agenttest.Sink{}
+	services := &countedChildAcquisitions{ProviderServices: agent.NewProviderServices(raw)}
+	root, _ := newTestToolTranscript(t, services, func(map[string]agent.MessageContent, bool) map[string][]byte { return nil })
+	var callers sync.WaitGroup
+	results := make(chan agent.ProviderServices, 20)
+	for index := 0; index < cap(results); index++ {
+		callers.Go(func() { results <- root.ChildSink("child") })
+	}
+	callers.Wait()
+	close(results)
+	first := <-results
+	require.NotNil(t, first)
+	for result := range results {
+		assert.Same(t, first, result)
+	}
+	assert.Equal(t, int64(1), services.count.Load(), "only the published wrapper may acquire a lifetime")
+	root.CleanupChildAgent("child")
+	require.NoError(t, root.WaitForRetirementsForTest(testutil.DeadlineContext(t)))
+}
+
+type pausedChildLeaseCapture struct {
+	agent.ProviderServices
+	armed   atomic.Bool
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (services *pausedChildLeaseCapture) AcquireChildSink(id string) agent.ChildSinkLease {
+	lease := services.ProviderServices.AcquireChildSink(id)
+	capture := lease.CaptureMessage
+	lease.CaptureMessage = func(content agent.MessageContent, span agent.SpanInfo) agent.MessageContent {
+		frozen := capture(content, span)
+		if services.armed.CompareAndSwap(true, false) {
+			close(services.entered)
+			<-services.release
+		}
+		return frozen
+	}
+	return lease
+}
+
+func TestToolTranscript_ChildAdmittedDuringRetirementDelaysAncestorCleanup(t *testing.T) {
+	t.Parallel()
+	raw := &agenttest.Sink{}
+	rawParent := raw.Child("parent")
+	rawParent.UpdateSessionID("native-parent")
+	services := &pausedChildLeaseCapture{ProviderServices: agent.NewProviderServices(raw), entered: make(chan struct{}), release: make(chan struct{})}
+	root, source := newTestToolTranscript(t, services, func(map[string]agent.MessageContent, bool) map[string][]byte { return nil })
+	source.childHook = func(string, agent.ProviderServices) Source {
+		parentSource := &testToolSource{locateHook: source.locateHook, readHook: source.readHook}
+		parentSource.childHook = func(string, agent.ProviderServices) Source {
+			return &testToolSource{locateHook: source.locateHook, readHook: func(_ context.Context, pending map[string]agent.MessageContent, _ bool) map[string][]byte {
+				result := make(map[string][]byte)
+				for id := range pending {
+					result[id] = []byte(`{"recovered":true}`)
+				}
+				return result
+			}}
+		}
+		return parentSource
+	}
+	parent := root.ChildSink("parent").(*Transcript)
+	publication := parent.CaptureMessage(agent.MessageContent{}, agent.SpanInfo{}).Publication.Owner()
+	services.armed.Store(true)
+	cleaned := make(chan struct{})
+	go func() { root.CleanupChildAgent("parent"); close(cleaned) }()
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case <-services.entered:
+	case <-ctx.Done():
+		t.Fatal("retirement did not capture its lifetime")
+	}
+	grandchild := parent.ChildSink("grandchild")
+	require.NotNil(t, grandchild)
+	grandchild.UpdateSessionID("native-grandchild")
+	queue := agent.OutputQueueFor(grandchild)
+	var released atomic.Bool
+	blocker := queue.Append(agent.OutputWrite{Label: "hold the grandchild result", Run: func() error {
+		if !released.Load() {
+			return agent.ErrOutputInFlight
+		}
+		return nil
+	}})[0]
+	require.ErrorIs(t, queue.Flush(), agent.ErrOutputInFlight)
+	err := grandchild.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"toolCallId":"call","result":"done"}`)}, agent.SpanInfo{SpanID: "call", Closing: true})
+	require.True(t, agent.OutputRetained(err))
+	close(services.release)
+	select {
+	case <-cleaned:
+	case <-ctx.Done():
+		t.Fatal("retirement construction did not finish")
+	}
+	parent.mu.Lock()
+	retirement := parent.retirement
+	parent.mu.Unlock()
+	err = parent.OutputQueue().FlushAfterReady(retirement.ticket.Load())
+	assert.True(t, err == nil || errors.Is(err, agent.ErrOutputInFlight))
+	require.NoError(t, root.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"done":true}`)}, agent.SpanInfo{}))
+	assert.True(t, publication.IsSessionCurrent(), "ancestor authority must survive its grandchild's retained output")
+	released.Store(true)
+	err = queue.FlushAfterReady(blocker)
+	assert.True(t, err == nil || errors.Is(err, agent.ErrOutputInFlight))
+	require.NoError(t, root.WaitForRetirementsForTest(testutil.DeadlineContext(t)))
+	rows := rawParent.Child("grandchild").Messages()
+	require.Len(t, rows, 1)
+	assert.JSONEq(t, `{"recovered":true}`, string(rows[0].SupplementalContent))
+	assert.False(t, publication.IsSessionCurrent())
+	assert.Nil(t, parent.ChildSink("too-late"), "a committed cleanup cannot admit another descendant")
+}
+
+func TestToolTranscript_RetirementRejectsFreshCallbackRows(t *testing.T) {
+	t.Parallel()
+	raw := &agenttest.Sink{}
+	writer := &reentrantToolWriter{ProviderServices: agent.NewProviderServices(raw)}
+	transcript, _ := newTestToolTranscript(t, writer, func(map[string]agent.MessageContent, bool) map[string][]byte { return nil })
+	callbackError := make(chan error, 1)
+	writer.messageHook = func() {
+		transcript.startRetirement()
+		callbackError <- transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"record":"too-late"}`)}, agent.SpanInfo{})
+	}
+	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"record":"accepted"}`)}, agent.SpanInfo{}))
+	assert.ErrorIs(t, <-callbackError, errTranscriptRetired)
+	require.Len(t, raw.Messages(), 1)
+	assert.JSONEq(t, `{"record":"accepted"}`, string(raw.Messages()[0].Content))
+	retirement := transcript.enqueueRetirement()
+	select {
+	case <-retirement.done:
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the accepted row did not release retirement")
+	}
+}
+
+func TestToolTranscript_RetiredWrappersRejectFreshReservations(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"batch", "generation"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			raw := &agenttest.Sink{}
+			transcript, _ := newTestToolTranscript(t, agent.NewProviderServices(raw), func(map[string]agent.MessageContent, bool) map[string][]byte { return nil })
+			retirement := transcript.enqueueRetirement()
+			retirement.wake()
+			select {
+			case <-retirement.done:
+			case <-testutil.DeadlineContext(t).Done():
+				t.Fatal("retirement did not complete")
+			}
+			if kind == "batch" {
+				err := agent.PersistTranscriptBatch(transcript, []agent.TranscriptMessage{{Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, Content: agent.MessageContent{Original: []byte(`{"record":"late"}`)}}})
+				assert.ErrorIs(t, err, errTranscriptRetired)
+				assert.False(t, agent.OutputRetained(err))
+			} else {
+				var buffer providerkit.GenerationBuffer
+				buffer.Append("late", agent.AssembledMessageKindText, "late text", providerkit.JoinVerbatim)
+				err := providerkit.FlushGeneration(&buffer, transcript, agent.MessageCompletionComplete, false)
+				assert.ErrorIs(t, err, errTranscriptRetired)
+				_, text, exists := buffer.ScopeSnapshot("late")
+				assert.True(t, exists)
+				assert.Equal(t, "late text", text)
+			}
+			assert.Empty(t, raw.Messages())
+			assert.False(t, transcript.OutputQueue().HasPending(), "rejected output must not prevent another lease from writing")
+		})
+	}
+}
+
+type heldOrderedToolWriter struct {
+	agent.TranscriptServices
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (writer heldOrderedToolWriter) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	close(writer.entered)
+	<-writer.release
+	return writer.TranscriptServices.PersistMessage(source, content, span)
+}
+
+func TestToolTranscript_RefusesADirectWriteWhenRetirementWinsReservation(t *testing.T) {
+	t.Parallel()
+	raw := &agenttest.Sink{}
+	transcript, _ := newTestToolTranscript(t, agent.NewProviderServices(raw), func(pending map[string]agent.MessageContent, final bool) map[string][]byte {
+		if final && len(pending) > 0 {
+			return map[string][]byte{"call": []byte(`{"final":true}`)}
+		}
+		return nil
+	})
+	var cleaned atomic.Bool
+	transcript.setRetireCleanup(func() { cleaned.Store(true) })
+	held := heldOrderedToolWriter{TranscriptServices: transcript.orderedWriter, entered: make(chan struct{}), release: make(chan struct{})}
+	transcript.orderedWriter = held
+	done := make(chan error, 1)
+	go func() {
+		done <- transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"toolCallId":"call"}`)}, agent.SpanInfo{SpanID: "call", Closing: true})
+	}()
+	<-held.entered
+	retirement := transcript.enqueueRetirement()
+	retirement.wake()
+	assert.True(t, cleaned.Load(), "a call paused before reservation owns no queue position")
+	close(held.release)
+	require.ErrorIs(t, <-done, errTranscriptRetired)
+	retirement.wake()
+	select {
+	case <-retirement.done:
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("retirement did not finish")
+	}
+	assert.Empty(t, raw.Messages())
+	assert.False(t, transcript.OutputQueue().HasPending())
+}
+
+func (writer heldOrderedToolWriter) OutputQueue() *agent.OutputQueue {
+	return agent.OutputQueueFor(writer.TranscriptServices)
+}
+
+func TestToolTranscript_NewLeaseCannotAdmitARetiredWritersCapture(t *testing.T) {
+	t.Parallel()
+	raw := &agenttest.Sink{}
+	raw.Child("child").UpdateSessionID("native-child")
+	root, _ := newTestToolTranscript(t, agent.NewProviderServices(raw), func(map[string]agent.MessageContent, bool) map[string][]byte { return nil })
+	old := root.ChildSink("child")
+	captured := agent.CaptureTranscript(old, agent.MessageContent{Original: []byte(`{"record":"expired"}`)}, agent.SpanInfo{}).MessageOperation(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)
+	queue := agent.OutputQueueFor(old)
+	var released atomic.Bool
+	blocker := queue.Append(agent.OutputWrite{Label: "hold retirement", Run: func() error {
+		if !released.Load() {
+			return agent.ErrOutputInFlight
+		}
+		return nil
+	}})[0]
+	require.ErrorIs(t, queue.Flush(), agent.ErrOutputInFlight)
+	root.CleanupChildAgent("child")
+	newer := root.ChildSink("child")
+	require.Same(t, queue, agent.OutputQueueFor(newer))
+	released.Store(true)
+	err := queue.FlushAfterReady(blocker)
+	require.True(t, err == nil || errors.Is(err, agent.ErrOutputInFlight))
+	require.NoError(t, root.WaitForRetirementsForTest(testutil.DeadlineContext(t)))
+	err = agent.PersistCapturedTranscriptBatch(newer, func() []agent.CapturedTranscriptOperation { return []agent.CapturedTranscriptOperation{captured} })
+	assert.ErrorIs(t, err, errTranscriptRetired)
+	assert.False(t, agent.OutputRetained(err))
+	assert.False(t, queue.HasPending())
+	require.NoError(t, newer.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"record":"current"}`)}, agent.SpanInfo{}))
+	rows := raw.Child("child").Messages()
+	require.Len(t, rows, 1)
+	assert.JSONEq(t, `{"record":"current"}`, string(rows[0].Content))
+}
+
+type heldToolCapture struct {
+	agent.ProviderServices
+	entered, release chan struct{}
+	held             atomic.Bool
+}
+
+func (writer *heldToolCapture) CaptureMessage(content agent.MessageContent, span agent.SpanInfo) agent.MessageContent {
+	if span.Closing && span.SpanID == "call" && writer.held.CompareAndSwap(false, true) {
+		close(writer.entered)
+		<-writer.release
+	}
+	return writer.ProviderServices.CaptureMessage(content, span)
+}
+
+func TestToolTranscript_AcceptedReservationDelaysRetirementThroughCapture(t *testing.T) {
+	t.Parallel()
+	raw := &agenttest.Sink{}
+	writer := &heldToolCapture{ProviderServices: agent.NewProviderServices(raw), entered: make(chan struct{}), release: make(chan struct{})}
+	transcript, _ := newTestToolTranscript(t, writer, func(pending map[string]agent.MessageContent, final bool) map[string][]byte {
+		if final && len(pending) > 0 {
+			return map[string][]byte{"call": []byte(`{"final":true}`)}
+		}
+		return nil
+	})
+	var cleaned atomic.Bool
+	transcript.setRetireCleanup(func() { cleaned.Store(true) })
+	done := make(chan error, 1)
+	go func() {
+		done <- transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"toolCallId":"call"}`)}, agent.SpanInfo{SpanID: "call", Closing: true})
+	}()
+	<-writer.entered
+	retirement := transcript.enqueueRetirement()
+	retirement.wake()
+	assert.False(t, cleaned.Load())
+	close(writer.release)
+	require.NoError(t, <-done)
+	retirement.wake()
+	select {
+	case <-retirement.done:
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("retirement did not finish")
+	}
+	rows := raw.Messages()
+	require.Len(t, rows, 1)
+	assert.JSONEq(t, `{"final":true}`, string(rows[0].SupplementalContent))
+}
+
+type historicalSupplementSource struct {
+	*testToolSource
+	failure error
+}
+
+func (source *historicalSupplementSource) CaptureSupplement(_ Location, _ agent.MessageContent, _ agent.SpanInfo) SupplementReader {
+	failure := source.failure
+	return func(context.Context, bool) ([]byte, error) { return []byte(`{"native":"retained"}`), failure }
+}
+
+func newHistoricalObservationTranscript(t *testing.T, failure error) (*Transcript, *agenttest.Sink, *observationEnrichmentWriter) {
+	t.Helper()
+	sink := &agenttest.Sink{}
+	sink.UpdateSessionID("native")
+	writer := &observationEnrichmentWriter{ProviderServices: agent.NewProviderServices(sink)}
+	source := &historicalSupplementSource{testToolSource: &testToolSource{
+		locateHook: func(sessionID string) Location { return Location{SessionKey: sessionID, Ready: true} },
+		readHook:   func(context.Context, map[string]agent.MessageContent, bool) map[string][]byte { return nil },
+	}, failure: failure}
+	transcript := New(t.Context(), writer, source)
+	persistClosingToolRow(t, transcript, []byte(`{"toolCallId":"call"}`))
+	return transcript, sink, writer
+}
+
+func TestToolTranscriptResetSchedulesHistoricalEnrichment(t *testing.T) {
+	t.Parallel()
+	transcript, sink, _ := newHistoricalObservationTranscript(t, nil)
+	transcript.Reset()
+	transcript.WaitForSupplementsForTest()
+	assert.JSONEq(t, `{"native":"retained"}`, string(sink.Messages()[0].SupplementalContent))
+}
+
+func TestToolTranscriptHistoricalReadKeepsPartialNativeData(t *testing.T) {
+	t.Parallel()
+	transcript, sink, _ := newHistoricalObservationTranscript(t, errors.New("one output file is unavailable"))
+	transcript.Reset()
+	transcript.WaitForSupplementsForTest()
+	require.NoError(t, transcript.FinalizePending())
+	assert.JSONEq(t, `{"native":"retained"}`, string(sink.Messages()[0].SupplementalContent))
+}
+
+func TestToolTranscriptHistoricalNativeReadSurvivesAnExtensionObservation(t *testing.T) {
+	t.Parallel()
+	transcript, sink, writer := newHistoricalObservationTranscript(t, nil)
+	loseExternalObservationCAS(t, sink, writer)
+	written, err := transcript.EnrichToolSpan("call", func([]byte) ([]byte, error) { return []byte(`{"extension":true}`), nil })
+	require.NoError(t, err)
+	assert.False(t, written)
+	transcript.Reset()
+	transcript.WaitForSupplementsForTest()
+	require.NoError(t, transcript.FinalizePending())
+	assert.JSONEq(t, `{"winner":"stored","extension":true,"native":"retained"}`, string(sink.Messages()[0].SupplementalContent))
+}
+
+func TestToolTranscriptClosedWorkerFinishesAnAcceptedHistoricalResult(t *testing.T) {
+	t.Parallel()
+	transcript, sink, _ := newHistoricalObservationTranscript(t, nil)
+	queue := transcript.OutputQueue()
+	var released atomic.Bool
+	blocker := queue.Append(agent.OutputWrite{Label: "hold an accepted result", Run: func() error {
+		if !released.Load() {
+			return agent.ErrOutputInFlight
+		}
+		return nil
+	}})[0]
+	require.ErrorIs(t, queue.Flush(), agent.ErrOutputInFlight)
+	err := transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"toolCallId":"second"}`)}, agent.SpanInfo{SpanID: "second", Closing: true})
+	require.True(t, agent.OutputRetained(err))
+	transcript.closeSupplementWorker()
+	transcript.AdoptNativeSession("replacement")
+	transcript.Reset()
+	released.Store(true)
+	require.NoError(t, queue.FlushAfterReady(blocker))
+	transcript.WaitForSupplementsForTest()
+	rows := sink.Messages()
+	require.NotEmpty(t, rows)
+	assert.Contains(t, string(rows[len(rows)-1].SupplementalContent), `"native":"retained"`)
+}
+
+func TestToolTranscriptHistoricalReadDoesNotWaitForAReentrantNativePass(t *testing.T) {
+	t.Parallel()
+	transcript, sink, _ := newHistoricalObservationTranscript(t, nil)
+	source := transcript.SourceForTest().(*historicalSupplementSource)
+	entered := make(chan struct{})
+	releaseRead := make(chan struct{})
+	finalDone := make(chan error, 1)
+	source.readHook = func(context.Context, map[string]agent.MessageContent, bool) map[string][]byte {
+		transcript.Reset()
+		go func() { finalDone <- transcript.FinalizePending() }()
+		close(entered)
+		<-releaseRead
+		return nil
+	}
+	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"next":true}`)}, agent.SpanInfo{}))
+	<-entered
+	ctx := testutil.DeadlineContext(t)
+	joined := false
+	select {
+	case err := <-finalDone:
+		joined = true
+		assert.True(t, err == nil || errors.Is(err, agent.ErrOutputInFlight))
+	case <-ctx.Done():
+		assert.Fail(t, "finalization waited for the native read that invoked it")
+	}
+	close(releaseRead)
+	if !joined {
+		<-finalDone
+	}
+	transcript.WaitForSupplementsForTest()
+	require.NoError(t, transcript.FinalizePending())
+	assert.Contains(t, string(sink.Messages()[0].SupplementalContent), `"native":"retained"`)
+}
+
+func TestToolTranscriptFinalNativePassFlushesItsMigratedObservations(t *testing.T) {
+	t.Parallel()
+	transcript, sink, _ := newHistoricalObservationTranscript(t, nil)
+	source := transcript.SourceForTest().(*historicalSupplementSource)
+	source.readHook = func(context.Context, map[string]agent.MessageContent, bool) map[string][]byte {
+		transcript.Reset()
+		// The worker must release its refused read before this native observer returns.
+		transcript.WaitForSupplementsForTest()
+		return nil
+	}
+	require.NoError(t, transcript.FinalizePending())
+	assert.Contains(t, string(sink.Messages()[0].SupplementalContent), `"native":"retained"`)
+}
+
+func TestToolTranscriptRetirementRefusesFreshNotifications(t *testing.T) {
+	t.Parallel()
+	for _, worker := range []bool{false, true} {
+		t.Run(fmt.Sprintf("worker envelope %t", worker), func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			transcript, _ := newTestToolTranscript(t, agent.NewProviderServices(sink), func(map[string]agent.MessageContent, bool) map[string][]byte { return nil })
+			child := transcript.ChildSink("child")
+			recorder := sink.Child("child")
+			transcript.CleanupChildAgent("child")
+			require.NoError(t, transcript.WaitForRetirementsForTest(testutil.DeadlineContext(t)))
+			content := agent.MessageContent{Original: []byte(`{"type":"late","text":"Unadmitted"}`)}
+			var err error
+			if worker {
+				_, err = child.PersistWorkerNotification(content)
+			} else {
+				_, err = child.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, content)
+			}
+			require.ErrorIs(t, err, errTranscriptRetired)
+			assert.Empty(t, recorder.PersistedNotifications())
+			assert.Empty(t, recorder.LeapMuxNotifications())
+		})
+	}
+}
+
+func TestToolTranscript_ExpiredStreamDoesNotBlockTheNewLease(t *testing.T) {
+	t.Parallel()
+	raw := &agenttest.Sink{}
+	child := raw.Child("child")
+	child.UpdateSessionID("native-child")
+	services := agent.NewProviderServices(raw)
+	newChild := func() *Transcript {
+		lease := services.AcquireChildSink("child")
+		require.NotNil(t, lease.Sink)
+		transcript := New(t.Context(), lease.Sink, unobservedChildSource{providerName: "test"})
+		transcript.childLease = lease
+		transcript.activateChildLease()
+		return transcript
+	}
+	operation := func(writer *Transcript, record string) agent.CapturedTranscriptOperation {
+		return agent.CaptureTranscript(writer, agent.MessageContent{Original: []byte(`{"record":"` + record + `"}`)}, agent.SpanInfo{}).MessageOperation(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)
+	}
+	old := newChild()
+	expired := operation(old, "expired")
+	old.setRetireCleanup(func() { old.childLease.Cleanup() })
+	retirement := old.enqueueRetirement()
+	newer := newChild()
+	queue := newer.OutputQueue()
+	require.Same(t, old.OutputQueue(), queue)
+	retirement.wake()
+	require.True(t, old.retirementComplete())
+	require.False(t, queue.HasPending())
+	newer.ReportProgress(agent.ModelTextProgress("current", "the new invocation still has unfinished output"))
+	progress := child.ProgressSnapshot()
+	require.Positive(t, progress.ThinkingTokens)
+	batch, err := agent.ReserveCapturedTranscriptBatch(newer)
+	require.NoError(t, err)
+	err = newer.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"record":"following"}`)}, agent.SpanInfo{})
+	require.ErrorIs(t, err, agent.ErrOutputInFlight)
+	require.True(t, agent.OutputRetained(err))
+	effects := 0
+	following := queue.Append(agent.OutputWrite{Owner: agent.NewOutputOwner(), Label: "preserve the following independent effect", Run: func() error { effects++; return nil }})[0]
+	operations := []agent.CapturedTranscriptOperation{operation(newer, "prefix"), expired, operation(newer, "suffix")}
+	calls, completions := 0, 0
+	err = batch.PrepareStream(func() (agent.CapturedTranscriptOperation, bool, error) {
+		if calls == len(operations) {
+			completions++
+			return agent.CapturedTranscriptOperation{}, true, nil
+		}
+		next := operations[calls]
+		calls++
+		return next, false, nil
+	})
+	require.ErrorIs(t, err, errTranscriptRetired)
+	assert.False(t, agent.OutputRetained(err))
+	assert.Equal(t, 2, calls)
+	assert.Zero(t, completions)
+	assert.True(t, following.Done())
+	assert.Equal(t, 1, effects)
+	assert.False(t, queue.HasPending())
+	assert.Equal(t, progress, child.ProgressSnapshot())
+	rows := child.Messages()
+	require.Len(t, rows, 2)
+	assert.JSONEq(t, `{"record":"prefix"}`, string(rows[0].Content))
+	assert.JSONEq(t, `{"record":"following"}`, string(rows[1].Content))
+	require.NoError(t, queue.Flush())
+	assert.Equal(t, 2, calls, "the rejected iterator must not resume")
+	assert.Equal(t, 2, child.MessageCount(), "the prefix must not repeat")
+	assert.Equal(t, 1, effects)
 }

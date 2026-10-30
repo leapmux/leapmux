@@ -36,7 +36,7 @@ func TestZCodeManualCompactionUsesNativeSessionRequest(t *testing.T) {
 	require.ErrorIs(t, a.SendInput("later turn", nil), agent.ErrAgentBusy)
 	require.ErrorIs(t, a.CompactContext(), agent.ErrAgentBusy)
 
-	a.HandleOutput(zcodeStateLine(t, ScopeSession, "session_compacted", `{"status":"idle"}`))
+	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, "session_compacted", `{"status":"idle"}`))
 	active, published = sink.LastTurnActive()
 	require.True(t, published)
 	require.False(t, active)
@@ -59,7 +59,7 @@ func TestZCodeManualCompactionEndsTheLiveStateAtTheFinalStateReason(t *testing.T
 			}
 			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
 				`{"operationId":"c1","status":"started","trigger":"auto"}`))
-			a.HandleOutput(zcodeStateLine(t, ScopeSession, reason, `{"status":"idle"}`))
+			a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, reason, `{"status":"idle"}`))
 			assert.Equal(t, []any{map[string]any{"trigger": "auto"}, nil}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
 			assert.Empty(t, a.compactionSessionID)
 		}
@@ -83,7 +83,7 @@ func TestZCodeManualCompactionPreservesNativeFailure(t *testing.T) {
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
 	answerZCodeRequest(t, a, stdin, MethodSessionCompact, `{"compact":{"state":"accepted"}}`)
 	require.NoError(t, a.CompactContext())
-	a.HandleOutput(zcodeStateLine(t, ScopeSession, contracts.ZCodeStateReasonSessionCompactFailed, `{"status":"idle"}`))
+	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, contracts.ZCodeStateReasonSessionCompactFailed, `{"status":"idle"}`))
 	active, published := sink.LastTurnActive()
 	require.True(t, published)
 	require.False(t, active)
@@ -138,7 +138,7 @@ func TestZCodeManualCompactionIgnoresAReplacedSessionReply(t *testing.T) {
 	a.compactionSessionID = "sess-new"
 	a.Mu.Unlock()
 	a.PublishTurnActive()
-	a.HandleOutput(zcodeStateLine(t, ScopeSession, contracts.ZCodeStateReasonSessionCompacted, `{"status":"idle"}`))
+	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, contracts.ZCodeStateReasonSessionCompacted, `{"status":"idle"}`))
 
 	a.Mu.Lock()
 	defer a.Mu.Unlock()

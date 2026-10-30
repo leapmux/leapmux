@@ -1,5 +1,5 @@
 {
-  "_readme": "The Go provider and TypeScript plugin share these ZCode app-server values. The protocol uses line-delimited JSON without a `jsonrpc` field. Both readers dispatch on the envelope type and payload kind. A value that only one reader uses stays in that reader's code. Z.ai owns the native values. Follow the installed native protocol when you change them.\n\n`toolKinds.Raw` identifies a native raw frame that can close a tool call. The app server can store that frame as the call's last frame. Both readers must recognize it to preserve the closing row.\n\n`resultTypes` includes four native `error_*` variants. The turn divider uses those values to identify a failure. An unknown value can incorrectly show an ordinary completion.\n\nLeapMux owns `supplement`. A retained tool row carries the native stored record beside the `tool.updated` envelope. It can carry native image bytes also. The browser checks the envelope before it uses those bytes.\n\n`storedTool` and `storedPart` identify fields in ZCode's native store. The Worker copies the complete native record. The plugin reads its fields. Reasonix uses the same division of responsibility for its own `toolRecord`.\n\nThe Worker writes ZCode's native envelope fields. The browser matches them against the current row:\n\n- `type` and `payload`.\n- `supplementPayload.kind`.\n- `supplementPayload.toolCallId`.\n- `supplementPayload.input`.\n\n`storedAttachment` covers all three levels of one native attachment:\n\n- `attachments` belongs to the part's `state`.\n- `artifactUri` belongs to the attachment's nested `metadata`.\n- The other fields belong to the attachment record.\n\nBoth readers use one table for this object graph. A field change must reach both readers. Native attachment fields `sessionID` and `messageID` differ in case from `storedTool.sessionId` and `storedTool.messageId`. Preserve those native spellings. The Worker stores image bytes under `artifactUri`, and the browser uses that same key.\n\nThe browser owns native serialization fields and strategies in its provider protocol module. The stored tool and part fields preserve the native session and call identity. An explicit artifactPath supplies a filesystem path. An artifact URI alone supplies no filesystem path. The browser shows the path beside the original preview. LeapMux reads no serialized output file.\n\nquerySources and stopReasons hold the words that separate a turn reply from a side query. Only main_turn is the reply of the running turn, so the worker persists only that one. tool_internal is the stop reason that marks a side query when the payload carries no querySource. Only the worker reads these tables. It stores no side query, so the browser draws every stored reply. stateReasons holds the state.updated reasons of a native compaction. The worker uses them to release the queue turn and end the live compaction. goalVerificationStatuses holds the goal check lifecycle, and compactionStatuses holds the compaction lifecycle. goalActions holds cleared, which is a worker decision and not a row. networkStatuses holds the retry notice, and networkStatusPrefixes holds the type prefix that marks a network status payload. microcompactStrategies holds the strategy that marks a microcompaction. hookRunOutcomes holds the hook outcomes that a user must see. modelSelectionOrigins holds the origin of a registry model switch. Only the worker reads it, because it stores no other model selection.",
+  "_readme": "The Go provider and TypeScript plugin share these ZCode app-server values. The protocol uses line-delimited JSON without a `jsonrpc` field. Both readers dispatch on the envelope type and payload kind. A value that only one reader uses stays in that reader's code. Z.ai owns the native values. Follow the installed native protocol when you change them.\n\n`toolKinds.Raw` identifies a native raw frame that can close a tool call. The app server can store that frame as the call's last frame. Both readers must recognize it to preserve the closing row.\n\n`resultTypes` includes four native `error_*` variants. The turn divider uses those values to identify a failure. An unknown value can incorrectly show an ordinary completion.\n\nLeapMux owns `supplement`. A retained tool row carries the native stored record beside the `tool.updated` envelope. It can carry native image bytes also. The browser checks the envelope before it uses those bytes.\n\n`storedTool` and `storedPart` identify fields in ZCode's native store. The Worker copies the complete native record. The plugin reads its fields. Reasonix uses the same division of responsibility for its own `toolRecord`.\n\nThe Worker writes ZCode's native envelope fields. The browser matches them against the current row:\n\n- `type` and `payload`.\n- `supplementPayload.kind`.\n- `supplementPayload.toolCallId`.\n- `supplementPayload.input`.\n\n`storedAttachment` covers all three levels of one native attachment:\n\n- `attachments` belongs to the part's `state`.\n- `artifactUri` belongs to the attachment's nested `metadata`.\n- The other fields belong to the attachment record.\n\nBoth readers use one table for this object graph. A field change must reach both readers. Native attachment fields `sessionID` and `messageID` differ in case from `storedTool.sessionId` and `storedTool.messageId`. Preserve those native spellings. The Worker stores image bytes under `artifactUri`, and the browser uses that same key.\n\nThe browser owns native serialization fields and strategies in its provider protocol module. The stored tool and part fields preserve the native session and call identity. An explicit artifactPath supplies a filesystem path. An artifact URI alone supplies no filesystem path. The browser shows the path beside the original preview. LeapMux reads no serialized output file.\n\nquerySources and stopReasons hold the words that separate a turn reply from a side query. Only main_turn is the reply of the running turn, so the worker persists only that one. tool_internal is the stop reason that marks a side query when the payload carries no querySource. Only the worker reads these tables. It stores no side query, so the browser draws every stored reply. stateReasons holds native compaction and prompt-boundary reasons. The worker uses compaction reasons to release the queue turn. Recovered turn rows preserve the prompt-boundary notification, and both readers use its reasons. goalVerificationStatuses holds the goal check lifecycle, and compactionStatuses holds the compaction lifecycle. goalActions holds cleared, which is a worker decision and not a row. networkStatuses holds the retry notice, and networkStatusPrefixes holds the type prefix that marks a network status payload. microcompactStrategies holds the strategy that marks a microcompaction. hookRunOutcomes holds the hook outcomes that a user must see. modelSelectionOrigins holds the origin of a registry model switch. Only the worker reads it, because it stores no other model selection.\n\n`responseText` identifies a prefix already accepted as a separate transcript row. The browser verifies that the native response starts with that prefix before it displays the remaining suffix. The complete native response remains unchanged.\n\nLeapMux owns records and backgroundTurnEnd. Each background turn end retains its exact native JSON as the original string and its own protobuf MessageCompletion ordinal. A consolidated notification row has no aggregate completion. The browser reads each entry independently, so a later success cannot replace an earlier failure.\n\nworkerMetadata.Invocation retains one opaque Worker span and its native call, message, session, and tool identities. Deferred tool readers and browser acceptance checks use the same invocation fields. An empty messageId records an identity that the native stream has not supplied.",
   "toolPrefixes": {
     "Subagent": "tool_subagent_"
   },
@@ -12,7 +12,9 @@
     "CompactStarted": "compact_started",
     "SessionCompacted": "session_compacted",
     "SessionCompactFailed": "session_compact_failed",
-    "SessionCompactCancelled": "session_compact_cancelled"
+    "SessionCompactCancelled": "session_compact_cancelled",
+    "PromptCompleted": "prompt_completed",
+    "PromptFailed": "prompt_failed"
   },
   "actions": {
     "Accept": "accept",
@@ -140,7 +142,8 @@
     "Type": "type",
     "Payload": "payload",
     "NativeTool": "nativeTool",
-    "OutputFiles": "outputFiles"
+    "OutputFiles": "outputFiles",
+    "ResponseText": "zcodeResponseText"
   },
   "supplementPayload": {
     "Kind": "kind",
@@ -398,6 +401,70 @@
           "type": "map[string]string"
         }
       ]
+    },
+    "ZCodeBackgroundTurnEnd": {
+      "doc": "ZCodeBackgroundTurnEnd retains one background outcome and the exact native JSON that supports it. Completion stores the protobuf MessageCompletion ordinal.",
+      "table": "backgroundTurnEnd",
+      "fields": [
+        {
+          "key": "Original",
+          "type": "string"
+        },
+        {
+          "key": "Completion",
+          "type": "int"
+        }
+      ]
+    },
+    "ZCodeInvocationMetadata": {
+      "doc": "ZCodeInvocationMetadata retains the association between one opaque Worker span and its native tool invocation. MessageID is empty until the native message identity is known.",
+      "table": "invocation",
+      "fields": [
+        {
+          "key": "SpanID",
+          "type": "string"
+        },
+        {
+          "key": "CallID",
+          "type": "string"
+        },
+        {
+          "key": "MessageID",
+          "type": "string"
+        },
+        {
+          "key": "SessionID",
+          "type": "string"
+        },
+        {
+          "key": "ToolName",
+          "type": "string"
+        }
+      ]
     }
+  },
+  "scopes": {
+    "Session": "session",
+    "Workspace": "workspace"
+  },
+  "responseText": {
+    "AcceptedPrefix": "acceptedPrefix"
+  },
+  "records": {
+    "BackgroundTurnEnd": "zcode_background_turn_end"
+  },
+  "backgroundTurnEnd": {
+    "Original": "original",
+    "Completion": "completion"
+  },
+  "workerMetadata": {
+    "Invocation": "zcodeInvocation"
+  },
+  "invocation": {
+    "SpanID": "spanId",
+    "CallID": "callId",
+    "MessageID": "messageId",
+    "SessionID": "sessionId",
+    "ToolName": "toolName"
   }
 }

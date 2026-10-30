@@ -13,6 +13,7 @@ import {
   getInnerMessage,
   getInnerMessageType,
   messageUsage,
+  normalizeContextUsage,
   parseMessageContent,
 } from './messageParser'
 
@@ -886,5 +887,45 @@ describe('extractPlanFilePath', () => {
     const content = { type: 'context_cleared' }
     const msg = makeMsg(MessageSource.LEAPMUX, wrap(content))
     expect(extractPlanFilePath(parseMessageContent(msg))).toBeUndefined()
+  })
+})
+
+describe('normalizeContextUsage', () => {
+  it.each([
+    'input_tokens',
+    'cache_creation_input_tokens',
+    'cache_read_input_tokens',
+    'output_tokens',
+    'context_tokens',
+  ])('preserves an explicit zero %s', (key) => {
+    expect(normalizeContextUsage({ [key]: 0 })).toMatchObject({ inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 })
+  })
+
+  it('preserves the complete native Amp zero reading', () => {
+    expect(normalizeContextUsage({
+      input_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+      output_tokens: 0,
+      context_tokens: 0,
+    })).toEqual({
+      inputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      outputTokens: 0,
+      contextTokens: 0,
+    })
+  })
+
+  it.each([
+    {},
+    { context_window: 200000 },
+    { input_tokens: -1 },
+    { input_tokens: Number.NaN },
+    { context_tokens: Number.POSITIVE_INFINITY },
+    { output_tokens: null },
+    { input_tokens: '0' },
+  ])('does not invent a reading from %j', (raw) => {
+    expect(normalizeContextUsage(raw)).toBeUndefined()
   })
 })

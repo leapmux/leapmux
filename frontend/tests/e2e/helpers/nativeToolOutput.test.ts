@@ -1,6 +1,6 @@
 import type { Locator } from '@playwright/test'
 import { runInNewContext } from 'node:vm'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createClipboardPageFixture } from '~/test-support/clipboardPage'
 import { computedNativeToolOutput, copyNativeToolOutputPreview } from './nativeToolOutput'
 
@@ -11,6 +11,16 @@ vi.mock('@playwright/test', async (importOriginal) => {
     ...actual,
     expect: actual.expect.configure({ timeout: 200 }),
   }
+})
+
+beforeEach(() => {
+  vi.useFakeTimers({
+    toFake: ['setTimeout', 'clearTimeout', 'performance'],
+  })
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 /** A page that copies the supplied text and records each browser operation. */

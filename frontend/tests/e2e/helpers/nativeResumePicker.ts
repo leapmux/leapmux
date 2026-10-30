@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test'
+import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { AgentOpenOptions } from '../agentSettings'
 import type { ServerInfo } from '../fixtures'
 import type { MockModelRequestRecord } from './mockModelScript'
@@ -39,6 +40,8 @@ export interface ResumePickerOptions {
   readonly subjectOptionValues?: Record<string, string>
   /** Inspect the request of the original turn right after its model answer, before the turn ends. */
   readonly onFirstTurn?: (request: MockModelRequestRecord) => void | Promise<void>
+  /** Resolve a required model choice after reopening, before queuing or sending the resumed prompt. */
+  readonly beforeResumedPrompt?: (context: ManagedNativeScenarioContext, reopened: AgentInfo) => void | Promise<void>
   /** Assert provider-specific facts about the request that consumed the resumed prompt. */
   readonly onResumedRequest?: (request: MockModelRequestRecord) => void | Promise<void>
   /**
@@ -184,6 +187,7 @@ export async function resumePickerScenario(
 
   await expect(userBubbles(page).filter({ hasText: texts.originalPrompt })).toHaveCount(1)
   await expect(assistantBubbles(page).filter({ hasText: texts.originalAnswer })).toHaveCount(originalAnswerBubbles)
+  await options.beforeResumedPrompt?.(context, reopened)
   const resumedStep = await modelScript.queue(nativeTextStep(context, texts.resumedAnswer))
   await sendMessage(page, modelScript.prompt(texts.resumedPrompt))
   await modelScript.waitForSteps(resumedStep + 1)

@@ -1,12 +1,10 @@
-import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { openAgentViaAPI } from '../helpers/api'
 import { MOCK_MODELS, MOCK_PROVIDER_IDS } from '../helpers/mockAgentEnvironment'
 import { exerciseBasicChat } from '../helpers/nativeConversation'
 import { nativeTextStep } from '../helpers/nativeScenario'
 import { agentTabs, sendMessage, waitForAgentIdle } from '../helpers/ui'
-import { refreshZcodeDefaultModel } from '../helpers/zcodeEnvironment'
+import { refreshZcodeDefaultModel, withZcodePersonalProviderConfiguration } from '../helpers/zcodeEnvironment'
 import { zcodeTest } from '../zcode-fixtures'
 
 // Run before the workspace fixture starts the agent. Restore this private file
@@ -14,15 +12,7 @@ import { zcodeTest } from '../zcode-fixtures'
 const personalProviderTest = zcodeTest.extend<{ personalOnlyConfiguration: void }>({
   personalOnlyConfiguration: [
     async ({ leapmuxServer }, use) => {
-      const path = join(leapmuxServer.agentEnv.HOME!, '.zcode', 'v2', 'config.json')
-      const legacy = readFileSync(path)
-      unlinkSync(path)
-      try {
-        await use()
-      }
-      finally {
-        writeFileSync(path, legacy, { mode: 0o600 })
-      }
+      await withZcodePersonalProviderConfiguration(leapmuxServer.agentEnv.HOME!, use)
     },
     { auto: true },
   ],

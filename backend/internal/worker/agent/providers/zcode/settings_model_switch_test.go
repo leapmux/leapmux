@@ -28,7 +28,7 @@ func TestRefreshZCodeUsageFromSession_PublishesNothingForUnchangedSettings(t *te
 	sink := &agenttest.Sink{}
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
-	a.model = "p/current"
+	zcodeApplySettings(t, a, `{"model":{"current":{"providerId":"p","modelId":"current"}}}`)
 	answerZCodeRequest(t, a, stdin, MethodSessionRead, `{"settings":{"model":{"current":{"providerId":"p","modelId":"current"}}}}`)
 	a.refreshZCodeUsageFromSession()
 	assert.Zero(t, sink.SettingsRefreshCount())

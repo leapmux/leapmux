@@ -78,11 +78,6 @@ type optionState struct {
 	// change happened during it (a reader-only change merely fires a harmless idempotent broadcast,
 	// as it did before). Bumped under the owning Base.Mu, like the rest of optionState.
 	structureGen uint64
-	// persists counts the settings refreshes that BroadcastSettingsRefresh persisted. A live
-	// UpdateSettings compares it before and after its writes: a difference means that a refresh
-	// persisted a value that a later write of the same span may have replaced, so the span
-	// persists its final state again. Bumped under the owning Base.Mu, like structureGen.
-	persists uint64
 	// unresolved records axes whose successful write returned no authoritative
 	// config-options snapshot. A later complete snapshot clears the set.
 	unresolved *boundedIDSet

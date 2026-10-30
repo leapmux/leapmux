@@ -3,6 +3,7 @@ import { ZCODE_EVENT, ZCODE_RESULT } from '~/generated/contracts/zcode-protocol'
 import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { turnEndLabel } from '../../../turnEndLabel'
+import { zcodeRecoveryEvidence } from './recoveryEvidence'
 import { zcodeEnvelope } from './toolCommon'
 
 /**
@@ -27,6 +28,22 @@ const ZCODE_FAILED_RESULTS: ReadonlyMap<string, string> = new Map([
  * for any other row so the caller falls back to the raw-JSON renderer.
  */
 export function zcodeResultDivider(parsed: unknown, completion?: MessageCompletion): TurnEnd | null {
+  if (zcodeRecoveryEvidence(parsed)) {
+    if (completion === MessageCompletion.ERROR) {
+      return {
+        label: turnEndLabel('failed'),
+        isError: true,
+      }
+    }
+    if (completion === MessageCompletion.INTERRUPTED) {
+      return {
+        label: turnEndLabel('interrupted'),
+      }
+    }
+    return {
+      label: turnEndLabel('ended'),
+    }
+  }
   const envelope = zcodeEnvelope(parsed)
   if (!envelope)
     return null
@@ -57,6 +74,11 @@ export function zcodeResultDivider(parsed: unknown, completion?: MessageCompleti
   }
 
   if (envelope.type === ZCODE_EVENT.TurnFailed) {
+    if (completion === MessageCompletion.INTERRUPTED) {
+      return {
+        label: turnEndLabel('interrupted'),
+      }
+    }
     const error = pickObject(payload, 'error')
     const message = pickString(error, 'message')
     const code = pickString(error, 'code') || pickString(error, 'type')

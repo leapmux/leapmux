@@ -2,9 +2,11 @@ package zcode
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -23,6 +25,100 @@ func (w zcodeInputStdin) Write(raw []byte) (int, error) {
 }
 
 func (zcodeInputStdin) Close() error { return nil }
+
+// zcodeInputWriter lets a test deliver native events before a send's write returns.
+type zcodeInputWriter func([]byte) (int, error)
+
+func (write zcodeInputWriter) Write(raw []byte) (int, error) { return write(raw) }
+
+func TestZCodeSendInput_PreservesNativeEventsBeforeTheSenderResumes(t *testing.T) {
+	t.Parallel()
+	for _, receiptFirst := range []bool{false, true} {
+		for _, completed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("receipt_first_%t_completed_%t", receiptFirst, completed), func(t *testing.T) {
+				t.Parallel()
+				sink := &agenttest.Sink{}
+				a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+				a.SetStdinForTest(agenttest.NopStdin(zcodeInputWriter(func(raw []byte) (int, error) {
+					var request zcodeSentRequest
+					require.NoError(t, json.Unmarshal(raw, &request))
+					if request.Method != MethodSessionSend {
+						return len(raw), nil
+					}
+					var input struct {
+						InputID string `json:"inputId"`
+					}
+					require.NoError(t, json.Unmarshal(request.Params, &input))
+					reply := func() {
+						a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(
+							`{"sessionId":"sess-1","accepted":true,"stateRevision":1}`)))
+					}
+					if receiptFirst {
+						reply()
+					}
+					a.HandleOutput(zcodeTurnEventLine(t, 1, "native-turn", contracts.ZCodeEventTurnStarted,
+						`{"turnNumber":1,"messageId":"user-message","inputId":"`+input.InputID+`"}`))
+					a.HandleOutput(zcodeTurnEventLine(t, 2, "native-turn", contracts.ZCodeEventModelStreaming,
+						`{"assistantMessageId":"reply","kind":"text_delta","delta":"retained answer"}`))
+					if completed {
+						a.HandleOutput(zcodeTurnEventLine(t, 3, "native-turn", contracts.ZCodeEventTurnCompleted,
+							`{"resultType":"success"}`))
+					}
+					if !receiptFirst {
+						reply()
+					}
+					return len(raw), nil
+				})))
+				require.NoError(t, a.SendInput("hello", nil))
+				if !completed {
+					a.Mu.Lock()
+					owner := a.turns["native-turn"]
+					a.Mu.Unlock()
+					require.NotNil(t, owner, "the receipt must preserve the already started native owner")
+					a.HandleOutput(zcodeTurnEventLine(t, 3, "native-turn", contracts.ZCodeEventTurnCompleted,
+						`{"resultType":"success"}`))
+				}
+				assert.False(t, a.PublishTurnActive().Active, "a completed input must not gain a phantom owner")
+				var texts []string
+				var ends int
+				for _, row := range sink.Messages() {
+					if _, text, _, ok := agenttest.DecodeAssembledMessage(row.Content); ok {
+						texts = append(texts, text)
+					}
+					if row.TurnEnd {
+						ends++
+					}
+				}
+				assert.Equal(t, []string{"retained answer"}, texts)
+				assert.Equal(t, 1, ends)
+			})
+		}
+	}
+}
+
+func TestZCodeSendInput_NewAdmissionDoesNotInheritThePreviousToolCount(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	a.HandleOutput(zcodeTurnEventLine(t, 0, "first", contracts.ZCodeEventTurnStarted, `{"turnNumber":1}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 0, "first", contracts.ZCodeEventToolUpdated,
+		`{"kind":"scheduled","toolCallId":"call","toolName":"Bash","input":{"command":"pwd"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 0, "first", contracts.ZCodeEventToolUpdated,
+		`{"kind":"result","toolCallId":"call","toolName":"Bash","result":{"success":true,"content":"/workspace"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 0, "first", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
+	answerZCodeRequest(t, a, stdin, MethodSessionSend, `{"sessionId":"sess-1","accepted":true,"stateRevision":2}`)
+	require.NoError(t, a.SendInput("second", nil))
+	request := waitZCodeRequest(t, stdin, MethodSessionSend)
+	var input struct {
+		InputID string `json:"inputId"`
+	}
+	require.NoError(t, json.Unmarshal(request.Params, &input))
+	a.HandleOutput(zcodeTurnEventLine(t, 0, "second", contracts.ZCodeEventTurnStarted,
+		`{"turnNumber":2,"inputId":"`+input.InputID+`"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 0, "second", contracts.ZCodeEventTurnCompleted, `{"resultType":"success","toolCallCount":0}`))
+	assert.Equal(t, []int{1, 0}, agenttest.TurnToolUseCounts(t, sink.Messages()))
+}
 
 func TestZCodeSendInput_RetriesABusyRefusalOnTheProcessClock(t *testing.T) {
 	t.Parallel()
@@ -277,4 +373,22 @@ func TestZCodeSendInput_ReplacedSessionReceiptDoesNotTouchTheNewSession(t *testi
 	assert.Equal(t, int64(3), a.stateRevision, "the replaced session's receipt must not advance the replacement's revision")
 	assert.Empty(t, a.turns, "the replaced session's receipt must create no turn owner on the replacement")
 	assert.Empty(t, a.foregroundTurnID)
+}
+
+func TestZCodeSendInput_SameIDReplacementReceiptCannotCreateAnOwner(t *testing.T) {
+	t.Parallel()
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+	result := make(chan error, 1)
+	go func() { result <- a.SendInput("old input", nil) }()
+	request := zcodeNthRequest(t, stdin, MethodSessionSend, 1)
+	snapshot, ok := a.parseStateSnapshot(json.RawMessage(`{"session":{"sessionId":"sess-1"},"runtime":{"stateRevision":1,"eventSeq":0}}`))
+	require.True(t, ok)
+	a.adoptCompleteZCodeSessionSnapshot(snapshot, true)
+	a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(`{"sessionId":"sess-1","accepted":true,"stateRevision":9}`)))
+	require.NoError(t, <-result, "the old receipt still proves delivery to its original lifetime")
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Equal(t, int64(1), a.stateRevision)
+	assert.Empty(t, a.turns)
 }

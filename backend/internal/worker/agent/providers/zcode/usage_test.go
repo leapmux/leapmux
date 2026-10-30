@@ -5,7 +5,9 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
@@ -14,7 +16,53 @@ import (
 
 type zcodeObservationSink struct {
 	*agenttest.Sink
-	onInfo func()
+	onInfo     func()
+	beforeInfo func()
+	onRefresh  func()
+}
+
+type zcodeObservationWriter struct {
+	agent.CapturedSessionObservationWriter
+	sink *zcodeObservationSink
+}
+
+func (sink *zcodeObservationSink) SessionObservationWriterFor(captured agent.CapturedTranscript) (agent.CapturedSessionObservationWriter, error) {
+	writer, err := sink.Sink.SessionObservationWriterFor(captured)
+	if err != nil {
+		return nil, err
+	}
+	return &zcodeObservationWriter{CapturedSessionObservationWriter: writer, sink: sink}, nil
+}
+
+func (writer *zcodeObservationWriter) PersistSettingsRefresh(refresh optionmap.Map) {
+	if callback := writer.sink.onRefresh; callback != nil {
+		writer.sink.onRefresh = nil
+		callback()
+	}
+	writer.CapturedSessionObservationWriter.PersistSettingsRefresh(refresh)
+}
+
+func (writer *zcodeObservationWriter) PublishSessionInfo(info map[string]interface{}) bool {
+	if callback := writer.sink.beforeInfo; callback != nil {
+		writer.sink.beforeInfo = nil
+		callback()
+	}
+	accepted := writer.CapturedSessionObservationWriter.PublishSessionInfo(info)
+	if accepted {
+		if callback := writer.sink.onInfo; callback != nil {
+			writer.sink.onInfo = nil
+			callback()
+		}
+	}
+	return accepted
+}
+
+func (s *zcodeObservationSink) PersistSettingsRefresh(refresh optionmap.Map) {
+	if callback := s.onRefresh; callback != nil {
+		s.onRefresh = nil
+		callback()
+	}
+	s.Sink.PersistSettingsRefresh(refresh)
 }
 
 func (s *zcodeObservationSink) BroadcastSessionInfo(info map[string]any) {
@@ -394,7 +442,7 @@ func TestZCodeTurnUsagePreservesOriginalBytes(t *testing.T) {
 	raw := []byte(" {\"type\":\"turn.completed\",\"future\":9007199254740993,\"payload\":{\"response\":\"Done\",\"usage\":{\"inputTokens\":2,\"outputTokens\":1,\"totalTokens\":3}}} \n")
 	event, ok := parseZCodeEvent(raw)
 	require.True(t, ok)
-	a.dispatchZCodeEvent(event)
+	a.dispatchZCodeEventOrdered(event)
 	messages := sink.Messages()
 	require.Len(t, messages, 1)
 	assert.Equal(t, raw, messages[0].Content)
@@ -428,4 +476,128 @@ func TestZCodeAugmentWithUsage_MalformedJSONReturnsRawUnchanged(t *testing.T) {
 	assert.Equal(t, raw, zcodeTurnContent(raw, zcodeUsageSnapshot{
 		HasCost: true, CostUSD: 1,
 	}).Original)
+}
+
+func TestZCodeSessionObservation_RejectsOlderReadAndPatchRevisions(t *testing.T) {
+	t.Parallel()
+	for _, patch := range []bool{false, true} {
+		t.Run(map[bool]string{false: "read", true: "patch"}[patch], func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			a.handleZCodeStateUpdated(json.RawMessage(`{"scope":"session","sessionId":"sess-1","revision":9,"reason":"model_changed","patch":{"model":{"current":{"providerId":"new","modelId":"B"}},"runtime":{"stateRevision":9,"contextUsage":{"used":900}}}}`))
+			if patch {
+				a.handleZCodeStateUpdated(json.RawMessage(`{"scope":"session","sessionId":"sess-1","revision":8,"reason":"model_changed","patch":{"model":{"current":{"providerId":"old","modelId":"A"}},"runtime":{"stateRevision":8,"contextUsage":{"used":800}}}}`))
+			} else {
+				var body zcodeStatePatchBody
+				require.NoError(t, json.Unmarshal([]byte(`{"model":{"current":{"providerId":"old","modelId":"A"}},"runtime":{"stateRevision":8,"contextUsage":{"used":800}}}`), &body))
+				a.applyZCodeSessionObservation("sess-1", body, nil)
+			}
+			a.Mu.Lock()
+			assert.Equal(t, "new/B", a.model)
+			assert.Equal(t, int64(900), a.latestContextUsage[contracts.ContextUsageFieldContextTokens])
+			a.Mu.Unlock()
+			assert.Equal(t, 1, sink.SettingsRefreshCount())
+		})
+	}
+}
+
+func TestZCodeSessionObservation_ReplacementBetweenCommitAndEffectsRejectsOldPublication(t *testing.T) {
+	t.Parallel()
+	sink := &zcodeObservationSink{Sink: &agenttest.Sink{}}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	sink.onRefresh = func() {
+		var replacement zcodeStateSnapshot
+		require.NoError(t, json.Unmarshal([]byte(`{"session":{"sessionId":"new-session"},"settings":{"model":{"current":{"providerId":"new","modelId":"B"}}}}`), &replacement))
+		a.applyCompleteSessionSnapshot(replacement)
+	}
+	var body zcodeStatePatchBody
+	require.NoError(t, json.Unmarshal([]byte(`{"model":{"current":{"providerId":"old","modelId":"A"}},"runtime":{"stateRevision":2,"contextUsage":{"used":800}}}`), &body))
+	a.applyZCodeSessionObservation("sess-1", body, nil)
+	assert.Equal(t, "new/B", a.model)
+	assert.Zero(t, sink.SettingsRefreshCount(), "old effects cannot acquire replacement settings authority")
+	assert.Zero(t, sink.SessionInfoCount(), "old usage cannot publish under replacement authority")
+}
+
+func TestZCodeSessionObservation_SuccessorCarriesPendingSettingsAndUsage(t *testing.T) {
+	t.Parallel()
+	for _, runtimeSuccessor := range []bool{false, true} {
+		t.Run(map[bool]string{false: "settings successor", true: "runtime successor"}[runtimeSuccessor], func(t *testing.T) {
+			t.Parallel()
+			sink := &zcodeObservationSink{Sink: &agenttest.Sink{}}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			var model, usage zcodeStatePatchBody
+			require.NoError(t, json.Unmarshal([]byte(`{"model":{"current":{"providerId":"p","modelId":"A"}}}`), &model))
+			require.NoError(t, json.Unmarshal([]byte(`{"runtime":{"contextUsage":{"used":900,"size":200000}}}`), &usage))
+			if runtimeSuccessor {
+				sink.onRefresh = func() { a.applyZCodeSessionObservation("sess-1", usage, nil) }
+				a.applyZCodeSessionObservation("sess-1", model, nil)
+			} else {
+				sink.beforeInfo = func() { a.applyZCodeSessionObservation("sess-1", model, nil) }
+				a.applyZCodeSessionObservation("sess-1", usage, nil)
+			}
+			assert.Equal(t, 1, sink.SettingsRefreshCount())
+			assert.Equal(t, "p/A", sink.LastSettingsRefresh().Model)
+			require.Equal(t, 1, sink.SessionInfoCount())
+			info := sink.LastSessionInfo()[contracts.SessionInfoKeyContextUsage].(map[string]any)
+			assert.Equal(t, int64(900), info[contracts.ContextUsageFieldContextTokens])
+		})
+	}
+}
+
+func TestZCodeSessionObservation_FreshSameIDCreationExpiresPendingEffects(t *testing.T) {
+	t.Parallel()
+	sink := &zcodeObservationSink{Sink: &agenttest.Sink{}}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	sink.onRefresh = func() {
+		var replacement zcodeStateSnapshot
+		require.NoError(t, json.Unmarshal([]byte(`{"session":{"sessionId":"sess-1"},"settings":{"model":{"current":{"providerId":"new","modelId":"B"}}}}`), &replacement))
+		a.adoptCompleteZCodeSessionSnapshot(replacement, true)
+	}
+	var body zcodeStatePatchBody
+	require.NoError(t, json.Unmarshal([]byte(`{"model":{"current":{"providerId":"old","modelId":"A"}},"runtime":{"contextUsage":{"used":800}}}`), &body))
+	a.applyZCodeSessionObservation("sess-1", body, nil)
+	assert.Equal(t, "new/B", a.model)
+	assert.Zero(t, sink.SettingsRefreshCount())
+	assert.Zero(t, sink.SessionInfoCount())
+}
+
+func TestRefreshZCodeUsageFromSessionRereadsAnEqualRevisionSupersededReply(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []string{"mode_changed", "prompt_completed"} {
+		t.Run(reason, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			stdin := &zcodeRecordedStdin{}
+			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+			a.Mu.Lock()
+			a.stateRevision = 2
+			a.Mu.Unlock()
+			a.recordZCodeUsage(zcodeUsage{InputTokens: 10000, OutputTokens: 500, CacheReadTokens: 2000})
+			done := make(chan struct{})
+			go func() { a.refreshZCodeUsageFromSession(); close(done) }()
+			first := waitZCodeRequest(t, stdin, MethodSessionRead)
+			a.HandleOutput([]byte(`{"method":"state.updated","params":{"scope":"session","sessionId":"sess-1","revision":3,"reason":"` + reason + `","patch":{"mode":{"current":"yolo"},"model":{"current":{"providerId":"p","modelId":"new"}},"thoughtLevel":{"enabled":true,"current":"high","available":[{"value":"high"}]}}}}`))
+			a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, first), json.RawMessage(`{"runtime":{"stateRevision":3,"eventSeq":0,"contextUsage":{"used":777,"size":128000}},"settings":{"mode":{"current":"build"},"model":{"current":{"providerId":"p","modelId":"old"}},"thoughtLevel":{"enabled":true,"current":"low","available":[{"value":"low"}]}}}`)))
+			zcodeTestReceive(t, done)
+			a.Mu.Lock()
+			assert.Equal(t, "p/new", a.model)
+			assert.Equal(t, "yolo", a.mode)
+			assert.Equal(t, "high", a.thoughtLevel)
+			assert.NotContains(t, a.latestContextUsage, contracts.ContextUsageFieldContextTokens)
+			a.Mu.Unlock()
+			second := zcodeNthRequest(t, stdin, MethodSessionRead, 2)
+			a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, second), json.RawMessage(`{"runtime":{"stateRevision":3,"eventSeq":0,"contextUsage":{"used":10500,"size":128000,"cache":{"inputTokens":10000,"cacheReadTokens":2000,"cacheWriteTokens":0}}},"settings":{"mode":{"current":"yolo"},"model":{"current":{"providerId":"p","modelId":"new"}},"thoughtLevel":{"enabled":true,"current":"high","available":[{"value":"high"}]}}}`)))
+			testutil.RequireEventually(t, func() bool {
+				a.Mu.Lock()
+				defer a.Mu.Unlock()
+				return a.latestContextUsage[contracts.ContextUsageFieldContextTokens] == int64(10500)
+			})
+			a.Mu.Lock()
+			assert.Equal(t, "p/new", a.model)
+			assert.Equal(t, "yolo", a.mode)
+			assert.Equal(t, "high", a.thoughtLevel)
+			a.Mu.Unlock()
+		})
+	}
 }

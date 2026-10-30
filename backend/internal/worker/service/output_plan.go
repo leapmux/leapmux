@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,6 +102,13 @@ func (h *OutputHandler) snapshotPlanFile(currentPath string, now time.Time) (str
 // candidate concurrently, exactly one open() succeeds and the loser falls
 // through to the next suffix.
 func writePlanFile(dir, title string, content []byte) (string, error) {
+	return writePlanFileWithCreate(dir, title, content, func(path string) (io.WriteCloser, error) {
+		return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	})
+}
+
+// writePlanFileWithCreate preserves real file naming when tests inject I/O failures.
+func writePlanFileWithCreate(dir, title string, content []byte, createFile func(string) (io.WriteCloser, error)) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("mkdir plan dir: %w", err)
 	}
@@ -112,21 +120,32 @@ func writePlanFile(dir, title string, content []byte) (string, error) {
 		} else {
 			candidate = filepath.Join(dir, fmt.Sprintf("%s.%d.md", stem, counter))
 		}
-		f, err := os.OpenFile(candidate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		f, err := createFile(candidate)
 		if err != nil {
 			if errors.Is(err, os.ErrExist) {
 				continue
 			}
 			return "", fmt.Errorf("create plan file: %w", err)
 		}
-		if _, err := f.Write(content); err != nil {
-			_ = f.Close()
-			_ = os.Remove(candidate)
-			return "", fmt.Errorf("write plan file: %w", err)
+		written, writeErr := f.Write(content)
+		if writeErr == nil && written != len(content) {
+			writeErr = io.ErrShortWrite
 		}
-		if err := f.Close(); err != nil {
-			return "", fmt.Errorf("close plan file: %w", err)
+		closeErr := f.Close()
+		var failure error
+		if writeErr != nil {
+			failure = fmt.Errorf("write plan file: %w", writeErr)
 		}
+		if closeErr != nil {
+			failure = errors.Join(failure, fmt.Errorf("close plan file: %w", closeErr))
+		}
+		if failure != nil {
+			if removeErr := os.Remove(candidate); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				failure = errors.Join(failure, fmt.Errorf("remove the refused plan file: %w", removeErr))
+			}
+			return "", failure
+		}
+
 		return candidate, nil
 	}
 	return "", fmt.Errorf("too many plan filename collisions in %q for title %q", dir, title)

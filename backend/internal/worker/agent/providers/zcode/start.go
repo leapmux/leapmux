@@ -93,17 +93,18 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		startPlanHTTP:   zcodeStartPlanHTTPClient,
 		projectTokens:   zcodeProjectTokens,
 		mode:            contracts.ZCodeDefaultMode,
-		toolCalls:       map[string]*zcodeToolCall{},
+		toolInvocations: map[string]*zcodeToolInvocation{},
 		pendingControls: map[string]*pendingControl{},
 	}
-	a.sink = agent.NewModelProgressResetSink(a.sink)
-	a.sink = newZCodeToolTranscript(ctx, a.sink, func() zcodeToolStoreLocation {
+	a.sink = zcodeProgressSink{ProviderServices: agent.NewModelProgressResetSink(a.sink)}
+	a.toolTranscript = newZCodeToolTranscript(ctx, a.sink, func() zcodeToolStoreLocation {
 		a.Mu.Lock()
 		defer a.Mu.Unlock()
 		location := storeLocation
 		location.sessionID = a.sessionID
 		return location
-	})
+	}, &zcodeToolTranscriptPolicy{canFinalizeRoot: a.canFinalizeZCodeTools, canFinalizeChild: a.canFinalizeZCodeChildTools})
+	a.sink = a.toolTranscript
 	a.model = catalog.launchModel(opts.Model())
 	a.thoughtLevel = opts.Effort()
 	// No goroutine reads the agent yet. The lock is the contract of the two helpers.
@@ -147,10 +148,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// choice, which the snapshot already recorded, and the user can change it.
 	a.applyStartupSettings(launchRequest, timeout)
 
-	// One repair attempt after the resume and the selection reassertion: a
-	// current model the live catalog no longer holds must not survive the start.
-	a.repairUnavailableZCodeModel(timeout)
-
 	if err := a.subscribe(timeout); err != nil {
 		cleanup()
 		return nil, a.FormatStartupError(MethodSessionSubscribe, err)
@@ -162,7 +159,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// a.sink, never the raw constructor parameter: a.sink is the thinking-reset wrapper
 	// installed above, and a call that holds the pre-wrap reference bypasses whatever the
 	// wrapper overrides.
-	a.sink.UpdateSessionID(sessionID)
 	a.sink.BroadcastStatusActive(sessionID)
 
 	return a, nil

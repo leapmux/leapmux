@@ -133,7 +133,7 @@ func TestGeminiToolSourceRejectsSymlinkedTranscriptDirectories(t *testing.T) {
 	require.NoError(t, os.Remove(directory))
 	require.NoError(t, os.Symlink(external, directory))
 	source := &geminiToolSource{query: query}
-	output, err := source.ReadSupplements(context.Background(), "native-session", map[string]agent.MessageContent{
+	output, err := source.ReadSupplements(context.Background(), source.Locate("native-session"), map[string]agent.MessageContent{
 		"run_shell_command__c1": {Original: []byte(`{"sessionUpdate":"tool_call_update","toolCallId":"run_shell_command__c1","status":"completed"}`)},
 	}, true)
 	assert.Error(t, err)

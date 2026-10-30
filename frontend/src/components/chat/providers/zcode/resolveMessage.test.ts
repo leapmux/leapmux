@@ -24,3 +24,56 @@ describe('zcode supplemental input conformance', () => {
     expect(JSON.stringify({ original, supplemental })).toBe(before)
   })
 })
+
+describe('resolveZCodeMessage', () => {
+  it.each(['hello ', '🙂 '])('removes only a proven accepted prefix %s from a native response', (prefix) => {
+    const original = {
+      type: 'session.updated',
+      payload: { content: `${prefix}world`, querySource: 'main_turn', stopReason: 'stop' },
+      future: 42,
+    }
+    const supplementalContent = {
+      zcodeResponseText: { acceptedPrefix: prefix },
+    }
+    const before = JSON.stringify({ original, supplementalContent })
+    expect(resolveZCodeMessage({
+      ...input(original),
+      supplementalContent,
+    }))
+      .toEqual({
+        ...original,
+        payload: { ...original.payload, content: 'world' },
+      })
+    expect(JSON.stringify({ original, supplementalContent })).toBe(before)
+  })
+
+  it.each([null, 3, {}, 'different'])('ignores an invalid or contradictory accepted prefix %j', (acceptedPrefix) => {
+    const original = {
+      type: 'session.updated',
+      payload: { content: 'answer', querySource: 'main_turn', stopReason: 'stop' },
+    }
+    expect(resolveZCodeMessage({
+      ...input(original),
+      supplementalContent: {
+        zcodeResponseText: { acceptedPrefix },
+      },
+    })).toEqual(original)
+  })
+
+  it('keeps a fully represented response empty for classification', () => {
+    const original = {
+      type: 'session.updated',
+      payload: { content: 'answer', querySource: 'main_turn', stopReason: 'stop' },
+    }
+    expect(resolveZCodeMessage({
+      ...input(original),
+      supplementalContent: {
+        zcodeResponseText: { acceptedPrefix: 'answer' },
+      },
+    }))
+      .toEqual({
+        ...original,
+        payload: { ...original.payload, content: '' },
+      })
+  })
+})

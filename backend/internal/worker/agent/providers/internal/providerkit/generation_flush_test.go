@@ -213,3 +213,56 @@ func TestFlushGenerationDoesNotCompleteAReplacementSessionsScope(t *testing.T) {
 	require.ErrorIs(t, FlushGeneration(&buffer, sink, agent.MessageCompletionComplete, false), assert.AnError)
 	assert.Equal(t, []agent.ProgressUpdate{agent.ModelTextProgress("same-scope", "new session text")}, raw.ProgressUpdates())
 }
+
+type rejectingGenerationReservation struct {
+	agent.ProviderServices
+	refusal error
+}
+
+func (sink *rejectingGenerationReservation) ReserveTranscriptOutput(queue *agent.OutputQueue, writes ...agent.OutputWrite) ([]*agent.OutputTicket, error) {
+	if sink.refusal != nil {
+		return nil, sink.refusal
+	}
+	return sink.ProviderServices.ReserveTranscriptOutput(queue, writes...)
+}
+
+func TestGenerationReservationUsesTheSameWriterAsItsCapturedDestination(t *testing.T) {
+	t.Parallel()
+	raw := &agenttest.Sink{}
+	refusal := errors.New("the old destination retired")
+	old := &rejectingGenerationReservation{ProviderServices: agent.NewProviderServices(raw), refusal: refusal}
+	newer := agent.NewProviderServices(raw)
+	var buffer GenerationBuffer
+	buffer.Append("scope", agent.AssembledMessageKindText, "kept", JoinVerbatim)
+	buffer.bindOutput(old)
+	buffer.bindOutput(newer)
+	destination := generationDestination{writer: old}
+	_, err := buffer.persistScopes([]string{"scope"}, agent.MessageCompletionComplete, destination.prepare, old)
+	require.ErrorIs(t, err, refusal)
+	assert.Empty(t, raw.Messages())
+	_, text, exists := buffer.ScopeSnapshot("scope")
+	assert.True(t, exists)
+	assert.Equal(t, "kept", text)
+	assert.False(t, buffer.OutputQueue().HasPending())
+}
+
+func TestGenerationRetryDoesNotRequireFreshAdmission(t *testing.T) {
+	t.Parallel()
+	raw := &agenttest.Sink{PersistErr: errors.New("storage unavailable")}
+	sink := &rejectingGenerationReservation{ProviderServices: agent.NewProviderServices(raw)}
+	var buffer GenerationBuffer
+	buffer.Append("scope", agent.AssembledMessageKindText, "kept", JoinVerbatim)
+	require.True(t, agent.OutputRetained(FlushGeneration(&buffer, sink, agent.MessageCompletionComplete, false)))
+	raw.PersistErr = nil
+	sink.refusal = errors.New("fresh admission closed")
+	require.NoError(t, FlushGeneration(&buffer, sink, agent.MessageCompletionComplete, false))
+	assert.False(t, buffer.OutputQueue().HasPending())
+	assert.False(t, buffer.HasPendingWrites())
+}
+
+func (s *generationFlushSink) ReserveTranscriptOutput(queue *agent.OutputQueue, writes ...agent.OutputWrite) ([]*agent.OutputTicket, error) {
+	return queue.Append(writes...), nil
+}
+func (s *generationFlushSink) ValidateTranscriptOutput(ticket *agent.OutputTicket) error {
+	return agent.ValidateTranscriptOutputTicket(ticket)
+}

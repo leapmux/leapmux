@@ -420,9 +420,8 @@ func TestZCodeSendInput_SendsTheResolvedPayload(t *testing.T) {
 	a.Mu.Lock()
 	a.model = "builtin:zai/GLM-5.3-Flash"
 	a.Mu.Unlock()
-	// Nothing answers this stdin, so the send fails at the await. The FRAME is what
-	// this test is about.
-	a.CancelForTest()
+	// The native refusal completes the request. This test checks its outgoing payload.
+	zcodeRecordRequestRepliesWithoutState(t, a, stdin)
 
 	_ = a.SendInput("look", []*leapmuxv1.Attachment{
 		zcodeAttachment("shot.png", "image/png", []byte("bytes")),
@@ -460,7 +459,7 @@ func TestZCodeSendInput_OmitsTheAttachmentsKeyWhenThereAreNone(t *testing.T) {
 
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
-	a.CancelForTest()
+	zcodeRecordRequestRepliesWithoutState(t, a, stdin)
 
 	_ = a.SendInput("hi", nil)
 

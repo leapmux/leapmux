@@ -241,3 +241,31 @@ func TestZCodeAccountState_AdmitsModelsOnlyForUsableEntitlements(t *testing.T) {
 		})
 	}
 }
+
+func TestZCodeAccountState_InlineKeyRotationRequiresAcknowledgement(t *testing.T) {
+	t.Parallel()
+	old := zcodeStateTestCodingPlanBinding("")
+	old.provider = &zcodeRegistryProvider{APIKey: &zcodeRegistryAPIKey{Source: zcodeAPIKeySourceInline, Value: "old"}}
+	fresh := zcodeStateTestCodingPlanBinding("")
+	fresh.provider = &zcodeRegistryProvider{APIKey: &zcodeRegistryAPIKey{Source: zcodeAPIKeySourceInline, Value: "new"}}
+	state := newZCodeAccountState(zcodeAccountSnapshotInputs{bindings: []zcodeAccountBinding{old}}, nil, time.Time{})
+	_, initial := state.payload("r")
+	state.accepted(initial, []zcodeAccountBinding{old})
+	state.reconcileBindings([]zcodeAccountBinding{fresh}, time.Time{})
+	payload, generation := state.payload("r")
+	assert.Greater(t, generation, initial)
+	assert.True(t, state.unpushed())
+	before, ok := state.binding(old.accountID)
+	require.True(t, ok)
+	assert.Equal(t, "old", before.configKey())
+	retry, retryGeneration := state.payload("r")
+	assert.Equal(t, generation, retryGeneration)
+	assert.Equal(t, payload.Revision, retry.Revision)
+	state.accepted(generation, []zcodeAccountBinding{fresh})
+	after, ok := state.binding(old.accountID)
+	require.True(t, ok)
+	assert.Equal(t, "new", after.configKey())
+	state.reconcileBindings([]zcodeAccountBinding{fresh}, time.Time{})
+	_, unchanged := state.payload("r")
+	assert.Equal(t, generation, unchanged)
+}

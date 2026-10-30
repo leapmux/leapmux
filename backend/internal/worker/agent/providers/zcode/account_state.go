@@ -145,9 +145,9 @@ func zcodeSameEntitlement(a, b zcodeAccountEntitlement) bool {
 }
 
 // zcodeSameBindingIdentity compares the fields whose change requires a new
-// account snapshot: identity, selection, team project, and entitlement.
+// account snapshot: identity, selection, inline credential, team project, and entitlement.
 func zcodeSameBindingIdentity(a, b zcodeAccountBinding) bool {
-	if a.accountID != b.accountID || a.legacyID != b.legacyID || a.current != b.current {
+	if a.accountID != b.accountID || a.legacyID != b.legacyID || a.current != b.current || a.configKey() != b.configKey() {
 		return false
 	}
 	if (a.team == nil) != (b.team == nil) {

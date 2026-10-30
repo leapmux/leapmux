@@ -57,7 +57,7 @@ func OpenToolSpanWithParent(sink ToolSpanServices, content agent.MessageContent,
 // derives the deadline from its durable backoff; the provider supplies no
 // instant of its own. The payload is defensively copied because the caller's
 // buffer may be reused by the stdout reader before the schedule is consumed.
-func ScheduleOrCancelServerErrorAutoRetry(sink agent.AutoRetryServices, retry bool, payload []byte) {
+func ScheduleOrCancelServerErrorAutoRetry(sink agent.AutoRetryWriter, retry bool, payload []byte) {
 	if !retry {
 		sink.CancelServerErrorRetry()
 		return

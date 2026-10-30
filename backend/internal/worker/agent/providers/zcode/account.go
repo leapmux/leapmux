@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"time"
 )
 
@@ -60,27 +61,32 @@ func (a *Agent) prepareAccountSnapshot(timeout time.Duration) zcodeAccountSnapsh
 // from account files. A store that LeapMux cannot read leaves the bindings on
 // config.json alone, and the warning says why.
 func (a *Agent) readAccountBindings(rules []zcodeBuiltinProviderRule) []zcodeAccountBinding {
-	selection := loadZCodeAccountSelection(a.homeDir)
-	entitlements := loadZCodeCodingPlanEntitlements(a.homeDir)
+	selection, selectionErr := loadZCodeAccountSelection(a.homeDir)
+	entitlements, entitlementErr := loadZCodeCodingPlanEntitlements(a.homeDir)
+	providers, providerErr := loadZCodeRegistryProviders(a.homeDir)
 	credentials := a.readAccountCredentials()
 	a.Mu.Lock()
-	a.catalog.accountSelection = selection
-	a.reloadLegacyProvidersLocked()
-	bindings, err := a.catalog.accountProviderBindings(rules, credentials, entitlements)
+	if selectionErr == nil {
+		a.catalog.accountSelection = selection
+	}
+	if entitlementErr == nil {
+		a.codingPlanEntitlements = entitlements
+	}
+	if providerErr == nil || errors.Is(providerErr, errZCodeConfigMissing) {
+		a.catalog.Providers = providers
+	}
+	catalog := a.catalog
+	entitlements = a.codingPlanEntitlements
 	a.Mu.Unlock()
+	if selectionErr != nil && !errors.Is(selectionErr, os.ErrNotExist) {
+		slog.Warn("zcode account selection is unreadable; keeping the last valid selection", "agent_id", a.AgentID(), "error", selectionErr)
+	}
+	if entitlementErr != nil && !errors.Is(entitlementErr, os.ErrNotExist) {
+		slog.Warn("zcode coding-plan entitlements are unreadable; keeping the last valid snapshot", "agent_id", a.AgentID(), "error", entitlementErr)
+	}
+	bindings, err := catalog.accountProviderBindings(rules, credentials, entitlements)
 	a.warnCredentialStoreError(err)
 	return bindings
-}
-
-// reloadLegacyProvidersLocked re-reads config.json and updates the catalog's
-// provider list so inline key changes are picked up. It does NOT touch Models
-// or refs, which the live catalog owns. Callers hold a.Mu.
-func (a *Agent) reloadLegacyProvidersLocked() {
-	catalog, err := loadZCodeCatalog(a.homeDir)
-	if err != nil && !errors.Is(err, errZCodeConfigMissing) && !errors.Is(err, errZCodeConfigUnusable) {
-		return
-	}
-	a.catalog.Providers = catalog.Providers
 }
 
 func (a *Agent) startPlanChecker(canonical map[string]string) zcodeStartPlanChecker {
@@ -152,13 +158,13 @@ func (a *Agent) sendAccountSnapshot(state *zcodeAccountState, timeout time.Durat
 type zcodeRuntimeHeadersRequest struct {
 	// RequestID is the LOGICAL id of the request, of the form
 	// `<session>:provider-runtime-headers:<uuid>`. The JSON-RPC envelope id is
-	// only the reply address; a cancellation names THIS id.
+	// only the reply address; a cancellation specifies THIS id.
 	RequestID string `json:"requestId"`
-	// SessionID is the session the credential serves. A cancellation must name
+	// SessionID is the session the credential serves. A cancellation must specify
 	// the same session.
 	SessionID string `json:"sessionId"`
 	// Workspace identifies the workspace of the request. A cancellation must
-	// name the same workspace.
+	// specify the same workspace.
 	Workspace  json.RawMessage `json:"workspace"`
 	ProviderID string          `json:"providerId"`
 	// ExpectedAccountScope is the scope of the credential that a model request

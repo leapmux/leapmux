@@ -148,13 +148,15 @@ func TestZCodeAccountRefresh_ReloadsCodingPlanEntitlement(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(cachePath), 0o755))
 	require.NoError(t, os.WriteFile(cachePath, []byte(`{"entryStatus":{"items":{"builtin:zai-coding-plan":{"status":"available"}}}}`), 0o600))
 
-	entitlements := loadZCodeCodingPlanEntitlements(home)
+	entitlements, err := loadZCodeCodingPlanEntitlements(home)
+	require.NoError(t, err)
 	require.Contains(t, entitlements, "builtin:zai-coding-plan")
 	assert.Equal(t, zcodeAvailabilityAvailable, entitlements["builtin:zai-coding-plan"].Availability)
 
 	// Flip to unavailable and reload.
 	require.NoError(t, os.WriteFile(cachePath, []byte(`{"entryStatus":{"items":{"builtin:zai-coding-plan":{"status":"unavailable"}}}}`), 0o600))
-	entitlements = loadZCodeCodingPlanEntitlements(home)
+	entitlements, err = loadZCodeCodingPlanEntitlements(home)
+	require.NoError(t, err)
 	require.Contains(t, entitlements, "builtin:zai-coding-plan")
 	assert.Equal(t, zcodeAvailabilityUnavailable, entitlements["builtin:zai-coding-plan"].Availability)
 	assert.Equal(t, zcodeUnavailableNotEntitled, entitlements["builtin:zai-coding-plan"].UnavailableReason)
@@ -351,4 +353,95 @@ func TestZCodeAccountRefresh_DiscardsAResultWhenSignInChangesDuringHTTP(t *testi
 		}
 	}
 	assert.Equal(t, []string{"Bearer A", "Bearer B", "Bearer C"}, h.checks())
+}
+
+func TestZCodeAccountRefresh_InvalidEntitlementsRetainTheLastValidDenial(t *testing.T) {
+	t.Parallel()
+	for _, invalid := range []string{"{", "null", `{"entryStatus":null}`, `{"entryStatus":{"items":null}}`, "missing", "directory"} {
+		t.Run(invalid, func(t *testing.T) {
+			t.Parallel()
+			home := t.TempDir()
+			path := filepath.Join(append([]string{home}, zcodeCodingPlanCacheRelPath...)...)
+			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+			require.NoError(t, os.WriteFile(path, []byte(`{"entryStatus":{"items":{"builtin:zai-coding-plan":{"status":"unavailable"}}}}`), 0o600))
+			a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
+			a.homeDir = home
+			a.credentials = zcodeTestCredentialStore(t, nil)
+			initial := zcodeStateTestCodingPlanBinding("")
+			a.catalog.Providers = []zcodeRegistryProvider{{ProviderID: initial.legacyID, APIKey: &zcodeRegistryAPIKey{Source: zcodeAPIKeySourceInline, Value: "key"}}}
+			require.NoError(t, os.WriteFile(zcodeConfigPath(home), []byte(`{"provider":{"builtin:zai-coding-plan":{"kind":"anthropic","options":{"apiKey":"key"},"models":{"GLM-5.3":{}}}}}`), 0o600))
+			first := a.readAccountBindings([]zcodeBuiltinProviderRule{initial.rule})
+			require.Len(t, first, 1)
+			assert.Equal(t, zcodeAvailabilityUnavailable, first[0].entitlement.Availability)
+			require.NoError(t, os.Remove(path))
+			if invalid == "directory" {
+				require.NoError(t, os.Mkdir(path, 0o755))
+			} else if invalid != "missing" {
+				require.NoError(t, os.WriteFile(path, []byte(invalid), 0o600))
+			}
+			next := a.readAccountBindings([]zcodeBuiltinProviderRule{initial.rule})
+			require.Len(t, next, 1)
+			assert.Equal(t, zcodeAvailabilityUnavailable, next[0].entitlement.Availability)
+			a.account = newZCodeAccountState(zcodeAccountSnapshotInputs{bindings: next}, nil, a.Clock().Now())
+			_, generation := a.account.payload("r")
+			a.account.accepted(generation, next)
+			_, err := a.accountRequestAuth(t.Context(), zcodeRuntimeHeadersRequest{ProviderID: initial.accountID})
+			assert.ErrorContains(t, err, "not available")
+		})
+	}
+}
+
+func TestZCodeAccountRefresh_InvalidSelectionKeepsTheAcceptedTeam(t *testing.T) {
+	t.Parallel()
+	for _, invalid := range []string{"{", "null", "missing", "directory"} {
+		t.Run(invalid, func(t *testing.T) {
+			t.Parallel()
+			home := t.TempDir()
+			path := filepath.Join(append([]string{home}, zcodeDesktopSettingsRelPath...)...)
+			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+			require.NoError(t, os.WriteFile(path, []byte(`{"providerFamilyDomain":"zai","providerFamilyConnectionSelections":{"zai":{"kind":"team-coding-plan","organizationId":"org","projectId":"project"}}}`), 0o600))
+			a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
+			a.homeDir = home
+			a.credentials = zcodeTestSignedInStore(t, "login")
+			var rules []zcodeBuiltinProviderRule
+			for _, mode := range []string{"individual-coding-plan", "team-coding-plan"} {
+				var rule zcodeBuiltinProviderRule
+				rule.ProviderID = "account:zai-" + mode
+				rule.Config.Access.Type, rule.Config.Access.AccountType, rule.Config.Access.Mode = zcodeAccountAccessType, zcodeFamilyZAI, mode
+				rules = append(rules, rule)
+			}
+			first := a.readAccountBindings(rules)
+			require.Len(t, first, 1)
+			require.Equal(t, "account:zai-team-coding-plan", first[0].accountID)
+			require.NotNil(t, first[0].team)
+			state := newZCodeAccountState(zcodeAccountSnapshotInputs{bindings: first}, nil, a.Clock().Now())
+			_, generation := state.payload("r")
+			state.accepted(generation, first)
+			require.NoError(t, os.Remove(path))
+			if invalid == "directory" {
+				require.NoError(t, os.Mkdir(path, 0o755))
+			} else if invalid != "missing" {
+				require.NoError(t, os.WriteFile(path, []byte(invalid), 0o600))
+			}
+			next := a.readAccountBindings(rules)
+			require.Len(t, next, 1)
+			assert.Equal(t, first[0].accountID, next[0].accountID)
+			assert.Equal(t, first[0].team, next[0].team)
+			assert.Equal(t, first[0].current, next[0].current)
+			state.reconcileBindings(next, a.Clock().Now())
+			_, unchanged := state.payload("r")
+			assert.Equal(t, generation, unchanged)
+			if invalid == "directory" {
+				require.NoError(t, os.Remove(path))
+			}
+			require.NoError(t, os.WriteFile(path, []byte(`{"providerFamilyDomain":"zai","providerFamilyConnectionSelections":{"zai":{"kind":"individual-coding-plan"}}}`), 0o600))
+			changed := a.readAccountBindings(rules)
+			require.Len(t, changed, 1)
+			assert.Equal(t, "account:zai-individual-coding-plan", changed[0].accountID)
+			assert.Nil(t, changed[0].team)
+			state.reconcileBindings(changed, a.Clock().Now())
+			_, changedGeneration := state.payload("r")
+			assert.Greater(t, changedGeneration, generation)
+		})
+	}
 }

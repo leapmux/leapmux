@@ -6,13 +6,11 @@ import (
 	"bytes"
 	"cmp"
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -177,6 +175,7 @@ type cachedTodo struct {
 // OutputHandler manages agent output persistence and broadcasting.
 // It holds shared state accessed by per-agent ProviderServices instances.
 type OutputHandler struct {
+	planStates           sync.Map // agent ID -> *planState
 	outputQueueMu        sync.Mutex
 	outputQueues         map[string]*agent.OutputQueue
 	outputClock          quartz.Clock
@@ -1036,6 +1035,8 @@ type agentOutputSink struct {
 	// span tracker). Guarded by childMu.
 	childMu    sync.Mutex
 	childSinks map[string]*agentOutputSink
+	// childLifetime is the cleanup authority of this child. The root mutation lock guards it.
+	childLifetime *childSinkLifetime
 	// initialUserMessage retains this transcript's opening assignment until
 	// its shared output queue completes the emptiness check and write.
 	initialUserMessage agent.InitialUserMessage
@@ -1063,10 +1064,11 @@ type agentOutputSink struct {
 	// catalogMu protects comparison identity and final catalog admission.
 	// A nested no-op replaces the identity without storing another catalog value.
 	// Provider samples, configured callbacks, logs, and transport run outside this mutex.
-	catalogMu         sync.Mutex
-	catalogComparison *catalogComparisonIdentity
-	messageSessionMu  sync.RWMutex
-	messageSession    *nativeSessionFact
+	catalogMu          sync.Mutex
+	catalogComparison  *catalogComparisonIdentity
+	sessionObservation *sessionObservationIdentity
+	messageSessionMu   sync.RWMutex
+	messageSession     *nativeSessionFact
 	// turnEndMu keeps message publication before its completion event during concurrent replay.
 	turnEndMu sync.Mutex
 }
@@ -1332,7 +1334,14 @@ func (s *agentOutputSink) PersistNotification(source leapmuxv1.MessageSource, co
 	if _, err := s.capturedOwner(content); err != nil {
 		return false, err
 	}
-	return s.h.persistNotificationThreaded(s.agentID, s.agentProvider, s.plugin, source, content)
+	mode := notificationThreaded
+	var envelope struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(content.Original, &envelope); err == nil {
+		mode = notificationModeForType(envelope.Type, mode)
+	}
+	return s.h.writeNotification(s.agentID, s.agentProvider, s.plugin, source, content, mode)
 }
 
 func (s *agentOutputSink) OpenSpan(spanID, parentSpanID string) {
@@ -1530,6 +1539,14 @@ func (s *agentOutputSink) MessageSessionID() string {
 }
 
 func (s *agentOutputSink) UpdateSessionID(sessionID string) {
+	s.updateSessionID(sessionID, false)
+}
+
+func (s *agentOutputSink) AdoptNativeSession(sessionID string) {
+	s.updateSessionID(sessionID, true)
+}
+
+func (s *agentOutputSink) updateSessionID(sessionID string, newLifetime bool) {
 	mutation := s.h.transcriptMutationMutex(s.rootAgentID)
 	mutation.Lock()
 	var failureMessage string
@@ -1555,14 +1572,19 @@ func (s *agentOutputSink) UpdateSessionID(sessionID string) {
 	activity := s.h.activityFor(s.agentID, s.rootAgentID)
 	activity.mu.Lock()
 	s.messageSessionMu.Lock()
-	if s.messageSession == nil || s.messageSession.id != sessionID {
+	nativeSessionChanged := newLifetime || s.messageSession == nil || s.messageSession.id != sessionID
+	if nativeSessionChanged {
 		s.messageSession = &nativeSessionFact{id: sessionID}
 	}
 	s.messageSessionMu.Unlock()
 	activity.mu.Unlock()
 	s.sessionInfoMu.Lock()
+	if nativeSessionChanged {
+		delete(s.lastSessionInfo, contracts.SessionInfoKeyContextUsage)
+		delete(s.lastSessionInfo, contracts.SessionInfoKeyTotalCostUsd)
+	}
 	for key := range s.activePermissionChecks {
-		if key.sessionID != sessionID {
+		if newLifetime || key.sessionID != sessionID {
 			delete(s.activePermissionChecks, key)
 		}
 	}
@@ -1733,40 +1755,15 @@ var dedupExemptSessionInfoKeys = map[string]struct{}{
 // in agentSession.store.ts. A marshal failure is treated as "changed"
 // so the value still passes through to the broadcast.
 func (s *agentOutputSink) BroadcastSessionInfo(info map[string]interface{}) {
-	if len(info) == 0 {
+	prepared, err := prepareSessionInfo(info)
+	if err != nil {
+		slog.Warn("marshal agent session info", "agent_id", s.agentID, "error", err)
 		return
 	}
-	s.sessionInfoMu.Lock()
-	if s.lastSessionInfo == nil {
-		s.lastSessionInfo = make(map[string][]byte, len(info))
+	changed := s.admitPreparedSessionInfo(prepared)
+	if len(changed) > 0 {
+		s.h.broadcastAgentSessionInfo(s.agentID, changed)
 	}
-	changed := make(map[string]interface{}, len(info))
-	for k, v := range info {
-		// An exempt key bypasses value deduplication. Permission checks use a separate cache.
-		if _, exempt := dedupExemptSessionInfoKeys[k]; exempt {
-			if k == contracts.SessionInfoKeyRunningTool {
-				s.cachePermissionCheckLocked(v)
-			}
-			changed[k] = v
-			continue
-		}
-		encoded, err := json.Marshal(v)
-		if err != nil {
-			// Can't dedup without canonical bytes — pass through.
-			changed[k] = v
-			continue
-		}
-		if prev, ok := s.lastSessionInfo[k]; ok && bytes.Equal(prev, encoded) {
-			continue
-		}
-		changed[k] = v
-		s.lastSessionInfo[k] = encoded
-	}
-	s.sessionInfoMu.Unlock()
-	if len(changed) == 0 {
-		return
-	}
-	s.h.broadcastAgentSessionInfo(s.agentID, changed)
 }
 
 type permissionCheckKey struct {
@@ -1854,10 +1851,7 @@ func (s *agentOutputSink) PersistWorkerNotification(content agent.MessageContent
 	if err := json.Unmarshal(content.Original, &envelope); err != nil {
 		return false, err
 	}
-	mode := notificationThreaded
-	if envelope.Type == contracts.NotificationTypeApiRetryResolved {
-		mode = notificationRetryResolution
-	}
+	mode := notificationModeForType(envelope.Type, notificationThreaded)
 	return s.h.writeNotification(s.agentID, s.agentProvider, s.plugin, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, content, mode)
 }
 
@@ -1866,18 +1860,11 @@ func (s *agentOutputSink) PersistLeapMuxNotification(content map[string]interfac
 }
 
 func (s *agentOutputSink) PersistSubagentReport(write agent.SubagentReportWrite) (bool, error) {
-	payload, err := write.NotificationPayload()
-	if err != nil || payload == nil {
+	captured, present, err := agent.CaptureSubagentReport(s, write)
+	if err != nil || !present {
 		return false, err
 	}
-	contentJSON, err := json.Marshal(payload)
-	if err != nil {
-		return false, fmt.Errorf("marshal subagent report: %w", err)
-	}
-	sum := sha256.Sum256([]byte(write.ReportID))
-	idempotencyKey := fmt.Sprintf("subagent-report:%x", sum)
-	content := s.CaptureMessage(agent.MessageContent{Original: contentJSON, IdempotencyKey: idempotencyKey}, agent.SpanInfo{})
-	return s.h.writeNotification(s.agentID, s.agentProvider, s.plugin, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, content, notificationReport)
+	return captured.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX)
 }
 
 func (s *agentOutputSink) PersistChildSubagentReport(write agent.ChildSubagentReportWrite) (bool, error) {
@@ -1914,8 +1901,15 @@ func (s *agentOutputSink) LoadAndDeletePlanModeToolUse(toolUseID string) (string
 	return v.(string), true
 }
 
-func (s *agentOutputSink) UpdatePlan(content []byte, compression leapmuxv1.ContentCompression, title string) {
-	s.h.updatePlan(s.agentID, content, compression, title)
+func (sink *agentOutputSink) UpdatePlan(content []byte, compression leapmuxv1.ContentCompression, title string) {
+	captured := agent.CaptureTranscript(sink, agent.MessageContent{}, agent.SpanInfo{})
+	writer, err := sink.PlanWriterFor(captured)
+	if err == nil {
+		err = writer.UpdatePlan(content, compression, title)
+	}
+	if err != nil {
+		slog.Warn("The Worker could not update the saved plan.", "agent_id", sink.agentID, "error", err)
+	}
 }
 
 func (s *agentOutputSink) ScheduleUsageLimitRetry(resetAt time.Time, sourcePayload []byte) {
@@ -2883,126 +2877,20 @@ func (h *OutputHandler) persistLeapMuxNotification(agentID string, agentProvider
 // the most recent title. The canonical path is `<sanitized_title>.md` for
 // the first plan with a given title in a month directory, and
 // `<sanitized_title>.<n>.md` for subsequent agents that pick the same title.
-func (h *OutputHandler) updatePlan(agentID string, compressed []byte, compression leapmuxv1.ContentCompression, title string) {
-	agentRow, err := h.queries.GetAgentByID(bgCtx(), agentID)
-	if err != nil {
-		slog.Warn("failed to fetch agent for plan update", "agent_id", agentID, "error", err)
-		return
+// updatePlan keeps the canonical-file operation independently testable without a native runtime.
+func (h *OutputHandler) updatePlan(agentID string, content []byte, compression leapmuxv1.ContentCompression, title string) {
+	if err := h.updatePlanFrom(planOperation{agentID: agentID}, content, compression, title); err != nil {
+		slog.Warn("The Worker could not update the saved plan.", "agent_id", agentID, "error", err)
 	}
+}
 
-	// Decompress the new content. An empty payload after decompression is
-	// treated as "no new plan content" — we only fall through to the
-	// title/path bookkeeping below when the caller has actual bytes.
-	var newContent []byte
-	if len(compressed) > 0 {
-		decompressed, err := msgcodec.Decompress(compressed, compression)
-		if err != nil {
-			slog.Warn("failed to decompress plan content", "agent_id", agentID, "error", err)
-			return
-		}
-		newContent = decompressed
+func (sink *agentOutputSink) ReserveTranscriptOutput(queue *agent.OutputQueue, writes ...agent.OutputWrite) ([]*agent.OutputTicket, error) {
+	if queue == nil {
+		return nil, errors.New("the transcript reservation has no output queue")
 	}
-	if len(newContent) == 0 {
-		return
-	}
+	return queue.Append(writes...), nil
+}
 
-	// Preserve existing plan_title when the caller's payload had no first
-	// line we could extract from. The title comparison below is then a
-	// no-op for that field.
-	if title == "" {
-		title = agentRow.PlanTitle
-	}
-
-	now := h.now()
-
-	// Disk-based no-op detection. If the canonical content on disk matches
-	// the new payload byte-for-byte and the title is unchanged, there is
-	// nothing to snapshot, write, or broadcast — short-circuit before any
-	// filesystem mutation.
-	if title == agentRow.PlanTitle && agentRow.PlanFilePath != "" {
-		if existing, err := os.ReadFile(agentRow.PlanFilePath); err == nil && bytes.Equal(existing, newContent) {
-			return
-		}
-	}
-
-	dir, err := h.resolvePlanDir(agentRow.PlanFilePath, now)
-	if err != nil {
-		slog.Warn("failed to resolve plan dir", "agent_id", agentID, "error", err)
-		return
-	}
-
-	// Snapshot whatever the agent's prior plan file is, regardless of
-	// title — option (a) of the title-change semantics. The snapshot
-	// preserves the prior stem, so historical files retain the title
-	// they had when written. Doing this before writePlanFile frees the
-	// agent's prior canonical slot for reuse on a same-title rewrite.
-	if agentRow.PlanFilePath != "" {
-		if _, err := h.snapshotPlanFile(agentRow.PlanFilePath, now); err != nil {
-			slog.Warn("failed to snapshot prior plan file", "agent_id", agentID, "prior_path", agentRow.PlanFilePath, "error", err)
-		}
-	}
-
-	canonicalPath, err := writePlanFile(dir, title, newContent)
-	if err != nil {
-		slog.Warn("failed to write plan file", "agent_id", agentID, "dir", dir, "title", title, "error", err)
-		return
-	}
-
-	titleChanged := title != agentRow.PlanTitle
-	pathChanged := canonicalPath != agentRow.PlanFilePath
-	// Overwrite a title nobody CHOSE, and never one a user typed. The row
-	// records that answer (see title_auto_generated); this used to re-derive it
-	// from the rendered string with a regex, which read a typed `Agent Bob` as
-	// a pooled name and overwrote it.
-	shouldAutoRename := titleChanged && title != "" &&
-		title != agentRow.Title &&
-		agentRow.TitleAutoGenerated != 0
-
-	if shouldAutoRename {
-		if err := h.queries.UpdateAgentPlanAndTitle(bgCtx(), db.UpdateAgentPlanAndTitleParams{
-			PlanFilePath: canonicalPath,
-			PlanTitle:    title,
-			Title:        title,
-			ID:           agentID,
-		}); err != nil {
-			slog.Warn("failed to update agent plan", "agent_id", agentID, "error", err)
-			return
-		}
-	} else if titleChanged || pathChanged {
-		if err := h.queries.UpdateAgentPlan(bgCtx(), db.UpdateAgentPlanParams{
-			PlanFilePath: canonicalPath,
-			PlanTitle:    title,
-			ID:           agentID,
-		}); err != nil {
-			slog.Warn("failed to update agent plan", "agent_id", agentID, "error", err)
-			return
-		}
-	}
-
-	if !titleChanged && !pathChanged {
-		// Path and title unchanged — content differed (we wouldn't be here
-		// otherwise), but the user-visible header is the same. The new
-		// file is already on disk; no notification needed.
-		return
-	}
-
-	// A plan with no title — no first line we could extract and no prior
-	// plan_title to fall back to — has nothing meaningful to announce. The
-	// client renders "Plan updated:" with an empty title as a raw-JSON bubble
-	// (plan_updated needs a title to form its label), so a titleless
-	// notification is pure noise. The plan file and the agents row are already
-	// written above; only the user-facing notification is skipped.
-	if title == "" {
-		return
-	}
-
-	payload := map[string]interface{}{
-		contracts.NotificationFieldType:         contracts.NotificationTypePlanUpdated,
-		contracts.NotificationFieldPlanTitle:    title,
-		contracts.NotificationFieldPlanFilePath: canonicalPath,
-	}
-	if shouldAutoRename {
-		payload[contracts.NotificationFieldUpdateAgentTitle] = true
-	}
-	h.PersistLeapMuxNotification(agentID, agentRow.AgentProvider, payload)
+func (sink *agentOutputSink) ValidateTranscriptOutput(ticket *agent.OutputTicket) error {
+	return agent.ValidateTranscriptOutputTicket(ticket)
 }

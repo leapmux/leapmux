@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"slices"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
@@ -35,6 +36,18 @@ const (
 
 func (h *OutputHandler) persistNotificationThreaded(agentID string, provider leapmuxv1.AgentProvider, plugin agent.Provider, source leapmuxv1.MessageSource, content agent.MessageContent) (bool, error) {
 	return h.writeNotification(agentID, provider, plugin, source, content, notificationThreaded)
+}
+
+// notificationModeForType preserves neutral notification reduction semantics.
+func notificationModeForType(kind string, fallback notificationWriteMode) notificationWriteMode {
+	switch kind {
+	case contracts.NotificationTypeApiRetryResolved:
+		return notificationRetryResolution
+	case contracts.NotificationTypeSubagentReport:
+		return notificationReport
+	default:
+		return fallback
+	}
 }
 
 func (h *OutputHandler) writeNotification(agentID string, provider leapmuxv1.AgentProvider, plugin agent.Provider, source leapmuxv1.MessageSource, content agent.MessageContent, mode notificationWriteMode) (bool, error) {

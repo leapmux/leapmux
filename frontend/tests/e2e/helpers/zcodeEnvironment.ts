@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { writePrivateJSON } from './privateConfigFile'
 
@@ -119,7 +119,10 @@ function zcodePersonalConfig(options: ZcodeEnvironmentOptions): Record<string, u
 /** The paths of one run's ZCode configuration files. */
 function zcodeConfigurationPaths(homeDir: string): { legacyPath: string, personalPath: string } {
   const zcodeDir = join(homeDir, '.zcode', 'v2')
-  return { legacyPath: join(zcodeDir, 'config.json'), personalPath: join(zcodeDir, 'provider_config.json') }
+  return {
+    legacyPath: join(zcodeDir, 'config.json'),
+    personalPath: join(zcodeDir, 'provider_config.json'),
+  }
 }
 
 /** The legacy configuration shape that the revocation reads. */
@@ -180,4 +183,45 @@ export function refreshZcodeDefaultModel(homeDir: string, providerID: string, mo
   personal.config.defaultModelSelection.providerId = providerID
   personal.config.defaultModelSelection.modelId = modelId
   writePrivateJSON(personalPath, personal)
+}
+
+/** Restore both configuration files after every scenario outcome. */
+export async function withZcodeConfigurationRestored<T>(homeDir: string, use: () => Promise<T>): Promise<T> {
+  const { legacyPath, personalPath } = zcodeConfigurationPaths(homeDir)
+  const files = [legacyPath, personalPath].map(path => ({
+    path,
+    bytes: readFileSync(path),
+  }))
+  let outcome: { value: T } | { error: unknown }
+  try {
+    outcome = { value: await use() }
+  }
+  catch (error) {
+    outcome = { error }
+  }
+  const restorationErrors: unknown[] = []
+  for (const file of files) {
+    try {
+      writeFileSync(file.path, file.bytes, { mode: 0o600 })
+    }
+    catch (error) {
+      restorationErrors.push(error)
+    }
+  }
+  if (restorationErrors.length > 0) {
+    if ('error' in outcome)
+      restorationErrors.unshift(outcome.error)
+    throw new AggregateError(restorationErrors, 'The scenario could not restore its ZCode configuration files.')
+  }
+  if ('error' in outcome)
+    throw outcome.error
+  return outcome.value
+}
+
+/** Run a scenario with the personal provider configuration alone. */
+export async function withZcodePersonalProviderConfiguration<T>(homeDir: string, use: () => Promise<T>): Promise<T> {
+  return withZcodeConfigurationRestored(homeDir, async () => {
+    unlinkSync(zcodeConfigurationPaths(homeDir).legacyPath)
+    return use()
+  })
 }

@@ -556,22 +556,48 @@ describe('the Kiro surface of the mock', () => {
   })
 
   it.each([
-    { inputTokens: 0, outputTokens: 0 },
-    { inputTokens: 60000, outputTokens: 123 },
-    { outputTokens: 3 },
-  ])('reports the step usage: %j', async (usage) => {
+    [undefined, 1, 1, 2],
+    [
+      { inputTokens: 0, outputTokens: 0 },
+      0,
+      0,
+      0,
+    ],
+    [
+      { inputTokens: 60000, outputTokens: 123 },
+      60000,
+      123,
+      60123,
+    ],
+    [
+      { outputTokens: 3 },
+      1,
+      3,
+      4,
+    ],
+    [
+      { inputTokens: 100 },
+      100,
+      1,
+      101,
+    ],
+  ] as const)('reports literal step usage %j', async (usage, input, output, total) => {
     const server = await startServer()
     await registerMockModelScenario(server.url, 'kiro-usage', {
       steps: [
-        { text: 'Answer', usage },
+        {
+          text: 'Answer',
+          ...(usage
+            ? { usage }
+            : {}),
+        },
       ],
     })
     const answer = await events(await call(server, 'KiroRuntimeService.GenerateAssistantResponse', turnBody(mockScenarioPrompt('kiro-usage', 'Reply.'))))
-    const input = usage.inputTokens ?? 1
     expect(answer.at(-1)).toEqual([
       'metadataEvent',
       {
-        tokenUsage: { uncachedInputTokens: input, outputTokens: usage.outputTokens, totalTokens: input + usage.outputTokens },
+        tokenUsage: { uncachedInputTokens: input, outputTokens: output, totalTokens: total },
         stopReason: 'END_TURN',
       },
     ])

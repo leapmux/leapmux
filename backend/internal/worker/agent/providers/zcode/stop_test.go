@@ -347,7 +347,7 @@ func zcodeStartExecTurn(t *testing.T, a *Agent, turnID, executionID string) {
 		fmt.Sprintf(`{"turnNumber":1,"input":"hi","foregroundExecutionId":%q}`, executionID)))
 }
 
-// zcodeStartBackgroundExecTurn starts a runtime turn that names the user
+// zcodeStartBackgroundExecTurn starts a runtime turn that identifies the user
 // execution it belongs to.
 func zcodeStartBackgroundExecTurn(t *testing.T, a *Agent, turnID, executionID string) {
 	t.Helper()
@@ -592,17 +592,17 @@ func TestZCodeInterrupt_OtherV4RefusalsDoNotFallThrough(t *testing.T) {
 	}
 }
 
-// zcodeGatedStdin delays the first write until the test releases it, so a test
+// zcodePausedStdin delays the first write until the test releases it, so a test
 // can move the world between Interrupt's capture of the stop target and the
-// request that names it.
-type zcodeGatedStdin struct {
+// request that identifies it.
+type zcodePausedStdin struct {
 	zcodeRecordedStdin
 	entered chan struct{}
 	gate    chan struct{}
 	once    sync.Once
 }
 
-func (w *zcodeGatedStdin) Write(p []byte) (int, error) {
+func (w *zcodePausedStdin) Write(p []byte) (int, error) {
 	w.once.Do(func() {
 		w.entered <- struct{}{}
 		<-w.gate
@@ -611,16 +611,16 @@ func (w *zcodeGatedStdin) Write(p []byte) (int, error) {
 }
 
 // TestZCodeInterrupt_ATargetChangeCannotProduceAnUnguardedStop: the stop target
-// can change between Interrupt's capture and the request that names it. The
+// can change between Interrupt's capture and the request that identifies it. The
 // request keeps the guard of the captured execution -- never an unguarded stop
 // that aborts the NEWER execution -- and a late acknowledgement opens no window
 // for the newer generation.
 func TestZCodeInterrupt_ATargetChangeCannotProduceAnUnguardedStop(t *testing.T) {
 	t.Parallel()
 	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
-	gated := &zcodeGatedStdin{entered: make(chan struct{}, 1), gate: make(chan struct{})}
+	paused := &zcodePausedStdin{entered: make(chan struct{}, 1), gate: make(chan struct{})}
 	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{
-		AgentID: "stop-test", Ctx: t.Context(), ProcessDone: make(chan struct{}), Stdin: gated,
+		AgentID: "stop-test", Ctx: t.Context(), ProcessDone: make(chan struct{}), Stdin: paused,
 	})
 	timer := &zcodeCapturedTimer{}
 	a.afterFunc = timer.afterFunc
@@ -630,7 +630,7 @@ func TestZCodeInterrupt_ATargetChangeCannotProduceAnUnguardedStop(t *testing.T) 
 	done := make(chan error, 1)
 	go func() { done <- a.Interrupt(agent.StopContext{}) }()
 	select {
-	case <-gated.entered:
+	case <-paused.entered:
 	case <-time.After(30 * time.Second):
 		t.Fatal("the guarded stop did not reach stdin")
 	}
@@ -638,9 +638,9 @@ func TestZCodeInterrupt_ATargetChangeCannotProduceAnUnguardedStop(t *testing.T) 
 	// written.
 	a.HandleOutput(zcodeTurnEventLine(t, 1, "turn-2", contracts.ZCodeEventTurnStarted,
 		`{"turnNumber":2,"input":"next","foregroundExecutionId":"exec-2"}`))
-	close(gated.gate)
+	close(paused.gate)
 
-	stdin := &gated.zcodeRecordedStdin
+	stdin := &paused.zcodeRecordedStdin
 	command := waitZCodeStopCommand(t, stdin)
 	assert.JSONEq(t, `{"expectedForegroundExecutionId":"exec-1"}`, string(command.Payload),
 		"the request keeps the captured execution's guard through the target change")
@@ -652,4 +652,70 @@ func TestZCodeInterrupt_ATargetChangeCannotProduceAnUnguardedStop(t *testing.T) 
 	assert.False(t, a.stopWindow.armed(),
 		"a late acknowledgement cannot open a window for the newer generation")
 	assert.Zero(t, timer.armed)
+}
+
+func TestZCodeStop_ReceiptTracksAProvisionalOwnerThroughNativeAdoption(t *testing.T) {
+	for _, raw := range []bool{false, true} {
+		t.Run(fmt.Sprintf("raw %t", raw), func(t *testing.T) {
+			t.Parallel()
+			stdin := &zcodeRecordedStdin{}
+			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+			a.afterFunc = (&zcodeCapturedTimer{}).afterFunc
+			a.createProvisionalZCodeTurn("sess-1", "input", 1)
+			done := make(chan error, 1)
+			go func() {
+				if raw {
+					done <- a.SendRawInput([]byte(`{"id":-31,"method":"session/stop","params":{"sessionId":"sess-1"}}`), agent.StopContext{})
+				} else {
+					done <- a.Interrupt(agent.StopContext{})
+				}
+			}()
+			request := waitZCodeRequest(t, stdin, MethodSessionStop)
+			a.HandleOutput(zcodeTurnEventLine(t, 1, "native", contracts.ZCodeEventTurnStarted, `{"inputId":"input","turnNumber":1}`))
+			a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(`{}`)))
+			require.NoError(t, <-done)
+			a.Mu.Lock()
+			assert.True(t, a.stopWindow.armed())
+			assert.Equal(t, "native", a.stopWindow.turnID)
+			a.Mu.Unlock()
+		})
+	}
+}
+
+func TestZCodeStop_OldCompactionReceiptCannotStopItsSuccessor(t *testing.T) {
+	for _, raw := range []bool{false, true} {
+		t.Run(fmt.Sprintf("raw %t", raw), func(t *testing.T) {
+			t.Parallel()
+			stdin := &zcodeRecordedStdin{}
+			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+			a.afterFunc = (&zcodeCapturedTimer{}).afterFunc
+			compactA := make(chan error, 1)
+			go func() { compactA <- a.CompactContext() }()
+			first := waitZCodeRequest(t, stdin, MethodSessionCompact)
+			a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, first), json.RawMessage(`{"compact":{"state":"accepted"}}`)))
+			require.NoError(t, <-compactA)
+			stop := make(chan error, 1)
+			go func() {
+				if raw {
+					stop <- a.SendRawInput([]byte(`{"id":-31,"method":"session/stop","params":{"sessionId":"sess-1"}}`), agent.StopContext{})
+				} else {
+					stop <- a.Interrupt(agent.StopContext{})
+				}
+			}()
+			request := waitZCodeRequest(t, stdin, MethodSessionStop)
+			a.finishZCodeCompaction("sess-1")
+			next := make(chan error, 1)
+			go func() { next <- a.CompactContext() }()
+			require.Eventually(t, func() bool { return len(stdin.RequestsFor(MethodSessionCompact)) == 2 }, 30*time.Second, time.Millisecond)
+			second := stdin.RequestsFor(MethodSessionCompact)[1]
+			a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, second), json.RawMessage(`{"compact":{"state":"accepted"}}`)))
+			require.NoError(t, <-next)
+			a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(`{}`)))
+			require.NoError(t, <-stop)
+			a.Mu.Lock()
+			assert.False(t, a.stopWindow.armed(), "an old stop cannot acquire the successor compaction")
+			assert.Equal(t, "sess-1", a.compactionSessionID)
+			a.Mu.Unlock()
+		})
+	}
 }

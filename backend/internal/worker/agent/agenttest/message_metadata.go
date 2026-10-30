@@ -30,14 +30,21 @@ func TurnToolUseCounts(t *testing.T, messages []Message) []int {
 		if !row.TurnEnd {
 			continue
 		}
-		require.NotEmpty(t, row.Metadata, "a native turn end needs explicit tool-count metadata, including zero")
-		var metadata map[string]json.RawMessage
-		require.NoError(t, json.Unmarshal(row.Metadata, &metadata))
-		require.Contains(t, metadata, contracts.MessageMetadataFieldToolUses)
-		var count int
-		require.NoError(t, json.Unmarshal(metadata[contracts.MessageMetadataFieldToolUses], &count))
-		require.GreaterOrEqual(t, count, 0, "a native tool count cannot be negative")
+		count := MessageToolUseCount(t, row)
 		counts = append(counts, count)
 	}
 	return counts
+}
+
+// MessageToolUseCount reads the count retained by either a current or historical divider.
+func MessageToolUseCount(t *testing.T, row Message) int {
+	t.Helper()
+	require.NotEmpty(t, row.Metadata, "a native turn end needs explicit tool-count metadata, including zero")
+	var metadata map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(row.Metadata, &metadata))
+	require.Contains(t, metadata, contracts.MessageMetadataFieldToolUses)
+	var count int
+	require.NoError(t, json.Unmarshal(metadata[contracts.MessageMetadataFieldToolUses], &count))
+	require.GreaterOrEqual(t, count, 0, "a native tool count cannot be negative")
+	return count
 }

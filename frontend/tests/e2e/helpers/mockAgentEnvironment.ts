@@ -461,7 +461,7 @@ export async function createMockAgentEnvironment(
         plainModelID: ZCODE_PLAIN_MODEL_WIRE_ID,
       }),
       ...createCodewhaleEnvironment({
-        homeDir,
+        runDirectory: runDir,
         baseURL: openAIBaseURL,
         modelKey: MODEL_KEY,
         modelID: MOCK_MODELS.deepseek,

@@ -11,6 +11,7 @@ package spantrack
 import (
 	"encoding/json"
 	"log/slog"
+	"maps"
 	"math/rand/v2"
 	"slices"
 	"sync"
@@ -65,6 +66,19 @@ type SpanTracker struct {
 	pending   *pendingSpan      // color reserved by ReserveSpanColor; consumed by matching OpenSpan.
 	rng       *rand.Rand        // lazy-initialized random source for color choice; tests inject directly.
 	deck      []int             // shuffled draw pile for primary-rule color selection; refilled when empty.
+}
+
+// FrozenSpanTracker retains immutable geometry without retaining a random source.
+type FrozenSpanTracker struct{ tracker SpanTracker }
+
+func (t *SpanTracker) Freeze() *FrozenSpanTracker {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return &FrozenSpanTracker{tracker: SpanTracker{spans: slices.Clone(t.spans), parentMap: maps.Clone(t.parentMap)}}
+}
+
+func (tracker *FrozenSpanTracker) Snapshot(parentSpanID, connectorSpanID string, closing bool) (int32, string, int32) {
+	return tracker.tracker.Snapshot(parentSpanID, connectorSpanID, closing)
 }
 
 // randIntn returns a random integer in [0, n) from the tracker's RNG, lazy

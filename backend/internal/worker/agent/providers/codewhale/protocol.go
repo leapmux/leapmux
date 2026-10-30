@@ -64,6 +64,7 @@ const (
 	eventTurnStarted            = "turn.started"
 	eventTurnLifecycle          = "turn.lifecycle"
 	eventTurnUsage              = "turn.usage"
+	eventTurnProviderRequest    = "turn.provider_request"
 	eventTurnSteered            = "turn.steered"
 	eventTurnInterruptRequested = "turn.interrupt_requested"
 	eventItemDelta              = "item.delta"

@@ -46,12 +46,11 @@ const (
 	MethodSessionCancelBackgroundTask = "session/cancelBackgroundTask"
 
 	MethodSessionSubscribe = "session/subscribe"
-	// MethodSessionEvents fetches a contiguous range of session events after a
-	// given sequence, for gap recovery. The reply carries the events and the
-	// highest sequence the range covers.
+	// MethodSessionEvents fetches retained mapped events after a public cursor.
+	// The reply contains events; expired transient events can leave sequence holes.
 	MethodSessionEvents = "session/events"
-	// MethodSessionMessages fetches the session's messages, newest first, for
-	// final-message reconciliation after a stalled turn.
+	// MethodSessionMessages fetches raw messages in chronological order. A limit
+	// selects the newest tail for final-message reconciliation after a stalled turn.
 	MethodSessionMessages = "session/messages"
 
 	// MethodConversationSubscribe and MethodConversationUnsubscribe open and
@@ -163,14 +162,6 @@ const (
 // ZCode subscription delivery kind. `desktop-continuous` is the streaming
 // subscription the desktop application itself uses.
 const DeliveryContinuous = "desktop-continuous"
-
-// ZCode state.updated scopes. The notification covers more than one scope, and
-// only the session scope carries the settings axes: the workspace scope patches
-// `modelCatalog`, and applying it as settings would read an all-absent snapshot.
-const (
-	ScopeSession   = "session"
-	ScopeWorkspace = "workspace"
-)
 
 // ZCode tool names LeapMux reasons about by name are generated: see
 // contracts/zcode-protocol.json. The renderer plugin dispatches on the same names.
@@ -348,6 +339,10 @@ type zcodeEventEnvelope struct {
 	Type         string          `json:"type"`
 	Payload      json.RawMessage `json:"payload"`
 	raw          json.RawMessage
+	// archive identifies reconstructed replay, whose batches can overlap live deltas.
+	archive bool
+	// replayUncertain carries checkpoint uncertainty to owners first seen in a replay drain.
+	replayUncertain bool
 }
 
 // UnmarshalJSON retains fields that the provider adds and the exact original bytes.

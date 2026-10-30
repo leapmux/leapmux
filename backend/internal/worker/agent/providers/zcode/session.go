@@ -1,6 +1,7 @@
 package zcode
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,65 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
+
+// zcodeSessionObservationIdentity fixes the lifetime and observation order before an RPC.
+type zcodeSessionObservationIdentity struct {
+	sessionID           string
+	epoch               uint64
+	observationSequence uint64
+	usable              bool
+}
+
+func (a *Agent) captureZCodeObservationIdentityLocked() zcodeSessionObservationIdentity {
+	return zcodeSessionObservationIdentity{sessionID: a.sessionID, epoch: a.sessionEpoch, observationSequence: a.observationSequence, usable: !a.sessionChanging && !a.StoppedLocked()}
+}
+
+func (a *Agent) zcodeSessionLifetimeCurrentLocked(identity zcodeSessionObservationIdentity) bool {
+	return identity.usable && identity.sessionID != "" && identity.sessionID == a.sessionID && identity.epoch == a.sessionEpoch && !a.sessionChanging && !a.StoppedLocked()
+}
+
+func (a *Agent) zcodeReadObservationCurrentLocked(identity *zcodeSessionObservationIdentity, runtime *zcodeRuntimeState) bool {
+	if runtime != nil && runtime.stateRevisionKnown && runtime.StateRevision < a.stateRevision {
+		return false
+	}
+	if identity == nil {
+		return true
+	}
+	if !identity.usable || a.sessionChanging || identity.sessionID != a.sessionID || identity.epoch != a.sessionEpoch {
+		return false
+	}
+	if identity.observationSequence != a.observationSequence {
+		return runtime != nil && runtime.stateRevisionKnown && runtime.StateRevision > a.stateRevision
+	}
+	return true
+}
+
+// readZCodeSession processes the known retained event range before exposing a snapshot.
+func (a *Agent) readZCodeSession(ctx context.Context, identity zcodeSessionObservationIdentity) (zcodeSessionReadSnapshot, error) {
+	var snapshot zcodeSessionReadSnapshot
+	if identity.sessionID == "" || !identity.usable {
+		return snapshot, errNoZCodeSession
+	}
+	raw, err := a.sendZCodeRequestContext(ctx, MethodSessionRead, map[string]any{"sessionId": identity.sessionID}, a.APITimeout())
+	if err != nil {
+		return snapshot, err
+	}
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		return snapshot, fmt.Errorf("decode session/read: %w", err)
+	}
+	if snapshot.Session != nil && snapshot.Session.SessionID != identity.sessionID {
+		return snapshot, fmt.Errorf("session/read returned a snapshot for another session")
+	}
+	observedSeq := int64(0)
+	if snapshot.Runtime != nil {
+		observedSeq = snapshot.Runtime.EventSeq
+	}
+	if err := a.ensureZCodeReplayThrough(ctx, identity.sessionID, observedSeq, identity.epoch); err != nil {
+		return snapshot, err
+	}
+	snapshot.identity = &identity
+	return snapshot, nil
+}
 
 // zcodeStateSnapshot is the state document every session RPC that changes
 // something returns: session/create, session/resume, and each setter.
@@ -39,27 +99,17 @@ type zcodeStateSnapshot struct {
 	// 0, and session/goal then sent expectedRevision 0 against a live session
 	// whose revision was higher -- the app-server refused every goal action
 	// with a conflict that did not exist.
-	Runtime struct {
-		EventSeq      int64  `json:"eventSeq"`
-		StateRevision int64  `json:"stateRevision"`
-		ActiveTurnID  string `json:"activeTurnId"`
-	} `json:"runtime"`
-	Projection struct {
-		ContextUsed     int64  `json:"contextUsed"`
-		ContextWindow   int64  `json:"contextWindow"`
-		TotalTokenCount int64  `json:"totalTokenCount"`
-		TurnCount       int    `json:"turnCount"`
-		CurrentTurnID   string `json:"currentTurnId"`
-	} `json:"projection"`
+	Runtime    zcodeRuntimeState    `json:"runtime"`
+	Projection zcodeProjectionState `json:"projection"`
 }
 
 // openSession creates a fresh session, or resumes the one the client specified.
 //
 // A resume that does not hold fails the whole start. See providerkit.ResumeFailedError.
 func (a *Agent) openSession(resumeID string, timeout time.Duration) error {
-	a.sessionLifecycleMu.Lock()
+	a.lockZCodeSessionLifecycle()
 	snap, err := a.openSessionState(resumeID, timeout)
-	a.sessionLifecycleMu.Unlock()
+	a.unlockZCodeSessionLifecycle()
 	if err == nil {
 		// Goal reporting can call the sink, so it runs outside the lifecycle lock.
 		a.reportZCodeGoal(snap.Session.Target, true)
@@ -161,7 +211,7 @@ func (a *Agent) openSessionState(resumeID string, timeout time.Duration) (zcodeS
 	if !ok || !zcodeUsableSessionID(snap.Session.SessionID) {
 		return zcodeStateSnapshot{}, fmt.Errorf("%s returned no session id", MethodSessionCreate)
 	}
-	a.applyCompleteSessionSnapshot(snap)
+	a.adoptCompleteZCodeSessionSnapshot(snap, true)
 	if mode != "" {
 		// The runtime folds the create's mode as it folds a session/setMode request,
 		// and the reply states the native mode only. A create with no mode takes a
@@ -206,7 +256,10 @@ func (a *Agent) applyStartupSettings(req zcodeSettingsRequest, timeout time.Dura
 	}
 	// EffortAuto is LeapMux's sentinel for "send no thought level at all", so the
 	// app-server keeps whatever default it resolved for the model.
-	if applyLevel {
+	a.Mu.Lock()
+	unavailable := a.zcodeCurrentModelUnavailableLocked()
+	a.Mu.Unlock()
+	if applyLevel && !unavailable {
 		if err := a.applyZCodeThoughtLevel(level, timeout); err != nil {
 			slog.Warn("zcode setThoughtLevel on startup failed", "agent_id", a.AgentID(), "level", level, "error", err)
 		}
@@ -236,7 +289,7 @@ func (a *Agent) applyStartupSettings(req zcodeSettingsRequest, timeout time.Dura
 // whole history into a transcript LeapMux already persisted.
 //
 // The reply must be the full {sessionId, eventSeq, events} document for the
-// session the request named. `snapshot` is optional and ignored when present.
+// session the request specified. `snapshot` is optional and ignored when present.
 // A decode or identity failure is returned: startup and ClearContext must not
 // proceed on a subscription that proved nothing.
 //
@@ -246,15 +299,20 @@ func (a *Agent) applyStartupSettings(req zcodeSettingsRequest, timeout time.Dura
 // leaves the gap for replayZCodeEvents to recover.
 func (a *Agent) subscribe(timeout time.Duration) error {
 	a.Mu.Lock()
-	sessionID, afterSeq := a.sessionID, a.lastSeq
+	identity := a.captureZCodeObservationIdentityLocked()
+	sessionID, afterSeq, epoch := identity.sessionID, a.lastSeq, identity.epoch
+	usable := a.zcodeSessionLifetimeCurrentLocked(identity)
 	a.Mu.Unlock()
 
-	raw, err := a.sendZCodeRequest(MethodSessionSubscribe, map[string]any{
+	if !usable {
+		return errNoZCodeSession
+	}
+	raw, err := a.sendZCodeSessionRequest(a.Context(), identity, MethodSessionSubscribe, map[string]any{
 		"sessionId":       sessionID,
 		"deliveryKind":    DeliveryContinuous,
 		"includeSnapshot": false,
 		"afterSeq":        afterSeq,
-	}, timeout)
+	}, timeout, nil)
 	if err != nil {
 		return err
 	}
@@ -280,54 +338,30 @@ func (a *Agent) subscribe(timeout time.Duration) error {
 	if resp.Events == nil {
 		return fmt.Errorf("%s returned no event list", MethodSessionSubscribe)
 	}
-	// Events the subscription replayed arrive in the RESPONSE, not as
-	// notifications, so they are dispatched here through the ordered
-	// coordinator. It advances lastSeq only for dispatched events.
-	for _, event := range *resp.Events {
-		a.dispatchZCodeEventOrdered(event)
+	events, err := prepareZCodeArchiveEvents(*resp.Events, sessionID)
+	if err != nil {
+		return fmt.Errorf("%s: %w", MethodSessionSubscribe, err)
 	}
-	// Record the response's high watermark so a gap between the last dispatched
-	// event and response.eventSeq triggers replay. Do NOT assign
-	// lastSeq = resp.EventSeq: the cursor advances only through dispatched
-	// events.
-	if *resp.EventSeq > 0 {
-		a.dispatchMu.Lock()
-		if *resp.EventSeq > a.replay.highWatermark {
-			a.replay.highWatermark = *resp.EventSeq
-		}
-		a.dispatchMu.Unlock()
-		// Startup must not succeed with a known gap: fill it now.
-		if err := a.ensureZCodeReplayContiguous(a.Context()); err != nil {
-			slog.Warn("zcode subscribe gap recovery", "agent_id", a.AgentID(), "error", err)
-		}
+	// The receipt's identity applies to ID-less entries too. A session replacement
+	// during this request must not admit its events or watermark to the new lifetime.
+	a.dispatchMu.Lock()
+	a.Mu.Lock()
+	current := a.zcodeSessionLifetimeCurrentLocked(identity)
+	a.Mu.Unlock()
+	if !current {
+		a.unlockZCodeDispatch()
+		return errNoZCodeSession
 	}
-	return nil
-}
+	a.markZCodeCanonicalRecoveryLocked()
+	for _, event := range events {
+		a.admitZCodeEventLocked(event)
+	}
+	a.unlockZCodeDispatch()
+	if err := a.ensureZCodeReplayThrough(a.Context(), sessionID, *resp.EventSeq, epoch); err != nil {
+		return fmt.Errorf("recover %s events: %w", MethodSessionSubscribe, err)
+	}
 
-// applyStateSnapshot folds a state document into the agent's own state.
-//
-// It does NOT report the goal, and that omission is the point. Three settings
-// setters fold their reply documents through here -- applyZCodeModel,
-// applyZCodeThoughtLevel and applyZCodeMode -- so reporting the goal from this
-// function would let a model, effort or permission-mode change write the goal
-// columns. Worse, reportZCodeGoal reads a `null` goal as "the goal is gone", so
-// a settings reply that spells it would DELETE a live goal and broadcast the
-// removal with no transcript row.
-//
-// The goal is reported from the two calls that genuinely restate a session,
-// openSession's create and resume branches, which is where a session snapshot
-// is the authority on what the goal is.
-func (a *Agent) applyStateSnapshot(raw json.RawMessage) (zcodeStateSnapshot, bool) {
-	if snap, ok := a.parseStateSnapshot(raw); ok {
-		a.Mu.Lock()
-		defer a.Mu.Unlock()
-		if zcodeUsableSessionID(snap.Session.SessionID) && snap.Session.SessionID != a.sessionID {
-			return zcodeStateSnapshot{}, false
-		}
-		a.applyParsedStateSnapshotLocked(snap)
-		return snap, true
-	}
-	return zcodeStateSnapshot{}, false
+	return nil
 }
 
 // parseStateSnapshot decodes a state document. ok is false for an absent or a
@@ -361,51 +395,108 @@ func (a *Agent) parseStateSnapshot(raw json.RawMessage) (zcodeStateSnapshot, boo
 
 // applyCompleteSessionSnapshot folds create/resume, whose model list is complete.
 func (a *Agent) applyCompleteSessionSnapshot(snap zcodeStateSnapshot) {
+	a.adoptCompleteZCodeSessionSnapshot(snap, false)
+}
+
+// adoptCompleteZCodeSessionSnapshot commits a new session lifetime with its replay state.
+// A create replaces the lifetime even if the response repeats the native session ID.
+func (a *Agent) adoptCompleteZCodeSessionSnapshot(snap zcodeStateSnapshot, fresh bool) {
+	a.dispatchMu.Lock()
+	defer a.unlockZCodeDispatch()
 	a.Mu.Lock()
-	defer a.Mu.Unlock()
-	if a.account != nil && snap.Settings != nil && snap.Settings.Model != nil && snap.Settings.Model.Available != nil {
+	oldSessionID := a.sessionID
+	replace := fresh || snap.Session.SessionID != oldSessionID
+	if replace {
+		a.sessionEpoch++
+		a.sessionChanging = true
+	}
+	a.Mu.Unlock()
+	if replace {
+		a.retireZCodeSessionObservationLocked()
+		if oldSessionID != "" {
+			a.retireZCodeSessionState(oldSessionID)
+		}
+		a.invalidateZCodeEventReplayLocked()
+	}
+	a.Mu.Lock()
+	if replace {
+		a.resetZCodeSessionCountersLocked()
+	}
+	if snap.Settings != nil && snap.Settings.Model != nil && snap.Settings.Model.Available != nil {
 		a.replaceZCodeLiveModelsLocked(snap.Settings.Model.Available, snap.Settings.Model.Current)
 	}
 	a.applyParsedStateSnapshotLocked(snap)
-	// Only initial adoption establishes a watermark from a snapshot. Setter
-	// replies can include notifications that LeapMux has not processed yet.
-	if snap.Runtime.EventSeq > a.lastSeq {
-		a.lastSeq = snap.Runtime.EventSeq
+	a.lastSeq = max(a.lastSeq, snap.Runtime.EventSeq)
+	if snap.Runtime.ActiveTurnID != "" && a.turns[snap.Runtime.ActiveTurnID] == nil {
+		a.createResumedZCodeTurnLocked(snap)
 	}
-	// A resume that reports an active turn creates a resumed owner for it, so
-	// recovery has a target. The owner carries no anchor until replay or a
-	// native start establishes what belongs to that turn.
-	if snap.Runtime.ActiveTurnID != "" {
-		if existing := a.turns[snap.Runtime.ActiveTurnID]; existing == nil {
-			a.createResumedZCodeTurnLocked(snap)
-		}
+	a.Mu.Unlock()
+	if replace {
+		a.sink.AdoptNativeSession(snap.Session.SessionID)
+		a.Mu.Lock()
+		a.sessionChanging = false
+		a.Mu.Unlock()
 	}
 }
 
+// retireZCodeSessionState finishes the replaced session before adoption can expose
+// new output. The caller holds dispatchMu and issues no native request here.
+func (a *Agent) retireZCodeSessionState(sessionID string) {
+	a.cancelZCodeRuntimeHeaderAnswersForSession(sessionID)
+	a.dropZCodeSteersOfReplacedSession()
+	a.retryResolution.Reset()
+	a.stopAllZCodeTurnWatchers()
+	a.endZCodeCompaction()
+	a.flushZCodeGeneration(agent.MessageCompletionInterrupted)
+	a.persistIncompleteZCodeTools(agent.MessageCompletionInterrupted)
+	a.Mu.Lock()
+	a.clearZCodeTurnsLocked()
+	a.compactionSessionID = ""
+	a.cancelStoppedZCodeTurnLocked()
+	a.TurnToolUses = 0
+	a.latestContextUsage = nil
+	a.sessionCostUsd = 0
+	a.sessionCostKnown = false
+	clear(a.toolInvocations)
+	a.nextToolOrder = 0
+	upserts := a.workflows.clear(agent.IncompleteTaskStatus(agent.MessageCompletionInterrupted))
+	a.Mu.Unlock()
+	a.upsertZCodeWorkflowRows(upserts)
+	a.withdrawPendingControls()
+	a.toolCallPrompts.Clear()
+	a.children.clear()
+	a.ResetCumulativeOutput()
+	// Pending writes retain their captured old session and must survive a storage failure.
+	a.generationBuffer.DiscardMatching(func(string) bool { return true })
+	a.sink.ReportProgress(agent.ResetProgress())
+	a.sink.ResetSpans()
+	a.clearZCodeGoal(false)
+}
+
+func (a *Agent) resetZCodeSessionCountersLocked() {
+	a.observationSequence++
+	a.modelObserved = false
+	a.thoughtLevelObserved = false
+	a.observedThoughtLevels = nil
+	a.observedThoughtDefault = ""
+	a.lastSeq = 0
+	a.stateRevision = 0
+	a.modeObserved = false
+	a.planEnabled = false
+	a.planObserved = false
+	a.pendingExitMode = ""
+}
+
 // createResumedZCodeTurnLocked adopts the active turn a resume snapshot
-// reports. The owner starts without content or anchor: recovery emits
-// nothing until replay or a native start establishes the anchor. The caller
-// holds a.Mu.
+// reports. The owner starts without content or a user-message anchor.
+// Recovery can select native messages whose turn anchor matches this turn.
+// The caller holds a.Mu.
 func (a *Agent) createResumedZCodeTurnLocked(snap zcodeStateSnapshot) {
-	if a.turns == nil {
-		a.turns = make(map[string]*zcodeTurnState)
-	}
-	a.turnGeneration++
-	turn := &zcodeTurnState{
+	a.createZCodeTurnLocked(zcodeTurnState{
 		id:                snap.Runtime.ActiveTurnID,
-		generation:        a.turnGeneration,
 		background:        false,
-		acceptedAt:        a.Clock().Now(),
 		admissionRevision: snap.Runtime.StateRevision,
-		baselineTurnCount: snap.Projection.TurnCount,
-		contentByScope:    map[string]string{},
-		toolCallIDs:       map[string]struct{}{},
-	}
-	a.turns[turn.id] = turn
-	a.foregroundTurnID = turn.id
-	a.refreshTurnActiveLocked()
-	// Start the recovery watcher so a stalled resumed turn is noticed.
-	a.startZCodeTurnWatcherLocked(turn)
+	})
 }
 
 func (a *Agent) applyParsedStateSnapshotLocked(snap zcodeStateSnapshot) {
@@ -415,28 +506,13 @@ func (a *Agent) applyParsedStateSnapshotLocked(snap zcodeStateSnapshot) {
 			// what LeapMux knows about its mode. A resumed session restores its plan
 			// flag from ZCode's store, and no snapshot states it, so the flag is
 			// unknown until a mode request or a mode event states it.
-			a.lastSeq = 0
-			a.stateRevision = 0
-			a.modeObserved = false
-			a.planEnabled = false
-			a.planObserved = false
-			a.pendingExitMode = ""
+			a.resetZCodeSessionCountersLocked()
 		}
 		a.sessionID = snap.Session.SessionID
 	}
-	a.noteZCodeStateRevisionLocked(snap.Runtime.StateRevision)
+	a.applyZCodeRuntimeStateLocked(&snap.Runtime)
 	if snap.Projection.ContextWindow > 0 {
 		a.contextWindow = snap.Projection.ContextWindow
-	}
-	if snap.Settings != nil && snap.Settings.Model != nil && snap.Settings.Model.Current.ModelID != "" {
-		delete(a.unresolvedSettings, agent.OptionIDModel)
-	}
-	if snap.Settings != nil && snap.Settings.ThoughtLevel != nil &&
-		(!snap.Settings.ThoughtLevel.Enabled || snap.Settings.ThoughtLevel.Current != "") {
-		delete(a.unresolvedSettings, agent.OptionIDEffort)
-	}
-	if snap.Settings != nil && snap.Settings.Mode != nil && snap.Settings.Mode.Current != "" {
-		delete(a.unresolvedSettings, agent.OptionIDPermissionMode)
 	}
 	a.applySettingsSnapshotLocked(snap.Settings)
 }
@@ -480,60 +556,18 @@ func (a *Agent) ClearContext() (string, error) {
 	if err := a.openSession("", timeout); err != nil {
 		return "", err
 	}
-	// The credential work of the replaced session is stale with it. The fresh
-	// session's own answers are keyed by its session id and survive.
-	a.cancelZCodeRuntimeHeaderAnswersForSession(oldSessionID)
-	a.dropZCodeSteersOfReplacedSession()
-	a.retryResolution.Reset()
 	a.applyStartupSettings(current, timeout)
-	// The turn belonged to the session this call replaced, so every owner goes
-	// with it. The flags and the window go in ONE critical section: a frame that
-	// arrived between them re-armed the window, which then fired into the NEW
-	// session.
-	a.invalidateZCodeEventReplay()
-	a.stopAllZCodeTurnWatchers()
-	a.Mu.Lock()
-	a.clearZCodeTurnsLocked()
-	a.compactionSessionID = ""
-	a.cancelStoppedZCodeTurnLocked()
-	a.Mu.Unlock()
-	a.endZCodeCompaction()
-	a.flushZCodeGeneration(agent.MessageCompletionInterrupted)
-	a.persistIncompleteZCodeTools(agent.MessageCompletionInterrupted)
-
-	a.Mu.Lock()
-	a.TurnToolUses = 0
-	a.latestContextUsage = nil
-	clear(a.toolCalls)
-	a.nextToolOrder = 0
-	sessionID := a.sessionID
-	// The replaced session's workflow runs end with it, and so does the
-	// subscription that watched them.
-	workflowUpserts := a.workflows.clear(agent.IncompleteTaskStatus(agent.MessageCompletionInterrupted))
-	a.Mu.Unlock()
-	a.upsertZCodeWorkflowRows(workflowUpserts)
-	a.withdrawPendingControls()
 	if err := a.reconcileZCodeConversation(); err != nil {
 		slog.Warn("zcode conversation subscription", "agent_id", a.AgentID(), "error", err)
 	}
 	a.PublishTurnActive()
-	a.toolCallPrompts.Clear()
-	a.children.clear()
-	a.ResetCumulativeOutput()
-	a.generationBuffer.Reset()
-	a.sink.ReportProgress(agent.ResetProgress())
-	a.sink.ResetSpans()
-	// A goal belongs to a SESSION, and this call replaced the session. The create
-	// snapshot can omit the goal, and reportZCodeGoal reports nothing for an
-	// absent key, so this clear is what removes the previous session's goal. It
-	// also forgets the goal that a goal check of the replaced session would
-	// report again.
-	a.clearZCodeGoal(false)
+	a.Mu.Lock()
+	sessionID := a.sessionID
+	a.Mu.Unlock()
 
 	if sessionID == "" {
 		return "", fmt.Errorf("the new ZCode session has no ID")
 	}
-	a.sink.UpdateSessionID(sessionID)
 	err := a.subscribe(timeout)
 	if oldSessionID != "" && oldSessionID != sessionID {
 		go a.retireZCodeSession(oldSessionID)

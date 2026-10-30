@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -207,10 +206,11 @@ func loadZCodeCatalog(homeDir string) (zcodeCatalog, error) {
 	if path == "" {
 		return zcodeCatalog{}, fmt.Errorf("no home directory to read ZCode's configuration from")
 	}
+	selection, _ := loadZCodeAccountSelection(homeDir)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return zcodeCatalog{accountSelection: loadZCodeAccountSelection(homeDir)}, fmt.Errorf("%w: %s", errZCodeConfigMissing, path)
+			return zcodeCatalog{accountSelection: selection}, fmt.Errorf("%w: %s", errZCodeConfigMissing, path)
 		}
 		return zcodeCatalog{}, fmt.Errorf("read %s: %w", path, err)
 	}
@@ -219,7 +219,7 @@ func loadZCodeCatalog(homeDir string) (zcodeCatalog, error) {
 		return zcodeCatalog{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 	catalog, skipped := buildZCodeCatalog(cfg)
-	catalog.accountSelection = loadZCodeAccountSelection(homeDir)
+	catalog.accountSelection = selection
 	if len(catalog.Providers) == 0 {
 		return catalog, fmt.Errorf("%w: no ZCode model provider in %s is usable%s", errZCodeConfigUnusable, path, zcodeSkipDetail(skipped))
 	}
@@ -227,19 +227,23 @@ func loadZCodeCatalog(homeDir string) (zcodeCatalog, error) {
 }
 
 // loadZCodeAccountSelection reads the account connection that setting.json selects.
-// A missing or unreadable file selects nothing.
-func loadZCodeAccountSelection(homeDir string) zcodeAccountSelection {
+// The caller decides whether a read failure permits an empty initial selection
+// or requires preserving the last valid selection.
+func loadZCodeAccountSelection(homeDir string) (zcodeAccountSelection, error) {
 	if homeDir == "" {
-		return zcodeAccountSelection{}
+		return zcodeAccountSelection{}, errors.New("no home directory for account selection")
 	}
 	path := filepath.Join(append([]string{homeDir}, zcodeDesktopSettingsRelPath...)...)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return zcodeAccountSelection{}
+		return zcodeAccountSelection{}, err
 	}
-	var settings zcodeDesktopSettingsFile
-	if json.Unmarshal(data, &settings) != nil {
-		return zcodeAccountSelection{}
+	var settings *zcodeDesktopSettingsFile
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return zcodeAccountSelection{}, fmt.Errorf("parse account selection: %w", err)
+	}
+	if settings == nil {
+		return zcodeAccountSelection{}, errors.New("account selection must be an object")
 	}
 	selection := zcodeAccountSelection{
 		domain:    strings.TrimSpace(settings.ProviderFamilyDomain),
@@ -262,35 +266,32 @@ func loadZCodeAccountSelection(homeDir string) zcodeAccountSelection {
 			selection.teams[family] = team
 		}
 	}
-	return selection
+	return selection, nil
 }
 
-// loadZCodeCodingPlanEntitlements reads coding-plan-cache.json, the desktop's
-// record of coding-plan availability. The shape is
-// entryStatus.items[<legacy-provider-id>].status. An explicit "available" marks
-// the plan available; an explicit "unavailable" marks it unavailable with
-// "not-entitled", even when a credential exists. An absent cache preserves the
-// current headless behavior. A malformed rewrite keeps the last usable
-// configuration and logs the error.
-func loadZCodeCodingPlanEntitlements(homeDir string) map[string]zcodeAccountEntitlement {
+// loadZCodeCodingPlanEntitlements decodes the desktop's coding-plan availability.
+// The caller retains its previous snapshot when this read fails.
+func loadZCodeCodingPlanEntitlements(homeDir string) (map[string]zcodeAccountEntitlement, error) {
 	if homeDir == "" {
-		return nil
+		return nil, errors.New("no home directory for coding-plan entitlements")
 	}
 	path := filepath.Join(append([]string{homeDir}, zcodeCodingPlanCacheRelPath...)...)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var cache struct {
-		EntryStatus struct {
+		EntryStatus *struct {
 			Items map[string]struct {
 				Status string `json:"status"`
 			} `json:"items"`
 		} `json:"entryStatus"`
 	}
 	if err := json.Unmarshal(data, &cache); err != nil {
-		slog.Warn("zcode coding-plan-cache.json is malformed; keeping the last usable configuration", "error", err)
-		return nil
+		return nil, err
+	}
+	if cache.EntryStatus == nil || cache.EntryStatus.Items == nil {
+		return nil, errors.New("coding-plan entitlements lack entryStatus.items")
 	}
 	out := make(map[string]zcodeAccountEntitlement, len(cache.EntryStatus.Items))
 	for id, item := range cache.EntryStatus.Items {
@@ -299,9 +300,32 @@ func loadZCodeCodingPlanEntitlements(homeDir string) map[string]zcodeAccountEnti
 			out[id] = zcodeAccountEntitlement{Availability: zcodeAvailabilityAvailable}
 		case "unavailable":
 			out[id] = zcodeAccountEntitlement{Availability: zcodeAvailabilityUnavailable, UnavailableReason: zcodeUnavailableNotEntitled}
+		default:
+			return nil, fmt.Errorf("coding-plan entitlement %q has unknown status %q", id, item.Status)
 		}
 	}
-	return out
+	return out, nil
+}
+
+// loadZCodeRegistryProviders reads only the registry inputs needed by account refresh.
+func loadZCodeRegistryProviders(homeDir string) ([]zcodeRegistryProvider, error) {
+	path := zcodeConfigPath(homeDir)
+	if path == "" {
+		return nil, errors.New("no home directory for ZCode providers")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, errZCodeConfigMissing
+		}
+		return nil, err
+	}
+	var cfg zcodeConfigFile
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	providers, _ := buildZCodeRegistryProviders(cfg)
+	return providers, nil
 }
 
 // zcodeUUIDPattern matches the device id that the desktop generates.

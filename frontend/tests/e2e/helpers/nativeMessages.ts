@@ -161,7 +161,7 @@ export function nativeMessagesHoldingText(messages: readonly AgentChatMessage[],
 
 export interface NativeToolOutputRecordOptions {
   callId: string
-  spanId: string | ((frame: Record<string, unknown>) => string)
+  spanId: string | ((frame: Record<string, unknown>, message: AgentChatMessage, supplement: unknown) => string)
   accepts: (frame: Record<string, unknown>) => boolean
 }
 
@@ -186,9 +186,10 @@ export function readNativeToolOutputRecord(snapshot: NativeMessageSnapshot, opti
     const frame = nativeMessageBody(message)
     if (!isObject(frame) || !options.accepts(frame))
       continue
+    const supplement = nativeMessageSupplement(message)
     const spanId = typeof options.spanId === 'string'
       ? options.spanId
-      : options.spanId(frame)
+      : options.spanId(frame, message, supplement)
     if (!spanId.trim())
       throw new Error('The native output record callback supplied an empty span owner.')
     if (message.spanId !== spanId)
@@ -196,7 +197,7 @@ export function readNativeToolOutputRecord(snapshot: NativeMessageSnapshot, opti
     records.push({
       message,
       frame,
-      supplement: nativeMessageSupplement(message),
+      supplement,
     })
   }
   if (records.length !== 1 || !records[0])

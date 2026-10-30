@@ -3,6 +3,7 @@ package codewhale
 import (
 	"net/http"
 	"net/url"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -218,14 +219,14 @@ func TestTheStreamSkipsDataThatIsNotAnEvent(t *testing.T) {
 	a.waitForStream()
 }
 
-// Each event the switch lists as ignored, each event of an ignored family, and
-// an event of a later release persist nothing. Each one still moves the
-// sequence, so a reconnect does not ask for it again.
+// Known ignored events and ignored families persist nothing. An unknown event
+// persists unchanged. All advance the sequence, so a reconnect skips them.
 func TestKnownEventsAreConsumedAndUnknownEventsPersist(t *testing.T) {
 	t.Parallel()
 	a, sink := newTestAgent(t, nil)
 	names := []string{
 		eventThreadStarted, eventThreadForked, eventTurnLifecycle, eventTurnInterruptRequested, eventModelToolsSnapshot,
+		"turn.provider_request",
 		"agent.spawned", "agent_mail.received", "tool_call.requested", "a_later.event",
 	}
 	for i, name := range names {
@@ -238,4 +239,50 @@ func TestKnownEventsAreConsumedAndUnknownEventsPersist(t *testing.T) {
 	assert.Zero(t, sink.PublishedControlCount())
 	assert.Empty(t, sink.TurnActives())
 	assert.Equal(t, uint64(len(names)), a.lastSeq)
+}
+
+func TestProviderRequestReceiptsAreDiagnostic(t *testing.T) {
+	t.Parallel()
+	for _, reported := range []bool{false, true} {
+		t.Run(strconv.FormatBool(reported), func(t *testing.T) {
+			t.Parallel()
+			a, sink := newTestAgent(t, nil)
+			a.HandleOutput(runtimeEvent(1, "turn.started", testTurnID, "", map[string]any{}))
+			a.HandleOutput(runtimeEvent(2, "turn.usage", testTurnID, "", map[string]any{"usage": map[string]any{"input_tokens": 100, "output_tokens": 7}}))
+			before, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyContextUsage)
+			require.True(t, ok)
+			broadcasts := sink.SessionInfoCount()
+			var usage any
+			if reported {
+				usage = map[string]any{"input_tokens": 9000, "output_tokens": 8000}
+			}
+			// Native 0.10.2 receipts describe request diagnostics. turn.usage owns
+			// the billable counts, even when a receipt repeats a usage object.
+			receipt := runtimeEvent(3, "turn.provider_request", testTurnID, "", map[string]any{
+				"turn_id": testTurnID, "request_index": 1, "prefix_check": nil,
+				"reused_preparation": false, "wire_observations": []any{},
+				"wire_observations_dropped": 0, "usage": usage, "usage_reported": reported,
+				"outcome": "completed", "transport_retries": 0, "elapsed_ms": 1,
+				"cache_attribution": "Local prefix changes and wire schema measurements are context for reported usage, not proof that eviction caused a miss or that unreported retries were free.",
+			})
+			a.HandleOutput(receipt)
+			a.HandleOutput(receipt)
+			assert.Equal(t, uint64(3), a.lastSeq)
+			assert.Empty(t, sink.Messages())
+			assert.Empty(t, sink.PersistedNotifications())
+			assert.Equal(t, broadcasts, sink.SessionInfoCount())
+			after, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyContextUsage)
+			require.True(t, ok)
+			assert.Equal(t, before, after)
+			message := itemEvent(4, contracts.CodewhaleEventItemCompleted, "reply", contracts.CodewhaleItemKindAgentMessage, "Hello.", nil)
+			a.HandleOutput(message)
+			a.HandleOutput(turnCompletedEvent(5, testTurnID, contracts.CodewhaleTurnStatusCompleted))
+			rows := sink.Messages()
+			require.Len(t, rows, 2)
+			assert.Equal(t, message, rows[0].Content)
+			assert.True(t, rows[1].TurnEnd)
+			a.HandleOutput(runtimeEvent(6, "turn.future_diagnostic", testTurnID, "", map[string]any{}))
+			require.Len(t, sink.Messages(), 3, "an unknown event must remain visible")
+		})
+	}
 }

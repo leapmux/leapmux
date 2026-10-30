@@ -95,7 +95,7 @@ func TestZCodeControlInputPreservesEarlierSupplement(t *testing.T) {
 	original := []byte(`{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"call","toolName":"ExitPlanMode"}}`)
 	event, ok := parseZCodeEvent(original)
 	require.True(t, ok)
-	a.dispatchZCodeEvent(event)
+	a.dispatchZCodeEventOrdered(event)
 	matched, err := a.supplementZCodeControlInput("call", "ExitPlanMode", json.RawMessage(`{"plan":"# Plan"}`))
 	require.NoError(t, err)
 	require.True(t, matched)

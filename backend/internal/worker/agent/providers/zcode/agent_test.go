@@ -2,6 +2,7 @@ package zcode
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -330,6 +331,7 @@ func TestZCodeInterrupt_EndsTheTurnTheAppServerNeverAnnounces(t *testing.T) {
 	// settlement emits is the only one the assertion can see.
 	zcodeSeedTestTurn(t, a, false)
 	a.Mu.Lock()
+	a.turns[a.foregroundTurnID].contentByScope["silent-stream"] = &zcodeScopeContent{observed: []byte("partial")}
 	a.turnActive = true
 	a.Mu.Unlock()
 
@@ -365,7 +367,8 @@ func TestZCodeInterrupt_LeavesARunningToolCallOpen(t *testing.T) {
 	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	a.Mu.Lock()
 	a.turnActive = true
-	a.toolCalls["call-1"] = &zcodeToolCall{name: "bash", lastFrame: []byte(`{"toolCallId":"call-1"}`)}
+	a.toolInvocations["call-1"] = &zcodeToolInvocation{spanID: "call-1", nativeCallID: "call-1", name: "bash", lastFrame: []byte(`{"toolCallId":"call-1"}`)}
+	zcodeOwnTestToolLocked(t, a, "call-1")
 	a.Mu.Unlock()
 
 	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
@@ -373,7 +376,7 @@ func TestZCodeInterrupt_LeavesARunningToolCallOpen(t *testing.T) {
 
 	assert.Empty(t, sink.Messages(), "the call keeps its running card until its own update arrives")
 	a.Mu.Lock()
-	_, stillOpen := a.toolCalls["call-1"]
+	_, stillOpen := a.toolInvocations["call-1"]
 	a.Mu.Unlock()
 	assert.True(t, stillOpen, "the call is still the runtime's to finish")
 }
@@ -434,11 +437,12 @@ func TestZCodeInterrupt_NoSessionIsANoop(t *testing.T) {
 
 // "unknown" is the app-server's placeholder before a session exists. Adopting it
 // would make later RPCs send a sessionId the app-server rejects.
-func TestApplyStateSnapshot_IgnoresTheUnknownSessionPlaceholder(t *testing.T) {
+func TestSettleZCodeSettingsSnapshot_RejectsTheUnknownSessionPlaceholder(t *testing.T) {
 	t.Parallel()
 
 	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.ControlSink{}))
-	a.applyStateSnapshot(json.RawMessage(`{"session":{"sessionId":"unknown"},"runtime":{"eventSeq":3}}`))
+	_, _, err := a.settleZCodeSettingsSnapshot(zcodeSettingsRequestIdentityForTest(a), nil, json.RawMessage(`{"session":{"sessionId":"unknown"},"runtime":{"eventSeq":3}}`))
+	require.ErrorIs(t, err, errNoZCodeSession)
 
 	a.Mu.Lock()
 	sessionID, seq := a.sessionID, a.lastSeq
@@ -447,12 +451,14 @@ func TestApplyStateSnapshot_IgnoresTheUnknownSessionPlaceholder(t *testing.T) {
 	assert.Zero(t, seq, "an incremental snapshot cannot advance the event cursor")
 }
 
-func TestApplyStateSnapshot_EmptyIsANoop(t *testing.T) {
+func TestSettleZCodeSettingsSnapshot_EmptyIsANoop(t *testing.T) {
 	t.Parallel()
 
 	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.ControlSink{}))
-	a.applyStateSnapshot(nil)
-	a.applyStateSnapshot(json.RawMessage(``))
+	_, _, err := a.settleZCodeSettingsSnapshot(zcodeSettingsRequestIdentityForTest(a), nil, nil)
+	require.NoError(t, err)
+	_, _, err = a.settleZCodeSettingsSnapshot(zcodeSettingsRequestIdentityForTest(a), nil, json.RawMessage(``))
+	require.NoError(t, err)
 	a.Mu.Lock()
 	sessionID := a.sessionID
 	a.Mu.Unlock()
@@ -783,7 +789,7 @@ func TestZCodeClearContext_OpensAFreshSessionAndDropsPerSessionState(t *testing.
 	a.turnActive = true
 	a.compactionSessionID = "sess-1"
 	a.lastSeq = 99
-	a.toolCalls["call-1"] = &zcodeToolCall{name: "Bash", input: json.RawMessage(`{"command":"ls"}`), final: true}
+	a.toolInvocations["call-1"] = &zcodeToolInvocation{spanID: "call-1", nativeCallID: "call-1", name: "Bash", input: json.RawMessage(`{"command":"ls"}`), final: true}
 	a.pendingControls["req-1"] = newPendingControl(json.RawMessage(`{"type":"control_request"}`))
 	a.latestContextUsage = map[string]any{"context_tokens": int64(12)}
 	a.lastGoalUpdate = agent.GoalUpdate{NativeID: "g1", Objective: "Ship it", Status: agent.GoalStatusActive}
@@ -818,7 +824,7 @@ func TestZCodeClearContext_OpensAFreshSessionAndDropsPerSessionState(t *testing.
 	assert.Empty(t, a.compactionSessionID)
 	assert.Empty(t, a.turns, "the replaced session's turn owners go with it")
 	assert.Empty(t, a.foregroundTurnID)
-	assert.Empty(t, a.toolCalls, "one record per call, so a session replace drops every fact about it")
+	assert.Empty(t, a.toolInvocations, "one record per call, so a session replace drops every fact about it")
 	assert.Empty(t, a.pendingControls)
 	assert.Nil(t, a.latestContextUsage)
 	// The goal goes with the session. A goal check of the replaced session must
@@ -963,6 +969,72 @@ func TestZCodeClearContext_ReportsAnInvalidSubscribeReceipt(t *testing.T) {
 	_, err := a.ClearContext()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), MethodSessionSubscribe)
+}
+
+func TestZCodeClearContext_PreservesOutputFromTheReplacementDuringSettings(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.thoughtLevel = "high"
+	zcodeRespondToRequestsForTest(t, a, func(request zcodeSentRequest) json.RawMessage {
+		switch request.Method {
+		case MethodSessionCreate:
+			return json.RawMessage(`{"session":{"sessionId":"replacement"},"settings":{"mode":{"current":"build"}}}`)
+		case MethodSetThoughtLevel:
+			a.HandleOutput(zcodeTurnEventLineForSession(t, "replacement", 1, "new-turn", contracts.ZCodeEventTurnStarted,
+				`{"turnNumber":1}`))
+			a.HandleOutput(zcodeTurnEventLineForSession(t, "replacement", 2, "new-turn", contracts.ZCodeEventModelStreaming,
+				`{"kind":"text_delta","assistantMessageId":"new-message","delta":"replacement output"}`))
+			return json.RawMessage(`{"settings":{"thoughtLevel":{"enabled":true,"current":"high","available":[{"value":"high"}]}}}`)
+		case MethodSessionSubscribe:
+			return json.RawMessage(`{"sessionId":"replacement","eventSeq":2,"events":[]}`)
+		case MethodSessionStop, MethodSessionClose:
+			return json.RawMessage(`{}`)
+		default:
+			return nil
+		}
+	})
+	sessionID, err := a.ClearContext()
+	require.NoError(t, err)
+	assert.Equal(t, "replacement", sessionID)
+	assert.True(t, a.PublishTurnActive().Active)
+	assert.Equal(t, len("replacement output"), a.generationBuffer.RetainedTextLenForTest(zcodeTextScope("new-message")))
+	assert.Zero(t, sink.MessageCount(), "context replacement cannot flush the new turn as interrupted")
+}
+
+func TestZCodeClearContext_RetainsCapturedOutputAfterAStorageFailure(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{PersistErr: errors.New("storage unavailable")}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.sink.UpdateSessionID("sess-1")
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "old", contracts.ZCodeEventTurnStarted, `{"turnNumber":1}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "old", contracts.ZCodeEventModelStreaming,
+		`{"kind":"text_delta","assistantMessageId":"old-message","delta":"retained old output"}`))
+	zcodeRespondToRequestsForTest(t, a, func(request zcodeSentRequest) json.RawMessage {
+		switch request.Method {
+		case MethodSessionCreate:
+			return json.RawMessage(`{"session":{"sessionId":"replacement"},"settings":{"mode":{"current":"build"}}}`)
+		case MethodSessionSubscribe:
+			return json.RawMessage(`{"sessionId":"replacement","eventSeq":0,"events":[]}`)
+		case MethodSessionStop, MethodSessionClose:
+			return json.RawMessage(`{}`)
+		default:
+			return nil
+		}
+	})
+	_, err := a.ClearContext()
+	require.NoError(t, err)
+	assert.Equal(t, len("retained old output"), a.generationBuffer.RetainedTextLenForTest(zcodeTextScope("old-message")))
+	attempts := sink.MessageCount()
+	sink.PersistErr = nil
+	require.NoError(t, a.sink.OutputQueue().Flush())
+	require.Greater(t, sink.MessageCount(), attempts, "restored storage must retry the retained row")
+	row := sink.Messages()[sink.MessageCount()-1]
+	_, text, completion, ok := agenttest.DecodeAssembledMessage(row.Content)
+	require.True(t, ok)
+	assert.Equal(t, "retained old output", text)
+	assert.Equal(t, agent.MessageCompletionInterrupted, completion)
+	assert.Equal(t, "sess-1", row.AgentSessionID)
 }
 
 // --- startup selection and the reasoning-level ladder ---

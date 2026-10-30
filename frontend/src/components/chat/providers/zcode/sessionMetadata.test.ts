@@ -12,7 +12,14 @@ function usageRow(usage: Record<string, unknown>): ParsedMessageContent {
     sessionId: 's-1',
     seq: 1,
   }
-  return { wrapper: null, topLevel: parentObject, parentObject, rawText: '', supplementalContent: undefined, messageMetadata: undefined }
+  return {
+    wrapper: null,
+    topLevel: parentObject,
+    parentObject,
+    rawText: '',
+    supplementalContent: undefined,
+    messageMetadata: undefined,
+  }
 }
 
 describe('zcodeContextUsageFromMessage', () => {
@@ -101,9 +108,19 @@ describe('zcodeContextUsageFromMessage', () => {
 
   it('defaults the counts the event does not state to zero', () => {
     expect(zcodeContextUsageFromMessage(usageRow({ inputTokens: 12 })))
-      .toEqual({ inputTokens: 12, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, outputTokens: 0 })
+      .toEqual({
+        inputTokens: 12,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        outputTokens: 0,
+      })
     expect(zcodeContextUsageFromMessage(usageRow({ cacheReadTokens: 900, outputTokens: 4 })))
-      .toEqual({ inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 900, outputTokens: 4 })
+      .toEqual({
+        inputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 900,
+        outputTokens: 4,
+      })
   })
 
   it('returns null for an all-zero snapshot and for a row that carries no usage', () => {
@@ -115,19 +132,57 @@ describe('zcodeContextUsageFromMessage', () => {
       totalTokens: 0,
     }))).toBeNull()
 
-    const noUsage = { type: ZCODE_EVENT.SessionUpdated, payload: { content: 'done', stopReason: 'stop' }, sessionId: 's-1', seq: 1 }
-    expect(zcodeContextUsageFromMessage({ wrapper: null, topLevel: noUsage, parentObject: noUsage, rawText: '', supplementalContent: undefined, messageMetadata: undefined }))
+    const noUsage = {
+      type: ZCODE_EVENT.SessionUpdated,
+      payload: { content: 'done', stopReason: 'stop' },
+      sessionId: 's-1',
+      seq: 1,
+    }
+    expect(zcodeContextUsageFromMessage({
+      wrapper: null,
+      topLevel: noUsage,
+      parentObject: noUsage,
+      rawText: '',
+      supplementalContent: undefined,
+      messageMetadata: undefined,
+    }))
       .toBeNull()
   })
 
   it('returns null for a stored row that is not a model response', () => {
     // A `session.updated` of another shape stores no reply row, and the usage of
     // another event type belongs to no reply either.
-    const drop = { type: ZCODE_EVENT.SessionUpdated, payload: { messageCount: 3 }, sessionId: 's-1', seq: 1 }
-    expect(zcodeContextUsageFromMessage({ wrapper: null, topLevel: drop, parentObject: drop, rawText: '', supplementalContent: undefined, messageMetadata: undefined }))
+    const drop = {
+      type: ZCODE_EVENT.SessionUpdated,
+      payload: { messageCount: 3 },
+      sessionId: 's-1',
+      seq: 1,
+    }
+    expect(zcodeContextUsageFromMessage({
+      wrapper: null,
+      topLevel: drop,
+      parentObject: drop,
+      rawText: '',
+      supplementalContent: undefined,
+      messageMetadata: undefined,
+    }))
       .toBeNull()
-    const turn = { type: ZCODE_EVENT.TurnCompleted, payload: { usage: { inputTokens: 10 } }, sessionId: 's-1', seq: 1 }
-    expect(zcodeContextUsageFromMessage({ wrapper: null, topLevel: turn, parentObject: turn, rawText: '', supplementalContent: undefined, messageMetadata: undefined }))
+    const turn = {
+      type: ZCODE_EVENT.TurnCompleted,
+      payload: {
+        usage: { inputTokens: 10 },
+      },
+      sessionId: 's-1',
+      seq: 1,
+    }
+    expect(zcodeContextUsageFromMessage({
+      wrapper: null,
+      topLevel: turn,
+      parentObject: turn,
+      rawText: '',
+      supplementalContent: undefined,
+      messageMetadata: undefined,
+    }))
       .toBeNull()
   })
 

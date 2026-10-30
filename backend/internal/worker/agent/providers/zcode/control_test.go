@@ -8,12 +8,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -129,7 +131,7 @@ func TestZCodeControlInputSupplementsThePersistedToolRequest(t *testing.T) {
 	original := []byte(` {"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"plan-call","toolName":"ExitPlanMode","inputOmitted":true,"future":9007199254740993}} `)
 	event, ok := parseZCodeEvent(original)
 	require.True(t, ok)
-	a.dispatchZCodeEvent(event)
+	a.dispatchZCodeEventOrdered(event)
 	a.HandleOutput(zcodeRequestLine(t, 7, contracts.ZCodeMethodRequestUserInput, `{
 		"requestId":"plan", "toolCallId":"plan-call", "toolName":"ExitPlanMode",
 		"input":{"plan":"# Welcome plan"}, "schema":{"interaction":"plan_approval"}
@@ -159,7 +161,7 @@ func TestZCodePlanControlSupplementsPartialInput(t *testing.T) {
 			original := []byte(` {"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"plan-call","toolName":"ExitPlanMode","input":{"allowedPrompts":[],"future":9007199254740993}}} `)
 			event, ok := parseZCodeEvent(original)
 			require.True(t, ok)
-			a.dispatchZCodeEvent(event)
+			a.dispatchZCodeEventOrdered(event)
 			a.HandleOutput(zcodeRequestLine(t, 7, contracts.ZCodeMethodRequestUserInput, `{"requestId":"plan","toolCallId":"plan-call","toolName":"ExitPlanMode","schema":{"interaction":"plan_approval"},`+controlInput+`}`))
 			messages := sink.Messages()
 			require.Len(t, messages, 1)
@@ -284,6 +286,8 @@ func TestHandlePermissionRequest_StoresTheHybridPayload(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
 
+	zcodeStartTestTurn(t, a, `{"turnNumber":1}`)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, `{"kind":"scheduled","toolCallId":"call-1","toolName":"Bash","inputOmitted":true}`))
 	a.HandleOutput(zcodeRequestLine(t, 7, contracts.ZCodeMethodRequestPermission, zcodePermissionParams))
 
 	payload := zcodeStoredPayload(t, sink)
@@ -293,7 +297,7 @@ func TestHandlePermissionRequest_StoresTheHybridPayload(t *testing.T) {
 	assert.Equal(t, "req-1", stored.RequestID)
 	assert.Equal(t, contracts.ZCodeMethodRequestPermission, stored.Method)
 	assert.Equal(t, "Bash", stored.Request.ToolName)
-	assert.Equal(t, "call-1", stored.Request.ToolUseID)
+	assert.Equal(t, zcodeTestSpanID(t, sink, "call-1"), stored.Request.ToolUseID)
 	assert.JSONEq(t, `{"command":"rm -rf build"}`, string(stored.Request.Input))
 	assert.JSONEq(t, zcodePermissionParams, string(stored.Params),
 		"ZCode's own params must survive verbatim, because the answer path reads the option list off them")
@@ -984,7 +988,7 @@ func TestAnswerProviderRuntimeHeaders_MalformedParamsAreNeverAuthorized(t *testi
 // One interaction/requestProviderRuntimeHeaders carries TWO identities. The
 // JSON-RPC envelope id is only the reply address. The logical `params.requestId`
 // (`<session>:provider-runtime-headers:<uuid>`) is the key a cancellation
-// names. The fixtures below keep the two deliberately different.
+// specifies. The fixtures below keep the two deliberately different.
 
 const zcodeTestRuntimeWorkspace = `{"workspacePath":"/tmp/zcode-workspace","workspaceKey":"/tmp/zcode-workspace"}`
 const zcodeTestOtherWorkspace = `{"workspacePath":"/tmp/zcode-other","workspaceKey":"/tmp/zcode-other"}`
@@ -1050,7 +1054,7 @@ func (w *zcodeBlockedStdin) Write(p []byte) (int, error) {
 
 func (w *zcodeBlockedStdin) Close() error { return w.rec.Close() }
 
-// The envelope id is the reply address alone: a cancellation that names it
+// The envelope id is the reply address alone: a cancellation that specifies it
 // cancels nothing. The logical id is the cancellation key.
 func TestAnswerProviderRuntimeHeaders_CancelsByLogicalIDAndNotByEnvelopeID(t *testing.T) {
 	t.Parallel()
@@ -1236,7 +1240,7 @@ func TestAnswerProviderRuntimeHeaders_RequestIDReuseKeepsTheNewerAnswer(t *testi
 	assert.Len(t, stdin.Requests(t), 1, "a cancellation reaches the answer that reused the id")
 }
 
-// A cancellation names the logical id, the session, AND the workspace. A
+// A cancellation specifies the logical id, the session, AND the workspace. A
 // notification that matches on fewer must not cancel anything.
 func TestAnswerProviderRuntimeHeaders_CancellationMatchesSessionAndWorkspace(t *testing.T) {
 	t.Parallel()
@@ -1786,7 +1790,7 @@ func TestZCodePermissionBookkeeping_ForgetIsOneShot(t *testing.T) {
 	assert.False(t, a.forgetZCodeControlRequest("req-1"), "an unknown id was never forwarded")
 	assert.False(t, a.forgetZCodeControlRequest(""))
 
-	a.rememberZCodeControlRequest("req-1", json.RawMessage(`{"type":"control_request"}`))
+	zcodeRememberControlForTest(t, a, "req-1")
 	assert.True(t, a.forgetZCodeControlRequest("req-1"))
 	assert.False(t, a.forgetZCodeControlRequest("req-1"), "a second resolved must not read as forwarded again")
 }
@@ -2091,5 +2095,318 @@ func TestZCodeElicitationAnswerText(t *testing.T) {
 	for _, raw := range []string{``, ` `, `null`, `[1]`, `{"a":1}`, `{`} {
 		_, ok := zcodeElicitationAnswerText(json.RawMessage(raw))
 		assert.False(t, ok, raw)
+	}
+}
+
+func TestZCodeControls_CorrelateRepeatedNativeIDsByTurn(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	for index, turnID := range []string{"foreground", "background"} {
+		source := ""
+		if index > 0 {
+			source = "background_task"
+		}
+		a.HandleOutput(zcodeTurnEventLine(t, int64(index*2+1), turnID, contracts.ZCodeEventTurnStarted, fmt.Sprintf(`{"turnNumber":%d,"inputSource":%q}`, index+1, source)))
+		a.HandleOutput(zcodeTurnEventLine(t, int64(index*2+2), turnID, contracts.ZCodeEventToolUpdated, fmt.Sprintf(`{"kind":"scheduled","toolCallId":"same","assistantMessageId":"message-%d","toolName":"Bash","inputOmitted":true}`, index)))
+	}
+	openings := sink.Messages()
+	require.Len(t, openings, 2)
+	for index, turnID := range []string{"foreground", "background"} {
+		params := json.RawMessage(fmt.Sprintf(`{"requestId":"request-%d","sessionId":"sess-1","turnId":%q,"toolCallId":"same","toolName":"Bash","input":{"command":"command-%d"}}`, index, turnID, index))
+		a.handlePermissionRequest(json.RawMessage(fmt.Sprintf(`"rpc-%d"`, index)), params)
+		stored, err := a.sink.ReadToolRequest(openings[index].SpanID)
+		require.NoError(t, err)
+		require.NotNil(t, stored)
+		resolved := zcodeProvider{}.ResolveProviderData(stored.Content)
+		var frame struct {
+			Payload struct {
+				Input struct {
+					Command string `json:"command"`
+				} `json:"input"`
+			} `json:"payload"`
+		}
+		require.NoError(t, json.Unmarshal(resolved, &frame))
+		assert.Equal(t, fmt.Sprintf("command-%d", index), frame.Payload.Input.Command)
+	}
+}
+
+func TestZCodeControls_ResolveRawChildCallIDsFromOrigin(t *testing.T) {
+	t.Parallel()
+	a, sink := spawnAZCodeSubagent(t)
+	// Mirrored events qualify the call ID; the interaction RPC preserves its raw ID.
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventToolUpdated, `{"kind":"scheduled","source":"subagent","agentId":"agent-1","childSessionId":"sess_subagent_agent-1","parentToolCallId":"spawn-1","toolCallId":"tool_subagent_agent-1_raw","assistantMessageId":"child-message","toolName":"Bash","inputOmitted":true}`))
+	a.handlePermissionRequest(json.RawMessage(`"rpc"`), json.RawMessage(`{"requestId":"child-request","sessionId":"sess-1","toolCallId":"raw","toolName":"Bash","input":{"command":"pwd"},"origin":{"kind":"subagent","agentId":"agent-1","childSessionId":"sess_subagent_agent-1","parentToolCallId":"spawn-1"}}`))
+	child := sink.Child(sink.ChildAgentIDs()[0])
+	spanID := zcodeTestSpanID(t, sink, "tool_subagent_agent-1_raw")
+	stored, err := child.ReadToolRequest(spanID)
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	var frame struct {
+		Payload struct {
+			Input map[string]string `json:"input"`
+		} `json:"payload"`
+	}
+	require.NoError(t, json.Unmarshal(zcodeProvider{}.ResolveProviderData(stored.Content), &frame))
+	assert.Equal(t, "pwd", frame.Payload.Input["command"])
+}
+
+func TestZCodeJSONEqual_PreservesExactNumericIdentity(t *testing.T) {
+	t.Parallel()
+	assert.False(t, zcodeJSONEqual([]byte(`{"id":9007199254740992}`), []byte(`{"id":9007199254740993}`)))
+	assert.True(t, zcodeJSONEqual([]byte(`{"value":1.0,"s":"\u0061"}`), []byte(`{"s":"a","value":1e0}`)))
+	assert.True(t, zcodeJSONEqual([]byte(`-0e999999999999999999999`), []byte(`0`)))
+	assert.True(t, zcodeJSONEqual([]byte(`10e999999999999999999999`), []byte(`1e1000000000000000000000`)))
+}
+
+func TestZCodeRuntimeHeaderReply_ReleasesCompletedContexts(t *testing.T) {
+	t.Parallel()
+	for _, failure := range []bool{false, true} {
+		t.Run(fmt.Sprintf("write failure %t", failure), func(t *testing.T) {
+			t.Parallel()
+			a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
+			answer := a.prepareZCodeRuntimeHeaderAnswer(json.RawMessage(`1`), json.RawMessage(`{"requestId":"logical","sessionId":"sess-1"}`))
+			require.NotNil(t, answer)
+			if failure {
+				a.SetStdinForTest(agenttest.NopStdin(zcodeInputWriter(func([]byte) (int, error) { return 0, errors.New("failed write") })))
+			}
+			a.replyZCodeRuntimeHeader(json.RawMessage(`1`), answer, map[string]any{})
+			assert.Error(t, answer.ctx.Err(), "every completed answer must release its process-context registration")
+		})
+	}
+}
+
+func TestZCodeControlIngress_RetiresBeforeTheHandlerRuns(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{contracts.ZCodeMethodRequestPermission, contracts.ZCodeMethodRequestUserInput} {
+		for _, replacement := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s replacement %t", method, replacement), func(t *testing.T) {
+				t.Parallel()
+				sink := &agenttest.ControlSink{}
+				a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+				raw := zcodeRequestLine(t, 7, method, `{"requestId":"delayed","toolName":"Bash","input":{},"options":[],"questions":[]}`)
+				handler, consumed := a.routeZCodeRPC(providerkit.ParseLine(raw))
+				require.True(t, consumed)
+				require.NotNil(t, handler)
+				if replacement {
+					snapshot, ok := a.parseStateSnapshot(json.RawMessage(`{"session":{"sessionId":"sess-1"}}`))
+					require.True(t, ok)
+					a.adoptCompleteZCodeSessionSnapshot(snapshot, true)
+				} else {
+					a.forgetZCodeControlRequest("delayed")
+				}
+				handler()
+				assert.Empty(t, sink.PublishedControls(), "a retired ingress instance must not publish a new prompt")
+				a.Mu.Lock()
+				assert.Empty(t, a.pendingControls)
+				a.Mu.Unlock()
+			})
+		}
+	}
+}
+
+type zcodeHeldPlanSink struct {
+	*agenttest.ControlSink
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (sink *zcodeHeldPlanSink) holdPlan(title string) {
+	if title == "Old plan" {
+		close(sink.entered)
+		<-sink.release
+	}
+}
+func (sink *zcodeHeldPlanSink) UpdatePlan(content []byte, compression leapmuxv1.ContentCompression, title string) {
+	sink.holdPlan(title)
+	sink.ControlSink.UpdatePlan(content, compression, title)
+}
+
+func TestZCodePlanControl_CannotOverwriteTheReplacementPlan(t *testing.T) {
+	t.Parallel()
+	sink := &zcodeHeldPlanSink{ControlSink: &agenttest.ControlSink{}, entered: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() {
+		select {
+		case <-sink.release:
+		default:
+			close(sink.release)
+		}
+	})
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	raw := zcodeRequestLine(t, 9, contracts.ZCodeMethodRequestUserInput, `{"requestId":"old-plan","toolName":"ExitPlanMode","input":{"plan":"# Old plan"},"schema":{"interaction":"plan_approval"}}`)
+	handled := make(chan struct{})
+	go func() { a.HandleOutput(raw); close(handled) }()
+	zcodeTestReceive(t, sink.entered)
+	snapshot, ok := a.parseStateSnapshot(json.RawMessage(`{"session":{"sessionId":"sess-1"}}`))
+	require.True(t, ok)
+	a.adoptCompleteZCodeSessionSnapshot(snapshot, true)
+	sink.ControlSink.UpdatePlan([]byte("# New plan"), leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE, "New plan")
+	close(sink.release)
+	zcodeTestReceive(t, handled)
+	assert.Equal(t, "New plan", sink.LastPlanUpdate().Title)
+	assert.Empty(t, sink.PublishedControls())
+}
+
+type zcodeHeldCapturedPlanWriter struct {
+	sink     *zcodeHeldPlanSink
+	delegate agent.CapturedPlanWriter
+}
+
+func (writer zcodeHeldCapturedPlanWriter) UpdatePlan(content []byte, compression leapmuxv1.ContentCompression, title string) error {
+	writer.sink.holdPlan(title)
+	return writer.delegate.UpdatePlan(content, compression, title)
+}
+func (sink *zcodeHeldPlanSink) PlanWriterFor(captured agent.CapturedTranscript) (agent.CapturedPlanWriter, error) {
+	delegate, err := sink.ControlSink.PlanWriterFor(captured)
+	if err != nil {
+		return nil, err
+	}
+	return zcodeHeldCapturedPlanWriter{sink: sink, delegate: delegate}, nil
+}
+
+func TestZCodeControlPreparation_DoesNotBlockAnotherRequest(t *testing.T) {
+	t.Parallel()
+	sink := &zcodeHeldPlanSink{ControlSink: &agenttest.ControlSink{}, entered: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() {
+		select {
+		case <-sink.release:
+		default:
+			close(sink.release)
+		}
+	})
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	raw := zcodeRequestLine(t, 9, contracts.ZCodeMethodRequestUserInput, `{"requestId":"old-plan","toolName":"ExitPlanMode","input":{"plan":"# Old plan"},"schema":{"interaction":"plan_approval"}}`)
+	handled := make(chan struct{})
+	go func() { a.HandleOutput(raw); close(handled) }()
+	zcodeTestReceive(t, sink.entered)
+	questionDone := make(chan struct{})
+	go func() {
+		a.handlePermissionRequest(json.RawMessage(`10`), json.RawMessage(`{"requestId":"other","toolName":"Bash","input":{}}`))
+		close(questionDone)
+	}()
+	ctx := testutil.DeadlineContext(t)
+	completed := false
+	select {
+	case <-questionDone:
+		completed = true
+	case <-ctx.Done():
+		assert.Fail(t, "the first control handler held a lock through plan storage")
+	}
+	if completed {
+		assert.Len(t, sink.PublishedControls(), 1)
+	}
+	close(sink.release)
+	if !completed {
+		zcodeTestReceive(t, questionDone)
+	}
+	zcodeTestReceive(t, handled)
+	assert.Len(t, sink.PublishedControls(), 2)
+}
+
+type zcodeReentrantCaptureSink struct {
+	*agenttest.ControlSink
+	entered    chan struct{}
+	release    chan struct{}
+	nestedDone chan struct{}
+	once       atomic.Bool
+	nested     func()
+}
+
+func (sink *zcodeReentrantCaptureSink) CaptureMessage(content agent.MessageContent, span agent.SpanInfo) agent.MessageContent {
+	if sink.once.CompareAndSwap(false, true) {
+		go func() { sink.nested(); close(sink.nestedDone) }()
+		close(sink.entered)
+		<-sink.release
+	}
+	return sink.ControlSink.CaptureMessage(content, span)
+}
+
+func TestZCodeControlIngress_ReentrantCaptureDoesNotWaitForItself(t *testing.T) {
+	t.Parallel()
+	sink := &zcodeReentrantCaptureSink{ControlSink: &agenttest.ControlSink{}, entered: make(chan struct{}), release: make(chan struct{}), nestedDone: make(chan struct{})}
+	t.Cleanup(func() {
+		select {
+		case <-sink.release:
+		default:
+			close(sink.release)
+		}
+	})
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	params := `{"requestId":"same","toolName":"Bash","input":{}}`
+	sink.nested = func() { a.handlePermissionRequest(json.RawMessage(`2`), json.RawMessage(params)) }
+	done := make(chan struct{})
+	go func() { a.handlePermissionRequest(json.RawMessage(`1`), json.RawMessage(params)); close(done) }()
+	zcodeTestReceive(t, sink.entered)
+	completed := false
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case <-sink.nestedDone:
+		completed = true
+	case <-ctx.Done():
+		assert.Fail(t, "a repeated request waited for the capture that invoked it")
+	}
+	close(sink.release)
+	if !completed {
+		zcodeTestReceive(t, sink.nestedDone)
+	}
+	zcodeTestReceive(t, done)
+	published := sink.PublishedControls()
+	require.Len(t, published, 2)
+	assert.Equal(t, published[0].Payload, published[1].Payload)
+}
+
+type zcodeReentrantPublicationSink struct {
+	*agenttest.ControlSink
+	once    atomic.Bool
+	reenter func()
+}
+
+func (sink *zcodeReentrantPublicationSink) PublishControlRequest(request agent.ControlRequest) error {
+	if sink.once.CompareAndSwap(false, true) {
+		sink.reenter()
+	}
+	return sink.ControlSink.PublishControlRequest(request)
+}
+
+func TestZCodeControlPublication_OrdersReusedLogicalInstances(t *testing.T) {
+	t.Parallel()
+	sink := &zcodeReentrantPublicationSink{ControlSink: &agenttest.ControlSink{}}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	var replacement string
+	sink.reenter = func() {
+		require.True(t, a.forgetZCodeControlRequest("same"))
+		a.handlePermissionRequest(json.RawMessage(`2`), json.RawMessage(`{"requestId":"same","toolName":"Bash","input":{"command":"new"}}`))
+		a.Mu.Lock()
+		replacement = a.pendingControls["same"].instanceID
+		a.Mu.Unlock()
+	}
+	a.handlePermissionRequest(json.RawMessage(`1`), json.RawMessage(`{"requestId":"same","toolName":"Bash","input":{"command":"old"}}`))
+	published := sink.PublishedControls()
+	require.Len(t, published, 2)
+	assert.Equal(t, replacement, published[1].InstanceID, "the new instance must store after the retired publication returns")
+	assert.Contains(t, string(published[1].Payload), `"command":"new"`)
+}
+
+func TestZCodeControlIngress_AnswersAnUnreadySessionWithoutPublishing(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{contracts.ZCodeMethodRequestPermission, contracts.ZCodeMethodRequestUserInput} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			stdin := &zcodeRecordedStdin{}
+			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+			a.Mu.Lock()
+			a.sessionChanging = true
+			a.Mu.Unlock()
+			a.HandleOutput(zcodeRequestLine(t, 7, method, `{"requestId":"unready","sessionId":"sess-1","toolName":"Bash","input":{"plan":"# Test"},"schema":{"interaction":"plan_approval"}}`))
+			require.Len(t, stdin.Frames(), 1, "a refused server request must receive a reply")
+			var response zcodeResponseEnvelope
+			require.NoError(t, json.Unmarshal(stdin.Frames()[0], &response))
+			require.NotNil(t, response.Error)
+			assert.Empty(t, sink.PublishedControls())
+			a.Mu.Lock()
+			assert.Empty(t, a.pendingControls)
+			a.Mu.Unlock()
+		})
 	}
 }

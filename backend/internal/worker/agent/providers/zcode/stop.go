@@ -210,14 +210,14 @@ func (a *Agent) refreshStoppedZCodeTurn(event zcodeEventEnvelope) {
 // stopEventExtendsLocked reports whether one session event proves the work the
 // window watches is still running. The caller holds a.Mu.
 //
-// An event that NAMES a turn belongs to that turn alone: a background turn's
+// An event that IDENTIFIES a turn belongs to that turn alone: a background turn's
 // events say nothing about the stopped user turn, and the window must never
 // keep a stopped turn alive on someone else's speech. The match takes the turn
 // id the window opened with and the generation of its owner record -- a
 // provisional turn adopts its native id at turn.started, and the generation is
 // the identity that survives the rename.
 //
-// An event that names no turn extends only when its type reports the watched
+// An event that identifies no turn extends only when its type reports the watched
 // work itself: the turn's lifecycle, model stream and tools, or the model
 // request of the running turn. A background task's notifications, subagent
 // traffic and the rest of the session machinery are none of the stopped turn's
@@ -232,8 +232,11 @@ func (a *Agent) stopEventExtendsLocked(event zcodeEventEnvelope) bool {
 		if event.TurnID == w.turnID {
 			return true
 		}
-		named := a.turns[event.TurnID]
-		return named != nil && named.generation == w.turnGeneration
+		eventOwner := a.turns[event.TurnID]
+		return eventOwner != nil && eventOwner.generation == w.turnGeneration
+	}
+	if w.turnID == "" && (a.compactionSessionID == "" || w.turnGeneration != a.compactionGeneration) {
+		return false
 	}
 	return stopEventReportsZCodeWork(event, w.turnID == "")
 }
@@ -368,11 +371,11 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 		return fmt.Errorf("agent is stopped")
 	}
 	owner := a.zcodeStopTargetLocked()
-	ownerID, ownerGeneration, executionID := "", uint64(0), ""
+	executionID := ""
 	if owner != nil {
-		ownerID, ownerGeneration, executionID = owner.id, owner.generation, owner.foregroundExecutionID
+		executionID = owner.foregroundExecutionID
 	}
-	compactionSessionID, sessionID := a.compactionSessionID, a.sessionID
+	compactionGeneration, compactionSessionID, sessionID := a.compactionGeneration, a.compactionSessionID, a.sessionID
 	a.Mu.Unlock()
 	if (owner == nil && compactionSessionID == "") || sessionID == "" {
 		return nil
@@ -397,22 +400,7 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 		// second stop: an unguarded stop could abort a newer execution.
 		return nil
 	}
-	if a.sessionID != sessionID {
-		return nil
-	}
-	if owner != nil {
-		current := a.turns[ownerID]
-		if current == nil || current.generation != ownerGeneration || current.settled {
-			return nil
-		}
-		a.stopWindow.open(time.Now(), stop, ownerID, ownerGeneration)
-	} else {
-		if a.compactionSessionID == "" || a.compactionSessionID != compactionSessionID {
-			return nil
-		}
-		a.stopWindow.open(time.Now(), stop, "", a.turnGeneration)
-	}
-	a.armStoppedZCodeTurnLocked()
+	a.acceptZCodeStopLocked(stop, sessionID, owner, compactionGeneration)
 	return nil
 }
 
@@ -464,11 +452,8 @@ func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 	}
 	a.Mu.Lock()
 	sessionID := a.sessionID
-	owner := a.foregroundZCodeTurnLocked()
-	ownerID, ownerGeneration := "", uint64(0)
-	if owner != nil {
-		ownerID, ownerGeneration = owner.id, owner.generation
-	}
+	owner := a.zcodeStopTargetLocked()
+	compactionGeneration := a.compactionGeneration
 	compactionSessionID := a.compactionSessionID
 	active := owner != nil || compactionSessionID != ""
 	a.Mu.Unlock()
@@ -484,7 +469,7 @@ func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 		a.withdrawZCodeSteersLocked()
 		a.beginZCodeStop()
 	}
-	_, err := a.sendZCodeFrame(*frame.ID, MethodSessionStop, data, zcodeStopTimeout)
+	_, err := a.sendZCodeFrameContext(a.Context(), *frame.ID, MethodSessionStop, data, zcodeStopTimeout, nil)
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 	if active {
@@ -498,20 +483,27 @@ func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 	if !active || a.sessionID != sessionID {
 		return nil
 	}
-	if ownerID != "" {
-		current := a.turns[ownerID]
-		if current == nil || current.generation != ownerGeneration || current.settled {
-			return nil
+	a.acceptZCodeStopLocked(stop, sessionID, owner, compactionGeneration)
+	return nil
+}
+
+// acceptZCodeStopLocked installs a window only for the work captured before the RPC.
+func (a *Agent) acceptZCodeStopLocked(stop agent.StopContext, sessionID string, owner *zcodeTurnState, compactionGeneration uint64) {
+	if a.sessionID != sessionID {
+		return
+	}
+	if owner != nil {
+		if a.turns[owner.id] != owner || owner.settled {
+			return
 		}
-		a.stopWindow.open(time.Now(), stop, ownerID, ownerGeneration)
+		a.stopWindow.open(time.Now(), stop, owner.id, owner.generation)
 	} else {
-		if a.compactionSessionID == "" || a.compactionSessionID != compactionSessionID {
-			return nil
+		if a.compactionSessionID == "" || a.compactionGeneration != compactionGeneration {
+			return
 		}
-		a.stopWindow.open(time.Now(), stop, "", a.turnGeneration)
+		a.stopWindow.open(time.Now(), stop, "", compactionGeneration)
 	}
 	a.armStoppedZCodeTurnLocked()
-	return nil
 }
 
 // InterruptEscalationReady reports whether an EARLIER accepted stop has been
@@ -568,6 +560,8 @@ func (a *Agent) stopProvenIgnoredLocked() bool {
 //
 // See ZC-001 in docs/provider-parity/protocol-evidence.md.
 func (a *Agent) endStoppedZCodeTurn(generation uint64) {
+	a.dispatchMu.Lock()
+	defer a.unlockZCodeDispatch()
 	a.Mu.Lock()
 	if !a.stopWindow.owns(generation) {
 		// This callback watched a window that a cancel or a refresh already retired.
@@ -590,7 +584,7 @@ func (a *Agent) endStoppedZCodeTurn(generation uint64) {
 		a.Mu.Unlock()
 		return
 	}
-	if turnID == "" && a.compactionSessionID == "" {
+	if turnID == "" && (a.compactionSessionID == "" || ownerGeneration != a.compactionGeneration) {
 		// The compaction this window watched ended on its own. Same verdict.
 		a.cancelStoppedZCodeTurnLocked()
 		a.Mu.Unlock()
@@ -598,6 +592,9 @@ func (a *Agent) endStoppedZCodeTurn(generation uint64) {
 	}
 	compacting := turnID == ""
 	if owner != nil {
+		if owner.pendingNative == nil {
+			a.stopZCodeTurnWatcherLocked(owner)
+		}
 		owner.settled = true
 		if a.foregroundTurnID == owner.id {
 			a.foregroundTurnID = ""
@@ -641,21 +638,21 @@ func (a *Agent) endStoppedZCodeTurn(generation uint64) {
 // keep their live state.
 func (a *Agent) resetZCodeTurnProgress(owner *zcodeTurnState) {
 	a.Mu.Lock()
-	var preserved []string
-	for _, turn := range a.turns {
-		if turn == owner {
-			continue
-		}
-		for scopeID := range turn.contentByScope {
-			preserved = append(preserved, scopeID)
-		}
+	var scopes []string
+	for scopeID := range owner.contentByScope {
+		scopes = append(scopes, scopeID)
 	}
 	var tools []string
-	for toolCallID := range owner.toolCallIDs {
+	for toolCallID := range owner.toolInvocationIDs {
+		if a.liveZCodeBackgroundToolLocked(toolCallID) {
+			continue
+		}
 		tools = append(tools, toolCallID)
 	}
 	a.Mu.Unlock()
-	a.sink.ReportProgress(agent.ResetModelProgressPreservingScopes(preserved))
+	for _, scopeID := range scopes {
+		a.sink.ReportProgress(agent.ResetModelScopeProgress(scopeID))
+	}
 	for _, toolCallID := range tools {
 		a.ClearCumulativeOutput(toolCallID)
 		a.sink.ReportProgress(agent.ResetOutputProgress(toolCallID))
@@ -720,6 +717,9 @@ func (a *Agent) Stop() {
 	// Wait, and armStoppedZCodeTurnLocked reads it to refuse the window from here on.
 	// The cancel that follows therefore drops a window the read loop cannot arm again.
 	a.NoteIntentionalStop()
+	a.dispatchMu.Lock()
+	a.retireZCodeSessionObservationLocked()
+	a.unlockZCodeDispatch()
 	// A pending window here is a stop the app-server already ignored, and the
 	// tear-down is the forced stop that finally ended the turn. The row it earns is
 	// read from the window BEFORE the cancel drops it.
@@ -762,6 +762,9 @@ func (a *Agent) Stop() {
 // Wait retains unfinished model output after an unexpected process exit.
 func (a *Agent) Wait() error {
 	err := a.Process.Wait()
+	a.dispatchMu.Lock()
+	a.retireZCodeSessionObservationLocked()
+	a.unlockZCodeDispatch()
 	a.stopAllZCodeTurnWatchers()
 	a.cancelAllZCodeRuntimeHeaderAnswers()
 	a.withdrawPendingControls()

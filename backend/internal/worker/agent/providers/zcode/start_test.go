@@ -253,24 +253,21 @@ func TestZCodeStart_RequiresARefreshedRegistryAcknowledgement(t *testing.T) {
 		"a refused registry refresh stops the start before the catalog read")
 }
 
-// A current model the complete nonempty live catalog no longer holds is repaired
-// once: the first live model, with its reasoning default.
-func TestZCodeModelRepair_SelectsTheFirstLiveModelWhenTheCurrentOneIsGone(t *testing.T) {
+// A complete catalog controls choices without changing the observed current model.
+func TestZCodeCatalog_RetainsAnUnavailableCurrentModelAtStartup(t *testing.T) {
 	opts, calls := zcodeStartupFixture(t, "current", "")
 	opts.ExtraEnv = append(opts.ExtraEnv, "LEAPMUX_ZCODE_FIXTURE_REVOKED_MODEL=1")
 	started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
 	require.NoError(t, err)
 	t.Cleanup(func() { started.Stop(); _ = started.Wait() })
 	native := started.(*Agent)
-	native.Mu.Lock()
-	defer native.Mu.Unlock()
-	assert.Equal(t, "personal:work/m", native.model, "the repair selects the first live model")
-	assert.Equal(t, "high", native.thoughtLevel, "the repair carries the first live model's reasoning default")
+	assert.Equal(t, "personal:work/revoked", native.model)
+	snapshot := native.SettingsSnapshot()
+	assert.Equal(t, agent.OptionSettlementUnresolved, snapshot.Settlements[agent.OptionIDModel].State)
 	assert.Equal(t, strings.Join([]string{
 		MethodUpdateProviderRegistry, MethodUpdateAccountConfig, MethodProviderRefreshRegistry,
-		MethodSessionCreate, MethodSetMode, MethodSetModel, MethodSessionSubscribe,
-	}, "\n"), zcodeStartupCalls(t, calls),
-		"one repair attempt after the reassertion, and no recursive setter sequence")
+		MethodSessionCreate, MethodSetMode, MethodSessionSubscribe,
+	}, "\n"), zcodeStartupCalls(t, calls), "startup must not choose a different model")
 }
 
 // A persisted selection that the live catalog still holds stays: the repair adds
@@ -303,8 +300,7 @@ func TestZCodeModelRepair_AnExplicitlyEmptyCatalogMarksTheModelUnresolved(t *tes
 	native.Mu.Lock()
 	defer native.Mu.Unlock()
 	assert.Equal(t, "personal:work/revoked", native.model, "an empty catalog manufactures no model")
-	_, unresolved := native.unresolvedSettings[agent.OptionIDModel]
-	assert.True(t, unresolved, "an unrepaired model is marked unresolved")
+	assert.True(t, native.zcodeCurrentModelUnavailableLocked(), "the current model remains unavailable")
 	assert.Equal(t, strings.Join([]string{
 		MethodUpdateProviderRegistry, MethodUpdateAccountConfig, MethodProviderRefreshRegistry,
 		MethodSessionCreate, MethodSetMode, MethodSessionSubscribe,

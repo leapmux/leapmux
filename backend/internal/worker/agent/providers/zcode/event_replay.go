@@ -5,341 +5,381 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"sort"
+	"slices"
 	"sync"
+	"time"
 )
 
-// Gap-safe ordered event dispatch and replay.
-//
-// The app-server numbers every session event with `seq`. A live subscription
-// can miss events (a transport gap, a slow reader), and a re-subscribe or a
-// `session/events` fetch recovers them. This file keeps the dispatch cursor
-// (`Agent.lastSeq`) contiguous: it advances only after the NEXT event is
-// dispatched, and a gap triggers a replay pass that fetches and merges the
-// missing range.
-//
-// Two goroutines dispatch events: the read loop delivers live notifications,
-// and a replay pass dispatches fetched events. `dispatchMu` serializes them
-// (see dispatchZCodeEvent). The pending map and the replay bookkeeping live
-// under the same lock.
-
-// Concrete limits for the replay coordinator.
 const (
-	// zcodeReplayPassLimit is how many fetch-and-dispatch passes one replay
-	// call runs before it reports an unclosable gap.
-	zcodeReplayPassLimit = 4
-	// zcodeReplayEventLimit is the page size of one session/events fetch.
-	zcodeReplayEventLimit = 256
+	zcodeReplayPassLimit     = 4
+	zcodeReplayRetryInterval = 30 * time.Second
 )
 
-// zcodeReplayState is the pending-event bookkeeping. Guarded by dispatchMu
-// except replayMu, which serializes whole replay passes.
+// zcodeReplayState retains accepted events until their available range dispatches.
+// dispatchMu guards its fields. mu serializes fetch passes without blocking the reader.
 type zcodeReplayState struct {
-	// pending holds sequenced events past a gap, keyed by seq. Entries survive
-	// between and outside replay passes so a failed replay does not lose them.
-	pending map[int64]zcodeEventEnvelope
-	// active is true between a replay pass's capture and its dispatch. Live
-	// events join pending while it is set, so the pass merges them.
-	active bool
-	// generation identifies the session generation. invalidateZCodeEventReplay
-	// increments it so an obsolete pass cannot commit against a replacement
-	// session.
-	generation uint64
-	// highWatermark is the highest sequence observed from any source (live
-	// event, subscribe reply, fetch response).
+	pending       map[int64]zcodeEventEnvelope
+	active        bool
+	generation    uint64
 	highWatermark int64
-	// mu serializes replay passes. Taken BEFORE dispatchMu.
-	mu sync.Mutex
+	worker        *zcodeReplayWorker
+	mu            sync.Mutex
 }
 
-// initZCodeReplayState prepares the pending map. Called from Agent construction
-// and from invalidateZCodeEventReplay.
-func (s *zcodeReplayState) init() {
-	s.pending = make(map[int64]zcodeEventEnvelope)
-}
+type zcodeReplayWorker struct{ cancel context.CancelFunc }
 
-// dispatchZCodeEventOrdered is the single entry point for every session event,
-// live or replayed. It keeps lastSeq contiguous and routes gaps into the
-// pending set for replayZCodeEvents to recover.
-//
-// Rule summary:
-//   - seq 0 keeps arrival-order dispatch: it carries no ordering information.
-//   - seq <= lastSeq is a duplicate and is suppressed.
-//   - seq == lastSeq+1 dispatches immediately, then drains now-contiguous
-//     pending events.
-//   - seq > lastSeq+1 goes to pending and schedules a replay. lastSeq is NOT
-//     advanced past a gap.
+func (s *zcodeReplayState) init() { s.pending = make(map[int64]zcodeEventEnvelope) }
+
+// dispatchZCodeEventOrdered is the ingress for live, replayed and directly fed events.
+// Sequence zero preserves arrival order. Positive live sequences wait for their
+// predecessors or an unrestricted replay that confirms the retained range.
 func (a *Agent) dispatchZCodeEventOrdered(event zcodeEventEnvelope) {
-	if event.Seq == 0 {
-		a.dispatchMu.Lock()
-		a.dispatchZCodeEventLocked(event)
-		a.dispatchMu.Unlock()
-		return
-	}
-
 	a.dispatchMu.Lock()
-	if a.replay.active {
-		// A replay pass will merge and dispatch this event. Hold it in the
-		// pending set so the read loop never blocks.
-		a.storePendingZCodeEventLocked(event)
-		a.dispatchMu.Unlock()
-		return
+	needsReplay := a.admitZCodeEventLocked(event)
+	a.unlockZCodeDispatch()
+	if needsReplay {
+		a.scheduleZCodeReplay()
 	}
-
-	a.Mu.Lock()
-	lastSeq := a.lastSeq
-	a.Mu.Unlock()
-
-	if event.Seq <= lastSeq {
-		a.dispatchMu.Unlock()
-		return
-	}
-
-	if event.Seq == lastSeq+1 {
-		a.dispatchZCodeEventLocked(event)
-		a.Mu.Lock()
-		a.lastSeq = event.Seq
-		a.Mu.Unlock()
-		a.drainPendingZCodeEventsLocked()
-		a.dispatchMu.Unlock()
-		return
-	}
-
-	// A gap: hold the event and recover the missing range.
-	a.storePendingZCodeEventLocked(event)
-	a.dispatchMu.Unlock()
-	a.scheduleZCodeReplay()
 }
 
-// storePendingZCodeEventLocked records one event awaiting contiguous dispatch
-// and raises the high watermark. The caller holds dispatchMu.
+// admitZCodeEventLocked shares ordering between live events and a subscription batch.
+// The caller holds dispatchMu.
+func (a *Agent) admitZCodeEventLocked(event zcodeEventEnvelope) bool {
+	if !a.acceptsZCodeEventSessionLocked(event) {
+		return false
+	}
+	if event.Seq == 0 {
+		a.dispatchZCodeEventLocked(event)
+		return false
+	}
+	a.storePendingZCodeEventLocked(event)
+	if !a.replay.active {
+		a.drainPendingZCodeEventsLocked(0)
+	}
+	return a.zcodeReplayHasGapLocked()
+}
+
+// acceptsZCodeEventSessionLocked runs before an event can change ordering state.
+func (a *Agent) acceptsZCodeEventSessionLocked(event zcodeEventEnvelope) bool {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	return event.SessionID == "" || a.sessionID == "" || event.SessionID == a.sessionID
+}
+
 func (a *Agent) storePendingZCodeEventLocked(event zcodeEventEnvelope) {
+	if !a.acceptsZCodeEventSessionLocked(event) {
+		return
+	}
+	a.Mu.Lock()
+	cursor := a.lastSeq
+	a.Mu.Unlock()
+	if event.Seq <= cursor || event.Seq <= 0 {
+		return
+	}
 	if a.replay.pending == nil {
 		a.replay.init()
 	}
-	a.replay.pending[event.Seq] = event
-	if event.Seq > a.replay.highWatermark {
-		a.replay.highWatermark = event.Seq
-	}
-}
-
-// drainPendingZCodeEventsLocked dispatches pending events that became
-// contiguous after the cursor advanced. The caller holds dispatchMu.
-func (a *Agent) drainPendingZCodeEventsLocked() {
-	for {
-		a.Mu.Lock()
-		next := a.lastSeq + 1
-		a.Mu.Unlock()
-		event, ok := a.replay.pending[next]
-		if !ok {
-			return
-		}
-		delete(a.replay.pending, next)
-		a.dispatchZCodeEventLocked(event)
-		a.Mu.Lock()
-		a.lastSeq = event.Seq
-		a.Mu.Unlock()
-	}
-}
-
-// scheduleZCodeReplay starts a replay pass on its own goroutine so the read
-// loop never blocks on the fetch RPC. A test replaces replayScheduler to
-// suppress automatic scheduling.
-func (a *Agent) scheduleZCodeReplay() {
-	if a.replayScheduler != nil {
-		a.replayScheduler()
+	if previous, exists := a.replay.pending[event.Seq]; exists && (!previous.archive || event.archive) {
 		return
 	}
-	go func() {
-		if err := a.replayZCodeEvents(a.Context()); err != nil {
-			slog.Warn("zcode event replay failed", "agent_id", a.AgentID(), "error", err)
-		}
-	}()
+	a.replay.pending[event.Seq] = event
+	a.replay.highWatermark = max(a.replay.highWatermark, event.Seq)
 }
 
-// replayZCodeEvents recovers a sequence gap by fetching the missing range and
-// dispatching it in order.
-//
-// Passes are serialized with replayMu. Each pass:
-//
-//  1. Captures afterSeq, session ID and replay generation under dispatchMu and
-//     sets replay.active so live events join the pending set.
-//  2. Fetches session/events OUTSIDE every lock so the read loop stays free.
-//  3. Merges the response with the pending set and dispatches the contiguous
-//     prefix under dispatchMu, after verifying that the session and generation
-//     still match.
-//
-// A pass that leaves a gap runs again, up to zcodeReplayPassLimit. After that
-// the function returns an error naming the missing range. Callers that must
-// not proceed with a gap (startup, context clear) check the error; a
-// background watcher retries later.
-func (a *Agent) replayZCodeEvents(ctx context.Context) error {
-	a.replay.mu.Lock()
-	defer a.replay.mu.Unlock()
-
-	var missingFrom, missingTo int64
-	for pass := 0; pass < zcodeReplayPassLimit; pass++ {
-		// Phase 1: capture.
-		a.dispatchMu.Lock()
+// drainPendingZCodeEventsLocked is the only incremental cursor writer.
+// A successful unrestricted fetch confirms the retained representation through
+// availableThrough. Missing numbers there may represent expired transient events.
+// Beyond that checkpoint, only a contiguous live prefix can advance the cursor.
+func (a *Agent) drainPendingZCodeEventsLocked(availableThrough int64) {
+	a.Mu.Lock()
+	cursor := a.lastSeq
+	a.Mu.Unlock()
+	if availableThrough > cursor {
+		sequences := make([]int64, 0, len(a.replay.pending))
+		for seq := range a.replay.pending {
+			if seq > cursor && seq <= availableThrough {
+				sequences = append(sequences, seq)
+			}
+		}
+		slices.Sort(sequences)
+		for _, seq := range sequences {
+			event := a.replay.pending[seq]
+			delete(a.replay.pending, seq)
+			event.replayUncertain = a.replay.active
+			a.dispatchZCodeEventLocked(event)
+			a.Mu.Lock()
+			a.lastSeq = max(a.lastSeq, seq)
+			a.Mu.Unlock()
+		}
 		a.Mu.Lock()
-		afterSeq := a.lastSeq
-		sessionID := a.sessionID
+		a.lastSeq = max(a.lastSeq, availableThrough)
 		a.Mu.Unlock()
-		generation := a.replay.generation
-		a.replay.active = true
-		a.dispatchMu.Unlock()
-
-		// Phase 2: fetch outside every lock.
-		fetched, highSeq, err := a.fetchZCodeSessionEvents(ctx, sessionID, afterSeq)
-		if err != nil {
-			a.dispatchMu.Lock()
-			a.endZCodeReplayPassLocked(generation)
-			a.dispatchMu.Unlock()
-			return fmt.Errorf("session/events after seq %d: %w", afterSeq, err)
-		}
-
-		// Phase 3: merge and dispatch the contiguous prefix.
-		a.dispatchMu.Lock()
-		if generation != a.replay.generation {
-			// The session was replaced while the fetch was in flight. The
-			// response belongs to the old session; drop it. The pending set
-			// was already discarded by invalidateZCodeEventReplay.
-			a.dispatchMu.Unlock()
-			return nil
-		}
-		if highSeq > a.replay.highWatermark {
-			a.replay.highWatermark = highSeq
-		}
-		merged := a.mergeZCodeReplayEventsLocked(fetched)
-		a.endZCodeReplayPassLocked(generation)
-		dispatched := a.dispatchZCodeReplayPrefixLocked(merged)
-		_ = dispatched
+	}
+	for {
 		a.Mu.Lock()
 		cursor := a.lastSeq
 		a.Mu.Unlock()
-		a.dispatchMu.Unlock()
+		event, ok := a.replay.pending[cursor+1]
+		if !ok {
+			return
+		}
+		delete(a.replay.pending, event.Seq)
+		event.replayUncertain = a.replay.active
+		a.dispatchZCodeEventLocked(event)
+		a.Mu.Lock()
+		a.lastSeq = max(a.lastSeq, event.Seq)
+		a.Mu.Unlock()
+	}
+}
 
-		// Phase 4: decide whether another pass is needed.
+func (a *Agent) zcodeReplayHasGapLocked() bool {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	return a.replay.highWatermark > a.lastSeq
+}
+
+// scheduleZCodeReplay reserves one worker before the reader can schedule another.
+func (a *Agent) scheduleZCodeReplay() {
+	a.dispatchMu.Lock()
+	if a.replay.worker != nil || !a.zcodeReplayHasGapLocked() {
+		a.unlockZCodeDispatch()
+		return
+	}
+	ctx, cancel := context.WithCancel(a.Context())
+	generation := a.replay.generation
+	worker := &zcodeReplayWorker{cancel: cancel}
+	a.replay.worker = worker
+	a.unlockZCodeDispatch()
+	work := func() {
+		defer cancel()
+		defer func() {
+			a.dispatchMu.Lock()
+			if a.replay.worker == worker {
+				a.replay.worker = nil
+			}
+			a.unlockZCodeDispatch()
+		}()
+		for {
+			if err := a.replayZCodeEvents(ctx); err != nil && ctx.Err() == nil {
+				slog.Warn("zcode event replay failed", "agent_id", a.AgentID(), "error", err)
+			}
+			a.dispatchMu.Lock()
+			current := a.replay.generation == generation
+			needed := current && a.zcodeReplayHasGapLocked()
+			if current && !needed && a.replay.worker == worker {
+				a.replay.worker = nil
+			}
+			a.unlockZCodeDispatch()
+			if !needed || ctx.Err() != nil {
+				return
+			}
+			timer := a.Clock().NewTimer(zcodeReplayRetryInterval, "zcode-event-replay-retry")
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-a.ProcessDone():
+				timer.Stop()
+				return
+			}
+		}
+	}
+	if a.replayScheduler != nil {
+		a.replayScheduler(work)
+	} else {
+		go work()
+	}
+}
+
+// replayZCodeEvents fetches the available range outside dispatchMu, then merges it
+// into the same pending set as live events. A failed pass retains every received event.
+func (a *Agent) replayZCodeEvents(ctx context.Context) error {
+	a.beginZCodeSessionPublicationDeferral()
+	a.replay.mu.Lock()
+	defer func() { a.replay.mu.Unlock(); a.endZCodeSessionPublicationDeferral() }()
+	var missingFrom, missingTo int64
+	for range zcodeReplayPassLimit {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		a.dispatchMu.Lock()
-		high := a.replay.highWatermark
-		a.dispatchMu.Unlock()
+		if !a.zcodeReplayHasGapLocked() {
+			a.unlockZCodeDispatch()
+			return nil
+		}
+		a.Mu.Lock()
+		afterSeq, sessionID := a.lastSeq, a.sessionID
+		a.Mu.Unlock()
+		generation := a.replay.generation
+		requestedThrough := a.replay.highWatermark
+		a.replay.active = true
+		a.unlockZCodeDispatch()
+
+		fetched, high, err := a.fetchZCodeSessionEvents(ctx, sessionID, afterSeq)
+		a.dispatchMu.Lock()
+		a.Mu.Lock()
+		current := a.sessionID == sessionID
+		a.Mu.Unlock()
+		if generation != a.replay.generation || !current {
+			a.unlockZCodeDispatch()
+			return nil
+		}
+		if err != nil {
+			a.replay.active = false
+			// Live delivery can close the prefix while the fetch fails.
+			a.drainPendingZCodeEventsLocked(0)
+			needed := a.zcodeReplayHasGapLocked()
+			a.unlockZCodeDispatch()
+			if !needed {
+				return nil
+			}
+			return fmt.Errorf("session/events after seq %d: %w", afterSeq, err)
+		}
+		a.replay.highWatermark = max(a.replay.highWatermark, high)
+		a.markZCodeCanonicalRecoveryLocked()
+		for _, event := range fetched {
+			a.storePendingZCodeEventLocked(event)
+		}
+		// Only the checkpoint known before this request is covered. Mapping the
+		// fetched snapshot can allocate newer public numbers during the request.
+		a.drainPendingZCodeEventsLocked(requestedThrough)
+		a.replay.active = false
+		a.Mu.Lock()
+		cursor := a.lastSeq
+		a.Mu.Unlock()
+		high = a.replay.highWatermark
+		a.unlockZCodeDispatch()
 		if high <= cursor {
 			return nil
 		}
-		missingFrom = cursor + 1
-		missingTo = high
+		missingFrom, missingTo = cursor+1, high
 	}
-	return fmt.Errorf("event replay exhausted %d passes; seq %d..%d still missing",
-		zcodeReplayPassLimit, missingFrom, missingTo)
+	return fmt.Errorf("event replay exhausted %d passes; seq %d..%d still missing", zcodeReplayPassLimit, missingFrom, missingTo)
 }
 
-// fetchZCodeSessionEvents asks the app-server for events after afterSeq.
-// It returns the events and the highest sequence the response covers.
+// fetchZCodeSessionEvents omits limit because the native endpoint limits the newest
+// tail, which cannot recover the beginning of a larger gap. It returns all available events.
 func (a *Agent) fetchZCodeSessionEvents(ctx context.Context, sessionID string, afterSeq int64) ([]zcodeEventEnvelope, int64, error) {
 	if sessionID == "" {
 		return nil, 0, fmt.Errorf("no session to fetch events for")
 	}
 	raw, err := a.sendZCodeRequestContext(ctx, MethodSessionEvents, map[string]any{
-		"sessionId": sessionID,
-		"afterSeq":  afterSeq,
-		"limit":     zcodeReplayEventLimit,
+		"sessionId": sessionID, "afterSeq": afterSeq,
 	}, a.APITimeout())
 	if err != nil {
 		return nil, 0, err
 	}
-	var resp struct {
-		EventSeq int64                `json:"eventSeq"`
-		Events   []zcodeEventEnvelope `json:"events"`
+	var response struct {
+		SessionID *string               `json:"sessionId"`
+		EventSeq  *int64                `json:"eventSeq"`
+		Events    *[]zcodeEventEnvelope `json:"events"`
 	}
-	if err := json.Unmarshal(raw, &resp); err != nil {
+	if err := json.Unmarshal(raw, &response); err != nil {
 		return nil, 0, fmt.Errorf("decode session/events response: %w", err)
 	}
-	high := resp.EventSeq
-	for _, ev := range resp.Events {
-		if ev.Seq > high {
-			high = ev.Seq
+	if response.Events == nil {
+		return nil, 0, fmt.Errorf("session/events returned no event list")
+	}
+	if response.SessionID != nil && *response.SessionID != sessionID {
+		return nil, 0, fmt.Errorf("session/events returned another session")
+	}
+	high := int64(0)
+	if response.EventSeq != nil {
+		if *response.EventSeq < 0 {
+			return nil, 0, fmt.Errorf("session/events returned a negative event sequence")
 		}
+		high = *response.EventSeq
 	}
-	return resp.Events, high, nil
+	events, err := prepareZCodeArchiveEvents(*response.Events, sessionID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("session/events: %w", err)
+	}
+	for _, event := range events {
+		high = max(high, event.Seq)
+	}
+	return events, high, nil
 }
 
-// mergeZCodeReplayEventsLocked combines fetched events with the pending set.
-// Sequenced events merge by seq (fetched wins on collision because it is the
-// server's own copy). The result is sorted by seq. The caller holds dispatchMu.
-func (a *Agent) mergeZCodeReplayEventsLocked(fetched []zcodeEventEnvelope) []zcodeEventEnvelope {
-	merged := make(map[int64]zcodeEventEnvelope, len(fetched)+len(a.replay.pending))
-	for seq, ev := range a.replay.pending {
-		merged[seq] = ev
-	}
-	for _, ev := range fetched {
-		if ev.Seq > 0 {
-			merged[ev.Seq] = ev
+// prepareZCodeArchiveEvents validates the complete request-scoped response
+// before it can authorize a checkpoint or alter pending live events.
+func prepareZCodeArchiveEvents(events []zcodeEventEnvelope, sessionID string) ([]zcodeEventEnvelope, error) {
+	prepared := slices.Clone(events)
+	for index := range prepared {
+		event := &prepared[index]
+		if event.Seq <= 0 {
+			return nil, fmt.Errorf("expected a positive event sequence, received %d", event.Seq)
 		}
-	}
-	out := make([]zcodeEventEnvelope, 0, len(merged))
-	for _, ev := range merged {
-		out = append(out, ev)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
-	return out
-}
-
-// dispatchZCodeReplayPrefixLocked dispatches the contiguous prefix of the
-// merged event list and removes each dispatched event from the pending set.
-// It returns how many events it dispatched. The caller holds dispatchMu.
-func (a *Agent) dispatchZCodeReplayPrefixLocked(events []zcodeEventEnvelope) int {
-	count := 0
-	for _, ev := range events {
-		a.Mu.Lock()
-		next := a.lastSeq + 1
-		a.Mu.Unlock()
-		if ev.Seq != next {
-			// A gap remains: stop here. Later events stay pending.
-			break
+		if event.Type == "" {
+			return nil, fmt.Errorf("the response contains no event type")
 		}
-		delete(a.replay.pending, ev.Seq)
-		a.dispatchZCodeEventLocked(ev)
-		a.Mu.Lock()
-		a.lastSeq = ev.Seq
-		a.Mu.Unlock()
-		count++
+		if event.SessionID != "" && event.SessionID != sessionID {
+			return nil, fmt.Errorf("the response contains an event for another session")
+		}
+		event.SessionID = sessionID
+		event.archive = true
 	}
-	return count
+	return prepared, nil
 }
 
-// endZCodeReplayPassLocked clears the active flag when the pass that set it is
-// the one ending. An obsolete pass (generation mismatch) leaves the newer
-// pass's state alone. The caller holds dispatchMu.
-func (a *Agent) endZCodeReplayPassLocked(generation uint64) {
-	if generation == a.replay.generation {
-		a.replay.active = false
-	}
-}
-
-// invalidateZCodeEventReplay retires every replay artifact of the current
-// session. ClearContext calls it so ID-less events of the replaced session
-// cannot enter the new session's dispatch.
 func (a *Agent) invalidateZCodeEventReplay() {
 	a.dispatchMu.Lock()
-	defer a.dispatchMu.Unlock()
-	a.replay.generation++
-	a.replay.active = false
-	a.replay.init()
-	a.replay.highWatermark = 0
+	defer a.unlockZCodeDispatch()
+	a.invalidateZCodeEventReplayLocked()
 }
 
-// ensureZCodeReplayContiguous runs replay passes until the cursor reaches the
-// high watermark or the pass limit is exhausted. Startup and ClearContext use
-// it to guarantee no known gap survives them.
-func (a *Agent) ensureZCodeReplayContiguous(ctx context.Context) error {
-	a.dispatchMu.Lock()
-	high := a.replay.highWatermark
-	a.Mu.Lock()
-	cursor := a.lastSeq
-	a.Mu.Unlock()
-	a.dispatchMu.Unlock()
-	if high <= cursor {
-		return nil
+// invalidateZCodeEventReplayLocked runs in the session-adoption critical section.
+func (a *Agent) invalidateZCodeEventReplayLocked() {
+	if a.replay.worker != nil {
+		a.replay.worker.cancel()
 	}
-	return a.replayZCodeEvents(ctx)
+	a.replay.generation++
+	a.replay.active = false
+	a.replay.worker = nil
+	a.replay.highWatermark = 0
+	a.replay.init()
+}
+
+// ensureZCodeReplayThrough requires an authoritative available range through
+// the snapshot's own sequence before its state can apply.
+func (a *Agent) ensureZCodeReplayThrough(ctx context.Context, sessionID string, observedSeq int64, epoch uint64) error {
+	a.dispatchMu.Lock()
+	a.Mu.Lock()
+	current := a.sessionID == sessionID && sessionID != "" && a.sessionEpoch == epoch && !a.sessionChanging
+	a.Mu.Unlock()
+	if !current {
+		a.unlockZCodeDispatch()
+		return errNoZCodeSession
+	}
+	a.replay.highWatermark = max(a.replay.highWatermark, observedSeq)
+	needed := a.zcodeReplayHasGapLocked()
+	a.unlockZCodeDispatch()
+	if needed {
+		if err := a.replayZCodeEvents(ctx); err != nil {
+			return err
+		}
+	}
+	a.dispatchMu.Lock()
+	defer a.unlockZCodeDispatch()
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if a.sessionID != sessionID || a.sessionEpoch != epoch || a.sessionChanging {
+		return errNoZCodeSession
+	}
+	if a.lastSeq < a.replay.highWatermark {
+		return fmt.Errorf("event replay still lacks seq %d..%d", a.lastSeq+1, a.replay.highWatermark)
+	}
+	return nil
+}
+
+// markZCodeCanonicalRecoveryLocked freezes uncertain appends before replay can
+// dispatch a model response or native end. The caller holds dispatchMu.
+func (a *Agent) markZCodeCanonicalRecoveryLocked() {
+	a.Mu.Lock()
+	for _, owner := range a.turns {
+		if !owner.finalized {
+			owner.canonicalRequired = true
+		}
+	}
+	a.Mu.Unlock()
 }

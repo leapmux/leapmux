@@ -22,6 +22,9 @@ func PersistGenerationScopes(buffer *GenerationBuffer, sink GenerationServices, 
 	buffer.bindOutput(sink)
 	destination := generationDestination{writer: agent.DirectTranscript(sink)}
 	defer func() {
+		if !destination.captured {
+			return
+		}
 		for _, scopeID := range scopeIDs {
 			update := agent.CompleteModelProgress(scopeID)
 			if destination.captured && destination.template.Publication != nil {
@@ -31,7 +34,7 @@ func PersistGenerationScopes(buffer *GenerationBuffer, sink GenerationServices, 
 			}
 		}
 	}()
-	_, err := buffer.persistScopes(scopeIDs, completion, destination.prepare)
+	_, err := buffer.persistScopes(scopeIDs, completion, destination.prepare, sink)
 	return err
 }
 

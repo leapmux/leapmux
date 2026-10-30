@@ -120,3 +120,24 @@ func TestRouteZCodeRPC_RegistersTheRuntimeHeaderAnswerBeforeTheHandlerRuns(t *te
 	a.runtimeHeaderMu.Unlock()
 	assert.Zero(t, remaining, "the answer removes its registration after its reply")
 }
+
+type zcodeReplacingParams struct{ replace func() }
+
+func (params zcodeReplacingParams) MarshalJSON() ([]byte, error) {
+	params.replace()
+	return []byte(`{"sessionId":"sess-1"}`), nil
+}
+
+func TestZCodeSessionRequest_ValidatesItsLifetimeAfterEncoding(t *testing.T) {
+	t.Parallel()
+	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
+	a.Mu.Lock()
+	identity := a.captureZCodeObservationIdentityLocked()
+	a.Mu.Unlock()
+	sent := 0
+	zcodeRespondToRequestsForTest(t, a, func(zcodeSentRequest) json.RawMessage { sent++; return json.RawMessage(`{}`) })
+	params := zcodeReplacingParams{replace: func() { a.Mu.Lock(); a.sessionEpoch++; a.Mu.Unlock() }}
+	_, err := a.sendZCodeSessionRequest(a.Context(), identity, MethodSessionSend, params, zcodeTestRPCTimeout, nil)
+	require.ErrorIs(t, err, agent.ErrInputSessionChanged)
+	assert.Zero(t, sent)
+}

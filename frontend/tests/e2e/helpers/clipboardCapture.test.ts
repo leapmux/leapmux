@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { deferred } from '~/test-support/async'
 import { createClipboardPageFixture } from '~/test-support/clipboardPage'
 import { captureClipboardText } from './clipboardCapture'
@@ -9,6 +9,16 @@ vi.mock('@playwright/test', async (importOriginal) => {
     ...actual,
     expect: actual.expect.configure({ timeout: 200 }),
   }
+})
+
+beforeEach(() => {
+  vi.useFakeTimers({
+    toFake: ['setTimeout', 'clearTimeout', 'performance'],
+  })
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 describe('captureClipboardText', () => {
@@ -41,7 +51,15 @@ describe('captureClipboardText', () => {
   })
 
   it('waits for the native write after the click handler returns', async () => {
-    const f = createClipboardPageFixture()
+    const sampledPending = deferred<void>()
+    const f = createClipboardPageFixture({
+      onEvaluation(value) {
+        if (value !== null && typeof value === 'object' && 'pending' in value && 'copied' in value
+          && value.pending === 1 && value.copied === false) {
+          sampledPending.resolve()
+        }
+      },
+    })
     const release = deferred<void>()
     const clicked = deferred<void>()
     const nativeWrite = async (text: string) => {
@@ -50,15 +68,23 @@ describe('captureClipboardText', () => {
     }
     f.clipboard.writeText = nativeWrite
     let pendingWrite: Promise<void> | undefined
+    let settled = false
     const captured = captureClipboardText(f.page, async () => {
       pendingWrite = f.copy('delayed native write')
       clicked.resolve()
     })
+    const outcome = captured.then(value => ({ value }), error => ({ error }))
+    void outcome.then(() => {
+      settled = true
+    })
     await clicked.promise
+    await sampledPending.promise
+    expect(settled).toBe(false)
     expect(f.nativeWrites).toEqual([])
     release.resolve()
     await pendingWrite
-    expect(await captured).toBe('delayed native write')
+    await vi.advanceTimersByTimeAsync(100)
+    expect(await outcome).toEqual({ value: 'delayed native write' })
     expect(f.clipboard.writeText).toBe(nativeWrite)
   })
 
@@ -86,7 +112,10 @@ describe('captureClipboardText', () => {
   it('rejects an action that makes no successful copy even if old clipboard text exists', async () => {
     const f = createClipboardPageFixture()
     await f.overwriteFromAnotherPage('old value')
-    await expect(captureClipboardText(f.page, async () => {})).rejects.toThrow(/toEqual/)
+    const captured = captureClipboardText(f.page, async () => {})
+    const rejected = expect(captured).rejects.toThrow(/toEqual/)
+    await vi.advanceTimersByTimeAsync(200)
+    await rejected
     expect(f.clipboard.writeText).toBe(f.originalWriteText)
   })
 
@@ -110,7 +139,10 @@ describe('captureClipboardText', () => {
     f.navigator.clipboard = undefined
     f.allowLegacyCopy(false)
     f.selectLegacyText('not copied')
-    await expect(captureClipboardText(f.page, async () => f.document.execCommand('copy'))).rejects.toThrow(/toEqual/)
+    const captured = captureClipboardText(f.page, async () => f.document.execCommand('copy'))
+    const rejected = expect(captured).rejects.toThrow(/toEqual/)
+    await vi.advanceTimersByTimeAsync(200)
+    await rejected
     expect(f.nativeWrites).toEqual([])
   })
 

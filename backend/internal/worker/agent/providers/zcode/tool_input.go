@@ -23,13 +23,25 @@ import (
 // treats a FAILED read as "the transcript has it", because a second plan row over
 // one that is already there draws the plan twice.
 func (a *Agent) supplementZCodeControlInput(toolCallID, toolName string, input json.RawMessage) (carriesInput bool, err error) {
-	if toolCallID == "" || zcodeInputIsAbsent(input) {
+	return a.supplementZCodeControlInputForSpan(a.zcodeSpanForNativeCall(toolCallID), toolName, input)
+}
+
+func (a *Agent) supplementZCodeControlInputForSpan(spanID, toolName string, input json.RawMessage) (bool, error) {
+	return a.supplementZCodeControlInputForCurrentRequest(spanID, toolName, input, nil)
+}
+
+func (a *Agent) supplementZCodeControlInputForCurrentRequest(spanID, toolName string, input json.RawMessage, current func() bool) (bool, error) {
+	if spanID == "" || zcodeInputIsAbsent(input) {
 		return false, nil
 	}
-	sink := a.zcodeSinkForToolCall(toolCallID)
-	stored, err := sink.ReadToolRequest(toolCallID)
+	sink := a.zcodeSinkForToolCall(spanID)
+	captured := agent.CaptureTranscript(sink, agent.MessageContent{}, agent.SpanInfo{SpanID: spanID}).FrozenContent()
+	stored, err := sink.ReadToolRequest(spanID)
 	if err != nil {
 		return false, err
+	}
+	if current != nil && !current() {
+		return false, nil
 	}
 	if stored == nil {
 		return false, nil
@@ -39,7 +51,7 @@ func (a *Agent) supplementZCodeControlInput(toolCallID, toolName string, input j
 		return false, nil
 	}
 	var request zcodeToolUpdated
-	if json.Unmarshal(event.Payload, &request) != nil || request.Kind != contracts.ZCodeToolKindScheduled || request.ToolCallID != toolCallID ||
+	if json.Unmarshal(event.Payload, &request) != nil || request.Kind != contracts.ZCodeToolKindScheduled || request.ToolCallID == "" ||
 		(toolName != "" && request.ToolName != "" && request.ToolName != toolName) {
 		return false, nil
 	}
@@ -70,7 +82,8 @@ func (a *Agent) supplementZCodeControlInput(toolCallID, toolName string, input j
 	}
 	// A refused write leaves the row without the input, and its bool says so.
 	return sink.EnrichMessage(agent.MessageEnrichment{
-		Seq: stored.Seq, SpanID: toolCallID, OriginalContent: stored.Content.Original,
+		Publication: captured.Publication, AgentSessionID: captured.AgentSessionID,
+		Seq: stored.Seq, SpanID: spanID, OriginalContent: stored.Content.Original,
 		PreviousRevision: stored.Revision, SupplementalContent: combined,
 	})
 }

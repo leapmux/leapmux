@@ -483,15 +483,18 @@ func TestHandleZCodeStateUpdated_SessionPatchAppliesTopLevelAxes(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
 
-	a.HandleOutput(zcodeStateLine(t, ScopeSession, "mode_changed", `{"mode":{"current":"plan"}}`))
+	a.Mu.Lock()
+	a.recordPlanRequestLocked(contracts.ZCodeModeBuild)
+	a.Mu.Unlock()
+	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, "mode_changed", `{"mode":{"current":"yolo"}}`))
 
 	a.Mu.Lock()
 	mode := a.mode
 	a.Mu.Unlock()
-	assert.Equal(t, contracts.ZCodeModePlan, mode)
+	assert.Equal(t, contracts.ZCodeModeYolo, mode)
 	require.Equal(t, 1, sink.SettingsRefreshCount(),
 		"a setting the AGENT changed must reach the picker, or a restart loses it")
-	assert.Equal(t, contracts.ZCodeModePlan, sink.LastSettingsRefresh().PermissionMode)
+	assert.Equal(t, contracts.ZCodeModeYolo, sink.LastSettingsRefresh().PermissionMode)
 }
 
 // The workspace scope patches `modelCatalog`, whose keys the settings struct does not
@@ -503,7 +506,7 @@ func TestHandleZCodeStateUpdated_NonSessionScopeIsNotSettings(t *testing.T) {
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
 
-	a.HandleOutput(zcodeStateLine(t, ScopeWorkspace, "catalog_changed", `{"mode":{"current":"yolo"}}`))
+	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeWorkspace, "catalog_changed", `{"mode":{"current":"yolo"}}`))
 
 	a.Mu.Lock()
 	mode := a.mode
@@ -525,7 +528,7 @@ func TestHandleZCodeStateUpdated_WorkspaceModelCatalogPatchRefreshesTheCatalog(t
 	a.model, a.thoughtLevel, a.mode, a.modeObserved, a.lastSeq = "personal:p/A", "high", "edit", true, int64(7)
 	a.Mu.Unlock()
 
-	a.HandleOutput(zcodeStateLine(t, ScopeWorkspace, "catalog_changed",
+	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeWorkspace, "catalog_changed",
 		`{"modelCatalog":{"revision":2},"mode":{"current":"yolo"},"runtime":{"eventSeq":42},"model":{"current":{"providerId":"personal:p","modelId":"B"}}}`))
 	zcodeAnswerRegistryRefresh(t, a, stdin, 1)
 	zcodeAnswerCatalogResume(t, a, stdin, 1, `[{"ref":{"providerId":"personal:p","modelId":"A"}}]`)
@@ -548,9 +551,9 @@ func TestHandleZCodeStateUpdated_WorkspaceModelCatalogPatchesCoalesce(t *testing
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
 
 	// The three patches land while the first pass waits for its registry answer.
-	a.HandleOutput(zcodeStateLine(t, ScopeWorkspace, "catalog_changed", `{"modelCatalog":{"revision":2}}`))
-	a.HandleOutput(zcodeStateLine(t, ScopeWorkspace, "catalog_changed", `{"modelCatalog":{"revision":3}}`))
-	a.HandleOutput(zcodeStateLine(t, ScopeWorkspace, "catalog_changed", `{"modelCatalog":{"revision":4}}`))
+	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeWorkspace, "catalog_changed", `{"modelCatalog":{"revision":2}}`))
+	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeWorkspace, "catalog_changed", `{"modelCatalog":{"revision":3}}`))
+	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeWorkspace, "catalog_changed", `{"modelCatalog":{"revision":4}}`))
 	zcodeAnswerRegistryRefresh(t, a, stdin, 1)
 	zcodeAnswerCatalogResume(t, a, stdin, 1, `[]`)
 	zcodeAnswerRegistryRefresh(t, a, stdin, 2)
@@ -570,7 +573,7 @@ func TestHandleZCodeStateUpdated_StatusOnlyPatchPersistsNothing(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
 
-	a.HandleOutput(zcodeStateLine(t, ScopeSession, "prompt_started", `{"status":"running"}`))
+	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, "prompt_started", `{"status":"running"}`))
 
 	assert.Equal(t, 0, sink.SettingsRefreshCount())
 }
@@ -586,7 +589,7 @@ func TestHandleZCodeStateUpdated_UnchangedAxesPersistNothing(t *testing.T) {
 	a.mode = contracts.ZCodeModePlan
 	a.Mu.Unlock()
 
-	a.HandleOutput(zcodeStateLine(t, ScopeSession, "mode_changed", `{"mode":{"current":"plan"}}`))
+	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, "mode_changed", `{"mode":{"current":"plan"}}`))
 
 	assert.Equal(t, 0, sink.SettingsRefreshCount())
 }
@@ -599,7 +602,7 @@ func TestHandleZCodeStateUpdated_RuntimeInAPatchIsApplied(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
 
-	a.HandleOutput(zcodeStateLine(t, ScopeSession, "runtime",
+	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, "runtime",
 		`{"runtime":{"contextUsage":{"used":1234,"size":200000,"cost":{"amount":0.5,"currency":"USD"}}}}`))
 
 	info := sink.LastSessionInfo()
@@ -708,9 +711,8 @@ func TestApplyZCodeModel_OverlayCarriesTheLevelAndAutoResolvesTheDefault(t *test
 			a.thoughtLevel = level
 			a.Mu.Unlock()
 
-			// No reply ever arrives, so the call returns a context error. The REQUEST is
-			// what this test is about.
-			a.CancelForTest()
+			// The reply omits settings; this test inspects the outgoing request.
+			zcodeRecordRequestRepliesWithoutState(t, a, stdin)
 			_, _ = a.applyZCodeModel("builtin:zai/GLM-5.3", a.thoughtLevel, 0)
 
 			requests := stdin.Requests(t)
@@ -753,7 +755,7 @@ func TestApplyZCodeModel_AccountConfigOmitsTheLegacyRuntimeModel(t *testing.T) {
       }
     }`)
 
-	a.CancelForTest()
+	zcodeRecordRequestRepliesWithoutState(t, a, stdin)
 	_, _ = a.applyZCodeModel("account:zai-individual-coding-plan/GLM-5.3", a.thoughtLevel, 0)
 
 	requests := stdin.Requests(t)
@@ -783,7 +785,7 @@ func TestApplyZCodeModel_OverlayOmitsTheLevelWhenTheModelDeclaresNoDefault(t *te
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
 	a.catalog = zcodeTestCatalog(t, zcodeTwoProviderConfig)
-	a.CancelForTest()
+	zcodeRecordRequestRepliesWithoutState(t, a, stdin)
 	_, _ = a.applyZCodeModel("builtin:zai/GLM-5.3-Flash", a.thoughtLevel, 0)
 
 	requests := stdin.Requests(t)
@@ -803,7 +805,7 @@ func TestApplyZCodeThoughtLevel_AlwaysSendsTheLevel(t *testing.T) {
 
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
-	a.CancelForTest()
+	zcodeRecordRequestRepliesWithoutState(t, a, stdin)
 	_ = a.applyZCodeThoughtLevel("max", 0)
 
 	requests := stdin.Requests(t)
@@ -822,7 +824,7 @@ func TestApplyZCodeMode_SendsTheModeAndAppliesNoLocalValue(t *testing.T) {
 
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
-	a.CancelForTest()
+	zcodeRecordRequestRepliesWithoutState(t, a, stdin)
 	_ = a.applyZCodeMode(contracts.ZCodeModeYolo, 0)
 
 	requests := stdin.Requests(t)
@@ -865,6 +867,7 @@ func TestZCodeUpdateSettings_NoChangeSendsNothingAndSucceeds(t *testing.T) {
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
 	a.Mu.Lock()
 	a.model, a.thoughtLevel, a.mode = "p/m", "high", contracts.ZCodeModeBuild
+	a.modelObserved, a.modeObserved, a.planObserved = true, true, true
 	a.unresolvedSettings = map[string]struct{}{agent.OptionIDEffort: {}}
 	a.Mu.Unlock()
 
@@ -881,7 +884,7 @@ func TestZCodeUpdateSettings_NoChangeSendsNothingAndSucceeds(t *testing.T) {
 	require.Equal(t, 1, sink.SettingsRefreshCount())
 	refresh := sink.LastSettingsRefresh()
 	assert.Equal(t, "p/m", refresh.Model)
-	assert.Equal(t, "high", refresh.Effort)
+	assert.Empty(t, refresh.Effort, "an unresolved effort must not be republished as confirmed")
 	assert.Equal(t, contracts.ZCodeModeBuild, refresh.PermissionMode)
 }
 
@@ -1053,9 +1056,8 @@ func TestApplyStartupSettings_PinsTheModeOnAResumedSession(t *testing.T) {
 	a.model = ""
 	a.thoughtLevel = agent.EffortAuto
 	a.Mu.Unlock()
-	// No reply arrives, so the setter fails at once. The REQUEST is what this test is
-	// about.
-	a.CancelForTest()
+	// The native refusal leaves the observed settings unchanged.
+	zcodeRecordRequestRepliesWithoutState(t, a, stdin)
 
 	a.applyStartupSettings(zcodeSettingsRequest{Mode: contracts.ZCodeModeBuild}, 0)
 
@@ -1080,7 +1082,7 @@ func TestApplyStartupSettings_PinsTheModeWhenTheSessionReportedNone(t *testing.T
 	a.thoughtLevel = agent.EffortAuto
 	a.mode = contracts.ZCodeModePlan // the launch request, echoed into the field, not an observation
 	a.Mu.Unlock()
-	a.CancelForTest()
+	zcodeRecordRequestRepliesWithoutState(t, a, stdin)
 
 	a.applyStartupSettings(zcodeSettingsRequest{Mode: contracts.ZCodeModePlan}, 0)
 
@@ -1123,9 +1125,8 @@ func TestApplyStartupSettings_SendsTheModeSetterWhenTheSessionRunsInAnotherMode(
 	a.thoughtLevel = agent.EffortAuto
 	a.mode = contracts.ZCodeModeYolo
 	a.Mu.Unlock()
-	// No reply ever arrives, so the setter returns a context error. The REQUEST is what
-	// this test is about.
-	a.CancelForTest()
+	// The reply omits settings; this test inspects the outgoing request.
+	zcodeRecordRequestRepliesWithoutState(t, a, stdin)
 
 	a.applyStartupSettings(zcodeSettingsRequest{Mode: contracts.ZCodeModePlan}, 0)
 
@@ -1228,7 +1229,7 @@ func TestApplyStartupSettings_TheRequestedLevelWinsOverTheFoldedOne(t *testing.T
 	a.mode = ""
 	a.model = ""
 	a.Mu.Unlock()
-	a.CancelForTest()
+	zcodeRecordRequestRepliesWithoutState(t, a, stdin)
 
 	a.applyStartupSettings(zcodeSettingsRequest{ThoughtLevel: "max"}, 0)
 
@@ -1398,7 +1399,7 @@ func TestZCodePlanFlag_APayloadWithoutAModeAndABooleanFlagIsNotAModeChange(t *te
 	assert.Equal(t, contracts.ZCodeDefaultMode, zcodePermissionMode(t, a))
 	assert.Equal(t, 0, sink.SettingsRefreshCount())
 
-	a.HandleOutput(zcodeEventLine(t, 10, contracts.ZCodeEventSessionUpdated,
+	a.HandleOutput(zcodeEventLine(t, 7, contracts.ZCodeEventSessionUpdated,
 		`{"mode":{"current":"yolo"},"content":"The model answered.","stopReason":"stop"}`))
 	assert.Equal(t, 1, sink.MessageCount(), "a model response with an unrelated `mode` shape still persists")
 }
@@ -1423,7 +1424,7 @@ func TestZCodePlanFlag_ADeclinedPlanKeepsPlanMode(t *testing.T) {
 	require.NotEmpty(t, resolution.Content)
 	require.NoError(t, a.SendRawInput(resolution.Content, agent.StopContext{}))
 	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventUserInputResolved, `{"requestId":"req-plan"}`))
-	a.HandleOutput(zcodeStateLine(t, ScopeSession, "prompt_completed", `{"mode":{"current":"build"}}`))
+	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, "prompt_completed", `{"mode":{"current":"build"}}`))
 
 	assert.Equal(t, contracts.ZCodeModePlan, zcodePermissionMode(t, a),
 		"the declined ExitPlanMode never ran, so the plan flag is still on")
@@ -1461,7 +1462,7 @@ func TestZCodePlanFlag_AnApprovedPlanReturnsToTheNativeMode(t *testing.T) {
 		PreviousMode: contracts.ZCodeModeEdit, PreviousPlanEnabled: true,
 		Source: "tool", ToolCallID: "call-plan",
 	}))
-	a.HandleOutput(zcodeStateLine(t, ScopeSession, "prompt_completed", `{"mode":{"current":"edit"}}`))
+	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, "prompt_completed", `{"mode":{"current":"edit"}}`))
 
 	assert.Equal(t, contracts.ZCodeModeEdit, zcodePermissionMode(t, a))
 	require.Equal(t, 2, sink.SettingsRefreshCount(), "one refresh for plan on, one for plan off")
@@ -1927,7 +1928,7 @@ func TestZCodeDeferPlanExitModeIsDroppedWhenTheUsersTurnEnds(t *testing.T) {
 		a.DeferPlanExitMode(contracts.ZCodeModeYolo)
 		zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 
-		a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnCompleted, `{}`))
+		a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnCompleted, `{}`))
 
 		assert.Empty(t, pendingAfter(t, a))
 	})
@@ -1938,7 +1939,7 @@ func TestZCodeDeferPlanExitModeIsDroppedWhenTheUsersTurnEnds(t *testing.T) {
 		a.DeferPlanExitMode(contracts.ZCodeModeYolo)
 		zcodeStartTestTurn(t, a, `{"turnNumber":1,"inputSource":"background_task"}`)
 
-		a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnCompleted, `{}`))
+		a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnCompleted, `{}`))
 
 		assert.Equal(t, contracts.ZCodeModeYolo, pendingAfter(t, a))
 	})
@@ -1960,7 +1961,7 @@ func TestHandleZCodeStateUpdated_AStaleSnapshotOfAnotherReasonKeepsTheObservedMo
 	require.Equal(t, contracts.ZCodeModeYolo, zcodePermissionMode(t, a))
 	refreshes := sink.SettingsRefreshCount()
 
-	a.HandleOutput(zcodeStateLine(t, ScopeSession, "prompt_completed", `{"mode":{"current":"build"}}`))
+	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, "prompt_completed", `{"mode":{"current":"build"}}`))
 
 	assert.Equal(t, contracts.ZCodeModeYolo, zcodePermissionMode(t, a),
 		"a snapshot that rides on another reason is older than the reported mode")
@@ -1978,7 +1979,7 @@ func TestHandleZCodeStateUpdated_AModeChangedPatchReplacesTheObservedMode(t *tes
 		Mode: contracts.ZCodeModeYolo, PreviousMode: contracts.ZCodeModeBuild, Source: "command",
 	}))
 
-	a.HandleOutput(zcodeStateLine(t, ScopeSession, "mode_changed", `{"mode":{"current":"build"}}`))
+	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, "mode_changed", `{"mode":{"current":"build"}}`))
 
 	assert.Equal(t, contracts.ZCodeModeBuild, zcodePermissionMode(t, a))
 	assert.Equal(t, contracts.ZCodeModeBuild, sink.LastSettingsRefresh().PermissionMode)
@@ -1991,7 +1992,7 @@ func TestHandleZCodeStateUpdated_ASnapshotOfAnotherReasonStatesTheFirstMode(t *t
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
 
-	a.HandleOutput(zcodeStateLine(t, ScopeSession, "prompt_completed", `{"mode":{"current":"yolo"}}`))
+	a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, "prompt_completed", `{"mode":{"current":"yolo"}}`))
 
 	assert.Equal(t, contracts.ZCodeModeYolo, zcodePermissionMode(t, a))
 }
@@ -2021,7 +2022,7 @@ func TestHandleZCodeStateUpdated_CompactionReasonsPersistNothingAndStillFinishTh
 			a.Mu.Unlock()
 			a.PublishTurnActive()
 
-			a.HandleOutput(zcodeStateLine(t, ScopeSession, tc.reason, `{"status":"idle"}`))
+			a.HandleOutput(zcodeStateLine(t, contracts.ZCodeScopeSession, tc.reason, `{"status":"idle"}`))
 
 			assert.Equal(t, 0, sink.MessageCount(), "the state.updated reason is no row")
 			assert.Equal(t, 0, sink.NotificationCount())
@@ -2037,5 +2038,95 @@ func TestHandleZCodeStateUpdated_CompactionReasonsPersistNothingAndStillFinishTh
 			assert.Equal(t, "sess-1", running, "the start of a rewrite keeps the compaction state")
 			assert.True(t, active, "the start of a rewrite keeps the queue turn busy")
 		})
+	}
+}
+
+func TestZCodeModelObservation_DoesNotReuseThePreviousModelsThoughtAxis(t *testing.T) {
+	t.Parallel()
+	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
+	var first, second zcodeSettingsSnapshot
+	require.NoError(t, json.Unmarshal([]byte(`{"model":{"current":{"providerId":"p","modelId":"A"},"available":[{"ref":{"providerId":"p","modelId":"A"}},{"ref":{"providerId":"p","modelId":"B"},"reasoning":{"levels":[{"value":"medium"}],"defaultLevel":"medium"}}]},"thoughtLevel":{"enabled":true,"current":"high","available":[{"value":"high"}]}}`), &first))
+	require.NoError(t, json.Unmarshal([]byte(`{"model":{"current":{"providerId":"p","modelId":"B"}}}`), &second))
+	a.Mu.Lock()
+	a.applySettingsSnapshotLocked(&first)
+	a.applySettingsSnapshotLocked(&second)
+	a.Mu.Unlock()
+	models, current, _ := a.zcodeModelsForUI()
+	assert.Equal(t, "p/B", current)
+	model := agent.FindAvailableModel(models, current)
+	require.NotNil(t, model)
+	var levels []string
+	for _, level := range model.SupportedEfforts {
+		levels = append(levels, level.Id)
+	}
+	assert.Contains(t, levels, "medium")
+	assert.NotContains(t, levels, "high")
+}
+
+func TestZCodeSettingsReceipt_CannotRollbackANewerObservation(t *testing.T) {
+	t.Parallel()
+	for _, axis := range []string{agent.OptionIDModel, agent.OptionIDEffort, agent.OptionIDPermissionMode} {
+		for _, receipt := range []string{"older", "zero", "unversioned", "replacement"} {
+			t.Run(axis+" "+receipt, func(t *testing.T) {
+				t.Parallel()
+				stdin := &zcodeRecordedStdin{}
+				a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+				a.catalog = zcodeTestCatalog(t, zcodeTwoProviderConfig)
+				a.planObserved = true
+				done := make(chan error, 1)
+				method := MethodSetModel
+				if axis == agent.OptionIDEffort {
+					method = MethodSetThoughtLevel
+				}
+				if axis == agent.OptionIDPermissionMode {
+					method = MethodSetMode
+				}
+				go func() {
+					switch axis {
+					case agent.OptionIDModel:
+						_, err := a.applyZCodeModel("builtin:zai/GLM-5.3-Flash", "", zcodeTestRPCTimeout)
+						done <- err
+					case agent.OptionIDEffort:
+						done <- a.applyZCodeThoughtLevel("low", zcodeTestRPCTimeout)
+					case agent.OptionIDPermissionMode:
+						done <- a.applyZCodeMode("plan", zcodeTestRPCTimeout)
+					}
+				}()
+				request := waitZCodeRequest(t, stdin, method)
+				newer := `{"model":{"current":{"providerId":"p","modelId":"B"}},"thoughtLevel":{"enabled":true,"current":"high","available":[{"value":"high"}]},"mode":{"current":"yolo"}}`
+				if receipt == "replacement" {
+					var snapshot zcodeStateSnapshot
+					require.NoError(t, json.Unmarshal([]byte(`{"session":{"sessionId":"sess-1"},"runtime":{"stateRevision":9},"settings":`+newer+`}`), &snapshot))
+					a.adoptCompleteZCodeSessionSnapshot(snapshot, true)
+				} else {
+					a.handleZCodeStateUpdated(json.RawMessage(`{"scope":"session","sessionId":"sess-1","revision":9,"reason":"mode_changed","patch":` + newer + `}`))
+				}
+				revision := `"runtime":{"stateRevision":8},`
+				if receipt == "zero" {
+					revision = `"runtime":{"stateRevision":0},`
+				}
+				if receipt == "unversioned" {
+					revision = ""
+				}
+				if receipt == "replacement" {
+					revision = `"runtime":{"stateRevision":100},`
+				}
+				reply := `{"session":{"sessionId":"sess-1"},` + revision + `"settings":{"model":{"current":{"providerId":"builtin:zai","modelId":"GLM-5.3-Flash"}},"thoughtLevel":{"enabled":true,"current":"low","available":[{"value":"low"}]},"mode":{"current":"build"}}}`
+				a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(reply)))
+				err := <-done
+				if receipt == "replacement" {
+					assert.ErrorIs(t, err, errNoZCodeSession)
+				} else {
+					require.NoError(t, err)
+				}
+				a.Mu.Lock()
+				assert.Equal(t, "p/B", a.model)
+				assert.Equal(t, "high", a.thoughtLevel)
+				assert.Equal(t, "yolo", a.mode)
+				assert.False(t, a.planEnabled)
+				assert.NotContains(t, a.unresolvedSettings, axis)
+				a.Mu.Unlock()
+			})
+		}
 	}
 }

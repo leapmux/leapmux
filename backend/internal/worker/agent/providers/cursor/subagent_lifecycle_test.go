@@ -249,6 +249,6 @@ func TestCursorNativeSubagentStoreMirrorDoesNotDuplicateLiveContent(t *testing.T
 	child := sink.Child(cursorNativeTaskChildID(t, sink, "native-task"))
 	before := child.Messages()
 	a.noteCursorTaskExtension("native-task")
-	a.observeCursorTaskRecord("native-task", cursorToolRecord{content: json.RawMessage(`{"toolName":"task","result":"ONE_NATIVE_CHILD_REPORT"}`)})
+	a.captureCursorTaskRecordObserver()("native-task", cursorToolRecord{content: json.RawMessage(`{"toolName":"task","result":"ONE_NATIVE_CHILD_REPORT"}`)})
 	assert.Equal(t, before, child.Messages())
 }
