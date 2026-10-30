@@ -10,10 +10,12 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/tooltranscript"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/leapmux/leapmux/internal/worker/todoevents"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -50,11 +52,20 @@ func (*cursorTestToolSource) Locate(sessionID string) tooltranscript.Location {
 
 func (*cursorTestToolSource) ToolCallID(original []byte) string { return acp.ToolCallID(original) }
 
-func (s *cursorTestToolSource) ReadSupplements(_ context.Context, _ string, pending map[string]agent.MessageContent, final bool) (map[string][]byte, error) {
+func (s *cursorTestToolSource) ReadSupplements(_ context.Context, _ tooltranscript.Location, pending map[string]agent.MessageContent, final bool) (map[string][]byte, error) {
 	if s.read == nil {
 		return nil, nil
 	}
 	return s.read(pending, final), nil
+}
+
+func (s *cursorTestToolSource) CaptureSupplement(_ tooltranscript.Location, content agent.MessageContent, span agent.SpanInfo) tooltranscript.SupplementReader {
+	read := s.read
+	if read == nil {
+		return nil
+	}
+	pending := map[string]agent.MessageContent{span.SpanID: content.Clone()}
+	return func(_ context.Context, final bool) ([]byte, error) { return read(pending, final)[span.SpanID], nil }
 }
 
 // newCursorTranscriptAgent builds a Cursor agent whose sink is a tool transcript, the
@@ -132,8 +143,8 @@ func TestCursorTaskStoreResultPersistsTheReportInTheChildTranscript(t *testing.T
 		"toolName":"Task",
 		"result":"This is the output of the subagent:\n\nresponse:\n<response>\nThe parser is in parser.go.\n</response>\n\nAgent ID: child"
 	}`)}
-	a.observeCursorTaskRecord("task-call", record)
-	a.observeCursorTaskRecord("task-call", record)
+	a.captureCursorTaskRecordObserver()("task-call", record)
+	a.captureCursorTaskRecordObserver()("task-call", record)
 
 	rows := sink.BackgroundTasks()
 	require.Len(t, rows, 1)
@@ -154,7 +165,7 @@ func TestCursorTaskStoreReplayDoesNotDuplicateAChildReport(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := newCursorTestAgent(agent.NewProviderServices(sink))
 	a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"task-call","title":"Task: Inspect","status":"pending","rawInput":{"_toolName":"task","prompt":"Inspect."}}`))
-	a.observeCursorTaskRecord("task-call", cursorToolRecord{content: json.RawMessage(
+	a.captureCursorTaskRecordObserver()("task-call", cursorToolRecord{content: json.RawMessage(
 		`{"type":"tool-result","toolCallId":"task-call","toolName":"Task","result":"<response>Report</response>"}`,
 	)})
 
@@ -170,7 +181,7 @@ func TestCursorTaskStoreReplayKeepsPendingReportsBounded(t *testing.T) {
 
 	a := newCursorTestAgent(agent.NewProviderServices(&agenttest.Sink{}))
 	for i := range cursorPendingTaskReportLimit + 20 {
-		a.observeCursorTaskRecord(fmt.Sprintf("task-%d", i), cursorToolRecord{content: json.RawMessage(
+		a.captureCursorTaskRecordObserver()(fmt.Sprintf("task-%d", i), cursorToolRecord{content: json.RawMessage(
 			`{"type":"tool-result","toolName":"Task","result":"<response>Report</response>"}`,
 		)})
 	}
@@ -183,7 +194,7 @@ func TestCursorTaskExtensionConsumesAReportThatTheStoreFoundFirst(t *testing.T) 
 	sink := &agenttest.Sink{}
 	a := newCursorTestAgent(agent.NewProviderServices(sink))
 	a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"task-call","title":"Task: Inspect","status":"pending","rawInput":{"_toolName":"task","prompt":"Inspect."}}`))
-	a.observeCursorTaskRecord("task-call", cursorToolRecord{content: json.RawMessage(
+	a.captureCursorTaskRecordObserver()("task-call", cursorToolRecord{content: json.RawMessage(
 		`{"type":"tool-result","toolCallId":"task-call","toolName":"Task","result":"<response>Report</response>"}`,
 	)})
 	require.True(t, a.handleCursorExtension(contracts.CursorMethodTask,
@@ -514,4 +525,148 @@ func TestCursorOnceAcknowledgedExtensionSurvivesCASLoss(t *testing.T) {
 	assert.Contains(t, supplement, contracts.CursorSupplementExtension)
 	assert.Contains(t, supplement, "rawOutput")
 	assert.Empty(t, transcript.PendingSpanIDsForTest())
+}
+
+func TestCursorTaskRecordObserverCannotPopulateAReplacementSession(t *testing.T) {
+	t.Parallel()
+	a := newCursorTestAgent(agent.NewProviderServices(&agenttest.Sink{}))
+	observe := a.captureCursorTaskRecordObserver()
+	a.clearTaskToolCalls()
+	observe("task-call", cursorToolRecord{content: json.RawMessage(`{"type":"tool-result","toolName":"Task","result":"<response>Old report</response>"}`)})
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Empty(t, a.taskReports)
+}
+
+type cursorReportRaceServices struct {
+	transcript  *tooltranscript.Transcript
+	childID     string
+	captureHook func()
+	agent.ProviderServices
+	lookupHook  func()
+	persistHook func()
+}
+
+func (services *cursorReportRaceServices) LookupBackgroundTask(key string) (string, bgtask.Status, bool, error) {
+	if services.lookupHook != nil {
+		services.lookupHook()
+	}
+	return services.ProviderServices.LookupBackgroundTask(key)
+}
+func (services *cursorReportRaceServices) PersistChildSubagentReport(write agent.ChildSubagentReportWrite) (bool, error) {
+	if services.lookupHook != nil {
+		services.lookupHook()
+	}
+	if services.persistHook != nil {
+		services.persistHook()
+	}
+	return services.ProviderServices.PersistChildSubagentReport(write)
+}
+func (services *cursorReportRaceServices) ChildSink(childID string) agent.ProviderServices {
+	return &cursorReportChildRaceServices{ProviderServices: services.ProviderServices.ChildSink(childID), parent: services}
+}
+
+type cursorReportChildRaceServices struct {
+	agent.ProviderServices
+	parent *cursorReportRaceServices
+}
+
+func (services *cursorReportChildRaceServices) CaptureMessage(content agent.MessageContent, span agent.SpanInfo) agent.MessageContent {
+	captured := services.ProviderServices.CaptureMessage(content, span)
+	if services.parent.captureHook != nil {
+		services.parent.captureHook()
+	}
+	return captured
+}
+
+func (services *cursorReportChildRaceServices) PersistNotification(source leapmuxv1.MessageSource, content agent.MessageContent) (bool, error) {
+	if services.parent.persistHook != nil {
+		services.parent.persistHook()
+	}
+	return services.ProviderServices.PersistNotification(source, content)
+}
+
+func newCursorReportRace(t *testing.T, withTranscript bool) (*Agent, *agenttest.Sink, *cursorReportRaceServices, *agenttest.Sink) {
+	t.Helper()
+	sink := &agenttest.Sink{}
+	services := &cursorReportRaceServices{ProviderServices: agent.NewProviderServices(sink)}
+	if withTranscript {
+		services.transcript = tooltranscript.New(t.Context(), services.ProviderServices, &cursorTestToolSource{})
+		services.ProviderServices = services.transcript
+	}
+	a := newCursorTestAgent(services)
+	a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"task-call","title":"Task: Inspect","status":"pending","rawInput":{"_toolName":"task","prompt":"Inspect.","description":"Inspect"}}`))
+	require.True(t, a.handleCursorExtension(contracts.CursorMethodTask, json.RawMessage(`{"toolCallId":"task-call","description":"Inspect","prompt":"Inspect.","agentId":"child"}`)))
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	services.childID = rows[0].ChildAgentID
+	return a, sink, services, sink.Child(rows[0].ChildAgentID)
+}
+
+func TestCursorTaskReportCaptureCannotPublishAfterSessionReset(t *testing.T) {
+	t.Parallel()
+	a, _, services, child := newCursorReportRace(t, false)
+	services.lookupHook = func() {
+		a.clearTaskToolCalls()
+		a.Mu.Lock()
+		a.taskReports["task-call"] = cursorTaskReportState{extensionSeen: true, report: "replacement"}
+		a.Mu.Unlock()
+	}
+	a.captureCursorTaskRecordObserver()("task-call", cursorToolRecord{content: json.RawMessage(`{"type":"tool-result","toolName":"Task","result":"<response>Old report</response>"}`)})
+	assert.Empty(t, child.LeapMuxNotifications())
+	a.Mu.Lock()
+	assert.Equal(t, "replacement", a.taskReports["task-call"].report)
+	a.Mu.Unlock()
+}
+
+func TestCursorTaskReportCompletionCannotClearReplacementState(t *testing.T) {
+	t.Parallel()
+	a, _, services, child := newCursorReportRace(t, false)
+	services.persistHook = func() {
+		a.clearTaskToolCalls()
+		a.Mu.Lock()
+		a.taskReports["task-call"] = cursorTaskReportState{extensionSeen: true, report: "replacement"}
+		a.Mu.Unlock()
+	}
+	a.captureCursorTaskRecordObserver()("task-call", cursorToolRecord{content: json.RawMessage(`{"type":"tool-result","toolName":"Task","result":"<response>Old report</response>"}`)})
+	require.Len(t, child.LeapMuxNotifications(), 1)
+	assert.Equal(t, "Old report", child.LeapMuxNotifications()[0]["text"])
+	a.Mu.Lock()
+	assert.Equal(t, "replacement", a.taskReports["task-call"].report)
+	a.Mu.Unlock()
+}
+
+func TestCursorAcceptedReportFinishesBeforeItsChildRetires(t *testing.T) {
+	t.Parallel()
+	a, _, services, child := newCursorReportRace(t, true)
+	services.persistHook = func() {
+		a.clearTaskToolCalls()
+		services.AdoptNativeSession("replacement-session")
+		services.transcript.Reset()
+		a.Mu.Lock()
+		a.taskReports["task-call"] = cursorTaskReportState{extensionSeen: true, report: "replacement"}
+		a.Mu.Unlock()
+	}
+	a.captureCursorTaskRecordObserver()("task-call", cursorToolRecord{content: json.RawMessage(`{"type":"tool-result","toolName":"Task","result":"<response>Old report</response>"}`)})
+	require.NoError(t, services.transcript.WaitForRetirementsForTest(testutil.DeadlineContext(t)))
+	reports := child.LeapMuxNotifications()
+	require.Len(t, reports, 1)
+	assert.Equal(t, "Old report", reports[0]["text"])
+	a.Mu.Lock()
+	assert.Equal(t, "replacement", a.taskReports["task-call"].report)
+	a.Mu.Unlock()
+}
+
+func TestCursorReportRefusedBeforeAdmissionKeepsItsState(t *testing.T) {
+	t.Parallel()
+	a, _, services, child := newCursorReportRace(t, true)
+	services.captureHook = func() {
+		services.transcript.CleanupChildAgent(services.childID)
+		require.NoError(t, services.transcript.WaitForRetirementsForTest(testutil.DeadlineContext(t)))
+	}
+	a.captureCursorTaskRecordObserver()("task-call", cursorToolRecord{content: json.RawMessage(`{"type":"tool-result","toolName":"Task","result":"<response>Unadmitted report</response>"}`)})
+	assert.Empty(t, child.LeapMuxNotifications())
+	a.Mu.Lock()
+	assert.Equal(t, "Unadmitted report", a.taskReports["task-call"].report)
+	a.Mu.Unlock()
 }

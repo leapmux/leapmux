@@ -3,7 +3,6 @@ package zcode
 import (
 	"encoding/json"
 	"os"
-	"sync/atomic"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -21,12 +20,14 @@ func TestTurnSignalWhitelist_ZCode(t *testing.T) {
 	// repository owns, so the table is checked for completeness against it (see
 	// the test underneath). Adding an event to the contract without an entry
 	// there fails that test.
-	var seq atomic.Int64
 	agenttest.AssertTurnFrames(t, zcodeTurnFrameCases(), func(t *testing.T, tc agenttest.TurnFrameCase) []bool {
 		sink := &agenttest.Sink{}
 		a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), &zcodeRecordedStdin{})
-		// Each case gets its own agent, so the seq only has to rise within one.
-		a.HandleOutput(zcodeEventLine(t, seq.Add(1), tc.Name, tc.Line))
+		// Each fresh agent receives its first sequenced event.
+		// The seeded owner is silent (no publications of its own), so the frame
+		// under test is the only thing that may move the flag.
+		zcodeSeedTestTurn(t, a, false)
+		a.HandleOutput(zcodeEventLine(t, 1, tc.Name, tc.Line))
 		return sink.TurnActives()
 	})
 }

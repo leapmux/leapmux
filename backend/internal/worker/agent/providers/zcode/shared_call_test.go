@@ -3,6 +3,7 @@ package zcode
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -192,5 +193,81 @@ func TestZCodeSharedCalls_HandlesAnEmptyKeyAndZeroResult(t *testing.T) {
 	value, err := calls.do(t.Context(), "", time.Duration(1<<63-1), func(context.Context) (int, error) { return 0, nil })
 	require.NoError(t, err)
 	assert.Zero(t, value)
+	assert.Zero(t, calls.waitingInAll())
+}
+
+// Cancelling one waiter must not cancel the call: the survivor's result may
+// still be published.
+func TestZCodeSharedCalls_ACancelledWaiterStillPublishesForTheSurvivor(t *testing.T) {
+	t.Parallel()
+
+	var calls zcodeSharedCalls[string, int]
+	published := make(chan bool, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	fn := func(callCtx context.Context) (int, error) {
+		<-release
+		published <- calls.publish(callCtx, "key", func() {})
+		return 42, nil
+	}
+
+	first, cancelFirst := context.WithCancel(context.Background())
+	defer cancelFirst()
+	firstErr := make(chan error, 1)
+	survivor := make(chan int, 1)
+	go func() {
+		_, err := calls.do(first, "key", time.Hour, fn)
+		firstErr <- err
+	}()
+	go func() {
+		value, err := calls.do(context.Background(), "key", time.Hour, fn)
+		assert.NoError(t, err)
+		survivor <- value
+	}()
+	require.Eventually(t, func() bool { return calls.waiting("key") == 2 }, 30*time.Second, time.Millisecond)
+
+	cancelFirst()
+	require.ErrorIs(t, <-firstErr, context.Canceled, "the cancelled waiter gets no result")
+	require.Eventually(t, func() bool { return calls.waiting("key") == 1 }, 30*time.Second, time.Millisecond,
+		"one cancelled waiter must leave the call for the survivor")
+
+	unblock()
+	assert.True(t, <-published, "the call of a survivor may still publish")
+	assert.Equal(t, 42, <-survivor)
+}
+
+// The last waiter to leave cancels the call: the abandoned result cannot
+// publish.
+func TestZCodeSharedCalls_LastWaiterCancellationRefusesPublication(t *testing.T) {
+	t.Parallel()
+
+	var calls zcodeSharedCalls[string, int]
+	published := make(chan bool, 1)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := calls.do(ctx, "key", time.Hour, func(callCtx context.Context) (int, error) {
+			close(started)
+			<-release
+			published <- calls.publish(callCtx, "key", func() {})
+			return 42, nil
+		})
+		done <- err
+	}()
+	<-started
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled, "the cancelled waiter gets no result")
+
+	unblock()
+	assert.False(t, <-published, "an abandoned call cannot publish")
 	assert.Zero(t, calls.waitingInAll())
 }

@@ -61,14 +61,18 @@ func (owner *transcriptOwner) sameLiveAuthority(other *transcriptOwner) bool {
 }
 
 func (owner *transcriptOwner) currentLocked() bool {
+	return owner.sessionCurrentLocked() && owner.activity.scope == owner.scope
+}
+
+func (owner *transcriptOwner) sessionCurrentLocked() bool {
 	if !owner.sink.registeredCurrent() {
 		return false
 	}
 	current, exists := owner.sink.h.activity.Load(owner.sink.agentID)
-	if !exists || current != owner.activity || owner.activity.scope != owner.scope {
+	if !exists || current != owner.activity {
 		return false
 	}
-	if !owner.sink.ownsControlPublisher() || owner.sink.currentMessageSessionFact() != owner.session || owner.session.id != owner.sessionID {
+	if !owner.sink.ownsControlPublisher() || owner.session == nil || owner.sink.currentMessageSessionFact() != owner.session || owner.session.id != owner.sessionID {
 		return false
 	}
 	rootProgress := owner.sink.turnPublisherSink().progress
@@ -85,6 +89,12 @@ func (owner *transcriptOwner) IsCurrent() bool {
 	owner.activity.mu.Lock()
 	defer owner.activity.mu.Unlock()
 	return owner.currentLocked()
+}
+
+func (owner *transcriptOwner) IsSessionCurrent() bool {
+	owner.activity.mu.Lock()
+	defer owner.activity.mu.Unlock()
+	return owner.sessionCurrentLocked()
 }
 
 func (publication *transcriptPublication) ReportProgress(update agent.ProgressUpdate) {
@@ -217,13 +227,21 @@ func (owner *transcriptOwner) dropOutputTail(spanID string) {
 }
 
 func (sink *agentOutputSink) CaptureMessage(content agent.MessageContent, span agent.SpanInfo) agent.MessageContent {
-	content = content.Clone()
 	if content.Publication != nil {
-		return content
+		return content.Clone()
 	}
 	mutation := sink.h.transcriptMutationMutex(sink.rootAgentID)
 	mutation.RLock()
 	defer mutation.RUnlock()
+	return sink.captureMessageUnderMutation(content, span)
+}
+
+// captureMessageUnderMutation captures while the caller holds the root mutation lock.
+func (sink *agentOutputSink) captureMessageUnderMutation(content agent.MessageContent, span agent.SpanInfo) agent.MessageContent {
+	content = content.Clone()
+	if content.Publication != nil {
+		return content
+	}
 	session := sink.currentMessageSessionFact()
 	if content.AgentSessionID == "" {
 		content.AgentSessionID = session.id
@@ -262,7 +280,11 @@ func (sink *agentOutputSink) CaptureMessage(content agent.MessageContent, span a
 }
 
 // withSpanSnapshot keeps immutable authority and replaces only span geometry.
-func (owner *transcriptOwner) withSpanSnapshot(tracker *SpanTracker, span agent.SpanInfo) *transcriptOwner {
+type spanSnapshotter interface {
+	Snapshot(parentSpanID, connectorSpanID string, closing bool) (int32, string, int32)
+}
+
+func (owner *transcriptOwner) withSpanSnapshot(tracker spanSnapshotter, span agent.SpanInfo) *transcriptOwner {
 	next := *owner
 	connector := resolveConnectorSpanID(span.SpanID, span.ConnectorSpanID, span.ParentSpanID, span.Closing)
 	next.depth, next.spanLines, next.spanColor = tracker.Snapshot(span.ParentSpanID, connector, span.Closing)

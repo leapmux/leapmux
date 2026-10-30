@@ -130,12 +130,21 @@ export interface MockModelTextStream {
 /**
  * Token counts a step reports in its usage block.
  *
- * Every field is optional. An absent field keeps the mock's default of 1, so a
- * step that only needs a bigger `inputTokens` need not state the rest.
+ * Every field is optional. Output defaults to one, and cache counts default to zero.
+ * Inclusive input defaults to one and increases when the cache buckets require more.
+ * Counts and their combined total must be nonnegative safe integers.
+ *
+ * `inputTokens` is the CACHE-INCLUSIVE count the provider's own usage reports;
+ * `cacheReadTokens` and `cacheWriteTokens` are the buckets inside it. The mock's
+ * writers map that pair onto each protocol's own usage shape.
  */
 export interface MockModelUsage {
   inputTokens?: number
   outputTokens?: number
+  /** Cache-read tokens inside the cache-inclusive `inputTokens`. */
+  cacheReadTokens?: number
+  /** Cache-write tokens inside the cache-inclusive `inputTokens`. */
+  cacheWriteTokens?: number
   /**
    * Context-window size the client may pair with `inputTokens`.
    *
@@ -144,6 +153,40 @@ export interface MockModelUsage {
    * response shapes that carry a window alongside usage.
    */
   contextWindow?: number
+}
+
+/** Resolve valid inclusive input and output counts for every model API writer. */
+export function resolveMockModelUsage(usage?: MockModelUsage): Required<Omit<MockModelUsage, 'contextWindow'>> {
+  return resolveUsageCounts(usage, 'Model usage')
+}
+
+function usageCount(value: unknown, label: string, key: keyof MockModelUsage): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0)
+    throw new Error(`${label} ${key} must be a non-negative integer`)
+  if (!Number.isSafeInteger(value))
+    throw new TypeError(`${label} ${key} exceeds the safe integer range`)
+  return value
+}
+
+function resolveUsageCounts(usage: MockModelUsage | undefined, label: string): Required<Omit<MockModelUsage, 'contextWindow'>> {
+  const input = usageCount(usage?.inputTokens ?? 1, label, 'inputTokens')
+  const outputTokens = usageCount(usage?.outputTokens ?? 1, label, 'outputTokens')
+  const cacheReadTokens = usageCount(usage?.cacheReadTokens ?? 0, label, 'cacheReadTokens')
+  const cacheWriteTokens = usageCount(usage?.cacheWriteTokens ?? 0, label, 'cacheWriteTokens')
+  if (usage?.contextWindow !== undefined)
+    usageCount(usage.contextWindow, label, 'contextWindow')
+  const cacheTokens = cacheReadTokens + cacheWriteTokens
+  if (!Number.isSafeInteger(cacheTokens))
+    throw new TypeError(`${label} combined cache count exceeds the safe integer range`)
+  const inputTokens = Math.max(input, cacheTokens)
+  if (!Number.isSafeInteger(inputTokens + outputTokens))
+    throw new TypeError(`${label} total token count exceeds the safe integer range`)
+  return {
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+  }
 }
 
 /**
@@ -876,14 +919,19 @@ function parseUsage(value: unknown, label: string): MockModelUsage | undefined {
   if (!isObject(value))
     throw new Error(`Model ${label} usage must be an object`)
   const usage: MockModelUsage = {}
-  for (const key of ['inputTokens', 'outputTokens', 'contextWindow'] as const) {
+  for (const key of [
+    'inputTokens',
+    'outputTokens',
+    'cacheReadTokens',
+    'cacheWriteTokens',
+    'contextWindow',
+  ] as const) {
     const raw = value[key]
     if (raw === undefined)
       continue
-    if (!Number.isInteger(raw) || Number(raw) < 0)
-      throw new Error(`Model ${label} usage ${key} must be a non-negative integer`)
-    usage[key] = Number(raw)
+    usage[key] = usageCount(raw, `Model ${label} usage`, key)
   }
+  resolveUsageCounts(usage, `Model ${label} usage`)
   return usage
 }
 

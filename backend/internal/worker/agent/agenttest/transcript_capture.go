@@ -4,8 +4,73 @@ import (
 	"errors"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
+
+type sinkSessionObservationWriter struct {
+	sink  *Sink
+	owner *testTranscriptOwner
+}
+
+func (sink *Sink) SessionObservationWriterFor(captured agent.CapturedTranscript) (agent.CapturedSessionObservationWriter, error) {
+	content := captured.FrozenContent()
+	if content.Publication == nil {
+		return nil, errors.New("the captured session observation has no owner")
+	}
+	owner, ok := content.Publication.Owner().(*testTranscriptOwner)
+	if !ok || owner == nil || owner.sink != sink || owner.key.session == nil ||
+		content.AgentSessionID == "" || content.AgentSessionID != owner.key.session.id {
+		return nil, errors.New("the captured session observation belongs to another source")
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if !owner.currentSessionLocked() {
+		return nil, errors.New("the captured session observation expired")
+	}
+	writer := &sinkSessionObservationWriter{sink: sink, owner: owner}
+	sink.sessionObservation = writer
+	return writer, nil
+}
+
+func (writer *sinkSessionObservationWriter) currentLocked() bool {
+	return writer.sink.sessionObservation == writer && writer.owner.currentSessionLocked()
+}
+
+func (writer *sinkSessionObservationWriter) PersistSettingsRefresh(refresh optionmap.Map) {
+	writer.sink.mu.Lock()
+	defer writer.sink.mu.Unlock()
+	if writer.currentLocked() {
+		writer.sink.persistSettingsRefreshLocked(refresh)
+	}
+}
+
+func (writer *sinkSessionObservationWriter) PublishSessionInfo(info map[string]interface{}) bool {
+	writer.sink.mu.Lock()
+	defer writer.sink.mu.Unlock()
+	if !writer.currentLocked() {
+		return false
+	}
+	writer.sink.sessionInfos = append(writer.sink.sessionInfos, info)
+	return true
+}
+
+func (writer *sinkSessionObservationWriter) Retire() {
+	writer.sink.mu.Lock()
+	if writer.sink.sessionObservation == writer {
+		writer.sink.sessionObservation = nil
+	}
+	writer.sink.mu.Unlock()
+}
+
+type nopSessionObservationWriter struct{}
+
+func (nop) SessionObservationWriterFor(agent.CapturedTranscript) (agent.CapturedSessionObservationWriter, error) {
+	return nopSessionObservationWriter{}, nil
+}
+func (nopSessionObservationWriter) PersistSettingsRefresh(optionmap.Map)           {}
+func (nopSessionObservationWriter) PublishSessionInfo(map[string]interface{}) bool { return false }
+func (nopSessionObservationWriter) Retire()                                        {}
 
 type testSessionFact struct{ id string }
 type testTranscriptScope struct{ active bool }
@@ -27,6 +92,10 @@ func (sink *Sink) CaptureMessage(content agent.MessageContent, _ agent.SpanInfo)
 	}
 	sink.mu.Lock()
 	defer sink.mu.Unlock()
+	return sink.captureMessageLocked(content)
+}
+
+func (sink *Sink) captureMessageLocked(content agent.MessageContent) agent.MessageContent {
 	if sink.sessionFact == nil {
 		sink.sessionFact = &testSessionFact{id: sink.currentSessionIDLocked()}
 	}
@@ -56,6 +125,12 @@ func (owner *testTranscriptOwner) IsCurrent() bool {
 	owner.sink.mu.Lock()
 	defer owner.sink.mu.Unlock()
 	return owner.currentLocked()
+}
+
+func (owner *testTranscriptOwner) IsSessionCurrent() bool {
+	owner.sink.mu.Lock()
+	defer owner.sink.mu.Unlock()
+	return owner.currentSessionLocked()
 }
 
 func (owner *testTranscriptOwner) PublishSessionInfo(info map[string]interface{}) bool {

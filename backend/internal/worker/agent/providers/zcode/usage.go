@@ -39,9 +39,33 @@ func (u zcodeUsage) empty() bool {
 
 // zcodeRuntimeState is the `runtime` object of a state snapshot or patch.
 type zcodeRuntimeState struct {
-	ActiveTurnID  string             `json:"activeTurnId"`
-	ContextUsage  *zcodeContextUsage `json:"contextUsage"`
-	StateRevision int64              `json:"stateRevision"`
+	activeTurnIDKnown  bool
+	stateRevisionKnown bool
+	eventSeqKnown      bool
+	ActiveTurnID       string             `json:"activeTurnId"`
+	ContextUsage       *zcodeContextUsage `json:"contextUsage"`
+	StateRevision      int64              `json:"stateRevision"`
+	// EventSeq is the sequence the snapshot was taken at. A value past the
+	// dispatch cursor requires replay of the retained range before the snapshot
+	// applies. Only delivered events or a completed unrestricted replay advance it.
+	EventSeq int64 `json:"eventSeq"`
+}
+
+func (runtime *zcodeRuntimeState) UnmarshalJSON(raw []byte) error {
+	type state zcodeRuntimeState
+	var decoded state
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	*runtime = zcodeRuntimeState(decoded)
+	runtime.activeTurnIDKnown = providerkit.RawPresent(fields["activeTurnId"])
+	runtime.stateRevisionKnown = providerkit.RawPresent(fields["stateRevision"])
+	runtime.eventSeqKnown = providerkit.RawPresent(fields["eventSeq"])
+	return nil
 }
 
 // zcodeContextUsage is the app-server's authoritative context readout.
@@ -69,6 +93,22 @@ type zcodeCost struct {
 // because a wrong number is worse than no number.
 const zcodeUsageCurrencyUSD = "USD"
 
+// ordinaryZCodeInput subtracts the cache buckets from ZCode's cache-inclusive
+// input count.
+//
+// ZCode's `inputTokens` is the TOTAL prompt traffic, so it already contains
+// `cacheReadTokens` and `cacheWriteTokens`. The broadcast's four counts are
+// exclusive rows of one breakdown, and the frontend sums them: projecting the
+// inclusive input as-is counts every cached token twice. A malformed reading
+// whose buckets exceed its input clamps to zero rather than going negative.
+func ordinaryZCodeInput(input, cacheRead, cacheWrite int64) int64 {
+	ordinary := input - cacheRead - cacheWrite
+	if ordinary < 0 {
+		return 0
+	}
+	return ordinary
+}
+
 // zcodeContextUsageMap projects token counts into the broadcast-shaped context-usage
 // map every provider emits. Returns nil for an empty usage object, so a caller does
 // not overwrite a real reading with zeros.
@@ -77,7 +117,7 @@ func zcodeContextUsageMap(usage zcodeUsage, contextWindow int64) map[string]any 
 		return nil
 	}
 	out := providerkit.ContextUsageMap(providerkit.ContextTokenCounts{
-		Input:      usage.InputTokens,
+		Input:      ordinaryZCodeInput(usage.InputTokens, usage.CacheReadTokens, usage.CacheWriteTokens),
 		CacheWrite: usage.CacheWriteTokens,
 		CacheRead:  usage.CacheReadTokens,
 		Output:     usage.OutputTokens,
@@ -101,7 +141,7 @@ func zcodeContextUsageFromRuntime(usage *zcodeContextUsage) map[string]any {
 	// when the readout carries no `cache` block. `output_tokens` has no source here.
 	var counts providerkit.ContextTokenCounts
 	if c := usage.Cache; c != nil {
-		counts.Input = c.InputTokens
+		counts.Input = ordinaryZCodeInput(c.InputTokens, c.CacheReadTokens, c.CacheWriteTokens)
 		counts.CacheRead = c.CacheReadTokens
 		counts.CacheWrite = c.CacheWriteTokens
 	}
@@ -114,30 +154,26 @@ func zcodeContextUsageFromRuntime(usage *zcodeContextUsage) map[string]any {
 }
 
 // applyZCodeRuntimeStateLocked records an incremental runtime observation.
-// Caller holds Mu and broadcasts the returned fields after releasing it.
-func (a *Agent) applyZCodeRuntimeStateLocked(runtime *zcodeRuntimeState) map[string]any {
+// Caller holds Mu and captures the complete publication after releasing it.
+func (a *Agent) applyZCodeRuntimeStateLocked(runtime *zcodeRuntimeState) {
 	if runtime == nil {
-		return nil
+		return
 	}
 	a.noteZCodeStateRevisionLocked(runtime.StateRevision)
-	info := map[string]any{}
 	if usage := zcodeContextUsageFromRuntime(runtime.ContextUsage); len(usage) > 0 {
 		a.latestContextUsage = usage
 		if runtime.ContextUsage.Size > 0 {
 			a.contextWindow = runtime.ContextUsage.Size
 		}
-		info[contracts.SessionInfoKeyContextUsage] = maps.Clone(usage)
 	}
 	// A cost in another currency is omitted, not converted. total_cost_usd
 	// states its unit, so a non-dollar amount would be a wrong number.
 	if c := runtime.ContextUsage.costOrNil(); c != nil && c.Currency == zcodeUsageCurrencyUSD {
 		a.sessionCostUsd = c.Amount
 		a.sessionCostKnown = true
-		info[contracts.SessionInfoKeyTotalCostUsd] = c.Amount
 	}
 	// A snapshot sequence can cover buffered notifications that have not arrived.
 	// Only adoption, subscription replay, and event dispatch advance lastSeq.
-	return info
 }
 
 // costOrNil reads the cost off a possibly-absent context usage, so the caller needs
@@ -157,6 +193,12 @@ func (u *zcodeContextUsage) costOrNil() *zcodeCost {
 // Overwriting the first with the second is what makes the fill gauge jump backwards
 // after a compaction.
 func (a *Agent) recordZCodeUsage(usage zcodeUsage) {
+	a.dispatchMu.Lock()
+	defer a.unlockZCodeDispatch()
+	a.recordZCodeUsageLocked(usage)
+}
+
+func (a *Agent) recordZCodeUsageLocked(usage zcodeUsage) {
 	contextUsage := zcodeContextUsageMap(usage, a.currentZCodeContextWindow())
 	if len(contextUsage) == 0 {
 		return
@@ -169,9 +211,9 @@ func (a *Agent) recordZCodeUsage(usage zcodeUsage) {
 	} else {
 		a.latestContextUsage = contextUsage
 	}
-	broadcast := maps.Clone(a.latestContextUsage)
+	a.observationSequence++
 	a.Mu.Unlock()
-	a.sink.BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyContextUsage: broadcast})
+	a.captureZCodeSessionObservationLocked()
 }
 
 // refreshZCodeUsageFromSession re-reads the session's own state after a turn ends,
@@ -179,35 +221,41 @@ func (a *Agent) recordZCodeUsage(usage zcodeUsage) {
 //
 // Best-effort and asynchronous by contract: the read loop must stay free to deliver
 // the response, so this may not run on the read-loop goroutine.
+// scheduleZCodeUsageRefresh combines requests while an earlier read runs.
+func (a *Agent) scheduleZCodeUsageRefresh() {
+	a.usageRefresh.Run("session", a.refreshZCodeUsageFromSession)
+}
+
 func (a *Agent) refreshZCodeUsageFromSession() {
 	a.Mu.Lock()
-	sessionID, stopped := a.sessionID, a.StoppedLocked()
+	identity := a.captureZCodeObservationIdentityLocked()
+	stopped := a.StoppedLocked() || a.sessionChanging
 	a.Mu.Unlock()
-	if sessionID == "" || stopped {
+	if identity.sessionID == "" || stopped || a.Context().Err() != nil {
 		return
 	}
-	raw, err := a.sendZCodeRequest(MethodSessionRead, map[string]any{"sessionId": sessionID}, a.APITimeout())
+	state, err := a.readZCodeSession(a.Context(), identity)
 	if err != nil {
-		// A build without session/read is a missing capability, not a failure: the
-		// event-driven readout stands.
 		if !zcodeIsMethodNotFound(err) {
 			slog.Debug("zcode session/read failed", "agent_id", a.AgentID(), "error", err)
 		}
 		return
 	}
-	var state struct {
-		Runtime  *zcodeRuntimeState     `json:"runtime"`
-		Settings *zcodeSettingsSnapshot `json:"settings"`
-	}
-	if err := json.Unmarshal(raw, &state); err != nil {
-		slog.Warn("zcode session/read unmarshal failed", "agent_id", a.AgentID(), "error", err)
-		return
-	}
-	body := zcodeStatePatchBody{Runtime: state.Runtime}
+	body := zcodeStatePatchBody{Runtime: state.Runtime, readIdentity: state.identity}
 	if state.Settings != nil {
 		body.zcodeSettingsSnapshot = *state.Settings
 	}
-	a.applyZCodeSessionObservation(sessionID, body, nil)
+	if a.applyZCodeSessionObservation(identity.sessionID, body, nil) {
+		return
+	}
+	// A later settings patch can share this revision while omitting runtime usage.
+	// Read under its observation rather than applying the superseded settings.
+	a.Mu.Lock()
+	retry := a.zcodeSessionLifetimeCurrentLocked(identity) && identity.observationSequence != a.observationSequence && state.Runtime != nil && state.Runtime.stateRevisionKnown && state.Runtime.StateRevision == a.stateRevision
+	a.Mu.Unlock()
+	if retry && a.Context().Err() == nil {
+		a.scheduleZCodeUsageRefresh()
+	}
 }
 
 // zcodeUsageSnapshot is the usage state one persisted envelope carries.

@@ -82,6 +82,10 @@ func nativeImageReferences(content []byte) (map[string]nativeImageReference, err
 
 // recoverResultImages uses the native API's Session-log authorization before it reads bytes.
 func (a *Agent) recoverResultImages(ctx context.Context, sessionID string, original []byte) ([]byte, error) {
+	return recoverResultImages(ctx, a.rpc, sessionID, original)
+}
+
+func recoverResultImages(ctx context.Context, rpc remoteRPC, sessionID string, original []byte) ([]byte, error) {
 	callID, refs, err := nativeResultImages(original)
 	if err != nil || len(refs) == 0 {
 		return nil, err
@@ -98,7 +102,7 @@ func (a *Agent) recoverResultImages(ctx context.Context, sessionID string, origi
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		raw, err := a.rpc.value(ctx, "session/attachment", map[string]any{"request": map[string]string{"sessionId": sessionID, "attachmentId": id}})
+		raw, err := rpc.value(ctx, "session/attachment", map[string]any{"request": map[string]string{"sessionId": sessionID, "attachmentId": id}})
 		if err != nil {
 			return nil, err
 		}

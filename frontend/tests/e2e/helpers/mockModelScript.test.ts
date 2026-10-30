@@ -9,6 +9,7 @@ import {
   MAX_SCENARIO_REQUEST_RECORDS,
   MAX_STEP_DELAY_MS,
   parseScenarioSpec,
+  resolveMockModelUsage,
   resolveStepCaptures,
   ruleRequest,
   SCENARIO_MARKER,
@@ -1465,6 +1466,60 @@ describe('parseScenarioSpec usage and rateLimits', () => {
       .toThrow('usage contextWindow must be a non-negative integer')
   })
 
+  // The cache counts are the buckets INSIDE the cache-inclusive inputTokens, and
+  // a step that only reports cache traffic states both without an input count.
+  it('keeps the cache-read and cache-write counts a step states', () => {
+    const spec = parseScenarioSpec({
+      steps: [
+        {
+          text: 'ok',
+          usage: {
+            inputTokens: 10,
+            cacheReadTokens: 2,
+            cacheWriteTokens: 3,
+            outputTokens: 4,
+          },
+        },
+      ],
+    })
+    expect(spec.steps[0]!.usage).toEqual({
+      inputTokens: 10,
+      cacheReadTokens: 2,
+      cacheWriteTokens: 3,
+      outputTokens: 4,
+    })
+  })
+
+  it('refuses a negative or fractional cache count', () => {
+    expect(() => parseScenarioSpec({
+      steps: [
+        {
+          text: 'a',
+          usage: { cacheReadTokens: -1 },
+        },
+      ],
+    }))
+      .toThrow('usage cacheReadTokens must be a non-negative integer')
+    expect(() => parseScenarioSpec({
+      steps: [
+        {
+          text: 'a',
+          usage: { cacheWriteTokens: 1.5 },
+        },
+      ],
+    }))
+      .toThrow('usage cacheWriteTokens must be a non-negative integer')
+    expect(() => parseScenarioSpec({
+      steps: [
+        {
+          text: 'a',
+          usage: { cacheWriteTokens: Number.NaN },
+        },
+      ],
+    }))
+      .toThrow('usage cacheWriteTokens must be a non-negative integer')
+  })
+
   it('refuses a rateLimits object that misses type or status', () => {
     expect(() => parseScenarioSpec({
       steps: [
@@ -2209,5 +2264,86 @@ describe('stopReason', () => {
         { ...output, stopReason: 'refusal' },
       ],
     })).toThrow('cannot combine stopReason')
+  })
+})
+
+describe('resolveMockModelUsage', () => {
+  it.each([
+    [
+      undefined,
+      {
+        inputTokens: 1,
+        outputTokens: 1,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      },
+    ],
+    [
+      { inputTokens: 0, outputTokens: 0 },
+      {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      },
+    ],
+    [
+      { cacheReadTokens: 3 },
+      {
+        inputTokens: 3,
+        outputTokens: 1,
+        cacheReadTokens: 3,
+        cacheWriteTokens: 0,
+      },
+    ],
+    [
+      { cacheWriteTokens: 3 },
+      {
+        inputTokens: 3,
+        outputTokens: 1,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 3,
+      },
+    ],
+    [
+      { cacheReadTokens: 2, cacheWriteTokens: 3 },
+      {
+        inputTokens: 5,
+        outputTokens: 1,
+        cacheReadTokens: 2,
+        cacheWriteTokens: 3,
+      },
+    ],
+    [
+      {
+        inputTokens: 10,
+        cacheReadTokens: 8,
+        cacheWriteTokens: 5,
+        outputTokens: 4,
+      },
+      {
+        inputTokens: 13,
+        outputTokens: 4,
+        cacheReadTokens: 8,
+        cacheWriteTokens: 5,
+      },
+    ],
+  ] as const)('keeps inclusive input at least as large as its cache buckets for %j', (usage, expected) => {
+    expect(resolveMockModelUsage(usage)).toEqual(expected)
+  })
+
+  it.each([
+    { inputTokens: Number.MAX_SAFE_INTEGER + 1 },
+    { cacheReadTokens: 1e308 },
+    { cacheReadTokens: Number.MAX_SAFE_INTEGER, cacheWriteTokens: 1 },
+    { inputTokens: Number.MAX_SAFE_INTEGER, outputTokens: 1 },
+    { contextWindow: Number.MAX_SAFE_INTEGER + 1 },
+  ])('refuses unsafe usage counts and totals %j', (usage) => {
+    expect(() => parseScenarioSpec({
+      steps: [
+        { text: 'Counts.', usage },
+      ],
+    })).toThrow(/safe integer/u)
+    expect(() => resolveMockModelUsage(usage)).toThrow(/safe integer/u)
   })
 })

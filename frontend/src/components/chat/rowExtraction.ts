@@ -150,7 +150,7 @@ export function extractChatRow(
     // The shared metadata reader adds the Worker's totals.
     // Pass the native payload to the plugin. Pass the parsed wrapper to the metadata reader, which unwraps it itself.
     if (category.kind === 'result_divider') {
-      const divider = plugin?.transcript.extractDivider?.(payload, options.completion)
+      const divider = plugin?.transcript.extractDivider?.(payload, options.completion ?? parsed.completion)
       const meta = dividerMetaFromMessage(parsed)
       return divider
         ? row({

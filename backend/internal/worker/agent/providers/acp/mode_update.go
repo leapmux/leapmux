@@ -33,14 +33,40 @@ func (b *Base) ObserveCurrentMode(modeID string) {
 	if modeID == "" {
 		return
 	}
-	axis := b.secondaryChannel()
 	b.Mu.Lock()
-	b.nativeModeID = modeID
-	b.secondaryReports++
-	changed := *axis.field != modeID
-	*axis.field = modeID
+	changed := b.observeCurrentModeLocked(modeID)
 	b.Mu.Unlock()
 	if changed {
 		b.BroadcastSettingsRefresh()
 	}
+}
+
+// ObserveCurrentModeForSession records a mode only for its original session.
+// Call the returned notification after releasing every provider mutex.
+// A nil notification means that the session expired or the mode did not change.
+func (b *Base) ObserveCurrentModeForSession(sessionID, modeID string) func() {
+	if sessionID == "" || modeID == "" {
+		return nil
+	}
+	b.Mu.Lock()
+	if b.sessionID != sessionID {
+		b.Mu.Unlock()
+		return nil
+	}
+	changed := b.observeCurrentModeLocked(modeID)
+	b.Mu.Unlock()
+	if !changed {
+		return nil
+	}
+	return b.BroadcastSettingsRefresh
+}
+
+// observeCurrentModeLocked requires Mu and changes no publisher state.
+func (b *Base) observeCurrentModeLocked(modeID string) bool {
+	axis := b.secondaryChannel()
+	b.nativeModeID = modeID
+	b.secondaryReports++
+	changed := *axis.field != modeID
+	*axis.field = modeID
+	return changed
 }

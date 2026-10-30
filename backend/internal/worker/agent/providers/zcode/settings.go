@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"reflect"
+	"regexp"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -17,11 +20,13 @@ import (
 
 // Errors the setters return for a request the catalog or the session cannot satisfy.
 var errNoZCodeSession = errors.New("agent has no ZCode session")
+var errInvalidZCodeModel = errors.New("the model is unavailable in ZCode's catalog")
+var errZCodeModelSelectionRequired = errors.New("the current ZCode model is unavailable; select an available model before sending a message")
 
 // newInvalidZCodeModelError reports a model id the catalog does not hold. The
 // message gives the id because the usual cause is a stale model selection.
 func newInvalidZCodeModelError(modelID string) error {
-	return fmt.Errorf("ZCode's configuration lists no model %q", modelID)
+	return fmt.Errorf("%w: %q", errInvalidZCodeModel, modelID)
 }
 
 // ZCode exposes three settable axes, and every one of them is applied through a
@@ -108,16 +113,24 @@ func (a *Agent) recordPlanRequestLocked(requested string) {
 //
 // The result is the stored plan-exit mode that this event releases, or empty. The
 // caller sends it, because the request needs a goroutine of its own.
-func (a *Agent) handleZCodeModeChanged(mode string, planEnabled bool, source string) (exitMode string) {
+func (a *Agent) handleZCodeModeChanged(mode string, planEnabled bool, source string) string {
+	a.dispatchMu.Lock()
+	defer a.unlockZCodeDispatch()
+	return a.handleZCodeModeChangedLocked(mode, planEnabled, source)
+}
+
+func (a *Agent) handleZCodeModeChangedLocked(mode string, planEnabled bool, source string) (exitMode string) {
 	defer a.queuePermissionApprovals()
 	a.Mu.Lock()
 	planBefore := a.planEnabled
+	knownBefore := a.modeObserved && a.planObserved
 	before := a.permissionModeLocked()
 	a.mode = mode
 	a.modeObserved = true
 	a.planEnabled = planEnabled
 	a.planObserved = true
 	a.modeChanges++
+	a.observationSequence++
 	// Every mode event drops a stored plan-exit mode, and only the exit itself
 	// releases it: an event of a plan tool that turns the flag OFF. A flag-off
 	// event of another source, such as the request of the user to leave plan
@@ -136,10 +149,12 @@ func (a *Agent) handleZCodeModeChanged(mode string, planEnabled bool, source str
 	if sendStored {
 		exitMode = stored
 	}
+	if before != after || !knownBefore || sendStored {
+		a.captureZCodeSessionObservationLocked()
+	}
 	if before == after && !sendStored {
 		return exitMode
 	}
-	a.sink.PersistSettingsRefresh(map[string]string{agent.OptionIDPermissionMode: after})
 	return exitMode
 }
 
@@ -238,6 +253,20 @@ type zcodeSettingsSnapshot struct {
 // which is what makes this safe to call with a partial state.updated patch. The plan
 // flag is not in the snapshot, so it stands also: the patch that ends a turn in plan
 // mode states `build` and leaves plan mode on.
+// setZCodeModelLocked invalidates the reasoning axis when its model changes.
+func (a *Agent) setZCodeModelLocked(modelID string, observed bool) {
+	if a.model != modelID {
+		a.thoughtLevelObserved = false
+		a.observedThoughtLevels = nil
+		a.observedThoughtDefault = ""
+	}
+	a.model = modelID
+	a.modelObserved = observed
+	if observed {
+		delete(a.unresolvedSettings, agent.OptionIDModel)
+	}
+}
+
 func (a *Agent) applySettingsSnapshotLocked(snap *zcodeSettingsSnapshot) {
 	if snap == nil {
 		return
@@ -247,16 +276,20 @@ func (a *Agent) applySettingsSnapshotLocked(snap *zcodeSettingsSnapshot) {
 		// applyStartupSettings skips the mode setter for a session that already runs in
 		// the requested mode, and this is the only place that evidence comes from.
 		a.modeObserved = true
+		if a.planObserved {
+			delete(a.unresolvedSettings, agent.OptionIDPermissionMode)
+		}
 	}
 	if m := snap.Model; m != nil {
 		a.mergeZCodeLiveModelsLocked(m.Available, m.Current)
 		if m.Current.ModelID != "" {
-			a.model = zcodeModelID(m.Current.ProviderID, m.Current.ModelID)
+			a.setZCodeModelLocked(zcodeModelID(m.Current.ProviderID, m.Current.ModelID), true)
 		} else if ref := m.LastUsed; ref != nil && ref.ModelID != "" && a.model == "" {
-			a.model = zcodeModelID(ref.ProviderID, ref.ModelID)
+			a.setZCodeModelLocked(zcodeModelID(ref.ProviderID, ref.ModelID), false)
 		}
 	}
 	if tl := snap.ThoughtLevel; tl != nil {
+		a.thoughtLevelObserved = false
 		// The model offers no thought level at all. Auto alone keeps the axis
 		// selectable-but-inert rather than showing a level the model would refuse.
 		//
@@ -271,6 +304,8 @@ func (a *Agent) applySettingsSnapshotLocked(snap *zcodeSettingsSnapshot) {
 		}
 		if !tl.Enabled {
 			offAxis()
+			a.thoughtLevelObserved = true
+			delete(a.unresolvedSettings, agent.OptionIDEffort)
 			return
 		}
 		levels := make([]*agent.EffortInfo, 0, len(tl.Available))
@@ -299,6 +334,8 @@ func (a *Agent) applySettingsSnapshotLocked(snap *zcodeSettingsSnapshot) {
 		switch {
 		case tl.Current != "" && available[tl.Current]:
 			a.thoughtLevel = tl.Current
+			a.thoughtLevelObserved = true
+			delete(a.unresolvedSettings, agent.OptionIDEffort)
 		case a.thoughtLevel != "" && a.thoughtLevel != agent.EffortAuto && !available[a.thoughtLevel]:
 			// The level was set for a different model, and this one does not offer it.
 			// Auto is the honest report: no level is pinned.
@@ -344,6 +381,12 @@ func (a *Agent) mergeZCodeLiveModelsLocked(available []zcodeAvailableModel, curr
 			IsDefault:     id == currentID,
 			Hidden:        wire.DisabledReason != "",
 		}
+		// Partial snapshots may omit availability. Only a complete replacement can
+		// confirm that a model which was disabled is available again.
+		if previous := a.liveModels[id]; previous.info != nil && previous.info.Hidden && wire.DisabledReason == "" {
+			info.Hidden = true
+		}
+
 		if info.DisplayName == "" {
 			info.DisplayName = zcodeModelDisplayName(wire.Ref.ModelID, wire.ProviderLabel)
 		}
@@ -423,34 +466,84 @@ func (a *Agent) replaceZCodeLiveModelsLocked(available []zcodeAvailableModel, cu
 	a.liveCatalogComplete = true
 }
 
-// resolveZCodeModelIDLocked resolves a model against the live catalog first and
-// then the legacy configuration. Caller holds a.Mu.
-func (a *Agent) resolveZCodeModelIDLocked(model string) (string, bool) {
+// zcodeSelectableModelsLocked derives the one catalog used by display and selection.
+// Before complete discovery, configured models supplement native records.
+func (a *Agent) zcodeSelectableModelsLocked() []*agent.ModelInfo {
+	models := make([]*agent.ModelInfo, 0, len(a.liveModelOrder)+len(a.catalog.Models))
+	seen := make(map[string]bool)
+	for _, id := range a.liveModelOrder {
+		if record, ok := a.liveModels[id]; ok && record.info != nil {
+			seen[id] = true
+			if !record.info.Hidden {
+				models = append(models, record.info)
+			}
+		}
+	}
+	if !a.liveCatalogComplete {
+		for _, info := range a.catalog.Models {
+			if info == nil || info.Hidden {
+				continue
+			}
+			id := a.normalizeZCodeSelectionLocked(info.Id)
+			if seen[id] {
+				continue
+			}
+			clone := *info
+			clone.Id = id
+			models = append(models, &clone)
+			seen[id] = true
+		}
+	}
+	return models
+}
+
+func (a *Agent) normalizeZCodeSelectionLocked(model string) string {
 	model = normalizeZCodeModelID(model)
+	if _, exists := a.liveModels[model]; exists {
+		return model
+	}
+	if providerID, modelID, ok := splitZCodeModelID(model); ok {
+		if accountID, mapped := a.catalog.accountProviderID(providerID); mapped {
+			return zcodeModelID(accountID, modelID)
+		}
+	}
+	return model
+}
+
+// resolveZCodeModelIDLocked uses the same catalog as the model picker.
+func (a *Agent) resolveZCodeModelIDLocked(model string) (string, bool) {
+	model = a.normalizeZCodeSelectionLocked(model)
 	if model == "" {
 		return "", false
 	}
-	if a.account != nil {
-		if providerID, modelID, ok := splitZCodeModelID(model); ok {
-			if accountID, mapped := a.catalog.accountProviderID(providerID); mapped {
-				model = zcodeModelID(accountID, modelID)
-			}
+	models := a.zcodeSelectableModelsLocked()
+	for _, info := range models {
+		if info.Id == model {
+			return info.Id, true
 		}
-	}
-	if _, ok := a.liveModels[model]; ok {
-		return model, true
 	}
 	if _, _, composite := splitZCodeModelID(model); !composite {
-		for _, id := range a.liveModelOrder {
-			if _, modelID, ok := splitZCodeModelID(id); ok && modelID == model {
-				return id, true
+		for _, info := range models {
+			if _, id, ok := splitZCodeModelID(info.Id); ok && id == model {
+				return info.Id, true
 			}
 		}
 	}
-	if a.account != nil && a.liveCatalogComplete {
-		return "", false
+	return "", false
+}
+
+// zcodeCurrentModelUnavailableLocked preserves the native observation separately
+// from complete catalog membership. The caller holds Mu.
+func (a *Agent) zcodeCurrentModelUnavailableLocked() bool {
+	record, available := a.liveModels[a.model]
+	if available && record.info != nil && record.info.Hidden {
+		return true
 	}
-	return a.catalog.resolveModelID(model)
+	if !a.liveCatalogComplete {
+		return false
+	}
+	return a.model == "" || !available || record.info == nil
+
 }
 
 // zcodeDefaultThoughtLevelLocked returns the live model default when available.
@@ -458,6 +551,9 @@ func (a *Agent) resolveZCodeModelIDLocked(model string) (string, bool) {
 func (a *Agent) zcodeDefaultThoughtLevelLocked(modelID string) string {
 	if record, ok := a.liveModels[modelID]; ok && record.info != nil {
 		return record.info.DefaultEffort
+	}
+	if a.liveCatalogComplete {
+		return ""
 	}
 	return a.catalog.defaultThoughtLevel(modelID)
 }
@@ -467,6 +563,9 @@ func (a *Agent) zcodeDefaultThoughtLevelLocked(modelID string) string {
 func (a *Agent) zcodeThoughtLevelsLocked(modelID string) []*agent.EffortInfo {
 	if record, ok := a.liveModels[modelID]; ok && record.info != nil {
 		return record.info.SupportedEfforts
+	}
+	if a.liveCatalogComplete {
+		return nil
 	}
 	if info := agent.FindAvailableModel(a.catalog.Models, modelID); info != nil {
 		return info.SupportedEfforts
@@ -483,15 +582,7 @@ func (a *Agent) zcodeModelsForUI() ([]*agent.ModelInfo, string, string) {
 	a.Mu.Lock()
 	current, level := a.model, a.thoughtLevel
 	observed, observedDefault := a.observedThoughtLevels, a.observedThoughtDefault
-	models := a.catalog.Models
-	if len(a.liveModelOrder) > 0 || (a.account != nil && a.liveCatalogComplete) {
-		models = make([]*agent.ModelInfo, 0, len(a.liveModelOrder))
-		for _, id := range a.liveModelOrder {
-			if record, ok := a.liveModels[id]; ok && record.info != nil {
-				models = append(models, record.info)
-			}
-		}
-	}
+	models := a.zcodeSelectableModelsLocked()
 	a.Mu.Unlock()
 
 	if len(observed) == 0 || current == "" {
@@ -571,80 +662,190 @@ func zcodeOffersLevel(offered []*agent.EffortInfo, level string) bool {
 	return !concrete
 }
 
+// --- reasoning-level recovery with an attempt limit ---
+
+// The two verified reasoning-level failure classes of the current app-server.
+// Both arrive with data.code "invalid_model_request", and the message states
+// which level the model refused: either no level was sent where one is required,
+// or the level the selection carried is not one the model offers. The message
+// matches one class exactly -- the provider and model spell the same composite
+// the wire uses -- so a schema error that merely mentions reasoning does not
+// qualify.
+var (
+	zcodeReasoningLevelRequiredRE     = regexp.MustCompile(`^Reasoning level is required for [^/]+/.+$`)
+	zcodeReasoningEffortUnsupportedRE = regexp.MustCompile(`^Reasoning effort "[^"]*" is not supported by [^/]+/.+$`)
+)
+
+// zcodeIsReasoningLevelRejection reports whether err states one of the two
+// verified reasoning-level failure classes -- the only errors another selection
+// of the same model switch can resolve. Everything else, including the same
+// data.code with a message outside the two classes, stops the switch at once.
+func zcodeIsReasoningLevelRejection(err error) bool {
+	var wire *zcodeError
+	if !errors.As(err, &wire) {
+		return false
+	}
+	var data struct {
+		Code string `json:"code"`
+	}
+	if json.Unmarshal(wire.Data, &data) != nil || data.Code != "invalid_model_request" {
+		return false
+	}
+	return zcodeReasoningLevelRequiredRE.MatchString(wire.Message) ||
+		zcodeReasoningEffortUnsupportedRE.MatchString(wire.Message)
+}
+
+// zcodeModelLevelAttempts caps how many reasoning-level selections one model
+// switch tries.
+const zcodeModelLevelAttempts = 5
+
+// zcodeModelLevelCandidates builds the reasoning-level ladder of one model
+// switch: the selected or live-default level first, then the selection that
+// carries no level at all, then the remaining levels the authoritative live
+// model record offers. A duplicate collapses into its earlier entry, and the
+// ladder stops at five selections. A model that declares no levels therefore
+// supplies no alternate level.
+func zcodeModelLevelCandidates(selected string, offered []*agent.EffortInfo) []string {
+	candidates := make([]string, 0, zcodeModelLevelAttempts)
+	seen := make(map[string]bool, zcodeModelLevelAttempts)
+	add := func(level string) {
+		if seen[level] || len(candidates) >= zcodeModelLevelAttempts {
+			return
+		}
+		seen[level] = true
+		candidates = append(candidates, level)
+	}
+	add(selected)
+	// The selection with no options.reasoningLevel: the app-server keeps whatever
+	// level the session already had.
+	add("")
+	for _, tier := range offered {
+		if tier == nil {
+			continue
+		}
+		if id := tier.GetId(); id != "" && id != agent.EffortAuto {
+			add(id)
+		}
+	}
+	return candidates
+}
+
+// zcodeModelApplyResult is what one model switch settled on.
+type zcodeModelApplyResult struct {
+	// ThoughtLevel is the OBSERVED level of the successful snapshot, never the
+	// requested one.
+	ThoughtLevel string
+	// Recovered records that the ladder settled the switch on a different
+	// candidate than the selected or live-default level.
+	Recovered bool
+}
+
 // applyZCodeModel pins the session's model and reports what the app-server settled
 // on.
 //
-// Legacy builds receive a runtimeModel overlay with the inline key. ZCode 0.16.9
-// owns the provider registry and strictly refuses that field, so its request carries
-// only the model reference.
-func (a *Agent) applyZCodeModel(modelID, level string, timeout time.Duration) error {
+// Legacy builds receive a runtimeModel overlay with the inline key, as one
+// attempt. ZCode 0.16.9 owns the provider registry and strictly refuses that
+// field, so a current account configuration sends only the model reference -- and
+// may retry: an app-server that refuses a reasoning level with one of the two
+// verified failure classes gets the ladder of zcodeModelLevelCandidates with a fixed attempt limit
+// instead of a dead switch that a restart would repeat.
+func (a *Agent) applyZCodeModel(modelID, level string, timeout time.Duration) (zcodeModelApplyResult, error) {
 	a.Mu.Lock()
 	resolved, ok := a.resolveZCodeModelIDLocked(modelID)
 	sessionID := a.sessionID
+	identity := a.captureZCodeSettingsRequestLocked()
 	accountConfig := a.account != nil
 	ref := a.liveModels[resolved].ref
 	defaultLevel := a.zcodeDefaultThoughtLevelLocked(resolved)
 	offered := a.zcodeThoughtLevelsLocked(resolved)
 	a.Mu.Unlock()
 	if !ok {
-		return newInvalidZCodeModelError(modelID)
+		return zcodeModelApplyResult{}, newInvalidZCodeModelError(modelID)
 	}
 	if sessionID == "" {
-		return errNoZCodeSession
+		return zcodeModelApplyResult{}, errNoZCodeSession
 	}
 	thoughtLevel := resolveZCodeThoughtLevel(level, defaultLevel, offered)
 
-	var params map[string]any
-	if accountConfig {
-		if ref.ModelID == "" {
-			providerID, providerModelID, valid := splitZCodeModelID(resolved)
-			if !valid {
-				return newInvalidZCodeModelError(modelID)
-			}
-			ref = zcodeModelRef{ProviderID: providerID, ModelID: providerModelID}
-		}
-		selection := zcodeModelSelection{zcodeModelRef: ref}
-		// A model that declares no default gets no level, so the app-server keeps
-		// whatever the session already had.
-		if thoughtLevel != "" {
-			selection.Options = &zcodeModelSelectionOptions{ReasoningLevel: thoughtLevel}
-		}
-		params = map[string]any{"sessionId": sessionID, "model": selection}
-	} else {
+	if !accountConfig {
 		overlay, found := a.catalog.runtimeModelFor(resolved, a.registryRevision, time.Now().UnixMilli())
 		if !found {
-			return newInvalidZCodeModelError(modelID)
+			return zcodeModelApplyResult{}, newInvalidZCodeModelError(modelID)
 		}
 		// A concrete level rides along so a legacy model switch does not drop it.
 		overlay.ThoughtLevel = thoughtLevel
-		params = map[string]any{
+		params := map[string]any{
 			"sessionId":    sessionID,
 			"model":        overlay.Model,
 			"runtimeModel": overlay,
 		}
+		raw, err := a.sendZCodeSessionRequest(a.Context(), identity.observation, MethodSetModel, params, timeout, nil)
+		if err != nil {
+			return zcodeModelApplyResult{}, err
+		}
+		return a.settleZCodeModelSnapshot(identity, resolved, raw)
 	}
 
-	raw, err := a.sendZCodeRequest(MethodSetModel, params, timeout)
-	if err != nil {
-		return err
+	if ref.ModelID == "" {
+		providerID, providerModelID, valid := splitZCodeModelID(resolved)
+		if !valid {
+			return zcodeModelApplyResult{}, newInvalidZCodeModelError(modelID)
+		}
+		ref = zcodeModelRef{ProviderID: providerID, ModelID: providerModelID}
 	}
-	a.sessionLifecycleMu.Lock()
-	defer a.sessionLifecycleMu.Unlock()
-	if !a.isCurrentZCodeSession(sessionID) {
-		return errNoZCodeSession
+	candidates := zcodeModelLevelCandidates(thoughtLevel, offered)
+	var lastErr error
+	for i, candidate := range candidates {
+		if i > 0 && !a.isCurrentZCodeSettingsRequest(identity) {
+			// A context clear replaced the session. The next selection would reach
+			// a session this switch does not serve.
+			return zcodeModelApplyResult{}, errNoZCodeSession
+		}
+		selection := zcodeModelSelection{zcodeModelRef: ref}
+		// A candidate with no level leaves the level to the app-server, so the
+		// selection carries no options.reasoningLevel at all.
+		if candidate != "" {
+			selection.Options = &zcodeModelSelectionOptions{ReasoningLevel: candidate}
+		}
+		params := map[string]any{
+			"sessionId": sessionID,
+			"model":     selection,
+			// A model switch of one agent must not rewrite the workspace default.
+			"persistAsWorkspaceLastUsed": false,
+		}
+		raw, err := a.sendZCodeSessionRequest(a.Context(), identity.observation, MethodSetModel, params, timeout, nil)
+		if err == nil {
+			result, settleErr := a.settleZCodeModelSnapshot(identity, resolved, raw)
+			result.Recovered = i > 0
+			return result, settleErr
+		}
+		if !zcodeIsReasoningLevelRejection(err) {
+			return zcodeModelApplyResult{}, err
+		}
+		lastErr = err
 	}
-	// The requested id stands only where the snapshot states nothing. Apply it
-	// first, then fold the reply: settings.model.current OVERWRITES this when the
-	// app-server clamped the model, so the picker never shows an id the session
-	// does not have.
+	// Every selection carried a level the app-server refused. The last rejection
+	// says why.
+	return zcodeModelApplyResult{}, lastErr
+}
+
+// settleZCodeModelSnapshot folds a successful session/setModel reply through the
+// session-identity check and the settings fold, and reports the observed level.
+func (a *Agent) isCurrentZCodeSettingsRequest(identity zcodeSettingsRequestIdentity) bool {
 	a.Mu.Lock()
-	a.model = resolved
-	a.Mu.Unlock()
-	snapshot, observed := a.applyStateSnapshot(raw)
-	if !observed || snapshot.Settings == nil || snapshot.Settings.Model == nil || snapshot.Settings.Model.Current.ModelID == "" {
-		a.markSettingUnresolved(agent.OptionIDModel)
+	defer a.Mu.Unlock()
+	return a.zcodeSessionLifetimeCurrentLocked(identity.observation)
+}
+
+func (a *Agent) settleZCodeModelSnapshot(identity zcodeSettingsRequestIdentity, resolved string, raw json.RawMessage) (zcodeModelApplyResult, error) {
+	_, _, err := a.settleZCodeSettingsSnapshot(identity, &zcodeSettingsFallback{axis: agent.OptionIDModel, value: resolved}, raw)
+	if err != nil {
+		return zcodeModelApplyResult{}, err
 	}
-	return nil
+	a.Mu.Lock()
+	thoughtLevel := a.thoughtLevel
+	a.Mu.Unlock()
+	return zcodeModelApplyResult{ThoughtLevel: thoughtLevel}, nil
 }
 
 // runsThoughtLevel reports whether the session runs at level now. A model switch can settle on the
@@ -663,35 +864,22 @@ func (a *Agent) runsThoughtLevel(level string) bool {
 func (a *Agent) applyZCodeThoughtLevel(level string, timeout time.Duration) error {
 	a.Mu.Lock()
 	sessionID := a.sessionID
+	identity := a.captureZCodeSettingsRequestLocked()
 	a.Mu.Unlock()
 	if sessionID == "" {
 		return errNoZCodeSession
 	}
-	raw, err := a.sendZCodeRequest(MethodSetThoughtLevel, map[string]any{
+	raw, err := a.sendZCodeSessionRequest(a.Context(), identity.observation, MethodSetThoughtLevel, map[string]any{
 		"sessionId":    sessionID,
 		"thoughtLevel": level,
-	}, timeout)
+		// A thought-level change of one agent must not rewrite the workspace default.
+		"persistAsWorkspaceLastUsed": false,
+	}, timeout, nil)
 	if err != nil {
 		return err
 	}
-	a.sessionLifecycleMu.Lock()
-	defer a.sessionLifecycleMu.Unlock()
-	if !a.isCurrentZCodeSession(sessionID) {
-		return errNoZCodeSession
-	}
-	a.Mu.Lock()
-	// Set first, then fold in the snapshot: the reply reports
-	// `settings.thoughtLevel.current`, which OVERWRITES this when the app-server
-	// clamped the level -- so the observed value wins and the requested value only
-	// stands where the snapshot states nothing.
-	a.thoughtLevel = level
-	a.Mu.Unlock()
-	snapshot, observed := a.applyStateSnapshot(raw)
-	if !observed || snapshot.Settings == nil || snapshot.Settings.ThoughtLevel == nil ||
-		(snapshot.Settings.ThoughtLevel.Enabled && snapshot.Settings.ThoughtLevel.Current == "") {
-		a.markSettingUnresolved(agent.OptionIDEffort)
-	}
-	return nil
+	_, _, err = a.settleZCodeSettingsSnapshot(identity, &zcodeSettingsFallback{axis: agent.OptionIDEffort, value: level}, raw)
+	return err
 }
 
 // applyZCodeMode switches the session's mode and reports the observed value.
@@ -702,40 +890,20 @@ func (a *Agent) applyZCodeMode(mode string, timeout time.Duration) error {
 	defer a.queuePermissionApprovals()
 	a.Mu.Lock()
 	sessionID := a.sessionID
-	modeChangesBefore := a.modeChanges
+	identity := a.captureZCodeSettingsRequestLocked()
 	a.Mu.Unlock()
 	if sessionID == "" {
 		return errNoZCodeSession
 	}
-	raw, err := a.sendZCodeRequest(MethodSetMode, map[string]any{
+	raw, err := a.sendZCodeSessionRequest(a.Context(), identity.observation, MethodSetMode, map[string]any{
 		"sessionId": sessionID,
 		"mode":      mode,
-	}, timeout)
+	}, timeout, nil)
 	if err != nil {
 		return err
 	}
-	a.sessionLifecycleMu.Lock()
-	defer a.sessionLifecycleMu.Unlock()
-	if !a.isCurrentZCodeSession(sessionID) {
-		return errNoZCodeSession
-	}
-	// The reply states no plan flag, so the accepted request states it. A
-	// SessionModeChanged event that arrived during the RPC wins instead: the event of
-	// this request states the same flag, and a later one, such as an EnterPlanMode
-	// that ran after the request, states a newer flag that the rule would overwrite.
-	a.Mu.Lock()
-	if a.modeChanges == modeChangesBefore {
-		a.recordPlanRequestLocked(mode)
-	}
-	a.Mu.Unlock()
-	// The snapshot carries settings.mode.current, which is the only snapshot field
-	// that tracks a switch of the native mode, so no local assignment of the native
-	// mode happens here.
-	snapshot, observed := a.applyStateSnapshot(raw)
-	if !observed || snapshot.Settings == nil || snapshot.Settings.Mode == nil || snapshot.Settings.Mode.Current == "" {
-		a.markSettingUnresolved(agent.OptionIDPermissionMode)
-	}
-	return nil
+	_, _, err = a.settleZCodeSettingsSnapshot(identity, &zcodeSettingsFallback{axis: agent.OptionIDPermissionMode, value: mode}, raw)
+	return err
 }
 
 // UpdateSettings applies a settings change live.
@@ -759,9 +927,42 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 
 	timeout := a.APITimeout()
 	applied := true
+	// skipEffortSetter suppresses the separate thought-level request after a model
+	// switch that owns the level: the ladder just rejected the request, or settled
+	// on some level of its own.
+	skipEffortSetter := false
 
 	if model := options[agent.OptionIDModel]; model != "" && normalizeZCodeModelID(model) != curModel {
-		if err := a.applyZCodeModel(model, curEffort, timeout); err != nil {
+		effort := options[agent.OptionIDEffort]
+		combinedEdit := effort != "" && effort != agent.EffortAuto && effort != curEffort
+		level := curEffort
+		if combinedEdit {
+			// A combined edit states the pair the user asked for, so the ladder
+			// starts from the requested level rather than the one the session runs.
+			level = effort
+		}
+		res, err := a.applyZCodeModel(model, level, timeout)
+		switch {
+		case err == nil:
+			if res.Recovered {
+				// The ladder settled on another level. Reapplying the request would
+				// repeat a rejected level, so the setter stays out of the way.
+				skipEffortSetter = true
+				if combinedEdit && res.ThoughtLevel != effort {
+					a.markSettingUnresolved(agent.OptionIDEffort)
+				}
+			}
+		case errors.Is(err, errInvalidZCodeModel), zcodeIsReasoningLevelRejection(err):
+			// Every selection carried a level the app-server refused. Restarting
+			// would repeat the rejected pair, so the edit reports the observed
+			// settings instead and leaves the request unresolved.
+			slog.Warn("zcode UpdateSettings could not apply the model selection; keeping the observed settings", "agent_id", a.AgentID(), "model", model, "error", err)
+			a.markSettingUnresolved(agent.OptionIDModel)
+			if combinedEdit {
+				a.markSettingUnresolved(agent.OptionIDEffort)
+				skipEffortSetter = true
+			}
+		default:
 			slog.Warn("zcode UpdateSettings setModel failed; restarting to apply", "agent_id", a.AgentID(), "model", model, "error", err)
 			applied = false
 		}
@@ -769,7 +970,7 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 	// An effort that equals the level before the edit is the stored value that the Worker sends
 	// with every edit, so it is no request for a change. The model switch above can also settle
 	// on the level that this edit states.
-	if effort := options[agent.OptionIDEffort]; effort != "" && effort != agent.EffortAuto && effort != curEffort && !a.runsThoughtLevel(effort) {
+	if effort := options[agent.OptionIDEffort]; !skipEffortSetter && effort != "" && effort != agent.EffortAuto && effort != curEffort && !a.runsThoughtLevel(effort) {
 		if err := a.applyZCodeThoughtLevel(effort, timeout); err != nil {
 			slog.Warn("zcode UpdateSettings setThoughtLevel failed; restarting to apply", "agent_id", a.AgentID(), "level", effort, "error", err)
 			applied = false
@@ -784,7 +985,9 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 
 	if !applied {
 		// A partial apply (the model landed, the thought level was refused) is reported
-		// as-is, and the caller restarts to settle it.
+		// as-is, and the caller restarts to settle it. A model switch whose reasoning
+		// level the app-server refused never reaches this branch: restarting would
+		// repeat the rejected pair, so that edit reports the observed settings instead.
 		//
 		// The trio is deliberately NOT rolled back. A setter that succeeded moved the live
 		// session, and applyStateSnapshot folded that model's own thought levels, its
@@ -800,21 +1003,22 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 		return agent.RestartRequiredSettings(options)
 	}
 
-	a.Mu.Lock()
-	model, effort, mode := a.model, a.thoughtLevel, a.permissionModeLocked()
-	a.Mu.Unlock()
-	a.sink.PersistSettingsRefresh(map[string]string{
-		agent.OptionIDModel:          model,
-		agent.OptionIDEffort:         effort,
-		agent.OptionIDPermissionMode: mode,
-	})
+	a.dispatchMu.Lock()
+	a.captureZCodeSessionObservationLocked()
+	a.unlockZCodeDispatch()
 	return a.SettingsSnapshot()
 }
 
 func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 	result := agent.ConfirmedSettings(agent.CurrentOptions(a.OptionGroups()))
 	a.Mu.Lock()
+	if a.model != "" {
+		result.SurfacedOptions[agent.OptionIDModel] = a.model
+	}
 	unresolved := make([]string, 0, len(a.unresolvedSettings))
+	if a.zcodeCurrentModelUnavailableLocked() {
+		unresolved = append(unresolved, agent.OptionIDModel)
+	}
 	for id := range a.unresolvedSettings {
 		unresolved = append(unresolved, id)
 	}
@@ -831,11 +1035,28 @@ func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 // it covers three scopes. Only the `session` scope carries settings, and the patch
 // is partial -- it holds the axes that changed and nothing else.
 type zcodeStatePatch struct {
-	Scope     string          `json:"scope"`
-	SessionID string          `json:"sessionId"`
-	Revision  int64           `json:"revision"`
-	Reason    string          `json:"reason"`
-	Patch     json.RawMessage `json:"patch"`
+	revisionKnown bool
+	raw           json.RawMessage
+	Scope         string          `json:"scope"`
+	SessionID     string          `json:"sessionId"`
+	Revision      int64           `json:"revision"`
+	Reason        string          `json:"reason"`
+	Patch         json.RawMessage `json:"patch"`
+}
+
+func (patch *zcodeStatePatch) UnmarshalJSON(raw []byte) error {
+	type statePatch zcodeStatePatch
+	var decoded statePatch
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	*patch = zcodeStatePatch(decoded)
+	patch.revisionKnown = providerkit.RawPresent(fields["revision"])
+	return nil
 }
 
 // zcodeStatePatchBody is the shape LeapMux reads out of a session-scope patch.
@@ -851,12 +1072,24 @@ type zcodeStatePatch struct {
 // refreshZCodeUsageFromSession; reading it here costs nothing and keeps a build
 // that starts sending it working without a change.
 type zcodeStatePatchBody struct {
+	revision     *int64
+	readIdentity *zcodeSessionObservationIdentity
 	zcodeSettingsSnapshot
-	Runtime *zcodeRuntimeState `json:"runtime"`
+	Runtime    *zcodeRuntimeState    `json:"runtime"`
+	Projection *zcodeProjectionState `json:"projection"`
 	// Status is the only other session-scope key the build emits (reason
 	// `prompt_started`). The struct lists it to document the shape, and nothing
 	// reads it: turn.started/turn.completed already drive the turn state.
 	Status string `json:"status"`
+}
+
+// zcodeWorkspacePatch is the part of a workspace-scope state.updated patch that
+// LeapMux reads. `modelCatalog` announces that the app-server reloaded its
+// provider registry: the session's live model catalog needs the same
+// registry-plus-catalog refresh that a catalog generation triggers. The patch's
+// own data never folds into session settings or the event watermark.
+type zcodeWorkspacePatch struct {
+	ModelCatalog json.RawMessage `json:"modelCatalog"`
 }
 
 // isCurrentZCodeSession reports whether sessionID is the session this agent
@@ -916,6 +1149,7 @@ func (a *Agent) handleZCodeStateUpdated(params json.RawMessage) {
 		slog.Warn("zcode state.updated unmarshal failed", "agent_id", a.AgentID(), "error", err)
 		return
 	}
+	notif.raw = append(json.RawMessage(nil), params...)
 	defer a.handleZCodeCompactionState(notif)
 	if len(notif.Patch) == 0 {
 		return
@@ -927,10 +1161,24 @@ func (a *Agent) handleZCodeStateUpdated(params json.RawMessage) {
 		slog.Debug("zcode state.updated patch not a session patch", "agent_id", a.AgentID(), "scope", notif.Scope)
 		return
 	}
-	// Only session patches can change this agent's runtime and settings.
-	// A workspace patch updates the model catalog and must not change session state.
-	if notif.Scope != ScopeSession {
+	// Only session patches can change this agent's runtime and settings. A
+	// workspace patch carrying `modelCatalog` schedules the registry-plus-catalog
+	// refresh beside the read loop; it must not change session state.
+	if notif.Scope != contracts.ZCodeScopeSession {
+		if notif.Scope == contracts.ZCodeScopeWorkspace {
+			var workspace zcodeWorkspacePatch
+			if err := json.Unmarshal(notif.Patch, &workspace); err == nil && workspace.ModelCatalog != nil {
+				a.scheduleZCodeCatalogRefresh()
+			}
+		}
 		return
+	}
+	// A prompt boundary (prompt_completed / prompt_failed) is evidence of a
+	// turn end. Attribute it to a turn owner before the generic observation:
+	// the attribution needs the owner's admission revision and baseline.
+	a.handleZCodePromptBoundary(notif, body)
+	if notif.revisionKnown {
+		body.revision = &notif.Revision
 	}
 	a.applyZCodeSessionObservation(notif.SessionID, body, &notif.Reason)
 }
@@ -938,37 +1186,41 @@ func (a *Agent) handleZCodeStateUpdated(params json.RawMessage) {
 // applyZCodeSessionObservation validates identity and commits runtime and settings
 // together. Sinks run after the commit and cannot split it across two sessions.
 // A nil patchReason identifies an unrestricted mode observation from session/read.
-func (a *Agent) applyZCodeSessionObservation(sessionID string, body zcodeStatePatchBody, patchReason *string) {
+func (a *Agent) applyZCodeSessionObservation(sessionID string, body zcodeStatePatchBody, patchReason *string) bool {
+	a.dispatchMu.Lock()
 	a.Mu.Lock()
 	// A context clear adopts a new session before the old one stops. Reject
 	// late observations of the old session. An empty ID cannot contradict it.
-	if a.StoppedLocked() || (sessionID != "" && a.sessionID != "" && sessionID != a.sessionID) {
+	if a.StoppedLocked() || a.sessionChanging || (sessionID != "" && a.sessionID != "" && sessionID != a.sessionID) ||
+		!a.zcodeReadObservationCurrentLocked(body.readIdentity, body.Runtime) ||
+		(body.revision != nil && *body.revision < a.stateRevision) {
 		a.Mu.Unlock()
-		return
+		a.unlockZCodeDispatch()
+		return false
 	}
-	info := a.applyZCodeRuntimeStateLocked(body.Runtime)
+	before := a.zcodeSessionPublicationViewLocked()
+	a.applyZCodeRuntimeStateLocked(body.Runtime)
+	if body.revision != nil {
+		a.noteZCodeStateRevisionLocked(*body.revision)
+	}
+	a.observationSequence++
 	if patchReason != nil {
 		body.dropStaleMode(*patchReason, a.modeObserved)
 	}
 	// A patch never states the goal. ZCode 3.14.5 sends a patch of status
 	// alone or of the settings. Its target_changed event announces each
 	// goal transition through handleZCodeGoalChanged.
-	before := zcodeSettingsTriple{a.model, a.thoughtLevel, a.permissionModeLocked()}
 	if body.hasSettings() {
 		a.applySettingsSnapshotLocked(&body.zcodeSettingsSnapshot)
 	}
-	after := zcodeSettingsTriple{a.model, a.thoughtLevel, a.permissionModeLocked()}
+	after := a.zcodeSessionPublicationViewLocked()
+	metadata := body.ThoughtLevel != nil || body.Model != nil && body.Model.Available != nil
 	a.Mu.Unlock()
-	if before != after {
-		a.sink.PersistSettingsRefresh(map[string]string{
-			agent.OptionIDModel:          after.model,
-			agent.OptionIDEffort:         after.effort,
-			agent.OptionIDPermissionMode: after.mode,
-		})
+	if metadata || !before.equal(after) {
+		a.captureZCodeSessionObservationLocked()
 	}
-	if len(info) > 0 {
-		a.sink.BroadcastSessionInfo(info)
-	}
+	a.unlockZCodeDispatch()
+	return true
 }
 
 // handleZCodeCompactionState reacts to a native compaction state transition.
@@ -977,7 +1229,7 @@ func (a *Agent) applyZCodeSessionObservation(sessionID string, body zcodeStatePa
 // reason persists nothing: one row from both would draw the same rewrite twice.
 // The reason switch stays because a final one releases the queue turn.
 func (a *Agent) handleZCodeCompactionState(notif zcodeStatePatch) {
-	if notif.Scope != ScopeSession || !a.isCurrentZCodeSession(notif.SessionID) {
+	if notif.Scope != contracts.ZCodeScopeSession || !a.isCurrentZCodeSession(notif.SessionID) {
 		return
 	}
 	switch notif.Reason {
@@ -991,15 +1243,6 @@ func (a *Agent) handleZCodeCompactionState(notif zcodeStatePatch) {
 	if notif.Reason != contracts.ZCodeStateReasonCompactStarted {
 		a.finishZCodeCompaction(notif.SessionID)
 	}
-}
-
-// zcodeSettingsTriple is the comparable snapshot of the three settable axes, used to
-// detect whether a state patch actually changed anything. mode is the value of the
-// permission-mode axis, not the native mode.
-type zcodeSettingsTriple struct {
-	model  string
-	effort string
-	mode   string
 }
 
 // DeferPlanExitMode stores the permission mode an approved plan exit chose and
@@ -1035,4 +1278,232 @@ func (a *Agent) sendDeferredZCodeExitMode(mode string) {
 			slog.Warn("zcode deferred plan exit mode failed", "agent_id", a.AgentID(), "mode", mode, "error", err)
 		}
 	}()
+}
+
+// zcodeSessionObservationEffects contains only immutable publication inputs.
+type zcodeSessionObservationEffects struct {
+	writer  agent.CapturedSessionObservationWriter
+	refresh optionmap.Map
+	info    map[string]interface{}
+	agentID string
+	err     error
+}
+
+func (effects *zcodeSessionObservationEffects) publish() {
+	if effects.err != nil {
+		slog.Warn("zcode session observation could not capture its source", "agent_id", effects.agentID, "error", effects.err)
+		return
+	}
+	if len(effects.refresh) > 0 {
+		effects.writer.PersistSettingsRefresh(effects.refresh)
+	}
+	if len(effects.info) > 0 {
+		effects.writer.PublishSessionInfo(effects.info)
+	}
+}
+
+// confirmedZCodeSettingsLocked omits axes whose current native value is unknown.
+func (a *Agent) confirmedZCodeSettingsLocked() optionmap.Map {
+	refresh := make(optionmap.Map)
+	if a.modelObserved && !a.zcodeCurrentModelUnavailableLocked() {
+		refresh[agent.OptionIDModel] = a.model
+	}
+	if a.thoughtLevelObserved {
+		refresh[agent.OptionIDEffort] = a.thoughtLevel
+	}
+	if a.modeObserved && a.planObserved {
+		refresh[agent.OptionIDPermissionMode] = a.permissionModeLocked()
+	}
+	for axis := range a.unresolvedSettings {
+		delete(refresh, axis)
+	}
+	return refresh
+}
+
+// captureZCodeSessionObservationLocked requires dispatchMu. Every successor
+// carries the complete confirmed state so expiring an older writer loses no effect.
+func (a *Agent) captureZCodeSessionObservationLocked() {
+	a.Mu.Lock()
+	if a.StoppedLocked() || a.ProcessExitedLocked() || a.IntentionalStopRequested() || a.sessionChanging || a.sessionID == "" {
+		a.Mu.Unlock()
+		return
+	}
+	sessionID := a.sessionID
+	view := a.zcodeSessionPublicationViewLocked()
+	refresh, info := view.refresh, view.info
+	a.Mu.Unlock()
+	if len(refresh) == 0 && len(info) == 0 {
+		return
+	}
+	captured := agent.CaptureTranscript(a.sink, agent.MessageContent{AgentSessionID: sessionID}, agent.SpanInfo{})
+	writer, err := a.sink.SessionObservationWriterFor(captured)
+	if err != nil {
+		a.retireZCodeSessionObservationLocked()
+		a.pendingSessionObservation = &zcodeSessionObservationEffects{agentID: a.AgentID(), err: err}
+		return
+	}
+	a.sessionObservationWriter = writer
+	a.pendingSessionObservation = &zcodeSessionObservationEffects{writer: writer, refresh: refresh, info: info}
+}
+
+func (a *Agent) retireZCodeSessionObservationLocked() {
+	if a.sessionObservationWriter != nil {
+		a.sessionObservationWriter.Retire()
+		a.sessionObservationWriter = nil
+	}
+	a.pendingSessionObservation = nil
+}
+
+// unlockZCodeDispatch runs observation callbacks only after provider locks release.
+func (a *Agent) unlockZCodeDispatch() {
+	var effects *zcodeSessionObservationEffects
+	if a.sessionPublicationDeferrals == 0 {
+		effects = a.pendingSessionObservation
+		a.pendingSessionObservation = nil
+	}
+	a.dispatchMu.Unlock()
+	if effects != nil {
+		effects.publish()
+	}
+}
+
+func (a *Agent) beginZCodeSessionPublicationDeferral() {
+	a.dispatchMu.Lock()
+	a.sessionPublicationDeferrals++
+	a.unlockZCodeDispatch()
+}
+
+func (a *Agent) endZCodeSessionPublicationDeferral() {
+	a.dispatchMu.Lock()
+	a.sessionPublicationDeferrals--
+	a.unlockZCodeDispatch()
+}
+
+func (a *Agent) lockZCodeSessionLifecycle() {
+	a.beginZCodeSessionPublicationDeferral()
+	a.sessionLifecycleMu.Lock()
+}
+
+func (a *Agent) unlockZCodeSessionLifecycle() {
+	a.sessionLifecycleMu.Unlock()
+	a.endZCodeSessionPublicationDeferral()
+}
+
+// zcodeSettingsRequestIdentity fixes the native lifetime and settings order before a setter RPC.
+type zcodeSettingsRequestIdentity struct {
+	observation zcodeSessionObservationIdentity
+	modeChanges uint64
+}
+
+type zcodeSettingsFallback struct{ axis, value string }
+
+func (a *Agent) captureZCodeSettingsRequestLocked() zcodeSettingsRequestIdentity {
+	return zcodeSettingsRequestIdentity{observation: a.captureZCodeObservationIdentityLocked(), modeChanges: a.modeChanges}
+}
+
+// settleZCodeSettingsSnapshot applies requested fallback only while the receipt
+// still owns the observation. Native values override permitted fallback.
+//
+// It never reports the goal. A model, effort, or mode reply must not write goal
+// columns or interpret a null target as removal. Only create/resume and native
+// goal events establish goal state.
+func (a *Agent) settleZCodeSettingsSnapshot(identity zcodeSettingsRequestIdentity, fallback *zcodeSettingsFallback, raw json.RawMessage) (zcodeStateSnapshot, bool, error) {
+	snapshot, observed := a.parseStateSnapshot(raw)
+	if !observed && fallback == nil {
+		return zcodeStateSnapshot{}, false, nil
+	}
+	needsReplay := false
+	defer func() {
+		if needsReplay {
+			a.scheduleZCodeReplay()
+		}
+	}()
+	a.lockZCodeSessionLifecycle()
+	defer a.unlockZCodeSessionLifecycle()
+	a.dispatchMu.Lock()
+	defer a.unlockZCodeDispatch()
+	a.Mu.Lock()
+	if !identity.observation.usable || a.StoppedLocked() || a.sessionChanging || identity.observation.sessionID != a.sessionID || identity.observation.epoch != a.sessionEpoch {
+		a.Mu.Unlock()
+		return zcodeStateSnapshot{}, false, errNoZCodeSession
+	}
+	if observed && snapshot.Session.SessionID != "" && (!zcodeUsableSessionID(snapshot.Session.SessionID) || snapshot.Session.SessionID != a.sessionID) {
+		a.Mu.Unlock()
+		return zcodeStateSnapshot{}, false, errNoZCodeSession
+	}
+	var runtime *zcodeRuntimeState
+	if observed {
+		runtime = &snapshot.Runtime
+	}
+	if !a.zcodeReadObservationCurrentLocked(&identity.observation, runtime) || (runtime != nil && runtime.eventSeqKnown && runtime.EventSeq < a.lastSeq) {
+		a.Mu.Unlock()
+		return zcodeStateSnapshot{}, false, nil
+	}
+	modeChanged := identity.modeChanges != a.modeChanges
+	if modeChanged && snapshot.Settings != nil {
+		snapshot.Settings.Mode = nil
+	}
+	if fallback != nil {
+		switch fallback.axis {
+		case agent.OptionIDModel:
+			a.setZCodeModelLocked(fallback.value, false)
+		case agent.OptionIDEffort:
+			a.thoughtLevel = fallback.value
+			a.thoughtLevelObserved = false
+		case agent.OptionIDPermissionMode:
+			if !modeChanged {
+				a.recordPlanRequestLocked(fallback.value)
+			}
+		default:
+			a.Mu.Unlock()
+			return zcodeStateSnapshot{}, false, fmt.Errorf("unknown ZCode settings axis %q", fallback.axis)
+		}
+	}
+	if observed {
+		a.applyParsedStateSnapshotLocked(snapshot)
+	}
+	a.observationSequence++
+	if fallback != nil {
+		settled := false
+		switch fallback.axis {
+		case agent.OptionIDModel:
+			settled = snapshot.Settings != nil && snapshot.Settings.Model != nil && a.modelObserved
+		case agent.OptionIDEffort:
+			settled = snapshot.Settings != nil && snapshot.Settings.ThoughtLevel != nil && a.thoughtLevelObserved
+		case agent.OptionIDPermissionMode:
+			settled = (modeChanged || snapshot.Settings != nil && snapshot.Settings.Mode != nil) && a.modeObserved && a.planObserved
+		}
+		if !settled {
+			if a.unresolvedSettings == nil {
+				a.unresolvedSettings = make(map[string]struct{})
+			}
+			a.unresolvedSettings[fallback.axis] = struct{}{}
+		}
+	}
+	if runtime != nil && runtime.eventSeqKnown {
+		a.replay.highWatermark = max(a.replay.highWatermark, runtime.EventSeq)
+		needsReplay = a.lastSeq < a.replay.highWatermark
+	}
+	a.Mu.Unlock()
+	a.captureZCodeSessionObservationLocked()
+	return snapshot, observed, nil
+}
+
+type zcodeSessionPublicationView struct {
+	refresh optionmap.Map
+	info    map[string]interface{}
+}
+
+func (view zcodeSessionPublicationView) equal(other zcodeSessionPublicationView) bool {
+	return maps.Equal(view.refresh, other.refresh) && reflect.DeepEqual(view.info, other.info)
+}
+func (a *Agent) zcodeSessionPublicationViewLocked() zcodeSessionPublicationView {
+	view := zcodeSessionPublicationView{refresh: a.confirmedZCodeSettingsLocked(), info: make(map[string]interface{})}
+	if len(a.latestContextUsage) > 0 {
+		view.info[contracts.SessionInfoKeyContextUsage] = maps.Clone(a.latestContextUsage)
+	}
+	if a.sessionCostKnown {
+		view.info[contracts.SessionInfoKeyTotalCostUsd] = a.sessionCostUsd
+	}
+	return view
 }

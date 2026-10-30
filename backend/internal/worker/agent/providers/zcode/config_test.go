@@ -1064,6 +1064,13 @@ func TestLoadZCodeAccountSelection(t *testing.T) {
 		return home
 	}
 
+	readSelection := func(t *testing.T, home string) zcodeAccountSelection {
+		t.Helper()
+		selection, err := loadZCodeAccountSelection(home)
+		require.NoError(t, err)
+		return selection
+	}
+
 	t.Run("reads the family and the selected modes", func(t *testing.T) {
 		t.Parallel()
 		home := writeSettings(t, `{
@@ -1074,7 +1081,7 @@ func TestLoadZCodeAccountSelection(t *testing.T) {
 			domain:    "zai",
 			planKinds: map[string]string{"zai": "team-coding-plan"},
 			teams:     map[string]zcodeTeamProject{},
-		}, loadZCodeAccountSelection(home), "a blank kind selects nothing, and a team plan without a project states no team")
+		}, readSelection(t, home), "a blank kind selects nothing, and a team plan without a project states no team")
 	})
 	t.Run("reads the team project of a team coding plan", func(t *testing.T) {
 		t.Parallel()
@@ -1089,20 +1096,29 @@ func TestLoadZCodeAccountSelection(t *testing.T) {
 			domain:    "bigmodel",
 			planKinds: map[string]string{"bigmodel": "team-coding-plan", "zai": "individual-coding-plan"},
 			teams:     map[string]zcodeTeamProject{"bigmodel": {organizationID: "org-1", projectID: "proj-1", productID: "prod-1"}},
-		}, loadZCodeAccountSelection(home))
+		}, readSelection(t, home))
 	})
 	t.Run("a file without a family states none", func(t *testing.T) {
 		t.Parallel()
 		home := writeSettings(t, `{"providerFamilyConnectionSelections": {"zai": {"kind": "individual-coding-plan"}}}`)
-		selection := loadZCodeAccountSelection(home)
+		selection := readSelection(t, home)
 		assert.Empty(t, selection.domain)
 		assert.Equal(t, map[string]string{"zai": "individual-coding-plan"}, selection.planKinds)
 	})
-	t.Run("a missing, malformed, or homeless file selects nothing", func(t *testing.T) {
+	t.Run("a read failure supplies no selection", func(t *testing.T) {
 		t.Parallel()
-		assert.Equal(t, zcodeAccountSelection{}, loadZCodeAccountSelection(t.TempDir()))
-		assert.Equal(t, zcodeAccountSelection{}, loadZCodeAccountSelection(writeSettings(t, `{`)))
-		assert.Equal(t, zcodeAccountSelection{}, loadZCodeAccountSelection(""))
+		for _, home := range []string{t.TempDir(), writeSettings(t, "{"), writeSettings(t, "null"), ""} {
+			selection, err := loadZCodeAccountSelection(home)
+			assert.Error(t, err)
+			assert.Equal(t, zcodeAccountSelection{}, selection)
+		}
+	})
+	t.Run("an empty object explicitly clears the selection", func(t *testing.T) {
+		t.Parallel()
+		selection := readSelection(t, writeSettings(t, "{}"))
+		assert.Empty(t, selection.domain)
+		assert.Empty(t, selection.planKinds)
+		assert.Empty(t, selection.teams)
 	})
 }
 
@@ -1146,6 +1162,76 @@ func TestZCodeCatalog_HasInlineAPIKey(t *testing.T) {
 	assert.True(t, catalog.hasInlineAPIKey(""), "an empty provider id asks about any provider")
 	assert.False(t, catalog.hasInlineAPIKey("unknown"))
 	assert.False(t, zcodeCatalog{}.hasInlineAPIKey(""))
+}
+
+func TestLoadZCodeCodingPlanEntitlements(t *testing.T) {
+	t.Parallel()
+
+	writeCache := func(t *testing.T, content string) string {
+		t.Helper()
+		home := t.TempDir()
+		path := filepath.Join(append([]string{home}, zcodeCodingPlanCacheRelPath...)...)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+		return home
+	}
+
+	t.Run("explicit available marks the coding plan available", func(t *testing.T) {
+		t.Parallel()
+		home := writeCache(t, `{"entryStatus":{"items":{"builtin:zai-coding-plan":{"status":"available"}}}}`)
+		got, err := loadZCodeCodingPlanEntitlements(home)
+		require.NoError(t, err)
+		require.Contains(t, got, "builtin:zai-coding-plan")
+		assert.Equal(t, zcodeAvailabilityAvailable, got["builtin:zai-coding-plan"].Availability)
+	})
+
+	t.Run("explicit unavailable marks it unavailable with not-entitled", func(t *testing.T) {
+		t.Parallel()
+		home := writeCache(t, `{"entryStatus":{"items":{"builtin:zai-coding-plan":{"status":"unavailable"}}}}`)
+		got, err := loadZCodeCodingPlanEntitlements(home)
+		require.NoError(t, err)
+		require.Contains(t, got, "builtin:zai-coding-plan")
+		assert.Equal(t, zcodeAvailabilityUnavailable, got["builtin:zai-coding-plan"].Availability)
+		assert.Equal(t, zcodeUnavailableNotEntitled, got["builtin:zai-coding-plan"].UnavailableReason)
+	})
+
+	t.Run("absent cache preserves the current behavior", func(t *testing.T) {
+		t.Parallel()
+		got, err := loadZCodeCodingPlanEntitlements(t.TempDir())
+		require.Error(t, err)
+		assert.Nil(t, got, "no cache entry means the current headless behavior applies")
+	})
+
+	t.Run("malformed cache returns an error", func(t *testing.T) {
+		t.Parallel()
+		home := writeCache(t, `{"entryStatus":`)
+		got, err := loadZCodeCodingPlanEntitlements(home)
+		require.Error(t, err)
+		assert.Nil(t, got, "a malformed rewrite reports no entitlement")
+	})
+
+	t.Run("no entitlement is inferred from selection alone", func(t *testing.T) {
+		t.Parallel()
+		home := writeCache(t, `{"entryStatus":{"items":{}}}`)
+		got, err := loadZCodeCodingPlanEntitlements(home)
+		require.NoError(t, err)
+		assert.Empty(t, got, "an empty items map infers nothing")
+	})
+
+	t.Run("an unrecognized status returns an error", func(t *testing.T) {
+		t.Parallel()
+		home := writeCache(t, `{"entryStatus":{"items":{"builtin:zai-coding-plan":{"status":"pending"}}}}`)
+		got, err := loadZCodeCodingPlanEntitlements(home)
+		require.Error(t, err)
+		assert.Empty(t, got, "only available and unavailable are recognized")
+	})
+
+	t.Run("no home directory returns nil", func(t *testing.T) {
+		t.Parallel()
+		got, err := loadZCodeCodingPlanEntitlements("")
+		require.Error(t, err)
+		assert.Nil(t, got)
+	})
 }
 
 func TestLoadZCodeCatalog_MissingMalformedAndKeylessConfigurations(t *testing.T) {

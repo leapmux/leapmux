@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { pickObject } from '../../../src/lib/jsonPick'
-import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
+import { nativeMessageBody, nativeMessageSupplement, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { assertPrivateNativePath } from '../helpers/nativePrivatePath'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
@@ -62,11 +62,24 @@ zcodeTest('keeps a native workflow output path and exact inline preview after re
   // The proof requires the declared path inside the storage directory, and the storage directory must stay inside the
   // private run directory, so the path stays inside both.
   assertPrivateNativePath(storageRoot, getGlobalState().tmpDir)
+  const snapshot = await readNativeMessageSnapshot(native, agent.id)
+  await testInfo.attach('zcode-native-output-worker-source', {
+    body: JSON.stringify(snapshot.messages.map(message => ({
+      id: message.id,
+      seq: message.seq.toString(),
+      spanId: message.spanId,
+      spanType: message.spanType,
+      agentSessionId: message.agentSessionId,
+      frame: nativeMessageBody(message),
+      supplement: nativeMessageSupplement(message),
+    }))),
+    contentType: 'application/json',
+  })
   await proveNativeOutputReceipt(
     {
       context: native,
       agent,
-      snapshot: await readNativeMessageSnapshot(native, agent.id),
+      snapshot,
       nativeCallId: callId,
       output,
     },

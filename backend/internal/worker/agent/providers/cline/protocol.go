@@ -56,6 +56,7 @@ const (
 	eventPendingPromptSubmitted = "session.pending_prompt_submitted"
 	eventPendingPrompts         = "session.pending_prompts"
 	eventUINotify               = "ui.notify"
+	eventCloud                  = "cloud.event"
 	eventSessionAttached        = "session.attached"
 	eventSessionDetached        = "session.detached"
 	eventSessionCreated         = "session.created"

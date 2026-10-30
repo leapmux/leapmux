@@ -334,12 +334,9 @@ func TestACPModelChangeSurfacesReasoningEffort(t *testing.T) {
 		"a status refresh must broadcast the new thinking_effort group to the frontend")
 }
 
-// TestACPConfigOption_EmptyResponseAdoptsWrittenValue is the regression guard for
-// [E10]: a server that accepts session/set_config_option but echoes no refreshed
-// configOptions (off-spec, but possible) must not leave the option at its stale prior value.
-// The write succeeded, so the value we wrote is authoritative and is recorded optimistically
-// -- otherwise applySettingsLive's readback would persist the stale value and revert the
-// user's choice.
+// TestACPConfigOption_EmptyResponseAdoptsWrittenValue keeps a successful but
+// unechoed request visible without confirming a clamp or removal. The provider
+// preserves the user's requested value while its readback remains unresolved.
 func TestACPConfigOption_EmptyResponseAdoptsWrittenValue(t *testing.T) {
 	ag, _ := newTestAgentForRPCWithResponder(t, func(string) agenttest.RPCReply {
 		// Every method (incl. set_config_option) succeeds but returns no configOptions.

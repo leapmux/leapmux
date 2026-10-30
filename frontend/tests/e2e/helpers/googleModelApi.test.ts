@@ -101,6 +101,78 @@ function streamRows(text: string): Record<string, unknown>[] {
 }
 
 describe('Google model API', () => {
+  it.each([
+    [undefined, 1, 1, 2, 0],
+    [
+      { cacheReadTokens: 3 },
+      3,
+      1,
+      4,
+      3,
+    ],
+    [
+      { cacheReadTokens: 2, cacheWriteTokens: 3 },
+      5,
+      1,
+      6,
+      2,
+    ],
+    [
+      { inputTokens: 100 },
+      100,
+      1,
+      101,
+      0,
+    ],
+    [
+      { outputTokens: 40 },
+      1,
+      40,
+      41,
+      0,
+    ],
+    [
+      { inputTokens: 0, outputTokens: 0 },
+      0,
+      0,
+      0,
+      0,
+    ],
+    [
+      { inputTokens: 10, outputTokens: 4, cacheReadTokens: 3 },
+      10,
+      4,
+      14,
+      3,
+    ],
+  ] as const)('reports literal usage on both Google response modes %j', async (usage, input, output, total, cacheRead) => {
+    for (const operation of ['generateContent', 'streamGenerateContent']) {
+      const id = `google-partial-${operation}`
+      const server = await scenario(id, {
+        steps: [
+          {
+            text: 'Counts.',
+            ...(usage
+              ? { usage }
+              : {}),
+          },
+        ],
+      })
+      const response = await generate(server, id, operation)
+      const rows = operation === 'generateContent'
+        ? [await response.json() as Record<string, unknown>]
+        : streamRows(await response.text())
+      expect(rows.at(-1)).toMatchObject({
+        usageMetadata: {
+          promptTokenCount: input,
+          candidatesTokenCount: output,
+          totalTokenCount: total,
+          cachedContentTokenCount: cacheRead,
+        },
+      })
+    }
+  })
+
   it.each(['generateContent', 'streamGenerateContent', 'countTokens'])('accepts the native Google v1 %s route with the same private authorization', async (operation) => {
     const id = `google-v1-${operation}`
     const server = await scenario(id, {

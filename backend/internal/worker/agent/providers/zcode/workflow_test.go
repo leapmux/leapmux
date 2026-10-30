@@ -403,7 +403,7 @@ func TestZCodeClearContextEndsActiveWorkflowRows(t *testing.T) {
 	a, sink, stdin := newZCodeActiveWorkflowAgent(t)
 	answerZCodeRequest(t, a, stdin, MethodSessionCreate, `{"session":{"sessionId":"sess-2"},"settings":{"mode":{"current":"build"}}}`)
 	answerZCodeRequest(t, a, stdin, MethodConversationUnsubscribe, `{}`)
-	answerZCodeRequest(t, a, stdin, MethodSessionSubscribe, `{}`)
+	answerZCodeRequest(t, a, stdin, MethodSessionSubscribe, `{"sessionId":"sess-2","eventSeq":0,"events":[]}`)
 
 	sessionID, err := a.ClearContext()
 	require.NoError(t, err)
@@ -453,7 +453,7 @@ func TestZCodeProcessTeardownEndsActiveWorkflowRows(t *testing.T) {
 func TestZCodeWorkflowRunSharesTheSubscriptionWithATrust(t *testing.T) {
 	t.Parallel()
 	a, _, stdin := newZCodeTrustAgent(t, 1)
-	a.HandleOutput(zcodeWorkflowTaskLine(t, 5, "running"))
+	a.HandleOutput(zcodeWorkflowTaskLine(t, 2, "running"))
 	answerZCodeSubscribe(t, a, stdin, 0)
 	require.Eventually(t, func() bool { _, id := zcodeConversationOpen(a); return id == "sub-1" }, zcodeTestRPCTimeout, zcodeTestPollInterval)
 

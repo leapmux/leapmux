@@ -6,7 +6,7 @@ import { Buffer } from 'node:buffer'
 import { isObject } from '../../../src/lib/jsonPick'
 import { mockCredentialReceipt } from './mockCredentials'
 import { readJSONBody, writeMockJSON, writeResponseHeaders } from './mockHttp'
-import { lastUserText, stopReasonToken, systemText } from './mockModelScript'
+import { lastUserText, resolveMockModelUsage, stopReasonToken, systemText } from './mockModelScript'
 import { rateLimitHeaders } from './mockRateLimitHeaders'
 import { bufferModelOutput } from './modelStream'
 
@@ -92,9 +92,13 @@ async function handleGoogleRequest(request: IncomingMessage, response: ServerRes
 }
 
 function googleUsage(step: MockModelStep) {
-  const input = step.usage?.inputTokens ?? 1
-  const output = step.usage?.outputTokens ?? 1
-  return { promptTokenCount: input, candidatesTokenCount: output, totalTokenCount: input + output }
+  const { inputTokens: input, outputTokens: output, cacheReadTokens } = resolveMockModelUsage(step.usage)
+  return {
+    promptTokenCount: input,
+    candidatesTokenCount: output,
+    totalTokenCount: input + output,
+    cachedContentTokenCount: cacheReadTokens,
+  }
 }
 
 function googleResponse(model: string, parts: Record<string, unknown>[], step?: MockModelStep) {

@@ -1,6 +1,7 @@
+import { Buffer } from 'node:buffer'
 import { createHash } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { join, relative, resolve, sep } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createCodewhaleEnvironment } from './codewhaleEnvironment'
 import { mcpProbeServer } from './mcpProbeServer'
@@ -9,7 +10,7 @@ let homeDir: string
 const echoServer = mcpProbeServer('echo_probe', '/srv/echo.mjs')
 function options() {
   return {
-    homeDir,
+    runDirectory: homeDir,
     baseURL: 'http://127.0.0.1:4567/v1',
     modelKey: 'unit-key',
     modelID: 'unit-model',
@@ -33,7 +34,7 @@ describe('createCodewhaleEnvironment', () => {
   it('points the built-in route at the mock with the given models, and closes each unscripted request', () => {
     const env = createCodewhaleEnvironment(options())
     expect(env).toEqual({
-      CODEWHALE_HOME: join(homeDir, '.codewhale'),
+      CODEWHALE_HOME: join(homeDir, 'cw'),
       CODEWHALE_TELEMETRY: '0',
       CODEWHALE_NO_UPDATE_CHECK: '1',
       CODEWHALE_ALLOW_SHELL: '1',
@@ -90,4 +91,18 @@ describe('createCodewhaleEnvironment', () => {
       }),
     ])
   })
+})
+
+it('keeps the native coordination socket below the macOS path limit in a parallel run', () => {
+  const runDirectory = join(homeDir, 'isolated-run')
+  const input = {
+    ...options(),
+    homeDir: join(runDirectory, 'agent-home'),
+    runDirectory,
+  }
+  const env = createCodewhaleEnvironment(input)
+  expect(env.CODEWHALE_HOME).toBe(join(runDirectory, 'cw'))
+  const nativeRelative = relative(runDirectory, env.CODEWHALE_HOME!).split(sep).join('/')
+  const socket = `/private/tmp/leapmux-e2e-xTgGch/3/${nativeRelative}/leapmux/home-8q3rfpoc2kyuj/run/store-bfa75386f70a.sock`
+  expect(Buffer.byteLength(socket, 'utf8')).toBeLessThanOrEqual(103)
 })

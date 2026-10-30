@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/require"
 )
@@ -53,7 +55,7 @@ func zcodeTestRelease(t *testing.T, content string) (zcodeBuiltinProviderFile, s
 func zcodeTestBindings(t *testing.T, catalog zcodeCatalog, content string, credentials zcodeCredentials) []zcodeAccountBinding {
 	t.Helper()
 	release, _ := zcodeTestRelease(t, content)
-	bindings, err := catalog.accountProviderBindings(release.Config.ProviderConfigRules.ProviderRules, credentials)
+	bindings, err := catalog.accountProviderBindings(release.Config.ProviderConfigRules.ProviderRules, credentials, nil)
 	require.NoError(t, err)
 	return bindings
 }
@@ -63,7 +65,7 @@ func zcodeTestBindings(t *testing.T, catalog zcodeCatalog, content string, crede
 func zcodeTestAccountPayload(t *testing.T, catalog zcodeCatalog, content string, startPlans map[string]zcodeAccountEntitlement) zcodeAccountProviderPayload {
 	t.Helper()
 	release, basedOn := zcodeTestRelease(t, content)
-	bindings, err := catalog.accountProviderBindings(release.Config.ProviderConfigRules.ProviderRules, zcodeCredentials{})
+	bindings, err := catalog.accountProviderBindings(release.Config.ProviderConfigRules.ProviderRules, zcodeCredentials{}, nil)
 	require.NoError(t, err)
 	return newZCodeAccountProviderPayload(bindings, basedOn, "leapmux-agent", startPlans)
 }
@@ -190,6 +192,22 @@ func (w *zcodeRecordedStdin) Write(p []byte) (int, error) {
 
 func (w *zcodeRecordedStdin) Close() error { return nil }
 
+// zcodeRespondToRequestsForTest answers selected requests before their writes return.
+// A nil response leaves the request for cancellation during test cleanup.
+func zcodeRespondToRequestsForTest(t *testing.T, a *Agent, respond func(zcodeSentRequest) json.RawMessage) {
+	t.Helper()
+	a.SetStdinForTest(agenttest.NopStdin(zcodeInputWriter(func(raw []byte) (int, error) {
+		var request zcodeSentRequest
+		if err := json.Unmarshal(raw, &request); err != nil {
+			return 0, err
+		}
+		if response := respond(request); response != nil {
+			a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), response))
+		}
+		return len(raw), nil
+	})))
+}
+
 // Frames returns every line written to stdin, in order.
 func (w *zcodeRecordedStdin) Frames() [][]byte {
 	w.mu.Lock()
@@ -208,6 +226,22 @@ func (w *zcodeRecordedStdin) Requests(t *testing.T) []zcodeSentRequest {
 			continue
 		}
 		out = append(out, req)
+	}
+	return out
+}
+
+// RequestsFor returns the requests for one method. It takes no *testing.T, so a
+// responder goroutine can read it while the test runs.
+func (w *zcodeRecordedStdin) RequestsFor(method string) []zcodeSentRequest {
+	out := []zcodeSentRequest{}
+	for _, frame := range w.Frames() {
+		var req zcodeSentRequest
+		if json.Unmarshal(frame, &req) != nil {
+			continue
+		}
+		if req.Method == method {
+			out = append(out, req)
+		}
 	}
 	return out
 }
@@ -275,10 +309,14 @@ func newZCodeTestAgentWithClock(t *testing.T, sink agent.ProviderServices, stdin
 		startPlanHTTP: newZCodeStartPlanHTTPClient(zcodeOfflineTransport{t: t}),
 		projectTokens: newZCodeProjectTokenClient(newZCodeStartPlanHTTPClient(zcodeOfflineTransport{t: t}),
 			zcodeProductionAccountEndpoints, quartz.NewReal(), func() float64 { return 0 }),
-		toolCalls:       map[string]*zcodeToolCall{},
+		toolInvocations: map[string]*zcodeToolInvocation{},
 		pendingControls: map[string]*pendingControl{},
 	}
-	a.sink = agent.NewModelProgressResetSink(a.sink)
+	a.sink = zcodeProgressSink{ProviderServices: agent.NewModelProgressResetSink(a.sink)}
+	// Suppress automatic replay scheduling: tests that need replay call
+	// replayZCodeEvents directly.
+	a.replayScheduler = func(func()) {}
+	a.sink.UpdateSessionID(a.sessionID)
 	return a
 }
 
@@ -303,6 +341,128 @@ func zcodeEventLine(t *testing.T, seq int64, eventType string, payload string) [
 	})
 	require.NoError(t, err)
 	return line
+}
+
+// zcodeTurnEventLine renders one session/event notification that identifies its turn,
+// as the app-server does for every event the turn owns. An empty turnID renders
+// an event that identifies no turn.
+func zcodeTurnEventLine(t *testing.T, seq int64, turnID, eventType, payload string) []byte {
+	return zcodeTurnEventLineForSession(t, "sess-1", seq, turnID, eventType, payload)
+}
+
+func zcodeTurnEventLineForSession(t *testing.T, sessionID string, seq int64, turnID, eventType, payload string) []byte {
+	t.Helper()
+	body := map[string]any{
+		"eventId":   "evt",
+		"sessionId": sessionID,
+		"seq":       seq,
+		"type":      eventType,
+	}
+	if turnID != "" {
+		body["turnId"] = turnID
+	}
+	if payload != "" {
+		body["payload"] = json.RawMessage(payload)
+	}
+	params, err := json.Marshal(body)
+	require.NoError(t, err)
+	line, err := json.Marshal(map[string]any{
+		"method": NotifySessionEvent,
+		"params": json.RawMessage(params),
+	})
+	require.NoError(t, err)
+	return line
+}
+
+// zcodeStartTestTurn feeds a turn.started for a test that drives turn-scoped
+// events without building the line itself. Sequence 0 keeps the line out of the
+// test's own sequence.
+func zcodeStartTestTurn(t *testing.T, a *Agent, payload string) {
+	t.Helper()
+	a.HandleOutput(zcodeEventLine(t, 0, contracts.ZCodeEventTurnStarted, payload))
+}
+
+// zcodeOwnTestTool attributes a hand-seeded tool call to the agent's sole turn
+// owner, as a tool event would.
+func zcodeOwnTestTool(t *testing.T, a *Agent, toolCallID string) {
+	t.Helper()
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	zcodeOwnTestToolLocked(t, a, toolCallID)
+}
+
+func zcodeOwnTestToolLocked(t *testing.T, a *Agent, toolCallID string) {
+	t.Helper()
+	var sole *zcodeTurnState
+	for _, turn := range a.turns {
+		if turn.settled {
+			continue
+		}
+		require.Nil(t, sole, "the test must hold exactly one unsettled turn")
+		sole = turn
+	}
+	require.NotNil(t, sole, "zcodeStartTestTurn first")
+	invocation := a.toolInvocations[toolCallID]
+	require.NotNil(t, invocation)
+	invocation.spanID, invocation.nativeCallID, invocation.owner = toolCallID, toolCallID, sole
+	if sole.invocationsByNativeID == nil {
+		sole.invocationsByNativeID = make(map[string]map[string]*zcodeToolInvocation)
+	}
+	sole.invocationsByNativeID[toolCallID] = map[string]*zcodeToolInvocation{"": invocation}
+	sole.toolInvocationIDs[toolCallID] = struct{}{}
+}
+
+// zcodeSeedTestTurn records a turn owner directly, with none of the
+// publications a turn.started event makes. A test that asserts exactly which
+// frames publish needs its owner seeded this way.
+func zcodeSeedTestTurn(t *testing.T, a *Agent, background bool) {
+	t.Helper()
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if a.turns == nil {
+		a.turns = make(map[string]*zcodeTurnState)
+	}
+	a.turnGeneration++
+	turn := &zcodeTurnState{
+		id:                fmt.Sprintf("#turn-%d", a.turnGeneration),
+		generation:        a.turnGeneration,
+		background:        background,
+		acceptedAt:        a.Clock().Now(),
+		contentByScope:    map[string]*zcodeScopeContent{},
+		toolInvocationIDs: map[string]struct{}{},
+	}
+	if !background {
+		a.foregroundTurnID = turn.id
+	}
+	a.turns[turn.id] = turn
+	a.refreshTurnActiveLocked()
+}
+
+// zcodeFetchedEvent renders one event as a session/events response carries it:
+// the bare envelope, with no notification wrapper.
+func zcodeFetchedEvent(t *testing.T, seq int64, eventType, payload string) json.RawMessage {
+	t.Helper()
+	body := map[string]any{
+		"eventId":   "evt",
+		"sessionId": "sess-1",
+		"seq":       seq,
+		"type":      eventType,
+	}
+	if payload != "" {
+		body["payload"] = json.RawMessage(payload)
+	}
+	raw, err := json.Marshal(body)
+	require.NoError(t, err)
+	return raw
+}
+
+// zcodeEventsReply renders one session/events response: the events a fetch
+// returns beside the sequence its range covers.
+func zcodeEventsReply(t *testing.T, eventSeq int64, events ...json.RawMessage) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{"eventSeq": eventSeq, "events": events})
+	require.NoError(t, err)
+	return raw
 }
 
 // zcodeStateLine renders one top-level state.updated notification.
@@ -349,6 +509,12 @@ func zcodeErrorReplyLine(t *testing.T, id int64, code int, message string) []byt
 // backstop only: a reply that never arrives fails the test in seconds, instead of
 // parking the run until the package timeout.
 const zcodeTestRPCTimeout = 5 * time.Second
+
+// zcodeCancelPromptness limits the waits that assert a cancellation ENDED
+// credential work or a shared call. It must stay well below
+// zcodeProjectTokenTimeout: the work's own timeout would otherwise satisfy the
+// wait and hide a cancellation that never happened.
+const zcodeCancelPromptness = 5 * time.Second
 
 // answerZCodeRequest replies to the next request for method with result.
 //
@@ -441,3 +607,99 @@ const zcodeTwoProviderConfig = `{
     }
   }
 }`
+
+// zcodeTestInvocationLocked selects an unambiguous native call for assertions.
+// The caller holds a.Mu.
+func zcodeTestInvocationLocked(a *Agent, nativeID string) *zcodeToolInvocation {
+	var found *zcodeToolInvocation
+	for _, invocation := range a.toolInvocations {
+		if invocation.nativeCallID == nativeID {
+			if found != nil {
+				panic("test call ID is ambiguous")
+			}
+			found = invocation
+		}
+	}
+	return found
+}
+
+func zcodeTestSpanID(t *testing.T, sink interface {
+	Messages() []agenttest.Message
+	ChildAgentIDs() []string
+	Child(string) *agenttest.Sink
+}, nativeID string) string {
+	t.Helper()
+	messages := sink.Messages()
+	for _, child := range sink.ChildAgentIDs() {
+		messages = append(messages, sink.Child(child).Messages()...)
+	}
+	found := ""
+	for _, row := range messages {
+		ref, valid := zcodeToolReferenceFrom(row.Content)
+		if !valid || ref.ToolCallID != nativeID || row.SpanID == "" {
+			continue
+		}
+		if found != "" {
+			require.Equal(t, found, row.SpanID, "the native test ID must be unambiguous")
+		}
+		found = row.SpanID
+	}
+	require.NotEmpty(t, found, "the tool must publish a row before its span is inspected")
+	return found
+}
+
+func zcodeTestSubagentKey(t *testing.T, a *Agent, nativeID string) string {
+	t.Helper()
+	spanID := a.zcodeSpanForNativeCall(nativeID)
+	require.NotEmpty(t, spanID)
+	return a.zcodeSubagentRegistryKey(spanID)
+}
+
+func zcodeSettingsRequestIdentityForTest(a *Agent) zcodeSettingsRequestIdentity {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	return a.captureZCodeSettingsRequestLocked()
+}
+
+// zcodeRecordRequestRepliesWithoutState keeps wire assertions independent of cancellation.
+func zcodeRecordRequestRepliesWithoutState(t *testing.T, a *Agent, stdin *zcodeRecordedStdin) {
+	t.Helper()
+	zcodeRespondToRequestsForTest(t, a, func(request zcodeSentRequest) json.RawMessage {
+		raw, err := json.Marshal(request)
+		require.NoError(t, err)
+		_, err = stdin.Write(raw)
+		require.NoError(t, err)
+		a.HandleOutput(zcodeErrorReplyLine(t, zcodeSentRequestID(t, request), -32603, "native refusal"))
+		return nil
+	})
+}
+
+func zcodeRememberControlForTest(t *testing.T, a *Agent, requestID string) {
+	t.Helper()
+	params, err := json.Marshal(map[string]string{"requestId": requestID, "toolName": "Bash"})
+	require.NoError(t, err)
+	a.handlePermissionRequest(json.RawMessage(`"native-wire"`), params)
+}
+
+func zcodeTestReceive[T any](t *testing.T, channel <-chan T) T {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	select {
+	case value := <-channel:
+		return value
+	case <-ctx.Done():
+		t.Fatal("the expected test operation did not finish")
+		var zero T
+		return zero
+	}
+}
+
+func (a *Agent) pendingZCodeControlPayload(requestID string) json.RawMessage {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if record := a.pendingControls[requestID]; record != nil {
+		return append(json.RawMessage(nil), record.payload...)
+	}
+	return nil
+}

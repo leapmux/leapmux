@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"time"
@@ -95,11 +96,20 @@ type MessageContent struct {
 	Publication TranscriptPublication
 	// WriteReceipt records the storage result of this captured write.
 	WriteReceipt *TranscriptWriteReceipt
+	// SupplementRead retains native lookup inputs for this exact captured row.
+	// It returns data only and must not mutate the current provider session.
+	SupplementRead CapturedMessageSupplement
+}
+
+type CapturedMessageSupplement interface {
+	Read(context.Context) ([]byte, error)
 }
 
 // TranscriptOwner identifies the original live publication state of one record.
 type TranscriptOwner interface {
 	IsCurrent() bool
+	// IsSessionCurrent ignores turn changes while preserving the original native session authority.
+	IsSessionCurrent() bool
 	PublishSessionInfo(info map[string]interface{}) bool
 }
 
@@ -131,6 +141,12 @@ type StoredMessage struct {
 
 // TranscriptServices persists provider output and turn boundaries.
 type TranscriptServices interface {
+	// ReserveTranscriptOutput admits all writes before capture. It invokes no callbacks.
+	// A refusal leaves the queue unchanged.
+	ReserveTranscriptOutput(queue *OutputQueue, writes ...OutputWrite) ([]*OutputTicket, error)
+	// ValidateTranscriptOutput checks a captured writer against an existing reservation.
+	// It invokes no callbacks and never appends another write.
+	ValidateTranscriptOutput(ticket *OutputTicket) error
 	// PersistWorkerNotification stores a captured worker envelope with its worker-specific reduction semantics.
 	PersistWorkerNotification(content MessageContent) (bool, error)
 	// CaptureMessage freezes the native session and live owner before a delayed write.
@@ -298,11 +314,16 @@ type ControlServices interface {
 
 // SessionServices publishes provider session state and settings.
 type SessionServices interface {
+	// SessionObservationWriterFor captures native-session authority before deferred effects.
+	SessionObservationWriterFor(CapturedTranscript) (CapturedSessionObservationWriter, error)
 	// MessageSessionID is the session that this sink stamps on a row that states no AgentSessionID.
 	// A provider resolves the child's sink before it broadcasts that child's session state.
 	// The broadcast then identifies the same session as the child's rows.
 	MessageSessionID() string
 	UpdateSessionID(sessionID string)
+	// AdoptNativeSession starts a new publication lifetime, even when the ID
+	// repeats. Call it before publishing the adopted session's output.
+	AdoptNativeSession(sessionID string)
 	UpdatePermissionMode(mode string)
 	// NotifyPermissionModeChanged emits the chat-view settings_changed notification
 	// for a permission-mode transition WITHOUT persisting the mode or broadcasting a
@@ -326,8 +347,24 @@ type SessionServices interface {
 	PersistChildSubagentReport(write ChildSubagentReportWrite) (stored bool, err error)
 }
 
+// CapturedSessionObservationWriter applies one complete observed state. A newer
+// observation expires it. Ordinary turns retain its native-session authority.
+type CapturedSessionObservationWriter interface {
+	PersistSettingsRefresh(optionmap.Map)
+	PublishSessionInfo(map[string]interface{}) bool
+	// Retire expires this writer under its effect-admission mutex. It is
+	// idempotent and invokes no provider, watcher, logger, or transport callback.
+	Retire()
+}
+
+// CapturedPlanWriter retains one native observation's authority to update the saved plan.
+type CapturedPlanWriter interface {
+	UpdatePlan([]byte, leapmuxv1.ContentCompression, string) error
+}
+
 // PlanServices stores plan-mode state.
 type PlanServices interface {
+	PlanWriterFor(CapturedTranscript) (CapturedPlanWriter, error)
 	StorePlanModeToolUse(toolUseID, targetMode string)
 	LoadAndDeletePlanModeToolUse(toolUseID string) (targetMode string, ok bool)
 	UpdatePlan(content []byte, compression leapmuxv1.ContentCompression, title string)
@@ -471,6 +508,9 @@ type ChildAgentSpec struct {
 
 // ChildServices owns child transcripts and their in-memory state.
 type ChildServices interface {
+	// AcquireChildSink creates one child service lifetime without invoking callbacks.
+	// Activate publishes its captured progress reset after the caller installs the sink.
+	AcquireChildSink(childAgentID string) ChildSinkLease
 
 	// --- Subagent transcripts and the background-task registry ---
 
@@ -555,6 +595,15 @@ type ChildServices interface {
 	// under the root and re-hydrate on reopen); only the in-memory caches are
 	// reclaimed. A no-op for an unknown child id.
 	CleanupChildAgent(childAgentID string)
+}
+
+// ChildSinkLease binds capture and cleanup to one physical child's service lifetime.
+// Native session adoption and ordinary turn changes preserve this lifetime.
+type ChildSinkLease struct {
+	Sink           ProviderServices
+	CaptureMessage func(MessageContent, SpanInfo) MessageContent
+	Activate       func()
+	Cleanup        func() bool
 }
 
 // BackgroundTaskServices owns the provider-neutral task registry.
@@ -667,6 +716,7 @@ type SteerEchoServices interface {
 // OutputEffectServices captures effects that can wait behind pending transcript rows.
 type OutputEffectServices interface {
 	// OutputQueue returns the lifetime owner of this transcript's pending writes.
+	// It invokes no provider, persistence, progress, or transport callback.
 	OutputQueue() *OutputQueue
 	// CaptureSteerReport retains the original publisher and span context. A failed effect can be retried.
 	CaptureSteerReport(count int, outcome SteerOutcome) func() error

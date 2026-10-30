@@ -39,7 +39,13 @@
     "networkStatusPrefixes",
     "microcompactStrategies",
     "hookRunOutcomes",
-    "modelSelectionOrigins"
+    "modelSelectionOrigins",
+    "scopes",
+    "responseText",
+    "records",
+    "backgroundTurnEnd",
+    "workerMetadata",
+    "invocation"
   ],
   "$defs": {
     "table": {
@@ -257,6 +263,24 @@
     },
     "structs": {
       "$ref": "#/$defs/structs"
+    },
+    "scopes": {
+      "$ref": "#/$defs/table"
+    },
+    "responseText": {
+      "$ref": "#/$defs/table"
+    },
+    "records": {
+      "$ref": "#/$defs/table"
+    },
+    "backgroundTurnEnd": {
+      "$ref": "#/$defs/table"
+    },
+    "workerMetadata": {
+      "$ref": "#/$defs/table"
+    },
+    "invocation": {
+      "$ref": "#/$defs/table"
     }
   }
 }

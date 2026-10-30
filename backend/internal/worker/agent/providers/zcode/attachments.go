@@ -146,12 +146,13 @@ func (a *Agent) checkZCodeModelInput(model string, media zcodeMediaKind, attachm
 		return nil
 	}
 	a.Mu.Lock()
-	record, live := a.liveModels[normalizeZCodeModelID(model)]
+	record, live := a.liveModels[a.normalizeZCodeSelectionLocked(model)]
+	complete := a.liveCatalogComplete
 	a.Mu.Unlock()
 	accepts := false
 	if live {
 		accepts = slices.Contains(record.modalities, media.modality)
-	} else {
+	} else if !complete {
 		a.Mu.Lock()
 		accepts = a.catalog.acceptsInputModality(model, media.modality)
 		a.Mu.Unlock()

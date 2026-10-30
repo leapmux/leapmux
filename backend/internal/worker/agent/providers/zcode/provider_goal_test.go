@@ -160,9 +160,10 @@ func TestZCodeGoal_ASettingsSnapshotNeverTouchesTheGoal(t *testing.T) {
 	agent := newZCodeTestAgent(t, agent.NewProviderServices(sink))
 
 	// The shape a setter reply carries, with a goal key that must be ignored.
-	_, ok := agent.applyStateSnapshot(json.RawMessage(
+	_, ok, err := agent.settleZCodeSettingsSnapshot(zcodeSettingsRequestIdentityForTest(agent), nil, json.RawMessage(
 		`{"session":{"sessionId":"sess-1"},"runtime":{"eventSeq":3},"goal":null}`))
 
+	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Zero(t, sink.GoalClears(), "a settings reply must not clear the goal")
 	assert.Empty(t, sink.Goals(), "nor set one")

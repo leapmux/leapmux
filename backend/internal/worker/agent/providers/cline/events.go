@@ -93,6 +93,9 @@ func (a *Agent) handleEvent(event hubEvent) {
 	// Heartbeats keep the connection active. The run end supplies the completion.
 	case eventUINotify:
 	// The hub's desktop notice repeats the run end.
+	case eventCloud:
+		// The cloud viewer consumes these replication snapshots and updates.
+		// This provider drives local sessions, whose output uses the cases above.
 	case eventSessionAttached, eventSessionDetached:
 	// These events describe the hub's client registry.
 	case eventSessionCreated, eventSessionDeleted:

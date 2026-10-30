@@ -27,7 +27,9 @@ func (a *Agent) refreshAccountSnapshot(state *zcodeAccountState) bool {
 	generation, refreshed := state.pushedGeneration, state.catalogGeneration
 	state.mu.Unlock()
 	if generation != refreshed {
-		if err := a.refreshZCodeModelCatalog(); err != nil {
+		// The generation becomes catalog-refreshed only after the registry and
+		// catalog reads of one pass both succeed.
+		if err := a.awaitZCodeCatalogRefresh(); err != nil {
 			slog.Warn("zcode model catalog refresh failed", "agent_id", a.AgentID(), "error", err)
 		} else {
 			state.mu.Lock()

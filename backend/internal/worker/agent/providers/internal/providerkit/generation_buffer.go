@@ -160,6 +160,17 @@ func (b *GenerationBuffer) finishMatching(completion agent.MessageCompletion, ma
 
 // finishEntriesLocked encodes every row before it removes any open scope.
 func (b *GenerationBuffer) finishEntriesLocked(entries []orderedSegment, completion agent.MessageCompletion) ([][]byte, error) {
+	rows, err := b.encodeEntriesLocked(entries, completion)
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		delete(b.segments, entry.scopeID)
+	}
+	return rows, nil
+}
+
+func (b *GenerationBuffer) encodeEntriesLocked(entries []orderedSegment, completion agent.MessageCompletion) ([][]byte, error) {
 	result := make([][]byte, 0, len(entries))
 	for _, entry := range entries {
 		if entry.segment.text.Len() == 0 {
@@ -170,9 +181,6 @@ func (b *GenerationBuffer) finishEntriesLocked(entries []orderedSegment, complet
 			return nil, err
 		}
 		result = append(result, raw)
-	}
-	for _, entry := range entries {
-		delete(b.segments, entry.scopeID)
 	}
 	return result, nil
 }

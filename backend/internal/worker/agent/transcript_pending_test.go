@@ -160,3 +160,10 @@ func TestCapturedOperationDerivationAndSubmissionHaveOneWinner(t *testing.T) {
 		assert.Equal(t, 1, writes)
 	}
 }
+
+func (writer *pendingCaptureWriter) ReserveTranscriptOutput(queue *OutputQueue, writes ...OutputWrite) ([]*OutputTicket, error) {
+	return queue.Append(writes...), nil
+}
+func (writer *pendingCaptureWriter) ValidateTranscriptOutput(ticket *OutputTicket) error {
+	return ValidateTranscriptOutputTicket(ticket)
+}

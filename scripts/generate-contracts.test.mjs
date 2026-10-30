@@ -1948,6 +1948,25 @@ describe('generate', () => {
     ])
   })
 
+  it('preserves the canonical supplement type of each provider', () => {
+    const files = generate(join(ROOT, 'contracts'), DESCRIPTOR)
+    const types = {
+      'deepseek-harness-protocol': 'DeepseekHarnessSupplement',
+      'gemini-protocol': 'GeminiSupplement',
+      'acp-protocol': 'ACPSupplementField',
+      'codex-protocol': 'CodexSupplementField',
+      'cursor-protocol': 'CursorSupplementField',
+      'pi-protocol': 'PiSupplementField',
+      'ohmypi-protocol': 'OhMyPiSupplementField',
+      'junie-protocol': 'JunieSupplementField',
+    }
+    for (const [domain, type] of Object.entries(types)) {
+      const output = files[`frontend/src/generated/contracts/${domain}.ts`]
+      expect(output).toContain(`export type ${type} =`)
+      expect(output).not.toContain('export type ZCodeSupplementField =')
+    }
+  })
+
   // These two domains use the shared PROVIDER_PROTOCOLS path. These assertions
   // verify the output that their old custom emitters did not supply.
   it('emits the shared provider-protocol shape for the newest domains', () => {

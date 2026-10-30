@@ -30,6 +30,8 @@ type Agent struct {
 	// state that saw both can publish a report. Guarded by Base.Mu and capped
 	// in tool_transcript.go.
 	taskReports map[string]cursorTaskReportState
+	// taskReportGeneration expires observers when native task state resets. Base.Mu protects it.
+	taskReportGeneration uint64
 	// nativeTasks keeps each native session link and its authoritative finished outcome.
 	// Base.Mu protects this map. ClearContext removes the old session's task identities.
 	nativeTasks map[string]cursorNativeTask

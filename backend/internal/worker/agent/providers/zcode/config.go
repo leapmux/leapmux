@@ -160,6 +160,28 @@ type zcodeProviderSkip struct {
 // Coding Plan, and dropping it would leave a user whose every provider is disabled
 // with no models at all rather than a working choice.
 func buildZCodeCatalog(cfg zcodeConfigFile) (zcodeCatalog, []zcodeProviderSkip) {
+	providers, skipped := buildZCodeRegistryProviders(cfg)
+	catalog := zcodeCatalog{Providers: providers, modalities: map[string][]string{}, refs: map[string]zcodeModelRef{}}
+	for _, provider := range providers {
+		for _, modelID := range zcodeModelOrder(cfg.Provider[provider.ProviderID].Models) {
+			model := cfg.Provider[provider.ProviderID].Models[modelID]
+			composite := zcodeModelID(provider.ProviderID, modelID)
+			catalog.Models = append(catalog.Models, zcodeModelInfo(composite, provider.Label, modelID, model))
+			catalog.refs[composite] = zcodeModelRef{ProviderID: provider.ProviderID, ModelID: modelID}
+			if model.Modalities != nil && len(model.Modalities.Input) > 0 {
+				lowered := make([]string, 0, len(model.Modalities.Input))
+				for _, value := range model.Modalities.Input {
+					lowered = append(lowered, strings.ToLower(strings.TrimSpace(value)))
+				}
+				catalog.modalities[composite] = lowered
+			}
+		}
+	}
+	markZCodeDefaultModel(catalog.Models)
+	return catalog, skipped
+}
+
+func buildZCodeRegistryProviders(cfg zcodeConfigFile) ([]zcodeRegistryProvider, []zcodeProviderSkip) {
 	type candidate struct {
 		providerID string
 		enabled    bool
@@ -224,10 +246,7 @@ func buildZCodeCatalog(cfg zcodeConfigFile) (zcodeCatalog, []zcodeProviderSkip) 
 		}
 	}
 
-	catalog := zcodeCatalog{
-		modalities: map[string][]string{},
-		refs:       map[string]zcodeModelRef{},
-	}
+	var providers []zcodeRegistryProvider
 	for _, c := range candidates {
 		kind, _ := zcodeProviderKind(c.provider.Kind)
 		entry := zcodeRegistryProvider{
@@ -247,21 +266,10 @@ func buildZCodeCatalog(cfg zcodeConfigFile) (zcodeCatalog, []zcodeProviderSkip) 
 		for _, modelID := range zcodeModelOrder(c.provider.Models) {
 			model := c.provider.Models[modelID]
 			entry.Models = append(entry.Models, zcodeRegistryModelFor(modelID, model))
-			composite := zcodeModelID(c.providerID, modelID)
-			catalog.Models = append(catalog.Models, zcodeModelInfo(composite, entry.Label, modelID, model))
-			catalog.refs[composite] = zcodeModelRef{ProviderID: c.providerID, ModelID: modelID}
-			if model.Modalities != nil && len(model.Modalities.Input) > 0 {
-				lowered := make([]string, 0, len(model.Modalities.Input))
-				for _, m := range model.Modalities.Input {
-					lowered = append(lowered, strings.ToLower(strings.TrimSpace(m)))
-				}
-				catalog.modalities[composite] = lowered
-			}
 		}
-		catalog.Providers = append(catalog.Providers, entry)
+		providers = append(providers, entry)
 	}
-	markZCodeDefaultModel(catalog.Models)
-	return catalog, skipped
+	return providers, skipped
 }
 
 // zcodeModelOrder ranks a provider's models the way ZCode itself ranks them:

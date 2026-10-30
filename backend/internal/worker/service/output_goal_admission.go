@@ -145,8 +145,7 @@ func (admission *goalAdmission) currentLocked() bool {
 		_, registered := admission.h.rootSinks.Load(admission.agentID)
 		return !registered && admission.h.sinkForAgent(admission.agentID) == nil
 	}
-	return admission.sink.registeredCurrent() && admission.sink.turnPublisherSink() == admission.publisher &&
-		admission.sink.currentMessageSessionFact() == admission.session
+	return (nativeSessionSource{sink: admission.sink, publisher: admission.publisher, session: admission.session}).currentLocked()
 }
 
 func (admission *goalAdmission) mutationMutex() *transcriptMutationLock {

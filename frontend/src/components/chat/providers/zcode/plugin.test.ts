@@ -314,57 +314,27 @@ describe('zcode quotable text', () => {
 
 describe('zcode contextUsageFromMessage', () => {
   // Usage rides a model response: `content` beside a `stopReason` states the
-  // finished generation the counts belong to.
-  const usageRow = (usage: Record<string, unknown>, extra: Record<string, unknown> = {}): ResolvedMessageContent =>
+  // finished generation the counts belong to. The projection's matrix lives in
+  // sessionMetadata.test.ts; this case pins the registration and the rule.
+  const usageRow = (usage: Record<string, unknown>): ResolvedMessageContent =>
     parsedOf(event(ZCODE_EVENT.SessionUpdated, {
       content: 'done',
       stopReason: 'stop',
       usage,
-      ...extra,
     }))
 
-  it('normalizes a usage snapshot onto the shared context-usage shape', () => {
+  it('is registered and subtracts the cache buckets from a cache-inclusive input', () => {
     expect(plugin?.session?.contextUsageFromMessage!(usageRow({
-      inputTokens: 100,
-      outputTokens: 10,
-      cacheReadTokens: 20,
-      cacheWriteTokens: 5,
-      totalTokens: 135,
+      inputTokens: 10,
+      outputTokens: 4,
+      cacheReadTokens: 2,
+      cacheWriteTokens: 3,
     }))).toEqual({
-      inputTokens: 100,
-      outputTokens: 10,
-      cacheReadInputTokens: 20,
-      cacheCreationInputTokens: 5,
-      contextTokens: 135,
+      inputTokens: 5,
+      cacheCreationInputTokens: 3,
+      cacheReadInputTokens: 2,
+      outputTokens: 4,
     })
-  })
-
-  it('omits contextTokens when the snapshot reports no total', () => {
-    expect(plugin?.session?.contextUsageFromMessage!(usageRow({ inputTokens: 100, outputTokens: 10 })))
-      .toEqual({
-        inputTokens: 100,
-        outputTokens: 10,
-        cacheReadInputTokens: 0,
-        cacheCreationInputTokens: 0,
-      })
-  })
-
-  it('returns null for an all-zero snapshot, which reports no usage at all', () => {
-    expect(plugin?.session?.contextUsageFromMessage!(usageRow({
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      totalTokens: 0,
-    }))).toBeNull()
-  })
-
-  it('returns null for a session.updated with no usage and for another event type', () => {
-    expect(plugin?.session?.contextUsageFromMessage!(parsedOf(event(ZCODE_EVENT.SessionUpdated, { messageCount: 3 }))))
-      .toBeNull()
-    expect(plugin?.session?.contextUsageFromMessage!(parsedOf(event(ZCODE_EVENT.TurnCompleted, {
-      usage: { inputTokens: 10 },
-    })))).toBeNull()
   })
 })
 
@@ -538,5 +508,179 @@ describe('zcode todo rows', () => {
 
   it('keeps every other tool result visible', () => {
     expect(classifyWithSpan(result, ZCODE_TOOL.Bash).kind).toBe('tool_result')
+  })
+})
+
+describe('zcode recovered turn evidence', () => {
+  it.each([
+    [
+      'prompt_completed',
+      MessageCompletion.COMPLETE,
+      'Turn ended',
+      false,
+    ],
+    [
+      'prompt_failed',
+      MessageCompletion.ERROR,
+      'Turn failed',
+      true,
+    ],
+    [
+      'prompt_failed',
+      MessageCompletion.COMPLETE,
+      'Turn ended',
+      false,
+    ],
+  ] as const)('renders %s with the stored outcome', (reason, completion, label, isError) => {
+    const evidence = {
+      type: 'state.updated',
+      payload: {
+        scope: 'session',
+        sessionId: 's-1',
+        revision: 12,
+        reason,
+        patch: { future: 'retained' },
+      },
+    }
+    const category = plugin.transcript.classify(input(evidence, null, AgentProvider.ZCODE))
+    expect(category.kind).toBe('result_divider')
+    expect(plugin.transcript.extractDivider(evidence, completion)).toEqual({
+      label,
+      ...(isError
+        ? { isError: true }
+        : {}),
+    })
+    const parsed = {
+      ...parsedOf(evidence),
+      completion,
+    }
+    const row = extractedRow(extractChatRow(AgentProvider.ZCODE, parsed, category))
+    expect(row).toMatchObject({
+      kind: 'divider',
+      divider: {
+        label,
+        ...(isError
+          ? { isError: true }
+          : {}),
+      },
+    })
+  })
+
+  it.each([
+    { scope: 'workspace', reason: 'prompt_completed' },
+    { scope: 'session', reason: 'unrelated' },
+  ])('leaves unrelated state patches unrecognized', (payload) => {
+    const evidence = { type: 'state.updated', payload }
+    expect(plugin.transcript.classify(input(evidence, null, AgentProvider.ZCODE)).kind).toBe('unknown')
+    expect(plugin.transcript.extractDivider(evidence)).toBeNull()
+  })
+})
+
+describe('zcode background turn outcomes', () => {
+  function background(reason: string, completion: MessageCompletion) {
+    return {
+      type: 'zcode_background_turn_end',
+      payload: {
+        original: JSON.stringify({
+          type: 'state.updated',
+          payload: { scope: 'session', reason },
+        }),
+        completion,
+      },
+    }
+  }
+
+  it.each([
+    ['prompt_failed', MessageCompletion.COMPLETE, 'Background turn ended'],
+    ['prompt_completed', MessageCompletion.ERROR, 'Background turn failed'],
+    ['prompt_completed', MessageCompletion.INTERRUPTED, 'Background turn interrupted'],
+  ] as const)('keeps a background %s outcome inside its own notification', (reason, completion, text) => {
+    const message = background(reason, completion)
+    const wrapper = {
+      old_seqs: [],
+      messages: [message],
+    }
+    expect(plugin.transcript.classify(input(message, wrapper, AgentProvider.ZCODE))).toMatchObject({
+      kind: 'notification',
+      entries: [
+        { kind: 'text', text },
+      ],
+    })
+  })
+
+  it('preserves earlier failure and later success inside one mixed notification thread', () => {
+    const failed = background('prompt_completed', MessageCompletion.ERROR)
+    const messages = [
+      failed,
+      event(ZCODE_EVENT.PermissionResolved, { decision: 'deny', toolName: 'Bash' }),
+      background('prompt_failed', MessageCompletion.COMPLETE),
+    ]
+    const wrapper = { old_seqs: [], messages }
+    expect(plugin.transcript.classify({
+      ...input(failed, wrapper, AgentProvider.ZCODE),
+      completion: MessageCompletion.COMPLETE,
+    })).toMatchObject({
+      kind: 'notification',
+      entries: [
+        { kind: 'text', text: 'Background turn failed' },
+        { kind: 'text', text: 'Denied Bash' },
+        { kind: 'text', text: 'Background turn ended' },
+      ],
+    })
+  })
+})
+
+describe('zcode retained background outcomes', () => {
+  it('shows an interrupted native failure as interrupted', () => {
+    const original = event(ZCODE_EVENT.TurnFailed, {
+      error: { code: 'cancelled', message: 'Cancelled' },
+    })
+    expect(plugin.transcript.extractDivider(original, MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted' })
+  })
+
+  it.each([undefined, null, -1, 1.5, 99, '1'])('rejects an invalid completion %s', (completion) => {
+    const record = {
+      type: 'zcode_background_turn_end',
+      payload: {
+        original: JSON.stringify(event(ZCODE_EVENT.TurnCompleted)),
+        completion,
+      },
+    }
+    expect(plugin.transcript.notificationEntry!(record)).toEqual([])
+  })
+
+  it.each([
+    '{',
+    '{}',
+    JSON.stringify(event(ZCODE_EVENT.ToolUpdated)),
+  ])('rejects evidence without a readable turn end: %s', (original) => {
+    expect(plugin.transcript.notificationEntry!({
+      type: 'zcode_background_turn_end',
+      payload: { original, completion: MessageCompletion.COMPLETE },
+    })).toEqual([])
+  })
+
+  it('retains the native failure details inside a background notification', () => {
+    const original = event(ZCODE_EVENT.TurnFailed, {
+      error: { code: 'native_error', message: 'Native failure', detail: 'Detailed cause' },
+    })
+    const entries = plugin.transcript.notificationEntry!({
+      type: 'zcode_background_turn_end',
+      payload: {
+        original: JSON.stringify(original),
+        completion: MessageCompletion.UNSPECIFIED,
+      },
+    })
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({
+      kind: 'text',
+      text: expect.stringContaining('Background turn failed'),
+    })
+    expect(entries[0]).toMatchObject({
+      text: expect.stringContaining('Native failure'),
+    })
+    expect(entries[0]).toMatchObject({
+      text: expect.stringContaining('Detailed cause'),
+    })
   })
 })

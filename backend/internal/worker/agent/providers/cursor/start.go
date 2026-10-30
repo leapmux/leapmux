@@ -40,7 +40,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				ctx,
 				sink,
 				func() string { return cursorACPStorePath(storeQuery, a.CurrentSessionID()) },
-				a.observeCursorTaskRecord,
+				a.captureCursorTaskRecordObserver,
 			)
 			a.transcript = transcript
 			return acp.Hooks{

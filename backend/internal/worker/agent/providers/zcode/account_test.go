@@ -249,7 +249,7 @@ func TestZCodeAccountRequestAuth_RefusesAStaleBigModelTeamSignIn(t *testing.T) {
       ]}}
     }`, credentials)
 	require.Len(t, bindings, 1)
-	a.account = &zcodeAccountState{bindings: bindings}
+	a.account = &zcodeAccountState{bindings: bindings, acceptedBindings: bindings}
 	_, err := a.accountRequestAuth(context.Background(), zcodeRuntimeHeadersRequest{ProviderID: "account:bigmodel-team-coding-plan"})
 	require.ErrorContains(t, err, "stale")
 }
@@ -287,7 +287,7 @@ func TestZCodeAccountState_TracksWhatTheAppServerHolds(t *testing.T) {
 	}}
 	first, learned := state.payload("r")
 	assert.Equal(t, "r", first.Revision)
-	state.accepted(learned)
+	state.accepted(learned, nil)
 	assert.False(t, state.unpushed())
 
 	state.learnForTest(map[string]zcodeAccountEntitlement{"builtin:zai-start-plan": zcodeUnknownEntitlement})
@@ -300,14 +300,14 @@ func TestZCodeAccountState_TracksWhatTheAppServerHolds(t *testing.T) {
 
 	// A check that learns while the push runs is not part of the pushed snapshot.
 	state.learnForTest(map[string]zcodeAccountEntitlement{"builtin:bigmodel-start-plan": available})
-	state.accepted(learned)
+	state.accepted(learned, nil)
 	assert.True(t, state.unpushed(), "the app-server does not hold the plan that the push did not carry")
 
 	state.learnForTest(map[string]zcodeAccountEntitlement{"builtin:zai-start-plan": {Availability: zcodeAvailabilityUnavailable}})
 	assert.Equal(t, zcodeAvailabilityUnavailable, state.plans["builtin:zai-start-plan"].entitlement.Availability, "a new result replaces an earlier entitlement")
 	third, learned := state.payload("r")
 	assert.Equal(t, "r#3", third.Revision)
-	state.accepted(learned)
+	state.accepted(learned, nil)
 	assert.False(t, state.unpushed())
 }
 
@@ -390,6 +390,9 @@ func newZCodeRecheckHarnessWithHandler(t *testing.T, store zcodeCredentialStore,
 	refuseZCodeRequest(t, h.a, h.stdin, MethodUpdateProviderRegistry, ErrMethodNotFound, "Method not found")
 	answerZCodeRequest(t, h.a, h.stdin, MethodUpdateAccountConfig,
 		`{"receivedRevision":"leapmux-test","providerCount":2,"status":"received"}`)
+	// The initial snapshot is followed by the registry refresh, before any
+	// catalog read.
+	answerZCodeRequest(t, h.a, h.stdin, MethodProviderRefreshRegistry, `{"refreshed":true}`)
 	require.NoError(t, h.a.pushProviderRegistry(zcodeTestRPCTimeout))
 
 	return h
@@ -430,8 +433,14 @@ func zcodeAcknowledgeAccountSnapshot(t *testing.T, h *zcodeRecheckHarness, reque
 	h.a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, read), json.RawMessage(`{}`)))
 }
 
+// zcodeAcknowledgeModelCatalog answers the registry refresh and the catalog
+// resume of catalog refresh n. The harness acknowledged the registry refresh of
+// the initial snapshot at setup, so the refresh n's registry request is number
+// n+1 while its resume is number n.
 func zcodeAcknowledgeModelCatalog(t *testing.T, h *zcodeRecheckHarness, n int) {
 	t.Helper()
+	registry := zcodeNthRequest(t, h.stdin, MethodProviderRefreshRegistry, n+1)
+	h.a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, registry), json.RawMessage(`{"refreshed":true}`)))
 	request := zcodeNthRequest(t, h.stdin, MethodSessionResume, n)
 	h.a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(`{"session":{"sessionId":"sess-1"},"settings":{"model":{"available":[]}}}`)))
 }
@@ -583,11 +592,162 @@ func TestZCodeAccountRequestAuth_RefusesUnreadableScopeDuringMint(t *testing.T) 
 	}
 }
 
+func TestZCodeAccountRequestAuth_RefusesAnUnavailableEntitlement(t *testing.T) {
+	t.Parallel()
+
+	a, api := zcodeAccountTestAgent(t, "", zcodeTestSignedInStore(t, "login"))
+	a.Mu.Lock()
+	state := a.account
+	a.Mu.Unlock()
+	// Simulate an accepted entitlement that says unavailable.
+	state.mu.Lock()
+	for i := range state.acceptedBindings {
+		if state.acceptedBindings[i].legacyID == "builtin:zai-coding-plan" {
+			state.acceptedBindings[i].entitlement = zcodeAccountEntitlement{
+				Availability:      zcodeAvailabilityUnavailable,
+				UnavailableReason: zcodeUnavailableNotEntitled,
+			}
+		}
+	}
+	state.mu.Unlock()
+	_, err := a.accountRequestAuth(context.Background(), zcodeRuntimeHeadersRequest{ProviderID: "account:zai-individual-coding-plan"})
+	require.Error(t, err, "an unavailable entitlement must refuse the credential even when a key exists")
+	assert.Empty(t, api.recorded(), "no mint or discovery runs for an unavailable entitlement")
+}
+
+func TestZCodeAccountRequestAuth_InvalidatesWhenAcceptedGenerationChanges(t *testing.T) {
+	t.Parallel()
+
+	store := zcodeTestSignedInStore(t, "login")
+	a, api := zcodeAccountTestAgent(t, "", store)
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	api.set(func(f *zcodeFakeProjectAPI) { f.release = release })
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := a.accountRequestAuth(context.Background(),
+			zcodeRuntimeHeadersRequest{ProviderID: "account:zai-individual-coding-plan", Reason: "model-request"})
+		result <- err
+	}()
+	require.Eventually(t, func() bool { return api.count("POST ") == 1 }, 30*time.Second, time.Millisecond)
+
+	// Accept a new generation while the mint is in flight.
+	a.Mu.Lock()
+	state := a.account
+	a.Mu.Unlock()
+	state.mu.Lock()
+	state.pushedGeneration++
+	state.acceptedGeneration = state.pushedGeneration
+	state.acceptedBindings = append([]zcodeAccountBinding(nil), state.bindings...)
+	state.mu.Unlock()
+
+	unblock()
+	require.ErrorIs(t, <-result, errZCodeScopeInvalidated,
+		"a changed accepted generation must not return a credential minted under the old one")
+}
+
+func TestZCodeAccountRequestAuth_InvalidatesWhenEntitlementBecomesUnavailableDuringMint(t *testing.T) {
+	t.Parallel()
+
+	store := zcodeTestSignedInStore(t, "login")
+	a, api := zcodeAccountTestAgent(t, "", store)
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	api.set(func(f *zcodeFakeProjectAPI) { f.release = release })
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := a.accountRequestAuth(context.Background(),
+			zcodeRuntimeHeadersRequest{ProviderID: "account:zai-individual-coding-plan", Reason: "model-request"})
+		result <- err
+	}()
+	require.Eventually(t, func() bool { return api.count("POST ") == 1 }, 30*time.Second, time.Millisecond)
+
+	// The accepted entitlement becomes unavailable while the mint is in flight.
+	a.Mu.Lock()
+	state := a.account
+	a.Mu.Unlock()
+	state.mu.Lock()
+	state.pushedGeneration++
+	state.acceptedGeneration = state.pushedGeneration
+	for i := range state.acceptedBindings {
+		if state.acceptedBindings[i].legacyID == "builtin:zai-coding-plan" {
+			state.acceptedBindings[i].entitlement = zcodeAccountEntitlement{
+				Availability:      zcodeAvailabilityUnavailable,
+				UnavailableReason: zcodeUnavailableNotEntitled,
+			}
+		}
+	}
+	state.mu.Unlock()
+
+	unblock()
+	require.ErrorIs(t, <-result, errZCodeScopeInvalidated,
+		"an accepted entitlement becoming unavailable during mint must invalidate the credential")
+}
+
+func TestZCodeAccountRequestAuth_TeamProjectChangeChangesScope(t *testing.T) {
+	t.Parallel()
+
+	teamA := zcodeTeamProject{organizationID: "org-default", projectID: "p-team", productID: "prod"}
+	teamB := zcodeTeamProject{organizationID: "org-team", projectID: "p-x", productID: "prod"}
+
+	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.ControlSink{}))
+	a.catalog.accountSelection = zcodeAccountSelection{
+		domain:    "zai",
+		planKinds: map[string]string{"zai": "team-coding-plan"},
+		teams:     map[string]zcodeTeamProject{"zai": teamA},
+	}
+	a.credentials = zcodeTestSignedInStore(t, "login")
+	a.identity = zcodeTestIdentity
+	tokens, api, _ := newZCodeTestProjectTokens(t)
+	a.projectTokens = tokens
+	// Add team API keys for both team projects.
+	api.set(func(f *zcodeFakeProjectAPI) {
+		f.keys["org-default/p-team"] = `[{"apiKey":"team-key-a","name":"zcode-team-api-key","keyType":2}]`
+		f.keys["org-team/p-x"] = `[{"apiKey":"team-key-b","name":"zcode-team-api-key","keyType":2}]`
+	})
+	seedZCodeAccountStateForTests(t, a)
+
+	authA, err := a.accountRequestAuth(context.Background(), zcodeRuntimeHeadersRequest{ProviderID: "account:zai-team-coding-plan"})
+	require.NoError(t, err)
+
+	// Change the team project and accept the new generation.
+	a.catalog.accountSelection.teams["zai"] = teamB
+	a.Mu.Lock()
+	state := a.account
+	a.Mu.Unlock()
+	state.mu.Lock()
+	state.pushedGeneration++
+	state.acceptedGeneration = state.pushedGeneration
+	for i := range state.acceptedBindings {
+		if state.acceptedBindings[i].legacyID == "builtin:zai-coding-plan" {
+			state.acceptedBindings[i].team = &teamB
+		}
+	}
+	state.mu.Unlock()
+
+	authB, err := a.accountRequestAuth(context.Background(), zcodeRuntimeHeadersRequest{ProviderID: "account:zai-team-coding-plan"})
+	require.NoError(t, err)
+	assert.NotEqual(t, authA.AccountScope, authB.AccountScope, "a team project A-to-B change must change the token scope")
+
+	// The old scope must be refused.
+	_, err = a.accountRequestAuth(context.Background(), zcodeRuntimeHeadersRequest{
+		ProviderID: "account:zai-team-coding-plan", ExpectedAccountScope: authA.AccountScope,
+	})
+	require.ErrorIs(t, err, errZCodeScopeInvalidated, "the old scope must be rejected after a team project change")
+	assert.NotEmpty(t, api.recorded())
+}
+
 func TestZCodeAccountState_ChangesRevisionWhenAnUnacknowledgedPayloadChanges(t *testing.T) {
 	t.Parallel()
 	state := &zcodeAccountState{plans: map[string]*zcodeStartPlanState{"a": {entitlement: zcodeUnknownEntitlement}, "b": {entitlement: zcodeUnknownEntitlement}}}
 	_, generation := state.payload("r")
-	state.accepted(generation)
+	state.accepted(generation, nil)
 	state.learnForTest(map[string]zcodeAccountEntitlement{"a": zcodeAvailable("a")})
 	first, _ := state.payload("r")
 	unchanged, _ := state.payload("r")

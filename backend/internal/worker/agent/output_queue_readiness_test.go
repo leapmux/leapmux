@@ -27,7 +27,7 @@ type pausedCapturedBatch struct {
 
 func pauseCapturedBatchBeforeUnreadyReturn(t *testing.T, queue *OutputQueue) *pausedCapturedBatch {
 	t.Helper()
-	batch, err := reserveCapturedTranscriptBatch(queue)
+	batch, err := reserveCapturedTranscriptBatch(queueReservationTranscript{}, queue)
 	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	paused := &pausedCapturedBatch{
@@ -135,7 +135,7 @@ func TestCapturedTranscriptBatchDiscardResumesTheNextReadyBatch(t *testing.T) {
 	t.Parallel()
 	var queue OutputQueue
 	paused := pauseCapturedBatchBeforeUnreadyReturn(t, &queue)
-	next, err := reserveCapturedTranscriptBatch(&queue)
+	next, err := reserveCapturedTranscriptBatch(queueReservationTranscript{}, &queue)
 	require.NoError(t, err)
 	var order []string
 	require.ErrorIs(t, next.PrepareStream(func() (CapturedTranscriptOperation, bool, error) {
@@ -212,7 +212,7 @@ func TestCapturedTranscriptBatchReadinessDoesNotWakeAnotherReservation(t *testin
 	t.Parallel()
 	var queue OutputQueue
 	paused := pauseCapturedBatchBeforeUnreadyReturn(t, &queue)
-	next, err := reserveCapturedTranscriptBatch(&queue)
+	next, err := reserveCapturedTranscriptBatch(queueReservationTranscript{}, &queue)
 	require.NoError(t, err)
 	require.ErrorIs(t, next.Prepare(func() []CapturedTranscriptOperation { return nil }), ErrOutputInFlight)
 	paused.resume()
@@ -261,4 +261,14 @@ func TestOutputQueueReportsARealFailureAfterTheHeadWasRemoved(t *testing.T) {
 	assert.False(t, later.Done())
 	assert.True(t, queue.HasPending())
 	assert.Nil(t, queue.retry)
+}
+
+type queueReservationTranscript struct{ TranscriptServices }
+
+func (queueReservationTranscript) ReserveTranscriptOutput(queue *OutputQueue, writes ...OutputWrite) ([]*OutputTicket, error) {
+	return queue.Append(writes...), nil
+}
+
+func (queueReservationTranscript) ValidateTranscriptOutput(ticket *OutputTicket) error {
+	return ValidateTranscriptOutputTicket(ticket)
 }

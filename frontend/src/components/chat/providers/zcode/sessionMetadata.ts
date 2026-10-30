@@ -16,12 +16,17 @@ export function zcodeContextUsageFromMessage(parsed: ParsedMessageContent): Cont
   const usage = pickObject(envelope.payload, 'usage')
   if (!usage)
     return null
-  const inputTokens = pickNumber(usage, 'inputTokens', 0)
+  const nativeInput = pickNumber(usage, 'inputTokens', 0)
   const outputTokens = pickNumber(usage, 'outputTokens', 0)
   const cacheReadInputTokens = pickNumber(usage, 'cacheReadTokens', 0)
   const cacheCreationInputTokens = pickNumber(usage, 'cacheWriteTokens', 0)
-  if (inputTokens === 0 && outputTokens === 0 && cacheReadInputTokens === 0 && cacheCreationInputTokens === 0)
+  if (nativeInput === 0 && outputTokens === 0 && cacheReadInputTokens === 0 && cacheCreationInputTokens === 0)
     return null
+  // ZCode's inputTokens is the cache-INCLUSIVE prompt traffic: it already holds
+  // both cache buckets. The shared display sums the four rows, so the replay
+  // subtracts the buckets out of the input. A malformed reading whose buckets
+  // exceed its input clamps to zero rather than going negative.
+  const inputTokens = Math.max(0, nativeInput - cacheReadInputTokens - cacheCreationInputTokens)
   const info: ContextUsageInfo = {
     inputTokens,
     cacheCreationInputTokens,

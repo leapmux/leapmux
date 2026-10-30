@@ -1,16 +1,20 @@
 import type { CompactionDetails, HookOutcome, NotificationEntry } from '../../../model/notification'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import {
+  ZCODE_BACKGROUND_TURN_END_FIELD,
   ZCODE_COMPACTION_STATUS,
   ZCODE_DECISION,
   ZCODE_EVENT,
   ZCODE_GOAL_VERIFICATION_STATUS,
   ZCODE_HOOK_RUN_OUTCOME,
   ZCODE_NETWORK_STATUS,
+  ZCODE_RECORD,
 } from '~/generated/contracts/zcode-protocol'
+import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { pickCounter, pickObject, pickString } from '~/lib/jsonPick'
 import { retryEntry } from '../../../model/notification'
 import { zcodeSessionUpdateKind } from '../sessionUpdateKind'
+import { zcodeResultDivider } from './resultDivider'
 import { zcodeEnvelope } from './toolCommon'
 
 /**
@@ -361,6 +365,38 @@ function zcodeNetworkRetryEntries(payload: Record<string, unknown>): Notificatio
  */
 export function zcodeNotificationEntry(msg: Record<string, unknown>): NotificationEntry[] {
   const envelope = zcodeEnvelope(msg)
+  if (envelope?.type === ZCODE_RECORD.BackgroundTurnEnd) {
+    const original = pickString(envelope.payload, ZCODE_BACKGROUND_TURN_END_FIELD.Original)
+    const completion = envelope.payload[ZCODE_BACKGROUND_TURN_END_FIELD.Completion]
+    if (typeof completion !== 'number' || ![
+      MessageCompletion.UNSPECIFIED,
+      MessageCompletion.COMPLETE,
+      MessageCompletion.INTERRUPTED,
+      MessageCompletion.ERROR,
+      MessageCompletion.FINISHED,
+    ].includes(completion)) {
+      return []
+    }
+    let native: unknown
+    try {
+      native = JSON.parse(original)
+    }
+    catch {
+      return []
+    }
+    const divider = zcodeResultDivider(native, completion)
+    if (!divider)
+      return []
+    const label = divider.label.replace(/^Turn\b/, 'Background turn')
+    return [
+      {
+        kind: 'text',
+        text: divider.detail
+          ? `${label}\n${divider.detail}`
+          : label,
+      },
+    ]
+  }
   if (envelope && envelope.type === ZCODE_EVENT.SessionUpdated)
     return zcodeSessionUpdateEntries(envelope.payload)
   const text = describeZCodeNotification(msg)

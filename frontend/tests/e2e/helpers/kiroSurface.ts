@@ -30,7 +30,7 @@ import { encodeEventStreamEvent, EVENT_STREAM_CONTENT_TYPE } from './awsEventStr
 import { KIRO_E2E_API_KEY } from './mockAgentEnvironment'
 import { mockCredentialReceipt } from './mockCredentials'
 import { readJSONBody, readMockBody, writeMockJSON, writeResponseHeaders } from './mockHttp'
-import { contentText, scenarioIDFromTexts } from './mockModelScript'
+import { contentText, resolveMockModelUsage, scenarioIDFromTexts } from './mockModelScript'
 import { createModelStream } from './modelStream'
 import { createScenarioQuota } from './scenarioQuota'
 
@@ -520,8 +520,7 @@ async function writeKiroTurn(response: ServerResponse, body: unknown, step: Mock
     return
   for (const [eventType, payload] of toolEvents)
     response.write(encodeEventStreamEvent(eventType, payload))
-  const inputTokens = step.usage?.inputTokens ?? 1
-  const outputTokens = step.usage?.outputTokens ?? 1
+  const { inputTokens, outputTokens } = resolveMockModelUsage(step.usage)
   const metadata: Record<string, unknown> = {
     tokenUsage: { uncachedInputTokens: inputTokens, outputTokens, totalTokens: inputTokens + outputTokens },
     stopReason: toolEvents.length > 0

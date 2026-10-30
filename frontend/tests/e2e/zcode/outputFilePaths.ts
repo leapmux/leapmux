@@ -1,9 +1,9 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import { MESSAGE_SUPPLEMENT_FIELD } from '../../../src/generated/contracts/worker-vocab'
-import { ZCODE_EVENT, ZCODE_SUPPLEMENT } from '../../../src/generated/contracts/zcode-protocol'
+import { ZCODE_SUPPLEMENT } from '../../../src/generated/contracts/zcode-protocol'
 import { isObject, pickObject } from '../../../src/lib/jsonPick'
 import { isFilesystemPath } from '../../../src/lib/paths'
-import { readNativeToolOutputRecord } from '../helpers/nativeMessages'
+import { readZcodeNativeToolResult } from './nativeToolRecord'
 
 function nativeFileSegment(value: string): string {
   return value.replace(/[^\w.-]/g, '_').slice(0, 120) || 'unknown'
@@ -11,12 +11,7 @@ function nativeFileSegment(value: string): string {
 
 /** Read the original inline result and its exact native tool serialization path. */
 export function readZcodeNativeOutput(snapshot: NativeMessageSnapshot, callId: string, toolName: string) {
-  const record = readNativeToolOutputRecord(snapshot, {
-    callId,
-    spanId: callId,
-    accepts: frame => frame.type === ZCODE_EVENT.ToolUpdated && frame.sessionId === snapshot.agentSessionId
-      && pickObject(frame, 'payload')?.kind === 'result' && pickObject(frame, 'payload')?.toolCallId === callId,
-  })
+  const record = readZcodeNativeToolResult(snapshot, callId, toolName)
   const provider = isObject(record.supplement)
     ? pickObject(record.supplement, MESSAGE_SUPPLEMENT_FIELD.Provider)
     : undefined

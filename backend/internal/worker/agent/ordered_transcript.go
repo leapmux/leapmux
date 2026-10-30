@@ -44,6 +44,12 @@ func (execution *outputExecution) active() bool {
 	return queue != nil && queue.executes(execution.ticket)
 }
 
+// IsTranscriptWriteExecuting identifies an operation already admitted to its queue.
+// A decorator can close fresh admission while preserving accepted immutable writes.
+func IsTranscriptWriteExecuting(content MessageContent) bool {
+	return content.outputExecution.active()
+}
+
 type orderedTranscript struct {
 	TranscriptServices
 	queue *OutputQueue
@@ -98,7 +104,7 @@ func PersistTranscriptBatch(writer TranscriptServices, messages []TranscriptMess
 			return err
 		}
 	}
-	return persistCapturedTranscriptBatch(queue, func() []CapturedTranscriptOperation {
+	return persistCapturedTranscriptBatch(writer, queue, func() []CapturedTranscriptOperation {
 		operations := make([]CapturedTranscriptOperation, 0, len(messages))
 		for _, message := range messages {
 			operations = append(operations, CaptureTranscript(writer, message.Content, message.Span).MessageOperation(message.Source))
@@ -113,14 +119,14 @@ func PersistTranscriptBatch(writer TranscriptServices, messages []TranscriptMess
 // No batch operation runs until every capture is ready. A retained failure
 // retries the captures, without invoking prepare again.
 func PersistCapturedTranscriptBatch(writer TranscriptServices, prepare func() []CapturedTranscriptOperation) error {
-	return persistCapturedTranscriptBatch(OutputQueueFor(writer), prepare)
+	return persistCapturedTranscriptBatch(writer, OutputQueueFor(writer), prepare)
 }
 
-func persistCapturedTranscriptBatch(queue *OutputQueue, prepare func() []CapturedTranscriptOperation) error {
+func persistCapturedTranscriptBatch(writer TranscriptServices, queue *OutputQueue, prepare func() []CapturedTranscriptOperation) error {
 	if prepare == nil {
 		return errors.New("the transcript batch has no preparation function")
 	}
-	batch, err := reserveCapturedTranscriptBatch(queue)
+	batch, err := reserveCapturedTranscriptBatch(writer, queue)
 	if err != nil {
 		return err
 	}
@@ -144,6 +150,7 @@ type CapturedTranscriptBatch struct {
 	operations []CapturedTranscriptOperation
 	index      int // Only the queue's current callback reads or changes index.
 	stream     *capturedTranscriptStream
+	rejection  atomic.Pointer[capturedOutputRefusal]
 }
 
 type capturedTranscriptStream struct {
@@ -156,15 +163,19 @@ type capturedTranscriptStream struct {
 // ReserveCapturedTranscriptBatch prevents later rows or effects from overtaking
 // an admitted group. The caller must eventually Prepare or Discard the group.
 func ReserveCapturedTranscriptBatch(writer TranscriptServices) (*CapturedTranscriptBatch, error) {
-	return reserveCapturedTranscriptBatch(OutputQueueFor(writer))
+	return reserveCapturedTranscriptBatch(writer, OutputQueueFor(writer))
 }
 
-func reserveCapturedTranscriptBatch(queue *OutputQueue) (*CapturedTranscriptBatch, error) {
+func reserveCapturedTranscriptBatch(writer TranscriptServices, queue *OutputQueue) (*CapturedTranscriptBatch, error) {
 	if queue == nil {
 		return nil, errors.New("the transcript batch has no output queue")
 	}
 	batch := &CapturedTranscriptBatch{queue: queue, owner: NewOutputOwner()}
-	batch.ticket = queue.Append(OutputWrite{Owner: batch.owner, Label: "persist captured transcript batch", Run: batch.persist})[0]
+	tickets, err := writer.ReserveTranscriptOutput(queue, OutputWrite{Owner: batch.owner, Label: "persist captured transcript batch", Run: batch.persist})
+	if err != nil {
+		return nil, err
+	}
+	batch.ticket = tickets[0]
 	return batch, nil
 }
 
@@ -191,7 +202,9 @@ func (batch *CapturedTranscriptBatch) persist() error {
 // validates the whole native candidate before selecting archive or live output.
 // next returns done=true at the end. A capture error must keep its position.
 // A storage error retries the retained capture without calling next again.
-// The queue owns the iterator and its recovery data until successful completion.
+// The queue owns the iterator and its recovery data until completion or a permanent
+// destination refusal. A permanent refusal releases the remaining stream after any
+// accepted prefix and allows later writes to continue.
 func (batch *CapturedTranscriptBatch) PrepareStream(next func() (CapturedTranscriptOperation, bool, error)) error {
 	if batch == nil {
 		return errors.New("the transcript batch has no reservation")
@@ -231,6 +244,16 @@ func (batch *CapturedTranscriptBatch) persistStream() error {
 		operation := stream.pending
 		if !stream.submitted {
 			if err := batch.validateStreamOperation(*operation); err != nil {
+				var refusal *capturedOutputRefusal
+				if errors.As(err, &refusal) {
+					// An expired destination cannot recover. Report partial failure and
+					// release the remaining stream position so other transcripts can write.
+					batch.rejection.Store(refusal)
+					batch.state.Store(capturedBatchDiscarded)
+					stream.pending = nil
+					stream.next = nil
+					batch.queue.ClearOwner(batch.owner)
+				}
 				return err
 			}
 			if err := operation.markSubmitted(); err != nil {
@@ -275,11 +298,18 @@ func (batch *CapturedTranscriptBatch) validateStreamOperation(operation Captured
 	if OutputQueueFor(state.writer) != batch.queue {
 		return errors.New("the captured transcript operation belongs to another output queue")
 	}
+	if err := state.writer.ValidateTranscriptOutput(batch.ticket); err != nil {
+		return &capturedOutputRefusal{err}
+	}
 	return nil
 }
 
 func (batch *CapturedTranscriptBatch) flushPrepared() error {
 	err := batch.queue.FlushAfterReady(batch.ticket)
+	if refusal := batch.rejection.Load(); refusal != nil {
+		_ = batch.queue.Flush()
+		return refusal
+	}
 	if batch.ticket.Done() {
 		return nil
 	}
@@ -320,6 +350,7 @@ func (batch *CapturedTranscriptBatch) Prepare(prepare func() []CapturedTranscrip
 			// unready position without discarding any reentrant submission.
 			batch.state.Store(capturedBatchDiscarded)
 			batch.queue.ClearOwner(batch.owner)
+			_ = batch.queue.Flush()
 		}
 	}()
 	batch.operations = slices.Clone(prepare())
@@ -332,6 +363,9 @@ func (batch *CapturedTranscriptBatch) Prepare(prepare func() []CapturedTranscrip
 		}
 		if OutputQueueFor(operation.captured.write.writer) != batch.queue {
 			return errors.New("the captured transcript operation belongs to another output queue")
+		}
+		if err := operation.captured.write.writer.ValidateTranscriptOutput(batch.ticket); err != nil {
+			return err
 		}
 	}
 	for _, operation := range batch.operations {
@@ -460,15 +494,20 @@ func (writer orderedTranscript) persist(operation capturedOperation, source leap
 	first := record == nil
 	if first {
 		record = &orderedOutputRecord{queue: writer.queue, operation: operation, source: source}
-		receipt.ordered = record
-		record.ticket = writer.queue.Append(OutputWrite{Label: "persist ordered transcript", Run: func() error {
+		tickets, reservationErr := writer.ReserveTranscriptOutput(writer.queue, OutputWrite{Label: "persist ordered transcript", Run: func() error {
 			if !record.ready.Load() {
 				return ErrOutputInFlight
 			}
 			broadcast, err := record.captured.persistWithExecution(record.operation, record.source, &outputExecution{ticket: record.ticket, operation: record.operation, source: record.source})
 			record.broadcast.Store(broadcast)
 			return err
-		}})[0]
+		}})
+		if reservationErr != nil {
+			receipt.orderedMu.Unlock()
+			return false, reservationErr
+		}
+		record.ticket = tickets[0]
+		receipt.ordered = record
 	}
 	receipt.orderedMu.Unlock()
 	if record.queue != writer.queue || record.operation != operation || record.source != source {
@@ -622,9 +661,59 @@ func (services *orderedProviderServices) ChildSink(childAgentID string) Provider
 	child := services.ProviderServices.ChildSink(childAgentID)
 	return NewOrderedProviderServices(OutputQueueFor(child), child)
 }
+
+func (services *orderedProviderServices) AcquireChildSink(childAgentID string) ChildSinkLease {
+	lease := services.ProviderServices.AcquireChildSink(childAgentID)
+	if lease.Sink != nil {
+		lease.Sink = NewOrderedProviderServices(OutputQueueFor(lease.Sink), lease.Sink)
+	}
+	return lease
+}
 func (services *orderedProviderServices) PersistChildMessage(childAgentID string, source leapmuxv1.MessageSource, content []byte, span SpanInfo) error {
 	return services.ChildSink(childAgentID).PersistMessage(source, MessageContent{Original: content}, span)
 }
 func (services *orderedProviderServices) PersistChildTurnEnd(childAgentID string, content MessageContent, span SpanInfo) error {
 	return services.ChildSink(childAgentID).PersistTurnEnd(content, span)
+}
+
+// ValidateTranscriptOutputTicket checks that a reservation has an ordering queue.
+func ValidateTranscriptOutputTicket(ticket *OutputTicket) error {
+	if ticket == nil || ticket.Queue() == nil {
+		return errors.New("the captured output has no reservation")
+	}
+	return nil
+}
+
+type capturedOutputRefusal struct{ err error }
+
+func (refusal *capturedOutputRefusal) Error() string { return refusal.err.Error() }
+func (refusal *capturedOutputRefusal) Unwrap() error { return refusal.err }
+
+// TranscriptOutputPrecedes checks the queue order of two existing reservations.
+func TranscriptOutputPrecedes(ticket, cutoff *OutputTicket) bool {
+	if ticket == nil || cutoff == nil || ticket == cutoff {
+		return false
+	}
+	queue := ticket.Queue()
+	if queue == nil || cutoff.Queue() != queue {
+		return false
+	}
+	queue.mu.Lock()
+	defer queue.mu.Unlock()
+	found := false
+	for _, pending := range queue.pending {
+		if pending == cutoff {
+			return found
+		}
+		if pending == ticket {
+			found = true
+		}
+	}
+	return false
+}
+
+// TranscriptWritePrecedes requires an active forwarded write before the cutoff.
+func TranscriptWritePrecedes(content MessageContent, cutoff *OutputTicket) bool {
+	execution := content.outputExecution
+	return execution.active() && TranscriptOutputPrecedes(execution.ticket, cutoff)
 }

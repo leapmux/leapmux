@@ -486,3 +486,30 @@ func writeNotificationTransportReceipt(t *testing.T, metrics any) {
 	path := filepath.Join(directory, "notification-transport-measurement-"+strings.ReplaceAll(t.Name(), "/", "-")+".json")
 	require.NoError(t, os.WriteFile(path, append(encoded, '\n'), 0600))
 }
+
+func TestCapturedSubagentReportsKeepTheirStandaloneRowsAndFirstAcceptedBytes(t *testing.T) {
+	t.Parallel()
+	svc, sink := setupRootSink(t, "captured-report-mode")
+	sink.PersistLeapMuxNotification(map[string]interface{}{"type": "before", "text": "Before"})
+	write := agent.SubagentReportWrite{ReportID: "report", Report: agent.SubagentReport{Text: "First report"}}
+	captured, present, err := agent.CaptureSubagentReport(sink, write)
+	require.NoError(t, err)
+	require.True(t, present)
+	_, err = captured.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX)
+	require.NoError(t, err)
+	sink.PersistLeapMuxNotification(map[string]interface{}{"type": "after", "text": "After"})
+	rows, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: "captured-report-mode"})
+	require.NoError(t, err)
+	require.Len(t, rows, 2, "a subagent report must start a separate notification row")
+	assert.Regexp(t, `^subagent-report:[0-9a-f]{64}$`, rows[1].IdempotencyKey)
+	write.Report.Text = "Changed replay"
+	replay, present, err := agent.CaptureSubagentReport(sink, write)
+	require.NoError(t, err)
+	require.True(t, present)
+	stored, err := replay.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX)
+	require.NoError(t, err)
+	assert.False(t, stored)
+	messages := transcriptMessages(t, svc, "captured-report-mode")
+	assert.Contains(t, fmt.Sprint(messages), "First report")
+	assert.NotContains(t, fmt.Sprint(messages), "Changed replay")
+}

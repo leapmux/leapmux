@@ -431,6 +431,14 @@ func (s modelProgressResetControl) PublishControlRequest(request ControlRequest)
 
 type modelProgressResetChildren struct{ ChildServices }
 
+func (s modelProgressResetChildren) AcquireChildSink(childAgentID string) ChildSinkLease {
+	lease := s.ChildServices.AcquireChildSink(childAgentID)
+	if lease.Sink != nil {
+		lease.Sink = NewModelProgressResetSink(lease.Sink)
+	}
+	return lease
+}
+
 func (s modelProgressResetChildren) ChildSink(childAgentID string) ProviderServices {
 	return NewModelProgressResetSink(s.ChildServices.ChildSink(childAgentID))
 }

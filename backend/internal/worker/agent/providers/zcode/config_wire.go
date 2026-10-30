@@ -221,6 +221,13 @@ type zcodeAccountBinding struct {
 	// session is the family's sign-in state in the credential store.
 	session zcodeAccountSession
 	current bool
+	// team is the team project that setting.json selects for this binding's
+	// family, or nil for a non-team plan. The runtime scope and the snapshot
+	// publication use the same generation of this value.
+	team *zcodeTeamProject
+	// entitlement is the coding-plan entitlement from coding-plan-cache.json.
+	// Start Plan entitlements are tracked in zcodeAccountState.plans instead.
+	entitlement zcodeAccountEntitlement
 }
 
 func (b zcodeAccountBinding) family() string { return b.rule.accountType() }
@@ -271,7 +278,11 @@ func (b zcodeAccountBinding) selectedWithoutFamily() bool {
 // provider. A plan that neither serves is left out of the snapshot. The error
 // reports unreadable credential material. Each binding retains independently
 // readable credentials and can also use its config.json key.
-func (c zcodeCatalog) accountProviderBindings(rules []zcodeBuiltinProviderRule, credentials zcodeCredentials) ([]zcodeAccountBinding, error) {
+//
+// codingPlanEntitlements carries the desktop's coding-plan-cache.json status per
+// legacy provider id. A coding plan with no entry keeps the default available
+// entitlement; a Start Plan's entitlement is tracked in zcodeAccountState.plans.
+func (c zcodeCatalog) accountProviderBindings(rules []zcodeBuiltinProviderRule, credentials zcodeCredentials, codingPlanEntitlements map[string]zcodeAccountEntitlement) ([]zcodeAccountBinding, error) {
 	sessions := map[string]zcodeAccountSession{}
 	var errs []error
 	var bindings []zcodeAccountBinding
@@ -295,6 +306,21 @@ func (c zcodeCatalog) accountProviderBindings(rules []zcodeBuiltinProviderRule, 
 			session:   session,
 		}
 		binding.provider = c.inlineProvider(binding.legacyID)
+		// Carry the selected team so runtime scope and snapshot publication use
+		// the same generation.
+		if rule.mode() == zcodeTeamCodingPlanMode {
+			if team, ok := c.accountSelection.teams[family]; ok {
+				binding.team = &team
+			}
+		}
+		// Carry the coding-plan entitlement from the desktop's cache.
+		if !rule.isStartPlan() {
+			if entitlement, ok := codingPlanEntitlements[binding.legacyID]; ok {
+				binding.entitlement = entitlement
+			} else {
+				binding.entitlement = zcodeCodingPlanEntitlement
+			}
+		}
 		credential := binding.configKey()
 		if credential == "" {
 			credential = session.accessToken
@@ -370,7 +396,8 @@ func (c zcodeCatalog) markCurrentBindings(bindings []zcodeAccountBinding) {
 // startPlans holds the entitlement of each Start Plan binding, keyed by its legacy
 // provider id. A Start Plan with no entry has an unknown entitlement, so it is not
 // entitled and the app-server offers none of its models: the ZCode desktop also
-// fails closed when it cannot learn the entitlement.
+// fails closed when it cannot learn the entitlement. A coding plan uses the
+// binding's own entitlement from coding-plan-cache.json.
 func newZCodeAccountProviderPayload(bindings []zcodeAccountBinding, basedOn, revision string, startPlans map[string]zcodeAccountEntitlement) zcodeAccountProviderPayload {
 	payload := zcodeAccountProviderPayload{
 		Revision:                    revision,
@@ -379,7 +406,7 @@ func newZCodeAccountProviderPayload(bindings []zcodeAccountBinding, basedOn, rev
 		States:                      map[string]zcodeAccountProviderState{},
 	}
 	for _, binding := range bindings {
-		entitlement := zcodeCodingPlanEntitlement
+		entitlement := binding.entitlement
 		if binding.rule.isStartPlan() {
 			var ok bool
 			if entitlement, ok = startPlans[binding.legacyID]; !ok {

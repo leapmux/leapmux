@@ -1,8 +1,8 @@
 import { expect } from '@playwright/test'
-import { BackgroundTaskKind, BackgroundTaskStatus, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { openNativeCatalogTurn } from '../helpers/nativeCodeExecution'
-import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
+import { nativeMessageBody, nativeMessageSupplement, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
@@ -15,6 +15,7 @@ import { backgroundTaskRows, expandBackgroundTasksSection } from '../helpers/sub
 import { assistantBubbles, sendMessage, toolCallRow, waitForAgentIdle } from '../helpers/ui'
 import { zcodeTest } from '../zcode-fixtures'
 import { zcodeStoredWorkflowCompletion, zcodeWorkflowCompletion, zcodeWorkflowLaunch } from './codeExecution'
+import { readZcodeNativeToolResult } from './nativeToolRecord'
 import { nativeContext } from './scenarios'
 
 zcodeTest('runs native workflow scripts and retains computed output and errors after reload', async ({ native }, testInfo) => {
@@ -74,9 +75,20 @@ zcodeTest('runs native workflow scripts and retains computed output and errors a
     const prove = async () => {
       const snapshot = await readNativeMessageSnapshot(native, agent.id)
       expect(snapshot.agentSessionId).toBe(agent.agentSessionId)
-      const frames = snapshot.messages.filter(message => message.source === MessageSource.AGENT
-        && message.agentSessionId === agent.agentSessionId && message.spanId === readCallId).map(nativeMessageBody)
-      expect(zcodeStoredWorkflowCompletion(frames, agent.agentSessionId, readCallId, launch.runId)).toEqual(completion)
+      await testInfo.attach(`zcode-${label}-worker-source`, {
+        body: JSON.stringify(snapshot.messages.map(message => ({
+          id: message.id,
+          seq: message.seq.toString(),
+          spanId: message.spanId,
+          spanType: message.spanType,
+          agentSessionId: message.agentSessionId,
+          frame: nativeMessageBody(message),
+          supplement: nativeMessageSupplement(message),
+        }))),
+        contentType: 'application/json',
+      })
+      const record = readZcodeNativeToolResult(snapshot, readCallId, 'GetWorkflowRun')
+      expect(zcodeStoredWorkflowCompletion([record.frame], agent.agentSessionId, readCallId, launch.runId)).toEqual(completion)
       const sidebar = await readNativeSidebarSnapshot(native, agent.id)
       const tasks = sidebar.backgroundTasks.filter(task => task.id === launchCallId)
       expect(tasks).toHaveLength(1)

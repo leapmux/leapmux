@@ -566,6 +566,28 @@ describe('readNativeToolOutputRecord', () => {
     expect(value.messages[0]!.supplementalContent).toEqual(before)
   })
 
+  it('passes the exact stored row and decoded supplement to a dynamic span reader', () => {
+    const value = snapshot()
+    const supplement = {
+      metadata: {
+        invocation: { span: 'selected-span' },
+      },
+    }
+    value.messages[0]!.supplementalContent = text.encode(JSON.stringify(supplement))
+    value.messages[0]!.supplementalContentCompression = ContentCompression.NONE
+    let received: unknown[] = []
+    const record = readNativeToolOutputRecord(value, {
+      ...options,
+      spanId: (frame, row, decoded) => {
+        received = [frame, row, decoded]
+        return 'selected-span'
+      },
+    })
+    expect(received[0]).toEqual(record.frame)
+    expect(received[1]).toBe(value.messages[0])
+    expect(received[2]).toEqual(supplement)
+  })
+
   it.each([
     { agentId: '' },
     { agentId: ' ' },

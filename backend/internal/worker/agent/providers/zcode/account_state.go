@@ -21,8 +21,13 @@ type zcodeAccountState struct {
 	generation        int
 	pushedGeneration  int
 	catalogGeneration int
-	changed           chan struct{}
-	refresh           chan struct{}
+	// acceptedBindings holds the bindings carried by the last app-server-
+	// acknowledged payload. Runtime reads these, not the newer pending ones.
+	acceptedBindings []zcodeAccountBinding
+	// acceptedGeneration is the generation of the last accepted payload.
+	acceptedGeneration int
+	changed            chan struct{}
+	refresh            chan struct{}
 }
 
 type zcodeStartPlanState struct {
@@ -37,9 +42,10 @@ type zcodeStartPlanState struct {
 func newZCodeAccountState(inputs zcodeAccountSnapshotInputs, results map[string]zcodeAccountEntitlement, now time.Time) *zcodeAccountState {
 	s := &zcodeAccountState{
 		basedOn: inputs.basedOn, rules: inputs.rules, canonical: inputs.canonical,
-		bindings: append([]zcodeAccountBinding(nil), inputs.bindings...),
-		plans:    map[string]*zcodeStartPlanState{},
-		changed:  make(chan struct{}), refresh: make(chan struct{}, 1),
+		bindings:         append([]zcodeAccountBinding(nil), inputs.bindings...),
+		acceptedBindings: append([]zcodeAccountBinding(nil), inputs.bindings...),
+		plans:            map[string]*zcodeStartPlanState{},
+		changed:          make(chan struct{}), refresh: make(chan struct{}, 1),
 	}
 	for _, binding := range s.bindings {
 		if !binding.rule.isStartPlan() {
@@ -59,13 +65,15 @@ func newZCodeAccountState(inputs zcodeAccountSnapshotInputs, results map[string]
 	return s
 }
 
+// binding returns the accepted binding for accountID. It reads only the last
+// app-server-accepted generation, not a newer pending one.
 func (s *zcodeAccountState) binding(accountID string) (zcodeAccountBinding, bool) {
 	if s == nil {
 		return zcodeAccountBinding{}, false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, binding := range s.bindings {
+	for _, binding := range s.acceptedBindings {
 		if binding.accountID == accountID {
 			return binding, true
 		}
@@ -93,12 +101,11 @@ func (s *zcodeAccountState) changedLocked() {
 
 // reconcileBindings invalidates results when their effective credential changes.
 // It also admits newly signed-in plans and removes plans that lost all credentials.
+// Selection, team project, and entitlement changes also trigger reconciliation.
 func (s *zcodeAccountState) reconcileBindings(bindings []zcodeAccountBinding, now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !slices.EqualFunc(s.bindings, bindings, func(a, b zcodeAccountBinding) bool {
-		return a.accountID == b.accountID && a.legacyID == b.legacyID && a.current == b.current
-	}) {
+	if !slices.EqualFunc(s.bindings, bindings, zcodeSameBindingIdentity) {
 		s.changedLocked()
 	}
 	s.bindings = bindings
@@ -135,6 +142,21 @@ func zcodeSameEntitlement(a, b zcodeAccountEntitlement) bool {
 		return false
 	}
 	return a.EffectiveAt == nil || *a.EffectiveAt == *b.EffectiveAt
+}
+
+// zcodeSameBindingIdentity compares the fields whose change requires a new
+// account snapshot: identity, selection, inline credential, team project, and entitlement.
+func zcodeSameBindingIdentity(a, b zcodeAccountBinding) bool {
+	if a.accountID != b.accountID || a.legacyID != b.legacyID || a.current != b.current || a.configKey() != b.configKey() {
+		return false
+	}
+	if (a.team == nil) != (b.team == nil) {
+		return false
+	}
+	if a.team != nil && *a.team != *b.team {
+		return false
+	}
+	return zcodeSameEntitlement(a.entitlement, b.entitlement)
 }
 
 func (s *zcodeAccountState) learnLocked(id string, entitlement zcodeAccountEntitlement) {
@@ -279,9 +301,16 @@ func (s *zcodeAccountState) payload(baseRevision string) (zcodeAccountProviderPa
 	return newZCodeAccountProviderPayload(s.bindings, s.basedOn, revision, entitlements), s.generation
 }
 
-func (s *zcodeAccountState) accepted(generation int) {
+// accepted publishes the bindings carried by an acknowledged payload. The
+// accepted generation advances atomically with the bindings it carries. A
+// regression to an older generation never replaces newer accepted bindings.
+func (s *zcodeAccountState) accepted(generation int, bindings []zcodeAccountBinding) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pushedGeneration = max(s.pushedGeneration, generation)
+	if generation >= s.acceptedGeneration {
+		s.acceptedGeneration = generation
+		s.acceptedBindings = append([]zcodeAccountBinding(nil), bindings...)
+	}
 	s.broadcastLocked()
 }

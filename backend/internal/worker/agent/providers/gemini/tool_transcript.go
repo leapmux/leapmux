@@ -30,19 +30,37 @@ func (*geminiToolSource) Locate(sessionID string) tooltranscript.Location {
 
 func (*geminiToolSource) ToolCallID(original []byte) string { return acp.ToolCallID(original) }
 
-func (source *geminiToolSource) ReadSupplements(ctx context.Context, sessionID string, pending map[string]agent.MessageContent, _ bool) (map[string][]byte, error) {
+func (source *geminiToolSource) ReadSupplements(ctx context.Context, location tooltranscript.Location, pending map[string]agent.MessageContent, _ bool) (map[string][]byte, error) {
+	return readGeminiToolSupplements(ctx, source.query, location.Path, pending, source.observeMode)
+}
+
+func (source *geminiToolSource) CaptureSupplement(location tooltranscript.Location, content agent.MessageContent, _ agent.SpanInfo) tooltranscript.SupplementReader {
+	id := acp.ToolCallID(content.Original)
+	if id == "" {
+		return nil
+	}
+	query := agent.StoredSessionQuery{WorkingDir: source.query.WorkingDir, HomeDir: source.query.Home(), EnvEntries: []string{"GEMINI_CLI_HOME=" + source.query.Env("GEMINI_CLI_HOME")}}
+	sessionID := location.Path
+	pending := map[string]agent.MessageContent{id: content.Clone()}
+	return func(ctx context.Context, _ bool) ([]byte, error) {
+		records, err := readGeminiToolSupplements(ctx, query, sessionID, pending, nil)
+		return records[id], err
+	}
+}
+
+func readGeminiToolSupplements(ctx context.Context, query agent.StoredSessionQuery, sessionID string, pending map[string]agent.MessageContent, observeMode func(string, json.RawMessage)) (map[string][]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	path, err := locateGeminiSession(source.query, sessionID)
+	path, err := locateGeminiSession(query, sessionID)
 	if err != nil {
 		return nil, err
 	}
-	session, err := readGeminiSession(source.query, path)
+	session, err := readGeminiSession(query, path)
 	if err != nil {
 		return nil, err
 	}
-	_, hash := geminiProjectIdentity(source.query.WorkingDir)
+	_, hash := geminiProjectIdentity(query.WorkingDir)
 	if session.SessionID != sessionID || session.ProjectHash != hash || session.Kind == "subagent" {
 		return nil, errors.New("the Gemini transcript belongs to another session")
 	}
@@ -65,8 +83,8 @@ func (source *geminiToolSource) ReadSupplements(ctx context.Context, sessionID s
 				return output, err
 			}
 			output[identity.ID] = extra
-			if source.observeMode != nil {
-				source.observeMode(sessionID, record)
+			if observeMode != nil {
+				observeMode(sessionID, record)
 			}
 		}
 	}

@@ -912,17 +912,20 @@ func (s *agentOutputSink) rawChildSink(childAgentID string) *agentOutputSink {
 	mutation := s.h.transcriptMutationMutex(s.rootAgentID)
 	mutation.Lock()
 	s.childMu.Lock()
-	var restoreErr error
-	defer func() {
-		s.childMu.Unlock()
-		mutation.Unlock()
-		if restoreErr != nil {
-			slog.Warn("Read the provider session for the transcript", "agent_id", childAgentID, "error", restoreErr)
-		}
-	}()
+	child, err := s.rawChildSinkLocked(childAgentID)
+	s.childMu.Unlock()
+	mutation.Unlock()
+	if err != nil {
+		slog.Warn("Read the provider session for the transcript", "agent_id", childAgentID, "error", err)
+	}
+	return child
+}
+
+// rawChildSinkLocked resolves a child under the root mutation lock and childMu.
+func (s *agentOutputSink) rawChildSinkLocked(childAgentID string) (*agentOutputSink, error) {
 	if s.childSinks != nil {
 		if c, ok := s.childSinks[childAgentID]; ok {
-			return c
+			return c, nil
 		}
 	}
 	current := s.registeredCurrent() && !s.progressClosed
@@ -941,6 +944,7 @@ func (s *agentOutputSink) rawChildSink(childAgentID string) *agentOutputSink {
 		tracker:          tracker,
 		messageSession:   &nativeSessionFact{},
 	}
+	var restoreErr error
 	if current {
 		restoreErr = child.restoreMessageSession()
 	}
@@ -950,14 +954,14 @@ func (s *agentOutputSink) rawChildSink(childAgentID string) *agentOutputSink {
 	if !current {
 		child.progress.close()
 		child.progressClosed = true
-		return child
+		return child, restoreErr
 	}
 	if s.childSinks == nil {
 		s.childSinks = make(map[string]*agentOutputSink)
 	}
 	s.childSinks[childAgentID] = child
 	s.h.sinksByAgent.Store(childAgentID, child)
-	return child
+	return child, restoreErr
 }
 
 func (s *agentOutputSink) PersistChildMessage(childAgentID string, source leapmuxv1.MessageSource, content []byte, span agent.SpanInfo) error {
@@ -1049,26 +1053,33 @@ func (s *agentOutputSink) CleanupChildAgent(childAgentID string) {
 	mutation.RLock()
 	s.childMu.Lock()
 	child := s.childSinks[childAgentID]
+	var lifetime *childSinkLifetime
+	if child != nil {
+		lifetime = child.childLifetime
+	}
 	s.childMu.Unlock()
-	current := child != nil && s.registeredCurrent() && child.registeredCurrent()
 	mutation.RUnlock()
 	if child == nil {
 		s.cleanupUncachedChild(childAgentID)
 		return
 	}
-	if !current {
-		return
-	}
+	s.cleanupChildLifetime(childAgentID, child, lifetime)
+}
+
+func (s *agentOutputSink) cleanupChildLifetime(childAgentID string, child *agentOutputSink, lifetime *childSinkLifetime) bool {
+	mutation := s.h.transcriptMutationMutex(s.rootAgentID)
 	for {
 		removal := s.h.prepareActivityRemoval(childAgentID)
 		mutation.Lock()
 		s.childMu.Lock()
-		current = s.childSinks[childAgentID] == child && s.registeredCurrent() && child.registeredCurrent()
+		current := s.childSinks[childAgentID] == child && s.registeredCurrent() && child.registeredCurrent() &&
+			child.childLifetime == lifetime
 		s.childMu.Unlock()
 		if !current {
 			mutation.Unlock()
-			return
+			return false
 		}
+		s.freezeChildLifetimeLocked(child)
 		if !s.h.cleanupChildMapsLocked(childAgentID, removal) {
 			mutation.Unlock()
 			continue
@@ -1079,7 +1090,7 @@ func (s *agentOutputSink) CleanupChildAgent(childAgentID string) {
 		mutation.Unlock()
 		s.h.watcher.DrainAgentEvents(childAgentID)
 		s.h.drainProgressClears(agentIDs)
-		return
+		return true
 	}
 }
 

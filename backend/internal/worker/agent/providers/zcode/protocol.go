@@ -26,6 +26,13 @@ const (
 	// 0.16.9. The app server loads built-in and personal providers itself. Its
 	// host supplies the active account plans with this method.
 	MethodUpdateAccountConfig = "provider/updateAccountConfig"
+	// MethodProviderRefreshRegistry asks the app-server to reload its built-in
+	// and personal provider registry from disk. A current app-server caches the
+	// registry it loaded at boot, and a personal configuration change reaches
+	// the session's model catalog only after this call. The reply is
+	// `{"refreshed":true}`; a build that does not implement it answers
+	// method-not-found, which the caller treats as "the capability is absent".
+	MethodProviderRefreshRegistry = "provider/refreshRegistry"
 
 	MethodSessionCreate  = "session/create"
 	MethodSessionResume  = "session/resume"
@@ -39,6 +46,12 @@ const (
 	MethodSessionCancelBackgroundTask = "session/cancelBackgroundTask"
 
 	MethodSessionSubscribe = "session/subscribe"
+	// MethodSessionEvents fetches retained mapped events after a public cursor.
+	// The reply contains events; expired transient events can leave sequence holes.
+	MethodSessionEvents = "session/events"
+	// MethodSessionMessages fetches raw messages in chronological order. A limit
+	// selects the newest tail for final-message reconciliation after a stalled turn.
+	MethodSessionMessages = "session/messages"
 
 	// MethodConversationSubscribe and MethodConversationUnsubscribe open and
 	// close a subscription to the desktop protocol's view of one session. Its
@@ -79,6 +92,11 @@ const (
 	// NotifyConversationFrame carries one frame of a MethodConversationSubscribe
 	// subscription.
 	NotifyConversationFrame = "v4/conversation/frame"
+	// NotifyProviderRuntimeHeadersCancelled withdraws one
+	// interaction/requestProviderRuntimeHeaders the app-server no longer needs:
+	// its model request was aborted or replaced. Params state the LOGICAL
+	// requestId, the session and the workspace of the request.
+	NotifyProviderRuntimeHeadersCancelled = "interaction/providerRuntimeHeadersCancelled"
 )
 
 // ZCode session event types (the `type` field inside a session/event envelope).
@@ -144,14 +162,6 @@ const (
 // ZCode subscription delivery kind. `desktop-continuous` is the streaming
 // subscription the desktop application itself uses.
 const DeliveryContinuous = "desktop-continuous"
-
-// ZCode state.updated scopes. The notification covers more than one scope, and
-// only the session scope carries the settings axes: the workspace scope patches
-// `modelCatalog`, and applying it as settings would read an all-absent snapshot.
-const (
-	ScopeSession   = "session"
-	ScopeWorkspace = "workspace"
-)
 
 // ZCode tool names LeapMux reasons about by name are generated: see
 // contracts/zcode-protocol.json. The renderer plugin dispatches on the same names.
@@ -329,6 +339,10 @@ type zcodeEventEnvelope struct {
 	Type         string          `json:"type"`
 	Payload      json.RawMessage `json:"payload"`
 	raw          json.RawMessage
+	// archive identifies reconstructed replay, whose batches can overlap live deltas.
+	archive bool
+	// replayUncertain carries checkpoint uncertainty to owners first seen in a replay drain.
+	replayUncertain bool
 }
 
 // UnmarshalJSON retains fields that the provider adds and the exact original bytes.

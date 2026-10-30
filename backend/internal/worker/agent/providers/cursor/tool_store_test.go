@@ -270,7 +270,7 @@ func TestCursorToolTranscriptDoesNotAdoptUnboundReplayRows(t *testing.T) {
 	assert.Equal(t, original, messages[0].Content)
 	assert.Empty(t, messages[0].AgentSessionID)
 	assert.Empty(t, messages[0].SupplementalContent)
-	assert.Equal(t, []string{"search"}, transcript.PendingSpanIDsForTest())
+	assert.Empty(t, transcript.PendingSpanIDsForTest(), "an unbound row must retire its native lookup when the sink adopts a session")
 	require.NoError(t, transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"stopReason":"end_turn"}`)}, agent.SpanInfo{}))
 	assert.Empty(t, sink.Messages()[0].SupplementalContent)
 	assert.Empty(t, transcript.PendingSpanIDsForTest())

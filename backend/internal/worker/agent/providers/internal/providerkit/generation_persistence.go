@@ -38,21 +38,21 @@ func (b *GenerationBuffer) HasPendingWrites() bool {
 // PersistAll freezes every open scope, then writes pending rows in boundary order.
 // A failed write retains its original bytes, completion, and destination for the next persistence call.
 func (b *GenerationBuffer) PersistAll(completion agent.MessageCompletion, persist func([]byte) error) error {
-	return b.persistMatching(completion, func(*generationSegment) bool { return true }, generationCallback(persist))
+	return b.persistMatching(completion, func(*generationSegment) bool { return true }, generationCallback(persist), nil)
 }
 
 // PersistKind freezes open scopes of one kind, then drains all pending writes in boundary order.
 func (b *GenerationBuffer) PersistKind(kind agent.AssembledMessageKind, completion agent.MessageCompletion, persist func([]byte) error) error {
-	return b.persistMatching(completion, func(segment *generationSegment) bool { return segment.kind == kind }, generationCallback(persist))
+	return b.persistMatching(completion, func(segment *generationSegment) bool { return segment.kind == kind }, generationCallback(persist), nil)
 }
 
 // PersistScope freezes one open scope, then drains pending writes in boundary order.
 // Its boolean reports an open scope or a pending write for the requested scope.
 func (b *GenerationBuffer) PersistScope(scopeID string, completion agent.MessageCompletion, persist func([]byte) error) (bool, error) {
-	return b.persistScopes([]string{scopeID}, completion, generationCallback(persist))
+	return b.persistScopes([]string{scopeID}, completion, generationCallback(persist), nil)
 }
 
-func (b *GenerationBuffer) persistScopes(scopeIDs []string, completion agent.MessageCompletion, prepare func([]byte) func(*agent.OutputTicket) error) (bool, error) {
+func (b *GenerationBuffer) persistScopes(scopeIDs []string, completion agent.MessageCompletion, prepare func([]byte) func(*agent.OutputTicket) error, reservationWriter agent.TranscriptServices) (bool, error) {
 	b.writeMu.Lock()
 	b.mu.Lock()
 	selected := make(map[string]bool, len(scopeIDs))
@@ -72,7 +72,7 @@ func (b *GenerationBuffer) persistScopes(scopeIDs []string, completion agent.Mes
 	for scopeID := range selected {
 		found = found || queue.HasScope(owner, scopeID)
 	}
-	pending, err := b.freezeEntriesLocked(entries, completion, prepare)
+	pending, err := b.freezeEntriesLocked(entries, completion, prepare, reservationWriter)
 	b.mu.Unlock()
 	b.writeMu.Unlock()
 	if err != nil {
@@ -81,10 +81,10 @@ func (b *GenerationBuffer) persistScopes(scopeIDs []string, completion agent.Mes
 	return found, b.prepareAndFlush(pending, prepare)
 }
 
-func (b *GenerationBuffer) persistMatching(completion agent.MessageCompletion, matches func(*generationSegment) bool, prepare func([]byte) func(*agent.OutputTicket) error) error {
+func (b *GenerationBuffer) persistMatching(completion agent.MessageCompletion, matches func(*generationSegment) bool, prepare func([]byte) func(*agent.OutputTicket) error, reservationWriter agent.TranscriptServices) error {
 	b.writeMu.Lock()
 	b.mu.Lock()
-	pending, err := b.freezeEntriesLocked(b.orderedSegmentsLocked(matches), completion, prepare)
+	pending, err := b.freezeEntriesLocked(b.orderedSegmentsLocked(matches), completion, prepare, reservationWriter)
 	b.mu.Unlock()
 	b.writeMu.Unlock()
 	if err != nil {
@@ -130,11 +130,11 @@ func (b *GenerationBuffer) prepareAndFlush(pending []*generationPreparation, pre
 
 // freezeEntriesLocked reserves every selected row before a capture can call the sink.
 // Native output that arrives during capture must remain after this batch.
-func (b *GenerationBuffer) freezeEntriesLocked(entries []orderedSegment, completion agent.MessageCompletion, prepare func([]byte) func(*agent.OutputTicket) error) ([]*generationPreparation, error) {
+func (b *GenerationBuffer) freezeEntriesLocked(entries []orderedSegment, completion agent.MessageCompletion, prepare func([]byte) func(*agent.OutputTicket) error, reservationWriter agent.TranscriptServices) ([]*generationPreparation, error) {
 	if len(entries) != 0 && prepare == nil {
 		return nil, errors.New("the generation write has no persistence function")
 	}
-	rows, err := b.finishEntriesLocked(entries, completion)
+	rows, err := b.encodeEntriesLocked(entries, completion)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +160,24 @@ func (b *GenerationBuffer) freezeEntriesLocked(entries []orderedSegment, complet
 			}})
 		index++
 	}
-	tickets := queue.Append(writes...)
+	var tickets []*agent.OutputTicket
+	if len(writes) == 0 {
+		for _, entry := range entries {
+			delete(b.segments, entry.scopeID)
+		}
+		return nil, nil
+	}
+	if reservationWriter != nil {
+		tickets, err = reservationWriter.ReserveTranscriptOutput(queue, writes...)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		tickets = queue.Append(writes...)
+	}
+	for _, entry := range entries {
+		delete(b.segments, entry.scopeID)
+	}
 	for i, ticket := range tickets {
 		pending[i].ticket = ticket
 	}
@@ -221,7 +238,7 @@ func (destination *generationDestination) prepare(raw []byte) func(*agent.Output
 func (b *GenerationBuffer) PersistScopeTo(scopeID string, completion agent.MessageCompletion, sink agent.TranscriptServices, template agent.MessageContent, span agent.SpanInfo) (bool, error) {
 	b.bindOutput(sink)
 	destination := generationDestination{writer: agent.DirectTranscript(sink), template: template.Clone(), span: span}
-	return b.persistScopes([]string{scopeID}, completion, destination.prepare)
+	return b.persistScopes([]string{scopeID}, completion, destination.prepare, sink)
 }
 
 // PersistAllTo submits all scopes through the sink's ordered writer.
@@ -229,5 +246,5 @@ func (b *GenerationBuffer) PersistScopeTo(scopeID string, completion agent.Messa
 func (b *GenerationBuffer) PersistAllTo(completion agent.MessageCompletion, sink agent.TranscriptServices, template agent.MessageContent, span agent.SpanInfo) error {
 	b.bindOutput(sink)
 	destination := generationDestination{writer: agent.DirectTranscript(sink), template: template.Clone(), span: span}
-	return b.persistMatching(completion, func(*generationSegment) bool { return true }, destination.prepare)
+	return b.persistMatching(completion, func(*generationSegment) bool { return true }, destination.prepare, sink)
 }

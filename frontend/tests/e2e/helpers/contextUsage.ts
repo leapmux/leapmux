@@ -3,6 +3,8 @@ import type { MockModelUsage } from './mockModelScript'
 import type { NativeScenarioContext } from './nativeScenario'
 import { expect } from '@playwright/test'
 import { formatTokenCount } from '../../../src/components/chat/rendererUtils'
+import { escapeRegExp } from '../../../src/lib/regexp'
+import { resolveMockModelUsage } from './mockModelScript'
 import { nativeTextStep } from './nativeScenario'
 import { openAgentInfoCard, sendMessage, waitForAgentIdle } from './ui'
 
@@ -16,22 +18,29 @@ import { openAgentInfoCard, sendMessage, waitForAgentIdle } from './ui'
  * specs script 12000/40 as a marker: the combined figure then differs on
  * screen from a default run.
  *
- * The card's Context row prints `formatTokenCount(total) / window`. The total
- * is input, output and cache summed, so the marker is that one abbreviation,
- * not each count separately. The card states no per-count figure, and the
- * `context-usage-grid` test id belongs to the status-bar trigger's PipGrid,
- * which has no text nodes at all.
+ * The default reader assumes the card's Context row prints `formatTokenCount(total) / window`. The total
+ * is the NORMALIZED breakdown summed: ordinary input (the cache-inclusive input
+ * minus both cache buckets), both cache buckets, and output. A consistent
+ * fixture therefore marks `input + output`; the cache buckets move the count
+ * between the breakdown rows and cancel out of the sum. The marker is that one
+ * abbreviation, not each count separately. The card states no per-count figure,
+ * and the `context-usage-grid` test id belongs to the status-bar trigger's
+ * PipGrid, which has no text nodes at all.
  */
 
 /**
  * The combined token count the card prints for one scripted usage block.
  *
- * The mock reports input and output; the card sums them (plus any cache
- * counts) into one figure. A step that reports no count at all produces no
- * marker.
+ * The mock reports a cache-INCLUSIVE input and the cache buckets inside it. The
+ * card sums the normalized breakdown -- ordinary input plus both buckets plus
+ * output -- so the total is `input + output` while the buckets fit inside the
+ * input. An over-full breakdown clamps the ordinary input to zero, and the sum
+ * then carries the whole cache traffic.
  */
 function usageTotal(usage: MockModelUsage): number {
-  return (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)
+  const { inputTokens: input, outputTokens: output, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite } = resolveMockModelUsage(usage)
+  const ordinaryInput = Math.max(0, input - cacheRead - cacheWrite)
+  return ordinaryInput + cacheRead + cacheWrite + output
 }
 
 /**
@@ -39,11 +48,16 @@ function usageTotal(usage: MockModelUsage): number {
  *
  * One marker: the card prints the combined size, not the counts separately.
  */
-export function usageMarkers(usage: MockModelUsage): string[] {
-  if (usage.inputTokens === undefined && usage.outputTokens === undefined)
+export function usageMarkers(usage: MockModelUsage, contextTokens: (usage: MockModelUsage) => number = usageTotal): string[] {
+  if (usage.inputTokens === undefined && usage.outputTokens === undefined
+    && usage.cacheReadTokens === undefined && usage.cacheWriteTokens === undefined) {
     return []
+  }
+  const tokens = contextTokens(usage)
+  if (!Number.isFinite(tokens) || tokens < 0)
+    throw new Error('The native context reader returned an invalid token count.')
   return [
-    formatTokenCount(usageTotal(usage)),
+    formatTokenCount(tokens),
   ]
 }
 
@@ -97,13 +111,13 @@ export async function readContextRow(page: Page): Promise<ContextRowReading | un
 /**
  * Open the agent info card, assert its Context row follows `usage`, and close the card, as `readContextRow` does.
  */
-export async function expectContextUsage(page: Page, usage: MockModelUsage): Promise<void> {
-  const markers = usageMarkers(usage)
+export async function expectContextUsage(page: Page, usage: MockModelUsage, contextTokens?: (usage: MockModelUsage) => number): Promise<void> {
+  const markers = usageMarkers(usage, contextTokens)
   if (markers.length === 0)
     throw new Error('The context usage check requires a usage block that states a token count.')
   const popover = await openAgentInfoCard(page)
   for (const marker of markers)
-    await expect(popover).toContainText(marker)
+    await expect(popover).toContainText(new RegExp(`Context\\s*${escapeRegExp(marker)}\\s*\\/`))
   await page.keyboard.press('Escape')
 }
 
@@ -114,6 +128,7 @@ export async function expectContextUsage(page: Page, usage: MockModelUsage): Pro
 export const SCRIPTED_CONTEXT_USAGE: Readonly<MockModelUsage> = { inputTokens: 12_000, outputTokens: 40, contextWindow: 128_000 }
 
 /**
+ * Providers can supply their native context-count reader through the scenario context.
  * Run one turn with distinct token counts. Require those counts in the live card and after reload.
  * The default uses SCRIPTED_CONTEXT_USAGE. A caller can supply another block to test a later update.
  */
@@ -128,8 +143,8 @@ export async function exerciseContextUsage(context: NativeScenarioContext, optio
   await sendMessage(context.page, context.modelScript.prompt('Reply once.'))
   await context.modelScript.waitForSteps(step + 1)
   await waitForAgentIdle(context.page)
-  await expectContextUsage(context.page, usage)
+  await expectContextUsage(context.page, usage, context.contextUsageTokens)
   await context.page.reload()
-  await expectContextUsage(context.page, usage)
+  await expectContextUsage(context.page, usage, context.contextUsageTokens)
   return usage
 }

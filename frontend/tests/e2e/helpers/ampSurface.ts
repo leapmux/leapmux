@@ -33,6 +33,7 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { AMP_CODE_EXEC_TOOL, executeAmpCodeFixture } from './ampCodeExecution'
 import { mockCredentialReceipt } from './mockCredentials'
 import { readMockBody, waitUnlessDisconnected, writeMockJSON } from './mockHttp'
+import { resolveMockModelUsage } from './mockModelScript'
 import { bufferModelOutput, createBufferedModelStream } from './modelStream'
 import { acceptWebSocket } from './webSocketServer'
 
@@ -1027,16 +1028,16 @@ function viewOf(thread: ActorThread): AmpThreadView {
 }
 
 function usage(step: MockModelStep, features: readonly string[]): Record<string, unknown> {
-  const inputTokens = step.usage?.inputTokens ?? 10
-  const outputTokens = step.usage?.outputTokens ?? 5
+  const { inputTokens: total, outputTokens, cacheReadTokens, cacheWriteTokens } = resolveMockModelUsage(step.usage)
+  const inputTokens = Math.max(0, total - cacheReadTokens - cacheWriteTokens)
   return {
     model: 'mock-model',
     maxInputTokens: step.usage?.contextWindow ?? 200_000,
     inputTokens,
     outputTokens,
-    cacheCreationInputTokens: 0,
-    cacheReadInputTokens: 0,
-    totalInputTokens: inputTokens,
+    cacheCreationInputTokens: cacheWriteTokens,
+    cacheReadInputTokens: cacheReadTokens,
+    totalInputTokens: inputTokens + cacheReadTokens + cacheWriteTokens,
     timestamp: new Date().toISOString(),
     features,
   }

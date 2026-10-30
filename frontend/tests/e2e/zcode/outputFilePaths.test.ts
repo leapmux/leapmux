@@ -1,10 +1,20 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import { describe, expect, it } from 'vitest'
+import { isObject } from '../../../src/lib/jsonPick'
 import { nativeOutputSnapshot } from '../helpers/nativeOutputReaderCases'
 import { readZcodeNativeOutput } from './outputFilePaths'
 
 const sessionId = 'native-session'
 const callId = 'native-call'
+const workerSpan = 'opaque-worker-span'
+const invocation = {
+  spanId: workerSpan,
+  callId,
+  sessionId,
+  messageId: 'native-message',
+  toolName: 'GetWorkflowRun',
+}
+const INVOCATION_OWNER = 'The native ZCode result has no exact invocation owner.'
 const path = '/native/zcode/artifacts/native-session/native-call-tool-result-11111111-1111-4111-8111-111111111111.txt'
 const frame = {
   type: 'tool.updated',
@@ -43,12 +53,18 @@ const NO_OWNER = 'The native ZCode output pointer has no exact call and session 
 const FOREIGN_PATH = 'The native ZCode path belongs to another call or session.'
 
 function snapshot(original: unknown = frame, supplement: unknown = { provider }): NativeMessageSnapshot {
+  const ownedSupplement = {
+    metadata: { zcodeInvocation: invocation },
+    ...(isObject(supplement)
+      ? supplement
+      : { provider: supplement }),
+  }
   return nativeOutputSnapshot([
     {
       frame: original,
-      spanId: callId,
+      spanId: workerSpan,
       spanType: 'GetWorkflowRun',
-      supplement,
+      supplement: ownedSupplement,
     },
   ], { agentId: 'native-agent', agentSessionId: sessionId })
 }
@@ -65,9 +81,9 @@ describe('readZcodeNativeOutput', () => {
 
   // A path field that is still a filesystem path passes the owner check, and the path check then refuses it.
   it.each([
-    ['session', NO_OWNER],
-    ['call', NO_OWNER],
-    ['tool', NO_OWNER],
+    ['session', INVOCATION_OWNER],
+    ['call', INVOCATION_OWNER],
+    ['tool', INVOCATION_OWNER],
     ['path', FOREIGN_PATH],
     ['status', NO_OWNER],
     ['strategy', NO_OWNER],
@@ -94,12 +110,6 @@ describe('readZcodeNativeOutput', () => {
     provider,
     { provider: null },
     { provider: false },
-    {
-      provider: {
-        ...provider,
-        payload: { kind: 'result', toolCallId: 'foreign' },
-      },
-    },
   ])('refuses an absent or unowned provider section: %j', (supplement) => {
     expect(() => readZcodeNativeOutput(snapshot(frame, supplement), callId, 'GetWorkflowRun')).toThrow(NO_OWNER)
   })
@@ -135,4 +145,41 @@ describe('readZcodeNativeOutput', () => {
     }), callId, 'GetWorkflowRun')
     expect(receipt.previewText).toBe('native preview')
   })
+})
+
+it('reads an opaque Worker span through its explicit native invocation mapping', () => {
+  const spanId = 'zcode-tool:opaque-worker-invocation'
+  const input = nativeOutputSnapshot([
+    {
+      frame,
+      spanId,
+      spanType: 'GetWorkflowRun',
+      supplement: {
+        provider,
+        metadata: {
+          zcodeInvocation: {
+            spanId,
+            callId,
+            sessionId,
+            messageId: 'native-message',
+            toolName: 'GetWorkflowRun',
+          },
+        },
+      },
+    },
+  ], { agentId: 'native-agent', agentSessionId: sessionId })
+  const receipt = readZcodeNativeOutput(input, callId, 'GetWorkflowRun')
+  expect(receipt.paths).toEqual([path])
+  expect(receipt.previewText).toBe('native preview')
+  expect(receipt.content).toBe(input.messages[0]?.content)
+})
+
+it('rejects a native provider payload that contradicts the result invocation', () => {
+  const supplement = {
+    provider: {
+      ...provider,
+      payload: { kind: 'result', toolCallId: 'foreign' },
+    },
+  }
+  expect(() => readZcodeNativeOutput(snapshot(frame, supplement), callId, 'GetWorkflowRun')).toThrow(INVOCATION_OWNER)
 })

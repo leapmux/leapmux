@@ -18,6 +18,7 @@ import (
 func (a *Agent) clearTaskToolCalls() {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
+	a.taskReportGeneration++
 	clear(a.taskToolCalls)
 	clear(a.taskReports)
 	clear(a.nativeTasks)

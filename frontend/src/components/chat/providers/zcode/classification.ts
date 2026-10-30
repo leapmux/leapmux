@@ -1,6 +1,6 @@
 import type { MessageCategory } from '../../messageClassifier'
 import type { ClassificationInput } from '../registry'
-import { ZCODE_EVENT } from '~/generated/contracts/zcode-protocol'
+import { ZCODE_EVENT, ZCODE_RECORD } from '~/generated/contracts/zcode-protocol'
 import { assertNever } from '~/lib/assertNever'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
@@ -8,6 +8,7 @@ import { isNotificationThreadWrapper } from '../../messageUtils'
 import { notificationClassifierFor } from '../../notificationClassification'
 import { zcodeNotificationEntry } from './extractors/notification'
 import { zcodePlanText } from './extractors/plan'
+import { zcodeRecoveryEvidence } from './extractors/recoveryEvidence'
 import { zcodeEnvelope, zcodeToolSpanRole } from './extractors/toolCommon'
 import { zcodeAssistantText } from './messageContent'
 import { ZCODE_SESSION_UPDATE_ROWS, zcodeSessionUpdateKind } from './sessionUpdateKind'
@@ -20,6 +21,7 @@ import { ZCODE_SESSION_UPDATE_ROWS, zcodeSessionUpdateKind } from './sessionUpda
  * Both uses read this one set, so they cannot drift.
  */
 const ZCODE_NOTIFICATION_TYPES = new Set<string>([
+  ZCODE_RECORD.BackgroundTurnEnd,
   ZCODE_EVENT.PermissionResolved,
   ZCODE_EVENT.TurnSteerQueued,
   ZCODE_EVENT.TurnSteerDrained,
@@ -73,7 +75,7 @@ export function classifyZCodeMessage(input: ClassificationInput): MessageCategor
     return { kind: 'user_content' }
   }
 
-  if (type === ZCODE_EVENT.TurnCompleted || type === ZCODE_EVENT.TurnFailed)
+  if (type === ZCODE_EVENT.TurnCompleted || type === ZCODE_EVENT.TurnFailed || zcodeRecoveryEvidence(parent))
     return { kind: 'result_divider' }
 
   if (type === ZCODE_EVENT.ToolUpdated) {

@@ -16,6 +16,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -552,4 +553,55 @@ func TestNotificationEntryOriginalOuterSinkRetainsItsThreadAfterReplacement(t *t
 		assert.Len(t, decodeNotifWrapper(t, row.Content, row.ContentCompression).Messages, 2)
 		assert.Equal(t, row.AgentSessionID == "original-session", row.TranscriptOnly)
 	}
+}
+
+func TestZCodeBackgroundOutcomesRetainIndependentCompletionsAfterConsolidation(t *testing.T) {
+	t.Parallel()
+	svc, _, ownerID, _ := setupBgTaskTestWithService(t)
+	sink := newTestRootOutputSink(t, svc.Output, ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
+	sink.UpdateSessionID("native")
+	failed := " {\"method\":\"state.updated\", \"params\":{\"scope\":\"session\",\"reason\":\"prompt_completed\",\"future\":\"retained\"}} "
+	completed := "{\"type\":\"turn.completed\", \"payload\":{\"resultType\":\"success\"}}\n"
+	background := func(original string, completion leapmuxv1.MessageCompletion) []byte {
+		return raw(t, map[string]any{
+			contracts.ZCodeSupplementType:    contracts.ZCodeRecordBackgroundTurnEnd,
+			contracts.ZCodeSupplementPayload: contracts.ZCodeBackgroundTurnEnd{Original: original, Completion: int(completion)},
+		})
+	}
+	entries := [][]byte{
+		background(failed, leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_ERROR),
+		raw(t, map[string]any{"type": contracts.ZCodeEventPermissionResolved, "payload": map[string]any{"decision": "deny", "toolName": "Bash"}}),
+		background(completed, leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_COMPLETE),
+	}
+	for _, entry := range entries {
+		_, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: entry})
+		require.NoError(t, err)
+	}
+	rows, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: ownerID})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	content, err := msgcodec.Decompress(rows[0].Content, rows[0].ContentCompression)
+	require.NoError(t, err)
+	var wrapper notifThreadWrapper
+	require.NoError(t, json.Unmarshal(content, &wrapper))
+	require.Len(t, wrapper.Messages, 3)
+	for index, expected := range entries {
+		assert.JSONEq(t, string(expected), string(wrapper.Messages[index]))
+	}
+	for _, outcome := range []struct {
+		index      int
+		original   string
+		completion leapmuxv1.MessageCompletion
+	}{
+		{0, failed, leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_ERROR},
+		{2, completed, leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_COMPLETE},
+	} {
+		var record struct {
+			Payload contracts.ZCodeBackgroundTurnEnd `json:"payload"`
+		}
+		require.NoError(t, json.Unmarshal(wrapper.Messages[outcome.index], &record))
+		assert.Equal(t, outcome.original, record.Payload.Original)
+		assert.EqualValues(t, outcome.completion, record.Payload.Completion)
+	}
+	assert.EqualValues(t, leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_UNSPECIFIED, workerdb.StorageEnumValue(rows[0].Completion))
 }

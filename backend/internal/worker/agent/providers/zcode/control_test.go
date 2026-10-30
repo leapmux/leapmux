@@ -8,11 +8,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -124,10 +127,11 @@ func TestZCodeControlInputSupplementsThePersistedToolRequest(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 	original := []byte(` {"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"plan-call","toolName":"ExitPlanMode","inputOmitted":true,"future":9007199254740993}} `)
 	event, ok := parseZCodeEvent(original)
 	require.True(t, ok)
-	a.dispatchZCodeEvent(event)
+	a.dispatchZCodeEventOrdered(event)
 	a.HandleOutput(zcodeRequestLine(t, 7, contracts.ZCodeMethodRequestUserInput, `{
 		"requestId":"plan", "toolCallId":"plan-call", "toolName":"ExitPlanMode",
 		"input":{"plan":"# Welcome plan"}, "schema":{"interaction":"plan_approval"}
@@ -153,10 +157,11 @@ func TestZCodePlanControlSupplementsPartialInput(t *testing.T) {
 			t.Parallel()
 			sink := &agenttest.ControlSink{}
 			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
 			original := []byte(` {"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"plan-call","toolName":"ExitPlanMode","input":{"allowedPrompts":[],"future":9007199254740993}}} `)
 			event, ok := parseZCodeEvent(original)
 			require.True(t, ok)
-			a.dispatchZCodeEvent(event)
+			a.dispatchZCodeEventOrdered(event)
 			a.HandleOutput(zcodeRequestLine(t, 7, contracts.ZCodeMethodRequestUserInput, `{"requestId":"plan","toolCallId":"plan-call","toolName":"ExitPlanMode","schema":{"interaction":"plan_approval"},`+controlInput+`}`))
 			messages := sink.Messages()
 			require.Len(t, messages, 1)
@@ -281,6 +286,8 @@ func TestHandlePermissionRequest_StoresTheHybridPayload(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
 
+	zcodeStartTestTurn(t, a, `{"turnNumber":1}`)
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated, `{"kind":"scheduled","toolCallId":"call-1","toolName":"Bash","inputOmitted":true}`))
 	a.HandleOutput(zcodeRequestLine(t, 7, contracts.ZCodeMethodRequestPermission, zcodePermissionParams))
 
 	payload := zcodeStoredPayload(t, sink)
@@ -290,7 +297,7 @@ func TestHandlePermissionRequest_StoresTheHybridPayload(t *testing.T) {
 	assert.Equal(t, "req-1", stored.RequestID)
 	assert.Equal(t, contracts.ZCodeMethodRequestPermission, stored.Method)
 	assert.Equal(t, "Bash", stored.Request.ToolName)
-	assert.Equal(t, "call-1", stored.Request.ToolUseID)
+	assert.Equal(t, zcodeTestSpanID(t, sink, "call-1"), stored.Request.ToolUseID)
 	assert.JSONEq(t, `{"command":"rm -rf build"}`, string(stored.Request.Input))
 	assert.JSONEq(t, zcodePermissionParams, string(stored.Params),
 		"ZCode's own params must survive verbatim, because the answer path reads the option list off them")
@@ -976,6 +983,422 @@ func TestAnswerProviderRuntimeHeaders_MalformedParamsAreNeverAuthorized(t *testi
 	}
 }
 
+// --- runtime-header answers: cancellation by the LOGICAL request id ---
+//
+// One interaction/requestProviderRuntimeHeaders carries TWO identities. The
+// JSON-RPC envelope id is only the reply address. The logical `params.requestId`
+// (`<session>:provider-runtime-headers:<uuid>`) is the key a cancellation
+// specifies. The fixtures below keep the two deliberately different.
+
+const zcodeTestRuntimeWorkspace = `{"workspacePath":"/tmp/zcode-workspace","workspaceKey":"/tmp/zcode-workspace"}`
+const zcodeTestOtherWorkspace = `{"workspacePath":"/tmp/zcode-other","workspaceKey":"/tmp/zcode-other"}`
+
+// zcodeRuntimeHeadersLine renders one interaction/requestProviderRuntimeHeaders
+// request: envelopeID is the reply address, requestID the logical id.
+func zcodeRuntimeHeadersLine(t *testing.T, envelopeID, requestID, sessionID, workspace, providerID string) []byte {
+	t.Helper()
+	line, err := json.Marshal(map[string]any{
+		"id":     envelopeID,
+		"method": MethodRequestProviderRuntimeHeaders,
+		"params": map[string]any{
+			"requestId":  requestID,
+			"sessionId":  sessionID,
+			"workspace":  json.RawMessage(workspace),
+			"providerId": providerID,
+			"reason":     "model-request",
+		},
+	})
+	require.NoError(t, err)
+	return line
+}
+
+// zcodeRuntimeHeadersCancelLine renders one providerRuntimeHeadersCancelled
+// notification: the app-server withdrawing one request.
+func zcodeRuntimeHeadersCancelLine(t *testing.T, requestID, sessionID, workspace string) []byte {
+	t.Helper()
+	line, err := json.Marshal(map[string]any{
+		"method": NotifyProviderRuntimeHeadersCancelled,
+		"params": map[string]any{
+			"requestId": requestID,
+			"sessionId": sessionID,
+			"workspace": json.RawMessage(workspace),
+		},
+	})
+	require.NoError(t, err)
+	return line
+}
+
+// zcodeBlockedStdin holds the FIRST write to the agent's stdin until the test
+// releases it, so a test can gate between the completion of an answer and its
+// reply. Later writes pass through. Every record lands in the wrapped recorder.
+type zcodeBlockedStdin struct {
+	rec     *zcodeRecordedStdin
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func zcodeBlockFirstStdin(rec *zcodeRecordedStdin) *zcodeBlockedStdin {
+	return &zcodeBlockedStdin{rec: rec, started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (w *zcodeBlockedStdin) Write(p []byte) (int, error) {
+	first := false
+	w.once.Do(func() { first = true })
+	if first {
+		close(w.started)
+		<-w.release
+	}
+	return w.rec.Write(p)
+}
+
+func (w *zcodeBlockedStdin) Close() error { return w.rec.Close() }
+
+// The envelope id is the reply address alone: a cancellation that specifies it
+// cancels nothing. The logical id is the cancellation key.
+func TestAnswerProviderRuntimeHeaders_CancelsByLogicalIDAndNotByEnvelopeID(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	a.catalog = zcodeTestCatalog(t, zcodeTwoProviderConfig)
+	const logical = "sess-1:provider-runtime-headers:0d4c7c3e-5a3f-4a1e-9f0d-1b2c3d4e5f60"
+
+	handler, consumed := a.routeZCodeRPC(providerkit.ParseLine(zcodeRuntimeHeadersLine(t,
+		"server-1", logical, "sess-1", zcodeTestRuntimeWorkspace, "builtin:zai")))
+	require.True(t, consumed)
+	require.NotNil(t, handler)
+	a.HandleOutput(zcodeRuntimeHeadersCancelLine(t, "server-1", "sess-1", zcodeTestRuntimeWorkspace))
+	handler()
+	replies := stdin.Requests(t)
+	require.Len(t, replies, 1, "the envelope id is not a cancellation key")
+	assert.Equal(t, `"server-1"`, string(replies[0].ID))
+
+	handler2, _ := a.routeZCodeRPC(providerkit.ParseLine(zcodeRuntimeHeadersLine(t,
+		"server-2", logical+"-2", "sess-1", zcodeTestRuntimeWorkspace, "builtin:zai")))
+	a.HandleOutput(zcodeRuntimeHeadersCancelLine(t, logical+"-2", "sess-1", zcodeTestRuntimeWorkspace))
+	handler2()
+	assert.Len(t, stdin.Requests(t), 1, "the app-server withdrew the request: the answer must not arrive")
+}
+
+// The handler runs on a goroutine of its own after the registration. A
+// cancellation that lands before the handler runs must already abort the
+// credential work: no request reaches the network and no reply is written.
+func TestAnswerProviderRuntimeHeaders_CancellationBeforeTheHandlerSuppressesTheReply(t *testing.T) {
+	t.Parallel()
+
+	a, api := zcodeAccountTestAgent(t, "", zcodeTestSignedInStore(t, "login"))
+	const logical = "sess-1:provider-runtime-headers:6f1e2d3c-8b4a-4c5d-9e7f-0a1b2c3d4e5f"
+
+	handler, consumed := a.routeZCodeRPC(providerkit.ParseLine(zcodeRuntimeHeadersLine(t,
+		"server-1", logical, "sess-1", zcodeTestRuntimeWorkspace, "account:zai-individual-coding-plan")))
+	require.True(t, consumed)
+	require.NotNil(t, handler)
+	a.HandleOutput(zcodeRuntimeHeadersCancelLine(t, logical, "sess-1", zcodeTestRuntimeWorkspace))
+	handler()
+	require.Never(t, func() bool { return len(api.recorded()) > 0 }, zcodeCancelPromptness, time.Millisecond,
+		"a cancelled answer sends no credential request")
+	assert.Empty(t, a.StdinForTest().(*zcodeRecordedStdin).Frames(),
+		"the app-server withdrew the request: the answer must not arrive")
+}
+
+// Completion commits to the reply BEFORE the write. A cancellation at that
+// gate returns without waiting for the blocked write and does not withdraw
+// the reply that already won.
+func TestAnswerProviderRuntimeHeaders_TheReplyAlreadyWonWhileTheWriteBlocks(t *testing.T) {
+	t.Parallel()
+
+	a, _ := zcodeAccountTestAgent(t, "", zcodeTestSignedInStore(t, "login"))
+	rec := a.StdinForTest().(*zcodeRecordedStdin)
+	blocked := zcodeBlockFirstStdin(rec)
+	a.SetStdinForTest(blocked)
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(blocked.release) }) }
+	t.Cleanup(unblock)
+	const logical = "sess-1:provider-runtime-headers:11111111-2222-4333-8444-555555555555"
+
+	a.HandleOutput(zcodeRuntimeHeadersLine(t,
+		"server-1", logical, "sess-1", zcodeTestRuntimeWorkspace, "account:zai-individual-coding-plan"))
+	<-blocked.started
+
+	cancelled := make(chan struct{})
+	go func() {
+		defer close(cancelled)
+		a.HandleOutput(zcodeRuntimeHeadersCancelLine(t, logical, "sess-1", zcodeTestRuntimeWorkspace))
+	}()
+	select {
+	case <-cancelled:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the cancellation waited for the blocked reply write")
+	}
+
+	unblock()
+	replies := zcodeAwaitReplies(t, rec, 1)
+	assert.Equal(t, `"server-1"`, string(replies[0].ID), "the reply already won the state transition")
+}
+
+// The state half of the gate: completion commits the answer to `replying`
+// BEFORE the write and holds its registration THROUGH the write.
+func TestAnswerProviderRuntimeHeaders_TheGateCommitsBeforeTheWrite(t *testing.T) {
+	t.Parallel()
+
+	a, _ := zcodeAccountTestAgent(t, "", zcodeTestSignedInStore(t, "login"))
+	rec := a.StdinForTest().(*zcodeRecordedStdin)
+	blocked := zcodeBlockFirstStdin(rec)
+	a.SetStdinForTest(blocked)
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(blocked.release) }) }
+	t.Cleanup(unblock)
+	const logical = "sess-1:provider-runtime-headers:aaaa1111-2222-4333-8444-555555555555"
+
+	a.HandleOutput(zcodeRuntimeHeadersLine(t,
+		"server-1", logical, "sess-1", zcodeTestRuntimeWorkspace, "account:zai-individual-coding-plan"))
+	<-blocked.started
+
+	a.runtimeHeaderMu.Lock()
+	answer := a.runtimeHeaderAnswers[logical]
+	a.runtimeHeaderMu.Unlock()
+	require.NotNil(t, answer, "the answer is registered under its logical id")
+	assert.Equal(t, zcodeRuntimeHeaderReplying, answer.state,
+		"completion commits to the reply before the write starts")
+	assert.Equal(t, `"server-1"`, string(answer.envelopeID))
+
+	unblock()
+	_ = zcodeAwaitReplies(t, rec, 1)
+	a.runtimeHeaderMu.Lock()
+	remaining := len(a.runtimeHeaderAnswers)
+	a.runtimeHeaderMu.Unlock()
+	assert.Zero(t, remaining, "completion removes its own registration after the write")
+}
+
+// A duplicate logical request id must not replace the existing registration:
+// the cancellation then cancels the FIRST answer only, and the duplicate keeps
+// its own reply.
+func TestAnswerProviderRuntimeHeaders_DuplicateLogicalIDDoesNotReplaceTheRegistration(t *testing.T) {
+	t.Parallel()
+
+	a, api := zcodeAccountTestAgent(t, "", zcodeTestSignedInStore(t, "login"))
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	api.set(func(f *zcodeFakeProjectAPI) { f.release = release })
+	const logical = "sess-1:provider-runtime-headers:22222222-3333-4444-8555-666666666666"
+
+	a.HandleOutput(zcodeRuntimeHeadersLine(t,
+		"server-1", logical, "sess-1", zcodeTestRuntimeWorkspace, "account:zai-individual-coding-plan"))
+	a.HandleOutput(zcodeRuntimeHeadersLine(t,
+		"server-2", logical, "sess-1", zcodeTestRuntimeWorkspace, "account:zai-individual-coding-plan"))
+	require.Eventually(t, func() bool { return api.mintStarted.Load() >= 1 }, 30*time.Second, time.Millisecond)
+
+	a.HandleOutput(zcodeRuntimeHeadersCancelLine(t, logical, "sess-1", zcodeTestRuntimeWorkspace))
+	// The cancelled waiter leaves the shared mint; the duplicate's waiter keeps
+	// it alive.
+	require.Eventually(t, func() bool { return a.projectTokens.mints.waitingInAll() == 1 },
+		zcodeCancelPromptness, time.Millisecond,
+		"the cancelled waiter must leave the shared call for the duplicate")
+	unblock()
+
+	stdin := a.StdinForTest().(*zcodeRecordedStdin)
+	replies := zcodeAwaitReplies(t, stdin, 1)
+	assert.Equal(t, `"server-2"`, string(replies[0].ID),
+		"the cancellation cancelled the first answer; the duplicate keeps its own reply")
+	assert.Len(t, stdin.Frames(), 1, "the cancelled first answer writes nothing")
+}
+
+// A cancelled answer that completes late must not remove or cancel a newer
+// answer that reused its logical request id, and its own entry must not linger
+// to shadow that reuse.
+func TestAnswerProviderRuntimeHeaders_RequestIDReuseKeepsTheNewerAnswer(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	a.catalog = zcodeTestCatalog(t, zcodeTwoProviderConfig)
+	const logical = "sess-1:provider-runtime-headers:33333333-4444-4555-8666-777777777777"
+
+	// The first answer is cancelled before its handler runs, so its completion
+	// arrives late -- after the second answer took the id.
+	first, _ := a.routeZCodeRPC(providerkit.ParseLine(zcodeRuntimeHeadersLine(t,
+		"server-1", logical, "sess-1", zcodeTestRuntimeWorkspace, "builtin:zai")))
+	a.HandleOutput(zcodeRuntimeHeadersCancelLine(t, logical, "sess-1", zcodeTestRuntimeWorkspace))
+	second, _ := a.routeZCodeRPC(providerkit.ParseLine(zcodeRuntimeHeadersLine(t,
+		"server-2", logical, "sess-1", zcodeTestRuntimeWorkspace, "builtin:zai")))
+	first()
+	assert.Empty(t, stdin.Frames(), "the cancelled first answer writes nothing")
+
+	second()
+	replies := stdin.Requests(t)
+	require.Len(t, replies, 1, "the newer answer of a reused request id keeps its reply")
+	assert.Equal(t, `"server-2"`, string(replies[0].ID))
+
+	// The first answer's entry must not linger: the id is free for the next use.
+	third, _ := a.routeZCodeRPC(providerkit.ParseLine(zcodeRuntimeHeadersLine(t,
+		"server-3", logical, "sess-1", zcodeTestRuntimeWorkspace, "builtin:zai")))
+	a.HandleOutput(zcodeRuntimeHeadersCancelLine(t, logical, "sess-1", zcodeTestRuntimeWorkspace))
+	third()
+	assert.Len(t, stdin.Requests(t), 1, "a cancellation reaches the answer that reused the id")
+}
+
+// A cancellation specifies the logical id, the session, AND the workspace. A
+// notification that matches on fewer must not cancel anything.
+func TestAnswerProviderRuntimeHeaders_CancellationMatchesSessionAndWorkspace(t *testing.T) {
+	t.Parallel()
+
+	a, api := zcodeAccountTestAgent(t, "", zcodeTestSignedInStore(t, "login"))
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	api.set(func(f *zcodeFakeProjectAPI) { f.release = release })
+	const logical = "sess-1:provider-runtime-headers:44444444-5555-4666-8777-888888888888"
+
+	a.HandleOutput(zcodeRuntimeHeadersLine(t,
+		"server-1", logical, "sess-1", zcodeTestRuntimeWorkspace, "account:zai-individual-coding-plan"))
+	require.Eventually(t, func() bool { return api.mintStarted.Load() >= 1 }, 30*time.Second, time.Millisecond)
+
+	a.HandleOutput(zcodeRuntimeHeadersCancelLine(t,
+		"sess-1:provider-runtime-headers:99999999-0000-4000-8000-000000000000", "sess-1", zcodeTestRuntimeWorkspace))
+	a.HandleOutput(zcodeRuntimeHeadersCancelLine(t, logical, "sess-OTHER", zcodeTestRuntimeWorkspace))
+	a.HandleOutput(zcodeRuntimeHeadersCancelLine(t, logical, "sess-1", zcodeTestOtherWorkspace))
+	assert.Zero(t, api.mintCancelled.Load(), "no mismatched cancellation aborted the mint")
+
+	unblock()
+	replies := zcodeAwaitReplies(t, a.StdinForTest().(*zcodeRecordedStdin), 1)
+	assert.Equal(t, `"server-1"`, string(replies[0].ID), "the answer survived every mismatched cancellation")
+}
+
+// The workspace match compares JSON by VALUE: a cancellation that states the
+// same object in another key order and other whitespace must still withdraw the
+// answer, and a semantically different workspace must not.
+func TestAnswerProviderRuntimeHeaders_CancellationMatchesTheWorkspaceByValue(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	a.catalog = zcodeTestCatalog(t, zcodeTwoProviderConfig)
+	const reordered = `{ "workspaceKey" : "/tmp/zcode-workspace" , "workspacePath" : "/tmp/zcode-workspace" }`
+
+	const logicalA = "sess-1:provider-runtime-headers:11111111-2222-4333-8444-555555555555"
+	first, _ := a.routeZCodeRPC(providerkit.ParseLine(zcodeRuntimeHeadersLine(t,
+		"server-1", logicalA, "sess-1", zcodeTestRuntimeWorkspace, "builtin:zai")))
+	a.HandleOutput(zcodeRuntimeHeadersCancelLine(t, logicalA, "sess-1", reordered))
+	first()
+	assert.Empty(t, stdin.Frames(), "the same workspace object in other bytes cancels the answer")
+
+	const logicalB = "sess-1:provider-runtime-headers:66666666-7777-4888-8999-000000000000"
+	second, _ := a.routeZCodeRPC(providerkit.ParseLine(zcodeRuntimeHeadersLine(t,
+		"server-2", logicalB, "sess-1", zcodeTestRuntimeWorkspace, "builtin:zai")))
+	a.HandleOutput(zcodeRuntimeHeadersCancelLine(t, logicalB, "sess-1", zcodeTestOtherWorkspace))
+	second()
+	replies := stdin.Requests(t)
+	require.Len(t, replies, 1, "a semantically different workspace cancels nothing")
+	assert.Equal(t, `"server-2"`, string(replies[0].ID))
+}
+
+// zcodeJSONEqual compares two JSON values semantically and falls back to the
+// bytes when either side is not JSON at all. An absent value matches only
+// another absent value.
+func TestZCodeJSONEqual_ComparesJSONValuesSemantically(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, zcodeJSONEqual([]byte(`{"a":1,"b":[2,3]}`), []byte(`{ "b": [2, 3], "a": 1 }`)))
+	assert.False(t, zcodeJSONEqual([]byte(`{"a":1}`), []byte(`{"a":2}`)))
+	assert.True(t, zcodeJSONEqual(nil, nil))
+	assert.True(t, zcodeJSONEqual([]byte(``), nil))
+	assert.False(t, zcodeJSONEqual(nil, []byte(`{}`)))
+	assert.True(t, zcodeJSONEqual([]byte(`oops`), []byte(`oops`)))
+	assert.False(t, zcodeJSONEqual([]byte(`oops`), []byte(`oops!`)))
+}
+
+// The wire cancellation ends the in-flight credential work of its answer.
+func TestAnswerProviderRuntimeHeaders_CancellationAbortsTheMint(t *testing.T) {
+	t.Parallel()
+
+	a, api := zcodeAccountTestAgent(t, "", zcodeTestSignedInStore(t, "login"))
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	api.set(func(f *zcodeFakeProjectAPI) { f.release = release })
+	const logical = "sess-1:provider-runtime-headers:5a5a5a5a-5b5b-4c5c-8d5d-5e5e5e5e5e5e"
+
+	a.HandleOutput(zcodeRuntimeHeadersLine(t,
+		"server-1", logical, "sess-1", zcodeTestRuntimeWorkspace, "account:zai-individual-coding-plan"))
+	require.Eventually(t, func() bool { return api.mintStarted.Load() >= 1 }, 30*time.Second, time.Millisecond)
+
+	a.HandleOutput(zcodeRuntimeHeadersCancelLine(t, logical, "sess-1", zcodeTestRuntimeWorkspace))
+	require.Eventually(t, func() bool { return api.mintCancelled.Load() >= 1 },
+		zcodeCancelPromptness, time.Millisecond,
+		"the cancellation must abort the in-flight mint promptly")
+	assert.Empty(t, a.StdinForTest().(*zcodeRecordedStdin).Frames(), "a cancelled answer writes nothing")
+}
+
+// A context clear replaces the session: the credential work of the replaced
+// session is stale and must end with it.
+func TestAnswerProviderRuntimeHeaders_ClearContextCancelsTheReplacedSessionAnswers(t *testing.T) {
+	t.Parallel()
+
+	a, api := zcodeAccountTestAgent(t, "", zcodeTestSignedInStore(t, "login"))
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	api.set(func(f *zcodeFakeProjectAPI) { f.release = release })
+	const logical = "sess-1:provider-runtime-headers:61616161-6262-4363-8464-656565656565"
+
+	a.HandleOutput(zcodeRuntimeHeadersLine(t,
+		"server-1", logical, "sess-1", zcodeTestRuntimeWorkspace, "account:zai-individual-coding-plan"))
+	require.Eventually(t, func() bool { return api.mintStarted.Load() >= 1 }, 30*time.Second, time.Millisecond)
+
+	stdin := a.StdinForTest().(*zcodeRecordedStdin)
+	answerZCodeRequest(t, a, stdin, MethodSessionCreate,
+		`{"session":{"sessionId":"sess-fresh"},"runtime":{"eventSeq":0},"settings":{"mode":{"current":"build"}}}`)
+	answerZCodeRequest(t, a, stdin, MethodSessionSubscribe, `{"sessionId":"sess-fresh","eventSeq":0,"events":[]}`)
+	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
+	answerZCodeRequest(t, a, stdin, MethodSessionClose, `{}`)
+	_, err := a.ClearContext()
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool { return api.mintCancelled.Load() >= 1 },
+		zcodeCancelPromptness, time.Millisecond,
+		"the replaced session's credential work must end with the replacement, not at its own timeout")
+}
+
+// Stop and Wait tear the agent down: every outstanding credential answer goes
+// with it, and its network work ends instead of running out its timeout.
+func TestAnswerProviderRuntimeHeaders_StopAndWaitCancelEveryOutstandingAnswer(t *testing.T) {
+	t.Parallel()
+
+	for name, teardown := range map[string]func(a *Agent){
+		"Stop": func(a *Agent) { a.SimulateExitForTest(); a.Stop() },
+		"Wait": func(a *Agent) { a.SimulateExitForTest(); _ = a.Wait() },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a, api := zcodeAccountTestAgent(t, "", zcodeTestSignedInStore(t, "login"))
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			t.Cleanup(unblock)
+			api.set(func(f *zcodeFakeProjectAPI) { f.release = release })
+
+			a.HandleOutput(zcodeRuntimeHeadersLine(t,
+				"server-1", "sess-1:provider-runtime-headers:71717171-7272-4373-8474-757575757575",
+				"sess-1", zcodeTestRuntimeWorkspace, "account:zai-individual-coding-plan"))
+			a.HandleOutput(zcodeRuntimeHeadersLine(t,
+				"server-2", "sess-2:provider-runtime-headers:81818181-8282-4383-8484-858585858585",
+				"sess-2", zcodeTestRuntimeWorkspace, "account:zai-individual-coding-plan"))
+			require.Eventually(t, func() bool { return api.mintStarted.Load() >= 1 }, 30*time.Second, time.Millisecond)
+
+			teardown(a)
+			require.Eventually(t, func() bool { return api.mintCancelled.Load() >= 1 },
+				zcodeCancelPromptness, time.Millisecond,
+				"teardown must end the outstanding credential work promptly, not leave it to its timeout")
+		})
+	}
+}
+
 func TestAnswerOfficialMcpAuthHeaders_DeclaresUnavailable(t *testing.T) {
 	t.Parallel()
 
@@ -1118,6 +1541,9 @@ func TestZCodeProvider_IsInterruptRecognizesTheStopFrame(t *testing.T) {
 
 	provider := zcodeProvider{}
 	assert.True(t, provider.IsInterrupt(`{"id":1,"method":"session/stop","params":{}}`))
+	assert.True(t, provider.IsInterrupt(`{"id":1,"method":"v4/command","params":{"commandId":"leapmux-stop-1","clientId":"leapmux","sessionId":"sess-1","type":"stop","payload":{"expectedForegroundExecutionId":"exec-1"},"issuedAt":0}}`),
+		"the guarded v4 stop is the primary interrupt frame")
+	assert.False(t, provider.IsInterrupt(`{"id":1,"method":"v4/command","params":{"type":"sendText"}}`))
 	assert.False(t, provider.IsInterrupt(`{"id":1,"method":"session/send"}`))
 	assert.False(t, provider.IsInterrupt(`not json`))
 	assert.False(t, provider.IsInterrupt(``))
@@ -1364,7 +1790,7 @@ func TestZCodePermissionBookkeeping_ForgetIsOneShot(t *testing.T) {
 	assert.False(t, a.forgetZCodeControlRequest("req-1"), "an unknown id was never forwarded")
 	assert.False(t, a.forgetZCodeControlRequest(""))
 
-	a.rememberZCodeControlRequest("req-1", json.RawMessage(`{"type":"control_request"}`))
+	zcodeRememberControlForTest(t, a, "req-1")
 	assert.True(t, a.forgetZCodeControlRequest("req-1"))
 	assert.False(t, a.forgetZCodeControlRequest("req-1"), "a second resolved must not read as forwarded again")
 }
@@ -1669,5 +2095,318 @@ func TestZCodeElicitationAnswerText(t *testing.T) {
 	for _, raw := range []string{``, ` `, `null`, `[1]`, `{"a":1}`, `{`} {
 		_, ok := zcodeElicitationAnswerText(json.RawMessage(raw))
 		assert.False(t, ok, raw)
+	}
+}
+
+func TestZCodeControls_CorrelateRepeatedNativeIDsByTurn(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	for index, turnID := range []string{"foreground", "background"} {
+		source := ""
+		if index > 0 {
+			source = "background_task"
+		}
+		a.HandleOutput(zcodeTurnEventLine(t, int64(index*2+1), turnID, contracts.ZCodeEventTurnStarted, fmt.Sprintf(`{"turnNumber":%d,"inputSource":%q}`, index+1, source)))
+		a.HandleOutput(zcodeTurnEventLine(t, int64(index*2+2), turnID, contracts.ZCodeEventToolUpdated, fmt.Sprintf(`{"kind":"scheduled","toolCallId":"same","assistantMessageId":"message-%d","toolName":"Bash","inputOmitted":true}`, index)))
+	}
+	openings := sink.Messages()
+	require.Len(t, openings, 2)
+	for index, turnID := range []string{"foreground", "background"} {
+		params := json.RawMessage(fmt.Sprintf(`{"requestId":"request-%d","sessionId":"sess-1","turnId":%q,"toolCallId":"same","toolName":"Bash","input":{"command":"command-%d"}}`, index, turnID, index))
+		a.handlePermissionRequest(json.RawMessage(fmt.Sprintf(`"rpc-%d"`, index)), params)
+		stored, err := a.sink.ReadToolRequest(openings[index].SpanID)
+		require.NoError(t, err)
+		require.NotNil(t, stored)
+		resolved := zcodeProvider{}.ResolveProviderData(stored.Content)
+		var frame struct {
+			Payload struct {
+				Input struct {
+					Command string `json:"command"`
+				} `json:"input"`
+			} `json:"payload"`
+		}
+		require.NoError(t, json.Unmarshal(resolved, &frame))
+		assert.Equal(t, fmt.Sprintf("command-%d", index), frame.Payload.Input.Command)
+	}
+}
+
+func TestZCodeControls_ResolveRawChildCallIDsFromOrigin(t *testing.T) {
+	t.Parallel()
+	a, sink := spawnAZCodeSubagent(t)
+	// Mirrored events qualify the call ID; the interaction RPC preserves its raw ID.
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventToolUpdated, `{"kind":"scheduled","source":"subagent","agentId":"agent-1","childSessionId":"sess_subagent_agent-1","parentToolCallId":"spawn-1","toolCallId":"tool_subagent_agent-1_raw","assistantMessageId":"child-message","toolName":"Bash","inputOmitted":true}`))
+	a.handlePermissionRequest(json.RawMessage(`"rpc"`), json.RawMessage(`{"requestId":"child-request","sessionId":"sess-1","toolCallId":"raw","toolName":"Bash","input":{"command":"pwd"},"origin":{"kind":"subagent","agentId":"agent-1","childSessionId":"sess_subagent_agent-1","parentToolCallId":"spawn-1"}}`))
+	child := sink.Child(sink.ChildAgentIDs()[0])
+	spanID := zcodeTestSpanID(t, sink, "tool_subagent_agent-1_raw")
+	stored, err := child.ReadToolRequest(spanID)
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	var frame struct {
+		Payload struct {
+			Input map[string]string `json:"input"`
+		} `json:"payload"`
+	}
+	require.NoError(t, json.Unmarshal(zcodeProvider{}.ResolveProviderData(stored.Content), &frame))
+	assert.Equal(t, "pwd", frame.Payload.Input["command"])
+}
+
+func TestZCodeJSONEqual_PreservesExactNumericIdentity(t *testing.T) {
+	t.Parallel()
+	assert.False(t, zcodeJSONEqual([]byte(`{"id":9007199254740992}`), []byte(`{"id":9007199254740993}`)))
+	assert.True(t, zcodeJSONEqual([]byte(`{"value":1.0,"s":"\u0061"}`), []byte(`{"s":"a","value":1e0}`)))
+	assert.True(t, zcodeJSONEqual([]byte(`-0e999999999999999999999`), []byte(`0`)))
+	assert.True(t, zcodeJSONEqual([]byte(`10e999999999999999999999`), []byte(`1e1000000000000000000000`)))
+}
+
+func TestZCodeRuntimeHeaderReply_ReleasesCompletedContexts(t *testing.T) {
+	t.Parallel()
+	for _, failure := range []bool{false, true} {
+		t.Run(fmt.Sprintf("write failure %t", failure), func(t *testing.T) {
+			t.Parallel()
+			a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
+			answer := a.prepareZCodeRuntimeHeaderAnswer(json.RawMessage(`1`), json.RawMessage(`{"requestId":"logical","sessionId":"sess-1"}`))
+			require.NotNil(t, answer)
+			if failure {
+				a.SetStdinForTest(agenttest.NopStdin(zcodeInputWriter(func([]byte) (int, error) { return 0, errors.New("failed write") })))
+			}
+			a.replyZCodeRuntimeHeader(json.RawMessage(`1`), answer, map[string]any{})
+			assert.Error(t, answer.ctx.Err(), "every completed answer must release its process-context registration")
+		})
+	}
+}
+
+func TestZCodeControlIngress_RetiresBeforeTheHandlerRuns(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{contracts.ZCodeMethodRequestPermission, contracts.ZCodeMethodRequestUserInput} {
+		for _, replacement := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s replacement %t", method, replacement), func(t *testing.T) {
+				t.Parallel()
+				sink := &agenttest.ControlSink{}
+				a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+				raw := zcodeRequestLine(t, 7, method, `{"requestId":"delayed","toolName":"Bash","input":{},"options":[],"questions":[]}`)
+				handler, consumed := a.routeZCodeRPC(providerkit.ParseLine(raw))
+				require.True(t, consumed)
+				require.NotNil(t, handler)
+				if replacement {
+					snapshot, ok := a.parseStateSnapshot(json.RawMessage(`{"session":{"sessionId":"sess-1"}}`))
+					require.True(t, ok)
+					a.adoptCompleteZCodeSessionSnapshot(snapshot, true)
+				} else {
+					a.forgetZCodeControlRequest("delayed")
+				}
+				handler()
+				assert.Empty(t, sink.PublishedControls(), "a retired ingress instance must not publish a new prompt")
+				a.Mu.Lock()
+				assert.Empty(t, a.pendingControls)
+				a.Mu.Unlock()
+			})
+		}
+	}
+}
+
+type zcodeHeldPlanSink struct {
+	*agenttest.ControlSink
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (sink *zcodeHeldPlanSink) holdPlan(title string) {
+	if title == "Old plan" {
+		close(sink.entered)
+		<-sink.release
+	}
+}
+func (sink *zcodeHeldPlanSink) UpdatePlan(content []byte, compression leapmuxv1.ContentCompression, title string) {
+	sink.holdPlan(title)
+	sink.ControlSink.UpdatePlan(content, compression, title)
+}
+
+func TestZCodePlanControl_CannotOverwriteTheReplacementPlan(t *testing.T) {
+	t.Parallel()
+	sink := &zcodeHeldPlanSink{ControlSink: &agenttest.ControlSink{}, entered: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() {
+		select {
+		case <-sink.release:
+		default:
+			close(sink.release)
+		}
+	})
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	raw := zcodeRequestLine(t, 9, contracts.ZCodeMethodRequestUserInput, `{"requestId":"old-plan","toolName":"ExitPlanMode","input":{"plan":"# Old plan"},"schema":{"interaction":"plan_approval"}}`)
+	handled := make(chan struct{})
+	go func() { a.HandleOutput(raw); close(handled) }()
+	zcodeTestReceive(t, sink.entered)
+	snapshot, ok := a.parseStateSnapshot(json.RawMessage(`{"session":{"sessionId":"sess-1"}}`))
+	require.True(t, ok)
+	a.adoptCompleteZCodeSessionSnapshot(snapshot, true)
+	sink.ControlSink.UpdatePlan([]byte("# New plan"), leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE, "New plan")
+	close(sink.release)
+	zcodeTestReceive(t, handled)
+	assert.Equal(t, "New plan", sink.LastPlanUpdate().Title)
+	assert.Empty(t, sink.PublishedControls())
+}
+
+type zcodeHeldCapturedPlanWriter struct {
+	sink     *zcodeHeldPlanSink
+	delegate agent.CapturedPlanWriter
+}
+
+func (writer zcodeHeldCapturedPlanWriter) UpdatePlan(content []byte, compression leapmuxv1.ContentCompression, title string) error {
+	writer.sink.holdPlan(title)
+	return writer.delegate.UpdatePlan(content, compression, title)
+}
+func (sink *zcodeHeldPlanSink) PlanWriterFor(captured agent.CapturedTranscript) (agent.CapturedPlanWriter, error) {
+	delegate, err := sink.ControlSink.PlanWriterFor(captured)
+	if err != nil {
+		return nil, err
+	}
+	return zcodeHeldCapturedPlanWriter{sink: sink, delegate: delegate}, nil
+}
+
+func TestZCodeControlPreparation_DoesNotBlockAnotherRequest(t *testing.T) {
+	t.Parallel()
+	sink := &zcodeHeldPlanSink{ControlSink: &agenttest.ControlSink{}, entered: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() {
+		select {
+		case <-sink.release:
+		default:
+			close(sink.release)
+		}
+	})
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	raw := zcodeRequestLine(t, 9, contracts.ZCodeMethodRequestUserInput, `{"requestId":"old-plan","toolName":"ExitPlanMode","input":{"plan":"# Old plan"},"schema":{"interaction":"plan_approval"}}`)
+	handled := make(chan struct{})
+	go func() { a.HandleOutput(raw); close(handled) }()
+	zcodeTestReceive(t, sink.entered)
+	questionDone := make(chan struct{})
+	go func() {
+		a.handlePermissionRequest(json.RawMessage(`10`), json.RawMessage(`{"requestId":"other","toolName":"Bash","input":{}}`))
+		close(questionDone)
+	}()
+	ctx := testutil.DeadlineContext(t)
+	completed := false
+	select {
+	case <-questionDone:
+		completed = true
+	case <-ctx.Done():
+		assert.Fail(t, "the first control handler held a lock through plan storage")
+	}
+	if completed {
+		assert.Len(t, sink.PublishedControls(), 1)
+	}
+	close(sink.release)
+	if !completed {
+		zcodeTestReceive(t, questionDone)
+	}
+	zcodeTestReceive(t, handled)
+	assert.Len(t, sink.PublishedControls(), 2)
+}
+
+type zcodeReentrantCaptureSink struct {
+	*agenttest.ControlSink
+	entered    chan struct{}
+	release    chan struct{}
+	nestedDone chan struct{}
+	once       atomic.Bool
+	nested     func()
+}
+
+func (sink *zcodeReentrantCaptureSink) CaptureMessage(content agent.MessageContent, span agent.SpanInfo) agent.MessageContent {
+	if sink.once.CompareAndSwap(false, true) {
+		go func() { sink.nested(); close(sink.nestedDone) }()
+		close(sink.entered)
+		<-sink.release
+	}
+	return sink.ControlSink.CaptureMessage(content, span)
+}
+
+func TestZCodeControlIngress_ReentrantCaptureDoesNotWaitForItself(t *testing.T) {
+	t.Parallel()
+	sink := &zcodeReentrantCaptureSink{ControlSink: &agenttest.ControlSink{}, entered: make(chan struct{}), release: make(chan struct{}), nestedDone: make(chan struct{})}
+	t.Cleanup(func() {
+		select {
+		case <-sink.release:
+		default:
+			close(sink.release)
+		}
+	})
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	params := `{"requestId":"same","toolName":"Bash","input":{}}`
+	sink.nested = func() { a.handlePermissionRequest(json.RawMessage(`2`), json.RawMessage(params)) }
+	done := make(chan struct{})
+	go func() { a.handlePermissionRequest(json.RawMessage(`1`), json.RawMessage(params)); close(done) }()
+	zcodeTestReceive(t, sink.entered)
+	completed := false
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case <-sink.nestedDone:
+		completed = true
+	case <-ctx.Done():
+		assert.Fail(t, "a repeated request waited for the capture that invoked it")
+	}
+	close(sink.release)
+	if !completed {
+		zcodeTestReceive(t, sink.nestedDone)
+	}
+	zcodeTestReceive(t, done)
+	published := sink.PublishedControls()
+	require.Len(t, published, 2)
+	assert.Equal(t, published[0].Payload, published[1].Payload)
+}
+
+type zcodeReentrantPublicationSink struct {
+	*agenttest.ControlSink
+	once    atomic.Bool
+	reenter func()
+}
+
+func (sink *zcodeReentrantPublicationSink) PublishControlRequest(request agent.ControlRequest) error {
+	if sink.once.CompareAndSwap(false, true) {
+		sink.reenter()
+	}
+	return sink.ControlSink.PublishControlRequest(request)
+}
+
+func TestZCodeControlPublication_OrdersReusedLogicalInstances(t *testing.T) {
+	t.Parallel()
+	sink := &zcodeReentrantPublicationSink{ControlSink: &agenttest.ControlSink{}}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	var replacement string
+	sink.reenter = func() {
+		require.True(t, a.forgetZCodeControlRequest("same"))
+		a.handlePermissionRequest(json.RawMessage(`2`), json.RawMessage(`{"requestId":"same","toolName":"Bash","input":{"command":"new"}}`))
+		a.Mu.Lock()
+		replacement = a.pendingControls["same"].instanceID
+		a.Mu.Unlock()
+	}
+	a.handlePermissionRequest(json.RawMessage(`1`), json.RawMessage(`{"requestId":"same","toolName":"Bash","input":{"command":"old"}}`))
+	published := sink.PublishedControls()
+	require.Len(t, published, 2)
+	assert.Equal(t, replacement, published[1].InstanceID, "the new instance must store after the retired publication returns")
+	assert.Contains(t, string(published[1].Payload), `"command":"new"`)
+}
+
+func TestZCodeControlIngress_AnswersAnUnreadySessionWithoutPublishing(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{contracts.ZCodeMethodRequestPermission, contracts.ZCodeMethodRequestUserInput} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			stdin := &zcodeRecordedStdin{}
+			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+			a.Mu.Lock()
+			a.sessionChanging = true
+			a.Mu.Unlock()
+			a.HandleOutput(zcodeRequestLine(t, 7, method, `{"requestId":"unready","sessionId":"sess-1","toolName":"Bash","input":{"plan":"# Test"},"schema":{"interaction":"plan_approval"}}`))
+			require.Len(t, stdin.Frames(), 1, "a refused server request must receive a reply")
+			var response zcodeResponseEnvelope
+			require.NoError(t, json.Unmarshal(stdin.Frames()[0], &response))
+			require.NotNil(t, response.Error)
+			assert.Empty(t, sink.PublishedControls())
+			a.Mu.Lock()
+			assert.Empty(t, a.pendingControls)
+			a.Mu.Unlock()
+		})
 	}
 }

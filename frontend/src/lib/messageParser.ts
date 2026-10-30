@@ -3,7 +3,7 @@ import type { ContextUsageInfo } from '~/models/agentSession'
 import { CONTEXT_USAGE_FIELD, SESSION_INFO_KEY } from '~/generated/contracts/session-info'
 import { MESSAGE_SUPPLEMENT_FIELD, NOTIFICATION_FIELD, NOTIFICATION_THREAD_TYPE, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { decompressContent } from '~/lib/decompress'
-import { isObject, pickFirstNumber, pickNumber, pickString } from '~/lib/jsonPick'
+import { isObject, pickCounter, pickNumber, pickString } from '~/lib/jsonPick'
 
 /**
  * Content-type discriminator emitted by the backend's `wrapNotifContent`
@@ -255,34 +255,34 @@ export function normalizeContextUsage(value: unknown): ContextUsageInfo | undefi
   if (!isObject(value))
     return undefined
 
-  const inputTokens = pickNumber(value, CONTEXT_USAGE_FIELD.InputTokens, 0)
-  const cacheCreationInputTokens = pickNumber(value, CONTEXT_USAGE_FIELD.CacheCreationInputTokens, 0)
-  const cacheReadInputTokens = pickNumber(value, CONTEXT_USAGE_FIELD.CacheReadInputTokens, 0)
-  const outputTokens = pickNumber(value, CONTEXT_USAGE_FIELD.OutputTokens, undefined)
+  const inputTokens = pickCounter(value, CONTEXT_USAGE_FIELD.InputTokens)
+  const cacheCreationInputTokens = pickCounter(value, CONTEXT_USAGE_FIELD.CacheCreationInputTokens)
+  const cacheReadInputTokens = pickCounter(value, CONTEXT_USAGE_FIELD.CacheReadInputTokens)
+  const outputTokens = pickCounter(value, CONTEXT_USAGE_FIELD.OutputTokens)
   // Pi's native RPC shape calls this `tokens`; LeapMux-normalized payloads use
   // `context_tokens` so the grid can distinguish authoritative totals from the
   // Claude-style input/cache component fields. Only the LeapMux spelling comes
   // from the contract -- `tokens` is Pi's own protocol token, which LeapMux does
   // not own (see the _readme in contracts/session-info.json).
-  const contextTokens = pickFirstNumber(value, [CONTEXT_USAGE_FIELD.ContextTokens, 'tokens'])
-  const contextWindow = pickNumber(value, CONTEXT_USAGE_FIELD.ContextWindow, undefined)
+  const contextTokens = pickCounter(value, CONTEXT_USAGE_FIELD.ContextTokens) ?? pickCounter(value, 'tokens')
+  const contextWindow = pickCounter(value, CONTEXT_USAGE_FIELD.ContextWindow)
   // A percentage is a reading of its own: a provider that states no token count
   // (Kiro) reports the fill alone, and an empty context is a real reading of zero.
   const usagePercent = pickNumber(value, CONTEXT_USAGE_FIELD.UsagePercent, undefined)
   const hasPercent = usagePercent !== undefined && Number.isFinite(usagePercent) && usagePercent >= 0
 
-  const hasTokenData = inputTokens > 0
-    || cacheCreationInputTokens > 0
-    || cacheReadInputTokens > 0
-    || (outputTokens ?? 0) > 0
-    || (contextTokens ?? 0) > 0
+  const hasTokenData = inputTokens !== undefined
+    || cacheCreationInputTokens !== undefined
+    || cacheReadInputTokens !== undefined
+    || outputTokens !== undefined
+    || contextTokens !== undefined
   if (!hasTokenData && !hasPercent)
     return undefined
 
   const usage: ContextUsageInfo = {
-    inputTokens,
-    cacheCreationInputTokens,
-    cacheReadInputTokens,
+    inputTokens: inputTokens ?? 0,
+    cacheCreationInputTokens: cacheCreationInputTokens ?? 0,
+    cacheReadInputTokens: cacheReadInputTokens ?? 0,
   }
   if (outputTokens !== undefined)
     usage.outputTokens = outputTokens

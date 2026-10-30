@@ -35,25 +35,28 @@ type ModeChange struct {
 
 // Sink is a test implementation of ProviderServices that records calls.
 type Sink struct {
+	planUpdates        []PlanUpdateRecord
 	outputQueue        agent.OutputQueue
+	childLifetime      *testChildSinkLifetime
 	initialUserMessage agent.InitialUserMessage
 	// nativeChildKey belongs to this sink's direct parent and uses that parent's childSinkMu.
 	nativeChildKey string
 	// PersistErr controls storage refusal. A test may change it only while no
 	// write runs, because the write path reads it without a separate lock.
-	PersistErr        error
-	mu                sync.Mutex
-	messages          []Message
-	notifications     []Message
-	progress          []agent.ProgressUpdate
-	progressCount     agent.ProgressCounter
-	sessionIDs        []string
-	sessionFact       *testSessionFact
-	transcriptScope   *testTranscriptScope
-	permissionModes   []string
-	modeChanges       []ModeChange
-	settingsRefreshes []SettingsRefresh
-	sessionInfos      []map[string]interface{}
+	PersistErr         error
+	mu                 sync.Mutex
+	messages           []Message
+	notifications      []Message
+	progress           []agent.ProgressUpdate
+	progressCount      agent.ProgressCounter
+	sessionIDs         []string
+	sessionFact        *testSessionFact
+	sessionObservation *sinkSessionObservationWriter
+	transcriptScope    *testTranscriptScope
+	permissionModes    []string
+	modeChanges        []ModeChange
+	settingsRefreshes  []SettingsRefresh
+	sessionInfos       []map[string]interface{}
 	// leapMuxNotifications holds every PersistLeapMuxNotification payload in
 	// arrival order. These are the worker's OWN notification envelopes, which no
 	// provider writes, so a test reads the meaning rather than provider bytes.
@@ -154,8 +157,7 @@ type Sink struct {
 	// simulates the service layer that folds a changing notification into an
 	// existing thread tail. The zero value reports a broadcast.
 	SuppressNotificationBroadcast bool
-	// reportIDs models the database uniqueness rule for provider-neutral reports.
-	reportIDs   map[string]struct{}
+	// Native record identities include their original provider session.
 	messageKeys map[nativeMessageIdentity]struct{}
 	turnEndKeys map[nativeMessageIdentity]struct{}
 }
@@ -612,6 +614,9 @@ func (s *Sink) PersistNotification(source leapmuxv1.MessageSource, content agent
 	if err := agent.ValidateMessageCompletion(content); err != nil {
 		return false, err
 	}
+	var payload map[string]interface{}
+	_ = json.Unmarshal(content.Original, &payload)
+	report := payload[contracts.NotificationFieldType] == contracts.NotificationTypeSubagentReport
 	identity := s.messageIdentityLocked(content)
 	if identity.key != "" {
 		for _, message := range s.notifications {
@@ -634,7 +639,7 @@ func (s *Sink) PersistNotification(source leapmuxv1.MessageSource, content agent
 				if err != nil {
 					return false, err
 				}
-				if message.Source != source || entry.Fingerprint != expected.Fingerprint {
+				if message.Source != source || !report && entry.Fingerprint != expected.Fingerprint {
 					return false, fmt.Errorf("notification identity conflict for key %q", identity.key)
 				}
 				return false, nil
@@ -656,6 +661,9 @@ func (s *Sink) PersistNotification(source leapmuxv1.MessageSource, content agent
 	s.notifications = append(s.notifications, Message{stored: true, Source: source, AgentSessionID: identity.sessionID,
 		Content: slices.Clone(content.Original), SupplementalContent: decoded.Supplemental, Metadata: decoded.Metadata, Completion: content.Completion,
 		TranscriptOnly: owner != nil && !owner.currentLocked()})
+	if report {
+		s.leapMuxNotifications = append(s.leapMuxNotifications, payload)
+	}
 	content.WriteReceipt.RecordStoredWrite(!s.SuppressNotificationBroadcast)
 	return !s.SuppressNotificationBroadcast, nil
 }
@@ -768,10 +776,18 @@ func (s *Sink) PublishControlRequest(agent.ControlRequest) error { return nil }
 func (s *Sink) CancelControlRequest(string)                      {}
 func (s *Sink) CancelControlRequestInstance(string, string)      {}
 func (s *Sink) UpdateSessionID(sessionID string) {
+	s.updateSessionID(sessionID, false)
+}
+
+func (s *Sink) AdoptNativeSession(sessionID string) {
+	s.updateSessionID(sessionID, true)
+}
+
+func (s *Sink) updateSessionID(sessionID string, newLifetime bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessionIDs = append(s.sessionIDs, sessionID)
-	if s.sessionFact == nil || s.sessionFact.id != sessionID {
+	if newLifetime || s.sessionFact == nil || s.sessionFact.id != sessionID {
 		s.sessionFact = &testSessionFact{id: sessionID}
 	}
 }
@@ -788,6 +804,10 @@ func (s *Sink) NotifyPermissionModeChanged(oldMode, newMode string) {
 func (s *Sink) PersistSettingsRefresh(refresh optionmap.Map) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.persistSettingsRefreshLocked(refresh)
+}
+
+func (s *Sink) persistSettingsRefreshLocked(refresh optionmap.Map) {
 	// Split the unified refresh map back into the named fields the assertions read:
 	// the three well-known axes plus every other key as an "extra". An axis the
 	// provider omitted reads back as "" (absent), matching the old "" sentinel.
@@ -858,23 +878,11 @@ func (s *Sink) PersistLeapMuxNotification(info map[string]interface{}) {
 }
 
 func (s *Sink) PersistSubagentReport(write agent.SubagentReportWrite) (bool, error) {
-	payload, err := write.NotificationPayload()
-	if err != nil || payload == nil {
+	captured, present, err := agent.CaptureSubagentReport(s, write)
+	if err != nil || !present {
 		return false, err
 	}
-	s.mu.Lock()
-	if s.reportIDs == nil {
-		s.reportIDs = make(map[string]struct{})
-	}
-	reportID := write.ReportID
-	if _, duplicate := s.reportIDs[reportID]; duplicate {
-		s.mu.Unlock()
-		return false, nil
-	}
-	s.reportIDs[reportID] = struct{}{}
-	s.mu.Unlock()
-	s.PersistLeapMuxNotification(payload)
-	return true, nil
+	return captured.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX)
 }
 func (s *Sink) PersistChildSubagentReport(write agent.ChildSubagentReportWrite) (bool, error) {
 	// The COMPLETE native key, never a trimmed one: trimming maps two provider
@@ -903,8 +911,6 @@ func (s *Sink) LoadAndDeletePlanModeToolUse(toolUseID string) (string, bool) {
 	}
 	return v.(string), true
 }
-
-func (s *Sink) UpdatePlan([]byte, leapmuxv1.ContentCompression, string) {}
 
 // ownsGoal matches the Worker: only a root sink can write a goal.
 // A child sink refuses the write and records nothing.
@@ -1842,6 +1848,7 @@ func (nop) CancelControlRequest(string)                       {}
 func (nop) CancelControlRequestInstance(string, string)       {}
 func (nop) MessageSessionID() string                          { return "" }
 func (nop) UpdateSessionID(string)                            {}
+func (nop) AdoptNativeSession(string)                         {}
 func (nop) UpdatePermissionMode(string)                       {}
 func (nop) NotifyPermissionModeChanged(string, string)        {}
 func (nop) PersistSettingsRefresh(optionmap.Map)              {}
@@ -1871,6 +1878,9 @@ func (nop) CancelServerErrorRetry()                               {}
 func (nop) EnsureChildAgent(agent.ChildAgentSpec) (string, error) { return "", nil }
 func (nop) ChildSpawnSpan(string) (string, error)                 { return "", nil }
 func (nop) ChildSink(string) agent.ProviderServices               { return Nop() }
+func (nop) AcquireChildSink(string) agent.ChildSinkLease {
+	return agent.ChildSinkLease{Sink: Nop(), CaptureMessage: func(content agent.MessageContent, _ agent.SpanInfo) agent.MessageContent { return content.Clone() }, Cleanup: func() bool { return true }}
+}
 func (nop) PersistChildMessage(string, leapmuxv1.MessageSource, []byte, agent.SpanInfo) error {
 	return nil
 }
@@ -1979,4 +1989,26 @@ func (s *Sink) BackgroundTaskStatuses(rowKey string) []bgtask.Status {
 	r.bgTasksMu.Lock()
 	defer r.bgTasksMu.Unlock()
 	return slices.Clone(r.bgTaskStatuses[rowKey])
+}
+
+func (sink *Sink) ReserveTranscriptOutput(queue *agent.OutputQueue, writes ...agent.OutputWrite) ([]*agent.OutputTicket, error) {
+	if queue == nil {
+		return nil, errors.New("the transcript reservation has no output queue")
+	}
+	return queue.Append(writes...), nil
+}
+
+func (nop) ReserveTranscriptOutput(queue *agent.OutputQueue, writes ...agent.OutputWrite) ([]*agent.OutputTicket, error) {
+	if queue == nil {
+		return nil, errors.New("the transcript reservation has no output queue")
+	}
+	return queue.Append(writes...), nil
+}
+
+func (sink *Sink) ValidateTranscriptOutput(ticket *agent.OutputTicket) error {
+	return agent.ValidateTranscriptOutputTicket(ticket)
+}
+
+func (nop) ValidateTranscriptOutput(ticket *agent.OutputTicket) error {
+	return agent.ValidateTranscriptOutputTicket(ticket)
 }

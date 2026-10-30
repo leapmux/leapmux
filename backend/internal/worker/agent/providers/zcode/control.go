@@ -11,6 +11,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/jsonfield"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -46,6 +47,8 @@ const zcodeControlMCPElicitation = "McpElicitation"
 
 // zcodePermissionRequest is the interaction/requestPermission params.
 type zcodePermissionRequest struct {
+	TurnID     string                  `json:"turnId"`
+	Origin     zcodeControlOrigin      `json:"origin"`
 	RequestID  string                  `json:"requestId"`
 	SessionID  string                  `json:"sessionId"`
 	ToolCallID string                  `json:"toolCallId"`
@@ -75,8 +78,11 @@ type zcodePermissionOption struct {
 // ResolveControlResponse, and the app-server waits for it -- which is the whole
 // point of a permission prompt.
 func (a *Agent) handlePermissionRequest(id, params json.RawMessage) {
-	a.controlMu.Lock()
-	defer a.controlMu.Unlock()
+	a.handlePreparedPermissionRequest(id, params, a.prepareZCodeControlRequest(id, params))
+}
+
+func (a *Agent) handlePreparedPermissionRequest(id, params json.RawMessage, record *pendingControl) {
+	defer a.discardUnpreparedZCodeControl(record)
 	var req zcodePermissionRequest
 	if err := json.Unmarshal(params, &req); err != nil {
 		slog.Warn("zcode permission request unmarshal failed", "agent_id", a.AgentID(), "error", err)
@@ -97,19 +103,24 @@ func (a *Agent) handlePermissionRequest(id, params json.RawMessage) {
 		a.replyZCodePermission(id, req.Options, agent.ControlBehaviorDeny, "leapmux could not route this permission request")
 		return
 	}
-	if _, err := a.supplementZCodeControlInput(req.ToolCallID, req.ToolName, req.Input); err != nil {
+	if record == nil {
+		a.replyZCodeControlFailure(id, "LeapMux cannot accept this interaction before the session is ready.")
+		return
+	}
+	if !a.beginZCodeControlWork(req.RequestID, record) {
+		return
+	}
+	defer a.finishZCodeControlWork(req.RequestID, record)
+	if record.prepared {
+		return
+	}
+	id = record.wireID
+	spanID := a.resolveZCodeControlSpan(record.ownerSessionID, req.TurnID, req.ToolCallID, req.Origin)
+	if _, err := a.supplementZCodeControlInputForCurrentRequest(spanID, req.ToolName, req.Input, func() bool { return a.zcodeControlRequestCurrent(req.RequestID, record) }); err != nil {
 		slog.Warn("recover permission tool input", "agent_id", a.AgentID(), "tool_call_id", req.ToolCallID, "error", err)
 	}
 
-	// Check for a repeat BEFORE the marshal below. The app-server re-announces an
-	// unanswered request every second, doubling to ten, for as long as the user takes to
-	// answer, and the payload embeds the whole tool input each time. Republishing the
-	// stored bytes skips that marshal, and it keeps a marshal failure on a REPEAT from
-	// sending replyZCodeControlFailure, which would resolve the app-server's request and
-	// destroy the prompt the user still holds.
-	if stored := a.pendingZCodeControlPayload(requestID); stored != nil {
-		slog.Debug("zcode re-announced permission request republished", "agent_id", a.AgentID(), "request_id", requestID)
-		a.publishZCodeControlRequest(requestID)
+	if !a.zcodeControlRequestCurrent(req.RequestID, record) {
 		return
 	}
 
@@ -120,7 +131,7 @@ func (a *Agent) handlePermissionRequest(id, params json.RawMessage) {
 		Method:    contracts.ZCodeMethodRequestPermission,
 		Request: zcodeControlRequestHeader{
 			ToolName:  req.ToolName,
-			ToolUseID: req.ToolCallID,
+			ToolUseID: spanID,
 			Input:     req.Input,
 		},
 		Params: params,
@@ -131,18 +142,19 @@ func (a *Agent) handlePermissionRequest(id, params json.RawMessage) {
 		return
 	}
 
-	a.rememberZCodeControlRequest(requestID, payload)
-	a.publishZCodeControlRequest(requestID)
+	a.completeZCodeControlRequest(requestID, record, payload)
 }
 
 // zcodeUserInputRequest is the interaction/requestUserInput params.
 type zcodeUserInputRequest struct {
-	RequestID  string          `json:"requestId"`
-	SessionID  string          `json:"sessionId"`
-	ToolCallID string          `json:"toolCallId"`
-	ToolName   string          `json:"toolName"`
-	Prompt     string          `json:"prompt"`
-	Input      json.RawMessage `json:"input"`
+	TurnID     string             `json:"turnId"`
+	Origin     zcodeControlOrigin `json:"origin"`
+	RequestID  string             `json:"requestId"`
+	SessionID  string             `json:"sessionId"`
+	ToolCallID string             `json:"toolCallId"`
+	ToolName   string             `json:"toolName"`
+	Prompt     string             `json:"prompt"`
+	Input      json.RawMessage    `json:"input"`
 	Schema     struct {
 		Interaction string               `json:"interaction"`
 		Questions   []zcodeInputQuestion `json:"questions"`
@@ -224,8 +236,11 @@ func (r zcodeUserInputRequest) toolInput() (json.RawMessage, error) {
 
 // handleUserInputRequest persists a plan approval or a question.
 func (a *Agent) handleUserInputRequest(id, params, original json.RawMessage) {
-	a.controlMu.Lock()
-	defer a.controlMu.Unlock()
+	a.handlePreparedUserInputRequest(id, params, original, a.prepareZCodeControlRequest(id, params))
+}
+
+func (a *Agent) handlePreparedUserInputRequest(id, params, original json.RawMessage, record *pendingControl) {
+	defer a.discardUnpreparedZCodeControl(record)
 	var req zcodeUserInputRequest
 	if err := json.Unmarshal(params, &req); err != nil {
 		slog.Warn("zcode user input request unmarshal failed", "agent_id", a.AgentID(), "error", err)
@@ -244,28 +259,34 @@ func (a *Agent) handleUserInputRequest(id, params, original json.RawMessage) {
 		a.replyZCodeUserInput(id, agent.ControlBehaviorDeny, zcodeUserInputReply{PlanApproval: req.isPlanApproval()})
 		return
 	}
+	if record == nil {
+		a.replyZCodeControlFailure(id, "LeapMux cannot accept this interaction before the session is ready.")
+		return
+	}
+	if !a.beginZCodeControlWork(req.RequestID, record) {
+		return
+	}
+	defer a.finishZCodeControlWork(req.RequestID, record)
+	if record.prepared {
+		return
+	}
+	id = record.wireID
 	nativeInput, err := req.toolInput()
 	if err != nil {
 		slog.Warn("encode interaction tool input", "agent_id", a.AgentID(), "error", err)
 		a.replyZCodeControlFailure(id, "LeapMux could not read the tool input.")
 		return
 	}
-	carriesInput, sourceErr := a.supplementZCodeControlInput(req.ToolCallID, req.ToolName, nativeInput)
+	spanID := a.resolveZCodeControlSpan(record.ownerSessionID, req.TurnID, req.ToolCallID, req.Origin)
+	carriesInput, sourceErr := a.supplementZCodeControlInputForCurrentRequest(spanID, req.ToolName, nativeInput, func() bool { return a.zcodeControlRequestCurrent(req.RequestID, record) })
 	if sourceErr != nil {
 		slog.Warn("recover interaction tool input", "agent_id", a.AgentID(), "tool_call_id", req.ToolCallID, "error", sourceErr)
 	}
 
-	// Check for a repeat BEFORE the two marshals below. The app-server re-announces an
-	// unanswered request every second, doubling to ten, for as long as the user takes to
-	// answer, and each repeat carries the whole tool input again. Republishing the stored
-	// bytes skips both marshals, and it keeps a marshal failure on a REPEAT from sending
-	// replyZCodeControlFailure, which would resolve the app-server's request and destroy
-	// the prompt the user still holds.
-	if stored := a.pendingZCodeControlPayload(req.RequestID); stored != nil {
-		slog.Debug("zcode re-announced user-input request republished", "agent_id", a.AgentID(), "request_id", req.RequestID)
-		a.publishZCodeControlRequest(req.RequestID)
+	if !a.zcodeControlRequestCurrent(req.RequestID, record) {
 		return
 	}
+
 	// The transcript confirms no row that carries this plan, so this call writes one.
 	// A read that FAILED confirms nothing either, and it is treated as "the row is
 	// there": a second plan row over one already in the transcript draws it twice.
@@ -274,17 +295,23 @@ func (a *Agent) handleUserInputRequest(id, params, original json.RawMessage) {
 			a.replyZCodeControlFailure(id, "The original plan request is unavailable.")
 			return
 		}
-		spanID := req.ToolCallID
-		if spanID == "" {
-			spanID = req.RequestID
+		planSpanID := spanID
+		if planSpanID == "" {
+			planSpanID = req.RequestID
 		}
-		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: original}, agent.SpanInfo{SpanID: spanID, SpanType: zcodeControlPlanApproval, NoSpan: true}); err != nil {
+		template := record.captured.FrozenContent().Clone()
+		template.Original = original
+		captured := agent.CaptureTranscript(a.sink, template, agent.SpanInfo{SpanID: planSpanID, SpanType: zcodeControlPlanApproval, NoSpan: true})
+		if err := captured.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT); err != nil {
 			slog.Error("persist plan control source", "agent_id", a.AgentID(), "request_id", req.RequestID, "error", err)
 			a.replyZCodeControlFailure(id, "LeapMux could not store the plan.")
 			return
 		}
 	}
 
+	if !a.zcodeControlRequestCurrent(req.RequestID, record) {
+		return
+	}
 	planText := req.planText()
 	toolName := zcodeControlAskUserQuestion
 	if req.isMCPElicitation() {
@@ -294,7 +321,17 @@ func (a *Agent) handleUserInputRequest(id, params, original json.RawMessage) {
 		toolName = zcodeControlPlanApproval
 		if strings.TrimSpace(planText) != "" {
 			// A context-clear approval reads this canonical copy after it replaces the native session.
-			a.sink.UpdatePlan([]byte(planText), leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE, providerkit.ExtractPlanTitle(planText))
+			writer, err := a.sink.PlanWriterFor(record.captured)
+			if err == nil {
+				err = writer.UpdatePlan([]byte(planText), leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE, providerkit.ExtractPlanTitle(planText))
+			}
+			if err != nil {
+				if a.zcodeControlRequestCurrent(req.RequestID, record) {
+					slog.Error("The Worker could not store the canonical plan.", "agent_id", a.AgentID(), "error", err)
+					a.replyZCodeControlFailure(id, "LeapMux could not store the plan.")
+				}
+				return
+			}
 		}
 	}
 
@@ -321,7 +358,7 @@ func (a *Agent) handleUserInputRequest(id, params, original json.RawMessage) {
 		Method:    contracts.ZCodeMethodRequestUserInput,
 		Request: zcodeControlRequestHeader{
 			ToolName:  toolName,
-			ToolUseID: req.ToolCallID,
+			ToolUseID: spanID,
 			Input:     input,
 		},
 		Params: params,
@@ -332,8 +369,7 @@ func (a *Agent) handleUserInputRequest(id, params, original json.RawMessage) {
 		return
 	}
 
-	a.rememberZCodeControlRequest(req.RequestID, payload)
-	a.publishZCodeControlRequest(req.RequestID)
+	a.completeZCodeControlRequest(req.RequestID, record, payload)
 }
 
 // zcodeSharedQuestions projects ZCode's questions into the shared control's shape.
@@ -441,6 +477,189 @@ func (a *Agent) replyZCodeUserInput(id json.RawMessage, behavior string, reply z
 	}
 }
 
+// zcodeRuntimeHeaderState is where one registered runtime-headers answer is in
+// its reply lifecycle.
+type zcodeRuntimeHeaderState int
+
+const (
+	// zcodeRuntimeHeaderPending is an answer whose work may still be running.
+	zcodeRuntimeHeaderPending zcodeRuntimeHeaderState = iota
+	// zcodeRuntimeHeaderReplying is an answer that committed to its reply: the
+	// cancellation that arrives now is too late.
+	zcodeRuntimeHeaderReplying
+	// zcodeRuntimeHeaderCancelled is a withdrawn answer. Its completion writes
+	// nothing.
+	zcodeRuntimeHeaderCancelled
+)
+
+// zcodeRuntimeHeaderAnswer is one registered interaction/requestProviderRuntimeHeaders.
+//
+// The two ids must never be confused. envelopeID is the JSON-RPC id of the
+// request, only for sendZCodeReply. requestID is the LOGICAL
+// `params.requestId` (`<session>:provider-runtime-headers:<uuid>`), the key a
+// cancellation specifies. A cancellation must also match sessionID and workspace.
+//
+// The state transition is linearized under Agent.runtimeHeaderMu, never the
+// blocking reply write itself: the write happens AFTER the lock is released, so
+// a cancellation of another answer never waits for it.
+type zcodeRuntimeHeaderAnswer struct {
+	envelopeID json.RawMessage
+	requestID  string
+	sessionID  string
+	workspace  json.RawMessage
+	// ctx is the context the credential work runs on; cancel withdraws it.
+	ctx    context.Context
+	cancel context.CancelFunc
+	state  zcodeRuntimeHeaderState
+}
+
+// prepareZCodeRuntimeHeaderAnswer registers the answer of one
+// interaction/requestProviderRuntimeHeaders BEFORE its handler runs. The
+// handler works on a goroutine of its own, and a cancellation that lands before
+// it runs must already find the registration. It is synchronous bookkeeping --
+// one decode and one map insert -- so the read loop absorbs it.
+//
+// It returns nil for a request LeapMux cannot register: malformed params take
+// the existing error-response path, a request without a logical id cannot be
+// cancelled by id, and a duplicate logical id must NOT replace the existing
+// registration -- the answer that holds the key also holds the cancellation
+// that specifies it.
+func (a *Agent) prepareZCodeRuntimeHeaderAnswer(envelopeID, params json.RawMessage) *zcodeRuntimeHeaderAnswer {
+	var req zcodeRuntimeHeadersRequest
+	if err := json.Unmarshal(params, &req); err != nil || req.RequestID == "" {
+		return nil
+	}
+	answer := &zcodeRuntimeHeaderAnswer{
+		envelopeID: envelopeID,
+		requestID:  req.RequestID,
+		sessionID:  req.SessionID,
+		workspace:  req.Workspace,
+	}
+	answer.ctx, answer.cancel = context.WithCancel(a.Context())
+	a.runtimeHeaderMu.Lock()
+	if a.runtimeHeaderAnswers == nil {
+		a.runtimeHeaderAnswers = map[string]*zcodeRuntimeHeaderAnswer{}
+	}
+	if _, taken := a.runtimeHeaderAnswers[req.RequestID]; taken {
+		a.runtimeHeaderMu.Unlock()
+		answer.cancel()
+		return nil
+	}
+	a.runtimeHeaderAnswers[req.RequestID] = answer
+	a.runtimeHeaderMu.Unlock()
+	return answer
+}
+
+// replyZCodeRuntimeHeader answers one runtime-headers request. A registered
+// answer is written only when its completion wins the state transition: a
+// cancelled answer writes nothing, and a reply that already committed cannot be
+// withdrawn. An unregistered answer (malformed params, no logical request id, or
+// a duplicate id) writes directly.
+func (a *Agent) replyZCodeRuntimeHeader(envelopeID json.RawMessage, answer *zcodeRuntimeHeaderAnswer, result any) {
+	if answer == nil {
+		if err := a.sendZCodeReply(envelopeID, result); err != nil {
+			slog.Warn("zcode provider runtime headers reply failed", "agent_id", a.AgentID(), "error", err)
+		}
+		return
+	}
+	if !a.beginZCodeRuntimeHeaderReply(answer) {
+		return
+	}
+	if err := a.sendZCodeReply(answer.envelopeID, result); err != nil {
+		slog.Warn("zcode provider runtime headers reply failed", "agent_id", a.AgentID(), "error", err)
+	}
+	a.finishZCodeRuntimeHeaderReply(answer)
+}
+
+// beginZCodeRuntimeHeaderReply commits the answer to its reply: `pending` to
+// `replying`, under the lock and never across the write. It reports false when
+// the answer is gone (a cancellation won) or a newer answer owns the key now;
+// the reply must then not start.
+func (a *Agent) beginZCodeRuntimeHeaderReply(answer *zcodeRuntimeHeaderAnswer) bool {
+	a.runtimeHeaderMu.Lock()
+	defer a.runtimeHeaderMu.Unlock()
+	if a.runtimeHeaderAnswers[answer.requestID] != answer || answer.state != zcodeRuntimeHeaderPending {
+		return false
+	}
+	answer.state = zcodeRuntimeHeaderReplying
+	return true
+}
+
+// finishZCodeRuntimeHeaderReply removes the answer's own registration after the
+// write. It removes ONLY its own: a request id that a newer answer reused after
+// a cancellation must keep that answer's registration.
+func (a *Agent) finishZCodeRuntimeHeaderReply(answer *zcodeRuntimeHeaderAnswer) {
+	a.runtimeHeaderMu.Lock()
+	if a.runtimeHeaderAnswers[answer.requestID] == answer {
+		delete(a.runtimeHeaderAnswers, answer.requestID)
+	}
+	a.runtimeHeaderMu.Unlock()
+	answer.cancel()
+}
+
+// zcodeRuntimeHeaderCancellation is the params of
+// NotifyProviderRuntimeHeadersCancelled: the identity of one withdrawn request.
+type zcodeRuntimeHeaderCancellation struct {
+	RequestID string          `json:"requestId"`
+	SessionID string          `json:"sessionId"`
+	Workspace json.RawMessage `json:"workspace"`
+}
+
+// handleZCodeRuntimeHeadersCancelled withdraws the answer of one
+// providerRuntimeHeadersCancelled notification. All three identifiers must
+// match -- the logical request id, the session AND the workspace -- so a stale
+// or mismatched notification never cancels a newer answer that happens to reuse
+// the id.
+func (a *Agent) handleZCodeRuntimeHeadersCancelled(params json.RawMessage) {
+	var note zcodeRuntimeHeaderCancellation
+	if err := json.Unmarshal(params, &note); err != nil {
+		slog.Warn("zcode provider runtime headers cancellation unmarshal failed", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	a.cancelZCodeRuntimeHeaderAnswers(func(answer *zcodeRuntimeHeaderAnswer) bool {
+		return answer.requestID == note.RequestID &&
+			answer.sessionID == note.SessionID &&
+			zcodeJSONEqual(answer.workspace, note.Workspace)
+	})
+}
+
+// cancelZCodeRuntimeHeaderAnswers cancels every pending answer the matcher
+// selects. A `replying` answer is never cancelled: it already committed to its
+// reply. The state change, the removal and the cancel run under one lock, so an
+// answer this sweep removes can never start a reply afterwards.
+func (a *Agent) cancelZCodeRuntimeHeaderAnswers(match func(*zcodeRuntimeHeaderAnswer) bool) {
+	a.runtimeHeaderMu.Lock()
+	defer a.runtimeHeaderMu.Unlock()
+	for id, answer := range a.runtimeHeaderAnswers {
+		if answer.state != zcodeRuntimeHeaderPending || !match(answer) {
+			continue
+		}
+		answer.state = zcodeRuntimeHeaderCancelled
+		delete(a.runtimeHeaderAnswers, id)
+		answer.cancel()
+	}
+}
+
+// cancelZCodeRuntimeHeaderAnswersForSession cancels the pending answers of one
+// session. A context clear calls it for the session it replaced.
+func (a *Agent) cancelZCodeRuntimeHeaderAnswersForSession(sessionID string) {
+	a.cancelZCodeRuntimeHeaderAnswers(func(answer *zcodeRuntimeHeaderAnswer) bool {
+		return answer.sessionID == sessionID
+	})
+}
+
+// cancelAllZCodeRuntimeHeaderAnswers cancels every pending answer. Stop and
+// Wait call it: nothing outlives the process.
+func (a *Agent) cancelAllZCodeRuntimeHeaderAnswers() {
+	a.cancelZCodeRuntimeHeaderAnswers(func(*zcodeRuntimeHeaderAnswer) bool { return true })
+}
+
+// zcodeJSONEqual compares two JSON values semantically: whitespace and object
+// key order do not matter.
+func zcodeJSONEqual(left, right json.RawMessage) bool {
+	return jsonfield.SemanticEqual(left, right)
+}
+
 // answerProviderRuntimeHeaders answers the app-server's request for freshly-minted
 // provider credentials.
 //
@@ -448,7 +667,10 @@ func (a *Agent) replyZCodeUserInput(id json.RawMessage, behavior string, reply z
 // so their reply reports authorization only. ZCode 0.16.9 keeps account credentials
 // in the host and requires the key in `requestAuth` for each model request, which
 // accountRequestAuth resolves.
-func (a *Agent) answerProviderRuntimeHeaders(id, params json.RawMessage) {
+//
+// The answer is the registration prepareZCodeRuntimeHeaderAnswer made; every
+// reply goes through it, so a withdrawn answer writes nothing.
+func (a *Agent) answerProviderRuntimeHeaders(id, params json.RawMessage, answer *zcodeRuntimeHeaderAnswer) {
 	a.Mu.Lock()
 	accountConfig := a.account != nil
 	a.Mu.Unlock()
@@ -470,16 +692,14 @@ func (a *Agent) answerProviderRuntimeHeaders(id, params json.RawMessage) {
 				"errorMessage":   "leapmux could not read the provider runtime headers request",
 			}
 		}
-		if err := a.sendZCodeReply(id, result); err != nil {
-			slog.Warn("zcode provider runtime headers reply failed", "agent_id", a.AgentID(), "error", err)
-		}
+		a.replyZCodeRuntimeHeader(id, answer, result)
 		return
 	}
 	if accountConfig {
 		// The caller sits on the event goroutine, and a coding plan's credential can
 		// take a network call, so the answer goes on a goroutine of its own: the
 		// reader must keep reading frames while the call runs.
-		go a.answerAccountRuntimeHeaders(id, req)
+		go a.answerAccountRuntimeHeaders(id, answer, req)
 		return
 	}
 	a.Mu.Lock()
@@ -492,16 +712,20 @@ func (a *Agent) answerProviderRuntimeHeaders(id, params json.RawMessage) {
 	if !authorized {
 		result["error"] = fmt.Sprintf("leapmux holds no credential for provider %q; add it to ZCode's configuration", req.ProviderID)
 	}
-	if err := a.sendZCodeReply(id, result); err != nil {
-		slog.Warn("zcode provider runtime headers reply failed", "agent_id", a.AgentID(), "error", err)
-	}
+	a.replyZCodeRuntimeHeader(id, answer, result)
 }
 
 // answerAccountRuntimeHeaders answers a runtime headers request of an account
 // build with the credential that accountRequestAuth resolves, or with the reason
 // that it has none.
-func (a *Agent) answerAccountRuntimeHeaders(id json.RawMessage, req zcodeRuntimeHeadersRequest) {
-	ctx, cancel := context.WithTimeout(a.Context(), zcodeProjectTokenTimeout)
+func (a *Agent) answerAccountRuntimeHeaders(id json.RawMessage, answer *zcodeRuntimeHeaderAnswer, req zcodeRuntimeHeadersRequest) {
+	// The answer's context is the cancellation scope: a withdrawn answer ends the
+	// credential work instead of letting it run out its timeout.
+	parent := a.Context()
+	if answer != nil {
+		parent = answer.ctx
+	}
+	ctx, cancel := context.WithTimeout(parent, zcodeProjectTokenTimeout)
 	auth, err := a.accountRequestAuth(ctx, req)
 	cancel()
 	var result any = map[string]any{"headersApplied": true, "requestAuth": auth}
@@ -509,9 +733,7 @@ func (a *Agent) answerAccountRuntimeHeaders(id json.RawMessage, req zcodeRuntime
 		slog.Warn("zcode provider credential unavailable", "agent_id", a.AgentID(), "provider", req.ProviderID, "error", err)
 		result = map[string]any{"headersApplied": false, "errorMessage": err.Error()}
 	}
-	if err := a.sendZCodeReply(id, result); err != nil {
-		slog.Warn("zcode provider runtime headers reply failed", "agent_id", a.AgentID(), "error", err)
-	}
+	a.replyZCodeRuntimeHeader(id, answer, result)
 }
 
 // answerOfficialMcpAuthHeaders answers the request for credentials to ZCode's
@@ -752,56 +974,191 @@ func zcodeAnswerContent(reply zcodeUserInputReply) map[string]any {
 
 // --- permission bookkeeping ---
 
-// pendingZCodeControlPayload returns the payload the FIRST announcement of requestID
-// stored, or nil when no announcement of it is pending.
-//
-// The app-server re-announces an unanswered interaction request on a timer that starts
-// at one second and doubles to ten, each time with a fresh WIRE id and the same
-// `requestId`. Every announcement after the first repeats a prompt the user already
-// holds, and publishing a freshly built payload would show a second banner: the frontend
-// de-duplicates on the request id AND the payload, and the payload differs because the
-// wire id is inside it.
-//
-// The caller therefore republishes THESE bytes rather than its own. Byte-identical bytes
-// leave an open banner alone, and they restore one that is gone -- which is what keeps a
-// prompt whose answer produced no reply reachable, instead of dropping every repeat and
-// blocking the turn for good. Answering the FIRST wire id still resolves the request: the
-// app-server registers every announced wire id against the same pending request.
-//
-// The record also makes the app-server's own permission.resolved for this request
-// recognizable as the echo of the user's answer rather than as an automatic decision.
-func (a *Agent) pendingZCodeControlPayload(requestID string) json.RawMessage {
+// beginZCodeControlWork keeps one preparer and publisher per request. Reannouncements
+// add publication attempts without blocking an independent or reentrant handler.
+func (a *Agent) beginZCodeControlWork(requestID string, record *pendingControl) bool {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
-	if record := a.pendingControls[requestID]; record != nil {
-		return record.payload
+	if a.pendingControls[requestID] != record || !a.zcodeControlLifetimeCurrentLocked(record) {
+		return false
 	}
-	return nil
+	record.announcements++
+	if record.working || !record.ingressReady {
+		return false
+	}
+	record.working = true
+	return true
 }
 
-// rememberZCodeControlRequest keeps the first wire identity until native settlement.
-func (a *Agent) rememberZCodeControlRequest(requestID string, payload json.RawMessage) {
-	record := newPendingControl(payload)
+// zcodeControlPublisher remains registered until its sink call and compensation finish.
+// One pending pointer is enough because each logical ID has one current instance.
+type zcodeControlPublisher struct{ pending *pendingControl }
+
+func (a *Agent) finishZCodeControlWork(requestID string, record *pendingControl) {
+	a.Mu.Lock()
+	owned := a.pendingControls[requestID] == record
+	current := owned && a.zcodeControlLifetimeCurrentLocked(record) && record.prepared
+	record.working = false
+	if !current {
+		if owned {
+			delete(a.pendingControls, requestID)
+		}
+		record.publicationOnce.Do(func() { close(record.publicationDone) })
+		cancel := owned && record.published
+		if cancel {
+			record.published = false
+		}
+		a.Mu.Unlock()
+		if cancel {
+			a.sink.CancelControlRequestInstance(requestID, record.instanceID)
+		}
+		return
+	}
+	publisher, start := a.queueZCodeControlPublicationLocked(requestID, record)
+	a.Mu.Unlock()
+	if start {
+		a.drainZCodeControlPublications(requestID, publisher)
+	}
+}
+
+// queueZCodeControlPublicationLocked requires Mu and a validated current instance.
+func (a *Agent) queueZCodeControlPublicationLocked(requestID string, record *pendingControl) (*zcodeControlPublisher, bool) {
+	if a.controlPublishers == nil {
+		a.controlPublishers = make(map[string]*zcodeControlPublisher)
+	}
+	publisher := a.controlPublishers[requestID]
+	start := publisher == nil
+	if start {
+		publisher = &zcodeControlPublisher{}
+		a.controlPublishers[requestID] = publisher
+	}
+	publisher.pending = record
+	return publisher, start
+}
+
+func (a *Agent) drainZCodeControlPublications(requestID string, publisher *zcodeControlPublisher) {
+	for {
+		a.Mu.Lock()
+		record := publisher.pending
+		if record == nil {
+			if a.controlPublishers[requestID] == publisher {
+				delete(a.controlPublishers, requestID)
+			}
+			a.Mu.Unlock()
+			return
+		}
+		if a.pendingControls[requestID] != record || !a.zcodeControlLifetimeCurrentLocked(record) || !record.prepared || record.announcements == 0 {
+			publisher.pending = nil
+			a.Mu.Unlock()
+			continue
+		}
+		record.announcements--
+		if record.announcements == 0 {
+			publisher.pending = nil
+		}
+		a.Mu.Unlock()
+		a.publishZCodeControlInstanceNow(requestID, record)
+	}
+}
+
+func (a *Agent) discardUnpreparedZCodeControl(record *pendingControl) {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
+	if record == nil || !record.ingressReady || record.working || record.prepared {
+		return
+	}
+	for requestID, current := range a.pendingControls {
+		if current == record {
+			delete(a.pendingControls, requestID)
+			record.publicationOnce.Do(func() { close(record.publicationDone) })
+			return
+		}
+	}
+}
+
+// prepareZCodeControlRequest reserves an instance before its handler can be delayed.
+func (a *Agent) prepareZCodeControlRequest(wireID, params json.RawMessage) *pendingControl {
+	var request struct {
+		RequestID string `json:"requestId"`
+		SessionID string `json:"sessionId"`
+	}
+	if json.Unmarshal(params, &request) != nil || request.RequestID == "" {
+		return nil
+	}
+	identity, valid := agent.NewControlRequestIdentity(wireID)
+	if !valid {
+		return nil
+	}
+	a.Mu.Lock()
+	session := a.captureZCodeObservationIdentityLocked()
+	if !a.zcodeSessionLifetimeCurrentLocked(session) || request.SessionID != "" && request.SessionID != session.sessionID {
+		a.Mu.Unlock()
+		return nil
+	}
+	if record := a.pendingControls[request.RequestID]; record != nil {
+		a.Mu.Unlock()
+		return record
+	}
+	record := newPendingControl(nil)
+	record.ownerSessionID, record.sessionID, record.epoch = session.sessionID, session.sessionID, session.epoch
+	record.wireID, record.wireKey = identity.Native, identity.Key
 	if a.pendingControls == nil {
 		a.pendingControls = make(map[string]*pendingControl)
 	}
-	if a.pendingControls[requestID] != nil {
-		return
-	}
-	record.ownerSessionID = a.sessionID
-	if record.sessionID == "" {
-		record.sessionID = a.sessionID
-	}
-	a.pendingControls[requestID] = record
+	a.pendingControls[request.RequestID] = record
+	a.Mu.Unlock()
+	captured := agent.CaptureTranscript(a.sink, agent.MessageContent{AgentSessionID: session.sessionID}, agent.SpanInfo{})
+	a.Mu.Lock()
+	record.captured = captured
+	record.ingressReady = true
+	a.Mu.Unlock()
+	return record
 }
 
-// publishZCodeControlRequest reuses the first payload and its publication instance.
-func (a *Agent) publishZCodeControlRequest(requestID string) {
+func (a *Agent) zcodeControlLifetimeCurrentLocked(record *pendingControl) bool {
+	return record != nil && record.ownerSessionID == a.sessionID && record.epoch == a.sessionEpoch && !a.sessionChanging && !a.StoppedLocked()
+}
+
+func (a *Agent) zcodeControlRequestCurrent(requestID string, record *pendingControl) bool {
 	a.Mu.Lock()
-	record := a.pendingControls[requestID]
-	if record == nil || record.answering {
+	defer a.Mu.Unlock()
+	return record != nil && a.pendingControls[requestID] == record && a.zcodeControlLifetimeCurrentLocked(record)
+}
+
+func (a *Agent) completeZCodeControlRequest(requestID string, record *pendingControl, payload json.RawMessage) bool {
+	prepared := newPendingControl(payload)
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if a.pendingControls[requestID] != record || !a.zcodeControlLifetimeCurrentLocked(record) {
+		return false
+	}
+	if record.prepared {
+		return true
+	}
+	record.payload = prepared.payload
+	record.automaticReply = prepared.automaticReply
+	record.prepared = true
+	return true
+}
+
+// publishRegisteredControl schedules a retry under the logical request's publisher.
+func (a *Agent) publishRegisteredControl(requestID string, record *pendingControl) {
+	a.Mu.Lock()
+	if a.pendingControls[requestID] != record || !a.zcodeControlLifetimeCurrentLocked(record) || !record.prepared {
+		a.Mu.Unlock()
+		return
+	}
+	record.announcements++
+	publisher, start := a.queueZCodeControlPublicationLocked(requestID, record)
+	a.Mu.Unlock()
+	if start {
+		a.drainZCodeControlPublications(requestID, publisher)
+	}
+}
+
+func (a *Agent) publishZCodeControlInstanceNow(requestID string, record *pendingControl) {
+	a.Mu.Lock()
+	if a.pendingControls[requestID] != record || !a.zcodeControlLifetimeCurrentLocked(record) || record.answering {
 		a.Mu.Unlock()
 		return
 	}
@@ -815,13 +1172,19 @@ func (a *Agent) publishZCodeControlRequest(requestID string) {
 		a.queuePermissionApprovals()
 		return
 	}
-	a.publishRegisteredControl(requestID, record)
+	a.publishZCodeControlInstanceToSink(requestID, record)
 }
 
-func (a *Agent) publishRegisteredControl(requestID string, record *pendingControl) {
+func (a *Agent) publishZCodeControlInstanceToSink(requestID string, record *pendingControl) {
+	a.Mu.Lock()
+	current := a.pendingControls[requestID] == record && a.zcodeControlLifetimeCurrentLocked(record) && record.prepared
+	a.Mu.Unlock()
+	if !current {
+		return
+	}
 	err := a.sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: record.ownerSessionID, RequestID: requestID, InstanceID: record.instanceID, Payload: record.payload})
 	a.Mu.Lock()
-	current := a.pendingControls[requestID] == record
+	current = a.pendingControls[requestID] == record && a.zcodeControlLifetimeCurrentLocked(record)
 	if err == nil && !record.answered {
 		record.published = true
 	}
@@ -833,6 +1196,9 @@ func (a *Agent) publishRegisteredControl(requestID string, record *pendingContro
 		delete(a.pendingControls, requestID)
 	}
 	bypass := current && err == nil && a.canBypassControlLocked(record)
+	if cancel {
+		record.published = false
+	}
 	a.Mu.Unlock()
 	if cancel {
 		a.sink.CancelControlRequestInstance(requestID, record.instanceID)

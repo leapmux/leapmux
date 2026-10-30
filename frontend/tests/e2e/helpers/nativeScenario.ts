@@ -1,7 +1,7 @@
 import type { Locator, Page } from '@playwright/test'
 import type { AgentInfo, AgentProvider, AvailableOptionGroup } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { ServerInfo } from '../fixtures'
-import type { MockModelRequestRecord, MockModelStep, MockModelToolCall } from './mockModelScript'
+import type { MockModelRequestRecord, MockModelStep, MockModelToolCall, MockModelUsage } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { ProviderAgent } from './workspace'
 import { expect } from '@playwright/test'
@@ -43,6 +43,8 @@ export interface NativeScenarioContext {
   modelScript: ModelScript
   provider: AgentProvider
   textStep?: NativeTextStep
+  /** Read the context size when the native provider reports a quantity other than the summed token breakdown. */
+  contextUsageTokens?: (usage: MockModelUsage) => number
   /**
    * The names of model tool calls that deliver the provider's final answer without a transcript tool row, such as Junie's `answer`.
    * A turn that holds only such a call has no tool activity.
@@ -86,6 +88,7 @@ export type NativeContextFixtures = Pick<ManagedNativeScenarioContext, 'page' | 
  * The fields of a scenario context that the native protocol of a provider states:
  *
  * - `textStep`.
+ * - `contextUsageTokens`.
  * - `answerToolNames`.
  * - `readToolResult`.
  * - `readModelContext`.

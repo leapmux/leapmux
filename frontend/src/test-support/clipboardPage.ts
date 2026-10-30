@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test'
 import { runInNewContext } from 'node:vm'
 
 /** Execute serialized page functions while two actors share one simulated OS clipboard. */
-export function createClipboardPageFixture() {
+export function createClipboardPageFixture(options: { onEvaluation?: (value: unknown) => void } = {}) {
   const events: string[] = []
   const nativeWrites: string[] = []
   let clipboardText = ''
@@ -56,7 +56,9 @@ export function createClipboardPageFixture() {
       const source = typeof operation === 'string'
         ? operation
         : `(${operation.toString()})(__clipboardArgument)`
-      return runInNewContext(source, realm, { timeout: 1000 })
+      const value = runInNewContext(source, realm, { timeout: 1000 })
+      options.onEvaluation?.(value)
+      return value
     },
   } as unknown as Page
   return {

@@ -15,8 +15,8 @@ import { writePrivateJSON } from './privateConfigFile'
 const CODEWHALE_PROVIDER_ID = 'deepseek'
 
 export interface CodewhaleEnvironmentOptions {
-  /** The isolated HOME of the run. */
-  homeDir: string
+  /** The private root of this isolated run and shard. */
+  runDirectory: string
   /** The OpenAI-compatible base URL of the mock, which ends in `/v1`. */
   baseURL: string
   modelKey: string
@@ -32,7 +32,7 @@ export interface CodewhaleEnvironmentOptions {
  * close every request that no test scripts.
  */
 export function createCodewhaleEnvironment(options: CodewhaleEnvironmentOptions): Record<string, string> {
-  const codewhaleHome = join(options.homeDir, '.codewhale')
+  const codewhaleHome = join(options.runDirectory, 'cw')
   mkdirSync(join(codewhaleHome, 'catalog'), { recursive: true })
   writeFileSync(join(codewhaleHome, 'config.toml'), codewhaleConfig(options), { mode: 0o600 })
   writePrivateJSON(join(codewhaleHome, 'mcp.json'), {

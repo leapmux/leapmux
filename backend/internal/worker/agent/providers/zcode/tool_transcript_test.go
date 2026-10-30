@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -55,7 +56,7 @@ func TestZCodeToolTranscriptPreservesSerializationWithIndependentNativeStorageSe
 	}, nativeDatabase)
 	location.sessionID = "session"
 	sink := &agenttest.Sink{}
-	transcript := newZCodeToolTranscript(t.Context(), agent.NewProviderServices(sink), func() zcodeToolStoreLocation { return location })
+	transcript := newZCodeToolTranscript(t.Context(), agent.NewProviderServices(sink), func() zcodeToolStoreLocation { return location }, nil)
 	tooltranscripttest.ReleaseToolStoreAtTestEnd(t, transcript)
 	request := `{"type":"tool.updated","sessionId":"session","payload":{"kind":"scheduled","toolCallId":"call","assistantMessageId":"message","toolName":"GetWorkflowRun"}}`
 	result := `{"type":"tool.updated","sessionId":"session","payload":{"kind":"result","toolCallId":"call","result":{"success":true,"content":"native preview"}}}`
@@ -88,7 +89,7 @@ func TestZCodeToolTranscriptRecoversCompletedImagesAfterProcessCancellation(t *t
 	f := newZCodeTranscriptFixture(t, true)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	f.transcript = newZCodeToolTranscript(ctx, agent.NewProviderServices(f.sink), func() zcodeToolStoreLocation { return f.location })
+	f.transcript = newZCodeToolTranscript(ctx, agent.NewProviderServices(f.sink), func() zcodeToolStoreLocation { return f.location }, nil)
 	tooltranscripttest.ReleaseToolStoreAtTestEnd(t, f.transcript)
 	_, err := f.db.Exec(`INSERT INTO part VALUES ('part', 'session', 'message', ?)`, zcodeNativeToolFixture("completed"))
 	require.NoError(t, err)
@@ -97,6 +98,43 @@ func TestZCodeToolTranscriptRecoversCompletedImagesAfterProcessCancellation(t *t
 	cancel()
 	require.NoError(t, f.transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"done":true}`)}, agent.SpanInfo{}))
 	assert.Contains(t, string(f.sink.Messages()[1].SupplementalContent), zcodeOutputFileFixtureData)
+}
+
+func TestZCodeToolTranscript_FinalReadsCloseHandlesAfterContextRetirement(t *testing.T) {
+	t.Parallel()
+	for _, failRead := range []bool{false, true} {
+		t.Run(fmt.Sprintf("query failure %t", failRead), func(t *testing.T) {
+			t.Parallel()
+			f := newZCodeTranscriptFixture(t, true)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			transcript := newZCodeToolTranscript(ctx, agent.NewProviderServices(f.sink), func() zcodeToolStoreLocation { return f.location }, nil)
+			tooltranscripttest.ReleaseToolStoreAtTestEnd(t, transcript)
+			source := transcript.SourceForTest().(*zcodeToolSource)
+			_, err := f.db.Exec(`INSERT INTO part VALUES ('part', 'session', 'message', ?)`, zcodeNativeToolFixture("completed"))
+			require.NoError(t, err)
+			f.writeOutputFile(t, "session")
+			lookup := map[string]zcodeToolLookup{"call": {callID: "call", messageID: "message"}}
+			records, err := readZCodeToolRecords(t.Context(), source.store, source.outputFiles, f.location, lookup)
+			require.NoError(t, err)
+			require.Len(t, records, 1)
+			require.True(t, source.ToolStoreHandleOpenForTest())
+			cancel()
+			require.Eventually(t, func() bool { return !source.ToolStoreHandleOpenForTest() }, 30*time.Second, time.Millisecond)
+			if failRead {
+				_, err = f.db.Exec(`DROP TABLE part`)
+				require.NoError(t, err)
+			}
+			records, err = readZCodeToolRecords(t.Context(), source.store, source.outputFiles, f.location, lookup)
+			if failRead {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				assert.Len(t, records, 1)
+			}
+			assert.False(t, source.ToolStoreHandleOpenForTest(), "a final native read must release its temporary handle on every return")
+		})
+	}
 }
 
 type zcodeTranscriptFixture struct {
@@ -118,7 +156,7 @@ func newZCodeTranscriptFixture(t *testing.T, createDatabase bool) *zcodeTranscri
 	if createDatabase {
 		f.db = agenttest.NewFixtureDB(t, f.location.databasePath, zcodeToolStoreDDL)
 	}
-	f.transcript = newZCodeToolTranscript(t.Context(), agent.NewProviderServices(f.sink), func() zcodeToolStoreLocation { return f.location })
+	f.transcript = newZCodeToolTranscript(t.Context(), agent.NewProviderServices(f.sink), func() zcodeToolStoreLocation { return f.location }, nil)
 	tooltranscripttest.ReleaseToolStoreAtTestEnd(t, f.transcript)
 	return f
 }
@@ -181,8 +219,8 @@ type observedZCodeToolSource struct {
 	reads []zcodeSupplementRead
 }
 
-func (s *observedZCodeToolSource) ReadSupplements(ctx context.Context, path string, pending map[string]agent.MessageContent, final bool) (map[string][]byte, error) {
-	result, err := s.zcodeToolSource.ReadSupplements(ctx, path, pending, final)
+func (s *observedZCodeToolSource) ReadSupplements(ctx context.Context, location tooltranscript.Location, pending map[string]agent.MessageContent, final bool) (map[string][]byte, error) {
+	result, err := s.zcodeToolSource.ReadSupplements(ctx, location, pending, final)
 	s.mu.Lock()
 	s.reads = append(s.reads, zcodeSupplementRead{err: err, contextErr: ctx.Err()})
 	s.mu.Unlock()
@@ -306,7 +344,7 @@ func TestZCodeToolTranscriptEnrichesChildCallsInTheChildTranscript(t *testing.T)
 	_, err = f.db.Exec(`INSERT INTO part VALUES ('part', 'child-session', 'message', ?)`, native)
 	require.NoError(t, err)
 	f.writeOutputFile(t, "child-session")
-	childID, err := f.transcript.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "child-key", Title: "Child"})
+	childID, err := f.transcript.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "child-session", AgentSessionID: "child-session", Title: "Child"})
 	require.NoError(t, err)
 	child := f.transcript.ChildSink(childID)
 	require.Same(t, child, f.transcript.ChildSink(childID))
@@ -330,7 +368,7 @@ func TestZCodeReleaseToolStoreAtTestEndClosesTheHandle(t *testing.T) {
 	tooltranscripttest.AssertReleaseClosesTheToolStore(t, func(t *testing.T, ctx context.Context) *tooltranscript.Transcript {
 		transcript := newZCodeToolTranscript(ctx, agent.NewProviderServices(&agenttest.Sink{}), func() zcodeToolStoreLocation {
 			return zcodeToolStoreLocation{databasePath: path, sessionID: "session"}
-		})
+		}, nil)
 		tooltranscripttest.ReleaseToolStoreAtTestEnd(t, transcript)
 		require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 			agent.MessageContent{Original: []byte(zcodeStoredImageRequest)}, agent.SpanInfo{SpanID: "call"}))
@@ -350,4 +388,129 @@ func TestZCodeTestsCloseTheToolStoreHandleTheyOpen(t *testing.T) {
 		Constructors: []string{"newZCodeToolTranscript"},
 		Release:      "tooltranscripttest.ReleaseToolStoreAtTestEnd",
 	})
+}
+
+type zcodeConcurrentToolSource struct {
+	*zcodeToolSource
+	canFinalize func() bool
+}
+
+func (source *zcodeConcurrentToolSource) CanFinalizeTurn() bool { return source.canFinalize() }
+
+func TestZCodeToolTranscript_KeepsConcurrentResultsUntilTheLastOwnerEnds(t *testing.T) {
+	t.Parallel()
+	f := newZCodeTranscriptFixture(t, true)
+	f.location.sessionID = "sess-1"
+	a := newZCodeTestAgent(t, agent.NewProviderServices(f.sink))
+	source := &zcodeConcurrentToolSource{zcodeToolSource: newZCodeToolSource(newZCodeToolStoreForTest(t), func() zcodeToolStoreLocation { return f.location }), canFinalize: func() bool {
+		a.Mu.Lock()
+		defer a.Mu.Unlock()
+		return !a.turnActive
+	}}
+	transcript := tooltranscript.New(t.Context(), a.sink, source)
+	tooltranscripttest.ReleaseToolStoreAtTestEnd(t, transcript)
+	a.sink = transcript
+	a.toolTranscript = transcript
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "foreground", contracts.ZCodeEventTurnStarted, `{"turnNumber":1}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "background", contracts.ZCodeEventTurnStarted, `{"turnNumber":2,"inputSource":"background_task"}`))
+	for index, turnID := range []string{"foreground", "background"} {
+		a.HandleOutput(zcodeTurnEventLine(t, int64(3+index), turnID, contracts.ZCodeEventToolUpdated, fmt.Sprintf(`{"kind":"scheduled","toolCallId":"same","assistantMessageId":"message-%d","toolName":"Bash","input":{"command":"pwd"}}`, index)))
+	}
+	openings := f.sink.Messages()
+	require.Len(t, openings, 2)
+	a.HandleOutput(zcodeTurnEventLine(t, 5, "foreground", contracts.ZCodeEventToolUpdated, `{"kind":"result","toolCallId":"same","result":{"content":"preview-a"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 6, "foreground", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
+	assert.Contains(t, transcript.PendingSpanIDsForTest(), openings[0].SpanID, "the first owner's boundary must preserve pending native enrichment")
+	for index := 0; index < 2; index++ {
+		native := fmt.Sprintf(`{"type":"tool","callID":"same","tool":"Bash","state":{"status":"completed","output":"result-%d"}}`, index)
+		_, err := f.db.Exec(`INSERT INTO part VALUES (?, 'sess-1', ?, ?)`, fmt.Sprintf("part-%d", index), fmt.Sprintf("message-%d", index), native)
+		require.NoError(t, err)
+	}
+	a.HandleOutput(zcodeTurnEventLine(t, 7, "background", contracts.ZCodeEventToolUpdated, `{"kind":"result","toolCallId":"same","result":{"content":"preview-b"}}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 8, "background", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
+	transcript.WaitForSupplementsForTest()
+	for index, opening := range openings {
+		var closing *agenttest.Message
+		for _, row := range f.sink.Messages() {
+			if row.SpanID == opening.SpanID && row.Closing {
+				copied := row
+				closing = &copied
+			}
+		}
+		require.NotNil(t, closing)
+		var supplement contracts.ZCodeToolResultEnvelope
+		require.NotEmpty(t, closing.SupplementalContent)
+		require.NoError(t, json.Unmarshal(closing.SupplementalContent, &supplement))
+		assert.Equal(t, fmt.Sprintf("message-%d", index), supplement.NativeTool.MessageID)
+		assert.Contains(t, string(supplement.NativeTool.Data), fmt.Sprintf("result-%d", index))
+	}
+	assert.Empty(t, transcript.PendingSpanIDsForTest())
+}
+
+func TestZCodeToolTranscript_QueuedHistoricalResultKeepsItsNativeImage(t *testing.T) {
+	t.Parallel()
+	for _, beforeFirstAttempt := range []bool{false, true} {
+		t.Run(fmt.Sprintf("queued before first attempt %t", beforeFirstAttempt), func(t *testing.T) {
+			t.Parallel()
+			f := newZCodeTranscriptFixture(t, true)
+			f.transcript.UpdateSessionID("session")
+			_, err := f.db.Exec(`INSERT INTO part VALUES ('old-part','session','message',?)`, zcodeNativeToolFixture("completed"))
+			require.NoError(t, err)
+			f.writeOutputFile(t, "session")
+			queue := agent.OutputQueueFor(f.transcript)
+			var release atomic.Bool
+			var blocker *agent.OutputTicket
+			if beforeFirstAttempt {
+				blocker = queue.Append(agent.OutputWrite{Label: "hold old session output", Run: func() error {
+					if !release.Load() {
+						return agent.ErrOutputInFlight
+					}
+					return nil
+				}})[0]
+				require.ErrorIs(t, queue.Flush(), agent.ErrOutputInFlight)
+			}
+			err = f.transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(zcodeStoredImageRequest)}, agent.SpanInfo{SpanID: "call", SpanType: "mcp__docs__read"})
+			require.True(t, agent.OutputRetained(err))
+			f.sink.PersistErr = errors.New("storage unavailable")
+			metadata, err := json.Marshal(map[string]any{contracts.ZCodeWorkerMetadataInvocation: contracts.ZCodeInvocationMetadata{SpanID: "call", CallID: "call", MessageID: "message", SessionID: "session", ToolName: "mcp__docs__read"}})
+			require.NoError(t, err)
+			err = f.transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(zcodeStoredImageResult), Metadata: metadata}, agent.SpanInfo{SpanID: "call", SpanType: "mcp__docs__read", Closing: true})
+			require.True(t, agent.OutputRetained(err))
+			f.location.sessionID = "new-session"
+			f.transcript.AdoptNativeSession("new-session")
+			newRequest := `{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"call","assistantMessageId":"new-message","toolName":"Bash"}}`
+			newResult := `{"type":"tool.updated","payload":{"kind":"result","toolCallId":"call","result":{"success":true,"content":"new preview"}}}`
+			require.True(t, agent.OutputRetained(f.transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(newRequest)}, agent.SpanInfo{SpanID: "call", SpanType: "Bash"})))
+			require.True(t, agent.OutputRetained(f.transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(newResult)}, agent.SpanInfo{SpanID: "call", SpanType: "Bash", Closing: true})))
+			progressBefore := f.sink.ProgressUpdates()
+			f.sink.PersistErr = nil
+			release.Store(true)
+			if blocker != nil {
+				require.NoError(t, queue.FlushAfterReady(blocker))
+			} else {
+				require.NoError(t, queue.Flush())
+			}
+			require.NoError(t, f.transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"done":true}`)}, agent.SpanInfo{}))
+			f.transcript.WaitForSupplementsForTest()
+			var oldRow, newRow *agenttest.Message
+			for _, row := range f.sink.Messages() {
+				if !row.Closing || !row.Stored() {
+					continue
+				}
+				copy := row
+				if row.AgentSessionID == "session" {
+					oldRow = &copy
+				}
+				if row.AgentSessionID == "new-session" {
+					newRow = &copy
+				}
+			}
+			require.NotNil(t, oldRow)
+			require.NotNil(t, newRow)
+			assert.Contains(t, string(oldRow.SupplementalContent), zcodeOutputFileFixtureData)
+			assert.Empty(t, newRow.SupplementalContent, "historical enrichment must not target the newer row of a reused span")
+			assert.Equal(t, []byte(zcodeStoredImageResult), oldRow.Content)
+			assert.Equal(t, progressBefore, f.sink.ProgressUpdates(), "historical data must not publish replacement-session progress")
+		})
+	}
 }

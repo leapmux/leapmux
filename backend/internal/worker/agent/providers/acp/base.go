@@ -94,10 +94,12 @@ const (
 // Base extends JSONRPCProcess with the fields and methods that every ACP agent
 // shares. The package documentation lists the ACP providers.
 type Base struct {
-	pendingFollowUp     *acpFollowUpPrompt
-	rootCallbacks       rootTranscriptCallbacks
-	nativeModeID        string
-	promptOutputDrained bool
+	pendingFollowUp *acpFollowUpPrompt
+	rootCallbacks   rootTranscriptCallbacks
+	// settingsPublications serializes complete settings callbacks, including reentrant writes.
+	settingsPublications agentapi.OutputQueue
+	nativeModeID         string
+	promptOutputDrained  bool
 
 	// These fields describe ACP turns and do not belong to the JSON-RPC transport.
 	promptActive bool
@@ -919,7 +921,6 @@ func (b *Base) UpdateSettings(options optionmap.Map) agentapi.SettingsApplyResul
 	// Comparing those snapshots could report the reader's change as ours or omit our change after a reader update.
 	// The monotonic generation detects either change and permits an idempotent broadcast of the current catalog.
 	structureGenBefore := b.options.structureGen
-	persistsBefore := b.options.persists
 	b.Mu.Unlock()
 
 	ok := true
@@ -939,21 +940,8 @@ func (b *Base) UpdateSettings(options optionmap.Map) agentapi.SettingsApplyResul
 	// The context-clear and handshake paths publish their own refreshes, so the model writer does not broadcast status.
 	b.Mu.Lock()
 	optionGroupsChanged := b.options.structureGen != structureGenBefore
-	refreshedDuringWrites := b.options.persists != persistsBefore
 	sessionID := b.sessionID
 	b.Mu.Unlock()
-	// A server can send config_option_update before answering the model write.
-	// The base then persists the value that the server resets.
-	// A write that restores the user's value can send no notification, leaving no later refresh to replace the stored reset value.
-	// Persist the final state again, so the stored row equals the session state.
-	// applySessionRefresh also persists after reapply during a context clear.
-	// A failed batch causes a restart, which persists its own confirmed settings.
-	//
-	// Live agents always have b.sink. Tests can create Base without a sink.
-	// Keep the nil guard so a catalog change in such a test cannot panic.
-	if ok && refreshedDuringWrites && b.sink != nil {
-		b.BroadcastSettingsRefresh()
-	}
 	if optionGroupsChanged && b.sink != nil {
 		b.sink.BroadcastStatusActive(sessionID)
 	}
@@ -961,14 +949,44 @@ func (b *Base) UpdateSettings(options optionmap.Map) agentapi.SettingsApplyResul
 	if !ok {
 		return agentapi.RestartRequiredSettings(options)
 	}
+	// A native publication can still be in flight after the service stores the
+	// requested values. Queue this final state behind it, even when the accepted
+	// values equal the request and the service has no corrective delta.
+	b.Mu.Lock()
+	snapshotModel, _, persistMode, optionValues := b.snapshotRefreshForPersistLocked(sc)
+	refresh := acpRefreshMap(snapshotModel, persistMode, optionValues)
+	for _, id := range b.options.unresolved.keys() {
+		// Preserve the caller's requested value without confirming its readback.
+		// An absent request supplies no value or removal for this unresolved axis.
+		if requested, present := options[id]; present {
+			refresh[id] = requested
+		} else {
+			delete(refresh, id)
+		}
+	}
+	if b.sink != nil && len(refresh) > 0 {
+		b.queueSettingsRefreshLocked(refresh)
+	}
+	b.Mu.Unlock()
+	if b.sink != nil {
+		_ = b.settingsPublications.Flush()
+	}
 	return b.SettingsSnapshot()
 }
 
 func (b *Base) SettingsSnapshot() agentapi.SettingsApplyResult {
-	result := agentapi.ConfirmedSettings(agentapi.CurrentOptions(b.OptionGroups()))
 	b.Mu.Lock()
+	result := agentapi.ConfirmedSettings(agentapi.CurrentOptions(b.optionGroupsLocked()))
 	unresolved := b.options.unresolved.keys()
 	b.Mu.Unlock()
+	// Local groups use their provider's mutex. Keep those callbacks outside Mu.
+	if b.hooks.LocalOptionGroups != nil {
+		local := agentapi.ConfirmedSettings(agentapi.CurrentOptions(b.hooks.LocalOptionGroups()))
+		for id, value := range local.SurfacedOptions {
+			result.SurfacedOptions[id] = value
+			result.Settlements[id] = local.Settlements[id]
+		}
+	}
 	for _, id := range unresolved {
 		result.Settlements[id] = agentapi.OptionSettlement{State: agentapi.OptionSettlementUnresolved}
 	}
@@ -1031,6 +1049,7 @@ func (b *Base) applySessionRefresh(resp json.RawMessage) {
 		_, optionListChanged = b.applyOptionGroupsKeepingStoredLocked(configOptions)
 	}
 	snapshotModel, snapshotSecondary, persistMode, optionValues := b.snapshotRefreshForPersistLocked(sc)
+	b.queueSettingsRefreshLocked(acpRefreshMap(snapshotModel, persistMode, optionValues))
 	sessionID := b.sessionID
 	b.Mu.Unlock()
 	slog.Info("acp agent settings refreshed from session",
@@ -1039,7 +1058,7 @@ func (b *Base) applySessionRefresh(resp json.RawMessage) {
 		"model", snapshotModel,
 		sc.logKey, snapshotSecondary,
 	)
-	b.sink.PersistSettingsRefresh(acpRefreshMap(snapshotModel, persistMode, optionValues))
+	_ = b.settingsPublications.Flush()
 	// A catalog-only change leaves PersistSettingsRefresh inactive because that method merges only selected values.
 	// Publish status directly so the frontend receives the new catalog, as handleACPConfigOptionUpdate does for a catalog-only change.
 	// A selected-value change also makes PersistSettingsRefresh publish the current catalog.
@@ -2090,20 +2109,25 @@ func Start[T any](ctx context.Context, opts agentapi.Options, sink agentapi.Prov
 // One implementation serves every ACP family through secondaryChannel and the provider's secondaryFallback, so providers need no override.
 func (b *Base) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	b.Mu.Lock()
-	var groups []*leapmuxv1.AvailableOptionGroup
-	if mg := agentapi.ModelOptionGroup(b.availableModels, b.model, agentapi.EffortSubGroups); mg != nil {
-		groups = append(groups, mg)
-	}
-	if grp := b.secondaryOptionGroupLocked(); grp != nil {
-		groups = append(groups, grp)
-	}
-	groups = append(groups, b.options.groups...)
+	groups := b.optionGroupsLocked()
 	b.Mu.Unlock()
 	// Outside b.Mu: the provider keeps these groups under a lock of its own.
 	if b.hooks.LocalOptionGroups != nil {
 		groups = append(groups, b.hooks.LocalOptionGroups()...)
 	}
 	return groups
+}
+
+// optionGroupsLocked builds the groups owned by Base. The caller holds Mu.
+func (b *Base) optionGroupsLocked() []*leapmuxv1.AvailableOptionGroup {
+	var groups []*leapmuxv1.AvailableOptionGroup
+	if mg := agentapi.ModelOptionGroup(b.availableModels, b.model, agentapi.EffortSubGroups); mg != nil {
+		groups = append(groups, mg)
+	}
+	if group := b.secondaryOptionGroupLocked(); group != nil {
+		groups = append(groups, group)
+	}
+	return append(groups, b.options.groups...)
 }
 
 // applyLocalOptions writes each changed value in a local option group from Hooks.LocalOptionGroups.
@@ -3017,9 +3041,9 @@ func (b *Base) BroadcastSettingsRefresh() {
 	// also touch the options must still re-include them or the refresh would not
 	// reflect them.
 	optionValues := b.options.mergeOptionValues(primaryAgentOptions(b.currentPrimaryAgent))
-	b.options.persists++
+	b.queueSettingsRefreshLocked(acpRefreshMap(model, mode, optionValues))
 	b.Mu.Unlock()
-	b.sink.PersistSettingsRefresh(acpRefreshMap(model, mode, optionValues))
+	_ = b.settingsPublications.Flush()
 }
 
 // buildACPModes converts ModeInfo entries into proto AvailableOption messages.

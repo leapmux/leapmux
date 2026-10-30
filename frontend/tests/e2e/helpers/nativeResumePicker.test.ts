@@ -454,6 +454,21 @@ describe('resumePickerScenario', () => {
     expect(read).toBeGreaterThan(picker.events.lastIndexOf('steps:2'))
   })
 
+  it('allows a provider to choose a model after reopening and before the resumed prompt', async () => {
+    const beforeResumedPrompt = vi.fn(async () => {
+      picker.events.push('before-resumed-prompt')
+      expect(picker.queued).toHaveLength(1)
+      expect(picker.sent).toHaveLength(1)
+    })
+    const options = { beforeResumedPrompt, resumedBodyHoldsOriginalAnswer: true }
+    await run(options)
+    expect(beforeResumedPrompt).toHaveBeenCalledTimes(1)
+    const position = picker.events.indexOf('before-resumed-prompt')
+    expect(position).toBeGreaterThan(picker.events.indexOf(`reopened:${STORED_SESSION}:${KEEPER_ID},${SUBJECT_ID}`))
+    expect(position).toBeLessThan(picker.events.lastIndexOf('queue:1'))
+    expect(position).toBeLessThan(picker.events.indexOf('send:Reply'))
+  })
+
   it('hands the original-turn request to onFirstTurn before that turn ends', async () => {
     const seen: MockModelRequestRecord[] = []
     await run({

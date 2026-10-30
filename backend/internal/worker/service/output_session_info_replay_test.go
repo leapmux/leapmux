@@ -153,6 +153,38 @@ func TestSessionInfoReplay_SessionChangeDropsOtherSessionChecks(t *testing.T) {
 	assert.Equal(t, "new", check[contracts.RunningToolFieldAgentSessionId])
 }
 
+func TestSessionInfoReplay_NativeSessionReplacementClearsOnlyItsUsageCache(t *testing.T) {
+	t.Parallel()
+	svc, sink, _ := newSessionInfoServiceFixture(t)
+	sink.UpdateSessionID("A")
+	usage := map[string]interface{}{
+		contracts.SessionInfoKeyContextUsage: map[string]interface{}{"context_tokens": 500},
+		contracts.SessionInfoKeyTotalCostUsd: 0.42,
+		contracts.SessionInfoKeyRateLimits:   map[string]interface{}{"remaining": 10},
+		"plan_file_path":                     "/plans/current.md",
+	}
+	sink.BroadcastSessionInfo(usage)
+	sink.UpdateSessionID("A")
+	events := svc.Output.SessionInfoReplayEvents("agent-1")
+	require.Len(t, events, 1)
+	assert.Contains(t, replayedSessionInfo(t, events[0]), contracts.SessionInfoKeyContextUsage)
+	sink.UpdateSessionID("B")
+	events = svc.Output.SessionInfoReplayEvents("agent-1")
+	require.Len(t, events, 1)
+	info := replayedSessionInfo(t, events[0])
+	assert.NotContains(t, info, contracts.SessionInfoKeyContextUsage)
+	assert.NotContains(t, info, contracts.SessionInfoKeyTotalCostUsd)
+	assert.Contains(t, info, contracts.SessionInfoKeyRateLimits)
+	assert.Equal(t, "/plans/current.md", info["plan_file_path"])
+	sink.BroadcastSessionInfo(map[string]interface{}{
+		contracts.SessionInfoKeyContextUsage: map[string]interface{}{"context_tokens": 20},
+		contracts.SessionInfoKeyTotalCostUsd: 0.01,
+	})
+	events = svc.Output.SessionInfoReplayEvents("agent-1")
+	require.Len(t, events, 1)
+	assert.Equal(t, 0.01, replayedSessionInfo(t, events[0])[contracts.SessionInfoKeyTotalCostUsd])
+}
+
 func TestSessionInfoReplay_PermissionChecksSortBySessionAndSpan(t *testing.T) {
 	t.Parallel()
 	svc, sink, _ := newSessionInfoServiceFixture(t)
@@ -358,4 +390,19 @@ func TestWatchEvents_CatchUpReplaysTheSessionCounters(t *testing.T) {
 	require.True(t, ok, "goal_progress must survive the replay")
 	assert.EqualValues(t, 4, progress[contracts.GoalProgressFieldIterations])
 	assert.Equal(t, []string{"s-a", "s-b"}, replayedChecks)
+}
+
+func TestHistoricalDividerMessagePreservesLiveActorState(t *testing.T) {
+	t.Parallel()
+	svc, services, _ := newSessionInfoServiceFixture(t)
+	services.UpdateSessionID("native")
+	services.SetTurnState(agent.TurnState{Active: true}, 1)
+	services.BroadcastSessionInfo(permissionCheckInfo("native", "current-check", true))
+	sink := requireRootOutputSink(t, svc.Output, "agent-1")
+	beforeChecks := sink.permissionCheckSnapshots()
+	beforeCount := unspentToolCount(svc.Output, "agent-1")
+	content := agent.WithToolUseCount(agent.MessageContent{Original: []byte(`{"type":"agent_end"}`)}, 7)
+	require.NoError(t, services.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}))
+	assert.Equal(t, beforeChecks, sink.permissionCheckSnapshots())
+	assert.Equal(t, beforeCount, unspentToolCount(svc.Output, "agent-1"))
 }

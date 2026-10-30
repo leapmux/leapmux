@@ -1,12 +1,16 @@
 package zcode
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/worker/agent"
+
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -41,6 +45,19 @@ type zcodeReplyFrame struct {
 // error WRAPS the *zcodeError, so a caller can read the code with zcodeErrorCode
 // (and the zcodeIs* helpers) instead of matching on message text.
 func (a *Agent) sendZCodeRequest(method string, params any, timeout time.Duration) (json.RawMessage, error) {
+	return a.sendZCodeRequestContext(a.Context(), method, params, timeout)
+}
+
+// sendZCodeRequestContext is sendZCodeRequest with an explicit context. A
+// recovery watcher passes its own cancellable context so a teardown cancels
+// the in-flight RPC.
+func (a *Agent) sendZCodeRequestContext(ctx context.Context, method string, params any, timeout time.Duration) (json.RawMessage, error) {
+	return a.sendZCodeRequestObserved(ctx, method, params, timeout, nil)
+}
+
+// sendZCodeRequestObserved applies a receipt before the reader delivers later events.
+// The observer must not wait for another request.
+func (a *Agent) sendZCodeRequestObserved(ctx context.Context, method string, params any, timeout time.Duration, observe func(json.RawMessage)) (json.RawMessage, error) {
 	id := a.nextReqID.Add(1)
 
 	data, err := json.Marshal(zcodeRequestFrame{ID: id, Method: method, Params: params})
@@ -48,26 +65,70 @@ func (a *Agent) sendZCodeRequest(method string, params any, timeout time.Duratio
 		return nil, fmt.Errorf("marshal %s: %w", method, err)
 	}
 	data = append(data, '\n')
-	return a.sendZCodeFrame(id, method, data, timeout)
+	return a.sendZCodeFrameContext(ctx, id, method, data, timeout, observe)
 }
 
-// sendZCodeFrame preserves caller bytes and claims the native reply ID before the write.
-func (a *Agent) sendZCodeFrame(id int64, method string, data []byte, timeout time.Duration) (json.RawMessage, error) {
-	ch, release, err := a.Register(id)
+func (a *Agent) sendZCodeSessionRequest(ctx context.Context, identity zcodeSessionObservationIdentity, method string, params any, timeout time.Duration, observe func(json.RawMessage)) (json.RawMessage, error) {
+	id := a.nextReqID.Add(1)
+	data, err := json.Marshal(zcodeRequestFrame{ID: id, Method: method, Params: params})
+	if err != nil {
+		return nil, fmt.Errorf("marshal %s: %w", method, err)
+	}
+	return a.sendZCodeFrameForSession(ctx, id, method, append(data, '\n'), timeout, observe, &identity)
+}
+
+// sendZCodeFrameContext preserves caller bytes and registers the reply before writing.
+func (a *Agent) sendZCodeFrameContext(ctx context.Context, id int64, method string, data []byte, timeout time.Duration, observe func(json.RawMessage)) (json.RawMessage, error) {
+	return a.sendZCodeFrameForSession(ctx, id, method, data, timeout, observe, nil)
+}
+
+func (a *Agent) sendZCodeFrameForSession(ctx context.Context, id int64, method string, data []byte, timeout time.Duration, observe func(json.RawMessage), identity *zcodeSessionObservationIdentity) (json.RawMessage, error) {
+	var observer func(json.RawMessage)
+	if observe != nil {
+		observer = func(raw json.RawMessage) {
+			var reply zcodeResponseEnvelope
+			if json.Unmarshal(raw, &reply) == nil && reply.Error == nil && len(reply.Result) != 0 {
+				observe(reply.Result)
+			}
+		}
+	}
+	ch, release, err := a.RegisterObserved(id, observer)
 	if err != nil {
 		return nil, fmt.Errorf("register %s: %w", method, err)
 	}
 	defer release()
 
-	if a.IsStopped() {
-		return nil, fmt.Errorf("agent is stopped")
+	if identity == nil {
+		if a.IsStopped() {
+			return nil, fmt.Errorf("agent is stopped")
+		}
+		if err := a.WriteStdin(data); err != nil {
+			return nil, fmt.Errorf("write %s: %w", method, err)
+		}
+	} else {
+		a.Mu.Lock()
+		if !a.zcodeSessionLifetimeCurrentLocked(*identity) {
+			a.Mu.Unlock()
+			return nil, agent.ErrInputSessionChanged
+		}
+		result, enqueueErr := a.EnqueueStdin(data)
+		a.Mu.Unlock()
+		if enqueueErr != nil {
+			return nil, fmt.Errorf("write %s: %w", method, enqueueErr)
+		}
+		select {
+		case writeErr := <-result:
+			if writeErr != nil {
+				return nil, fmt.Errorf("write %s: %w", method, writeErr)
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-a.ProcessDone():
+			return nil, a.ProcessExitError()
+		}
 	}
 
-	if err := a.WriteStdin(data); err != nil {
-		return nil, fmt.Errorf("write %s: %w", method, err)
-	}
-
-	raw, err := a.AwaitResponse(ch, method, timeout)
+	raw, err := providerkit.AwaitReply(&a.Process, ctx, ch, method, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -135,6 +196,22 @@ func (a *Agent) routeZCodeRPC(line *providerkit.ParsedLine) (handler func(), con
 	// without a copy: ReadOutput allocates a fresh buffer per line, and
 	// json.RawMessage.UnmarshalJSON copies into its own allocation on top of that. So
 	// nothing the scanner reuses is reachable from here.
+	if line.Method == MethodRequestProviderRuntimeHeaders {
+		// The registration happens HERE, before the handler exists: a cancellation
+		// that lands before the handler runs must already find the answer.
+		// prepareZCodeRuntimeHeaderAnswer is synchronous bookkeeping, so the read
+		// loop absorbs it.
+		answer := a.prepareZCodeRuntimeHeaderAnswer(line.ID, line.Params)
+		return func() { a.answerProviderRuntimeHeaders(line.ID, line.Params, answer) }, true
+	}
+	switch line.Method {
+	case contracts.ZCodeMethodRequestPermission:
+		record := a.prepareZCodeControlRequest(line.ID, line.Params)
+		return func() { a.handlePreparedPermissionRequest(line.ID, line.Params, record) }, true
+	case contracts.ZCodeMethodRequestUserInput:
+		record := a.prepareZCodeControlRequest(line.ID, line.Params)
+		return func() { a.handlePreparedUserInputRequest(line.ID, line.Params, line.Raw, record) }, true
+	}
 	return func() { a.handleServerRequest(line) }, true
 }
 
@@ -154,6 +231,10 @@ func (a *Agent) interceptResponse(line *providerkit.ParsedLine) bool {
 
 // handleServerRequest routes one app-server request to its handler.
 //
+// interaction/requestProviderRuntimeHeaders is NOT routed here: routeZCodeRPC
+// registers its answer before the handler exists (see
+// prepareZCodeRuntimeHeaderAnswer).
+//
 // Every branch MUST answer, including the ones LeapMux cannot satisfy. The
 // app-server blocks the flow behind an unanswered request -- the runtime-preferences
 // handshake blocks session/create outright -- so silence is a hang, not a decline.
@@ -166,8 +247,6 @@ func (a *Agent) handleServerRequest(line *providerkit.ParsedLine) {
 		a.handlePermissionRequest(id, params)
 	case contracts.ZCodeMethodRequestUserInput:
 		a.handleUserInputRequest(id, params, line.Raw)
-	case MethodRequestProviderRuntimeHeaders:
-		a.answerProviderRuntimeHeaders(id, params)
 	case MethodRequestOfficialMcpAuthHeaders:
 		a.answerOfficialMcpAuthHeaders(id)
 	default:
@@ -198,8 +277,18 @@ func (a *Agent) answerRuntimePreferences(id json.RawMessage) {
 	}
 }
 
-// handleOutput is the ReadOutput handler for lines the interceptor did not consume.
+// handleOutput is the ReadOutput handler for lines the interceptor did not
+// consume. Session events go through the ordered coordinator so a gap in the
+// live stream triggers replay; everything else dispatches through
+// handleZCodeOutput.
 func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
+	if line.Method == NotifySessionEvent {
+		event, ok := parseZCodeEvent(line.Params)
+		if ok {
+			a.dispatchZCodeEventOrdered(event)
+			return
+		}
+	}
 	handleZCodeOutput(a, line)
 }
 
@@ -220,7 +309,7 @@ func (a *Agent) HandleOutput(content []byte) {
 	if consumed {
 		return
 	}
-	handleZCodeOutput(a, line)
+	a.handleOutput(line)
 }
 
 // ZCode's v4 command inbox.
@@ -242,13 +331,25 @@ const (
 	zcodeCommandDeleteQueueItem            = "deleteQueueItem"
 	zcodeCommandRequestWorkspaceHookReview = "requestWorkspaceHookReview"
 	zcodeCommandRespondWorkspaceHookReview = "respondWorkspaceHookReview"
+	// zcodeCommandStop aborts one foreground execution under a guard. See
+	// zcodeStopPayload and sendZCodeStopCommand.
+	zcodeCommandStop = "stop"
 )
 
 // The statuses of a command acknowledgement that LeapMux reads.
 const (
-	zcodeCommandAccepted = "accepted"
-	zcodeCommandStale    = "stale"
+	zcodeCommandAccepted  = "accepted"
+	zcodeCommandStale     = "stale"
+	zcodeCommandDuplicate = "duplicate"
+	zcodeCommandNoop      = "noop"
 )
+
+// zcodeCommandGuardStopTargetChanged is the reasonCode of the `noop` that a
+// guarded `stop` earns when its expected execution no longer exists. The inbox
+// refuses the stop rather than abort the execution that took its place, and
+// LeapMux must honour that: no window, and no second stop that could abort the
+// newer execution.
+const zcodeCommandGuardStopTargetChanged = "guard.stopTargetChanged"
 
 // zcodeCommandEnvelope is one `v4/command` request.
 type zcodeCommandEnvelope struct {
@@ -284,9 +385,16 @@ type zcodeCommandResult struct {
 // acknowledgement. Each acknowledgement advances the newest session revision
 // the agent knows, which a later compare-and-set command starts from.
 func (a *Agent) sendZCodeCommand(envelope zcodeCommandEnvelope) (zcodeCommandAck, error) {
+	return a.sendZCodeCommandTimeout(envelope, a.APITimeout())
+}
+
+// sendZCodeCommandTimeout is sendZCodeCommand with an explicit timeout. Every
+// acknowledgement goes through the same validation: it must decode, and it must
+// identify the command it acknowledges.
+func (a *Agent) sendZCodeCommandTimeout(envelope zcodeCommandEnvelope, timeout time.Duration) (zcodeCommandAck, error) {
 	envelope.ClientID = zcodeCommandClientID
 	envelope.IssuedAt = a.Clock().Now().UnixMilli()
-	raw, err := a.sendZCodeRequest(MethodCommand, envelope, a.APITimeout())
+	raw, err := a.sendZCodeRequest(MethodCommand, envelope, timeout)
 	if err != nil {
 		return zcodeCommandAck{}, err
 	}
@@ -301,6 +409,34 @@ func (a *Agent) sendZCodeCommand(envelope zcodeCommandEnvelope) (zcodeCommandAck
 	a.commandRevision = max(a.commandRevision, ack.RevisionAtDecision)
 	a.Mu.Unlock()
 	return ack, nil
+}
+
+// zcodeStopCommandPrefix identifies the commands of one guarded stop.
+const zcodeStopCommandPrefix = "leapmux-stop-"
+
+// zcodeStopPayload is the `stop` command's payload. The expected execution id
+// is REQUIRED: the inbox aborts whatever execution is current when the field is
+// absent, and LeapMux must never abort a newer execution than the one the user
+// stopped. sendZCodeStopCommand refuses an empty id, and an owner that recorded
+// none takes the legacy session/stop instead.
+type zcodeStopPayload struct {
+	ExpectedForegroundExecutionID string `json:"expectedForegroundExecutionId"`
+}
+
+// sendZCodeStopCommand sends the guarded stop of one foreground execution and
+// returns its acknowledgement. It takes the stop timeout rather than the API
+// timeout: the inbox aborts the execution synchronously, so a longer wait only
+// makes a user-driven interrupt look slower than it is.
+func (a *Agent) sendZCodeStopCommand(sessionID, expectedForegroundExecutionID string) (zcodeCommandAck, error) {
+	if expectedForegroundExecutionID == "" {
+		return zcodeCommandAck{}, fmt.Errorf("a guarded ZCode stop needs the execution id it guards")
+	}
+	return a.sendZCodeCommandTimeout(zcodeCommandEnvelope{
+		CommandID: zcodeStopCommandPrefix + id.Short(),
+		SessionID: sessionID,
+		Type:      zcodeCommandStop,
+		Payload:   zcodeStopPayload{ExpectedForegroundExecutionID: expectedForegroundExecutionID},
+	}, zcodeStopTimeout)
 }
 
 // zcodeCommandRefusal states why the inbox did not accept a command.

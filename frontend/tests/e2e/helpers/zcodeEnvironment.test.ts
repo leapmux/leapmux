@@ -1,7 +1,7 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { createZcodeEnvironment } from './zcodeEnvironment'
+import { createZcodeEnvironment, refreshZcodeDefaultModel, revokeZcodeModelFromConfiguration, withZcodeConfigurationRestored, withZcodePersonalProviderConfiguration } from './zcodeEnvironment'
 
 let runDirectory: string
 function options() {
@@ -72,5 +72,105 @@ describe('createZcodeEnvironment', () => {
     expect(env.ZCODE_STORAGE_DIR).toBe(join(runDirectory, 'zcode-storage'))
     expect(statSync(env.ZCODE_STORAGE_DIR!).isDirectory()).toBe(true)
     expect(env.ZCODE_MODEL_TELEMETRY_ENABLED).toBe('false')
+  })
+})
+
+describe('revokeZcodeModelFromConfiguration', () => {
+  it('removes the model from both configuration files and moves a default selection of it', () => {
+    createZcodeEnvironment(options())
+    revokeZcodeModelFromConfiguration(join(runDirectory, 'home'), 'unit-model')
+    const legacy = JSON.parse(readFileSync(join(runDirectory, 'home', '.zcode', 'v2', 'config.json'), 'utf8'))
+    expect(Object.keys(legacy.provider['personal:unit'].models)).toEqual(['unit-alt', 'unit-plain'])
+    const personal = JSON.parse(readFileSync(join(runDirectory, 'home', '.zcode', 'v2', 'provider_config.json'), 'utf8'))
+    expect(personal.config.providerConfigRules.providerRules[0].config.personalModelIds).toEqual(['unit-alt', 'unit-plain'])
+    expect(personal.config.providerConfigRules.providerRules[0].config.modelOrder).toEqual(['unit-alt', 'unit-plain'])
+    expect(personal.config.modelConfigRules.providerModelRules.map((model: { modelId: string }) => model.modelId)).toEqual(['unit-alt', 'unit-plain'])
+    expect(personal.config.defaultModelSelection).toEqual({
+      providerId: 'personal:unit',
+      modelId: 'unit-alt',
+      options: { reasoningLevel: 'high' },
+    })
+  })
+
+  it('keeps a default selection of another model', () => {
+    createZcodeEnvironment(options())
+    revokeZcodeModelFromConfiguration(join(runDirectory, 'home'), 'unit-alt')
+    const personal = JSON.parse(readFileSync(join(runDirectory, 'home', '.zcode', 'v2', 'provider_config.json'), 'utf8'))
+    expect(personal.config.defaultModelSelection).toEqual({
+      providerId: 'personal:unit',
+      modelId: 'unit-model',
+      options: { reasoningLevel: 'high' },
+    })
+  })
+
+  // A configuration file the run does not hold is left alone: the revocation
+  // still reaches the other file and never fails on the absent one.
+  it('leaves a configuration file the run does not hold alone', () => {
+    createZcodeEnvironment(options())
+    rmSync(join(runDirectory, 'home', '.zcode', 'v2', 'config.json'))
+    revokeZcodeModelFromConfiguration(join(runDirectory, 'home'), 'unit-model')
+    const personal = JSON.parse(readFileSync(join(runDirectory, 'home', '.zcode', 'v2', 'provider_config.json'), 'utf8'))
+    expect(personal.config.providerConfigRules.providerRules[0].config.personalModelIds).toEqual(['unit-alt', 'unit-plain'])
+  })
+})
+
+describe('refreshZcodeDefaultModel', () => {
+  it('points the default model selection at the given model', () => {
+    createZcodeEnvironment(options())
+    refreshZcodeDefaultModel(join(runDirectory, 'home'), 'personal:unit', 'unit-alt')
+    const personal = JSON.parse(readFileSync(join(runDirectory, 'home', '.zcode', 'v2', 'provider_config.json'), 'utf8'))
+    expect(personal.config.defaultModelSelection).toEqual({
+      providerId: 'personal:unit',
+      modelId: 'unit-alt',
+      options: { reasoningLevel: 'high' },
+    })
+    expect(personal.config.providerConfigRules.providerRules[0].config.personalModelIds).toEqual(['unit-model', 'unit-alt', 'unit-plain'])
+  })
+})
+
+describe('withZcodePersonalProviderConfiguration', () => {
+  it.each([false, true])('restores both original files when the callback fails: %s', async (fails) => {
+    createZcodeEnvironment(options())
+    const homeDir = options().homeDir
+    const paths = ['config.json', 'provider_config.json'].map(file => join(homeDir, '.zcode', 'v2', file))
+    const before = paths.map(path => readFileSync(path))
+    const failure = new Error('scenario failed')
+    const operation = withZcodePersonalProviderConfiguration(homeDir, async () => {
+      expect(existsSync(paths[0]!)).toBe(false)
+      expect(existsSync(paths[1]!)).toBe(true)
+      refreshZcodeDefaultModel(homeDir, options().providerID, options().alternateModelID)
+      if (fails)
+        throw failure
+      return 'completed'
+    })
+    if (fails)
+      await expect(operation).rejects.toBe(failure)
+    else
+      await expect(operation).resolves.toBe('completed')
+    expect(paths.map(path => readFileSync(path))).toEqual(before)
+  })
+})
+
+describe('withZcodeConfigurationRestored', () => {
+  it('restores the second file when the first restoration and the scenario fail', async () => {
+    createZcodeEnvironment(options())
+    const homeDir = options().homeDir
+    const legacyPath = join(homeDir, '.zcode', 'v2', 'config.json')
+    const personalPath = join(homeDir, '.zcode', 'v2', 'provider_config.json')
+    const original = readFileSync(personalPath)
+    const failure = new Error('scenario failed')
+    const operation = withZcodeConfigurationRestored(homeDir, async () => {
+      writeFileSync(personalPath, 'changed')
+      rmSync(legacyPath)
+      mkdirSync(legacyPath)
+      throw failure
+    })
+    await expect(operation).rejects.toMatchObject({
+      errors: expect.arrayContaining([
+        failure,
+        expect.objectContaining({ code: 'EISDIR' }),
+      ]),
+    })
+    expect(readFileSync(personalPath)).toEqual(original)
   })
 })
