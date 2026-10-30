@@ -16,13 +16,19 @@ import (
 )
 
 func approvalEvent(approvalID string, display map[string]any) map[string]any {
-	return map[string]any{"type": contracts.KimiEventApprovalRequested, "approval_id": approvalID, "agent_id": kimiMainAgentID,
-		"tool_name": contracts.KimiToolBash, "tool_input_display": display}
+	return map[string]any{
+		"type": contracts.KimiFrameInteraction, "kind": contracts.KimiInteractionKindApproval, "status": kimiInteractionPending,
+		"interaction_id": approvalID, "agent_id": kimiMainAgentID,
+		"request": map[string]any{"tool_name": contracts.KimiToolBash, "tool_input_display": display},
+	}
 }
 
 func questionEvent(questionID string) map[string]any {
-	return map[string]any{"type": contracts.KimiEventQuestionRequested, "question_id": questionID, "agent_id": kimiMainAgentID,
-		"questions": []map[string]any{{"id": "q_0", "question": "Color?", "options": []map[string]any{{"id": "opt_0_0", "label": "Red"}}}}}
+	return map[string]any{
+		"type": contracts.KimiFrameInteraction, "kind": contracts.KimiInteractionKindQuestion, "status": kimiInteractionPending,
+		"interaction_id": questionID, "agent_id": kimiMainAgentID,
+		"request": map[string]any{"questions": []map[string]any{{"id": "q_0", "question": "Color?", "options": []map[string]any{{"id": "opt_0_0", "label": "Red"}}}}},
+	}
 }
 
 func TestBypassApprovesPendingAndLaterToolsButKeepsSpecialControls(t *testing.T) {
@@ -36,18 +42,18 @@ func TestBypassApprovesPendingAndLaterToolsButKeepsSpecialControls(t *testing.T)
 	rig.feed(t, questionEvent("question"))
 	rig.agent.UpdateSettings(options(agent.OptionIDPermissionMode, contracts.KimiModeAuto))
 	for _, id := range []string{"first", "second"} {
-		posts := rig.fake.requestsTo("POST " + kimiItemPath(rig.sessionID(), "approvals", id, ""))
+		posts := rig.fake.requestsTo("POST " + kimiItemPath(rig.sessionID(), "interactions", id, ""))
 		require.Len(t, posts, 1, "Bypass answers every pending tool permission")
-		assert.JSONEq(t, `{"decision":"approved"}`, string(posts[0].Body))
+		assert.JSONEq(t, `{"kind":"approval","decision":"approved"}`, string(posts[0].Body))
 	}
 	assert.ElementsMatch(t, []string{"first", "second"}, rig.sink.CanceledControls())
 	for _, id := range []string{"plan", "goal"} {
-		assert.Empty(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "approvals", id, "")))
+		assert.Empty(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "interactions", id, "")))
 	}
-	assert.Empty(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "questions", "question", "")))
+	assert.Empty(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "interactions", "question", "")))
 	rig.feed(t, approvalEvent("later", map[string]any{"kind": "command", "command": "pwd"}))
 	waitFor(t, func() bool {
-		return len(rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "approvals", "later", ""))) == 1
+		return len(rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "interactions", "later", ""))) == 1
 	}, "the later tool is approved")
 	assert.Equal(t, 5, rig.sink.PublishedControlCount(), "the later tool needs no manual card")
 }
@@ -59,13 +65,13 @@ func TestDeliveredApprovalCannotBeAnsweredAgainBeforeItsResolutionEvent(t *testi
 	answer := answerFor(t, rig, "approval", "allow", nil, nil)
 	require.NoError(t, rig.agent.SendRawInput(answer, agent.StopContext{}))
 	require.ErrorIs(t, rig.agent.SendRawInput(answer, agent.StopContext{}), errKimiControlGone)
-	require.Len(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "approvals", "approval", "")), 1)
+	require.Len(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "interactions", "approval", "")), 1)
 }
 
 func TestFailedAutomaticApprovalKeepsItsManualCardWithoutAnotherAttempt(t *testing.T) {
 	t.Parallel()
 	rig := newKimiTestRig(t, agent.Options{Options: options(agent.OptionIDPermissionMode, contracts.KimiModeAuto)})
-	firstRoute := "POST " + kimiItemPath(rig.sessionID(), "approvals", "first", "")
+	firstRoute := "POST " + kimiItemPath(rig.sessionID(), "interactions", "first", "")
 	rig.fake.reply(firstRoute, fakeKapReply{Code: 40001, Msg: "the decision was refused"})
 	rig.feed(t, approvalEvent("first", map[string]any{"kind": "command"}))
 	waitFor(t, rig.agent.approvalWork.Idle, "the failed approval reaches its manual fallback")
@@ -95,7 +101,7 @@ func TestNarrowerPolicyKeepsAnUnclaimedToolForManualApproval(t *testing.T) {
 	require.Zero(t, rig.sink.PublishedControlCount())
 	rig.agent.UpdateSettings(options(agent.OptionIDPermissionMode, contracts.KimiModeManual))
 	assert.Equal(t, 1, rig.sink.PublishedControlCount())
-	assert.Empty(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "approvals", "approval", "")))
+	assert.Empty(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "interactions", "approval", "")))
 }
 
 // answerFor resolves a browser answer against the request the sink stored, as
@@ -129,7 +135,7 @@ func TestKimiPublishesControlRequests(t *testing.T) {
 	assert.Equal(t, "question_1", controls[1].RequestID)
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(controls[0].Payload, &payload))
-	assert.Equal(t, contracts.KimiEventApprovalRequested, payload["type"], "the request is the server's own payload")
+	assert.Equal(t, contracts.KimiFrameInteraction, payload["type"], "the request is the server's own payload")
 
 	messages := rig.sink.Messages()
 	require.NotEmpty(t, messages)
@@ -163,12 +169,12 @@ func TestKimiDeliversAnswers(t *testing.T) {
 		rig := newKimiTestRig(t, agent.Options{})
 		rig.feed(t, approvalEvent("approval_1", map[string]any{"kind": "command", "command": "ls"}))
 		require.NoError(t, rig.agent.SendRawInput(answerFor(t, rig, "approval_1", "allow", map[string]any{"scope": "session"}, nil), agent.StopContext{}))
-		posts := rig.fake.requestsTo("POST " + kimiItemPath(rig.sessionID(), "approvals", "approval_1", ""))
+		posts := rig.fake.requestsTo("POST " + kimiItemPath(rig.sessionID(), "interactions", "approval_1", ""))
 		require.Len(t, posts, 1)
-		assert.JSONEq(t, `{"decision":"approved","scope":"session"}`, string(posts[0].Body))
+		assert.JSONEq(t, `{"kind":"approval","decision":"approved","scope":"session"}`, string(posts[0].Body))
 
 		// The server's resolution that follows an answer withdraws nothing.
-		rig.feed(t, map[string]any{"type": contracts.KimiEventApprovalResolved, "approval_id": "approval_1", "decision": "approved"})
+		rig.feed(t, map[string]any{"type": contracts.KimiFrameInteraction, "kind": contracts.KimiInteractionKindApproval, "status": kimiInteractionEnded, "outcome": "cancelled", "interaction_id": "approval_1", "decision": "approved"})
 		assert.Empty(t, rig.sink.CanceledControls())
 		require.ErrorIs(t, rig.agent.SendRawInput(answerFor(t, rig, "approval_1", "allow", nil, nil), agent.StopContext{}), errKimiControlGone,
 			"a resolved request takes no second answer")
@@ -182,7 +188,7 @@ func TestKimiDeliversAnswers(t *testing.T) {
 		require.NoError(t, rig.agent.SendRawInput(content, agent.StopContext{}))
 
 		profile := kimiSessionPath(rig.sessionID(), "/profile")
-		approval := kimiItemPath(rig.sessionID(), "approvals", "approval_1", "")
+		approval := kimiItemPath(rig.sessionID(), "interactions", "approval_1", "")
 		routes := rig.fake.routes()
 		profileAt, approvalAt := -1, -1
 		for i, route := range routes {
@@ -198,7 +204,7 @@ func TestKimiDeliversAnswers(t *testing.T) {
 		profiles := rig.fake.requestsTo("POST " + profile)
 		assert.JSONEq(t, `{"agent_config":{"permission_mode":"auto"}}`, string(profiles[len(profiles)-1].Body))
 		posts := rig.fake.requestsTo("POST " + approval)
-		assert.JSONEq(t, `{"decision":"approved"}`, string(posts[0].Body), "the mode is LeapMux's own and never reaches the approval")
+		assert.JSONEq(t, `{"kind":"approval","decision":"approved"}`, string(posts[0].Body), "the mode is LeapMux's own and never reaches the approval")
 		session, _ := rig.fake.session(rig.sessionID())
 		assert.Equal(t, contracts.KimiModeAuto, session.Permission)
 		assert.Empty(t, rig.sink.PermissionModes(),
@@ -209,7 +215,7 @@ func TestKimiDeliversAnswers(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{Options: options(agent.OptionIDPermissionMode, contracts.KimiModeYolo)})
 		sub := approvalEvent("approval_1", map[string]any{"kind": contracts.KimiDisplayPlanReview, "plan": "# A subagent's plan"})
-		sub["agentId"], sub["agent_id"] = "agent-0", "agent-0"
+		sub["agent_id"] = "agent-0"
 		rig.feed(t, sub)
 		profile := "POST " + kimiSessionPath(rig.sessionID(), "/profile")
 		before := len(rig.fake.requestsTo(profile))
@@ -217,9 +223,9 @@ func TestKimiDeliversAnswers(t *testing.T) {
 		content := answerFor(t, rig, "approval_1", "allow", nil, &leapmuxv1.PlanApprovalSettings{PermissionMode: contracts.KimiModeManual})
 		require.NoError(t, rig.agent.SendRawInput(content, agent.StopContext{}))
 		assert.Len(t, rig.fake.requestsTo(profile), before, "no profile write reaches the main session")
-		posts := rig.fake.requestsTo("POST " + kimiItemPath(rig.sessionID(), "approvals", "approval_1", ""))
+		posts := rig.fake.requestsTo("POST " + kimiItemPath(rig.sessionID(), "interactions", "approval_1", ""))
 		require.Len(t, posts, 1)
-		assert.JSONEq(t, `{"decision":"approved"}`, string(posts[0].Body))
+		assert.JSONEq(t, `{"kind":"approval","decision":"approved"}`, string(posts[0].Body))
 		session, _ := rig.fake.session(rig.sessionID())
 		assert.Equal(t, contracts.KimiModeYolo, session.Permission, "the main agent keeps Ask When Needed")
 		assert.Empty(t, rig.sink.PermissionModes())
@@ -238,9 +244,9 @@ func TestKimiDeliversAnswers(t *testing.T) {
 		profiles := rig.fake.requestsTo("POST " + kimiSessionPath(rig.sessionID(), "/profile"))
 		require.NotEmpty(t, profiles)
 		assert.JSONEq(t, `{"agent_config":{"permission_mode":"yolo"}}`, string(profiles[len(profiles)-1].Body))
-		posts := rig.fake.requestsTo("POST " + kimiItemPath(rig.sessionID(), "approvals", "approval_1", ""))
+		posts := rig.fake.requestsTo("POST " + kimiItemPath(rig.sessionID(), "interactions", "approval_1", ""))
 		require.Len(t, posts, 1)
-		assert.JSONEq(t, `{"decision":"approved","selected_label":"yolo"}`, string(posts[0].Body),
+		assert.JSONEq(t, `{"kind":"approval","decision":"approved","selected_label":"yolo"}`, string(posts[0].Body),
 			"the label still rides, so the server's own reading of it agrees")
 		assert.Equal(t, []string{contracts.KimiModeYolo}, rig.sink.PermissionModes())
 		assert.Equal(t, contracts.KimiModeYolo, agent.CurrentOptions(rig.agent.OptionGroups())[agent.OptionIDPermissionMode])
@@ -262,17 +268,17 @@ func TestKimiDeliversAnswers(t *testing.T) {
 		rig.feed(t, questionEvent("question_1"))
 		content := answerFor(t, rig, "question_1", "allow", map[string]any{"answers": map[string]any{"q_0": map[string]any{"kind": "single", "option_id": "opt_0_0"}}}, nil)
 		require.NoError(t, rig.agent.SendRawInput(content, agent.StopContext{}))
-		posts := rig.fake.requestsTo("POST " + kimiItemPath(rig.sessionID(), "questions", "question_1", ""))
+		posts := rig.fake.requestsTo("POST " + kimiItemPath(rig.sessionID(), "interactions", "question_1", ""))
 		require.Len(t, posts, 1)
-		assert.JSONEq(t, `{"answers":{"q_0":{"kind":"single","option_id":"opt_0_0"}},"method":"click"}`, string(posts[0].Body))
+		assert.JSONEq(t, `{"kind":"question","answers":{"q_0":{"kind":"single","option_id":"opt_0_0"}},"method":"click"}`, string(posts[0].Body))
 	})
 
-	t.Run("a dismissal succeeds with the server's own non-zero code", func(t *testing.T) {
+	t.Run("a dismissal succeeds through the interaction route", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
 		rig.feed(t, questionEvent("question_1"))
-		route := kimiItemPath(rig.sessionID(), "questions", "question_1", kimiActionDismiss)
-		rig.fake.reply("POST "+route, fakeKapReply{Code: kimiCodeQuestionDismissed, Msg: "dismissed"})
+		route := kimiItemPath(rig.sessionID(), "interactions", "question_1", "")
+		rig.fake.reply("POST "+route, fakeKapReply{Code: kimiCodeOK, Msg: "dismissed"})
 		require.NoError(t, rig.agent.SendRawInput(answerFor(t, rig, "question_1", "deny", nil, nil), agent.StopContext{}))
 		assert.Len(t, rig.fake.requestsTo("POST "+route), 1)
 	})
@@ -281,7 +287,7 @@ func TestKimiDeliversAnswers(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
 		rig.feed(t, approvalEvent("approval_1", map[string]any{"kind": "command", "command": "ls"}))
-		rig.fake.reply("POST "+kimiItemPath(rig.sessionID(), "approvals", "approval_1", ""), fakeKapReply{Code: kimiCodeAlreadyResolved})
+		rig.fake.reply("POST "+kimiItemPath(rig.sessionID(), "interactions", "approval_1", ""), fakeKapReply{Code: kimiCodeInteractionEnded})
 		require.ErrorIs(t, rig.agent.SendRawInput(answerFor(t, rig, "approval_1", "allow", nil, nil), agent.StopContext{}), errKimiControlGone)
 	})
 
@@ -289,7 +295,7 @@ func TestKimiDeliversAnswers(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
 		rig.feed(t, approvalEvent("approval_1", map[string]any{"kind": "command", "command": "ls"}))
-		rig.fake.reply("POST "+kimiItemPath(rig.sessionID(), "approvals", "approval_1", ""), fakeKapReply{Drop: true})
+		rig.fake.reply("POST "+kimiItemPath(rig.sessionID(), "interactions", "approval_1", ""), fakeKapReply{Drop: true})
 		require.ErrorIs(t, rig.agent.SendRawInput(answerFor(t, rig, "approval_1", "allow", nil, nil), agent.StopContext{}), agent.ErrDeliveryUncertain)
 	})
 
@@ -297,7 +303,7 @@ func TestKimiDeliversAnswers(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
 		rig.feed(t, approvalEvent("approval_1", map[string]any{"kind": "command", "command": "ls"}))
-		rig.fake.reply("POST "+kimiItemPath(rig.sessionID(), "approvals", "approval_1", ""), fakeKapReply{Code: 40001, Msg: "bad decision"})
+		rig.fake.reply("POST "+kimiItemPath(rig.sessionID(), "interactions", "approval_1", ""), fakeKapReply{Code: 40001, Msg: "bad decision"})
 		err := rig.agent.SendRawInput(answerFor(t, rig, "approval_1", "allow", nil, nil), agent.StopContext{})
 		require.Error(t, err)
 		assert.False(t, errors.Is(err, errKimiControlGone) || errors.Is(err, agent.ErrDeliveryUncertain))
@@ -324,7 +330,7 @@ func TestKimiRefusesAnswersItCannotDeliver(t *testing.T) {
 	rig.agent.Mu.Unlock()
 	err := rig.agent.SendRawInput([]byte(`{"response":{"request_id":"approval_1","response":{"decision":"approved"}}}`), agent.StopContext{})
 	require.ErrorContains(t, err, "previous session")
-	assert.Empty(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "approvals", "approval_1", "")))
+	assert.Empty(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "interactions", "approval_1", "")))
 }
 
 func TestKimiWithdrawsWhatTheServerResolvedByItself(t *testing.T) {
@@ -335,12 +341,12 @@ func TestKimiWithdrawsWhatTheServerResolvedByItself(t *testing.T) {
 	rig.feed(t, questionEvent("question_2"))
 
 	// The turn was aborted: the server resolves both with no decision.
-	rig.feed(t, map[string]any{"type": contracts.KimiEventApprovalResolved, "approval_id": "approval_1"})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventQuestionDismissed, "question_id": "question_1"})
+	rig.feed(t, map[string]any{"type": contracts.KimiFrameInteraction, "kind": contracts.KimiInteractionKindApproval, "status": kimiInteractionEnded, "outcome": "cancelled", "interaction_id": "approval_1"})
+	rig.feed(t, map[string]any{"type": contracts.KimiFrameInteraction, "kind": contracts.KimiInteractionKindQuestion, "status": kimiInteractionEnded, "outcome": "dismissed", "interaction_id": "question_1"})
 	assert.Equal(t, []string{"approval_1", "question_1"}, rig.sink.CanceledControls())
 
-	rig.feed(t, map[string]any{"type": contracts.KimiEventQuestionAnswered, "question_id": "question_unknown"})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventApprovalResolved})
+	rig.feed(t, map[string]any{"type": contracts.KimiFrameInteraction, "kind": contracts.KimiInteractionKindQuestion, "status": kimiInteractionEnded, "outcome": "answered", "interaction_id": "question_unknown"})
+	rig.feed(t, map[string]any{"type": contracts.KimiFrameInteraction, "kind": contracts.KimiInteractionKindApproval, "status": kimiInteractionEnded, "outcome": "cancelled"})
 	assert.Len(t, rig.sink.CanceledControls(), 2, "a resolution of a request LeapMux never published withdraws nothing")
 
 	rig.agent.withdrawAllControls()
@@ -357,15 +363,15 @@ func TestKimiCancelsARequestNoUserCanAnswer(t *testing.T) {
 	}{
 		"an approval": {
 			event: approvalEvent("approval_1", map[string]any{"kind": "command", "command": "ls"}),
-			route: func(sessionID string) string { return kimiItemPath(sessionID, "approvals", "approval_1", "") },
-			body:  `{"decision":"cancelled"}`,
+			route: func(sessionID string) string { return kimiItemPath(sessionID, "interactions", "approval_1", "") },
+			body:  `{"kind":"approval","decision":"cancelled"}`,
 		},
 		"a question": {
 			event: questionEvent("question_1"),
 			route: func(sessionID string) string {
-				return kimiItemPath(sessionID, "questions", "question_1", kimiActionDismiss)
+				return kimiItemPath(sessionID, "interactions", "question_1", "")
 			},
-			body: `{}`,
+			body: `{"kind":"question","dismissed":true}`,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -388,7 +394,7 @@ func TestClassifyKimiControlError(t *testing.T) {
 	t.Parallel()
 
 	assert.NoError(t, classifyKimiControlError(nil))
-	assert.ErrorIs(t, classifyKimiControlError(&kimiAPIError{Code: kimiCodeAlreadyResolved}), errKimiControlGone)
+	assert.ErrorIs(t, classifyKimiControlError(&kimiAPIError{Code: kimiCodeInteractionEnded}), errKimiControlGone)
 	other := &kimiAPIError{Code: 40001}
 	assert.Same(t, error(other), classifyKimiControlError(other))
 	assert.ErrorIs(t, classifyKimiControlError(errors.New("connection reset")), agent.ErrDeliveryUncertain)
@@ -408,23 +414,21 @@ func TestKimiIgnoresARequestWithNoID(t *testing.T) {
 	assert.Zero(t, pending)
 }
 
-// The server fills the interaction's agent tag and the envelope's agent from
-// the same tag. A request that states no tag belongs to the envelope's agent.
-func TestKimiApprovalWithNoAgentTagTakesTheEnvelopeAgent(t *testing.T) {
+// The native interaction carries one agent tag. A missing tag denotes main.
+func TestKimiApprovalUsesItsNativeAgentTag(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
 
 	sub := approvalEvent("approval_1", map[string]any{"kind": contracts.KimiDisplayPlanReview, "plan": "# A subagent's plan"})
-	delete(sub, "agent_id")
-	sub["agentId"] = "agent-0"
+	sub["agent_id"] = "agent-0"
 	rig.feed(t, sub)
-	assert.Zero(t, rig.sink.PlanUpdateCount(), "the envelope states a subagent, whose plan is not the session's")
+	assert.Zero(t, rig.sink.PlanUpdateCount(), "the interaction states a subagent, whose plan is not the session's")
 	assert.Equal(t, 1, rig.sink.PublishedControlCount(), "the user still answers it")
 
 	main := approvalEvent("approval_2", map[string]any{"kind": contracts.KimiDisplayPlanReview, "plan": "# The session's plan"})
 	delete(main, "agent_id")
 	rig.feed(t, main)
-	require.Equal(t, 1, rig.sink.PlanUpdateCount(), "the envelope states the main agent")
+	require.Equal(t, 1, rig.sink.PlanUpdateCount(), "a missing native tag denotes the main agent")
 	assert.Equal(t, "The session's plan", rig.sink.LastPlanUpdate().Title)
 }
 
@@ -458,25 +462,25 @@ func TestKimiReconcileControls(t *testing.T) {
 		"a request of another session is not this snapshot's to judge")
 }
 
-func TestKimiInteractionEvent(t *testing.T) {
+func TestKimiSnapshotInteraction(t *testing.T) {
 	t.Parallel()
 
 	t.Run("an approval reads as the event that announced it", func(t *testing.T) {
 		t.Parallel()
 		item := json.RawMessage(`{"approval_id":"approval_1","tool_name":"Bash","type":"stale","sessionId":"session_old"}`)
-		event, requestID, ok := kimiInteractionEvent(contracts.KimiEventApprovalRequested, "session_1", item)
+		event, requestID, ok := kimiSnapshotInteraction(contracts.KimiInteractionKindApproval, "session_1", item)
 		require.True(t, ok)
 		assert.Equal(t, "approval_1", requestID)
-		assert.Equal(t, contracts.KimiEventApprovalRequested, event.Type)
+		assert.Equal(t, contracts.KimiFrameInteraction, event.Type)
 		assert.Equal(t, kimiMainAgentID, event.AgentID, "an interaction with no agent tag is the main agent's")
-		assert.JSONEq(t, `{"approval_id":"approval_1","tool_name":"Bash","type":"event.approval.requested",`+
-			`"agentId":"main","sessionId":"session_1"}`, string(event.Raw), "the envelope fields replace what the item held")
+		assert.JSONEq(t, `{"type":"interaction","kind":"approval","status":"pending","interaction_id":"approval_1",`+
+			`"agent_id":"main","session_id":"session_1","request":{"tool_name":"Bash"}}`, string(event.Raw), "the snapshot projects the native interaction identity and request")
 	})
 
 	t.Run("a question keeps its agent", func(t *testing.T) {
 		t.Parallel()
 		item := json.RawMessage(`{"question_id":"question_1","agent_id":"agent-2"}`)
-		event, requestID, ok := kimiInteractionEvent(contracts.KimiEventQuestionRequested, "session_1", item)
+		event, requestID, ok := kimiSnapshotInteraction(contracts.KimiInteractionKindQuestion, "session_1", item)
 		require.True(t, ok)
 		assert.Equal(t, "question_1", requestID)
 		assert.Equal(t, "agent-2", event.AgentID)
@@ -486,16 +490,16 @@ func TestKimiInteractionEvent(t *testing.T) {
 		eventType string
 		item      string
 	}{
-		"bytes that are not JSON":            {contracts.KimiEventApprovalRequested, `not json`},
-		"a null item":                        {contracts.KimiEventApprovalRequested, `null`},
-		"an array":                           {contracts.KimiEventApprovalRequested, `[]`},
-		"an approval with no id":             {contracts.KimiEventApprovalRequested, `{"tool_name":"Bash"}`},
-		"a question that states an approval": {contracts.KimiEventQuestionRequested, `{"approval_id":"approval_1"}`},
-		"an id of the wrong type":            {contracts.KimiEventApprovalRequested, `{"approval_id":7}`},
+		"bytes that are not JSON":            {contracts.KimiInteractionKindApproval, `not json`},
+		"a null item":                        {contracts.KimiInteractionKindApproval, `null`},
+		"an array":                           {contracts.KimiInteractionKindApproval, `[]`},
+		"an approval with no id":             {contracts.KimiInteractionKindApproval, `{"tool_name":"Bash"}`},
+		"a question that states an approval": {contracts.KimiInteractionKindQuestion, `{"approval_id":"approval_1"}`},
+		"an id of the wrong type":            {contracts.KimiInteractionKindApproval, `{"approval_id":7}`},
 	} {
 		t.Run(name+" is refused", func(t *testing.T) {
 			t.Parallel()
-			_, _, ok := kimiInteractionEvent(tc.eventType, "session_1", json.RawMessage(tc.item))
+			_, _, ok := kimiSnapshotInteraction(tc.eventType, "session_1", json.RawMessage(tc.item))
 			assert.False(t, ok)
 		})
 	}
@@ -561,7 +565,7 @@ func TestKimiApprovalWhoseModeSwitchFailsStaysPending(t *testing.T) {
 	rig := newKimiTestRig(t, agent.Options{})
 	rig.feed(t, approvalEvent("approval_1", map[string]any{"kind": contracts.KimiDisplayGoalStart, "objective": "Ship it"}))
 	profile := "POST " + kimiSessionPath(rig.sessionID(), "/profile")
-	approval := "POST " + kimiItemPath(rig.sessionID(), "approvals", "approval_1", "")
+	approval := "POST " + kimiItemPath(rig.sessionID(), "interactions", "approval_1", "")
 	content := answerFor(t, rig, "approval_1", "allow", map[string]any{"choice": contracts.KimiGoalModeYolo}, nil)
 
 	rig.fake.reply(profile, fakeKapReply{Code: 50000, Msg: "profile locked"})

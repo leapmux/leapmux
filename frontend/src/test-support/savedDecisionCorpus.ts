@@ -44,8 +44,12 @@ function clineHubEvent(event: string, stamp: ClineHubStamp, payload: Record<stri
 
 /**
  * Saved decisions CAPTURED from the installed runtimes, rather than written by hand
- * (RL-001): five on September 14, 2026, Kimi Code, Grok Build, Qwen Code and Oh My
- * Pi on September 23, and Codewhale, Kiro and Cline on September 24.
+ * (RL-001):
+ *
+ * - Five original cases on September 14, 2026
+ * - Grok Build, Qwen Code and Oh My Pi on September 23, 2026
+ * - Codewhale, Kiro and Cline on September 24, 2026
+ * - Kimi Code on October 30, 2026
  *
  * The five of the first capture are here because theirs were the runtimes that asked
  * for permission on that day. Claude Code, Cursor, OpenCode, Kilo and Pi approved the
@@ -514,46 +518,45 @@ export const SAVED_DECISION_CORPUS: readonly SavedDecisionCapture[] = [
       decision: 'allow',
     },
   },
-  // Kimi Code states its request as an `event.approval.requested`, which the worker
-  // stores verbatim (captured from a live Kimi Code 2.0.2 session, September 23, 2026).
-  // The stored answer is the server's own approval body in the envelope the worker
-  // writes: the body that the capture posted, with the session scope that an approval
-  // for the session adds.
+  // Captured from Kimi Code 2.4.0 on October 30, 2026. The Worker keeps the
+  // complete interaction frame and the native answer to the unified route.
+  // A cold browser displayed the session-scoped approval as the label below.
   {
     provider: Provider.KIMI_CODE,
     name: 'kimi Allow for this session',
     label: 'Allow for this session',
     request: {
-      type: 'event.approval.requested',
-      agentId: 'main',
-      sessionId: 'session_f7cf22a1-3d27-4d41-b8e2-978b1e5fa5a7',
-      approval_id: 'approval_bd6a909a-e27b-4e67-9ccf-8812f349173e',
-      session_id: 'session_f7cf22a1-3d27-4d41-b8e2-978b1e5fa5a7',
+      type: 'interaction',
+      session_id: 'session_95882f97-016a-41fe-8b84-db5d4fdb9193',
       agent_id: 'main',
-      turn_id: 0,
-      tool_call_id: 'call_bash_1',
-      tool_name: 'Bash',
-      action: 'Running: echo hi-from-bash',
-      tool_input_display: {
-        kind: 'command',
-        command: 'echo hi-from-bash',
-        cwd: '/work',
-        description: 'Echo a greeting',
-        language: 'bash',
+      event_created_at: '2026-10-30T01:05:56.980Z',
+      interaction_id: 'approval_cf9626b4-39a1-41a7-8997-e8a180544556',
+      status: 'pending',
+      tool_call_id: 'interaction-first',
+      kind: 'approval',
+      request: {
+        tool_name: 'Bash',
+        action: 'Running: echo kimi-interaction-$((40 + 2))',
+        tool_input_display: {
+          kind: 'command',
+          command: 'echo kimi-interaction-$((40 + 2))',
+          cwd: '/private/tmp/leapmux-e2e-XZYER4/kimi-e2e-wd-2PLvPU',
+          language: 'bash',
+        },
+        expires_at: '2026-10-31T01:05:56.979Z',
       },
-      created_at: '2026-09-23T18:06:49.141Z',
-      expires_at: '2026-09-24T18:06:49.141Z',
     },
     response: {
-      type: 'control_response',
       response: {
-        subtype: 'success',
-        request_id: 'approval_bd6a909a-e27b-4e67-9ccf-8812f349173e',
+        request_id: 'approval_cf9626b4-39a1-41a7-8997-e8a180544556',
         response: {
+          kind: 'approval',
           decision: 'approved',
           scope: 'session',
         },
+        subtype: 'success',
       },
+      type: 'control_response',
     },
   },
   // Grok Build and Qwen Code, captured from their live ACP sessions on September 23,

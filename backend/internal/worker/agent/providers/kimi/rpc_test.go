@@ -59,20 +59,20 @@ func TestKimiClientCall(t *testing.T) {
 	t.Run("accepts a code the caller states", func(t *testing.T) {
 		t.Parallel()
 		client := newKimiTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
-			writeFakeKapEnvelope(w, http.StatusOK, kimiCodeQuestionDismissed, "dismissed", nil)
+			writeFakeKapEnvelope(w, http.StatusOK, kimiCodeOK, "dismissed", nil)
 		})
-		assert.NoError(t, client.post(context.Background(), "/api/v1/x", nil, nil, kimiCodeQuestionDismissed))
+		assert.NoError(t, client.post(context.Background(), "/api/v1/x", nil, nil, kimiCodeOK))
 	})
 
 	t.Run("reads the envelope of a non-2xx reply", func(t *testing.T) {
 		t.Parallel()
 		client := newKimiTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
-			writeFakeKapEnvelope(w, http.StatusConflict, kimiCodeAlreadyResolved, "already resolved", nil)
+			writeFakeKapEnvelope(w, http.StatusConflict, kimiCodeInteractionEnded, "already resolved", nil)
 		})
 		err := client.post(context.Background(), "/api/v1/x", nil, nil)
 		var apiErr *kimiAPIError
 		require.ErrorAs(t, err, &apiErr)
-		assert.Equal(t, kimiCodeAlreadyResolved, apiErr.Code)
+		assert.Equal(t, kimiCodeInteractionEnded, apiErr.Code)
 		assert.Equal(t, http.StatusConflict, apiErr.Status)
 	})
 

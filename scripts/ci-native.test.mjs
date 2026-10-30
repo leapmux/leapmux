@@ -1,11 +1,15 @@
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, describe, expect, it } from 'bun:test'
 
 const root = resolve(import.meta.dirname, '..')
 const readYaml = path => Bun.YAML.parse(readFileSync(resolve(root, path), 'utf8'))
+const expression = body => `\${{ ${body} }}`
+// The one Bun test that the native jobs run: the resource monitor reads each
+// OS through its own probe, so each runner tests its own.
+const MONITOR_TEST = 'bun test --timeout 30000 scripts/ci-resource-monitor.test.mjs scripts/ci-resource-monitor/'
 const fixtures = []
 
 afterEach(() => {
@@ -82,12 +86,14 @@ describe('native CI validation', () => {
       expect(linux).toContain(`cd ${module} && go tool golangci-lint run --allow-serial-runners ./...`)
     expect(linux.filter(command => command.includes('cargo clippy'))).toHaveLength(1)
     expect(linux.filter(command => command.includes('bun run test'))).toEqual(['cd frontend && bun run test scripts/ tests/e2e/helpers/'])
-    expect(linux.join('\n')).not.toMatch(/bun test|bun run (?:lint|typecheck)|validate-json|renovate/)
+    expect(linux).toContain(MONITOR_TEST)
+    expect(linux.filter(command => command !== MONITOR_TEST).join('\n')).not.toMatch(/bun test|bun run (?:lint|typecheck)|validate-json|renovate/)
   })
 
   it.each([
     '',
     'frontend-native',
+    'ci-monitor',
     'backend',
     'desktop-go',
     'rust-test',
@@ -99,6 +105,7 @@ describe('native CI validation', () => {
     fixtures.push(dir)
     const stages = [
       'frontend-native',
+      'ci-monitor',
       'backend',
       'desktop-go',
       'rust-test',
@@ -107,6 +114,7 @@ describe('native CI validation', () => {
     const selected = Object.fromEntries([
       'test-native',
       'test-frontend-native',
+      'test-ci-monitor',
       'test-backend-no-docker-run',
       'test-desktop-run',
     ].map(name => [
@@ -118,6 +126,7 @@ describe('native CI validation', () => {
     // so the fixture can fail each test command without native toolchains.
     for (const name of [
       'test-frontend-native',
+      'test-ci-monitor',
       'test-backend-no-docker-run',
       'test-desktop-run',
       'test-native',
@@ -149,7 +158,8 @@ describe('native CI validation', () => {
     expect(native).toContain('cd desktop/rust && cargo test --locked')
     expect(native).toContain('cd desktop/rust && cargo clippy --locked --all-targets -- -D warnings')
     expect(native).toContain('cd frontend && bun run test scripts/ tests/e2e/helpers/')
-    expect(native.join('\n')).not.toMatch(/golangci-lint|GOOS=|bun run (?:lint|typecheck)|bun test|renovate/)
+    expect(native).toContain(MONITOR_TEST)
+    expect(native.filter(cmd => cmd !== MONITOR_TEST).join('\n')).not.toMatch(/golangci-lint|GOOS=|bun run (?:lint|typecheck)|bun test|renovate/)
     expect(native.filter(cmd => cmd.includes('bun run test'))).toEqual(['cd frontend && bun run test scripts/ tests/e2e/helpers/'])
     // Omitting integration-tagged Docker suites also keeps them out of compilation.
     const backend = native.find(cmd => cmd.includes('cd backend && go tool gotestsum'))
@@ -172,5 +182,36 @@ describe('native CI validation', () => {
           expect(step.shell).toBe('pwsh')
       }
     }
+  })
+
+  it.each(['linux', 'macos', 'windows'])('monitors the %s runner on request, from the toolchain setup to the end of the job', (name) => {
+    const job = readYaml('.github/workflows/ci.yaml').jobs[name]
+    const steps = job.steps
+    const monitor = 'bun scripts/ci-resource-monitor.mjs'
+    const start = steps.findIndex(step => step.uses === './.github/actions/ci-resource-monitor' && step.with.mode === 'start')
+    const stop = steps.findIndex(step => step.uses === './.github/actions/ci-resource-monitor' && step.with.mode === 'stop')
+    const setup = steps.findIndex(step => step.uses === './.github/actions/setup-build')
+    const tests = steps.findIndex(step => /^task test(?:-native(?:-linux)?)?$/.test(step.run ?? ''))
+    // The monitor needs the Bun that the toolchain setup installs.
+    expect(start).toBe(setup + 1)
+    expect(tests).toBeGreaterThan(start)
+    // The stop step runs last and after a failure, so it prints the log of every job that GitHub keeps.
+    expect(stop).toBe(steps.length - 1)
+    // The repository variable CI_RESOURCE_MONITOR switches the monitor on.
+    expect(steps[start].if).toBe('vars.CI_RESOURCE_MONITOR == \'true\'')
+    expect(steps[stop].if).toBe('always() && vars.CI_RESOURCE_MONITOR == \'true\'')
+    const action = readYaml('.github/actions/ci-resource-monitor/action.yaml')
+    expect(action.inputs.mode.required).toBe(true)
+    expect(action.runs.using).toBe('composite')
+    expect(action.runs.steps).toHaveLength(1)
+    const invocation = action.runs.steps[0]
+    expect(invocation.if).toBe('always()')
+    expect(invocation.shell).toBe(expression('runner.os == \'Windows\' && \'pwsh\' || \'bash\''))
+    expect(invocation['working-directory']).toBe(expression('github.workspace'))
+    expect(invocation.env.GH_TOKEN).toBe(expression('github.token'))
+    expect(invocation.env.MONITOR_HEAD_SHA).toBe(expression('github.event.pull_request.head.sha || github.sha'))
+    expect(invocation.run).toBe(`${monitor} "${expression('inputs.mode')}"`)
+    expect(job.permissions.checks).toBe('write')
+    expect(existsSync(resolve(root, 'scripts/ci-resource-monitor.mjs'))).toBe(true)
   })
 })

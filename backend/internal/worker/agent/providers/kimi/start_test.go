@@ -52,7 +52,7 @@ func TestKimiConnect(t *testing.T) {
 		fake.version = "1.9.9"
 		fake.mu.Unlock()
 		_, err := connectOffline(t, server.URL, fakeKapToken)
-		require.ErrorIs(t, err, errKimiLegacyCLI)
+		require.ErrorIs(t, err, errKimiUnsupportedVersion)
 		assert.Contains(t, err.Error(), "1.9.9")
 	})
 

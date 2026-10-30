@@ -1,5 +1,5 @@
 {
-  "_readme": "These Kimi Code values cross the Go and TypeScript boundary. LeapMux runs `kimi web` and drives its kap-server through REST and one WebSocket. Each event payload repeats its frame type. The Worker stores native event payloads. It removes repeated entries from global config warnings and preserves their other native fields. The browser dispatches on those same event types. The events table includes every declared server event, including the server-added event.* family. The origins table identifies who starts a turn. The tools and displayKinds tables identify tools and control displays. The decision and answer tables hold native reply values. The goalModes table holds approval labels. The modes table combines the three native permission modes with LeapMux plan mode. Moonshot AI owns these values except the two reply marks. LeapMux chooses dismiss for the dedicated dismiss route. LeapMux chooses permission_mode for the mode after plan approval. The todoStatuses and turnEndReasons tables hold native task and completion values. The browser owns native output headers and per-line footers in its provider protocol module. The opening event supplies the tool name because native result events contain no name. Per-line footers contain no declared length. The browser shows the reported output_path beside the original preview. It checks native session and agent identity. It checks native turn and call identity also. LeapMux reads no output file. The Worker also stores each entry of GET /sessions/{id}/warnings in the shape of the warning event (type, agentId, sessionId, code, message). The server publishes profile warnings before a subscription can receive them. notificationEvents lists the event types that the Worker stores as notification rows. The browser treats the same set as one notification thread. The Worker stores other unknown session events as message rows. Compaction starts and blocked compactions use the live compaction key.",
+  "_readme": "These Kimi Code values cross the Go and TypeScript boundary. LeapMux runs `kimi web` and drives its kap-server through REST and one WebSocket. Each event payload repeats its frame type. The Worker stores native event payloads and complete native interaction frames. Approvals and questions arrive through unsequenced interaction frames with nested requests. The frames and interactionKinds tables describe that envelope. The versions table states the minimum CLI and server release. The Worker removes repeated entries from global config warnings and preserves their other native fields. The browser dispatches on those same event types. The events table includes every declared server event, including the server-added event.* family. The origins table identifies who starts a turn. The tools and displayKinds tables identify tools and control displays. The decision and answer tables hold native reply values. The goalModes table holds approval labels. The modes table combines the three native permission modes with LeapMux plan mode. Moonshot AI owns the native wire values. LeapMux chooses the minimum release and owns its plan mode and permission_mode, which selects the mode after plan approval. Control answers use the unified interaction route and carry their native kind. A question dismissal sets dismissed to true. The todoStatuses and turnEndReasons tables hold native task and completion values. The browser owns native output headers and per-line footers in its provider protocol module. The opening event supplies the tool name because native result events contain no name. Per-line footers contain no declared length. The browser shows the reported output_path beside the original preview. It checks native session and agent identity. It checks native turn and call identity also. LeapMux reads no output file. The Worker also stores each entry of GET /sessions/{id}/warnings in the shape of the warning event (type, agentId, sessionId, code, message). The server publishes profile warnings before a subscription can receive them. notificationEvents lists the event types that the Worker stores as notification rows. The browser treats the same set as one notification thread. The Worker stores other unknown session events as message rows. Compaction starts and blocked compactions use the live compaction key.",
   "events": {
     "AgentCreated": "agent.created",
     "AgentDisposed": "agent.disposed",
@@ -57,11 +57,6 @@
     "SessionMetaUpdated": "session.meta.updated",
     "PermissionApprovalRequested": "permission.approval.requested",
     "PermissionApprovalResolved": "permission.approval.resolved",
-    "ApprovalRequested": "event.approval.requested",
-    "ApprovalResolved": "event.approval.resolved",
-    "QuestionRequested": "event.question.requested",
-    "QuestionAnswered": "event.question.answered",
-    "QuestionDismissed": "event.question.dismissed",
     "SessionCreated": "event.session.created",
     "SessionArchived": "event.session.archived",
     "SessionDeleted": "event.session.deleted",
@@ -102,7 +97,6 @@
     "CronDelete": "CronDelete",
     "CronList": "CronList",
     "Edit": "Edit",
-    "EnterPlanMode": "EnterPlanMode",
     "ExitPlanMode": "ExitPlanMode",
     "FetchURL": "FetchURL",
     "GetGoal": "GetGoal",
@@ -164,8 +158,9 @@
     "SelectedLabel": "selected_label",
     "Answers": "answers",
     "Method": "method",
-    "Dismiss": "dismiss",
-    "PermissionMode": "permission_mode"
+    "PermissionMode": "permission_mode",
+    "Kind": "kind",
+    "Dismissed": "dismissed"
   },
   "todoStatuses": {
     "Pending": "pending",
@@ -180,9 +175,13 @@
   },
   "structs": {
     "KimiApprovalReply": {
-      "doc": "KimiApprovalReply is the body that answers one approval, as the worker stores it.\n\nThe worker posts it to `/sessions/{id}/approvals/{approval_id}` without\n`permission_mode`, which is LeapMux's own: it states the mode an approved plan\nor goal start switches to, and the worker applies it before it posts the\ndecision. The browser\nreads the stored reply back to word the saved answer.",
+      "doc": "KimiApprovalReply is the body that answers one approval, as the worker stores it.\n\nThe worker posts it to `/sessions/{id}/interactions/{interaction_id}` without\n`permission_mode`, which is LeapMux's own: it states the mode an approved plan\nor goal start switches to, and the worker applies it before it posts the\ndecision. The browser\nreads the stored reply back to word the saved answer.",
       "table": "reply",
       "fields": [
+        {
+          "key": "Kind",
+          "type": "string"
+        },
         {
           "key": "Decision",
           "type": "string"
@@ -210,9 +209,13 @@
       ]
     },
     "KimiQuestionReply": {
-      "doc": "KimiQuestionReply is the body that answers one question, as the worker stores it.\n\n`Dismiss` is LeapMux's own mark: the server takes a dismissal through its own\n`:dismiss` route with no body, so a stored reply that sets it carries no answers.",
+      "doc": "KimiQuestionReply answers one native question through the interaction route.\nThe body contains exactly one of Answers or Dismissed, with Kind set to question.",
       "table": "reply",
       "fields": [
+        {
+          "key": "Kind",
+          "type": "string"
+        },
         {
           "key": "Answers",
           "type": "json.RawMessage",
@@ -224,7 +227,7 @@
           "omitempty": true
         },
         {
-          "key": "Dismiss",
+          "key": "Dismissed",
           "type": "bool",
           "omitempty": true
         }
@@ -273,5 +276,15 @@
     "TaskNotified",
     "HookResult",
     "ConfigWarning"
-  ]
+  ],
+  "frames": {
+    "Interaction": "interaction"
+  },
+  "interactionKinds": {
+    "Approval": "approval",
+    "Question": "question"
+  },
+  "versions": {
+    "Minimum": "2.4.0"
+  }
 }

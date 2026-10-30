@@ -21,47 +21,6 @@ import (
 // decision. The resolution is pure: the running agent posts the body
 // (deliverControlResponse).
 
-// kimiStoredRequest is the part of a stored control request the resolution
-// reads: which event it is, which agent asks, and what it asks.
-type kimiStoredRequest struct {
-	Type string `json:"type"`
-	// AgentID is the interaction's own agent tag, and EventAgentID is the agent
-	// the event envelope states. The server fills both from the same tag.
-	AgentID          string `json:"agent_id"`
-	EventAgentID     string `json:"agentId"`
-	ToolName         string `json:"tool_name"`
-	ToolInputDisplay struct {
-		Kind    string              `json:"kind"`
-		Options []kimiLabeledOption `json:"options"`
-	} `json:"tool_input_display"`
-	Questions []struct {
-		ID      string `json:"id"`
-		Options []struct {
-			ID string `json:"id"`
-		} `json:"options"`
-		MultiSelect bool `json:"multi_select"`
-	} `json:"questions"`
-}
-
-// agent returns the agent the request belongs to. The server words an
-// interaction with no agent tag as the main agent's (interactionAgentId), so
-// a request that states no agent is the main agent's.
-func (r kimiStoredRequest) agent() string {
-	switch {
-	case r.AgentID != "":
-		return r.AgentID
-	case r.EventAgentID != "":
-		return r.EventAgentID
-	default:
-		return kimiMainAgentID
-	}
-}
-
-// kimiLabeledOption is one option a plan review offers.
-type kimiLabeledOption struct {
-	Label string `json:"label"`
-}
-
 // kimiResolveControlResponse turns the browser's answer into the server's body.
 func kimiResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlResponseResolution {
 	result := agent.DefaultControlResponseResolution(ctx)
@@ -70,9 +29,13 @@ func kimiResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlR
 		// travel as they came.
 		return result
 	}
-	var request kimiStoredRequest
+	var request kimiInteraction
 	if err := json.Unmarshal(ctx.RequestPayload, &request); err != nil {
 		slog.Warn("kimi stored control request does not decode", "request_id", ctx.RequestID, "error", err)
+		result.Refuse(agent.RefusalUnreadableRequest)
+		return result
+	}
+	if request.Type != contracts.KimiFrameInteraction || request.Request == nil || request.Status != kimiInteractionPending {
 		result.Refuse(agent.RefusalUnreadableRequest)
 		return result
 	}
@@ -96,14 +59,14 @@ func kimiResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlR
 	choice := agent.DecodeControlChoice(ctx.ResponseContent)
 
 	var native any
-	switch request.Type {
-	case contracts.KimiEventApprovalRequested:
+	switch request.Kind {
+	case contracts.KimiInteractionKindApproval:
 		reply, refusal := kimiApprovalReply(request, allow, message, choice, fields.Scope)
 		if refusal != "" {
 			result.Refuse(refusal)
 			return result
 		}
-		switch request.ToolInputDisplay.Kind {
+		switch request.Request.ToolInputDisplay.Kind {
 		case contracts.KimiDisplayPlanReview:
 			if request.agent() != kimiMainAgentID {
 				// A subagent's plan review is the subagent's own: the approval takes
@@ -125,11 +88,11 @@ func kimiResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlR
 			}
 		}
 		native = reply
-	case contracts.KimiEventQuestionRequested:
+	case contracts.KimiInteractionKindQuestion:
 		if !allow {
 			// A refusal dismisses the question. Its text cannot ride the dismissal,
 			// so it reaches the model as the user's next message.
-			native = contracts.KimiQuestionReply{Dismiss: true}
+			native = contracts.KimiQuestionReply{Kind: contracts.KimiInteractionKindQuestion, Dismissed: true}
 			result.FollowUp = agent.FeedbackFollowUp(message)
 			break
 		}
@@ -138,7 +101,7 @@ func kimiResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlR
 			result.Refuse(agent.RefusalAnswersDoNotFit)
 			return result
 		}
-		native = contracts.KimiQuestionReply{Answers: fields.Answers, Method: kimiQuestionMethod}
+		native = contracts.KimiQuestionReply{Kind: contracts.KimiInteractionKindQuestion, Answers: fields.Answers, Method: kimiQuestionMethod}
 	default:
 		slog.Warn("kimi stored control request is not an approval or a question", "request_id", ctx.RequestID, "type", request.Type)
 		result.Refuse(agent.RefusalUnreadableRequest)
@@ -161,8 +124,8 @@ func kimiResolveControlResponse(ctx agent.ControlResponseContext) agent.ControlR
 // request did not offer is refused rather than sent, because the server would
 // take an unknown label for a plain decision and do something the user did not
 // pick.
-func kimiApprovalReply(request kimiStoredRequest, allow bool, message, choice, scope string) (contracts.KimiApprovalReply, string) {
-	reply := contracts.KimiApprovalReply{Decision: contracts.KimiDecisionRejected}
+func kimiApprovalReply(request kimiInteraction, allow bool, message, choice, scope string) (contracts.KimiApprovalReply, string) {
+	reply := contracts.KimiApprovalReply{Kind: contracts.KimiInteractionKindApproval, Decision: contracts.KimiDecisionRejected}
 	if allow {
 		reply.Decision = contracts.KimiDecisionApproved
 	} else if message != "" {
@@ -178,7 +141,7 @@ func kimiApprovalReply(request kimiStoredRequest, allow bool, message, choice, s
 		if scope != contracts.KimiApprovalScopeSession {
 			return contracts.KimiApprovalReply{}, agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE, scope)
 		}
-		if request.ToolInputDisplay.Kind == contracts.KimiDisplayPlanReview {
+		if request.Request.ToolInputDisplay.Kind == contracts.KimiDisplayPlanReview {
 			return contracts.KimiApprovalReply{}, "a plan review takes no session scope"
 		}
 		reply.Scope = scope
@@ -188,13 +151,13 @@ func kimiApprovalReply(request kimiStoredRequest, allow bool, message, choice, s
 
 // kimiChoiceOffered reports whether a request offers choice for a decision of
 // this polarity.
-func kimiChoiceOffered(request kimiStoredRequest, allow bool, choice string) bool {
-	switch request.ToolInputDisplay.Kind {
+func kimiChoiceOffered(request kimiInteraction, allow bool, choice string) bool {
+	switch request.Request.ToolInputDisplay.Kind {
 	case contracts.KimiDisplayPlanReview:
 		if !allow {
 			return choice == contracts.KimiPlanLabelRevise || choice == contracts.KimiPlanLabelRejectAndExit
 		}
-		return slices.ContainsFunc(request.ToolInputDisplay.Options, func(option kimiLabeledOption) bool {
+		return slices.ContainsFunc(request.Request.ToolInputDisplay.Options, func(option kimiLabeledOption) bool {
 			return option.Label == choice
 		})
 	case contracts.KimiDisplayGoalStart:
@@ -228,7 +191,7 @@ type kimiAnswerFit struct {
 // kimiAnswersFit reports whether answers answer the stored questions: every key
 // is a question of the request, every option id is one of that question's
 // options, and each kind carries the fields the server requires of it.
-func kimiAnswersFit(request kimiStoredRequest, raw json.RawMessage) bool {
+func kimiAnswersFit(request kimiInteraction, raw json.RawMessage) bool {
 	if len(raw) == 0 {
 		return false
 	}
@@ -236,9 +199,9 @@ func kimiAnswersFit(request kimiStoredRequest, raw json.RawMessage) bool {
 	if err := json.Unmarshal(raw, &answers); err != nil || len(answers) == 0 {
 		return false
 	}
-	options := make(map[string][]string, len(request.Questions))
-	multi := make(map[string]bool, len(request.Questions))
-	for _, question := range request.Questions {
+	options := make(map[string][]string, len(request.Request.Questions))
+	multi := make(map[string]bool, len(request.Request.Questions))
+	for _, question := range request.Request.Questions {
 		ids := make([]string, 0, len(question.Options))
 		for _, option := range question.Options {
 			ids = append(ids, option.ID)

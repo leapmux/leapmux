@@ -7,7 +7,7 @@ import { parseMcpToolName } from '../../model/mcpToolCall'
  *
  * Kimi Code reports a tool by NAME, so this table is where the name becomes the
  * closed kind that drives the icon, the label and the body. The names are the ones
- * the 2.0.2 server sends the model (probe `tools-main.json`).
+ * supported runtime declares in contracts/kimi-protocol.json.
  *
  * A Map rather than an object: a Model Context Protocol tool may be called
  * `constructor` or `toString`, and a plain object answers those two names from
@@ -35,8 +35,7 @@ const KIMI_TOOL_KINDS: ReadonlyMap<string, ToolKind> = new Map<string, ToolKind>
   [KIMI_TOOL.TaskOutput, 'task'],
   [KIMI_TOOL.TaskStop, 'task'],
   [KIMI_TOOL.WaitFor, 'wait'],
-  // Both halves of the plan-mode switch.
-  [KIMI_TOOL.EnterPlanMode, 'switch_mode'],
+  // The user enters Plan mode; this tool requests the exit.
   [KIMI_TOOL.ExitPlanMode, 'switch_mode'],
   // A cron entry fires later, whichever half of its lifecycle the call is.
   [KIMI_TOOL.CronCreate, 'trigger'],
@@ -56,7 +55,7 @@ const KIMI_TOOL_KINDS: ReadonlyMap<string, ToolKind> = new Map<string, ToolKind>
  * The kind of one Kimi Code tool.
  *
  * An `mcp__<server>__<tool>` name is a Model Context Protocol tool. A name the table
- * does not list is one a later release adds, and it takes the uncategorized card.
+ * does not list takes the uncategorized card.
  * An empty name states no kind.
  */
 export function kimiToolKind(toolName: string): ToolKind {

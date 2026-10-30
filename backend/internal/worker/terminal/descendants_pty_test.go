@@ -3,40 +3,47 @@ package terminal
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/util/procutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// startShellPastInit spawns a real PTY and waits until the shell echoes a
-// marker, which is the only reliable proof it is past its init scripts and
-// accepting input. Every case below sends a command, so it needs a shell that
-// will run one.
+// startShellPastInit spawns a real PTY and waits for a shell-executed marker.
+// Input echo cannot contain that marker. It returns the private working
+// directory for commands that write an execution receipt.
 //
 // It is no longer what keeps the walk quiet: a profile script's own children
 // share the shell's process group, and reportsAsWork excludes that group.
-func startShellPastInit(t *testing.T, m *Manager, id string) {
+func startShellPastInit(t *testing.T, m *Manager, id string) string {
 	t.Helper()
+	workingDir := t.TempDir()
 	require.NoError(t, m.StartTerminal(context.Background(), Options{
 		ID:         id,
 		Shell:      testutil.TestShell(),
-		WorkingDir: t.TempDir(),
+		WorkingDir: workingDir,
 		Cols:       200,
 		Rows:       24,
 	}, func([]byte, int64, []Signal) {}, nil))
 	testutil.RegisterTerminalCleanup(t, m, id)
 
 	const marker = "descendants_ready_marker"
-	require.NoError(t, m.SendInput(id, []byte("echo "+marker+testutil.TestShellEnter())))
+	command, err := testutil.TestShellOutputCommand(marker)
+	require.NoError(t, err)
+	require.NoError(t, m.SendInput(id, []byte(command+testutil.TestShellEnter())))
 	testutil.RequireEventually(t, func() bool {
 		screen, _, _ := m.ScreenSnapshotSince(id, 0)
 		return bytes.Contains(screen, []byte(marker))
-	}, "expected the shell to echo the marker")
+	}, "expected the shell to execute the marker command")
+	return workingDir
 }
 
 // namesOf normalizes each reported name so one assertion reads the same
@@ -57,7 +64,7 @@ func namesOf(procs []ProcessInfo) []string {
 // batch treats those three as.
 func oneTerminal(t *testing.T, m *Manager, id string) ([]ProcessInfo, int, error) {
 	t.Helper()
-	out, err := m.DescendantProcesses(context.Background(), []string{id})
+	out, err := m.DescendantProcesses(t.Context(), []string{id})
 	if err != nil || len(out) == 0 {
 		return nil, 0, err
 	}
@@ -208,32 +215,81 @@ func TestProcessGroupOf_ShellAndItsJobsAreInDifferentGroups(t *testing.T) {
 	}
 	m := NewManager()
 	const id = "desc-groups"
-	startShellPastInit(t, m, id)
+	workingDir := startShellPastInit(t, m, id)
 
 	shellPID := terminalOf(t, m, id).ShellPID()
 	shellGroup, res := processGroupOf(shellPID)
 	require.Equal(t, processGroupFound, res,
 		"the shell's own group must be readable, or the filter degrades to reporting everything")
 
-	line, _ := testutil.TestSleepCommand()
-	require.NoError(t, m.SendInput(id, []byte(line+testutil.TestShellEnter())))
+	var childPID int
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		screen, _, _ := m.ScreenSnapshotSince(id, 0)
+		t.Logf("shell PID %d group %d, child PID %d, screen %q", shellPID, shellGroup, childPID, screen)
+		if childPID > 0 {
+			group, result := processGroupOf(childPID)
+			t.Logf("child group %d, group result %d", group, result)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		table, err := procutil.SnapshotProcessTable(ctx)
+		t.Logf("process snapshot error: %v", err)
+		for _, record := range table.Records() {
+			if record.PID == shellPID || record.PID == childPID {
+				t.Logf("process record: %+v", record)
+			}
+		}
+		reported, discoveryErr := m.DescendantProcesses(ctx, []string{id})
+		t.Logf("reported processes: %+v, discovery error: %v", reported, discoveryErr)
+	})
+	// The receipt proves execution independently of both PTY echo and the
+	// descendant filter whose process-group premise this test verifies.
+	pidPath := filepath.Join(workingDir, "child.pid")
+	quotedPIDPath := "'" + strings.ReplaceAll(pidPath, "'", "'\\''") + "'"
+	// The PID is numeric. Interactive Bash treats ! followed by a double quote
+	// as history expansion, so leave this special parameter unquoted.
+	require.NoError(t, m.SendInput(id, []byte("sleep 60 & printf '%s\\n' $! > "+quotedPIDPath+testutil.TestShellEnter())))
+	testutil.RequireEventually(t, func() bool {
+		data, err := os.ReadFile(pidPath)
+		if err != nil {
+			return false
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		return err == nil && pid > 0
+	}, "expected the shell to write the child PID receipt")
+	data, err := os.ReadFile(pidPath)
+	require.NoError(t, err)
+	childPID, err = strconv.Atoi(strings.TrimSpace(string(data)))
+	require.NoError(t, err)
+	childGroup, result := processGroupOf(childPID)
+	require.Equal(t, processGroupFound, result)
+	require.NotEqual(t, shellGroup, childGroup, "a background job must have its own process group")
+	testutil.RequireEventually(t, func() bool {
+		table, _ := procutil.SnapshotProcessTable(t.Context())
+		for _, record := range table.Records() {
+			if record.PID == childPID && record.PPID == shellPID {
+				return true
+			}
+		}
+		return false
+	}, "expected the raw process table to retain the child's actual parent")
 
-	var got []ProcessInfo
-	testutil.AssertEventually(t, func() bool {
+	testutil.RequireEventually(t, func() bool {
 		procs, _, err := oneTerminal(t, m, id)
 		if err != nil {
 			return false
 		}
-		got = procs
-		return len(procs) > 0
-	}, "expected the backgrounded child to appear beneath the shell")
+		for _, process := range procs {
+			if int(process.PID) == childPID {
+				return true
+			}
+		}
+		return false
+	}, "expected the exact background child to appear beneath the shell")
 
-	for _, p := range got {
-		group, res := processGroupOf(int(p.PID))
-		require.Equal(t, processGroupFound, res)
-		assert.NotEqual(t, shellGroup, group,
-			"a job the user started gets its own group; sharing the shell's would hide it from the guard")
-	}
 }
 
 // TestDescendantProcesses_BatchAnswersEveryTerminalFromOneScan pins the batch

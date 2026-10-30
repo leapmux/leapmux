@@ -66,12 +66,3 @@ func (j *JobObject) Close() error {
 	}
 	return windows.CloseHandle(windows.Handle(raw))
 }
-
-// SignalProcessGroup signals the child process. Windows has no POSIX
-// process-group signal. The job that the owner attaches after Start ends descendants.
-func SignalProcessGroup(cmd *exec.Cmd, sig syscall.Signal) error {
-	if cmd == nil || cmd.Process == nil {
-		return nil
-	}
-	return cmd.Process.Signal(sig)
-}

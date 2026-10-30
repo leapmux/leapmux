@@ -3,17 +3,17 @@ import type { ControlExtractionInput, ExtractedControlRequest } from '../registr
 import type { ControlResponseSender } from '~/components/chat/controls/types'
 import { KIND_ALLOW_ALWAYS, KIND_REJECT_ONCE } from '~/components/chat/model/controlPrompt'
 import { ACP_PERMISSION_KIND } from '~/generated/contracts/acp-protocol'
-import { KIMI_APPROVAL_SCOPE, KIMI_DISPLAY, KIMI_EVENT, KIMI_GOAL_MODE, KIMI_PLAN_LABEL, KIMI_REPLY } from '~/generated/contracts/kimi-protocol'
+import { KIMI_APPROVAL_SCOPE, KIMI_DISPLAY, KIMI_GOAL_MODE, KIMI_INTERACTION_KIND, KIMI_PLAN_LABEL, KIMI_REPLY } from '~/generated/contracts/kimi-protocol'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { buildControlResponseEnvelope, buildDenyResponse, withControlChoice } from '~/utils/controlResponse'
 import { sendResponse } from '../../controls/types'
-import { KIMI_MAIN_AGENT, kimiDisplay } from './protocol'
+import { KIMI_MAIN_AGENT, kimiDisplay, kimiInteractionRequest } from './protocol'
 
 /**
  * Kimi Code's approval requests, read into the shared control model.
  *
- * The server announces an approval as `event.approval.requested`, and the worker
- * publishes that payload verbatim. Its `tool_input_display` words the call, and its
+ * The server announces an approval in an `interaction` frame, and the worker
+ * stores that frame unchanged. Its nested request supplies `tool_input_display`, whose
  * `kind` decides which control answers it:
  *
  *   plan_review -> the main agent's plan: the plan approval, with the approaches the
@@ -24,7 +24,7 @@ import { KIMI_MAIN_AGENT, kimiDisplay } from './protocol'
  *   goal_start  -> a permission, whose options start the goal in a permission mode
  *   anything    -> a permission: approve once, approve for the session, or reject
  *
- * A question is a different event, which `askUserQuestion.isRequest` recognizes before
+ * A question has a different interaction kind, which `askUserQuestion.isRequest` recognizes before
  * this reader runs.
  */
 
@@ -64,21 +64,20 @@ const KIMI_GOAL_OPTIONS: readonly PermissionOption[] = [
 
 /** Whether a stored control payload is an approval request. */
 export function kimiIsApproval(payload: Record<string, unknown>): boolean {
-  return pickString(payload, 'type') === KIMI_EVENT.ApprovalRequested
+  return kimiInteractionRequest(payload, KIMI_INTERACTION_KIND.Approval) !== undefined
 }
 
 /**
- * The agent an approval belongs to: `main`, or a subagent's `agent-N`. The server tags
- * the interaction with its agent and repeats the tag on the event envelope, and it
- * words an interaction with no tag as the main agent's.
+ * The agent an approval belongs to: `main`, or a subagent's `agent-N`. The server
+ * puts the native agent tag in `agent_id` and supplies `main` when no tag exists.
  */
 function kimiApprovalAgentId(payload: Record<string, unknown>): string {
-  return pickString(payload, 'agent_id') || pickString(payload, 'agentId') || KIMI_MAIN_AGENT
+  return pickString(payload, 'agent_id') || KIMI_MAIN_AGENT
 }
 
 /** The `tool_input_display.kind` of an approval. */
 export function kimiApprovalDisplayKind(payload: Record<string, unknown>): string {
-  return pickString(kimiDisplay(payload, 'tool_input_display'), 'kind')
+  return pickString(kimiDisplay(kimiInteractionRequest(payload, KIMI_INTERACTION_KIND.Approval), 'tool_input_display'), 'kind')
 }
 
 /**
@@ -143,9 +142,10 @@ function kimiPermissionOptions(displayKind: string, display: Record<string, unkn
 /** `Provider.extractControl` for Kimi Code. */
 export function kimiExtractControl(input: ControlExtractionInput): ExtractedControlRequest | null {
   const { payload } = input
-  if (!kimiIsApproval(payload))
+  const request = kimiInteractionRequest(payload, KIMI_INTERACTION_KIND.Approval)
+  if (!request)
     return null
-  const display = kimiDisplay(payload, 'tool_input_display')
+  const display = kimiDisplay(request, 'tool_input_display')
   const displayKind = pickString(display, 'kind')
   if (displayKind === KIMI_DISPLAY.PlanReview && kimiApprovalAgentId(payload) === KIMI_MAIN_AGENT) {
     const plan = pickString(display, 'plan')
@@ -157,8 +157,8 @@ export function kimiExtractControl(input: ControlExtractionInput): ExtractedCont
       choices: kimiPlanChoices(display),
     }
   }
-  const toolName = pickString(payload, 'tool_name')
-  const reason = pickString(payload, 'action')
+  const toolName = pickString(request, 'tool_name')
+  const reason = pickString(request, 'action')
   const command = pickString(display, 'command')
   const cwd = pickString(display, 'cwd')
   // A subagent's plan review states its plan in prose, which reads as text. The rest

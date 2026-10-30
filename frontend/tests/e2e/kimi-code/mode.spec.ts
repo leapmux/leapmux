@@ -14,6 +14,7 @@ import { nativeToolResult } from '../helpers/nativeToolResult'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { chooseSettingsOption, expectSettingsChip, expectSettingsOptionChosen, sendMessage, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { kimiTest } from '../kimi-fixtures'
+import { kimiPlanModeFromInstructions } from './planScenario'
 
 kimiTest.describe('applies Kimi Code session settings', () => {
   kimiTest('switches the effort and mode in native turns, and keeps them after a reload', async ({ native, authenticatedKimiWorkspace }) => {
@@ -87,10 +88,7 @@ kimiTest('returns from Plan to Always Ask and keeps each native mode after reloa
     notices.push(notice)
     const nativeProof = async (request: MockModelRequestRecord) => {
       // Kimi keeps earlier Plan reminders in its history. The latest reminder states the current native mode.
-      const latest = nativeModelInstructionText(request).match(/Plan mode is (?:no longer )?active\./g)?.at(-1)
-      expect(latest).toBe(mode.value === KIMI_MODE.Plan
-        ? 'Plan mode is active.'
-        : 'Plan mode is no longer active.')
+      expect(kimiPlanModeFromInstructions(nativeModelInstructionText(request))).toBe(mode.value === KIMI_MODE.Plan)
       if (mode.value === KIMI_MODE.Manual) {
         const callId = `kimi-return-always-ask-${approvalProbe++}`
         const command = 'echo "kimi-mode-safe-$((40 + 2))"'

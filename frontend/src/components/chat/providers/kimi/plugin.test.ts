@@ -46,7 +46,7 @@ describe('kimi plugin', () => {
         response: {
           subtype: 'success',
           request_id: 'r',
-          response: { decision: 'approved', scope: 'session' },
+          response: { kind: 'approval', decision: 'approved', scope: 'session' },
         },
       },
     })

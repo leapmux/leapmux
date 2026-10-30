@@ -8,15 +8,10 @@
  */
 export const KIMI_PLAN_FILE_CAPTURE = { planFile: 'Plan file: (\\S+?\\.md)' } as const
 
-/**
- * How many times `needle` occurs in `text`.
- *
- * A model request repeats the whole conversation, so a marker that an earlier
- * message holds is in every later request body. Compare the counts of two
- * bodies to prove that the messages between them hold the marker.
- */
-export function occurrences(text: string, needle: string): number {
-  if (needle === '')
-    throw new Error('occurrences needs a needle that is not empty')
-  return text.split(needle).length - 1
+/** The latest native Plan-mode disclosure, or undefined when no disclosure exists. */
+export function kimiPlanModeFromInstructions(text: string): boolean | undefined {
+  let active: boolean | undefined
+  for (const match of text.matchAll(/Plan mode is (no longer )?active[.:]/g))
+    active = match[1] === undefined
+  return active
 }

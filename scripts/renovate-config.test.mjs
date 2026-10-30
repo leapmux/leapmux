@@ -137,8 +137,23 @@ describe('trusted Renovate configuration', () => {
   })
   it('covers every version claim and import path while excluding generated code and work sums', () => {
     const config = fixtureConfig()
+    // Renovate upgrades no key that renovate.json disables, so the sync after
+    // an upgrade never rewrites the files of those claims. The runner claims
+    // live in the workflows, which the filters keep out: a post-upgrade commit
+    // must not reach a workflow.
+    const policy = JSON.parse(readFileSync(resolve(root, 'renovate.json'), 'utf8'))
+    const frozen = new Set(policy.packageRules
+      .filter(rule => rule.enabled === false && rule.matchManagers?.includes('custom.regex'))
+      .flatMap(rule => rule.matchDepTypes ?? []))
+    expect(frozen).toEqual(new Set(['UBUNTU_RUNNER', 'MACOS_RUNNER', 'WINDOWS_RUNNER']))
+    const upgradable = CLAIMS.filter(claim => !frozen.has(claim.key))
+    const frozenFiles = new Set(CLAIMS.filter(claim => frozen.has(claim.key)).map(claim => claim.file))
+    for (const file of frozenFiles) {
+      expect(file.startsWith('.github/workflows/'), file).toBe(true)
+      expect(config.postUpgradeTasks.fileFilters.some(pattern => new Bun.Glob(pattern).match(file)), file).toBe(false)
+    }
     for (const path of [
-      ...new Set(CLAIMS.map(claim => claim.file)),
+      ...new Set(upgradable.map(claim => claim.file)),
       'buf.gen.yaml',
       'backend/go.sum',
       'desktop/go/go.sum',

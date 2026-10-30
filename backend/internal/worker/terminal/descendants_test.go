@@ -12,11 +12,12 @@ import (
 // tree builds the walk's parent index from a list of pid -> ppid pairs, so each
 // case below states the shape it means and nothing else. It goes through the
 // same process table that the real scan uses, so a case cannot pin an index shape the
-// production path never builds.
+// production path never builds. Every process shares one start time, so the
+// table's start-time rule links each pair; the rule has its own case below.
 func tree(pairs ...[2]int32) *procutil.ProcessTable {
 	out := make([]procutil.ProcessRecord, 0, len(pairs))
 	for _, p := range pairs {
-		out = append(out, procutil.ProcessRecord{PID: int(p[0]), PPID: int(p[1])})
+		out = append(out, procutil.ProcessRecord{PID: int(p[0]), PPID: int(p[1]), StartTime: 1})
 	}
 	return procutil.NewProcessTable(out)
 }
@@ -111,7 +112,7 @@ func TestDescendantPIDs_CycleTerminates(t *testing.T) {
 	// The parent index is not an atomic snapshot of the machine, so a stale ppid
 	// pointing at a recycled pid can close a loop. Without the visited set this
 	// walk never returns, and the Worker hangs inside a close.
-	byParent := tree([2]int32{100, 1}, [2]int32{200, 100}, [2]int32{300, 200}, [2]int32{200, 300})
+	byParent := tree([2]int32{100, 300}, [2]int32{200, 100}, [2]int32{300, 200})
 
 	got, total := descendantPIDs(byParent, 100, 0, reportAll)
 
@@ -140,6 +141,36 @@ func TestDescendantPIDs_RootAbsentFromTheTable(t *testing.T) {
 
 	require.Empty(t, got)
 	assert.Zero(t, total)
+}
+
+// Windows keeps the parent PID of a process whose parent ended, and it gives
+// that PID to a new process. winlogon.exe records an smss.exe that ended at
+// boot, so a shell that takes that PID is not running winlogon.exe.
+func TestDescendantPIDs_ReportsNoProcessThatStartedBeforeTheShell(t *testing.T) {
+	t.Parallel()
+
+	byParent := procutil.NewProcessTable([]procutil.ProcessRecord{
+		{PID: 100, PPID: 1, StartTime: 5000},
+		{PID: 200, PPID: 100, StartTime: 100},
+		{PID: 300, PPID: 100, StartTime: 6000},
+	})
+
+	got, total := descendantPIDs(byParent, 100, 0, reportAll)
+
+	assert.Equal(t, []int32{300}, got)
+	assert.Equal(t, 1, total)
+}
+
+func TestDescendantPIDs_ReportsWorkWithAnUnreadableCreationTime(t *testing.T) {
+	t.Parallel()
+	table := procutil.NewProcessTable([]procutil.ProcessRecord{
+		{PID: 100, PPID: 1, StartTime: 1000},
+		{PID: 200, PPID: 100},
+		{PID: 300, PPID: 200, StartTime: 1200},
+	})
+	pids, total := descendantPIDs(table, 100, 0, reportAll)
+	assert.Equal(t, []int32{200, 300}, pids)
+	assert.Equal(t, 2, total)
 }
 
 func TestDescendantPIDs_EmptyTable(t *testing.T) {

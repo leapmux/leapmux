@@ -4,6 +4,31 @@ import { kimiApprovalRequest, kimiQuestionRequest } from '~/test-support/kimiFix
 import { KIMI_OPTION, kimiApprovalDisplayKind, kimiExtractControl, kimiIsApproval, kimiPlanChoices, sendKimiPermissionOption } from './extractControl'
 
 describe('kimiExtractControl', () => {
+  it('reads the nested request of a native interaction frame', () => {
+    const payload = {
+      type: 'interaction',
+      interaction_id: 'approval_native',
+      session_id: 'session_1',
+      agent_id: 'main',
+      kind: 'approval',
+      status: 'pending',
+      request: {
+        tool_name: 'Bash',
+        action: 'Run pwd',
+        tool_input_display: { kind: 'command', command: 'pwd', cwd: '/work' },
+      },
+    }
+    expect(kimiExtractControl({ payload })).toMatchObject({
+      kind: 'permission',
+      permission: {
+        title: 'Bash',
+        command: 'pwd',
+        workingDirectory: '/work',
+        reason: 'Run pwd',
+      },
+    })
+  })
+
   it('reads a command approval as a permission with the three answers', () => {
     const payload = kimiApprovalRequest(KIMI_TOOL.Bash, {
       kind: 'command',
@@ -81,7 +106,7 @@ describe('kimiExtractControl', () => {
         { label: 'Option B' },
       ],
     }
-    const payload = kimiApprovalRequest(KIMI_TOOL.ExitPlanMode, display, { agent_id: 'agent-0', agentId: 'agent-0' })
+    const payload = kimiApprovalRequest(KIMI_TOOL.ExitPlanMode, display, { agent_id: 'agent-0' })
     expect(kimiExtractControl({ payload })).toStrictEqual({
       kind: 'permission',
       permission: {
@@ -102,11 +127,11 @@ describe('kimiExtractControl', () => {
     })
   })
 
-  it('reads the envelope agent when the approval states no agent of its own', () => {
+  it('reads the native agent tag and defaults an absent tag to the main agent', () => {
     const display = { kind: KIMI_DISPLAY.PlanReview, plan: '# Plan' }
-    const subagent = kimiApprovalRequest(KIMI_TOOL.ExitPlanMode, display, { agent_id: '', agentId: 'agent-1' })
+    const subagent = kimiApprovalRequest(KIMI_TOOL.ExitPlanMode, display, { agent_id: 'agent-1' })
     expect(kimiExtractControl({ payload: subagent })?.kind).toBe('permission')
-    const main = kimiApprovalRequest(KIMI_TOOL.ExitPlanMode, display, { agent_id: '', agentId: '' })
+    const main = kimiApprovalRequest(KIMI_TOOL.ExitPlanMode, display, { agent_id: '' })
     expect(kimiExtractControl({ payload: main })?.kind).toBe('plan')
   })
 
@@ -128,7 +153,8 @@ describe('kimiExtractControl', () => {
   // The server words every approval through its display, and a bare one states only
   // the tool it asks about.
   it('reads an approval that states no display and no action as a bare permission', () => {
-    const { tool_input_display: _display, ...payload } = kimiApprovalRequest(KIMI_TOOL.Write, {}, { action: '' })
+    const payload = kimiApprovalRequest(KIMI_TOOL.Write, {}, { action: '' })
+    delete payload.request.tool_input_display
     expect(kimiExtractControl({ payload })).toStrictEqual({
       kind: 'permission',
       permission: {

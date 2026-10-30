@@ -72,7 +72,7 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
   [KIMI_TOOL.TaskOutput]: done(KIMI_TOOL.TaskOutput, { task_id: 'bash-1' }, 'status: running\noutput: hi'),
   [KIMI_TOOL.TaskStop]: done(KIMI_TOOL.TaskStop, { task_id: 'bash-1' }, 'Stopped bash-1.'),
   [KIMI_TOOL.WaitFor]: done(KIMI_TOOL.WaitFor, { timeout: 30 }, 'Task bash-1 completed.'),
-  [KIMI_TOOL.EnterPlanMode]: done(KIMI_TOOL.EnterPlanMode, {}, 'Entered plan mode. Plan file: /work/plan.md'),
+
   [KIMI_TOOL.CronCreate]: done(KIMI_TOOL.CronCreate, { cron: '0 9 * * *', prompt: 'Check the build.' }, 'Created cron job cron-1.'),
   [KIMI_TOOL.CronList]: done(KIMI_TOOL.CronList, {}, 'cron-1: 0 9 * * *'),
   [KIMI_TOOL.CronDelete]: done(KIMI_TOOL.CronDelete, { id: 'cron-1' }, 'Deleted cron-1.'),
@@ -125,7 +125,6 @@ export const KIMI_TOOL_RESULTS: ToolResultCheck = {
     failed('skill', KIMI_TOOL.Skill),
     failed('task', KIMI_TOOL.TaskOutput),
     failed('wait', KIMI_TOOL.WaitFor),
-    failed('switch_mode', KIMI_TOOL.EnterPlanMode),
     failed('trigger', KIMI_TOOL.CronCreate),
     failed('report', KIMI_TOOL.GetGoal),
     failed('message', KIMI_TOOL.NotifyUser),

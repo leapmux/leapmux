@@ -2,7 +2,7 @@ import { expect } from '@playwright/test'
 import { escapeRegExp } from '../../../src/lib/regexp'
 import { kimiAgentSwarmToolCall } from '../helpers/providerToolCalls'
 import { backgroundTaskRows, expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
-import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, chooseSettingsOption, sendMessage, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
 import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
 import { kimiTest } from '../kimi-fixtures'
 import { kimiChildTurn, prepareKimiChildRun } from './childScenario'
@@ -11,6 +11,8 @@ kimiTest.describe('Kimi Code workflow grouping', () => {
   kimiTest('groups native AgentSwarm members under its description', async ({ native }) => {
     const { page, modelScript } = native
     await prepareKimiChildRun(page)
+    await chooseSettingsOption(page, 'swarmMode-on')
+    await waitForSettingsIdle(page)
 
     const description = 'Review the probe items'
     await modelScript.rule(

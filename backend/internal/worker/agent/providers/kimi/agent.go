@@ -99,10 +99,6 @@ type Agent struct {
 	// workspaceTrust holds the workspace-trust question that LeapMux asks for
 	// Kimi Code. See workspace_trust.go.
 	workspaceTrust providerkit.WorkspaceTrust
-
-	// descendantGroups is the Stop hook that lists the process groups the
-	// server's tools run in. A test replaces it.
-	descendantGroups func(rootPID int) []int
 }
 
 var (

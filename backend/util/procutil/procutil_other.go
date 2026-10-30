@@ -39,13 +39,3 @@ func DetachFromTerminal(cmd *exec.Cmd) {
 	cmd.SysProcAttr.Foreground = false
 	cmd.SysProcAttr.Setctty = false
 }
-
-// SignalProcessGroup sends sig to the child's process group. The child
-// must be a group leader (Setsid or Setpgid). A nil cmd or Process is
-// a no-op.
-func SignalProcessGroup(cmd *exec.Cmd, sig syscall.Signal) error {
-	if cmd == nil || cmd.Process == nil {
-		return nil
-	}
-	return syscall.Kill(-cmd.Process.Pid, sig)
-}

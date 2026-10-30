@@ -2,27 +2,43 @@ package kiro
 
 import (
 	"encoding/json"
+	"sync"
 	"testing"
-	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// A manual compaction is live state with its trigger, and no stored row.
+// A pending manual compaction publishes its live trigger without storing a start row.
 func TestKiroManualCompactionIsLiveState(t *testing.T) {
 	t.Parallel()
+	requestReceived := make(chan struct{})
+	allowReply := make(chan struct{})
 	a, sink, requests := newKiroAgent(t, agent.Options{}, func(request agenttest.RecordedRequest) agenttest.RPCReply {
 		if request.Method == kiroCompactMethod {
+			close(requestReceived)
+			<-allowReply
 			return agenttest.RPCReply{Result: json.RawMessage(`{"success":true}`)}
 		}
 		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 	})
-	_ = requests
+	releaseReply := sync.OnceFunc(func() { close(allowReply) })
+	t.Cleanup(releaseReply)
 	require.NoError(t, a.CompactContext())
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case <-requestReceived:
+	case <-ctx.Done():
+		require.FailNow(t, "the peer never received the compaction request")
+	}
+	sent := requestsFor(requests(), kiroCompactMethod)
+	require.Len(t, sent, 1)
+	assert.Equal(t, kiroTestSession, sent[0].Params["sessionId"])
+	assert.True(t, a.PromptActive(), "the pending reply must retain the compaction turn")
 	assert.Equal(t, []interface{}{
 		map[string]interface{}{contracts.CompactionFieldTrigger: "manual"},
 	}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
@@ -30,6 +46,13 @@ func TestKiroManualCompactionIsLiveState(t *testing.T) {
 		assert.NotContains(t, string(row.Content), "compacting", "no stored start row")
 	}
 	assert.Empty(t, sink.Notifications(), "no worker start row")
+
+	releaseReply()
+	waitForIdle(t, a)
+	assert.Equal(t, []interface{}{
+		map[string]interface{}{contracts.CompactionFieldTrigger: "manual"}, nil,
+	}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+	assert.Equal(t, []string{"The conversation had nothing to compact"}, statusTexts(sink))
 }
 
 // The automatic summarization is live state, and its native end stores one
@@ -73,11 +96,11 @@ func TestKiroCompactionFinishEndsLiveStateAndKeepsItsRow(t *testing.T) {
 			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 		})
 		require.NoError(t, a.CompactContext())
-		require.Eventually(t, func() bool {
-			values := sink.SessionInfoValues(contracts.SessionInfoKeyCompaction)
-			return len(values) >= 2 && values[len(values)-1] == nil
-		}, time.Second, 5*time.Millisecond, "the refusal ends the live state")
-		require.NotEmpty(t, sink.Notifications(), "the refusal keeps its own row")
+		waitForIdle(t, a)
+		assert.Equal(t, []interface{}{
+			map[string]interface{}{contracts.CompactionFieldTrigger: "manual"}, nil,
+		}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+		assert.Equal(t, []string{"Kiro did not compact the context"}, statusTexts(sink))
 	})
 	t.Run("nothing to compact", func(t *testing.T) {
 		t.Parallel()
@@ -88,12 +111,11 @@ func TestKiroCompactionFinishEndsLiveStateAndKeepsItsRow(t *testing.T) {
 			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 		})
 		require.NoError(t, a.CompactContext())
-		require.Eventually(t, func() bool {
-			return len(sink.Notifications()) > 0
-		}, time.Second, 5*time.Millisecond)
-		values := sink.SessionInfoValues(contracts.SessionInfoKeyCompaction)
-		require.Len(t, values, 2)
-		assert.Nil(t, values[1])
+		waitForIdle(t, a)
+		assert.Equal(t, []interface{}{
+			map[string]interface{}{contracts.CompactionFieldTrigger: "manual"}, nil,
+		}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+		assert.Equal(t, []string{"The conversation had nothing to compact"}, statusTexts(sink))
 	})
 }
 

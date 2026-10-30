@@ -44,18 +44,13 @@ func (kimiProvider) IsInterrupt(content string) bool {
 	return isKimiRawAbort([]byte(content))
 }
 
-// PlanModeControl reads Kimi's plan tools, which take Claude's names. An
-// ExitPlanMode reaches LeapMux as an approval, which is answered through the
-// shared plan approval.
+// PlanModeControl recognizes the native ExitPlanMode approval. The user
+// enables Plan mode through settings.
 func (kimiProvider) PlanModeControl(toolName string) agent.PlanModeControlKind {
-	switch toolName {
-	case contracts.KimiToolEnterPlanMode:
-		return agent.PlanModeControlEnter
-	case contracts.KimiToolExitPlanMode:
+	if toolName == contracts.KimiToolExitPlanMode {
 		return agent.PlanModeControlExit
-	default:
-		return agent.PlanModeControlNone
 	}
+	return agent.PlanModeControlNone
 }
 
 // PlanModePermissionMode states the two ends of plan mode on LeapMux's axis.

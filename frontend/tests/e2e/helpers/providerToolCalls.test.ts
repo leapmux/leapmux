@@ -4416,3 +4416,10 @@ describe('codexWaitCellToolCall', () => {
     expect(() => codexWaitCellToolCall(id!, cellId!)).toThrow('requires a call ID and cell ID')
   })
 })
+
+describe('enterPlanModeToolCall for Kimi Code', () => {
+  it('refuses the removed tool for entering Plan mode', () => {
+    expect(() => enterPlanModeToolCall(AgentProvider.KIMI_CODE, 'unsupported-enter'))
+      .toThrow(`AgentProvider ${AgentProvider.KIMI_CODE} has no enter plan mode builder in this table`)
+  })
+})

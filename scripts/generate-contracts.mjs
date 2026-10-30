@@ -2923,12 +2923,36 @@ export const PROVIDER_PROTOCOLS = [
     title: 'Kimi Code',
     preamble: [
       'Moonshot AI owns the kap-server event, origin, tool, display, decision and mode names.',
-      'LeapMux owns the `plan` value of the permission-mode axis and the two marks in `reply`',
-      '(`dismiss` and `permission_mode`). Both sides read them -- the Go worker dispatches',
+      'LeapMux owns the `plan` value of the permission-mode axis and `permission_mode` in `reply`.',
+      'Both sides read them -- the Go worker dispatches',
       'the events and answers the approvals and questions, the browser plugin classifies the',
       'same persisted payloads and writes the answers.',
     ].join('\n// '),
     tables: [
+      {
+        key: 'frames',
+        frameKind: 'name',
+        goTable: 'Frame',
+        tsTable: 'FRAME',
+        tsType: 'KimiFrame',
+        doc: 'WebSocket frame types outside the durable event stream',
+      },
+      {
+        key: 'interactionKinds',
+        goTable: 'InteractionKind',
+        tsTable: 'INTERACTION_KIND',
+        tsType: 'KimiInteractionKind',
+        doc: 'the controls carried by interaction frames',
+      },
+      {
+        key: 'versions',
+        goTable: 'Version',
+        tsTable: 'VERSION',
+        tsType: 'KimiVersion',
+        readers: ['go'],
+        readersWhy: 'The worker enforces native runtime versions. The TypeScript export serves the end-to-end install probe; browser code does not discover local executables.',
+        doc: 'the minimum native protocol release',
+      },
       {
         key: 'events',
         frameKind: 'name',

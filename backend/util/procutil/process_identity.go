@@ -62,6 +62,20 @@ func (p ProcessIdentity) Runs() bool {
 	return ok && current == p
 }
 
+// couldBeChildOf reports whether p can be a child of parent: both start times
+// are known, and p started no earlier than parent. The start time has
+// millisecond precision, so a child can share its parent's.
+//
+// A recorded parent PID alone does not prove the relation on Windows. Windows
+// keeps the parent PID of a process whose parent ended, and it gives that PID
+// to a new process. csrss.exe and winlogon.exe record smss.exe instances that
+// ended at boot, so a process that takes such a PID appears to be their parent.
+// Unix reparents orphans instead. A non-atomic snapshot can still mix
+// identities after PID reuse, so the creation-order check applies there too.
+func (p ProcessIdentity) couldBeChildOf(parent ProcessIdentity) bool {
+	return p.StartTime > 0 && parent.StartTime > 0 && p.StartTime >= parent.StartTime
+}
+
 // Kill kills the process when it still runs. It reports true when it sent the
 // kill. It kills nothing and reports false when the pid now belongs to another
 // process or to none, and it never kills the worker's own process.

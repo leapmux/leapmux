@@ -41,6 +41,39 @@ const REQUEST = kimiQuestionRequest([
 ])
 
 describe('kimiQuestionsFromPayload', () => {
+  it('reads the questions inside a native interaction request', () => {
+    const payload = {
+      type: 'interaction',
+      interaction_id: 'question_native',
+      session_id: 'session_1',
+      agent_id: 'main',
+      kind: 'question',
+      status: 'pending',
+      request: {
+        questions: [
+          {
+            id: 'q_0',
+            question: 'Which color?',
+            options: [
+              { id: 'red', label: 'Red' },
+            ],
+          },
+        ],
+      },
+    }
+    expect(kimiIsQuestionRequest(payload)).toBe(true)
+    expect(kimiQuestionsFromPayload(payload)).toStrictEqual([
+      {
+        id: 'q_0',
+        question: 'Which color?',
+        options: [
+          { value: 'red', label: 'Red' },
+        ],
+        allowEmpty: true,
+      },
+    ])
+  })
+
   it('reads each question with its option ids as values', () => {
     expect(kimiQuestionsFromPayload(REQUEST)).toStrictEqual([
       {
@@ -98,7 +131,9 @@ describe('kimiQuestionsFromPayload', () => {
       .toStrictEqual([])
     expect(kimiQuestionsFromPayload({
       ...kimiQuestionRequest([]),
-      questions: { id: 'q_0', question: 'Q' },
+      request: {
+        questions: { id: 'q_0', question: 'Q' },
+      },
     })).toStrictEqual([])
   })
 

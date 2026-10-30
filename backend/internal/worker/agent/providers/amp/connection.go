@@ -14,7 +14,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
-	"github.com/leapmux/leapmux/util/procutil"
 )
 
 // ampIdentityEnvKeys are the variables Amp sets on every command it runs. The
@@ -102,7 +101,7 @@ func (p *ampProcess) writeLine(line []byte) error {
 // leaves the flag set, and no answer follows it.
 func (p *ampProcess) signalInterrupt() error {
 	p.interruptSignalled.Store(true)
-	return procutil.SignalProcessGroup(p.Cmd(), syscall.SIGINT)
+	return p.SignalGroup(syscall.SIGINT)
 }
 
 // launchArgs builds Amp's arguments.

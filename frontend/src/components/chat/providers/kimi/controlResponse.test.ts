@@ -12,7 +12,11 @@ function saved(request: Record<string, unknown>, native: Record<string, unknown>
     request,
     response: {
       type: 'control_response',
-      response: { subtype: 'success', request_id: 'r', response: native },
+      response: {
+        subtype: 'success',
+        request_id: 'r',
+        response: { kind: request.kind, ...native },
+      },
     },
   }
 }
@@ -22,6 +26,11 @@ const PLAN = kimiApprovalRequest(KIMI_TOOL.ExitPlanMode, { kind: KIMI_DISPLAY.Pl
 const GOAL = kimiApprovalRequest(KIMI_TOOL.CreateGoal, { kind: KIMI_DISPLAY.GoalStart, objective: 'Ship it' })
 
 describe('kimiControlResponseSummary', () => {
+  it('refuses an answer whose native kind differs from its request', () => {
+    expect(kimiControlResponseSummary(saved(COMMAND, { kind: 'question', decision: 'approved' }))).toBeNull()
+    expect(kimiControlResponseSummary(saved(COMMAND, { kind: undefined, decision: 'approved' }))).toBeNull()
+  })
+
   it('words a permission answer', () => {
     expect(kimiControlResponseSummary(saved(COMMAND, { decision: 'approved' }))).toStrictEqual({ kind: 'label', text: 'Allow' })
     expect(kimiControlResponseSummary(saved(COMMAND, { decision: 'approved', scope: 'session' }))).toStrictEqual({ kind: 'label', text: 'Allow for this session' })
@@ -103,7 +112,7 @@ describe('kimiControlResponseSummary', () => {
       kind: 'label',
       text: 'Which color?: Blue\nWhich sizes?: S, unknown, XL\nAnything else?: No.\nSkipped one?: Skipped',
     })
-    expect(kimiControlResponseSummary(saved(request, { dismiss: true }))).toStrictEqual({ kind: 'label', text: 'Dismissed' })
+    expect(kimiControlResponseSummary(saved(request, { dismissed: true }))).toStrictEqual({ kind: 'label', text: 'Dismissed' })
     expect(kimiControlResponseSummary(saved(request, { answers: {} }))).toStrictEqual({ kind: 'label', text: 'No answer' })
     expect(kimiControlResponseSummary(saved(request, {}))).toBeNull()
   })

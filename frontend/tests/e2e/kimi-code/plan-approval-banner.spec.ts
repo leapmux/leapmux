@@ -2,10 +2,11 @@ import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeModelBodiesAfter } from '../helpers/nativeScenario'
-import { enterPlanModeToolCall, exitPlanModeFromFileToolCall, writeToolCall } from '../helpers/providerToolCalls'
-import { chooseSettingsOption, controlActions, expectNoControlBanner, expectSettingsChip, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
+import { nativeToolResult } from '../helpers/nativeToolResult'
+import { exitPlanModeFromFileToolCall, writeToolCall } from '../helpers/providerToolCalls'
+import { chooseSettingsOption, controlActions, expectNoControlBanner, expectSettingsChip, sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { kimiTest } from '../kimi-fixtures'
-import { KIMI_PLAN_FILE_CAPTURE, occurrences } from './planScenario'
+import { KIMI_PLAN_FILE_CAPTURE } from './planScenario'
 
 const KIMI = AgentProvider.KIMI_CODE
 
@@ -53,12 +54,18 @@ async function choosePlanChoice(page: Page, index: number) {
   await planChoice(page, index).click()
 }
 
+/** Enable planning through the user control before the model writes the plan. */
+async function enablePlanMode(page: Page) {
+  await waitForSettingsHydrated(page)
+  await chooseSettingsOption(page, 'permissionMode-plan')
+  await waitForSettingsIdle(page)
+  await expectSettingsChip(page, 'Plan')
+}
+
 kimiTest.describe('reviews a Kimi Code plan', () => {
   kimiTest('an approved approach leaves plan mode and reaches the model', async ({ authenticatedKimiWorkspace, page, modelScript }) => {
     void authenticatedKimiWorkspace
-    await waitForSettingsHydrated(page)
-    await chooseSettingsOption(page, 'permissionMode-plan')
-    await expectSettingsChip(page, 'Plan')
+    await enablePlanMode(page)
 
     const start = await modelScript.queue(...planSteps(), { text: 'Executing Option B.' })
     await sendMessage(page, modelScript.prompt('Plan the change and offer two approaches.'))
@@ -83,24 +90,16 @@ kimiTest.describe('reviews a Kimi Code plan', () => {
     await expectSettingsChip(page, 'Ask When Needed')
   })
 
-  // EnterPlanMode states the plan file path in its own result, so the capture
-  // reads it from there.
   kimiTest('a request for revisions keeps plan mode, and the model hears it', async ({ authenticatedKimiWorkspace, page, modelScript }) => {
     void authenticatedKimiWorkspace
-    await waitForSettingsHydrated(page)
-    await expectSettingsChip(page, 'Always Ask')
+    await enablePlanMode(page)
 
     const start = await modelScript.queue(
-      {
-        toolCalls: [
-          enterPlanModeToolCall(KIMI, 'enter-plan'),
-        ],
-      },
       ...planSteps(),
       { text: 'I will revise the plan.' },
     )
-    await sendMessage(page, modelScript.prompt('Enter plan mode, plan the change, and offer two approaches.'))
-    await modelScript.waitForSteps(start + 3)
+    await sendMessage(page, modelScript.prompt('Plan the change and offer two approaches.'))
+    await modelScript.waitForSteps(start + 2)
 
     const banner = await waitForControlBanner(page)
     await expect(banner).toContainText('Proposed Plan')
@@ -109,13 +108,10 @@ kimiTest.describe('reviews a Kimi Code plan', () => {
     await choosePlanChoice(page, 2)
     await expectNoControlBanner(page)
 
-    await modelScript.waitForSteps(start + 4)
+    await modelScript.waitForSteps(start + 3)
     await waitForAgentIdle(page)
-    // Every request carries the tool schemas and the plan-mode reminder, and either
-    // can speak of a revision. So the answer reached the model only when the request
-    // after the plan review speaks of it more often than the request before it.
-    const revisions = async (step: number) => occurrences(JSON.stringify((await modelScript.requestAt(step)).body).toLowerCase(), 'revis')
-    expect(await revisions(start + 3), 'the plan result asks for a revision').toBeGreaterThan(await revisions(start + 2))
+    const request = await modelScript.requestAt(start + 2)
+    expect(nativeToolResult(request, 'exit-plan')).toContain('User requested revisions. Plan mode remains active.')
     await expectSettingsChip(page, 'Plan')
   })
 })

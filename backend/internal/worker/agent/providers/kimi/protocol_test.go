@@ -52,6 +52,6 @@ func TestKimiPaths(t *testing.T) {
 
 	assert.Equal(t, "/api/v1/sessions/session_1/profile", kimiSessionPath("session_1", "/profile"))
 	assert.Equal(t, "/api/v1/sessions/session_1:abort", kimiSessionPath("session_1", kimiActionAbort))
-	assert.Equal(t, "/api/v1/sessions/session_1/questions/q_1:dismiss", kimiItemPath("session_1", "questions", "q_1", kimiActionDismiss))
-	assert.Equal(t, "/api/v1/sessions/session_1/approvals/a_1", kimiItemPath("session_1", "approvals", "a_1", ""))
+	assert.Equal(t, "/api/v1/sessions/session_1/tasks/task_1:cancel", kimiItemPath("session_1", "tasks", "task_1", kimiActionCancel))
+	assert.Equal(t, "/api/v1/sessions/session_1/interactions/a_1", kimiItemPath("session_1", "interactions", "a_1", ""))
 }

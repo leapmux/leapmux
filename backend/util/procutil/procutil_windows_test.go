@@ -27,8 +27,3 @@ func TestDetachFromTerminalDoesNotAllocateSysProcAttr(t *testing.T) {
 	DetachFromTerminal(cmd)
 	assert.Nil(t, cmd.SysProcAttr, "the Windows no-op must not allocate SysProcAttr")
 }
-
-func TestSignalProcessGroupIsNoopOnNilProcess(t *testing.T) {
-	require.NoError(t, SignalProcessGroup(nil, 0))
-	require.NoError(t, SignalProcessGroup(exec.Command("true"), 0))
-}

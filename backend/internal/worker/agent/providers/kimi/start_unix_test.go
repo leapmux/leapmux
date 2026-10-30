@@ -25,6 +25,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/util/procutil"
 )
 
 // The launch tests put a fake `kimi` on PATH that re-runs this test binary as
@@ -39,8 +40,8 @@ const (
 	kimiHelperEnv         = "LEAPMUX_TEST_KIMI_HELPER"
 	kimiHelperVersionEnv  = "LEAPMUX_TEST_KIMI_VERSION"
 	kimiHelperScenarioEnv = "LEAPMUX_TEST_KIMI_SCENARIO"
-	// kimiHelperChildPIDEnv gives the file where the helper writes the PID of a
-	// process that it leaves behind.
+	// kimiHelperChildPIDEnv gives the file where the helper records the PID and
+	// creation time of a process that it leaves behind.
 	kimiHelperChildPIDEnv = "LEAPMUX_TEST_KIMI_CHILD_PID_FILE"
 )
 
@@ -137,8 +138,8 @@ func TestKimiStopEndsTheEventStream(t *testing.T) {
 	require.Equal(t, readers+1, r, "the agent runs one stream reader")
 	require.Equal(t, dispatchers+1, d, "the agent runs one stream dispatcher")
 
-	// The server exits inside the stop's grace period, so the stop never cancels
-	// the process context. The stream must end without it.
+	// The stream owns a separate context, so Stop must close it explicitly and
+	// Wait must join its goroutines after native exit.
 	started.Stop()
 	require.NoError(t, started.Wait())
 	waitForKimiStreamLoops(t, readers, dispatchers, "a stopped agent keeps no stream goroutine")
@@ -154,9 +155,7 @@ func TestKimiWaitEndsTheEventStreamOfAServerThatDied(t *testing.T) {
 
 	// The server dies, and nobody calls Stop. The manager's exit goroutine calls
 	// Wait, and nothing else.
-	group, err := syscall.Getpgid(kimi.Cmd().Process.Pid)
-	require.NoError(t, err)
-	require.NoError(t, syscall.Kill(-group, syscall.SIGKILL))
+	require.NoError(t, kimi.SignalGroup(syscall.SIGKILL))
 	_ = started.Wait()
 	waitForKimiStreamLoops(t, readers, dispatchers,
 		"the reader stops redialing the dead server's port with the token, and the dispatcher returns")
@@ -181,7 +180,7 @@ func TestKimiStartReportsAFailedResume(t *testing.T) {
 func TestKimiStartRefusesTheLegacyCLI(t *testing.T) {
 	argsFile := installFakeKimi(t, kimiHelperVersionEnv+"=kimi, version 1.5.0")
 	_, _, err := startKimiForTest(t, agent.Options{})
-	require.ErrorIs(t, err, errKimiLegacyCLI)
+	require.ErrorIs(t, err, errKimiUnsupportedVersion)
 	assert.Contains(t, err.Error(), "1.5.0")
 	args, readErr := os.ReadFile(argsFile)
 	require.NoError(t, readErr)
@@ -192,7 +191,7 @@ func TestKimiStartReportsAServerThatExitsBeforeItIsReady(t *testing.T) {
 	installFakeKimi(t, kimiHelperScenarioEnv+"=exit-early")
 	_, _, err := startKimiForTest(t, agent.Options{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "Kimi Code 2.0 or later")
+	assert.Contains(t, err.Error(), "Kimi Code "+kimiMinimumVersion.String()+" or later")
 }
 
 func TestKimiStartRefusesAServerWithNoModel(t *testing.T) {
@@ -235,7 +234,7 @@ func TestKimiStartIsNotHeldByAProcessTheVersionProbeLeftBehind(t *testing.T) {
 	}
 	done := make(chan startResult, 1)
 	go func() {
-		started, err := Start(context.Background(), opts, agent.NewProviderServices(&agenttest.ControlSink{}))
+		started, err := Start(t.Context(), opts, agent.NewProviderServices(&agenttest.ControlSink{}))
 		done <- startResult{agent: started, err: err}
 	}()
 	settle := func(result startResult) {
@@ -250,33 +249,38 @@ func TestKimiStartIsNotHeldByAProcessTheVersionProbeLeftBehind(t *testing.T) {
 	case <-time.After(45 * time.Second):
 		// End the process that holds the probe, so the start returns and its
 		// server does not outlive the test.
-		_ = syscall.Kill(readKimiHelperChildPID(t, pidFile), syscall.SIGKILL)
+		identity := readKimiHelperChildIdentity(t, pidFile)
+		_, _ = identity.Kill()
 		settle(<-done)
 		t.Fatal("the start waits for a process that the version probe left behind")
 	}
-	childPID := readKimiHelperChildPID(t, pidFile)
-	t.Cleanup(func() { _ = syscall.Kill(childPID, syscall.SIGKILL) })
+	childIdentity := readKimiHelperChildIdentity(t, pidFile)
+	t.Cleanup(func() { _, _ = childIdentity.Kill() })
 	require.NoError(t, result.err, "the probe read the version the program printed before it exited")
 	t.Cleanup(func() { settle(result) })
-	require.NoError(t, syscall.Kill(childPID, 0), "the process that holds the pipe still runs, so the start did not wait for it")
+	require.True(t, childIdentity.Runs(), "the exact process that holds the pipe still runs, so the start did not wait for it")
 }
 
-// readKimiHelperChildPID reads the PID that the helper wrote.
-func readKimiHelperChildPID(t *testing.T, pidFile string) int {
+// readKimiHelperChildIdentity reads the creation identity recorded at launch.
+func readKimiHelperChildIdentity(t *testing.T, pidFile string) procutil.ProcessIdentity {
 	t.Helper()
 	data, err := os.ReadFile(pidFile)
 	require.NoError(t, err)
-	var pid int
-	_, err = fmt.Sscan(string(data), &pid)
+	fields := strings.Fields(string(data))
+	require.Len(t, fields, 2)
+	pid, err := strconv.Atoi(fields[0])
+	require.NoError(t, err)
+	start, err := strconv.ParseInt(fields[1], 10, 64)
 	require.NoError(t, err)
 	require.Positive(t, pid)
-	return pid
+	require.Positive(t, start)
+	return procutil.ProcessIdentity{PID: pid, StartTime: start}
 }
 
 func TestKimiStartReportsAServerThatStatesNoVersion(t *testing.T) {
 	installFakeKimi(t, kimiHelperScenarioEnv+"=legacy-server")
 	_, _, err := startKimiForTest(t, agent.Options{})
-	require.ErrorContains(t, err, errKimiLegacyCLI.Error(), "the server's own version is checked too")
+	require.ErrorContains(t, err, errKimiUnsupportedVersion.Error(), "the server's own version is checked too")
 	assert.Contains(t, err.Error(), kimiVersionFromServer)
 }
 
@@ -373,14 +377,26 @@ func runFakeKimiVersion(scenario string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		if err := os.WriteFile(os.Getenv(kimiHelperChildPIDEnv), []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
+		// Record the identity while this parent still owns the unreaped child.
+		// A later lookup from its bare PID could adopt an unrelated process.
+		identity, identified := procutil.IdentifyProcess(child.Process.Pid)
+		if !identified {
+			_ = child.Process.Kill()
+			_ = child.Wait()
+			fmt.Fprintln(os.Stderr, "the probe's child supplied no creation identity")
+			return 1
+		}
+		receipt := fmt.Sprintf("%d %d", identity.PID, identity.StartTime)
+		if err := os.WriteFile(os.Getenv(kimiHelperChildPIDEnv), []byte(receipt), 0o600); err != nil {
+			_, _ = identity.Kill()
+			_ = child.Wait()
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
 	}
 	version := os.Getenv(kimiHelperVersionEnv)
 	if version == "" {
-		version = "2.0.2"
+		version = "2.4.0"
 	}
 	fmt.Println(version)
 	return 0
@@ -397,7 +413,7 @@ func TestLaunchPinsTheUpdaterOffForTheVersionProbeAndTheServer(t *testing.T) {
 		Binary:  kimiBinaryName,
 		Start:   Start,
 		Pins:    []string{"KIMI_CODE_NO_AUTO_UPDATE=1"},
-		Answers: map[string]string{"--version": "kimi-code 2.1.1"},
+		Answers: map[string]string{"--version": "kimi-code 2.4.0"},
 		Runs:    2,
 	})
 }

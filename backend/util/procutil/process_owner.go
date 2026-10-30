@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -141,6 +142,23 @@ func (o *ProcessOwner) PID() int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.root.PID
+}
+
+// SignalGroup signals the verified root or its process group. A completed wait
+// or shutdown prevents delivery, even if the OS reuses the numeric PID.
+// Callers retain responsibility for capturing descendants before stopping a tree.
+func (o *ProcessOwner) SignalGroup(signal syscall.Signal) error {
+	if o == nil {
+		return nil
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.started || o.closed || o.terminating || o.waitFinished || o.root.IsZero() {
+		return nil
+	}
+	// Windows rejects graceful signals even when stdin closure can finish the
+	// shutdown. Return delivery errors separately from final cleanup errors.
+	return o.platform.signalRoot(o.root, signal)
 }
 
 // Wait performs one native wait and gives every caller the same result.

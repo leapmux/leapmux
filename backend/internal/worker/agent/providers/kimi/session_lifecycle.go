@@ -176,7 +176,7 @@ type kimiSnapshot struct {
 	// InFlightTurn is the MAIN agent's running turn, or nil when it runs none.
 	InFlightTurn *kimiInFlightTurn `json:"in_flight_turn"`
 	// PendingApprovals and PendingQuestions are the interactions that wait for
-	// an answer. See kimiInteractionEvent for their shape.
+	// an answer. See kimiSnapshotInteraction for their projection into native frames.
 	PendingApprovals []json.RawMessage `json:"pending_approvals"`
 	PendingQuestions []json.RawMessage `json:"pending_questions"`
 	// Subagents is the server's roster of subagents. See kimiRosterSubagent.
@@ -241,21 +241,25 @@ func (a *Agent) resyncSession(ctx context.Context, sessionID string, replayed bo
 		return
 	}
 	a.foldStatus(status)
-	if replayed {
-		return
-	}
 	var snapshot kimiSnapshot
 	if err := a.api.get(ctx, kimiSessionPath(sessionID, "/snapshot"), &snapshot); err != nil {
 		slog.Warn("kimi resync snapshot read failed", "agent_id", a.AgentID(), "error", err)
-		if !status.Busy {
+		if !replayed && !status.Busy {
 			// An idle session runs no main turn, so a turn the stream saw start and
 			// never saw end must not latch the agent busy.
 			a.reconcileTurn(nil)
 		}
 		return
 	}
-	a.reconcileTurn(snapshot.InFlightTurn)
+	if !replayed {
+		a.reconcileTurn(snapshot.InFlightTurn)
+	}
+	// Interaction frames have no durable cursor. Their resolutions can be lost
+	// even when every durable event was replayed.
 	a.reconcileControls(sessionID, snapshot.PendingApprovals, snapshot.PendingQuestions)
+	if replayed {
+		return
+	}
 	tasks, err := a.readTasks(ctx, sessionID)
 	if err != nil {
 		// The roster still repairs the subagents it lists. Nothing proves that an

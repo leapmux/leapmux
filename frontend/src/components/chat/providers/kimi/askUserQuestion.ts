@@ -1,8 +1,8 @@
 /**
  * Kimi Code's question requests: recognize one, read its questions, and answer it.
  *
- * The server announces a question as `event.question.requested`, and the worker
- * publishes that payload verbatim as the control request. Each question and each
+ * The server announces a question through an `interaction` frame. The worker
+ * stores the frame unchanged, and its nested request holds the questions. Each question and each
  * option carries an id of the server's own (`q_0`, `opt_0_1`), and an answer names
  * those ids rather than the words on screen. So an option's VALUE here is its id,
  * which is what the shared control keeps as the selection, and the answer this module
@@ -11,21 +11,23 @@
 
 import type { ControlAnswerState } from '../../controls/types'
 import type { ControlQuestion, QuestionPrompt } from '../../model/question'
-import { KIMI_ANSWER_KIND, KIMI_EVENT, KIMI_REPLY } from '~/generated/contracts/kimi-protocol'
+import { KIMI_ANSWER_KIND, KIMI_INTERACTION_KIND, KIMI_REPLY } from '~/generated/contracts/kimi-protocol'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { buildControlResponseEnvelope } from '~/utils/controlResponse'
 import { questionsFromRecords } from '../questionRecords'
+import { kimiInteractionRequest } from './protocol'
 
 /** The raw question records of a stored question request, in the order it declares. */
 export function kimiQuestionRecords(payload: Record<string, unknown>): Record<string, unknown>[] {
-  return Array.isArray(payload.questions)
-    ? payload.questions.filter(isObject)
+  const request = kimiInteractionRequest(payload, KIMI_INTERACTION_KIND.Question)
+  return Array.isArray(request?.questions)
+    ? request.questions.filter(isObject)
     : []
 }
 
 /** Whether a stored control payload is a question request. */
 export function kimiIsQuestionRequest(payload: Record<string, unknown>): boolean {
-  return pickString(payload, 'type') === KIMI_EVENT.QuestionRequested
+  return kimiInteractionRequest(payload, KIMI_INTERACTION_KIND.Question) !== undefined
 }
 
 /**

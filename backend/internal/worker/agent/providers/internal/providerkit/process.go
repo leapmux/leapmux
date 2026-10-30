@@ -26,6 +26,11 @@ import (
 // maxStderrSize caps the captured stderr at one mebibyte.
 const maxStderrSize = 1 << 20
 
+// stderrDrainWait is how long a reader of the captured stderr waits for the
+// drain to reach the end of the pipe. A descendant that keeps stderr open can
+// outlive the process and prevent the drain from finishing.
+const stderrDrainWait = 3 * time.Second
+
 // Process contains the shared lifecycle state and methods.
 // claude.Agent embeds it directly.
 // opencode.Agent and cursor.Agent use the Agent Client Protocol (ACP).
@@ -56,11 +61,14 @@ type Process struct {
 	stderrBuf  bytes.Buffer
 	stderrMu   sync.Mutex
 	stderrDone chan struct{}
+	// stderrDraining reports that DrainStderr started, so stderrDone closes
+	// when the drain ends.
+	stderrDraining atomic.Bool
 
 	Mu      sync.Mutex
 	stopped bool
-	// processExited freezes exitCompletion when the native wait returns.
-	// A later cleanup call must not reclassify a natural failure as a stop.
+	// processExited freezes exitCompletion when an exit or startup failure is
+	// first recorded. Later cleanup must not reclassify that failure as a stop.
 	processExited  bool
 	exitCompletion agent.MessageCompletion
 	// intentionalStop is set before a provider sends its graceful stop request.
@@ -396,9 +404,14 @@ func (p *Process) sendStopSignal() {
 	if p.stopSignal == 0 {
 		return
 	}
-	if err := procutil.SignalProcessGroup(p.cmd, p.stopSignal); err != nil {
+	if err := p.SignalGroup(p.stopSignal); err != nil {
 		slog.Debug("signal the agent process group", "agent_id", p.agentID, "signal", p.stopSignal, "error", err)
 	}
+}
+
+// SignalGroup delegates delivery to the prepared process owner.
+func (p *Process) SignalGroup(signal syscall.Signal) error {
+	return p.owner.SignalGroup(signal)
 }
 
 // IsStopped returns true if the process was intentionally stopped via Stop().
@@ -428,15 +441,20 @@ func (p *Process) NoteIntentionalStop() {
 	p.Mu.Unlock()
 }
 
+// recordProcessExit freezes the first classification. Diagnostic collection
+// can update the error without changing that classification.
 func (p *Process) recordProcessExit(err error) {
 	p.Mu.Lock()
+	defer p.Mu.Unlock()
 	p.waitErr = err
+	if p.processExited {
+		return
+	}
 	p.processExited = true
 	p.exitCompletion = agent.MessageCompletionError
 	if p.intentionalStop.Load() || p.stopped {
 		p.exitCompletion = agent.MessageCompletionInterrupted
 	}
-	p.Mu.Unlock()
 }
 
 // APITimeout returns the configured API timeout, or DefaultAPITimeout if unset.
@@ -510,7 +528,15 @@ func (p *Process) StoppedLocked() bool {
 	return p.stopped
 }
 
-// ProcessExitedLocked reports whether the process exited. The caller holds Mu.
+// ProcessExited reports whether an exit or startup failure was recorded.
+func (p *Process) ProcessExited() bool {
+	p.Mu.Lock()
+	defer p.Mu.Unlock()
+	return p.ProcessExitedLocked()
+}
+
+// ProcessExitedLocked reports whether an exit or startup failure was recorded.
+// The caller holds Mu.
 func (p *Process) ProcessExitedLocked() bool {
 	return p.processExited
 }
@@ -528,12 +554,9 @@ func (p *Process) SkipStderr() {
 }
 
 // Stderr returns the captured stderr output. It waits for the stderr
-// goroutine to finish draining the pipe (up to 3 seconds).
+// goroutine to finish draining the pipe (up to stderrDrainWait).
 func (p *Process) Stderr() string {
-	select {
-	case <-p.stderrDone:
-	case <-time.After(3 * time.Second):
-	}
+	p.waitForStderrDrain()
 	p.stderrMu.Lock()
 	defer p.stderrMu.Unlock()
 	return p.stderrBuf.String()
@@ -542,10 +565,11 @@ func (p *Process) Stderr() string {
 // ProcessExitError returns a descriptive error for a process that exited
 // unexpectedly. It includes the exit code when available.
 func (p *Process) ProcessExitError() error {
-	if p.waitErr != nil {
-		if exitErr, ok := p.waitErr.(*exec.ExitError); ok {
-			return fmt.Errorf("agent process exited with code %d", exitErr.ExitCode())
-		}
+	p.Mu.Lock()
+	waitErr := p.waitErr
+	p.Mu.Unlock()
+	if exitErr, ok := waitErr.(*exec.ExitError); ok {
+		return fmt.Errorf("agent process exited with code %d", exitErr.ExitCode())
 	}
 	return fmt.Errorf("agent process exited unexpectedly")
 }
@@ -562,7 +586,10 @@ func (e *startupDiagnosticError) Unwrap() error { return e.cause }
 func (p *Process) FormatStartupError(phase string, err error) error {
 	details := "no error details"
 	if err != nil {
-		details = fmt.Sprintf("%s: %s", phase, err)
+		details = fmt.Sprintf("%s", err)
+		if phase != "" {
+			details = phase + ": " + details
+		}
 	} else if phase != "" {
 		details = phase + ": " + details
 	}
@@ -757,6 +784,7 @@ func (p *Process) StartCmd() error {
 	} else {
 		startErr = p.owner.Start()
 	}
+	startErr = errors.Join(startErr, p.pipes.closeChildPipes())
 	if startErr == nil {
 		return nil
 	}
@@ -767,7 +795,21 @@ func (p *Process) StartCmd() error {
 	if errors.Is(startErr, exec.ErrNotFound) {
 		startErr = errors.Join(fs.ErrNotExist, startErr)
 	}
+	p.recordProcessExit(startErr)
+	if p.pipes != nil {
+		if !p.stderrDraining.Load() {
+			select {
+			case <-p.stderrDone:
+			default:
+				p.DrainStderr(p.pipes.Stderr())
+			}
+		}
+		p.awaitStderrDrain()
+	}
 	startErr = fmt.Errorf("start %s: %w", p.providerName, errors.Join(startErr, p.pipes.Close()))
+	if p.pipes != nil {
+		startErr = p.FormatStartupError("", startErr)
+	}
 	// No output reader starts after this failure. Finish the lifecycle here so cleanup can wait safely.
 	p.recordProcessExit(startErr)
 	close(p.processDone)
@@ -920,6 +962,10 @@ func (p *Process) finishOutput(scanner *bufio.Scanner) {
 		waitErr = p.cmd.Wait()
 	}
 	p.recordProcessExit(waitErr)
+	p.awaitStderrDrain()
+	if err := p.pipes.closeStderrReader(); err != nil {
+		slog.Warn("close agent stderr", "agent_id", p.agentID, "error", err)
+	}
 	if err := p.owner.Close(); err != nil {
 		slog.Warn("close owned agent processes", "agent_id", p.agentID, "error", err)
 	}
@@ -942,11 +988,42 @@ func (p *Process) MessageWithToolUses(original []byte) agent.MessageContent {
 	return agent.WithToolUseCount(agent.MessageContent{Original: original}, count)
 }
 
+// awaitStderrDrain lets an active drain read the independently owned pipe
+// after the native wait records the exit. The wait has a time limit because
+// a descendant can keep the pipe open after the process ends.
+func (p *Process) awaitStderrDrain() {
+	if !p.stderrDraining.Load() {
+		return
+	}
+	if !p.waitForStderrDrain() {
+		slog.Debug("stderr drain outlived the process; a descendant may hold the pipe", "agent_id", p.agentID)
+	}
+}
+
+// waitForStderrDrain also supports an externally supplied completion channel.
+// Only shutdown requires that DrainStderr started in this Process.
+func (p *Process) waitForStderrDrain() bool {
+	select {
+	case <-p.stderrDone:
+		return true
+	default:
+	}
+	timer := p.Clock().NewTimer(stderrDrainWait, "stderr-drain")
+	defer timer.Stop()
+	select {
+	case <-p.stderrDone:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
 // DrainStderr starts a goroutine that reads from the given reader into
 // the stderr buffer, capped at maxStderrSize. It closes stderrDone when
 // the reader is exhausted. The lock is only held for individual writes,
 // not the entire drain loop.
 func (p *Process) DrainStderr(r io.Reader) {
+	p.stderrDraining.Store(true)
 	go func() {
 		defer close(p.stderrDone)
 		buf := make([]byte, 32*1024)

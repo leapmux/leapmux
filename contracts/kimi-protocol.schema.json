@@ -21,7 +21,10 @@
     "todoStatuses",
     "turnEndReasons",
     "defaultMode",
-    "notificationEvents"
+    "notificationEvents",
+    "frames",
+    "interactionKinds",
+    "versions"
   ],
   "$defs": {
     "table": {
@@ -190,6 +193,25 @@
       "items": {
         "type": "string",
         "pattern": "^[A-Z][A-Za-z0-9]*$"
+      }
+    },
+    "frames": {
+      "$ref": "#/$defs/table"
+    },
+    "interactionKinds": {
+      "$ref": "#/$defs/table"
+    },
+    "versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "Minimum"
+      ],
+      "properties": {
+        "Minimum": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        }
       }
     }
   }
