@@ -1174,12 +1174,12 @@ func (s *UserService) DropElevation(ctx context.Context, _ *leapmuxv1.DropElevat
 		n, err = s.store.Sessions().DropElevation(ctx, store.DropSessionElevationParams{
 			SessionID: sessionID,
 			UserID:    userInfo.ID,
-		}, s.now())
+		})
 	} else {
 		n, err = s.store.APITokens().DropElevation(ctx, store.DropAPITokenElevationParams{
 			TokenID: apiTokenID,
 			UserID:  userInfo.ID,
-		}, s.now())
+		})
 	}
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("drop elevation: %w", err))

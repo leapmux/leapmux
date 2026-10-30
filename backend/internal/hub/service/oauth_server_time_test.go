@@ -29,9 +29,8 @@ func TestPreTouchPollOAuthError_ThrottleUsesSuppliedNow(t *testing.T) {
 	lastPoll := now.Add(-time.Second)
 	h := &OAuthServerHandler{}
 	row := &store.DeviceAuthorization{
-		ExpiresAt:       now.Add(time.Hour),
-		LastPolledAt:    &lastPoll,
-		IntervalSeconds: 5,
+		ExpiresAt:    now.Add(time.Hour),
+		LastPolledAt: &lastPoll,
 	}
 
 	body, rejected := h.preTouchPollOAuthError(row, now)

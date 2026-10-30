@@ -15,17 +15,9 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
-// These tests exercise delegation_token-specific behavior the plan
-// called out beyond the basic accept/expire/revoke cases that
-// api_token_test.go already covers:
+// These tests exercise delegation_token-specific behavior beyond the
+// basic accept/expire/revoke cases that api_token_test.go already covers:
 //
-//   - issued_for_tab_id is recorded on the row but not consulted by
-//     the validator (it's provenance only — the workspace is the
-//     authoritative scope);
-//   - sibling-tab access works because validation is workspace-wide,
-//     not tab-locked;
-//   - tokens minted for different users are
-//     independent — revoking one doesn't void the others;
 //   - `Touch` advances `last_used_at` so admin tooling can surface
 //     a non-stale "in-use" indicator;
 //   - the Cleanup() revoked/expired delegation-token sweeps respect
@@ -54,37 +46,6 @@ func mintDelegation(t *testing.T, st store.Store, v *auth.TokenValidator, p stor
 	}
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), p))
 	return p.ID, secret
-}
-
-func TestDelegationToken_IssuedForTabIDIsProvenanceOnly(t *testing.T) {
-	st := newTestStore(t)
-	v := newValidator(t, st)
-	userID := seedUser(t, st)
-	workerID, _ := seedWorkerAndWorkspace(t, st, userID)
-
-	// Provenance fields recorded but not enforced. The validator
-	// must ACCEPT the bearer regardless of whether the
-	// issued_for_tab_id corresponds to a real tab — the row is for
-	// audit, not authorization.
-	tokenID, secret := mintDelegation(t, st, v, store.CreateDelegationTokenParams{
-		GrantedScopes:    "workspace:read workspace:write worker:read",
-		UserID:           userid.MustNew(userID),
-		WorkerID:         workerID,
-		IssuedForTabID:   "no-such-tab",
-		IssuedForTabType: 1,
-		AgentID:          "agent-no-such",
-	})
-
-	info, err := v.ValidateBearer(context.Background(), auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret))
-	require.NoError(t, err)
-	assert.Equal(t, userID, info.ID.String())
-
-	row, err := st.DelegationTokens().GetByID(context.Background(), tokenID)
-	require.NoError(t, err)
-	assert.Equal(t, "no-such-tab", row.IssuedForTabID,
-		"provenance field must round-trip through the store")
-	assert.Equal(t, "agent-no-such", row.AgentID,
-		"agent_id provenance must round-trip through the store")
 }
 
 func TestDelegationToken_TouchUpdatesLastUsedAt(t *testing.T) {

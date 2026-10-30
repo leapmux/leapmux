@@ -112,28 +112,29 @@ func TestMaybeCompact_PublishesANewGeneration(t *testing.T) {
 		"an untouched record must be shared with the superseded generation, not re-cloned")
 }
 
-// TestMaybeAdvanceEpoch_PublishesANewGenerationSharingEntityMaps pins both
-// halves of nextStateGeneration: it publishes (so the old generation keeps its
-// epoch) and it is O(1) (so the entity maps are aliased, not copied).
-func TestMaybeAdvanceEpoch_PublishesANewGenerationSharingEntityMaps(t *testing.T) {
-	mgr, _, _ := runManager(t, "user-1", allowAll{}, 230_000)
+// TestCompactionPass_EpochRotationPublishesANewGenerationSharingEntityMaps pins
+// both halves of nextStateGeneration on the epoch rotation: it publishes (so
+// the old generation keeps its epoch) and it is O(1) (so the entity maps are
+// aliased, not copied).
+func TestCompactionPass_EpochRotationPublishesANewGenerationSharingEntityMaps(t *testing.T) {
+	mgr, j, _ := runManager(t, "user-1", allowAll{}, 230_000)
 	seedRootInternal(t, mgr, "w1", "root1")
-	// Drain compaction FIRST, so the tick under test does the epoch bump and
-	// nothing else. maybeCompact's pre-check early-returns while max_hlc has
-	// not moved past compaction_watermark, and neither the seed below nor the
-	// epoch bump moves max_hlc -- so the only generation the tick publishes is
-	// nextStateGeneration's, which is what this test is about. (Without this,
-	// maybeCompact's full CloneState publishes right after and the assertion
-	// would be reading its fresh maps.)
+	// Drain compaction FIRST, so the tick under test does the epoch rotation
+	// and nothing else. Without an advance the pass is header-only, and
+	// neither the seed below nor the rotation moves max_hlc -- so the only
+	// generation the tick publishes is nextStateGeneration's, which is what
+	// this test is about. (Otherwise the pass copies the maps for the prune,
+	// and the assertion would be reading its fresh maps.)
 	mgr.TickHousekeeping(context.Background())
 
 	before := captureGeneration(mgr)
 	beforeEpoch := before.GetCurrentEpoch()
-	// Age the epoch past EpochDuration so the next pass advances it. The
-	// manager's injected clock only moves 1ms per call, so move the START back
-	// rather than waiting.
+	// Age the epoch by ONE period so the next pass advances it exactly once
+	// (the rotation catches up every whole elapsed period). The manager's
+	// injected clock only moves 1ms per call from a point past UnixMilli(0),
+	// so move the START back rather than waiting.
 	mgr.SeedStateForTest(func(state *leapmuxv1.UserCrdtState) {
-		state.EpochStartedAt = timestamppb.New(time.UnixMilli(0).Add(-2 * crdt.EpochDuration))
+		state.EpochStartedAt = timestamppb.New(time.UnixMilli(0).Add(-crdt.EpochDuration))
 	})
 	seeded := captureGeneration(mgr)
 
@@ -142,6 +143,9 @@ func TestMaybeAdvanceEpoch_PublishesANewGenerationSharingEntityMaps(t *testing.T
 	after := captureGeneration(mgr)
 	require.Equal(t, beforeEpoch+1, after.GetCurrentEpoch(), "the epoch should have advanced")
 	assert.Equal(t, beforeEpoch, before.GetCurrentEpoch(), "the old generation keeps its epoch")
+	persisted := j.persistedState()
+	require.NotNil(t, persisted, "the rotation must be persisted")
+	assert.Equal(t, beforeEpoch+1, persisted.GetCurrentEpoch(), "the persisted blob carries the new epoch")
 	// The epoch bump touches no record, so the entity maps are shared with the
 	// generation it superseded -- that sharing is what makes it O(1), and it is
 	// also exactly why an in-place delete on one generation would corrupt

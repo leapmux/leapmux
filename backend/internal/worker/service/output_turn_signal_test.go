@@ -55,7 +55,7 @@ func newTurnSignalFixture(t *testing.T) (*Service, string) {
 	svc, _, _ := setupTestService(t)
 	agentID := "agent-turn-signal"
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
-		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: agentID, WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	svc.startAgentFn = startWith(svc.Agents, claudetest.StartEcho)

@@ -995,7 +995,7 @@ func createAgentRowForTest(t *testing.T, svc *Service, workingDir string) db.Age
 	t.Helper()
 	agentID := "a-" + t.Name()
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: agentID, WorkingDir: workingDir, HomeDir: workingDir,
+		ID: agentID, WorkingDir: workingDir,
 	}))
 	row, err := svc.getAgentByID(context.Background(), agentID)
 	require.NoError(t, err)

@@ -187,7 +187,7 @@ func TestNotificationJournalTransportDeliversConsolidatedLiveAndReplay(t *testin
 	const ownerID = "lossless-notification-owner"
 	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
 	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{ID: ownerID,
-		WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: provider}))
+		WorkingDir: t.TempDir(), AgentProvider: provider}))
 	sink := agent.NewModelProgressResetSink(newTestRootOutputSink(t, svc.Output, ownerID, provider))
 	sink.UpdateSessionID("native")
 	live := newEncryptedNotificationTransport(t)
@@ -229,7 +229,7 @@ func TestNotificationJournalTransportDeliversConsolidatedLiveAndReplay(t *testin
 	identities := readStoredNotificationEntries(t, before)
 	require.Len(t, identities, len(inputs))
 	for index, content := range inputs {
-		assertNotificationEntryIdentity(t, content, before, identities[index])
+		assertNotificationEntryIdentity(t, provider, content, before, identities[index])
 	}
 	wrapper := decodeNotifWrapper(t, before.Content, before.ContentCompression)
 	require.Len(t, wrapper.Messages, 1)

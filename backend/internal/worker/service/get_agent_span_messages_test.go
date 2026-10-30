@@ -40,7 +40,7 @@ func TestGetAgentSpanMessagesScopesAndOrdersRelatedMessages(t *testing.T) {
 	t.Parallel()
 	service, dispatcher, _ := setupTestService(t)
 	for _, agentID := range []string{"agent-1", "agent-2"} {
-		require.NoError(t, service.Queries.CreateAgent(t.Context(), db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir()}))
+		require.NoError(t, service.Queries.CreateAgent(t.Context(), db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: agentID, WorkingDir: t.TempDir()}))
 		for _, suffix := range []string{"request", "result", "unrelated"} {
 			spanID := "call\nwith-provider-suffix"
 			if suffix == "unrelated" {
@@ -48,9 +48,8 @@ func TestGetAgentSpanMessagesScopesAndOrdersRelatedMessages(t *testing.T) {
 			}
 			_, err := createMessageRow(t.Context(), service.Queries, db.CreateMessageParams{
 				ID: agentID + "-" + suffix, AgentID: agentID,
-				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-				Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-				Content:       []byte(`{"type":"tool"}`), ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
+				Source:  leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+				Content: []byte(`{"type":"tool"}`), ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 				SpanID: spanID, CreatedAt: sqltime.NewSQLiteTime(time.Now()),
 			})
 			require.NoError(t, err)
@@ -74,7 +73,7 @@ func TestGetAgentSpanMessagesScopesAndOrdersRelatedMessages(t *testing.T) {
 func TestGetAgentSpanMessagesRejectsInvalidRequests(t *testing.T) {
 	t.Parallel()
 	service, dispatcher, _ := setupTestService(t)
-	require.NoError(t, service.Queries.CreateAgent(t.Context(), db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir()}))
+	require.NoError(t, service.Queries.CreateAgent(t.Context(), db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: "agent-1", WorkingDir: t.TempDir()}))
 	_, writer := getAgentSpanMessages(t, dispatcher, "agent-1", "")
 	assert.NotEmpty(t, writer.errors)
 	_, writer = getAgentSpanMessages(t, dispatcher, "unknown-agent", "span")
@@ -86,14 +85,13 @@ func TestGetAgentSpanMessagesSeparatesProviderSessions(t *testing.T) {
 	service, dispatcher, _ := setupTestService(t)
 	require.NoError(t, service.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
 		ID: "agent", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		WorkingDir: t.TempDir(),
 	}))
 	for _, sessionID := range []string{"old", "new", ""} {
 		for _, side := range []string{"request", "result"} {
 			_, err := createMessageRow(t.Context(), service.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 				ID: sessionID + "-" + side, AgentID: "agent", AgentSessionID: sessionID,
-				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-				Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, SpanID: "same-tool",
+				Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, SpanID: "same-tool",
 				Content: []byte(`{"native":"unchanged"}`), CreatedAt: sqltime.NewSQLiteTime(time.Now()),
 			})
 			require.NoError(t, err)

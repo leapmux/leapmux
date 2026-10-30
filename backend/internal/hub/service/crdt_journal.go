@@ -265,11 +265,10 @@ func (j *crdtJournal) scan(ctx context.Context, p journalScan) ([]crdt.ResumeBat
 	cur := cursor
 	for {
 		rows, err := j.store.UserOpBatches().ListAfter(ctx, store.ListUserOpBatchesAfterParams{
-			UserID:            owner,
-			AfterPhysicalMs:   cur.GetPhysical(),
-			AfterLogical:      cur.GetLogical(),
-			AfterOriginClient: cur.GetClientId(),
-			Limit:             store.CRDTBatchPageLimit,
+			UserID:          owner,
+			AfterPhysicalMs: cur.GetPhysical(),
+			AfterLogical:    cur.GetLogical(),
+			Limit:           store.CRDTBatchPageLimit,
 		})
 		if err != nil {
 			return nil, nil, fmt.Errorf("list user_op_batches after watermark: %w", err)
@@ -278,10 +277,12 @@ func (j *crdtJournal) scan(ctx context.Context, p journalScan) ([]crdt.ResumeBat
 			break
 		}
 		for _, r := range rows {
+			// The journal stores no client id: every canonical HLC carries
+			// crdt.CanonicalClockID (CommitBatch refuses any other).
 			rowHLC := &leapmuxv1.HLC{
 				Physical: r.PhysicalMs,
 				Logical:  r.Logical,
-				ClientId: r.OriginClient,
+				ClientId: crdt.CanonicalClockID,
 			}
 			// Register-time high-water: batches with first-op HLC > until were
 			// committed after the subscriber registered and are delivered via
@@ -419,11 +420,14 @@ func (j *crdtJournal) scan(ctx context.Context, p journalScan) ([]crdt.ResumeBat
 		if len(rows) < store.CRDTBatchPageLimit {
 			break
 		}
+		// The next page starts after the last row's own sort key,
+		// (physical_ms, logical), which makes the keyset exact: no row is
+		// skipped and none is returned twice.
 		last := rows[len(rows)-1]
 		cur = &leapmuxv1.HLC{
 			Physical: last.PhysicalMs,
-			Logical:  last.LastLogical,
-			ClientId: last.OriginClient,
+			Logical:  last.Logical,
+			ClientId: crdt.CanonicalClockID,
 		}
 	}
 	return out, corrupt, nil
@@ -432,7 +436,7 @@ func (j *crdtJournal) scan(ctx context.Context, p journalScan) ([]crdt.ResumeBat
 func (j *crdtJournal) CommitBatch(ctx context.Context, c crdt.CommitBatch) error {
 	// One mint for the committing tenant, minted here rather than per journal
 	// row: every row a batch writes -- the journal row, the dedup row and the
-	// index-view rows -- belongs to this one transaction's user, which
+	// tab-index rows -- belongs to this one transaction's user, which
 	// crdt.CommitBatch states exactly once.
 	owner, err := mintTenant(c.UserID)
 	if err != nil {
@@ -457,24 +461,32 @@ func (j *crdtJournal) CommitBatch(ctx context.Context, c crdt.CommitBatch) error
 	if err != nil {
 		return fmt.Errorf("marshal transitions %s: %w", c.Batch.GetBatchId(), err)
 	}
+	// The journal stores no client id and rebuilds every canonical HLC with
+	// crdt.CanonicalClockID, so an op stamped by any other clock would change
+	// identity on the next read. Every op, not only the first: a dedup hit
+	// rebuilds each committed op's HLC with one client id.
+	ops := c.Batch.GetOps()
+	if len(ops) == 0 {
+		// The first op anchors the row's key, and op_count is CHECKed > 0.
+		return fmt.Errorf("commit batch %s: the batch has no ops", c.Batch.GetBatchId())
+	}
+	for i, op := range ops {
+		if id := op.GetCanonicalHlc().GetClientId(); id != crdt.CanonicalClockID {
+			return fmt.Errorf("commit batch %s: op %d has canonical client id %q, want %q",
+				c.Batch.GetBatchId(), i, id, crdt.CanonicalClockID)
+		}
+	}
 	return j.store.RunInTransaction(ctx, func(tx store.Store) error {
-		ops := c.Batch.GetOps()
 		opCount := int64(len(ops))
 		first := ops[0].GetCanonicalHlc()
-		last := ops[opCount-1].GetCanonicalHlc()
 		if err := tx.UserOpBatches().Insert(ctx, store.InsertUserOpBatchParams{
 			UserID:             owner,
 			PhysicalMs:         first.GetPhysical(),
 			Logical:            first.GetLogical(),
-			LastLogical:        last.GetLogical(),
-			OriginClient:       first.GetClientId(),
-			PrincipalID:        c.PrincipalID,
 			BatchID:            c.Batch.GetBatchId(),
-			BodyHash:           c.Dedup.BodyHash,
 			BatchPayload:       payload,
 			TransitionsPayload: transitionsPayload,
 			OpCount:            opCount,
-			Epoch:              c.Epoch,
 		}); err != nil {
 			return fmt.Errorf("insert user_op_batch %s: %w", c.Batch.GetBatchId(), err)
 		}
@@ -489,7 +501,6 @@ func (j *crdtJournal) CommitBatch(ctx context.Context, c crdt.CommitBatch) error
 			PrincipalID:         c.PrincipalID,
 			CanonicalPhysicalMs: dCanon.GetPhysical(),
 			CanonicalLogical:    dCanon.GetLogical(),
-			CanonicalClient:     dCanon.GetClientId(),
 			OpCount:             d.OpCount,
 			Epoch:               c.Epoch,
 			ExpiresAt:           d.ExpiresAt,
@@ -525,24 +536,11 @@ func (j *crdtJournal) LookupRecentBatchID(ctx context.Context, userID, batchID s
 		BatchID:           row.BatchID,
 		BodyHash:          row.BodyHash,
 		PrincipalID:       row.PrincipalID,
-		CanonicalFirstHLC: &leapmuxv1.HLC{Physical: row.CanonicalPhysicalMs, Logical: row.CanonicalLogical, ClientId: row.CanonicalClient},
+		CanonicalFirstHLC: &leapmuxv1.HLC{Physical: row.CanonicalPhysicalMs, Logical: row.CanonicalLogical, ClientId: crdt.CanonicalClockID},
 		OpCount:           row.OpCount,
 		Epoch:             row.Epoch,
 		ExpiresAt:         row.ExpiresAt,
 	}, nil
-}
-
-func (j *crdtJournal) AdvanceEpoch(ctx context.Context, userID string, epoch int64, startedAt time.Time) error {
-	owner, err := mintTenant(userID)
-	if err != nil {
-		return err
-	}
-	return j.store.UserState().AdvanceEpoch(ctx, store.AdvanceUserEpochParams{
-		UserID:         owner,
-		Epoch:          epoch,
-		EpochStartedAt: startedAt,
-		UpdatedAt:      startedAt,
-	})
 }
 
 func (j *crdtJournal) CompactBatch(ctx context.Context, c crdt.CompactBatch) error {
@@ -558,7 +556,6 @@ func (j *crdtJournal) CompactBatch(ctx context.Context, c crdt.CompactBatch) err
 		if err != nil {
 			return fmt.Errorf("marshal state: %w", err)
 		}
-		now := time.Now()
 		if err := tx.UserState().Upsert(ctx, store.UpsertUserStateParams{
 			UserID:       owner,
 			StatePayload: payload,
@@ -566,18 +563,16 @@ func (j *crdtJournal) CompactBatch(ctx context.Context, c crdt.CompactBatch) err
 			// and the blob can never disagree about how far this user has
 			// compacted. The retention sweep deletes only strictly below it.
 			CompactionPhysicalMs: c.State.GetCompactionWatermark().GetPhysical(),
-			CurrentEpoch:         c.State.GetCurrentEpoch(),
-			EpochStartedAt:       c.State.GetEpochStartedAt().AsTime(),
-			UpdatedAt:            now,
 		}); err != nil {
 			return fmt.Errorf("upsert user_state: %w", err)
 		}
+		// A nil DropThrough is a header-only pass (an epoch rotation, or the
+		// first persist of a Bootstrap epoch stamp), which deletes no batch.
 		if c.DropThrough != nil {
 			if err := tx.UserOpBatches().DeleteThrough(ctx, store.DeleteUserOpBatchesThroughParams{
-				UserID:              owner,
-				ThroughPhysicalMs:   c.DropThrough.GetPhysical(),
-				ThroughLogical:      c.DropThrough.GetLogical(),
-				ThroughOriginClient: c.DropThrough.GetClientId(),
+				UserID:            owner,
+				ThroughPhysicalMs: c.DropThrough.GetPhysical(),
+				ThroughLogical:    c.DropThrough.GetLogical(),
 			}); err != nil {
 				return fmt.Errorf("delete user_op_batches through: %w", err)
 			}
@@ -591,7 +586,7 @@ func (j *crdtJournal) CleanupExpiredRecentBatchIDs(ctx context.Context, before t
 }
 
 // txTabIndexWriter is a thin adapter from crdt.TabIndexWriter to the
-// transactional store.WorkspaceTabIndexStore. All four methods are
+// transactional store.WorkspaceTabIndexStore. Both methods are
 // bulk: crdt.ApplyDiff hands the writer the full per-batch slices in
 // one call, and the underlying store chunks internally when the
 // backend's parameter limit demands it.
@@ -605,7 +600,7 @@ func (j *crdtJournal) CleanupExpiredRecentBatchIDs(ctx context.Context, before t
 // so the row's owner was always this one, and dropping the field removes the
 // only way for the two to drift.
 //
-// The DELETE paths are the asymmetry: crdt.TabKey DOES carry an owner, because
+// The DELETE path is the asymmetry: crdt.TabKey DOES carry an owner, because
 // a key names an EXISTING row whose owner is half the primary key. Those bind
 // each key's own owner, so one unusable key does not cancel the deletes queued
 // for its neighbours.
@@ -614,45 +609,28 @@ type txTabIndexWriter struct {
 	owner userid.UserID
 }
 
-func (w txTabIndexWriter) BulkUpsertOwned(ctx context.Context, rows []crdt.TabIndexRow) error {
+func (w txTabIndexWriter) BulkUpsert(ctx context.Context, rows []crdt.TabIndexRow) error {
 	if len(rows) == 0 {
 		return nil
 	}
-	return w.tx.WorkspaceTabIndex().BulkUpsertOwned(ctx, w.tabParams(rows))
+	return w.tx.WorkspaceTabIndex().BulkUpsert(ctx, w.tabParams(rows))
 }
 
-func (w txTabIndexWriter) BulkDeleteOwned(ctx context.Context, keys []crdt.TabKey) error {
+func (w txTabIndexWriter) BulkDelete(ctx context.Context, keys []crdt.TabKey) error {
 	storeKeys := tabIndexKeys(keys)
 	if len(storeKeys) == 0 {
 		return nil
 	}
-	return w.tx.WorkspaceTabIndex().BulkDeleteOwned(ctx, storeKeys)
-}
-
-func (w txTabIndexWriter) BulkUpsertRendered(ctx context.Context, rows []crdt.TabIndexRow) error {
-	if len(rows) == 0 {
-		return nil
-	}
-	return w.tx.WorkspaceTabIndex().BulkUpsertRendered(ctx, w.tabParams(rows))
-}
-
-func (w txTabIndexWriter) BulkDeleteRendered(ctx context.Context, keys []crdt.TabKey) error {
-	storeKeys := tabIndexKeys(keys)
-	if len(storeKeys) == 0 {
-		return nil
-	}
-	return w.tx.WorkspaceTabIndex().BulkDeleteRendered(ctx, storeKeys)
+	return w.tx.WorkspaceTabIndex().BulkDelete(ctx, storeKeys)
 }
 
 // tabParams converts a diff's rows to store params, supplying the committing
-// tenant as the owner column (a crdt.TabIndexRow carries none).
-// store.UpsertRenderedTabParams is an alias of store.UpsertOwnedTabParams (the
-// two views share one column set), so the owned and rendered upserts share this
-// single conversion instead of repeating it.
-func (w txTabIndexWriter) tabParams(rows []crdt.TabIndexRow) []store.UpsertOwnedTabParams {
-	params := make([]store.UpsertOwnedTabParams, len(rows))
+// tenant as the owner column (a crdt.TabIndexRow carries none) and copying
+// each row's Rendered flag.
+func (w txTabIndexWriter) tabParams(rows []crdt.TabIndexRow) []store.UpsertTabParams {
+	params := make([]store.UpsertTabParams, len(rows))
 	for i, row := range rows {
-		params[i] = store.UpsertOwnedTabParams{
+		params[i] = store.UpsertTabParams{
 			UserID:      w.owner,
 			WorkspaceID: row.WorkspaceID,
 			TabType:     row.TabType,
@@ -660,6 +638,7 @@ func (w txTabIndexWriter) tabParams(rows []crdt.TabIndexRow) []store.UpsertOwned
 			WorkerID:    row.WorkerID,
 			TileID:      row.TileID,
 			Position:    row.Position,
+			Rendered:    row.Rendered,
 		}
 	}
 	return params
@@ -672,7 +651,7 @@ func (w txTabIndexWriter) tabParams(rows []crdt.TabIndexRow) []store.UpsertOwned
 // belongs to the store, which applies store.FilterTabIndexKeys at every site
 // that binds an owner column (sqlutil.BulkDeleteTabs for sqlite/mysql, the
 // postgres adapter directly) and SKIPS the zero keys there. Keeping the rule
-// there rather than here means a future non-CRDT caller of BulkDeleteOwned
+// there rather than here means a future non-CRDT caller of BulkDelete
 // inherits it instead of having to know to re-copy it -- and means one unusable
 // key never cancels its neighbours, which an early refusal here would.
 func tabIndexKeys(keys []crdt.TabKey) []store.TabIndexKey {

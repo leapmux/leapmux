@@ -65,13 +65,12 @@ func (h *WorkerDelegationHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/worker/delegation-tokens/revoke", h.handleRevoke)
 }
 
+// mintRequest is the body of a mint call. IssuedForTabID is the tab the
+// calling worker says it hosts; the mint checks that claim and stores no tab.
 type mintRequest struct {
-	UserID           string `json:"user_id"`
-	IssuedForTabID   string `json:"issued_for_tab_id"`
-	IssuedForTabType int32  `json:"issued_for_tab_type"`
-	AgentID          string `json:"agent_id"`
-	TerminalID       string `json:"terminal_id"`
-	TTLSeconds       int64  `json:"ttl_seconds"`
+	UserID         string `json:"user_id"`
+	IssuedForTabID string `json:"issued_for_tab_id"`
+	TTLSeconds     int64  `json:"ttl_seconds"`
 }
 
 type mintResponse struct {
@@ -178,10 +177,6 @@ func (h *WorkerDelegationHandler) handleMint(w http.ResponseWriter, r *http.Requ
 		ID:               tokenID,
 		UserID:           uid,
 		WorkerID:         worker.ID,
-		AgentID:          req.AgentID,
-		TerminalID:       req.TerminalID,
-		IssuedForTabID:   req.IssuedForTabID,
-		IssuedForTabType: req.IssuedForTabType,
 		SecretHash:       pair.AccessHash,
 		RefreshHash:      pair.RefreshHash,
 		ExpiresAt:        pair.AccessExpiresAt,

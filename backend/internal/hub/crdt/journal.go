@@ -86,8 +86,8 @@ type Journal interface {
 	ListBatchesAfter(ctx context.Context, userID string, after, until *leapmuxv1.HLC, maxOps, maxBytes int) (batches []ResumeBatch, corrupt []CorruptRow, err error)
 
 	// CommitBatch atomically writes the batch to user_op_batches, the
-	// dedup row to user_recent_batch_ids, and the index-view diff to
-	// workspace_tab_owned / workspace_tab_rendered. All three writes
+	// dedup row to user_recent_batch_ids, and the tab-index diff to
+	// workspace_tab_owned. All three writes
 	// land inside a single DB transaction; on rollback the manager's
 	// in-memory state is NOT advanced (the caller checks err).
 	CommitBatch(ctx context.Context, c CommitBatch) error
@@ -96,15 +96,14 @@ type Journal interface {
 	// within the dedup window. Returns nil if absent.
 	LookupRecentBatchID(ctx context.Context, userID, batchID string) (*RecentBatchRecord, error)
 
-	// AdvanceEpoch bumps current_epoch + epoch_started_at without
-	// rewriting the state_payload.
-	AdvanceEpoch(ctx context.Context, userID string, epoch int64, startedAt time.Time) error
-
-	// CompactBatch atomically rewrites user_state.state_payload (with
-	// the new compaction_watermark) AND deletes the user_op_batches rows
-	// whose batch's last canonical HLC ≤ watermark. The manager hands
-	// the freshly-compacted state and that watermark; on success the
-	// caller advances its in-memory compaction_watermark.
+	// CompactBatch upserts user_state.state_payload with whatever header the
+	// compaction pass built -- the watermarks, current_epoch,
+	// epoch_started_at and the pruned maps -- and, in the same transaction,
+	// deletes the user_op_batches rows whose batch's last canonical HLC is
+	// at or below DropThrough. It deletes only when DropThrough is not nil:
+	// nil means a pass that did not advance the watermark (an epoch rotation
+	// or the first persist of a Bootstrap epoch stamp), and such a pass
+	// deletes nothing. The manager publishes State only after a nil error.
 	//
 	// It does NOT touch user_recent_batch_ids, and compaction does not
 	// narrow the retry-idempotence window. Dedup rows are written at
@@ -121,7 +120,7 @@ type Journal interface {
 
 // CommitBatch carries the inputs to Journal.CommitBatch. UserID, PrincipalID
 // and Epoch are the whole commit's context: every row it writes -- the journal
-// row, the dedup row, and the index-view rows -- belongs to that one tenant,
+// row, the dedup row, and the tab-index rows -- belongs to that one tenant,
 // principal and epoch, so they are stated once here rather than repeated per
 // row.
 type CommitBatch struct {
@@ -184,7 +183,9 @@ type DedupEntry struct {
 
 // CompactBatch carries the inputs to Journal.CompactBatch.
 type CompactBatch struct {
-	State       *leapmuxv1.UserCrdtState
+	State *leapmuxv1.UserCrdtState
+	// DropThrough is the op-batch deletion floor, or nil for a pass that
+	// deletes no batch.
 	DropThrough *leapmuxv1.HLC
 }
 

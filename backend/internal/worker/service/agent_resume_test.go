@@ -120,7 +120,6 @@ func seedOpenAgent(t *testing.T, svc *Service, agentID string, used bool) {
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
 		ID:            agentID,
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Resumed:       resumed,
 	}))
@@ -165,7 +164,7 @@ func TestAgentResume_RetriesAnUnconfirmedManualSession(t *testing.T) {
 	recorder := newStartRecorder()
 	recorder.install(svc)
 	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
-		ID: "agent-pending", WorkingDir: t.TempDir(), HomeDir: svc.HomeDir,
+		ID: "agent-pending", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC,
 		Resumed:       1, PendingResumeSessionID: "session-a1",
 	}))
@@ -216,7 +215,6 @@ func TestAgentResume_SkipsSubagentTranscripts(t *testing.T) {
 		SpawnSpanID:   "span-1",
 		Title:         "child task",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 
@@ -367,12 +365,11 @@ func TestAgentResume_RestoresAnAgentWithASessionButNoResumeFlag(t *testing.T) {
 
 	seedOpenAgent(t, svc, "agent-messaged", false)
 	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		ID:            "msg-1",
-		AgentID:       "agent-messaged",
-		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		Content:       []byte("hello"),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
+		ID:        "msg-1",
+		AgentID:   "agent-messaged",
+		Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content:   []byte("hello"),
+		CreatedAt: sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
 	// The provider reports its session id after that first turn, which is what
@@ -488,12 +485,11 @@ func TestAgentResume_ResumesTheSessionTheRowPointsAt(t *testing.T) {
 	// a session id stamped after the user's message.
 	seedOpenAgent(t, svc, "agent-1", false)
 	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		ID:            "msg-1",
-		AgentID:       "agent-1",
-		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		Content:       []byte("hello"),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
+		ID:        "msg-1",
+		AgentID:   "agent-1",
+		Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content:   []byte("hello"),
+		CreatedAt: sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
@@ -608,7 +604,6 @@ func TestAgentResume_ResumesNothingForAnAgentWithNoSession(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Resumed:       1,
 	}))
@@ -797,7 +792,6 @@ func TestAgentResume_SkipsChildTranscripts(t *testing.T) {
 		ParentAgentID: sql.NullString{String: "agent-root", Valid: true},
 		SpawnSpanID:   "span-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Title:         "child",
 	}))

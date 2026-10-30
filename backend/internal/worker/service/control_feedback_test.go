@@ -61,30 +61,30 @@ func TestApprovalLinkedInputKeepsItsProviderSession(t *testing.T) {
 		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK,
 		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION,
 	} {
+		// No "different provider" case: the answer reports its agent's provider,
+		// so an answer and its agent can no longer disagree on it.
 		for _, tc := range []struct {
 			name, session string
 			state         leapmuxv1.ControlDeliveryState
-			provider      leapmuxv1.AgentProvider
 			wantError     bool
 		}{
-			{"matching", "original", leapmuxv1.ControlDeliveryState_CONTROL_DELIVERY_STATE_COMPLETED, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, false},
-			{"replacement", "replacement", leapmuxv1.ControlDeliveryState_CONTROL_DELIVERY_STATE_COMPLETED, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, true},
-			{"different provider", "original", leapmuxv1.ControlDeliveryState_CONTROL_DELIVERY_STATE_COMPLETED, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, true},
-			{"unrecorded approval", "original", leapmuxv1.ControlDeliveryState_CONTROL_DELIVERY_STATE_DELIVERED, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, true},
+			{"matching", "original", leapmuxv1.ControlDeliveryState_CONTROL_DELIVERY_STATE_COMPLETED, false},
+			{"replacement", "replacement", leapmuxv1.ControlDeliveryState_CONTROL_DELIVERY_STATE_COMPLETED, true},
+			{"unrecorded approval", "original", leapmuxv1.ControlDeliveryState_CONTROL_DELIVERY_STATE_DELIVERED, true},
 		} {
 			t.Run(kind.String()+"/"+tc.name, func(t *testing.T) {
 				svc, _, _ := setupTestService(t)
 				createClaimTestAgent(t, svc, "agent-1")
 				err := dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{
 					AgentID: "agent-1", RequestID: "approval", State: tc.state, InputID: "input",
-					AgentSessionID: "original", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+					AgentSessionID: "original",
 				})
 				require.NoError(t, err)
 				original := "  Keep the approved text.\n"
 				resolved, err := svc.resolveControlInput(inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
 					ItemMetadata: inputqueue.ItemMetadata{OrderingMetadata: inputqueue.OrderingMetadata{AgentID: "agent-1", ID: "input", Kind: kind}},
 					Text:         original,
-				}}, db.Agent{AgentSessionID: tc.session, AgentProvider: tc.provider})
+				}}, db.Agent{AgentSessionID: tc.session, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX})
 				if tc.wantError {
 					require.Error(t, err)
 					require.Empty(t, resolved.text)

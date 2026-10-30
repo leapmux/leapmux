@@ -81,7 +81,7 @@ func TestListAgents_ReportsActiveWhenTheStartupEndsWhileGitRuns(t *testing.T) {
 	const id = "agent-ending-startup"
 	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		AgentProvider: provider, ID: id, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: provider, ID: id, WorkingDir: t.TempDir(),
 	}))
 	handle := svc.AgentStartup.begin(id, func() {})
 	require.NotNil(t, handle)
@@ -104,7 +104,7 @@ func TestListAgents_ReportsStartingWhenTheStartupStillRunsAfterGit(t *testing.T)
 	svc, d, _ := setupTestService(t)
 	const id = "agent-running-startup"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: id, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: id, WorkingDir: t.TempDir(),
 	}))
 	handle := svc.AgentStartup.begin(id, func() {})
 	require.NotNil(t, handle)
@@ -126,7 +126,7 @@ func TestListAgents_ReportsInactiveWhenTheProcessStopsWhileGitRuns(t *testing.T)
 	const id = "agent-stopping-process"
 	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		AgentProvider: provider, ID: id, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: provider, ID: id, WorkingDir: t.TempDir(),
 	}))
 	startRunningTestProcess(ctx, t, svc, id, provider)
 

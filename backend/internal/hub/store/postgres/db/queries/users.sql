@@ -77,8 +77,8 @@ LIMIT sqlc.arg('limit');
 UPDATE users SET password_hash = $1, first_credential_exempt = TRUE, updated_at = NOW()
 WHERE id = $2;
 
--- The profile/email/email_verified/admin updates all RETURN id, updated_at so
--- the store layer can atomically emit a user_info cache-invalidation event: each
+-- The profile/email/email_verified/admin updates all RETURN id so the store
+-- layer can atomically emit a user_info cache-invalidation event: each
 -- mutates a field cached in UserInfo (username, email, email_verified -- an auth
 -- gate -- and is_admin), so a stale cached UserInfo must be dropped cross-process
 -- the same way. No row match -> no event.
@@ -86,22 +86,22 @@ WHERE id = $2;
 -- name: UpdateUserProfile :one
 UPDATE users SET username = $1, display_name = $2, display_name_folded = $3, updated_at = NOW()
 WHERE id = $4
-RETURNING id, updated_at;
+RETURNING id;
 
 -- name: UpdateUserEmail :one
 UPDATE users SET email = $1, email_verified = $2, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = NOW()
 WHERE id = $3
-RETURNING id, updated_at;
+RETURNING id;
 
 -- name: UpdateUserEmailVerified :one
 UPDATE users SET email_verified = $1, updated_at = NOW()
 WHERE id = $2
-RETURNING id, updated_at;
+RETURNING id;
 
 -- name: UpdateUserAdmin :one
 UPDATE users SET is_admin = $1, updated_at = NOW()
 WHERE id = $2
-RETURNING id, updated_at;
+RETURNING id;
 
 -- name: DeleteUser :exec
 UPDATE users SET deleted_at = NOW() WHERE id = $1;
@@ -192,7 +192,7 @@ WHERE id = $1;
 -- name: PromotePendingEmail :one
 UPDATE users SET email = pending_email, email_verified = TRUE, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = NOW()
 WHERE id = $1 AND pending_email != ''
-RETURNING id, updated_at;
+RETURNING id;
 
 -- ConsumeVerificationAttempt atomically charges one attempt against the
 -- user's pending verification, force-expiring on the 6th try, and
@@ -223,7 +223,7 @@ WHERE pending_email != ''
   AND ((pending_email_token != '' AND pending_email_expires_at IS NOT NULL AND pending_email_expires_at < sqlc.arg(cutoff))
     OR (pending_email_token = '' AND updated_at < sqlc.arg(codeless_cutoff)));
 
--- name: BumpUserTokensRevokedAt :one
+-- name: BumpUserAuthGeneration :one
 -- The query itself has no deleted_at guard, so it would act on a
 -- soft-deleted row -- but neither caller can reach one: RevokeUserTokens
 -- (via RevokeAllUserCredentials) runs inside RunInUserAuthTransaction, whose
@@ -234,12 +234,10 @@ WHERE pending_email != ''
 -- revokes before soft-deleting, so that ordering is not exercised today.
 -- Only a missing id is a no-op.
 UPDATE users
-SET tokens_revoked_at = revocation_clock.now_at,
-    auth_generation   = auth_generation + 1,
-    updated_at = revocation_clock.now_at
-FROM (SELECT clock_timestamp() AS now_at) AS revocation_clock
+SET auth_generation   = auth_generation + 1,
+    updated_at = clock_timestamp()
 WHERE id = $1
-RETURNING id, tokens_revoked_at, auth_generation;
+RETURNING id, auth_generation;
 
 -- name: SetPendingRecovery :execresult
 -- Conditional mint, recovery twin of SetPendingEmail: the write lands
@@ -310,9 +308,8 @@ SET password_hash = sqlc.arg(password_hash),
     pending_recovery_expires_at = NULL,
     pending_recovery_unblocked_at = NULL,
     pending_recovery_attempts = 0,
-    tokens_revoked_at = clock_timestamp(),
     auth_generation = auth_generation + 1,
     updated_at = NOW()
 WHERE id = sqlc.arg(id) AND pending_recovery_token = sqlc.arg(pending_recovery_token)
-RETURNING id, tokens_revoked_at, auth_generation;
+RETURNING id, auth_generation;
 

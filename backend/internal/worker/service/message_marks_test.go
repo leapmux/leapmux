@@ -21,13 +21,12 @@ import (
 func seedMark(t *testing.T, svc *Service, agentID, id string, mark leapmuxv1.MarkType) int64 {
 	t.Helper()
 	seq, err := createMessageRow(context.Background(), svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		ID:            id,
-		AgentID:       agentID,
-		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		Content:       []byte("hi"),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		MarkType:      workerdb.OptionalStorageEnum(mark),
-		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
+		ID:        id,
+		AgentID:   agentID,
+		Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content:   []byte("hi"),
+		MarkType:  workerdb.OptionalStorageEnum(mark),
+		CreatedAt: sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
 	return seq
@@ -52,7 +51,7 @@ func TestListMessageMarks_ReturnsMarkedSeqsAndRange(t *testing.T) {
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
 	// seq 1: user message (marked), 2: unmarked, 3: control response (marked),
@@ -95,7 +94,7 @@ func TestListMessageMarks_MinSeqAfterLeadingDelete(t *testing.T) {
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 	seedMark(t, svc, "agent-1", "m1", leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE)
 	seq2 := seedMark(t, svc, "agent-1", "m2", leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE)
@@ -117,7 +116,7 @@ func TestListMessageMarks_EmptyAgent(t *testing.T) {
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
 	resp := listMarks(t, d, "agent-1")
@@ -140,7 +139,7 @@ func TestListMessageMarks_ClosedAgent_ReturnsEmptyWithPresentRange(t *testing.T)
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 	seedMark(t, svc, "agent-1", "m1", leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE)
 	require.NoError(t, closeErr(svc.Queries.CloseAgent(ctx, "agent-1")))
@@ -209,7 +208,7 @@ func TestPersistSyntheticUserMessage_LeavesInterruptNoticeUnmarked(t *testing.T)
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 
@@ -252,7 +251,7 @@ func TestPersistControlResponseAnswerRows_SingleStructuredRow(t *testing.T) {
 	t.Run("non-self-displayed persists one marked structured row", func(t *testing.T) {
 		svc, _, _ := setupTestService(t)
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+			ID: "agent-1", WorkingDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		}))
 		persistControlResponseAnswerForTest(t, svc, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, mk(t, false, false))
@@ -265,7 +264,7 @@ func TestPersistControlResponseAnswerRows_SingleStructuredRow(t *testing.T) {
 	t.Run("self-displayed clear-context persists exactly one marked structured row", func(t *testing.T) {
 		svc, _, _ := setupTestService(t)
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+			ID: "agent-1", WorkingDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		}))
 		persistControlResponseAnswerForTest(t, svc, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, mk(t, true, true))
@@ -278,7 +277,7 @@ func TestPersistControlResponseAnswerRows_SingleStructuredRow(t *testing.T) {
 	t.Run("self-displayed without clear-context persists no row", func(t *testing.T) {
 		svc, _, _ := setupTestService(t)
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+			ID: "agent-1", WorkingDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		}))
 		persistControlResponseAnswerForTest(t, svc, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, mk(t, true, false))
@@ -296,7 +295,6 @@ func TestReplayAgentCatchUp_ReplaysControlRequestAgentProvider(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
 	}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{

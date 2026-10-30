@@ -190,7 +190,7 @@ func TestWatchEvents_OpeningRequestRegistersAndAcks(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -209,7 +209,7 @@ func TestWatchEvents_PartialRejectionAcksAndKeepsStream(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-good", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-good", WorkingDir: "/tmp",
 	}))
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -237,10 +237,10 @@ func TestWatchEvents_AgentLookupFailureLeavesRegistrationsUntouched(t *testing.T
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: "term-1", WorkingDir: "/tmp", HomeDir: "/tmp", Cols: 80, Rows: 24, Screen: []byte("s"),
+		ID: "term-1", WorkingDir: "/tmp", Cols: 80, Rows: 24, Screen: []byte("s"),
 	}))
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -278,7 +278,7 @@ func TestWatchEvents_EmptyRequestClearsAndAcks(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -305,10 +305,10 @@ func TestWatchEvents_CoalescedRevisionsApplyNewest(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-2", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-2", WorkingDir: "/tmp",
 	}))
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -344,7 +344,7 @@ func TestWatchEvents_CancelFrameUnwatchesAndEnds(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -417,7 +417,7 @@ func TestWatchEvents_UndecodableRevisionSurvives(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -447,7 +447,7 @@ func TestWatchEvents_PromoteNotifyToFullReplaysOnce(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -521,17 +521,16 @@ func TestWatchEvents_PromoteWithCappedCursorReplay(t *testing.T) {
 			ctx := context.Background()
 			svc, d, w := setupTestService(t)
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-				ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+				ID: "agent-1", WorkingDir: "/tmp",
 			}))
 
 			seqs := make([]int64, 0, tc.messageCount)
 			for i := range tc.messageCount {
 				seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-					ID:            fmt.Sprintf("msg-%d", i+1),
-					AgentID:       "agent-1",
-					Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-					Content:       []byte("hi"),
-					AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+					ID:      fmt.Sprintf("msg-%d", i+1),
+					AgentID: "agent-1",
+					Source:  leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+					Content: []byte("hi"),
 				})
 				require.NoError(t, err)
 				seqs = append(seqs, seq)
@@ -604,7 +603,7 @@ func TestWatchEvents_DemoteThenRepromoteReplaysAgain(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -645,7 +644,7 @@ func TestWatchEvents_DualPromote_TerminalCatchUpBeforeAgent(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-dual", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-dual", WorkingDir: "/tmp",
 	}))
 	startTestTerminal(t, svc, ctx, "term-dual")
 	require.True(t, svc.Terminals.AppendOutput("term-dual", []byte("screen")))
@@ -701,7 +700,7 @@ func TestWatchEvents_DualPromote_GitBatchOverlapsTerminalCatchUp(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-overlap", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-overlap", WorkingDir: "/tmp",
 	}))
 	startTestTerminal(t, svc, ctx, "term-overlap")
 	require.True(t, svc.Terminals.AppendOutput("term-overlap", []byte("screen")))
@@ -768,7 +767,7 @@ func TestWatchEvents_DualPromote_CancelsGitBatchWhenTransportDies(t *testing.T) 
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-git-cancel", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-git-cancel", WorkingDir: "/tmp",
 	}))
 	startTestTerminal(t, svc, ctx, "term-git-cancel")
 	require.True(t, svc.Terminals.AppendOutput("term-git-cancel", []byte("screen")))
@@ -821,7 +820,7 @@ func TestWatchEvents_LookupFailedRetryPerformsOwedReplay(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -867,7 +866,7 @@ func TestWatchEvents_ChannelCloseUnwatches(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -903,7 +902,7 @@ func TestWatchEvents_BindStreamRefusalReleasesOwnership(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
 	refusing := &bindRefusingWriter{testResponseWriter: w}
@@ -939,7 +938,7 @@ func TestWatchEvents_PromoteAfterCancelSkipsReplay(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -980,7 +979,6 @@ func TestReplayIncludesBackgroundTasksSnapshot(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "root-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 
@@ -1052,7 +1050,6 @@ func TestReplayIncludesActivitySnapshot(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "root-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	// A running process is a precondition of every busy answer; the real check
@@ -1108,7 +1105,6 @@ func TestReplayActivityPrecedesTheMessageBurst(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "root-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	svc.Output.processRunning = func(string) bool { return true }
@@ -1119,11 +1115,10 @@ func TestReplayActivityPrecedesTheMessageBurst(t *testing.T) {
 	// A burst for the activity frame to precede. Without one, any order passes.
 	for i := range 3 {
 		_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-			ID:            fmt.Sprintf("msg-%d", i),
-			AgentID:       "root-1",
-			Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-			Content:       []byte("hello"),
-			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+			ID:      fmt.Sprintf("msg-%d", i),
+			AgentID: "root-1",
+			Source:  leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+			Content: []byte("hello"),
 		})
 		require.NoError(t, err)
 	}
@@ -1168,7 +1163,6 @@ func TestReplayActivityIsTheWATCHEDAgentsOwnAnswer(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "root-own",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	svc.Output.processRunning = func(string) bool { return true }
@@ -1227,7 +1221,6 @@ func TestWatchChildAgentReplaysWithoutProcess(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "root-2",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	rootSink := newTestRootOutputSink(t, svc.Output, "root-2", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
@@ -1243,11 +1236,10 @@ func TestWatchChildAgentReplaysWithoutProcess(t *testing.T) {
 	// ship and we can confirm the replay actually ran (not just an empty
 	// catch-up).
 	_, err = createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		ID:            "child-msg-1",
-		AgentID:       childID,
-		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		Content:       []byte("hello from child"),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		ID:      "child-msg-1",
+		AgentID: childID,
+		Source:  leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content: []byte("hello from child"),
 	})
 	require.NoError(t, err)
 
@@ -1298,7 +1290,7 @@ func TestListAgentsCarriesBothActivityAnswers(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	settles := holdSettles(t, svc.Output)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 	}))
 	svc.Output.processRunning = func(string) bool { return true }
 
@@ -1333,7 +1325,7 @@ func TestReplayFramesAreMarkedAndLiveOnesAreNot(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 	}))
 	svc.Output.processRunning = func(string) bool { return true }
 
@@ -1370,7 +1362,7 @@ func TestReplayFramesKeepTheExactAcceptedUpdateID(t *testing.T) {
 	svc, dispatcher, writer := setupTestService(t)
 	const ownerID = "replay-request-owner"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: ownerID, WorkingDir: t.TempDir(), HomeDir: t.TempDir()}))
+		ID: ownerID, WorkingDir: t.TempDir()}))
 	svc.Output.processRunning = func(string) bool { return true }
 	const firstID = uint64(1<<53 + 17)
 	dispatch(dispatcher, "WatchEvents", &leapmuxv1.WatchEventsRequest{UpdateId: firstID,
@@ -1435,7 +1427,7 @@ func TestReplayPageReadFailureFailsTheExactWatch(t *testing.T) {
 	svc, dispatcher, writer := setupTestService(t)
 	const ownerID = "replay-page-failure-owner"
 	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
-		ID: ownerID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: ownerID, WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	svc.Queries = db.New(&replayPageReadFailureDBTX{DBTX: svc.DB})
@@ -1481,7 +1473,7 @@ func TestReplayPreparationFailurePreservesReplacementWatch(t *testing.T) {
 	svc, _, oldWriter := setupTestService(t)
 	const ownerID = "replay-replacement-owner"
 	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
-		ID: ownerID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		ID: ownerID, WorkingDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	svc.Queries = db.New(&replayPageReadFailureDBTX{DBTX: svc.DB})
 	caller := channel.LocalAgentCaller(userid.MustNew("user-1"))

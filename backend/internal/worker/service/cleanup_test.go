@@ -205,7 +205,7 @@ func TestCleanup_SweepsSameInstantBoundaries(t *testing.T) {
 
 	seedAgent := func(id string, closedAt time.Time) {
 		require.NoError(t, queries.CreateAgent(ctx, gendb.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-			ID: id, WorkingDir: "/tmp", HomeDir: "/home", Title: id, Options: "{}",
+			ID: id, WorkingDir: "/tmp", Title: id, Options: "{}",
 		}))
 		_, err := sqlDB.ExecContext(ctx, "UPDATE agents SET closed_at = ? WHERE id = ?", timefmt.Format(closedAt), id)
 		require.NoError(t, err)
@@ -228,7 +228,7 @@ func TestCleanup_SweepsSameInstantBoundaries(t *testing.T) {
 
 	seedTerminal := func(id string, closedAt time.Time) {
 		require.NoError(t, queries.UpsertTerminal(ctx, gendb.UpsertTerminalParams{
-			ID: id, WorkingDir: "/tmp", HomeDir: "/home", Shell: "/bin/zsh",
+			ID: id, WorkingDir: "/tmp", Shell: "/bin/zsh",
 			Title: id, Cols: 80, Rows: 24, Screen: []byte{},
 			ClosedAt: sqltime.SQLiteNullTimeOf(closedAt),
 		}))
@@ -453,14 +453,13 @@ func TestCleanup_DeleteClosedAgentsReclaimsChildAlongsideRoot(t *testing.T) {
 
 	// Root + child, linked via parent_agent_id.
 	require.NoError(t, queries.CreateAgent(ctx, gendb.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "root-closed", WorkingDir: "/tmp", HomeDir: "/home",
+		ID: "root-closed", WorkingDir: "/tmp",
 	}))
 	require.NoError(t, queries.CreateChildAgent(ctx, gendb.CreateChildAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:            "child-closed",
 		ParentAgentID: sql.NullString{String: "root-closed", Valid: true},
 		SpawnSpanID:   "span-1",
 		WorkingDir:    "/tmp",
-		HomeDir:       "/home",
 	}))
 
 	// Backdate BOTH rows' closed_at past the retention window. A child soft-
@@ -496,14 +495,13 @@ func TestCleanup_DeleteClosedAgentsRetainsChildWhenRootRetained(t *testing.T) {
 	ctx := context.Background()
 
 	require.NoError(t, queries.CreateAgent(ctx, gendb.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "root-recent", WorkingDir: "/tmp", HomeDir: "/home",
+		ID: "root-recent", WorkingDir: "/tmp",
 	}))
 	require.NoError(t, queries.CreateChildAgent(ctx, gendb.CreateChildAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:            "child-recent",
 		ParentAgentID: sql.NullString{String: "root-recent", Valid: true},
 		SpawnSpanID:   "span-2",
 		WorkingDir:    "/tmp",
-		HomeDir:       "/home",
 	}))
 
 	// Stamp closed_at just inside the retention window (newer than the cutoff).

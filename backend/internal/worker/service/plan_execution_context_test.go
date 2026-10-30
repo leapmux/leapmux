@@ -23,7 +23,7 @@ func TestPlanExecutionRetryKeepsItsPreparedSession(t *testing.T) {
 	t.Cleanup(func() { svc.Agents.StopAgent("agent-1") })
 	err = dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{
 		AgentID: "agent-1", RequestID: "approval", ClaimToken: "claim", State: storedStateCompleted,
-		InputID: "execute", AgentSessionID: "original", AgentProvider: row.AgentProvider,
+		InputID: "execute", AgentSessionID: "original",
 		PlanApprovalSettings: []byte(`{"permissionMode":"acceptEdits","clearContext":true}`),
 	})
 	require.NoError(t, err)
@@ -78,14 +78,14 @@ func TestPlanExecutionRetryKeepsItsPreparedSession(t *testing.T) {
 // one, and validateSession refuses the plan in it.
 func TestPlanExecutionResumesThePreparedSessionAfterTheProcessExits(t *testing.T) {
 	svc, _, _ := setupTestService(t)
-	row := createPlanSessionTestAgent(t, svc, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "ExitPlanMode")
+	createPlanSessionTestAgent(t, svc, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "ExitPlanMode")
 	// An agent opened from a selected native session resumes its stored session
 	// without a user message in it, so the cold start has a session to resume.
 	_, err := svc.DB.ExecContext(t.Context(), `UPDATE agents SET resumed = 1 WHERE id = 'agent-1'`)
 	require.NoError(t, err)
 	err = dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{
 		AgentID: "agent-1", RequestID: "approval", ClaimToken: "claim", State: storedStateCompleted,
-		InputID: "execute", AgentSessionID: "original", AgentProvider: row.AgentProvider,
+		InputID: "execute", AgentSessionID: "original",
 		PlanApprovalSettings: []byte(`{"permissionMode":"acceptEdits","clearContext":true}`),
 	})
 	require.NoError(t, err)

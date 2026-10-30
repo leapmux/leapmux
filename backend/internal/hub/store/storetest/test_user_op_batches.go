@@ -23,18 +23,20 @@ func (s *Suite) testUserOpBatches(t *testing.T) {
 	// every backend -- a dialect that got the predicate or the batching wrong
 	// would either leak rows forever or delete a live client's resume tail.
 	//
-	// The cutoff is an HLC physical, NOT the committed_at wall clock. That is
-	// what keeps the sweep and Manager.decideResume in one time domain, and it
-	// is also what makes these cases deterministic: the rows carry the exact
-	// physical values under test rather than whatever the DB server stamped.
-	insertBatch := func(t *testing.T, st store.Store, owner userid.UserID, batchID string, physical int64) {
+	// The cutoff is an HLC physical, NOT a wall-clock time. That is what keeps
+	// the sweep and Manager.decideResume in one time domain, and it is also
+	// what makes these cases deterministic: the rows carry the exact physical
+	// values under test rather than whatever the DB server stamped.
+	insertBatchAt := func(t *testing.T, st store.Store, owner userid.UserID, batchID string, physical, logical, opCount int64) {
 		t.Helper()
 		require.NoError(t, st.UserOpBatches().Insert(ctx, store.InsertUserOpBatchParams{
-			UserID: owner, PhysicalMs: physical, Logical: 0, LastLogical: 0,
-			OriginClient: "c1", PrincipalID: "p", BatchID: batchID,
-			BodyHash: []byte("h"), BatchPayload: []byte("b"), TransitionsPayload: []byte("t"),
-			OpCount: 1, Epoch: 1,
+			UserID: owner, PhysicalMs: physical, Logical: logical, BatchID: batchID,
+			BatchPayload: []byte("b"), TransitionsPayload: []byte("t"), OpCount: opCount,
 		}))
+	}
+	insertBatch := func(t *testing.T, st store.Store, owner userid.UserID, batchID string, physical int64) {
+		t.Helper()
+		insertBatchAt(t, st, owner, batchID, physical, 0, 1)
 	}
 
 	// How far this owner's state_payload has actually absorbed its op tail. The
@@ -42,14 +44,10 @@ func (s *Suite) testUserOpBatches(t *testing.T) {
 	// retention cutoff to be the binding floor must raise this first.
 	absorbedThrough := func(t *testing.T, st store.Store, owner userid.UserID, physical int64) {
 		t.Helper()
-		now := time.Now()
 		require.NoError(t, st.UserState().Upsert(ctx, store.UpsertUserStateParams{
 			UserID:               owner,
 			StatePayload:         []byte("s"),
 			CompactionPhysicalMs: physical,
-			CurrentEpoch:         1,
-			EpochStartedAt:       now,
-			UpdatedAt:            now,
 		}))
 	}
 
@@ -132,11 +130,10 @@ func (s *Suite) testUserOpBatches(t *testing.T) {
 		assert.Equal(t, int64(1), deleted, "only the absorbed row is eligible")
 
 		rows, err := st.UserOpBatches().ListAfter(ctx, store.ListUserOpBatchesAfterParams{
-			UserID:            owner,
-			AfterPhysicalMs:   120,
-			AfterLogical:      0,
-			AfterOriginClient: "",
-			Limit:             store.CRDTBatchPageLimit,
+			UserID:          owner,
+			AfterPhysicalMs: 120,
+			AfterLogical:    0,
+			Limit:           store.CRDTBatchPageLimit,
 		})
 		require.NoError(t, err)
 		require.Len(t, rows, 1, "the tail Bootstrap replays must still be there")
@@ -146,7 +143,7 @@ func (s *Suite) testUserOpBatches(t *testing.T) {
 	// The LIMIT itself. Every other case here seeds a handful of rows, so the
 	// sweep's `LIMIT 1000` never binds -- and that batching is the ONE place the
 	// three dialects genuinely diverge in FORM: sqlite deletes by `rowid IN
-	// (SELECT ... LIMIT 1000)`, postgres by the four-column primary key tuple
+	// (SELECT ... LIMIT 1000)`, postgres by the three-column primary key tuple
 	// (deliberately not ctid, which YugabyteDB rejects outright), and mysql by a
 	// bare `DELETE ... LIMIT 1000` over a correlated subquery. A form that
 	// silently stopped honouring the LIMIT would delete the whole eligible set in
@@ -172,8 +169,7 @@ func (s *Suite) testUserOpBatches(t *testing.T) {
 		require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
 			for i := range seeded {
 				// Distinct physical_ms keeps every row a distinct primary key
-				// (user_id, physical_ms, logical, origin_client) and every batch_id
-				// distinct for the dedup index.
+				// (user_id, physical_ms, logical), and every batch_id distinct.
 				insertBatch(t, tx, owner, fmt.Sprintf("bulk-%04d", i), int64(i+1))
 			}
 			return nil
@@ -229,6 +225,80 @@ func (s *Suite) testUserOpBatches(t *testing.T) {
 		assert.Equal(t, int64(1), n)
 	})
 
+	// DeleteThrough keys on a batch's LAST op, logical + op_count - 1: the
+	// journal stores the first op's HLC and the op count, and a batch's ops
+	// carry contiguous logicals. A cursor that has reached only an earlier op
+	// of the batch must keep the whole row, or a resume would lose the later
+	// ops.
+	t.Run("DeleteThrough keeps a multi-op batch until the cursor reaches its last op", func(t *testing.T) {
+		st := s.NewStore(t)
+		owner := userid.MustNew(SeedUser(t, st, "uob-delete-through").ID)
+		// Ops at logicals 5, 6 and 7 of physical 10.
+		insertBatchAt(t, st, owner, "three-ops", 10, 5, 3)
+
+		count := func() int64 {
+			n, err := st.UserOpBatches().Count(ctx, owner)
+			require.NoError(t, err)
+			return n
+		}
+		require.NoError(t, st.UserOpBatches().DeleteThrough(ctx, store.DeleteUserOpBatchesThroughParams{
+			UserID: owner, ThroughPhysicalMs: 10, ThroughLogical: 6,
+		}))
+		assert.Equal(t, int64(1), count(), "the cursor at the batch's second op must keep the batch")
+
+		require.NoError(t, st.UserOpBatches().DeleteThrough(ctx, store.DeleteUserOpBatchesThroughParams{
+			UserID: owner, ThroughPhysicalMs: 10, ThroughLogical: 7,
+		}))
+		assert.Zero(t, count(), "the cursor at the batch's last op must delete it")
+	})
+
+	// An earlier physical deletes the batch whatever its logical; a later one
+	// keeps it whatever the cursor's logical.
+	t.Run("DeleteThrough compares the physical first", func(t *testing.T) {
+		st := s.NewStore(t)
+		owner := userid.MustNew(SeedUser(t, st, "uob-delete-through-phys").ID)
+		insertBatchAt(t, st, owner, "early", 10, 50, 2)
+		insertBatchAt(t, st, owner, "late", 12, 0, 1)
+
+		require.NoError(t, st.UserOpBatches().DeleteThrough(ctx, store.DeleteUserOpBatchesThroughParams{
+			UserID: owner, ThroughPhysicalMs: 11, ThroughLogical: 0,
+		}))
+		rows, err := st.UserOpBatches().ListAfter(ctx, store.ListUserOpBatchesAfterParams{
+			UserID: owner, Limit: store.CRDTBatchPageLimit,
+		})
+		require.NoError(t, err)
+		require.Len(t, rows, 1)
+		assert.Equal(t, "late", rows[0].BatchID)
+	})
+
+	// ListAfter pages by (physical_ms, logical) alone: a row is after the
+	// cursor when its physical is greater, or equal with a greater logical.
+	t.Run("ListAfter orders and filters by physical then logical", func(t *testing.T) {
+		st := s.NewStore(t)
+		owner := userid.MustNew(SeedUser(t, st, "uob-list-after").ID)
+		insertBatchAt(t, st, owner, "p5-l3", 5, 3, 2)
+		insertBatchAt(t, st, owner, "p5-l1", 5, 1, 2)
+		insertBatchAt(t, st, owner, "p6-l0", 6, 0, 1)
+		insertBatchAt(t, st, owner, "p4-l9", 4, 9, 1)
+
+		ids := func(physical, logical int64) []string {
+			rows, err := st.UserOpBatches().ListAfter(ctx, store.ListUserOpBatchesAfterParams{
+				UserID: owner, AfterPhysicalMs: physical, AfterLogical: logical, Limit: store.CRDTBatchPageLimit,
+			})
+			require.NoError(t, err)
+			out := make([]string, 0, len(rows))
+			for _, r := range rows {
+				out = append(out, r.BatchID)
+			}
+			return out
+		}
+		assert.Equal(t, []string{"p4-l9", "p5-l1", "p5-l3", "p6-l0"}, ids(0, 0))
+		assert.Equal(t, []string{"p5-l3", "p6-l0"}, ids(5, 1), "a row at the cursor itself is not after it")
+		assert.Equal(t, []string{"p5-l3", "p6-l0"}, ids(5, 2))
+		assert.Equal(t, []string{"p6-l0"}, ids(5, 3))
+		assert.Empty(t, ids(6, 0))
+	})
+
 	// Regression: a fresh user has no rows, no compaction watermark, so
 	// the CRDT manager's bootstrap path calls ListAfter with a zero
 	// HLC and the full CRDTBatchPageLimit. Earlier the SQLite query
@@ -245,11 +315,10 @@ func (s *Suite) testUserOpBatches(t *testing.T) {
 		user := SeedUser(t, st, "uob-empty-journal")
 
 		rows, err := st.UserOpBatches().ListAfter(ctx, store.ListUserOpBatchesAfterParams{
-			UserID:            userid.MustNew(user.ID),
-			AfterPhysicalMs:   0,
-			AfterLogical:      0,
-			AfterOriginClient: "",
-			Limit:             store.CRDTBatchPageLimit,
+			UserID:          userid.MustNew(user.ID),
+			AfterPhysicalMs: 0,
+			AfterLogical:    0,
+			Limit:           store.CRDTBatchPageLimit,
 		})
 		require.NoError(t, err)
 		assert.Empty(t, rows)
@@ -286,13 +355,11 @@ func (s *Suite) testUserOpBatches(t *testing.T) {
 		// And therefore closed for the child rows: the FK has nothing to point at.
 		now := time.Now().UTC()
 		require.Error(t, st.UserOpBatches().Insert(ctx, store.InsertUserOpBatchParams{
-			UserID: userid.UserID{}, PhysicalMs: 1, Logical: 0, LastLogical: 0,
-			OriginClient: "c", PrincipalID: "", BatchID: "blank-batch",
-			BodyHash: []byte("h"), BatchPayload: []byte("p"), TransitionsPayload: []byte("t"), OpCount: 1, Epoch: 1,
+			UserID: userid.UserID{}, PhysicalMs: 1, Logical: 0, BatchID: "blank-batch",
+			BatchPayload: []byte("p"), TransitionsPayload: []byte("t"), OpCount: 1,
 		}), "a blank-owner op batch has no parent user row to reference")
 		require.Error(t, st.UserState().Upsert(ctx, store.UpsertUserStateParams{
-			UserID: userid.UserID{}, StatePayload: []byte("state"), CurrentEpoch: 1,
-			EpochStartedAt: now, UpdatedAt: now,
+			UserID: userid.UserID{}, StatePayload: []byte("state"),
 		}), "a blank-owner state row has no parent user row to reference")
 
 		// Every read below binds a zero owner against rows owned by someone REAL.
@@ -300,25 +367,23 @@ func (s *Suite) testUserOpBatches(t *testing.T) {
 		// exist: a gate that stopped binding user_id would hand the blank caller
 		// these rows, and each assertion would fail.
 		require.NoError(t, st.UserOpBatches().Insert(ctx, store.InsertUserOpBatchParams{
-			UserID: userid.MustNew(realUser.ID), PhysicalMs: 1, Logical: 0, LastLogical: 0,
-			OriginClient: "c", PrincipalID: realUser.ID, BatchID: "real-batch",
-			BodyHash: []byte("h"), BatchPayload: []byte("real-body"), TransitionsPayload: []byte("t"), OpCount: 1, Epoch: 1,
+			UserID: userid.MustNew(realUser.ID), PhysicalMs: 1, Logical: 0, BatchID: "real-batch",
+			BatchPayload: []byte("real-body"), TransitionsPayload: []byte("t"), OpCount: 1,
 		}))
 		require.NoError(t, st.UserState().Upsert(ctx, store.UpsertUserStateParams{
-			UserID: userid.MustNew(realUser.ID), StatePayload: []byte("real-state"), CurrentEpoch: 1,
-			EpochStartedAt: now, UpdatedAt: now,
+			UserID: userid.MustNew(realUser.ID), StatePayload: []byte("real-state"),
 		}))
 		require.NoError(t, st.UserRecentBatchIDs().Insert(ctx, store.InsertUserRecentBatchIDParams{
 			UserID: userid.MustNew(realUser.ID), BatchID: "real-recent", BodyHash: []byte("h"),
 			PrincipalID: realUser.ID, CanonicalPhysicalMs: 1, CanonicalLogical: 0,
-			CanonicalClient: "c", OpCount: 1, Epoch: 1, ExpiresAt: now.Add(time.Hour),
+			OpCount: 1, Epoch: 1, ExpiresAt: now.Add(time.Hour),
 		}))
 		require.NoError(t, st.LifecycleOutbox().Insert(ctx, store.InsertLifecycleOutboxParams{
 			UserID: userid.MustNew(realUser.ID), OpType: leapmuxv1.WorkspaceLifecycleOp_WORKSPACE_LIFECYCLE_OP_CREATE, Payload: []byte("payload"),
 		}))
 
 		rows, err := st.UserOpBatches().ListAfter(ctx, store.ListUserOpBatchesAfterParams{
-			UserID: userid.UserID{}, AfterPhysicalMs: 0, AfterLogical: 0, AfterOriginClient: "",
+			UserID: userid.UserID{}, AfterPhysicalMs: 0, AfterLogical: 0,
 			Limit: store.CRDTBatchPageLimit,
 		})
 		require.NoError(t, err)
@@ -342,7 +407,7 @@ func (s *Suite) testUserOpBatches(t *testing.T) {
 
 		// Control: the gate still WORKS for a real owner.
 		rows, err = st.UserOpBatches().ListAfter(ctx, store.ListUserOpBatchesAfterParams{
-			UserID: userid.MustNew(realUser.ID), AfterPhysicalMs: 0, AfterLogical: 0, AfterOriginClient: "",
+			UserID: userid.MustNew(realUser.ID), AfterPhysicalMs: 0, AfterLogical: 0,
 			Limit: store.CRDTBatchPageLimit,
 		})
 		require.NoError(t, err)

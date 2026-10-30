@@ -39,6 +39,38 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 		assert.False(t, sec.CreatedAt.IsZero())
 	})
 
+	// An unset Go field holds the UNSPECIFIED zero, and no section is of no
+	// type or on no sidebar, so the column CHECKs refuse it.
+	t.Run("create refuses SECTION_TYPE_UNSPECIFIED", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "wsec-no-type-user")
+
+		err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
+			ID:          id.Generate(),
+			UserID:      userid.MustNew(user.ID),
+			Name:        "Untyped",
+			Position:    "a0",
+			SectionType: leapmuxv1.SectionType_SECTION_TYPE_UNSPECIFIED,
+			Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
+		})
+		assert.Error(t, err)
+	})
+
+	t.Run("create refuses SIDEBAR_UNSPECIFIED", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "wsec-no-sidebar-user")
+
+		err := st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
+			ID:          id.Generate(),
+			UserID:      userid.MustNew(user.ID),
+			Name:        "Nowhere",
+			Position:    "a0",
+			SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
+			Sidebar:     leapmuxv1.Sidebar_SIDEBAR_UNSPECIFIED,
+		})
+		assert.Error(t, err)
+	})
+
 	t.Run("get by id not found", func(t *testing.T) {
 		st := s.NewStore(t)
 		_, err := st.WorkspaceSections().GetByID(ctx, "nonexistent")

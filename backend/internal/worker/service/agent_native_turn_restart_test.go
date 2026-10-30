@@ -86,7 +86,7 @@ func prepareNativeRestartAgent(t *testing.T) (*Service, *nativeRestartProbeAgent
 	workingDir := t.TempDir()
 	mode := map[string]string{agent.OptionIDPermissionMode: "plan"}
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: id, WorkingDir: workingDir, HomeDir: t.TempDir(),
+		ID: id, WorkingDir: workingDir,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY,
 		Options:       marshalOptions(mode), Resumed: 1,
 	}))
@@ -281,7 +281,7 @@ func TestNativeTurnRestartFailureKeepsTheQueuedInputPaused(t *testing.T) {
 	assert.Empty(t, row.AgentSessionID, "a failed resume must clear its stale session ID")
 	var paused bool
 	require.NoError(t, svc.DB.QueryRowContext(ctx,
-		"SELECT paused FROM agent_input_queue_state WHERE agent_id = ?", id).Scan(&paused))
+		"SELECT pause_reason IS NOT NULL FROM agent_input_queue_state WHERE agent_id = ?", id).Scan(&paused))
 	assert.True(t, paused, "a failed replacement keeps queued input for an explicit retry")
 }
 

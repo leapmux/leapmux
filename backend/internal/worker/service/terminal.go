@@ -254,7 +254,6 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			if upsertErr := svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
 				ID:            terminalID,
 				WorkingDir:    plan.PlannedWorkingDir,
-				HomeDir:       svc.HomeDir,
 				ShellStartDir: shellStartDir,
 				Shell:         shell,
 				Title:         terminalTitle,

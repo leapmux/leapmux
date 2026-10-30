@@ -4,7 +4,7 @@ SELECT * FROM user_recent_batch_ids WHERE user_id = ? AND batch_id = ?;
 -- name: InsertRecentBatchID :exec
 INSERT INTO user_recent_batch_ids (
     user_id, batch_id, body_hash, principal_id,
-    canonical_physical_ms, canonical_logical, canonical_client,
+    canonical_physical_ms, canonical_logical,
     op_count, epoch, expires_at
 ) VALUES (
     sqlc.arg(user_id),
@@ -13,7 +13,6 @@ INSERT INTO user_recent_batch_ids (
     sqlc.arg(principal_id),
     sqlc.arg(canonical_physical_ms),
     sqlc.arg(canonical_logical),
-    sqlc.arg(canonical_client),
     sqlc.arg(op_count),
     sqlc.arg(epoch),
     sqlc.arg(expires_at)

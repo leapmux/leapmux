@@ -105,7 +105,7 @@ func TestWorkspaceArchive_StopsProcessesAndPreservesTabData(t *testing.T) {
 	const agentID = "archive-agent"
 	const terminalID = "archive-terminal"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: agentID, WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Resumed:       1,
 	}))
@@ -116,8 +116,8 @@ func TestWorkspaceArchive_StopsProcessesAndPreservesTabData(t *testing.T) {
 		ID: "message-1", AgentID: agentID, Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content: []byte("preserved transcript"), ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		SpanLines:                      "[]", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		CreatedAt: sqltime.NewSQLiteTime(time.Now()),
+		SpanLines:                      "[]",
+		CreatedAt:                      sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
 	_, err = svc.Agents.StartAgentWith(ctx, agent.Options{
@@ -128,7 +128,7 @@ func TestWorkspaceArchive_StopsProcessesAndPreservesTabData(t *testing.T) {
 
 	terminalDir := t.TempDir()
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: terminalID, WorkingDir: terminalDir, HomeDir: t.TempDir(),
+		ID: terminalID, WorkingDir: terminalDir,
 		Shell: testutil.TestShell(), Cols: 80, Rows: 24, Screen: []byte{},
 	}))
 	require.NoError(t, svc.Terminals.StartTerminal(ctx, terminal.Options{
@@ -230,7 +230,7 @@ func TestWorkspaceArchive_StopsAnAgentThatOwnsNoProcess(t *testing.T) {
 	svc, dispatcher, _ := setupTestService(t)
 	const agentID = "archive-inactive"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: agentID, WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	require.False(t, svc.Agents.HasAgent(agentID))
@@ -269,7 +269,7 @@ func TestWorkspaceArchive_StopsEveryTabInTheRequest(t *testing.T) {
 	tabs := make([]*leapmuxv1.TabRef, 0, len(agentIDs)+len(terminalIDs))
 	for _, agentID := range agentIDs {
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-			ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+			ID: agentID, WorkingDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		}))
 		_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
@@ -283,7 +283,7 @@ func TestWorkspaceArchive_StopsEveryTabInTheRequest(t *testing.T) {
 	for _, terminalID := range terminalIDs {
 		terminalDir := t.TempDir()
 		require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-			ID: terminalID, WorkingDir: terminalDir, HomeDir: t.TempDir(),
+			ID: terminalID, WorkingDir: terminalDir,
 			Shell: testutil.TestShell(), Cols: 80, Rows: 24, Screen: []byte{},
 		}))
 		require.NoError(t, svc.Terminals.StartTerminal(ctx, terminal.Options{
@@ -322,7 +322,7 @@ func TestWorkspaceArchive_DuplicateArchiveIsANoOp(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	const agentID = "archive-twice"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: agentID, WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	var firstCleanup atomic.Bool
@@ -358,7 +358,7 @@ func TestWorkspaceArchive_PausesAndRestoresAnUnpausedInputQueue(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	const agentID = "queued-agent"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: agentID, WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	_, err := svc.InputQueue.TurnStarted(ctx, agentID, false)
@@ -396,7 +396,7 @@ func TestWorkspaceArchive_PreservesAManualQueuePause(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	const agentID = "manually-paused-agent"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: agentID, WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	_, err := svc.InputQueue.TurnStarted(ctx, agentID, false)
@@ -423,7 +423,7 @@ func TestWorkspaceArchive_PreservesAnExistingAgentStoppedPause(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	const agentID = "crashed-agent"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: agentID, WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	_, err := svc.InputQueue.Pause(ctx, agentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED)
@@ -455,7 +455,7 @@ func TestWorkspaceArchive_CancelsAnInFlightStartup(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	const agentID = "archive-starting"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: agentID, WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	startupCtx, cancel := context.WithCancel(ctx)
@@ -514,7 +514,7 @@ func TestWorkspaceArchive_UnarchiveResumesOnlyEligibleAgents(t *testing.T) {
 		{id: "closed", sessionID: "session-closed", resumed: 1, closed: true},
 	} {
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-			ID: testAgent.id, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+			ID: testAgent.id, WorkingDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 			Resumed:       testAgent.resumed,
 		}))
@@ -576,7 +576,7 @@ func TestWorkspaceArchive_DatabaseFailureStopsNoProcess(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	const agentID = "archive-db-failure"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: agentID, WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
@@ -649,11 +649,11 @@ func TestWorkspaceArchive_RefusesEveryWriteRPCOnAnArchivedTab(t *testing.T) {
 	const agentID = "archived-agent"
 	const terminalID = "archived-terminal"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), Title: "before",
+		ID: agentID, WorkingDir: t.TempDir(), Title: "before",
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: terminalID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), Title: "before",
+		ID: terminalID, WorkingDir: t.TempDir(), Title: "before",
 		Shell: testutil.TestShell(), Cols: 80, Rows: 24, Screen: []byte{},
 	}))
 	_, err := svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
@@ -776,7 +776,7 @@ func TestWorkspaceArchive_SkipsAClosedRow(t *testing.T) {
 	const openAgent = "open-agent"
 	for _, id := range []string{closedAgent, openAgent} {
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-			ID: id, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+			ID: id, WorkingDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		}))
 	}
@@ -827,7 +827,7 @@ func TestWorkspaceArchive_UnarchiveWaitsForAnArchiveDrain(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	const agentID = "archive-drain-race"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: agentID, WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, Resumed: 1,
 	}))
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{

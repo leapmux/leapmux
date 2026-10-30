@@ -101,9 +101,9 @@ func TestSubmitRefusesABlankTenantManager(t *testing.T) {
 // rewrite another tenant's state -- and one that adopted a blank payload would
 // key a row by "", which the store now refuses outright. The derived tab-index
 // rows were the sharper half of that radius until service.txTabIndexWriter
-// began stamping the committing tenant and workspace_tab_owned.user_id gained
-// its users(id) FK; before those, a blank payload produced blank-owner rows the
-// store could not delete, so the worker reconciler kept their agents and
+// began stamping the committing tenant and workspace_tab_owned gained a
+// foreign key whose chain reaches users(id); before those, a blank payload
+// produced blank-owner rows the store could not delete, so the worker reconciler kept their agents and
 // terminals alive with no API able to clear them.
 //
 // Named by internal/audit.identityComparisonSites for

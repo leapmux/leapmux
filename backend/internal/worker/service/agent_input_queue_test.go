@@ -76,7 +76,7 @@ func setupInputQueueRPCService(t *testing.T) (*Service, *channel.Dispatcher) {
 	t.Helper()
 	svc, dispatcher, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	return svc, dispatcher
@@ -119,7 +119,7 @@ func TestEnqueueAgentInputRefusesAQuestionAnswer(t *testing.T) {
 	ctx := t.Context()
 	svc, dispatcher, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	before, err := svc.InputQueue.Snapshot(ctx, "agent-1")
@@ -149,7 +149,7 @@ func TestReadOnlyChildUserMessageIsRefusedBeforeQueueMutation(t *testing.T) {
 			svc, dispatcher, _ := setupTestService(t)
 			const provider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-				ID: "readonly-parent", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: provider,
+				ID: "readonly-parent", WorkingDir: t.TempDir(), AgentProvider: provider,
 			}))
 			childID, err := newTestRootOutputSink(t, svc.Output, "readonly-parent", provider).EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "readonly-spawn", ProviderChildKey: "native-child", Title: "native child"})
 			require.NoError(t, err)
@@ -193,7 +193,7 @@ func TestChildInputAdmissionKeepsSupportedMessagesAndControlFeedback(t *testing.
 			ctx := context.Background()
 			svc, dispatcher, _ := setupTestService(t)
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-				ID: "admission-parent", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: tc.provider,
+				ID: "admission-parent", WorkingDir: t.TempDir(), AgentProvider: tc.provider,
 			}))
 			childID, err := newTestRootOutputSink(t, svc.Output, "admission-parent", tc.provider).EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "admission-spawn", ProviderChildKey: "native-child", Title: "native child"})
 			require.NoError(t, err)
@@ -219,7 +219,7 @@ func TestAgentInfoPublishesEffectiveSteeringCapability(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	workingDir := t.TempDir()
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: workingDir, HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: workingDir,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
@@ -247,7 +247,7 @@ func TestAgentInfoPublishesEffectivePreemptionCapability(t *testing.T) {
 	workingDir := t.TempDir()
 	for _, agentID := range []string{"steerable", "interrupt-only", "cold"} {
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-			ID: agentID, WorkingDir: workingDir, HomeDir: t.TempDir(),
+			ID: agentID, WorkingDir: workingDir,
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 		}))
 	}
@@ -299,7 +299,7 @@ func TestLiveStatusChangePublishesPreemptionCapability(t *testing.T) {
 	const coldAgentID = "cold-agent"
 	for _, agentID := range []string{preemptAgentID, coldAgentID} {
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-			ID: agentID, WorkingDir: workingDir, HomeDir: t.TempDir(),
+			ID: agentID, WorkingDir: workingDir,
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 		}))
 	}
@@ -335,7 +335,7 @@ func TestPreemptQueuedAgentInputRPC(t *testing.T) {
 	svc, dispatcher, _ := setupTestService(t)
 	workingDir := t.TempDir()
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: workingDir, HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: workingDir,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 	}))
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
@@ -376,7 +376,7 @@ func TestPreemptQueuedAgentInputRPCRefusesAPausedQueue(t *testing.T) {
 	svc, dispatcher, _ := setupTestService(t)
 	workingDir := t.TempDir()
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: workingDir, HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: workingDir,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 	}))
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
@@ -426,7 +426,7 @@ func TestLiveStatusChangePublishesSteeringCapability(t *testing.T) {
 	workingDir := t.TempDir()
 	for _, agentID := range []string{steeringAgentID, coldAgentID} {
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-			ID: agentID, WorkingDir: workingDir, HomeDir: t.TempDir(),
+			ID: agentID, WorkingDir: workingDir,
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		}))
 	}
@@ -466,7 +466,7 @@ func TestCompactOperationFallsBackToProviderInputWhenNativeCompactionIsUnsupport
 	svc, _, _ := setupTestService(t)
 	workingDir := t.TempDir()
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: workingDir, HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: workingDir,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
@@ -555,12 +555,12 @@ func TestAgentProcessExitPausesRootAndChildQueues(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "root-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "root-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	require.NoError(t, svc.Queries.CreateChildAgent(ctx, db.CreateChildAgentParams{
 		ID: "child-1", ParentAgentID: sql.NullString{String: "root-1", Valid: true},
-		SpawnSpanID: "spawn-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		SpawnSpanID: "spawn-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	for _, agentID := range []string{"root-1", "child-1"} {
@@ -598,7 +598,7 @@ func TestAgentInputQueueBroadcastsSnapshotToTwoClients(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	first := newTestWriter()
@@ -633,7 +633,7 @@ func TestQueuedClearStartsColdAgentOnlyOnce(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	var starts atomic.Int32
@@ -661,7 +661,7 @@ func TestQueuedClearCreatesBoundaryBeforeLaterInputRuns(t *testing.T) {
 	ctx := context.Background()
 	svc, _, writer := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	svc.startAgentFn = startWith(svc.Agents, claudetest.StartEcho)
@@ -687,7 +687,7 @@ func TestQueuedClearCreatesBoundaryBeforeLaterInputRuns(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, messages, 3)
 	assert.Equal(t, "clear-1", messages[0].ID)
-	boundary, err := messageToProto(&messages[1])
+	boundary, err := messageToProto(&messages[1], leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	require.NoError(t, err)
 	assert.Equal(t, []string{contracts.NotificationTypeContextCleared}, decodeMessageTypes(t, boundary))
 	assert.Equal(t, "message-1", messages[2].ID)
@@ -720,7 +720,7 @@ func TestQueuedClearFailureKeepsInputOutOfTranscript(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
@@ -739,7 +739,7 @@ func TestQueuedClearFailureKeepsInputOutOfTranscript(t *testing.T) {
 	messages, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
 	require.NoError(t, err)
 	require.Len(t, messages, 1)
-	message, err := messageToProto(&messages[0])
+	message, err := messageToProto(&messages[0], leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	require.NoError(t, err)
 	assert.Equal(t, []string{contracts.NotificationTypeAgentError}, decodeMessageTypes(t, message))
 }
@@ -760,7 +760,7 @@ func TestQueuedClearDropsTheClearedSession(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	const agentID = "agent-1"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: agentID, WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_AMP,
 	}))
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
@@ -773,7 +773,6 @@ func TestQueuedClearDropsTheClearedSession(t *testing.T) {
 		AgentID:            agentID,
 		Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content:            []byte(`{"content":"keep this in the cleared thread"}`),
-		AgentProvider:      leapmuxv1.AgentProvider_AGENT_PROVIDER_AMP,
 		CreatedAt:          sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
@@ -812,7 +811,7 @@ func TestQueuedClearKeepsTheSessionThatItsLaunchStates(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	const agentID = "agent-1"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: agentID, WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
@@ -937,7 +936,7 @@ func TestQueuedFirstMessageToAnIdleAgentStartsAFreshSession(t *testing.T) {
 	// The row of a tab that was opened, started and never used: its provider
 	// reported a session, and no message reached it.
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-idle", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-idle", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
@@ -977,7 +976,7 @@ func TestChildQueuePublishesOnlyEffectiveSteeringCapability(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	const rootID = "zcode-root"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: rootID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: rootID, WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
 	}))
 	sink := newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
@@ -1031,7 +1030,7 @@ func TestAutoRetryProducersUseGeneratedQueueKinds(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
@@ -1077,7 +1076,7 @@ func TestSyntheticUserInputEnqueuesAUserMessage(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
@@ -1114,7 +1113,7 @@ func TestUpdateAgentGoalQueuesTextUntilDelivery(t *testing.T) {
 	ctx := context.Background()
 	svc, dispatcher, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	startGoalTextAgent(t, svc, "agent-1")
@@ -1150,7 +1149,7 @@ func TestUpdateAgentGoalReturnsTheQueueFullMessage(t *testing.T) {
 	ctx := context.Background()
 	svc, dispatcher, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	startGoalTextAgent(t, svc, "agent-1")
@@ -1179,12 +1178,12 @@ func TestUpdateAgentGoalRefusesASubagentWithoutEnqueueing(t *testing.T) {
 	ctx := context.Background()
 	svc, dispatcher, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "root-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "root-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	require.NoError(t, svc.Queries.CreateChildAgent(ctx, db.CreateChildAgentParams{
 		ID: "child-1", ParentAgentID: sql.NullString{String: "root-1", Valid: true},
-		SpawnSpanID: "spawn-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		SpawnSpanID: "spawn-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 
@@ -1207,7 +1206,7 @@ func TestPlanExecutionProducerPreservesItsQueueSemantics(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	planPath := filepath.Join(t.TempDir(), "plan.md")
@@ -1379,7 +1378,7 @@ func startMockAgentWrappingSink(
 	t.Helper()
 	workingDir := t.TempDir()
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
-		ID: agentID, WorkingDir: workingDir, HomeDir: t.TempDir(),
+		ID: agentID, WorkingDir: workingDir,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	sink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -1473,7 +1472,7 @@ func TestInterruptAgentEscalatesWhenTheProviderProvesItsStopIgnored(t *testing.T
 	const agentID = "agent-escalate"
 	workingDir := t.TempDir()
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: agentID, WorkingDir: workingDir, HomeDir: t.TempDir(),
+		ID: agentID, WorkingDir: workingDir,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, Resumed: 1,
 	}))
 	// A stored session the row was RESUMED from is what the replacement must
@@ -1704,7 +1703,7 @@ func TestUpdateAgentGoalRefusesAnObjectiveThatClears(t *testing.T) {
 	ctx := context.Background()
 	svc, dispatcher, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	startGoalTextAgent(t, svc, "agent-1")
@@ -1731,7 +1730,7 @@ func TestPlanExecutionQueuesThePlanStoredThroughTheSink(t *testing.T) {
 		ctx := t.Context()
 		svc, _, _ := setupTestService(t)
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+			ID: "agent-1", WorkingDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
 		}))
 		if hasOldPath {
@@ -1761,7 +1760,7 @@ func TestPlanExecutionWithoutASavedPlanQueuesTheNeutralTurn(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
 	}))
 	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
@@ -1788,7 +1787,7 @@ func TestPlanExecutionFailsWhenTheSavedPlanCannotBeRead(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	require.NoError(t, svc.Queries.UpdateAgentPlan(ctx, db.UpdateAgentPlanParams{
@@ -1815,7 +1814,7 @@ func TestControlInputWaitsForAnApprovalThatIsStillPending(t *testing.T) {
 	startEchoAgent(t, svc, "agent-1")
 	err := dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{
 		AgentID: "agent-1", RequestID: "request", ClaimToken: "claim", State: storedStatePending,
-		AgentSessionID: "session-1", InputID: "feedback-input", FollowUp: "feedback", FollowUpKind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		AgentSessionID: "session-1", InputID: "feedback-input", FollowUp: "feedback", FollowUpKind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK,
 	})
 	require.NoError(t, err)
 	item := inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
@@ -1906,7 +1905,7 @@ func TestDispatchClassifiesAStoreFaultRatherThanFailingTheInput(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	workingDir := t.TempDir()
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: workingDir, HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: workingDir,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	// The store itself fails, which is what tells a transient fault apart from a
@@ -1942,7 +1941,7 @@ func TestResolveControlInputStatesAStoreFaultAsItsPauseReason(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	workingDir := t.TempDir()
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: workingDir, HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: workingDir,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
@@ -1971,7 +1970,7 @@ func newRequeueFixture(t *testing.T) (*Service, agent.ProviderServices) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE,
 	}))
 	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)

@@ -40,9 +40,7 @@ type teardownEnv struct {
 	channelSvc    *service.ChannelService
 	workerMgr     *workermgr.Manager
 	userID        string
-	workspaceID   string
 	workerID      string
-	tabID         string
 	workerAuthTok string
 	revokeURL     string
 }
@@ -72,9 +70,7 @@ func setupTeardownEnv(t *testing.T) *teardownEnv {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	// Seed user / workspace / worker / workspace_tab so the mint authz
-	// check has something to verify and the delegation rows are
-	// well-formed.
+	// Seed the user and the worker that the delegation rows belong to.
 	ctx := context.Background()
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
@@ -92,21 +88,6 @@ func setupTeardownEnv(t *testing.T) *teardownEnv {
 		SlhdsaPublicKey: []byte("slhdsa"),
 	}))
 
-	wsID := id.Generate()
-	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: wsID, OwnerUserID: userid.MustNew(userID), Title: "ws",
-	}))
-	tabID := id.Generate()
-	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
-		UserID:      userid.MustNew(userID),
-		WorkspaceID: wsID,
-		WorkerID:    workerID,
-		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabID:       tabID,
-		Position:    "a",
-		TileID:      "tile-1",
-	}))
-
 	return &teardownEnv{
 		store:         st,
 		validator:     tv,
@@ -116,9 +97,7 @@ func setupTeardownEnv(t *testing.T) *teardownEnv {
 		channelSvc:    channelSvc,
 		workerMgr:     wMgr,
 		userID:        userID,
-		workspaceID:   wsID,
 		workerID:      workerID,
-		tabID:         tabID,
 		workerAuthTok: workerAuthTok,
 		revokeURL:     srv.URL + "/worker/delegation-tokens/revoke",
 	}
@@ -129,14 +108,12 @@ func (e *teardownEnv) seedDelegationRow(t *testing.T) (tokenID string) {
 	tokenID = id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, e.store.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
-		GrantedScopes:    "workspace:read workspace:write worker:read",
-		ID:               tokenID,
-		UserID:           userid.MustNew(e.userID),
-		WorkerID:         e.workerID,
-		IssuedForTabID:   e.tabID,
-		IssuedForTabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
-		SecretHash:       e.validator.HashSecret(secret),
-		ExpiresAt:        time.Now().Add(time.Hour),
+		GrantedScopes: "workspace:read workspace:write worker:read",
+		ID:            tokenID,
+		UserID:        userid.MustNew(e.userID),
+		WorkerID:      e.workerID,
+		SecretHash:    e.validator.HashSecret(secret),
+		ExpiresAt:     time.Now().Add(time.Hour),
 	}))
 	return tokenID
 }

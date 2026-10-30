@@ -330,7 +330,7 @@ func newControlIPCFactory(p Params, svc *service.Service, dispatcher *channel.Di
 // A read error answers "none": the caller turns that into a mint failure the
 // backoff retries, which is the same shape a not-yet-propagated tab already takes.
 func liveTabForMint(queries *db.Queries) crossworker.LiveTabProvider {
-	return func() (string, int32, bool) {
+	return func() (string, bool) {
 		ctx := context.Background()
 		// A delegation mint targets a tab this worker owns, and worker-owned
 		// tabs are ROOT agents only (child agents are excluded from
@@ -339,15 +339,15 @@ func liveTabForMint(queries *db.Queries) crossworker.LiveTabProvider {
 		// owned by calling worker") and the mint backoff would loop to a
 		// permanent failure.
 		if ids, err := queries.ListAllOpenRootAgentIDs(ctx); err == nil && len(ids) > 0 {
-			return ids[0], int32(leapmuxv1.TabType_TAB_TYPE_AGENT), true
+			return ids[0], true
 		}
 		// Quake terminals are excluded for exactly the reason child agents
 		// are: they have no CRDT tab, so the hub refuses their id with a 403
 		// and the mint backoff loops to a permanent failure.
 		if ids, err := queries.ListAllOpenTabTerminalIDs(ctx); err == nil && len(ids) > 0 {
-			return ids[0], int32(leapmuxv1.TabType_TAB_TYPE_TERMINAL), true
+			return ids[0], true
 		}
-		return "", 0, false
+		return "", false
 	}
 }
 

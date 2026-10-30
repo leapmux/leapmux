@@ -35,7 +35,7 @@ func TestOpenAgentCopiesThePriorWorkerTranscript(t *testing.T) {
 	const sessionID = "session-a1"
 	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: sourceID, WorkingDir: workingDir, HomeDir: svc.HomeDir, AgentProvider: provider,
+		ID: sourceID, WorkingDir: workingDir, AgentProvider: provider,
 	}))
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
 		ID: sourceID, AgentSessionID: sessionID,
@@ -53,7 +53,6 @@ func TestOpenAgentCopiesThePriorWorkerTranscript(t *testing.T) {
 			Source: message.source, Content: []byte(message.content),
 			ContentCompression:             leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 			SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-			AgentProvider:                  provider,
 			CreatedAt:                      sqltime.NewSQLiteTime(time.Now()),
 		})
 		require.NoError(t, err)
@@ -92,7 +91,7 @@ func seedTranscriptSource(t *testing.T, svc *Service, id, workingDir, sessionID 
 	t.Helper()
 	ctx := t.Context()
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: id, WorkingDir: workingDir, HomeDir: svc.HomeDir, AgentProvider: provider,
+		ID: id, WorkingDir: workingDir, AgentProvider: provider,
 	}))
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
 		ID: id, AgentSessionID: sessionID,
@@ -159,7 +158,6 @@ func TestOpenAgentDoesNotCopyUnmatchedWorkerRows(t *testing.T) {
 						Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, Content: []byte(`{"text":"private source row"}`),
 						ContentCompression:             leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 						SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-						AgentProvider:                  sourceProvider,
 						CreatedAt:                      sqltime.NewSQLiteTime(time.Now()),
 					})
 					require.NoError(t, err)
@@ -310,7 +308,7 @@ func TestConfirmedNativeSessionRejectsAnotherOpenClaim(t *testing.T) {
 	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
 	seedTranscriptSource(t, svc, "confirmed-owner", t.TempDir(), "session-a1", provider, false)
 	err := svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
-		ID: "second-owner", WorkingDir: t.TempDir(), HomeDir: svc.HomeDir,
+		ID: "second-owner", WorkingDir: t.TempDir(),
 		AgentProvider: provider, PendingResumeSessionID: "session-a1", Resumed: 1,
 	})
 	require.Error(t, err, "the unique index keeps a confirmed owner exclusive")
@@ -344,7 +342,6 @@ func TestCopiedWorkerRowsKeepOrderMetadataAndHighWater(t *testing.T) {
 			SpanLines:                      `["line"]`,
 			SpanColor:                      23,
 			Depth:                          2,
-			AgentProvider:                  provider,
 			MarkType:                       workerdb.OptionalStorageEnum(row.mark),
 			CreatedAt:                      createdAt,
 		})
@@ -367,7 +364,6 @@ func TestCopiedWorkerRowsKeepOrderMetadataAndHighWater(t *testing.T) {
 			wantSessionID = "session-before-clear"
 		}
 		assert.Equal(t, wantSessionID, row.AgentSessionID)
-		assert.Equal(t, provider, row.AgentProvider)
 		assert.Equal(t, createdAt, row.CreatedAt)
 		assert.Equal(t, int64(2), row.Depth)
 		assert.Equal(t, "parent-span-"+strconv.Itoa(i+1), row.ParentSpanID)
@@ -389,7 +385,6 @@ func TestCopiedWorkerRowsKeepOrderMetadataAndHighWater(t *testing.T) {
 		Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, Content: []byte("next"),
 		ContentCompression:             leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		AgentProvider:                  provider,
 		CreatedAt:                      createdAt,
 	})
 	require.NoError(t, err)
@@ -415,7 +410,6 @@ func TestResumeAfterWorkerRetentionStillOpens(t *testing.T) {
 		Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, Content: []byte("saved before retention"),
 		ContentCompression:             leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		AgentProvider:                  provider,
 		CreatedAt:                      sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
@@ -441,7 +435,6 @@ func TestRepeatedResumeCopiesTheNewestClosedTranscript(t *testing.T) {
 		Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, Content: []byte("first"),
 		ContentCompression:             leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		AgentProvider:                  provider,
 		CreatedAt:                      sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
@@ -457,7 +450,6 @@ func TestRepeatedResumeCopiesTheNewestClosedTranscript(t *testing.T) {
 		Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, Content: []byte("second"),
 		ContentCompression:             leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		AgentProvider:                  provider,
 		CreatedAt:                      sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
@@ -492,7 +484,6 @@ func TestResumeCopyFailureRollsBackTheNewAgent(t *testing.T) {
 		Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, Content: []byte("first"),
 		ContentCompression:             leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		AgentProvider:                  provider,
 		CreatedAt:                      sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
@@ -504,13 +495,12 @@ func TestResumeCopyFailureRollsBackTheNewAgent(t *testing.T) {
 		Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, Content: []byte("collision"),
 		ContentCompression:             leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		AgentProvider:                  provider,
 		CreatedAt:                      sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
 
 	err = svc.createAgentRecordWithTranscript(t.Context(), db.CreateAgentParams{
-		ID: "target", WorkingDir: workingDir, HomeDir: svc.HomeDir,
+		ID: "target", WorkingDir: workingDir,
 		AgentProvider: provider, Resumed: 1,
 	}, "session-a1")
 	require.Error(t, err)
@@ -561,7 +551,7 @@ func TestEmbeddedNotificationJournalSurvivesRootNestedAndRepeatedResume(t *testi
 	}
 	for iteration, target := range []string{"journal-first-resume", "journal-second-resume"} {
 		require.NoError(t, svc.createAgentRecordWithTranscript(t.Context(), db.CreateAgentParams{
-			ID: target, WorkingDir: workingDir, HomeDir: svc.HomeDir, AgentProvider: provider, Resumed: 1,
+			ID: target, WorkingDir: workingDir, AgentProvider: provider, Resumed: 1,
 		}, "native-root"))
 		require.NoError(t, svc.Queries.UpdateAgentSessionID(t.Context(), db.UpdateAgentSessionIDParams{ID: target, AgentSessionID: "native-root"}))
 		descendants, err := svc.Queries.ListAgentDescendantsForResume(t.Context(), sql.NullString{String: target, Valid: true})
@@ -587,7 +577,7 @@ func TestEmbeddedNotificationJournalSurvivesRootNestedAndRepeatedResume(t *testi
 			entries := readStoredNotificationEntries(t, row)
 			assert.Len(t, entries, 1)
 			if len(entries) == 1 {
-				assertNotificationEntryIdentity(t, content, row, entries[0])
+				assertNotificationEntryIdentity(t, provider, content, row, entries[0])
 				assert.True(t, row.TranscriptOnly)
 			}
 			var replaySink = resumedRoot

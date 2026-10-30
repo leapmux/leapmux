@@ -28,7 +28,7 @@ func (k BoundTabIndexKey) TabID() string { return k.tabID }
 
 // FilterTabIndexKeysForTable is FilterTabIndexKeys plus the report every caller
 // owes on a drop, so the "skip the key, but say so, naming the table" rule lives
-// in one place instead of three verbatim copies (postgres owned + rendered, and
+// in one place instead of two verbatim copies (the postgres BulkDelete, and
 // sqlutil.BulkDeleteTabs for sqlite/mysql).
 //
 // The call still happens INSIDE each BulkDelete* method rather than being

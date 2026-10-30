@@ -17,7 +17,7 @@ import (
 func createPlanSessionTestAgent(t *testing.T, svc *Service, provider leapmuxv1.AgentProvider, tool string) db.Agent {
 	t.Helper()
 	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: provider,
+		ID: "agent-1", WorkingDir: t.TempDir(), AgentProvider: provider,
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDPermissionMode: codex.ModeAskForApproval, contracts.CodexOptionPermissionProfile: codex.ProfileReadOnly,
 			contracts.CodexOptionCollaborationMode: codex.CollaborationPlan,
@@ -139,7 +139,7 @@ func TestNativePlanRecordingDoesNotChangeAReplacementSession(t *testing.T) {
 	response := []byte(`{"response":{"request_id":"plan","response":{"behavior":"allow"}}}`)
 	deliveryID, err := svc.Output.claimControlResponseAnswer(db.StoreControlResponseAnswerParams{
 		AgentID: "agent-1", RequestID: "plan", ClaimToken: "claim", AgentSessionID: "original",
-		AgentProvider: old.AgentProvider, RequestPayload: []byte(`{"request":{"tool_name":"ExitPlanMode"}}`),
+		RequestPayload:  []byte(`{"request":{"tool_name":"ExitPlanMode"}}`),
 		ResponseContent: response, ResolvedContent: response,
 		PlanApprovalSettings: []byte(`{"permissionMode":"bypassPermissions","clearContext":false}`),
 	})

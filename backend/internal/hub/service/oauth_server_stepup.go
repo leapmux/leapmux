@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -108,7 +107,6 @@ func (h *OAuthServerHandler) handleStepUpAuthorization(w http.ResponseWriter, r 
 		// A step-up asks for NOTHING. It widens no grant; it only proves that
 		// somebody is still there, so the approval writes no scope either.
 		RequestedScopes: "",
-		IntervalSeconds: int64(DeviceCodePollInterval / time.Second),
 		ExpiresAt:       h.now().Add(DeviceCodeTTL),
 		ElevateTokenID:  tokenID,
 	})

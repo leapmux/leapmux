@@ -35,7 +35,7 @@ func insertCountedMessage(t *testing.T, queries *gendb.Queries, id string, suppl
 	compressed, compression := msgcodec.Compress(supplemental)
 	_, err := queries.CreateMessage(t.Context(), gendb.CreateMessageParams{
 		ID: id, AgentID: "root", AgentSessionID: "counted", IdempotencyKey: "",
-		Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		Source:  leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 		Content: []byte(`{}`), ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		SupplementalContent: compressed, SupplementalContentCompression: compression,
 		SpanLines: "[]",
@@ -55,8 +55,8 @@ func TestNotificationEntryCountTracksDirectWrites(t *testing.T) {
 	providerOnly, providerCompression := msgcodec.Compress([]byte(`{"provider":{"rows":["a long provider supplement to compress"]}}`))
 	_, err := store.ExecContext(t.Context(), `INSERT INTO messages
 		(id, agent_id, seq, agent_session_id, source, content, content_compression,
-		 supplemental_content, supplemental_content_compression, agent_provider)
-		VALUES ('provider-only', 'root', 10, 'direct', 2, X'7B7D', 1, ?, ?, 1)`,
+		 supplemental_content, supplemental_content_compression)
+		VALUES ('provider-only', 'root', 10, 'direct', 2, X'7B7D', 1, ?, ?)`,
 		providerOnly, providerCompression)
 	require.NoError(t, err)
 
@@ -64,8 +64,8 @@ func TestNotificationEntryCountTracksDirectWrites(t *testing.T) {
 	twoEntries := journalSupplement(t, 2)
 	_, err = store.ExecContext(t.Context(), `INSERT INTO messages
 		(id, agent_id, seq, agent_session_id, source, content, content_compression,
-		 supplemental_content, supplemental_content_compression, agent_provider)
-		VALUES ('direct-journal', 'root', 11, 'direct', 2, X'7B7D', 1, ?, 1, 1)`, twoEntries)
+		 supplemental_content, supplemental_content_compression)
+		VALUES ('direct-journal', 'root', 11, 'direct', 2, X'7B7D', 1, ?, 1)`, twoEntries)
 	require.NoError(t, err)
 
 	for _, row := range []struct {
@@ -182,16 +182,16 @@ func TestNotificationEntryCountMarksCorruptStorageForTheLookup(t *testing.T) {
 	// Invalid private storage: the journal field is not an array.
 	_, err := store.ExecContext(t.Context(), `INSERT INTO messages
 		(id, agent_id, seq, agent_session_id, source, content, content_compression,
-		 supplemental_content, supplemental_content_compression, agent_provider)
-		VALUES ('invalid-journal', 'root', 21, 'corrupt', 2, X'7B7D', 1, ?, 1, 1)`,
+		 supplemental_content, supplemental_content_compression)
+		VALUES ('invalid-journal', 'root', 21, 'corrupt', 2, X'7B7D', 1, ?, 1)`,
 		[]byte(`{"metadata":{"notification_entries":null}}`))
 	require.NoError(t, err)
 
 	// Decompression failure: bytes that are not the zstd they claim.
 	_, err = store.ExecContext(t.Context(), `INSERT INTO messages
 		(id, agent_id, seq, agent_session_id, source, content, content_compression,
-		 supplemental_content, supplemental_content_compression, agent_provider)
-		VALUES ('bad-zstd', 'root', 22, 'corrupt', 2, X'7B7D', 1, ?, 2, 1)`,
+		 supplemental_content, supplemental_content_compression)
+		VALUES ('bad-zstd', 'root', 22, 'corrupt', 2, X'7B7D', 1, ?, 2)`,
 		[]byte("definitely not a zstd frame"))
 	require.NoError(t, err)
 

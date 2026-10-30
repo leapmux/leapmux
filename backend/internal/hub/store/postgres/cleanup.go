@@ -27,6 +27,12 @@ func (s *cleanupStore) HardDeleteWorkersBefore(ctx context.Context, cutoff time.
 	return rowsAffected(s.conn.q.HardDeleteWorkersBefore(ctx, pgtime.NullOf(cutoff)))
 }
 
+// CompleteStaleDeregistrations deletes the workers deregistering since before
+// cutoff; see the query's doc for what it recovers.
+func (s *cleanupStore) CompleteStaleDeregistrations(ctx context.Context, cutoff time.Time) (int64, error) {
+	return rowsAffected(s.conn.q.CompleteStaleDeregistrations(ctx, pgtime.NullOf(cutoff)))
+}
+
 func (s *cleanupStore) HardDeleteExpiredRegistrationKeysBefore(ctx context.Context, cutoff time.Time) (int64, error) {
 	return rowsAffected(s.conn.q.HardDeleteExpiredRegistrationKeysBefore(ctx, pgtime.New(cutoff)))
 }
@@ -92,7 +98,7 @@ func (s *cleanupStore) CompactPublishedRevocationEvents(
 // DeleteUserOpBatchesBeforePhysical is the retention backstop for CRDT
 // op batches -- see the query's own doc for why the HLC-based compaction tick
 // cannot drain a dormant account, and why the cutoff is an HLC physical rather
-// than the committed_at wall clock.
+// than a wall-clock time.
 func (s *cleanupStore) DeleteUserOpBatchesBeforePhysical(ctx context.Context, cutoffPhysicalMs int64) (int64, error) {
 	return rowsAffected(s.conn.q.DeleteUserOpBatchesBeforePhysical(ctx, cutoffPhysicalMs))
 }

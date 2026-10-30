@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/mail"
@@ -437,7 +438,7 @@ func TestCLIConsent_AdminScopeRefusedAtEveryLegThatBindsIt(t *testing.T) {
 			ClientID:        oauthapp.ControlCLIClientID,
 			RequestedScopes: "admin:read admin:users admin:settings admin:workers",
 			DeviceCode:      id.Generate(), UserCode: userCode, DeviceName: "headless-box",
-			ExpiresAt: now.Add(service.DeviceCodeTTL), IntervalSeconds: 5,
+			ExpiresAt: now.Add(service.DeviceCodeTTL),
 		}))
 
 		resp, err := postForm(env.server.URL+"/oauth/device", url.Values{
@@ -453,7 +454,7 @@ func TestCLIConsent_AdminScopeRefusedAtEveryLegThatBindsIt(t *testing.T) {
 		row, err := env.store.DeviceAuthorizations().GetByUserCode(ctx, userCode)
 		require.NoError(t, err)
 		assert.Empty(t, row.GrantedScopes, "a refused activation must bind no grant")
-		assert.NotEqual(t, int64(1), row.Approved, "a refused activation must not approve the grant")
+		assert.NotEqual(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED, row.State, "a refused activation must not approve the grant")
 	})
 }
 
@@ -472,7 +473,7 @@ func TestDeviceActivation_RequiresElevationAndBindsTheScope(t *testing.T) {
 			ClientID:        oauthapp.ControlCLIClientID,
 			RequestedScopes: ask,
 			DeviceCode:      id.Generate(), UserCode: userCode, DeviceName: "headless",
-			IntervalSeconds: 5, ExpiresAt: env.now().Add(10 * time.Minute),
+			ExpiresAt: env.now().Add(10 * time.Minute),
 		}))
 		return userCode
 	}
@@ -487,7 +488,7 @@ func TestDeviceActivation_RequiresElevationAndBindsTheScope(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 	row, err := env.store.DeviceAuthorizations().GetByUserCode(ctx, code)
 	require.NoError(t, err)
-	assert.EqualValues(t, 0, row.Approved, "a refused activation must approve nothing")
+	assert.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING, row.State, "a refused activation must approve nothing")
 
 	// Elevated, and the approval binds the ASK the row already carries. The
 	// browser posts a DECISION and never a scope: the request and the consent
@@ -512,7 +513,7 @@ func TestDeviceActivation_RequiresElevationAndBindsTheScope(t *testing.T) {
 		"the first Allow must return the confirmation page")
 	row, err = env.store.DeviceAuthorizations().GetByUserCode(ctx, code)
 	require.NoError(t, err)
-	assert.EqualValues(t, 0, row.Approved,
+	assert.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING, row.State,
 		"the unconfirmed Allow binds nothing; the grant stays pending")
 
 	resp, err = postForm(env.server.URL+"/oauth/device", url.Values{
@@ -523,7 +524,7 @@ func TestDeviceActivation_RequiresElevationAndBindsTheScope(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	row, err = env.store.DeviceAuthorizations().GetByUserCode(ctx, code)
 	require.NoError(t, err)
-	assert.EqualValues(t, 1, row.Approved)
+	assert.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED, row.State)
 	assert.Contains(t, row.GrantedScopes, "admin:settings", "the browser's consent is what the row records")
 
 	// A routine ask never meets the second step: its Allow binds on the first
@@ -537,7 +538,7 @@ func TestDeviceActivation_RequiresElevationAndBindsTheScope(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	row, err = env.store.DeviceAuthorizations().GetByUserCode(ctx, code)
 	require.NoError(t, err)
-	assert.EqualValues(t, 1, row.Approved,
+	assert.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED, row.State,
 		"a non-admin ask binds with one click, exactly as every routine consent always did")
 }
 
@@ -594,7 +595,7 @@ func TestDeviceActivation_IdentifiesTheAppForACLISuppliedCode(t *testing.T) {
 	require.NoError(t, env.store.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
 		ClientID:   oauthapp.ControlCLIClientID,
 		DeviceCode: id.Generate(), UserCode: userCode, DeviceName: "ci-runner-7",
-		IntervalSeconds: 5, ExpiresAt: env.now().Add(10 * time.Minute),
+		ExpiresAt: env.now().Add(10 * time.Minute),
 	}))
 
 	resp := getWithCookie(t, env.server.URL+"/oauth/device?user_code="+url.QueryEscape(verifycode.Format(userCode)), cookie)

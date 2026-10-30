@@ -278,10 +278,10 @@ func (s *WorkerConnectorService) Connect(
 		return wrappedConnectError(connect.CodeInternal, err)
 	}
 	// No soft-delete check here, deliberately. GetByAuthToken already excludes a
-	// DELETED worker (`status != 3`), and a DEREGISTERING one must still be able
-	// to hold this stream -- that is how it receives the deregister instruction
-	// and wipes its local state. Refusing it here would leave the machine
-	// running with nobody able to tell it to stop.
+	// DELETED worker (`deleted_at IS NULL`), and a DEREGISTERING one must still
+	// be able to hold this stream -- that is how it receives the deregister
+	// instruction and wipes its local state. Refusing it here would leave the
+	// machine running with nobody able to tell it to stop.
 
 	// Register the connection. Replacement cancels this derived context to
 	// terminate the superseded handler without affecting the request context of
@@ -381,26 +381,20 @@ func (s *WorkerConnectorService) Connect(
 		slog.Info("worker disconnected", "worker_id", worker.ID, "reason", exitReason)
 	}()
 
-	// Process pending notifications. A deregistering worker used to early-
-	// return after the inline ProcessPendingNotifications call, before the
-	// receive goroutine and main loop. Under enqueue semantics nothing drains
-	// that path, so the deregister instruction would reach the wire only via
-	// the final Drain defer -- racing stream teardown -- and pending.Complete
-	// (which only runs from the loop) could never fire, so MarkDeleted /
-	// ClearDeregistering never ran on the ack path. Both cases now run through
-	// the main loop, which drains and routes acks.
+	// A deregistering worker is told to stop on every connect: its persisted
+	// deregistering_at is the intent, and this connection is the delivery.
+	// The delivery runs beside the main loop rather than before it, because
+	// the DEREGISTER instruction reaches the wire through the loop's drain and
+	// its acknowledgement through the loop's receive (pending.Complete only
+	// runs from the loop). notifyDone ends the connection once the delivery
+	// returns, whatever its outcome. An ACTIVE worker starts no delivery
+	// goroutine.
 	var notifyDone chan struct{} // nil for a normal worker: a nil select case blocks forever
-	if s.notifier != nil {
-		if worker.Status == leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING {
-			notifyDone = make(chan struct{})
-		}
+	if s.notifier != nil && worker.Status == leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING {
+		notifyDone = make(chan struct{})
 		go func() {
-			if notifyDone != nil {
-				defer close(notifyDone)
-			}
-			if err := s.notifier.ProcessPendingNotifications(ctx, worker.ID); err != nil {
-				slog.Error("failed to process pending notifications", "worker_id", worker.ID, "error", err)
-			}
+			defer close(notifyDone)
+			s.notifier.DeliverOnConnect(ctx, worker)
 		}()
 	}
 
@@ -430,8 +424,8 @@ func (s *WorkerConnectorService) Connect(
 	idleTimer := time.NewTimer(workerIdleTimeout)
 	defer idleTimer.Stop()
 	// Deregistering workers must not compete with the receive-idle timer:
-	// ProcessPendingNotifications parks in SendAndWait and a quiet worker
-	// would otherwise be torn down mid-ack. Nil select case blocks forever.
+	// DeliverOnConnect parks in SendAndWait and a quiet worker would otherwise
+	// be torn down mid-ack. Nil select case blocks forever.
 	var idleC <-chan time.Time
 	if notifyDone == nil {
 		idleC = idleTimer.C
@@ -515,7 +509,7 @@ func (s *WorkerConnectorService) Connect(
 			}
 
 		case <-notifyDone:
-			exitReason = "pending notifications processed"
+			exitReason = "DEREGISTER delivery finished"
 			return nil
 
 		case <-ctx.Done():

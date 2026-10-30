@@ -19,7 +19,6 @@ type Store interface {
 	Users() UserStore
 	Sessions() SessionStore
 	Workers() WorkerStore
-	WorkerNotifications() WorkerNotificationStore
 	RegistrationKeys() RegistrationKeyStore
 	Workspaces() WorkspaceStore
 	WorkspaceTabIndex() WorkspaceTabIndexStore
@@ -159,9 +158,9 @@ type UserStore interface {
 	CompleteRecovery(ctx context.Context, p CompleteRecoveryParams) (*RecoveryRevocation, error)
 	// Delete soft-deletes the user.
 	Delete(ctx context.Context, id string) error
-	// RevokeUserTokens advances the user's tokens_revoked_at marker
-	// plus auth_generation epoch and emits a durable user-token
-	// revocation event in the same transaction. Returns the number of
+	// RevokeUserTokens increments the user's auth_generation epoch and
+	// emits a durable user-token revocation event, carrying the new epoch,
+	// in the same transaction. Returns the number of
 	// rows affected (0 when no user row matches the id). The UPDATE has no
 	// deleted_at guard, but the sole production caller
 	// (RevokeAllUserCredentials) runs inside RunInUserAuthTransaction, whose
@@ -234,7 +233,7 @@ type SessionStore interface {
 	// DropElevation ends the session's elevation now, and emits the same
 	// user_info event Elevate does -- here it must, because a cached longer
 	// deadline would fail OPEN.
-	DropElevation(ctx context.Context, p DropSessionElevationParams, now time.Time) (int64, error)
+	DropElevation(ctx context.Context, p DropSessionElevationParams) (int64, error)
 }
 
 type WorkerStore interface {
@@ -244,9 +243,13 @@ type WorkerStore interface {
 	// soft-deleted. Use this only for admin tooling / audit paths that need
 	// to inspect deleted records; normal business logic should use GetByID.
 	GetByIDIncludeDeleted(ctx context.Context, id string) (*Worker, error)
+	// GetByAuthToken returns an ACTIVE or DEREGISTERING worker: a
+	// deregistering worker must still connect, because connecting is how it
+	// is told to stop. A deleted worker is ErrNotFound.
 	GetByAuthToken(ctx context.Context, token string) (*Worker, error)
 	GetPublicKey(ctx context.Context, id string) (*WorkerPublicKeys, error)
 	GetOwned(ctx context.Context, p GetOwnedWorkerParams) (*Worker, error)
+	// ListByUserID pages the user's ACTIVE workers only.
 	ListByUserID(ctx context.Context, p ListWorkersByUserIDParams) (Page[Worker], error)
 	ListAdmin(ctx context.Context, p ListWorkersAdminParams) (Page[WorkerWithOwner], error)
 	// GetAdmin is the single-row form of ListAdmin: the worker plus the
@@ -257,11 +260,19 @@ type WorkerStore interface {
 	// reports "". Soft-deleted workers are included, as ListAdmin includes
 	// them for status=WORKER_STATUS_DELETED.
 	GetAdmin(ctx context.Context, id string) (*WorkerWithOwner, error)
+	// SetStatus moves a live worker between ACTIVE and DEREGISTERING. Only
+	// tests call it. DELETED is refused with ErrInvalidArgument: deletion
+	// goes through MarkDeleted.
 	SetStatus(ctx context.Context, p SetWorkerStatusParams) error
 	UpdateLastSeen(ctx context.Context, id string) error
 	UpdatePublicKey(ctx context.Context, p UpdateWorkerPublicKeyParams) error
+	// Deregister stamps deregistering_at on an ACTIVE worker the caller
+	// registered and reports the rows it changed: 0 for a worker that is
+	// already deregistering or deleted. ForceDeregister is the same without
+	// the registrant check, for administrators.
 	Deregister(ctx context.Context, p DeregisterWorkerParams) (int64, error)
 	ForceDeregister(ctx context.Context, id string) (int64, error)
+	// MarkDeleted soft-deletes a live worker; a second call is a no-op.
 	MarkDeleted(ctx context.Context, id string) error
 	// MarkAllDeletedByUser soft-deletes every worker registered by
 	// registeredBy. A zero id is ErrInvalidArgument, never a silent no-op:
@@ -269,14 +280,6 @@ type WorkerStore interface {
 	// reporting success when it deleted nothing is the worse half of the same
 	// mistake.
 	MarkAllDeletedByUser(ctx context.Context, registeredBy userid.UserID) error
-}
-
-type WorkerNotificationStore interface {
-	Create(ctx context.Context, p CreateWorkerNotificationParams) error
-	ListPendingByWorker(ctx context.Context, workerID string) ([]WorkerNotification, error)
-	MarkDelivered(ctx context.Context, id string) error
-	MarkFailed(ctx context.Context, id string) error
-	IncrementAttempts(ctx context.Context, id string) error
 }
 
 // RegistrationKeySoftDeleteOffset is how far into the past SoftDelete
@@ -342,21 +345,25 @@ type WorkspaceStore interface {
 	SoftDeleteAllByUser(ctx context.Context, ownerUserID userid.UserID) error
 }
 
-// WorkspaceTabIndexStore is the materialized derived view of every
-// non-tombstoned tab in the user doc. The CRDT manager keeps it in
-// sync with UserCrdtState; UI / worker reconciliation consume it via
-// _rendered (UI) or _owned (worker reconciliation).
+// WorkspaceTabIndexStore is the materialized derived index of every
+// non-tombstoned tab in the user doc: one workspace_tab_owned row per tab,
+// whose Rendered flag marks the tabs that render. The CRDT manager keeps it in
+// sync with UserCrdtState. The client tab RPCs read only the rendered rows
+// (ListRenderedByWorkspaceIDs, GetRendered, LocateAccessibleRendered); worker
+// reconciliation and the delegation handler read every row.
 type WorkspaceTabIndexStore interface {
-	UpsertOwned(ctx context.Context, p UpsertOwnedTabParams) error
-	// BulkUpsertOwned applies every row in `rows` as a single bulk
-	// upsert. Empty slice is a no-op. Implementations chunk internally
-	// when the backend's parameter limit would be exceeded, but the
-	// operation as a whole is not atomic across chunks — callers that
-	// need atomicity must run inside a transaction.
-	BulkUpsertOwned(ctx context.Context, rows []UpsertOwnedTabParams) error
-	// BulkDeleteOwned deletes every row identified by `keys` as a
+	// UpsertOwned writes one row. Only tests call it; the CRDT manager writes
+	// through BulkUpsert.
+	UpsertOwned(ctx context.Context, p UpsertTabParams) error
+	// BulkUpsert applies every row in `rows` as a single bulk upsert, including
+	// each row's Rendered flag. Empty slice is a no-op. Implementations chunk
+	// internally when the backend's parameter limit would be exceeded, but the
+	// operation as a whole is not atomic across chunks — callers that need
+	// atomicity must run inside a transaction.
+	BulkUpsert(ctx context.Context, rows []UpsertTabParams) error
+	// BulkDelete deletes every row identified by `keys` as a
 	// single bulk delete. Empty slice is a no-op. Same chunking /
-	// atomicity notes as BulkUpsertOwned.
+	// atomicity notes as BulkUpsert.
 	//
 	// A key with a zero/blank owner is SKIPPED rather than refusing the
 	// whole call (store.FilterTabIndexKeys): the bad key is one of many, so
@@ -364,7 +371,7 @@ type WorkspaceTabIndexStore interface {
 	// neighbours. Skipped is not silent -- every dialect logs the drop count
 	// at WARN, because reaching a zero owner means an upstream tenancy
 	// invariant broke.
-	BulkDeleteOwned(ctx context.Context, keys []TabIndexKey) error
+	BulkDelete(ctx context.Context, keys []TabIndexKey) error
 	// ListOwnedByWorker returns p.UserID's owned tabs hosted by p.WorkerID.
 	// Each row includes the archive state derived from its current section.
 	// The result is authoritative ONLY for that owner: the worker's orphan
@@ -384,7 +391,8 @@ type WorkspaceTabIndexStore interface {
 	// caller has to resolve its own list beforehand.
 	ListOwnedTabsByWorkspace(ctx context.Context, p ListOwnedTabsByWorkspaceParams) ([]OwnedTabRef, error)
 	// GetOwned returns the single workspace_tab_owned row identified
-	// by (user_id, tab_id) -- the table's primary key -- or ErrNotFound. It takes
+	// by (user_id, tab_id) -- the table's primary key -- whether or not it
+	// renders, or ErrNotFound. It takes
 	// no workspace: the mint-time check asks "does this user own this tab on this
 	// worker", and which workspace holds it is not part of that question. The
 	// indexed point-lookup mirrors GetRendered and lets the delegation
@@ -394,13 +402,6 @@ type WorkspaceTabIndexStore interface {
 	// never bind a blank owner (see OwnerFilter).
 	GetOwned(ctx context.Context, p GetOwnedTabParams) (*WorkspaceTabRow, error)
 
-	UpsertRendered(ctx context.Context, p UpsertRenderedTabParams) error
-	// BulkUpsertRendered is the rendered-view counterpart to
-	// BulkUpsertOwned.
-	BulkUpsertRendered(ctx context.Context, rows []UpsertRenderedTabParams) error
-	// BulkDeleteRendered is the rendered-view counterpart to
-	// BulkDeleteOwned.
-	BulkDeleteRendered(ctx context.Context, keys []TabIndexKey) error
 	// ListRenderedByWorkspaceIDs returns p.UserID's rendered tabs across
 	// every workspace_id in `p.WorkspaceIDs`. The result is ordered by
 	// (workspace_id, position) so callers iterating the slice get a
@@ -409,8 +410,9 @@ type WorkspaceTabIndexStore interface {
 	// p.UserID: it is an ownership gate, so it must never bind a blank
 	// owner (see userid.OwnerFilter).
 	ListRenderedByWorkspaceIDs(ctx context.Context, p ListRenderedTabsByWorkspaceIDsParams) ([]WorkspaceTabRow, error)
-	// GetRendered returns the single workspace_tab_rendered row identified
-	// by (user_id, workspace_id, tab_type, tab_id), or ErrNotFound. A zero
+	// GetRendered returns the single rendered workspace_tab_owned row
+	// identified by (user_id, workspace_id, tab_type, tab_id), or ErrNotFound;
+	// a row that does not render is ErrNotFound too. A zero
 	// p.UserID is ErrNotFound, for the same reason as GetOwned.
 	GetRendered(ctx context.Context, p GetRenderedTabParams) (*WorkspaceTabRow, error)
 	// LocateAccessibleRendered returns the rendered-tab row matching
@@ -437,7 +439,6 @@ type UserOpBatchesStore interface {
 type UserStateStore interface {
 	Get(ctx context.Context, userID userid.UserID) (*UserStateRow, error)
 	Upsert(ctx context.Context, p UpsertUserStateParams) error
-	AdvanceEpoch(ctx context.Context, p AdvanceUserEpochParams) error
 }
 
 // UserRecentBatchIDStore manages the dedup table.
@@ -501,7 +502,7 @@ type APITokenStore interface {
 	// DropElevation ends the credential's elevation now, and emits the same
 	// user_info event Elevate does -- here it must, because a cached longer
 	// deadline would otherwise keep granting.
-	DropElevation(ctx context.Context, p DropAPITokenElevationParams, now time.Time) (int64, error)
+	DropElevation(ctx context.Context, p DropAPITokenElevationParams) (int64, error)
 	// ListByUser pages one user's own live tokens, keyset on created_at.
 	ListByUser(ctx context.Context, p ListAPITokensByUserParams) (Page[APIToken], error)
 	// ListAll pages every live api_token across users with the owner username
@@ -619,7 +620,6 @@ type RevocationEvent struct {
 	Kind               leapmuxv1.RevocationEventKind
 	SubjectID          string
 	UserID             string
-	RevokedAt          time.Time
 	UserAuthGeneration int64
 	CreatedAt          time.Time
 }
@@ -1005,6 +1005,14 @@ type CleanupStore interface {
 	HardDeleteExpiredSessions(ctx context.Context, now time.Time) (int64, error)
 	HardDeleteWorkspacesBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	HardDeleteWorkersBefore(ctx context.Context, cutoff time.Time) (int64, error)
+	// CompleteStaleDeregistrations deletes (sets deleted_at on) every worker
+	// that has been deregistering since before cutoff, in capped passes (the
+	// caller drains until a pass changes nothing). It recovers every way a
+	// deregistration can fail to finish: a lost acknowledgement, a failed
+	// deletion after a valid one, and a hub restart while the worker was
+	// offline. It is cross-owner by design: a worker that never reconnects has
+	// no session to scope the sweep to.
+	CompleteStaleDeregistrations(ctx context.Context, cutoff time.Time) (int64, error)
 	HardDeleteExpiredRegistrationKeysBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	HardDeleteUsersBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	// DeleteUserOpBatchesBeforePhysical hard-deletes CRDT op batches whose HLC
@@ -1015,8 +1023,8 @@ type CleanupStore interface {
 	// retain its final retention window of batches indefinitely.
 	//
 	// The cutoff is an HLC physical rather than a wall clock so this deletes
-	// EXACTLY the set Manager.decideResume refuses. Sweeping the committed_at
-	// column instead would put the two floors in different time domains -- the
+	// EXACTLY the set Manager.decideResume refuses. Sweeping on a wall-clock
+	// time instead would put the two floors in different time domains -- the
 	// hub's monotonically-clamped HLC versus the DB server's wall clock -- and
 	// any skew between them lets this delete rows a live cursor still passes,
 	// which ListUserOpBatchesAfter reports as a short tail rather than an error.
@@ -1107,8 +1115,9 @@ type TestHelper interface {
 	// wrong-entity call is inexpressible.
 	SetLastActiveAt(ctx context.Context, id string, lastActiveAt time.Time) error
 
-	// SetRevocationEventRevokedAt writes an exact revocation_events.revoked_at timestamp.
-	SetRevocationEventRevokedAt(ctx context.Context, id string, revokedAt time.Time) error
+	// SetDeregisteringAt backdates a worker's deregistering_at. Only workers
+	// carry the column, so the table is pinned as SetLastActiveAt's is.
+	SetDeregisteringAt(ctx context.Context, workerID string, deregisteringAt time.Time) error
 
 	// ListAllOwnedTabs returns every workspace_tab_owned row, unfiltered by
 	// owner, ordered by (user_id, tab_id).

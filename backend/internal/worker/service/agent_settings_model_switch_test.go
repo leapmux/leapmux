@@ -89,7 +89,6 @@ func TestUpdateAgentSettings_StoppedAgentAcceptsAnOptionOfThePersistedCatalog(t 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		Options:       `{"opencode_mode":"safe"}`,
 	}))
@@ -140,7 +139,6 @@ func TestUpdateAgentSettings_StoppedModelSwitchUsesThePersistedCatalog(t *testin
 				require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 					ID:            "agent-1",
 					WorkingDir:    t.TempDir(),
-					HomeDir:       t.TempDir(),
 					AgentProvider: provider,
 					Options:       marshalOptions(map[string]string{agent.OptionIDModel: fixtureModelA, agent.OptionIDEffort: "low"}),
 				}))

@@ -1,7 +1,7 @@
 -- name: InsertRevocationEvent :exec
 INSERT INTO revocation_events (
-    id, kind, subject_id, user_id, revoked_at, user_auth_generation
-) VALUES ($1, $2, $3, $4, $5, $6);
+    id, kind, subject_id, user_id, user_auth_generation
+) VALUES ($1, $2, $3, $4, $5);
 
 -- name: SessionRevokedEventExists :one
 -- Was this session taken away by an administrator, rather than signed out?
@@ -37,7 +37,7 @@ WHERE id = 1;
 
 -- name: ListPublishedRevocationEventsAfter :many
 SELECT
-    seq, id, kind, subject_id, user_id, revoked_at,
+    seq, id, kind, subject_id, user_id,
     user_auth_generation, created_at, published_at
 FROM revocation_events
 WHERE seq > $1

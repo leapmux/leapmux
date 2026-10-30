@@ -68,7 +68,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	}))
 
 	// api_tokens: expires_at + refresh_expires_at on Create, the New*/Prev*
-	// triplet on RotateRefresh, and revocation_events.revoked_at via Revoke.
+	// triplet on RotateRefresh, and a pending revocation event via Revoke.
 	rotatedID := id.Generate()
 	require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
 		ID:               rotatedID,
@@ -112,7 +112,6 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	_, createErr := st.OAuthClients().Create(ctx, store.CreateOAuthClientParams{
 		ClientID:           verifiedApp,
 		OwnerUserID:        user.ID,
-		CreatedBy:          user.ID,
 		ClientName:         "canon-app",
 		RedirectURIs:       "https://app.example.com/cb",
 		Scopes:             "workspace:read",
@@ -187,11 +186,10 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	// device_authorizations: expires_at on Create, last_polled_at on
 	// TouchPoll, consumed_at on Consume.
 	require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-		ClientID:        oauthapp.ControlCLIClientID,
-		DeviceCode:      "canon-device-code",
-		UserCode:        "CANON-USER-CODE",
-		IntervalSeconds: 5,
-		ExpiresAt:       future,
+		ClientID:   oauthapp.ControlCLIClientID,
+		DeviceCode: "canon-device-code",
+		UserCode:   "CANON-USER-CODE",
+		ExpiresAt:  future,
 	}))
 	require.NoError(t, st.DeviceAuthorizations().TouchPoll(ctx, "canon-device-code", time.Now().UTC()))
 	approved, err := st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{
@@ -229,25 +227,9 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		PrincipalID:         user.ID,
 		CanonicalPhysicalMs: 1,
 		CanonicalLogical:    1,
-		CanonicalClient:     "client",
 		OpCount:             1,
 		Epoch:               1,
 		ExpiresAt:           future,
-	}))
-
-	// user_state: epoch_started_at + updated_at on Upsert AND AdvanceEpoch.
-	require.NoError(t, st.UserState().Upsert(ctx, store.UpsertUserStateParams{
-		UserID:         userid.MustNew(user.ID),
-		StatePayload:   []byte("state"),
-		CurrentEpoch:   1,
-		EpochStartedAt: now,
-		UpdatedAt:      now,
-	}))
-	require.NoError(t, st.UserState().AdvanceEpoch(ctx, store.AdvanceUserEpochParams{
-		UserID:         userid.MustNew(user.ID),
-		Epoch:          2,
-		EpochStartedAt: future,
-		UpdatedAt:      future,
 	}))
 
 	// user_sessions: expires_at is Go-bound by Create; created_at and
@@ -278,32 +260,12 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	// worker_registration_keys: created_at DEFAULT + Go-bound expires_at.
 	storetest.SeedRegistrationKey(t, st, user.ID, future)
 
-	// worker_notifications: created_at DEFAULT on Create, delivered_at via
-	// MarkDelivered's strftime.
-	notifID := id.Generate()
-	require.NoError(t, st.WorkerNotifications().Create(ctx, store.CreateWorkerNotificationParams{
-		ID:       notifID,
-		WorkerID: worker.ID,
-		Type:     leapmuxv1.NotificationType_NOTIFICATION_TYPE_DEREGISTER,
-		Payload:  `{"reason":"canon"}`,
-	}))
-	require.NoError(t, st.WorkerNotifications().MarkDelivered(ctx, notifID))
-
-	// user_op_batches.committed_at via its column DEFAULT.
-	require.NoError(t, st.UserOpBatches().Insert(ctx, store.InsertUserOpBatchParams{
-		UserID:             userid.MustNew(user.ID),
-		PhysicalMs:         1,
-		Logical:            1,
-		LastLogical:        1,
-		OriginClient:       "client",
-		PrincipalID:        user.ID,
-		BatchID:            "canon-opbatch",
-		BodyHash:           []byte("hash"),
-		BatchPayload:       []byte("payload"),
-		TransitionsPayload: []byte("transitions"),
-		OpCount:            1,
-		Epoch:              1,
-	}))
+	// workers.deregistering_at via ForceDeregister's strftime, on a worker of
+	// its own so the fixtures above keep a live worker.
+	deregistering := storetest.SeedWorker(t, st, user.ID)
+	deregistered, err := st.Workers().ForceDeregister(ctx, deregistering.ID)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, deregistered)
 
 	// workspace_sections.created_at via its column DEFAULT.
 	require.NoError(t, st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
@@ -425,12 +387,6 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	revokedDeleg, err := st.DelegationTokens().Revoke(ctx, delegationID)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, revokedDeleg)
-
-	// users.tokens_revoked_at via RevokeUserTokens, which also enqueues
-	// another pending revocation event.
-	revokedUsers, err := st.Users().RevokeUserTokens(ctx, userid.MustNew(user.ID))
-	require.NoError(t, err)
-	require.EqualValues(t, 1, revokedUsers)
 
 	// hub_runtime_lease.lease_expires_at via AcquireHubRuntimeLease's SQL-side
 	// strftime offset; the same call publishes the pending revocation events

@@ -150,8 +150,7 @@ SET granted_scopes = sqlc.arg(new_granted_scopes),
     refresh_hash = sqlc.arg(new_refresh_hash),
     refresh_expires_at = sqlc.arg(new_refresh_expires_at),
     previous_refresh_hash = sqlc.arg(prev_refresh_hash),
-    previous_refresh_expires_at = sqlc.arg(prev_refresh_expires_at),
-    last_rotated_at = NOW(3)
+    previous_refresh_expires_at = sqlc.arg(prev_refresh_expires_at)
 WHERE id = sqlc.arg(id)
   AND revoked_at IS NULL
   AND refresh_hash = sqlc.arg(prev_refresh_hash);

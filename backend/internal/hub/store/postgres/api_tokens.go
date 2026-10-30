@@ -7,7 +7,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -53,7 +52,6 @@ func fromDBAPIToken(t gendb.ApiToken, c joinedClient) store.APIToken {
 		CreatedAt:                t.CreatedAt.Time,
 		AuthGeneration:           t.AuthGeneration,
 		LastUsedAt:               t.LastUsedAt.Ptr(),
-		LastRotatedAt:            t.LastRotatedAt.Ptr(),
 		ExpiresAt:                t.ExpiresAt.Ptr(),
 		RefreshExpiresAt:         t.RefreshExpiresAt.Ptr(),
 		RevokedAt:                t.RevokedAt.Ptr(),
@@ -195,18 +193,14 @@ func (s *apiTokenStore) RotateRefresh(ctx context.Context, p store.RotateAPIToke
 		if err != nil {
 			return nil, mapErr(err)
 		}
-		rotatedAt, err := sqlutil.RequireTime(row.ApiToken.LastRotatedAt.Time, row.ApiToken.LastRotatedAt.Valid, "last_rotated_at")
-		if err != nil {
-			return nil, err
-		}
-		return &store.CredentialEvent{Kind: store.RevocationEventKindAPITokenRotation, SubjectID: row.ApiToken.ID, UserID: row.ApiToken.UserID, At: rotatedAt}, nil
+		return &store.CredentialEvent{Kind: store.RevocationEventKindAPITokenRotation, SubjectID: row.ApiToken.ID, UserID: row.ApiToken.UserID}, nil
 	}, emitCredentialEvent)
 }
 
 func (s *apiTokenStore) Revoke(ctx context.Context, id string) (int64, error) {
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *pgConn) (*store.CredentialEvent, error) {
 		row, err := conn.q.RevokeAPIToken(ctx, id)
-		return revokedCredentialEvent(row.ID, row.UserID, row.RevokedAt, store.RevocationEventKindAPIToken, err)
+		return revokedCredentialEvent(row.ID, row.UserID, store.RevocationEventKindAPIToken, err)
 	}, emitCredentialEvent)
 }
 
@@ -219,7 +213,7 @@ func (s *apiTokenStore) RevokeOwned(ctx context.Context, p store.RevokeOwnedAPIT
 	}
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *pgConn) (*store.CredentialEvent, error) {
 		row, err := conn.q.RevokeOwnedAPIToken(ctx, gendb.RevokeOwnedAPITokenParams{ID: p.ID, UserID: owner})
-		return revokedCredentialEvent(row.ID, row.UserID, row.RevokedAt, store.RevocationEventKindAPIToken, err)
+		return revokedCredentialEvent(row.ID, row.UserID, store.RevocationEventKindAPIToken, err)
 	}, emitCredentialEvent)
 }
 
@@ -290,7 +284,7 @@ func (s *apiTokenStore) Elevate(ctx context.Context, p store.ElevateAPITokenPara
 		if n == 0 {
 			return nil, nil
 		}
-		return store.UserInfoEvent(owner, now.UTC()), nil
+		return store.UserInfoEvent(owner), nil
 	}, emitCredentialEvent)
 }
 
@@ -309,7 +303,7 @@ func (s *apiTokenStore) SlideElevation(ctx context.Context, p store.SlideAPIToke
 	return n, mapErr(err)
 }
 
-func (s *apiTokenStore) DropElevation(ctx context.Context, p store.DropAPITokenElevationParams, now time.Time) (int64, error) {
+func (s *apiTokenStore) DropElevation(ctx context.Context, p store.DropAPITokenElevationParams) (int64, error) {
 	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {
 		return 0, store.ErrInvalidArgument
@@ -325,6 +319,6 @@ func (s *apiTokenStore) DropElevation(ctx context.Context, p store.DropAPITokenE
 		if n == 0 {
 			return nil, nil
 		}
-		return store.UserInfoEvent(owner, now.UTC()), nil
+		return store.UserInfoEvent(owner), nil
 	}, emitCredentialEvent)
 }

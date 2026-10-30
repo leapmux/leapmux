@@ -123,15 +123,6 @@ func (j *memJournal) LookupRecentBatchID(_ context.Context, _, batchID string) (
 	return &clone, nil
 }
 
-func (j *memJournal) AdvanceEpoch(_ context.Context, _ string, epoch int64, _ time.Time) error {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	if j.state != nil {
-		j.state.CurrentEpoch = epoch
-	}
-	return nil
-}
-
 func (j *memJournal) CompactBatch(_ context.Context, c crdt.CompactBatch) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()

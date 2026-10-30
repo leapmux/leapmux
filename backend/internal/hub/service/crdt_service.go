@@ -82,8 +82,10 @@ func (s *CRDTService) SubmitOps(
 	}
 	// This Get is where the session's tenant is spent: the manager it returns IS
 	// the tenant, so the SubmitInput below names none. PrincipalID and
-	// OriginClient below are NOT that axis even though they hold the same value
-	// today -- they say WHO is writing, which a delegation bearer changes.
+	// OriginClient below are NOT that axis even though they hold the same value:
+	// they say WHO is writing. That is the authenticated user's ID, and a
+	// delegation bearer authenticates as its user, so it has the same
+	// principal as a session of that user.
 	mgr, err := s.registry.Get(ctx, userID)
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("get manager: %w", err))

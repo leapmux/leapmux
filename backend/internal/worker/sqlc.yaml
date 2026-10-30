@@ -42,10 +42,6 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "AgentProvider"
-          - column: "messages.agent_provider"
-            go_type:
-              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "AgentProvider"
           - column: "messages.mark_type"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -116,10 +112,6 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "ControlDeliveryState"
-          - column: "control_response_payloads.agent_provider"
-            go_type:
-              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "AgentProvider"
           - column: "control_response_payloads.follow_up_kind"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"

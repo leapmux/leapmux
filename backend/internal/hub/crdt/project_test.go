@@ -164,10 +164,10 @@ func placeTab(t *testing.T, state *leapmuxv1.UserCrdtState, tabID, tileID string
 // child's real id disagree.
 //
 // RenderedTabs deliberately keeps reporting the RAW tile_id anyway. It is an
-// addressable index, not a view: it feeds `workspace_tab_rendered`, which backs
-// LocateTab / GetTab / ListTabs, and the CLI derives `--tile-id` from a
-// `--tab-id` through exactly that path and then emits SetTabRegister(tile_id)
-// with it. `validateTabPlacement` requires a LEAF, so handing back the
+// addressable index, not a view: it feeds the rendered rows of
+// `workspace_tab_owned`, which back LocateTab / GetTab / ListTabs, and the CLI
+// derives `--tile-id` from a `--tab-id` through exactly that path and then
+// emits SetTabRegister(tile_id) with it. `validateTabPlacement` requires a LEAF, so handing back the
 // collapsed SPLIT's id would turn `tab open --after-tab <id>` into a rejected
 // batch. The hub has no rendered tree of its own for the id to be "wrong"
 // against.

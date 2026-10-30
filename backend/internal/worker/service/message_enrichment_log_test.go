@@ -40,7 +40,7 @@ func TestEnrichmentFailureLogReleasesTheMutationBeforeCallbacks(t *testing.T) {
 	providerID := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	provider := mutationLogTodoProvider{Provider: testRegistry.Plugin(providerID)}
 	svc, _, _ := setupTestService(t, withRegistry(registryWithPlugin(t, providerID, provider)))
-	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: providerID}))
+	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{ID: agentID, WorkingDir: t.TempDir(), AgentProvider: providerID}))
 	services := newTestRootOutputSink(t, svc.Output, agentID, providerID)
 	services.UpdateSessionID("original-native-session")
 	sink := requireRootOutputSink(t, svc.Output, agentID)

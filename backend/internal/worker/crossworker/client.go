@@ -27,14 +27,11 @@ import (
 // call and had its own hand-copied 30s.
 const channelOpenTimeout = tunnel.DefaultChannelOpenTimeout
 
-// DelegationScope identifies the user the bearer is minted for, plus the
-// spawn provenance (agent_id OR terminal_id — the hub uses these for the
-// audit log). UserID is required; the spawn identifiers may be empty for
-// hub-facing calls without a specific spawn provenance.
+// DelegationScope identifies the user the bearer is minted for. UserID is
+// required. The worker caches one bearer per user, so the scope carries no
+// spawn identity: one cached bearer serves every spawn of that user.
 type DelegationScope struct {
-	UserID     userid.UserID
-	AgentID    string
-	TerminalID string
+	UserID userid.UserID
 }
 
 // DelegationProvider supplies a fresh delegation-token bearer for the user

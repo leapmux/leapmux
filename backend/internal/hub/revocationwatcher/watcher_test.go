@@ -131,8 +131,6 @@ type envT struct {
 	watcher  *revocationwatcher.Watcher
 	userID   string
 	workerID string
-	wsID     string
-	tabID    string
 }
 
 func setup(t *testing.T) *envT {
@@ -181,24 +179,9 @@ func setupUnseededWithOptions(t *testing.T, opts ...revocationwatcher.Option) *e
 		SlhdsaPublicKey: []byte("slhdsa"),
 	}))
 
-	wsID := id.Generate()
-	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
-		ID: wsID, OwnerUserID: userid.MustNew(u.ID), Title: "ws",
-	}))
-	tabID := id.Generate()
-	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(context.Background(), store.UpsertOwnedTabParams{
-		UserID:      userid.MustNew(u.ID),
-		WorkspaceID: wsID,
-		WorkerID:    workerID,
-		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabID:       tabID,
-		Position:    "a",
-		TileID:      "tile-1",
-	}))
-
 	return &envT{
 		st: st, cache: sc, closer: closer, watcher: w,
-		userID: u.ID, workerID: workerID, wsID: wsID, tabID: tabID,
+		userID: u.ID, workerID: workerID,
 	}
 }
 
@@ -220,36 +203,14 @@ func (e *envT) seedDelegationToken(t *testing.T) string {
 	t.Helper()
 	tokenID := id.Generate()
 	require.NoError(t, e.st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
-		GrantedScopes:    "workspace:read workspace:write worker:read",
-		ID:               tokenID,
-		UserID:           userid.MustNew(e.userID),
-		WorkerID:         e.workerID,
-		IssuedForTabID:   e.tabID,
-		IssuedForTabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
-		SecretHash:       []byte("hash"),
-		ExpiresAt:        time.Now().Add(time.Hour),
+		GrantedScopes: "workspace:read workspace:write worker:read",
+		ID:            tokenID,
+		UserID:        userid.MustNew(e.userID),
+		WorkerID:      e.workerID,
+		SecretHash:    []byte("hash"),
+		ExpiresAt:     time.Now().Add(time.Hour),
 	}))
 	return tokenID
-}
-
-func (e *envT) seedUser(t *testing.T, username string) string {
-	t.Helper()
-	userID := id.Generate()
-	require.NoError(t, e.st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:                    userID,
-		Username:              username,
-		PasswordHash:          "hash",
-		DisplayName:           username,
-		FirstCredentialExempt: true,
-	}))
-	return userID
-}
-
-func (e *envT) testHelper(t *testing.T) store.TestHelper {
-	t.Helper()
-	testable, ok := e.st.(store.TestableStore)
-	require.True(t, ok)
-	return testable.TestHelper()
 }
 
 func TestWatcher_APITokenRotationEvictsRemoteCacheWithoutClosingChannels(t *testing.T) {
@@ -462,35 +423,6 @@ func TestWatcher_ConsumesAlreadyPublishedEventsWhenPublishFails(t *testing.T) {
 	require.NoError(t, env.watcher.RunOnce(context.Background()))
 
 	assert.Equal(t, []string{apiToken}, env.closer.bearerSnapshot())
-}
-
-func TestWatcher_OlderRevokedAtPublishedAfterNewerEventIsNotSkipped(t *testing.T) {
-	env := setup(t)
-	newerUser := env.userID
-	olderUser := env.seedUser(t, "older-revoked-at")
-
-	_, err := env.st.Users().RevokeUserTokens(context.Background(), userid.MustNew(newerUser))
-	require.NoError(t, err)
-	require.NoError(t, env.watcher.RunOnce(context.Background()))
-	require.Equal(t, []string{newerUser}, env.closer.userSnapshot())
-	require.Len(t, env.closer.userGenerationSnapshot(), 1)
-
-	_, err = env.st.Users().RevokeUserTokens(context.Background(), userid.MustNew(olderUser))
-	require.NoError(t, err)
-	published, err := env.st.RevocationEvents().PublishPending(context.Background(), 1)
-	require.NoError(t, err)
-	require.Equal(t, int64(1), published)
-	events, err := env.st.RevocationEvents().ListPublishedAfter(context.Background(), 1, 1)
-	require.NoError(t, err)
-	require.Len(t, events, 1)
-
-	olderRevokedAt := events[0].Event.RevokedAt.Add(-time.Hour)
-	require.NoError(t, env.testHelper(t).SetRevocationEventRevokedAt(
-		context.Background(), events[0].Event.ID, olderRevokedAt))
-
-	require.NoError(t, env.watcher.RunOnce(context.Background()))
-	assert.Equal(t, []string{newerUser, olderUser}, env.closer.userSnapshot())
-	require.Len(t, env.closer.userGenerationSnapshot(), 2)
 }
 
 func TestWatcher_LargeBurstIsProcessedInBoundedPages(t *testing.T) {

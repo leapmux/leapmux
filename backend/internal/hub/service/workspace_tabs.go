@@ -78,9 +78,9 @@ func (s *WorkspaceService) GetTab(
 		return nil, err
 	}
 	// loadWorkspaceForRead proved the caller owns the workspace; user.ID is
-	// therefore the owner whose rendered tabs live in it. Binding it is what
-	// stops a foreign row -- workspace_tab_rendered's workspace_id is a plain
-	// FK, so any tenant may name any workspace -- from answering this lookup.
+	// therefore the owner whose rendered tabs live in it. Binding it keeps the
+	// lookup owner-scoped: tab ids are unique only within one user, and the
+	// composite workspace key makes every row of this workspace the owner's.
 	row, err := s.store.WorkspaceTabIndex().GetRendered(ctx, store.GetRenderedTabParams{
 		UserID:      user.ID,
 		WorkspaceID: req.GetWorkspaceId(),

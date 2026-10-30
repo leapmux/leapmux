@@ -120,7 +120,7 @@ func (svc *Service) resolveControlInput(item inputqueue.DispatchItem, currentAge
 }
 
 func (input controlInput) validateSession(current db.Agent) error {
-	if input.source != nil && (input.sessionID() == "" || input.sessionID() != current.AgentSessionID || input.source.AgentProvider != current.AgentProvider) {
+	if input.source != nil && (input.sessionID() == "" || input.sessionID() != current.AgentSessionID) {
 		return fmt.Errorf("%w: the original provider session is no longer active", agent.ErrInputSessionChanged)
 	}
 	return nil

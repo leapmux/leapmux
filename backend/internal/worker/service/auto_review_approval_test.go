@@ -67,7 +67,7 @@ func startAutoReviewAgentWithSink(t *testing.T, svc *Service, approver *autoRevi
 	ctx := testutil.DeadlineContext(t)
 	const id = "agent-1"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: id, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: id, WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{ID: id, AgentSessionID: "thread-1"}))
@@ -220,7 +220,7 @@ func TestApproveAutoReviewDenial_RefusesMetadataWithoutDelivery(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	approver := &autoReviewApproverAgent{}
 	messageID := startAutoReviewAgent(t, svc, approver)
-	require.NoError(t, svc.Output.recordAutoReviewApproval("agent-1", messageID, "review-1"))
+	require.NoError(t, svc.Output.recordAutoReviewApproval("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, messageID, "review-1"))
 	dbAgent, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
 	err = svc.approveAutoReviewDenial(dbAgent, messageID, "review-1")
@@ -246,7 +246,7 @@ func TestApproveAutoReviewDenial_KeepsTheRecordThroughAMerge(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, deliveryID)
 	require.NoError(t, setControlDeliveryState(svc.Queries, deliveryID, storedStatePending, storedStateDelivered))
-	require.NoError(t, svc.Output.recordAutoReviewApproval("agent-1", messageID, "review-1"))
+	require.NoError(t, svc.Output.recordAutoReviewApproval("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, messageID, "review-1"))
 
 	second := strings.Replace(autoReviewTestRow, `"reviewId":"review-1"`, `"reviewId":"review-2"`, 1)
 	_, err = sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(second)})
@@ -274,7 +274,7 @@ func TestRecordAutoReviewApproval_RefusesARowThatLeft(t *testing.T) {
 	_, err := svc.Queries.DeleteMessageByAgentAndID(t.Context(), db.DeleteMessageByAgentAndIDParams{ID: messageID, AgentID: "agent-1"})
 	require.NoError(t, err)
 
-	assert.ErrorIs(t, svc.Output.recordAutoReviewApproval("agent-1", messageID, "review-1"), errAutoReviewRowChanged)
+	assert.ErrorIs(t, svc.Output.recordAutoReviewApproval("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, messageID, "review-1"), errAutoReviewRowChanged)
 }
 
 func TestDecodeAutoReviewApprovals(t *testing.T) {
@@ -399,11 +399,11 @@ func TestApproveAutoReviewDenial_RefusesASubagent(t *testing.T) {
 	svc, d, _ := setupTestService(t)
 	ctx := t.Context()
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "root", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		ID: "root", WorkingDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	require.NoError(t, svc.Queries.CreateChildAgent(ctx, db.CreateChildAgentParams{
 		ID: "child", ParentAgentID: sql.NullString{String: "root", Valid: true}, SpawnSpanID: "spawn-span",
-		WorkingDir: t.TempDir(), HomeDir: t.TempDir(), Title: "child", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		WorkingDir: t.TempDir(), Title: "child", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 
 	w := newTestWriter()
@@ -439,11 +439,11 @@ func TestRecordAutoReviewApproval_WritesNothingForARecordedReview(t *testing.T) 
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
 	messageID := startAutoReviewAgent(t, svc, &autoReviewApproverAgent{})
-	require.NoError(t, svc.Output.recordAutoReviewApproval("agent-1", messageID, "review-1"))
+	require.NoError(t, svc.Output.recordAutoReviewApproval("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, messageID, "review-1"))
 	first, err := svc.Queries.GetMessageByAgentAndID(t.Context(), db.GetMessageByAgentAndIDParams{ID: messageID, AgentID: "agent-1"})
 	require.NoError(t, err)
 
-	require.NoError(t, svc.Output.recordAutoReviewApproval("agent-1", messageID, "review-1"))
+	require.NoError(t, svc.Output.recordAutoReviewApproval("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, messageID, "review-1"))
 
 	again, err := svc.Queries.GetMessageByAgentAndID(t.Context(), db.GetMessageByAgentAndIDParams{ID: messageID, AgentID: "agent-1"})
 	require.NoError(t, err)

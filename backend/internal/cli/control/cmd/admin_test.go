@@ -454,7 +454,7 @@ func TestTokenRowsCarryTheOwnerDeletedFlag(t *testing.T) {
 
 	del := adminDelegationTokenJSON(&leapmuxv1.AdminDelegationToken{
 		Id: "d-1", UserId: "u-1", Username: "alice", OwnerDeleted: false,
-		WorkerId: "w-1", AgentId: "a-1", CreatedAt: created,
+		WorkerId: "w-1", CreatedAt: created,
 		RevokedAt: created,
 	})
 	assert.Equal(t, false, del["owner_deleted"])
@@ -739,7 +739,7 @@ func TestAdminRowMappers_CarryEveryFieldOfTheirProtoMessage(t *testing.T) {
 		{
 			name: "adminDelegationTokenJSON", msg: delegation,
 			render: func() map[string]any { return adminDelegationTokenJSON(delegation) },
-			keys:   merge(tokenFields(), identity("worker_id", "agent_id")),
+			keys:   merge(tokenFields(), identity("worker_id")),
 		},
 		{
 			name: "adminWorkerJSON", msg: worker,

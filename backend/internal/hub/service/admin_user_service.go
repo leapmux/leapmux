@@ -704,16 +704,17 @@ func (s *AdminUserService) DeleteUser(ctx context.Context, req *leapmuxv1.Delete
 		}
 		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
-	// AFTER the commit, never inside it. SendDeregister persists a
-	// notification row and moves worker-manager state, so a rollback after
-	// it would leave a worker told it was deregistered when it was not.
+	// AFTER the commit, never inside it. SendDeregister tells a connected
+	// worker to stop and moves worker-manager state, so a rollback after it
+	// would leave a worker told it was deleted when it was not.
 	s.lifecycle.UserRevoked(user.ID, committedGeneration)
 	for _, workerID := range workerIDs {
 		if err := s.workerEffects.Apply(ctx, workerID, user.ID); err != nil {
 			// The user IS deleted and its workers ARE soft-deleted. A worker
-			// that missed its stop notification reconciles on its next
-			// connect, so this is worth a log, not a failed response that
-			// invites a retry of an already-committed deletion.
+			// that missed its stop instruction is refused at its next
+			// connect, because its row is deleted, so this is worth a log,
+			// not a failed response that invites a retry of an
+			// already-committed deletion.
 			slog.Warn("user deleted but one worker was not told to stop",
 				"user_id", user.ID, "worker_id", workerID, "error", err)
 		}
@@ -1250,7 +1251,6 @@ func delegationTokenToProto(t store.DelegationTokenWithOwner) *leapmuxv1.AdminDe
 		Username:     t.OwnerUsername,
 		OwnerDeleted: t.OwnerDeleted,
 		WorkerId:     t.WorkerID,
-		AgentId:      t.AgentID,
 		CreatedAt:    timestamppb.New(t.CreatedAt),
 		// A delegation token always expires; the other two are optional.
 		ExpiresAt:  timestamppb.New(t.ExpiresAt),

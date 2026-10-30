@@ -712,7 +712,9 @@ func TestManager_StaleEpoch_Rejected(t *testing.T) {
 
 	// Bump the in-memory epoch by 2 directly; emulates 28 days of advance.
 	// SeedStateForTest (not an op batch — no op writes CurrentEpoch; only
-	// maybeAdvanceEpoch does) routes the write through the manager goroutine.
+	// the compaction pass's epoch rotation does) routes the write through the
+	// manager goroutine. TestEpochRotation_TwoEpochsOldSubmitIsStale drives the
+	// same gate through a real rotation.
 	mgr.SeedStateForTest(func(s *leapmuxv1.UserCrdtState) {
 		s.CurrentEpoch = currentEpoch + 2
 	})
@@ -1034,11 +1036,9 @@ func TestManager_TabIndexInSync(t *testing.T) {
 	assert.Equal(t, "w1", owned["tA"].WorkspaceID)
 	assert.Equal(t, "root1", owned["tA"].TileID)
 	assert.Equal(t, "wkr1", owned["tA"].WorkerID)
-	// _rendered also carries worker_id so ListTabs can route without
-	// joining _owned.
-	assert.Equal(t, "wkr1", rendered["tA"].WorkerID)
+	assert.True(t, owned["tA"].Rendered, "the tab sits on a live leaf root, so its row renders")
 
-	// Tombstone the tab; both views must drop the row.
+	// Tombstone the tab; the row must go.
 	tombstoneBatch := &leapmuxv1.OpBatch{
 		BatchId: "b2",
 		Ops: []*leapmuxv1.CrdtOp{{OpId: "op-tomb-tA", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
@@ -1495,7 +1495,10 @@ func TestManager_DedupHitOldEpoch_FallsThroughToStaleEpoch(t *testing.T) {
 
 	// Advance current_epoch by 2; the dedup row's stored epoch is now
 	// `current_epoch - 2`, outside the one-epoch grace window. SeedStateForTest
-	// (no op writes CurrentEpoch) routes the write through the manager goroutine.
+	// (no op writes CurrentEpoch; only the compaction pass's rotation does)
+	// routes the write through the manager goroutine.
+	// TestEpochRotation_StaleDedupRowIsRejected drives the same check through
+	// real rotations.
 	mgr.SeedStateForTest(func(s *leapmuxv1.UserCrdtState) { s.CurrentEpoch = epoch + 2 })
 	newEpoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 	require.Equal(t, epoch+2, newEpoch)
@@ -1512,32 +1515,6 @@ func TestManager_DedupHitOldEpoch_FallsThroughToStaleEpoch(t *testing.T) {
 	require.NotNil(t, rejected)
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_STALE_EPOCH, rejected.GetReason(),
 		"dedup hit on a stored-epoch outside the retention window must reject as stale_epoch, not echo")
-}
-
-// TestRendered_HasWorkerID_ListTabsCanRouteWithoutOwnedJoin asserts the
-// fundamental contract that `workspace_tab_rendered` carries `worker_id`
-// — so the hub's ListTabs / GetTab handlers can serve clients without
-// joining `_owned`. The validation is also covered as a sub-check inside
-// TestManager_TabIndexInSync; this test calls it out explicitly so a
-// future contributor wouldn't accidentally collapse the rendered row
-// schema down to (tab_id, tile_id, workspace_id) and break routing.
-func TestRendered_HasWorkerID_ListTabsCanRouteWithoutOwnedJoin(t *testing.T) {
-	mgr, j, _ := runManager(t, "user-1", allowAll{}, 22_000)
-	seedRootInternal(t, mgr, "w1", "root1")
-	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
-
-	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "b1", "tA", "root1", "wkr-rendered", "p1")},
-	})
-	require.NoError(t, err)
-
-	_, rendered := j.snapshotIndex()
-	require.Contains(t, rendered, "tA")
-	assert.Equal(t, "wkr-rendered", rendered["tA"].WorkerID,
-		"rendered row must carry worker_id so ListTabs can route without joining _owned")
-	assert.Equal(t, "w1", rendered["tA"].WorkspaceID)
-	assert.Equal(t, "root1", rendered["tA"].TileID)
 }
 
 // Stop must be safe to call concurrently: two callers (the registry's Shutdown

@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
@@ -15,7 +14,6 @@ type CredentialEvent struct {
 	Kind      leapmuxv1.RevocationEventKind
 	SubjectID string
 	UserID    string
-	At        time.Time
 	// UserAuthGeneration carries the committed user credential epoch for
 	// user-wide (user_tokens) events; it is zero for per-credential events.
 	UserAuthGeneration int64
@@ -30,12 +28,11 @@ type CredentialEvent struct {
 // auth generation. Six dialect call sites retyped that literal, across three
 // stores whose Postgres and MySQL suites run only under `-tags integration`
 // with Docker -- which is exactly where a per-dialect typo stays invisible.
-func UserInfoEvent(userID string, at time.Time) *CredentialEvent {
+func UserInfoEvent(userID string) *CredentialEvent {
 	return &CredentialEvent{
 		Kind:      RevocationEventKindUserInfo,
 		SubjectID: userID,
 		UserID:    userID,
-		At:        at,
 	}
 }
 

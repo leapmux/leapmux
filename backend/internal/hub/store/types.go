@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -83,7 +84,6 @@ type User struct {
 	Prefs                 string
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
-	TokensRevokedAt       *time.Time
 	AuthGeneration        int64
 	DeletedAt             *time.Time
 }
@@ -179,7 +179,26 @@ type Worker struct {
 	// DeregisterWorker refuses these to keep users from accidentally
 	// tearing down the bundled desktop worker.
 	AutoRegistered bool
-	DeletedAt      *time.Time
+	// DeregisteringAt is when the worker was deregistered, or nil. Status is
+	// derived from it and DeletedAt (see WorkerStatusOf).
+	DeregisteringAt *time.Time
+	DeletedAt       *time.Time
+}
+
+// WorkerStatusOf derives a worker's lifecycle state from its two timestamps.
+// No column stores the status, so this is the one place the mapping lives:
+//   - DELETED when deletedAt is set, whatever deregisteringAt holds;
+//   - DEREGISTERING when only deregisteringAt is set;
+//   - ACTIVE otherwise.
+func WorkerStatusOf(deregisteringAt, deletedAt *time.Time) leapmuxv1.WorkerStatus {
+	switch {
+	case deletedAt != nil:
+		return leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED
+	case deregisteringAt != nil:
+		return leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING
+	default:
+		return leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE
+	}
 }
 
 // PageCursor returns the keyset position for worker listings (ListByUserID
@@ -201,19 +220,6 @@ type WorkerWithOwner struct {
 	// presentation layers decide how to render a deleted owner.
 	OwnerUsername string
 	OwnerDeleted  bool
-}
-
-// WorkerNotification represents a queued notification for a worker.
-type WorkerNotification struct {
-	ID          string
-	WorkerID    string
-	Type        leapmuxv1.NotificationType
-	Payload     string
-	Status      leapmuxv1.NotificationStatus
-	Attempts    int64
-	MaxAttempts int64
-	CreatedAt   time.Time
-	DeliveredAt *time.Time
 }
 
 // WorkerRegistrationKey is a short-lived bearer credential the user mints
@@ -251,19 +257,18 @@ type Workspace struct {
 	ID          string
 	OwnerUserID string
 	Title       string
-	IsDeleted   bool
 	CreatedAt   time.Time
 	DeletedAt   *time.Time
 }
 
-// WorkspaceTabRow is a stored row from workspace_tab_owned or
-// workspace_tab_rendered. The two tables hold the same stored columns; the
-// distinction is WHICH table a row came from, and which reader it serves.
+// WorkspaceTabRow is a stored row of workspace_tab_owned, the derived tab
+// index. Every row is an owned (live) tab; Rendered says whether the tab's
+// tile is a live leaf reachable from a registered root.
 //
-// The client tab RPCs read `_rendered`. The worker delegation handler reads
-// `_owned` to find a tab's owning Worker. Worker reconciliation also reads
-// `_owned`, but through WorkerTabStateRow below, which carries the workspace's
-// archive state as well.
+// The client tab RPCs read only the rendered rows. The worker delegation
+// handler reads any row to find a tab's owning Worker. Worker reconciliation
+// also reads every row, but through WorkerTabStateRow below, which carries the
+// workspace's archive state as well.
 type WorkspaceTabRow struct {
 	UserID      string
 	WorkspaceID string
@@ -272,6 +277,7 @@ type WorkspaceTabRow struct {
 	WorkerID    string
 	TileID      string
 	Position    string
+	Rendered    bool
 }
 
 // WorkerTabStateRow is the owner projection that Worker reconciliation reads.
@@ -290,27 +296,19 @@ type UserOpBatchRow struct {
 	UserID       string
 	PhysicalMs   int64
 	Logical      int64
-	LastLogical  int64
-	OriginClient string
-	PrincipalID  string
 	BatchID      string
-	BodyHash     []byte
 	BatchPayload []byte
 	// TransitionsPayload is the proto-marshalled BatchTransitions the resume
 	// path replays as visibility-transition frames (see crdt.ResumeBatch).
 	TransitionsPayload []byte
 	OpCount            int64
-	Epoch              int64
-	CommittedAt        time.Time
 }
 
-// UserStateRow is the materialized UserCrdtState blob.
+// UserStateRow is the materialized UserCrdtState blob. The epoch lives inside
+// the blob, which is what LoadState reads.
 type UserStateRow struct {
-	UserID         string
-	StatePayload   []byte
-	CurrentEpoch   int64
-	EpochStartedAt time.Time
-	UpdatedAt      time.Time
+	UserID       string
+	StatePayload []byte
 }
 
 // UserRecentBatchIDRow is a dedup-table row.
@@ -321,7 +319,6 @@ type UserRecentBatchIDRow struct {
 	PrincipalID         string
 	CanonicalPhysicalMs int64
 	CanonicalLogical    int64
-	CanonicalClient     string
 	OpCount             int64
 	Epoch               int64
 	ExpiresAt           time.Time
@@ -333,7 +330,6 @@ type LifecycleOutboxRow struct {
 	UserID     string
 	OpType     leapmuxv1.WorkspaceLifecycleOp
 	Payload    []byte
-	EnqueuedAt time.Time
 	ConsumedAt *time.Time
 }
 
@@ -867,6 +863,20 @@ type SetWorkerStatusParams struct {
 	Status leapmuxv1.WorkerStatus
 }
 
+// DeregisteringFlag reports whether the status SetStatus is asked for is
+// DEREGISTERING (true) or ACTIVE (false). DELETED and UNSPECIFIED are
+// ErrInvalidArgument: deletion goes through MarkDeleted.
+func (p SetWorkerStatusParams) DeregisteringFlag() (bool, error) {
+	switch p.Status {
+	case leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE:
+		return false, nil
+	case leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING:
+		return true, nil
+	default:
+		return false, fmt.Errorf("%w: SetStatus takes ACTIVE or DEREGISTERING, not %v; use MarkDeleted to delete", ErrInvalidArgument, p.Status)
+	}
+}
+
 type UpdateWorkerPublicKeyParams struct {
 	ID              string
 	PublicKey       []byte
@@ -890,16 +900,39 @@ type GetOwnedWorkerParams struct {
 }
 
 type ListWorkersAdminParams struct {
-	UserID     *string
+	UserID *string
+	// Status narrows the listing to one derived state; nil lists every live
+	// (ACTIVE or DEREGISTERING) worker. See WorkerAdminListScopeOf.
 	Status     *leapmuxv1.WorkerStatus
 	PageParams // Keyset on (created_at DESC, id DESC).
 }
 
-type CreateWorkerNotificationParams struct {
-	ID       string
-	WorkerID string
-	Type     leapmuxv1.NotificationType
-	Payload  string
+// WorkerAdminListScope is the query a ListWorkersAdminParams.Status selects:
+// the deleted listing, or the live listing with the live states it includes.
+type WorkerAdminListScope struct {
+	Deleted              bool
+	IncludeActive        bool
+	IncludeDeregistering bool
+}
+
+// WorkerAdminListScopeOf maps an admin listing's status filter to the query
+// that serves it, once for every dialect. nil lists every live worker; an
+// UNSPECIFIED or unknown status is ErrInvalidArgument rather than an empty
+// page, so a caller's bad filter is not mistaken for "no such workers".
+func WorkerAdminListScopeOf(status *leapmuxv1.WorkerStatus) (WorkerAdminListScope, error) {
+	if status == nil {
+		return WorkerAdminListScope{IncludeActive: true, IncludeDeregistering: true}, nil
+	}
+	switch *status {
+	case leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE:
+		return WorkerAdminListScope{IncludeActive: true}, nil
+	case leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING:
+		return WorkerAdminListScope{IncludeDeregistering: true}, nil
+	case leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED:
+		return WorkerAdminListScope{Deleted: true}, nil
+	default:
+		return WorkerAdminListScope{}, fmt.Errorf("%w: worker status %v", ErrInvalidArgument, *status)
+	}
 }
 
 type CreateRegistrationKeyParams struct {
@@ -953,11 +986,9 @@ type SoftDeleteWorkspaceParams struct {
 	OwnerUserID userid.UserID
 }
 
-// UpsertOwnedTabParams / UpsertRenderedTabParams target the two
-// derived tab-index views maintained by the CRDT manager. Both views
-// carry identical column sets — alias rather than two parallel structs
-// so the bulk-upsert helpers can take either type without an extra
-// copy pass.
+// UpsertTabParams writes one row of the derived tab index the CRDT manager
+// maintains. Rendered is stated on every row: the column has no DEFAULT, so
+// a writer that forgot it fails instead of storing "not rendered".
 //
 // UserID is userid.UserID like every other owner field on a *Params struct in
 // this file: the value is minted once at the store call (hub/service's
@@ -966,7 +997,7 @@ type SoftDeleteWorkspaceParams struct {
 // (WorkspaceTabRow, UserOpBatchRow, ...) stay string-keyed -- their user_id is
 // a column read back out of the database, and typing it would force a mint at
 // the read boundary on data the process never vouched for.
-type UpsertOwnedTabParams struct {
+type UpsertTabParams struct {
 	UserID      userid.UserID
 	WorkspaceID string
 	TabType     leapmuxv1.TabType
@@ -974,21 +1005,16 @@ type UpsertOwnedTabParams struct {
 	WorkerID    string
 	TileID      string
 	Position    string
+	Rendered    bool
 }
-
-// UpsertRenderedTabParams is an alias of UpsertOwnedTabParams; the two
-// derived views share the same column set, so callers that build the
-// "rendered" slice from already-typed "owned" data can pass it through
-// directly.
-type UpsertRenderedTabParams = UpsertOwnedTabParams
 
 // GetRenderedTabParams identifies a single rendered-tab row.
 //
 // UserID is the tenancy axis and is REQUIRED, for the reason spelled out on
-// GetOwnedTabParams: workspace_tab_rendered has the same (user_id, tab_id) key
-// and the same plain workspace_id FK, so any user's row may refer to any existing
-// workspace and tab ids are unique only within one user. Verifying that the
-// CALLER owns the workspace does not establish that the ROW does.
+// GetOwnedTabParams: tab ids are client-minted and unique only within one
+// user, so (workspace_id, tab_type, tab_id) is not a key. The composite
+// workspace key makes the row's user the workspace's owner, so binding the
+// caller's id also refuses a caller who does not own the workspace.
 type GetRenderedTabParams struct {
 	UserID      userid.UserID
 	WorkspaceID string
@@ -1032,9 +1058,10 @@ type ListOwnedTabsByWorkerParams struct {
 }
 
 // ListOwnedTabsByWorkspaceParams scopes the worker fan-out of a workspace
-// deletion to one owner. A workspace's owner does not constrain the user_id of
-// rows written against that workspace_id, so the predicate has to be in the
-// query rather than applied by the caller.
+// deletion to one owner. The composite workspace key makes every row of a
+// workspace its owner's, so for the owner the bind changes nothing; it makes a
+// caller who does not own the workspace see nothing, and it keeps the read
+// owner-scoped by its own WHERE clause.
 type ListOwnedTabsByWorkspaceParams struct {
 	UserID      userid.UserID
 	WorkspaceID string
@@ -1052,8 +1079,8 @@ type OwnedTabRef struct {
 	TabID    string
 }
 
-// TabIndexKey identifies a single row in workspace_tab_owned or
-// workspace_tab_rendered for bulk-delete by (user_id, tab_id).
+// TabIndexKey identifies a single row in workspace_tab_owned for bulk-delete
+// by (user_id, tab_id).
 //
 // A zero UserID is representable (Go cannot forbid userid.UserID{}) and is how
 // an unminted CRDT key arrives here; FilterTabIndexKeys drops those rather than
@@ -1073,40 +1100,41 @@ type LocateAccessibleRenderedTabParams struct {
 }
 
 // InsertUserOpBatchParams writes a single row to user_op_batches.
+//
+// It carries no HLC client id: every canonical HLC has client id
+// crdt.CanonicalClockID, and the reader rebuilds it from that constant.
 type InsertUserOpBatchParams struct {
 	UserID       userid.UserID
 	PhysicalMs   int64
 	Logical      int64
-	LastLogical  int64
-	OriginClient string
-	PrincipalID  string
 	BatchID      string
-	BodyHash     []byte
 	BatchPayload []byte
 	// TransitionsPayload is the proto-marshalled BatchTransitions (per-entity
 	// {pre,post} workspace) the resume path replays as visibility-transition
 	// frames.
 	TransitionsPayload []byte
 	OpCount            int64
-	Epoch              int64
 }
 
+// ListUserOpBatchesAfterParams pages the journal after the cursor
+// (AfterPhysicalMs, AfterLogical), compared without a client id; see the
+// ListUserOpBatchesAfter query for why that is exact.
 type ListUserOpBatchesAfterParams struct {
-	UserID            userid.UserID
-	AfterPhysicalMs   int64
-	AfterLogical      int64
-	AfterOriginClient string
+	UserID          userid.UserID
+	AfterPhysicalMs int64
+	AfterLogical    int64
 	// Limit caps the per-call row count so a far-behind subscriber
 	// cannot OOM the broadcaster. Use CRDTBatchPageLimit for the
 	// default page size.
 	Limit int32
 }
 
+// DeleteUserOpBatchesThroughParams deletes every batch whose last op's
+// canonical HLC is at or below (ThroughPhysicalMs, ThroughLogical).
 type DeleteUserOpBatchesThroughParams struct {
-	UserID              userid.UserID
-	ThroughPhysicalMs   int64
-	ThroughLogical      int64
-	ThroughOriginClient string
+	UserID            userid.UserID
+	ThroughPhysicalMs int64
+	ThroughLogical    int64
 }
 
 // UpsertUserStateParams writes a fresh state blob.
@@ -1120,16 +1148,6 @@ type UpsertUserStateParams struct {
 	// already absorbed, and a value that outran the blob would license deleting
 	// ops no Bootstrap could then replay.
 	CompactionPhysicalMs int64
-	CurrentEpoch         int64
-	EpochStartedAt       time.Time
-	UpdatedAt            time.Time
-}
-
-type AdvanceUserEpochParams struct {
-	UserID         userid.UserID
-	Epoch          int64
-	EpochStartedAt time.Time
-	UpdatedAt      time.Time
 }
 
 type InsertUserRecentBatchIDParams struct {
@@ -1139,7 +1157,6 @@ type InsertUserRecentBatchIDParams struct {
 	PrincipalID         string
 	CanonicalPhysicalMs int64
 	CanonicalLogical    int64
-	CanonicalClient     string
 	OpCount             int64
 	Epoch               int64
 	ExpiresAt           time.Time
@@ -1371,7 +1388,6 @@ type APIToken struct {
 	CreatedAt                time.Time
 	AuthGeneration           int64
 	LastUsedAt               *time.Time
-	LastRotatedAt            *time.Time
 	ExpiresAt                *time.Time
 	RefreshExpiresAt         *time.Time
 	RevokedAt                *time.Time
@@ -1442,16 +1458,13 @@ func (t APITokenWithOwner) PageCursor() (time.Time, string) { return t.CreatedAt
 
 // DelegationToken is a short-lived bearer minted by a worker so a
 // spawned agent (or opt-in terminal) can act for the user against the
-// hub or a sibling worker. Scope is (UserID, WorkspaceID); IssuedFor*
-// fields are provenance only.
+// hub or a sibling worker. Scope is (UserID, WorkerID): the user the bearer
+// acts as, and the minting worker whose reach limits it (see
+// auth.DelegationWorkerScope).
 type DelegationToken struct {
-	ID               string
-	UserID           string
-	WorkerID         string
-	AgentID          string
-	TerminalID       string
-	IssuedForTabID   string
-	IssuedForTabType int32
+	ID       string
+	UserID   string
+	WorkerID string
 	// GrantedScopes is what the minting worker delegated, already narrowed to
 	// auth.CeilingFor(BearerKindDelegation) at the mint -- and narrowed again
 	// when the row is READ, so a hand-edited row cannot widen it.
@@ -1481,13 +1494,12 @@ func (t DelegationTokenWithOwner) PageCursor() (time.Time, string) { return t.Cr
 
 // DeviceAuthorization is an in-flight RFC 8628 device-code grant.
 type DeviceAuthorization struct {
-	DeviceCode      string
-	UserCode        string
-	DeviceName      string
-	UserID          string
-	Approved        int64 // 0 pending, 1 approved, 2 denied
-	LastPolledAt    *time.Time
-	IntervalSeconds int64
+	DeviceCode   string
+	UserCode     string
+	DeviceName   string
+	UserID       string
+	State        leapmuxv1.DeviceAuthorizationState
+	LastPolledAt *time.Time
 	// ClientID is the app that started the flow.
 	ClientID string
 	// RequestedScopes is what the APP asked for, written at creation.
@@ -1523,7 +1535,6 @@ type DeviceAuthorization struct {
 type OAuthClient struct {
 	ClientID    string
 	OwnerUserID string // empty = hub-wide
-	CreatedBy   string
 	// SecretHash is nil for a PUBLIC client. It is never returned to a caller;
 	// the secret itself crosses once, at registration.
 	SecretHash []byte
@@ -1640,7 +1651,6 @@ type CreateOAuthClientParams struct {
 	// OwnerUserID empty registers a HUB-WIDE app. Only an administrator or
 	// dynamic registration may leave it empty; the calling service binds it.
 	OwnerUserID        string
-	CreatedBy          string
 	SecretHash         []byte
 	ClientName         string
 	IconBlob           []byte
@@ -1919,13 +1929,9 @@ type ListAllDelegationTokensParams struct {
 }
 
 type CreateDelegationTokenParams struct {
-	ID               string
-	UserID           userid.UserID
-	WorkerID         string
-	AgentID          string
-	TerminalID       string
-	IssuedForTabID   string
-	IssuedForTabType int32
+	ID       string
+	UserID   userid.UserID
+	WorkerID string
 	// GrantedScopes is the canonical scope string; see DelegationToken. The
 	// column has no default, so an unstated grant fails the INSERT.
 	GrantedScopes    string
@@ -1941,7 +1947,6 @@ type CreateDeviceAuthorizationParams struct {
 	DeviceName      string
 	ClientID        string
 	RequestedScopes string
-	IntervalSeconds int64
 	ExpiresAt       time.Time
 	// ElevateTokenID makes this an ELEVATION grant for that api_tokens row
 	// rather than a login. Empty mints a credential, as it always did.

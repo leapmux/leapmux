@@ -815,8 +815,8 @@ func (s *agentOutputSink) resolveStoredChildAgent(ctx context.Context, reg bgTas
 		return "", err
 	}
 
-	// Create the child agent row. Copy working_dir/home_dir/provider from THIS
-	// sink's agent row.
+	// Create the child agent row. Copy working_dir/provider from THIS sink's
+	// agent row.
 	parent, err := reg.queries.GetAgentByID(ctx, s.agentID)
 	if err != nil {
 		return "", fmt.Errorf("get parent agent for child spawn: %w", err)
@@ -860,7 +860,6 @@ func (s *agentOutputSink) resolveStoredChildAgent(ctx context.Context, reg bgTas
 		ProviderChildKey: providerChildKey,
 		Options:          spec.Options.Marshal(),
 		WorkingDir:       parent.WorkingDir,
-		HomeDir:          parent.HomeDir,
 		Title:            rowTitle,
 		AgentProvider:    parent.AgentProvider,
 		AgentSessionID:   spec.AgentSessionID,

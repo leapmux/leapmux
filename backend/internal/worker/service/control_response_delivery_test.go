@@ -55,7 +55,7 @@ func TestClearContextDoesNotSuppressOtherControlResponses(t *testing.T) {
 		t.Run(tool, func(t *testing.T) {
 			svc, _, _ := setupTestService(t)
 			require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
-				ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+				ID: "agent-1", WorkingDir: t.TempDir(),
 				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 			}))
 			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{

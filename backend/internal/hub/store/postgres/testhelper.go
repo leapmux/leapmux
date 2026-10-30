@@ -63,12 +63,8 @@ func (h *pgTestHelper) SetLastActiveAt(ctx context.Context, id string, lastActiv
 	return sqlutil.SetLastActiveAt(ctx, h.exec, sqlutil.ParameterStyleDollar, id, lastActiveAt)
 }
 
-func (h *pgTestHelper) SetRevocationEventRevokedAt(ctx context.Context, id string, revokedAt time.Time) error {
-	return h.setTimestamp(ctx, sqlutil.TimestampColumnRevocationEventRevokedAt, id, revokedAt)
-}
-
-func (h *pgTestHelper) setTimestamp(ctx context.Context, column sqlutil.TimestampColumn, id string, at any) error {
-	return sqlutil.SetTimestampColumn(ctx, h.exec, sqlutil.ParameterStyleDollar, column, id, at)
+func (h *pgTestHelper) SetDeregisteringAt(ctx context.Context, workerID string, deregisteringAt time.Time) error {
+	return sqlutil.SetDeregisteringAt(ctx, h.exec, sqlutil.ParameterStyleDollar, workerID, deregisteringAt)
 }
 
 // ListAllOwnedTabs reads workspace_tab_owned without an owner predicate. See
@@ -85,7 +81,7 @@ func (h *pgTestHelper) ListAllOwnedTabs(ctx context.Context) ([]store.WorkspaceT
 	for rows.Next() {
 		var r store.WorkspaceTabRow
 		var tabType int32
-		if err := rows.Scan(&r.UserID, &r.WorkspaceID, &tabType, &r.TabID, &r.WorkerID, &r.TileID, &r.Position); err != nil {
+		if err := rows.Scan(&r.UserID, &r.WorkspaceID, &tabType, &r.TabID, &r.WorkerID, &r.TileID, &r.Position, &r.Rendered); err != nil {
 			return nil, err
 		}
 		r.TabType = leapmuxv1.TabType(tabType)

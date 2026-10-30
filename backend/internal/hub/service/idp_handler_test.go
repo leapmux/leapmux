@@ -1366,8 +1366,8 @@ func (s purposeRewritingStates) Get(ctx context.Context, state string) (*store.O
 //
 // The login leg creates: a session, an account, an identity link. It must
 // never be the branch a value reaches by not matching something else -- and
-// the Go zero value "" is exactly such a value, so a row that lost its
-// purpose used to sign somebody in.
+// the Go zero value, UNSPECIFIED, is exactly such a value, so a row that lost
+// its purpose used to sign somebody in.
 func TestOAuthCallback_RefusesAnUnknownPurpose(t *testing.T) {
 	t.Parallel()
 

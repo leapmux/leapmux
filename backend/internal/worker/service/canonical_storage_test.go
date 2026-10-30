@@ -47,7 +47,6 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	require.NoError(t, queries.CreateAgent(ctx, gendb.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    "/tmp",
-		HomeDir:       "/home",
 		Title:         "agent",
 		Options:       "{}",
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -72,7 +71,6 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		ContentCompression:             leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		SpanLines:                      "[]",
-		AgentProvider:                  leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		CreatedAt:                      sqltime.NewSQLiteTime(now),
 	})
 	require.NoError(t, err)
@@ -85,7 +83,6 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	require.NoError(t, queries.UpsertTerminal(ctx, gendb.UpsertTerminalParams{
 		ID:         "term-1",
 		WorkingDir: "/tmp",
-		HomeDir:    "/home",
 		Shell:      "/bin/zsh",
 		Title:      "terminal",
 		Cols:       80,
@@ -96,7 +93,6 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	require.NoError(t, queries.UpsertTerminal(ctx, gendb.UpsertTerminalParams{
 		ID:         "term-2",
 		WorkingDir: "/tmp",
-		HomeDir:    "/home",
 		Shell:      "/bin/zsh",
 		Title:      "terminal-2",
 		Cols:       80,
@@ -115,15 +111,23 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	require.NoError(t, cwErr)
 	require.NoError(t, queries.DeleteWorktree(ctx, "wt-1"))
 
-	// agent_todos.updated_at via UpsertAgentTodo's strftime.
-	require.NoError(t, queries.UpsertAgentTodo(ctx, gendb.UpsertAgentTodoParams{
+	// agent_todos.updated_at via the column DEFAULT on InsertAgentTodo, then via
+	// UpdateAgentTodo's strftime.
+	require.NoError(t, queries.InsertAgentTodo(ctx, gendb.InsertAgentTodoParams{
 		AgentID: "agent-1",
-		RowKey:  "todo-1",
 		Seq:     1,
 		TaskID:  "task-1",
 		Content: "do the thing",
 		Status:  leapmuxv1.TodoStatus(todoevents.StatusPending),
 	}))
+	updatedTodos, updateTodoErr := queries.UpdateAgentTodo(ctx, gendb.UpdateAgentTodoParams{
+		AgentID: "agent-1",
+		Seq:     1,
+		Content: "do the thing again",
+		Status:  leapmuxv1.TodoStatus(todoevents.StatusInProgress),
+	})
+	require.NoError(t, updateTodoErr)
+	require.Equal(t, int64(1), updatedTodos)
 
 	// agent_background_tasks: created_at/updated_at are Go-bound on the Upsert;
 	// ended_at/updated_at are Go-bound on the Close. Agent agent-1 (root) already

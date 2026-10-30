@@ -55,7 +55,6 @@ func setupAgentWithWatcher(t *testing.T, svc *Service, w *testResponseWriter, ag
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            agentID,
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: provider,
 	}))
 

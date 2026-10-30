@@ -23,14 +23,13 @@ func seedArchivedChildForResume(t *testing.T, svc *Service, rootID, parentID, ch
 	require.NoError(t, svc.Queries.CreateChildAgent(ctx, db.CreateChildAgentParams{
 		ID: childID, ParentAgentID: sql.NullString{String: parentID, Valid: true},
 		SpawnSpanID: rowKey + "-span", WorkingDir: parent.WorkingDir,
-		HomeDir: parent.HomeDir, Title: rowKey + " title", AgentProvider: parent.AgentProvider,
+		Title: rowKey + " title", AgentProvider: parent.AgentProvider,
 	}))
 	_, err = svc.Queries.CreateMessage(ctx, db.CreateMessageParams{
 		ID: childID + "-message", AgentID: childID,
 		Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, Content: []byte(childID + " archived answer"),
 		ContentCompression:             leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		AgentProvider:                  parent.AgentProvider,
 		CreatedAt:                      sqltime.NewSQLiteTime(nowMillis()),
 	})
 	require.NoError(t, err)
@@ -137,7 +136,6 @@ func TestResumeRejectsBrokenArchivedChildLinkWithoutCreatingARoot(t *testing.T) 
 		Content:                        []byte("prior input"),
 		ContentCompression:             leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		AgentProvider:                  provider,
 		CreatedAt:                      sqltime.NewSQLiteTime(nowMillis()),
 	})
 	require.NoError(t, err)
@@ -152,7 +150,7 @@ func TestResumeRejectsBrokenArchivedChildLinkWithoutCreatingARoot(t *testing.T) 
 	require.NoError(t, err)
 
 	err = svc.createAgentRecordWithTranscript(t.Context(), db.CreateAgentParams{
-		ID: "new-root", WorkingDir: workingDir, HomeDir: svc.HomeDir,
+		ID: "new-root", WorkingDir: workingDir,
 		AgentProvider: provider, Resumed: 1,
 	}, "session-a1")
 	require.ErrorContains(t, err, "child")

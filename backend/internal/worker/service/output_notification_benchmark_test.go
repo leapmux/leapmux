@@ -28,7 +28,7 @@ func BenchmarkNotificationDuplicateLookup(b *testing.B) {
 					}
 					b.ReportAllocs()
 					for b.Loop() {
-						found, err := findNotificationDuplicate(queries, "lookup-agent", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+						found, err := findNotificationDuplicate(queries, "lookup-agent",
 							leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, "lookup-session", entry, notificationThreaded)
 						if err != nil || found != exists {
 							b.Fatalf("The duplicate lookup returns %t with error %v. Expected duplicate: %t.", found, err, exists)
@@ -63,7 +63,7 @@ func notificationLookupFixture(b *testing.B, count int, providerSupplement bool)
 	write := func(id string, supplemental []byte, compression leapmuxv1.ContentCompression) {
 		_, err := createMessageRow(ctx, writer, db.CreateMessageParams{
 			ID: id, AgentID: "lookup-agent", AgentSessionID: "lookup-session",
-			Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+			Source:  leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 			Content: []byte(`{"content":"ordinary message"}`), ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 			SupplementalContent: supplemental, SupplementalContentCompression: compression,
 			SpanLines: "[]",
@@ -116,7 +116,7 @@ func BenchmarkNotificationEntryCountWriteCost(b *testing.B) {
 				}
 				_, err := createMessageRow(ctx, queries, db.CreateMessageParams{
 					ID: fmt.Sprintf("write-%d", written), AgentID: "write-agent", AgentSessionID: "write-session",
-					Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+					Source:  leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 					Content: []byte(`{"content":"ordinary message"}`), ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 					SupplementalContent: supplemental, SupplementalContentCompression: compression,
 					SpanLines: "[]", CreatedAt: sqltime.NewSQLiteTime(time.Date(2026, time.October, 9, 0, 0, 0, 0, time.UTC)),

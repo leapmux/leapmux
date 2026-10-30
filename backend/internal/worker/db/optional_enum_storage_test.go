@@ -25,8 +25,10 @@ func optionalEnumColumns(t *testing.T) []optionalEnumColumn {
 		{"messages.mark_type", `INSERT INTO messages (id,agent_id,seq,source,content,content_compression,mark_type) VALUES ('target','root',2,2,X'7B7D',1,?)`, `SELECT mark_type FROM messages WHERE id='target'`, 2},
 		{"messages.assembled_kind", `INSERT INTO messages (id,agent_id,seq,source,content,content_compression,assembled_kind) VALUES ('target','root',2,2,X'7B7D',1,?)`, `SELECT assembled_kind FROM messages WHERE id='target'`, 3},
 		{"messages.completion", `INSERT INTO messages (id,agent_id,seq,source,content,content_compression,completion) VALUES ('target','root',2,2,X'7B7D',1,?)`, `SELECT completion FROM messages WHERE id='target'`, completionMaximum},
-		{"agent_input_queue_state.pause_reason", `INSERT INTO agent_input_queue_state (agent_id,pause_reason) VALUES ('root',?)`, `SELECT pause_reason FROM agent_input_queue_state WHERE agent_id='root'`, 6},
-		{"agent_input_queue_state.pause_owner", `INSERT INTO agent_input_queue_state (agent_id,pause_owner) VALUES ('root',?)`, `SELECT pause_owner FROM agent_input_queue_state WHERE agent_id='root'`, 6},
+		// A pause states its reason and its owner together, so each row sets the
+		// partner column to NULL with a NULL value and to a real ordinal otherwise.
+		{"agent_input_queue_state.pause_reason", `INSERT INTO agent_input_queue_state (agent_id,pause_reason,pause_owner) VALUES ('root',?1,CASE WHEN ?1 IS NULL THEN NULL ELSE 1 END)`, `SELECT pause_reason FROM agent_input_queue_state WHERE agent_id='root'`, 6},
+		{"agent_input_queue_state.pause_owner", `INSERT INTO agent_input_queue_state (agent_id,pause_reason,pause_owner) VALUES ('root',CASE WHEN ?1 IS NULL THEN NULL ELSE 1 END,?1)`, `SELECT pause_owner FROM agent_input_queue_state WHERE agent_id='root'`, 6},
 	}
 }
 

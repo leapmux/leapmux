@@ -107,7 +107,7 @@ func TestChannelFor_PropagatesDelegationError(t *testing.T) {
 	dp := &stubDelegationProvider{err: errors.New("mint refused: tab gone")}
 	c := New(context.Background(), testEndpoint(t), &PinStore{}, dp)
 
-	_, err := c.channelFor(context.Background(), "worker-B", DelegationScope{UserID: userid.MustNew("user-1"), AgentID: "agent-1"})
+	_, err := c.channelFor(context.Background(), "worker-B", DelegationScope{UserID: userid.MustNew("user-1")})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "delegation token")
 	assert.Contains(t, err.Error(), "mint refused")

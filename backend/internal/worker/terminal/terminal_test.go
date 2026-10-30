@@ -1332,12 +1332,11 @@ func TestUpsertAndGetTerminal(t *testing.T) {
 
 	termID := "tm-db"
 
-	// Upsert a terminal (workspace_id is plain TEXT, no FK needed).
+	// Upsert a terminal. The table has no workspace_id column.
 	screenData := []byte("hello terminal")
 	require.NoError(t, queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
 		ID:         termID,
 		WorkingDir: "/tmp",
-		HomeDir:    "/home/test",
 		Cols:       120,
 		Rows:       40,
 		Screen:     screenData,
@@ -1348,7 +1347,6 @@ func TestUpsertAndGetTerminal(t *testing.T) {
 	require.NoError(t, err, "GetTerminal")
 	assert.Equal(t, termID, row.ID)
 	assert.Equal(t, "/tmp", row.WorkingDir)
-	assert.Equal(t, "/home/test", row.HomeDir)
 	assert.Equal(t, int64(120), row.Cols)
 	assert.Equal(t, int64(40), row.Rows)
 	assert.Equal(t, screenData, row.Screen)

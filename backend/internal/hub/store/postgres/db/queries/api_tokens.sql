@@ -174,8 +174,7 @@ SET granted_scopes = sqlc.arg(new_granted_scopes),
     refresh_hash = sqlc.arg(new_refresh_hash),
     refresh_expires_at = sqlc.arg(new_refresh_expires_at),
     previous_refresh_hash = sqlc.arg(prev_refresh_hash),
-    previous_refresh_expires_at = sqlc.arg(prev_refresh_expires_at),
-    last_rotated_at = NOW()
+    previous_refresh_expires_at = sqlc.arg(prev_refresh_expires_at)
 WHERE id = sqlc.arg(id)
   AND revoked_at IS NULL
   AND refresh_hash = sqlc.arg(prev_refresh_hash);
@@ -184,7 +183,7 @@ WHERE id = sqlc.arg(id)
 UPDATE api_tokens
 SET revoked_at = clock_timestamp()
 WHERE id = $1 AND revoked_at IS NULL
-RETURNING id, user_id, revoked_at;
+RETURNING id, user_id;
 
 -- name: RevokeOwnedAPIToken :one
 -- Self-service revocation. The owner check is IN the statement, so no Go
@@ -193,7 +192,7 @@ RETURNING id, user_id, revoked_at;
 UPDATE api_tokens
 SET revoked_at = clock_timestamp()
 WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND revoked_at IS NULL
-RETURNING id, user_id, revoked_at;
+RETURNING id, user_id;
 
 -- name: RevokeOtherUserAPITokens :execrows
 -- Bulk revocation with ONE exclusion, the twin of DeleteOtherUserSessions.

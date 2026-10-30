@@ -1,22 +1,30 @@
+// Package notifier delivers the DEREGISTER instruction to a worker.
+//
+// It keeps no queue. The persisted deregistration intent is the
+// workers.deregistering_at column, written by the deregister transaction
+// before the notifier runs; the notifier only tells a CONNECTED worker to stop
+// and, on its acknowledgement, deletes the worker. A worker that is offline is
+// told at its next connect (DeliverOnConnect), and the cleanup loop deletes a
+// worker still deregistering after its grace period
+// (store.CleanupStore.CompleteStaleDeregistrations), so every failure of this
+// package's delivery is recovered from the persisted state.
 package notifier
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
-	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/nilcheck"
 )
 
 // workerRegistry is the narrow surface Notifier needs from the live-worker
 // map. ConnForTrustedPath performs no authorization, which is correct here:
 // every worker id the notifier passes came from an authorized store row or a
-// trusted server flow (deregister, reconnect flush), never from a user request.
+// trusted server flow (deregister, connect), never from a user request.
 // Holding this interface instead of *workermgr.Manager structurally prevents
 // reaching Register / WaitFor* / the liveness probes.
 type workerRegistry interface {
@@ -25,13 +33,22 @@ type workerRegistry interface {
 	ClearDeregistering(string)
 }
 
-// Notifier manages sending notifications to workers with persistent
-// queue fallback for reliable delivery.
+// requestSender sends one request to a connected worker and waits for the
+// response that carries the same request id. *workermgr.PendingRequests is the
+// production implementation; a test substitutes its own.
+type requestSender interface {
+	SendAndWait(ctx context.Context, conn *workermgr.Conn, msg *leapmuxv1.ConnectResponse) (*leapmuxv1.ConnectRequest, error)
+}
+
+// Notifier tells a deregistering worker to stop, and deletes it once the
+// worker acknowledges. See the package doc for how a failed delivery is
+// recovered.
 type Notifier struct {
-	store      store.Store
-	workerMgr  workerRegistry
-	pending    *workermgr.PendingRequests
-	apiTimeout func() time.Duration
+	store          store.Store
+	workerMgr      workerRegistry
+	sender         requestSender
+	apiTimeout     func() time.Duration
+	workersChanged func(ownerID string)
 }
 
 // New creates a new Notifier. wMgr is taken as the narrow workerRegistry
@@ -44,125 +61,122 @@ type Notifier struct {
 // nil *workermgr.Manager converted to this interface is a NON-nil interface
 // holding a nil pointer, so `wMgr != nil` would not catch it. Left unchecked,
 // the first ConnForTrustedPath call panics on a nil receiver -- and it happens
-// on the notification-delivery goroutine, which has no recover, so a wiring
-// mistake takes the hub process down long after startup instead of at it.
-// nilcheck sees through the conversion; workermgr.New guards its own dependency
-// the same way, for the same reason.
-func New(st store.Store, wMgr workerRegistry, pr *workermgr.PendingRequests, apiTimeout func() time.Duration) *Notifier {
+// on the delivery goroutine, which has no recover, so a wiring mistake takes
+// the hub process down long after startup instead of at it. nilcheck sees
+// through the conversion, and the sender gets the same check for the same
+// reason.
+//
+// workersChanged is called with the worker's owner after a deletion is
+// recorded, so the owner's clients re-read their worker list. A nil
+// workersChanged is a no-op.
+func New(st store.Store, wMgr workerRegistry, sender requestSender, apiTimeout func() time.Duration, workersChanged func(ownerID string)) *Notifier {
 	if nilcheck.IsNilDependency(wMgr) {
 		panic("notifier: New requires a worker registry")
 	}
+	if nilcheck.IsNilDependency(sender) {
+		panic("notifier: New requires a request sender")
+	}
 	return &Notifier{
-		store:      st,
-		workerMgr:  wMgr,
-		pending:    pr,
-		apiTimeout: apiTimeout,
+		store:          st,
+		workerMgr:      wMgr,
+		sender:         sender,
+		apiTimeout:     apiTimeout,
+		workersChanged: workersChanged,
 	}
 }
 
-// SendOrQueue attempts to deliver a notification to a worker immediately.
-// If the worker is offline or delivery fails, the notification is persisted
-// to the worker_notifications queue for later delivery.
-func (n *Notifier) SendOrQueue(ctx context.Context, workerID string, notificationType leapmuxv1.NotificationType, payload string, msg *leapmuxv1.ConnectResponse) error {
-	conn := n.workerMgr.ConnForTrustedPath(workerID)
-	if conn != nil {
-		sendCtx, cancel := context.WithTimeout(ctx, n.apiTimeout())
-		defer cancel()
-
-		_, err := n.pending.SendAndWait(sendCtx, conn, msg)
-		if err == nil {
-			return nil // Delivered and acked.
-		}
-		slog.Warn("failed to deliver notification, queueing", "worker_id", workerID, "type", notificationType, "error", err)
-	}
-
-	// Queue for later delivery.
-	return n.store.WorkerNotifications().Create(ctx, store.CreateWorkerNotificationParams{
-		ID:       id.Generate(),
-		WorkerID: workerID,
-		Type:     notificationType,
-		Payload:  payload,
-	})
-}
-
-// ProcessPendingNotifications delivers any queued notifications to a connected worker.
-// Called when a worker connects or reconnects.
-func (n *Notifier) ProcessPendingNotifications(ctx context.Context, workerID string) error {
-	notifications, err := n.store.WorkerNotifications().ListPendingByWorker(ctx, workerID)
+// SendDeregister tells a worker to stop. The caller MUST call it after the
+// durable change committed: deregistering_at for a deregistration, or
+// deleted_at for a worker deleted with its user.
+//
+// It marks the worker deregistering in the live registry, so its user can no
+// longer reach it, and then:
+//   - an offline worker that is already deleted needs nothing more, so its
+//     mark is cleared;
+//   - an offline deregistering worker keeps its mark, and is told at its next
+//     connect;
+//   - a connected worker is told now, and deleted on its acknowledgement (see
+//     deliver).
+//
+// A failed read of the worker is returned. The durable change already
+// committed, so the next connect or the cleanup sweep still recovers it.
+func (n *Notifier) SendDeregister(ctx context.Context, workerID string) error {
+	n.workerMgr.MarkDeregistering(workerID)
+	worker, err := n.store.Workers().GetByIDIncludeDeleted(ctx, workerID)
 	if err != nil {
-		return fmt.Errorf("list pending notifications: %w", err)
+		return err
 	}
-
 	conn := n.workerMgr.ConnForTrustedPath(workerID)
 	if conn == nil {
-		return fmt.Errorf("worker not connected")
-	}
-
-	for _, notif := range notifications {
-		_ = n.store.WorkerNotifications().IncrementAttempts(ctx, notif.ID)
-
-		msg, err := n.buildNotificationMessage(notif)
-		if err != nil {
-			slog.Error("failed to build notification message", "notification_id", notif.ID, "error", err)
-			if notif.Attempts+1 >= notif.MaxAttempts {
-				_ = n.store.WorkerNotifications().MarkFailed(ctx, notif.ID)
-			}
-			continue
-		}
-
-		sendCtx, cancel := context.WithTimeout(ctx, n.apiTimeout())
-		_, sendErr := n.pending.SendAndWait(sendCtx, conn, msg)
-		cancel()
-
-		if sendErr != nil {
-			slog.Warn("failed to deliver queued notification", "notification_id", notif.ID, "error", sendErr)
-			if notif.Attempts+1 >= notif.MaxAttempts {
-				_ = n.store.WorkerNotifications().MarkFailed(ctx, notif.ID)
-			}
-			continue
-		}
-
-		_ = n.store.WorkerNotifications().MarkDelivered(ctx, notif.ID)
-
-		// For deregister notifications, mark worker as fully deleted after ack.
-		if notif.Type == leapmuxv1.NotificationType_NOTIFICATION_TYPE_DEREGISTER {
-			_ = n.store.Workers().MarkDeleted(ctx, workerID)
+		if worker.DeletedAt != nil {
 			n.workerMgr.ClearDeregistering(workerID)
-			slog.Info("worker deregistration complete", "worker_id", workerID)
 		}
+		return nil
 	}
-
+	n.deliver(ctx, worker, conn)
 	return nil
 }
 
-// SendDeregister sends a deregistration notification to a worker.
-func (n *Notifier) SendDeregister(ctx context.Context, workerID string) error {
-	n.workerMgr.MarkDeregistering(workerID)
+// DeliverOnConnect tells a just-connected DEREGISTERING worker to stop. It
+// also re-establishes the in-memory deregistering mark, which a hub restart
+// loses while deregistering_at survives.
+func (n *Notifier) DeliverOnConnect(ctx context.Context, worker *store.Worker) {
+	n.workerMgr.MarkDeregistering(worker.ID)
+	conn := n.workerMgr.ConnForTrustedPath(worker.ID)
+	if conn == nil {
+		// The connection ended before delivery started; the next connect or
+		// the cleanup sweep recovers it.
+		slog.Warn("deregistering worker disconnected before it was told to stop", "worker_id", worker.ID)
+		return
+	}
+	n.deliver(ctx, worker, conn)
+}
 
-	msg := &leapmuxv1.ConnectResponse{
+// deliver is the one delivery routine: send the DEREGISTER instruction to a
+// connected worker, wait for its acknowledgement, and record the deletion.
+func (n *Notifier) deliver(ctx context.Context, worker *store.Worker, conn *workermgr.Conn) {
+	sendCtx, cancel := context.WithTimeout(ctx, n.apiTimeout())
+	resp, err := n.sender.SendAndWait(sendCtx, conn, deregisterMessage())
+	cancel()
+
+	if worker.DeletedAt != nil {
+		// The worker was deleted with its user: there is no deletion left to
+		// record, and nothing to wait for whatever the send's result was.
+		n.workerMgr.ClearDeregistering(worker.ID)
+		return
+	}
+	// SendAndWait matches a response by request id alone, so a response with
+	// a different payload is not an acknowledgement.
+	if err != nil || resp.GetDeregisterAck() == nil {
+		slog.Warn("worker did not acknowledge DEREGISTER; it is told again at its next connect, and deleted by the cleanup sweep after the grace period",
+			"worker_id", worker.ID, "error", err)
+		return
+	}
+
+	// The worker deletes its own registration and exits right after it
+	// acknowledges, so its connection context ends at once. The deletion is
+	// recorded in a hub-owned context, so that cannot cancel the only attempt.
+	completeCtx, cancelComplete := context.WithTimeout(context.WithoutCancel(ctx), n.apiTimeout())
+	defer cancelComplete()
+	if err := n.store.Workers().MarkDeleted(completeCtx, worker.ID); err != nil {
+		slog.Warn("worker acknowledged DEREGISTER but its deletion failed; the cleanup sweep deletes it after the grace period",
+			"worker_id", worker.ID, "error", err)
+		return
+	}
+	n.workerMgr.ClearDeregistering(worker.ID)
+	if n.workersChanged != nil {
+		n.workersChanged(worker.RegisteredBy)
+	}
+	slog.Info("worker deregistration complete", "worker_id", worker.ID)
+}
+
+// deregisterMessage is the fixed DEREGISTER instruction.
+func deregisterMessage() *leapmuxv1.ConnectResponse {
+	return &leapmuxv1.ConnectResponse{
 		Payload: &leapmuxv1.ConnectResponse_Deregister{
 			Deregister: &leapmuxv1.DeregisterNotification{
 				Reason: "worker deregistered by owner",
 			},
 		},
-	}
-
-	return n.SendOrQueue(ctx, workerID, leapmuxv1.NotificationType_NOTIFICATION_TYPE_DEREGISTER, "{}", msg)
-}
-
-// buildNotificationMessage converts a persisted notification into a ConnectResponse.
-func (n *Notifier) buildNotificationMessage(notif store.WorkerNotification) (*leapmuxv1.ConnectResponse, error) {
-	switch notif.Type {
-	case leapmuxv1.NotificationType_NOTIFICATION_TYPE_DEREGISTER:
-		return &leapmuxv1.ConnectResponse{
-			Payload: &leapmuxv1.ConnectResponse_Deregister{
-				Deregister: &leapmuxv1.DeregisterNotification{
-					Reason: "worker deregistered by owner",
-				},
-			},
-		}, nil
-
-	default:
-		return nil, fmt.Errorf("unknown notification type: %s", notif.Type)
 	}
 }

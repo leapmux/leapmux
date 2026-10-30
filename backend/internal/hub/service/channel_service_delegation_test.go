@@ -129,14 +129,12 @@ func (e *bearerChannelEnv) mintDelegation(t *testing.T, userID, workerID, worksp
 	tokenID = id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, e.store.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
-		GrantedScopes:    "workspace:read workspace:write worker:read",
-		ID:               tokenID,
-		UserID:           userid.MustNew(userID),
-		WorkerID:         workerID,
-		IssuedForTabID:   "tab-x",
-		IssuedForTabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
-		SecretHash:       e.validator.HashSecret(secret),
-		ExpiresAt:        time.Now().Add(time.Hour),
+		GrantedScopes: "workspace:read workspace:write worker:read",
+		ID:            tokenID,
+		UserID:        userid.MustNew(userID),
+		WorkerID:      workerID,
+		SecretHash:    e.validator.HashSecret(secret),
+		ExpiresAt:     time.Now().Add(time.Hour),
 	}))
 	return auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret), tokenID
 }

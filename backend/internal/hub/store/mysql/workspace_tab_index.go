@@ -13,11 +13,11 @@ import (
 )
 
 // bulkUpsertChunkRows is the per-statement row cap for bulk-upsert
-// SQL constructed at runtime. MySQL's default max_prepared_stmt_count
-// allows up to 65535 placeholders per statement; the seven-column
-// upsert uses 7 per row, so 4096 rows stays well under that limit
-// while still avoiding pathological packet sizes (max_allowed_packet
-// defaults to 64 MB, way more than 4096 rows worth of small VARCHARs).
+// SQL constructed at runtime. MySQL allows up to 65535 placeholders per
+// prepared statement; the eight-column upsert uses 8 per row, so 4096
+// rows (32768 placeholders) stays well under that limit while still
+// avoiding pathological packet sizes (max_allowed_packet defaults to
+// 64 MB, way more than 4096 rows worth of small VARCHARs).
 const bulkUpsertChunkRows = 4096
 
 // bulkDeleteChunkRows is the per-statement key cap for bulk-delete
@@ -31,7 +31,7 @@ type workspaceTabIndexStore struct {
 
 var _ store.WorkspaceTabIndexStore = (*workspaceTabIndexStore)(nil)
 
-func (s *workspaceTabIndexStore) UpsertOwned(ctx context.Context, p store.UpsertOwnedTabParams) error {
+func (s *workspaceTabIndexStore) UpsertOwned(ctx context.Context, p store.UpsertTabParams) error {
 	return mapErr(s.conn.q.UpsertOwnedTab(ctx, gendb.UpsertOwnedTabParams{
 		UserID:      p.UserID.String(),
 		WorkspaceID: p.WorkspaceID,
@@ -40,15 +40,23 @@ func (s *workspaceTabIndexStore) UpsertOwned(ctx context.Context, p store.Upsert
 		WorkerID:    p.WorkerID,
 		TileID:      p.TileID,
 		Position:    p.Position,
+		Rendered:    p.Rendered,
 	}))
 }
 
-func (s *workspaceTabIndexStore) BulkUpsertOwned(ctx context.Context, rows []store.UpsertOwnedTabParams) error {
-	return bulkUpsertTabs(ctx, s.conn.exec, "workspace_tab_owned", rows)
+// BulkUpsert runs each chunk of up to bulkUpsertChunkRows rows as a single
+// INSERT ... VALUES (...), (...) ON DUPLICATE KEY UPDATE statement.
+func (s *workspaceTabIndexStore) BulkUpsert(ctx context.Context, rows []store.UpsertTabParams) error {
+	return sqlutil.BulkUpsertTabs(ctx, s.conn.exec, rows, sqlutil.BulkUpsertTabsConfig{
+		ConflictSuffix: " ON DUPLICATE KEY UPDATE workspace_id = VALUES(workspace_id), tab_type = VALUES(tab_type), worker_id = VALUES(worker_id), tile_id = VALUES(tile_id), position = VALUES(position), rendered = VALUES(rendered)",
+		ChunkRows:      bulkUpsertChunkRows,
+	}, mapErr)
 }
 
-func (s *workspaceTabIndexStore) BulkDeleteOwned(ctx context.Context, keys []store.TabIndexKey) error {
-	return bulkDeleteTabs(ctx, s.conn.exec, "workspace_tab_owned", keys)
+// BulkDelete runs each chunk as a single DELETE ... WHERE (user_id, tab_id)
+// IN ((?, ?), ...) statement.
+func (s *workspaceTabIndexStore) BulkDelete(ctx context.Context, keys []store.TabIndexKey) error {
+	return sqlutil.BulkDeleteTabs(ctx, s.conn.exec, keys, bulkDeleteChunkRows, mapErr)
 }
 
 func (s *workspaceTabIndexStore) ListOwnedByWorker(ctx context.Context, p store.ListOwnedTabsByWorkerParams) ([]store.WorkerTabStateRow, error) {
@@ -104,28 +112,8 @@ func (s *workspaceTabIndexStore) GetOwned(ctx context.Context, p store.GetOwnedT
 		}
 		return nil, mapErr(err)
 	}
-	out := ownedTabRowFromDB(row)
+	out := tabRowFromDB(row)
 	return &out, nil
-}
-
-func (s *workspaceTabIndexStore) UpsertRendered(ctx context.Context, p store.UpsertRenderedTabParams) error {
-	return mapErr(s.conn.q.UpsertRenderedTab(ctx, gendb.UpsertRenderedTabParams{
-		UserID:      p.UserID.String(),
-		WorkspaceID: p.WorkspaceID,
-		TabType:     p.TabType,
-		TabID:       p.TabID,
-		WorkerID:    p.WorkerID,
-		TileID:      p.TileID,
-		Position:    p.Position,
-	}))
-}
-
-func (s *workspaceTabIndexStore) BulkUpsertRendered(ctx context.Context, rows []store.UpsertRenderedTabParams) error {
-	return bulkUpsertTabs(ctx, s.conn.exec, "workspace_tab_rendered", rows)
-}
-
-func (s *workspaceTabIndexStore) BulkDeleteRendered(ctx context.Context, keys []store.TabIndexKey) error {
-	return bulkDeleteTabs(ctx, s.conn.exec, "workspace_tab_rendered", keys)
 }
 
 func (s *workspaceTabIndexStore) ListRenderedByWorkspaceIDs(ctx context.Context, p store.ListRenderedTabsByWorkspaceIDsParams) ([]store.WorkspaceTabRow, error) {
@@ -145,7 +133,7 @@ func (s *workspaceTabIndexStore) ListRenderedByWorkspaceIDs(ctx context.Context,
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return store.MapSlice(rows, renderedTabRowFromDB), nil
+	return store.MapSlice(rows, tabRowFromDB), nil
 }
 
 func (s *workspaceTabIndexStore) GetRendered(ctx context.Context, p store.GetRenderedTabParams) (*store.WorkspaceTabRow, error) {
@@ -167,27 +155,8 @@ func (s *workspaceTabIndexStore) GetRendered(ctx context.Context, p store.GetRen
 		}
 		return nil, mapErr(err)
 	}
-	out := renderedTabRowFromDB(row)
+	out := tabRowFromDB(row)
 	return &out, nil
-}
-
-// bulkUpsertTabs implements BulkUpsertOwned / BulkUpsertRendered for
-// MySQL. The two tables share an identical schema, primary key, and
-// update list; only the table name differs between calls. Each chunk
-// of up to bulkUpsertChunkRows rows runs as a single INSERT ...
-// VALUES (...), (...) ON DUPLICATE KEY UPDATE statement.
-func bulkUpsertTabs(ctx context.Context, exec gendb.DBTX, table string, rows []store.UpsertOwnedTabParams) error {
-	return sqlutil.BulkUpsertTabs(ctx, exec, table, rows, sqlutil.BulkUpsertTabsConfig{
-		ConflictSuffix: " ON DUPLICATE KEY UPDATE workspace_id = VALUES(workspace_id), tab_type = VALUES(tab_type), worker_id = VALUES(worker_id), tile_id = VALUES(tile_id), position = VALUES(position)",
-		ChunkRows:      bulkUpsertChunkRows,
-	}, mapErr)
-}
-
-// bulkDeleteTabs implements BulkDeleteOwned / BulkDeleteRendered for
-// MySQL. Each chunk runs as a single DELETE ... WHERE (user_id,
-// tab_id) IN ((?, ?), ...) statement.
-func bulkDeleteTabs(ctx context.Context, exec gendb.DBTX, table string, keys []store.TabIndexKey) error {
-	return sqlutil.BulkDeleteTabs(ctx, exec, table, keys, bulkDeleteChunkRows, mapErr)
 }
 
 func (s *workspaceTabIndexStore) LocateAccessibleRendered(ctx context.Context, p store.LocateAccessibleRenderedTabParams) (*store.WorkspaceTabRow, error) {
@@ -208,12 +177,12 @@ func (s *workspaceTabIndexStore) LocateAccessibleRendered(ctx context.Context, p
 		}
 		return nil, mapErr(err)
 	}
-	out := renderedTabRowFromDB(row)
+	out := tabRowFromDB(row)
 	return &out, nil
 }
 
 // ownedTabRefFromDB converts one ListOwnedTabsByWorkspace row to the store's
-// (worker_id, tab_type, tab_id) triple. Named beside ownedTabRowFromDB and used
+// (worker_id, tab_type, tab_id) triple. Named beside tabRowFromDB and used
 // through store.MapSlice for the same reason: the conversion is the one place the
 // generated column types meet the store's, so it should exist once per dialect
 // rather than being open-coded in the query method.
@@ -236,13 +205,9 @@ func ownedTabStateRowFromDB(r gendb.ListOwnedTabsByWorkerRow) store.WorkerTabSta
 	}
 }
 
-// ownedTabRowFromDB converts one generated workspace_tab_owned row to the store
-// shape. renderedTabRowFromDB below is its byte-for-byte twin over
-// gendb.WorkspaceTabRendered, and the pair CANNOT collapse into one generic
-// helper: the two tables share a column set but sqlc generates a distinct
-// struct per table, and Go permits neither field access on a union type
-// parameter nor a []A -> []B slice conversion.
-func ownedTabRowFromDB(r gendb.WorkspaceTabOwned) store.WorkspaceTabRow {
+// tabRowFromDB converts one generated workspace_tab_owned row to the store
+// shape.
+func tabRowFromDB(r gendb.WorkspaceTabOwned) store.WorkspaceTabRow {
 	return store.WorkspaceTabRow{
 		UserID:      r.UserID,
 		WorkspaceID: r.WorkspaceID,
@@ -251,19 +216,6 @@ func ownedTabRowFromDB(r gendb.WorkspaceTabOwned) store.WorkspaceTabRow {
 		WorkerID:    r.WorkerID,
 		TileID:      r.TileID,
 		Position:    r.Position,
-	}
-}
-
-// renderedTabRowFromDB converts one generated workspace_tab_rendered row to the
-// store shape. See ownedTabRowFromDB for why the two are not one helper.
-func renderedTabRowFromDB(r gendb.WorkspaceTabRendered) store.WorkspaceTabRow {
-	return store.WorkspaceTabRow{
-		UserID:      r.UserID,
-		WorkspaceID: r.WorkspaceID,
-		TabType:     r.TabType,
-		TabID:       r.TabID,
-		WorkerID:    r.WorkerID,
-		TileID:      r.TileID,
-		Position:    r.Position,
+		Rendered:    r.Rendered,
 	}
 }

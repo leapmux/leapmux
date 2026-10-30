@@ -227,22 +227,25 @@ WHERE pending_email != ''
   AND ((pending_email_token != '' AND pending_email_expires_at IS NOT NULL AND pending_email_expires_at < sqlc.arg(cutoff))
     OR (pending_email_token = '' AND updated_at < sqlc.arg(codeless_cutoff)));
 
--- The token-revocation lock/update pair has no deleted_at guard, so it
--- would act on a soft-deleted row -- but the only caller
--- (RevokeAllUserCredentials) runs inside RunInUserAuthTransaction, whose
--- LockUserAuthState filters deleted_at IS NULL, so revoking an
--- already-soft-deleted user aborts before this lock runs. Every revoke
--- path revokes before soft-deleting, so that ordering is not exercised
--- today. Only a missing id is a no-op (ErrNoRows on the lock).
--- name: GetUserTokensRevocationForUpdate :one
-SELECT id, tokens_revoked_at, auth_generation, NOW(3) AS now_at FROM users
+-- The auth-generation lock/update pair has no deleted_at guard, so it
+-- would act on a soft-deleted row -- but neither revocation caller can
+-- reach one: RevokeUserTokens (via RevokeAllUserCredentials) runs inside
+-- RunInUserAuthTransaction, whose LockUserAuthState filters
+-- deleted_at IS NULL; fenceUserTokensLocked (the auth-gate reduction
+-- fence) runs only in RunUserInfoMutation's existedBefore && existedAfter
+-- branch, and both existence reads use GetUserByID, which also filters
+-- deleted_at IS NULL. CompleteRecovery also takes the lock, and its UPDATE
+-- re-checks the recovery token. Every revoke path revokes before
+-- soft-deleting, so that ordering is not exercised today. Only a missing id
+-- is a no-op (ErrNoRows on the lock).
+-- name: GetUserAuthGenerationForUpdate :one
+SELECT id, auth_generation, NOW(3) AS now_at FROM users
 WHERE id = ?
 FOR UPDATE;
 
--- name: SetUserTokensRevokedAt :execresult
+-- name: SetUserAuthGeneration :execresult
 UPDATE users
-SET tokens_revoked_at = sqlc.arg(tokens_revoked_at),
-    auth_generation = sqlc.arg(auth_generation),
+SET auth_generation = sqlc.arg(auth_generation),
     updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id);
 
@@ -325,7 +328,6 @@ SET password_hash = sqlc.arg(password_hash),
     pending_recovery_expires_at = NULL,
     pending_recovery_unblocked_at = NULL,
     pending_recovery_attempts = 0,
-    tokens_revoked_at = sqlc.arg(tokens_revoked_at),
     auth_generation = sqlc.arg(auth_generation),
     updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id) AND pending_recovery_token = sqlc.arg(pending_recovery_token);

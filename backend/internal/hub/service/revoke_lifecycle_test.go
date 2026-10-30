@@ -153,14 +153,12 @@ func TestAdminUserService_RevokeDelegationTokenClosesThatBearer(t *testing.T) {
 	worker := storetest.SeedWorker(t, env.st, userID)
 	tokenID := id.Generate()
 	require.NoError(t, env.st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
-		GrantedScopes:    "workspace:read workspace:write worker:read",
-		ID:               tokenID,
-		UserID:           userid.MustNew(userID),
-		WorkerID:         worker.ID,
-		IssuedForTabID:   "tab-1",
-		IssuedForTabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
-		SecretHash:       []byte("hash"),
-		ExpiresAt:        time.Now().Add(time.Hour),
+		GrantedScopes: "workspace:read workspace:write worker:read",
+		ID:            tokenID,
+		UserID:        userid.MustNew(userID),
+		WorkerID:      worker.ID,
+		SecretHash:    []byte("hash"),
+		ExpiresAt:     time.Now().Add(time.Hour),
 	}))
 
 	_, err := env.client.RevokeDelegationToken(authedReq(ctx,
@@ -209,14 +207,12 @@ func TestAdminUserService_RevokeUserSessionsReportsTheCommittedGeneration(t *tes
 	}))
 	worker := storetest.SeedWorker(t, env.st, userID)
 	require.NoError(t, env.st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
-		GrantedScopes:    "workspace:read workspace:write worker:read",
-		ID:               id.Generate(),
-		UserID:           userid.MustNew(userID),
-		WorkerID:         worker.ID,
-		IssuedForTabID:   "tab-1",
-		IssuedForTabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
-		SecretHash:       []byte("hash"),
-		ExpiresAt:        time.Now().Add(time.Hour),
+		GrantedScopes: "workspace:read workspace:write worker:read",
+		ID:            id.Generate(),
+		UserID:        userid.MustNew(userID),
+		WorkerID:      worker.ID,
+		SecretHash:    []byte("hash"),
+		ExpiresAt:     time.Now().Add(time.Hour),
 	}))
 
 	before, err := env.st.Users().GetByID(ctx, userID)

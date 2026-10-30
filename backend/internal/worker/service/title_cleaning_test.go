@@ -492,7 +492,6 @@ func TestUpdateTerminalTitle_AnEmptiedTitleReportsTheLiveTitleNotTheStoredOne(t 
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
 		ID:         "term-1",
 		WorkingDir: workingDir,
-		HomeDir:    "/tmp",
 		Title:      "Terminal Stored",
 		Cols:       80,
 		Rows:       24,
@@ -530,7 +529,6 @@ func seedTerminalWithTitle(t *testing.T, svc *Service, terminalID, title string)
 	require.NoError(t, svc.Queries.UpsertTerminal(context.Background(), db.UpsertTerminalParams{
 		ID:         terminalID,
 		WorkingDir: t.TempDir(),
-		HomeDir:    t.TempDir(),
 		Title:      title,
 		Screen:     []byte{},
 	}))
@@ -621,7 +619,6 @@ func newRegistryRoot(t *testing.T) (*Service, *testResponseWriter) {
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
 		ID:            "root-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	return svc, w

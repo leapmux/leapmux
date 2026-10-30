@@ -126,7 +126,7 @@ func (s *AppService) RegisterApp(
 	if err := refuseAdminCeilingToNonAdmin(user, scopes); err != nil {
 		return nil, err
 	}
-	params, secret, buildErr := s.buildAppParams(msg, owner, user.ID.String(), source, scopes)
+	params, secret, buildErr := s.buildAppParams(msg, owner, source, scopes)
 	if buildErr != nil {
 		return nil, buildErr
 	}
@@ -736,7 +736,7 @@ func (s *AppService) resolveOwnership(
 // states directly. Every validation rule is the core's, so a redirect-URI
 // rule or a ceiling closure holds on all surfaces or neither.
 func (s *AppService) buildAppParams(
-	msg *leapmuxv1.RegisterAppRequest, owner, createdBy string, source leapmuxv1.AppRegistrationSource, scopes authscope.ScopeSet,
+	msg *leapmuxv1.RegisterAppRequest, owner string, source leapmuxv1.AppRegistrationSource, scopes authscope.ScopeSet,
 ) (store.CreateOAuthClientParams, string, error) {
 	params, secret, err := buildOAuthClientRegistration(s.validator, appRegistrationSpec{
 		name:         msg.GetClientName(),
@@ -751,7 +751,7 @@ func (s *AppService) buildAppParams(
 		elevationAllowed: msg.GetElevationAllowed(),
 		icon:             msg.GetIcon(),
 		iconMediaType:    msg.GetIconMediaType(),
-	}, source, owner, createdBy)
+	}, source, owner)
 	if err != nil {
 		// The Connect surface answers one code with the core's own text: the
 		// distinction between invalid_redirect_uri and

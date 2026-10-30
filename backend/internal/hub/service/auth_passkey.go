@@ -309,8 +309,8 @@ func RevokePasskeyAuthState(ctx context.Context, tx store.Store, userID string) 
 // instead of at each rotation site.
 //
 // generationAlreadyBumped is true only on the recovery completion:
-// CompleteRecovery's row update already moved tokens_revoked_at and
-// auth_generation and returned the committed generation, so the bearer
+// CompleteRecovery's row update already moved auth_generation and
+// returned the committed generation, so the bearer
 // branches revoke rows directly -- auth.RevokeAllUserCredentials would bump
 // the epoch a second time and target an epoch the caller does not hold.
 //

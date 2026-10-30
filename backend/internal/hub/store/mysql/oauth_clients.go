@@ -26,7 +26,6 @@ func fromGetOAuthClientRow(c gendb.GetOAuthClientRow) store.OAuthClient {
 	return store.OAuthClient{
 		ClientID:           c.ClientID,
 		OwnerUserID:        c.OwnerUserID.String,
-		CreatedBy:          c.CreatedByUserID.String,
 		SecretHash:         c.SecretHash,
 		ClientName:         c.ClientName,
 		HasIcon:            sqlutil.CoerceInt64(c.IconBytes) > 0,
@@ -48,7 +47,6 @@ func fromListRow(c gendb.ListOAuthClientsRow) store.OAuthClient {
 	return store.OAuthClient{
 		ClientID:           c.ClientID,
 		OwnerUserID:        c.OwnerUserID.String,
-		CreatedBy:          c.CreatedByUserID.String,
 		SecretHash:         c.SecretHash,
 		ClientName:         c.ClientName,
 		HasIcon:            sqlutil.CoerceInt64(c.IconBytes) > 0,
@@ -76,7 +74,6 @@ func (s *oauthClientStore) Create(ctx context.Context, p store.CreateOAuthClient
 		// Binding "" instead would create a row nobody owns and nobody sees,
 		// because no users.id is ever empty.
 		OwnerUserID:        sqlutil.NullNonEmpty(p.OwnerUserID),
-		CreatedByUserID:    sqlutil.NullNonEmpty(p.CreatedBy),
 		SecretHash:         p.SecretHash,
 		ClientName:         p.ClientName,
 		IconBlob:           p.IconBlob,

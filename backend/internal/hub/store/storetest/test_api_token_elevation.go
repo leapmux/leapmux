@@ -78,7 +78,7 @@ func (s *Suite) testAPITokenElevation(t *testing.T) {
 		dropped, err := st.APITokens().DropElevation(ctx, store.DropAPITokenElevationParams{
 			TokenID: tokenID,
 			UserID:  userid.MustNew(user.ID),
-		}, now())
+		})
 		require.NoError(t, err)
 		assert.EqualValues(t, 1, dropped)
 

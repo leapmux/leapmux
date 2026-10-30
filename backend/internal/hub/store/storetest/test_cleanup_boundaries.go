@@ -256,11 +256,10 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 			{"live", cutoff.Add(time.Millisecond)},
 		} {
 			require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-				ClientID:        oauthapp.ControlCLIClientID,
-				DeviceCode:      "device-" + d.suffix,
-				UserCode:        "USER-" + d.suffix,
-				IntervalSeconds: 5,
-				ExpiresAt:       d.expiresAt,
+				ClientID:   oauthapp.ControlCLIClientID,
+				DeviceCode: "device-" + d.suffix,
+				UserCode:   "USER-" + d.suffix,
+				ExpiresAt:  d.expiresAt,
 			}))
 		}
 
@@ -424,7 +423,6 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 				PrincipalID:         user.ID,
 				CanonicalPhysicalMs: 1,
 				CanonicalLogical:    1,
-				CanonicalClient:     "client",
 				OpCount:             1,
 				Epoch:               1,
 				ExpiresAt:           expiresAt,

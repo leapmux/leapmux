@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -162,14 +163,15 @@ type agentTodoCache = registryCache[cachedTodo]
 // it at each step.
 type agentTodoView = registryView[cachedTodo]
 
-// cachedTodo pairs an Item with the agent_todos `row_key` it persists
-// under. The row_key is the Item's ID when set (incremental Task*
-// path) and a synthetic `snap-N` otherwise (snapshot path for
-// providers without stable per-task ids — TodoWrite / Codex plan /
-// ACP plan). Eviction and per-row updates address rows by row_key.
+// cachedTodo pairs an Item with the agent_todos `seq` it persists under. The
+// seq is the row's key: eviction and per-row updates address rows by it. The
+// Item's ID is the provider's task id when it has one (incremental Task*
+// path) and empty otherwise (snapshot path for providers without stable
+// per-task ids -- TodoWrite / Codex plan / ACP plan); todoIndexByID resolves a
+// task id to its row.
 type cachedTodo struct {
-	item   todoevents.Item
-	rowKey string
+	item todoevents.Item
+	seq  int64
 }
 
 // OutputHandler manages agent output persistence and broadcasting.
@@ -1952,15 +1954,9 @@ func (h *OutputHandler) clearNotifThread(agentID string, owner *transcriptOwner)
 }
 
 // createMessageRow persists a chat-message row, refusing invalid boundary values.
-// Every persisted message must carry a real provider so the client can render it
-// through that provider's renderers; an UNSPECIFIED provider is a persistence bug
-// (the frontend surfaces such a row as `unsupported_provider`). mark_type is also
-// stored as an integer and later rendered as a rail label, so reject unknown enum
-// values before they become misleading clickable dots.
+// mark_type is stored as an integer and later rendered as a rail label, so reject
+// unknown enum values before they become misleading clickable dots.
 func createMessageRow(ctx context.Context, q *db.Queries, params db.CreateMessageParams) (int64, error) {
-	if params.AgentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
-		return 0, fmt.Errorf("refusing to persist message %q for agent %q with UNSPECIFIED agent provider", params.ID, params.AgentID)
-	}
 	// An EMPTY supplement carries no compression, and NONE is what an empty
 	// blob is. The column says the same thing with DEFAULT 1, but the generated
 	// INSERT binds every column, so no caller ever reaches that default. A
@@ -2061,7 +2057,6 @@ func (h *OutputHandler) prepareMessage(agentID string, agentProvider leapmuxv1.A
 		SpanType:                       span.SpanType,
 		SpanColor:                      int64(spanColor),
 		SpanLines:                      spanLines,
-		AgentProvider:                  agentProvider,
 		MarkType:                       workerdb.OptionalStorageEnum(span.MarkType),
 		AssembledKind:                  workerdb.OptionalStorageEnum(assembledKind),
 		Completion:                     workerdb.OptionalStorageEnum(completion),
@@ -2149,7 +2144,7 @@ func (h *OutputHandler) prepareMessageTodo(agentID string, agentProvider leapmux
 	}
 	provider := h.agents.Registry().Plugin(agentProvider)
 	resolved := agent.ResolveMessageContent(provider, content.Clone())
-	event, present := provider.ExtractTodoEvent(span.SpanType, slices.Clone(resolved), h.pairedToolUseLookup(agentID, content.AgentSessionID, span))
+	event, present := provider.ExtractTodoEvent(span.SpanType, slices.Clone(resolved), h.pairedToolUseLookup(provider, agentID, content.AgentSessionID, span))
 	if !present {
 		return nil, nil
 	}
@@ -2300,7 +2295,7 @@ func (h *OutputHandler) persistMessageWithTodoEvent(
 
 type todoUpdateMutation struct {
 	index  int
-	rowKey string
+	seq    int64
 	before todoevents.Item
 	item   todoevents.Item
 }
@@ -2316,7 +2311,7 @@ func reduceTodoUpdate(rows []cachedTodo, event todoevents.Event) (todoUpdateMuta
 	row := rows[idx]
 	return todoUpdateMutation{
 		index:  idx,
-		rowKey: row.rowKey,
+		seq:    row.seq,
 		before: row.item,
 		item:   todoevents.ApplyPatch(row.item, event.Patch),
 	}, true
@@ -2369,7 +2364,10 @@ func (h *OutputHandler) enqueueTodoChange(agentID string, items []todoevents.Ite
 // read that failed, both mean the same thing to the caller, which is that it builds
 // the less detailed row instead of none at all. The nil is memoized too, so a miss
 // costs one query rather than one per parser.
-func (h *OutputHandler) pairedToolUseLookup(agentID, sessionID string, span agent.SpanInfo) func() []byte {
+//
+// provider is the agent's own plugin: the paired request belongs to the same
+// agent, and an agent never changes provider.
+func (h *OutputHandler) pairedToolUseLookup(provider agent.Provider, agentID, sessionID string, span agent.SpanInfo) func() []byte {
 	return sync.OnceValue(func() []byte {
 		message, err := h.readToolRequest(agentID, sessionID, span.SpanID)
 		if err != nil {
@@ -2379,7 +2377,7 @@ func (h *OutputHandler) pairedToolUseLookup(agentID, sessionID string, span agen
 		if message == nil {
 			return nil
 		}
-		return agent.ResolveMessageContent(h.agents.Registry().Plugin(message.Provider), message.Content)
+		return agent.ResolveMessageContent(provider, message.Content)
 	})
 }
 
@@ -2407,7 +2405,15 @@ func (h *OutputHandler) applyTodoEventLocked(ctx context.Context, reg agentTodoV
 		return h.applySnapshotLocked(ctx, reg, ev.Snapshot)
 
 	case todoevents.KindCreate, todoevents.KindDetail:
-		mutated, err := h.upsertTodoLocked(ctx, reg, ev.Kind, ev.Item)
+		// One transaction, as applyMergeLocked's: at the cap the eviction's
+		// DELETE and the insert must commit together, or a failed insert leaves
+		// an unrelated to-do deleted from the table and the cache.
+		mutated := false
+		err := reg.inTransactionLocked(ctx, h.db, func(tx agentTodoView) error {
+			var err error
+			mutated, err = h.upsertTodoLocked(ctx, tx, ev.Kind, ev.Item)
+			return err
+		})
 		if err != nil {
 			return nil, false, err
 		}
@@ -2429,7 +2435,7 @@ func (h *OutputHandler) applyTodoEventLocked(ctx context.Context, reg agentTodoV
 func (h *OutputHandler) applyPreparedTodoUpdateLocked(ctx context.Context, reg agentTodoView, mutation todoUpdateMutation) ([]todoevents.Item, bool, error) {
 	cache := reg.cache
 	if mutation.index < 0 || mutation.index >= len(cache.Rows) ||
-		cache.Rows[mutation.index].rowKey != mutation.rowKey ||
+		cache.Rows[mutation.index].seq != mutation.seq ||
 		cache.Rows[mutation.index].item != mutation.before {
 		return nil, false, fmt.Errorf("prepared todo update no longer matches canonical task %q", mutation.item.ID)
 	}
@@ -2437,18 +2443,33 @@ func (h *OutputHandler) applyPreparedTodoUpdateLocked(ctx context.Context, reg a
 	if mutation.item == mutation.before {
 		return todoItems(cache.Rows), false, nil
 	}
-	if err := reg.queries.UpdateAgentTodo(ctx, db.UpdateAgentTodoParams{
-		Content:     mutation.item.Content,
-		ActiveForm:  mutation.item.ActiveForm,
-		Description: mutation.item.Description,
-		Status:      leapmuxv1.TodoStatus(mutation.item.Status.OrPending()),
-		AgentID:     reg.ownerID,
-		RowKey:      mutation.rowKey,
-	}); err != nil {
+	if err := updateTodoRowLocked(ctx, reg, mutation.seq, mutation.item); err != nil {
 		return nil, false, err
 	}
 	cache.Rows[mutation.index].item = mutation.item
 	return todoItems(cache.Rows), true, nil
+}
+
+// updateTodoRowLocked writes item over the row at seq. The cache mirrors the
+// table, so an update that matches no row means the two diverged; it fails
+// rather than leave the cache holding a row the table does not.
+// Caller must hold the cache's mutex.
+func updateTodoRowLocked(ctx context.Context, reg agentTodoView, seq int64, item todoevents.Item) error {
+	rows, err := reg.queries.UpdateAgentTodo(ctx, db.UpdateAgentTodoParams{
+		Content:     item.Content,
+		ActiveForm:  item.ActiveForm,
+		Description: item.Description,
+		Status:      leapmuxv1.TodoStatus(item.Status.OrPending()),
+		AgentID:     reg.ownerID,
+		Seq:         seq,
+	})
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return fmt.Errorf("agent_todos row %s/%d is gone; the registry cache no longer mirrors the table", reg.ownerID, seq)
+	}
+	return nil
 }
 
 // evictOldestFinishedLocked removes the oldest finished row (completed or
@@ -2513,15 +2534,19 @@ func (h *OutputHandler) upsertTodoLocked(ctx context.Context, reg agentTodoView,
 			return false, nil
 		}
 	}
-	// Pick the next seq from the in-memory mirror so a fresh insert
-	// gets the right ordering without a `MAX(seq)` round-trip. On
-	// CONFLICT the existing row's seq is preserved (the UPSERT
-	// excludes seq from the SET list), so the choice is harmless
-	// when we end up updating in place.
-	if err := reg.queries.UpsertAgentTodo(ctx, db.UpsertAgentTodoParams{
+	if existingIdx >= 0 {
+		if err := updateTodoRowLocked(ctx, reg, cache.Rows[existingIdx].seq, merged); err != nil {
+			return false, err
+		}
+		cache.Rows[existingIdx].item = merged
+		return true, nil
+	}
+	// Pick the next seq from the in-memory mirror so a fresh insert gets the
+	// right ordering without a `MAX(seq)` round-trip.
+	seq := cache.nextSeq
+	if err := reg.queries.InsertAgentTodo(ctx, db.InsertAgentTodoParams{
 		AgentID:     reg.ownerID,
-		RowKey:      item.ID,
-		Seq:         cache.nextSeq,
+		Seq:         seq,
 		TaskID:      item.ID,
 		Content:     merged.Content,
 		ActiveForm:  merged.ActiveForm,
@@ -2530,12 +2555,8 @@ func (h *OutputHandler) upsertTodoLocked(ctx context.Context, reg agentTodoView,
 	}); err != nil {
 		return false, err
 	}
-	if existingIdx < 0 {
-		cache.Rows = append(cache.Rows, cachedTodo{item: merged, rowKey: item.ID})
-		cache.nextSeq++
-	} else {
-		cache.Rows[existingIdx].item = merged
-	}
+	cache.Rows = append(cache.Rows, cachedTodo{item: merged, seq: seq})
+	cache.nextSeq++
 	return true, nil
 }
 
@@ -2574,7 +2595,7 @@ func (h *OutputHandler) applySnapshotLocked(ctx context.Context, reg agentTodoVi
 	}
 	cache.Rows = make([]cachedTodo, len(capped))
 	for i, it := range capped {
-		cache.Rows[i] = cachedTodo{item: it, rowKey: rowKeyFor(it, i+1)}
+		cache.Rows[i] = cachedTodo{item: it, seq: int64(i + 1)}
 	}
 	cache.nextSeq = int64(len(capped)) + 1
 	return todoItems(cache.Rows), true, nil
@@ -2627,7 +2648,6 @@ func (h *OutputHandler) snapshotWriteLocked(ctx context.Context, reg agentTodoVi
 	for i, it := range capped {
 		if err := q.InsertAgentTodo(ctx, db.InsertAgentTodoParams{
 			AgentID:     agentID,
-			RowKey:      rowKeyFor(it, i+1),
 			Seq:         int64(i + 1),
 			TaskID:      it.ID,
 			Content:     it.Content,
@@ -2639,16 +2659,6 @@ func (h *OutputHandler) snapshotWriteLocked(ctx context.Context, reg agentTodoVi
 		}
 	}
 	return nil
-}
-
-// rowKeyFor returns the agent_todos.row_key for a snapshot Item:
-// the Item's ID when set (Claude TaskList), else a synthetic
-// `snap-<seq>` (TodoWrite / Codex / ACP carry no stable per-row id).
-func rowKeyFor(it todoevents.Item, seq int) string {
-	if it.ID != "" {
-		return it.ID
-	}
-	return fmt.Sprintf("snap-%d", seq)
 }
 
 // itemFromRow projects a persisted agent_todos row into the in-memory
@@ -2692,12 +2702,12 @@ func (h *OutputHandler) todoOps() registryOps[cachedTodo] {
 			}
 			entries := make([]seedEntry[cachedTodo], len(rows))
 			for i, r := range rows {
-				entries[i] = seedEntry[cachedTodo]{item: cachedTodo{item: itemFromRow(r), rowKey: r.RowKey}, seq: r.Seq}
+				entries[i] = seedEntry[cachedTodo]{item: cachedTodo{item: itemFromRow(r), seq: r.Seq}, seq: r.Seq}
 			}
 			return entries, nil
 		},
-		keyOf:  func(r cachedTodo) string { return r.rowKey },
-		setKey: func(r *cachedTodo, key string) { r.rowKey = key },
+		// A to-do row never changes key, so the registry has no setKey.
+		keyOf: func(r cachedTodo) string { return todoSeqKey(r.seq) },
 		isFinished: func(r cachedTodo) bool {
 			return r.item.Status.IsFinished()
 		},
@@ -2705,11 +2715,11 @@ func (h *OutputHandler) todoOps() registryOps[cachedTodo] {
 			return !r.item.Status.IsFinished()
 		},
 		deleteByKey: func(ctx context.Context, q *db.Queries, ownerID, key string) error {
-			_, err := q.DeleteAgentTodoByRowKey(ctx, db.DeleteAgentTodoByRowKeyParams{
-				AgentID: ownerID,
-				RowKey:  key,
-			})
-			return err
+			seq, err := strconv.ParseInt(key, 10, 64)
+			if err != nil {
+				return fmt.Errorf("agent_todos registry key %q is not a seq: %w", key, err)
+			}
+			return q.DeleteAgentTodoBySeq(ctx, db.DeleteAgentTodoBySeqParams{AgentID: ownerID, Seq: seq})
 		},
 		// One cap pool (bucketOf nil), so the seed limit is the cap itself.
 		cap:   todoevents.MaxTodos,
@@ -2731,8 +2741,11 @@ func (h *OutputHandler) LoadTodos(ctx context.Context, agentID string) ([]todoev
 	return todoItems(cache.Rows), nil
 }
 
+// todoSeqKey is a to-do row's registry key: its seq, in decimal.
+func todoSeqKey(seq int64) string { return strconv.FormatInt(seq, 10) }
+
 // todoItems projects the cache's rows into a freshly-allocated slice of the
-// items (no row_keys). Used to build the post-mutation broadcast payload.
+// items (no seqs). Used to build the post-mutation broadcast payload.
 // Caller must hold the cache's mutex.
 func todoItems(rows []cachedTodo) []todoevents.Item {
 	out := make([]todoevents.Item, len(rows))
@@ -2743,10 +2756,9 @@ func todoItems(rows []cachedTodo) []todoevents.Item {
 }
 
 // todoIndexByID returns the row index for the given task id, or -1 when not
-// present. Todos are addressed by task id for create/update/delete (the
-// registry row_key matches the id for incremental Task* events but diverges to
-// a synthetic `snap-N` for snapshot rows), so this lookup is by item.ID rather
-// than by the registryCache row_key. Caller must hold the cache's mutex.
+// present. Providers address to-dos by task id for create/update/delete, and
+// the registry keys a row by its seq, so this lookup is by item.ID rather than
+// by the registry key. Caller must hold the cache's mutex.
 func todoIndexByID(rows []cachedTodo, id string) int {
 	return slices.IndexFunc(rows, func(r cachedTodo) bool { return r.item.ID == id })
 }

@@ -234,8 +234,8 @@ func (svc *Service) processControlResponse(dbAgent db.Agent, request *leapmuxv1.
 		FollowUpKind: plan.resolution.FollowUp.Kind, NonBlocking: plan.requestMeta.NonBlocking,
 		PlanApprovalSettings: plan.settingsJSON,
 		SourceSeq:            plan.requestMeta.SourceSeq,
-		AgentSessionID:       plan.requestMeta.AgentSessionID, AgentProvider: dbAgent.AgentProvider,
-		InputID: controlResponseQueueID(agentID, plan),
+		AgentSessionID:       plan.requestMeta.AgentSessionID,
+		InputID:              controlResponseQueueID(agentID, plan),
 	})
 	if err != nil {
 		return fmt.Errorf("reserve the control response: %w", err)

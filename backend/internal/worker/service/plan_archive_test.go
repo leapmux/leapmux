@@ -183,7 +183,6 @@ func makeAgentWithPlanPath(t *testing.T, queries *db.Queries, agentID, planPath 
 	require.NoError(t, queries.CreateAgent(context.Background(), db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         agentID,
 		WorkingDir: t.TempDir(),
-		HomeDir:    t.TempDir(),
 		Title:      "test agent",
 	}))
 	require.NoError(t, queries.UpdateAgentPlan(context.Background(), db.UpdateAgentPlanParams{

@@ -499,11 +499,10 @@ message AdminDelegationToken {
   string username = 3;
   bool owner_deleted = 4;
   string worker_id = 5;
-  string agent_id = 6;
-  google.protobuf.Timestamp created_at = 7;
-  google.protobuf.Timestamp last_used_at = 8;
-  google.protobuf.Timestamp expires_at = 9;
-  google.protobuf.Timestamp revoked_at = 10;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp last_used_at = 7;
+  google.protobuf.Timestamp expires_at = 8;
+  google.protobuf.Timestamp revoked_at = 9;
 }
 
 message ListDelegationTokensRequest {

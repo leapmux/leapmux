@@ -59,7 +59,7 @@ func createTerminalRow(ctx context.Context, t *testing.T, svc *Service, id strin
 	t.Helper()
 	workingDir := t.TempDir()
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: id, WorkingDir: workingDir, HomeDir: workingDir,
+		ID: id, WorkingDir: workingDir,
 		Cols: 80, Rows: 24, Screen: []byte{},
 	}))
 	return workingDir

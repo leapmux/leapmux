@@ -21,7 +21,6 @@ func TestControlResponseReservationRequiresTheCurrentRequestInstance(t *testing.
 	})
 	deliveryID, err := svc.Output.claimControlResponseAnswer(db.StoreControlResponseAnswerParams{
 		AgentID: "agent-1", RequestID: "request", ClaimToken: "old-claim",
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	})
 	require.NoError(t, err)
 	require.Empty(t, deliveryID, "an earlier metadata read must not reserve a replaced request")
@@ -32,7 +31,7 @@ func TestControlResponseReservationRequiresTheCurrentRequestInstance(t *testing.
 func createClaimTestAgent(t *testing.T, svc *Service, id string) {
 	t.Helper()
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
-		ID: id, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: id, WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 }
@@ -133,7 +132,6 @@ func TestClaimControlResponseAnswerRejectsDatabaseFailure(t *testing.T) {
 	require.NoError(t, err)
 	deliveryID, err := svc.Output.claimControlResponseAnswer(db.StoreControlResponseAnswerParams{
 		AgentID: "agent-1", RequestID: "req-1", ClaimToken: "tokA",
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	})
 	require.ErrorContains(t, err, "reservation unavailable")
 	require.Empty(t, deliveryID, "a failed reservation must not permit delivery")
@@ -182,7 +180,6 @@ func claimControlResponseForTest(t *testing.T, output *OutputHandler, agentID, r
 	t.Helper()
 	deliveryID, err := output.claimControlResponseAnswer(db.StoreControlResponseAnswerParams{
 		AgentID: agentID, RequestID: requestID, ClaimToken: claimToken,
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	})
 	require.NoError(t, err)
 	return deliveryID != ""

@@ -53,12 +53,8 @@ func (h *mysqlTestHelper) SetLastActiveAt(ctx context.Context, id string, lastAc
 	return sqlutil.SetLastActiveAt(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, id, lastActiveAt)
 }
 
-func (h *mysqlTestHelper) SetRevocationEventRevokedAt(ctx context.Context, id string, revokedAt time.Time) error {
-	return h.setTimestamp(ctx, sqlutil.TimestampColumnRevocationEventRevokedAt, id, revokedAt)
-}
-
-func (h *mysqlTestHelper) setTimestamp(ctx context.Context, column sqlutil.TimestampColumn, id string, at any) error {
-	return sqlutil.SetTimestampColumn(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, column, id, at)
+func (h *mysqlTestHelper) SetDeregisteringAt(ctx context.Context, workerID string, deregisteringAt time.Time) error {
+	return sqlutil.SetDeregisteringAt(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, workerID, deregisteringAt)
 }
 
 // ListAllOwnedTabs reads workspace_tab_owned without an owner predicate. See

@@ -32,9 +32,6 @@ CREATE TABLE users (
     -- Counts attempts against the active pending_email_token. Reset to 0
     -- whenever a new token is issued; force-expires the token at >5.
     pending_email_attempts   INTEGER NOT NULL DEFAULT 0,
-    -- When the pending-mail gate opens again. The mint (SetPendingEmail)
-    -- writes it one resend cooldown ahead; the gate compares this column
-    -- directly rather than deriving from the expiry, because
     -- When the pending-mail gate opens again: the mint arms it one
     -- resend cooldown ahead, a failed-send clear one failure window
     -- ahead, and every other clear NULLs it. The gate reads this, never
@@ -61,15 +58,12 @@ CREATE TABLE users (
     prefs          TEXT NOT NULL DEFAULT '{}',
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    -- High-water mark bumped whenever this user's auth basis is
-    -- bulk-revoked. Each bump also records a durable user-token
-    -- revocation event so cookie channels and bearer caches die together
-    -- with admin-CLI mutations that run in a separate process.
-    tokens_revoked_at        TIMESTAMPTZ,
     -- Monotonic credential epoch. Sessions and bearer rows copy this
     -- value when issued; user-wide revocation increments it so stale
     -- credentials fail without depending on timestamp precision or
-    -- cross-host clock agreement.
+    -- cross-host clock agreement. Each increment also records a durable
+    -- user-token revocation event, which closes cookie channels and evicts
+    -- bearer caches across hub processes.
     auth_generation          BIGINT NOT NULL DEFAULT 0,
     deleted_at     TIMESTAMPTZ
 );
@@ -133,9 +127,19 @@ CREATE TABLE workers (
     id            TEXT COLLATE "C" PRIMARY KEY,
     auth_token    TEXT COLLATE "C" NOT NULL UNIQUE,
     registered_by TEXT COLLATE "C" NOT NULL REFERENCES users(id),
-    status        INTEGER NOT NULL DEFAULT 1,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_seen_at  TIMESTAMPTZ,
+    -- Set when the worker is deregistered; the persisted deregistration intent.
+    -- The store derives the reported WorkerStatus from this column and
+    -- deleted_at, and no column stores it:
+    --   ACTIVE:        deregistering_at IS NULL     AND deleted_at IS NULL
+    --   DEREGISTERING: deregistering_at IS NOT NULL AND deleted_at IS NULL
+    --   DELETED:       deleted_at IS NOT NULL
+    -- A deregistering worker is told to stop whenever it is connected, and a
+    -- valid acknowledgement deletes it. The cleanup loop deletes a worker
+    -- still deregistering after the grace period
+    -- (CompleteStaleDeregistrations).
+    deregistering_at TIMESTAMPTZ,
     public_key    BYTEA NOT NULL DEFAULT '',
     mlkem_public_key  BYTEA NOT NULL DEFAULT '',
     slhdsa_public_key BYTEA NOT NULL DEFAULT '',
@@ -148,43 +152,14 @@ CREATE TABLE workers (
     auto_registered BOOLEAN NOT NULL DEFAULT FALSE,
     deleted_at    TIMESTAMPTZ
 );
--- Non-partial on purpose (matches MySQL): ListWorkersByUserID and
--- ListWorkersAdminByUserAndStatus filter on registered_by + status with NO
--- deleted_at predicate, so a WHERE deleted_at IS NULL partial index would be
--- ineligible and every page would fall back to a full table scan plus sort.
--- The leading registered_by column also serves HardDeleteUsersBefore's
--- NOT EXISTS (workers.registered_by = users.id) point probe over ALL rows
--- (including soft-deleted), so no separate registered_by-only index is needed.
-CREATE INDEX idx_workers_registered_by_status_created ON workers(registered_by, status, created_at DESC, id DESC);
--- Admin status-only listing (ListWorkersAdminByStatus) cannot use the
--- (registered_by, status, created_at) index because registered_by is the
--- leading column. Non-partial on purpose: the query carries no deleted_at
--- filter (status=3 lists soft-deleted workers), so a WHERE deleted_at IS NULL
--- partial index would be ineligible and every page would fall back to a full
--- table scan plus sort.
-CREATE INDEX idx_workers_status_created ON workers(status, created_at DESC, id DESC);
--- Admin per-user listing (ListWorkersAdminByUser): see the sqlite migration for
--- the full rationale. Partial on deleted_at IS NULL because the query filters
--- it; the (registered_by, status, created_at, id) composite above can't serve
--- this query's ORDER BY (status breaks the created_at order within a
--- registered_by prefix).
+-- See the sqlite migration for which query each index serves.
+CREATE INDEX idx_workers_registered_by ON workers(registered_by);
 CREATE INDEX idx_workers_registered_by_created ON workers(registered_by, created_at DESC, id DESC) WHERE deleted_at IS NULL;
-CREATE INDEX idx_workers_deleted_at ON workers(deleted_at) WHERE deleted_at IS NOT NULL;
 CREATE INDEX idx_workers_created_at ON workers(created_at DESC, id DESC) WHERE deleted_at IS NULL;
-
--- Worker notifications (persistent queue for reliable delivery)
-CREATE TABLE worker_notifications (
-    id           TEXT COLLATE "C" PRIMARY KEY,
-    worker_id    TEXT COLLATE "C" NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
-    type         INTEGER NOT NULL,
-    payload      TEXT NOT NULL DEFAULT '{}',
-    status       INTEGER NOT NULL DEFAULT 1,
-    attempts     INTEGER NOT NULL DEFAULT 0,
-    max_attempts INTEGER NOT NULL DEFAULT 5,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    delivered_at TIMESTAMPTZ
-);
-CREATE INDEX idx_worker_notifications_worker_status ON worker_notifications(worker_id, status);
+CREATE INDEX idx_workers_registered_by_deleted_created ON workers(registered_by, created_at DESC, id DESC) WHERE deleted_at IS NOT NULL;
+CREATE INDEX idx_workers_deleted_created ON workers(created_at DESC, id DESC) WHERE deleted_at IS NOT NULL;
+CREATE INDEX idx_workers_deleted_at ON workers(deleted_at) WHERE deleted_at IS NOT NULL;
+CREATE INDEX idx_workers_deregistering ON workers(deregistering_at) WHERE deregistering_at IS NOT NULL AND deleted_at IS NULL;
 
 -- Active worker registration keys.
 --
@@ -214,9 +189,14 @@ CREATE TABLE workspace_sections (
     name         TEXT NOT NULL,
     -- COLLATE "C" on every position column: ORDER BY position must sort byte-wise to match the Go/TS lexorank comparator regardless of alphabet.
     position     TEXT COLLATE "C" NOT NULL,
-    section_type INTEGER NOT NULL DEFAULT 1,
-    sidebar      INTEGER NOT NULL DEFAULT 1,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    -- SectionType and Sidebar ordinals (proto/leapmux/v1/section.proto).
+    -- DEFAULT 1 is SECTION_TYPE_WORKSPACES_CUSTOM and SIDEBAR_LEFT.
+    -- TestEnumColumnChecksMatchTheirProtoRanges checks both ranges.
+    section_type INTEGER NOT NULL DEFAULT 1 CHECK (section_type BETWEEN 1 AND 7),
+    sidebar      INTEGER NOT NULL DEFAULT 1 CHECK (sidebar BETWEEN 1 AND 2),
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- The parent key of workspace_section_items' composite foreign key.
+    UNIQUE (id, user_id)
 );
 CREATE INDEX idx_workspace_sections_user_id ON workspace_sections(user_id);
 -- One default section of each type per user. section_type = 1 is
@@ -236,50 +216,58 @@ CREATE TABLE workspaces (
     id            TEXT COLLATE "C" PRIMARY KEY,
     owner_user_id TEXT COLLATE "C" NOT NULL REFERENCES users(id),
     title         TEXT NOT NULL DEFAULT '',
-    is_deleted    BOOLEAN NOT NULL DEFAULT FALSE,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at    TIMESTAMPTZ
+    deleted_at    TIMESTAMPTZ,
+    -- The parent key of the composite foreign keys that tie a placement and a
+    -- tab row to a workspace their own user owns.
+    UNIQUE (id, owner_user_id)
 );
-CREATE INDEX idx_workspaces_owner_live ON workspaces(owner_user_id) WHERE is_deleted = FALSE;
+CREATE INDEX idx_workspaces_owner_live ON workspaces(owner_user_id) WHERE deleted_at IS NULL;
 CREATE INDEX idx_workspaces_owner_user_id ON workspaces(owner_user_id);
 CREATE INDEX idx_workspaces_deleted_at ON workspaces(deleted_at) WHERE deleted_at IS NOT NULL;
 
--- Workspace-to-section assignments (per-user)
+-- Workspace-to-section placements. Workspace access is owner-only, so a
+-- workspace has at most one placement, keyed by workspace_id. The two
+-- composite foreign keys make a placement whose user differs from the
+-- workspace's owner or from the section's user impossible to store: the
+-- placement's user must own both.
 CREATE TABLE workspace_section_items (
-    user_id      TEXT COLLATE "C" NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    workspace_id TEXT COLLATE "C" NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    section_id   TEXT COLLATE "C" NOT NULL REFERENCES workspace_sections(id) ON DELETE CASCADE,
+    workspace_id TEXT COLLATE "C" NOT NULL PRIMARY KEY,
+    user_id      TEXT COLLATE "C" NOT NULL,
+    section_id   TEXT COLLATE "C" NOT NULL,
     position     TEXT COLLATE "C" NOT NULL,
-    PRIMARY KEY (user_id, workspace_id)
+    -- The placement's user must own both the workspace and the section.
+    FOREIGN KEY (workspace_id, user_id) REFERENCES workspaces(id, owner_user_id) ON DELETE CASCADE,
+    FOREIGN KEY (section_id, user_id) REFERENCES workspace_sections(id, user_id) ON DELETE CASCADE
 );
-CREATE INDEX idx_workspace_section_items_section ON workspace_section_items(section_id);
+CREATE INDEX idx_workspace_section_items_user ON workspace_section_items(user_id);
+CREATE INDEX idx_workspace_section_items_section ON workspace_section_items(section_id, user_id);
 
 -- See sqlite migration for full rationale on the CRDT schema (op
--- journal, materialized state blob, derived tab views, dedup table,
+-- journal, materialized state blob, derived tab index, dedup table,
 -- and lifecycle outbox).
 CREATE TABLE user_op_batches (
     user_id        TEXT COLLATE "C" NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     physical_ms   BIGINT NOT NULL,
     logical       BIGINT NOT NULL,
-    last_logical  BIGINT NOT NULL,
-    origin_client TEXT COLLATE "C" NOT NULL,
-    principal_id  TEXT COLLATE "C" NOT NULL,
     batch_id      TEXT COLLATE "C" NOT NULL,
-    body_hash     BYTEA NOT NULL,
     batch_payload BYTEA NOT NULL,
     transitions_payload BYTEA NOT NULL,
     op_count      INTEGER NOT NULL CHECK (op_count > 0),
-    epoch         BIGINT NOT NULL,
-    committed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),  -- operator-facing audit stamp only; NOT a retention predicate (see idx_user_op_batches_physical_ms)
-    PRIMARY KEY (user_id, physical_ms, logical, origin_client)
+    PRIMARY KEY (user_id, physical_ms, logical)
 );
-CREATE UNIQUE INDEX idx_user_op_batches_dedup ON user_op_batches(user_id, batch_id);
 -- Backs DeleteUserOpBatchesBeforePhysical, the cross-user retention sweep.
 -- The PK leads with user_id, which that query does not bind, so without this
 -- the hourly sweep full-scans every user's rows -- including the final pass
 -- that exists only to prove nothing is left to delete.
 CREATE INDEX idx_user_op_batches_physical_ms ON user_op_batches(physical_ms);
 
+-- One materialized UserCrdtState blob per user. Only the compaction pass
+-- rewrites this row: when the compaction watermark advances, when the epoch
+-- rotates, and on the first persist of an epoch start that Bootstrap stamped.
+-- Per-batch commits update only user_op_batches + the tab index to keep the
+-- hot path off the multi-MB blob. The epoch (current_epoch, epoch_started_at)
+-- lives in the blob, which LoadState reads; no column copies it.
 CREATE TABLE user_state (
     user_id           TEXT COLLATE "C" PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     state_payload    BYTEA NOT NULL,
@@ -292,46 +280,35 @@ CREATE TABLE user_state (
     -- a user as state_payload + every batch ABOVE this watermark, so a batch at
     -- or below it is absorbed and a batch above it is the sole surviving copy
     -- of those ops. The cross-user retention sweep joins on it for that reason.
-    compaction_physical_ms BIGINT NOT NULL DEFAULT 0,
-    current_epoch    BIGINT NOT NULL DEFAULT 1,
-    epoch_started_at TIMESTAMPTZ NOT NULL,
-    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    compaction_physical_ms BIGINT NOT NULL DEFAULT 0
 );
 
+-- The derived tab index. See the sqlite migration for the full rationale.
+-- `rendered` marks the rows ListTabs, GetTab and LocateTab read; the
+-- composite foreign key ties a row to a workspace its own user owns.
 CREATE TABLE workspace_tab_owned (
-    -- The users(id) FK mirrors the sibling CRDT tables (user_op_batches,
-    -- user_state, user_recent_batch_ids, lifecycle_outbox): without it a
-    -- blank-owner row is insertable but no delete path can bind it away.
-    user_id      TEXT COLLATE "C" NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    workspace_id TEXT COLLATE "C" NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    tab_type     INTEGER NOT NULL,
+    user_id      TEXT COLLATE "C" NOT NULL,
+    workspace_id TEXT COLLATE "C" NOT NULL,
+    -- A TabType ordinal.
+    tab_type     INTEGER NOT NULL CHECK (tab_type BETWEEN 1 AND 4),
     tab_id       TEXT COLLATE "C" NOT NULL,
     worker_id    TEXT COLLATE "C" NOT NULL,
     tile_id      TEXT COLLATE "C" NOT NULL,
     position     TEXT COLLATE "C" NOT NULL,
-    PRIMARY KEY (user_id, tab_id)
+    -- No DEFAULT: SQL that omits it fails instead of storing "not rendered".
+    rendered     BOOLEAN NOT NULL,
+    PRIMARY KEY (user_id, tab_id),
+    FOREIGN KEY (workspace_id, user_id) REFERENCES workspaces(id, owner_user_id) ON DELETE CASCADE
 );
 -- (user_id, worker_id), not worker_id alone: ListOwnedTabsByWorker binds both,
 -- so a single-column index could only seek worker_id and then re-filter every
 -- match by owner.
 CREATE INDEX idx_workspace_tab_owned_worker    ON workspace_tab_owned(user_id, worker_id);
-CREATE INDEX idx_workspace_tab_owned_workspace ON workspace_tab_owned(workspace_id);
-
-CREATE TABLE workspace_tab_rendered (
-    -- Same users(id) FK as workspace_tab_owned above.
-    user_id      TEXT COLLATE "C" NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    workspace_id TEXT COLLATE "C" NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    tab_type     INTEGER NOT NULL,
-    tab_id       TEXT COLLATE "C" NOT NULL,
-    worker_id    TEXT COLLATE "C" NOT NULL,
-    tile_id      TEXT COLLATE "C" NOT NULL,
-    position     TEXT COLLATE "C" NOT NULL,
-    PRIMARY KEY (user_id, tab_id)
-);
-CREATE INDEX idx_workspace_tab_rendered_workspace ON workspace_tab_rendered(workspace_id);
--- No tab_id-only index: LocateAccessibleRenderedTab now binds user_id as well,
--- so PRIMARY KEY (user_id, tab_id) serves it as a point lookup. A standalone
--- tab_id index would be write amplification with no reader.
+-- Leads with (workspace_id, user_id), the composite foreign key's columns, so
+-- it serves both the workspace delete cascade and the per-workspace readers.
+CREATE INDEX idx_workspace_tab_owned_workspace ON workspace_tab_owned(workspace_id, user_id);
+-- No tab_id-only index: LocateAccessibleRenderedTab binds user_id as well, so
+-- PRIMARY KEY (user_id, tab_id) serves it as a point lookup.
 
 CREATE TABLE user_recent_batch_ids (
     user_id                TEXT COLLATE "C" NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -340,7 +317,6 @@ CREATE TABLE user_recent_batch_ids (
     principal_id          TEXT COLLATE "C" NOT NULL,
     canonical_physical_ms BIGINT NOT NULL,
     canonical_logical     BIGINT NOT NULL,
-    canonical_client      TEXT COLLATE "C" NOT NULL,
     op_count              INTEGER NOT NULL CHECK (op_count > 0),
     epoch                 BIGINT NOT NULL,
     expires_at            TIMESTAMPTZ NOT NULL,
@@ -357,7 +333,6 @@ CREATE TABLE lifecycle_outbox (
     -- that branch unreachable.
     op_type     SMALLINT NOT NULL CHECK (op_type BETWEEN 1 AND 3),
     payload     BYTEA NOT NULL,
-    enqueued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     consumed_at TIMESTAMPTZ
 );
 CREATE INDEX idx_lifecycle_outbox_pending ON lifecycle_outbox(user_id, id) WHERE consumed_at IS NULL;
@@ -371,7 +346,6 @@ CREATE TABLE revocation_events (
     kind       SMALLINT NOT NULL CHECK (kind BETWEEN 1 AND 7),
     subject_id TEXT COLLATE "C" NOT NULL,
     user_id    TEXT COLLATE "C" NOT NULL,
-    revoked_at TIMESTAMPTZ NOT NULL,
     user_auth_generation BIGINT NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     seq BIGINT UNIQUE CHECK (seq IS NULL OR seq > 0),
@@ -402,7 +376,6 @@ CREATE TABLE oauth_clients (
     -- NULL = hub-wide; non-NULL = that user's private app. One column carries
     -- the whole visibility rule.
     owner_user_id         TEXT COLLATE "C" REFERENCES users(id) ON DELETE CASCADE,
-    created_by_user_id    TEXT COLLATE "C" REFERENCES users(id) ON DELETE SET NULL,
     -- NULL is a PUBLIC client and non-NULL is a CONFIDENTIAL one.
     secret_hash           BYTEA,
     client_name           TEXT NOT NULL,
@@ -462,7 +435,6 @@ CREATE TABLE api_tokens (
     created_at                    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     auth_generation               BIGINT NOT NULL DEFAULT 0,
     last_used_at                  TIMESTAMPTZ,
-    last_rotated_at               TIMESTAMPTZ,
     expires_at                    TIMESTAMPTZ,
     refresh_expires_at            TIMESTAMPTZ,
     revoked_at                    TIMESTAMPTZ,
@@ -509,10 +481,6 @@ CREATE TABLE delegation_tokens (
     id                            TEXT COLLATE "C" PRIMARY KEY,
     user_id                       TEXT COLLATE "C" NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     worker_id                     TEXT COLLATE "C" NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
-    agent_id                      TEXT COLLATE "C" NOT NULL DEFAULT '',
-    terminal_id                   TEXT COLLATE "C" NOT NULL DEFAULT '',
-    issued_for_tab_id             TEXT COLLATE "C" NOT NULL DEFAULT '',
-    issued_for_tab_type           INTEGER NOT NULL DEFAULT 0,
     -- What the minting worker delegated, already narrowed to the delegation
     -- ceiling. No DEFAULT, as on api_tokens.
     granted_scopes                TEXT NOT NULL,
@@ -526,7 +494,8 @@ CREATE TABLE delegation_tokens (
     revoked_at                    TIMESTAMPTZ
 );
 CREATE INDEX idx_delegation_tokens_user ON delegation_tokens(user_id);
-CREATE INDEX idx_delegation_tokens_worker_agent ON delegation_tokens(worker_id, agent_id);
+-- Serves the worker_id foreign key and its ON DELETE CASCADE.
+CREATE INDEX idx_delegation_tokens_worker ON delegation_tokens(worker_id);
 CREATE INDEX idx_delegation_tokens_revoked_at ON delegation_tokens(revoked_at) WHERE revoked_at IS NOT NULL;
 -- Keyset index for the admin ListAllDelegationTokens listing (see
 -- idx_api_tokens_created_at for the rationale).
@@ -550,9 +519,12 @@ CREATE TABLE device_authorizations (
     -- What the approval granted. It binds at the consent.
     granted_scopes        TEXT NOT NULL DEFAULT '',
     user_id               TEXT COLLATE "C" REFERENCES users(id) ON DELETE CASCADE,
-    approved              INTEGER NOT NULL DEFAULT 0,        -- 0 pending, 1 approved, 2 denied
+    -- Where the authorization stands: a DeviceAuthorizationState ordinal
+    -- (proto/leapmux/v1/hub_storage.proto), 1 pending, 2 approved, 3 denied.
+    -- No DEFAULT: the create binds PENDING, so an unstated state fails the
+    -- INSERT. TestEnumColumnChecksMatchTheirProtoRanges checks the range.
+    state                 INTEGER NOT NULL CHECK (state BETWEEN 1 AND 3),
     last_polled_at        TIMESTAMPTZ,
-    interval_seconds      INTEGER NOT NULL DEFAULT 5,
     created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at            TIMESTAMPTZ NOT NULL,
     consumed_at           TIMESTAMPTZ,
@@ -650,7 +622,11 @@ CREATE TABLE oauth_states (
     -- The session a REAUTH state elevates on success. Empty for a LOGIN state.
     session_id      TEXT COLLATE "C" NOT NULL DEFAULT '',
     expires_at      TIMESTAMPTZ NOT NULL,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- A REAUTH (2) state carries the session it elevates, and a LOGIN state
+    -- carries none. TestOAuthStatePurposeReauthNumbering pins the literal 2,
+    -- which a constraint cannot take as a parameter.
+    CHECK ((purpose = 2) = (session_id <> ''))
 );
 
 -- Pending OAuth signups (new users choosing their username)
@@ -761,7 +737,6 @@ DROP TABLE IF EXISTS oauth_user_links;
 DROP TABLE IF EXISTS oauth_providers;
 DROP TABLE IF EXISTS lifecycle_outbox;
 DROP TABLE IF EXISTS user_recent_batch_ids;
-DROP TABLE IF EXISTS workspace_tab_rendered;
 DROP TABLE IF EXISTS workspace_tab_owned;
 DROP TABLE IF EXISTS user_state;
 DROP TABLE IF EXISTS user_op_batches;
@@ -769,7 +744,6 @@ DROP TABLE IF EXISTS workspace_section_items;
 DROP TABLE IF EXISTS workspace_sections;
 DROP TABLE IF EXISTS workspaces;
 DROP TABLE IF EXISTS worker_registration_keys;
-DROP TABLE IF EXISTS worker_notifications;
 DROP TABLE IF EXISTS workers;
 DROP TABLE IF EXISTS user_sessions;
 DROP TABLE IF EXISTS users;

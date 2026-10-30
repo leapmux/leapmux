@@ -384,7 +384,7 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
 			ClientID:   clientID,
 			DeviceCode: id.Generate(), UserCode: "ABC-DEF",
-			IntervalSeconds: 5, ExpiresAt: time.Now().Add(10 * time.Minute),
+			ExpiresAt: time.Now().Add(10 * time.Minute),
 		}))
 		require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
 			Code: id.Generate(), UserID: owner, ClientID: clientID,
@@ -504,7 +504,6 @@ func seedApp(t *testing.T, st store.Store, name, owner string, source leapmuxv1.
 	_, err := st.OAuthClients().Create(context.Background(), store.CreateOAuthClientParams{
 		ClientID:           clientID,
 		OwnerUserID:        owner,
-		CreatedBy:          owner,
 		ClientName:         name,
 		RedirectURIs:       "https://app.example.com/callback",
 		Scopes:             "workspace:read",

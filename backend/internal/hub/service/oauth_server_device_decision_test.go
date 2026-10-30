@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 // Deny is EVERY value that is not "allow", including an ABSENT one, and the
@@ -36,7 +38,7 @@ func TestDeviceApproval_AnAbsentDecisionDeniesFinally(t *testing.T) {
 
 	row, err := env.store.DeviceAuthorizations().Get(ctx, deviceCode)
 	require.NoError(t, err)
-	assert.EqualValues(t, 2, row.Approved, "an absent decision must record a denial")
+	assert.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_DENIED, row.State, "an absent decision must record a denial")
 	assert.Empty(t, row.GrantedScopes, "a denial grants nothing")
 
 	// A SECOND post, this time saying allow, must change nothing. Without
@@ -48,7 +50,7 @@ func TestDeviceApproval_AnAbsentDecisionDeniesFinally(t *testing.T) {
 
 	after, err := env.store.DeviceAuthorizations().Get(ctx, deviceCode)
 	require.NoError(t, err)
-	assert.EqualValues(t, 2, after.Approved, "a denial is final")
+	assert.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_DENIED, after.State, "a denial is final")
 	assert.Empty(t, after.UserID, "a denied grant must never bind an account")
 }
 

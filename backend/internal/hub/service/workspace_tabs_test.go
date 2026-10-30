@@ -16,73 +16,81 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
-// renderedTabCollision seeds the one shape that makes the tab lookups'
-// tenancy axis observable: two users whose rendered rows carry the SAME
-// (workspace_id, tab_type, tab_id).
+// renderedTabCollision seeds the shape that makes the tab lookups' tenancy
+// axis observable: two users whose rendered rows carry the SAME
+// (tab_type, tab_id), each in a workspace of their own.
 //
-// That is legal, not contrived. workspace_tab_rendered is keyed
-// (user_id, tab_id) and its workspace_id is a plain FK, so any user's row may
-// name any existing workspace, and a tab id is unique only within one user.
-// The stranger's row is inserted FIRST so a lookup that resolves by
-// index order rather than by owner reaches it.
+// That is legal, not contrived: a tab id is unique only within one user. The
+// composite workspace key keeps each row inside its own user's workspace, so
+// the two rows cannot share one. The stranger's row is inserted FIRST so a
+// lookup that resolves by index order rather than by owner reaches it.
 //
-// Returns the workspace the owner owns, plus each side's tile id -- the tile
-// is what distinguishes the two rows in an assertion.
-func renderedTabCollision(t *testing.T, st store.Store) (ownerID, strangerID, wsID, ownerTile, strangerTile string) {
+// Returns each side's workspace and tile id -- the tile is what distinguishes
+// the two rows in an assertion.
+func renderedTabCollision(t *testing.T, st store.Store) (ownerID, strangerID, ownerWS, strangerWS, ownerTile, strangerTile string) {
 	t.Helper()
 	ctx := context.Background()
 
 	owner := storetest.SeedUser(t, st, "tabs-owner")
 	stranger := storetest.SeedUser(t, st, "tabs-stranger")
-	wsID = storetest.SeedWorkspace(t, st, owner.ID, "Owned")
+	ownerWS = storetest.SeedWorkspace(t, st, owner.ID, "Owned")
+	strangerWS = storetest.SeedWorkspace(t, st, stranger.ID, "Stranger's")
 	ownerWorker := storetest.SeedWorker(t, st, owner.ID)
 	strangerWorker := storetest.SeedWorker(t, st, stranger.ID)
 
 	const tabID = "shared-tab-id"
-	for _, row := range []store.UpsertRenderedTabParams{
+	for _, row := range []store.UpsertTabParams{
 		{
-			UserID: userid.MustNew(stranger.ID), WorkspaceID: wsID,
+			UserID: userid.MustNew(stranger.ID), WorkspaceID: strangerWS,
 			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: tabID,
 			WorkerID: strangerWorker.ID, TileID: "tile-stranger", Position: "a0",
+			Rendered: true,
 		},
 		{
-			UserID: userid.MustNew(owner.ID), WorkspaceID: wsID,
+			UserID: userid.MustNew(owner.ID), WorkspaceID: ownerWS,
 			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: tabID,
 			WorkerID: ownerWorker.ID, TileID: "tile-owner", Position: "a1",
+			Rendered: true,
 		},
 	} {
-		require.NoError(t, st.WorkspaceTabIndex().UpsertRendered(ctx, row))
+		require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, row))
 	}
-	return owner.ID, stranger.ID, wsID, "tile-owner", "tile-stranger"
+	return owner.ID, stranger.ID, ownerWS, strangerWS, "tile-owner", "tile-stranger"
 }
 
 // TestWorkspaceService_GetTab_BindsTheCallerAsOwner pins the service half of
-// the rendered-tab tenancy fix. The store query is owner-scoped, so a storetest
-// passes no matter WHICH owner the service binds; only a test at this layer
-// catches GetTab binding the wrong id -- or dropping the binding when the
-// params struct next changes shape.
-//
-// Proving the caller owns the workspace is not the same as proving the ROW
-// does, which is exactly why the caller's own id has to reach the query.
+// the rendered-tab tenancy rule. The store query is owner-scoped, so a
+// storetest passes no matter WHICH owner the service binds; only a test at
+// this layer catches GetTab binding the wrong id -- or dropping the binding
+// when the params struct next changes shape.
 func TestWorkspaceService_GetTab_BindsTheCallerAsOwner(t *testing.T) {
 	t.Parallel()
 
 	st := hubtestutil.OpenTestStore(t)
-	ownerID, _, wsID, ownerTile, strangerTile := renderedTabCollision(t, st)
+	ownerID, strangerID, ownerWS, strangerWS, ownerTile, strangerTile := renderedTabCollision(t, st)
 
 	svc := service.NewWorkspaceService(st, nil, nil)
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(ownerID)})
+	getTab := func(userID, workspaceID string) (*leapmuxv1.GetTabResponse, error) {
+		ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(userID)})
+		return svc.GetTab(ctx, &leapmuxv1.GetTabRequest{
+			WorkspaceId: workspaceID,
+			TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
+			TabId:       "shared-tab-id",
+		})
+	}
 
-	resp, err := svc.GetTab(ctx, &leapmuxv1.GetTabRequest{
-		WorkspaceId: wsID,
-		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabId:       "shared-tab-id",
-	})
+	resp, err := getTab(ownerID, ownerWS)
 	require.NoError(t, err)
 	assert.Equal(t, ownerTile, resp.GetTab().GetTileId(),
 		"GetTab must answer from the caller's own row")
-	assert.NotEqual(t, strangerTile, resp.GetTab().GetTileId(),
-		"a row owned by another user must never satisfy this lookup, even in a workspace the caller owns")
+
+	resp, err = getTab(strangerID, strangerWS)
+	require.NoError(t, err)
+	assert.Equal(t, strangerTile, resp.GetTab().GetTileId(),
+		"control: the stranger reaches their own row in their own workspace")
+
+	_, err = getTab(strangerID, ownerWS)
+	require.Error(t, err, "a caller who does not own the workspace must not read its tabs")
 }
 
 // TestWorkspaceService_LocateTab_BindsTheCallerAsOwner is the same pin for the
@@ -97,10 +105,9 @@ func TestWorkspaceService_LocateTab_BindsTheCallerAsOwner(t *testing.T) {
 
 	// Each user owns their own workspace and both hold a row under the SAME tab
 	// id -- the collision LocateTab must resolve by owner. They cannot share one
-	// workspace here: LocateAccessibleRendered searches only workspaces the
-	// caller can access, so a row parked in someone else's workspace is
-	// correctly unreachable, and one user cannot hold two rows under one tab id
-	// because (user_id, tab_id) is the primary key.
+	// workspace: the composite workspace key ties each row to a workspace its
+	// own user owns, and one user cannot hold two rows under one tab id because
+	// (user_id, tab_id) is the primary key.
 	owner := storetest.SeedUser(t, st, "locate-owner")
 	stranger := storetest.SeedUser(t, st, "locate-stranger")
 	ownerWS := storetest.SeedWorkspace(t, st, owner.ID, "Owner WS")
@@ -110,19 +117,21 @@ func TestWorkspaceService_LocateTab_BindsTheCallerAsOwner(t *testing.T) {
 
 	ownerID, strangerID := owner.ID, stranger.ID
 	ownerTile, strangerTile := "tile-owner", "tile-stranger"
-	for _, row := range []store.UpsertRenderedTabParams{
+	for _, row := range []store.UpsertTabParams{
 		{
 			UserID: userid.MustNew(strangerID), WorkspaceID: strangerWS,
 			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "shared-tab-id",
 			WorkerID: strangerWorker.ID, TileID: strangerTile, Position: "a0",
+			Rendered: true,
 		},
 		{
 			UserID: userid.MustNew(ownerID), WorkspaceID: ownerWS,
 			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "shared-tab-id",
 			WorkerID: ownerWorker.ID, TileID: ownerTile, Position: "a1",
+			Rendered: true,
 		},
 	} {
-		require.NoError(t, st.WorkspaceTabIndex().UpsertRendered(ctx, row))
+		require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, row))
 	}
 
 	svc := service.NewWorkspaceService(st, nil, nil)

@@ -241,6 +241,7 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 		"idx_terminals_closed_at":                   "no query filters on closed_at through this index",
 		"idx_terminals_open_working_dir":            "no query filters on working_dir through this index",
 		"idx_terminals_quake_working_dir":           "a uniqueness constraint, enforced on write rather than read",
+		"idx_agent_todos_task_id":                   "a uniqueness constraint, enforced on write rather than read",
 	}
 	for _, index := range partialIndexes(t, connection) {
 		if _, ok := covered[index]; ok {
@@ -365,7 +366,7 @@ func TestEveryQueryRepeatsThePartialIndexPredicateItNeeds(t *testing.T) {
 		}
 	}
 	require.NoError(t, rows.Close())
-	require.Len(t, terms, 5, "the schema declares inequality-family partial indexes on five tables")
+	require.Len(t, terms, 6, "the schema declares inequality-family partial indexes on six tables")
 
 	files, err := filepath.Glob(filepath.Join("queries", "*.sql"))
 	require.NoError(t, err)

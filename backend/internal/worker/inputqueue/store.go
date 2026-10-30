@@ -548,7 +548,7 @@ func (s *Store) SetPaused(ctx context.Context, agentID string, paused bool, reas
 	if paused {
 		owner = pauseOwnerManual
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET paused = ?, pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, paused, workerdb.OptionalStorageEnum(reason), workerdb.OptionalStorageEnum(leapmuxv1.AgentInputQueuePauseOwner(owner)), nowText(), agentID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, workerdb.OptionalStorageEnum(reason), workerdb.OptionalStorageEnum(leapmuxv1.AgentInputQueuePauseOwner(owner)), nowText(), agentID); err != nil {
 		return Snapshot{}, err
 	}
 	return commitSnapshot(ctx, tx, agentID, s.now())
@@ -593,8 +593,8 @@ func (s *Store) pauseForPlannedRestart(ctx context.Context, agentID string) (Sna
 	// a write to a stopping process is unsafe however the queue came to pause.
 	result, err := tx.ExecContext(ctx, `
 		UPDATE agent_input_queue_state
-		SET paused = 1, pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ?
-		WHERE agent_id = ? AND paused = 0`,
+		SET pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ?
+		WHERE agent_id = ? AND pause_reason IS NULL`,
 		leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, pauseOwnerPlannedRestart, nowText(), agentID)
 	if err != nil {
 		return Snapshot{}, false, err
@@ -619,23 +619,23 @@ func (s *Store) finishPlannedRestart(ctx context.Context, agentID string, oldTur
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return Snapshot{}, false, err
 	}
-	var paused, active bool
+	var active bool
 	var storedReason *leapmuxv1.AgentInputQueuePauseReason
 	var storedOwner *leapmuxv1.AgentInputQueuePauseOwner
 	if err := tx.QueryRowContext(ctx, `
-		SELECT paused, pause_reason, pause_owner, active_turn
-		FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&paused, &storedReason, &storedOwner, &active); err != nil {
+		SELECT pause_reason, pause_owner, active_turn
+		FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&storedReason, &storedOwner, &active); err != nil {
 		return Snapshot{}, false, err
 	}
+	// The queue is paused exactly when it records a pause reason.
+	paused := storedReason != nil
 	reason := workerdb.StorageEnumValue(storedReason)
 	owner := pauseOwner(workerdb.StorageEnumValue(storedOwner))
-	nextPaused := paused
 	nextReason := reason
 	nextOwner := owner
 	// Resume only the pause that this restart created. A crash, an archive, or
-	// the user overwrites pause_owner, so their pause survives the restart.
+	// the user takes pause_owner over, so their pause survives the restart.
 	if resumeQueue && paused && owner == pauseOwnerPlannedRestart {
-		nextPaused = false
 		nextReason = leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED
 		nextOwner = pauseOwnerNone
 	} else if paused && owner == pauseOwnerPlannedRestart {
@@ -650,16 +650,16 @@ func (s *Store) finishPlannedRestart(ctx context.Context, agentID string, oldTur
 	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET restarting = 0, updated_at = ? WHERE agent_id = ?`, nowText(), agentID); err != nil {
 		return Snapshot{}, false, err
 	}
-	changed := nextPaused != paused || nextReason != reason || nextOwner != owner || nextActive != active
+	changed := nextReason != reason || nextOwner != owner || nextActive != active
 	if changed {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE agent_input_queue_state
-			SET paused = ?, pause_reason = ?, pause_owner = ?, active_turn = ?,
+			SET pause_reason = ?, pause_owner = ?, active_turn = ?,
 				active_turn_steerable = CASE WHEN ? THEN active_turn_steerable ELSE 0 END,
 				active_input_id = CASE WHEN ? THEN active_input_id ELSE '' END,
 				revision = revision + 1, updated_at = ?
 			WHERE agent_id = ?`,
-			nextPaused, workerdb.OptionalStorageEnum(nextReason), workerdb.OptionalStorageEnum(leapmuxv1.AgentInputQueuePauseOwner(nextOwner)), nextActive, nextActive, nextActive, nowText(), agentID); err != nil {
+			workerdb.OptionalStorageEnum(nextReason), workerdb.OptionalStorageEnum(leapmuxv1.AgentInputQueuePauseOwner(nextOwner)), nextActive, nextActive, nextActive, nowText(), agentID); err != nil {
 			return Snapshot{}, false, err
 		}
 	}
@@ -827,7 +827,7 @@ func readDispatchGate(ctx context.Context, tx db.DBTX, agentID string, now time.
 // that the caller already selected.
 func readDispatchGateFor(ctx context.Context, tx db.DBTX, agentID string, now time.Time, head OrderingMetadata, headFound bool) (dispatchGate, error) {
 	gate := dispatchGate{Now: now, ApprovalsComplete: true}
-	if err := tx.QueryRowContext(ctx, `SELECT paused, restarting, active_turn, active_turn_steerable,
+	if err := tx.QueryRowContext(ctx, `SELECT pause_reason IS NOT NULL, restarting, active_turn, active_turn_steerable,
 		(SELECT COUNT(*) FROM agent_input_queue_items WHERE agent_id = ? AND state = ?),
 		COALESCE((SELECT closed_at IS NOT NULL FROM agents WHERE id = ?), 1)
 		FROM agent_input_queue_state WHERE agent_id = ?`, agentID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO, agentID, agentID).
@@ -1187,16 +1187,16 @@ func insertInputTranscript(ctx context.Context, tx *sql.Tx, item StoredItem, att
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO messages
 		(id, agent_id, seq, source, content, content_compression, idempotency_key, depth, span_id,
-		 parent_span_id, span_type, span_lines, span_color, agent_provider, mark_type, created_at,
+		 parent_span_id, span_type, span_lines, span_color, mark_type, created_at,
 		 supplemental_content, supplemental_content_compression)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 0, '', '', '', ?, 0, ?, ?, ?, COALESCE(?, X''), ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, 0, '', '', '', ?, 0, ?, ?, COALESCE(?, X''), ?)`,
 		item.ID, item.AgentID, seq, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		compressed, compression, inputIdempotencyKey(NewItem{
 			ID: item.ID, AgentID: item.AgentID, Kind: item.Kind, Text: item.Text,
 			TargetMode: item.TargetMode, PrepareContext: item.PrepareContext,
 			ReclassifyOnEdit: item.ReclassifyOnEdit, ScheduledAt: item.ScheduledAt,
 			SourcePayload: item.SourcePayload, Attachments: attachments,
-		}), spanLines, provider, workerdb.OptionalStorageEnum(mark), item.CreatedAt, supplementalContent, supplementalCompression); err != nil {
+		}), spanLines, workerdb.OptionalStorageEnum(mark), item.CreatedAt, supplementalContent, supplementalCompression); err != nil {
 		return AcceptedTranscript{}, err
 	}
 	return AcceptedTranscript{
@@ -1498,7 +1498,7 @@ func (s *Store) FailDispatch(ctx context.Context, agentID, inputID string, deliv
 	if changed != 1 {
 		return Snapshot{}, ErrConflict
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', paused = 1, pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, reason, pauseOwnerDelivery, nowText(), agentID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, reason, pauseOwnerDelivery, nowText(), agentID); err != nil {
 		return Snapshot{}, err
 	}
 	return commitSnapshot(ctx, tx, agentID, s.now())
@@ -1636,11 +1636,10 @@ func pauseAndEndTurn(ctx context.Context, tx *sql.Tx, agentID string, reason lea
 	return tx.ExecContext(ctx, `
 		UPDATE agent_input_queue_state
 		SET active_turn = 0, active_turn_steerable = 0, active_input_id = '',
-			paused = 1,
-			pause_reason = CASE WHEN paused = 1 THEN pause_reason ELSE ? END,
-			pause_owner = CASE WHEN paused = 0 OR pause_owner = ? THEN ? ELSE pause_owner END,
+			pause_reason = CASE WHEN pause_reason IS NOT NULL THEN pause_reason ELSE ? END,
+			pause_owner = CASE WHEN pause_reason IS NULL OR pause_owner = ? THEN ? ELSE pause_owner END,
 			revision = revision + 1, updated_at = ?
-		WHERE agent_id = ? AND (active_turn = 1 OR paused = 0 OR pause_owner = ?)`,
+		WHERE agent_id = ? AND (active_turn = 1 OR pause_reason IS NULL OR pause_owner = ?)`,
 		reason, pauseOwnerPlannedRestart, owner, nowText(), agentID, pauseOwnerPlannedRestart)
 }
 
@@ -1649,9 +1648,9 @@ func pauseAndEndTurn(ctx context.Context, tx *sql.Tx, agentID string, reason lea
 func resumeOwnedPause(ctx context.Context, tx *sql.Tx, agentID string, owner pauseOwner) (sql.Result, error) {
 	return tx.ExecContext(ctx, `
 		UPDATE agent_input_queue_state
-		SET paused = 0, pause_reason = NULL, pause_owner = NULL,
+		SET pause_reason = NULL, pause_owner = NULL,
 			revision = revision + 1, updated_at = ?
-		WHERE agent_id = ? AND paused = 1 AND pause_owner = ?`, nowText(), agentID, owner)
+		WHERE agent_id = ? AND pause_owner = ?`, nowText(), agentID, owner)
 }
 
 // ResumeAfterArchive resumes only the pause that PauseForArchive created. The
@@ -2090,12 +2089,12 @@ func (s *Store) Recover(ctx context.Context) ([]Snapshot, error) {
 				_ = tx.Rollback()
 				return nil, err
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', paused = 1, pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_UNCERTAIN, pauseOwnerRecovery, nowText(), agentID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_UNCERTAIN, pauseOwnerRecovery, nowText(), agentID); err != nil {
 				_ = tx.Rollback()
 				return nil, err
 			}
 		} else if active {
-			if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', paused = 1, pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, pauseOwnerRecovery, nowText(), agentID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, pauseOwnerRecovery, nowText(), agentID); err != nil {
 				_ = tx.Rollback()
 				return nil, err
 			}
@@ -2151,7 +2150,7 @@ func replaceAttachments(ctx context.Context, tx *sql.Tx, itemID string, attachme
 		return err
 	}
 	for i := range attachments {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO agent_input_queue_attachments (item_id, position, filename, mime_type, data, size) VALUES (?, ?, ?, ?, ?, ?)`, itemID, i, attachments[i].Filename, attachments[i].MimeType, attachments[i].Data, len(attachments[i].Data)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO agent_input_queue_attachments (item_id, position, filename, mime_type, data) VALUES (?, ?, ?, ?, ?)`, itemID, i, attachments[i].Filename, attachments[i].MimeType, attachments[i].Data); err != nil {
 			return err
 		}
 	}
@@ -2286,7 +2285,7 @@ func snapshotTx(ctx context.Context, tx db.DBTX, agentID string, now time.Time) 
 	snapshot := Snapshot{AgentID: agentID}
 	var revision int64
 	var reason *leapmuxv1.AgentInputQueuePauseReason
-	err := tx.QueryRowContext(ctx, `SELECT revision, paused, pause_reason, active_turn, active_turn_steerable FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&revision, &snapshot.Paused, &reason, &snapshot.ActiveTurn, &snapshot.ActiveTurnSteerable)
+	err := tx.QueryRowContext(ctx, `SELECT revision, pause_reason IS NOT NULL, pause_reason, active_turn, active_turn_steerable FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&revision, &snapshot.Paused, &reason, &snapshot.ActiveTurn, &snapshot.ActiveTurnSteerable)
 	if errors.Is(err, sql.ErrNoRows) {
 		return snapshot, nil
 	}

@@ -44,12 +44,10 @@ func integerEnumColumns() []integerEnumColumn {
 		{"agents.goal_status", "UPDATE agents SET goal_status = ?", "SELECT typeof(goal_status), goal_status FROM agents", 0, 5, nil},
 		{"messages.content_compression", "UPDATE messages SET content_compression = ?", "SELECT typeof(content_compression), content_compression FROM messages", 1, 2, nil},
 		{"messages.supplemental_content_compression", "UPDATE messages SET supplemental_content_compression = ?", "SELECT typeof(supplemental_content_compression), supplemental_content_compression FROM messages", 1, 2, nil},
-		{"messages.agent_provider", "UPDATE messages SET agent_provider = ?", "SELECT typeof(agent_provider), agent_provider FROM messages", 1, int64(len(leapmuxv1.AgentProvider_name) - 1), nil},
 		{"agent_input_queue_items.kind", "UPDATE agent_input_queue_items SET kind = ?", "SELECT typeof(kind), kind FROM agent_input_queue_items", 1, 8, nil},
 		{"agent_input_queue_items.state", "UPDATE agent_input_queue_items SET state = ?", "SELECT typeof(state), state FROM agent_input_queue_items", 1, 5, nil},
 		{"control_deliveries.state", "UPDATE control_deliveries SET state = ?", "SELECT typeof(state), state FROM control_deliveries", 1, 4, nil},
 		{"control_deliveries.kind", "UPDATE control_deliveries SET kind = ? WHERE id = 'enum-unattached'", "SELECT typeof(kind), kind FROM control_deliveries WHERE id = 'enum-unattached'", 1, 2, nil},
-		{"control_response_payloads.agent_provider", "UPDATE control_response_payloads SET agent_provider = ?", "SELECT typeof(agent_provider), agent_provider FROM control_response_payloads", 1, int64(len(leapmuxv1.AgentProvider_name) - 1), nil},
 		// The tie CHECK demands follow_up text exactly when the kind is non-zero,
 		// so the update writes both from one bound parameter (?1 appears twice).
 		// A range refusal then cannot hide behind a tie refusal.
@@ -71,11 +69,11 @@ func integerEnumStore(t *testing.T) *sql.DB {
 		"INSERT INTO messages (id, agent_id, seq, source, content, content_compression) VALUES ('enum-message', 'enum-owner', 1, 1, X'7b7d', 1)",
 		"INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, state) VALUES ('enum-input', 'enum-owner', 1, 1, 1)",
 		"INSERT INTO control_deliveries (id, agent_id, kind, operation_id, instance_id, state) VALUES ('enum-response', 'enum-owner', 1, 'enum-request', 'enum-claim', 1)",
-		"INSERT INTO control_response_payloads (delivery_id, agent_provider) VALUES ('enum-response', 1)",
+		"INSERT INTO control_response_payloads (delivery_id) VALUES ('enum-response')",
 		"INSERT INTO control_deliveries (id, agent_id, kind, operation_id, instance_id, state) VALUES ('enum-unattached', 'enum-owner', 1, 'unattached', '', 1)",
 		"INSERT INTO control_deliveries (id, agent_id, kind, operation_id, instance_id, state) VALUES ('enum-review', 'enum-owner', 2, 'review', 'session', 1)",
 		"INSERT INTO auto_review_approval_payloads (delivery_id, message_id) VALUES ('enum-review', 'enum-message')",
-		"INSERT INTO agent_todos (agent_id, row_key, seq, content, status) VALUES ('enum-owner', 'enum-todo', 1, 'todo', 1)",
+		"INSERT INTO agent_todos (agent_id, seq, content, status) VALUES ('enum-owner', 1, 'todo', 1)",
 		"INSERT INTO agent_background_tasks (owner_agent_id, output_generation, row_key, seq, kind, status) VALUES ('enum-owner', 0, 'enum-task', 1, 1, 1)",
 	} {
 		_, err := store.ExecContext(t.Context(), statement)
@@ -282,10 +280,6 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 		// plain minimum-to-maximum range. Nil means every ordinal from zero to
 		// lastAccepted.
 		admitted []int32
-		// columns is how many columns carry this exact CHECK text, where more
-		// than one does. A Contains assertion cannot tell three columns that
-		// share a CHECK from one column that kept it, so this counts them.
-		columns int
 		// narrower says the column admits LESS than the enum declares, and why.
 		narrower string
 	}{
@@ -402,20 +396,19 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.ContentCompression_name),
 		},
 		{
-			// One CHECK, three columns: agents, messages and
-			// control_response_payloads each store the provider that produced
-			// the row.
-			column:       "agent_provider (agents, messages, control_response_payloads)",
+			// agents is the one table that stores a provider: a message and a
+			// control answer report the provider of their agent.
+			column:       "agents.agent_provider",
 			check:        "CHECK (agent_provider BETWEEN 1 AND 30)",
-			columns:      3,
 			lastAccepted: int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_MUSE_CODE),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentProvider_name),
 		},
 	} {
 		t.Run(c.column, func(t *testing.T) {
-			want := max(c.columns, 1)
-			assert.Equalf(t, want, strings.Count(sql, c.check),
-				"%d column(s) must carry %q; %s is one of them", want, c.check, c.column)
+			// Count rather than Contains: a CHECK that a second column copied
+			// would otherwise pass unnoticed.
+			assert.Equalf(t, 1, strings.Count(sql, c.check),
+				"exactly one column must carry %q, and it is %s", c.check, c.column)
 			if c.narrower != "" {
 				admitted := c.admitted
 				if admitted == nil {
@@ -444,10 +437,10 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 	}
 }
 
-// AgentProvider is CONTIGUOUS, and the three CHECKs above state a plain range
+// AgentProvider is CONTIGUOUS, and the CHECK above states a plain range
 // because of it. The project leaves no `reserved` and no hole, so a removed
 // provider is deleted and every provider past it moves down one. That is a data
-// change, not a rename -- these columns store the ordinal -- and this test is
+// change, not a rename -- the column stores the ordinal -- and this test is
 // what makes a hole visible if one ever reappears, because the range assertion
 // above reads the ceiling alone and would not notice a missing middle.
 func TestAgentProviderOrdinalsAreContiguous(t *testing.T) {
@@ -456,7 +449,7 @@ func TestAgentProviderOrdinalsAreContiguous(t *testing.T) {
 	for ordinal := int32(1); ordinal <= int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_MUSE_CODE); ordinal++ {
 		_, declared := leapmuxv1.AgentProvider_name[ordinal]
 		assert.Truef(t, declared,
-			"AgentProvider %d is a hole; the three agent_provider CHECKs state a plain range, so either close it by renumbering or narrow them", ordinal)
+			"AgentProvider %d is a hole; the agents.agent_provider CHECK states a plain range, so either close it by renumbering or narrow it", ordinal)
 	}
 }
 
@@ -552,11 +545,10 @@ func TestMessageCompressionColumnsRefuseUnspecified(t *testing.T) {
 	insert := func(id string, compression, supplementalCompression leapmuxv1.ContentCompression) error {
 		_, err := connection.ExecContext(t.Context(), `
 			INSERT INTO messages
-			(id, agent_id, seq, source, content, content_compression, supplemental_content_compression, agent_provider)
-			VALUES (?, 'agent-1', ?, ?, '{}', ?, ?, ?)`,
+			(id, agent_id, seq, source, content, content_compression, supplemental_content_compression)
+			VALUES (?, 'agent-1', ?, ?, '{}', ?, ?)`,
 			id, len(id), leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-			compression, supplementalCompression,
-			leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+			compression, supplementalCompression)
 		return err
 	}
 	none := leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE
@@ -571,7 +563,7 @@ func TestMessageCompressionColumnsRefuseUnspecified(t *testing.T) {
 		"CHECK constraint failed", "supplemental_content_compression must refuse UNSPECIFIED")
 }
 
-// agents.agent_provider refuses an UNSPECIFIED 0, the same as its two siblings.
+// agents.agent_provider refuses an UNSPECIFIED 0.
 // Every agent runs ONE provider's process, so a 0 is a field the writer forgot.
 // Both writers of the table are covered: CreateAgent for a root agent, and
 // CreateChildAgent for a subagent transcript, which copies the parent's value.

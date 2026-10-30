@@ -26,7 +26,8 @@ import (
 //
 // workspace_tab_owned is keyed by (user_id, tab_id) and nothing ties a row's
 // owner to the registrant of the worker it names, so two owners' rows can
-// legitimately reference one worker. The response must carry only the
+// legitimately reference one worker (each row sits in a workspace its own
+// user owns, which the composite workspace key requires). The response must carry only the
 // registrant's rows AND announce that scope: the reconciler on the other end
 // reaps every LOCAL row the list omits, so an unannounced narrowing would tell
 // it to destroy every other owner's live file tabs.
@@ -39,17 +40,21 @@ func TestListOwnedTabsForWorker_ScopedToRegistrant(t *testing.T) {
 	userB := storetest.SeedUser(t, st, "reconcile-bob")
 	worker := storetest.SeedWorker(t, st, userA.ID)
 	wsA := storetest.SeedWorkspace(t, st, userA.ID, "alice ws")
+	wsB := storetest.SeedWorkspace(t, st, userB.ID, "bob ws")
 
 	// Both owners hold a FILE tab with the SAME client-minted id on alice's
-	// worker, in a workspace alice owns. Every part of that is schema-legal.
+	// worker, each in a workspace of their own. Every part of that is
+	// schema-legal.
 	const sharedTabID = "file-1700000000000-1"
-	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
-		UserID: userid.MustNew(userB.ID), WorkspaceID: wsA, WorkerID: worker.ID,
+	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertTabParams{
+		UserID: userid.MustNew(userB.ID), WorkspaceID: wsB, WorkerID: worker.ID,
 		TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: sharedTabID, TileID: "tile-b", Position: "b0",
+		Rendered: false,
 	}))
-	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
+	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertTabParams{
 		UserID: userid.MustNew(userA.ID), WorkspaceID: wsA, WorkerID: worker.ID,
 		TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: sharedTabID, TileID: "tile-a", Position: "a0",
+		Rendered: false,
 	}))
 
 	req := &leapmuxv1.ListOwnedTabsForWorkerRequest{}
@@ -77,6 +82,61 @@ func TestListOwnedTabsForWorker_ScopedToRegistrant(t *testing.T) {
 		"the response must declare the owner it is authoritative for")
 }
 
+// TestListOwnedTabsForWorker_ReportsADeletedWorkspaceArchived pins the window
+// between DeleteWorkspace and the lifecycle drain. The delete soft-deletes the
+// workspace and drops its placement in one transaction, while the tab rows
+// stay until the drain tombstones the tabs. A reconcile pass in that window
+// must read ARCHIVED: ACTIVE cleared the archive flag of the workspace's tabs
+// and resumed their agents just before the tabs closed.
+func TestListOwnedTabsForWorker_ReportsADeletedWorkspaceArchived(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	ctx := context.Background()
+	owner := storetest.SeedUser(t, st, "reconcile-deleted-owner")
+	worker := storetest.SeedWorker(t, st, owner.ID)
+	workspaceID := storetest.SeedWorkspace(t, st, owner.ID, "deleted")
+	ownerID := userid.MustNew(owner.ID)
+	require.NoError(t, st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
+		ID: "archived-section", UserID: ownerID, Name: "Archived", Position: "z",
+		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED,
+		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
+	}))
+	require.NoError(t, st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
+		UserID: ownerID, WorkspaceID: workspaceID, SectionID: "archived-section", Position: "a",
+	}))
+	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertTabParams{
+		UserID: ownerID, WorkspaceID: workspaceID, WorkerID: worker.ID,
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "deleted-agent", TileID: "tile", Position: "a",
+		Rendered: false,
+	}))
+	// The store half of DeleteWorkspace's transaction, with no lifecycle drain.
+	require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
+		deleted, err := tx.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{ID: workspaceID, OwnerUserID: ownerID})
+		if err != nil {
+			return err
+		}
+		require.Equal(t, int64(1), deleted)
+		return tx.WorkspaceSectionItems().Delete(ctx, store.DeleteWorkspaceSectionItemParams{
+			UserID: ownerID, WorkspaceID: workspaceID,
+		})
+	}))
+
+	req := &leapmuxv1.ListOwnedTabsForWorkerRequest{}
+	var resp *leapmuxv1.ListOwnedTabsForWorkerResponse
+	_, callErr := callUnderServerInfo(ctx, func(callCtx context.Context) error {
+		info, _ := connect.CallInfoForServerContext(callCtx)
+		info.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
+		var err error
+		resp, err = service.NewWorkerReconcilerService(st).ListOwnedTabsForWorker(callCtx, req)
+		return err
+	})
+	require.NoError(t, callErr)
+	require.Len(t, resp.GetTabStates(), 1, "the tab row stays until the lifecycle drain tombstones it")
+	assert.Equal(t, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
+		resp.GetTabStates()[0].GetArchiveState())
+}
+
 func TestListOwnedTabsForWorker_ReturnsArchivedState(t *testing.T) {
 	t.Parallel()
 
@@ -94,9 +154,10 @@ func TestListOwnedTabsForWorker_ReturnsArchivedState(t *testing.T) {
 	require.NoError(t, st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
 		UserID: ownerID, WorkspaceID: workspaceID, SectionID: "archived-section", Position: "a",
 	}))
-	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
+	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertTabParams{
 		UserID: ownerID, WorkspaceID: workspaceID, WorkerID: worker.ID,
 		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "archived-agent", TileID: "tile", Position: "a",
+		Rendered: false,
 	}))
 
 	req := &leapmuxv1.ListOwnedTabsForWorkerRequest{}
@@ -156,9 +217,10 @@ func TestListOwnedTabsForWorker_ReachableThroughTheAuthInterceptor(t *testing.T)
 	owner := storetest.SeedUser(t, st, "interceptor-owner")
 	worker := storetest.SeedWorker(t, st, owner.ID)
 	ws := storetest.SeedWorkspace(t, st, owner.ID, "owned")
-	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
+	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertTabParams{
 		UserID: userid.MustNew(owner.ID), WorkspaceID: ws, WorkerID: worker.ID,
 		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "agent-live", TileID: "tile", Position: "a0",
+		Rendered: false,
 	}))
 
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})

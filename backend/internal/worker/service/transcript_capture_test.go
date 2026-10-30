@@ -452,7 +452,7 @@ func TestStoredMessageSequenceReceiptPrecedesWatcherPublication(t *testing.T) {
 			provider.armed.Store(todo)
 			svc, _, _ := setupTestService(t, withRegistry(registryWithPlugin(t, providerID, provider)))
 			const ownerID = "sequence-receipt-owner"
-			require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{ID: ownerID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: providerID}))
+			require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{ID: ownerID, WorkingDir: t.TempDir(), AgentProvider: providerID}))
 			sink := newTestRootOutputSink(t, svc.Output, ownerID, providerID)
 			receipt := agent.NewTranscriptWriteReceipt()
 			var inspected int
@@ -514,7 +514,7 @@ func TestCapturedProviderPreparationKeepsOriginalPairedSession(t *testing.T) {
 			provider := &reentrantTranscriptProvider{Provider: testRegistry.Plugin(providerID), stage: "resolve"}
 			svc, _, _ := setupTestService(t, withRegistry(registryWithPlugin(t, providerID, provider)))
 			const ownerID = "paired-session-owner"
-			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{ID: ownerID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: providerID}))
+			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{ID: ownerID, WorkingDir: t.TempDir(), AgentProvider: providerID}))
 			sink := newTestRootOutputSink(t, svc.Output, ownerID, providerID)
 			sink.UpdateSessionID("session-s")
 			sink.SetTurnState(agent.TurnState{Active: true}, 1)
@@ -587,7 +587,7 @@ func TestCapturedProviderPreparationCanReplaceItsPublisher(t *testing.T) {
 				provider := &reentrantTranscriptProvider{Provider: testRegistry.Plugin(providerID), stage: stage}
 				svc, _, _ := setupTestService(t, withRegistry(registryWithPlugin(t, providerID, provider)))
 				const ownerID = "provider-preparation-owner"
-				require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{ID: ownerID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: providerID}))
+				require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{ID: ownerID, WorkingDir: t.TempDir(), AgentProvider: providerID}))
 				sink := newTestRootOutputSink(t, svc.Output, ownerID, providerID)
 				sink.UpdateSessionID("original-session")
 				sink.SetTurnState(agent.TurnState{Active: true}, 1)

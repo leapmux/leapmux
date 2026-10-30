@@ -11,15 +11,12 @@ package audit
 // once. It used to be restated inside that regex, and the rule's one silent
 // failure mode is a column the scan does not know -- the query is simply never
 // classified as an ownership predicate, and nothing anywhere reports a gap.
-// ownerColumns are the column names that name a row's OWNER.
 //
-// created_by_user_id is PROVENANCE rather than ownership -- who registered an
-// app -- but it is listed anyway, and the reason is the rule's polarity: this
-// list decides which WHERE clauses get classified at all, so a column left off
-// it is silently outside every check. A provenance column that no query filters
-// on costs one line here and nothing else; one that a query starts filtering on
-// later is then classified from the first day rather than from the day somebody
-// notices.
+// A provenance column with a foreign key onto users belongs here too, because
+// of the rule's polarity: this list decides which WHERE clauses get classified
+// at all, so a column left off it is silently outside every check. One that a
+// query starts filtering on later is then classified from the first day rather
+// than from the day somebody notices.
 //
 // verified_by_user_id is NOT here, and the tripwire below is why: it is the one
 // provenance column that carries no foreign key onto users, so listing it would
@@ -27,7 +24,6 @@ package audit
 // for why it cannot have one.
 var ownerColumns = []string{
 	"user_id", "owner_user_id", "registered_by", "created_by",
-	"created_by_user_id",
 }
 
 // unguardedOwnerFilterQueries are the queries whose WHERE clause names an owner
@@ -148,16 +144,6 @@ var unscopedOwnerKeyedQueries = map[string]string{
 	// so this lookup cannot match a second row -- and it is the query that
 	// DISCOVERS the owner during a provider login, so it has none to bind.
 	"GetOAuthUserLink": "idx_oauth_user_links_provider_subject makes (provider_id, provider_subject) unique, and this is the login lookup that resolves WHICH user the external subject maps to",
-
-	// ---- section teardown ----
-	//
-	// section_id is a globally-unique id and SectionService verifies the
-	// caller owns the section (requireOwnedSection) before either of these
-	// runs. The sweep must then reach every item pointing at that section --
-	// including a cross-owner row, which would otherwise survive its section
-	// and dangle.
-	"DeleteWorkspaceSectionItemsBySection": "the caller's ownership of section_id is verified by requireOwnedSection; the teardown must reach every item pointing at it",
-	"HasWorkspaceSectionItemsBySection":    "the emptiness probe for the teardown above; it must see exactly what that delete will remove",
 
 	// ---- worker: deliberately cross-owner ----
 

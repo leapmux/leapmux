@@ -378,7 +378,6 @@ func adminDelegationTokenJSON(t *leapmuxv1.AdminDelegationToken) map[string]any 
 	row := tokenLifecycleJSON(t.GetId(), t.GetUserId(), t.GetUsername(), t.GetOwnerDeleted(),
 		t.GetCreatedAt(), t.GetLastUsedAt(), t.GetExpiresAt(), t.GetRevokedAt())
 	row["worker_id"] = t.GetWorkerId()
-	row["agent_id"] = t.GetAgentId()
 	return row
 }
 

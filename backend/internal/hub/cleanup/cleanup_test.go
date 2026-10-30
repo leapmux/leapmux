@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
+	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -26,9 +27,11 @@ func setupTestStore(t *testing.T) store.TestableStore {
 	return st
 }
 
+// cleanupSpyStore serves the real store with its cleanup half replaced by a
+// spy.
 type cleanupSpyStore struct {
 	store.Store
-	cleanup *cleanupSpy
+	cleanup store.CleanupStore
 }
 
 func (s cleanupSpyStore) Cleanup() store.CleanupStore {
@@ -348,4 +351,91 @@ func TestRun_DeletesAPITokensPastBothDeadlines(t *testing.T) {
 		_, err = st.APITokens().GetByID(ctx, kept.id)
 		require.NoError(t, err, kept.why)
 	}
+}
+
+// TestRun_CompletesStaleDeregistrations pins the recovery that makes worker
+// deregistration durable: a worker still deregistering after the grace period
+// is deleted, untold. A worker inside the grace period keeps waiting for its
+// instruction, and an ACTIVE worker is untouched. The deletion is a soft one,
+// so the worker then waits out the normal retention like every other.
+func TestRun_CompletesStaleDeregistrations(t *testing.T) {
+	st := setupTestStore(t)
+	ctx := context.Background()
+	user := storetest.SeedUser(t, st, "stale-deregistration-owner")
+	stale := storetest.SeedWorker(t, st, user.ID)
+	recent := storetest.SeedWorker(t, st, user.ID)
+	active := storetest.SeedWorker(t, st, user.ID)
+	for _, worker := range []*store.Worker{stale, recent} {
+		n, err := st.Workers().ForceDeregister(ctx, worker.ID)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), n)
+	}
+	now := time.Now().UTC()
+	require.NoError(t, st.TestHelper().SetDeregisteringAt(ctx, stale.ID, now.Add(-deregisterGracePeriod-time.Hour)))
+	require.NoError(t, st.TestHelper().SetDeregisteringAt(ctx, recent.ID, now.Add(-deregisterGracePeriod+time.Hour)))
+
+	run(ctx, st)
+
+	for worker, want := range map[string]leapmuxv1.WorkerStatus{
+		stale.ID:  leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED,
+		recent.ID: leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING,
+		active.ID: leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE,
+	} {
+		row, err := st.Workers().GetByIDIncludeDeleted(ctx, worker)
+		require.NoError(t, err, "a worker deleted by this pass is soft-deleted, not hard-deleted")
+		assert.Equal(t, want, row.Status, "worker %s", worker)
+	}
+}
+
+// deregistrationSweepSpy records each CompleteStaleDeregistrations call and
+// returns the scripted row counts in order, then 0.
+type deregistrationSweepSpy struct {
+	store.CleanupStore
+	cutoffs []time.Time
+	results []int64
+}
+
+func (s *deregistrationSweepSpy) CompleteStaleDeregistrations(_ context.Context, cutoff time.Time) (int64, error) {
+	s.cutoffs = append(s.cutoffs, cutoff)
+	if len(s.cutoffs) <= len(s.results) {
+		return s.results[len(s.cutoffs)-1], nil
+	}
+	return 0, nil
+}
+
+// TestRun_DrainsStaleDeregistrationsWithTheGracePeriodCutoff pins the sweep's
+// cutoff and its drain: each pass binds now minus the grace period, the loop
+// continues past a partial batch until one deletes nothing, and one cleanup
+// run stops at maxStaleDeregistrationBatches.
+func TestRun_DrainsStaleDeregistrationsWithTheGracePeriodCutoff(t *testing.T) {
+	t.Run("drains until a batch deletes nothing", func(t *testing.T) {
+		st := setupTestStore(t)
+		spy := &deregistrationSweepSpy{
+			CleanupStore: st.Cleanup(),
+			results:      []int64{store.CleanupBatchLimit, store.CleanupBatchLimit / 2},
+		}
+		before := time.Now().UTC()
+
+		run(context.Background(), cleanupSpyStore{Store: st, cleanup: spy})
+
+		after := time.Now().UTC()
+		require.Len(t, spy.cutoffs, 3, "a full batch, a partial batch, then the empty one that ends the drain")
+		for _, cutoff := range spy.cutoffs {
+			assert.False(t, cutoff.Before(before.Add(-deregisterGracePeriod)), "cutoff %v is older than the grace period", cutoff)
+			assert.False(t, cutoff.After(after.Add(-deregisterGracePeriod)), "cutoff %v is newer than the grace period", cutoff)
+		}
+	})
+
+	t.Run("stops at the batch limit", func(t *testing.T) {
+		st := setupTestStore(t)
+		results := make([]int64, maxStaleDeregistrationBatches+1)
+		for i := range results {
+			results[i] = store.CleanupBatchLimit
+		}
+		spy := &deregistrationSweepSpy{CleanupStore: st.Cleanup(), results: results}
+
+		run(context.Background(), cleanupSpyStore{Store: st, cleanup: spy})
+
+		assert.Len(t, spy.cutoffs, maxStaleDeregistrationBatches)
+	})
 }

@@ -17,7 +17,7 @@ func TestOutputQueueRetriesTheFinalWriteWithoutAnotherNativeFrame(t *testing.T) 
 	t.Parallel()
 	clock := testutil.NewQuartzMock(t)
 	svc, _, _ := setupTestService(t, withClock(clock))
-	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{ID: "queue-agent", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE}))
+	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{ID: "queue-agent", WorkingDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE}))
 	sink := agent.NewModelProgressResetSink(newTestRootOutputSink(t, svc.Output, "queue-agent", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
 	queue := agent.OutputQueueFor(sink)
 	var unavailable atomic.Bool

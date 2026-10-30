@@ -415,10 +415,11 @@ func (s *Suite) testCleanup(t *testing.T) {
 		wsID := SeedWorkspace(t, st, user.ID, "Cascade WS")
 
 		// Create child records.
-		require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
+		require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertTabParams{
 			UserID: userid.MustNew(user.ID), WorkspaceID: wsID, WorkerID: worker.ID,
 			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "f1",
 			TileID: "tile-1", Position: "a0",
+			Rendered: false,
 		}))
 		secID := id.Generate()
 		require.NoError(t, st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
@@ -451,22 +452,20 @@ func (s *Suite) testCleanup(t *testing.T) {
 		assert.ErrorIs(t, err, store.ErrNotFound, "the workspace delete must cascade to its owned-tab rows")
 	})
 
+	// delegation_tokens.worker_id is the one foreign key into workers, ON DELETE
+	// CASCADE: a hard-deleted worker takes the tokens minted on it along.
 	t.Run("hard delete workers cascades to children", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "cleanup-wk-cascade-user")
 		worker := SeedWorker(t, st, user.ID)
-		wsID := SeedWorkspace(t, st, user.ID, "Worker WS")
-
-		// Create child records.
-		require.NoError(t, st.WorkerNotifications().Create(ctx, store.CreateWorkerNotificationParams{
-			ID: id.Generate(), WorkerID: worker.ID,
-			Type:    leapmuxv1.NotificationType_NOTIFICATION_TYPE_DEREGISTER,
-			Payload: `{"test":true}`,
-		}))
-		require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
-			UserID: userid.MustNew(user.ID), WorkspaceID: wsID, WorkerID: worker.ID,
-			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "wk-f1",
-			TileID: "tile-1", Position: "a0",
+		tokenID := id.Generate()
+		require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
+			GrantedScopes: "workspace:read",
+			ID:            tokenID,
+			UserID:        userid.MustNew(user.ID),
+			WorkerID:      worker.ID,
+			SecretHash:    []byte("hash"),
+			ExpiresAt:     time.Now().Add(time.Hour),
 		}))
 
 		// Soft-delete and backdate.
@@ -478,30 +477,107 @@ func (s *Suite) testCleanup(t *testing.T) {
 		assert.Equal(t, int64(1), n)
 
 		// Verify children are gone.
-		notifs, err := st.WorkerNotifications().ListPendingByWorker(ctx, worker.ID)
+		_, err = st.DelegationTokens().GetByID(ctx, tokenID)
+		assert.ErrorIs(t, err, store.ErrNotFound, "the worker's delegation tokens must go with it")
+	})
+
+	// The sweep that finishes every deregistration the notifier could not:
+	// it deletes a worker deregistering since before the cutoff, and leaves
+	// every other worker exactly as it was.
+	t.Run("complete stale deregistrations deletes only workers deregistering since before the cutoff", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "cleanup-stale-dereg-user")
+		stale := SeedWorker(t, st, user.ID)
+		recent := SeedWorker(t, st, user.ID)
+		active := SeedWorker(t, st, user.ID)
+		alreadyDeleted := SeedWorker(t, st, user.ID)
+		for _, w := range []string{stale.ID, recent.ID} {
+			_, err := st.Workers().ForceDeregister(ctx, w)
+			require.NoError(t, err)
+		}
+		require.NoError(t, st.Workers().MarkDeleted(ctx, alreadyDeleted.ID))
+		deletedBefore, err := st.Workers().GetByIDIncludeDeleted(ctx, alreadyDeleted.ID)
 		require.NoError(t, err)
-		assert.Empty(t, notifs)
+		recentRow, err := st.Workers().GetByID(ctx, recent.ID)
+		require.NoError(t, err)
+		require.NotNil(t, recentRow.DeregisteringAt)
+
+		// Move the stale worker's intent back past a cutoff that sits just
+		// before the recent worker's own stamp.
+		cutoff := recentRow.DeregisteringAt.Add(-time.Minute)
+		require.NoError(t, st.TestHelper().SetDeregisteringAt(ctx, stale.ID, cutoff.Add(-time.Hour)))
+
+		n, err := st.Cleanup().CompleteStaleDeregistrations(ctx, cutoff)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), n, "only the worker deregistering since before the cutoff")
+
+		got, err := st.Workers().GetByIDIncludeDeleted(ctx, stale.ID)
+		require.NoError(t, err)
+		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, got.Status)
+		got, err = st.Workers().GetByID(ctx, recent.ID)
+		require.NoError(t, err)
+		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, got.Status, "a recent deregistration keeps waiting")
+		got, err = st.Workers().GetByID(ctx, active.ID)
+		require.NoError(t, err)
+		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE, got.Status, "an active worker is untouched")
+		got, err = st.Workers().GetByIDIncludeDeleted(ctx, alreadyDeleted.ID)
+		require.NoError(t, err)
+		require.NotNil(t, got.DeletedAt)
+		assert.True(t, deletedBefore.DeletedAt.Equal(*got.DeletedAt), "an already-deleted worker keeps its deletion time")
+
+		n, err = st.Cleanup().CompleteStaleDeregistrations(ctx, cutoff)
+		require.NoError(t, err)
+		assert.Zero(t, n, "a second pass finds nothing")
+	})
+
+	// The sweep's LIMIT 1000 must hold in every dialect, and the drain loop
+	// must finish the rest.
+	t.Run("complete stale deregistrations drains more than one batch", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "cleanup-stale-dereg-bulk")
+		const (
+			seeded    = 1200
+			sweepStep = 1000 // the LIMIT literal in every dialect's sweep
+		)
+		require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
+			for range seeded {
+				workerID := id.Generate()
+				require.NoError(t, tx.Workers().Create(ctx, store.CreateWorkerParams{
+					ID: workerID, AuthToken: id.Generate(), RegisteredBy: userid.MustNew(user.ID),
+					PublicKey: []byte{}, MlkemPublicKey: []byte{}, SlhdsaPublicKey: []byte{},
+				}))
+				_, err := tx.Workers().ForceDeregister(ctx, workerID)
+				require.NoError(t, err)
+			}
+			return nil
+		}))
+		// A cutoff after every stamp makes every seeded worker stale.
+		cutoff := time.Now().UTC().Add(time.Hour)
+		n, err := st.Cleanup().CompleteStaleDeregistrations(ctx, cutoff)
+		require.NoError(t, err)
+		assert.Equal(t, int64(sweepStep), n, "one pass changes exactly LIMIT rows")
+		n, err = st.Cleanup().CompleteStaleDeregistrations(ctx, cutoff)
+		require.NoError(t, err)
+		assert.Equal(t, int64(seeded-sweepStep), n)
+		n, err = st.Cleanup().CompleteStaleDeregistrations(ctx, cutoff)
+		require.NoError(t, err)
+		assert.Zero(t, n)
 	})
 
 	t.Run("hard delete users cascades to remaining children", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "cleanup-user-cascade")
 
-		// Create a second user to own the workspace that will outlive the
-		// deleted user (simulating the real cleanup order where the loop cleans
-		// workspaces before users).
-		otherUser := SeedUser(t, st, "cleanup-other-user")
-		wsID := SeedWorkspace(t, st, otherUser.ID, "User WS")
-
 		// Create child records for user (not covered by workspace cleanup).
+		// No section item: a placement must name a workspace its own user
+		// owns, and a user who still owns a workspace is not hard-deleted
+		// (the cleanup loop removes workspaces first, which cascades their
+		// placements away).
 		secID := id.Generate()
 		require.NoError(t, st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
 			ID: secID, UserID: userid.MustNew(user.ID), Name: "UserSec",
 			Position: "a0", SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
 			Sidebar: leapmuxv1.Sidebar_SIDEBAR_LEFT,
-		}))
-		require.NoError(t, st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
-			UserID: userid.MustNew(user.ID), WorkspaceID: wsID, SectionID: secID, Position: "a0",
 		}))
 		prov := SeedOAuthProvider(t, st, "cleanup-user-cascade-prov")
 		require.NoError(t, st.OAuthTokens().Upsert(ctx, store.UpsertOAuthTokensParams{
@@ -525,10 +601,6 @@ func (s *Suite) testCleanup(t *testing.T) {
 		sections, err := st.WorkspaceSections().ListByUserID(ctx, userid.MustNew(user.ID))
 		require.NoError(t, err)
 		assert.Empty(t, sections)
-
-		items, err := st.WorkspaceSectionItems().ListByUser(ctx, userid.MustNew(user.ID))
-		require.NoError(t, err)
-		assert.Empty(t, items)
 
 		_, err = st.OAuthTokens().Get(ctx, store.GetOAuthTokensParams{
 			UserID: userid.MustNew(user.ID), ProviderID: prov.ID,

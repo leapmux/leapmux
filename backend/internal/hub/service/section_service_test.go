@@ -575,6 +575,46 @@ func TestSectionService_DeleteSection_WithItems(t *testing.T) {
 	assert.True(t, found, "workspace should be in 'In progress' section after deleting custom section")
 }
 
+// TestDeleteSection_IgnoresAnItemOfASoftDeletedWorkspace pins the emptiness
+// probe to the view the relocation loop walks. A soft delete leaves the
+// workspace's placement row behind (SoftDeleteAllByUser removes none), and
+// ListByUser hides it, so the loop never moves it. A probe that still counted
+// it refused the delete with FailedPrecondition for a section the user sees
+// as empty.
+func TestDeleteSection_IgnoresAnItemOfASoftDeletedWorkspace(t *testing.T) {
+	t.Parallel()
+
+	env := setupSectionTest(t)
+	ctx := context.Background()
+	owner := userid.MustNew(env.userID)
+
+	createResp, err := env.client.CreateSection(authedReq(ctx,
+		&leapmuxv1.CreateSectionRequest{Name: "Holds A Deleted Workspace", Sidebar: leapmuxv1.Sidebar_SIDEBAR_LEFT}, env.token))
+	require.NoError(t, err)
+	sectionID := createResp.GetSection().GetId()
+
+	workspaceID := id.Generate()
+	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
+		ID:          workspaceID,
+		OwnerUserID: owner,
+		Title:       "soon deleted",
+	}))
+	require.NoError(t, env.store.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
+		UserID:      owner,
+		WorkspaceID: workspaceID,
+		SectionID:   sectionID,
+		Position:    "n",
+	}))
+	require.NoError(t, env.store.Workspaces().SoftDeleteAllByUser(ctx, owner))
+
+	_, err = env.client.DeleteSection(authedReq(ctx,
+		&leapmuxv1.DeleteSectionRequest{SectionId: sectionID}, env.token))
+	require.NoError(t, err, "a section whose only item belongs to a soft-deleted workspace is empty to its user")
+
+	_, err = env.store.WorkspaceSections().GetByID(ctx, sectionID)
+	assert.ErrorIs(t, err, store.ErrNotFound, "the section must be gone")
+}
+
 // TestSectionService_DeleteSection_ReassignsPositionsOnMerge pins the
 // position-uniqueness fix: when a custom section is deleted, its items
 // must be appended to "In progress" with FRESH lexorank positions that

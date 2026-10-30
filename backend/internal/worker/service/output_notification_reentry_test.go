@@ -44,7 +44,7 @@ func TestNotificationProviderPreparationPermitsReentry(t *testing.T) {
 			provider := &reentrantNotificationProvider{Provider: testRegistry.Plugin(providerID)}
 			svc, _, _ := setupTestService(t, withRegistry(registryWithPlugin(t, providerID, provider)))
 			const ownerID = "notification-reentry-owner"
-			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{ID: ownerID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: providerID}))
+			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{ID: ownerID, WorkingDir: t.TempDir(), AgentProvider: providerID}))
 			sink := newTestRootOutputSink(t, svc.Output, ownerID, providerID)
 			sink.UpdateSessionID("native")
 			_, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
@@ -89,17 +89,17 @@ func TestNotificationProviderPreparationPermitsReentry(t *testing.T) {
 			entries := readStoredNotificationEntries(t, rows[0])
 			require.NotEmpty(t, entries)
 			assert.Equal(t, "first", entries[0].IdempotencyKey)
-			assertNotificationEntryIdentity(t, agent.MessageContent{Original: []byte(`{"type":"system","value":"first"}`), IdempotencyKey: "first"}, rows[0], entries[0])
+			assertNotificationEntryIdentity(t, providerID, agent.MessageContent{Original: []byte(`{"type":"system","value":"first"}`), IdempotencyKey: "first"}, rows[0], entries[0])
 			if operation == "notification append" {
 				require.Len(t, entries, 3)
 				assert.Equal(t, "nested", entries[1].IdempotencyKey)
 				assert.Equal(t, "outer", entries[2].IdempotencyKey)
-				assertNotificationEntryIdentity(t, agent.MessageContent{Original: []byte(`{"type":"system","value":"nested"}`), IdempotencyKey: "nested"}, rows[0], entries[1])
-				assertNotificationEntryIdentity(t, agent.MessageContent{Original: []byte(`{"type":"system","value":"outer"}`), IdempotencyKey: "outer"}, rows[0], entries[2])
+				assertNotificationEntryIdentity(t, providerID, agent.MessageContent{Original: []byte(`{"type":"system","value":"nested"}`), IdempotencyKey: "nested"}, rows[0], entries[1])
+				assertNotificationEntryIdentity(t, providerID, agent.MessageContent{Original: []byte(`{"type":"system","value":"outer"}`), IdempotencyKey: "outer"}, rows[0], entries[2])
 			} else {
 				require.Len(t, entries, 2)
 				assert.True(t, rows[0].TranscriptOnly)
-				assertNotificationEntryIdentity(t, agent.MessageContent{Original: []byte(`{"type":"system","value":"outer"}`), IdempotencyKey: "outer"}, rows[0], entries[1])
+				assertNotificationEntryIdentity(t, providerID, agent.MessageContent{Original: []byte(`{"type":"system","value":"outer"}`), IdempotencyKey: "outer"}, rows[0], entries[1])
 			}
 		})
 	}

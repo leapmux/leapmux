@@ -36,7 +36,6 @@ func setupRootSink(t *testing.T, rootID string, options ...setupOption) (*Servic
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
 		ID:            rootID,
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	return svc, newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -228,7 +227,6 @@ func newRootAgent(t *testing.T, svc *Service, rootID string) agent.ProviderServi
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
 		ID:            rootID,
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	return newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -1529,8 +1527,10 @@ func TestCloseBackgroundTask_PreservesTheNativeMessagesProvider(t *testing.T) {
 		db.ListAllMessagesByAgentIDParams{AgentID: childID})
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
-	assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, rows[0].AgentProvider,
-		"the native result retains the child provider")
+	child, err := svc.Queries.GetAgentByID(context.Background(), childID)
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, child.AgentProvider,
+		"the native result renders with the child's provider, which the child copies from its parent")
 }
 
 // Process exit records every child outcome without adding transcript messages.

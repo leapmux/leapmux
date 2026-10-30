@@ -21,7 +21,7 @@ func TestPlanApprovalSettingsPersistOutsideTheNativeResponse(t *testing.T) {
 		t.Run(settings.PermissionMode, func(t *testing.T) {
 			svc, _, _ := setupTestService(t)
 			require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
-				ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+				ID: "agent-1", WorkingDir: t.TempDir(),
 				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 			}))
 			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
@@ -72,7 +72,7 @@ func TestPlanSettingsRequireAMatchingApprovalBeforeReservation(t *testing.T) {
 		t.Run(tc.tool+"-"+tc.behavior+"-"+tc.expectedError, func(t *testing.T) {
 			svc, _, _ := setupTestService(t)
 			require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
-				ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+				ID: "agent-1", WorkingDir: t.TempDir(),
 				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 			}))
 			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
@@ -102,8 +102,7 @@ func TestSavedPlanSettingsStaySeparateDuringRecording(t *testing.T) {
 	request := []byte(` {"request":{"tool_name":"ExitPlanMode","input":{"plan":"# Plan"}},"extra":false} `)
 	for _, settings := range []string{`{"permissionMode":"","clearContext":false}`, `{"permissionMode":"default","clearContext":true}`} {
 		plan, err := controlResponsePlanFromAnswer(testRegistry, db.ControlResponseAnswer{
-			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-			RequestID:     "plan", RequestPayload: request, ResponseContent: response, ResolvedContent: response,
+			RequestID: "plan", RequestPayload: request, ResponseContent: response, ResolvedContent: response,
 			PlanApprovalSettings: []byte(settings),
 		})
 		require.NoError(t, err)
@@ -158,8 +157,7 @@ func TestSavedPlanSettingsReachTheTranscriptAsStored(t *testing.T) {
 	response := []byte(`{"response":{"subtype":"success","request_id":"plan","response":{"behavior":"allow"}}}`)
 	stored := []byte(`{"permissionMode":"default"}`)
 	plan, err := controlResponsePlanFromAnswer(testRegistry, db.ControlResponseAnswer{
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		RequestID:     "plan", RequestPayload: []byte(`{"request":{"tool_name":"ExitPlanMode"}}`),
+		RequestID: "plan", RequestPayload: []byte(`{"request":{"tool_name":"ExitPlanMode"}}`),
 		ResponseContent: response, ResolvedContent: response,
 		PlanApprovalSettings: stored,
 	})

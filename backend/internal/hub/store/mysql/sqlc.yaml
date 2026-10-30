@@ -26,20 +26,6 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/internal/util/sqltime"
               type: "MySQLNullTime"
-          # Worker enums
-          - column: "workers.status"
-            go_type:
-              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "WorkerStatus"
-          # Worker notification enums
-          - column: "worker_notifications.type"
-            go_type:
-              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "NotificationType"
-          - column: "worker_notifications.status"
-            go_type:
-              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "NotificationStatus"
           # Workspace section enums
           - column: "workspace_sections.section_type"
             go_type:
@@ -51,15 +37,11 @@ sql:
               type: "Sidebar"
           # Workspace tab enum
           # sqlc SILENTLY ignores an override whose table does not exist, so this
-          # pair must specify the columns the schema actually declares. One entry
+          # entry must specify the column the schema actually declares. One entry
           # here specified `workspace_tabs`, a table the store removed, and it did
-          # nothing at all: both real columns stayed int64, and workspace_tab_index.go
+          # nothing at all: the real columns stayed int64, and workspace_tab_index.go
           # went on hand-casting them in both directions.
           - column: "workspace_tab_owned.tab_type"
-            go_type:
-              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "TabType"
-          - column: "workspace_tab_rendered.tab_type"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "TabType"
@@ -91,6 +73,10 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "WorkspaceLifecycleOp"
+          - column: "device_authorizations.state"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "DeviceAuthorizationState"
           # Force binary token-hash columns to []byte (sqlc would map
           # MySQL VARBINARY to NullString otherwise, which is awkward
           # for HMAC bytes).

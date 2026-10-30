@@ -167,7 +167,7 @@ func (h *OutputHandler) notificationReference(agentID string, provider leapmuxv1
 	return &copy
 }
 
-func (h *OutputHandler) readNotificationParent(queries *db.Queries, agentID string, provider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, content agent.MessageContent, owner *transcriptOwner, standalone bool, reference *notifThreadRef) (*db.Message, error) {
+func (h *OutputHandler) readNotificationParent(queries *db.Queries, agentID string, source leapmuxv1.MessageSource, content agent.MessageContent, owner *transcriptOwner, standalone bool, reference *notifThreadRef) (*db.Message, error) {
 	if standalone || (reference == nil && owner != nil && !owner.IsCurrent()) {
 		return nil, nil
 	}
@@ -184,7 +184,7 @@ func (h *OutputHandler) readNotificationParent(queries *db.Queries, agentID stri
 	if err != nil {
 		return nil, err
 	}
-	if row.Source != source || row.AgentProvider != provider || row.AgentSessionID != content.AgentSessionID {
+	if row.Source != source || row.AgentSessionID != content.AgentSessionID {
 		if reference != nil {
 			return nil, errors.New("the notification aggregate does not match its entry owner")
 		}
@@ -215,7 +215,7 @@ func (h *OutputHandler) prepareNotification(agentID string, provider leapmuxv1.A
 	var tail []db.Message
 	var err error
 	if mode == notificationRetryResolution {
-		tail, err = readRetryResolutionTail(h.queries, agentID, provider, content.AgentSessionID, owner)
+		tail, err = readRetryResolutionTail(h.queries, agentID, content.AgentSessionID, owner)
 		if err == nil {
 			parent, err = retryResolutionParent(tail, plugin)
 		}
@@ -225,7 +225,7 @@ func (h *OutputHandler) prepareNotification(agentID string, provider leapmuxv1.A
 		mutex.Lock()
 		reference := h.notificationReference(agentID, provider, source, content, owner, standalone)
 		mutex.Unlock()
-		parent, err = h.readNotificationParent(h.queries, agentID, provider, source, content, owner, standalone, reference)
+		parent, err = h.readNotificationParent(h.queries, agentID, source, content, owner, standalone, reference)
 	}
 	if err != nil {
 		return notificationPreparation{}, err
@@ -262,7 +262,7 @@ func notificationParentEqual(first, second *db.Message) bool {
 		return first == second
 	}
 	return first.ID == second.ID && first.AgentID == second.AgentID && first.AgentSessionID == second.AgentSessionID &&
-		first.Source == second.Source && first.AgentProvider == second.AgentProvider && first.Seq == second.Seq &&
+		first.Source == second.Source && first.Seq == second.Seq &&
 		first.ContentCompression == second.ContentCompression && bytes.Equal(first.Content, second.Content) &&
 		first.SupplementalContentCompression == second.SupplementalContentCompression && bytes.Equal(first.SupplementalContent, second.SupplementalContent) &&
 		first.SupplementalRevision == second.SupplementalRevision && first.TranscriptOnly == second.TranscriptOnly &&
@@ -291,13 +291,13 @@ func (h *OutputHandler) writeNotificationLocked(agentID string, provider leapmux
 	queries := db.New(connection)
 	_, completion := agent.MessageMetadata(content)
 	if content.IdempotencyKey != "" {
-		duplicate, err := findNotificationDuplicate(queries, agentID, provider, source, content.AgentSessionID, entry, mode)
+		duplicate, err := findNotificationDuplicate(queries, agentID, source, content.AgentSessionID, entry, mode)
 		if err != nil || duplicate {
 			return notificationWrite{}, err
 		}
 	}
 	if mode == notificationRetryResolution {
-		tail, err := readRetryResolutionTail(queries, agentID, provider, content.AgentSessionID, owner)
+		tail, err := readRetryResolutionTail(queries, agentID, content.AgentSessionID, owner)
 		if err != nil {
 			return notificationWrite{}, err
 		}
@@ -309,7 +309,7 @@ func (h *OutputHandler) writeNotificationLocked(agentID string, provider leapmux
 		}
 	} else {
 		reference := h.notificationReference(agentID, provider, source, content, owner, standalone)
-		parent, err := h.readNotificationParent(queries, agentID, provider, source, content, owner, standalone, reference)
+		parent, err := h.readNotificationParent(queries, agentID, source, content, owner, standalone, reference)
 		if err != nil {
 			return notificationWrite{}, err
 		}
@@ -333,7 +333,7 @@ func (h *OutputHandler) writeNotificationLocked(agentID string, provider leapmux
 	return write, nil
 }
 
-func findNotificationDuplicate(queries *db.Queries, agentID string, provider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, sessionID string, expected agent.NotificationEntry, mode notificationWriteMode) (bool, error) {
+func findNotificationDuplicate(queries *db.Queries, agentID string, source leapmuxv1.MessageSource, sessionID string, expected agent.NotificationEntry, mode notificationWriteMode) (bool, error) {
 	rows, err := queries.ListMessageSupplementsByAgentAndSession(bgCtx(), db.ListMessageSupplementsByAgentAndSessionParams{
 		AgentID: agentID, AgentSessionID: sessionID,
 	})
@@ -353,7 +353,7 @@ func findNotificationDuplicate(queries *db.Queries, agentID string, provider lea
 			if entry.IdempotencyKey != expected.IdempotencyKey {
 				continue
 			}
-			if row.Source != source || row.AgentProvider != provider || (mode != notificationReport && entry.Fingerprint != expected.Fingerprint) {
+			if row.Source != source || (mode != notificationReport && entry.Fingerprint != expected.Fingerprint) {
 				return false, fmt.Errorf("notification identity conflict for key %q", expected.IdempotencyKey)
 			}
 			return true, nil
@@ -402,7 +402,7 @@ func (h *OutputHandler) storePreparedNotification(queries *db.Queries, agentID s
 		}
 		seq, err := createMessageRow(ctx, queries, db.CreateMessageParams{
 			ID: messageID, AgentID: agentID, AgentSessionID: content.AgentSessionID, IdempotencyKey: key,
-			Source: source, AgentProvider: provider, Content: compressed, ContentCompression: compression,
+			Source: source, Content: compressed, ContentCompression: compression,
 			SupplementalContent: supplementalCompressed, SupplementalContentCompression: supplementalCompression,
 			Completion: workerdb.OptionalStorageEnum(completion), TranscriptOnly: stale, SpanLines: lines, CreatedAt: sqltime.NewSQLiteTime(now),
 		})
@@ -462,7 +462,7 @@ func (h *OutputHandler) storePreparedNotification(queries *db.Queries, agentID s
 	prospective.Content, prospective.ContentCompression, prospective.SpanLines = compressed, compression, lines
 	prospective.SupplementalContent, prospective.SupplementalContentCompression = supplementalCompressed, supplementalCompression
 	prospective.Completion, prospective.TranscriptOnly = workerdb.OptionalStorageEnum(completion), stale
-	message, err := messageToProto(&prospective)
+	message, err := messageToProto(&prospective, provider)
 	if err != nil {
 		return notificationWrite{}, err
 	}

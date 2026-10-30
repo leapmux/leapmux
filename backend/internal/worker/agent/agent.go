@@ -136,7 +136,6 @@ type StoredMessage struct {
 	Content  MessageContent
 	Seq      int64
 	Revision int64
-	Provider leapmuxv1.AgentProvider
 }
 
 // TranscriptServices persists provider output and turn boundaries.

@@ -128,10 +128,12 @@ func (m *Manager) ConnForUser(ctx context.Context, user *auth.UserInfo, workerID
 	// A worker the operator has deregistered is not reachable by its user, even
 	// while its connection is still open.
 	//
-	// Deregistration is asynchronous: MarkDeregistering runs when the notification
-	// is sent, and ClearDeregistering only after the worker ACKS it. Without this
-	// check the whole of that window -- unbounded, since an offline worker's
-	// notification sits queued until it reconnects -- still handed the user a live
+	// Deregistration is asynchronous: MarkDeregistering runs when the worker is
+	// told to stop, and ClearDeregistering only after its deletion is recorded
+	// (or at once, for a worker that is already deleted). Without this check the
+	// whole of that window -- unbounded, since an offline deregistering worker
+	// keeps the flag until it connects or the hub restarts, and a restart sets
+	// it again at the worker's next connect -- still handed the user a live
 	// conn for a machine being torn down. Deregistering is the operator's
 	// containment action; a containment action that leaves the thing reachable
 	// until it politely acknowledges is not one.
@@ -381,7 +383,7 @@ func (m *Manager) OnlineForTrustedPath(workerID string) bool {
 
 // MarkDeregistering marks a worker as being deregistered, which makes it
 // unreachable through ConnForUser until the flag is cleared. The trusted path
-// stays open so the deregister notification itself can be delivered.
+// stays open so the DEREGISTER instruction itself can be delivered.
 func (m *Manager) MarkDeregistering(workerID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

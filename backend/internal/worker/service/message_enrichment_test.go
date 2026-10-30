@@ -32,7 +32,7 @@ func TestCapturedEnrichmentProviderPreparationCanReplaceItsPublisher(t *testing.
 			provider := &reentrantTranscriptProvider{Provider: testRegistry.Plugin(providerID), stage: stage}
 			svc, _, _ := setupTestService(t, withRegistry(registryWithPlugin(t, providerID, provider)))
 			const ownerID = "enrichment-preparation-owner"
-			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{ID: ownerID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: providerID}))
+			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{ID: ownerID, WorkingDir: t.TempDir(), AgentProvider: providerID}))
 			sink := newTestRootOutputSink(t, svc.Output, ownerID, providerID)
 			sink.UpdateSessionID("original-session")
 			sink.SetTurnState(agent.TurnState{Active: true}, 1)
@@ -187,7 +187,7 @@ func TestPersistMessageStoresOriginalAndSupplementTogether(t *testing.T) {
 	assert.Equal(t, before+1, writer.count(), "the first broadcast must contain both sources")
 	broadcasts := messages.snapshot()
 	require.Len(t, broadcasts, 1)
-	message, err := messageToProto(&row)
+	message, err := messageToProto(&row, sink.agentProvider)
 	require.NoError(t, err)
 	assert.True(t, proto.Equal(message, broadcasts[0]), "the first broadcast must match the stored row")
 }
@@ -200,7 +200,7 @@ func TestPairedToolUseLookupResolvesSupplementalInput(t *testing.T) {
 	supplemental := []byte(`{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"call","input":{"file_path":"/project/recovered.ts"}}}`)
 	span := agent.SpanInfo{SpanID: "call", SpanType: "Read"}
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: original, Supplemental: supplemental}, span))
-	resolved := sink.h.pairedToolUseLookup(sink.agentID, sink.currentMessageSessionID(), span)()
+	resolved := sink.h.pairedToolUseLookup(sink.h.agents.Registry().Plugin(sink.agentProvider), sink.agentID, sink.currentMessageSessionID(), span)()
 	assert.JSONEq(t, `{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"call","toolName":"Read","inputOmitted":true,"input":{"file_path":"/project/recovered.ts"}}}`, string(resolved))
 	row, err := sink.h.queries.GetLatestMessageByAgentID(t.Context(), sink.agentID)
 	require.NoError(t, err)
@@ -284,7 +284,7 @@ func TestEnrichMessagePreservesIdentityAndRejectsStaleContent(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, string(enriched), string(decodedSupplement.Supplemental))
 	assert.Equal(t, broadcasts+1, writer.count())
-	message, err := messageToProto(&after)
+	message, err := messageToProto(&after, sink.agentProvider)
 	require.NoError(t, err)
 	assert.Equal(t, after.Content, message.Content)
 	assert.Equal(t, after.SupplementalContent, message.SupplementalContent)

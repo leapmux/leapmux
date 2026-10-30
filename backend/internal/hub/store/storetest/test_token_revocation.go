@@ -58,7 +58,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		assert.Equal(t, store.RevocationEventKindAPITokenRotation, events[0].Event.Kind)
 		assert.Equal(t, tokenID, events[0].Event.SubjectID)
 		assert.Equal(t, user.ID, events[0].Event.UserID)
-		assert.False(t, events[0].Event.RevokedAt.IsZero())
+		assert.Zero(t, events[0].Event.UserAuthGeneration, "a rotation is a per-credential event")
 
 		n, err = st.APITokens().RotateRefresh(ctx, params)
 		require.NoError(t, err)
@@ -303,7 +303,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		assert.Equal(t, int64(1), events[0].Event.UserAuthGeneration)
 	})
 
-	t.Run("user bumps create timestamped user-token events", func(t *testing.T) {
+	t.Run("user bumps create generation-bearing user-token events", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "user")
 
@@ -320,8 +320,8 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		require.Len(t, events, 2)
 		for _, event := range events {
 			assert.Equal(t, store.RevocationEventKindUserTokens, event.Event.Kind)
+			assert.Equal(t, user.ID, event.Event.SubjectID)
 			assert.Equal(t, user.ID, event.Event.UserID)
-			assert.False(t, event.Event.RevokedAt.IsZero())
 		}
 		assert.ElementsMatch(t, []int64{1, 2}, []int64{
 			events[0].Event.UserAuthGeneration,
@@ -384,7 +384,6 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		assert.Equal(t, user.ID, events[0].Event.SubjectID)
 		assert.Equal(t, user.ID, events[0].Event.UserID)
 		assert.Equal(t, int64(0), events[0].Event.UserAuthGeneration, "user_info is a cache signal, not generation-bearing")
-		assert.False(t, events[0].Event.RevokedAt.IsZero())
 	})
 
 	t.Run("admin demotion (is_admin true->false) emits a generation-bearing user_tokens revocation", func(t *testing.T) {
@@ -471,7 +470,6 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		assert.Equal(t, userID, events[0].Event.SubjectID)
 		assert.Equal(t, userID, events[0].Event.UserID)
 		assert.Equal(t, int64(0), events[0].Event.UserAuthGeneration, "user_info is a cache signal, not generation-bearing")
-		assert.False(t, events[0].Event.RevokedAt.IsZero())
 	}
 
 	t.Run("profile change emits a user_info cache-invalidation event", func(t *testing.T) {
@@ -1075,27 +1073,14 @@ func seedAPIToken(t *testing.T, st store.Store, userID string) string {
 func seedDelegationToken(t *testing.T, st store.Store, userID string) string {
 	t.Helper()
 	worker := SeedWorker(t, st, userID)
-	wsID := SeedWorkspace(t, st, userID, "ws")
-	tabID := id.Generate()
-	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
-		UserID:      userid.MustNew(userID),
-		WorkspaceID: wsID,
-		WorkerID:    worker.ID,
-		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabID:       tabID,
-		Position:    "a",
-		TileID:      "tile-1",
-	}))
 	tokenID := id.Generate()
 	require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
-		GrantedScopes:    "workspace:read workspace:write worker:read",
-		ID:               tokenID,
-		UserID:           userid.MustNew(userID),
-		WorkerID:         worker.ID,
-		IssuedForTabID:   tabID,
-		IssuedForTabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
-		SecretHash:       []byte("hash"),
-		ExpiresAt:        time.Now().Add(time.Hour),
+		GrantedScopes: "workspace:read workspace:write worker:read",
+		ID:            tokenID,
+		UserID:        userid.MustNew(userID),
+		WorkerID:      worker.ID,
+		SecretHash:    []byte("hash"),
+		ExpiresAt:     time.Now().Add(time.Hour),
 	}))
 	return tokenID
 }

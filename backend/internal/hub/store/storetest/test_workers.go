@@ -633,7 +633,8 @@ func (s *Suite) testWorkers(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		// ListByUserID filters on status = 1, so only the active worker comes back.
+		// ListByUserID lists ACTIVE workers only (deregistering_at IS NULL), so
+		// only the active worker comes back.
 		page, err := st.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
 			RegisteredBy: userid.MustNew(user.ID),
 			PageParams:   store.PageParams{Limit: 10},
@@ -900,5 +901,191 @@ func (s *Suite) testWorkers(t *testing.T) {
 		})
 		assert.ElementsMatch(t, []string{older.ID, tiedA.ID, tiedB.ID}, seen,
 			"same-millisecond admin-listed workers must not be skipped across page boundaries")
+	})
+
+	// No column stores the status: it is derived from deregistering_at and
+	// deleted_at (store.WorkerStatusOf), so every transition below is a
+	// timestamp write, and the reads must agree with it.
+	t.Run("derived status follows deregistering_at and deleted_at", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "derived-status-user")
+		owner := userid.MustNew(user.ID)
+		worker := SeedWorker(t, st, user.ID)
+		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE, worker.Status)
+		assert.Nil(t, worker.DeregisteringAt)
+
+		n, err := st.Workers().Deregister(ctx, store.DeregisterWorkerParams{ID: worker.ID, RegisteredBy: owner})
+		require.NoError(t, err)
+		require.Equal(t, int64(1), n)
+		found, err := st.Workers().GetByID(ctx, worker.ID)
+		require.NoError(t, err)
+		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, found.Status)
+		require.NotNil(t, found.DeregisteringAt, "Deregister stamps the persisted intent")
+		firstStamp := *found.DeregisteringAt
+
+		n, err = st.Workers().Deregister(ctx, store.DeregisterWorkerParams{ID: worker.ID, RegisteredBy: owner})
+		require.NoError(t, err)
+		assert.Zero(t, n, "a second Deregister changes nothing")
+		found, err = st.Workers().GetByID(ctx, worker.ID)
+		require.NoError(t, err)
+		require.NotNil(t, found.DeregisteringAt)
+		assert.True(t, firstStamp.Equal(*found.DeregisteringAt), "a second Deregister must not restart the grace period")
+
+		require.NoError(t, st.Workers().MarkDeleted(ctx, worker.ID))
+		_, err = st.Workers().GetByID(ctx, worker.ID)
+		assert.ErrorIs(t, err, store.ErrNotFound)
+		deleted, err := st.Workers().GetByIDIncludeDeleted(ctx, worker.ID)
+		require.NoError(t, err)
+		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, deleted.Status)
+		require.NotNil(t, deleted.DeletedAt)
+		firstDeletion := *deleted.DeletedAt
+
+		require.NoError(t, st.Workers().MarkDeleted(ctx, worker.ID), "a second MarkDeleted is a no-op")
+		deleted, err = st.Workers().GetByIDIncludeDeleted(ctx, worker.ID)
+		require.NoError(t, err)
+		assert.True(t, firstDeletion.Equal(*deleted.DeletedAt), "a second MarkDeleted must not move deleted_at")
+
+		n, err = st.Workers().Deregister(ctx, store.DeregisterWorkerParams{ID: worker.ID, RegisteredBy: owner})
+		require.NoError(t, err)
+		assert.Zero(t, n, "a deleted worker cannot be deregistered")
+		n, err = st.Workers().ForceDeregister(ctx, worker.ID)
+		require.NoError(t, err)
+		assert.Zero(t, n)
+	})
+
+	// A deregistering worker must still connect, because connecting is how it
+	// is told to stop; a deleted one must not.
+	t.Run("get by auth token admits active and deregistering and refuses deleted", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "token-status-user")
+		active := SeedWorker(t, st, user.ID)
+		deregistering := SeedWorker(t, st, user.ID)
+		deleted := SeedWorker(t, st, user.ID)
+		_, err := st.Workers().ForceDeregister(ctx, deregistering.ID)
+		require.NoError(t, err)
+		require.NoError(t, st.Workers().MarkDeleted(ctx, deleted.ID))
+
+		got, err := st.Workers().GetByAuthToken(ctx, active.AuthToken)
+		require.NoError(t, err)
+		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE, got.Status)
+		got, err = st.Workers().GetByAuthToken(ctx, deregistering.AuthToken)
+		require.NoError(t, err)
+		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, got.Status)
+		_, err = st.Workers().GetByAuthToken(ctx, deleted.AuthToken)
+		assert.ErrorIs(t, err, store.ErrNotFound)
+	})
+
+	// Every combination of the admin listing's two filters, paged one row at a
+	// time so each matching set spans at least two pages.
+	t.Run("list admin selects each derived status, with and without a user, across pages", func(t *testing.T) {
+		st := s.NewStore(t)
+		byStatus := map[leapmuxv1.WorkerStatus]map[string][]string{} // status -> user -> ids
+		users := []string{SeedUser(t, st, "admin-matrix-a").ID, SeedUser(t, st, "admin-matrix-b").ID}
+		base := time.Now().UTC().Truncate(time.Millisecond).Add(-time.Hour)
+		seq := 0
+		for _, u := range users {
+			for _, status := range []leapmuxv1.WorkerStatus{
+				leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE,
+				leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING,
+				leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED,
+			} {
+				for range 2 {
+					w := SeedWorker(t, st, u)
+					seq++
+					require.NoError(t, st.TestHelper().SetCreatedAt(ctx, store.EntityWorkers, w.ID, base.Add(time.Duration(seq)*time.Second)))
+					switch status {
+					case leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE:
+						// A new worker is ACTIVE already.
+					case leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING:
+						_, err := st.Workers().ForceDeregister(ctx, w.ID)
+						require.NoError(t, err)
+					case leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED:
+						require.NoError(t, st.Workers().MarkDeleted(ctx, w.ID))
+					case leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED:
+						t.Fatalf("no derived status is %v", status)
+					}
+					if byStatus[status] == nil {
+						byStatus[status] = map[string][]string{}
+					}
+					byStatus[status][u] = append(byStatus[status][u], w.ID)
+				}
+			}
+		}
+		want := func(statuses []leapmuxv1.WorkerStatus, user *string) []string {
+			var out []string
+			for _, status := range statuses {
+				for _, u := range users {
+					if user == nil || *user == u {
+						out = append(out, byStatus[status][u]...)
+					}
+				}
+			}
+			return out
+		}
+		live := []leapmuxv1.WorkerStatus{leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING}
+		for _, c := range []struct {
+			name     string
+			status   *leapmuxv1.WorkerStatus
+			statuses []leapmuxv1.WorkerStatus
+		}{
+			{"every live worker", nil, live},
+			{"active", ptrconv.Ptr(leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE), []leapmuxv1.WorkerStatus{leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE}},
+			{"deregistering", ptrconv.Ptr(leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING), []leapmuxv1.WorkerStatus{leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING}},
+			{"deleted", ptrconv.Ptr(leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED), []leapmuxv1.WorkerStatus{leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED}},
+		} {
+			for _, user := range []*string{nil, &users[0]} {
+				name := c.name + ", all users"
+				if user != nil {
+					name = c.name + ", one user"
+				}
+				t.Run(name, func(t *testing.T) {
+					seen := pageThroughByOne(t, func(cursor string) (store.Page[store.WorkerWithOwner], error) {
+						return st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
+							UserID: user, Status: c.status,
+							PageParams: store.PageParams{Cursor: cursor, Limit: 1},
+						})
+					})
+					expected := want(c.statuses, user)
+					require.GreaterOrEqual(t, len(expected), 2, "fixture: the set must span two pages")
+					assert.ElementsMatch(t, expected, seen)
+				})
+			}
+		}
+
+		_, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
+			Status: ptrconv.Ptr(leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED), PageParams: store.PageParams{Limit: 10},
+		})
+		assert.ErrorIs(t, err, store.ErrInvalidArgument, "an unspecified status is a bad filter, not an empty page")
+	})
+
+	t.Run("set status round-trips the live states and refuses deleted", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "setstatus-live-user")
+		worker := SeedWorker(t, st, user.ID)
+		get := func() *store.Worker {
+			t.Helper()
+			found, err := st.Workers().GetByID(ctx, worker.ID)
+			require.NoError(t, err)
+			return found
+		}
+
+		require.NoError(t, st.Workers().SetStatus(ctx, store.SetWorkerStatusParams{ID: worker.ID, Status: leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING}))
+		found := get()
+		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, found.Status)
+		require.NotNil(t, found.DeregisteringAt)
+		stamp := *found.DeregisteringAt
+		require.NoError(t, st.Workers().SetStatus(ctx, store.SetWorkerStatusParams{ID: worker.ID, Status: leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING}))
+		assert.True(t, stamp.Equal(*get().DeregisteringAt), "setting DEREGISTERING again keeps the original stamp")
+
+		require.NoError(t, st.Workers().SetStatus(ctx, store.SetWorkerStatusParams{ID: worker.ID, Status: leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE}))
+		found = get()
+		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE, found.Status)
+		assert.Nil(t, found.DeregisteringAt)
+
+		for _, status := range []leapmuxv1.WorkerStatus{leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED} {
+			err := st.Workers().SetStatus(ctx, store.SetWorkerStatusParams{ID: worker.ID, Status: status})
+			assert.ErrorIs(t, err, store.ErrInvalidArgument, "SetStatus(%v) must be refused; deletion goes through MarkDeleted", status)
+		}
+		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE, get().Status, "a refused SetStatus changes nothing")
 	})
 }

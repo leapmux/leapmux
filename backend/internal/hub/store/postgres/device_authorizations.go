@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
 	"github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
@@ -25,9 +26,8 @@ func fromDBDeviceAuthorization(d gendb.DeviceAuthorization) store.DeviceAuthoriz
 		UserCode:        d.UserCode,
 		DeviceName:      d.DeviceName,
 		UserID:          uid,
-		Approved:        int64(d.Approved),
+		State:           d.State,
 		LastPolledAt:    d.LastPolledAt.Ptr(),
-		IntervalSeconds: int64(d.IntervalSeconds),
 		ClientID:        d.ClientID,
 		RequestedScopes: d.RequestedScopes,
 		GrantedScopes:   d.GrantedScopes,
@@ -56,7 +56,7 @@ func (s *deviceAuthorizationStore) Create(ctx context.Context, p store.CreateDev
 		DeviceName:      p.DeviceName,
 		ClientID:        p.ClientID,
 		RequestedScopes: p.RequestedScopes,
-		IntervalSeconds: int32(p.IntervalSeconds),
+		State:           leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING,
 		ExpiresAt:       pgtime.New(p.ExpiresAt),
 		ElevateTokenID:  textNonEmpty(p.ElevateTokenID),
 	}))
@@ -94,6 +94,8 @@ func (s *deviceAuthorizationStore) Approve(ctx context.Context, p store.ApproveD
 		UserID:        userIDText(p.UserID),
 		DeviceCode:    p.DeviceCode,
 		GrantedScopes: p.GrantedScopes,
+		ApprovedState: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED,
+		PendingState:  leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING,
 		Now:           pgtime.New(now),
 	})
 }
@@ -112,18 +114,25 @@ func (s *deviceAuthorizationStore) ApproveByUserCode(ctx context.Context, p stor
 		UserID:        userIDText(p.UserID),
 		UserCode:      p.UserCode,
 		GrantedScopes: p.GrantedScopes,
+		ApprovedState: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED,
+		PendingState:  leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING,
 		Now:           pgtime.New(now),
 	})
 }
 
 func (s *deviceAuthorizationStore) DenyByUserCode(ctx context.Context, userCode string) (int64, error) {
-	return s.conn.q.DenyDeviceAuthorizationByUserCode(ctx, userCode)
+	return s.conn.q.DenyDeviceAuthorizationByUserCode(ctx, gendb.DenyDeviceAuthorizationByUserCodeParams{
+		UserCode:     userCode,
+		DeniedState:  leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_DENIED,
+		PendingState: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING,
+	})
 }
 
 func (s *deviceAuthorizationStore) Consume(ctx context.Context, deviceCode string, now time.Time) (int64, error) {
 	return s.conn.q.ConsumeDeviceAuthorization(ctx, gendb.ConsumeDeviceAuthorizationParams{
-		DeviceCode: deviceCode,
-		Now:        pgtime.New(now),
+		DeviceCode:    deviceCode,
+		ApprovedState: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED,
+		Now:           pgtime.New(now),
 	})
 }
 
@@ -139,8 +148,9 @@ func (s *deviceAuthorizationStore) ConsumeApprovedForUserClient(ctx context.Cont
 		return 0, store.ErrInvalidArgument
 	}
 	return rowsAffected(s.conn.q.ConsumeApprovedDeviceAuthorizationsForUserClient(ctx, gendb.ConsumeApprovedDeviceAuthorizationsForUserClientParams{
-		ClientID: clientID,
-		UserID:   textNonEmpty(user.String()),
-		Now:      pgtime.New(now),
+		ClientID:      clientID,
+		ApprovedState: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED,
+		UserID:        textNonEmpty(user.String()),
+		Now:           pgtime.New(now),
 	}))
 }

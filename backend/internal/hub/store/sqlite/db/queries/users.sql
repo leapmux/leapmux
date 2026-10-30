@@ -83,8 +83,8 @@ LIMIT sqlc.arg(limit);
 UPDATE users SET password_hash = ?, first_credential_exempt = 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ?;
 
--- The profile/email/email_verified/admin updates all RETURN id, updated_at so
--- the store layer can atomically emit a user_info cache-invalidation event: each
+-- The profile/email/email_verified/admin updates all RETURN id so the store
+-- layer can atomically emit a user_info cache-invalidation event: each
 -- mutates a field cached in UserInfo (username, email, email_verified -- an auth
 -- gate -- and is_admin), so a stale cached UserInfo must be dropped cross-process
 -- the same way. No row match -> no event.
@@ -92,22 +92,22 @@ WHERE id = ?;
 -- name: UpdateUserProfile :one
 UPDATE users SET username = ?, display_name = ?, display_name_folded = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ?
-RETURNING id, updated_at;
+RETURNING id;
 
 -- name: UpdateUserEmail :one
 UPDATE users SET email = ?, email_verified = ?, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ?
-RETURNING id, updated_at;
+RETURNING id;
 
 -- name: UpdateUserEmailVerified :one
 UPDATE users SET email_verified = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ?
-RETURNING id, updated_at;
+RETURNING id;
 
 -- name: UpdateUserAdmin :one
 UPDATE users SET is_admin = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ?
-RETURNING id, updated_at;
+RETURNING id;
 
 -- name: DeleteUser :exec
 UPDATE users SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?;
@@ -126,8 +126,8 @@ UPDATE users SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?
 -- Gating keeps the workspaces/workers -> users delete order correct under bulk
 -- deletes; the user is reaped on a later pass once its stragglers drain. Each
 -- NOT EXISTS is an indexed point probe: idx_workspaces_owner_user_id covers
--- workspaces.owner_user_id, and the leading column of
--- idx_workers_registered_by_status_created covers workers.registered_by.
+-- workspaces.owner_user_id, and idx_workers_registered_by covers
+-- workers.registered_by.
 DELETE FROM users WHERE rowid IN (
     SELECT u.rowid FROM users u
     -- Raw compare: deleted_at (canonical on every write) against the SQLiteTime
@@ -215,7 +215,7 @@ WHERE id = ?;
 -- name: PromotePendingEmail :one
 UPDATE users SET email = pending_email, email_verified = 1, pending_email = '', pending_email_token = '', pending_email_expires_at = NULL, pending_email_unblocked_at = NULL, pending_email_attempts = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ? AND pending_email != ''
-RETURNING id, updated_at;
+RETURNING id;
 
 -- name: ConsumeVerificationAttempt :one
 UPDATE users
@@ -246,10 +246,10 @@ WHERE pending_email != ''
   AND ((pending_email_token != '' AND pending_email_expires_at IS NOT NULL AND pending_email_expires_at < sqlc.arg(cutoff))
     OR (pending_email_token = '' AND updated_at < sqlc.arg(codeless_cutoff)));
 
--- name: BumpUserTokensRevokedAt :one
--- Bumps the user-wide revocation timestamp and credential epoch, then
--- returns the row that moved so the store layer can emit a durable
--- revocation event carrying the new epoch. The query itself has no
+-- name: BumpUserAuthGeneration :one
+-- Bumps the user-wide credential epoch, then returns the row that moved so
+-- the store layer can emit a durable revocation event carrying the new
+-- epoch. The query itself has no
 -- deleted_at guard, so it would act on a soft-deleted row -- but neither
 -- caller can reach one: RevokeUserTokens (via RevokeAllUserCredentials)
 -- runs inside RunInUserAuthTransaction, whose LockUserAuthState filters
@@ -260,11 +260,10 @@ WHERE pending_email != ''
 -- that ordering is not exercised today. Only a truly missing row (no id
 -- match) is a no-op.
 UPDATE users
-SET tokens_revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-    auth_generation   = auth_generation + 1,
+SET auth_generation   = auth_generation + 1,
     updated_at        = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ?
-RETURNING id, tokens_revoked_at, auth_generation;
+RETURNING id, auth_generation;
 
 -- name: SetPendingRecovery :execresult
 -- Conditional mint, recovery twin of SetPendingEmail: the write lands
@@ -335,9 +334,8 @@ SET password_hash = sqlc.arg(password_hash),
     pending_recovery_expires_at = NULL,
     pending_recovery_unblocked_at = NULL,
     pending_recovery_attempts = 0,
-    tokens_revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
     auth_generation = auth_generation + 1,
     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = sqlc.arg(id) AND pending_recovery_token = sqlc.arg(pending_recovery_token)
-RETURNING id, tokens_revoked_at, auth_generation;
+RETURNING id, auth_generation;
 

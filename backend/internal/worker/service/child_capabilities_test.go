@@ -40,7 +40,7 @@ func TestChildCapabilitiesUseTheStoredOptions(t *testing.T) {
 			registry := registryWithPlugin(t, provider, storedChildOperationsProvider{})
 			svc, _, _ := setupTestService(t, withRegistry(registry))
 			ctx := context.Background()
-			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{ID: "root", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: provider}))
+			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{ID: "root", WorkingDir: t.TempDir(), AgentProvider: provider}))
 			sink := newTestRootOutputSink(t, svc.Output, "root", provider)
 			childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "native-child", Title: "Child"})
 			require.NoError(t, err)

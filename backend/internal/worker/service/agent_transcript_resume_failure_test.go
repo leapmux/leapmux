@@ -142,7 +142,7 @@ func TestFailedNativeResumeRetainsTheCopiedWorkerTranscript(t *testing.T) {
 			Source: content.source, Content: []byte(content.bytes), IdempotencyKey: content.key,
 			ContentCompression:             leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 			SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-			AgentProvider:                  provider, CreatedAt: sqltime.NewSQLiteTime(time.Unix(100+int64(index), 0)),
+			CreatedAt:                      sqltime.NewSQLiteTime(time.Unix(100+int64(index), 0)),
 		})
 		require.NoError(t, err)
 	}
@@ -254,7 +254,7 @@ func openRefusedNativeResume(t *testing.T) (*Service, string, []db.Message, *res
 			Source: content.source, Content: []byte(content.bytes), IdempotencyKey: content.key,
 			ContentCompression:             leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 			SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-			AgentProvider:                  provider, CreatedAt: sqltime.NewSQLiteTime(time.Unix(100+int64(index), 0)),
+			CreatedAt:                      sqltime.NewSQLiteTime(time.Unix(100+int64(index), 0)),
 		})
 		require.NoError(t, err)
 	}

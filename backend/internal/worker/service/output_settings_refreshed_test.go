@@ -58,7 +58,6 @@ func newRefreshTestFixture(t *testing.T, seed settingsSeed) refreshTestFixture {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       seed.options(),
 	}))
@@ -537,7 +536,6 @@ func TestPersistCatalogIfChanged(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: copilot,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "gpt-5"}),
 	}))
@@ -694,7 +692,7 @@ func liveSwitchFixture(t *testing.T, storedModel string, wrap ...func(agent.Agen
 	const provider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	options := map[string]string{agent.OptionIDModel: fixtureModelB, agent.OptionIDEffort: "low"}
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: provider,
+		ID: "agent-1", WorkingDir: t.TempDir(), AgentProvider: provider,
 		Options: marshalOptions(options),
 	}))
 	stored := (&switchingAgent{models: fixtureModels(), model: storedModel, effort: "low"}).OptionGroups()

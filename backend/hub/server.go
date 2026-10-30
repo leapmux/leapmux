@@ -563,7 +563,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	mailRenderer := mail.Renderer{BaseURL: hubBaseURL}
 
 	broadcaster := service.NewHubEventBroadcaster(cMgr)
-	notifierSvc := notifier.New(st, wMgr, pendingReqs, apiTimeout)
+	notifierSvc := notifier.New(st, wMgr, pendingReqs, apiTimeout, broadcaster.NotifyWorkersChanged)
 
 	// Per-user CRDT manager registry. The factory constructs a fully
 	// bootstrapped manager (state loaded from disk, ops replayed) on

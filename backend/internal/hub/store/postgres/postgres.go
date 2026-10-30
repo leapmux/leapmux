@@ -137,9 +137,6 @@ func newPoolConn(shared *pgShared, pool gendb.DBTX) *pgConn {
 func (s *pgStore) Users() store.UserStore       { return &userStore{conn: s.conn} }
 func (s *pgStore) Sessions() store.SessionStore { return &sessionStore{conn: s.conn} }
 func (s *pgStore) Workers() store.WorkerStore   { return &workerStore{conn: s.conn} }
-func (s *pgStore) WorkerNotifications() store.WorkerNotificationStore {
-	return &workerNotificationStore{conn: s.conn}
-}
 func (s *pgStore) RegistrationKeys() store.RegistrationKeyStore {
 	return &registrationKeyStore{conn: s.conn}
 }

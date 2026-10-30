@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
@@ -143,4 +144,76 @@ func TestMigrate_IsIdempotent(t *testing.T) {
 	require.NoError(t, sqlDB.QueryRow(
 		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'agents'`).Scan(&agents))
 	assert.Equal(t, 1, agents, "the schema must survive a repeat migration intact")
+}
+
+// TestInputQueueStateRefusesHalfAPause pins the table constraint that makes
+// pause_reason the paused flag. A pause states its reason and its owner
+// together, so a row with one and not the other is a state no reader can
+// interpret, and the database refuses it.
+func TestInputQueueStateRefusesHalfAPause(t *testing.T) {
+	t.Parallel()
+
+	sqlDB, err := db.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	ctx := context.Background()
+	require.NoError(t, db.Migrate(ctx, sqlDB))
+
+	for name, c := range map[string]struct {
+		reason, owner any
+		refused       bool
+	}{
+		"a reason without an owner": {reason: 1, owner: nil, refused: true},
+		"an owner without a reason": {reason: nil, owner: 1, refused: true},
+		"a pause with both":         {reason: 1, owner: 1},
+		"no pause":                  {reason: nil, owner: nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			agentID := "agent-" + strings.ReplaceAll(name, " ", "-")
+			_, err := sqlDB.ExecContext(ctx, `INSERT INTO agents (id) VALUES (?)`, agentID)
+			require.NoError(t, err)
+			_, err = sqlDB.ExecContext(ctx,
+				`INSERT INTO agent_input_queue_state (agent_id, pause_reason, pause_owner) VALUES (?, ?, ?)`,
+				agentID, c.reason, c.owner)
+			if c.refused {
+				assert.ErrorContains(t, err, "CHECK constraint failed")
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}
+
+// TestAttachmentSizeIsTheDataLength pins the generated size column. The
+// database derives it from the bytes, so it always agrees with them, and a
+// writer cannot state it.
+func TestAttachmentSizeIsTheDataLength(t *testing.T) {
+	t.Parallel()
+
+	sqlDB, err := db.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	ctx := context.Background()
+	require.NoError(t, db.Migrate(ctx, sqlDB))
+	for _, statement := range []string{
+		`INSERT INTO agents (id) VALUES ('agent-1')`,
+		`INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, state) VALUES ('item-1', 'agent-1', 1, 1, 1)`,
+	} {
+		_, err := sqlDB.ExecContext(ctx, statement)
+		require.NoError(t, err)
+	}
+
+	_, err = sqlDB.ExecContext(ctx,
+		`INSERT INTO agent_input_queue_attachments (item_id, position, filename, mime_type, data) VALUES ('item-1', 0, 'a.bin', 'application/octet-stream', ?)`,
+		[]byte("hello"))
+	require.NoError(t, err)
+	var size int64
+	require.NoError(t, sqlDB.QueryRowContext(ctx,
+		`SELECT size FROM agent_input_queue_attachments WHERE item_id = 'item-1' AND position = 0`).Scan(&size))
+	assert.Equal(t, int64(5), size)
+
+	_, err = sqlDB.ExecContext(ctx,
+		`INSERT INTO agent_input_queue_attachments (item_id, position, filename, mime_type, data, size) VALUES ('item-1', 1, 'b.bin', 'application/octet-stream', ?, 5)`,
+		[]byte("hello"))
+	assert.Error(t, err, "a writer cannot state a generated column")
 }

@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -49,10 +48,6 @@ func (s *Suite) testCredentialRoundTrip(t *testing.T) {
 			ID:               id.Generate(),
 			UserID:           userid.MustNew(user.ID),
 			WorkerID:         worker.ID,
-			AgentID:          "agent-roundtrip",
-			TerminalID:       "terminal-roundtrip",
-			IssuedForTabID:   "tab-roundtrip",
-			IssuedForTabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
 			GrantedScopes:    "workspace:read workspace:write worker:read",
 			SecretHash:       []byte("secret-hash-roundtrip"),
 			RefreshHash:      []byte("refresh-hash-roundtrip"),
@@ -83,7 +78,6 @@ func (s *Suite) testCredentialRoundTrip(t *testing.T) {
 			DeviceName:      "roundtrip-laptop",
 			ClientID:        oauthapp.ControlCLIClientID,
 			RequestedScopes: "workspace:read file:read",
-			IntervalSeconds: 5,
 			ExpiresAt:       time.Now().Add(10 * time.Minute).UTC().Truncate(time.Second),
 			ElevateTokenID:  tokenID,
 		}

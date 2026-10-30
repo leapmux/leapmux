@@ -190,7 +190,7 @@ func runningSwitchFixture(t *testing.T, provider leapmuxv1.AgentProvider, relaun
 		options[agent.OptionIDPermissionMode] = mode
 	}
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: provider,
+		ID: "agent-1", WorkingDir: t.TempDir(), AgentProvider: provider,
 		Options: marshalOptions(options),
 	}))
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{

@@ -3,7 +3,7 @@ INSERT INTO workspaces (id, owner_user_id, title)
 VALUES (?, ?, ?);
 
 -- name: GetWorkspaceByID :one
-SELECT * FROM workspaces WHERE id = ? AND is_deleted = 0;
+SELECT * FROM workspaces WHERE id = ? AND deleted_at IS NULL;
 
 -- name: GetWorkspaceByIDIncludeDeleted :one
 SELECT * FROM workspaces WHERE id = ?;
@@ -11,7 +11,7 @@ SELECT * FROM workspaces WHERE id = ?;
 -- name: ListWorkspacesByIDs :many
 SELECT * FROM workspaces
 WHERE id IN (sqlc.slice('workspace_ids'))
-  AND is_deleted = 0;
+  AND deleted_at IS NULL;
 
 -- name: ListAccessibleWorkspaces :many
 -- Secondary sort on `id` is the deterministic tiebreaker: created_at is
@@ -27,7 +27,7 @@ WHERE id IN (sqlc.slice('workspace_ids'))
 -- (e.g. "Foo..." vs "foo...") still sort deterministically. SQLite and
 -- PostgreSQL already collate case-sensitively by default.
 SELECT w.* FROM workspaces w
-WHERE w.is_deleted = 0
+WHERE w.deleted_at IS NULL
   AND w.owner_user_id = sqlc.arg(user_id)
 ORDER BY w.created_at DESC, w.id DESC;
 
@@ -35,15 +35,15 @@ ORDER BY w.created_at DESC, w.id DESC;
 UPDATE workspaces SET title = ? WHERE id = ? AND owner_user_id = ?;
 
 -- name: SoftDeleteWorkspace :execresult
--- The is_deleted = 0 guard makes a concurrent delete racing this one match zero
+-- The deleted_at IS NULL guard makes a concurrent delete racing this one match zero
 -- rows, so the service's rows-affected NotFound check fires for the loser
 -- instead of reporting success for a workspace the winner already deleted
 -- (and queueing a second lifecycle-outbox row / channel-close pass). Matches
 -- SoftDeleteAllWorkspacesByUser's guard.
-UPDATE workspaces SET is_deleted = 1, deleted_at = NOW(3) WHERE id = ? AND owner_user_id = ? AND is_deleted = 0;
+UPDATE workspaces SET deleted_at = NOW(3) WHERE id = ? AND owner_user_id = ? AND deleted_at IS NULL;
 
 -- name: SoftDeleteAllWorkspacesByUser :exec
-UPDATE workspaces SET is_deleted = 1, deleted_at = NOW(3) WHERE owner_user_id = ? AND is_deleted = 0;
+UPDATE workspaces SET deleted_at = NOW(3) WHERE owner_user_id = ? AND deleted_at IS NULL;
 
 -- name: HardDeleteWorkspacesBefore :execresult
 DELETE FROM workspaces WHERE id IN (SELECT w.id FROM (SELECT workspaces.id FROM workspaces WHERE workspaces.deleted_at IS NOT NULL AND workspaces.deleted_at < ? LIMIT 1000) w);

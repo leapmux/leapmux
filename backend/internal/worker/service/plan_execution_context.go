@@ -50,7 +50,7 @@ func (svc *Service) prepareApprovedPlanContext(item inputqueue.DispatchItem, inp
 	changed, recordErr := svc.Queries.RecordControlResponseExecutionSession(bgCtx(), db.RecordControlResponseExecutionSessionParams{
 		State:   storedStateCompleted,
 		AgentID: item.AgentID, InputID: item.ID, AgentSessionID: input.source.AgentSessionID,
-		AgentProvider: input.source.AgentProvider, ExecutionSessionID: sessionID,
+		ExecutionSessionID: sessionID,
 	})
 	if recordErr != nil {
 		return fmt.Errorf("%w: record the plan execution session: %w", agent.ErrDeliveryUncertain, errors.Join(err, recordErr))

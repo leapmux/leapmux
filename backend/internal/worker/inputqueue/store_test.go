@@ -32,7 +32,7 @@ func newQueueDatabase(t *testing.T) *sql.DB {
 	t.Cleanup(func() { _ = database.Close() })
 	require.NoError(t, workerdb.Migrate(context.Background(), database))
 	require.NoError(t, gendb.New(database).CreateAgent(context.Background(), gendb.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	return database
@@ -453,7 +453,7 @@ func TestInitialSchemaCreatesDurableInputQueue(t *testing.T) {
 			`SELECT COUNT(*) FROM sqlite_master WHERE name = ?`, object).Scan(&count))
 		assert.Equal(t, 1, count, object)
 	}
-	var deliveryErrorColumns, legacyInputFingerprintColumns, legacyDedupKeyColumns, idempotencyKeyColumns int
+	var deliveryErrorColumns, legacyInputFingerprintColumns, legacyDedupKeyColumns, idempotencyKeyColumns, providerColumns int
 	require.NoError(t, database.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'delivery_error'`).Scan(&deliveryErrorColumns))
 	require.NoError(t, database.QueryRowContext(ctx,
@@ -462,10 +462,13 @@ func TestInitialSchemaCreatesDurableInputQueue(t *testing.T) {
 		`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'dedup_key'`).Scan(&legacyDedupKeyColumns))
 	require.NoError(t, database.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'idempotency_key'`).Scan(&idempotencyKeyColumns))
+	require.NoError(t, database.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'agent_provider'`).Scan(&providerColumns))
 	assert.Zero(t, deliveryErrorColumns)
 	assert.Zero(t, legacyInputFingerprintColumns)
 	assert.Zero(t, legacyDedupKeyColumns)
 	assert.Equal(t, 1, idempotencyKeyColumns)
+	assert.Zero(t, providerColumns, "a message reports its agent's provider; no column stores a copy")
 	var idempotencyIndexSQL string
 	require.NoError(t, database.QueryRowContext(ctx,
 		`SELECT sql FROM sqlite_master WHERE name = 'idx_messages_idempotency_key'`).Scan(&idempotencyIndexSQL))
@@ -475,13 +478,16 @@ func TestInitialSchemaCreatesDurableInputQueue(t *testing.T) {
 	require.NoError(t, database.QueryRowContext(ctx,
 		`SELECT sql FROM sqlite_master WHERE name = 'idx_agent_input_queue_one_edit'`).Scan(&editIndexSQL))
 	assert.Contains(t, editIndexSQL, "WHERE edit_owner <> ''")
-	var pauseOwnerColumns, archiveMarkerColumns int
+	var pauseOwnerColumns, archiveMarkerColumns, pausedColumns int
 	require.NoError(t, database.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM pragma_table_info('agent_input_queue_state') WHERE name = 'pause_owner'`).Scan(&pauseOwnerColumns))
 	require.NoError(t, database.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM pragma_table_info('agent_input_queue_state') WHERE name = 'paused_for_archive'`).Scan(&archiveMarkerColumns))
+	require.NoError(t, database.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('agent_input_queue_state') WHERE name = 'paused'`).Scan(&pausedColumns))
 	assert.Equal(t, 1, pauseOwnerColumns)
 	assert.Zero(t, archiveMarkerColumns, "pause_owner replaced the single-cause archive flag")
+	assert.Zero(t, pausedColumns, "the queue is paused exactly when pause_reason is set; no column stores a second copy")
 	// The item id is the primary key, so a composite unique over (agent_id, id)
 	// can never reject a row that the primary key admits.
 	var itemsTableSQL string
@@ -1544,8 +1550,8 @@ func TestStoreEnforcesAggregateAttachmentCap(t *testing.T) {
 			VALUES (?, 'agent-1', ?, 1, 'queued')`, inputID, i)
 		require.NoError(t, err)
 		_, err = database.ExecContext(ctx, `
-			INSERT INTO agent_input_queue_attachments (item_id, position, filename, mime_type, data, size)
-			VALUES (?, 0, 'blob.bin', 'application/octet-stream', zeroblob(?), ?)`, inputID, MaxItemBytes, MaxItemBytes)
+			INSERT INTO agent_input_queue_attachments (item_id, position, filename, mime_type, data)
+			VALUES (?, 0, 'blob.bin', 'application/octet-stream', zeroblob(?))`, inputID, MaxItemBytes)
 		require.NoError(t, err)
 	}
 	_, err = store.Enqueue(ctx, NewItem{
@@ -2072,7 +2078,7 @@ func TestStoreSnapshotRefusesToPreemptAnApprovalThatIsNotRecorded(t *testing.T) 
 			require.NoError(t, err)
 			err = dbtest.StoreControlResponse(t.Context(), database, gendb.ControlResponseAnswer{
 				AgentID: "agent-1", RequestID: "approval", ClaimToken: "claim", State: state,
-				InputID: "plan", PlanApprovalSettings: []byte(`{}`), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+				InputID: "plan", PlanApprovalSettings: []byte(`{}`),
 			})
 			require.NoError(t, err)
 
@@ -2249,4 +2255,98 @@ func TestStoreAutomaticQuestionAdmission(t *testing.T) {
 			assert.Equal(t, "answer", prepared.Item.Text)
 		})
 	}
+}
+
+// queuePauseState is the pause half of agent-1's queue state row.
+type queuePauseState struct {
+	reason     leapmuxv1.AgentInputQueuePauseReason
+	owner      pauseOwner
+	activeTurn bool
+	revision   int64
+}
+
+func readQueuePauseState(t *testing.T, database *sql.DB) queuePauseState {
+	t.Helper()
+	var reason, owner sql.NullInt64
+	var state queuePauseState
+	require.NoError(t, database.QueryRowContext(t.Context(),
+		`SELECT pause_reason, pause_owner, active_turn, revision FROM agent_input_queue_state WHERE agent_id = 'agent-1'`).
+		Scan(&reason, &owner, &state.activeTurn, &state.revision))
+	state.reason = leapmuxv1.AgentInputQueuePauseReason(reason.Int64)
+	state.owner = pauseOwner(owner.Int64)
+	return state
+}
+
+// pauseAgentAndEndTurn runs pauseAndEndTurn for agent-1 in its own
+// transaction and returns the number of rows it changed.
+func pauseAgentAndEndTurn(t *testing.T, database *sql.DB, reason leapmuxv1.AgentInputQueuePauseReason, owner pauseOwner) int64 {
+	t.Helper()
+	tx, err := database.BeginTx(t.Context(), nil)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	result, err := pauseAndEndTurn(t.Context(), tx, "agent-1", reason, owner)
+	require.NoError(t, err)
+	rows, err := result.RowsAffected()
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit())
+	return rows
+}
+
+// TestPauseAndEndTurnKeepsTheEarlierPause pins the contract in the doc above
+// pauseAndEndTurn, which now reads the pause from pause_reason alone: an
+// existing pause keeps its reason and its owner, except that a pause a
+// planned restart owns passes to the new cause and keeps its reason.
+func TestPauseAndEndTurnKeepsTheEarlierPause(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a manual pause keeps its reason and owner", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		_, err := store.SetPaused(t.Context(), "agent-1", true, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL)
+		require.NoError(t, err)
+		_, err = database.ExecContext(t.Context(), `UPDATE agent_input_queue_state SET active_turn = 1 WHERE agent_id = 'agent-1'`)
+		require.NoError(t, err)
+
+		changed := pauseAgentAndEndTurn(t, database,
+			leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, pauseOwnerAgentStopped)
+		assert.Equal(t, int64(1), changed, "the active turn ends")
+		after := readQueuePauseState(t, database)
+		assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL, after.reason)
+		assert.Equal(t, pauseOwnerManual, after.owner)
+		assert.False(t, after.activeTurn)
+
+		// No turn is active and the pause is not a planned restart's, so the
+		// WHERE clause matches nothing.
+		changed = pauseAgentAndEndTurn(t, database,
+			leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, pauseOwnerAgentStopped)
+		assert.Zero(t, changed)
+		assert.Equal(t, after, readQueuePauseState(t, database), "a call that matches nothing changes nothing")
+	})
+
+	t.Run("a planned restart's pause passes to the new cause", func(t *testing.T) {
+		t.Parallel()
+		database, store := newStoreFixture(t)
+		_, created, err := store.pauseForPlannedRestart(t.Context(), "agent-1")
+		require.NoError(t, err)
+		require.True(t, created)
+		before := readQueuePauseState(t, database)
+		require.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, before.reason)
+		require.Equal(t, pauseOwnerPlannedRestart, before.owner)
+
+		changed := pauseAgentAndEndTurn(t, database,
+			leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, pauseOwnerArchive)
+		assert.Equal(t, int64(1), changed)
+		after := readQueuePauseState(t, database)
+		assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, after.reason,
+			"the takeover keeps the reason the restart recorded")
+		assert.Equal(t, pauseOwnerArchive, after.owner)
+
+		// The restart no longer owns the pause, so its end cannot lift it.
+		snapshot, _, err := store.finishPlannedRestart(t.Context(), "agent-1", true, true)
+		require.NoError(t, err)
+		assert.True(t, snapshot.Paused, "the archive's pause survives the end of the restart")
+		final := readQueuePauseState(t, database)
+		assert.Equal(t, pauseOwnerArchive, final.owner)
+		assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, final.reason)
+	})
 }

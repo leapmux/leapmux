@@ -109,7 +109,9 @@ message WorkspaceContentsRecord {
 // UserCrdtState is the full materialized state for one user. Stored as
 // a single proto blob in user_state. Manager-internal slots
 // (`workspaces` map membership, `current_epoch`, `epoch_started_at`)
-// are mutated outside the op log via lifecycle / epoch rotation.
+// are mutated outside the op log. Lifecycle sets the workspaces; only the
+// compaction pass writes the epoch fields (Bootstrap stamps a missing
+// epoch_started_at, and the next compaction pass persists it).
 message UserCrdtState {
   string                                    user_id              = 1;
   map<string, NodeRecord>                   nodes                = 2;

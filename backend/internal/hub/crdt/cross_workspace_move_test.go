@@ -14,9 +14,8 @@ import (
 // TestCrossWorkspaceMove_SetTabRegisterTileID_ResolvesNewWorkspace
 // covers the v1 cross-workspace move primitive: a single
 // SetTabRegister(tile_id=newTile) on a tab whose new tile resolves to
-// a different workspace_id via the parent_id chain. Both
-// `_owned.workspace_id` and `_rendered.workspace_id` must reflect the
-// new workspace immediately.
+// a different workspace_id via the parent_id chain. The tab's index row
+// must reflect the new workspace immediately, and keep rendering.
 func TestCrossWorkspaceMove_SetTabRegisterTileID_ResolvesNewWorkspace(t *testing.T) {
 	mgr, j, _ := runManager(t, "user-1", allowAll{}, 100_000)
 	seedRootInternal(t, mgr, "w1", "root1")
@@ -52,9 +51,8 @@ func TestCrossWorkspaceMove_SetTabRegisterTileID_ResolvesNewWorkspace(t *testing
 	owned, rendered = j.snapshotIndex()
 	require.Contains(t, owned, "tA")
 	assert.Equal(t, "w2", owned["tA"].WorkspaceID,
-		"_owned must reflect the post-move workspace via tile ancestry")
-	assert.Equal(t, "w2", rendered["tA"].WorkspaceID,
-		"_rendered must reflect the post-move workspace")
+		"the row must reflect the post-move workspace via tile ancestry")
+	assert.Contains(t, rendered, "tA", "the moved tab still renders")
 	assert.Equal(t, "root2", owned["tA"].TileID)
 }
 
@@ -113,10 +111,10 @@ func TestCrossWorkspaceMove_PureCreate_OnlyDestPermissionRequired(t *testing.T) 
 	require.NotNil(t, r[0].GetCommitted(), "pure-create on w2 should succeed without w1 permission")
 }
 
-// TestCrossWorkspaceMove_TabIndexBothViewsConsistent verifies that
-// after a move, both _owned and _rendered carry the same workspace_id
-// and tile_id (no stale rows from the source workspace).
-func TestCrossWorkspaceMove_TabIndexBothViewsConsistent(t *testing.T) {
+// TestCrossWorkspaceMove_TabIndexRowMovesWithTheTab verifies that after a
+// move, the tab's one index row carries the new workspace_id, tile_id and
+// position (no stale row left in the source workspace).
+func TestCrossWorkspaceMove_TabIndexRowMovesWithTheTab(t *testing.T) {
 	mgr, j, _ := runManager(t, "user-1", allowAll{}, 400_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 	seedRootInternal(t, mgr, "w2", "root2")
@@ -148,16 +146,18 @@ func TestCrossWorkspaceMove_TabIndexBothViewsConsistent(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	owned, rendered := j.snapshotIndex()
+	owned, _ := j.snapshotIndex()
 	require.Contains(t, owned, "tA")
-	require.Contains(t, rendered, "tA")
-	assert.Equal(t, "w2", owned["tA"].WorkspaceID)
-	assert.Equal(t, "w2", rendered["tA"].WorkspaceID)
-	assert.Equal(t, "root2", owned["tA"].TileID)
-	assert.Equal(t, "root2", rendered["tA"].TileID)
-	assert.Equal(t, "newpos", rendered["tA"].Position)
+	assert.Equal(t, crdt.TabIndexRow{
+		WorkspaceID: "w2",
+		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
+		TabID:       "tA",
+		WorkerID:    "wkr1",
+		TileID:      "root2",
+		Position:    "newpos",
+		Rendered:    true,
+	}, owned["tA"])
 
 	// Only one row per tab id — no stale w1 row.
 	assert.Len(t, owned, 1)
-	assert.Len(t, rendered, 1)
 }

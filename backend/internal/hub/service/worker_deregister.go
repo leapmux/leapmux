@@ -11,12 +11,14 @@ import (
 // WorkerDeregisterEffects holds the three out-of-database effects that
 // MUST follow every worker deregistration, whichever surface performed it.
 //
-// The store verb only flips the row's status. Without these effects the
-// worker is never told to stop, so it keeps its Connect stream and its
-// leases; its memoized delegation scope keeps outstanding tokens reaching
-// across workers until a cache TTL expires; and no owner's client learns
-// the list changed. The row also STAYS at DEREGISTERING forever, because
-// only the notifier's acknowledgement path calls MarkDeleted.
+// The store verb only stamps the row's deregistering_at, the persisted
+// intent. Without these effects a connected worker is not told to stop until
+// it reconnects, so it keeps its Connect stream and its leases; its memoized
+// delegation scope keeps outstanding tokens reaching across workers until a
+// cache TTL expires; and no owner's client learns the list changed. The
+// intent itself is never lost: an offline worker is told at its next connect,
+// and the cleanup loop deletes a worker still deregistering after its grace
+// period.
 //
 // The admin surfaces used to run none of the three, so a deregister typed
 // by an administrator did strictly less than the same deregister typed by
@@ -41,9 +43,11 @@ func NewWorkerDeregisterEffects(scopeCache *auth.DelegationScopeCache, n *notifi
 // addressed to the OWNER, not to the administrator who typed the command.
 //
 // Callers MUST run it AFTER the deregistering transaction commits.
-// SendDeregister persists a notification row and moves worker-manager
-// state, so a rollback after it would leave a worker told it was
-// deregistered while its row says otherwise.
+// SendDeregister persists nothing itself: it reads the committed row, moves
+// worker-manager state, and tells a connected worker to stop -- which can
+// complete the deletion at once, on the worker's acknowledgement. A rollback
+// after it would leave a worker told to stop, and possibly deleted, while
+// its row said otherwise.
 func (e *WorkerDeregisterEffects) Apply(ctx context.Context, workerID, ownerID string) error {
 	if e == nil {
 		return nil

@@ -1,8 +1,7 @@
 -- name: InsertUserOpBatch :exec
 INSERT INTO user_op_batches (
-    user_id, physical_ms, logical, last_logical, origin_client,
-    principal_id, batch_id, body_hash, batch_payload, transitions_payload, op_count, epoch
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    user_id, physical_ms, logical, batch_id, batch_payload, transitions_payload, op_count
+) VALUES (?, ?, ?, ?, ?, ?, ?);
 
 -- name: ListUserOpBatchesAfter :many
 -- Paged scan so a far-behind subscriber cannot OOM the broadcaster;
@@ -15,23 +14,31 @@ INSERT INTO user_op_batches (
 -- SQLite then assigns that `?` an index one greater than the largest
 -- already in the statement, leaving a gap that the generated Go code
 -- never binds (see https://www.sqlite.org/lang_expr.html#parameters).
+--
+-- The cursor is compared by (physical_ms, logical) alone. The journal stores
+-- no client id: one clock stamps every canonical HLC of a user, so
+-- (physical_ms, logical) is unique within a user. Every cursor the hub hands
+-- out is a canonical HLC (client id crdt.CanonicalClockID) or the zero HLC,
+-- and no row has physical 0, so dropping the client id from the comparison
+-- changes the result for none of them.
 SELECT * FROM user_op_batches
 WHERE user_id = sqlc.arg(user_id)
   AND (physical_ms > sqlc.arg(after_physical_ms)
        OR (physical_ms = sqlc.arg(after_physical_ms)
-           AND (logical > sqlc.arg(after_logical)
-                OR (logical = sqlc.arg(after_logical)
-                    AND origin_client > sqlc.arg(after_origin_client)))))
-ORDER BY physical_ms, logical, origin_client
+           AND logical > sqlc.arg(after_logical)))
+ORDER BY physical_ms, logical
 LIMIT sqlc.arg(row_limit);
 
 -- name: DeleteUserOpBatchesThrough :exec
 -- Boundary alignment: this delete keys on the batch's LAST canonical HLC
--- (physical_ms, last_logical, origin_client) with a `<=` test, while
--- crdt.Manager.decideResume admits a resume cursor with a strict `>` test
--- against op_retention_watermark. The floor from laggedRetentionWatermark
--- always carries logical=0 (the lag case), so a batch whose last op is at
--- (floor.physical, last_logical>=1) survives deletion here AND a cursor at
+-- (physical_ms, logical + op_count - 1) with a `<=` test. A batch's ops share
+-- physical_ms and carry contiguous logicals from `logical`, because
+-- processSubmit stamps every op of a batch from one Clock.Tick loop, so
+-- logical + op_count - 1 is the last op's logical. crdt.Manager.decideResume
+-- admits a resume cursor with a strict `>` test against
+-- op_retention_watermark. The floor from laggedRetentionWatermark always
+-- carries logical=0 (the lag case), so a batch whose last op is at
+-- (floor.physical, last logical>=1) survives deletion here AND a cursor at
 -- that batch passes resume -- the two boundaries stay consistent. A floor
 -- with a non-zero logical would delete a batch the resume predicate still
 -- admits, opening a silent gap in the client's delta. TestLaggedRetentionWatermark_ZerosLogicalForLagCase
@@ -40,9 +47,7 @@ DELETE FROM user_op_batches
 WHERE user_id = ?
   AND (physical_ms < sqlc.arg(through_physical_ms)
        OR (physical_ms = sqlc.arg(through_physical_ms)
-           AND (last_logical < sqlc.arg(through_logical)
-                OR (last_logical = sqlc.arg(through_logical)
-                    AND origin_client <= sqlc.arg(through_origin_client)))));
+           AND (logical + op_count - 1) <= sqlc.arg(through_logical)));
 
 -- name: CountUserOpBatches :one
 SELECT COUNT(*) FROM user_op_batches WHERE user_id = ?;
@@ -56,14 +61,15 @@ SELECT COUNT(*) FROM user_op_batches WHERE user_id = ?;
 -- batches (and their transitions_payload record snapshots) forever. This
 -- sweep drains that tail on the shared cleanup schedule.
 --
--- The cutoff is an HLC physical, NOT the committed_at wall clock, so this
--- deletes exactly the set decideResume refuses. The two are NOT
+-- The cutoff is an HLC physical, NOT a wall-clock time, so this deletes
+-- exactly the set decideResume refuses. A wall-clock cutoff is NOT
 -- interchangeable even though HLC physical is Unix epoch-ms: Clock.Tick
 -- clamps physical monotonically and Clock.Observe re-seeds it from the
 -- persisted state, so after a backward clock correction physical runs
--- permanently ahead of wall time -- and committed_at is assigned by the DB
--- server, a different machine under Postgres/MySQL. Sweeping on committed_at
--- would then delete rows whose HLC a live cursor still passes, and
+-- permanently ahead of wall time -- and a time the database assigns comes
+-- from the database server, a different machine under Postgres/MySQL. A sweep
+-- on wall-clock time would then delete rows whose HLC a live cursor still
+-- passes, and
 -- ListUserOpBatchesAfter would silently return the surviving later rows,
 -- shipping a delta with a hole in it. Batched via LIMIT; the caller drains
 -- until a pass deletes nothing. The LIMIT is a hard literal rather than a bind,

@@ -576,6 +576,8 @@ func TestCLI_PasswordReset_RevokesAPIAndDelegationTokens(t *testing.T) {
 		GrantedScopes:    authscope.NonAdminGrant().String(),
 		SecretHash:       []byte("hash"),
 	}))
+	before, err := st.Users().GetByID(ctx, user.ID)
+	require.NoError(t, err)
 	require.NoError(t, st.Close())
 
 	require.NoError(t, runPasswordReset(testCmdCtx, []string{
@@ -597,7 +599,8 @@ func TestCLI_PasswordReset_RevokesAPIAndDelegationTokens(t *testing.T) {
 	require.NotNil(t, tokens.Rows[0].RevokedAt)
 	updated, err := st.Users().GetByID(ctx, user.ID)
 	require.NoError(t, err)
-	assert.NotNil(t, updated.TokensRevokedAt)
+	assert.Greater(t, updated.AuthGeneration, before.AuthGeneration,
+		"a password reset must advance the user's credential epoch")
 }
 
 func captureStdout(t *testing.T, fn func() error) (string, error) {

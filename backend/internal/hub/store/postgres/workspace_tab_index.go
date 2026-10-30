@@ -30,7 +30,7 @@ const bulkUpsertChunkRows = 4096
 const bulkDeleteChunkRows = 8192
 
 // upsertParamArrays is the column-major projection of a chunk of
-// UpsertOwnedTabParams that pgx forwards as separate text/integer
+// UpsertTabParams that pgx forwards as separate text/integer/boolean
 // arrays to the UNNEST query. The arrays are re-used across chunks
 // (see makeUpsertParamArrays + fill) so the per-chunk allocation cost
 // stays at zero after the first chunk.
@@ -42,6 +42,7 @@ type upsertParamArrays struct {
 	workerIDs    []string
 	tileIDs      []string
 	positions    []string
+	rendered     []bool
 }
 
 // makeUpsertParamArrays allocates the column arrays once, sized for
@@ -56,10 +57,11 @@ func makeUpsertParamArrays(capacity int) upsertParamArrays {
 		workerIDs:    make([]string, 0, capacity),
 		tileIDs:      make([]string, 0, capacity),
 		positions:    make([]string, 0, capacity),
+		rendered:     make([]bool, 0, capacity),
 	}
 }
 
-func (p *upsertParamArrays) fill(rows []store.UpsertOwnedTabParams) {
+func (p *upsertParamArrays) fill(rows []store.UpsertTabParams) {
 	p.userIDs = p.userIDs[:0]
 	p.workspaceIDs = p.workspaceIDs[:0]
 	p.tabTypes = p.tabTypes[:0]
@@ -67,6 +69,7 @@ func (p *upsertParamArrays) fill(rows []store.UpsertOwnedTabParams) {
 	p.workerIDs = p.workerIDs[:0]
 	p.tileIDs = p.tileIDs[:0]
 	p.positions = p.positions[:0]
+	p.rendered = p.rendered[:0]
 	for _, r := range rows {
 		p.userIDs = append(p.userIDs, r.UserID.String())
 		p.workspaceIDs = append(p.workspaceIDs, r.WorkspaceID)
@@ -75,10 +78,11 @@ func (p *upsertParamArrays) fill(rows []store.UpsertOwnedTabParams) {
 		p.workerIDs = append(p.workerIDs, r.WorkerID)
 		p.tileIDs = append(p.tileIDs, r.TileID)
 		p.positions = append(p.positions, r.Position)
+		p.rendered = append(p.rendered, r.Rendered)
 	}
 }
 
-// keyArrays mirrors upsertParamArrays for the two-column BulkDelete*
+// keyArrays mirrors upsertParamArrays for the two-column BulkDelete
 // path: a single allocation per call, reused across chunks. It fills from
 // store.BoundTabIndexKey rather than store.TabIndexKey, so the only keys that
 // can reach a bind are the ones store.FilterTabIndexKeys already cleared.
@@ -103,16 +107,15 @@ func (k *keyArrays) fill(keys []store.BoundTabIndexKey) {
 	}
 }
 
-// bulkUpsertTabs is the shared body of BulkUpsertOwned and BulkUpsertRendered:
-// allocate the column arrays once, walk the input in chunks, and hand each
-// filled chunk to exec. The only thing that differs between the two callers is
-// which generated query exec runs, so that is all they spell.
+// bulkUpsertTabs is the body of BulkUpsert: allocate the column arrays once,
+// walk the input in chunks, and hand each filled chunk to exec, which runs the
+// generated query.
 //
 // It cannot delegate to sqlutil.BulkUpsertTabs: that composes "?"-placeholder
 // SQL at runtime, while postgres binds sqlc-generated unnest(...::TEXT[])
 // array queries. The chunk arithmetic they DO share lives in
 // sqlutil.ChunkRange.
-func bulkUpsertTabs(rows []store.UpsertOwnedTabParams, exec func(p *upsertParamArrays) error) error {
+func bulkUpsertTabs(rows []store.UpsertTabParams, exec func(p *upsertParamArrays) error) error {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -123,16 +126,15 @@ func bulkUpsertTabs(rows []store.UpsertOwnedTabParams, exec func(p *upsertParamA
 	})
 }
 
-// bulkDeleteTabs is the shared body of BulkDeleteOwned and BulkDeleteRendered.
+// bulkDeleteTabs is the chunking body of BulkDelete.
 //
 // It takes keys that are ALREADY filtered, and does not call
 // store.FilterTabIndexKeys itself. That is deliberate, not an oversight: the
 // store-bind rule in internal/audit requires the FuncDecl that runs a
-// classified ownership query (BulkDeleteOwnedTabs / BulkDeleteRenderedTabs) to
-// lexically contain a call to a shared owner guard. Pulling the filter in here
-// would move the guard out of BulkDeleteOwned / BulkDeleteRendered, and the
-// audit would correctly report both as binding an owner column unguarded. Do
-// not "clean this up" by hoisting the filter.
+// classified ownership query (BulkDeleteOwnedTabs) to lexically contain a call
+// to a shared owner guard. Pulling the filter in here would move the guard out
+// of BulkDelete, and the audit would correctly report it as binding an owner
+// column unguarded. Do not "clean this up" by hoisting the filter.
 func bulkDeleteTabs(bound []store.BoundTabIndexKey, exec func(k *keyArrays) error) error {
 	if len(bound) == 0 {
 		return nil
@@ -144,7 +146,7 @@ func bulkDeleteTabs(bound []store.BoundTabIndexKey, exec func(k *keyArrays) erro
 	})
 }
 
-func (s *workspaceTabIndexStore) UpsertOwned(ctx context.Context, p store.UpsertOwnedTabParams) error {
+func (s *workspaceTabIndexStore) UpsertOwned(ctx context.Context, p store.UpsertTabParams) error {
 	return mapErr(s.conn.q.UpsertOwnedTab(ctx, gendb.UpsertOwnedTabParams{
 		UserID:      p.UserID.String(),
 		WorkspaceID: p.WorkspaceID,
@@ -153,30 +155,32 @@ func (s *workspaceTabIndexStore) UpsertOwned(ctx context.Context, p store.Upsert
 		WorkerID:    p.WorkerID,
 		TileID:      p.TileID,
 		Position:    p.Position,
+		Rendered:    p.Rendered,
 	}))
 }
 
-func (s *workspaceTabIndexStore) BulkUpsertOwned(ctx context.Context, rows []store.UpsertOwnedTabParams) error {
+func (s *workspaceTabIndexStore) BulkUpsert(ctx context.Context, rows []store.UpsertTabParams) error {
 	return bulkUpsertTabs(rows, func(p *upsertParamArrays) error {
 		return mapErr(s.conn.q.BulkUpsertOwnedTabs(ctx, gendb.BulkUpsertOwnedTabsParams{
-			UserIds:      p.userIDs,
-			WorkspaceIds: p.workspaceIDs,
-			TabTypes:     p.tabTypes,
-			TabIds:       p.tabIDs,
-			WorkerIds:    p.workerIDs,
-			TileIds:      p.tileIDs,
-			Positions:    p.positions,
+			UserIds:       p.userIDs,
+			WorkspaceIds:  p.workspaceIDs,
+			TabTypes:      p.tabTypes,
+			TabIds:        p.tabIDs,
+			WorkerIds:     p.workerIDs,
+			TileIds:       p.tileIDs,
+			Positions:     p.positions,
+			RenderedFlags: p.rendered,
 		}))
 	})
 }
 
-func (s *workspaceTabIndexStore) BulkDeleteOwned(ctx context.Context, keys []store.TabIndexKey) error {
+func (s *workspaceTabIndexStore) BulkDelete(ctx context.Context, keys []store.TabIndexKey) error {
 	// Skip keys with an unusable owner; one bad key must not cancel its
 	// neighbours' deletes. See store.FilterTabIndexKeys. The guard stays in
 	// THIS function rather than moving into bulkDeleteTabs -- see the note
 	// there. A drop is logged, not swallowed: it means an upstream tenancy
 	// invariant broke.
-	bound := store.FilterTabIndexKeysForTable("workspace_tab_owned", keys)
+	bound := store.FilterTabIndexKeysForTable(sqlutil.TabIndexTable, keys)
 	return bulkDeleteTabs(bound, func(k *keyArrays) error {
 		return mapErr(s.conn.q.BulkDeleteOwnedTabs(ctx, gendb.BulkDeleteOwnedTabsParams{
 			UserIds: k.userIDs,
@@ -238,49 +242,8 @@ func (s *workspaceTabIndexStore) GetOwned(ctx context.Context, p store.GetOwnedT
 		}
 		return nil, mapErr(err)
 	}
-	out := ownedTabRowFromDB(row)
+	out := tabRowFromDB(row)
 	return &out, nil
-}
-
-func (s *workspaceTabIndexStore) UpsertRendered(ctx context.Context, p store.UpsertRenderedTabParams) error {
-	return mapErr(s.conn.q.UpsertRenderedTab(ctx, gendb.UpsertRenderedTabParams{
-		UserID:      p.UserID.String(),
-		WorkspaceID: p.WorkspaceID,
-		TabType:     p.TabType,
-		TabID:       p.TabID,
-		WorkerID:    p.WorkerID,
-		TileID:      p.TileID,
-		Position:    p.Position,
-	}))
-}
-
-func (s *workspaceTabIndexStore) BulkUpsertRendered(ctx context.Context, rows []store.UpsertRenderedTabParams) error {
-	return bulkUpsertTabs(rows, func(p *upsertParamArrays) error {
-		return mapErr(s.conn.q.BulkUpsertRenderedTabs(ctx, gendb.BulkUpsertRenderedTabsParams{
-			UserIds:      p.userIDs,
-			WorkspaceIds: p.workspaceIDs,
-			TabTypes:     p.tabTypes,
-			TabIds:       p.tabIDs,
-			WorkerIds:    p.workerIDs,
-			TileIds:      p.tileIDs,
-			Positions:    p.positions,
-		}))
-	})
-}
-
-func (s *workspaceTabIndexStore) BulkDeleteRendered(ctx context.Context, keys []store.TabIndexKey) error {
-	// Skip keys with an unusable owner; one bad key must not cancel its
-	// neighbours' deletes. See store.FilterTabIndexKeys. The guard stays in
-	// THIS function rather than moving into bulkDeleteTabs -- see the note
-	// there. A drop is logged, not swallowed: it means an upstream tenancy
-	// invariant broke.
-	bound := store.FilterTabIndexKeysForTable("workspace_tab_rendered", keys)
-	return bulkDeleteTabs(bound, func(k *keyArrays) error {
-		return mapErr(s.conn.q.BulkDeleteRenderedTabs(ctx, gendb.BulkDeleteRenderedTabsParams{
-			UserIds: k.userIDs,
-			TabIds:  k.tabIDs,
-		}))
-	})
 }
 
 func (s *workspaceTabIndexStore) ListRenderedByWorkspaceIDs(ctx context.Context, p store.ListRenderedTabsByWorkspaceIDsParams) ([]store.WorkspaceTabRow, error) {
@@ -300,7 +263,7 @@ func (s *workspaceTabIndexStore) ListRenderedByWorkspaceIDs(ctx context.Context,
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return store.MapSlice(rows, renderedTabRowFromDB), nil
+	return store.MapSlice(rows, tabRowFromDB), nil
 }
 
 func (s *workspaceTabIndexStore) GetRendered(ctx context.Context, p store.GetRenderedTabParams) (*store.WorkspaceTabRow, error) {
@@ -322,7 +285,7 @@ func (s *workspaceTabIndexStore) GetRendered(ctx context.Context, p store.GetRen
 		}
 		return nil, mapErr(err)
 	}
-	out := renderedTabRowFromDB(row)
+	out := tabRowFromDB(row)
 	return &out, nil
 }
 
@@ -338,7 +301,7 @@ func (s *workspaceTabIndexStore) LocateAccessibleRendered(ctx context.Context, p
 		TabID:  p.TabID,
 		// This parameter alone still needs the conversion: sqlc types it from the
 		// query's own expression rather than from the column, so the override on
-		// workspace_tab_rendered.tab_type does not reach it.
+		// workspace_tab_owned.tab_type does not reach it.
 		TabType: int32(p.TabType),
 	})
 	if err != nil {
@@ -347,12 +310,12 @@ func (s *workspaceTabIndexStore) LocateAccessibleRendered(ctx context.Context, p
 		}
 		return nil, mapErr(err)
 	}
-	out := renderedTabRowFromDB(row)
+	out := tabRowFromDB(row)
 	return &out, nil
 }
 
 // ownedTabRefFromDB converts one ListOwnedTabsByWorkspace row to the store's
-// (worker_id, tab_type, tab_id) triple. Named beside ownedTabRowFromDB and used
+// (worker_id, tab_type, tab_id) triple. Named beside tabRowFromDB and used
 // through store.MapSlice for the same reason: the conversion is the one place the
 // generated column types meet the store's, so it should exist once per dialect
 // rather than being open-coded in the query method.
@@ -375,13 +338,9 @@ func ownedTabStateRowFromDB(r gendb.ListOwnedTabsByWorkerRow) store.WorkerTabSta
 	}
 }
 
-// ownedTabRowFromDB converts one generated workspace_tab_owned row to the store
-// shape. renderedTabRowFromDB below is its byte-for-byte twin over
-// gendb.WorkspaceTabRendered, and the pair CANNOT collapse into one generic
-// helper: the two tables share a column set but sqlc generates a distinct
-// struct per table, and Go permits neither field access on a union type
-// parameter nor a []A -> []B slice conversion.
-func ownedTabRowFromDB(r gendb.WorkspaceTabOwned) store.WorkspaceTabRow {
+// tabRowFromDB converts one generated workspace_tab_owned row to the store
+// shape.
+func tabRowFromDB(r gendb.WorkspaceTabOwned) store.WorkspaceTabRow {
 	return store.WorkspaceTabRow{
 		UserID:      r.UserID,
 		WorkspaceID: r.WorkspaceID,
@@ -390,19 +349,6 @@ func ownedTabRowFromDB(r gendb.WorkspaceTabOwned) store.WorkspaceTabRow {
 		WorkerID:    r.WorkerID,
 		TileID:      r.TileID,
 		Position:    r.Position,
-	}
-}
-
-// renderedTabRowFromDB converts one generated workspace_tab_rendered row to the
-// store shape. See ownedTabRowFromDB for why the two are not one helper.
-func renderedTabRowFromDB(r gendb.WorkspaceTabRendered) store.WorkspaceTabRow {
-	return store.WorkspaceTabRow{
-		UserID:      r.UserID,
-		WorkspaceID: r.WorkspaceID,
-		TabType:     r.TabType,
-		TabID:       r.TabID,
-		WorkerID:    r.WorkerID,
-		TileID:      r.TileID,
-		Position:    r.Position,
+		Rendered:    r.Rendered,
 	}
 }

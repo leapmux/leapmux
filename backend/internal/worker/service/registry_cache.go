@@ -103,9 +103,12 @@ type registryOps[T any] struct {
 	// reclaimFinishedBelowSeq deletes the pool's FINISHED rows older than `seq` --
 	// the surplus a seed window leaves behind. Optional: nil skips the pass.
 	reclaimFinishedBelowSeq func(ctx context.Context, q *db.Queries, ownerID string, bucket, seq int64) error
-	// keyOf extracts the registry key (row_key / task id) from a stored row.
+	// keyOf extracts the registry key from a stored row: a background task's
+	// row_key, a to-do's decimal seq.
 	keyOf func(T) string
-	// setKey sets the registry key on a stored row (in place) for a rename.
+	// setKey sets the registry key on a stored row (in place) for a rename. It
+	// may be nil for a registry whose rows never change key, and
+	// renameRowKeyLocked then renames nothing.
 	setKey func(*T, string)
 	// isFinished reports whether a stored row is final (eligible for eviction).
 	isFinished func(T) bool
@@ -592,13 +595,14 @@ func (c *registryCache[T]) dropRowLocked(key string) bool {
 
 // renameRowKeyLocked re-keys the cached row from oldKey to newKey in place,
 // preserving its position, status, and child linkage. Returns false when no row
-// exists at oldKey (or newKey is empty) so the caller can no-op. A row already
+// exists at oldKey, when newKey is empty, or when the registry has no setKey, so
+// the caller can no-op. A row already
 // present at newKey is dropped so the renamed row stays the single entry for
 // that key; the DB rejects that collision outright under its PRIMARY KEY, so
 // RenameBackgroundTask resolves it before it calls here and this branch is the
 // cache's own consistency guard. Caller must hold c.Mu.
 func (c *registryCache[T]) renameRowKeyLocked(oldKey, newKey string) bool {
-	if oldKey == "" || newKey == "" || oldKey == newKey {
+	if c.ops.setKey == nil || oldKey == "" || newKey == "" || oldKey == newKey {
 		return false
 	}
 	idx := c.indexOf(oldKey)

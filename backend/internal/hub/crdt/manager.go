@@ -15,19 +15,26 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"github.com/leapmux/leapmux/internal/util/panicsafe"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
 	// EpochDuration is how long the manager runs on a single epoch
 	// before advancing. 14 days matches the dedup retention window;
-	// retries older than 2 epochs are rejected as stale_epoch.
+	// retries older than 2 epochs are rejected as stale_epoch. The
+	// rotation happens in the compaction pass (maybeCompact), catches up
+	// every whole period that elapsed, and is persisted in the
+	// UserCrdtState blob, so a restart keeps it.
 	EpochDuration = 14 * 24 * time.Hour
 	// HubReservedPrincipal is the reserved principal_id stamped on
 	// hub-driven internal ops (lifecycle, worker reconciliation
 	// tombstones). Doubles as the prefix for origin_client_id stamps
 	// produced by the manager (see hubClientID in NewManager).
 	HubReservedPrincipal = "hub"
-	// DedupTTL is how long a batch_id stays in user_recent_batch_ids.
+	// DedupTTL is how long a batch_id stays in user_recent_batch_ids. It
+	// equals EpochDuration, so a retry past its dedup row is at least one
+	// epoch old; see PruneTombstonesAtOrBelow for what the epoch gates still
+	// do and do not catch after that.
 	DedupTTL = 14 * 24 * time.Hour
 	// OpRetentionTTL is how far behind max_hlc the op_retention_watermark
 	// lags: op batches whose last canonical HLC is older than this (relative
@@ -138,9 +145,9 @@ const (
 // backward clock correction. Deriving the cutoff FROM now() and comparing it
 // AGAINST HLC physicals is the deliberate arrangement -- the floor advances
 // with real time (so dormant accounts drain) while both sides read one number.
-// Sweeping the committed_at column instead would reintroduce the split, and
-// worse, committed_at is stamped by the DB server, a different machine under
-// Postgres and MySQL.
+// Sweeping on a wall-clock time instead would reintroduce the split, and
+// worse, a time the database stamps comes from the DB server, a different
+// machine under Postgres and MySQL.
 func OpRetentionCutoffPhysicalMs(now time.Time, ttl time.Duration) int64 {
 	return now.Add(-ttl).UnixMilli()
 }
@@ -155,8 +162,10 @@ func OpRetentionCutoffPhysicalMs(now time.Time, ttl time.Duration) int64 {
 // compared it back against m.owner.String(). Dropping it makes "a submit landed on the
 // wrong tenant's manager" unrepresentable rather than merely detected.
 //
-// PrincipalID is the other axis and stays: it names WHO is writing (a session,
-// a delegation bearer, or the hub), which nothing about the receiver supplies.
+// PrincipalID is the other axis and stays: it names WHO is writing, which
+// nothing about the receiver supplies. It is the authenticated user's ID, or
+// HubReservedPrincipal for hub-internal ops; a delegation bearer authenticates
+// as its user, so it has the same principal as a session of that user.
 type SubmitInput struct {
 	Epoch        int64
 	Batches      []*leapmuxv1.OpBatch
@@ -211,7 +220,7 @@ type Manager struct {
 	// The manager goroutine (Start's select loop) is the SOLE writer of
 	// m.state: every mutation -- including workspace lifecycle create/delete,
 	// which flows through SubmitInternal as SetWorkspaceRegisterOp /
-	// TombstoneWorkspaceOp -- goes through processSubmit / maybeAdvanceEpoch on
+	// TombstoneWorkspaceOp -- goes through processSubmit / maybeCompact on
 	// that one goroutine. That makes the bare m.state map reads in
 	// ValidateBatch / DiffProjectionForBatch legitimately lock-free.
 	// m.mu (RWMutex) guards m.state only against the RLock readers
@@ -283,6 +292,19 @@ type Manager struct {
 	// it to milliseconds to assert the retention/drop boundary without
 	// sleeping through the production 24h default.
 	opRetentionTTL time.Duration
+
+	// epochStartUnpersisted is true while the published state carries an
+	// EpochStartedAt that Bootstrap stamped and no CompactBatch has persisted
+	// yet. Bootstrap sets it when it stamps; the first successful CompactBatch
+	// clears it. Bootstrap writes it before Start, and afterwards only
+	// maybeCompact, on the manager goroutine, reads and clears it.
+	//
+	// The flag exists so the stamp is persisted without a write in Bootstrap,
+	// which runs on Registry.Get's request path. Waiting for the next
+	// watermark advance instead would lose the stamp for a user who connects
+	// but never commits: each restart would mint a new start, and the epoch
+	// would never reach EpochDuration.
+	epochStartUnpersisted bool
 
 	// maxResumeDeltaFrameBytes is the ceiling buildResumeDelta enforces on the
 	// BUILT delta (proto.Size). Held on Manager rather than read from the
@@ -716,7 +738,7 @@ func NewManager(owner userid.UserID, journal Journal, auth AuthChecker, logger *
 	hubID := HubReservedPrincipal + "-" + truncateRunes(owner.String(), 8)
 	m := &Manager{
 		owner:                    owner,
-		clock:                    NewClock("hub-canonical"),
+		clock:                    NewClock(CanonicalClockID),
 		hubClientID:              hubID,
 		auth:                     auth,
 		journal:                  journal,
@@ -750,9 +772,15 @@ func (m *Manager) Bootstrap(ctx context.Context) error {
 	}
 	if state == nil {
 		state = NewState(m.owner.String())
-		state.EpochStartedAt = nil
 	} else if err := m.requireOwnState(state); err != nil {
 		return err
+	}
+	// A fresh state, or one persisted before any epoch start was stamped,
+	// begins its epoch now. The first compaction pass persists the stamp
+	// (see epochStartUnpersisted), so a restart keeps it.
+	if state.GetEpochStartedAt() == nil {
+		state.EpochStartedAt = timestamppb.New(m.now())
+		m.epochStartUnpersisted = true
 	}
 	ensureStateMaps(state)
 	for _, batch := range tail {
@@ -793,11 +821,12 @@ var errBlankManagerTenant = errors.New("crdt: manager has a blank user id; it wa
 // The derived tab-index rows carried the same hazard until two later layers
 // closed it: Project / projectOneTab still take each row's owner from
 // state.GetUserId(), but service.txTabIndexWriter stamps every upserted row
-// with the COMMITTING tenant instead, and workspace_tab_owned.user_id now
-// REFERENCES users(id), so a blank-owner row -- the one the store could never
-// delete and the worker reconciler kept reading as a live tab -- is no longer
-// storable at all. This refusal is still the first of the three, and the only
-// one that stops a manager serving a document it cannot name.
+// with the COMMITTING tenant instead, and workspace_tab_owned's
+// (workspace_id, user_id) REFERENCES workspaces(id, owner_user_id), whose
+// owner REFERENCES users(id), so a blank-owner row -- the one the store could
+// never delete and the worker reconciler kept reading as a live tab -- is no
+// longer storable at all. This refusal is still the first of the three, and
+// the only one that stops a manager serving a document it cannot name.
 //
 // Nothing in the code can produce that divergence today: UpsertUserState keys
 // the row by the payload's own user_id, so key and payload agree by
@@ -1266,7 +1295,7 @@ func (m *Manager) processBatch(ctx context.Context, in SubmitInput, batch *leapm
 	// shell, so reading from `working` returns an empty worker_id.
 	preState := m.state
 
-	// 11. Commit: journal + index views + state advance, all in one tx.
+	// 11. Commit: journal + tab index + state advance, all in one tx.
 	if err := m.commit(ctx, in, batch, working, res); err != nil {
 		// A commit failure is a transient store error (the journal DB write) --
 		// the batch already passed ValidateBatch, so the body-hash step inside
@@ -1658,7 +1687,8 @@ func (m *Manager) currentEpoch() int64 {
 // m.state reads in ValidateBatch / DiffProjectionForBatch. It is a TEST-ONLY
 // seam for seeds that genuinely
 // cannot be a valid op batch — e.g. bumping CurrentEpoch to exercise a
-// stale-epoch gate (no op writes CurrentEpoch; only maybeAdvanceEpoch does) or
+// stale-epoch gate (no op writes CurrentEpoch; only maybeCompact's epoch
+// rotation does) or
 // constructing a record with hand-picked LWW HLCs that bypass the LWW-merge
 // path. Every workspace-record seed that CAN be an op batch should go through
 // SubmitInternal as a SetWorkspaceRegisterOp, mirroring the production

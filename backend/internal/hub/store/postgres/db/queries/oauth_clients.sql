@@ -12,13 +12,12 @@
 -- registration, so the blob's 64 KiB ceiling is not a hot-path cost the way
 -- Get's projection avoids.
 INSERT INTO oauth_clients (
-    client_id, owner_user_id, created_by_user_id, secret_hash, client_name,
+    client_id, owner_user_id, secret_hash, client_name,
     icon_blob, icon_media_type, client_uri, redirect_uris, scopes, grant_types,
     elevation_allowed, registration_source, verified_at, verified_by_user_id
 ) VALUES (
     sqlc.arg(client_id),
     sqlc.narg(owner_user_id),
-    sqlc.narg(created_by_user_id),
     sqlc.narg(secret_hash),
     sqlc.arg(client_name),
     sqlc.narg(icon_blob),
@@ -32,7 +31,7 @@ INSERT INTO oauth_clients (
     sqlc.narg(verified_at),
     sqlc.narg(verified_by_user_id)
 )
-RETURNING client_id, owner_user_id, created_by_user_id, secret_hash, client_name,
+RETURNING client_id, owner_user_id, secret_hash, client_name,
        icon_blob, client_uri, redirect_uris,
        scopes, grant_types, elevation_allowed, registration_source,
        verified_at, verified_by_user_id, created_at, updated_at, revoked_at;
@@ -46,7 +45,7 @@ RETURNING client_id, owner_user_id, created_by_user_id, secret_hash, client_name
 -- most whether an icon exists, and the column holds up to 64 KiB that the
 -- token endpoint, every consent page and every device poll would otherwise
 -- drag per request. GetOAuthClientIcon serves the one reader that wants bytes.
-SELECT client_id, owner_user_id, created_by_user_id, secret_hash, client_name,
+SELECT client_id, owner_user_id, secret_hash, client_name,
        COALESCE(LENGTH(icon_blob), 0) AS icon_bytes, client_uri, redirect_uris,
        scopes, grant_types, elevation_allowed, registration_source,
        verified_at, verified_by_user_id, created_at, updated_at, revoked_at
@@ -76,7 +75,7 @@ FROM oauth_clients WHERE client_id = sqlc.arg(client_id);
 -- listing asks for; the default keeps the live-only shape every authorize
 -- surface reads. The explicit column list drops the icon bytes for the same
 -- reason GetOAuthClient does.
-SELECT client_id, owner_user_id, created_by_user_id, secret_hash, client_name,
+SELECT client_id, owner_user_id, secret_hash, client_name,
        COALESCE(LENGTH(icon_blob), 0) AS icon_bytes, client_uri, redirect_uris,
        scopes, grant_types, elevation_allowed, registration_source,
        verified_at, verified_by_user_id, created_at, updated_at, revoked_at
@@ -292,7 +291,7 @@ WHERE client_id = sqlc.arg(client_id)
 --   * updated_at -- the row's own clock. A boot that changed no constant
 --     writes nothing observable, so "when did this app last change" keeps
 --     answering the operator's last edit rather than the last restart.
---   * owner_user_id, created_by_user_id, created_at -- the row's own history
+--   * owner_user_id, created_at -- the row's own history
 --     from its first boot. A reconciliation that rewrote created_at would
 --     make the registration look brand new on every upgrade.
 INSERT INTO oauth_clients (

@@ -1,7 +1,14 @@
 -- name: SetWorkspaceSectionItem :exec
+-- One placement per workspace, so the primary key is workspace_id alone and
+-- ON DUPLICATE KEY matches it. The update branch takes user_id from the
+-- incoming row, not the stored one: with the stored user_id kept, user B's
+-- call would rewrite user A's placement, because both composite keys would
+-- then check A's row. With the incoming user_id, the workspace key refuses
+-- B's write.
 INSERT INTO workspace_section_items (user_id, workspace_id, section_id, position)
 VALUES (?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE
+  user_id = VALUES(user_id),
   section_id = VALUES(section_id),
   position = VALUES(position);
 
@@ -11,7 +18,7 @@ WHERE user_id = ? AND workspace_id = ?;
 
 -- name: ListWorkspaceSectionItemsByUser :many
 -- A section item PLACES a workspace, so it must not outlive the workspace.
--- The workspace delete is a SOFT delete (workspaces.is_deleted), so the
+-- The workspace delete is a SOFT delete (workspaces.deleted_at), so the
 -- ON DELETE CASCADE on workspace_id never fires and the row survives. The
 -- join to workspaces drops it here instead. Without this the sidebar counts
 -- an archived workspace nobody can see: the rows come from the workspace
@@ -35,7 +42,7 @@ WHERE user_id = ? AND workspace_id = ?;
 -- across page loads.
 SELECT wsi.* FROM workspace_section_items wsi
 JOIN workspace_sections ws ON wsi.section_id = ws.id
-JOIN workspaces w ON wsi.workspace_id = w.id AND w.is_deleted = 0
+JOIN workspaces w ON wsi.workspace_id = w.id AND w.deleted_at IS NULL
 WHERE wsi.user_id = ?
 ORDER BY ws.position, wsi.position, wsi.workspace_id;
 
@@ -48,7 +55,16 @@ DELETE FROM workspace_section_items
 WHERE section_id = ?;
 
 -- name: HasWorkspaceSectionItemsBySection :one
-SELECT EXISTS(SELECT 1 FROM workspace_section_items WHERE section_id = ?) AS has_items;
+-- Sees exactly the items ListWorkspaceSectionItemsByUser returns: a soft
+-- delete leaves a workspace's placement behind, and DeleteSection relocates
+-- only the items that listing returns, so counting a soft-deleted
+-- workspace's item here would refuse the delete of a section its user sees
+-- as empty. Deleting the section then cascades that leftover row away.
+SELECT EXISTS(
+    SELECT 1 FROM workspace_section_items wsi
+    JOIN workspaces w ON w.id = wsi.workspace_id AND w.deleted_at IS NULL
+    WHERE wsi.section_id = ?
+) AS has_items;
 
 -- name: IsWorkspaceInArchivedSection :one
 -- Section type is a parameter, not the literal 3 this used to carry: a

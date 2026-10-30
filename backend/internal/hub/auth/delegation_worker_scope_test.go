@@ -121,9 +121,11 @@ func TestResolveDelegationWorkerScope_ForeignMinterReachesOnlyItself(t *testing.
 func TestResolveDelegationWorkerScope_NonActiveMinterLosesCrossWorkerReach(t *testing.T) {
 	ctx := context.Background()
 
+	// No UNSPECIFIED case: no column stores the status any more. It is derived
+	// from deregistering_at and deleted_at (store.WorkerStatusOf), which always
+	// yields a declared state, and a deleted minter has its own test below.
 	for name, status := range map[string]leapmuxv1.WorkerStatus{
 		"deregistering": leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING,
-		"unspecified":   leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED,
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := seedScopeUser(t, hubtestutil.OpenTestStore(t))

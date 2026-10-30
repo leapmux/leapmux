@@ -241,7 +241,6 @@ func TestRelaunchForStartupSettingsChangeUsesInjectedStarter(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            agentID,
 		WorkingDir:    workingDir,
-		HomeDir:       t.TempDir(),
 		AgentProvider: provider,
 		// In production the startup handoff has already persisted the latest settings before
 		// relaunchForStartupSettingsChange bounces the process to apply them.
@@ -403,7 +402,6 @@ func TestPersistConfirmedAgentSettingsPreservesLatePermissionModeChange(t *testi
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:         agentID,
 		WorkingDir: t.TempDir(),
-		HomeDir:    t.TempDir(),
 		Title:      "late mode",
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDModel:          "opus",
@@ -468,7 +466,6 @@ func TestPersistConfirmedAgentSettingsPreservesPreStartPermissionModeChange(t *t
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:         agentID,
 		WorkingDir: t.TempDir(),
-		HomeDir:    t.TempDir(),
 		Title:      "pre-start mode",
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDModel:          "opus",
@@ -555,7 +552,6 @@ func TestPersistConfirmedAgentSettingsAppliesConfirmedModelDespiteOtherAxisChang
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 				ID:            agentID,
 				WorkingDir:    t.TempDir(),
-				HomeDir:       t.TempDir(),
 				Title:         "model resolution",
 				Options:       marshalOptions(initialOptions),
 				AgentProvider: test.provider,
@@ -624,7 +620,7 @@ func TestPersistConfirmedAgentSettings_AppliesConfirmedModelWhenColumnLacksDefau
 	// The stored column is MISSING the effort axis (a refresh cleared it). It is NOT a fixed point
 	// of resolveProviderDefaults, which would re-fill effort=auto for a Claude agent.
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: agentID, WorkingDir: t.TempDir(),
 		Title: "cleared default axis",
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDModel:          agent.DefaultModelSentinel,
@@ -675,7 +671,7 @@ func TestPersistConfirmedAgentSettings_DoesNotClobberConcurrentCatalog(t *testin
 
 	agentID := "agent-catalog-cas"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: agentID, WorkingDir: t.TempDir(),
 		Title: "catalog cas",
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDModel:  "opus",

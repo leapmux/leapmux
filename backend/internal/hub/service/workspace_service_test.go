@@ -49,14 +49,19 @@ func TestWorkspaceServiceDeleteWorkspaceFansOutToOwnersWorkersOnly(t *testing.T)
 	ownerWorker := storetest.SeedWorker(t, st, owner.ID)
 	strangerWorker := storetest.SeedWorker(t, st, stranger.ID)
 	workspaceID := storetest.SeedWorkspace(t, st, owner.ID, "deleted")
+	// The stranger's tab sits in the stranger's own workspace: the composite
+	// workspace key refuses a row whose user does not own its workspace.
+	strangerWorkspaceID := storetest.SeedWorkspace(t, st, stranger.ID, "stranger's")
 
-	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
+	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertTabParams{
 		UserID: userid.MustNew(owner.ID), WorkspaceID: workspaceID, WorkerID: ownerWorker.ID,
 		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "tab-owner", TileID: "tile", Position: "a0",
+		Rendered: false,
 	}))
-	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
-		UserID: userid.MustNew(stranger.ID), WorkspaceID: workspaceID, WorkerID: strangerWorker.ID,
+	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertTabParams{
+		UserID: userid.MustNew(stranger.ID), WorkspaceID: strangerWorkspaceID, WorkerID: strangerWorker.ID,
 		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "tab-stranger", TileID: "tile", Position: "a1",
+		Rendered: false,
 	}))
 
 	svc := service.NewWorkspaceService(st, nil, nil)
@@ -345,10 +350,10 @@ func TestWorkspaceService_SetWorkspaceArchiveState_TransitionsAndGroupsWorkers(t
 
 	workerA := storetest.SeedWorker(t, st, user.ID)
 	workerB := storetest.SeedWorker(t, st, user.ID)
-	for _, tab := range []store.UpsertOwnedTabParams{
-		{UserID: owner, WorkspaceID: workspaceID, WorkerID: workerA.ID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "agent-a", TileID: "tile-a", Position: "a"},
-		{UserID: owner, WorkspaceID: workspaceID, WorkerID: workerA.ID, TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "file-a", TileID: "tile-a", Position: "b"},
-		{UserID: owner, WorkspaceID: workspaceID, WorkerID: workerB.ID, TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabID: "terminal-b", TileID: "tile-b", Position: "c"},
+	for _, tab := range []store.UpsertTabParams{
+		{UserID: owner, WorkspaceID: workspaceID, WorkerID: workerA.ID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "agent-a", TileID: "tile-a", Position: "a", Rendered: false},
+		{UserID: owner, WorkspaceID: workspaceID, WorkerID: workerA.ID, TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "file-a", TileID: "tile-a", Position: "b", Rendered: false},
+		{UserID: owner, WorkspaceID: workspaceID, WorkerID: workerB.ID, TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabID: "terminal-b", TileID: "tile-b", Position: "c", Rendered: false},
 	} {
 		require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, tab))
 	}
@@ -748,9 +753,10 @@ func TestWorkspaceService_RenameWorkspace_AllowedAgainAfterUnarchive(t *testing.
 	assert.Equal(t, "after", ws.Title)
 }
 
-// Another user's archived workspace does not make the caller's own workspace
-// unrenamable: the query filters on the CALLER's section items.
-func TestWorkspaceService_RenameWorkspace_ArchivedForAnotherUserDoesNotBlock(t *testing.T) {
+// Another user cannot archive the caller's workspace, so the caller's own
+// workspace stays renamable: the composite placement key refuses a second
+// user's placement of it outright.
+func TestWorkspaceService_RenameWorkspace_AnotherUserCannotArchiveTheWorkspace(t *testing.T) {
 	t.Parallel()
 
 	st := hubtestutil.OpenTestStore(t)
@@ -760,9 +766,13 @@ func TestWorkspaceService_RenameWorkspace_ArchivedForAnotherUserDoesNotBlock(t *
 	workspaceID := storetest.SeedWorkspace(t, st, owner.ID, "before")
 	placeWorkspaceInSection(t, st, owner.ID, workspaceID,
 		sectionIDOfType(t, st, owner.ID, leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS))
-	// The OTHER user files the same workspace id into THEIR archive.
-	placeWorkspaceInSection(t, st, other.ID, workspaceID,
-		sectionIDOfType(t, st, other.ID, leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED))
+	// The OTHER user tries to file the same workspace id into THEIR archive.
+	require.Error(t, st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
+		UserID:      userid.MustNew(other.ID),
+		WorkspaceID: workspaceID,
+		SectionID:   sectionIDOfType(t, st, other.ID, leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED),
+		Position:    "n",
+	}), "a placement of another user's workspace must not be storable")
 
 	svc := service.NewWorkspaceService(st, nil, nil)
 	authCtx := auth.WithUser(ctx, &auth.UserInfo{ID: userid.MustNew(owner.ID)})

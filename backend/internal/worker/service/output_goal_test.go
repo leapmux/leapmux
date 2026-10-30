@@ -36,7 +36,6 @@ func setupGoalTest(t *testing.T) (*Service, agent.ProviderServices, string, func
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
@@ -437,7 +436,6 @@ func TestGoal_LoadGoalAnswersNilForAChild(t *testing.T) {
 		SpawnSpanID:   "span-1",
 		Title:         "a subagent",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 
