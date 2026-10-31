@@ -1,13 +1,15 @@
 #!/usr/bin/env bun
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import process from 'node:process'
 import { readGithubJsonResponse } from './github-json.mjs'
 import { renovateModule } from './renovate-engine.mjs'
+import { authorizedEcosystem, authorizedRootMap, buildAuthorizedMap, defaultReaders } from './renovate-exemptions.mjs'
 import { dependencyIgnorePaths } from './renovate-inputs.mjs'
+import { ecosystemVersions } from './renovate-lockfile-versions.mjs'
 import { planTauriTargets } from './renovate-tauri-graph.mjs'
-import { assertTauriCompatibility, readTauriVersions, tauriPairs } from './renovate-tauri.mjs'
+import { assertTauriCompatibility, readTauriVersions, TAURI_ECOSYSTEMS, tauriPairs } from './renovate-tauri.mjs'
 
 const { init: initializeRenovateLogger } = await renovateModule('logger/index.js')
 
@@ -30,12 +32,15 @@ export function securityCompanions(targets, vulnerabilityAlerts) {
   }))
 }
 
-export async function prepareTauriSecurity(alerts, config, baseline, { request = fetch, now = Date.now() } = {}) {
+export async function prepareTauriSecurity(alerts, config, baseline, { authorized = {}, request = fetch, now = Date.now() } = {}) {
   const targets = await planTauriTargets(tauriPairs(baseline), {
     policy: config,
     alerts,
     baseline,
     security: true,
+    exemptions: {
+      authorized: authorizedRootMap(authorized, TAURI_ECOSYSTEMS),
+    },
     request,
     now,
   })
@@ -47,6 +52,35 @@ export async function prepareTauriSecurity(alerts, config, baseline, { request =
         [pair.npm, target.npm],
         [pair.cargo, target.cargo],
       ]))
+}
+
+/**
+ * Authorize the fixes of the open alerts: for each alerted package that the trusted
+ * lockfiles lock, the exact patched versions and their exact pins. A local run reads no
+ * alert and no lockfile, and authorizes nothing.
+ */
+export async function prepareAuthorized(alerts, { local = false, read, readers = defaultReaders, checkout } = {}) {
+  if (local)
+    return buildAuthorizedMap([], readers)
+  const versions = ecosystemVersions(read, { checkout })
+  const packages = new Map()
+  for (const alert of alerts) {
+    const pkg = alert.security_vulnerability?.package
+    const ecosystem = authorizedEcosystem(pkg?.ecosystem)
+    if (alert.state !== 'open' || !ecosystem || typeof pkg.name !== 'string')
+      continue
+    const baseVersions = versions[ecosystem].get(pkg.name)
+    if (baseVersions?.size) {
+      packages.set(`${ecosystem}\0${pkg.name}`, {
+        ecosystem,
+        name: pkg.name,
+        baseVersions: [...baseVersions],
+      })
+    }
+  }
+  return buildAuthorizedMap([
+    ...packages.values(),
+  ], readers)
 }
 
 const REPOSITORY_API_PATH = '/repos/leapmux/leapmux'
@@ -113,12 +147,20 @@ if (import.meta.main) {
     await initializeRenovateLogger()
     const root = resolve(import.meta.dirname, '..')
     const config = await Bun.file(resolve(root, 'renovate.json')).json()
-    const alerts = process.argv.includes('--local')
+    const local = process.argv.includes('--local')
+    const alerts = local
       ? []
       : await readAlerts(process.env.GH_TOKEN)
+    const authorized = await prepareAuthorized(alerts, {
+      local,
+      read: path => existsSync(resolve(root, path))
+        ? readFileSync(resolve(root, path), 'utf8')
+        : null,
+      checkout: root,
+    })
     const baseline = readTauriVersions(root)
     assertTauriCompatibility(baseline)
-    const securityTargets = await prepareTauriSecurity(alerts, config, baseline)
+    const securityTargets = await prepareTauriSecurity(alerts, config, baseline, { authorized })
     const listed = spawnSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
     if (listed.status !== 0)
       throw new Error('Cannot enumerate tracked Go files.')
@@ -131,6 +173,7 @@ if (import.meta.main) {
       importFiles,
       ignorePaths: await dependencyIgnorePaths(files, config),
       alerts,
+      authorized,
     }))
   }
   catch (error) {

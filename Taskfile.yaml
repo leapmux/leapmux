@@ -62,10 +62,21 @@ vars:
 # --- Code Generation ---
 
 tasks:
-  install-renovate:
+  # Install scripts stay disabled for the whole Renovate tree. build-renovate-re2
+  # compiles only the RE2 sources that the frozen lockfile verified.
+  install-renovate-packages:
     desc: Install the complete pinned Renovate dependency tree without scripts
     cmds:
       - cd .github/renovate && bun install --frozen-lockfile --ignore-scripts
+
+  install-renovate:
+    desc: Install the pinned Renovate tree and compile its RE2 engine
+    cmds:
+      - task: install-renovate-packages
+      # Renovate runs only on Linux, and Windows would need the MSVC toolchain.
+      # Without the native module, Renovate falls back to JavaScript RegExp.
+      - task: build-renovate-re2
+        if: '[ "{{OS}}" != "windows" ]'
 
   validate-standalone-tools:
     desc: Install and validate proposed standalone JavaScript tools
@@ -99,6 +110,12 @@ tasks:
       - task: install-renovate
       - bun scripts/renovate-prepare.mjs {{.CLI_ARGS}}
 
+  check-dependency-age:
+    desc: Reject a Renovate PR whose lockfiles add a version younger than the minimum release age
+    deps: [install-renovate-packages]
+    cmds:
+      - bun scripts/check-dependency-age.mjs {{.CLI_ARGS}}
+
   check-renovate-protection:
     desc: Verify effective main protection before publishing
     cmds:
@@ -118,7 +135,9 @@ tasks:
     desc: Run the pinned CLI with a hard 50-minute execution limit
     env:
       RENOVATE_CONFIG_FILE: .github/renovate-config.cjs
+      RENOVATE_TRUSTED_ROOT: '{{.ROOT_DIR}}'
       LOG_FORMAT: json
+      LOG_LEVEL: debug
     cmds: &renovate_commands
       - node scripts/run-renovate.mjs
 
@@ -136,10 +155,10 @@ tasks:
     # Task's environment decoder does not expand YAML map merges.
     env:
       RENOVATE_CONFIG_FILE: .github/renovate-config.cjs
+      RENOVATE_TRUSTED_ROOT: '{{.ROOT_DIR}}'
       LOG_FORMAT: json
+      LOG_LEVEL: debug
       RENOVATE_DRY_RUN: full
-      # Exercise artifact generation even outside the routine publishing window.
-      RENOVATE_FORCE: '{"schedule":[]}'
     # Task does not pass a caller task's environment to a nested task invocation.
     cmds: *renovate_commands
 
@@ -406,6 +425,32 @@ tasks:
       - task: prepare-frontend
       - task: prepare-backend
       - task: prepare-desktop
+
+  build-renovate-re2:
+    desc: Compile Renovate's RE2 engine from the locked sources with the locked node-gyp
+    sources:
+      - scripts/task-state.mjs
+      - .github/renovate/bun.lock
+      - .github/renovate/node_modules/re2/package.json
+      - .github/renovate/node_modules/re2/binding.gyp
+      - .github/renovate/node_modules/re2/lib/**/*
+      - .github/renovate/node_modules/re2/vendor/**/*
+    vars:
+      JS_CONTEXT:
+        sh: *js_context_command
+      CXX_CONTEXT:
+        sh: '"${CXX:-c++}" --version'
+      CACHE_CONTEXT: '{{.JS_CONTEXT}}/{{.CXX_CONTEXT}}/{{OS}}/{{ARCH}}'
+      OUTPUTS: &outputs_build_renovate_re2
+        - .github/renovate/node_modules/re2/build/Release/re2.node
+    generates: *outputs_build_renovate_re2
+    status: *artifact_status
+    cmds:
+      - *forget_artifacts
+      # Never run re2's install script: it downloads a prebuilt binary.
+      - cd .github/renovate/node_modules/re2 && node ../node-gyp/bin/node-gyp.js rebuild --jobs max
+      - cd .github/renovate && node -e "new (require('re2'))('.*').exec('test')"
+      - *record_artifacts
 
   # Scripts that need frontend/node_modules depend on this installation task.
   # They do not need the full frontend preparation. A contract validation must not render icons.

@@ -70,10 +70,7 @@ describe('representativeQueueDuration', () => {
 describe('selectRebaseUpgrades', () => {
   const env = {
     msg: 'Env config',
-    config: {
-      dryRun: 'full',
-      force: { schedule: [] },
-    },
+    config: { dryRun: 'full' },
   }
   const record = {
     msg: 'Created post-upgrade commands data file.',
@@ -102,12 +99,6 @@ describe('selectRebaseUpgrades', () => {
           config: { dryRun: null },
         },
       ],
-      [
-        {
-          ...env,
-          config: { dryRun: 'full' },
-        },
-      ],
     ])
       expect(() => selectRebaseUpgrades(records, [])).toThrow('verified full dry run')
     expect(() => selectRebaseUpgrades([
@@ -129,10 +120,7 @@ describe('rebase measurement entry point', () => {
     writeFileSync(resolve(path, '.tmp/renovate-execution.jsonl'), `${JSON.stringify({ code: 0, timedOut: false, durationMs: 100 })}\n`)
     writeFileSync(resolve(path, '.tmp/renovate-cli.log'), `${JSON.stringify({
       msg: 'Env config',
-      config: {
-        dryRun: 'full',
-        force: { schedule: [] },
-      },
+      config: { dryRun: 'full' },
     })}\n${JSON.stringify({ msg: 'Repository finished' })}\n`)
     writeFileSync(resolve(path, '.tmp/renovate-timings.jsonl'), '')
     const result = spawnSync(process.execPath, [

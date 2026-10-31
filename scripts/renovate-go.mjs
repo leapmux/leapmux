@@ -88,6 +88,7 @@ export function prepareGoUpgrades(upgrades, { trusted, run, read }) {
   const unique = [
     ...changes.values(),
   ]
+  // Rewrite moved module paths in imports and tool directives before any metadata changes.
   run(resolve(trusted, `.tmp/leapmux-dependency-imports${process.platform === 'win32'
     ? '.exe'
     : ''}`), [], {
@@ -112,6 +113,8 @@ export function prepareGoUpgrades(upgrades, { trusted, run, read }) {
     })
   }
   if (hasWorkspaceGo) {
+    // go work sync refreshes go.work.sum. .gitignore and the post-upgrade file filters
+    // keep that file out of every commit.
     run('go', ['work', 'sync'])
     verifyReplacements(['backend/go.mod', 'desktop/go/go.mod'].map(read))
   }
@@ -121,6 +124,7 @@ export function prepareGoUpgrades(upgrades, { trusted, run, read }) {
 /** Generate and tidy only the graphs selected during preparation. */
 export function finishGoUpgrades({ hasWorkspaceGo, hasSiteGo }, { root, run, read, write }) {
   if (hasWorkspaceGo) {
+    // tidy reads the generated packages and the embedded assets, so they exist first.
     run('task', ['prepare-backend'])
     for (const cwd of ['backend', 'desktop/go'])
       run('go', ['mod', 'tidy'], { cwd })

@@ -915,7 +915,7 @@ describe('renovate workflow and protection', () => {
       'Install pinned Renovate without scripts',
       'Validate configuration',
       'Compile trusted import helper',
-      'Validate PR detail renderer',
+      'Validate Renovate renderers',
     ])
       expect(position(name)).toBeLessThan(position('Create read-only installation token'))
     expect(position('Verify main protection before publishing')).toBeLessThan(position('Create publishing installation token'))
@@ -944,9 +944,15 @@ describe('renovate workflow and protection', () => {
     expect(steps.find(step => step.name === 'Publish dependency updates')['timeout-minutes']).toBe(50)
     expect(dry.env.RENOVATE_TOKEN).toBe(expression('steps.read.outputs.token'))
     expect(dry.run).toBe('task renovate-dry-run')
-    const dryEnvironment = yaml('Taskfile.yaml').tasks['renovate-dry-run'].env
+    const tasks = yaml('Taskfile.yaml').tasks
+    const dryEnvironment = tasks['renovate-dry-run'].env
     expect(dryEnvironment.RENOVATE_DRY_RUN).toBe('full')
-    expect(JSON.parse(dryEnvironment.RENOVATE_FORCE)).toEqual({ schedule: [] })
+    expect(dryEnvironment.RENOVATE_FORCE).toBeUndefined()
+    // A local run has no workflow environment, so both targets supply these themselves.
+    for (const target of ['renovate', 'renovate-dry-run']) {
+      expect(tasks[target].env.RENOVATE_TRUSTED_ROOT, target).toBe('{{.ROOT_DIR}}')
+      expect(tasks[target].env.LOG_LEVEL, target).toBe('debug')
+    }
     const rebase = steps.find(step => step.name === 'Measure representative rebases')
     expect(rebase.if).toBe(dry.if)
     expect(rebase.run).toBe('task renovate-rebase-benchmark')
@@ -960,10 +966,13 @@ describe('renovate workflow and protection', () => {
     expect(comments.if).toContain('!cancelled()')
     expect(comments.env.GH_TOKEN).toBe(expression('steps.write.outputs.token'))
     expect(comments.run).toBe('task publish-renovate-details')
-    const renderer = steps.find(step => step.name === 'Validate PR detail renderer')
-    expect(renderer.run).toBe('task test-scripts -- ./scripts/renovate-pr-details.test.mjs')
+    const renderer = steps.find(step => step.name === 'Validate Renovate renderers')
+    expect(renderer.run).toBe('task test-scripts -- ./scripts/renovate-pr-details.test.mjs ./scripts/renovate-dashboard.test.mjs')
     expect(renderer.env?.GH_TOKEN).toBeUndefined()
     expect(steps.some(step => step.name === 'Validate PR detail comments')).toBe(false)
+    const diagnostics = steps.find(step => step.name === 'Upload timing and diagnostic records')
+    expect(diagnostics.if).toBe('always()')
+    expect(diagnostics.with.path.split('\n')).toContain('.tmp/renovate-shims/invocations.jsonl')
   })
   it('rejects publishing before activation and rejects every ref except upstream main', () => {
     const step = yaml('.github/workflows/renovate.yaml').jobs.renovate.steps[0]
@@ -1027,6 +1036,44 @@ describe('renovate workflow and protection', () => {
       expect(result.status === 0).toBe(expected)
     }
   })
+  it('checks the release age of a Renovate PR and passes every other ref in seconds', () => {
+    const ci = yaml('.github/workflows/ci.yaml')
+    const job = ci.jobs['dependency-age']
+    expect(job['runs-on']).toBe('ubuntu-24.04')
+    expect(job.permissions).toEqual({ contents: 'read' })
+    const [scope, ...rest] = job.steps
+    expect(scope.id).toBe('scope')
+    expect(scope.env.RENOVATE_BRANCH).toBe(expression('startsWith(github.head_ref, \'renovate/\')'))
+    for (const step of rest)
+      expect(step.if, step.name ?? step.uses).toBe('steps.scope.outputs.renovate == \'true\'')
+    for (const [branch, expected] of [
+      ['true', 'renovate=true'],
+      ['false', 'renovate=false'],
+    ]) {
+      const directory = fixture()
+      expect(runShell(scope.run, directory, { RENOVATE_BRANCH: branch }).status).toBe(0)
+      expect(readFileSync(join(directory, 'output'), 'utf8').trim()).toBe(expected)
+    }
+    const checkout = rest.find(step => String(step.uses).startsWith('actions/checkout@'))
+    expect(checkout.with['fetch-depth']).toBe(0)
+    const setup = rest.find(step => step.uses === './.github/actions/setup-build')
+    expect(setup.with).toEqual({
+      'github-token': expression('secrets.GITHUB_TOKEN'),
+      'setup-desktop': 'false',
+    })
+    const check = rest.at(-1)
+    expect(check.run).toBe('task check-dependency-age -- --base "$(git merge-base HEAD origin/main)" --head-ref "$HEAD_REF"')
+    expect(check.env).toEqual({
+      HEAD_REF: expression('github.head_ref'),
+      GITHUB_TOKEN: expression('secrets.GITHUB_TOKEN'),
+    })
+    expect(yaml('Taskfile.yaml').tasks['check-dependency-age']).toEqual({
+      desc: 'Reject a Renovate PR whose lockfiles add a version younger than the minimum release age',
+      deps: ['install-renovate-packages'],
+      cmds: ['bun scripts/check-dependency-age.mjs {{.CLI_ARGS}}'],
+    })
+    expect(ci.jobs['required-ci'].needs).toContain('dependency-age')
+  })
   it('keeps the administrator credential in the release environment and atomic push only', () => {
     const release = yaml('.github/workflows/release.yaml').jobs.release
     expect(release.environment).toBe('release-admin')
@@ -1056,7 +1103,13 @@ describe('renovate workflow and protection', () => {
     const required = ci.jobs['required-ci']
     expect(required.name).toBe('Required CI')
     expect(required.if).toBe('always()')
-    expect(required.needs).toEqual(['linux', 'macos', 'windows', 'docker'])
+    expect(required.needs).toEqual([
+      'linux',
+      'macos',
+      'windows',
+      'docker',
+      'dependency-age',
+    ])
     for (const result of [
       'success',
       'failure',

@@ -18,7 +18,7 @@ export function representativeQueueDuration(cliMs, benchmarkMs) {
 }
 
 export function selectRebaseUpgrades(records, timings) {
-  if (!records.some(record => record.msg === 'Env config' && record.config?.dryRun === 'full' && Array.isArray(record.config.force?.schedule) && record.config.force.schedule.length === 0))
+  if (!records.some(record => record.msg === 'Env config' && record.config?.dryRun === 'full'))
     throw new Error('Rebase measurements require a verified full dry run.')
   const passed = new Set(timings.filter(timing => timing.status === 'passed').flatMap(timing => timing.branches))
   for (const branch of ['renovate/go-security', 'renovate/go-workspace']) {

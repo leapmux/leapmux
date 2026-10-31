@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { prepareTauriSecurity, readAlerts, securityCompanions } from './renovate-prepare.mjs'
+import { prepareAuthorized, prepareTauriSecurity, readAlerts, securityCompanions } from './renovate-prepare.mjs'
 import { matchesCargoRequirement } from './renovate-tauri-releases.mjs'
 
 const policy = {
@@ -245,6 +245,103 @@ describe('prepareTauriSecurity', () => {
       request: async () => new Response('', { status: 503 }),
     })).rejects.toThrow('503')
     await expect(prepareTauriSecurity({}, config, baseline)).rejects.toThrow('array')
+  })
+})
+
+describe('prepareAuthorized', () => {
+  const files = {
+    'frontend/bun.lock': '{ "packages": { "fixed-pkg": ["fixed-pkg@1.2.0", "", {}, "sha512-x"], "other": ["other@3.0.0", "", {}, "sha512-y"] } }',
+    'desktop/rust/Cargo.lock': '[[package]]\nname = "tauri-plugin-x"\nversion = "2.4.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n',
+    'backend/go.mod': 'module github.com/leapmux/leapmux\n\ngo 1.25\n\nrequire github.com/go-jose/go-jose/v4 v4.1.6\n',
+  }
+  const read = path => files[path] ?? null
+  const openAlert = (ecosystem, name) => ({
+    state: 'open',
+    security_vulnerability: {
+      package: { ecosystem, name },
+    },
+  })
+  const record = (ecosystem, name, range, fixed) => ({
+    vulnerabilities: [
+      {
+        package: { ecosystem, name },
+        vulnerable_version_range: range,
+        first_patched_version: fixed,
+      },
+    ],
+  })
+  function readers() {
+    const calls = []
+    return {
+      calls,
+      advisories: async (ecosystem, name) => {
+        calls.push(`${ecosystem}:${name}`)
+        return [
+          record('npm', 'fixed-pkg', '< 1.2.3', '1.2.3'),
+          record('rust', 'tauri-plugin-x', '< 2.4.1', '2.4.1'),
+          record('go', 'github.com/go-jose/go-jose/v4', '< 4.1.7', '4.1.7'),
+          record('npm', 'unlocked', '< 9.0.0', '9.0.0'),
+        ]
+      },
+      goMetadata: async (module, version) => ({
+        status: 'found',
+        info: { Path: module, Version: version },
+      }),
+      npmManifest: async name => ({
+        dependencies: name === 'fixed-pkg'
+          ? { 'fixed-pkg-core': '1.2.3' }
+          : {},
+      }),
+      crateDependencies: async name => name === 'tauri-plugin-x'
+        ? [
+            { crate_id: 'tauri', req: '=2.11.6', kind: 'normal' },
+          ]
+        : [],
+      goModText: async () => 'module github.com/go-jose/go-jose/v4\n\ngo 1.24\n',
+    }
+  }
+  it('writes the roots of the open alerts with their exact pins, by ecosystem', async () => {
+    const injected = readers()
+    const authorized = await prepareAuthorized([
+      openAlert('npm', 'fixed-pkg'),
+      openAlert('rust', 'tauri-plugin-x'),
+      openAlert('go', 'github.com/go-jose/go-jose/v4'),
+      {
+        ...openAlert('npm', 'other'),
+        state: 'fixed',
+      },
+      openAlert('pip', 'fixed-pkg'),
+    ], { read, readers: injected })
+    expect(authorized).toEqual({
+      npm: {
+        'fixed-pkg@1.2.3': ['fixed-pkg-core@1.2.3'],
+      },
+      crates: {
+        'tauri-plugin-x@2.4.1': ['tauri@2.11.6'],
+      },
+      go: { 'github.com/go-jose/go-jose/v4@v4.1.7': [] },
+    })
+    expect(injected.calls.sort()).toEqual(['crates:tauri-plugin-x', 'go:github.com/go-jose/go-jose/v4', 'npm:fixed-pkg'])
+  })
+  it('writes an empty map for a local run without reading a lockfile or an advisory', async () => {
+    const injected = readers()
+    expect(await prepareAuthorized([
+      openAlert('npm', 'fixed-pkg'),
+    ], {
+      local: true,
+      read: () => {
+        throw new Error('A local run must not read a lockfile.')
+      },
+      readers: injected,
+    })).toEqual({ npm: {}, crates: {}, go: {} })
+    expect(injected.calls).toEqual([])
+  })
+  it('authorizes nothing for an alert whose package the trusted lockfiles do not lock', async () => {
+    const injected = readers()
+    expect(await prepareAuthorized([
+      openAlert('npm', 'unlocked'),
+    ], { read, readers: injected })).toEqual({ npm: {}, crates: {}, go: {} })
+    expect(injected.calls).toEqual([])
   })
 })
 

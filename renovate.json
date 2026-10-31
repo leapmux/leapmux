@@ -11,10 +11,6 @@
     "custom.regex"
   ],
   "timezone": "Asia/Seoul",
-  "schedule": [
-    "* 2-5 * * 1"
-  ],
-  "updateNotScheduled": true,
   "dependencyDashboard": true,
   "automerge": false,
   "autoApprove": false,
@@ -32,6 +28,9 @@
   "commitMessageAction": "Update",
   "commitMessageLowerCase": "never",
   "commitMessageTopic": "{{depName}}",
+  "prBodyNotes": [
+    "{{#if isVulnerabilityAlert}}Renovate proposes this security fix as soon as the advisory lists it. Only the patched version and the versions that it pins exactly skip the minimum release age. Required CI rejects any other version in this PR that is younger than that age. Check the release date and the source of the patched version before you merge.{{/if}}"
+  ],
   "prBodyTemplate": "## Motivation\n\n- Keep dependencies current and address reported vulnerabilities.\n\n## Modifications\n\n{{{table}}}\n\n## Result\n\n- Dependency changes remain subject to human review and required CI.",
   "vulnerabilityAlerts": {
     "enabled": true,
@@ -41,8 +40,7 @@
     "additionalBranchPrefix": "{{#if (equals manager \"gomod\")}}go-{{/if}}",
     "schedule": [],
     "dependencyDashboardApproval": false,
-    "minimumReleaseAge": "3 days",
-    "minimumReleaseAgeBehaviour": "timestamp-required",
+    "minimumReleaseAge": null,
     "internalChecksFilter": "strict",
     "vulnerabilityFixStrategy": "lowest",
     "commitMessageSuffix": "",
@@ -63,7 +61,7 @@
   "lockFileMaintenance": {
     "enabled": true,
     "schedule": [
-      "* 2-5 * * 1"
+      "at any time"
     ],
     "commitMessageAction": "Update",
     "commitMessageTopic": "lockfiles",

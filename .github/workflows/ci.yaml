@@ -94,6 +94,8 @@ jobs:
         if: matrix.arch == 'amd64'
         run: task validate-standalone-tools
 
+      # The pinned Renovate CLI runs on the Node.js version in versions.env, so this
+      # step also validates a proposed Node.js runtime.
       - name: Validate Renovate dependency extraction
         if: matrix.arch == 'amd64'
         run: task renovate-extract
@@ -348,10 +350,45 @@ jobs:
           go-cache-hit: ${{ steps.go-cache.outputs.cache-hit }}
           build-args: ${{ steps.setup.outputs.build-args }}
 
+  dependency-age:
+    # Renovate checks the release age only for the version that it selects, while
+    # bun install and cargo update resolve the rest of a lockfile. This job rejects a
+    # Renovate PR whose lockfiles add a version younger than the minimum release age.
+    # Every other ref passes in seconds.
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Select Renovate branches
+        id: scope
+        env:
+          RENOVATE_BRANCH: ${{ startsWith(github.head_ref, 'renovate/') }}
+        run: echo "renovate=$RENOVATE_BRANCH" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.scope.outputs.renovate == 'true'
+        with:
+          # The check compares the PR with its merge base on main.
+          fetch-depth: 0
+
+      - name: Setup build toolchain
+        if: steps.scope.outputs.renovate == 'true'
+        uses: ./.github/actions/setup-build
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          setup-desktop: 'false'
+
+      - name: Check the release age of new lockfile versions
+        if: steps.scope.outputs.renovate == 'true'
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: task check-dependency-age -- --base "$(git merge-base HEAD origin/main)" --head-ref "$HEAD_REF"
+
   required-ci:
     name: Required CI
     if: always()
-    needs: [linux, macos, windows, docker]
+    needs: [linux, macos, windows, docker, dependency-age]
     runs-on: ubuntu-24.04
     permissions: {}
     steps:

@@ -411,3 +411,360 @@ describe('planTauriTargets', () => {
     })).rejects.toThrow('dependency metadata')
   })
 })
+
+const young = '2026-10-25T23:00:00Z'
+
+// Serve npm publication times, crate releases, and crate dependencies from one table.
+function catalog({ releases, dependencies = {} }) {
+  return async (url) => {
+    const { host, pathname } = new URL(url)
+    if (pathname.endsWith('/dependencies')) {
+      const [name, version] = pathname.split('/').slice(4, 6).map(decodeURIComponent)
+      return Response.json({
+        dependencies: (dependencies[`${name}@${version}`] ?? []).map(([crate_id, req]) => ({
+          crate_id,
+          req,
+          kind: 'normal',
+          optional: false,
+        })),
+      })
+    }
+    if (host === 'registry.npmjs.org') {
+      return Response.json({
+        time: Object.fromEntries(releases[decodeURIComponent(pathname.slice(1))] ?? []),
+      })
+    }
+    return Response.json({
+      versions: (releases[decodeURIComponent(pathname.split('/').at(-1))] ?? []).map(([num, created_at]) => ({ num, created_at })),
+    })
+  }
+}
+
+function rustAlert(name, range, fixed) {
+  return {
+    state: 'open',
+    dependency: { manifest_path: 'desktop/rust/Cargo.lock' },
+    security_vulnerability: {
+      package: { name, ecosystem: 'rust' },
+      vulnerable_version_range: range,
+      first_patched_version: { identifier: fixed },
+    },
+  }
+}
+
+const targetsOf = result => result && Object.fromEntries(result.map(({ pair, target }) => [pair.cargo, target]))
+
+describe('planTauriTargets with authorized security exemptions', () => {
+  const pluginFix = ({ npmCompanion = old, closure = ['tauri@2.12.0'] } = {}) => ({
+    policy,
+    security: true,
+    alerts: [
+      rustAlert(plugin.cargo, '< 2.6.0', '2.6.0'),
+    ],
+    exemptions: {
+      authorized: new Map([
+        [
+          'tauri-plugin-opener@2.6.0',
+          new Set(closure),
+        ],
+      ]),
+    },
+    request: catalog({
+      releases: {
+        [plugin.cargo]: [
+          ['2.5.0', old],
+          ['2.6.0', young],
+        ],
+        [plugin.npm]: [
+          ['2.5.0', old],
+          ['2.6.0', npmCompanion],
+        ],
+        [core.cargo]: [
+          ['2.11.0', old],
+          ['2.12.0', young],
+        ],
+        [core.npm]: [
+          ['2.11.0', old],
+          ['2.12.0', old],
+        ],
+      },
+      dependencies: {
+        'tauri-plugin-opener@2.6.0': [
+          ['tauri', '=2.12.0'],
+        ],
+      },
+    }),
+    now,
+  })
+  it('selects a one-hour-old plugin fix and the young core crate that it pins exactly when the npm companion is old enough', async () => {
+    expect(targetsOf(await planTauriTargets([core, plugin], pluginFix()))).toEqual({
+      [plugin.cargo]: { npm: '2.6.0', cargo: '2.6.0' },
+      [core.cargo]: { npm: '2.12.0', cargo: '2.12.0' },
+    })
+  })
+  it('keeps the vulnerable pair when the npm companion of the fix is young and not pinned exactly', async () => {
+    expect(await planTauriTargets([core, plugin], pluginFix({ npmCompanion: young }))).toEqual([])
+  })
+  it('rejects a young core crate that no selected root pins', async () => {
+    expect(await planTauriTargets([core, plugin], pluginFix({ closure: [] }))).toBeNull()
+  })
+  it('rejects a young target above the patched version', async () => {
+    // 2.6.1 fits the old core baseline, so its own age is the only reason to reject it.
+    const options = {
+      ...pluginFix(),
+      upgrades: [
+        { depName: plugin.cargo, newVersion: '2.6.1', isVulnerabilityAlert: true },
+      ],
+      request: catalog({
+        releases: {
+          [plugin.cargo]: [
+            ['2.6.0', young],
+            ['2.6.1', young],
+          ],
+          [plugin.npm]: [
+            ['2.6.0', old],
+            ['2.6.1', old],
+          ],
+          [core.cargo]: [
+            ['2.11.0', old],
+          ],
+          [core.npm]: [
+            ['2.11.0', old],
+          ],
+        },
+        dependencies: {
+          'tauri-plugin-opener@2.6.1': [
+            ['tauri', '2.11'],
+          ],
+        },
+      }),
+    }
+    expect(await planTauriTargets([core, plugin], options)).toBeNull()
+    expect(targetsOf(await planTauriTargets([core, plugin], {
+      ...options,
+      exemptions: {
+        authorized: new Map([
+          [
+            'tauri-plugin-opener@2.6.1',
+            new Set(),
+          ],
+        ]),
+      },
+    }))).toEqual({
+      // A security plan takes the lowest npm companion of the minor.
+      [plugin.cargo]: { npm: '2.6.0', cargo: '2.6.1' },
+      [core.cargo]: { npm: '2.11.0', cargo: '2.11.0' },
+    })
+  })
+  it('keeps every changed young version out with an empty exemption map', async () => {
+    const options = {
+      ...pluginFix(),
+      exemptions: {
+        authorized: new Map(),
+      },
+    }
+    expect(await planTauriTargets([core, plugin], options)).toEqual([])
+    expect(await planTauriTargets([core, plugin], {
+      ...options,
+      security: false,
+      alerts: [],
+      upgrades: [
+        { depName: plugin.cargo, newVersion: '2.6.0' },
+      ],
+    })).toBeNull()
+  })
+  it('keeps a young baseline pair unchanged with an empty exemption map after its alert closes', async () => {
+    const result = await planTauriTargets([core, plugin], {
+      policy,
+      upgrades: [
+        { depName: plugin.cargo, newVersion: '2.6.0' },
+      ],
+      exemptions: {
+        authorized: new Map(),
+      },
+      request: catalog({
+        releases: {
+          [plugin.cargo]: [
+            ['2.6.0', old],
+          ],
+          [plugin.npm]: [
+            ['2.6.0', old],
+          ],
+          [core.cargo]: [
+            ['2.11.0', young],
+          ],
+          [core.npm]: [
+            ['2.11.0', young],
+          ],
+        },
+        dependencies: {
+          'tauri-plugin-opener@2.6.0': [
+            ['tauri', '2.11'],
+          ],
+        },
+      }),
+      now,
+    })
+    expect(targetsOf(result)).toEqual({
+      [plugin.cargo]: { npm: '2.6.0', cargo: '2.6.0' },
+      [core.cargo]: { npm: '2.11.0', cargo: '2.11.0' },
+    })
+  })
+  it('keeps a young baseline crate eligible with an empty exemption map when a routine update replans its pair', async () => {
+    const result = await planTauriTargets([core], {
+      policy,
+      upgrades: [
+        { depName: core.npm, newVersion: '2.11.1' },
+      ],
+      exemptions: {
+        authorized: new Map(),
+      },
+      request: catalog({
+        releases: {
+          [core.cargo]: [
+            ['2.11.0', young],
+          ],
+          [core.npm]: [
+            ['2.11.0', old],
+            ['2.11.1', old],
+          ],
+        },
+      }),
+      now,
+    })
+    expect(targetsOf(result)).toEqual({
+      [core.cargo]: { npm: '2.11.1', cargo: '2.11.0' },
+    })
+  })
+  it('backtracks past a conditional companion whose root the plan cannot select', async () => {
+    const result = await planTauriTargets([
+      { ...core, npmVersion: '2.10.0', cargoVersion: '2.10.0' },
+    ], {
+      policy,
+      security: true,
+      alerts: [
+        rustAlert(core.cargo, '< 2.11.0', '2.11.0'),
+      ],
+      exemptions: {
+        authorized: new Map([
+          [
+            'tauri-plugin-b@1.0.1',
+            new Set(['@tauri-apps/api@2.11.0']),
+          ],
+        ]),
+      },
+      request: catalog({
+        releases: {
+          [core.cargo]: [
+            ['2.10.0', old],
+            ['2.11.0', old],
+          ],
+          [core.npm]: [
+            ['2.10.0', old],
+            ['2.11.0', young],
+            ['2.11.1', old],
+          ],
+        },
+      }),
+      now,
+    })
+    expect(result[0].target).toEqual({ npm: '2.11.1', cargo: '2.11.0' })
+  })
+  describe('a root whose domain follows the release that it authorizes', () => {
+    const pluginA = {
+      npm: '@tauri-apps/plugin-a',
+      cargo: 'tauri-plugin-a',
+      npmVersion: '2.0.0',
+      cargoVersion: '2.0.0',
+    }
+    const pluginB = {
+      npm: '@tauri-apps/plugin-b',
+      cargo: 'tauri-plugin-b',
+      npmVersion: '1.0.0',
+      cargoVersion: '1.0.0',
+    }
+    const exemptions = {
+      authorized: new Map([
+        [
+          'tauri-plugin-b@1.0.1',
+          new Set(['tauri-plugin-a@2.0.1']),
+        ],
+      ]),
+    }
+    const releases = {
+      [pluginA.cargo]: [
+        ['2.0.0', old],
+        ['2.0.1', young],
+      ],
+      [pluginA.npm]: [
+        ['2.0.0', old],
+      ],
+      [pluginB.cargo]: [
+        ['1.0.0', old],
+        ['1.0.1', young],
+      ],
+      [pluginB.npm]: [
+        ['1.0.0', old],
+      ],
+    }
+    const options = {
+      policy,
+      security: true,
+      alerts: [
+        rustAlert(pluginB.cargo, '< 1.0.1', '1.0.1'),
+      ],
+      exemptions,
+      request: catalog({
+        releases,
+        dependencies: {
+          'tauri-plugin-b@1.0.1': [
+            ['tauri-plugin-a', '=2.0.1'],
+          ],
+        },
+      }),
+      now,
+    }
+    const expected = {
+      [pluginA.cargo]: { npm: '2.0.0', cargo: '2.0.1' },
+      [pluginB.cargo]: { npm: '1.0.0', cargo: '1.0.1' },
+    }
+    it('finds the plan when the authorized release is assigned first', async () => {
+      expect(targetsOf(await planTauriTargets([pluginA, pluginB], options))).toEqual(expected)
+    })
+    it('finds the same plan in the reverse order', async () => {
+      expect(targetsOf(await planTauriTargets([pluginB, pluginA], options))).toEqual(expected)
+    })
+    it('rejects the young release when no candidate holds its root', async () => {
+      expect(await planTauriTargets([pluginA, pluginB], {
+        ...options,
+        alerts: [],
+        upgrades: [
+          { depName: pluginA.cargo, newVersion: '2.0.1' },
+        ],
+        request: catalog({
+          releases: {
+            ...releases,
+            [pluginB.cargo]: [
+              ['1.0.0', old],
+            ],
+          },
+        }),
+      })).toBeNull()
+    })
+  })
+  it('rejects exemptions that are not a map of sets', async () => {
+    for (const exemptions of [
+      {},
+      { authorized: {} },
+      {
+        authorized: new Map([
+          [
+            'a@1.0.0',
+            ['b@1.0.0'],
+          ],
+        ]),
+      },
+    ])
+      await expect(planTauriTargets([plugin], { policy, exemptions })).rejects.toThrow('Tauri exemptions')
+  })
+})

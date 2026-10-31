@@ -75,6 +75,7 @@ function requireBotPullRequest(pr, branchName) {
 
 export async function updateDetailComments(pr, bodies, { api = githubRequest, actorLogin = botLogin } = {}) {
   const comments = await listAll(api, `${repositoryPath}/issues/${pr}/comments`)
+  // Update only the parts that the bot wrote. A human comment never changes.
   const owned = comments.filter(comment => comment.user?.login === actorLogin && typeof comment.body === 'string' && comment.body.startsWith(COMMENT_MARKER))
   const parts = new Map()
   for (const comment of owned) {

@@ -1,4 +1,6 @@
-import { matchesCargoRequirement, readTauriReleases, tauriMajorMinor, tauriPairCandidates, tauriReleaseAgeMs } from './renovate-tauri-releases.mjs'
+import { splitIdentity } from './renovate-exemptions.mjs'
+import { readRegistryJson, releaseAgeMs } from './renovate-release-age.mjs'
+import { matchesCargoRequirement, readTauriReleases, tauriMajorMinor, tauriPairCandidates } from './renovate-tauri-releases.mjs'
 import { lockedTauriVersions, tauriAdvisories } from './renovate-tauri-security.mjs'
 
 function selectedVersion(upgrades, name, baseline) {
@@ -14,13 +16,7 @@ function selectedVersion(upgrades, name, baseline) {
 
 async function readDependencies(name, version, request) {
   const url = `https://crates.io/api/v1/crates/${encodeURIComponent(name)}/${encodeURIComponent(version)}/dependencies`
-  const response = await request(url, {
-    headers: { 'User-Agent': 'leapmux-dependency-maintenance' },
-    signal: AbortSignal.timeout(30000),
-  })
-  if (!response.ok)
-    throw new Error(`Tauri dependency metadata read failed: ${response.status} ${url}`)
-  const metadata = await response.json()
+  const metadata = await readRegistryJson(url, { request, description: 'Tauri dependency metadata read' })
   if (!Array.isArray(metadata.dependencies))
     throw new TypeError(`Invalid Tauri dependency metadata: ${name}@${version}`)
   return metadata.dependencies.filter(dependency => dependency.kind === 'normal' && !dependency.optional).map((dependency) => {
@@ -45,8 +41,20 @@ function preparedPair(pair, targets, advisories) {
   return { npm, cargo }
 }
 
-/** Select the whole companion graph before any manifest or lockfile changes. */
-export async function planTauriTargets(pairs, { policy, alerts = [], upgrades = [], baseline, proposed, security = false, preparedTargets = null, request = fetch, now = Date.now() }) {
+/**
+ * Select the whole companion graph before any manifest or lockfile changes. Every changed
+ * version is old enough, an authorized root, or in the closure of an authorized root that
+ * the same plan introduces. `exemptions.authorized` maps each root to its closure.
+ */
+export async function planTauriTargets(pairs, { policy, alerts = [], upgrades = [], baseline, proposed, security = false, preparedTargets = null, exemptions = {
+  authorized: new Map(),
+}, request = fetch, now = Date.now() }) {
+  const authorized = exemptions?.authorized
+  if (!(authorized instanceof Map) || [
+    ...authorized.values(),
+  ].some(closure => !(closure instanceof Set))) {
+    throw new TypeError('Tauri exemptions require a map from each authorized root to the set of its closure.')
+  }
   const advisories = tauriAdvisories(alerts)
   if (preparedTargets && Object.keys(preparedTargets).length > 0 && !security)
     throw new Error('Prepared Tauri security targets require security processing.')
@@ -106,7 +114,8 @@ export async function planTauriTargets(pairs, { policy, alerts = [], upgrades = 
       readTauriReleases(pair.npm, request),
       readTauriReleases(pair.cargo, request),
     ])
-    const age = tauriReleaseAgeMs(policy, context.securityRoot)
+    // A security fix waits as a routine update does, except for the authorized exemptions.
+    const age = releaseAgeMs(policy)
     const minimum = (selected, fixed) => fixed && Bun.semver.order(fixed, selected) > 0
       ? fixed
       : selected
@@ -130,6 +139,7 @@ export async function planTauriTargets(pairs, { policy, alerts = [], upgrades = 
         : !cargoFixed && cargoSelected === pair.cargoVersion && version === pair.cargoVersion),
       now,
       minimumAgeMs: age,
+      authorized,
       maximumMajor,
     })
     candidates.sort((a, b) => Number(Number(a.cargo.split('.')[0]) > maximumMajor) - Number(Number(b.cargo.split('.')[0]) > maximumMajor))
@@ -179,10 +189,29 @@ export async function planTauriTargets(pairs, { policy, alerts = [], upgrades = 
     }
     return assigned.every(entry => Number(entry.target.cargo.split('.')[0]) <= entry.maximumMajor || authorized.has(entry.pair.cargo))
   }
+  // A conditional release needs one of its roots, introduced by the same plan. An
+  // unassigned domain may still supply a root: a root's domain can follow the release
+  // that it authorizes, because the order puts plugins first, not dependencies.
+  const supplies = (root) => {
+    const { name, version } = splitIdentity(root)
+    const domain = domains.find(candidate => candidate.pair.npm === name || candidate.pair.cargo === name)
+    if (!domain)
+      return false
+    const entry = assigned.find(candidate => candidate.pair === domain.pair)
+    if (!entry)
+      return true
+    return domain.pair.npm === name
+      ? entry.target.npm === version && version !== entry.pair.npmVersion
+      : entry.target.cargo === version && version !== entry.pair.cargoVersion
+  }
+  const authorizationPossible = () => assigned.every(entry => (entry.target.requires ?? []).every(roots => [...roots].some(supplies)))
   const search = async (index) => {
     if (index === domains.length) {
-      return authorizedMajors()
-        ? assigned.map(entry => ({ pair: entry.pair, target: entry.target }))
+      return authorizedMajors() && authorizationPossible()
+        ? assigned.map(entry => ({
+            pair: entry.pair,
+            target: { npm: entry.target.npm, cargo: entry.target.cargo },
+          }))
         : null
     }
     const { pair, candidates, maximumMajor, securityRoot } = domains[index]
@@ -199,7 +228,9 @@ export async function planTauriTargets(pairs, { policy, alerts = [], upgrades = 
         maximumMajor,
         securityRoot,
       })
-      const result = await search(index + 1)
+      const result = authorizationPossible()
+        ? await search(index + 1)
+        : null
       if (result)
         return result
       assigned.pop()
