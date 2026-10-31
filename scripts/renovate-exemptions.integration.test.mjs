@@ -1,22 +1,20 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { delimiter, join, resolve } from 'node:path'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'bun:test'
 import { goMetadata, resolveGoIdentity } from './renovate-exemptions.mjs'
+import { scratchDirectories } from './test-support.mjs'
 
-const root = resolve(import.meta.dirname, '..')
-const fixtures = []
+const scratch = scratchDirectories()
 const servers = []
 afterEach(() => {
   for (const server of servers.splice(0)) server.stop(true)
-  for (const fixture of fixtures.splice(0)) rmSync(fixture, { recursive: true, force: true })
+  scratch.cleanup()
 })
 
 function fixture() {
-  mkdirSync(resolve(root, '.tmp'), { recursive: true })
-  const directory = mkdtempSync(resolve(root, '.tmp/renovate-exemptions-integration-'))
-  fixtures.push(directory)
+  const directory = scratch.create('renovate-exemptions-integration')
   return directory
 }
 

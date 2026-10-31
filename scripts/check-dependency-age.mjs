@@ -1,42 +1,24 @@
 #!/usr/bin/env bun
-import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
 import process from 'node:process'
 import { parseArgs } from 'node:util'
+import { alertedPackages, readAlerts } from './dependabot-alerts.mjs'
 import { activeExemptions, buildAuthorizedMap, defaultReaders, splitIdentity } from './renovate-exemptions.mjs'
-import { cargoReplacementDowngrades, DEPENDENCY_LOCKFILES, introducedVersions, lockedVersions, lockfileInput, readRevisionFile } from './renovate-lockfile-versions.mjs'
-import { readRegistryJson, releaseAgeMs, serialThrottle } from './renovate-release-age.mjs'
+import { runGoOutsideModules } from './renovate-go-command.mjs'
+import { cargoReplacementDowngrades, DEPENDENCY_LOCKFILES, introducedVersions, readLockedVersions, readRevisionFile } from './renovate-lockfile-versions.mjs'
+import { readCrateReleases, readNpmReleases } from './renovate-registry.mjs'
+import { describeAge, isPublishedBy, releaseAgeMs } from './renovate-release-age.mjs'
 
 // Renovate checks the release age only for the version that it selects. bun install and
-// cargo update resolve transitive versions themselves, so Required CI checks every
-// version that a Renovate PR adds to a lockfile. Direct pins in versions.env and in
-// workflow actions stay under Renovate's own strict selection.
+// cargo update resolve transitive versions themselves, and a person can run them too, so
+// Required CI checks every version that a pull request adds to a lockfile. Renovate's own
+// selection holds a pin in versions.env or in a workflow to the age. A security fix of a
+// workflow pin skips the routine age, and nothing here checks such a pin.
 
-/** The branches that Renovate's security configuration names; only these may exempt a fix. */
+/** The branches that Renovate's security configuration creates; only these may exempt a fix. */
 export const SECURITY_BRANCHES = Object.freeze(['renovate/security', 'renovate/go-security'])
 
-const root = resolve(import.meta.dirname, '..')
-
-// Run a command without blocking the event loop.
-function runCommand(command, args, options) {
-  return new Promise((settle) => {
-    let stdout = ''
-    let stderr = ''
-    const child = spawn(command, args, {
-      ...options,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    child.stdout.setEncoding('utf8').on('data', (data) => {
-      stdout += data
-    })
-    child.stderr.setEncoding('utf8').on('data', (data) => {
-      stderr += data
-    })
-    child.once('error', error => settle({ error, status: null, stdout, stderr }))
-    child.once('close', status => settle({ status, stdout, stderr }))
-  })
-}
+const repositoryRoot = resolve(import.meta.dirname, '..')
 
 /** Split the concatenated JSON objects that `go list -json` prints. */
 export function parseJsonStream(text) {
@@ -71,50 +53,25 @@ export function parseJsonStream(text) {
   return values
 }
 
-const npmDocuments = new Map()
-/** Read the publication time of one npm version from its packument. */
-export async function readNpmTime(name, version, { request = fetch } = {}) {
-  if (!npmDocuments.has(name))
-    npmDocuments.set(name, readRegistryJson(`https://registry.npmjs.org/${encodeURIComponent(name)}`, { request, description: 'npm packument read' }))
-  return (await npmDocuments.get(name))?.time?.[version] ?? null
-}
-
-const crateRequests = serialThrottle(1000)
-/** Read the publication time of one crate version. crates.io allows one request per second. */
-export async function readCrateTime(name, version, { request = fetch } = {}) {
-  const metadata = await crateRequests(() => readRegistryJson(`https://crates.io/api/v1/crates/${encodeURIComponent(name)}/${encodeURIComponent(version)}`, { request, description: 'Crate version read', notFound: null }))
-  return metadata?.version?.created_at ?? null
-}
-
 /** Read the publication times of Go module versions with one `go list` call through GOPROXY. */
-export async function readGoTimes(identities, { checkout = root, env = process.env } = {}) {
+export async function readGoTimes(identities, { checkout = repositoryRoot, env = process.env, run } = {}) {
   const times = new Map()
   if (identities.length === 0)
     return times
-  mkdirSync(resolve(checkout, '.tmp'), { recursive: true })
-  const directory = mkdtempSync(resolve(checkout, '.tmp/go-times-'))
-  try {
-    const result = await runCommand('go', [
-      'list',
-      '-m',
-      '-json',
-      '-e',
-      ...identities,
-    ], {
-      cwd: directory,
-      env: { ...env, GOWORK: 'off', GOTOOLCHAIN: 'local' },
-    })
-    if (result.error || result.status !== 0)
-      throw new Error(`go list failed: ${result.error?.message ?? result.stderr.trim()}`)
-    for (const module of parseJsonStream(result.stdout)) {
-      if (!module.Error && typeof module.Time === 'string')
-        times.set(`${module.Path}@${module.Version}`, module.Time)
-    }
-    return times
+  const result = await runGoOutsideModules([
+    'list',
+    '-m',
+    '-json',
+    '-e',
+    ...identities,
+  ], { checkout, env, run })
+  if (result.error || result.status !== 0)
+    throw new Error(`go list failed: ${result.error?.message ?? result.stderr.trim()}`)
+  for (const module of parseJsonStream(result.stdout)) {
+    if (!module.Error && typeof module.Time === 'string')
+      times.set(`${module.Path}@${module.Version}`, module.Time)
   }
-  finally {
-    rmSync(directory, { recursive: true, force: true })
-  }
+  return times
 }
 
 async function mapLimited(items, limit, task) {
@@ -132,23 +89,103 @@ async function mapLimited(items, limit, task) {
   return results
 }
 
-export const defaultTimeReaders = Object.freeze({ npmTime: readNpmTime, crateTime: readCrateTime, goTimes: readGoTimes })
-
-function readWorkingFile(checkout, path) {
-  const file = resolve(checkout, path)
-  return existsSync(file)
-    ? readFileSync(file, 'utf8')
-    : null
+/**
+ * Return the publication-time readers of one check. Each set reads each npm packument and
+ * each crate index file once, and keeps only the release times. `request` replaces the
+ * registry transport, as a test does.
+ */
+export function timeReaders({ request } = {}) {
+  const timeOf = (read) => {
+    const releases = new Map()
+    return async (name, version) => {
+      if (!releases.has(name))
+        releases.set(name, read(name, { request }))
+      return (await releases.get(name)).find(release => release.version === version)?.publishedAt ?? null
+    }
+  }
+  return Object.freeze({
+    npmTime: timeOf(readNpmReleases),
+    crateTime: timeOf(readCrateReleases),
+    goTimes: readGoTimes,
+  })
 }
 
 /**
- * Check every lockfile version that a Renovate branch adds against the release age of
- * the base policy. Return the violations; a non-Renovate branch returns null without
- * reading any file or registry.
+ * Read the publication time of each `{ ecosystem, identity }` entry, in the order of
+ * `entries`. A version without a known time reads as null.
  */
-export async function checkDependencyAge({ base, headRef, checkout = root, now = Date.now(), readers = defaultReaders, times = defaultTimeReaders }) {
-  if (typeof headRef !== 'string' || !headRef.startsWith('renovate/'))
-    return null
+export async function publicationTimes(entries, times = timeReaders(), { checkout = repositoryRoot } = {}) {
+  const goIdentities = [
+    ...new Set(entries.filter(entry => entry.ecosystem === 'go').map(entry => entry.identity)),
+  ]
+  const goTimes = goIdentities.length === 0
+    ? new Map()
+    : await times.goTimes(goIdentities, { checkout })
+  return mapLimited(entries, 8, async (entry) => {
+    if (entry.ecosystem === 'go')
+      return goTimes.get(entry.identity) ?? null
+    const { name, version } = splitIdentity(entry.identity)
+    return entry.ecosystem === 'npm'
+      ? times.npmTime(name, version)
+      : times.crateTime(name, version)
+  })
+}
+
+/**
+ * Return the identities that a security branch exempts, by the path of each changed
+ * lockfile, as `Map<path, Set<name@version>>`: each active authorized root that a lockfile
+ * introduces, with its closure. Only a package that an open alert reports on that lockfile
+ * may take a fix, and its fixes come from its base versions in that lockfile alone. A
+ * package that the lockfile adds, removes, or moves counts as changed.
+ */
+export async function securityExemptions(files, { alerts = [], readers = defaultReaders, warn } = {}) {
+  const alerted = alertedPackages(alerts)
+  const packages = []
+  for (const file of files) {
+    const reported = alerted.get(file.path)
+    if (!reported)
+      continue
+    const changed = new Set([...file.baseVersions].filter(([name, versions]) => [...versions].some(version => !file.headVersions.get(name)?.has(version))).map(([name]) => name))
+    for (const identity of file.introduced)
+      changed.add(splitIdentity(identity).name)
+    for (const name of [...changed].filter(candidate => reported.has(candidate)).sort()) {
+      const baseVersions = file.baseVersions.get(name)
+      if (baseVersions?.size) {
+        packages.push({
+          lockfile: file.path,
+          name,
+          baseVersions: [...baseVersions],
+        })
+      }
+    }
+  }
+  const authorized = await buildAuthorizedMap(packages, readers, {
+    lockfiles: files.map(file => file.path),
+    warn,
+  })
+  return new Map(files.map((file) => {
+    const introduced = new Set(file.introduced)
+    return [
+      file.path,
+      activeExemptions(authorized[file.path], {
+        base: file.baseVersions,
+        selected: root => introduced.has(root),
+      }).exempt,
+    ]
+  }))
+}
+
+/**
+ * Check every lockfile version that a pull request adds between the `base` and `head`
+ * revisions against the release age of the base policy, and return the violations. Only
+ * a version younger than the age, or without a release timestamp, needs an exemption, so
+ * a security branch reads the open alerts and builds its exemptions only for those. A
+ * Renovate branch must also never let cargo lower a version: a person may do that on
+ * purpose, with `cargo update --precise`.
+ */
+export async function checkDependencyAge({ base, head = 'HEAD', headRef, checkout = repositoryRoot, now = Date.now(), readers = defaultReaders, openAlerts = () => readAlerts(process.env.GITHUB_TOKEN), times = timeReaders(), warn }) {
+  if (typeof headRef !== 'string')
+    throw new TypeError('The release-age check requires the head ref of the pull request.')
   const policy = readRevisionFile(base, 'renovate.json', { cwd: checkout })
   if (policy == null)
     throw new Error(`The base revision ${base} has no renovate.json.`)
@@ -156,81 +193,49 @@ export async function checkDependencyAge({ base, headRef, checkout = root, now =
   const files = []
   for (const entry of DEPENDENCY_LOCKFILES) {
     const before = readRevisionFile(base, entry.path, { cwd: checkout })
-    const after = readWorkingFile(checkout, entry.path)
+    const after = readRevisionFile(head, entry.path, { cwd: checkout })
     // An unchanged or removed file adds no version, so it needs no registry read.
     if (after == null || before === after)
       continue
-    const baseInput = lockfileInput(entry.kind, before, { checkout })
-    const headInput = lockfileInput(entry.kind, after, { checkout })
+    const baseVersions = await readLockedVersions(entry.kind, before, { checkout })
+    const headVersions = await readLockedVersions(entry.kind, after, { checkout })
     files.push({
       ...entry,
-      before,
-      after,
-      baseInput,
-      headInput,
-      introduced: introducedVersions(entry.kind, baseInput, headInput),
+      baseVersions,
+      headVersions,
+      introduced: introducedVersions(baseVersions, headVersions),
     })
   }
   const violations = []
-  for (const file of files.filter(entry => entry.kind === 'cargo')) {
-    // A downgrade fails on every Renovate branch, security branches included.
-    for (const { name, from, to } of cargoReplacementDowngrades(file.before, file.after))
-      violations.push({ file: file.path, identity: `${name}@${to}`, message: `cargo would downgrade ${name} from ${from} to ${to}.` })
+  if (headRef.startsWith('renovate/')) {
+    for (const file of files.filter(entry => entry.kind === 'cargo')) {
+      for (const { name, from, to } of cargoReplacementDowngrades(file.baseVersions, file.headVersions))
+        violations.push({ file: file.path, identity: `${name}@${to}`, message: `cargo would downgrade ${name} from ${from} to ${to}.` })
+    }
   }
   const introduced = files.flatMap(file => file.introduced.map(identity => ({ file: file.path, ecosystem: file.ecosystem, identity })))
   if (introduced.length === 0)
     return violations
-  const exempt = new Set()
-  if (SECURITY_BRANCHES.includes(headRef)) {
-    // Authorize from the base: a changed package keeps only the fixes of its base versions.
-    const packages = new Map()
-    for (const file of files) {
-      const before = file.baseInput == null
-        ? new Map()
-        : lockedVersions(file.kind, file.baseInput)
-      const after = lockedVersions(file.kind, file.headInput)
-      const changed = new Set([...before].filter(([name, versions]) => [...versions].some(version => !after.get(name)?.has(version))).map(([name]) => name))
-      for (const identity of file.introduced)
-        changed.add(splitIdentity(identity).name)
-      for (const name of changed) {
-        const key = `${file.ecosystem}\0${name}`
-        const entry = packages.get(key) ?? {
-          ecosystem: file.ecosystem,
-          name,
-          baseVersions: new Set(),
-        }
-        for (const version of before.get(name) ?? [])
-          entry.baseVersions.add(version)
-        packages.set(key, entry)
-      }
-    }
-    const authorized = await buildAuthorizedMap([
-      ...packages.values(),
-    ].filter(entry => entry.baseVersions.size > 0), readers)
-    for (const [ecosystem, roots] of Object.entries(authorized)) {
-      const added = new Set(introduced.filter(entry => entry.ecosystem === ecosystem).map(entry => entry.identity))
-      for (const identity of activeExemptions(roots, root => added.has(root)))
-        exempt.add(`${ecosystem}\0${identity}`)
-    }
-  }
-  const checked = introduced.filter(entry => !exempt.has(`${entry.ecosystem}\0${entry.identity}`))
-  const goTimes = await times.goTimes([
-    ...new Set(checked.filter(entry => entry.ecosystem === 'go').map(entry => entry.identity)),
-  ], { checkout })
-  const published = await mapLimited(checked, 8, async (entry) => {
-    const { name, version } = splitIdentity(entry.identity)
-    if (entry.ecosystem === 'go')
-      return goTimes.get(entry.identity) ?? null
-    return entry.ecosystem === 'npm'
-      ? times.npmTime(name, version)
-      : times.crateTime(name, version)
-  })
-  for (const [index, entry] of checked.entries()) {
-    const time = Date.parse(published[index])
-    if (!Number.isFinite(time))
-      violations.push({ file: entry.file, identity: entry.identity, message: `${entry.identity} has no release timestamp.` })
-    else if (now - time < ageMs)
-      violations.push({ file: entry.file, identity: entry.identity, message: `${entry.identity} was published at ${new Date(time).toISOString()}, less than ${ageMs / 86400000} days ago.` })
+  const published = await publicationTimes(introduced, times, { checkout })
+  const young = introduced
+    .map((entry, index) => ({
+      ...entry,
+      time: Date.parse(published[index]),
+    }))
+    .filter(entry => !isPublishedBy(entry.time, now - ageMs))
+  if (young.length === 0)
+    return violations
+  const exempt = SECURITY_BRANCHES.includes(headRef)
+    ? await securityExemptions(files, { alerts: await openAlerts(), readers, warn })
+    : new Map()
+  for (const entry of young.filter(candidate => !exempt.get(candidate.file)?.has(candidate.identity))) {
+    violations.push({
+      file: entry.file,
+      identity: entry.identity,
+      message: Number.isFinite(entry.time)
+        ? `${entry.identity} was published at ${new Date(entry.time).toISOString()}, less than ${describeAge(ageMs)} ago.`
+        : `${entry.identity} has no release timestamp.`,
+    })
   }
   return violations
 }
@@ -246,8 +251,8 @@ export function annotations(violations) {
 
 /**
  * Run the check for command-line arguments and return the exit code. A violation prints
- * one annotation per line and returns 1, which fails Required CI. The other options are
- * the options of checkDependencyAge.
+ * one annotation per line and returns 1, which fails Required CI. A skipped security fix
+ * prints a warning annotation. The other options are the options of checkDependencyAge.
  */
 export async function main(argv, { stdout = process.stdout, stderr = process.stderr, ...options } = {}) {
   try {
@@ -255,17 +260,20 @@ export async function main(argv, { stdout = process.stdout, stderr = process.std
       args: argv,
       options: {
         'base': { type: 'string' },
+        'head': { type: 'string', default: 'HEAD' },
         'head-ref': { type: 'string' },
       },
       strict: true,
     })
     if (!values.base || values['head-ref'] === undefined)
-      throw new Error('Usage: check-dependency-age.mjs --base <sha> --head-ref <ref>')
-    const violations = await checkDependencyAge({ ...options, base: values.base, headRef: values['head-ref'] })
-    if (violations === null) {
-      stdout.write(`${values['head-ref'] || 'This ref'} is not a Renovate branch. The release-age check does not apply.\n`)
-      return 0
-    }
+      throw new Error('Usage: check-dependency-age.mjs --base <rev> [--head <rev>] --head-ref <ref>')
+    const violations = await checkDependencyAge({
+      warn: message => stdout.write(`::warning::${escapeData(message)}\n`),
+      ...options,
+      base: values.base,
+      head: values.head,
+      headRef: values['head-ref'],
+    })
     if (violations.length > 0) {
       for (const line of annotations(violations))
         stdout.write(`${line}\n`)

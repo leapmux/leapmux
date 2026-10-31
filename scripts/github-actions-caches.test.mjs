@@ -1,23 +1,16 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { delimiter, join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, describe, expect, it } from 'bun:test'
 import { NOTICE_INPUTS } from './notice-inputs.mjs'
+import { git, gitRepository, scratchDirectories } from './test-support.mjs'
 
 const root = resolve(import.meta.dirname, '..')
-const fixtures = []
-
-afterEach(() => {
-  for (const dir of fixtures.splice(0)) rmSync(dir, { recursive: true, force: true })
-})
-
-function fixture() {
-  mkdirSync(join(root, '.tmp'), { recursive: true })
-  const dir = mkdtempSync(join(root, '.tmp', 'actions-test-'))
-  fixtures.push(dir)
-  return dir
-}
+const scratch = scratchDirectories()
+afterEach(scratch.cleanup)
+const fixture = () => scratch.create('actions-test')
 
 // Put the directory of fake commands first INSIDE the script. A fake
 // directory at the front of the spawn PATH is not enough: Git for Windows'
@@ -64,30 +57,6 @@ function outputFile(dir, file = 'output') {
   return existsSync(path)
     ? readFileSync(path, 'utf8')
     : ''
-}
-
-function git(dir, ...args) {
-  const result = spawnSync('git', args, { cwd: dir, encoding: 'utf8' })
-  expect(result.status, result.stdout + result.stderr).toBe(0)
-  return result.stdout.trim()
-}
-
-function initGit(dir, bare = false) {
-  mkdirSync(dir, { recursive: true })
-  git(dir, 'init', '--initial-branch=main', ...(bare
-    ? ['--bare']
-    : []))
-  for (const [key, value] of Object.entries({
-    'core.fsmonitor': 'false',
-    'gc.auto': '0',
-    'maintenance.auto': 'false',
-    'commit.gpgsign': 'false',
-    'tag.gpgsign': 'false',
-    'user.name': 'Test',
-    'user.email': 'test@example.invalid',
-  })) {
-    git(dir, 'config', key, value)
-  }
 }
 
 function yaml(relPath) {
@@ -480,47 +449,47 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
       const dir = fixture()
       const remote = join(dir, 'remote')
       const local = join(dir, 'release')
-      initGit(remote, true)
-      initGit(local)
+      gitRepository(remote, { bare: true })
+      gitRepository(local)
       writeFileSync(join(local, 'versions.env'), 'VERSION=1.2.3-dev\n')
-      git(local, 'add', 'versions.env')
-      git(local, 'commit', '-m', 'chore: Set the initial version')
-      const initial = git(local, 'rev-parse', 'HEAD')
-      git(local, 'remote', 'add', 'origin', remote)
-      git(local, 'push', '-u', 'origin', 'main')
+      git(local, ['add', 'versions.env'])
+      git(local, ['commit', '-m', 'chore: Set the initial version'])
+      const initial = git(local, ['rev-parse', 'HEAD'])
+      git(local, ['remote', 'add', 'origin', remote])
+      git(local, ['push', '-u', 'origin', 'main'])
       writeFileSync(join(local, 'versions.env'), 'VERSION=1.2.3\n')
-      git(local, 'commit', '-am', 'chore: Release v1.2.3')
-      const releaseCommit = git(local, 'rev-parse', 'HEAD')
-      git(local, 'tag', 'v1.2.3')
+      git(local, ['commit', '-am', 'chore: Release v1.2.3'])
+      const releaseCommit = git(local, ['rev-parse', 'HEAD'])
+      git(local, ['tag', 'v1.2.3'])
       writeFileSync(join(local, 'versions.env'), 'VERSION=1.2.4-dev\n')
-      git(local, 'commit', '-am', 'chore: Bump version to 1.2.4-dev')
+      git(local, ['commit', '-am', 'chore: Bump version to 1.2.4-dev'])
       let expectedMain = initial
       if (conflict === 'branch') {
         const other = join(dir, 'other')
-        initGit(other)
-        git(other, 'remote', 'add', 'origin', remote)
-        git(other, 'fetch', 'origin', 'main')
-        git(other, 'reset', '--hard', 'origin/main')
+        gitRepository(other)
+        git(other, ['remote', 'add', 'origin', remote])
+        git(other, ['fetch', 'origin', 'main'])
+        git(other, ['reset', '--hard', 'origin/main'])
         writeFileSync(join(other, 'unrelated'), 'another writer\n')
-        git(other, 'add', 'unrelated')
-        git(other, 'commit', '-m', 'test: Add another change')
-        git(other, 'push', 'origin', 'main')
-        expectedMain = git(other, 'rev-parse', 'HEAD')
+        git(other, ['add', 'unrelated'])
+        git(other, ['commit', '-m', 'test: Add another change'])
+        git(other, ['push', 'origin', 'main'])
+        expectedMain = git(other, ['rev-parse', 'HEAD'])
       }
       if (conflict === 'tag')
-        git(remote, 'update-ref', 'refs/tags/v1.2.3', initial)
+        git(remote, ['update-ref', 'refs/tags/v1.2.3', initial])
       const steps = yaml('.github/workflows/release.yaml').jobs.release.steps
       const push = steps.find(step => step.name === 'Push version commits and release tag')
       const result = runShell(push.run.replaceAll(expression('inputs.version'), '1.2.3'), local, { RELEASE_ADMIN_TOKEN: 'fixture-token' })
       expect(result.status === 0).toBe(conflict === 'none')
       if (conflict === 'none') {
-        expect(git(remote, 'rev-parse', 'refs/heads/main')).toBe(git(local, 'rev-parse', 'HEAD'))
-        expect(git(remote, 'rev-parse', 'refs/tags/v1.2.3')).toBe(releaseCommit)
-        expect(git(remote, 'show', 'main:versions.env')).toBe('VERSION=1.2.4-dev')
-        expect(git(remote, 'show', 'v1.2.3:versions.env')).toBe('VERSION=1.2.3')
+        expect(git(remote, ['rev-parse', 'refs/heads/main'])).toBe(git(local, ['rev-parse', 'HEAD']))
+        expect(git(remote, ['rev-parse', 'refs/tags/v1.2.3'])).toBe(releaseCommit)
+        expect(git(remote, ['show', 'main:versions.env'])).toBe('VERSION=1.2.4-dev')
+        expect(git(remote, ['show', 'v1.2.3:versions.env'])).toBe('VERSION=1.2.3')
       }
       else {
-        expect(git(remote, 'rev-parse', 'refs/heads/main')).toBe(expectedMain)
+        expect(git(remote, ['rev-parse', 'refs/heads/main'])).toBe(expectedMain)
         const tag = spawnSync('git', ['rev-parse', '--verify', 'refs/tags/v1.2.3'], { cwd: remote, encoding: 'utf8' })
         if (conflict === 'tag')
           expect(tag.stdout.trim()).toBe(initial)
@@ -537,6 +506,31 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     }
     expect(prefix).not.toContain('CACHE_WEEK')
     expect(step.with.key).toBe(`${prefix}\${{ env.CACHE_WEEK }}`)
+  })
+
+  it('deploys the site with the locked wrangler, installed without install scripts', () => {
+    const steps = yaml('.github/workflows/publish-site.yaml').jobs.publish.steps
+    const index = name => steps.findIndex(step => step.name === name)
+    const install = steps[index('Install the locked site tools')]
+    const deploy = steps[index('Deploy to Cloudflare Workers')]
+    expect(index('Install the locked site tools')).toBeGreaterThan(index('Build site'))
+    expect(index('Deploy to Cloudflare Workers')).toBeGreaterThan(index('Install the locked site tools'))
+    expect(install).toMatchObject({ 'working-directory': 'site', 'run': 'bun install --frozen-lockfile --ignore-scripts' })
+    expect(deploy).toMatchObject({ 'working-directory': 'site', 'run': './node_modules/.bin/wrangler deploy' })
+    expect(deploy.env).toEqual({
+      CLOUDFLARE_API_TOKEN: expression('secrets.CLOUDFLARE_API_TOKEN'),
+      CLOUDFLARE_ACCOUNT_ID: expression('secrets.CLOUDFLARE_ACCOUNT_ID'),
+      WRANGLER_SEND_METRICS: 'false',
+    })
+    // site/bun.lock pins the whole tree, and the release-age check reads it.
+    expect(JSON.parse(raw('site/package.json')).devDependencies.wrangler).toMatch(/^\d+\.\d+\.\d+$/)
+  })
+
+  it('builds the macOS disk image tools with the node-gyp that the frontend lockfile pins', () => {
+    const task = yaml('Taskfile.yaml').tasks['prepare-dmg-tools']
+    expect(task.sources).toContain('frontend/bun.lock')
+    expect(task.cmds).toContain('cd frontend/node_modules/macos-alias && node ../node-gyp/bin/node-gyp.js rebuild')
+    expect(JSON.parse(raw('frontend/package.json')).devDependencies).toHaveProperty('node-gyp')
   })
 
   it('deploys changes to every external Hugo mount and the tool versions', () => {
@@ -705,6 +699,40 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     ]) {
       expect(raw(file)).not.toContain('rust-save-if')
     }
+  })
+
+  it('restores the compiled Renovate RE2 engine after the package install, with the task state that accepts it', () => {
+    const steps = yaml('.github/workflows/ci.yaml').jobs.linux.steps
+    const index = name => steps.findIndex(step => step.name === name)
+    const install = index('Install the pinned Renovate packages')
+    const cache = index('Cache the compiled Renovate RE2 engine')
+    const extract = index('Validate Renovate dependency extraction')
+    expect(install).toBeGreaterThanOrEqual(0)
+    // bun install replaces a package directory that it installs anew, with a restored engine in it.
+    expect(cache).toBeGreaterThan(install)
+    expect(extract).toBeGreaterThan(cache)
+    expect(steps[install].run).toBe('task install-renovate-packages')
+    expect(steps[cache].if).toBe(steps[install].if)
+    expect(steps[cache].uses).toBe('./.github/actions/build-output-cache')
+    // The archive holds the outputs of the task, its Task checksum, and its task-state record.
+    const task = 'build-renovate-re2'
+    const outputs = yaml('Taskfile.yaml').tasks[task].vars.OUTPUTS
+    expect(outputs.length).toBeGreaterThan(0)
+    expect(cachePaths(steps[cache])).toEqual([
+      ...outputs,
+      `.task/checksum/${task}`,
+      `.task/artifacts/${createHash('sha256').update(task).digest('hex')}.sha256`,
+    ])
+    const { key, 'restore-keys': restoreKeys, save } = steps[cache].with
+    const lockHash = expression('hashFiles(\'.github/renovate/bun.lock\')')
+    expect(key).toStartWith('renovate-re2-')
+    expect(key).toContain(lockHash)
+    expect(key).toContain(expression('hashFiles(\'Taskfile.yaml\', \'scripts/task-state.mjs\')'))
+    expect(key).toEndWith(`-${expression('env.CACHE_WEEK')}`)
+    // A restored engine from another recipe fails the task-state check, and the task rebuilds it.
+    expect(key.startsWith(restoreKeys)).toBe(true)
+    expect(restoreKeys).toEndWith(`${lockHash}-`)
+    expect(save).toBe(expression('github.ref == \'refs/heads/main\''))
   })
 
   it('keeps per-commit build args out of the toolchain layers', () => {
@@ -1036,43 +1064,77 @@ describe('renovate workflow and protection', () => {
       expect(result.status === 0).toBe(expected)
     }
   })
-  it('checks the release age of a Renovate PR and passes every other ref in seconds', () => {
+  it('checks the release age of every pull request and passes a push in seconds', () => {
     const ci = yaml('.github/workflows/ci.yaml')
+    expect(Object.keys(ci.on).sort()).toEqual(['pull_request', 'push'])
     const job = ci.jobs['dependency-age']
     expect(job['runs-on']).toBe('ubuntu-24.04')
-    expect(job.permissions).toEqual({ contents: 'read' })
+    // A security branch reads the open Dependabot alerts with the job token.
+    expect(job.permissions).toEqual({ 'contents': 'read', 'vulnerability-alerts': 'read' })
     const [scope, ...rest] = job.steps
     expect(scope.id).toBe('scope')
-    expect(scope.env.RENOVATE_BRANCH).toBe(expression('startsWith(github.head_ref, \'renovate/\')'))
+    expect(scope.env.PULL_REQUEST).toBe(expression('github.event_name == \'pull_request\''))
     for (const step of rest)
-      expect(step.if, step.name ?? step.uses).toBe('steps.scope.outputs.renovate == \'true\'')
-    for (const [branch, expected] of [
-      ['true', 'renovate=true'],
-      ['false', 'renovate=false'],
+      expect(step.if, step.name ?? step.uses).toBe('steps.scope.outputs.checked == \'true\'')
+    for (const [event, expected] of [
+      ['true', 'checked=true'],
+      ['false', 'checked=false'],
     ]) {
       const directory = fixture()
-      expect(runShell(scope.run, directory, { RENOVATE_BRANCH: branch }).status).toBe(0)
+      expect(runShell(scope.run, directory, { PULL_REQUEST: event }).status).toBe(0)
       expect(readFileSync(join(directory, 'output'), 'utf8').trim()).toBe(expected)
     }
     const checkout = rest.find(step => String(step.uses).startsWith('actions/checkout@'))
-    expect(checkout.with['fetch-depth']).toBe(0)
-    const setup = rest.find(step => step.uses === './.github/actions/setup-build')
-    expect(setup.with).toEqual({
-      'github-token': expression('secrets.GITHUB_TOKEN'),
-      'setup-desktop': 'false',
-    })
+    expect(checkout.with).toEqual({ 'fetch-depth': 2, 'persist-credentials': false })
+    // The check needs no compiled cache and no dependency download.
+    expect(rest.some(step => step.uses === './.github/actions/setup-build')).toBe(false)
+    expect(rest.map(step => String(step.uses ?? '').split('@')[0]).filter(Boolean)).toEqual([
+      'actions/checkout',
+      './.github/actions/load-versions',
+      'actions/setup-go',
+      'oven-sh/setup-bun',
+      'arduino/setup-task',
+    ])
+    expect(rest.find(step => String(step.uses).startsWith('actions/setup-go@')).with.cache).toBe(false)
+    // Every tool comes from the base commit: the job checks it out before it loads a version.
+    const names = rest.map(step => step.name ?? step.uses)
+    expect(names.indexOf('Check out the base commit')).toBeLessThan(names.indexOf('Load tool versions'))
     const check = rest.at(-1)
-    expect(check.run).toBe('task check-dependency-age -- --base "$(git merge-base HEAD origin/main)" --head-ref "$HEAD_REF"')
+    expect(check.run).toBe('task check-dependency-age -- --base HEAD --head "$PR_MERGE_SHA" --head-ref "$HEAD_REF"')
     expect(check.env).toEqual({
       HEAD_REF: expression('github.head_ref'),
       GITHUB_TOKEN: expression('secrets.GITHUB_TOKEN'),
     })
     expect(yaml('Taskfile.yaml').tasks['check-dependency-age']).toEqual({
-      desc: 'Reject a Renovate PR whose lockfiles add a version younger than the minimum release age',
+      desc: 'Reject a pull request whose lockfiles add a version younger than the minimum release age',
       deps: ['install-renovate-packages'],
       cmds: ['bun scripts/check-dependency-age.mjs {{.CLI_ARGS}}'],
     })
     expect(ci.jobs['required-ci'].needs).toContain('dependency-age')
+  })
+  it('checks out the base commit and records the merge commit for the age check', () => {
+    const step = yaml('.github/workflows/ci.yaml').jobs['dependency-age'].steps.find(entry => entry.name === 'Check out the base commit')
+    const directory = fixture()
+    const base = gitRepository(directory, {
+      files: { file: 'base\n' },
+    })
+    git(directory, ['checkout', '-q', '-b', 'renovate/x'])
+    writeFileSync(join(directory, 'file'), 'head\n')
+    git(directory, ['commit', '-q', '-am', 'head'])
+    git(directory, ['checkout', '-q', 'main'])
+    git(directory, [
+      'merge',
+      '-q',
+      '--no-ff',
+      '-m',
+      'merge',
+      'renovate/x',
+    ])
+    const merge = git(directory, ['rev-parse', 'HEAD'])
+    const result = runShell(step.run, directory)
+    expect(result.status, result.stderr).toBe(0)
+    expect(git(directory, ['rev-parse', 'HEAD'])).toBe(base)
+    expect(outputFile(directory, 'environment').trim()).toBe(`PR_MERGE_SHA=${merge}`)
   })
   it('keeps the administrator credential in the release environment and atomic push only', () => {
     const release = yaml('.github/workflows/release.yaml').jobs.release
@@ -1094,12 +1156,15 @@ describe('renovate workflow and protection', () => {
     for (const step of ci.jobs.docker.steps.filter(step => String(step.uses).includes('docker-build') || String(step.uses).includes('build-docker-image')))
       expect(step.with.variant).toBe(expression('matrix.variant'))
     expect(ci.jobs.linux.steps.find(step => step.run === 'task lint').if).toBe('matrix.arch == \'amd64\'')
-    expect(ci.jobs.linux.steps.find(step => step.run === 'task validate-standalone-tools').if).toBe('matrix.arch == \'amd64\'')
+    expect(ci.jobs.linux.steps.find(step => step.run === 'task validate-site-tools').if).toBe('matrix.arch == \'amd64\'')
     expect(ci.jobs.linux.steps.find(step => step.run === 'task renovate-extract').if).toBe('matrix.arch == \'amd64\'')
-    expect(yaml('Taskfile.yaml').tasks['validate-standalone-tools'].cmds).toEqual([
-      'bunx node-gyp@{{.NODE_GYP_VERSION}} --version',
-      'bunx wrangler@{{.WRANGLER_VERSION}} --version',
-    ])
+    // Every JavaScript tool comes from a lockfile that the release-age check reads.
+    expect(yaml('Taskfile.yaml').tasks['validate-site-tools']).toMatchObject({
+      dir: 'site',
+      cmds: ['bun install --frozen-lockfile --ignore-scripts', './node_modules/.bin/wrangler --version'],
+    })
+    for (const file of ['Taskfile.yaml', ...workflowFiles])
+      expect(raw(file), file).not.toMatch(/\bbunx\b|wrangler-action/)
     const required = ci.jobs['required-ci']
     expect(required.name).toBe('Required CI')
     expect(required.if).toBe('always()')

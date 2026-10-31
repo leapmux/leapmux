@@ -8,7 +8,7 @@ import { renovateHandlebars } from './renovate-engine.mjs'
 
 const root = resolve(import.meta.dirname, '..')
 const ageMs = 3 * 86400000
-const options = { ageMs, ageLabel: '3 days' }
+const options = { ageMs, timeZone: 'Asia/Seoul' }
 
 function alert(name, ecosystem, manifest, { range = '>= 0.15.0, < 0.20.0', fixed = '0.20.0', ghsa = 'GHSA-wrw7-89jp-8q8g', state = 'open' } = {}) {
   return {
@@ -102,7 +102,7 @@ describe('renderSkippedDependencies', () => {
     expect(items).toHaveLength(5)
     expect(items.find(item => item.includes('`unfixed`'))).toEndWith('[GHSA-2345-6789-cfgh](https://github.com/advisories/GHSA-2345-6789-cfgh) affects `>= 0.15.0, < 0.20.0`. No patched version exists.')
     expect(items.find(item => item.includes('`skipped`'))).toEndWith('Renovate skips it: Ignored by configuration.')
-    expect(items.find(item => item.includes('`stuck`'))).toEndWith('A fix version exists, but Renovate found no update.')
+    expect(items.find(item => item.includes('`stuck`'))).toEndWith('A patched version exists, but Renovate found no update.')
     expect(items.find(item => item.includes('`young`'))).toEndWith('Every update that fixes it waits for the minimum release age.')
     expect(items.find(item => item.includes('`wheel`'))).toEndWith('Renovate manages no dependency of the `pip` ecosystem.')
     expect(section).not.toContain('closed')
@@ -177,7 +177,7 @@ describe('renderSkippedDependencies', () => {
     expect(blocks(section)['Security alerts without a proposed fix'].items).toEqual([
       '- `glib` in `desktop/rust/Cargo.lock`, `desktop/rust/other/Cargo.lock`: [GHSA-wrw7-89jp-8q8g](https://github.com/advisories/GHSA-wrw7-89jp-8q8g) affects `>= 0.15.0, < 0.20.0`, fixed in `0.20.0`. Transitive dependency. Renovate updates only dependencies that a manifest declares.',
     ])
-    expect(blocks(section)['Waiting for the minimum release age (3 days)'].items).toEqual([
+    expect(blocks(section)['Waiting for the minimum release age (3 days, dates in Asia/Seoul)'].items).toEqual([
       '- `shared` (`.github/renovate/package.json`, `frontend/package.json`): `2.0.0` waits until 2026-11-01',
     ])
   })
@@ -242,7 +242,7 @@ describe('renderSkippedDependencies', () => {
         },
       ],
     }), options)
-    expect(blocks(section)['Waiting for the minimum release age (3 days)']).toEqual({
+    expect(blocks(section)['Waiting for the minimum release age (3 days, dates in Asia/Seoul)']).toEqual({
       count: 3,
       items: [
         '- `ubuntu` (`versions.env`): `26.04` waits until 2026-11-01',
@@ -250,6 +250,34 @@ describe('renderSkippedDependencies', () => {
         '- `renovate` (`.github/renovate/package.json`): proposes `44.190.0`; `44.190.1`, `44.190.2`, `44.190.3`, … wait',
       ],
     })
+  })
+  it('dates the end of a wait on the calendar of the schedule zone, and states the age with its buffer', () => {
+    const packageFiles = data({
+      bun: [
+        {
+          packageFile: 'frontend/package.json',
+          deps: [
+            {
+              depName: 'late',
+              // The wait ends at 2026-11-01T20:00Z, which is 05:00 on November 2 in Seoul.
+              updates: [
+                { newVersion: '1.0.0', pendingChecks: true, releaseTimestamp: '2026-10-29T20:00:00Z' },
+              ],
+            },
+          ],
+        },
+      ],
+    })
+    expect(blocks(renderSkippedDependencies(packageFiles, options))['Waiting for the minimum release age (3 days, dates in Asia/Seoul)'].items).toEqual([
+      '- `late` (`frontend/package.json`): `1.0.0` waits until 2026-11-02',
+    ])
+    expect(blocks(renderSkippedDependencies(packageFiles, { ageMs, timeZone: 'UTC' }))['Waiting for the minimum release age (3 days, dates in UTC)'].items).toEqual([
+      '- `late` (`frontend/package.json`): `1.0.0` waits until 2026-11-01',
+    ])
+    const buffered = renderSkippedDependencies(packageFiles, { ageMs: ageMs + 1800000, timeZone: 'UTC' })
+    expect(blocks(buffered)['Waiting for the minimum release age (3 days 30 minutes, dates in UTC)'].items).toEqual([
+      '- `late` (`frontend/package.json`): `1.0.0` waits until 2026-11-01',
+    ])
   })
   it('groups and counts the skip reasons, and lists a dependency of two files once', () => {
     const section = renderSkippedDependencies(new Map([
@@ -388,6 +416,13 @@ describe('configureSkippedDependencies', () => {
       policy: { minimumReleaseAge: '0 days' },
       alerts: [],
     })).rejects.toThrow('positive duration')
+    expect(renovateHandlebars().helpers.leapmuxSkippedDependencies).toBeUndefined()
+  })
+  it('fails before it registers a helper when the policy sets an unknown time zone', async () => {
+    await expect(configureSkippedDependencies({
+      policy: { ...policy, timezone: 'Mars/Olympus_Mons' },
+      alerts: [],
+    })).rejects.toThrow(RangeError)
     expect(renovateHandlebars().helpers.leapmuxSkippedDependencies).toBeUndefined()
   })
 })

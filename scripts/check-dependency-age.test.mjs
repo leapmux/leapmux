@@ -1,16 +1,16 @@
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'bun:test'
-import { annotations, checkDependencyAge, main, parseJsonStream, readCrateTime, readGoTimes, readNpmTime, SECURITY_BRANCHES } from './check-dependency-age.mjs'
+import { annotations, checkDependencyAge, main, parseJsonStream, readGoTimes, SECURITY_BRANCHES, securityExemptions, timeReaders } from './check-dependency-age.mjs'
+import { introducedVersions, lockedVersions } from './renovate-lockfile-versions.mjs'
+import { crateIndexResponse, git, gitRepository, scratchDirectories, writeFiles } from './test-support.mjs'
 
 const root = resolve(import.meta.dirname, '..')
-const fixtures = []
-afterEach(() => {
-  for (const fixture of fixtures.splice(0)) rmSync(fixture, { recursive: true, force: true })
-})
+const scratch = scratchDirectories()
+afterEach(scratch.cleanup)
 
 const now = Date.parse('2026-10-31T00:00:00Z')
 const fourDays = '2026-10-27T00:00:00Z'
@@ -25,51 +25,29 @@ function cargoLock(identities) {
 }
 const goMod = requirements => `module github.com/leapmux/leapmux\n\ngo 1.25\n\nrequire (\n${requirements.map(identity => `\t${identity.replace('@', ' ')}`).join('\n')}\n)\n`
 
-function git(directory, args) {
-  const result = spawnSync('git', args, {
-    cwd: directory,
-    encoding: 'utf8',
-    env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
-  })
-  expect(result.status, `git ${args.join(' ')}: ${result.stderr}`).toBe(0)
-  return result.stdout.trim()
-}
-
-function write(directory, files) {
-  for (const [file, content] of Object.entries(files)) {
-    if (content === null) {
-      rmSync(resolve(directory, file), { force: true })
-      continue
-    }
-    mkdirSync(resolve(directory, file, '..'), { recursive: true })
-    writeFileSync(resolve(directory, file), content)
-  }
-}
-
-// A base commit, and a working tree that holds the head of the Renovate PR.
+// A base commit, and a head commit of the pull request on top of it.
 function repository(base, head) {
-  mkdirSync(resolve(root, '.tmp'), { recursive: true })
-  const checkout = mkdtempSync(resolve(root, '.tmp/check-dependency-age-'))
-  fixtures.push(checkout)
-  write(checkout, {
-    'renovate.json': readFileSync(resolve(root, 'renovate.json')),
-    ...base,
+  const checkout = scratch.create('check-dependency-age')
+  const baseCommit = gitRepository(checkout, {
+    files: {
+      'renovate.json': readFileSync(resolve(root, 'renovate.json')),
+      ...base,
+    },
   })
-  for (const args of [
-    ['init', '-q', '-b', 'main'],
-    ['config', 'core.fsmonitor', 'false'],
-    ['config', 'gc.auto', '0'],
-    ['config', 'maintenance.auto', 'false'],
-    ['config', 'user.email', 'fixture@example.com'],
-    ['config', 'user.name', 'Fixture'],
-    ['config', 'commit.gpgsign', 'false'],
-    ['add', '-A'],
-    ['commit', '-q', '-m', 'base'],
+  writeFiles(checkout, head)
+  git(checkout, ['add', '--all'])
+  git(checkout, [
+    'commit',
+    '--quiet',
+    '--allow-empty',
+    '--message',
+    'head',
   ])
-    git(checkout, args)
-  const sha = git(checkout, ['rev-parse', 'HEAD'])
-  write(checkout, head)
-  return { checkout, base: sha }
+  return {
+    checkout,
+    base: baseCommit,
+    head: git(checkout, ['rev-parse', 'HEAD']),
+  }
 }
 
 function offline() {
@@ -122,6 +100,21 @@ function advisoryReaders(advisories, { pins = {}, go = {} } = {}) {
   }
 }
 
+// The open Dependabot alerts of packages on one dependency file.
+function alertsOn(manifest, ecosystem, ...names) {
+  return names.map(name => ({
+    state: 'open',
+    dependency: { manifest_path: manifest },
+    security_vulnerability: {
+      package: { ecosystem, name },
+    },
+  }))
+}
+
+function noAlerts() {
+  throw new Error('Unexpected Dependabot alert read.')
+}
+
 function advisory(ecosystem, name, range, fixed) {
   return {
     vulnerabilities: [
@@ -135,15 +128,50 @@ function advisory(ecosystem, name, range, fixed) {
 }
 
 describe('checkDependencyAge', () => {
-  it('skips a branch that Renovate does not own without reading a file or a registry', async () => {
-    for (const headRef of ['feature/age', '', undefined, 'main']) {
-      expect(await checkDependencyAge({
+  it('checks a pull request from any branch, so a person who adds a young version gets a violation', async () => {
+    const { checkout, base } = repository({
+      'frontend/bun.lock': bunLock(['a@1.0.0']),
+    }, {
+      'frontend/bun.lock': bunLock(['a@1.1.0']),
+    })
+    for (const headRef of ['feature/age', 'main', '']) {
+      expect((await checkDependencyAge({
+        base,
+        headRef,
+        checkout,
+        now,
+        readers: offlineReaders,
+        openAlerts: noAlerts,
+        times: timeTable({ 'a@1.1.0': oneHour }),
+      })).map(violation => violation.identity), headRef).toEqual(['a@1.1.0'])
+    }
+  })
+  it('accepts a Cargo downgrade on a branch that a person owns, who may lower a version on purpose', async () => {
+    const { checkout, base } = repository({
+      'desktop/rust/Cargo.lock': cargoLock(['foo@1.4.2']),
+    }, {
+      'desktop/rust/Cargo.lock': cargoLock(['foo@1.4.1']),
+    })
+    expect(await checkDependencyAge({
+      base,
+      headRef: 'feature/pin-foo',
+      checkout,
+      now,
+      readers: offlineReaders,
+      openAlerts: noAlerts,
+      times: timeTable({ 'foo@1.4.1': fourDays }),
+    })).toEqual([])
+  })
+  it('requires the head ref before it reads anything', async () => {
+    for (const headRef of [undefined, null, 42]) {
+      await expect(checkDependencyAge({
         base: 'missing',
         headRef,
         checkout: '/nonexistent',
         readers: offlineReaders,
+        openAlerts: noAlerts,
         times: offlineTimes,
-      })).toBeNull()
+      }), String(headRef)).rejects.toThrow('requires the head ref')
     }
   })
   it('reads no registry when no lockfile changes', async () => {
@@ -160,6 +188,55 @@ describe('checkDependencyAge', () => {
       readers: offlineReaders,
       times: offlineTimes,
     })).toEqual([])
+  })
+  it('reads the head lockfiles from the head revision, never from the working tree', async () => {
+    const { checkout, base, head } = repository({
+      'frontend/bun.lock': bunLock(['a@1.0.0']),
+    }, {
+      'frontend/bun.lock': bunLock(['a@1.1.0']),
+    })
+    // The working tree holds the trusted base tools in CI, not the head of the PR.
+    writeFiles(checkout, {
+      'frontend/bun.lock': bunLock(['a@1.0.0', 'young@1.0.0']),
+    })
+    const times = timeTable({ 'a@1.1.0': fourDays, 'young@1.0.0': oneHour })
+    expect(await checkDependencyAge({
+      base,
+      head,
+      headRef: 'renovate/frontend',
+      checkout,
+      now,
+      readers: offlineReaders,
+      times,
+    })).toEqual([])
+    expect(times.reads).toEqual(['a@1.1.0'])
+    await expect(checkDependencyAge({
+      base,
+      head: 'missing-revision',
+      headRef: 'renovate/frontend',
+      checkout,
+      now,
+      readers: offlineReaders,
+      times,
+    })).rejects.toThrow('Cannot read the git revision missing-revision')
+  })
+  it('states an age with a buffer in the words of the dashboard', async () => {
+    const { checkout, base } = repository({
+      'renovate.json': JSON.stringify({ minimumReleaseAge: '3 days', minimumReleaseAgeBuffer: '30 minutes' }),
+      'frontend/bun.lock': bunLock(['a@1.0.0']),
+    }, {
+      'frontend/bun.lock': bunLock(['a@1.1.0']),
+    })
+    expect(await checkDependencyAge({
+      base,
+      headRef: 'renovate/frontend',
+      checkout,
+      now,
+      readers: offlineReaders,
+      times: timeTable({ 'a@1.1.0': oneHour }),
+    })).toEqual([
+      { file: 'frontend/bun.lock', identity: 'a@1.1.0', message: 'a@1.1.0 was published at 2026-10-30T23:00:00.000Z, less than 3 days 30 minutes ago.' },
+    ])
   })
   it('accepts a version four days old and rejects one an hour old with its file and identity', async () => {
     const { checkout, base } = repository({
@@ -212,6 +289,7 @@ describe('checkDependencyAge', () => {
         checkout,
         now,
         readers: advisoryReaders([]),
+        openAlerts: noAlerts,
         times: timeTable({ 'foo@1.4.1': fourDays }),
       })
       expect(violations, headRef).toEqual([
@@ -269,6 +347,7 @@ describe('checkDependencyAge', () => {
       readers: advisoryReaders([
         advisory('npm', 'fixed-pkg', '< 1.2.3', '1.2.3'),
       ]),
+      openAlerts: noAlerts,
       times: timeTable({ 'fixed-pkg@1.2.3': oneHour }),
     })
     expect(violations.map(violation => violation.identity)).toEqual(['fixed-pkg@1.2.3'])
@@ -281,7 +360,8 @@ describe('checkDependencyAge', () => {
     const pins = {
       'fixed-pkg@1.2.3': ['fixed-pkg-core@1.2.3'],
     }
-    const check = async (base, head, readers = advisoryReaders(fix, { pins }), table = {}) => {
+    const alerted = alertsOn('frontend/package.json', 'npm', 'fixed-pkg', 'b', 'pkg', 'other')
+    const check = async (base, head, readers = advisoryReaders(fix, { pins }), table = {}, alerts = alerted) => {
       const fixture = repository({
         'frontend/bun.lock': bunLock(base),
       }, {
@@ -293,6 +373,7 @@ describe('checkDependencyAge', () => {
         headRef: 'renovate/security',
         now,
         readers,
+        openAlerts: async () => alerts,
         times,
       })
       return {
@@ -300,8 +381,87 @@ describe('checkDependencyAge', () => {
         reads: times.reads,
       }
     }
-    it('accepts the exact patched root and its exact pins without reading their times', async () => {
-      expect(await check(['fixed-pkg@1.2.0', 'fixed-pkg-core@1.2.0'], ['fixed-pkg@1.2.3', 'fixed-pkg-core@1.2.3'])).toEqual({ identities: [], reads: [] })
+    it('accepts the exact patched root and its exact pins', async () => {
+      expect(await check(['fixed-pkg@1.2.0', 'fixed-pkg-core@1.2.0'], ['fixed-pkg@1.2.3', 'fixed-pkg-core@1.2.3'])).toEqual({
+        identities: [],
+        reads: ['fixed-pkg-core@1.2.3', 'fixed-pkg@1.2.3'],
+      })
+    })
+    it('reads no advisory when every new version is old enough', async () => {
+      const advisoryReads = []
+      const readers = {
+        ...advisoryReaders(fix, { pins }),
+        advisories: async (ecosystem, name) => {
+          advisoryReads.push(name)
+          return fix
+        },
+      }
+      // Null alerts fail any read of them, so the check reads no alert either.
+      expect((await check(['fixed-pkg@1.2.0'], ['fixed-pkg@1.2.3'], readers, { 'fixed-pkg@1.2.3': fourDays }, null)).identities).toEqual([])
+      expect(advisoryReads).toEqual([])
+    })
+    it('exempts nothing for a package without an open alert, although an advisory lists its fix', async () => {
+      for (const alerts of [
+        [],
+        alertsOn('frontend/package.json', 'npm', 'other'),
+        // An alert on another lockfile authorizes nothing in this one.
+        alertsOn('.github/renovate/package.json', 'npm', 'fixed-pkg'),
+        alertsOn('frontend/package.json', 'npm', 'fixed-pkg').map(alert => ({ ...alert, state: 'dismissed' })),
+      ]) {
+        expect((await check(['fixed-pkg@1.2.0'], ['fixed-pkg@1.2.3'], undefined, { 'fixed-pkg@1.2.3': oneHour }, alerts)).identities, JSON.stringify(alerts)).toEqual(['fixed-pkg@1.2.3'])
+      }
+    })
+    it('fails when it cannot read the open alerts for a young version', async () => {
+      const fixture = repository({
+        'frontend/bun.lock': bunLock(['fixed-pkg@1.2.0']),
+      }, {
+        'frontend/bun.lock': bunLock(['fixed-pkg@1.2.3']),
+      })
+      await expect(checkDependencyAge({
+        ...fixture,
+        headRef: 'renovate/security',
+        now,
+        readers: advisoryReaders(fix),
+        openAlerts: async () => {
+          throw new Error('Dependabot alert read failed: 403')
+        },
+        times: timeTable({ 'fixed-pkg@1.2.3': oneHour }),
+      })).rejects.toThrow('Dependabot alert read failed: 403')
+    })
+    it('passes an old-enough fix when its advisory cannot be read, and warns about the skipped fix', async () => {
+      const warnings = []
+      const fixture = repository({
+        'frontend/bun.lock': bunLock(['fixed-pkg@1.2.0', 'other@1.0.0']),
+      }, {
+        'frontend/bun.lock': bunLock(['fixed-pkg@1.2.3', 'other@1.0.1']),
+      })
+      const readers = {
+        ...advisoryReaders(fix, { pins }),
+        advisories: async (ecosystem, name) => {
+          if (name === 'other')
+            throw new Error('Advisory read failed: 503')
+          return fix
+        },
+      }
+      const options = {
+        ...fixture,
+        headRef: 'renovate/security',
+        now,
+        readers,
+        openAlerts: async () => alerted,
+        warn: message => warnings.push(message),
+      }
+      expect(await checkDependencyAge({
+        ...options,
+        times: timeTable({ 'fixed-pkg@1.2.3': oneHour, 'other@1.0.1': fourDays }),
+      })).toEqual([])
+      expect(warnings).toEqual(['Skipped the security fixes of other in frontend/bun.lock: Advisory read failed: 503'])
+      // The skipped package exempts nothing, so its young version still fails.
+      const young = await checkDependencyAge({
+        ...options,
+        times: timeTable({ 'fixed-pkg@1.2.3': oneHour, 'other@1.0.1': oneHour }),
+      })
+      expect(young.map(violation => violation.identity)).toEqual(['other@1.0.1'])
     })
     it('rejects a young pin of an authorized root that the PR leaves unchanged', async () => {
       const readers = advisoryReaders([
@@ -338,13 +498,13 @@ describe('checkDependencyAge', () => {
       ])
       expect(await check(['pkg@1.2.0', 'pkg@1.2.4'], ['pkg@1.2.3', 'pkg@1.2.5', 'pkg@1.2.6'], readers, { 'pkg@1.2.6': oneHour })).toEqual({
         identities: ['pkg@1.2.6'],
-        reads: ['pkg@1.2.6'],
+        reads: ['pkg@1.2.3', 'pkg@1.2.5', 'pkg@1.2.6'],
       })
     })
   })
 
   describe('on renovate/go-security', () => {
-    const check = async (base, head, advisories, go, table = {}) => {
+    const check = async (base, head, advisories, go, table = {}, alerted = true) => {
       const fixture = repository({
         'backend/go.mod': goMod(base),
       }, {
@@ -356,6 +516,9 @@ describe('checkDependencyAge', () => {
         headRef: 'renovate/go-security',
         now,
         readers: advisoryReaders(advisories, { go }),
+        openAlerts: async () => alerted
+          ? alertsOn('backend/go.mod', 'go', ...new Set(advisories.flatMap(entry => entry.vulnerabilities.map(record => record.package.name))))
+          : [],
         times,
       })
       return {
@@ -366,7 +529,10 @@ describe('checkDependencyAge', () => {
     it('accepts a move to the major-suffixed module path', async () => {
       expect(await check(['example.com/lib@v1.9.0'], ['example.com/lib/v2@v2.0.0'], [
         advisory('go', 'example.com/lib', '< 2.0.0', '2.0.0'),
-      ], { 'example.com/lib/v2@v2.0.0': 'found' })).toEqual({ identities: [], reads: [] })
+      ], { 'example.com/lib/v2@v2.0.0': 'found' })).toEqual({
+        identities: [],
+        reads: ['example.com/lib/v2@v2.0.0'],
+      })
     })
     it('accepts a gopkg.in move to the next major', async () => {
       expect((await check(['gopkg.in/yaml.v2@v2.4.0'], ['gopkg.in/yaml.v3@v3.0.1'], [
@@ -383,64 +549,217 @@ describe('checkDependencyAge', () => {
         advisory('go', 'example.com/pseudo', '< 1.0.1', '1.0.1'),
       ], { 'example.com/pseudo@v1.0.1': 'found' })).identities).toEqual([])
     })
+    it('rejects a young first patched version without an open alert, as no shim guards Go', async () => {
+      expect((await check(['example.com/lib@v1.9.0'], ['example.com/lib/v2@v2.0.0'], [
+        advisory('go', 'example.com/lib', '< 2.0.0', '2.0.0'),
+      ], { 'example.com/lib/v2@v2.0.0': 'found' }, {}, false)).identities).toEqual(['example.com/lib/v2@v2.0.0'])
+    })
     it('still rejects another young module in the same PR', async () => {
       expect(await check(['example.com/lib@v1.9.0'], ['example.com/lib/v2@v2.0.0', 'example.com/other@v0.2.0'], [
         advisory('go', 'example.com/lib', '< 2.0.0', '2.0.0'),
       ], { 'example.com/lib/v2@v2.0.0': 'found' }, { 'example.com/other@v0.2.0': oneHour })).toEqual({
         identities: ['example.com/other@v0.2.0'],
-        reads: ['example.com/other@v0.2.0'],
+        reads: ['example.com/lib/v2@v2.0.0', 'example.com/other@v0.2.0'],
       })
     })
   })
 })
 
-describe('readNpmTime', () => {
-  it('reads each packument once and returns the publication time of a version, or null', async () => {
-    const urls = []
-    const request = async (url) => {
-      urls.push(url)
-      return Response.json({
-        time: { '1.0.0': fourDays },
-      })
+describe('securityExemptions', () => {
+  // A changed lockfile, as checkDependencyAge passes it.
+  const changed = (path, ecosystem, kind, lock, before, after) => {
+    const baseVersions = lockedVersions(kind, lock(before))
+    const headVersions = lockedVersions(kind, lock(after))
+    return {
+      path,
+      ecosystem,
+      baseVersions,
+      headVersions,
+      introduced: introducedVersions(baseVersions, headVersions),
     }
-    expect(await readNpmTime('@leapmux-test/times', '1.0.0', { request })).toBe(fourDays)
-    expect(await readNpmTime('@leapmux-test/times', '2.0.0', { request })).toBeNull()
-    expect(urls).toEqual(['https://registry.npmjs.org/%40leapmux-test%2Ftimes'])
+  }
+  const recording = (readers) => {
+    const asked = []
+    return {
+      asked,
+      readers: {
+        ...readers,
+        advisories: async (ecosystem, name) => {
+          asked.push(`${ecosystem}:${name}`)
+          return readers.advisories(ecosystem, name)
+        },
+      },
+    }
+  }
+  it('exempts an introduced root and its closure, from the base versions of the changed lockfile alone', async () => {
+    const file = changed('frontend/bun.lock', 'npm', 'bun', bunLock, ['fixed-pkg@1.2.0', 'fixed-pkg-core@1.2.0', 'steady@1.0.0'], ['fixed-pkg@1.2.3', 'fixed-pkg-core@1.2.3', 'steady@1.0.0'])
+    const { asked, readers } = recording(advisoryReaders([
+      advisory('npm', 'fixed-pkg', '< 1.2.3', '1.2.3'),
+    ], {
+      pins: {
+        'fixed-pkg@1.2.3': ['fixed-pkg-core@1.2.3'],
+      },
+    }))
+    const alerts = alertsOn('frontend/bun.lock', 'npm', 'fixed-pkg', 'fixed-pkg-core', 'steady')
+    expect(await securityExemptions([file], { alerts, readers })).toEqual(new Map([
+      [
+        'frontend/bun.lock',
+        new Set(['fixed-pkg@1.2.3', 'fixed-pkg-core@1.2.3']),
+      ],
+    ]))
+    // An unchanged package asks for no advisory, even with an open alert.
+    expect(asked.sort()).toEqual(['npm:fixed-pkg', 'npm:fixed-pkg-core'])
   })
-  it('fails when the registry answers with an error', async () => {
-    await expect(readNpmTime('leapmux-test-error', '1.0.0', {
-      request: async () => new Response('', { status: 500 }),
-    })).rejects.toThrow('npm packument read failed: 500')
+  it('keys each exemption by its lockfile, and asks about a removed package', async () => {
+    const npm = changed('frontend/bun.lock', 'npm', 'bun', bunLock, ['gone@1.0.0'], ['added@1.0.0'])
+    const crates = changed('desktop/rust/Cargo.lock', 'crates', 'cargo', cargoLock, ['fix@2.0.0', 'pin@1.0.4'], ['fix@2.0.1', 'pin@1.0.5'])
+    const { asked, readers } = recording(advisoryReaders([
+      advisory('rust', 'fix', '< 2.0.1', '2.0.1'),
+    ], {
+      pins: {
+        'fix@2.0.1': ['pin@1.0.5'],
+      },
+    }))
+    const alerts = [
+      ...alertsOn('frontend/package.json', 'npm', 'gone', 'added'),
+      ...alertsOn('desktop/rust/Cargo.lock', 'rust', 'fix', 'pin'),
+    ]
+    expect(await securityExemptions([npm, crates], { alerts, readers })).toEqual(new Map([
+      [
+        'frontend/bun.lock',
+        new Set(),
+      ],
+      [
+        'desktop/rust/Cargo.lock',
+        new Set(['fix@2.0.1', 'pin@1.0.5']),
+      ],
+    ]))
+    // A package that only the head locks has no base version, so it has no fix to authorize.
+    expect(asked.sort()).toEqual(['crates:fix', 'crates:pin', 'npm:gone'])
+  })
+  it('exempts nothing for a fix that the lockfile does not introduce or that the base already locks', async () => {
+    const readers = advisoryReaders([
+      advisory('npm', 'fixed-pkg', '< 1.2.3', '1.2.3'),
+    ])
+    const alerts = alertsOn('frontend/bun.lock', 'npm', 'fixed-pkg')
+    const none = new Map([
+      [
+        'frontend/bun.lock',
+        new Set(),
+      ],
+    ])
+    // The head moves past the patched version, so the authorized root is not introduced.
+    expect(await securityExemptions([
+      changed('frontend/bun.lock', 'npm', 'bun', bunLock, ['fixed-pkg@1.2.0'], ['fixed-pkg@1.2.4']),
+    ], { alerts, readers })).toEqual(none)
+    // The base already locks the patched version beside the vulnerable one.
+    expect(await securityExemptions([
+      changed('frontend/bun.lock', 'npm', 'bun', bunLock, ['fixed-pkg@1.2.0', 'fixed-pkg@1.2.3'], ['fixed-pkg@1.2.3']),
+    ], { alerts, readers })).toEqual(none)
+  })
+  it('reads no advisory and exempts nothing without an open alert on the changed lockfile', async () => {
+    const { asked, readers } = recording(advisoryReaders([
+      advisory('npm', 'fixed-pkg', '< 1.2.3', '1.2.3'),
+    ]))
+    const file = changed('frontend/bun.lock', 'npm', 'bun', bunLock, ['fixed-pkg@1.2.0'], ['fixed-pkg@1.2.3'])
+    for (const alerts of [
+      [],
+      alertsOn('.github/renovate/bun.lock', 'npm', 'fixed-pkg'),
+      undefined,
+    ]) {
+      expect(await securityExemptions([file], { alerts, readers }), JSON.stringify(alerts)).toEqual(new Map([
+        [
+          'frontend/bun.lock',
+          new Set(),
+        ],
+      ]))
+    }
+    expect(asked).toEqual([])
+  })
+  it('warns and exempts nothing when the advisory read of a changed package fails', async () => {
+    const warnings = []
+    const exempt = await securityExemptions([
+      changed('frontend/bun.lock', 'npm', 'bun', bunLock, ['fixed-pkg@1.2.0'], ['fixed-pkg@1.2.3']),
+    ], {
+      alerts: alertsOn('frontend/bun.lock', 'npm', 'fixed-pkg'),
+      readers: {
+        advisories: async () => {
+          throw new Error('Advisory read failed: 503')
+        },
+      },
+      warn: message => warnings.push(message),
+    })
+    expect(exempt).toEqual(new Map([
+      [
+        'frontend/bun.lock',
+        new Set(),
+      ],
+    ]))
+    expect(warnings).toEqual(['Skipped the security fixes of fixed-pkg in frontend/bun.lock: Advisory read failed: 503'])
   })
 })
 
-describe('readCrateTime', () => {
-  it('returns the creation time of a crate version, and null for a version that crates.io lacks', async () => {
+describe('timeReaders', () => {
+  const registry = () => {
     const urls = []
-    const request = async (url) => {
-      urls.push(url)
-      return url.endsWith('/1.0.0')
-        ? Response.json({
-            version: { created_at: fourDays },
+    return {
+      urls,
+      request: async (url) => {
+        urls.push(url)
+        if (url.startsWith('https://registry.npmjs.org/')) {
+          return Response.json({
+            time: { 'created': oneHour, '1.0.0': fourDays },
           })
-        : new Response('', { status: 404 })
+        }
+        return url.endsWith('/missing')
+          ? new Response('', { status: 404 })
+          : crateIndexResponse([
+              { name: 'foo', vers: '1.0.0', pubtime: fourDays },
+              { name: 'foo', vers: '1.1.0' },
+            ])
+      },
     }
-    expect(await readCrateTime('foo', '1.0.0', { request })).toBe(fourDays)
-    expect(await readCrateTime('foo', '9.9.9', { request })).toBeNull()
-    expect(urls).toEqual(['https://crates.io/api/v1/crates/foo/1.0.0', 'https://crates.io/api/v1/crates/foo/9.9.9'])
+  }
+  it('reads each npm packument once for one set and returns the time of a version, or null', async () => {
+    const { urls, request } = registry()
+    const times = timeReaders({ request })
+    expect(await Promise.all([
+      times.npmTime('@leapmux-test/times', '1.0.0'),
+      times.npmTime('@leapmux-test/times', '2.0.0'),
+      times.npmTime('@leapmux-test/times', 'created'),
+    ])).toEqual([fourDays, null, null])
+    expect(urls).toEqual(['https://registry.npmjs.org/%40leapmux-test%2Ftimes'])
   })
-  it('fails when crates.io answers with a server error', async () => {
-    await expect(readCrateTime('foo', '1.0.0', {
-      request: async () => new Response('', { status: 503 }),
-    })).rejects.toThrow('Crate version read failed: 503')
+  it('reads each crate index file once for one set, and returns null for a version or a crate that the index lacks', async () => {
+    const { urls, request } = registry()
+    const times = timeReaders({ request })
+    expect(await times.crateTime('foo', '1.0.0')).toBe(fourDays)
+    expect(await times.crateTime('foo', '1.1.0')).toBeNull()
+    expect(await times.crateTime('foo', '9.9.9')).toBeNull()
+    expect(await times.crateTime('missing', '1.0.0')).toBeNull()
+    expect(urls).toEqual(['https://index.crates.io/3/f/foo', 'https://index.crates.io/mi/ss/missing'])
+  })
+  it('keeps one cache for each set, and separates an npm package from a crate with the same name', async () => {
+    const { urls, request } = registry()
+    const first = timeReaders({ request })
+    expect(await first.npmTime('foo', '1.0.0')).toBe(fourDays)
+    expect(await first.crateTime('foo', '1.0.0')).toBe(fourDays)
+    expect(await timeReaders({ request }).npmTime('foo', '1.0.0')).toBe(fourDays)
+    expect(urls).toEqual(['https://registry.npmjs.org/foo', 'https://index.crates.io/3/f/foo', 'https://registry.npmjs.org/foo'])
+    expect(first.goTimes).toBe(readGoTimes)
+  })
+  it('fails when a registry answers with an error', async () => {
+    const failing = status => timeReaders({
+      request: async () => new Response('', { status }),
+    })
+    await expect(failing(500).npmTime('leapmux-test-error', '1.0.0')).rejects.toThrow('npm packument read failed: 500')
+    await expect(failing(503).crateTime('foo', '1.0.0')).rejects.toThrow('Crate index read failed: 503')
   })
 })
 
 describe('readGoTimes', () => {
   it('reads the times of published versions through GOPROXY and leaves out an unknown version', async () => {
-    mkdirSync(resolve(root, '.tmp'), { recursive: true })
-    const checkout = mkdtempSync(resolve(root, '.tmp/check-dependency-age-go-'))
-    fixtures.push(checkout)
+    const checkout = scratch.create('check-dependency-age-go')
     // The module proxy layout. go list -m reads only the .info and .mod files.
     const proxy = resolve(checkout, 'proxy')
     mkdirSync(resolve(proxy, 'example.com/lib/@v'), { recursive: true })
@@ -518,6 +837,36 @@ describe('main', () => {
     })).toBe(0)
     expect(stdout.lines).toEqual(['Every version that the lockfiles add meets the minimum release age.\n'])
   })
+  it('reads the head lockfiles from the revision that --head gives, and prints a skipped fix as a warning', async () => {
+    const { checkout, base, head } = lockfiles()
+    git(checkout, ['checkout', '-q', '--detach', base])
+    const stdout = capture()
+    expect(await main([
+      '--base',
+      base,
+      '--head',
+      head,
+      '--head-ref',
+      'renovate/security',
+    ], {
+      stdout,
+      stderr: capture(),
+      checkout,
+      now,
+      readers: {
+        ...offlineReaders,
+        advisories: async () => {
+          throw new Error('Advisory read failed: 503\nretry later')
+        },
+      },
+      openAlerts: async () => alertsOn('frontend/bun.lock', 'npm', 'a'),
+      times: timeTable({ 'a@1.1.0': oneHour }),
+    })).toBe(1)
+    expect(stdout.lines).toEqual([
+      '::warning::Skipped the security fixes of a in frontend/bun.lock: Advisory read failed: 503%0Aretry later\n',
+      '::error file=frontend/bun.lock::a@1.1.0 was published at 2026-10-30T23:00:00.000Z, less than 3 days ago.\n',
+    ])
+  })
   it('returns 1 with the reason when the check cannot read the base revision', async () => {
     const { checkout } = lockfiles()
     const stderr = capture()
@@ -568,7 +917,8 @@ describe('the check-dependency-age entry point', () => {
     resolve(root, 'scripts/check-dependency-age.mjs'),
     ...args,
   ], { cwd: checkout, encoding: 'utf8' })
-  it('succeeds for a branch that Renovate does not own', () => {
+  it('checks a branch that a person owns, and succeeds when no lockfile changes', () => {
+    // The entry point checks the repository that holds it. HEAD against itself changes nothing.
     const result = cli(root, [
       '--base',
       'HEAD',
@@ -576,7 +926,7 @@ describe('the check-dependency-age entry point', () => {
       'feature/x',
     ])
     expect(result.status, result.stderr).toBe(0)
-    expect(result.stdout).toContain('is not a Renovate branch')
+    expect(result.stdout).toBe('Every version that the lockfiles add meets the minimum release age.\n')
   })
   it('rejects missing arguments', () => {
     const result = cli(root, ['--head-ref', 'renovate/x'])

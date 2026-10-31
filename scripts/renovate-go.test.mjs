@@ -1,19 +1,8 @@
 import { describe, expect, it } from 'bun:test'
-import { finishGoUpgrades, newModulePath, prepareGoUpgrades, verifyReplacements } from './renovate-go.mjs'
+import { finishGoUpgrades, prepareGoUpgrades, verifyReplacements } from './renovate-go.mjs'
 
 const replacement = version => `replace google.golang.org/genproto => google.golang.org/genproto ${version}\n`
 const baseline = replacement('v0.0.0-20260420184626-e10c466a9529')
-function upgrade(extra = {}) {
-  return {
-    manager: 'gomod',
-    packageFile: 'backend/go.mod',
-    depName: 'example.com/library/v7',
-    newValue: 'v8.1.0',
-    depType: 'require',
-    ...extra,
-  }
-}
-
 describe('prepareGoUpgrades', () => {
   it('skips both phases without Go upgrades or graph access', () => {
     const unexpected = () => {
@@ -36,17 +25,6 @@ describe('prepareGoUpgrades', () => {
       expect(state).toEqual({ hasWorkspaceGo: false, hasSiteGo: false })
       finishGoUpgrades(state, options)
     }
-  })
-})
-
-describe('newModulePath', () => {
-  it('handles version suffixes, first-major paths, and incompatible modules', () => {
-    expect(newModulePath(upgrade())).toBe('example.com/library/v8')
-    expect(newModulePath(upgrade({ depName: 'gopkg.in/yaml.v2', newValue: 'v3.0.1' }))).toBe('gopkg.in/yaml.v3')
-    expect(newModulePath(upgrade({ depName: 'gopkg.in/tomb.v2-unstable', newValue: 'v3.0.0' }))).toBe('gopkg.in/tomb.v3')
-    expect(newModulePath(upgrade({ depName: 'example.com/library', newValue: 'v2.0.0' }))).toBe('example.com/library/v2')
-    expect(newModulePath(upgrade({ depName: 'example.com/library', newValue: 'v2.0.0+incompatible' }))).toBe('example.com/library')
-    expect(newModulePath(upgrade({ depName: 'google.golang.org/genproto', newValue: 'v0.0.0-20261020000000-abcdefabcdef' }))).toBe('google.golang.org/genproto')
   })
 })
 

@@ -1,0 +1,8 @@
+{
+  "name": "leapmux-site",
+  "private": true,
+  "description": "The locked tools that publish the LeapMux site",
+  "devDependencies": {
+    "wrangler": "4.127.1"
+  }
+}

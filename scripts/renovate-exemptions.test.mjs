@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { describe, expect, it } from 'bun:test'
-import { activeExemptions, authorizedClosure, authorizedFixes, buildAuthorizedMap, classifyGoMetadata, exactPins, isInAdvisoryRange, readAdvisories, resolveGoIdentity, splitIdentity } from './renovate-exemptions.mjs'
+import { activeExemptions, authorizedClosure, authorizedFixes, buildAuthorizedMap, classifyGoMetadata, exactIdentity, exactPins, PREPARED_LOCKFILES, readAdvisories, resolveGoIdentity, splitIdentity, validateAuthorizedMap } from './renovate-exemptions.mjs'
 
 function advisory(name, ecosystem, records, extra = {}) {
   return {
@@ -44,20 +44,6 @@ function goReader(states) {
     },
   }
 }
-
-describe('isInAdvisoryRange', () => {
-  it('matches comma-separated ranges and prerelease Go pseudo-versions', () => {
-    expect(isInAdvisoryRange('0.18.1', '>= 0.15.0, < 0.20.0')).toBe(true)
-    expect(isInAdvisoryRange('0.20.0', '>= 0.15.0, < 0.20.0')).toBe(false)
-    expect(isInAdvisoryRange('v1.0.1-0.20260615104152-545b12e0e8c7', '< 1.0.1')).toBe(true)
-    expect(isInAdvisoryRange('v2.0.0+incompatible', '< 2.0.1')).toBe(true)
-  })
-  it('rejects an invalid range and never matches an invalid version', () => {
-    expect(() => isInAdvisoryRange('1.0.0', 'not a range')).toThrow('Invalid advisory range')
-    expect(() => isInAdvisoryRange('1.0.0', undefined)).toThrow('vulnerable version range')
-    expect(isInAdvisoryRange('main', '< 1.0.0')).toBe(false)
-  })
-})
 
 describe('splitIdentity', () => {
   it('splits scoped, Go, and crate identities', () => {
@@ -146,6 +132,20 @@ describe('authorizedFixes', () => {
       ], { withdrawn_at: '2026-10-01T00:00:00Z' }),
       advisory('pkg', 'npm', [
         ['< 7.0.0', null],
+      ]),
+    ])
+    expect(await authorizedFixes({
+      ecosystem: 'npm',
+      name: 'pkg',
+      baseVersions: ['1.0.0'],
+    }, { advisories })).toEqual([])
+  })
+  it('authorizes nothing for a record whose range is missing or blank', async () => {
+    const { advisories } = advisoryReader([
+      advisory('pkg', 'npm', [
+        [null, '2.0.0'],
+        ['', '3.0.0'],
+        ['  ', '4.0.0'],
       ]),
     ])
     expect(await authorizedFixes({
@@ -348,6 +348,35 @@ describe('exactPins', () => {
   })
 })
 
+describe('exactIdentity', () => {
+  it('returns the identity of a requirement that admits one version, in each syntax', () => {
+    expect(exactIdentity('crates', 'tauri', '=2.11.6')).toBe('tauri@2.11.6')
+    expect(exactIdentity('crates', 'tauri', ' = 2.11.6 ')).toBe('tauri@2.11.6')
+    expect(exactIdentity('npm', '@s/core', '1.2.3')).toBe('@s/core@1.2.3')
+    expect(exactIdentity('npm', '@s/core', '=1.2.3')).toBe('@s/core@1.2.3')
+  })
+  it('returns null for a range or a value that is not a requirement, and rejects an unknown syntax', () => {
+    for (const requirement of [
+      '2',
+      '^2.11.6',
+      '>=1.0.0',
+      '~1.2.3',
+      undefined,
+      null,
+      3,
+    ])
+      expect(exactIdentity('crates', 'tauri', requirement), String(requirement)).toBeNull()
+    for (const requirement of [
+      '^1.2.3',
+      '1.x',
+      'latest',
+      'workspace:*',
+    ])
+      expect(exactIdentity('npm', 'x', requirement), requirement).toBeNull()
+    expect(() => exactIdentity('go', 'x', '1.0.0')).toThrow('Unknown requirement ecosystem')
+  })
+})
+
 describe('authorizedClosure', () => {
   const graph = edges => ({
     npmManifest: async (name, version) => ({
@@ -385,6 +414,26 @@ describe('authorizedClosure', () => {
       ],
     ]))
   })
+  it('stops a Go closure at the requirements of the root, without reading the go.mod of a requirement', async () => {
+    const read = []
+    const closures = await authorizedClosure([
+      { ecosystem: 'go', name: 'example.com/root', version: 'v1.0.0' },
+    ], {
+      goModText: async (module, version) => {
+        read.push(`${module}@${version}`)
+        return module === 'example.com/root'
+          ? 'module example.com/root\n\ngo 1.25\n\nrequire example.com/a v1.0.0\n'
+          : 'module example.com/a\n\ngo 1.25\n\nrequire example.com/old v0.1.0\n'
+      },
+    })
+    expect(closures).toEqual(new Map([
+      [
+        'example.com/root@v1.0.0',
+        new Set(['example.com/a@v1.0.0']),
+      ],
+    ]))
+    expect(read).toEqual(['example.com/root@v1.0.0'])
+  })
   it('returns an empty map for no roots and rejects mixed ecosystems', async () => {
     expect(await authorizedClosure([], {})).toEqual(new Map())
     await expect(authorizedClosure([
@@ -395,45 +444,102 @@ describe('authorizedClosure', () => {
 })
 
 describe('activeExemptions', () => {
-  it('includes only active roots and their closures, from a map or a prepared object', () => {
-    const map = new Map([
-      [
-        'a@1.0.0',
-        new Set(['b@2.0.0']),
-      ],
-      [
+  const roots = {
+    'c@1.0.0': ['d@1.0.0'],
+    'a@1.0.0': ['b@2.0.0'],
+  }
+  const base = new Map()
+  it('includes only the selected roots and their closures, with the roots sorted', () => {
+    expect(activeExemptions(roots, {
+      base,
+      selected: root => root === 'a@1.0.0',
+    })).toEqual({
+      roots: ['a@1.0.0'],
+      exempt: new Set(['a@1.0.0', 'b@2.0.0']),
+    })
+    expect(activeExemptions(roots, {
+      base,
+      selected: () => true,
+    })).toEqual({
+      roots: ['a@1.0.0', 'c@1.0.0'],
+      exempt: new Set([
         'c@1.0.0',
-        new Set(['d@1.0.0']),
-      ],
+        'd@1.0.0',
+        'a@1.0.0',
+        'b@2.0.0',
+      ]),
+    })
+    expect(activeExemptions(undefined, {
+      base,
+      selected: () => true,
+    })).toEqual({
+      roots: [],
+      exempt: new Set(),
+    })
+    expect(activeExemptions(roots, {
+      base,
+      selected: () => false,
+    })).toEqual({
+      roots: [],
+      exempt: new Set(),
+    })
+  })
+  it('skips a root that the base locks without asking the selection', () => {
+    const asked = []
+    const result = activeExemptions(roots, {
+      base: new Map([
+        [
+          'a',
+          new Set(['0.9.0', '1.0.0']),
+        ],
+        [
+          'c',
+          new Set(['0.9.0']),
+        ],
+      ]),
+      selected: (root) => {
+        asked.push(root)
+        return true
+      },
+    })
+    expect(result.roots).toEqual(['c@1.0.0'])
+    expect(asked).toEqual(['c@1.0.0'])
+  })
+  it('rejects a call without the base versions or without a selection', () => {
+    for (const options of [
+      undefined,
+      {
+        selected: () => true,
+      },
+      {
+        base: {},
+        selected: () => true,
+      },
+      { base },
     ])
-    expect(activeExemptions(map, root => root === 'a@1.0.0')).toEqual(new Set(['a@1.0.0', 'b@2.0.0']))
-    expect(activeExemptions({
-      'a@1.0.0': ['b@2.0.0'],
-      'c@1.0.0': ['d@1.0.0'],
-    }, root => root === 'c@1.0.0')).toEqual(new Set(['c@1.0.0', 'd@1.0.0']))
-    expect(activeExemptions(undefined, () => true)).toEqual(new Set())
-    expect(activeExemptions(map, () => false)).toEqual(new Set())
+      expect(() => activeExemptions(roots, options), JSON.stringify(options)).toThrow('require the base versions and a selection')
   })
 })
 
 describe('buildAuthorizedMap', () => {
-  it('writes each ecosystem with its roots and sorted closures', async () => {
+  const lockfiles = ['frontend/bun.lock', '.github/renovate/bun.lock', 'desktop/rust/Cargo.lock']
+  it('keys the roots and their sorted closures by lockfile, with an entry for each lockfile', async () => {
     const readers = {
       advisories: async (ecosystem, name) => ({
-        'npm\0fixed-pkg': [
+        'npm/fixed-pkg': [
           advisory('fixed-pkg', 'npm', [
             ['< 1.2.3', '1.2.3'],
           ]),
         ],
-        'crates\0tauri-plugin-x': [
+        'crates/tauri-plugin-x': [
           advisory('tauri-plugin-x', 'rust', [
             ['< 2.4.1', '2.4.1'],
           ]),
         ],
-      })[`${ecosystem}\0${name}`] ?? [],
+      })[`${ecosystem}/${name}`] ?? [],
       npmManifest: async name => ({
         dependencies: name === 'fixed-pkg'
-          ? { 'fixed-pkg-core': '1.2.3' }
+          ? { 'fixed-pkg-core': '1.2.3', 'loose': '^1.0.0' }
           : {},
       }),
       crateDependencies: async name => name === 'tauri-plugin-x'
@@ -445,103 +551,288 @@ describe('buildAuthorizedMap', () => {
     }
     expect(await buildAuthorizedMap([
       {
-        ecosystem: 'npm',
+        lockfile: 'frontend/bun.lock',
         name: 'fixed-pkg',
         baseVersions: ['1.2.0'],
       },
       {
-        ecosystem: 'crates',
+        lockfile: 'desktop/rust/Cargo.lock',
         name: 'tauri-plugin-x',
         baseVersions: ['2.4.0'],
       },
       {
-        ecosystem: 'crates',
+        lockfile: 'desktop/rust/Cargo.lock',
         name: 'unaffected',
         baseVersions: ['1.0.0'],
       },
-    ], readers)).toEqual({
-      npm: {
+    ], readers, { lockfiles })).toEqual({
+      'frontend/bun.lock': {
         'fixed-pkg@1.2.3': ['fixed-pkg-core@1.2.3'],
       },
-      crates: {
+      '.github/renovate/bun.lock': {},
+      'desktop/rust/Cargo.lock': {
         'tauri-plugin-x@2.4.1': ['tauri@2.11.6'],
       },
-      go: {},
     })
+  })
+  it('authorizes a package only from the base versions of its own lockfile, and reads a shared closure once', async () => {
+    const manifests = []
+    const readers = {
+      advisories: async () => [
+        advisory('shared', 'npm', [
+          ['< 1.0.1', '1.0.1'],
+        ]),
+      ],
+      npmManifest: async (name, version) => {
+        manifests.push(`${name}@${version}`)
+        return { dependencies: {} }
+      },
+    }
+    expect(await buildAuthorizedMap([
+      {
+        lockfile: 'frontend/bun.lock',
+        name: 'shared',
+        baseVersions: ['1.0.0'],
+      },
+      // This lockfile locks only the patched version, so it authorizes nothing.
+      {
+        lockfile: '.github/renovate/bun.lock',
+        name: 'shared',
+        baseVersions: ['1.0.1'],
+      },
+    ], readers, {
+      lockfiles: ['frontend/bun.lock', '.github/renovate/bun.lock'],
+    })).toEqual({
+      'frontend/bun.lock': { 'shared@1.0.1': [] },
+      '.github/renovate/bun.lock': {},
+    })
+    expect(await buildAuthorizedMap([
+      {
+        lockfile: 'frontend/bun.lock',
+        name: 'shared',
+        baseVersions: ['1.0.0'],
+      },
+      {
+        lockfile: '.github/renovate/bun.lock',
+        name: 'shared',
+        baseVersions: ['1.0.0'],
+      },
+    ], readers, {
+      lockfiles: ['frontend/bun.lock', '.github/renovate/bun.lock'],
+    })).toEqual({
+      'frontend/bun.lock': { 'shared@1.0.1': [] },
+      '.github/renovate/bun.lock': { 'shared@1.0.1': [] },
+    })
+    // One read for each map: the second map reads the shared root once for both lockfiles.
+    expect(manifests).toEqual(['shared@1.0.1', 'shared@1.0.1'])
+  })
+  it('rejects an unknown lockfile, a package of a lockfile outside the map, and a call without lockfiles', async () => {
+    const readers = {
+      advisories: async () => {
+        throw new Error('A rejected map must not read advisories.')
+      },
+    }
+    await expect(buildAuthorizedMap([], readers, {
+      lockfiles: ['frontend/bun.lock', 'other/bun.lock'],
+    })).rejects.toThrow('Unknown dependency lockfile: other/bun.lock')
+    await expect(buildAuthorizedMap([
+      {
+        lockfile: 'backend/go.mod',
+        name: 'example.com/a',
+        baseVersions: ['v1.0.0'],
+      },
+    ], readers, {
+      lockfiles: ['frontend/bun.lock'],
+    })).rejects.toThrow('belongs to no lockfile of the map: backend/go.mod')
+    await expect(buildAuthorizedMap([], readers)).rejects.toThrow('requires the paths of its lockfiles')
+  })
+})
+
+describe('buildAuthorizedMap when a read fails', () => {
+  it('skips the package whose fixes and the root whose closure cannot be read, warns once, and keeps the others', async () => {
+    const warnings = []
+    const readers = {
+      advisories: async (ecosystem, name) => {
+        if (name === 'unreadable')
+          throw new Error('Advisory read failed: 503')
+        return [
+          advisory(name, 'npm', [
+            ['< 2.0.0', '2.0.0'],
+          ]),
+        ]
+      },
+      npmManifest: async (name) => {
+        if (name === 'missing-fix')
+          throw new Error('npm manifest read failed: 404')
+        return { dependencies: {} }
+      },
+    }
+    const pkg = (lockfile, name) => ({
+      lockfile,
+      name,
+      baseVersions: ['1.0.0'],
+    })
+    expect(await buildAuthorizedMap([
+      pkg('frontend/bun.lock', 'unreadable'),
+      pkg('frontend/bun.lock', 'missing-fix'),
+      pkg('.github/renovate/bun.lock', 'missing-fix'),
+      pkg('frontend/bun.lock', 'kept'),
+    ], readers, {
+      lockfiles: ['frontend/bun.lock', '.github/renovate/bun.lock'],
+      warn: message => warnings.push(message),
+    })).toEqual({
+      'frontend/bun.lock': { 'kept@2.0.0': [] },
+      '.github/renovate/bun.lock': {},
+    })
+    expect(warnings).toEqual([
+      'Skipped the security fixes of unreadable in frontend/bun.lock: Advisory read failed: 503',
+      'Skipped the authorized fix missing-fix@2.0.0: npm manifest read failed: 404',
+    ])
+  })
+})
+
+describe('PREPARED_LOCKFILES', () => {
+  it('lists every npm and crates lockfile, which a shim or the Tauri planner resolves, and no go.mod', () => {
+    expect(PREPARED_LOCKFILES).toEqual([
+      'frontend/bun.lock',
+      '.github/renovate/bun.lock',
+      'site/bun.lock',
+      'desktop/rust/Cargo.lock',
+    ])
+  })
+})
+
+describe('validateAuthorizedMap', () => {
+  it('returns a map of prepared lockfiles, including an empty one', () => {
+    const authorized = {
+      'frontend/bun.lock': {
+        'x@1.1.0': ['x-core@1.1.0', '@s/y@2.0.0'],
+      },
+      'desktop/rust/Cargo.lock': {},
+    }
+    expect(validateAuthorizedMap(authorized)).toBe(authorized)
+    expect(validateAuthorizedMap({})).toEqual({})
+  })
+  it('rejects a map that is not an object of lockfile maps', () => {
+    for (const authorized of [null, undefined, [], 'map'])
+      expect(() => validateAuthorizedMap(authorized), JSON.stringify(authorized)).toThrow('must map each lockfile path to its roots')
+    for (const roots of [null, [], 'roots'])
+      expect(() => validateAuthorizedMap({ 'frontend/bun.lock': roots }), JSON.stringify(roots)).toThrow('The authorized roots of frontend/bun.lock')
+  })
+  it('rejects a lockfile outside the prepared ones, and Go in particular', () => {
+    for (const path of ['backend/go.mod', 'npm', 'other/bun.lock'])
+      expect(() => validateAuthorizedMap({ [path]: {} }), path).toThrow(`unexpected lockfile: ${path}`)
+  })
+  it('rejects a root or a pin that is not a package identity, and a closure that is not an array', () => {
+    expect(() => validateAuthorizedMap({
+      'frontend/bun.lock': { 'x@1.0.0': 'x-core@1.0.0' },
+    })).toThrow('must list package identities')
+    expect(() => validateAuthorizedMap({
+      'frontend/bun.lock': {
+        'x@1.0.0': [1],
+      },
+    })).toThrow('must list package identities')
+    expect(() => validateAuthorizedMap({
+      'frontend/bun.lock': { x: [] },
+    })).toThrow('Invalid package identity: x')
+    expect(() => validateAuthorizedMap({
+      'frontend/bun.lock': {
+        'x@1.0.0': ['name@'],
+      },
+    })).toThrow('Invalid package identity: name@')
   })
 })
 
 describe('readAdvisories', () => {
-  it('follows each page, sends a token when present, and caches the result', async () => {
+  const page = (link, entries) => Response.json(entries, link
+    ? {
+        headers: { link },
+      }
+    : {})
+  it('follows each cursor page with the token', async () => {
     const calls = []
     const request = async (url, init) => {
-      calls.push({ url, authorization: init.headers.Authorization ?? null })
-      const page = new URL(url).searchParams.get('after')
-      return Response.json(page
-        ? [
+      calls.push({ url, authorization: init.headers.Authorization })
+      return new URL(url).searchParams.get('after')
+        ? page(null, [
             { ghsa_id: 'GHSA-page-two' },
-          ]
-        : [
+          ])
+        : page('<https://api.github.com/advisories?type=reviewed&ecosystem=npm&affects=cached-pkg&per_page=100&after=abc>; rel="next"', [
             { ghsa_id: 'GHSA-page-one' },
-          ], {
-        headers: page
-          ? {}
-          : { link: '<https://api.github.com/advisories?type=reviewed&ecosystem=npm&affects=cached-pkg&per_page=100&after=abc>; rel="next"' },
-      })
+          ])
     }
-    const options = {
+    expect((await readAdvisories('npm', 'cached-pkg', {
       request,
       env: { GH_TOKEN: 'token-value' },
-    }
-    expect((await readAdvisories('npm', 'cached-pkg', options)).map(entry => entry.ghsa_id)).toEqual(['GHSA-page-one', 'GHSA-page-two'])
-    expect(await readAdvisories('npm', 'cached-pkg', options)).toHaveLength(2)
+    })).map(entry => entry.ghsa_id)).toEqual(['GHSA-page-one', 'GHSA-page-two'])
     expect(calls).toHaveLength(2)
     expect(new URL(calls[0].url).searchParams.get('type')).toBe('reviewed')
     expect(new URL(calls[0].url).searchParams.get('affects')).toBe('cached-pkg')
     expect(calls.every(call => call.authorization === 'Bearer token-value')).toBe(true)
   })
-  it('reads without a token and maps crates to the rust ecosystem', async () => {
+  it('maps crates to the rust ecosystem, and prefers GITHUB_TOKEN to GH_TOKEN', async () => {
     const calls = []
-    await readAdvisories('crates', 'tokenless-crate', {
-      env: {},
+    await readAdvisories('crates', 'a-crate', {
+      env: { GITHUB_TOKEN: 'actions-token', GH_TOKEN: 'app-token' },
       request: async (url, init) => {
-        calls.push({ url, authorization: init.headers.Authorization ?? null })
+        calls.push({ url, authorization: init.headers.Authorization })
         return Response.json([])
       },
     })
     expect(new URL(calls[0].url).searchParams.get('ecosystem')).toBe('rust')
-    expect(calls[0].authorization).toBeNull()
+    expect(calls[0].authorization).toBe('Bearer actions-token')
   })
-  it('rejects a failed response, an invalid body, an unsafe link, and does not cache a failure', async () => {
-    let attempts = 0
-    const failing = async () => {
-      attempts++
-      return new Response('nope', { status: 502 })
-    }
-    await expect(readAdvisories('npm', 'failing-pkg', { request: failing, env: {} })).rejects.toThrow('Advisory read failed: 502')
-    await expect(readAdvisories('npm', 'failing-pkg', { request: failing, env: {} })).rejects.toThrow('Advisory read failed: 502')
-    expect(attempts).toBe(2)
+  it('requires a token before it reads anything', async () => {
+    await expect(readAdvisories('npm', 'tokenless', {
+      env: {},
+      request: async () => {
+        throw new Error('A read without a token must not reach the network.')
+      },
+    })).rejects.toThrow('A GitHub token is required.')
+  })
+  it('rejects a failed response, an invalid body, a link that the query does not allow, and an unknown ecosystem', async () => {
+    const env = { GH_TOKEN: 'token-value' }
+    await expect(readAdvisories('npm', 'failing-pkg', {
+      request: async () => new Response('nope', { status: 502 }),
+      env,
+    })).rejects.toThrow('Advisory read failed: 502')
     await expect(readAdvisories('npm', 'object-pkg', {
       request: async () => Response.json({}),
-      env: {},
+      env,
     })).rejects.toThrow('invalid list')
-    await expect(readAdvisories('npm', 'unsafe-pkg', {
-      request: async () => Response.json([], {
-        headers: { link: '<https://evil.example/advisories?after=x>; rel="next"' },
-      }),
-      env: {},
-    })).rejects.toThrow('Unsafe advisory pagination link')
-    expect(() => readAdvisories('pip', 'x')).toThrow('Unknown advisory ecosystem')
+    for (const link of [
+      '<https://evil.example/advisories?type=reviewed&ecosystem=npm&affects=unsafe-pkg&per_page=100&after=x>; rel="next"',
+      '<https://api.github.com/advisories?type=reviewed&ecosystem=npm&affects=other-pkg&per_page=100&after=x>; rel="next"',
+      '<https://api.github.com/advisories?type=reviewed&ecosystem=npm&affects=unsafe-pkg&per_page=100>; rel="next"',
+      '<https://api.github.com/advisories?type=reviewed&ecosystem=npm&affects=unsafe-pkg&per_page=100&after=x&page=2>; rel="next"',
+    ]) {
+      await expect(readAdvisories('npm', 'unsafe-pkg', {
+        request: async () => page(link, []),
+        env,
+      }), link).rejects.toThrow('Unsafe or ambiguous GitHub pagination link.')
+    }
+    await expect(readAdvisories('pip', 'x', { env })).rejects.toThrow('Unknown advisory ecosystem')
+  })
+  it('stops a cursor cycle without a second read of the repeated page', async () => {
+    let requests = 0
+    const link = '<https://api.github.com/advisories?type=reviewed&ecosystem=npm&affects=cycle&per_page=100&after=same>; rel="next"'
+    await expect(readAdvisories('npm', 'cycle', {
+      env: { GH_TOKEN: 'token-value' },
+      request: async () => {
+        requests++
+        return page(link, [])
+      },
+    })).rejects.toThrow('Advisory pagination cycle detected.')
+    expect(requests).toBe(2)
   })
 })
 
 describe('the exemption policy under Node', () => {
-  it('evaluates ranges and active exemptions with the same results', () => {
-    const source = `const m=await import(${JSON.stringify(new URL('./renovate-exemptions.mjs', import.meta.url).href)}); console.log(JSON.stringify({range:m.isInAdvisoryRange('v1.0.1-0.20260615104152-545b12e0e8c7','< 1.0.1'),exempt:[...m.activeExemptions({'a@1.0.0':['b@2.0.0'],'c@1.0.0':[]},k=>k==='a@1.0.0')]}))`
+  it('evaluates active exemptions with the same results', () => {
+    const source = `const m=await import(${JSON.stringify(new URL('./renovate-exemptions.mjs', import.meta.url).href)}); console.log(JSON.stringify({exempt:[...m.activeExemptions({'a@1.0.0':['b@2.0.0'],'c@1.0.0':[]},{base:new Map(),selected:k=>k==='a@1.0.0'}).exempt]}))`
     const result = spawnSync('node', ['--input-type=module', '-e', source], { encoding: 'utf8' })
     expect(result.status, result.stderr).toBe(0)
     expect(JSON.parse(result.stdout)).toEqual({
-      range: true,
       exempt: ['a@1.0.0', 'b@2.0.0'],
     })
   })

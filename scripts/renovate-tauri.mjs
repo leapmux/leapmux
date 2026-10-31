@@ -1,12 +1,30 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { authorizedRootMap } from './renovate-exemptions.mjs'
-import { parseBunLock, parseCargoLock, parseCargoManifest } from './renovate-lockfile-versions.mjs'
+import { splitIdentity, validateAuthorizedMap } from './renovate-exemptions.mjs'
+import { bunIdentity, parseBunLock, parseCargoLock, parseCargoManifest } from './renovate-lockfile-versions.mjs'
 import { planTauriTargets } from './renovate-tauri-graph.mjs'
 import { matchesCargoRequirement, tauriMajorMinor } from './renovate-tauri-releases.mjs'
 
-/** The authorized-map ecosystems that publish Tauri companions. */
-export const TAURI_ECOSYSTEMS = Object.freeze(['npm', 'crates'])
+/** The lockfiles of the Tauri pairs: the JavaScript side and the Rust side. */
+const TAURI_LOCKFILES = Object.freeze(['frontend/bun.lock', 'desktop/rust/Cargo.lock'])
+
+/**
+ * Return the authorized roots of the Tauri packages of `pairs`, with their closures, as
+ * `planTauriTargets` reads them. A root of another package never authorizes a Tauri
+ * release, because the plan can select only a Tauri root. The npm names and the crate
+ * names of the pairs differ, so the roots of the two lockfiles never collide.
+ */
+export function tauriAuthorizedRoots(authorized, pairs) {
+  const names = new Set(pairs.flatMap(pair => [pair.npm, pair.cargo]))
+  const roots = new Map()
+  for (const path of TAURI_LOCKFILES) {
+    for (const [root, closure] of Object.entries(authorized?.[path] ?? {})) {
+      if (names.has(splitIdentity(root).name))
+        roots.set(root, new Set(closure))
+    }
+  }
+  return roots
+}
 
 function cargoCompanion(name) {
   return name === '@tauri-apps/api'
@@ -31,21 +49,23 @@ function cargoDeclaration(manifest, name) {
 export function tauriVersions(bunText, cargoText, cargoManifestText) {
   const bun = parseBunLock(bunText)
   const cargo = parseCargoLock(cargoText)
-  const npm = Object.fromEntries(Object.entries(bun.packages).filter(([name]) => /^@tauri-apps\/[^/]+$/.test(name)).map(([name, value]) => [
-    name,
-    value[0].slice(value[0].lastIndexOf('@') + 1),
-  ]))
   const resolved = Object.fromEntries(cargo.package.filter(pkg => pkg.name.startsWith('tauri')).map(pkg => [pkg.name, pkg.version]))
+  const npm = {}
   const occurrences = { npm: {}, cargo: {} }
-  for (const value of Object.values(bun.packages)) {
-    const identity = value[0]
-    const split = identity.lastIndexOf('@')
-    const name = identity.slice(0, split)
-    if (name.startsWith('@tauri-apps/')) {
-      occurrences.npm[name] = [
+  for (const [key, value] of Object.entries(bun.packages)) {
+    const identity = bunIdentity(value[0])
+    // The planner compares and pins the version of each direct Tauri package, so bun.lock
+    // must lock it at a registry version of that same package.
+    if (/^@tauri-apps\/[^/]+$/.test(key)) {
+      if (identity?.name !== key)
+        throw new Error(`bun.lock must lock ${key} at an npm registry version, not ${value[0]}.`)
+      npm[key] = identity.version
+    }
+    if (identity?.name.startsWith('@tauri-apps/')) {
+      occurrences.npm[identity.name] = [
         ...new Set([
-          ...(occurrences.npm[name] ?? []),
-          identity.slice(split + 1),
+          ...(occurrences.npm[identity.name] ?? []),
+          identity.version,
         ]),
       ].sort(Bun.semver.order)
     }
@@ -134,24 +154,24 @@ export function reconcileCargoRequirement(text, name, target, { exact = false } 
   })
 }
 
-export async function reconcileTauri({ root, trusted, run, security = false, upgrades = [], request = fetch }) {
+export async function reconcileTauri({ root, trusted, run, security = false, upgrades = [], request }) {
   const proposed = readTauriVersions(root)
   const baseline = readTauriVersions(trusted)
   const prepared = JSON.parse(readFileSync(resolve(trusted, '.tmp/renovate-prepared.json'), 'utf8'))
   const policy = JSON.parse(readFileSync(resolve(trusted, 'renovate.json'), 'utf8'))
   if (security && !prepared.authorized)
     throw new Error('Security processing requires the authorized fixes of the prepared file.')
-  // Only a security branch may select a young authorized fix.
-  const exemptions = {
-    authorized: security
-      ? authorizedRootMap(prepared.authorized, TAURI_ECOSYSTEMS)
-      : new Map(),
-  }
+  if (security)
+    validateAuthorizedMap(prepared.authorized)
   const pairs = tauriPairs(proposed).map((pair) => {
     if (!baseline.npm[pair.npm] || !baseline.cargo[pair.cargo])
       throw new Error(`Cannot find trusted Tauri baseline for ${pair.npm}.`)
     return { ...pair, npmVersion: baseline.npm[pair.npm], cargoVersion: baseline.cargo[pair.cargo] }
   })
+  // Only a security branch may select a young authorized fix.
+  const authorizedRoots = security
+    ? tauriAuthorizedRoots(prepared.authorized, pairs)
+    : new Map()
   const targets = await planTauriTargets(pairs, {
     policy,
     alerts: prepared.alerts,
@@ -160,7 +180,7 @@ export async function reconcileTauri({ root, trusted, run, security = false, upg
     proposed,
     security,
     preparedTargets: security ? prepared.securityTargets : null,
-    exemptions,
+    authorizedRoots,
     request,
   })
   if (!targets)

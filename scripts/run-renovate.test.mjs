@@ -1,18 +1,17 @@
 import { Buffer } from 'node:buffer'
 import { spawn, spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import process from 'node:process'
 import { Writable } from 'node:stream'
 import { afterEach, describe, expect, it } from 'bun:test'
 import { runWithTimeout } from './run-renovate.mjs'
+import { scratchDirectories } from './test-support.mjs'
 
 const root = resolve(import.meta.dirname, '..')
-const fixtures = []
-afterEach(() => {
-  for (const fixture of fixtures.splice(0)) rmSync(fixture, { recursive: true, force: true })
-})
+const scratch = scratchDirectories()
+afterEach(scratch.cleanup)
 
 async function exitedProcessTree(detached) {
   let leader
@@ -257,9 +256,7 @@ describe('runWithTimeout', () => {
 describe('local Renovate startup', () => {
   it('starts the trusted configuration from the dry-run Task environment alone', () => {
     // The fixture stands in for ROOT_DIR, so the test never overwrites the real prepared file.
-    mkdirSync(resolve(root, '.tmp'), { recursive: true })
-    const trusted = mkdtempSync(resolve(root, '.tmp/renovate-startup-'))
-    fixtures.push(trusted)
+    const trusted = scratch.create('renovate-startup')
     mkdirSync(resolve(trusted, '.tmp'))
     writeFileSync(resolve(trusted, 'renovate.json'), readFileSync(resolve(root, 'renovate.json')))
     writeFileSync(resolve(trusted, '.tmp/renovate-prepared.json'), JSON.stringify({ packageRules: [], importFiles: [] }))

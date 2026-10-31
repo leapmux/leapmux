@@ -1,21 +1,13 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { delimiter, join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, describe, expect, it } from 'bun:test'
 import { findRealTool, toolShimPaths, writeToolShims } from './renovate-shims.mjs'
+import { scratchDirectories } from './test-support.mjs'
 
-const root = resolve(import.meta.dirname, '..')
-const fixtures = []
-afterEach(() => {
-  for (const fixture of fixtures.splice(0)) rmSync(fixture, { recursive: true, force: true })
-})
-
-function fixture() {
-  mkdirSync(resolve(root, '.tmp'), { recursive: true })
-  const directory = mkdtempSync(resolve(root, '.tmp/renovate-shims-'))
-  fixtures.push(directory)
-  return directory
-}
+const scratch = scratchDirectories()
+afterEach(scratch.cleanup)
+const fixture = () => scratch.create('renovate-shims')
 
 function fakeTool(directory, name) {
   mkdirSync(directory, { recursive: true })
@@ -28,13 +20,13 @@ function fakeTool(directory, name) {
 const policy = { minimumReleaseAge: '3 days', minimumReleaseAgeBuffer: null }
 const prepared = {
   authorized: {
-    npm: {
+    'frontend/bun.lock': {
       'x@1.1.0': ['x-core@1.1.0'],
     },
-    crates: {
+    '.github/renovate/bun.lock': {},
+    'desktop/rust/Cargo.lock': {
       'fix@2.0.1': ['pin@1.0.5'],
     },
-    go: { 'example.com/lib@v1.0.1': [] },
   },
 }
 
@@ -46,7 +38,6 @@ describe('toolShimPaths', () => {
       bin: '/trusted/.tmp/renovate-shims/bin',
       policy: '/trusted/.tmp/renovate-shims/policy.json',
       invocationLog: '/trusted/.tmp/renovate-shims/invocations.jsonl',
-      crates: '/trusted/.tmp/renovate-shims/crates',
     })
     expect(() => toolShimPaths('relative')).toThrow('absolute')
   })
@@ -108,17 +99,61 @@ describe.skipIf(process.platform === 'win32')('writeToolShims', () => {
         bun: join(directory, 'tools/bun'),
         cargo: join(directory, 'tools/cargo'),
       },
-      authorized: { npm: prepared.authorized.npm, crates: prepared.authorized.crates },
-      cratesApi: 'https://crates.io/api/v1',
-      maxRepairRounds: 10,
+      authorized: prepared.authorized,
+      cratesIndex: 'https://index.crates.io',
       invocationLog: paths.invocationLog,
     })
   })
-  it('removes the crate cache and the invocation records of an earlier run', () => {
+  it('never resolves a shim of an earlier run that PATH spells through a symlink', () => {
     const directory = fixture()
     const paths = toolShimPaths(directory)
-    mkdirSync(paths.crates, { recursive: true })
-    writeFileSync(join(paths.crates, 'stale.json'), '[]')
+    const bun = fakeTool(join(directory, 'tools'), 'bun')
+    fakeTool(join(directory, 'tools'), 'cargo')
+    const env = {
+      PATH: join(directory, 'tools'),
+    }
+    writeToolShims({
+      root: directory,
+      policy,
+      prepared,
+      env,
+    })
+    // A second spelling of the shim directory, first on PATH, as a symlinked checkout gives.
+    symlinkSync(paths.bin, join(directory, 'linked-bin'))
+    const written = writeToolShims({
+      root: directory,
+      policy,
+      prepared,
+      env: {
+        PATH: [
+          join(directory, 'linked-bin'),
+          join(directory, 'tools'),
+        ].join(delimiter),
+      },
+    })
+    expect(written.document.realTools.bun).toBe(bun)
+    expect(readFileSync(join(paths.bin, 'bun'), 'utf8')).toStartWith(`#!/bin/sh\nexec '${bun}' `)
+  })
+  it('writes the crate index that the caller passes, which the aged index reads', () => {
+    const directory = fixture()
+    fakeTool(join(directory, 'tools'), 'bun')
+    fakeTool(join(directory, 'tools'), 'cargo')
+    const { document } = writeToolShims({
+      root: directory,
+      policy,
+      prepared,
+      cratesIndex: 'http://127.0.0.1:1/index',
+      env: {
+        PATH: join(directory, 'tools'),
+      },
+    })
+    expect(document.cratesIndex).toBe('http://127.0.0.1:1/index')
+  })
+  it('removes every file and the invocation records of an earlier run', () => {
+    const directory = fixture()
+    const paths = toolShimPaths(directory)
+    mkdirSync(join(paths.directory, 'crates'), { recursive: true })
+    writeFileSync(join(paths.directory, 'crates/stale.json'), '[]')
     writeFileSync(paths.invocationLog, '{}\n')
     fakeTool(join(directory, 'tools'), 'bun')
     fakeTool(join(directory, 'tools'), 'cargo')
@@ -130,10 +165,10 @@ describe.skipIf(process.platform === 'win32')('writeToolShims', () => {
         PATH: join(directory, 'tools'),
       },
     })
-    expect(() => statSync(join(paths.crates, 'stale.json'))).toThrow()
+    expect(() => statSync(join(paths.directory, 'crates'))).toThrow()
     expect(() => statSync(paths.invocationLog)).toThrow()
   })
-  it('rejects a prepared file without authorized fixes and a missing tool', () => {
+  it('rejects a prepared file without authorized fixes or with a malformed map, and a missing tool', () => {
     const directory = fixture()
     fakeTool(join(directory, 'tools'), 'bun')
     expect(() => writeToolShims({
@@ -144,6 +179,24 @@ describe.skipIf(process.platform === 'win32')('writeToolShims', () => {
         PATH: join(directory, 'tools'),
       },
     })).toThrow('lacks the authorized fixes')
+    // The map crossed a JSON file, so the shims must not trust its shape.
+    for (const authorized of [
+      { npm: {} },
+      { 'backend/go.mod': {} },
+      {
+        'frontend/bun.lock': { 'x@1.0.0': 'x-core@1.0.0' },
+      },
+      null,
+    ]) {
+      expect(() => writeToolShims({
+        root: directory,
+        policy,
+        prepared: { authorized },
+        env: {
+          PATH: join(directory, 'tools'),
+        },
+      }), JSON.stringify(authorized)).toThrow(/unexpected lockfile|must list package identities|must map each lockfile path/)
+    }
     expect(() => writeToolShims({
       root: directory,
       policy,
@@ -156,6 +209,21 @@ describe.skipIf(process.platform === 'win32')('writeToolShims', () => {
 })
 
 describe.skipIf(process.platform === 'win32')('findRealTool', () => {
+  it('skips an excluded directory under any spelling that resolves to it', () => {
+    const directory = fixture()
+    fakeTool(join(directory, 'excluded'), 'bun')
+    symlinkSync(join(directory, 'excluded'), join(directory, 'alias'))
+    const bun = fakeTool(join(directory, 'real'), 'bun')
+    expect(findRealTool('bun', {
+      path: [
+        join(directory, 'alias'),
+        join(directory, 'real'),
+      ].join(delimiter),
+      exclude: [
+        join(directory, 'excluded'),
+      ],
+    })).toBe(bun)
+  })
   it('skips a directory that is not absolute, a missing file, and a file that is not executable', () => {
     const directory = fixture()
     mkdirSync(join(directory, 'plain'))

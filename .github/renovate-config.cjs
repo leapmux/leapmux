@@ -13,8 +13,13 @@ module.exports = async () => {
   const prepared = JSON.parse(fs.readFileSync(path.join(trusted, '.tmp/renovate-prepared.json'), 'utf8'))
   const command = `bun ${JSON.stringify(path.join(trusted, 'scripts/renovate-post-upgrade.mjs'))}`
   const { prHeader, prBodyTemplate } = configureDetailsCapture(trusted, config.prBodyTemplate)
-  // run-renovate.mjs writes these shims, which hold bun and cargo resolution to the release age.
-  const { toolShimPaths } = await import('../scripts/renovate-shims.mjs')
+  // run-renovate.mjs writes the bun and cargo shims, which hold resolution to the release
+  // age, and gives their directory in LEAPMUX_TOOL_SHIMS. A run that it did not start, such
+  // as the configuration validator, runs no tool through them. Required CI checks the
+  // lockfiles of every pull request either way.
+  const shims = process.env.LEAPMUX_TOOL_SHIMS
+  if (shims !== undefined && (!path.isAbsolute(shims) || ['bun', 'cargo'].some(tool => !fs.existsSync(path.join(shims, tool)))))
+    throw new Error(`LEAPMUX_TOOL_SHIMS must give a directory that holds the bun and cargo shims: ${shims}`)
   const { configureSkippedDependencies } = await import('../scripts/renovate-dashboard.mjs')
   const { dependencyDashboardFooter } = await configureSkippedDependencies({ policy: config, alerts: prepared.alerts ?? [] })
   return {
@@ -37,18 +42,21 @@ module.exports = async () => {
     customEnvVariables: {
       RENOVATE_TRUSTED_ROOT: trusted,
       GOTOOLCHAIN: 'local',
-      PATH: `${toolShimPaths(trusted).bin}${path.delimiter}${process.env.PATH}`,
+      ...(shims === undefined
+        ? {}
+        : { PATH: `${shims}${path.delimiter}${process.env.PATH}` }),
     },
     exposeAllEnv: false,
     baseDir: path.join(trusted, '.tmp/renovate-run'),
     globalExtends,
+    ...config,
     // Renovate re-extracts a package file after an update to check its lockfile result,
     // which the bun manager cannot do. The tool shims and check-dependency-age enforce
-    // the release age of lockfile versions instead.
+    // the release age of lockfile versions instead. A remap of the repository applies too.
     logLevelRemap: [
       { matchMessage: 'Could not re-extract the packageFile after updating it', newLogLevel: 'debug' },
+      ...(config.logLevelRemap ?? []),
     ],
-    ...config,
     prHeader,
     prBodyTemplate,
     dependencyDashboardFooter,

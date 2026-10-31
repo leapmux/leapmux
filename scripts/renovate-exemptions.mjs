@@ -1,10 +1,14 @@
-import { spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import process from 'node:process'
+import { nextGithubPage, readGithubJsonResponse } from './github-json.mjs'
+import { newModulePath } from './go-module-path.mjs'
+import { advisoryRange, isInAdvisoryRange, normalizeAdvisoryVersion, patchedIdentifier } from './renovate-advisory-range.mjs'
+import { advisoryEcosystem } from './renovate-ecosystems.mjs'
 import { renovateModule, requireRenovate } from './renovate-engine.mjs'
-import { goModJson } from './renovate-lockfile-versions.mjs'
-import { readRegistryJson, serialThrottle } from './renovate-release-age.mjs'
+import { runGoOutsideModules } from './renovate-go-command.mjs'
+import { DEPENDENCY_LOCKFILES, goModJson } from './renovate-lockfile-versions.mjs'
+import { CRATES_API, NPM_REGISTRY, readRegistryJson } from './renovate-registry.mjs'
 
 // An authorized root is the exact first patched version that a GitHub-reviewed advisory
 // lists for a version that the base locks. Only an active root, which the change newly
@@ -14,32 +18,7 @@ const semver = requireRenovate('semver')
 const { api: cargoVersioning } = await renovateModule('modules/versioning/cargo/index.js')
 const { api: npmVersioning } = await renovateModule('modules/versioning/npm/index.js')
 
-const root = resolve(import.meta.dirname, '..')
-
-/** The GitHub advisory ecosystem of each authorized-map ecosystem. */
-export const ADVISORY_ECOSYSTEMS = Object.freeze({ npm: 'npm', crates: 'rust', go: 'go' })
-export const AUTHORIZED_ECOSYSTEMS = Object.freeze(Object.keys(ADVISORY_ECOSYSTEMS))
-
-/** Return the authorized-map ecosystem of a GitHub advisory ecosystem, or null for an unmanaged one. */
-export function authorizedEcosystem(advisoryEcosystem) {
-  return AUTHORIZED_ECOSYSTEMS.find(ecosystem => ADVISORY_ECOSYSTEMS[ecosystem] === advisoryEcosystem) ?? null
-}
-
-/** Remove the Go spelling of a version, so that a semver range can match it. */
-export function normalizeAdvisoryVersion(version) {
-  return String(version).replace(/^v/, '').replace(/\+incompatible$/, '')
-}
-
-/** Match a version against an advisory range, including prereleases such as Go pseudo-versions. */
-export function isInAdvisoryRange(version, range) {
-  if (typeof range !== 'string')
-    throw new TypeError('An advisory record requires a vulnerable version range.')
-  const normalized = range.replaceAll(',', ' ')
-  if (!semver.validRange(normalized))
-    throw new Error(`Invalid advisory range: ${range}`)
-  const candidate = semver.valid(normalizeAdvisoryVersion(version))
-  return candidate !== null && semver.satisfies(candidate, normalized, { includePrerelease: true })
-}
+const repositoryRoot = resolve(import.meta.dirname, '..')
 
 /** Split `name@version`, where a scoped npm name also starts with `@`. */
 export function splitIdentity(identity) {
@@ -98,45 +77,15 @@ export function classifyGoMetadata(module, version, result) {
   }
 }
 
-// Run a command without blocking the event loop, so that an in-process server can answer it.
-function runCommand(command, args, options) {
-  return new Promise((settle) => {
-    let stdout = ''
-    let stderr = ''
-    const child = spawn(command, args, {
-      ...options,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    child.stdout.setEncoding('utf8').on('data', (data) => {
-      stdout += data
-    })
-    child.stderr.setEncoding('utf8').on('data', (data) => {
-      stderr += data
-    })
-    child.once('error', error => settle({ error, status: null, stdout, stderr }))
-    child.once('close', status => settle({ status, stdout, stderr }))
-  })
-}
-
 /** Read Go module metadata through GOPROXY, outside every workspace and module. */
-export async function goMetadata(module, version, { checkout = root, env = process.env, run = runCommand } = {}) {
-  mkdirSync(resolve(checkout, '.tmp'), { recursive: true })
-  const directory = mkdtempSync(resolve(checkout, '.tmp/go-metadata-'))
-  try {
-    return classifyGoMetadata(module, version, await run('go', [
-      'list',
-      '-m',
-      '-json',
-      '-e',
-      `${module}@${version}`,
-    ], {
-      cwd: directory,
-      env: { ...env, GOWORK: 'off', GOTOOLCHAIN: 'local' },
-    }))
-  }
-  finally {
-    rmSync(directory, { recursive: true, force: true })
-  }
+export async function goMetadata(module, version, { checkout = repositoryRoot, env = process.env, run } = {}) {
+  return classifyGoMetadata(module, version, await runGoOutsideModules([
+    'list',
+    '-m',
+    '-json',
+    '-e',
+    `${module}@${version}`,
+  ], { checkout, env, run }))
 }
 
 /**
@@ -161,8 +110,6 @@ export async function resolveGoIdentity(name, patched, { goMetadata: read = goMe
     { name, version },
   ]
   if (!carriesMajor) {
-    // renovate-go.mjs loads Renovate's configuration modules, which only this path needs.
-    const { newModulePath } = await import('./renovate-go.mjs')
     candidates = [
       {
         name: newModulePath({ depName: name, newValue: version }),
@@ -181,88 +128,49 @@ export async function resolveGoIdentity(name, patched, { goMetadata: read = goMe
   throw new Error(`no published module for ${name} ${patched}`)
 }
 
-const advisoryCache = new Map()
-
-function nextAdvisoryPage(header) {
-  for (const part of header?.split(/,\s*(?=<)/) ?? []) {
-    const entry = /^\s*<([^>]+)>\s*;(.*)$/.exec(part)
-    if (!entry || !/\brel\s*=\s*"?next"?/.test(entry[2]))
-      continue
-    const url = new URL(entry[1])
-    if (url.origin !== 'https://api.github.com' || url.pathname !== '/advisories' || url.username || url.password)
-      throw new Error(`Unsafe advisory pagination link: ${entry[1]}`)
-    return url.href
+/**
+ * Read every GitHub-reviewed advisory that affects one package, following each page once.
+ * The read requires a token: the API allows only 60 anonymous requests an hour.
+ */
+export async function readAdvisories(ecosystem, name, { request = fetch, env = process.env } = {}) {
+  const query = new URLSearchParams({
+    type: 'reviewed',
+    ecosystem: advisoryEcosystem(ecosystem),
+    affects: name,
+    per_page: '100',
+  })
+  const token = env.GITHUB_TOKEN || env.GH_TOKEN
+  // A cursor link repeats the query and adds its cursor.
+  const accept = url => url.pathname === '/advisories' && !url.searchParams.has('page')
+    && [...query].every(([key, value]) => url.searchParams.get(key) === value)
+    && [
+      url.searchParams.get('after'),
+      url.searchParams.get('before'),
+    ].some(Boolean)
+  let path = `/advisories?${query}`
+  const advisories = []
+  const seen = new Set()
+  while (path) {
+    if (seen.has(path))
+      throw new Error('Advisory pagination cycle detected.')
+    seen.add(path)
+    const { data: batch, headers } = await readGithubJsonResponse(path, { token, request, description: 'Advisory read' })
+    if (!Array.isArray(batch))
+      throw new TypeError(`The advisory API returned an invalid list for ${name}.`)
+    advisories.push(...batch)
+    path = nextGithubPage(headers.get('link'), accept)
   }
-  return null
-}
-
-/** Read every GitHub-reviewed advisory that affects one package, following each page once. */
-export function readAdvisories(ecosystem, name, { request = fetch, env = process.env } = {}) {
-  const advisoryEcosystem = ADVISORY_ECOSYSTEMS[ecosystem]
-  if (!advisoryEcosystem)
-    throw new Error(`Unknown advisory ecosystem: ${ecosystem}`)
-  const key = `${advisoryEcosystem}\0${name}`
-  if (!advisoryCache.has(key)) {
-    const read = (async () => {
-      const token = env.GITHUB_TOKEN || env.GH_TOKEN
-      const query = new URLSearchParams({
-        type: 'reviewed',
-        ecosystem: advisoryEcosystem,
-        affects: name,
-        per_page: '100',
-      })
-      let url = `https://api.github.com/advisories?${query}`
-      const advisories = []
-      const seen = new Set()
-      while (url) {
-        if (seen.has(url))
-          throw new Error('Advisory pagination cycle detected.')
-        seen.add(url)
-        const response = await request(url, {
-          method: 'GET',
-          signal: AbortSignal.timeout(30000),
-          headers: {
-            'Accept': 'application/vnd.github+json',
-            'X-GitHub-Api-Version': '2022-11-28',
-            'User-Agent': 'leapmux-dependency-maintenance',
-            ...(token
-              ? { Authorization: `Bearer ${token}` }
-              : {}),
-          },
-        })
-        if (!response.ok)
-          throw new Error(`Advisory read failed: ${response.status} ${url}`)
-        const batch = await response.json()
-        if (!Array.isArray(batch))
-          throw new TypeError(`The advisory API returned an invalid list for ${name}.`)
-        advisories.push(...batch)
-        url = nextAdvisoryPage(response.headers.get('link'))
-      }
-      return advisories
-    })()
-    // A failed read must not stay cached for a later caller.
-    read.catch(() => advisoryCache.delete(key))
-    advisoryCache.set(key, read)
-  }
-  return advisoryCache.get(key)
-}
-
-function patchedIdentifier(record) {
-  const value = record.first_patched_version
-  return value !== null && typeof value === 'object'
-    ? value.identifier ?? null
-    : value ?? null
+  return advisories
 }
 
 /**
  * Return the authorized roots of one package: for each reviewed advisory record of the
  * package whose range contains a base version, the record's exact first patched version,
- * in its head identity.
+ * in its head identity. A record without a range proves no base version vulnerable, so it
+ * authorizes nothing.
  */
 export async function authorizedFixes({ ecosystem, name, baseVersions }, { advisories = readAdvisories, goMetadata: readGo = goMetadata } = {}) {
-  const advisoryEcosystem = ADVISORY_ECOSYSTEMS[ecosystem]
-  if (!advisoryEcosystem)
-    throw new Error(`Unknown advisory ecosystem: ${ecosystem}`)
+  const githubEcosystem = advisoryEcosystem(ecosystem)
   const bases = [
     ...(baseVersions ?? []),
   ]
@@ -273,10 +181,10 @@ export async function authorizedFixes({ ecosystem, name, baseVersions }, { advis
     if (advisory.withdrawn_at)
       continue
     for (const record of advisory.vulnerabilities ?? []) {
-      if (record.package?.name !== name || record.package?.ecosystem !== advisoryEcosystem)
+      if (record.package?.name !== name || record.package?.ecosystem !== githubEcosystem)
         continue
       const fixed = patchedIdentifier(record)
-      if (fixed === null || !bases.some(version => isInAdvisoryRange(version, record.vulnerable_version_range)))
+      if (fixed === null || advisoryRange(record.vulnerable_version_range) === null || !bases.some(version => isInAdvisoryRange(version, record.vulnerable_version_range)))
         continue
       if (typeof fixed !== 'string' || !semver.valid(normalizeAdvisoryVersion(fixed)))
         throw new Error(`Invalid patched version for ${name}: ${JSON.stringify(fixed)}`)
@@ -294,27 +202,25 @@ export async function authorizedFixes({ ecosystem, name, baseVersions }, { advis
   return roots
 }
 
-const crateRequests = serialThrottle(1000)
-
-/** Read one crate version's dependency requirements. crates.io allows one request per second. */
-export async function readCrateDependencies(name, version, { request = fetch } = {}) {
-  const url = `https://crates.io/api/v1/crates/${encodeURIComponent(name)}/${encodeURIComponent(version)}/dependencies`
-  const metadata = await crateRequests(() => readRegistryJson(url, { request, description: 'Crate dependency read' }))
+/** Read one crate version's dependency requirements. */
+export async function readCrateDependencies(name, version, { request } = {}) {
+  const url = `${CRATES_API}/crates/${encodeURIComponent(name)}/${encodeURIComponent(version)}/dependencies`
+  const metadata = await readRegistryJson(url, { request, description: 'Crate dependency read' })
   if (!Array.isArray(metadata?.dependencies))
     throw new TypeError(`Invalid crate dependency metadata: ${name}@${version}`)
   return metadata.dependencies
 }
 
 /** Read one npm version manifest. */
-export async function readNpmManifest(name, version, { request = fetch } = {}) {
-  const manifest = await readRegistryJson(`https://registry.npmjs.org/${encodeURIComponent(name)}/${encodeURIComponent(version)}`, { request, description: 'npm manifest read' })
+async function readNpmManifest(name, version, { request } = {}) {
+  const manifest = await readRegistryJson(`${NPM_REGISTRY}/${encodeURIComponent(name)}/${encodeURIComponent(version)}`, { request, description: 'npm manifest read' })
   if (!manifest || typeof manifest !== 'object')
     throw new TypeError(`Invalid npm manifest: ${name}@${version}`)
   return manifest
 }
 
 /** Read the go.mod file of one published Go module version through GOPROXY. */
-export async function readGoModText(module, version, options = {}) {
+async function readGoModText(module, version, options = {}) {
   const result = await goMetadata(module, version, options)
   if (result.status !== 'found' || typeof result.info.GoMod !== 'string')
     throw new Error(`Cannot read the go.mod file of ${module}@${version}: ${result.message ?? 'no file'}`)
@@ -329,19 +235,31 @@ export const defaultReaders = Object.freeze({
   goModText: readGoModText,
 })
 
-function exactVersion(requirement) {
+const REQUIREMENT_VERSIONINGS = Object.freeze({ crates: cargoVersioning, npm: npmVersioning })
+
+/**
+ * Return `name@version` for a requirement that admits exactly one version, such as
+ * `=1.2.3`, or null for any other requirement. `ecosystem` selects Cargo's or npm's syntax.
+ */
+export function exactIdentity(ecosystem, name, requirement) {
+  const versioning = REQUIREMENT_VERSIONINGS[ecosystem]
+  if (!versioning)
+    throw new Error(`Unknown requirement ecosystem: ${ecosystem}`)
+  if (typeof requirement !== 'string' || !versioning.isSingleVersion(requirement))
+    return null
   const version = semver.clean(requirement.trim().replace(/^=\s*/, ''))
   if (!version)
     throw new Error(`Invalid exact requirement: ${requirement}`)
-  return version
+  return `${name}@${version}`
 }
 
 /** Return the exact requirements of one version, as `name@version`. */
 export async function exactPins(ecosystem, name, version, readers = defaultReaders) {
   if (ecosystem === 'crates') {
     return (await readers.crateDependencies(name, version))
-      .filter(dependency => ['normal', 'build'].includes(dependency.kind) && typeof dependency.req === 'string' && cargoVersioning.isSingleVersion(dependency.req))
-      .map(dependency => `${dependency.crate_id}@${exactVersion(dependency.req)}`)
+      .filter(dependency => ['normal', 'build'].includes(dependency.kind))
+      .map(dependency => exactIdentity('crates', dependency.crate_id, dependency.req))
+      .filter(identity => identity !== null)
   }
   if (ecosystem === 'npm') {
     const manifest = await readers.npmManifest(name, version)
@@ -351,20 +269,24 @@ export async function exactPins(ecosystem, name, version, readers = defaultReade
       ...manifest.optionalDependencies,
     }
     return Object.entries(requirements)
-      .filter(([, requirement]) => typeof requirement === 'string' && npmVersioning.isSingleVersion(requirement))
-      .map(([dependency, requirement]) => `${dependency}@${exactVersion(requirement)}`)
+      .map(([dependency, requirement]) => exactIdentity('npm', dependency, requirement))
+      .filter(identity => identity !== null)
   }
   if (ecosystem === 'go') {
     // MVS treats every requirement of a module as the exact version that the module was built against.
-    const module = JSON.parse(goModJson(await readers.goModText(name, version)))
+    const module = JSON.parse(await goModJson(await readers.goModText(name, version)))
     return (module.Require ?? []).map(requirement => `${requirement.Path}@${requirement.Version}`)
   }
   throw new Error(`Unknown advisory ecosystem: ${ecosystem}`)
 }
 
 /**
- * Return each root with the transitive closure of its exact pins, as
- * `Map<name@version, Set<name@version>>`. All roots must share one ecosystem.
+ * Return each root with the closure of its exact pins, as
+ * `Map<name@version, Set<name@version>>`. All roots must share one ecosystem. A crate or
+ * npm closure follows the exact pins of each pin. A Go closure holds the requirements of
+ * the root's go.mod only: since Go 1.17, a go.mod lists every module that the packages of
+ * its module need, and the module graph prunes the requirements of those modules. A walk
+ * through their go.mod files would instead reach every version that any of them ever required.
  */
 export async function authorizedClosure(roots, readers = defaultReaders) {
   const ecosystems = new Set(roots.map(entry => entry.ecosystem))
@@ -382,7 +304,8 @@ export async function authorizedClosure(roots, readers = defaultReaders) {
       for (const pin of await exactPins(entry.ecosystem, current.name, current.version, readers)) {
         if (!seen.has(pin)) {
           seen.add(pin)
-          queue.push(pin)
+          if (entry.ecosystem !== 'go')
+            queue.push(pin)
         }
       }
     }
@@ -392,54 +315,123 @@ export async function authorizedClosure(roots, readers = defaultReaders) {
   return closures
 }
 
-/** Return the active roots and their closures as one set of `name@version`. */
-export function activeExemptions(authorizedMap, isActive) {
-  const entries = authorizedMap instanceof Map
-    ? [...authorizedMap]
-    : Object.entries(authorizedMap ?? {})
+/**
+ * Return the active roots of one ecosystem of the prepared map (`{ root: [closure] }`) and
+ * the identities that they exempt. A root is active when `base` (`Map<name, Set<version>>`)
+ * does not lock it and `selected(root)` holds. `selected` runs only for a root that the base
+ * does not lock.
+ */
+export function activeExemptions(authorized, { base, selected } = {}) {
+  if (!(base instanceof Map) || typeof selected !== 'function')
+    throw new TypeError('Active exemptions require the base versions and a selection.')
+  const roots = []
   const exempt = new Set()
-  for (const [key, closure] of entries) {
-    if (!isActive(key))
+  for (const [root, closure] of Object.entries(authorized ?? {})) {
+    const { name, version } = splitIdentity(root)
+    if (base.get(name)?.has(version) || !selected(root))
       continue
-    exempt.add(key)
+    roots.push(root)
+    exempt.add(root)
     for (const pin of closure)
       exempt.add(pin)
   }
-  return exempt
+  return {
+    roots: roots.sort(),
+    exempt,
+  }
 }
 
 /**
- * Merge the roots of some ecosystems of a prepared authorized map into one
- * `Map<root, Set<closure>>`. An identity that two ecosystems share is ambiguous.
+ * The lockfiles of the prepared authorized map: those that the bun shim, the cargo shim,
+ * and the Tauri planner resolve. Required CI builds the exemptions of every dependency
+ * lockfile itself, Go included.
  */
-export function authorizedRootMap(authorized, ecosystems = AUTHORIZED_ECOSYSTEMS) {
-  const roots = new Map()
-  for (const ecosystem of ecosystems) {
-    for (const [root, closure] of Object.entries(authorized?.[ecosystem] ?? {})) {
+export const PREPARED_LOCKFILES = Object.freeze(DEPENDENCY_LOCKFILES.filter(entry => ['npm', 'crates'].includes(entry.ecosystem)).map(entry => entry.path))
+
+const isPlainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value)
+
+/**
+ * Check a prepared authorized map that a JSON file carried: an object that keys the roots
+ * of each lockfile of PREPARED_LOCKFILES by its path, with each root, a package identity,
+ * mapped to the array of the identities of its closure. Return the map, or fail on the
+ * first violation.
+ */
+export function validateAuthorizedMap(authorized) {
+  if (!isPlainObject(authorized))
+    throw new TypeError('The authorized map must map each lockfile path to its roots.')
+  for (const [path, roots] of Object.entries(authorized)) {
+    if (!PREPARED_LOCKFILES.includes(path))
+      throw new Error(`The authorized map lists an unexpected lockfile: ${path}`)
+    if (!isPlainObject(roots))
+      throw new TypeError(`The authorized roots of ${path} must map each root to its closure.`)
+    for (const [root, closure] of Object.entries(roots)) {
+      splitIdentity(root)
       if (!Array.isArray(closure) || closure.some(pin => typeof pin !== 'string'))
         throw new TypeError(`The authorized closure of ${root} must list package identities.`)
-      if (roots.has(root))
-        throw new Error(`Two ecosystems authorize the same identity: ${root}`)
-      roots.set(root, new Set(closure))
+      for (const pin of closure)
+        splitIdentity(pin)
     }
   }
-  return roots
+  return authorized
 }
 
 /**
- * Build the authorized map of the prepared file for packages with their base versions:
- * `{ npm: { root: [closure] }, crates: {...}, go: {...} }`.
+ * Build the authorized map of the packages, as `{ [lockfile path]: { root: [closure] } }`
+ * with one entry for each path of `lockfiles`. Each package is `{ lockfile, name,
+ * baseVersions }`, so its fixes come from the base versions of its own lockfile alone. A
+ * package whose fixes cannot be read, and a root whose closure cannot be read, authorize
+ * nothing. `warn` reports each of them, and the release age then holds their versions as
+ * it holds any other.
  */
-export async function buildAuthorizedMap(packages, readers = defaultReaders) {
-  const authorized = Object.fromEntries(AUTHORIZED_ECOSYSTEMS.map(ecosystem => [ecosystem, {}]))
-  for (const ecosystem of AUTHORIZED_ECOSYSTEMS) {
-    const roots = []
-    for (const entry of packages.filter(candidate => candidate.ecosystem === ecosystem)) {
-      for (const fixed of await authorizedFixes(entry, readers))
-        roots.push({ ecosystem, ...fixed })
+export async function buildAuthorizedMap(packages, readers = defaultReaders, { lockfiles, warn = message => process.stderr.write(`${message}\n`) } = {}) {
+  if (!Array.isArray(lockfiles))
+    throw new TypeError('An authorized map requires the paths of its lockfiles.')
+  const entries = lockfiles.map(path => DEPENDENCY_LOCKFILES.find(entry => entry.path === path) ?? path)
+  const unknown = entries.find(entry => typeof entry === 'string')
+  if (unknown !== undefined)
+    throw new Error(`Unknown dependency lockfile: ${unknown}`)
+  const stray = packages.find(pkg => !lockfiles.includes(pkg.lockfile))
+  if (stray)
+    throw new Error(`The package ${stray.name} belongs to no lockfile of the map: ${stray.lockfile}`)
+  const authorized = Object.fromEntries(lockfiles.map(path => [path, {}]))
+  // Two lockfiles of one ecosystem can authorize one root. Read its closure once.
+  const closures = new Map(entries.map(entry => [
+    entry.ecosystem,
+    new Map(),
+  ]))
+  const closureOf = async (ecosystem, root) => {
+    const key = `${root.name}@${root.version}`
+    if (!closures.get(ecosystem).has(key)) {
+      try {
+        closures.get(ecosystem).set(key, [
+          ...(await authorizedClosure([
+            { ecosystem, ...root },
+          ], readers)).get(key),
+        ].sort())
+      }
+      catch (error) {
+        warn(`Skipped the authorized fix ${key}: ${error.message}`)
+        closures.get(ecosystem).set(key, null)
+      }
     }
-    for (const [key, closure] of await authorizedClosure(roots, readers))
-      authorized[ecosystem][key] = [...closure].sort()
+    return closures.get(ecosystem).get(key)
+  }
+  for (const entry of entries) {
+    for (const pkg of packages.filter(candidate => candidate.lockfile === entry.path)) {
+      let roots
+      try {
+        roots = await authorizedFixes({ ecosystem: entry.ecosystem, name: pkg.name, baseVersions: pkg.baseVersions }, readers)
+      }
+      catch (error) {
+        warn(`Skipped the security fixes of ${pkg.name} in ${entry.path}: ${error.message}`)
+        continue
+      }
+      for (const root of roots) {
+        const closure = await closureOf(entry.ecosystem, root)
+        if (closure)
+          authorized[entry.path][`${root.name}@${root.version}`] = closure
+      }
+    }
   }
   return authorized
 }

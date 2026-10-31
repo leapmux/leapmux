@@ -1,8 +1,10 @@
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
+import { posix, resolve } from 'node:path'
 import process from 'node:process'
+import { ECOSYSTEMS } from './renovate-ecosystems.mjs'
 import { renovateModule, requireRenovate } from './renovate-engine.mjs'
+import { runGoOutsideModules } from './renovate-go-command.mjs'
 
 // One parser for every lockfile reader. It runs under Node and Bun, so it uses no Bun API.
 const JSON5 = requireRenovate('json5')
@@ -11,18 +13,31 @@ const { parse: parseToml } = await renovateModule('util/toml.js')
 
 const root = resolve(import.meta.dirname, '..')
 
+const lockfile = (path, ecosystem) => Object.freeze({ path, kind: ECOSYSTEMS[ecosystem].kind, ecosystem })
+
 /**
  * The files that record resolved dependency versions, each with its package-manager
  * kind and the registry ecosystem that publishes its versions.
  */
 export const DEPENDENCY_LOCKFILES = Object.freeze([
-  Object.freeze({ path: 'frontend/bun.lock', kind: 'bun', ecosystem: 'npm' }),
-  Object.freeze({ path: '.github/renovate/bun.lock', kind: 'bun', ecosystem: 'npm' }),
-  Object.freeze({ path: 'desktop/rust/Cargo.lock', kind: 'cargo', ecosystem: 'crates' }),
-  Object.freeze({ path: 'backend/go.mod', kind: 'gomod', ecosystem: 'go' }),
-  Object.freeze({ path: 'desktop/go/go.mod', kind: 'gomod', ecosystem: 'go' }),
-  Object.freeze({ path: 'site/go.mod', kind: 'gomod', ecosystem: 'go' }),
+  lockfile('frontend/bun.lock', 'npm'),
+  lockfile('.github/renovate/bun.lock', 'npm'),
+  lockfile('site/bun.lock', 'npm'),
+  lockfile('desktop/rust/Cargo.lock', 'crates'),
+  lockfile('backend/go.mod', 'go'),
+  lockfile('desktop/go/go.mod', 'go'),
+  lockfile('site/go.mod', 'go'),
 ])
+
+/**
+ * Return the entry of DEPENDENCY_LOCKFILES that records the versions of a dependency
+ * file, given as the lockfile or as the manifest beside it, as a Dependabot alert gives
+ * it. Return null for any other path.
+ */
+export function dependencyLockfile(path) {
+  return DEPENDENCY_LOCKFILES.find(entry => entry.path === path
+    || posix.join(posix.dirname(entry.path), ECOSYSTEMS[entry.ecosystem].manifest) === path) ?? null
+}
 
 export function parseBunLock(text) {
   return JSON5.parse(text)
@@ -44,8 +59,13 @@ export function bunIdentity(identity) {
   if (split <= 0)
     return null
   const version = identity.slice(split + 1)
-  // Workspace, link, file, git, and tarball sources are not registry versions.
-  return semver.valid(version) === version
+  // Workspace, link, file, git, and tarball sources are not registry versions. A registry
+  // version keeps its build metadata, which `semver.valid` drops, so compare it with that part.
+  const parsed = semver.parse(version)
+  const spelled = parsed && `${parsed.version}${parsed.build.length > 0
+    ? `+${parsed.build.join('.')}`
+    : ''}`
+  return spelled === version
     ? {
         name: identity.slice(0, split),
         version,
@@ -53,8 +73,17 @@ export function bunIdentity(identity) {
     : null
 }
 
-function runGit(args, { cwd }) {
+/** Run git synchronously with room for a large lockfile in its output. */
+export function runGit(args, { cwd }) {
   return spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+}
+
+/** Return the text of a file under `directory`, or null when the file is absent. */
+export function readWorkingFile(directory, path) {
+  const file = resolve(directory, path)
+  return existsSync(file)
+    ? readFileSync(file, 'utf8')
+    : null
 }
 
 /**
@@ -81,32 +110,25 @@ export function readRevisionFile(revision, path, { cwd = root, git = runGit } = 
 }
 
 /** Run `go mod edit -json` on go.mod text, which is the input of the gomod reader. */
-export function goModJson(text, { checkout = root } = {}) {
-  mkdirSync(resolve(checkout, '.tmp'), { recursive: true })
-  const directory = mkdtempSync(resolve(checkout, '.tmp/go-mod-json-'))
-  try {
-    const file = resolve(directory, 'go.mod')
-    writeFileSync(file, text)
-    const result = spawnSync('go', ['mod', 'edit', '-json', file], {
-      cwd: directory,
-      encoding: 'utf8',
-      env: { ...process.env, GOWORK: 'off', GOTOOLCHAIN: 'local' },
-      maxBuffer: 16 * 1024 * 1024,
-    })
-    if (result.error || result.status !== 0)
-      throw new Error(`go mod edit -json failed: ${result.error?.message ?? result.stderr.trim()}`)
-    return result.stdout
-  }
-  finally {
-    rmSync(directory, { recursive: true, force: true })
-  }
+export async function goModJson(text, { checkout = root, env = process.env, run } = {}) {
+  const result = await runGoOutsideModules([
+    'mod',
+    'edit',
+    '-json',
+    'go.mod',
+  ], {
+    checkout,
+    env,
+    run,
+    files: { 'go.mod': text },
+  })
+  if (result.error || result.status !== 0)
+    throw new Error(`go mod edit -json failed: ${result.error?.message ?? result.stderr.trim()}`)
+  return result.stdout
 }
 
-/**
- * Return the registry versions that one lockfile resolves, as `Map<name, Set<version>>`.
- * The gomod kind reads `go mod edit -json` output: its requirements and versioned replacements.
- */
-export function lockedVersions(kind, text) {
+// Read the registry versions of one parsed input. A gomod input is `go mod edit -json` output.
+function versionsOf(kind, text) {
   const versions = new Map()
   const add = (name, version) => {
     if (typeof name !== 'string' || !name || typeof version !== 'string' || !version)
@@ -147,47 +169,43 @@ export function lockedVersions(kind, text) {
   return versions
 }
 
-/** Return the input of `lockedVersions` for a file's text: gomod reads `go mod edit -json` output. */
-export function lockfileInput(kind, text, options = {}) {
-  return kind === 'gomod' && text != null
-    ? goModJson(text, options)
-    : text
+/** Return the registry versions that a bun.lock or Cargo.lock text resolves, as `Map<name, Set<version>>`. */
+export function lockedVersions(kind, text) {
+  if (kind === 'gomod')
+    throw new Error('lockedVersions reads bun.lock and Cargo.lock text. Read go.mod through readLockedVersions.')
+  return versionsOf(kind, text)
+}
+
+/** Return the requirements and the versioned replacements of `go mod edit -json` output. */
+export function goModVersions(json) {
+  return versionsOf('gomod', json)
 }
 
 /**
- * Merge the versions of every dependency lockfile by ecosystem, as
- * `{ npm: Map<name, Set<version>>, crates: ..., go: ... }`. `read(path)` returns the
- * text of a repository file, or null when the file is absent.
+ * Return the registry versions that one dependency file resolves. A go.mod file runs
+ * `go mod edit -json`, so this reader is async. An absent file (null) resolves nothing.
  */
-export function ecosystemVersions(read, options = {}) {
-  const merged = Object.fromEntries(DEPENDENCY_LOCKFILES.map(({ ecosystem }) => [
-    ecosystem,
-    new Map(),
-  ]))
-  for (const { path, kind, ecosystem } of DEPENDENCY_LOCKFILES) {
-    const text = read(path)
-    if (text == null)
-      continue
-    for (const [name, versions] of lockedVersions(kind, lockfileInput(kind, text, options))) {
-      const known = merged[ecosystem].get(name) ?? new Set()
-      for (const version of versions)
-        known.add(version)
-      merged[ecosystem].set(name, known)
-    }
-  }
-  return merged
+export async function readLockedVersions(kind, text, options = {}) {
+  if (text == null)
+    return new Map()
+  return kind === 'gomod'
+    ? goModVersions(await goModJson(text, options))
+    : lockedVersions(kind, text)
 }
 
-/** Return each `name@version` that `head` locks and `base` does not. An absent base locks nothing. */
-export function introducedVersions(kind, base, head) {
-  const before = base == null
-    ? new Map()
-    : lockedVersions(kind, base)
+/** Return each version of `Map<name, Set<version>>` as `name@version`. */
+export function versionIdentities(versions) {
+  return new Set([
+    ...versions,
+  ].flatMap(([name, set]) => [...set].map(version => `${name}@${version}`)))
+}
+
+/** Return each `name@version` of the versions `after` that the versions `before` lack. */
+export function introducedVersions(before, after) {
+  const known = versionIdentities(before)
   return [
-    ...lockedVersions(kind, head),
-  ].flatMap(([name, versions]) => [...versions]
-    .filter(version => !before.get(name)?.has(version))
-    .map(version => `${name}@${version}`)).sort()
+    ...versionIdentities(after),
+  ].filter(identity => !known.has(identity)).sort()
 }
 
 /** Return the Cargo compatibility line of a version: `1`, `0.3`, or `0.0.4`. */
@@ -204,16 +222,12 @@ export function cargoLine(version) {
 }
 
 /**
- * Report each registry crate version that replaces a removed base version of the same
- * compatibility line with a lower version. An unchanged duplicate, another line, and an
- * addition beside a kept version are never compared.
+ * Report each registry crate version of `after` that replaces a removed version of `before`
+ * in the same compatibility line with a lower version. Both are Cargo.lock versions, as
+ * `Map<name, Set<version>>`. An unchanged duplicate, another line, and an addition beside a
+ * kept version are never compared.
  */
-export function cargoReplacementDowngrades(base, head) {
-  // An absent base locks nothing, so nothing can be replaced.
-  if (base == null)
-    return []
-  const before = lockedVersions('cargo', base)
-  const after = lockedVersions('cargo', head)
+export function cargoReplacementDowngrades(before, after) {
   const downgrades = []
   for (const [name, headVersions] of after) {
     const baseVersions = before.get(name)

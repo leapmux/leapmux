@@ -1,5 +1,6 @@
 import { renovateModule } from './renovate-engine.mjs'
-import { readRegistryJson } from './renovate-release-age.mjs'
+import { readCrateReleases, readNpmReleases } from './renovate-registry.mjs'
+import { isPublishedBy } from './renovate-release-age.mjs'
 
 const { api: cargoVersioning } = await renovateModule('modules/versioning/cargo/index.js')
 export function tauriMajorMinor(version) {
@@ -16,17 +17,30 @@ export function matchesCargoRequirement(version, requirement) {
  * Return the releases at or above the minimum that the policy admits. `authorizedBy` is
  * null for a release that needs no other selection: an old-enough release or an authorized
  * root. A young release in the closure of authorized roots lists those roots, and a plan
- * may select it only together with one of them. Every other young release is excluded.
+ * may select it only together with one of them. An authorized root or closure member must
+ * still meet the release age of a security fix, `securityMinimumAgeMs`, unless it has no
+ * publication time: Renovate holds a younger security fix back, as its
+ * `timestamp-optional` behaviour admits a fix without a timestamp. Every other young
+ * release is excluded.
  */
-export function eligibleTauriReleases(releases, minimum, { name, now = Date.now(), minimumAgeMs, authorized = new Map() }) {
+export function eligibleTauriReleases(releases, minimum, { name, now = Date.now(), minimumAgeMs, securityMinimumAgeMs = 0, authorized = new Map() }) {
   if (!Number.isSafeInteger(minimumAgeMs) || minimumAgeMs <= 0)
     throw new Error('Tauri release filtering requires a positive minimum age.')
+  if (!Number.isSafeInteger(securityMinimumAgeMs) || securityMinimumAgeMs < 0)
+    throw new Error('Tauri release filtering requires a nonnegative security age.')
   return releases.flatMap((release) => {
     if (!/^\d+\.\d+\.\d+$/.test(release.version) || release.yanked || Bun.semver.order(release.version, minimum) < 0)
       return []
-    const key = `${name}@${release.version}`
     const published = Date.parse(release.publishedAt)
-    if ((Number.isFinite(published) && now - published >= minimumAgeMs) || authorized.has(key)) {
+    if (isPublishedBy(published, now - minimumAgeMs)) {
+      return [
+        { ...release, authorizedBy: null },
+      ]
+    }
+    if (Number.isFinite(published) && !isPublishedBy(published, now - securityMinimumAgeMs))
+      return []
+    const key = `${name}@${release.version}`
+    if (authorized.has(key)) {
       return [
         { ...release, authorizedBy: null },
       ]
@@ -40,36 +54,34 @@ export function eligibleTauriReleases(releases, minimum, { name, now = Date.now(
   })
 }
 
-export async function readTauriReleases(name, request = fetch) {
-  const npm = name.startsWith('@tauri-apps/')
-  const url = npm
-    ? `https://registry.npmjs.org/${encodeURIComponent(name)}`
-    : `https://crates.io/api/v1/crates/${encodeURIComponent(name)}`
-  const metadata = await readRegistryJson(url, { request, description: 'Tauri companion metadata read' })
-  if (npm
-    ? !metadata.time || typeof metadata.time !== 'object'
-    : !Array.isArray(metadata.versions)) {
-    throw new Error(`Invalid Tauri release metadata: ${name}`)
-  }
-  return npm
-    ? Object.entries(metadata.time).map(([version, publishedAt]) => ({ version, publishedAt }))
-    : metadata.versions.map(release => ({ version: release.num, publishedAt: release.created_at, yanked: release.yanked }))
+/** Read the releases of a Tauri companion: an npm package or a crate. */
+export async function readTauriReleases(name, request) {
+  return name.startsWith('@tauri-apps/')
+    ? readNpmReleases(name, { request })
+    : readCrateReleases(name, { request })
 }
 
 /**
- * List compatible pairs without downgrading main or bypassing release age. A pair that
- * holds a conditionally eligible release lists, in `requires`, one set of authorizing
+ * List compatible pairs without downgrading main. Every changed release is old enough,
+ * unless an authorized root or its closure admits it (see `eligibleTauriReleases`). A pair
+ * that holds a conditionally eligible release lists, in `requires`, one set of authorizing
  * roots for each such release.
  */
-export function tauriPairCandidates(npmReleases, cargoReleases, { npmMinimum, cargoMinimum, existing = {}, security = false, preferLowest = security, safe = () => true, npmName, cargoName, now = Date.now(), minimumAgeMs, authorized = new Map(), maximumMajor = Math.max(Number(npmMinimum.split('.')[0]), Number(cargoMinimum.split('.')[0])) }) {
+export function tauriPairCandidates(npmReleases, cargoReleases, { npmMinimum, cargoMinimum, existing = {}, security = false, preferLowest = security, safe = () => true, npmName, cargoName, now = Date.now(), minimumAgeMs, securityMinimumAgeMs, authorized = new Map(), maximumMajor = Math.max(Number(npmMinimum.split('.')[0]), Number(cargoMinimum.split('.')[0])) }) {
   if (!Number.isSafeInteger(maximumMajor) || maximumMajor < 0)
     throw new Error('The selected Tauri major must be a nonnegative safe integer.')
   const direction = preferLowest
     ? 1
     : -1
   const eligible = (releases, minimum, name, current) => {
-    const candidates = eligibleTauriReleases(releases, minimum, { name, now, minimumAgeMs, authorized })
-    // Keeping a trusted locked version introduces no release; every changed version still needs a timestamp.
+    const candidates = eligibleTauriReleases(releases, minimum, {
+      name,
+      now,
+      minimumAgeMs,
+      securityMinimumAgeMs,
+      authorized,
+    })
+    // Keeping a trusted locked version introduces no release, so it needs no timestamp and no authorization.
     if (current && cargoVersioning.isVersion(current) && Bun.semver.order(current, minimum) >= 0) {
       const kept = candidates.find(release => release.version === current)
       if (kept)

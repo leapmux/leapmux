@@ -78,14 +78,15 @@ tasks:
       - task: build-renovate-re2
         if: '[ "{{OS}}" != "windows" ]'
 
-  validate-standalone-tools:
-    desc: Install and validate proposed standalone JavaScript tools
+  validate-site-tools:
+    desc: Install the locked site tools as the site workflow does, and validate wrangler
+    dir: site
     env:
       CI: 'true'
       WRANGLER_SEND_METRICS: 'false'
     cmds:
-      - bunx node-gyp@{{.NODE_GYP_VERSION}} --version
-      - bunx wrangler@{{.WRANGLER_VERSION}} --version
+      - bun install --frozen-lockfile --ignore-scripts
+      - ./node_modules/.bin/wrangler --version
 
   lint-renovate:
     desc: Validate Renovate configuration with the pinned CLI
@@ -111,7 +112,7 @@ tasks:
       - bun scripts/renovate-prepare.mjs {{.CLI_ARGS}}
 
   check-dependency-age:
-    desc: Reject a Renovate PR whose lockfiles add a version younger than the minimum release age
+    desc: Reject a pull request whose lockfiles add a version younger than the minimum release age
     deps: [install-renovate-packages]
     cmds:
       - bun scripts/check-dependency-age.mjs {{.CLI_ARGS}}
@@ -438,8 +439,10 @@ tasks:
     vars:
       JS_CONTEXT:
         sh: *js_context_command
+      # Leave CXX unquoted: a compiler command with options, such as `ccache c++`, is valid
+      # for node-gyp and make, and must stay valid here.
       CXX_CONTEXT:
-        sh: '"${CXX:-c++}" --version'
+        sh: '${CXX:-c++} --version'
       CACHE_CONTEXT: '{{.JS_CONTEXT}}/{{.CXX_CONTEXT}}/{{OS}}/{{ARCH}}'
       OUTPUTS: &outputs_build_renovate_re2
         - .github/renovate/node_modules/re2/build/Release/re2.node
@@ -758,6 +761,7 @@ tasks:
     deps: [install-frontend-deps]
     sources:
       - versions.env
+      - frontend/bun.lock
       - scripts/task-state.mjs
       - frontend/node_modules/macos-alias/package.json
       - frontend/node_modules/macos-alias/binding.gyp
@@ -775,7 +779,8 @@ tasks:
     status: *artifact_status
     cmds:
       - *forget_artifacts
-      - cd frontend/node_modules/macos-alias && bunx node-gyp@{{.NODE_GYP_VERSION}} rebuild
+      # frontend/bun.lock locks node-gyp, so the release build resolves no tool from the network.
+      - cd frontend/node_modules/macos-alias && node ../node-gyp/bin/node-gyp.js rebuild
       - *record_artifacts
 
   build-desktop-darwin:

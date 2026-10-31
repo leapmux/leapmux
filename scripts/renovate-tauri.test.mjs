@@ -1,14 +1,13 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'bun:test'
 import { parseBunLock, parseCargoLock, parseCargoManifest } from './renovate-lockfile-versions.mjs'
-import { assertTauriCompatibility, readTauriVersions, reconcileCargoRequirement, reconcileTauri, tauriPairs, tauriVersions } from './renovate-tauri.mjs'
+import { assertTauriCompatibility, readTauriVersions, reconcileCargoRequirement, reconcileTauri, tauriAuthorizedRoots, tauriPairs, tauriVersions } from './renovate-tauri.mjs'
+import { crateIndexResponse, isCrateIndexRead, scratchDirectories } from './test-support.mjs'
 
 const root = resolve(import.meta.dirname, '..')
-const fixtures = []
-afterEach(() => {
-  for (const fixture of fixtures.splice(0)) rmSync(fixture, { recursive: true, force: true })
-})
+const scratch = scratchDirectories()
+afterEach(scratch.cleanup)
 
 describe('readTauriVersions', () => {
   it('identifies direct pairs in the real lockfiles while retaining nested vulnerability occurrences', () => {
@@ -59,9 +58,7 @@ describe('readTauriVersions', () => {
 })
 
 function tauriFixture({ core = false, proposedCore = '2.11.0' } = {}) {
-  mkdirSync(resolve(root, '.tmp'), { recursive: true })
-  const fixture = mkdtempSync(resolve(root, '.tmp/tauri-companion-'))
-  fixtures.push(fixture)
+  const fixture = scratch.create('tauri-companion')
   const trusted = resolve(fixture, 'trusted')
   const proposed = resolve(fixture, 'proposed')
   const lock = (version, coreVersion = '2.11.0') => JSON.stringify({
@@ -120,24 +117,22 @@ describe('reconcileTauri', () => {
         { depName: 'tauri', newVersion: '2.12.0' },
         { depName: 'tauri-plugin-opener', newVersion: '2.6.0' },
       ],
-      request: async url => Response.json(url.includes('/dependencies')
-        ? { dependencies: [] }
-        : url.includes('registry.npmjs.org')
-          ? {
-              time: url.includes('plugin-opener')
-                ? {}
-                : { '2.12.0': publishedAt },
-            }
-          : {
-              versions: [
-                {
-                  num: url.includes('plugin-opener')
-                    ? '2.6.0'
-                    : '2.12.0',
-                  created_at: publishedAt,
-                },
-              ],
-            }),
+      request: async url => isCrateIndexRead(url)
+        ? crateIndexResponse([
+            {
+              vers: url.includes('plugin-opener')
+                ? '2.6.0'
+                : '2.12.0',
+              pubtime: publishedAt,
+            },
+          ])
+        : Response.json(url.includes('/dependencies')
+            ? { dependencies: [] }
+            : {
+                time: url.includes('plugin-opener')
+                  ? {}
+                  : { '2.12.0': publishedAt },
+              }),
       run: (...args) => calls.push(args),
     })).rejects.toThrow('compatible')
     expect(files.map(file => readFileSync(resolve(proposed, file), 'utf8'))).toEqual(before)
@@ -148,24 +143,21 @@ describe('reconcileTauri', () => {
     const publishedAt = new Date(Date.now() - 4 * 86400000).toISOString()
     const pending = []
     let released = false
-    const response = url => Response.json(url.includes('/dependencies')
-      ? { dependencies: [] }
-      : url.includes('registry.npmjs.org')
-        ? {
-            time: { [url.includes('plugin-opener')
-              ? '2.6.0'
-              : '2.12.0']: publishedAt },
-          }
-        : {
-            versions: [
-              {
-                num: url.includes('plugin-opener')
-                  ? '2.6.0'
-                  : '2.12.0',
-                created_at: publishedAt,
-              },
-            ],
-          })
+    const version = url => url.includes('plugin-opener')
+      ? '2.6.0'
+      : '2.12.0'
+    const response = url => isCrateIndexRead(url)
+      ? crateIndexResponse([
+          {
+            vers: version(url),
+            pubtime: publishedAt,
+          },
+        ])
+      : Response.json(url.includes('/dependencies')
+          ? { dependencies: [] }
+          : {
+              time: { [version(url)]: publishedAt },
+            })
     const running = reconcileTauri({
       root: proposed,
       trusted,
@@ -188,30 +180,28 @@ describe('reconcileTauri', () => {
   it('includes a previously unchanged core pair when a plugin requires a newer core', async () => {
     const { proposed, trusted, lock } = tauriFixture({ core: true })
     const publishedAt = new Date(Date.now() - 4 * 86400000).toISOString()
-    const request = async url => Response.json(url.includes('/dependencies')
-      ? {
-          dependencies: url.includes('plugin-opener')
-            ? [
-                {
-                  crate_id: 'tauri',
-                  req: '2.12',
-                  kind: 'normal',
-                  optional: false,
-                },
-              ]
-            : [],
-        }
-      : url.includes('registry.npmjs.org')
-        ? {
-            time: Object.fromEntries((url.includes('plugin-opener')
-              ? ['2.7.0']
-              : ['2.11.0', '2.12.0']).map(version => [version, publishedAt])),
-          }
-        : {
-            versions: (url.includes('plugin-opener')
-              ? ['2.6.0', '2.7.0']
-              : ['2.11.0', '2.12.0']).map(num => ({ num, created_at: publishedAt })),
-          })
+    const request = async url => isCrateIndexRead(url)
+      ? crateIndexResponse((url.includes('plugin-opener')
+          ? ['2.6.0', '2.7.0']
+          : ['2.11.0', '2.12.0']).map(vers => ({ vers, pubtime: publishedAt })))
+      : Response.json(url.includes('/dependencies')
+          ? {
+              dependencies: url.includes('plugin-opener')
+                ? [
+                    {
+                      crate_id: 'tauri',
+                      req: '2.12',
+                      kind: 'normal',
+                      optional: false,
+                    },
+                  ]
+                : [],
+            }
+          : {
+              time: Object.fromEntries((url.includes('plugin-opener')
+                ? ['2.7.0']
+                : ['2.11.0', '2.12.0']).map(version => [version, publishedAt])),
+            })
     const calls = []
     await reconcileTauri({
       root: proposed,
@@ -255,7 +245,7 @@ describe('reconcileTauri', () => {
         },
       ],
       securityTargets: { '@tauri-apps/plugin-opener': '2.6.3', 'tauri-plugin-opener': '2.6.0' },
-      authorized: { npm: {}, crates: {}, go: {} },
+      authorized: {},
     }))
     const before = readFileSync(resolve(proposed, 'frontend/package.json'), 'utf8')
     await expect(reconcileTauri({
@@ -277,18 +267,16 @@ describe('reconcileTauri', () => {
     await reconcileTauri({
       root: proposed,
       trusted,
-      request: async url => Response.json(url.includes('/dependencies')
-        ? { dependencies: [] }
-        : url.includes('registry.npmjs.org')
-          ? {
-              time: { '2.5.0': publishedAt, '2.6.3': publishedAt },
-            }
-          : {
-              versions: [
-                { num: '2.5.0', created_at: publishedAt },
-                { num: '2.6.0', created_at: publishedAt },
-              ],
-            }),
+      request: async url => isCrateIndexRead(url)
+        ? crateIndexResponse([
+            { vers: '2.5.0', pubtime: publishedAt },
+            { vers: '2.6.0', pubtime: publishedAt },
+          ])
+        : Response.json(url.includes('/dependencies')
+            ? { dependencies: [] }
+            : {
+                time: { '2.5.0': publishedAt, '2.6.3': publishedAt },
+              }),
       run: (command, args) => {
         expect(command).toBe('bun')
         expect(args).toEqual(['install', '--ignore-scripts'])
@@ -309,20 +297,43 @@ describe('reconcileTauri', () => {
       upgrades: [
         { depName: 'tauri-plugin-opener', newVersion: '2.6.0' },
       ],
-      request: async url => Response.json(url.includes('/dependencies')
-        ? { dependencies: [] }
-        : url.includes('registry.npmjs.org')
-          ? {
-              time: { '2.5.0': publishedAt },
-            }
-          : {
-              versions: [
-                { num: '2.5.0', created_at: publishedAt },
-                { num: '2.6.0', created_at: publishedAt },
-              ],
-            }),
+      request: async url => isCrateIndexRead(url)
+        ? crateIndexResponse([
+            { vers: '2.5.0', pubtime: publishedAt },
+            { vers: '2.6.0', pubtime: publishedAt },
+          ])
+        : Response.json(url.includes('/dependencies')
+            ? { dependencies: [] }
+            : {
+                time: { '2.5.0': publishedAt },
+              }),
       run: () => { throw new Error('Unexpected mutation.') },
     })).rejects.toThrow('No compatible Tauri graph')
+  })
+  it('rejects a malformed authorized map of the prepared file before any registry read or write', async () => {
+    const { proposed, trusted } = tauriFixture()
+    for (const authorized of [
+      {
+        crates: { 'tauri-plugin-opener@2.6.0': [] },
+      },
+      {
+        'desktop/rust/Cargo.lock': { 'tauri-plugin-opener@2.6.0': 'tauri@2.11.0' },
+      },
+      [],
+    ]) {
+      writeFileSync(resolve(trusted, '.tmp/renovate-prepared.json'), JSON.stringify({ alerts: [], securityTargets: {}, authorized }))
+      await expect(reconcileTauri({
+        root: proposed,
+        trusted,
+        security: true,
+        request: async () => {
+          throw new Error('Unexpected registry read.')
+        },
+        run: () => {
+          throw new Error('Unexpected execution.')
+        },
+      }), JSON.stringify(authorized)).rejects.toThrow(/unexpected lockfile|must list package identities|must map each lockfile path/)
+    }
   })
   it('requires the authorized fixes of the prepared file for security processing', async () => {
     const { proposed, trusted } = tauriFixture()
@@ -341,7 +352,8 @@ describe('reconcileTauri', () => {
   it('selects a young authorized fix on a security branch only', async () => {
     const day = 86400000
     const old = new Date(Date.now() - 4 * day).toISOString()
-    const young = new Date(Date.now() - 3600000).toISOString()
+    // Old enough for a security fix (two hours), and too young for a routine update.
+    const young = new Date(Date.now() - 3 * 3600000).toISOString()
     const attempt = (crates, security) => {
       const { proposed, trusted, lock } = tauriFixture()
       writeFileSync(resolve(trusted, '.tmp/renovate-prepared.json'), JSON.stringify({
@@ -357,7 +369,7 @@ describe('reconcileTauri', () => {
           },
         ],
         securityTargets: {},
-        authorized: { npm: {}, crates, go: {} },
+        authorized: { 'desktop/rust/Cargo.lock': crates },
       }))
       const calls = []
       const running = reconcileTauri({
@@ -367,18 +379,16 @@ describe('reconcileTauri', () => {
         upgrades: [
           { depName: 'tauri-plugin-opener', newVersion: '2.6.0', isVulnerabilityAlert: security },
         ],
-        request: async url => Response.json(url.includes('/dependencies')
-          ? { dependencies: [] }
-          : url.includes('registry.npmjs.org')
-            ? {
-                time: { '2.5.0': old, '2.6.0': old },
-              }
-            : {
-                versions: [
-                  { num: '2.5.0', created_at: old },
-                  { num: '2.6.0', created_at: young },
-                ],
-              }),
+        request: async url => isCrateIndexRead(url)
+          ? crateIndexResponse([
+              { vers: '2.5.0', pubtime: old },
+              { vers: '2.6.0', pubtime: young },
+            ])
+          : Response.json(url.includes('/dependencies')
+              ? { dependencies: [] }
+              : {
+                  time: { '2.5.0': old, '2.6.0': old },
+                }),
         run: (command) => {
           calls.push(command)
           const manifest = JSON.parse(readFileSync(resolve(proposed, 'frontend/package.json'), 'utf8'))
@@ -408,7 +418,7 @@ describe('reconcileTauri', () => {
     writeFileSync(resolve(trusted, '.tmp/renovate-prepared.json'), JSON.stringify({
       alerts: [],
       securityTargets: { '@tauri-apps/plugin-opener': '2.6.3', 'tauri-plugin-opener': '2.6.0' },
-      authorized: { npm: {}, crates: {}, go: {} },
+      authorized: {},
     }))
     await reconcileTauri({
       root: proposed,
@@ -433,6 +443,55 @@ describe('readTauriVersions', () => {
     writeFileSync(resolve(trusted, 'desktop/rust/Cargo.lock'), '[[package]]\nname = "tauri"\nversion = "2.11.3"\n[[package]]\nname = "tauri"\nversion = "3.0.0"\n[[package]]\nname = "tauri-plugin-opener"\nversion = "2.5.0"\n')
     expect(readTauriVersions(trusted).cargo.tauri).toBe('2.11.3')
     expect(() => readTauriVersions(resolve(trusted, 'missing'))).toThrow()
+  })
+})
+
+describe('tauriAuthorizedRoots', () => {
+  const pairs = [
+    {
+      npm: '@tauri-apps/api',
+      cargo: 'tauri',
+      npmVersion: '2.11.0',
+      cargoVersion: '2.11.0',
+    },
+    {
+      npm: '@tauri-apps/plugin-opener',
+      cargo: 'tauri-plugin-opener',
+      npmVersion: '2.5.0',
+      cargoVersion: '2.5.0',
+    },
+  ]
+  it('keeps the roots of the Tauri packages, with their closures, from the lockfiles of both sides', () => {
+    expect(tauriAuthorizedRoots({
+      'frontend/bun.lock': {
+        '@tauri-apps/api@2.11.1': ['@tauri-apps/cli@2.11.1'],
+      },
+      'desktop/rust/Cargo.lock': {
+        'tauri-plugin-opener@2.5.1': ['tauri@2.11.1'],
+      },
+    }, pairs)).toEqual(new Map([
+      [
+        '@tauri-apps/api@2.11.1',
+        new Set(['@tauri-apps/cli@2.11.1']),
+      ],
+      [
+        'tauri-plugin-opener@2.5.1',
+        new Set(['tauri@2.11.1']),
+      ],
+    ]))
+  })
+  it('drops the roots of other packages, and every root of another lockfile', () => {
+    expect(tauriAuthorizedRoots({
+      'frontend/bun.lock': { 'which@6.0.0': [] },
+      'desktop/rust/Cargo.lock': {
+        'which@6.0.0': ['tauri@2.11.1'],
+      },
+      // The Renovate tree is not a side of a Tauri pair, even for a Tauri package name.
+      '.github/renovate/bun.lock': { '@tauri-apps/api@2.11.1': [] },
+    }, pairs)).toEqual(new Map())
+  })
+  it('authorizes nothing without a prepared map', () => {
+    expect(tauriAuthorizedRoots(undefined, pairs)).toEqual(new Map())
   })
 })
 
@@ -499,5 +558,28 @@ describe('assertTauriCompatibility', () => {
     expect(() => tauriVersions(bun, cargo)).toThrow('direct locked Tauri version')
     expect(tauriVersions(bun, cargo, '[dependencies]\ntauri = "2"\n').occurrences.cargo.tauri).toEqual(['2.11.3', '3.0.0'])
     expect(() => tauriVersions(bun, '[[package]]\nname = "tauri"\nversion = "3.0.0"\n', '[dependencies]\ntauri = "2"\n')).toThrow('direct locked Tauri version')
+  })
+  it('rejects a direct Tauri package that bun.lock locks outside the npm registry or under another name', () => {
+    const cargo = '[[package]]\nname = "tauri"\nversion = "2.11.3"\n'
+    for (const identity of [
+      '@tauri-apps/api@workspace:packages/api',
+      '@tauri-apps/api@github:tauri-apps/tauri#abc123',
+      'tauri-api-fork@2.11.1',
+    ]) {
+      const bun = JSON.stringify({
+        packages: {
+          '@tauri-apps/api': [identity],
+        },
+      })
+      expect(() => tauriVersions(bun, cargo), identity).toThrow(`bun.lock must lock @tauri-apps/api at an npm registry version, not ${identity}.`)
+    }
+    // A nested copy of another package under a Tauri key path is not a direct pair.
+    const nested = JSON.stringify({
+      packages: {
+        '@tauri-apps/api': ['@tauri-apps/api@2.11.1'],
+        'x/@tauri-apps/api': ['@tauri-apps/api@2.10.0'],
+      },
+    })
+    expect(tauriVersions(nested, cargo).occurrences.npm['@tauri-apps/api']).toEqual(['2.10.0', '2.11.1'])
   })
 })

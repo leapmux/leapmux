@@ -29,7 +29,7 @@
   "commitMessageLowerCase": "never",
   "commitMessageTopic": "{{depName}}",
   "prBodyNotes": [
-    "{{#if isVulnerabilityAlert}}Renovate proposes this security fix as soon as the advisory lists it. Only the patched version and the versions that it pins exactly skip the minimum release age. Required CI rejects any other version in this PR that is younger than that age. Check the release date and the source of the patched version before you merge.{{/if}}"
+    "{{#if isVulnerabilityAlert}}Renovate proposes this security fix once the patched version is two hours old. Only the patched version and the versions that it pins exactly skip the minimum release age. Required CI rejects any other lockfile version in this PR that is younger than that age. It checks no version in a workflow. Check the release date and the source of the patched version, and of each such version, before you merge.{{/if}}"
   ],
   "prBodyTemplate": "## Motivation\n\n- Keep dependencies current and address reported vulnerabilities.\n\n## Modifications\n\n{{{table}}}\n\n## Result\n\n- Dependency changes remain subject to human review and required CI.",
   "vulnerabilityAlerts": {
@@ -40,7 +40,8 @@
     "additionalBranchPrefix": "{{#if (equals manager \"gomod\")}}go-{{/if}}",
     "schedule": [],
     "dependencyDashboardApproval": false,
-    "minimumReleaseAge": null,
+    "minimumReleaseAge": "2 hours",
+    "minimumReleaseAgeBehaviour": "timestamp-optional",
     "internalChecksFilter": "strict",
     "vulnerabilityFixStrategy": "lowest",
     "commitMessageSuffix": "",
@@ -146,6 +147,15 @@
       ],
       "groupName": "Renovate",
       "rangeStrategy": "pin"
+    },
+    {
+      "matchManagers": [
+        "bun"
+      ],
+      "matchFileNames": [
+        "site/package.json"
+      ],
+      "groupName": "site"
     },
     {
       "matchManagers": [

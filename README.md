@@ -562,9 +562,19 @@ Each run creates and maintains routine branches, lockfile maintenance, and secur
 
 - Routine major updates wait for approval in the Dependency Dashboard.
 - Security fixes, including major fixes, bypass dashboard approval.
+  Renovate proposes a security fix once the patched version is two hours old.
+  Within those two hours, Renovate stops the whole run when the artifacts of a new security branch fail, so a younger fix waits for the next run.
 - Every new dependency version needs a release timestamp and a release age of at least three days.
-  `Required CI` rejects a Renovate PR whose lockfiles add a younger version.
-  A security PR may add the advisory's patched version and the versions that it pins exactly, and its PR comments say so.
+  `Required CI` rejects a pull request whose lockfiles add a younger version, whoever opens it.
+  To take a younger version, wait until it is old enough, and then run the check again.
+  Renovate already holds a new bun or cargo version to the age while it writes a branch.
+  cargo resolves through a local copy of the crates.io index that leaves out every younger version.
+  A young Go module that `go mod tidy` adds appears only in `Required CI`, after Renovate opens the PR.
+- A security PR may add the advisory's patched version and the versions that it pins exactly, and its PR comments say so.
+  Only a package that an open Dependabot alert reports, in the lockfile that the alert gives, may take such a fix.
+  A security PR also takes a new version of a pin in a workflow, and no check covers that pin: a tag records no publication time that its author cannot change.
+  Check the release date of such a pin before you merge.
+  `versions.env` holds no pin that a Dependabot alert can match, and a test enforces this, so a lockfile check covers every such dependency.
 - Every merge needs a human review and the `Required CI` and `NOTICE` checks.
   Renovate never approves or merges a pull request (PR).
 
@@ -576,6 +586,7 @@ Warnings, security advisories, and release notes go into bot-owned PR comments.
 A dry run renders no PR, so it captures none.
 
 Dependabot alerts supply the vulnerability findings.
+`Required CI` reads the open alerts of a security branch with its job token, which has the `vulnerability-alerts: read` permission.
 Keep the dependency graph and Dependabot alerts enabled.
 Keep Dependabot's automatic security-update PRs disabled.
 See [Renovate's security-update requirements](https://docs.renovatebot.com/configuration-options/#vulnerabilityalerts).
@@ -583,7 +594,7 @@ See [Renovate's security-update requirements](https://docs.renovatebot.com/confi
 `.github/renovate/` pins Renovate and its complete dependency tree.
 `task install-renovate` installs it with `--frozen-lockfile --ignore-scripts`.
 On macOS and Linux, it then compiles Renovate's RE2 regular-expression engine from the locked sources.
-`task lint`, `task test-scripts`, and `task test` therefore need a C++ compiler there.
+`task lint`, `task test-scripts`, and `task test` therefore need a C++ compiler and Python 3 there, which node-gyp uses.
 Run the Renovate targets with the Node.js and Bun versions in `versions.env`.
 A run fails when it exceeds 50 minutes, or when Renovate cannot finish the repository, for example after a network error.
 Each run uploads its logs, timing records, and tool invocation records as the `renovate-diagnostics` artifact.
@@ -591,7 +602,9 @@ Each run uploads its logs, timing records, and tool invocation records as the `r
 #### Credentials
 
 A repository administrator owns the GitHub App, its credentials, and the activation settings.
-The App is registered under [the leapmux organization](https://github.com/organizations/leapmux/settings/apps/new), with webhooks disabled.
+The App is registered under [the leapmux organization](https://github.com/organizations/leapmux/settings/apps/new).
+Its homepage is the repository URL, and its webhooks are disabled.
+Only this account may install it ("Only on this account"), so nobody else can install it on another repository.
 It is installed **only** on `leapmux/leapmux`, with these repository permissions:
 
 | Permission | Access |
@@ -666,6 +679,8 @@ To resume after a suspension, follow these steps:
    ```
 
 2. Check its `renovate-diagnostics` artifact. The queue, including the measured rebases, must finish within 40 minutes.
+   The run measures the rebases only when it proposes a Go workspace update.
+   When `.tmp/renovate-rebase-benchmark.json` reports `skipped`, dispatch another dry run after a Go update appears.
 3. Set `RENOVATE_PUBLISH_READY=true`, then dispatch one publishing run with `-f mode=publish`.
 4. Check the dashboard, the PRs, and CI. Then set `RENOVATE_ENABLED=true`.
 
@@ -735,6 +750,7 @@ The image uses a multi-stage build (buf, Bun, Go). `versions.env` at the reposit
 ### Tool versions
 
 `versions.env` is the single source of truth for every toolchain and base-image version.
+A JavaScript tool is not a toolchain: a lockfile pins it, as `frontend/bun.lock` pins node-gyp and `site/bun.lock` pins wrangler.
 These consumers read it directly:
 
 - `Taskfile.yaml` loads it through `dotenv:`.

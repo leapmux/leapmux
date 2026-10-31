@@ -1,5 +1,5 @@
-import { splitIdentity } from './renovate-exemptions.mjs'
-import { readRegistryJson, releaseAgeMs } from './renovate-release-age.mjs'
+import { readCrateDependencies, splitIdentity } from './renovate-exemptions.mjs'
+import { releaseAgeMs, securityReleaseAgeMs } from './renovate-release-age.mjs'
 import { matchesCargoRequirement, readTauriReleases, tauriMajorMinor, tauriPairCandidates } from './renovate-tauri-releases.mjs'
 import { lockedTauriVersions, tauriAdvisories } from './renovate-tauri-security.mjs'
 
@@ -15,11 +15,8 @@ function selectedVersion(upgrades, name, baseline) {
 }
 
 async function readDependencies(name, version, request) {
-  const url = `https://crates.io/api/v1/crates/${encodeURIComponent(name)}/${encodeURIComponent(version)}/dependencies`
-  const metadata = await readRegistryJson(url, { request, description: 'Tauri dependency metadata read' })
-  if (!Array.isArray(metadata.dependencies))
-    throw new TypeError(`Invalid Tauri dependency metadata: ${name}@${version}`)
-  return metadata.dependencies.filter(dependency => dependency.kind === 'normal' && !dependency.optional).map((dependency) => {
+  const dependencies = await readCrateDependencies(name, version, { request })
+  return dependencies.filter(dependency => dependency.kind === 'normal' && !dependency.optional).map((dependency) => {
     if (typeof dependency.crate_id !== 'string' || typeof dependency.req !== 'string')
       throw new TypeError(`Invalid Tauri dependency requirement: ${name}@${version}`)
     return { name: dependency.crate_id, requirement: dependency.req }
@@ -44,16 +41,13 @@ function preparedPair(pair, targets, advisories) {
 /**
  * Select the whole companion graph before any manifest or lockfile changes. Every changed
  * version is old enough, an authorized root, or in the closure of an authorized root that
- * the same plan introduces. `exemptions.authorized` maps each root to its closure.
+ * the same plan introduces. `authorizedRoots` maps each root to the set of its closure.
  */
-export async function planTauriTargets(pairs, { policy, alerts = [], upgrades = [], baseline, proposed, security = false, preparedTargets = null, exemptions = {
-  authorized: new Map(),
-}, request = fetch, now = Date.now() }) {
-  const authorized = exemptions?.authorized
-  if (!(authorized instanceof Map) || [
-    ...authorized.values(),
+export async function planTauriTargets(pairs, { policy, alerts = [], upgrades = [], baseline, proposed, security = false, preparedTargets = null, authorizedRoots = new Map(), request, now = Date.now() }) {
+  if (!(authorizedRoots instanceof Map) || [
+    ...authorizedRoots.values(),
   ].some(closure => !(closure instanceof Set))) {
-    throw new TypeError('Tauri exemptions require a map from each authorized root to the set of its closure.')
+    throw new TypeError('The authorized Tauri roots require a map from each root to the set of its closure.')
   }
   const advisories = tauriAdvisories(alerts)
   if (preparedTargets && Object.keys(preparedTargets).length > 0 && !security)
@@ -101,6 +95,10 @@ export async function planTauriTargets(pairs, { policy, alerts = [], upgrades = 
 
   // Registry reads for independent pairs overlap; all package-manager writes remain sequential.
   const hasSecurityRoot = contexts.some(context => context.securityRoot)
+  // A security fix waits as a routine update does, except for the authorized exemptions,
+  // which wait for the release age of a security fix.
+  const age = releaseAgeMs(policy)
+  const securityAge = securityReleaseAgeMs(policy)
   const loadDomain = async (context) => {
     const { pair, prepared, npmSelected, cargoSelected, npmFixed, cargoFixed, maximumMajor } = context
     if (prepared) {
@@ -114,8 +112,6 @@ export async function planTauriTargets(pairs, { policy, alerts = [], upgrades = 
       readTauriReleases(pair.npm, request),
       readTauriReleases(pair.cargo, request),
     ])
-    // A security fix waits as a routine update does, except for the authorized exemptions.
-    const age = releaseAgeMs(policy)
     const minimum = (selected, fixed) => fixed && Bun.semver.order(fixed, selected) > 0
       ? fixed
       : selected
@@ -139,7 +135,8 @@ export async function planTauriTargets(pairs, { policy, alerts = [], upgrades = 
         : !cargoFixed && cargoSelected === pair.cargoVersion && version === pair.cargoVersion),
       now,
       minimumAgeMs: age,
-      authorized,
+      securityMinimumAgeMs: securityAge,
+      authorized: authorizedRoots,
       maximumMajor,
     })
     candidates.sort((a, b) => Number(Number(a.cargo.split('.')[0]) > maximumMajor) - Number(Number(b.cargo.split('.')[0]) > maximumMajor))

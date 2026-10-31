@@ -1,31 +1,27 @@
 import { Buffer } from 'node:buffer'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { delimiter, join, resolve } from 'node:path'
 import process from 'node:process'
 import { gzipSync } from 'node:zlib'
 import { afterEach, describe, expect, it } from 'bun:test'
 import { lockedVersions } from './renovate-lockfile-versions.mjs'
 import { toolShimPaths, writeToolShims } from './renovate-shims.mjs'
+import { git, gitRepository, scratchDirectories, writeFiles } from './test-support.mjs'
 
 const root = resolve(import.meta.dirname, '..')
-const fixtures = []
+const scratch = scratchDirectories()
 const servers = []
 afterEach(() => {
   for (const server of servers.splice(0)) server.stop(true)
-  for (const fixture of fixtures.splice(0)) rmSync(fixture, { recursive: true, force: true })
+  scratch.cleanup()
 })
 
 const old = '2026-01-01T00:00:00.000Z'
 const young = () => new Date(Date.now() - 3600000).toISOString()
 
-function fixture() {
-  mkdirSync(resolve(root, '.tmp'), { recursive: true })
-  const directory = mkdtempSync(resolve(root, '.tmp/renovate-shims-native-'))
-  fixtures.push(directory)
-  return directory
-}
+const fixture = () => scratch.create('renovate-shims-native')
 
 // The test process serves the registries, so every tool runs asynchronously.
 async function run(command, args, { cwd, env }) {
@@ -43,59 +39,26 @@ async function run(command, args, { cwd, env }) {
   return { status, stdout, stderr }
 }
 
-function write(directory, files) {
-  for (const [file, content] of Object.entries(files)) {
-    mkdirSync(resolve(directory, file, '..'), { recursive: true })
-    writeFileSync(resolve(directory, file), content)
-  }
-}
-
-// Pin the repository configuration, as testutil.NewGitRepo does: a global fsmonitor
-// daemon would outlive the command and race the fixture cleanup.
-function repository(directory, files) {
-  write(directory, files)
-  const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
-  for (const args of [
-    ['init', '-q', '-b', 'main'],
-    ['config', 'core.fsmonitor', 'false'],
-    ['config', 'gc.auto', '0'],
-    ['config', 'maintenance.auto', 'false'],
-    ['config', 'user.email', 'fixture@example.com'],
-    ['config', 'user.name', 'Fixture'],
-    ['config', 'commit.gpgsign', 'false'],
-    ['add', '-A'],
-    ['commit', '-q', '-m', 'base'],
-  ]) {
-    const result = spawnSync('git', args, { cwd: directory, encoding: 'utf8', env })
-    expect(result.status, `git ${args.join(' ')}: ${result.stderr}`).toBe(0)
-  }
-  return directory
-}
-
+// Commit every change of the repository as a new base.
 function commit(directory) {
-  const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
-  for (const args of [
-    ['add', '-A'],
-    ['commit', '-q', '-m', 'base lockfile'],
-  ]) {
-    const result = spawnSync('git', args, { cwd: directory, encoding: 'utf8', env })
-    expect(result.status, result.stderr).toBe(0)
-  }
+  git(directory, ['add', '--all'])
+  git(directory, [
+    'commit',
+    '--quiet',
+    '--message',
+    'base lockfile',
+  ])
 }
 
-function shims(directory, { npm = {}, crates = {}, cratesApi, maxRepairRounds } = {}) {
+// The prepared map keys the roots of each lockfile by its path in the repository.
+function shims(directory, { authorized = {}, cratesIndex } = {}) {
   writeToolShims({
     root: directory,
     policy: { minimumReleaseAge: '3 days', minimumReleaseAgeBuffer: null },
-    prepared: {
-      authorized: { npm, crates, go: {} },
-    },
+    prepared: { authorized },
     env: { PATH: process.env.PATH },
-    ...(cratesApi
-      ? { cratesApi }
-      : {}),
-    ...(maxRepairRounds
-      ? { maxRepairRounds }
+    ...(cratesIndex
+      ? { cratesIndex }
       : {}),
   })
   return toolShimPaths(directory)
@@ -187,8 +150,10 @@ function crateIndexPath(name) {
       : `${name.slice(0, 2)}/${name.slice(2, 4)}/${name}`
 }
 
-// A sparse index with a crates API. The test changes `crates` between the base and the
-// head, as a registry gains releases after main locks its versions.
+// A sparse index whose entries carry the publication time of each version, as the
+// crates.io index does. The test changes `crates` between the base and the head, as a
+// registry gains releases after main locks its versions. `index` is the source that cargo
+// reads, and `shimIndex` is the same index as the shim reads it.
 function crateRegistry(crates) {
   const server = Bun.serve({
     port: 0,
@@ -200,7 +165,7 @@ function crateRegistry(crates) {
         return Response.json({ dl: `${base}/dl`, api: base })
       for (const [name, versions] of Object.entries(crates)) {
         if (path === `/index/${crateIndexPath(name)}`) {
-          return new Response(Object.entries(versions).map(([vers, { deps = {} }]) => JSON.stringify({
+          return new Response(Object.entries(versions).map(([vers, { time, deps = {} }]) => JSON.stringify({
             name,
             vers,
             deps: Object.entries(deps).map(([dependency, req]) => ({
@@ -215,19 +180,16 @@ function crateRegistry(crates) {
             cksum: '0'.repeat(64),
             features: {},
             yanked: false,
+            // crates.io writes whole seconds, and cargo rejects an entry with fractional seconds.
+            pubtime: new Date(time).toISOString().replace(/\.\d{3}Z$/, 'Z'),
           })).join('\n'))
-        }
-        if (path === `/api/v1/crates/${name}`) {
-          return Response.json({
-            versions: Object.entries(versions).map(([num, { time }]) => ({ num, created_at: time, yanked: false })),
-          })
         }
       }
       return new Response('not found', { status: 404 })
     },
   })
   servers.push(server)
-  return { index: `sparse+http://127.0.0.1:${server.port}/index/`, api: `http://127.0.0.1:${server.port}/api/v1` }
+  return { index: `sparse+http://127.0.0.1:${server.port}/index/`, shimIndex: `http://127.0.0.1:${server.port}/index` }
 }
 
 function toolEnvironment(directory, paths, extra = {}) {
@@ -248,11 +210,11 @@ function toolEnvironment(directory, paths, extra = {}) {
 describe.skipIf(process.platform === 'win32')('the generated tool shims with real tools', () => {
   it('starts under Node and writes shims that run the real Bun', async () => {
     const directory = fixture()
-    write(directory, {
+    writeFiles(directory, {
       'frontend/bun.lock': readFileSync(resolve(root, 'frontend/bun.lock')),
       'desktop/rust/Cargo.lock': readFileSync(resolve(root, 'desktop/rust/Cargo.lock')),
     })
-    const source = `const {writeToolShims}=await import(${JSON.stringify(new URL('./renovate-shims.mjs', import.meta.url).href)}); const {readFileSync}=await import('node:fs'); writeToolShims({root:process.argv[1],policy:JSON.parse(readFileSync(process.argv[2],'utf8')),prepared:{authorized:{npm:{},crates:{'glib@0.20.0':[]},go:{}}}}); process.stdout.write(process.versions.bun??'node')`
+    const source = `const {writeToolShims}=await import(${JSON.stringify(new URL('./renovate-shims.mjs', import.meta.url).href)}); const {readFileSync}=await import('node:fs'); writeToolShims({root:process.argv[1],policy:JSON.parse(readFileSync(process.argv[2],'utf8')),prepared:{authorized:{'desktop/rust/Cargo.lock':{'glib@0.20.0':[]}}}}); process.stdout.write(process.versions.bun??'node')`
     const started = spawnSync('node', [
       '--input-type=module',
       '-e',
@@ -273,11 +235,9 @@ describe.skipIf(process.platform === 'win32')('the generated tool shims with rea
         cargo: Bun.which('cargo'),
       },
       authorized: {
-        npm: {},
-        crates: { 'glib@0.20.0': [] },
+        'desktop/rust/Cargo.lock': { 'glib@0.20.0': [] },
       },
-      cratesApi: 'https://crates.io/api/v1',
-      maxRepairRounds: 10,
+      cratesIndex: 'https://index.crates.io',
       invocationLog: paths.invocationLog,
     })
     for (const tool of ['bun', 'cargo']) {
@@ -340,11 +300,17 @@ describe.skipIf(process.platform === 'win32')('the generated tool shims with rea
     function project(dependencies, authorized = {}) {
       const directory = fixture()
       const registry = npmRegistry(packages())
-      const app = repository(join(directory, 'app'), {
-        'package.json': `${JSON.stringify({ name: 'app', private: true, dependencies }, null, 2)}\n`,
-        'bunfig.toml': `[install]\nregistry = "${registry}"\n`,
+      const repository = join(directory, 'repository')
+      gitRepository(repository, {
+        files: {
+          'frontend/package.json': `${JSON.stringify({ name: 'app', private: true, dependencies }, null, 2)}\n`,
+          'frontend/bunfig.toml': `[install]\nregistry = "${registry}"\n`,
+        },
       })
-      const paths = shims(directory, { npm: authorized })
+      const app = join(repository, 'frontend')
+      const paths = shims(directory, {
+        authorized: { 'frontend/bun.lock': authorized },
+      })
       // Isolate HOME, so that a global bunfig cannot set its own release age.
       const env = toolEnvironment(directory, paths, {
         HOME: join(directory, 'home'),
@@ -355,6 +321,7 @@ describe.skipIf(process.platform === 'win32')('the generated tool shims with rea
       const locked = () => identities(lockedVersions('bun', readFileSync(join(app, 'bun.lock'), 'utf8')))
       return {
         app,
+        repository,
         paths,
         env,
         install,
@@ -370,9 +337,9 @@ describe.skipIf(process.platform === 'win32')('the generated tool shims with rea
       expect(invocations(paths)).toEqual([
         expect.objectContaining({
           tool: 'bun',
-          cwd: '.',
+          cwd: 'frontend',
           args: ['install', '--ignore-scripts'],
-          effectiveArgs: ['install', '--ignore-scripts', '--minimum-release-age=259200'],
+          effectiveArgs: ['install', '--minimum-release-age=259200', '--ignore-scripts'],
           activeRoots: [],
           baseExcludes: 0,
           exitCode: 0,
@@ -380,9 +347,9 @@ describe.skipIf(process.platform === 'win32')('the generated tool shims with rea
       ])
     })
     it('resolves lockfile maintenance to the old-enough version and keeps the base identities', async () => {
-      const { app, install, locked, paths } = project({ x: '^1.0.0' })
+      const { app, repository, install, locked, paths } = project({ x: '^1.0.0' })
       expect((await install()).status).toBe(0)
-      commit(app)
+      commit(repository)
       rmSync(join(app, 'bun.lock'))
       const result = await install()
       expect(result.status, result.stderr).toBe(0)
@@ -390,19 +357,19 @@ describe.skipIf(process.platform === 'win32')('the generated tool shims with rea
       expect(invocations(paths).at(-1)).toMatchObject({
         effectiveArgs: [
           'install',
-          '--ignore-scripts',
           '--minimum-release-age=259200',
           '--minimum-release-age-excludes=…(2 entries)',
+          '--ignore-scripts',
         ],
         baseExcludes: 2,
       })
     })
     it('installs a declared security fix and its exact pin, and rejects any other young version', async () => {
-      const { app, install, declare, locked, paths } = project({ x: '^1.0.0' }, {
+      const { app, repository, install, declare, locked, paths } = project({ x: '^1.0.0' }, {
         'x@1.1.0': ['x-core@1.1.0'],
       })
       expect((await install()).status).toBe(0)
-      commit(app)
+      commit(repository)
       declare({ x: '1.1.0' })
       const fixed = await install()
       expect(fixed.status, fixed.stderr).toBe(0)
@@ -437,11 +404,11 @@ describe.skipIf(process.platform === 'win32')('the generated tool shims with rea
       expect(readFileSync(join(app, 'bun.lock'), 'utf8')).toBe(before)
     })
     it('keeps a young version that the base already locks and rejects a newly introduced one', async () => {
-      const { app, env, declare, install, locked, paths } = project({ x: '1.1.0' })
+      const { app, repository, env, declare, install, locked, paths } = project({ x: '1.1.0' })
       // Main locked the young fix while its alert was open. Real Bun writes that base.
       const based = await run(Bun.which('bun'), ['install', '--ignore-scripts'], { cwd: app, env })
       expect(based.status, based.stderr).toBe(0)
-      commit(app)
+      commit(repository)
       rmSync(join(app, 'bun.lock'))
       declare({ x: '1.1.0', z: '>=1.0.0' })
       const result = await install()
@@ -458,28 +425,33 @@ describe.skipIf(process.platform === 'win32')('the generated tool shims with rea
         ? { deps }
         : {}),
     })
-    function project(dependencies, base, { authorized = {}, maxRepairRounds } = {}) {
+    // A crate at desktop/rust/ of a repository, which resolves through a fake crates.io.
+    function project(dependencies, base, { authorized = {} } = {}) {
       const directory = fixture()
       const crates = structuredClone(base)
       const registry = crateRegistry(crates)
       const cargoHome = join(directory, 'cargo-home')
-      write(cargoHome, { 'config.toml': `[source.crates-io]\nreplace-with = "local"\n[source.local]\nregistry = "${registry.index}"\n` })
+      writeFiles(cargoHome, { 'config.toml': `[source.crates-io]\nreplace-with = "local"\n[source.local]\nregistry = "${registry.index}"\n` })
       const manifest = deps => `[package]\nname = "app"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\n${Object.entries(deps).map(([name, req]) => `${name} = "${req}"`).join('\n')}\n`
-      const app = join(directory, 'app')
-      write(app, {
+      const repository = join(directory, 'repository')
+      const app = join(repository, 'desktop/rust')
+      writeFiles(app, {
         'Cargo.toml': manifest(dependencies),
         'src/lib.rs': '',
       })
-      const paths = shims(directory, { crates: authorized, cratesApi: registry.api, maxRepairRounds })
+      const paths = shims(directory, {
+        authorized: { 'desktop/rust/Cargo.lock': authorized },
+        cratesIndex: registry.shimIndex,
+      })
       const env = toolEnvironment(directory, paths, { CARGO_HOME: cargoHome })
       return {
         app,
         paths,
-        // Main locks the base with the real cargo before the registry gains releases.
+        // Main locks the base with the real cargo, through no aged index.
         async lockBase() {
           const result = await run(Bun.which('cargo'), ['update'], { cwd: app, env })
           expect(result.status, result.stderr).toBe(0)
-          repository(app, {})
+          gitRepository(repository)
         },
         publish(name, versions) {
           crates[name] = {
@@ -493,7 +465,7 @@ describe.skipIf(process.platform === 'win32')('the generated tool shims with rea
         locked: () => identities(lockedVersions('cargo', readFileSync(join(app, 'Cargo.lock'), 'utf8'))),
       }
     }
-    it('repairs a young transitive crate in lockfile maintenance while another line of the crate stays', async () => {
+    it('resolves a transitive crate to its newest old-enough version in lockfile maintenance while another line of the crate stays', async () => {
       const fixture = project({ parent: '1', foo: '0.9' }, {
         parent: {
           '1.0.0': crate(old, { foo: '^1.4.0' }),
@@ -518,12 +490,29 @@ describe.skipIf(process.platform === 'win32')('the generated tool shims with rea
       expect(invocations(fixture.paths)).toEqual([
         expect.objectContaining({
           tool: 'cargo',
-          repairs: [
-            { from: 'foo@1.4.2', to: 'foo@1.4.1' },
-          ],
+          cwd: 'desktop/rust',
+          activeRoots: [],
           exitCode: 0,
         }),
       ])
+      // The aged index replaces the source only to resolve.
+      expect(fixture.lockText()).not.toContain('127.0.0.1')
+      expect(fixture.lockText()).toContain('source = "registry+https://github.com/rust-lang/crates.io-index"')
+    })
+    it('keeps a young version that the base already locks, as the aged index still serves it', async () => {
+      const fixture = project({ foo: '1' }, {
+        foo: {
+          '1.4.1': crate(old),
+          '1.4.2': crate(young()),
+        },
+      })
+      // Main locked the young fix while its alert was open. The real cargo writes that base.
+      await fixture.lockBase()
+      expect(fixture.locked()).toEqual(['foo@1.4.2'])
+      const before = fixture.lockText()
+      const result = await fixture.cargo(['update'])
+      expect(result.status, result.stderr).toBe(0)
+      expect(fixture.lockText()).toBe(before)
     })
     it('fails when a new exact pin forces a downgrade, even when every release is old enough', async () => {
       const fixture = project({ parent: '=1.0.0' }, {
@@ -550,7 +539,7 @@ describe.skipIf(process.platform === 'win32')('the generated tool shims with rea
         error: expect.stringContaining('cargo would downgrade foo from 1.4.2 to 1.4.1'),
       })
     })
-    it('keeps an authorized precise fix and its exact pin, and repairs another young version of the pinned crate', async () => {
+    it('keeps an authorized precise fix and its exact pin, and resolves another young version of the pinned crate to an old-enough one', async () => {
       const fixture = project({ fix: '2' }, {
         fix: {
           '2.0.0': crate(old),
@@ -586,9 +575,7 @@ describe.skipIf(process.platform === 'win32')('the generated tool shims with rea
       expect(fixture.locked()).toEqual(['fix@2.0.1', 'pin@0.4.0', 'pin@1.0.5'])
       expect(invocations(fixture.paths).at(-1)).toMatchObject({
         activeRoots: ['fix@2.0.1'],
-        repairs: [
-          { from: 'pin@0.4.1', to: 'pin@0.4.0' },
-        ],
+        exitCode: 0,
       })
     })
     it('keeps an authorized lock-only fix through the workspace update that follows its precise update', async () => {
@@ -626,18 +613,40 @@ describe.skipIf(process.platform === 'win32')('the generated tool shims with rea
       const workspace = await fixture.cargo(['update', ...manifest, '--workspace'])
       expect(workspace.status, workspace.stderr).toBe(0)
       expect(fixture.locked()).toEqual(['fix@2.0.1', 'pin@1.0.5'])
-      expect(invocations(fixture.paths).map(record => [record.activeRoots, record.repairs])).toEqual([
+      expect(invocations(fixture.paths).map(record => [record.activeRoots, record.exitCode])).toEqual([
         [
           ['fix@2.0.1'],
-          [],
+          0,
         ],
         [
           ['fix@2.0.1'],
-          [],
+          0,
         ],
       ])
     })
-    it('fails when a young crate has no old-enough version', async () => {
+    it('rejects a young precise target that no open alert authorizes, in cargo itself', async () => {
+      const fixture = project({ fix: '2' }, {
+        fix: {
+          '2.0.0': crate(old),
+        },
+      })
+      await fixture.lockBase()
+      fixture.publish('fix', {
+        '2.0.1': crate(young()),
+      })
+      const before = fixture.lockText()
+      const result = await fixture.cargo([
+        'update',
+        '--package',
+        'fix@2.0.0',
+        '--precise',
+        '2.0.1',
+      ])
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toContain('fix')
+      expect(fixture.lockText()).toBe(before)
+    })
+    it('fails in cargo when a crate has no old-enough version, and leaves the lockfile alone', async () => {
       const fixture = project({}, {})
       await fixture.lockBase()
       const recent = young()
@@ -648,18 +657,16 @@ describe.skipIf(process.platform === 'win32')('the generated tool shims with rea
       fixture.declare({ foo: '1' })
       const before = fixture.lockText()
       const result = await fixture.cargo(['update', '--workspace'])
-      expect(result.status).toBe(1)
-      expect(result.stderr).toContain('Cargo release-age repair failed: no eligible version')
-      expect(result.stderr).toContain('Cargo.lock was restored to its state before this command.')
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toContain('foo')
       expect(fixture.lockText()).toBe(before)
       expect(invocations(fixture.paths).at(-1)).toMatchObject({
         tool: 'cargo',
-        exitCode: 1,
-        error: expect.stringContaining('Cargo release-age repair failed: no eligible version'),
+        exitCode: result.status,
       })
     })
-    it('fails when a chain of repairs exceeds the round limit', async () => {
-      const fixture = project({}, {}, { maxRepairRounds: 1 })
+    it('resolves a chain of young crates to old-enough versions in one update', async () => {
+      const fixture = project({}, {})
       await fixture.lockBase()
       const recent = young()
       fixture.publish('foo', {
@@ -671,21 +678,13 @@ describe.skipIf(process.platform === 'win32')('the generated tool shims with rea
         '2.0.1': crate(recent),
       })
       fixture.declare({ foo: '1' })
-      const before = fixture.lockText()
       const result = await fixture.cargo(['update', '--workspace'])
-      expect(result.status).toBe(1)
-      expect(result.stderr).toContain('Cargo release-age repair failed: round limit reached\n- bar@2.0.1')
-      expect(result.stderr).toContain('Cargo.lock was restored to its state before this command.')
-      expect(fixture.lockText()).toBe(before)
-      expect(invocations(fixture.paths).at(-1)).toMatchObject({
-        tool: 'cargo',
-        exitCode: 1,
-        error: expect.stringContaining('Cargo release-age repair failed: round limit reached'),
-      })
+      expect(result.status, result.stderr).toBe(0)
+      expect(fixture.locked()).toEqual(['bar@2.0.0', 'foo@1.4.1'])
     })
     it('keeps a young crate family that pins itself exactly at its versions and updates the other crates', async () => {
-      // As the wasm-bindgen crates do, two young crates pin a third young crate exactly,
-      // so no single --precise command can move any of them back.
+      // As the wasm-bindgen crates do, two young crates pin a third young crate exactly.
+      // The aged index serves none of them, so cargo keeps the old family together.
       const fixture = project({ futures: '0.4', sys: '0.3', other: '1' }, {
         futures: {
           '0.4.79': crate(old, { js: '=0.3.106' }),
@@ -726,12 +725,9 @@ describe.skipIf(process.platform === 'win32')('the generated tool shims with rea
         'other@1.1.0',
         'sys@0.3.106',
       ])
-      expect(invocations(fixture.paths).at(-1)).toMatchObject({
-        tool: 'cargo',
-        exitCode: 0,
-        repairs: [],
-        excluded: ['futures', 'js', 'sys'],
-      })
+      const record = invocations(fixture.paths).at(-1)
+      expect(record).toMatchObject({ tool: 'cargo', exitCode: 0 })
+      expect(record).not.toHaveProperty('excluded')
     })
     it('keeps a crate that pins a young version exactly at its version in a full update', async () => {
       const fixture = project({ parent: '1', other: '1' }, {
@@ -758,12 +754,9 @@ describe.skipIf(process.platform === 'win32')('the generated tool shims with rea
       const result = await fixture.cargo(['update'])
       expect(result.status, result.stderr).toBe(0)
       expect(fixture.locked()).toEqual(['foo@1.4.1', 'other@1.1.0', 'parent@1.0.0'])
-      expect(invocations(fixture.paths).at(-1)).toMatchObject({
-        exitCode: 0,
-        excluded: ['foo', 'parent'],
-      })
+      expect(invocations(fixture.paths).at(-1)).toMatchObject({ exitCode: 0 })
     })
-    it('fails when cargo rejects the repair because a dependency pins the young version', async () => {
+    it('fails in cargo when a dependency pins a young version exactly, and leaves the lockfile alone', async () => {
       const fixture = project({}, {})
       await fixture.lockBase()
       fixture.publish('parent', {
@@ -776,15 +769,9 @@ describe.skipIf(process.platform === 'win32')('the generated tool shims with rea
       fixture.declare({ parent: '1' })
       const before = fixture.lockText()
       const result = await fixture.cargo(['update', '--workspace'])
-      expect(result.status).toBe(1)
-      expect(result.stderr).toContain('Cargo release-age repair failed: cargo rejected --precise 1.4.1')
-      expect(result.stderr).toContain('Cargo.lock was restored to its state before this command.')
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toContain('foo')
       expect(fixture.lockText()).toBe(before)
-      expect(invocations(fixture.paths).at(-1)).toMatchObject({
-        tool: 'cargo',
-        exitCode: 1,
-        error: expect.stringContaining('Cargo release-age repair failed: cargo rejected --precise 1.4.1'),
-      })
     })
   })
 })

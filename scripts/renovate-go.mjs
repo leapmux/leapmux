@@ -1,5 +1,6 @@
 import { resolve } from 'node:path'
 import process from 'node:process'
+import { newModulePath } from './go-module-path.mjs'
 import { DEPENDENCY_INPUT_FILES } from './renovate-inputs.mjs'
 import { refreshSite } from './renovate-site.mjs'
 
@@ -18,21 +19,6 @@ export function verifyReplacements(texts) {
   const versions = texts.map(replacementVersion)
   if (new Set(versions).size !== 1)
     throw new Error('Conflicting genproto replacements; both modules must change together before workspace commands.')
-}
-
-export function newModulePath(upgrade) {
-  const old = upgrade.depName
-  const major = Number(/^v(\d+)\./.exec(upgrade.newValue)?.[1])
-  if (!Number.isSafeInteger(major))
-    throw new TypeError(`Invalid Go module version: ${upgrade.newValue}`)
-  if (upgrade.newValue.endsWith('+incompatible'))
-    return old
-  if (old.startsWith('gopkg.in/'))
-    return old.replace(/\.v\d+(?:-unstable)?$/, `.v${major}`)
-  const base = old.replace(/\/v\d+$/, '')
-  return major >= 2
-    ? `${base}/v${major}`
-    : base
 }
 
 /** Prepare validated Go upgrades before any updated generator runs. */

@@ -1,29 +1,29 @@
-import { renovateHandlebars, renovateModule, requireRenovate } from './renovate-engine.mjs'
-import { isInAdvisoryRange } from './renovate-exemptions.mjs'
-import { releaseAgeMs } from './renovate-release-age.mjs'
+import { advisoryRange, isInAdvisoryRange, patchedIdentifier } from './renovate-advisory-range.mjs'
+import { ECOSYSTEMS } from './renovate-ecosystems.mjs'
+import { registerRootHelper, renovateModule } from './renovate-engine.mjs'
+import { describeAge, releaseAgeMs } from './renovate-release-age.mjs'
 
 // The Dependency Dashboard lists, under Skipped Dependencies, each update and security
 // alert that Renovate did not propose, with the reason. Renovate loads this module from
 // its configuration under Node, so the module graph uses no Bun API.
 
-/** The managers that can update a dependency of each alerted ecosystem. */
+/** The managers that can update a dependency of each alerted ecosystem, by its GitHub name. */
 const ALERT_MANAGERS = Object.freeze({
-  npm: ['bun'],
-  rust: ['cargo'],
-  go: ['gomod'],
-  actions: ['github-actions'],
+  ...Object.fromEntries(Object.values(ECOSYSTEMS).map(({ advisory, kind }) => [
+    advisory,
+    Object.freeze([kind]),
+  ])),
+  actions: Object.freeze(['github-actions']),
 })
 
 /** The block title of each skip reason. Any other reason shows its own code. */
-export const SKIP_REASON_TITLES = Object.freeze({
+const SKIP_REASON_TITLES = Object.freeze({
   'disabled': 'Disabled by configuration',
   'ignored': 'Ignored by configuration',
   'contains-variable': 'Version comes from a variable',
 })
 
 const TRANSITIVE = 'Transitive dependency. Renovate updates only dependencies that a manifest declares.'
-
-const semver = requireRenovate('semver')
 
 // Renovate reads its own checkbox markers from the dashboard body. An identifier must never
 // spell one, so a word joiner splits each marker inside the rendered text.
@@ -88,13 +88,21 @@ function collect(entries) {
 // that states no comparable version, such as a digest update, counts as a fix, because
 // the dashboard cannot show that it leaves the alert open.
 function fixesAlert(update, range) {
-  if (typeof update.newVersion !== 'string' || typeof range !== 'string' || !semver.validRange(range.replaceAll(',', ' ')))
+  if (typeof update.newVersion !== 'string' || advisoryRange(range) === null)
     return true
   return !isInAdvisoryRange(update.newVersion, range)
 }
 
 const fileList = files => files.map(code).join(', ')
-const dateOf = time => new Date(time).toISOString().slice(0, 10)
+// en-CA formats a date as YYYY-MM-DD.
+function dateOf(time, timeZone) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(time)
+}
 
 function alertBlock(files, alerts) {
   const entries = []
@@ -106,7 +114,7 @@ function alertBlock(files, alerts) {
     const ecosystem = vulnerability.package?.ecosystem
     if (typeof name !== 'string')
       continue
-    const patched = vulnerability.first_patched_version?.identifier ?? null
+    const patched = patchedIdentifier(vulnerability)
     const managers = ALERT_MANAGERS[ecosystem]
     const deps = managers
       ? files.filter(file => managers.includes(file.manager)).flatMap(file => file.deps.filter(dep => dep.depName === name || dep.packageName === name))
@@ -130,7 +138,7 @@ function alertBlock(files, alerts) {
       ].join(', ')}.`
     }
     else if (updates.length === 0) {
-      reason = 'A fix version exists, but Renovate found no update.'
+      reason = 'A patched version exists, but Renovate found no update.'
     }
     else if (fixes.length === 0) {
       reason = 'Every update that Renovate found stays in the vulnerable range.'
@@ -159,7 +167,7 @@ function alertBlock(files, alerts) {
   }
 }
 
-function waitingBlock(files, { ageMs, ageLabel }) {
+function waitingBlock(files, { ageMs, timeZone }) {
   const entries = []
   for (const file of files) {
     for (const dep of file.deps) {
@@ -175,7 +183,7 @@ function waitingBlock(files, { ageMs, ageLabel }) {
             key: JSON.stringify(['pending', dep.depName, update.newVersion ?? update.newDigest ?? update.updateType]),
             files: [file.packageFile],
             render: entry => `${code(dep.depName)} (${fileList(entry.files)}): ${subject} ${Number.isFinite(published)
-              ? `waits until ${dateOf(published + ageMs)}`
+              ? `waits until ${dateOf(published + ageMs, timeZone)}`
               : 'has no release timestamp'}`,
           })
         }
@@ -198,7 +206,7 @@ function waitingBlock(files, { ageMs, ageLabel }) {
     }
   }
   return {
-    title: `Waiting for the minimum release age (${escapeHtml(ageLabel)})`,
+    title: `Waiting for the minimum release age (${escapeHtml(describeAge(ageMs))}, dates in ${escapeHtml(timeZone)})`,
     entries: collect(entries),
   }
 }
@@ -238,18 +246,20 @@ function renderBlocks(blocks, limit) {
 
 /**
  * Render the Skipped Dependencies section from Renovate's package files by base branch.
+ * A date is a calendar day in `timeZone`, the zone of Renovate's schedule.
  * The lists shorten, each to the same number of items, until the section fits `maxLength`.
  */
-export function renderSkippedDependencies(dataByBranch, { alerts = [], ageMs, ageLabel, maxLength = 20000 }) {
+export function renderSkippedDependencies(dataByBranch, { alerts = [], ageMs, timeZone = 'UTC', maxLength = 20000 }) {
   const files = packageFilesOf(dataByBranch)
   const blocks = [
     alertBlock(files, alerts),
-    waitingBlock(files, { ageMs, ageLabel }),
+    waitingBlock(files, { ageMs, timeZone }),
     ...skipBlocks(files),
   ].filter(block => block.entries.length > 0)
   const longest = Math.max(0, ...blocks.map(block => block.entries.length))
-  if (renderBlocks(blocks, longest).length <= maxLength)
-    return renderBlocks(blocks, longest)
+  const complete = renderBlocks(blocks, longest)
+  if (complete.length <= maxLength)
+    return complete
   // Find the largest item count that fits.
   let low = 0
   let high = longest
@@ -273,30 +283,31 @@ export function renderSkippedDependencies(dataByBranch, { alerts = [], ageMs, ag
 export async function configureSkippedDependencies({ policy, alerts }) {
   const { PackageFiles } = await renovateModule('workers/repository/package-files.js')
   const ageMs = releaseAgeMs(policy)
-  const ageLabel = policy.minimumReleaseAge
-  const handlebars = renovateHandlebars()
-  const previous = handlebars.helpers.leapmuxSkippedDependencies
-  handlebars.registerHelper('leapmuxSkippedDependencies', function (options) {
-    const root = options.data?.root
-    if (this !== root || [
+  // Without a policy time zone, Renovate schedules in the runner's zone, which is UTC on
+  // GitHub-hosted runners.
+  const timeZone = policy.timezone ?? 'UTC'
+  // An unknown zone fails here, before the helper exists, and not in the middle of a run.
+  dateOf(0, timeZone)
+  const dispose = registerRootHelper('leapmuxSkippedDependencies', {
+    // The dashboard renders from the repository context, which holds no upgrade field.
+    accepts: root => [
       'manager',
       'packageFile',
       'upgrades',
       'depName',
-    ].some(field => root?.[field] !== undefined)) {
-      throw new Error('Skipped dependencies can only be rendered in the Dependency Dashboard footer.')
-    }
+    ].every(field => root?.[field] === undefined),
+    rejection: 'Skipped dependencies can only be rendered in the Dependency Dashboard footer.',
+  }, () => {
     if (PackageFiles.data.size === 0)
       throw new Error('Skipped dependencies require the package files that Renovate extracted.')
-    return renderSkippedDependencies(PackageFiles.data, { alerts, ageMs, ageLabel })
+    return renderSkippedDependencies(PackageFiles.data, { alerts, ageMs, timeZone })
   })
+  const footer = '{{{leapmuxSkippedDependencies}}}'
   return {
-    dependencyDashboardFooter: '{{{leapmuxSkippedDependencies}}}',
-    dispose() {
-      if (previous)
-        handlebars.registerHelper('leapmuxSkippedDependencies', previous)
-      else
-        handlebars.unregisterHelper('leapmuxSkippedDependencies')
-    },
+    // A footer that the policy sets stays, above the section.
+    dependencyDashboardFooter: typeof policy.dependencyDashboardFooter === 'string' && policy.dependencyDashboardFooter.trim() !== ''
+      ? `${policy.dependencyDashboardFooter}\n\n${footer}`
+      : footer,
+    dispose,
   }
 }

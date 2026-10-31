@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { eligibleTauriReleases, matchesCargoRequirement, readTauriReleases, tauriPairCandidates } from './renovate-tauri-releases.mjs'
+import { crateIndexResponse, isCrateIndexRead } from './test-support.mjs'
 
 const now = Date.parse('2026-10-26T00:00:00Z')
 const release = (version, publishedAt = '2026-10-20T00:00:00Z') => ({ version, publishedAt })
@@ -101,21 +102,63 @@ describe('eligibleTauriReleases', () => {
     ], '2.11.0', options)).toEqual([])
     expect(() => eligibleTauriReleases([], '2.11.0', { ...options, minimumAgeMs: 0 })).toThrow('positive minimum age')
   })
+  it('holds an authorized root and a closure member to the security age, unless it has no publication time', () => {
+    const securityMinimumAgeMs = 2 * 3600000
+    const authorized = new Map([
+      [
+        'tauri@2.12.1',
+        new Set(),
+      ],
+      [
+        'tauri-plugin-a@2.0.1',
+        new Set(['tauri@2.12.2']),
+      ],
+      [
+        'tauri@2.12.3',
+        new Set(),
+      ],
+      [
+        'tauri@2.12.4',
+        new Set(),
+      ],
+    ])
+    const result = eligibleTauriReleases([
+      // One hour old: younger than the security age.
+      release('2.12.1', young),
+      release('2.12.2', young),
+      // Exactly the security age, which Renovate admits.
+      release('2.12.3', new Date(now - securityMinimumAgeMs).toISOString()),
+      release('2.12.4', null),
+    ], '2.11.0', { ...options, securityMinimumAgeMs, authorized })
+    expect(result.map(entry => [entry.version, entry.authorizedBy])).toEqual([
+      ['2.12.3', null],
+      ['2.12.4', null],
+    ])
+    for (const securityAge of [-1, 0.5, Number.NaN])
+      expect(() => eligibleTauriReleases([], '2.11.0', { ...options, securityMinimumAgeMs: securityAge }), String(securityAge)).toThrow('nonnegative security age')
+  })
 })
 
 describe('readTauriReleases', () => {
-  it('reads npm publication times and crate release metadata with the shared registry reader', async () => {
+  it('reads npm publication times from the packument and crate releases from the sparse index', async () => {
     const calls = []
     const request = async (url, init) => {
       calls.push([url, init.headers['User-Agent']])
-      return Response.json(url.includes('registry.npmjs.org')
-        ? {
-            time: { '2.12.0': '2026-10-20T00:00:00Z' },
-          }
-        : {
-            versions: [
-              { num: '2.12.0', created_at: '2026-10-20T00:00:00Z', yanked: true },
-            ],
+      return isCrateIndexRead(url)
+        ? crateIndexResponse([
+            {
+              name: 'tauri',
+              vers: '2.12.0',
+              yanked: true,
+              pubtime: '2026-10-20T00:00:00Z',
+            },
+          ])
+        : Response.json({
+            time: {
+              'created': '2026-01-01T00:00:00Z',
+              '2.12.0': '2026-10-20T00:00:00Z',
+              'modified': '2026-10-21T00:00:00Z',
+            },
           })
     }
     expect(await readTauriReleases('@tauri-apps/api', request)).toEqual([
@@ -126,10 +169,15 @@ describe('readTauriReleases', () => {
     ])
     expect(calls).toEqual([
       ['https://registry.npmjs.org/%40tauri-apps%2Fapi', 'leapmux-dependency-maintenance'],
-      ['https://crates.io/api/v1/crates/tauri', 'leapmux-dependency-maintenance'],
+      ['https://index.crates.io/ta/ur/tauri', 'leapmux-dependency-maintenance'],
     ])
-    await expect(readTauriReleases('tauri', async () => new Response('', { status: 503 }))).rejects.toThrow('Tauri companion metadata read failed: 503')
-    await expect(readTauriReleases('tauri', async () => Response.json({}))).rejects.toThrow('Invalid Tauri release metadata')
+  })
+  it('fails on a failed read and on metadata that is not a release list', async () => {
+    const failed = async () => new Response('', { status: 503 })
+    await expect(readTauriReleases('tauri', failed)).rejects.toThrow('Crate index read failed: 503')
+    await expect(readTauriReleases('@tauri-apps/api', failed)).rejects.toThrow('npm packument read failed: 503')
+    await expect(readTauriReleases('tauri', async () => new Response('{"name":"tauri"}'))).rejects.toThrow('Invalid crate index entry for tauri.')
+    await expect(readTauriReleases('@tauri-apps/api', async () => Response.json({}))).rejects.toThrow('Invalid npm packument: @tauri-apps/api')
   })
 })
 

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { delimiter, resolve } from 'node:path'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
@@ -7,19 +7,16 @@ import { afterEach, describe, expect, it } from 'bun:test'
 import { renovateModule } from './renovate-engine.mjs'
 import { securityCompanions } from './renovate-prepare.mjs'
 import { CLAIMS } from './sync-versions.mjs'
+import { scratchDirectories } from './test-support.mjs'
 
 const { init: initializeRenovateLogger } = await renovateModule('logger/index.js')
 await initializeRenovateLogger()
 
 const root = resolve(import.meta.dirname, '..')
-const fixtures = []
-afterEach(() => {
-  for (const fixture of fixtures.splice(0)) rmSync(fixture, { recursive: true, force: true })
-})
+const scratch = scratchDirectories()
+afterEach(scratch.cleanup)
 function fixtureDirectory(packageRules = []) {
-  mkdirSync(resolve(root, '.tmp'), { recursive: true })
-  const dir = mkdtempSync(resolve(root, '.tmp/renovate-config-'))
-  fixtures.push(dir)
+  const dir = scratch.create('renovate-config')
   mkdirSync(resolve(dir, '.tmp'))
   writeFileSync(resolve(dir, 'renovate.json'), readFileSync(resolve(root, 'renovate.json')))
   writeFileSync(resolve(dir, '.tmp/renovate-prepared.json'), JSON.stringify({
@@ -28,16 +25,25 @@ function fixtureDirectory(packageRules = []) {
   }))
   return dir
 }
-function fixtureConfig(packageRules = []) {
-  const dir = fixtureDirectory(packageRules)
-  const result = spawnSync('node', [
+function loadConfig(dir, env = {}) {
+  // A shim directory of the caller's own run must not reach the fixture.
+  const inherited = { ...process.env }
+  delete inherited.LEAPMUX_TOOL_SHIMS
+  return spawnSync('node', [
     '-e',
     'require(process.argv[1])().then(config => process.stdout.write(JSON.stringify(config)))',
     resolve(root, '.github/renovate-config.cjs'),
   ], {
     encoding: 'utf8',
-    env: { ...process.env, RENOVATE_TRUSTED_ROOT: dir },
+    env: {
+      ...inherited,
+      RENOVATE_TRUSTED_ROOT: dir,
+      ...env,
+    },
   })
+}
+function fixtureConfig(packageRules = [], env = {}) {
+  const result = loadConfig(fixtureDirectory(packageRules), env)
   expect(result.status, result.stderr).toBe(0)
   return JSON.parse(result.stdout)
 }
@@ -96,8 +102,7 @@ describe('trusted Renovate configuration', () => {
     }
   })
   it('passes dry-run flags and no schedule override to the actual Task command', () => {
-    const directory = mkdtempSync(resolve(root, '.tmp/renovate-task-env-'))
-    fixtures.push(directory)
+    const directory = scratch.create('renovate-task-env')
     mkdirSync(resolve(directory, 'scripts'))
     const tasks = Bun.YAML.parse(readFileSync(resolve(root, 'Taskfile.yaml'), 'utf8')).tasks
     writeFileSync(resolve(directory, 'Taskfile.yaml'), Bun.YAML.stringify({
@@ -207,7 +212,13 @@ describe('trusted Renovate configuration', () => {
       'desktop/go/example.go',
     ])
       expect(config.postUpgradeTasks.fileFilters).toContain(path)
+    // Renovate's bun manager commits these lockfiles as its own artifacts. No post-upgrade
+    // task writes them, so the post-upgrade tasks must not commit them either.
     for (const path of [
+      '.github/renovate/package.json',
+      '.github/renovate/bun.lock',
+      'site/package.json',
+      'site/bun.lock',
       'go.work.sum',
       'backend/generated/example.go',
       'backend/internal/hub/generated/frontend/embed.go',
@@ -218,12 +229,44 @@ describe('trusted Renovate configuration', () => {
     expect(config.allowScripts).toBe(false)
     expect(config.exposeAllEnv).toBe(false)
     expect(config.customEnvVariables.GOTOOLCHAIN).toBe('local')
-    // The shims lead the PATH of every child process, ahead of the inherited entries.
-    const [first, ...inherited] = config.customEnvVariables.PATH.split(delimiter)
-    expect(first).toBe(resolve(config.customEnvVariables.RENOVATE_TRUSTED_ROOT, '.tmp/renovate-shims/bin'))
-    expect(inherited.join(delimiter)).toBe(process.env.PATH)
+    // Without the shims of run-renovate.mjs, as for the validator, the child PATH stays as it is.
+    expect(config.customEnvVariables.PATH).toBeUndefined()
     expect(config.requireConfig).toBe('ignored')
     expect(config.dependencyDashboardFooter).toBe('{{{leapmuxSkippedDependencies}}}')
+  })
+  it('puts the shims that run-renovate.mjs wrote first on the child PATH, and rejects a directory without them', () => {
+    const shims = resolve(fixtureDirectory(), '.tmp/renovate-shims/bin')
+    mkdirSync(shims, { recursive: true })
+    writeFileSync(resolve(shims, 'bun'), '')
+    const missing = loadConfig(fixtureDirectory(), { LEAPMUX_TOOL_SHIMS: shims })
+    expect(missing.status).not.toBe(0)
+    expect(missing.stderr).toContain('LEAPMUX_TOOL_SHIMS must give a directory that holds the bun and cargo shims')
+    writeFileSync(resolve(shims, 'cargo'), '')
+    const config = fixtureConfig([], { LEAPMUX_TOOL_SHIMS: shims })
+    // The shims lead the PATH of every child process, ahead of the inherited entries.
+    const [first, ...inherited] = config.customEnvVariables.PATH.split(delimiter)
+    expect(first).toBe(shims)
+    expect(inherited.join(delimiter)).toBe(process.env.PATH)
+    expect(loadConfig(fixtureDirectory(), { LEAPMUX_TOOL_SHIMS: 'relative/bin' }).status).not.toBe(0)
+  })
+  it('keeps the log remaps and the dashboard footer of the repository policy', () => {
+    const dir = fixtureDirectory()
+    const policy = JSON.parse(readFileSync(resolve(dir, 'renovate.json'), 'utf8'))
+    writeFileSync(resolve(dir, 'renovate.json'), JSON.stringify({
+      ...policy,
+      logLevelRemap: [
+        { matchMessage: 'Repository remap', newLogLevel: 'info' },
+      ],
+      dependencyDashboardFooter: 'Repository footer',
+    }))
+    const result = loadConfig(dir)
+    expect(result.status, result.stderr).toBe(0)
+    const config = JSON.parse(result.stdout)
+    expect(config.logLevelRemap.map(remap => remap.matchMessage)).toEqual([
+      'Could not re-extract the packageFile after updating it',
+      'Repository remap',
+    ])
+    expect(config.dependencyDashboardFooter).toBe('Repository footer\n\n{{{leapmuxSkippedDependencies}}}')
   })
   it('renders the Skipped Dependencies footer with the alerts of the prepared file', () => {
     const dir = fixtureDirectory()
