@@ -20,7 +20,15 @@ function record() {
     changelogs: 'Release note details.',
   }
 }
-function fixture(actor = bot) {
+// GitHub stores each C0 control character except tab, line feed, and carriage return,
+// and DEL, in caret notation: it stored the ESC of a terminal color code as "^[".
+function githubStored(text) {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\x00-\x08\v\f\x0E-\x1F\x7F]/g, character => character === '\x7F'
+    ? '^?'
+    : `^${String.fromCharCode(character.charCodeAt(0) + 64)}`)
+}
+function fixture(actor = bot, { store = text => text } = {}) {
   const pr = {
     number: 546,
     user: { login: bot, type: 'Bot' },
@@ -58,7 +66,7 @@ function fixture(actor = bot) {
       const created = {
         id: nextId++,
         user: { login: actor },
-        body: body.body,
+        body: store(body.body),
         html_url: `https://github.com/leapmux/leapmux/pull/546#issuecomment-${nextId}`,
       }
       comments.push(created)
@@ -68,11 +76,11 @@ function fixture(actor = bot) {
       return structuredClone(comments.find(comment => comment.id === commentId))
     if (method === 'PATCH' && commentId) {
       const comment = comments.find(comment => comment.id === commentId)
-      comment.body = body.body
+      comment.body = store(body.body)
       return structuredClone(comment)
     }
     if (method === 'PATCH' && url.pathname === `${root}/pulls/546`) {
-      pr.body = body.body
+      pr.body = store(body.body)
       return structuredClone(pr)
     }
     if (method === 'GET' && url.pathname === `${root}/pulls/546`)
@@ -169,6 +177,21 @@ describe('managed Renovate detail comments', () => {
     await publishRecord(data, state.pr, template, { api: state.api })
     expect(state.calls.filter(call => call.method === 'POST')).toHaveLength(posts)
     expect(state.comments[0].body).toContain('Human content.')
+  })
+  it('publishes release notes with terminal color codes, which GitHub would store differently', async () => {
+    const state = fixture(bot, { store: githubStored })
+    // The release notes of @tauri-apps/api 2.12 hold a build log with color codes.
+    const data = {
+      ...record(),
+      notes: 'Notes.',
+      changelogs: '$ rollup -c\n\x1B[36m\n\x1B[1m./src/app.ts\x1B[22m → \x1B[1mdist\x1B[22m\x1B[39m\r\nDone\x07.',
+    }
+    await publishRecord(data, state.pr, template, { api: state.api })
+    const managed = state.comments.filter(comment => comment.user.login === bot)
+    expect(managed).toHaveLength(1)
+    expect(managed[0].body).toContain('$ rollup -c\n\n./src/app.ts → dist\nDone.')
+    expect(managed[0].body).toBe(githubStored(managed[0].body))
+    expect(state.pr.body).not.toContain('Legacy advisory details.')
   })
   it('updates existing parts and retires surplus parts without deleting comments', async () => {
     const state = fixture()

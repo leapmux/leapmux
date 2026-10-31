@@ -296,3 +296,34 @@ describe('PR detail comments', () => {
     expect(() => partitionLegacyBody(body.replace(resultText, 'Human-modified result.'), template)).toThrow('differs')
   })
 })
+
+describe('renderDetailComments', () => {
+  const render = changelogs => renderDetailComments({
+    ...record(),
+    warnings: '',
+    notes: '',
+    changelogs,
+  })
+  const content = body => body.slice(body.indexOf('\n\n') + 2)
+  it('removes each terminal escape sequence whole, so GitHub stores the body as written', () => {
+    for (const [changelogs, expected] of [
+      ['\x1B[36m./src/app.ts\x1B[22m → \x1B[1;39mdist\x1B[0m', './src/app.ts → dist'],
+      ['\x1B]8;;https://example.com\x07link\x1B]8;;\x07', 'link'],
+      ['\x1B]0;title\x1B\\text', 'text'],
+      ['\x1B(Bplain\x1BM', 'plain'],
+      ['\x1BPq#0;2;0;0;0\x1B\\sixel', 'sixel'],
+      ['\x1B=keypad', 'keypad'],
+    ])
+      expect(render(changelogs).map(content), JSON.stringify(changelogs)).toEqual([expected])
+  })
+  it('drops every other control character, keeps tabs, and uses LF line endings', () => {
+    // An ESC that starts no escape sequence is a control character like the others.
+    expect(render('a\0b\x07c\bd\x0Be\x0Cf\x1Fg\x7Fh\x1B\ti\tj\r\nk\rl\nm\x1B').map(content)).toEqual(['abcdefgh\ti\tj\nk\nl\nm'])
+  })
+  it('replaces a lone surrogate, which GitHub cannot store, with the replacement character', () => {
+    expect(render('before\uD800after').map(content)).toEqual(['before�after'])
+  })
+  it('renders no comment for a field that holds only control characters', () => {
+    expect(render('\x1B[0m\r\n\x07')).toEqual([])
+  })
+})

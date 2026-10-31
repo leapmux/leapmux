@@ -13,6 +13,22 @@ const contentFields = [
 export const DETAIL_FIELDS = ['warnings', 'notes', 'changelogs']
 export const COMMENT_MARKER = '<!-- leapmux-renovate-details:v1 part='
 
+// GitHub stores each C0 control character except tab, line feed, and carriage return, and
+// DEL, in caret notation: the ESC of a terminal color code reads back as "^[". A body that
+// holds one never reads back as written, so the publisher rejects the comment. A terminal
+// escape sequence only colors a build log in release notes, so the renderer removes it whole.
+// The ECMA-48 forms, in order: a control sequence, a control string that BEL or ST ends, a
+// sequence with intermediate bytes, and a sequence of one final byte.
+// eslint-disable-next-line no-control-regex
+const TERMINAL_ESCAPE = /\x1B(?:\[[\x30-\x3F]*[\x20-\x2F]*[\x40-\x7E]|[\]PX^_][^\x07\x1B]*(?:\x07|\x1B\\)|[\x20-\x2F]+[\x30-\x7E]|[\x30-\x7E])/g
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARACTER = /[\x00-\x08\v\f\x0E-\x1F\x7F]/g
+
+/** Return the text as GitHub stores it unchanged: no control character, and LF line endings. */
+function storableText(text) {
+  return text.toWellFormed().replace(TERMINAL_ESCAPE, '').replace(/\r\n?/g, '\n').replace(CONTROL_CHARACTER, '')
+}
+
 export function validateDetailRecord(record) {
   if (!record || record.version !== 1 || record.repository !== 'leapmux/leapmux'
     || typeof record.branchName !== 'string' || record.branchName.length > 240
@@ -228,7 +244,7 @@ export function splitDetailText(text, limit = 46000) {
 
 export function renderDetailComments(record) {
   validateDetailRecord(record)
-  const text = DETAIL_FIELDS.map(field => record[field].trim()).filter(Boolean).join('\n\n---\n\n')
+  const text = DETAIL_FIELDS.map(field => storableText(record[field]).trim()).filter(Boolean).join('\n\n---\n\n')
   return splitDetailText(text).map((chunk, index, chunks) => {
     const body = `${COMMENT_MARKER}${index + 1} -->\n## Renovate update details (${index + 1}/${chunks.length})\n\n${chunk.prefix}${chunk.raw}${chunk.suffix}`
     if (Buffer.byteLength(body) > 50000)
