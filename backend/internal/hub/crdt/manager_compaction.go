@@ -43,15 +43,17 @@ func (m *Manager) TickHousekeeping(ctx context.Context) {
 	m.runOnManagerGoroutine(func() { m.tickHousekeeping(ctx) })
 }
 
-// tickHousekeeping runs dedup-table cleanup, then the compaction pass, which
-// also rotates the epoch and persists a Bootstrap epoch stamp. Driven by a 60s
+// tickHousekeeping runs compaction, then dedup-table cleanup. Compaction also
+// rotates the epoch and persists a Bootstrap epoch stamp. Driven by a 60s
 // ticker; never blocks long. Presence cleanup is event-driven (via subscriber
 // disconnects + deferred clear timers), not bound to this tick.
 func (m *Manager) tickHousekeeping(ctx context.Context) {
-	if _, err := m.journal.CleanupExpiredRecentBatchIDs(ctx, m.now()); err != nil {
+	m.maybeCompact(ctx)
+	// Use the published epoch. A failed rotation leaves its accepted epochs
+	// unchanged, and their dedup records must remain available for retries.
+	if _, err := m.journal.CleanupExpiredRecentBatchIDs(ctx, m.owner.String(), m.now(), m.state.GetCurrentEpoch()-1); err != nil {
 		m.logger.Warn("cleanup recent batch ids", "err", err)
 	}
-	m.maybeCompact(ctx)
 }
 
 // epochRotation reports the epoch header `s` should carry at `now`.

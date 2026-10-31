@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -24,6 +25,76 @@ import (
 // not settle.
 func (s *Suite) testOAuthClients(t *testing.T) {
 	ctx := context.Background()
+	for _, owned := range []bool{false, true} {
+		for _, icon := range []bool{false, true} {
+			for _, verified := range []bool{false, true} {
+				t.Run(fmt.Sprintf("get and list preserve app fields owned=%v icon=%v verified=%v", owned, icon, verified), func(t *testing.T) {
+					st := s.NewStore(t)
+					user := SeedUser(t, st, "projection-user")
+					owner := userid.MustNew(user.ID)
+					params := store.CreateOAuthClientParams{
+						ClientID: id.Generate(), ClientName: "Projection app", ClientURI: "https://app.example.com",
+						SecretHash: []byte("client-secret-hash"), RedirectURIs: `["https://app.example.com/callback"]`,
+						Scopes: "workspace:read agent:read", GrantTypes: `["authorization_code","refresh_token"]`,
+						ElevationAllowed: true, RegistrationSource: store.OAuthClientSourceAdmin,
+					}
+					if owned {
+						params.OwnerUserID, params.RegistrationSource = user.ID, store.OAuthClientSourceUser
+					}
+					if icon {
+						params.IconBlob, params.IconMediaType = []byte{1, 2, 3}, "image/png"
+					}
+					if verified {
+						at := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+						params.VerifiedAt, params.VerifiedBy = &at, "historical-verifier"
+					}
+					created, err := st.OAuthClients().Create(ctx, params)
+					require.NoError(t, err)
+					assert.Equal(t, icon, created.HasIcon, "the create mapper must retain its distinct icon projection")
+					check := func(row store.OAuthClient) {
+						t.Helper()
+						assert.Equal(t, params.ClientID, row.ClientID)
+						assert.Equal(t, params.OwnerUserID, row.OwnerUserID)
+						assert.Equal(t, params.SecretHash, row.SecretHash)
+						assert.Equal(t, params.ClientName, row.ClientName)
+						assert.Equal(t, icon, row.HasIcon)
+						assert.Equal(t, params.ClientURI, row.ClientURI)
+						assert.Equal(t, params.RedirectURIs, row.RedirectURIs)
+						assert.Equal(t, params.Scopes, row.Scopes)
+						assert.Equal(t, params.GrantTypes, row.GrantTypes)
+						assert.True(t, row.ElevationAllowed)
+						assert.Equal(t, params.RegistrationSource, row.RegistrationSource)
+						assert.Equal(t, params.VerifiedBy, row.VerifiedBy)
+						assert.Equal(t, params.VerifiedAt, row.VerifiedAt)
+						assert.False(t, row.CreatedAt.IsZero())
+						assert.False(t, row.UpdatedAt.IsZero())
+					}
+					get, err := st.OAuthClients().Get(ctx, params.ClientID)
+					require.NoError(t, err)
+					check(*get)
+					changed, err := st.OAuthClients().Revoke(ctx, store.OAuthClientOwnershipParams{
+						ClientID: params.ClientID, CallerUserID: owner, CallerIsAdmin: !owned,
+					})
+					require.NoError(t, err)
+					require.EqualValues(t, 1, changed)
+					page, err := st.OAuthClients().List(ctx, store.ListOAuthClientsParams{
+						UserID: owner, IncludeHubWide: true, IncludeRevoked: true, PageParams: store.PageParams{Limit: 100},
+					})
+					require.NoError(t, err)
+					found := false
+					for _, row := range page.Rows {
+						if row.ClientID == params.ClientID {
+							found = true
+							check(row)
+							assert.NotNil(t, row.RevokedAt)
+							assert.Equal(t, get.CreatedAt, row.CreatedAt)
+						}
+					}
+					assert.True(t, found)
+				})
+			}
+		}
+	}
 
 	t.Run("every store open seeds the built-in registrations", func(t *testing.T) {
 		st := s.NewStore(t)
@@ -347,6 +418,7 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		alice := SeedUser(t, st, "deleter")
 		owner := userid.MustNew(alice.ID)
 		clientID := seedApp(t, st, "held", alice.ID, store.OAuthClientSourceUser)
+		deviceCode, authorizationCode := seedOAuthFlow(t, st, clientID, owner)
 
 		tokenID := id.Generate()
 		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
@@ -370,6 +442,18 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		held, err = st.OAuthClients().CountTokens(ctx, clientID)
 		require.NoError(t, err)
 		assert.EqualValues(t, 1, held, "a revoked credential is history and still holds the key")
+		_, err = st.OAuthClients().Delete(ctx, store.OAuthClientOwnershipParams{
+			ClientID: clientID, CallerUserID: owner,
+		})
+		require.Error(t, err)
+		_, err = st.OAuthClients().Get(ctx, clientID)
+		require.NoError(t, err)
+		_, err = st.DeviceAuthorizations().Get(ctx, deviceCode)
+		require.NoError(t, err, "a failed deletion must restore the device grant")
+		_, err = st.OAuthAuthorizationCodes().Get(ctx, authorizationCode)
+		require.NoError(t, err, "a failed deletion must restore the authorization code")
+		_, err = st.APITokens().GetByID(ctx, tokenID)
+		require.NoError(t, err)
 	})
 
 	t.Run("a delete clears the flow's one-shot rows", func(t *testing.T) {
@@ -381,13 +465,14 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		// An ABANDONED device flow and an unredeemed authorization code. Both
 		// reference the app under the same RESTRICT key as a credential, but
 		// neither is history: a device grant lives ten minutes and a code one.
+		deviceCode, authorizationCode := id.Generate(), id.Generate()
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
 			ClientID:   clientID,
-			DeviceCode: id.Generate(), UserCode: "ABC-DEF",
+			DeviceCode: deviceCode, UserCode: "ABC-DEF",
 			ExpiresAt: time.Now().Add(10 * time.Minute),
 		}))
 		require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
-			Code: id.Generate(), UserID: owner, ClientID: clientID,
+			Code: authorizationCode, UserID: owner, ClientID: clientID,
 			CodeChallenge: "challenge", RedirectURI: "https://app.example.com/callback",
 			GrantedScopes: "workspace:read", InstallationName: "laptop",
 			ExpiresAt: time.Now().Add(time.Minute),
@@ -401,7 +486,55 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 
 		_, err = st.OAuthClients().Get(ctx, clientID)
 		RequireNotFound(t, err)
+		_, err = st.DeviceAuthorizations().Get(ctx, deviceCode)
+		RequireNotFound(t, err)
+		_, err = st.OAuthAuthorizationCodes().Get(ctx, authorizationCode)
+		RequireNotFound(t, err)
 	})
+
+	for _, builtIn := range []bool{false, true} {
+		for _, outerTransaction := range []bool{false, true} {
+			name := "foreign app"
+			if builtIn {
+				name = "built-in app"
+			}
+			if outerTransaction {
+				name += " inside an outer transaction"
+			}
+			t.Run("a refused delete preserves flow rows for a "+name, func(t *testing.T) {
+				st := s.NewStore(t)
+				alice := SeedUser(t, st, "flow-alice")
+				bob := SeedUser(t, st, "flow-bob")
+				clientID := oauthapp.ControlCLIClientID
+				if !builtIn {
+					clientID = seedApp(t, st, "private-flow", alice.ID, store.OAuthClientSourceUser)
+				}
+				deviceCode, authorizationCode := seedOAuthFlow(t, st, clientID, userid.MustNew(alice.ID))
+				remove := func(tx store.Store) error {
+					rows, err := tx.OAuthClients().Delete(ctx, store.OAuthClientOwnershipParams{
+						ClientID: clientID, CallerUserID: userid.MustNew(bob.ID), CallerIsAdmin: builtIn,
+					})
+					if err == nil {
+						assert.Zero(t, rows)
+					}
+					return err
+				}
+				var err error
+				if outerTransaction {
+					err = st.RunInTransaction(ctx, remove)
+				} else {
+					err = remove(st)
+				}
+				require.NoError(t, err)
+				_, err = st.OAuthClients().Get(ctx, clientID)
+				require.NoError(t, err)
+				_, err = st.DeviceAuthorizations().Get(ctx, deviceCode)
+				assert.NoError(t, err, "a refused app deletion must preserve the device grant")
+				_, err = st.OAuthAuthorizationCodes().Get(ctx, authorizationCode)
+				assert.NoError(t, err, "a refused app deletion must preserve the authorization code")
+			})
+		}
+	}
 
 	t.Run("a built-in registration refuses every write but its elevation", func(t *testing.T) {
 		st := s.NewStore(t)
@@ -494,6 +627,23 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		assert.Equal(t, "guarded-app", app.ClientName)
 		assert.Nil(t, app.RevokedAt)
 	})
+}
+
+func seedOAuthFlow(t *testing.T, st store.Store, clientID string, owner userid.UserID) (deviceCode, authorizationCode string) {
+	t.Helper()
+	deviceCode, authorizationCode = id.Generate(), id.Generate()
+	ctx := context.Background()
+	require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
+		ClientID: clientID, DeviceCode: deviceCode, UserCode: "FLOW-CODE",
+		ExpiresAt: time.Now().Add(10 * time.Minute),
+	}))
+	require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
+		Code: authorizationCode, UserID: owner, ClientID: clientID,
+		CodeChallenge: "challenge", RedirectURI: "https://app.example.com/callback",
+		GrantedScopes: "workspace:read", InstallationName: "laptop",
+		ExpiresAt: time.Now().Add(time.Minute),
+	}))
+	return deviceCode, authorizationCode
 }
 
 // seedApp registers one app. An EMPTY owner is hub-wide, which is the same

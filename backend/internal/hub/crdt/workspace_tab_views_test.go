@@ -113,8 +113,8 @@ func TestWorkerReconnect_IndexReconciliation(t *testing.T) {
 
 	// Create then tombstone a tab.
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "b1", "tA", "root1", "wkr1", "p1")},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{addTabBatch(t, "b1", "tA", "root1", "wkr1", "p1")}),
 	})
 	require.NoError(t, err)
 
@@ -125,8 +125,8 @@ func TestWorkerReconnect_IndexReconciliation(t *testing.T) {
 		}}}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{tombstone},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{tombstone}),
 	})
 	require.NoError(t, err)
 

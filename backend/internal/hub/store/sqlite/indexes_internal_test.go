@@ -85,7 +85,7 @@ func assertCompositeKeysetIndex(t *testing.T, db *sql.DB, table, indexName, want
 }
 
 // TestWorkersRegisteredByCreatedIndex pins the index behind the per-user live
-// listings (ListWorkersByUserID and ListWorkersAdminLiveByUser: registered_by=?,
+// listing (ListWorkersAdminLiveByUser: registered_by=?,
 // deleted_at IS NULL). It must be partial on deleted_at (the queries filter it)
 // and carry the trailing id DESC; without it every per-user page top-N sorts.
 func TestWorkersRegisteredByCreatedIndex(t *testing.T) {
@@ -243,14 +243,12 @@ func loadQuerySQL(t *testing.T, file, name string) string {
 func TestPaginatedListingsRideTheirKeysetIndexes(t *testing.T) {
 	_, db := newSessionTestStore(t)
 
+	// Admin worker pages select IDs before owner metadata; their actual
+	// adapter plans and fetch limits are covered by the worker-plan suite.
 	cases := []struct{ file, query, index string }{
 		{"users.sql", "ListAllUsers", "idx_users_created_at"},
 		{"users.sql", "SearchUsers", "idx_users_created_at"},
-		{"workers.sql", "ListWorkersByUserID", "idx_workers_registered_by_created"},
-		{"workers.sql", "ListWorkersAdminLive", "idx_workers_created_at"},
-		{"workers.sql", "ListWorkersAdminLiveByUser", "idx_workers_registered_by_created"},
-		{"workers.sql", "ListWorkersAdminDeleted", "idx_workers_deleted_created"},
-		{"workers.sql", "ListWorkersAdminDeletedByUser", "idx_workers_registered_by_deleted_created"},
+		{"workers.sql", "ListWorkersByUserID", "idx_workers_registered_by_active_created"},
 		{"worker_registration_keys.sql", "ListRegistrationKeysAdmin", "idx_worker_registration_keys_created_at"},
 		{"user_sessions.sql", "ListUserSessionsByUserID", "idx_user_sessions_user_last_active"},
 		{"user_sessions.sql", "ListAllActiveSessions", "idx_user_sessions_last_active"},
@@ -280,12 +278,13 @@ func TestPaginatedListingsRideTheirKeysetIndexes(t *testing.T) {
 	}
 }
 
-// explainPlan returns the detail column of EXPLAIN QUERY PLAN for sqlText,
-// binding NULL for every placeholder: SQLite chooses the plan at prepare
-// time, so parameter values cannot change it.
-func explainPlan(t *testing.T, db *sql.DB, sqlText string) []string {
+// explainPlan returns the detail column of EXPLAIN QUERY PLAN for sqlText.
+// It uses the supplied arguments, or NULL for each placeholder when omitted.
+func explainPlan(t *testing.T, db *sql.DB, sqlText string, args ...any) []string {
 	t.Helper()
-	args := make([]any, strings.Count(sqlText, "?"))
+	if args == nil {
+		args = make([]any, strings.Count(sqlText, "?"))
+	}
 	rows, err := db.QueryContext(context.Background(), "EXPLAIN QUERY PLAN "+sqlText, args...)
 	require.NoError(t, err)
 	var details []string

@@ -67,14 +67,11 @@ func TestGeneratedInterfaceParamsAreAllowlisted(t *testing.T) {
 			"LeaseMillis": "arithmetic expression param; not a timestamp",
 			// The sqlite and postgres twins type these through CAST and ::boolean;
 			// sqlc's MySQL engine has no boolean CAST to type them with.
-			"IncludeActive":        "the admin worker listing's ACTIVE arm: a bare boolean parameter that no column types, bound as bool by the dialect wrapper",
-			"IncludeDeregistering": "the admin worker listing's DEREGISTERING arm: a bare boolean parameter that no column types, bound as bool by the dialect wrapper",
-			"Deregistering":        "SetWorkerStatus's IF() condition: a bare boolean parameter that no column types, bound as bool by the dialect wrapper",
-			"CallerIsAdmin":        "the app-ownership predicate's administrator arm: a bare boolean parameter that no column types, and CASTing it would type it on postgres alone",
-			"IncludeRevoked":       "the retired-row widening arm of the app listings: a bare boolean parameter that no column types, bound as bool by the dialect wrapper",
-			"IncludeHubWide":       "the catalogue-widening arm of the one app listing: a bare boolean parameter that no column types, bound as bool by the dialect wrapper",
-			"HubWideOnly":          "the catalogue-narrowing arm of the one app listing (its CASE expression loses the decltype on every dialect): a bare boolean parameter that no column types, bound as bool by the dialect wrapper",
-			"IconBytes":            "COALESCE(LENGTH(icon_blob), 0) loses its decltype; read through sqlutil.CoerceInt64, never bound",
+			"CallerIsAdmin":  "the app-ownership predicate's administrator arm: a bare boolean parameter that no column types, and CASTing it would type it on postgres alone",
+			"IncludeRevoked": "the retired-row widening arm of the app listings: a bare boolean parameter that no column types, bound as bool by the dialect wrapper",
+			"IncludeHubWide": "the catalogue-widening arm of the one app listing: a bare boolean parameter that no column types, bound as bool by the dialect wrapper",
+			"HubWideOnly":    "the catalogue-narrowing arm of the one app listing (its CASE expression loses the decltype on every dialect): a bare boolean parameter that no column types, bound as bool by the dialect wrapper",
+			"IconBytes":      "COALESCE(LENGTH(icon_blob), 0) loses its decltype; read through sqlutil.CoerceInt64, never bound",
 		},
 		postgresGenPkg: {
 			"CallerIsAdmin":  "the app-ownership predicate's administrator arm: a bare boolean parameter that no column types, and CASTing it would type it on postgres alone",

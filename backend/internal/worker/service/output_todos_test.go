@@ -1671,7 +1671,7 @@ func TestRegistryCache_AFailedTransactionBodyRestoresTheCacheAndWritesNothing(t 
 
 	wantErr := errors.New("the body refused")
 	err = reg.inTransactionLocked(ctx, svc.Output.db, func(tx agentTodoView) error {
-		_, upsertErr := svc.Output.upsertTodoLocked(ctx, tx, todoevents.KindCreate,
+		_, upsertErr := upsertTodoLocked(ctx, tx, todoevents.KindCreate,
 			todoevents.Item{ID: "t2", Content: "two", Status: todoevents.StatusPending})
 		require.NoError(t, upsertErr)
 		require.Len(t, cache.Rows, 2, "the body moved the mirror before it failed")

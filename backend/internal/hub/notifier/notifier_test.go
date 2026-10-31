@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
+	"github.com/leapmux/leapmux/internal/hub/workermgr/workermgrtest"
 )
 
 var errInjected = errors.New("notifier test: injected failure")
@@ -23,24 +24,26 @@ var errInjected = errors.New("notifier test: injected failure")
 // non-nil conn means the worker is connected. It records every call and keeps
 // the flag the real registry would hold.
 type fakeRegistry struct {
-	mu      sync.Mutex
-	conn    *workermgr.Conn
-	marked  []string
-	cleared []string
-	flag    map[string]bool
+	mu     sync.Mutex
+	conn   *workermgr.Conn
+	marked []string
+	flag   map[string]bool
 }
 
-func newFakeRegistry(connected bool) *fakeRegistry {
+func newFakeRegistry(t *testing.T, workerID string, connected bool) *fakeRegistry {
 	r := &fakeRegistry{flag: map[string]bool{}}
 	if connected {
-		r.conn = &workermgr.Conn{}
+		r.conn, _ = workermgrtest.NewRecordedConn(t, workerID)
 	}
 	return r
 }
 
-func (f *fakeRegistry) ConnForTrustedPath(string) *workermgr.Conn {
+func (f *fakeRegistry) ConnForTrustedPath(workerID string) *workermgr.Conn {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.conn != nil && f.conn.WorkerID != workerID {
+		return nil
+	}
 	return f.conn
 }
 
@@ -48,14 +51,9 @@ func (f *fakeRegistry) MarkDeregistering(workerID string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.marked = append(f.marked, workerID)
-	f.flag[workerID] = true
-}
-
-func (f *fakeRegistry) ClearDeregistering(workerID string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.cleared = append(f.cleared, workerID)
-	delete(f.flag, workerID)
+	if f.conn != nil && f.conn.WorkerID == workerID {
+		f.flag[workerID] = true
+	}
 }
 
 func (f *fakeRegistry) flagged(workerID string) bool {
@@ -100,10 +98,14 @@ type faultyWorkers struct {
 	store.WorkerStore
 	mu                sync.Mutex
 	getIncludeDeleted error
+	beforeGet         func()
 	markDeletedOnce   error
 }
 
 func (w *faultyWorkers) GetByIDIncludeDeleted(ctx context.Context, id string) (*store.Worker, error) {
+	if w.beforeGet != nil {
+		w.beforeGet()
+	}
 	if w.getIncludeDeleted != nil {
 		return nil, w.getIncludeDeleted
 	}
@@ -167,19 +169,19 @@ func TestNew_PanicsOnANilDependency(t *testing.T) {
 	var nilManager *workermgr.Manager
 	var nilPending *workermgr.PendingRequests
 	assert.Panics(t, func() { New(st, nilManager, ackSender(), timeout, nil) }, "a nil registry must fail at wiring time")
-	assert.Panics(t, func() { New(st, newFakeRegistry(false), nilPending, timeout, nil) }, "a nil sender must fail at wiring time")
+	assert.Panics(t, func() { New(st, newFakeRegistry(t, "", false), nilPending, timeout, nil) }, "a nil sender must fail at wiring time")
 }
 
 func TestSendDeregister_OnlineWorkerIsDeletedOnAck(t *testing.T) {
 	e := newEnv(t)
-	reg := newFakeRegistry(true)
+	reg := newFakeRegistry(t, e.worker, true)
 	sender := ackSender()
 
 	require.NoError(t, e.notifier(e.st, reg, sender).SendDeregister(context.Background(), e.worker))
 
 	assert.Equal(t, 1, sender.callCount())
 	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, e.status(t), "a valid acknowledgement deletes the worker")
-	assert.False(t, reg.flagged(e.worker), "the flag is cleared once the deletion is recorded")
+	assert.True(t, reg.flagged(e.worker), "the published connection remains contained until it unregisters")
 	assert.Equal(t, []string{e.worker}, reg.marked)
 	assert.Equal(t, []string{e.owner}, e.changed, "the owner's clients are told the list changed")
 }
@@ -188,7 +190,7 @@ func TestSendDeregister_OnlineWorkerIsDeletedOnAck(t *testing.T) {
 // response nor a response of another kind is an acknowledgement.
 func TestSendDeregister_NilResponseIsNotAnAck(t *testing.T) {
 	e := newEnv(t)
-	reg := newFakeRegistry(true)
+	reg := newFakeRegistry(t, e.worker, true)
 	sender := &fakeSender{respond: func(context.Context) (*leapmuxv1.ConnectRequest, error) { return nil, nil }}
 
 	require.NoError(t, e.notifier(e.st, reg, sender).SendDeregister(context.Background(), e.worker))
@@ -200,7 +202,7 @@ func TestSendDeregister_NilResponseIsNotAnAck(t *testing.T) {
 
 func TestSendDeregister_OtherPayloadIsNotAnAck(t *testing.T) {
 	e := newEnv(t)
-	reg := newFakeRegistry(true)
+	reg := newFakeRegistry(t, e.worker, true)
 	sender := &fakeSender{respond: func(context.Context) (*leapmuxv1.ConnectRequest, error) {
 		return &leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}}}, nil
 	}}
@@ -213,7 +215,7 @@ func TestSendDeregister_OtherPayloadIsNotAnAck(t *testing.T) {
 
 func TestSendDeregister_SendErrorKeepsTheIntent(t *testing.T) {
 	e := newEnv(t)
-	reg := newFakeRegistry(true)
+	reg := newFakeRegistry(t, e.worker, true)
 	sender := &fakeSender{respond: func(context.Context) (*leapmuxv1.ConnectRequest, error) { return nil, errInjected }}
 
 	require.NoError(t, e.notifier(e.st, reg, sender).SendDeregister(context.Background(), e.worker),
@@ -224,25 +226,25 @@ func TestSendDeregister_SendErrorKeepsTheIntent(t *testing.T) {
 	assert.Empty(t, e.changed)
 }
 
-func TestSendDeregister_OfflineWorkerKeepsTheFlag(t *testing.T) {
+func TestSendDeregisterOfflineWorkerKeepsOnlyThePersistedIntent(t *testing.T) {
 	e := newEnv(t)
-	reg := newFakeRegistry(false)
+	reg := newFakeRegistry(t, e.worker, false)
 	sender := ackSender()
 
 	require.NoError(t, e.notifier(e.st, reg, sender).SendDeregister(context.Background(), e.worker))
 
 	assert.Zero(t, sender.callCount(), "an offline worker cannot be told")
 	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, e.status(t))
-	assert.True(t, reg.flagged(e.worker), "the flag keeps the worker unreachable until it connects")
+	assert.False(t, reg.flagged(e.worker), "offline intent needs no registry entry")
 }
 
-// A worker deleted with its user has no deletion left to record, so the flag
-// is cleared whatever happens to the instruction.
-func TestSendDeregister_DeletedWorkerClearsTheFlag(t *testing.T) {
+// A deleted worker needs no further database mutation. A current connection
+// still stays contained until it unregisters, regardless of the send outcome.
+func TestSendDeregisterDeletedWorkerKeepsItsCurrentConnectionContained(t *testing.T) {
 	t.Run("offline", func(t *testing.T) {
 		e := newEnv(t)
 		require.NoError(t, e.st.Workers().MarkDeleted(context.Background(), e.worker))
-		reg := newFakeRegistry(false)
+		reg := newFakeRegistry(t, e.worker, false)
 		sender := ackSender()
 
 		require.NoError(t, e.notifier(e.st, reg, sender).SendDeregister(context.Background(), e.worker))
@@ -260,13 +262,13 @@ func TestSendDeregister_DeletedWorkerClearsTheFlag(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			e := newEnv(t)
 			require.NoError(t, e.st.Workers().MarkDeleted(context.Background(), e.worker))
-			reg := newFakeRegistry(true)
+			reg := newFakeRegistry(t, e.worker, true)
 			sender := &fakeSender{respond: respond}
 
 			require.NoError(t, e.notifier(e.st, reg, sender).SendDeregister(context.Background(), e.worker))
 
 			assert.Equal(t, 1, sender.callCount(), "a connected worker is still told to stop")
-			assert.False(t, reg.flagged(e.worker))
+			assert.True(t, reg.flagged(e.worker))
 			assert.Empty(t, e.changed, "nothing changed in the list: the worker was already deleted")
 		})
 	}
@@ -276,7 +278,7 @@ func TestSendDeregister_DeletedWorkerClearsTheFlag(t *testing.T) {
 // context: the deletion must not depend on that context.
 func TestSendDeregister_CompletionSurvivesTheCallersCancel(t *testing.T) {
 	e := newEnv(t)
-	reg := newFakeRegistry(true)
+	reg := newFakeRegistry(t, e.worker, true)
 	ctx, cancel := context.WithCancel(context.Background())
 	sender := &fakeSender{respond: func(sendCtx context.Context) (*leapmuxv1.ConnectRequest, error) {
 		cancel()
@@ -287,7 +289,7 @@ func TestSendDeregister_CompletionSurvivesTheCallersCancel(t *testing.T) {
 
 	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, e.status(t),
 		"the deletion runs in a hub-owned context, so a cancelled caller cannot abort it")
-	assert.False(t, reg.flagged(e.worker))
+	assert.True(t, reg.flagged(e.worker))
 }
 
 // A deletion that fails after a valid acknowledgement cannot be retried by the
@@ -296,7 +298,7 @@ func TestSendDeregister_CompletionSurvivesTheCallersCancel(t *testing.T) {
 func TestSendDeregister_FailedCompletionIsCompletedByTheSweep(t *testing.T) {
 	e := newEnv(t)
 	workers := &faultyWorkers{WorkerStore: e.st.Workers(), markDeletedOnce: errInjected}
-	reg := newFakeRegistry(true)
+	reg := newFakeRegistry(t, e.worker, true)
 	sender := ackSender()
 
 	require.NoError(t, e.notifier(faultyStore{Store: e.st, workers: workers}, reg, sender).SendDeregister(context.Background(), e.worker))
@@ -318,18 +320,18 @@ func TestSendDeregister_FailedCompletionIsCompletedByTheSweep(t *testing.T) {
 // the worker's next connect is told to stop, and the flag is set again.
 func TestDeliverOnConnect_AfterARestart(t *testing.T) {
 	e := newEnv(t)
-	reg := newFakeRegistry(true) // a new notifier and registry: nothing flagged
+	reg := newFakeRegistry(t, e.worker, true) // a new notifier and registry: nothing flagged
 	sender := ackSender()
 	worker, err := e.st.Workers().GetByAuthToken(context.Background(), mustAuthToken(t, e.st, e.worker))
 	require.NoError(t, err)
 	require.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, worker.Status)
 
-	e.notifier(e.st, reg, sender).DeliverOnConnect(context.Background(), worker)
+	e.notifier(e.st, reg, sender).DeliverOnConnect(context.Background(), worker, reg.conn)
 
 	assert.Equal(t, []string{e.worker}, reg.marked, "the flag is set again on connect")
 	assert.Equal(t, 1, sender.callCount())
 	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, e.status(t))
-	assert.False(t, reg.flagged(e.worker))
+	assert.True(t, reg.flagged(e.worker))
 }
 
 func mustAuthToken(t *testing.T, st store.Store, workerID string) string {

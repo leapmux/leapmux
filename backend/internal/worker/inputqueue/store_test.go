@@ -1407,11 +1407,17 @@ func TestStoreRecoveryDistinguishesUncertainAndInterrupted(t *testing.T) {
 	require.NoError(t, err)
 	_, _, err = store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
+	_, err = store.SetPaused(ctx, "agent-1", true, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL)
+	require.NoError(t, err)
+	before := readQueuePauseState(t, database)
 	snapshots, err := NewStore(database, nil).Recover(ctx)
 	require.NoError(t, err)
 	require.Len(t, snapshots, 1)
 	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN, snapshots[0].Items[0].State)
 	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_UNCERTAIN, snapshots[0].PauseReason)
+	assert.Equal(t, pauseOwnerRecovery, readQueuePauseState(t, database).owner)
+	assert.EqualValues(t, before.revision+1, snapshots[0].Revision)
+	assertQueueTurnEnded(t, database)
 
 	database, store = newStoreFixture(t)
 	_, err = store.Enqueue(ctx, NewItem{ID: "two", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
@@ -1420,9 +1426,73 @@ func TestStoreRecoveryDistinguishesUncertainAndInterrupted(t *testing.T) {
 	require.NoError(t, err)
 	_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, TurnSteerable: true})
 	require.NoError(t, err)
+	_, err = store.SetPaused(ctx, "agent-1", true, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL)
+	require.NoError(t, err)
+	before = readQueuePauseState(t, database)
 	snapshots, err = NewStore(database, nil).Recover(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, snapshots[0].PauseReason)
+	assert.Equal(t, pauseOwnerRecovery, readQueuePauseState(t, database).owner)
+	assert.EqualValues(t, before.revision+1, snapshots[0].Revision)
+	assertQueueTurnEnded(t, database)
+}
+
+func TestStoreFailDispatchReplacesThePauseAndClearsAllTurnState(t *testing.T) {
+	t.Parallel()
+	for _, uncertain := range []bool{false, true} {
+		for _, providerReported := range []bool{false, true} {
+			t.Run(fmt.Sprintf("uncertain=%v reported=%v", uncertain, providerReported), func(t *testing.T) {
+				database, store := newStoreFixture(t)
+				ctx := t.Context()
+				_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Text: "hello", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE})
+				require.NoError(t, err)
+				_, _, err = store.PrepareDispatch(ctx, "agent-1", false)
+				require.NoError(t, err)
+				if providerReported {
+					_, _, err = store.TurnStarted(ctx, "agent-1", true)
+					require.NoError(t, err)
+				}
+				_, err = store.SetPaused(ctx, "agent-1", true, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL)
+				require.NoError(t, err)
+				before := readQueuePauseState(t, database)
+				snapshot, err := store.FailDispatch(ctx, "agent-1", "one", assert.AnError, uncertain)
+				require.NoError(t, err)
+				require.Len(t, snapshot.Items, 1)
+				reason := leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_FAILED
+				state := leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED
+				if uncertain {
+					reason, state = leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_UNCERTAIN, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN
+				}
+				assert.Equal(t, reason, snapshot.PauseReason)
+				assert.Equal(t, state, snapshot.Items[0].State)
+				assert.Equal(t, assert.AnError.Error(), snapshot.Items[0].Error)
+				assert.Equal(t, pauseOwnerDelivery, readQueuePauseState(t, database).owner)
+				assert.EqualValues(t, before.revision+1, snapshot.Revision)
+				assertQueueTurnEnded(t, database)
+			})
+		}
+	}
+}
+
+func TestStoreRecoveryKeepsAnIdlePauseAndRevision(t *testing.T) {
+	t.Parallel()
+	database, store := newStoreFixture(t)
+	_, err := store.SetPaused(t.Context(), "agent-1", true, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL)
+	require.NoError(t, err)
+	before := readQueuePauseState(t, database)
+	_, err = store.Recover(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, before, readQueuePauseState(t, database))
+}
+
+func assertQueueTurnEnded(t *testing.T, database *sql.DB) {
+	t.Helper()
+	var active, steerable bool
+	var inputID string
+	require.NoError(t, database.QueryRowContext(t.Context(), `SELECT active_turn, active_turn_steerable, active_input_id FROM agent_input_queue_state WHERE agent_id = 'agent-1'`).Scan(&active, &steerable, &inputID))
+	assert.False(t, active)
+	assert.False(t, steerable)
+	assert.Empty(t, inputID)
 }
 
 func TestStoreRecoveryIgnoresClosedAgents(t *testing.T) {

@@ -48,8 +48,8 @@ func (s *countingCRDTService) SubmitOps(
 // size built here.
 func submitOpsOfSize(atLeast int) *leapmuxv1.SubmitOpsRequest {
 	return &leapmuxv1.SubmitOpsRequest{
-		Epoch:   1,
-		Batches: []*leapmuxv1.OpBatch{{BatchId: strings.Repeat("p", atLeast)}},
+
+		Batches: batchesAtEpoch(1, []*leapmuxv1.OpBatch{{BatchId: strings.Repeat("p", atLeast)}}),
 	}
 }
 

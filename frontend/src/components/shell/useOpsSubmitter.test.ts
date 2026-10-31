@@ -1,9 +1,12 @@
+import type { OpBatch } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { userCRDTClient, userCRDTUnloadClient } from '~/api/clients'
 import { showWarnToast } from '~/components/common/Toast'
 import { BatchRejectionReason, OpBatchSchema } from '~/generated/proto/leapmux/v1/user_ops_pb'
+import { HLCClock } from '~/lib/crdt/hlc'
+import { PendingOpsManager } from '~/lib/crdt/pendingOps'
 import { createOpsSubmitter } from './useOpsSubmitter'
 
 // The submitter's only user-visible side effect on a permanent rejection is a
@@ -26,6 +29,23 @@ vi.mock('~/api/clients', () => ({
 
 function batch(id: string) {
   return create(OpBatchSchema, { batchId: id, ops: [] })
+}
+
+function bootstrapPending(pending: PendingOpsManager, currentEpoch: bigint) {
+  pending.bootstrap({
+    userId: 'user',
+    nodes: {},
+    tabs: {},
+    floatingWindows: {},
+    workspaces: {},
+    currentEpoch,
+  })
+}
+
+function pendingAtEpoch(epoch: bigint) {
+  const pending = new PendingOpsManager('user', new HLCClock('client'))
+  bootstrapPending(pending, epoch)
+  return pending
 }
 
 interface FakePendingOpts {
@@ -56,14 +76,14 @@ function makeFakePending(opts: FakePendingOpts = {}) {
   }
 }
 
-function rejectedResponse(batchId: string) {
+function rejectedResponse(batchId: string, reason = BatchRejectionReason.BATCH_REJECTION_FORBIDDEN_WORKSPACE) {
   return {
     results: [
       {
         batchId,
         outcome: {
           case: 'rejected' as const,
-          value: { $typeName: 'leapmux.v1.BatchRejection', reason: BatchRejectionReason.BATCH_REJECTION_FORBIDDEN_WORKSPACE, offendingOpId: '' },
+          value: { $typeName: 'leapmux.v1.BatchRejection', reason, offendingOpId: '' },
         },
       },
     ],
@@ -95,6 +115,164 @@ async function advancePastBackoff() {
 describe('createOpsSubmitter (retry requeue)', () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
+
+  for (const failure of ['parked', 'in flight'] as const) {
+    it(`preserves a batch's submitted epoch after bootstrap while its retry is ${failure}`, async () => {
+      await createRoot(async (dispose) => {
+        const pending = pendingAtEpoch(1n)
+        const epochs: bigint[] = []
+        let rejectRequest: (error: Error) => void = () => {
+          throw new Error('the first request did not start')
+        }
+        const held = new Promise<never>((_resolve, reject) => {
+          rejectRequest = reject
+        })
+        const submitOps = vi.fn(async (request: { batches: { epoch: bigint }[] }) => {
+          const submitted = request.batches[0]
+          if (submitted === undefined)
+            throw new Error('the request must contain its batch')
+          epochs.push(submitted.epoch)
+          if (epochs.length === 1)
+            return held
+          return { results: [] }
+        })
+        const submitter = createOpsSubmitter({
+          pending: () => pending,
+          client: { submitOps } as never,
+        })
+        submitter.enqueue(batch('lost-ack'))
+        const firstRequest = submitter.flush()
+        if (failure === 'parked') {
+          rejectRequest(new Error('the commit acknowledgement was lost'))
+          await firstRequest
+        }
+        bootstrapPending(pending, 2n)
+        if (failure === 'in flight') {
+          rejectRequest(new Error('the commit acknowledgement was lost'))
+          await firstRequest
+        }
+        await advancePastBackoff()
+        expect(epochs).toEqual([1n, 1n])
+        expect(pending.state.pendingBatches).toEqual([])
+        dispose()
+      })
+    })
+  }
+
+  it('stamps a queued batch only when a manager can submit it', async () => {
+    await createRoot(async (dispose) => {
+      let pending: PendingOpsManager | null = null
+      const submitOps = vi.fn().mockResolvedValue({ results: [] })
+      const submitter = createOpsSubmitter({
+        pending: () => pending,
+        client: { submitOps } as never,
+      })
+      const candidate = batch('waiting')
+      submitter.enqueue(candidate)
+      await submitter.flush()
+      expect(candidate.epoch).toBe(0n)
+      expect(submitOps).not.toHaveBeenCalled()
+      pending = pendingAtEpoch(2n)
+      await submitter.flush()
+      expect(candidate.epoch).toBe(2n)
+      expect(submitOps).toHaveBeenCalledTimes(1)
+      dispose()
+    })
+  })
+
+  for (const unload of [false, true]) {
+    it(`keeps mixed batch epochs and order in one ${unload ? 'unload' : 'ordinary'} request`, async () => {
+      await createRoot(async (dispose) => {
+        const pending = pendingAtEpoch(2n)
+        const requests: { batches: OpBatch[] }[] = []
+        const send = async (request: { batches: OpBatch[] }) => {
+          requests.push(request)
+          return { results: [] }
+        }
+        const ordinary = vi.fn(send)
+        const keepalive = vi.fn(send)
+        const submitter = createOpsSubmitter({
+          pending: () => pending,
+          client: { submitOps: ordinary } as never,
+          unloadClient: { submitOps: keepalive } as never,
+        })
+        for (const [id, epoch] of [
+          ['a', 1n],
+          ['b', 2n],
+          ['c', 1n],
+        ] as const) {
+          const candidate = batch(id)
+          candidate.epoch = epoch
+          submitter.enqueue(candidate)
+        }
+        await submitter.flush({ unload })
+        expect(requests).toHaveLength(1)
+        expect(requests[0]?.batches.map(candidate => [candidate.batchId, candidate.epoch])).toEqual([
+          ['a', 1n],
+          ['b', 2n],
+          ['c', 1n],
+        ])
+        expect(ordinary).toHaveBeenCalledTimes(unload ? 0 : 1)
+        expect(keepalive).toHaveBeenCalledTimes(unload ? 1 : 0)
+        dispose()
+      })
+    })
+  }
+
+  it('refreshes an unsubmitted epoch once and preserves it after a transport failure', async () => {
+    await createRoot(async (dispose) => {
+      const pending = pendingAtEpoch(0n)
+      const epochs: bigint[] = []
+      const submitOps = vi.fn(async (request: { batches: OpBatch[] }) => {
+        const candidate = request.batches[0]
+        if (candidate === undefined)
+          throw new Error('the request must contain its batch')
+        epochs.push(candidate.epoch)
+        if (epochs.length === 1)
+          return rejectedResponse('refresh', BatchRejectionReason.BATCH_REJECTION_EPOCH_REQUIRED)
+        if (epochs.length === 2)
+          throw new Error('the acknowledgement was lost')
+        return committedResponse('refresh')
+      })
+      const submitter = createOpsSubmitter({
+        pending: () => pending,
+        client: { submitOps } as never,
+        reconnect: async () => bootstrapPending(pending, 2n),
+      })
+      submitter.enqueue(batch('refresh'))
+      await submitter.flush()
+      await advancePastBackoff()
+      bootstrapPending(pending, 3n)
+      await advancePastBackoff()
+      expect(epochs).toEqual([0n, 2n, 2n])
+      dispose()
+    })
+  })
+
+  it('does not resend handled results when reconnecting after a rejection fails', async () => {
+    await createRoot(async (dispose) => {
+      const pending = makeFakePending({ retryable: true, needsEpochRefresh: true })
+      const submitOps = vi.fn().mockResolvedValue({
+        results: [
+          ...committedResponse('committed').results,
+          ...rejectedResponse('retry').results,
+        ],
+      })
+      const submitter = createOpsSubmitter({
+        pending: () => pending as never,
+        client: { submitOps } as never,
+        reconnect: async () => { throw new Error('reconnect failed') },
+      })
+      submitter.enqueue(batch('committed'))
+      submitter.enqueue(batch('retry'))
+      await submitter.flush()
+      await advancePastBackoff()
+      expect(submitOps).toHaveBeenCalledTimes(1)
+      expect(pending.consumeBatchCommitted).toHaveBeenCalledTimes(1)
+      expect(pending.revertPendingBatch).toHaveBeenCalledWith('retry')
+      dispose()
+    })
+  })
 
   it('requeues a retryable batch even when no epoch refresh / reconnect is needed', async () => {
     await createRoot(async (dispose) => {

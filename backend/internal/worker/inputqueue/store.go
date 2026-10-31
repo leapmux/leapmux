@@ -1498,10 +1498,17 @@ func (s *Store) FailDispatch(ctx context.Context, agentID, inputID string, deliv
 	if changed != 1 {
 		return Snapshot{}, ErrConflict
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, reason, pauseOwnerDelivery, nowText(), agentID); err != nil {
+	if err := replacePauseAndEndTurn(ctx, tx, agentID, reason, pauseOwnerDelivery); err != nil {
 		return Snapshot{}, err
 	}
 	return commitSnapshot(ctx, tx, agentID, s.now())
+}
+
+// replacePauseAndEndTurn replaces any existing pause and clears its turn.
+// The caller owns the transaction and any item-state validation.
+func replacePauseAndEndTurn(ctx context.Context, tx *sql.Tx, agentID string, reason leapmuxv1.AgentInputQueuePauseReason, owner pauseOwner) error {
+	_, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, reason, owner, nowText(), agentID)
+	return err
 }
 
 // TurnEnded clears the active turn.
@@ -2084,17 +2091,16 @@ func (s *Store) Recover(ctx context.Context) ([]Snapshot, error) {
 			_ = tx.Rollback()
 			return nil, err
 		}
+		reason := leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED
 		if unconfirmed > 0 {
 			if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = 'Worker restarted before delivery was confirmed', updated_at = ? WHERE agent_id = ? AND state IN (?, ?)`, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN, nowText(), agentID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO); err != nil {
 				_ = tx.Rollback()
 				return nil, err
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_UNCERTAIN, pauseOwnerRecovery, nowText(), agentID); err != nil {
-				_ = tx.Rollback()
-				return nil, err
-			}
-		} else if active {
-			if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, pauseOwnerRecovery, nowText(), agentID); err != nil {
+			reason = leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_UNCERTAIN
+		}
+		if unconfirmed > 0 || active {
+			if err := replacePauseAndEndTurn(ctx, tx, agentID, reason, pauseOwnerRecovery); err != nil {
 				_ = tx.Rollback()
 				return nil, err
 			}

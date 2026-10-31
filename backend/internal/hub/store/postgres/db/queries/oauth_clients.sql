@@ -260,6 +260,17 @@ DELETE FROM device_authorizations WHERE client_id = sqlc.arg(client_id);
 -- The sibling of DeleteEphemeralGrantsForOAuthClient; see its comment.
 DELETE FROM oauth_authorization_codes WHERE client_id = sqlc.arg(client_id);
 
+-- name: LockDeletableOAuthClient :one
+-- Authorize and lock the app before deleting its one-shot flow rows.
+SELECT client_id FROM oauth_clients
+WHERE client_id = sqlc.arg(client_id)
+  AND registration_source <> sqlc.arg(builtin_source)
+  AND (
+      (owner_user_id IS NULL AND sqlc.arg(caller_is_admin))
+      OR owner_user_id = sqlc.arg(caller_user_id)
+  )
+FOR UPDATE;
+
 -- name: DeleteOAuthClient :execresult
 -- The HARD delete, for an app that never held a credential. The RESTRICT
 -- foreign key refuses it otherwise, which is the point: a delete that silently

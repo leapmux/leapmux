@@ -156,6 +156,10 @@ func TestNotifyRegistrationChange_NoWaiters(t *testing.T) {
 
 func TestMarkDeregistering(t *testing.T) {
 	m := New(DenyAllReach())
+	conn, _ := newTestConn(t, "b1", nil, nil)
+	_, err := m.Register(conn)
+	require.NoError(t, err)
+	t.Cleanup(func() { m.Unregister("b1", conn) })
 
 	assert.False(t, m.IsDeregistering("b1"))
 
@@ -311,16 +315,6 @@ func TestManager_OnlineForTrustedPath_NotRegistered(t *testing.T) {
 	assert.False(t, m.OnlineForTrustedPath("nonexistent-worker"), "OnlineForTrustedPath should return false for unknown worker")
 }
 
-func TestClearDeregistering(t *testing.T) {
-	m := New(DenyAllReach())
-
-	m.MarkDeregistering("b1")
-	m.ClearDeregistering("b1")
-	assert.False(t, m.IsDeregistering("b1"))
-
-	m.ClearDeregistering("nonexistent")
-}
-
 // Register enqueues a Conn's Greeting BEFORE publishing it. With a single
 // handler drain that makes it mechanically the first frame written.
 func TestRegisterSendsGreetingBeforePublishing(t *testing.T) {
@@ -440,10 +434,14 @@ func TestManager_ConnForUser_DeregisteringWorkerIsUnreachable(t *testing.T) {
 	assert.Same(t, conn, m.ConnForTrustedPath("w1"),
 		"the trusted path stays open: it is how the deregister notification is delivered")
 
-	m.ClearDeregistering("w1")
+	require.True(t, m.Unregister("w1", conn))
+	fresh, _ := newTestConn(t, "w1", nil, nil)
+	_, err = m.Register(fresh)
+	require.NoError(t, err)
+	t.Cleanup(func() { m.Unregister("w1", fresh) })
 	got, err = m.ConnForUser(context.Background(), &auth.UserInfo{}, "w1")
 	require.NoError(t, err)
-	assert.Same(t, conn, got, "clearing the flag restores user-directed reach")
+	assert.Same(t, fresh, got, "a new membership requires fresh authorization")
 }
 
 func TestErrReachDenied_IsPermissionDenied(t *testing.T) {

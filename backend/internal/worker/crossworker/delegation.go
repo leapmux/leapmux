@@ -140,11 +140,11 @@ func delegationKey(userID userid.UserID) string {
 }
 
 // GetBearer satisfies DelegationProvider.
-func (s *DelegationStore) GetBearer(ctx context.Context, scope DelegationScope) (string, error) {
-	if scope.UserID.IsZero() {
+func (s *DelegationStore) GetBearer(ctx context.Context, userID userid.UserID) (string, error) {
+	if userID.IsZero() {
 		return "", errors.New("crossworker: user_id required")
 	}
-	key := delegationKey(scope.UserID)
+	key := delegationKey(userID)
 	s.mu.Lock()
 	if c, ok := s.cached[key]; ok && time.Until(c.expiresAt) > s.MintGracePeriod {
 		bearer := c.bearer
@@ -170,7 +170,7 @@ func (s *DelegationStore) GetBearer(ctx context.Context, scope DelegationScope) 
 	s.inflight[key] = fl
 	s.mu.Unlock()
 
-	minted, err := s.mint(ctx, scope)
+	minted, err := s.mint(ctx, userID)
 
 	s.mu.Lock()
 	fl.tok, fl.err = minted, err
@@ -211,7 +211,7 @@ type mintedToken struct {
 	ExpiresAt time.Time
 }
 
-func (s *DelegationStore) mint(ctx context.Context, scope DelegationScope) (mintedToken, error) {
+func (s *DelegationStore) mint(ctx context.Context, userID userid.UserID) (mintedToken, error) {
 	maxAttempts := s.MintMaxAttempts
 	if maxAttempts < 1 {
 		maxAttempts = 1
@@ -235,7 +235,7 @@ func (s *DelegationStore) mint(ctx context.Context, scope DelegationScope) (mint
 	// elapsed-time cap so MaxAttempts is the only retry governor and
 	// callers' --retry-attempts configurations behave predictably.
 	return backoff.Retry(ctx, func() (mintedToken, error) {
-		minted, mErr := s.mintOnce(ctx, scope)
+		minted, mErr := s.mintOnce(ctx, userID)
 		if mErr == nil {
 			return minted, nil
 		}
@@ -249,16 +249,16 @@ func (s *DelegationStore) mint(ctx context.Context, scope DelegationScope) (mint
 	}, backoff.WithBackOff(b), backoff.WithMaxTries(uint(maxAttempts)), backoff.WithMaxElapsedTime(0))
 }
 
-func (s *DelegationStore) mintOnce(ctx context.Context, scope DelegationScope) (mintedToken, error) {
+func (s *DelegationStore) mintOnce(ctx context.Context, userID userid.UserID) (mintedToken, error) {
 	if s.LiveTab == nil {
 		return mintedToken{}, errors.New("delegation mint: no LiveTabProvider wired")
 	}
 	tabID, ok := s.LiveTab()
 	if !ok || tabID == "" {
-		return mintedToken{}, fmt.Errorf("delegation mint: this worker hosts no open tab for user=%s", scope.UserID.String())
+		return mintedToken{}, fmt.Errorf("delegation mint: this worker hosts no open tab for user=%s", userID.String())
 	}
 	body, _ := json.Marshal(map[string]any{
-		"user_id":           scope.UserID.String(),
+		"user_id":           userID.String(),
 		"issued_for_tab_id": tabID,
 	})
 	url := locallisten.JoinPath(s.requestBaseURL, "/worker/delegation-tokens/mint")
@@ -302,7 +302,7 @@ func (s *DelegationStore) mintOnce(ctx context.Context, scope DelegationScope) (
 }
 
 // Acquire records that one more spawn (agent / opted-in terminal)
-// references the user's bearer slot. Pairs with Release at teardown so the
+// refers to the user's bearer slot. Pairs with Release at teardown so the
 // last referencing spawn triggers a hub-side revoke instead of leaving the
 // row to expire on its own.
 //

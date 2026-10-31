@@ -116,41 +116,56 @@ func listWorkersByUserIDParams(registeredBy, cursor string, limit int64) (gendb.
 	})
 }
 
-// listWorkersAdminLiveParams builds the user_id=none live query
-// (ListWorkersAdminLive): deleted_at IS NULL, with the live states the scope
-// includes.
-func listWorkersAdminLiveParams(scope store.WorkerAdminListScope, cursor string, limit int64) (gendb.ListWorkersAdminLiveParams, error) {
+// listWorkersAdminLiveParams builds the typed cursor for ListWorkersAdminLive.
+func listWorkersAdminLiveParams(cursor string, limit int64) (gendb.ListWorkersAdminLiveParams, error) {
 	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListWorkersAdminLiveParams {
-		return gendb.ListWorkersAdminLiveParams{
-			IncludeActive: scope.IncludeActive, IncludeDeregistering: scope.IncludeDeregistering,
-			CursorTime: ct, CursorID: cid, Limit: fl,
-		}
+		return gendb.ListWorkersAdminLiveParams{CursorTime: ct, CursorID: cid, Limit: fl}
 	})
 }
 
-// listWorkersAdminLiveByUserParams builds the user_id=set live query
-// (ListWorkersAdminLiveByUser). The user_id dimension is its own query rather
-// than an opt-in `(narg IS NULL OR registered_by = narg)` probe; see
-// workers.sql for the full 2x2 matrix rationale.
-func listWorkersAdminLiveByUserParams(scope store.WorkerAdminListScope, userID string, cursor string, limit int64) (gendb.ListWorkersAdminLiveByUserParams, error) {
+// listWorkersAdminLiveByUserParams builds the typed cursor for ListWorkersAdminLiveByUser.
+func listWorkersAdminLiveByUserParams(userID string, cursor string, limit int64) (gendb.ListWorkersAdminLiveByUserParams, error) {
 	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListWorkersAdminLiveByUserParams {
-		return gendb.ListWorkersAdminLiveByUserParams{
-			IncludeActive: scope.IncludeActive, IncludeDeregistering: scope.IncludeDeregistering,
-			UserID: userID, CursorTime: ct, CursorID: cid, Limit: fl,
-		}
+		return gendb.ListWorkersAdminLiveByUserParams{UserID: userID, CursorTime: ct, CursorID: cid, Limit: fl}
 	})
 }
 
-// listWorkersAdminDeletedParams builds the user_id=none deleted query
-// (ListWorkersAdminDeleted): deleted_at IS NOT NULL.
+// listWorkersAdminActiveParams builds the typed cursor for ListWorkersAdminActive.
+func listWorkersAdminActiveParams(cursor string, limit int64) (gendb.ListWorkersAdminActiveParams, error) {
+	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListWorkersAdminActiveParams {
+		return gendb.ListWorkersAdminActiveParams{CursorTime: ct, CursorID: cid, Limit: fl}
+	})
+}
+
+// listWorkersAdminActiveByUserParams builds the typed cursor for ListWorkersAdminActiveByUser.
+func listWorkersAdminActiveByUserParams(userID string, cursor string, limit int64) (gendb.ListWorkersAdminActiveByUserParams, error) {
+	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListWorkersAdminActiveByUserParams {
+		return gendb.ListWorkersAdminActiveByUserParams{UserID: userID, CursorTime: ct, CursorID: cid, Limit: fl}
+	})
+}
+
+// listWorkersAdminDeregisteringParams builds the typed cursor for ListWorkersAdminDeregistering.
+func listWorkersAdminDeregisteringParams(cursor string, limit int64) (gendb.ListWorkersAdminDeregisteringParams, error) {
+	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListWorkersAdminDeregisteringParams {
+		return gendb.ListWorkersAdminDeregisteringParams{CursorTime: ct, CursorID: cid, Limit: fl}
+	})
+}
+
+// listWorkersAdminDeregisteringByUserParams builds the typed cursor for ListWorkersAdminDeregisteringByUser.
+func listWorkersAdminDeregisteringByUserParams(userID string, cursor string, limit int64) (gendb.ListWorkersAdminDeregisteringByUserParams, error) {
+	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListWorkersAdminDeregisteringByUserParams {
+		return gendb.ListWorkersAdminDeregisteringByUserParams{UserID: userID, CursorTime: ct, CursorID: cid, Limit: fl}
+	})
+}
+
+// listWorkersAdminDeletedParams builds the typed cursor for ListWorkersAdminDeleted.
 func listWorkersAdminDeletedParams(cursor string, limit int64) (gendb.ListWorkersAdminDeletedParams, error) {
 	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListWorkersAdminDeletedParams {
 		return gendb.ListWorkersAdminDeletedParams{CursorTime: ct, CursorID: cid, Limit: fl}
 	})
 }
 
-// listWorkersAdminDeletedByUserParams builds the user_id=set deleted query
-// (ListWorkersAdminDeletedByUser).
+// listWorkersAdminDeletedByUserParams builds the typed cursor for ListWorkersAdminDeletedByUser.
 func listWorkersAdminDeletedByUserParams(userID string, cursor string, limit int64) (gendb.ListWorkersAdminDeletedByUserParams, error) {
 	return withCursor(cursor, limit, func(ct sqltime.SQLiteNullTime, cid sql.NullString, fl int64) gendb.ListWorkersAdminDeletedByUserParams {
 		return gendb.ListWorkersAdminDeletedByUserParams{UserID: userID, CursorTime: ct, CursorID: cid, Limit: fl}

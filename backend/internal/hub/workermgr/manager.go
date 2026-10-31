@@ -33,7 +33,7 @@ var ErrTooManyWorkers = errors.New("worker connection refused: account is at its
 type Manager struct {
 	mu            sync.RWMutex
 	conns         map[string]*Conn // workerID -> Conn
-	deregistering map[string]bool  // workerID -> true if deregistering
+	deregistering map[string]bool  // containment markers for current connections only
 	// connsByOwner counts the live connections each account holds, so the
 	// per-account cap can be tested in the SAME critical section that publishes
 	// to conns -- see Register.
@@ -106,8 +106,8 @@ func DenyAllReach() ReachAuthorizer { return denyAllReach{} }
 
 // ConnForUser is the ONLY user-directed way to reach a worker connection.
 //
-// It runs the ReachAuthorizer the Manager was constructed with before touching
-// the map, so an entrypoint that takes a worker id off a request cannot read
+// It runs the ReachAuthorizer before returning a connection, so an entrypoint
+// that takes a worker id off a request cannot read
 // the registry without the ownership + delegation-scope check -- previously a
 // convention each new entrypoint had to remember. A nil connection with a nil
 // error means the worker is not reachable -- authorized but offline, or being
@@ -120,31 +120,23 @@ func (m *Manager) ConnForUser(ctx context.Context, user *auth.UserInfo, workerID
 	if user == nil {
 		return nil, ErrReachDenied
 	}
+	// Authorization may wait on the store. Its result applies only to the
+	// connection observed before that read, never to a later admission.
+	m.mu.RLock()
+	observed := m.conns[workerID]
+	m.mu.RUnlock()
 	if err := m.reachAuth.AuthorizeWorkerReach(ctx, user, workerID); err != nil {
 		return nil, err
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	// A worker the operator has deregistered is not reachable by its user, even
-	// while its connection is still open.
-	//
-	// Deregistration is asynchronous: MarkDeregistering runs when the worker is
-	// told to stop, and ClearDeregistering only after its deletion is recorded
-	// (or at once, for a worker that is already deleted). Without this check the
-	// whole of that window -- unbounded, since an offline deregistering worker
-	// keeps the flag until it connects or the hub restarts, and a restart sets
-	// it again at the worker's next connect -- still handed the user a live
-	// conn for a machine being torn down. Deregistering is the operator's
-	// containment action; a containment action that leaves the thing reachable
-	// until it politely acknowledges is not one.
-	//
-	// The trusted path is deliberately NOT gated: ConnForTrustedPath is how the
-	// deregister notification itself reaches the worker, so gating it would make
-	// the teardown unable to complete and the flag permanent.
-	if m.deregistering[workerID] {
+	// Keep containment until this membership ends. Acknowledgement or deletion
+	// cannot restore a connection that an earlier authorization still reaches.
+	// The trusted path remains available to deliver the stop instruction.
+	if observed == nil || m.conns[workerID] != observed || m.deregistering[workerID] {
 		return nil, nil
 	}
-	return m.conns[workerID], nil
+	return observed, nil
 }
 
 // New creates a new Manager gated by a. Pass DenyAllReach() for a registry that
@@ -327,6 +319,7 @@ func (m *Manager) Unregister(workerID string, conn *Conn) bool {
 	removed := false
 	if m.conns[workerID] == conn {
 		delete(m.conns, workerID)
+		delete(m.deregistering, workerID)
 		// Released here and nowhere else: the predicate above is what makes the
 		// tally survive replacement. A superseded connection's deferred cleanup
 		// reaches this method too, and releasing unconditionally would give its
@@ -381,27 +374,22 @@ func (m *Manager) OnlineForTrustedPath(workerID string) bool {
 	return ok
 }
 
-// MarkDeregistering marks a worker as being deregistered, which makes it
-// unreachable through ConnForUser until the flag is cleared. The trusted path
-// stays open so the DEREGISTER instruction itself can be delivered.
+// MarkDeregistering contains a current connection until it unregisters.
+// Offline intent lives only in the worker's persisted row. The trusted path
+// stays available to deliver the DEREGISTER instruction.
 func (m *Manager) MarkDeregistering(workerID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.deregistering[workerID] = true
+	if m.conns[workerID] != nil {
+		m.deregistering[workerID] = true
+	}
 }
 
-// IsDeregistering returns true if the worker is in the deregistering state.
+// IsDeregistering reports whether the current connection is contained.
 func (m *Manager) IsDeregistering(workerID string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.deregistering[workerID]
-}
-
-// ClearDeregistering removes the deregistering flag for a worker.
-func (m *Manager) ClearDeregistering(workerID string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.deregistering, workerID)
 }
 
 // WaitForRegistrationChange blocks until the registration identified by

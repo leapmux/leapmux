@@ -192,8 +192,22 @@ func (s *WorkerConnectorService) Register(
 	workerID := id.Generate()
 	authToken := id.Generate()
 
-	var registeredBy string
-	err := s.store.RunInTransaction(ctx, func(tx store.Store) error {
+	// Resolve the owner before opening the transaction. In MySQL, an ordinary
+	// read inside the transaction could establish its snapshot before the owner
+	// lock, hiding a registration that commits while this request waits.
+	key, err := s.store.RegistrationKeys().GetByID(ctx, regKey)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeUnauthenticated, "registration key invalid or already consumed")
+		}
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("read registration key: %w", err))
+	}
+	registeredBy := key.CreatedBy
+	registrantUID, mintOK := userid.New(registeredBy)
+	if !mintOK {
+		return nil, connect.NewError(connect.CodeInternal, "registration key has a blank creator")
+	}
+	err = s.store.RunInUserAuthTransaction(ctx, registrantUID, func(tx store.Store) error {
 		// Atomic consume: returns the row only if expires_at > now and
 		// flips it into the soft-deleted state. Any concurrent caller
 		// loses the race and sees ErrNotFound.
@@ -205,18 +219,12 @@ func (s *WorkerConnectorService) Register(
 			return wrappedConnectError(connect.CodeInternal, fmt.Errorf("consume registration key: %w", err))
 		}
 
-		registeredBy = row.CreatedBy
-		// The key's creator is the worker's registrant; a blank one would make
-		// the worker owned by nobody and unreachable by its real owner.
-		registrantUID, mintOK := userid.New(registeredBy)
-		if !mintOK {
-			return connect.NewError(connect.CodeInternal, "registration key has a blank creator")
+		if !registrantUID.Matches(row.CreatedBy) {
+			return connect.NewError(connect.CodeUnauthenticated, "registration key creator changed")
 		}
-		// Counted INSIDE the transaction that consumes the key and creates the
-		// row, so two registrations racing cannot both read an under-cap count
-		// and both be admitted. Outside it this would be a suggestion rather
-		// than a bound -- the same reason the connection cap counts under the
-		// lock it already held.
+		// The live owner's lock serializes this count and insert against other
+		// registrations and account deletion. Different keys otherwise lock
+		// different rows and can both observe a count below the maximum.
 		if err := s.refuseIfAtWorkerCap(ctx, tx, registrantUID); err != nil {
 			return err
 		}
@@ -233,6 +241,9 @@ func (s *WorkerConnectorService) Register(
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeUnauthenticated, "registration key creator no longer exists")
+		}
 		// A transaction callback can run more than once. Publish only its final refusal.
 		var limitError *workerRegistrationLimitError
 		if errors.As(err, &limitError) {
@@ -413,7 +424,7 @@ func (s *WorkerConnectorService) Connect(
 		notifyDone = make(chan struct{})
 		go func() {
 			defer close(notifyDone)
-			s.notifier.DeliverOnConnect(ctx, current)
+			s.notifier.DeliverOnConnect(ctx, current, conn)
 		}()
 	}
 

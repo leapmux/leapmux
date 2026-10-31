@@ -149,38 +149,43 @@ func indexRow(owned *OwnedTab, rendered bool) TabIndexRow {
 // to `next`. The diff is computed from the projection (not the raw
 // state), so projection-repair drops are reflected in the Rendered flag.
 func DiffProjection(prev, next *Projection) IndexDiff {
-	prevRows, prevOwners := indexRowsOf(prev)
-	nextRows, _ := indexRowsOf(next)
+	prevRows := indexRowsOf(prev)
+	nextRows := indexRowsOf(next)
 
 	diff := IndexDiff{}
-	for id, row := range nextRows {
-		if prevRow, ok := prevRows[id]; !ok || prevRow != row {
+	for id, entry := range nextRows {
+		row := indexRow(entry.tab, entry.rendered)
+		if previous, ok := prevRows[id]; !ok || indexRow(previous.tab, previous.rendered) != row {
 			diff.Upserts = append(diff.Upserts, row)
 		}
 	}
-	for id := range prevRows {
+	for id, previous := range prevRows {
 		if _, ok := nextRows[id]; !ok {
-			diff.Deletes = append(diff.Deletes, TabKey{UserID: prevOwners[id], TabID: id})
+			diff.Deletes = append(diff.Deletes, TabKey{UserID: previous.tab.UserID, TabID: id})
 		}
 	}
 	return diff
 }
 
-// indexRowsOf maps a projection's tabs to their index rows by tab id, with the
-// owner of each row, which a delete key needs. A tab is Rendered when
-// RenderedTabs lists its id.
-func indexRowsOf(p *Projection) (map[string]TabIndexRow, map[string]string) {
+// tabIndexEntry keeps an owned tab and its rendering flag together. The tab
+// supplies both its comparable index row and the owner needed for deletion.
+type tabIndexEntry struct {
+	tab      *OwnedTab
+	rendered bool
+}
+
+// indexRowsOf indexes the projection's owned tabs without copying their fields.
+// Rendering membership comes from the same projection's RenderedTabs.
+func indexRowsOf(p *Projection) map[string]tabIndexEntry {
 	rendered := make(map[string]bool, len(p.RenderedTabs))
 	for _, t := range p.RenderedTabs {
 		rendered[t.TabID] = true
 	}
-	rows := make(map[string]TabIndexRow, len(p.OwnedTabs))
-	owners := make(map[string]string, len(p.OwnedTabs))
+	rows := make(map[string]tabIndexEntry, len(p.OwnedTabs))
 	for _, t := range p.OwnedTabs {
-		rows[t.TabID] = indexRow(t, rendered[t.TabID])
-		owners[t.TabID] = t.UserID
+		rows[t.TabID] = tabIndexEntry{tab: t, rendered: rendered[t.TabID]}
 	}
-	return rows, owners
+	return rows
 }
 
 // ApplyDiff writes the diff to the tab index. Caller must ensure

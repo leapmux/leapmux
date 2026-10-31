@@ -9,4 +9,9 @@ INSERT INTO user_recent_batch_ids (
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 
 -- name: DeleteExpiredRecentBatchIDs :execresult
-DELETE FROM user_recent_batch_ids WHERE expires_at < $1;
+-- A batch identity survives while its committed epoch is still accepted.
+-- Scope cleanup to one owner: another manager may have a different epoch.
+DELETE FROM user_recent_batch_ids
+WHERE user_id = sqlc.arg(user_id)
+  AND expires_at < sqlc.arg(before)
+  AND epoch < sqlc.arg(oldest_accepted_epoch);

@@ -2,6 +2,7 @@ package sqlutil
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -9,6 +10,32 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestClearWorkerDeregisteringAtKeepsItsFixedScope(t *testing.T) {
+	for _, style := range []ParameterStyle{ParameterStyleQuestionMark, ParameterStyleDollar} {
+		var query string
+		var args []any
+		injected := errors.New("the test database refused the update")
+		err := ClearWorkerDeregisteringAt(context.Background(), func(_ context.Context, text string, values ...any) error {
+			query, args = text, values
+			return injected
+		}, style, "worker")
+		assert.ErrorIs(t, err, injected)
+		placeholder := "?"
+		if style == ParameterStyleDollar {
+			placeholder = "$1"
+		}
+		assert.Equal(t, "UPDATE workers SET deregistering_at = NULL WHERE id = "+placeholder+" AND deleted_at IS NULL", query)
+		assert.Equal(t, []any{"worker"}, args)
+	}
+	called := false
+	err := ClearWorkerDeregisteringAt(context.Background(), func(context.Context, string, ...any) error {
+		called = true
+		return nil
+	}, ParameterStyle(255), "worker")
+	assert.Error(t, err)
+	assert.False(t, called)
+}
 
 func TestSetEntityColumnValueUsesApprovedIdentifiersAndParameterStyle(t *testing.T) {
 	var gotQuery string

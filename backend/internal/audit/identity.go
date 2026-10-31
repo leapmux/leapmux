@@ -70,6 +70,9 @@ var identityComparisonSites = map[string]string{
 	// production path that reached crdt.Registry.Get with an unvalidated column
 	// string -- the manager is now derived from the bound owner instead.
 	"internal/hub/service.(*WorkerConnectorService).handleWorkspaceTabsSync": "TestHandleWorkspaceTabsSync_TombstonesOnlyTheRegistrant",
+	// Admission locks the key's preflight owner, then checks the consumed key
+	// still belongs to that owner. A blank or changed creator must not pass.
+	"internal/hub/service.(*WorkerConnectorService).Register": "TestRegisterRefusesAConsumedKeyWithAnotherCreator",
 
 	// ---- hub/crdt: grant polarity ----
 

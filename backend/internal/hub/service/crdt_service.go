@@ -91,7 +91,7 @@ func (s *CRDTService) SubmitOps(
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("get manager: %w", err))
 	}
 	results, err := mgr.Submit(ctx, crdt.SubmitInput{
-		Epoch:        req.GetEpoch(),
+
 		Batches:      req.GetBatches(),
 		PrincipalID:  user.ID.String(),
 		OriginClient: user.ID.String(),

@@ -246,12 +246,12 @@ func (f *fakeJournal) CompactBatch(_ context.Context, c crdt.CompactBatch) error
 	return nil
 }
 
-func (f *fakeJournal) CleanupExpiredRecentBatchIDs(_ context.Context, before time.Time) (int64, error) {
+func (f *fakeJournal) CleanupExpiredRecentBatchIDs(_ context.Context, userID string, before time.Time, oldestAcceptedEpoch int64) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	deleted := int64(0)
 	for id, row := range f.dedup {
-		if row.ExpiresAt.Before(before) {
+		if row.UserID == userID && row.ExpiresAt.Before(before) && row.Epoch < oldestAcceptedEpoch {
 			delete(f.dedup, id)
 			deleted++
 		}

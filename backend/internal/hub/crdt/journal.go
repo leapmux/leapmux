@@ -113,9 +113,10 @@ type Journal interface {
 	// row. See Manager.maybeCompact for the same statement from the other side.
 	CompactBatch(ctx context.Context, c CompactBatch) error
 
-	// CleanupExpiredRecentBatchIDs deletes dedup rows past their TTL.
-	// Periodic; doesn't need transactional accuracy.
-	CleanupExpiredRecentBatchIDs(ctx context.Context, before time.Time) (int64, error)
+	// CleanupExpiredRecentBatchIDs deletes only this owner's expired rows
+	// whose committed epoch is older than the published acceptance window.
+	// Rows from an accepted epoch must survive even if epoch persistence fails.
+	CleanupExpiredRecentBatchIDs(ctx context.Context, userID string, before time.Time, oldestAcceptedEpoch int64) (int64, error)
 }
 
 // CommitBatch carries the inputs to Journal.CommitBatch. UserID, PrincipalID

@@ -234,7 +234,7 @@ func (s *userStore) runCachedUserMutation(
 		},
 		mutate,
 		func(ctx context.Context, conn *sqliteConn, userID string) error {
-			return insertRevocationEvent(ctx, conn, store.RevocationEventKindUserInfo, userID, userID, 0)
+			return emitCredentialEvent(ctx, conn, *store.UserInfoEvent(userID))
 		},
 		fence,
 	)

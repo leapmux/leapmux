@@ -165,12 +165,13 @@ CREATE INDEX idx_workers_registered_by ON workers(registered_by);
 -- The keyset listings (created_at DESC, id DESC), partial on the live/deleted
 -- predicate each query spells, so the composite ORDER BY rides the index
 -- instead of top-N sorting:
---   ListWorkersByUserID, ListWorkersAdminLiveByUser -> idx_workers_registered_by_created
+--   ListWorkersByUserID                              -> idx_workers_registered_by_active_created
+--   ListWorkersAdminLiveByUser                       -> idx_workers_registered_by_created
 --   ListWorkersAdminLive                             -> idx_workers_created_at
 --   ListWorkersAdminDeletedByUser                    -> idx_workers_registered_by_deleted_created
 --   ListWorkersAdminDeleted                          -> idx_workers_deleted_created
--- The live listings filter deregistering_at as a residual; it is NULL on all
--- but the few workers in mid-deregistration.
+-- The all-live listings include both live states; exact states use their
+-- dedicated indexes below.
 CREATE INDEX idx_workers_registered_by_created ON workers(registered_by, created_at DESC, id DESC) WHERE deleted_at IS NULL;
 CREATE INDEX idx_workers_created_at ON workers(created_at DESC, id DESC) WHERE deleted_at IS NULL;
 CREATE INDEX idx_workers_registered_by_deleted_created ON workers(registered_by, created_at DESC, id DESC) WHERE deleted_at IS NOT NULL;
@@ -178,6 +179,13 @@ CREATE INDEX idx_workers_deleted_created ON workers(created_at DESC, id DESC) WH
 CREATE INDEX idx_workers_deleted_at ON workers(deleted_at) WHERE deleted_at IS NOT NULL;
 -- The stale-deregistration sweep (CompleteStaleDeregistrations).
 CREATE INDEX idx_workers_deregistering ON workers(deregistering_at) WHERE deregistering_at IS NOT NULL AND deleted_at IS NULL;
+
+-- Exact live states need their own ordered populations. A residual state
+-- filter would scan every worker of the other live state before a rare match.
+CREATE INDEX idx_workers_active_created ON workers(created_at DESC, id DESC) WHERE deleted_at IS NULL AND deregistering_at IS NULL;
+CREATE INDEX idx_workers_registered_by_active_created ON workers(registered_by, created_at DESC, id DESC) WHERE deleted_at IS NULL AND deregistering_at IS NULL;
+CREATE INDEX idx_workers_deregistering_created ON workers(created_at DESC, id DESC) WHERE deleted_at IS NULL AND deregistering_at IS NOT NULL;
+CREATE INDEX idx_workers_registered_by_deregistering_created ON workers(registered_by, created_at DESC, id DESC) WHERE deleted_at IS NULL AND deregistering_at IS NOT NULL;
 
 -- Active worker registration keys.
 --
@@ -365,7 +373,9 @@ CREATE TABLE user_recent_batch_ids (
     expires_at            DATETIME NOT NULL,
     PRIMARY KEY (user_id, batch_id)
 );
-CREATE INDEX idx_user_recent_batch_ids_expires ON user_recent_batch_ids(expires_at);
+-- Cleanup seeks this owner's epochs below the accepted window before checking
+-- expiry, so every tick skips the identities that must remain available.
+CREATE INDEX idx_user_recent_batch_ids_cleanup ON user_recent_batch_ids(user_id, epoch, expires_at);
 
 -- Transactional outbox for workspace lifecycle events. Lifecycle RPCs
 -- (CreateWorkspace / RenameWorkspace / DeleteWorkspace) write to

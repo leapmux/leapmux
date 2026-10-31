@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -24,12 +25,34 @@ import (
 // registry, built on the shared registryCache mechanics. The type-specific
 // ops (list query, key/finished/seq extractors, delete query) live in
 // bgTaskOps, built once per OutputHandler.
-type bgTaskCache = registryCache[bgtask.Item]
+type bgTaskCache = registryCache[bgtask.Item, string]
 
 // bgTaskView is one background-task operation bound to the query handle it runs
 // on; see registryView for why a registry operation carries the handle rather
 // than taking it at each step.
-type bgTaskView = registryView[bgtask.Item]
+type bgTaskView = registryView[bgtask.Item, string]
+
+// renameBgTaskRowKeyLocked changes a cached background task's key while
+// preserving its position and lifecycle. A stale target entry is removed.
+// The caller must hold cache.Mu.
+func renameBgTaskRowKeyLocked(cache *bgTaskCache, oldKey, newKey string) bool {
+	if oldKey == "" || newKey == "" || oldKey == newKey {
+		return false
+	}
+	index := cache.indexOf(oldKey)
+	if index < 0 {
+		return false
+	}
+	if target := cache.indexOf(newKey); target >= 0 {
+		cache.Rows = slices.Delete(cache.Rows, target, target+1)
+		index = cache.indexOf(oldKey)
+		if index < 0 {
+			return false
+		}
+	}
+	cache.Rows[index].RowKey = newKey
+	return true
+}
 
 // bgItemFromRow projects a persisted agent_background_tasks row into the
 // in-memory Item shape. Used by the seed closure.
@@ -59,8 +82,8 @@ func bgItemFromRow(r db.AgentBackgroundTask) bgtask.Item {
 
 // bgTaskOps supplies the shared operations for background task caches.
 // Each database operation uses the query handle supplied by its caller.
-func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
-	return registryOps[bgtask.Item]{
+func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item, string] {
+	return registryOps[bgtask.Item, string]{
 		listRows: func(ctx context.Context, q *db.Queries, ownerID string, bucket int64, limit int32) ([]seedEntry[bgtask.Item], error) {
 			rows, err := q.ListAgentBackgroundTasksByKindNewestFirst(ctx, db.ListAgentBackgroundTasksByKindNewestFirstParams{
 				OwnerAgentID: ownerID,
@@ -85,8 +108,7 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 			})
 			return err
 		},
-		keyOf:  func(r bgtask.Item) string { return r.RowKey },
-		setKey: func(r *bgtask.Item, key string) { r.RowKey = key },
+		keyOf: func(r bgtask.Item) string { return r.RowKey },
 		isFinished: func(r bgtask.Item) bool {
 			return r.Status.IsFinished()
 		},
@@ -106,7 +128,7 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 		// send-to-subagent and interrupt -- and the child agents row outlives the
 		// registry delete, so deleting the row leaves a subagent nobody can reach
 		// while its transcript is still readable.
-		retention: &registryRetention[bgtask.Item]{
+		retention: &registryRetention[bgtask.Item, string]{
 			keep: func(r bgtask.Item) bool { return r.ChildAgentID != "" },
 			load: func(ctx context.Context, q *db.Queries, ownerID, key string) (bgtask.Item, bool, error) {
 				return h.loadStoredBgTask(ctx, q, ownerID, key)
@@ -1350,7 +1372,7 @@ func (s *agentOutputSink) ReviveBackgroundTask(rowKey string) error {
 // a separately-keyed row closes.
 //
 // Order matters: seed the cache, then mutate it. On a cold cache (after a
-// worker restart, or the first registry touch for a root), renameRowKeyLocked
+// worker restart, or the first registry touch for a root), renameBgTaskRowKeyLocked
 // sees an empty Rows slice and returns false, so the DB rename must NOT be
 // conditional on the in-memory rename succeeding -- seed first, then re-key.
 // Both keys go through the SAME normalization every other registry primitive
@@ -1435,7 +1457,7 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 		if rows == 0 {
 			return errBackgroundTaskSuperseded
 		}
-		reg.cache.renameRowKeyLocked(oldKey, newKey)
+		renameBgTaskRowKeyLocked(reg.cache, oldKey, newKey)
 		if _, hidden := reg.cache.evictedActive[oldKey]; hidden {
 			delete(reg.cache.evictedActive, oldKey)
 			reg.cache.evictedActive[newKey] = struct{}{}

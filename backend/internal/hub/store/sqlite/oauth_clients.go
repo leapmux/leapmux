@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
@@ -15,13 +16,9 @@ type oauthClientStore struct{ conn *sqliteConn }
 
 var _ store.OAuthClientStore = (*oauthClientStore)(nil)
 
-// The full-row queries project every column except the icon BYTES, so each
-// maps through one of these; they state the same 17 fields because the
-// generated Row types are distinct per query (the listing folds both reader
-// shapes into ONE query, and Create returns the stored row, so exactly three
-// spellings remain: Get, the listing, and Create). The listing and Get read
-// HasIcon from the projected LENGTH; Create returns the blob itself once, at
-// registration, because sqlc honors no RETURNING alias for the expression.
+// Get and List project icon length instead of its bytes. Their generated row
+// types have identical fields and support explicit conversion.
+// Create returns icon bytes, so its mapper derives HasIcon from the blob.
 func fromGetOAuthClientRow(c gendb.GetOAuthClientRow) store.OAuthClient {
 	return store.OAuthClient{
 		ClientID:           c.ClientID,
@@ -65,24 +62,7 @@ func fromCreateRow(c gendb.CreateOAuthClientRow) store.OAuthClient {
 }
 
 func fromListRow(c gendb.ListOAuthClientsRow) store.OAuthClient {
-	return store.OAuthClient{
-		ClientID:           c.ClientID,
-		OwnerUserID:        c.OwnerUserID.String,
-		SecretHash:         c.SecretHash,
-		ClientName:         c.ClientName,
-		HasIcon:            sqlutil.CoerceInt64(c.IconBytes) > 0,
-		ClientURI:          c.ClientUri,
-		RedirectURIs:       c.RedirectUris,
-		Scopes:             c.Scopes,
-		GrantTypes:         c.GrantTypes,
-		ElevationAllowed:   c.ElevationAllowed,
-		RegistrationSource: c.RegistrationSource,
-		VerifiedAt:         c.VerifiedAt.Ptr(),
-		VerifiedBy:         c.VerifiedByUserID.String,
-		CreatedAt:          c.CreatedAt.Time,
-		UpdatedAt:          c.UpdatedAt.Time,
-		RevokedAt:          c.RevokedAt.Ptr(),
-	}
+	return fromGetOAuthClientRow(gendb.GetOAuthClientRow(c))
 }
 
 func (s *oauthClientStore) Create(ctx context.Context, p store.CreateOAuthClientParams) (*store.OAuthClient, error) {
@@ -283,19 +263,27 @@ func (s *oauthClientStore) Delete(ctx context.Context, p store.OAuthClientOwners
 	}
 	var deleted int64
 	err := (&sqliteStore{conn: s.conn}).RunInTransaction(ctx, func(tx store.Store) error {
+		deleted = 0
 		q := tx.(*sqliteStore).conn.q
+		params := gendb.DeleteOAuthClientParams{
+			BuiltinSource: store.OAuthClientSourceBuiltin,
+			ClientID:      p.ClientID,
+			CallerIsAdmin: p.CallerIsAdmin,
+			CallerUserID:  sql.NullString{String: owner, Valid: true},
+		}
+		if _, err := q.LockDeletableOAuthClient(ctx, gendb.LockDeletableOAuthClientParams(params)); err != nil {
+			if errors.Is(mapErr(err), store.ErrNotFound) {
+				return nil
+			}
+			return err
+		}
 		if _, err := q.DeleteEphemeralGrantsForOAuthClient(ctx, p.ClientID); err != nil {
 			return err
 		}
 		if _, err := q.DeleteAuthorizationCodesForOAuthClient(ctx, p.ClientID); err != nil {
 			return err
 		}
-		n, err := rowsAffected(q.DeleteOAuthClient(ctx, gendb.DeleteOAuthClientParams{
-			BuiltinSource: store.OAuthClientSourceBuiltin,
-			ClientID:      p.ClientID,
-			CallerIsAdmin: p.CallerIsAdmin,
-			CallerUserID:  sql.NullString{String: owner, Valid: true},
-		}))
+		n, err := rowsAffected(q.DeleteOAuthClient(ctx, params))
 		deleted = n
 		return err
 	})
@@ -319,9 +307,8 @@ func (s *oauthClientStore) ListUserTokenRefs(ctx context.Context, clientID strin
 	}))
 }
 
-// userTokenRefsOf is the per-user listing's mapper: the generated Row type is
-// distinct from the all-users one (Go has no structural typing), exactly as
-// the three full-row mappers above are distinct for the same reason.
+// userTokenRefsOf maps the per-user query rows. Individual generated token
+// rows support explicit conversion, but their slice types do not.
 func userTokenRefsOf(rows []gendb.ListUserAPITokenIDsForOAuthClientRow, err error) ([]store.APITokenRef, error) {
 	if err != nil {
 		return nil, mapErr(err)

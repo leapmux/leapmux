@@ -67,6 +67,10 @@ func (h *pgTestHelper) SetDeregisteringAt(ctx context.Context, workerID string, 
 	return sqlutil.SetDeregisteringAt(ctx, h.exec, sqlutil.ParameterStyleDollar, workerID, deregisteringAt)
 }
 
+func (h *pgTestHelper) ClearWorkerDeregisteringAt(ctx context.Context, workerID string) error {
+	return sqlutil.ClearWorkerDeregisteringAt(ctx, h.exec, sqlutil.ParameterStyleDollar, workerID)
+}
+
 // ListAllOwnedTabs reads workspace_tab_owned without an owner predicate. See
 // store.TestHelper.ListAllOwnedTabs for why this is test-only. The statement is
 // shared with the database/sql dialects; only the driver differs, and tab_type

@@ -192,7 +192,7 @@ func (s *Suite) testWorkspaceTabIndex(t *testing.T) {
 				}},
 			} {
 				err := c.run()
-				if assert.Errorf(t, err, "%s (rendered=%v): a blank owner names no user, so the row must not be storable", c.name, rendered) {
+				if assert.Errorf(t, err, "%s (rendered=%v): a blank owner identifies no user, so the row must not be storable", c.name, rendered) {
 					t.Logf("%s (rendered=%v) refused the blank owner with: %v", c.name, rendered, err)
 				}
 			}
@@ -374,7 +374,7 @@ func (s *Suite) testWorkspaceTabIndex(t *testing.T) {
 	// tenant's row can reach when it does not: workspace_tab_owned is keyed by
 	// (user_id, tab_id), tab ids are client-minted (a FILE tab id is
 	// `file-<millis>-<counter>`, so two clients collide readily), and worker_id
-	// does not constrain a row's owner -- it is a plain column that names a
+	// does not constrain a row's owner -- it is a plain column that identifies a
 	// worker with an owner of its own. (workspace_id does: the composite key
 	// ties a row to a workspace its own user owns, so the stranger's rows below
 	// sit in the stranger's own workspace.)
@@ -550,7 +550,7 @@ func (s *Suite) testWorkspaceTabIndex(t *testing.T) {
 	// Client-minted tab ids are unique only within a user, so two owners can
 	// hold the same tab id, each in a workspace of their own. Every rendered
 	// read binds the row's owner, so neither owner reaches the other's row --
-	// and a caller who names a workspace they do not own sees nothing, because
+	// and a caller who specifies a workspace they do not own sees nothing, because
 	// the composite key makes every row of that workspace its owner's.
 	t.Run("rendered reads are scoped to the row owner", func(t *testing.T) {
 		st := s.NewStore(t)
@@ -596,7 +596,7 @@ func (s *Suite) testWorkspaceTabIndex(t *testing.T) {
 			UserID: ownerID, WorkspaceIDs: []string{wsID, otherWS},
 		})
 		require.NoError(t, err)
-		require.Len(t, got, 1, "the listing must not leak the other owner's row, even for a workspace id the caller names")
+		require.Len(t, got, 1, "the listing must not leak the other owner's row, even for a workspace id the caller specifies")
 		assert.Equal(t, "tile-owner", got[0].TileID)
 
 		located, err := st.WorkspaceTabIndex().LocateAccessibleRendered(ctx, store.LocateAccessibleRenderedTabParams{

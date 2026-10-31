@@ -13,6 +13,142 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/todoevents"
 )
 
+func TestOutputTodosUnchangedUpsertDoesNotStartATransaction(t *testing.T) {
+	t.Parallel()
+	svc := setupTodoRowTest(t)
+	item := todoevents.Item{
+		ID: "existing", Content: "Keep this task", ActiveForm: "Keeping this task",
+		Description: "Existing detail", Status: todoevents.StatusPending,
+	}
+	_, _, err := svc.Output.applyTodoEvent("agent-1", todoevents.Event{Kind: todoevents.KindCreate, Item: item})
+	require.NoError(t, err)
+	cache := svc.Output.todoCache("agent-1")
+	cache.Mu.Lock()
+	defer cache.Mu.Unlock()
+	before, nextSeq := cache.snapshot(), cache.nextSeq
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	reg := cache.on(svc.Queries, "agent-1")
+	for _, event := range []todoevents.Event{
+		{Kind: todoevents.KindCreate},
+		{Kind: todoevents.KindDetail},
+		{Kind: todoevents.KindCreate, Item: item},
+		{Kind: todoevents.KindDetail, Item: todoevents.Item{ID: item.ID}},
+		{Kind: todoevents.KindMerge},
+		{Kind: todoevents.KindMerge, Items: []todoevents.Item{item, item}},
+	} {
+		items, changed, err := applyTodoEventLocked(ctx, reg, svc.Output.db, event)
+		assert.NoError(t, err, "an unchanged event needs no transaction, even when its context is cancelled")
+		assert.False(t, changed)
+		assert.Equal(t, todoItems(before), items)
+		assert.Equal(t, before, cache.Rows)
+		assert.Equal(t, nextSeq, cache.nextSeq)
+	}
+	_, changed, err := applyTodoEventLocked(ctx, reg, svc.Output.db, todoevents.Event{
+		Kind: todoevents.KindDetail, Item: todoevents.Item{ID: item.ID, Content: "A real mutation"},
+	})
+	assert.ErrorIs(t, err, context.Canceled, "a real mutation must still use its persistence context")
+	assert.False(t, changed)
+	assert.Equal(t, before, cache.Rows)
+	assert.Equal(t, nextSeq, cache.nextSeq)
+}
+
+func TestOutputTodosUseTheSameStatusBeforeAndAfterColdSeeding(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []todoevents.EventKind{
+		todoevents.KindCreate, todoevents.KindDetail, todoevents.KindMerge, todoevents.KindSnapshot,
+	} {
+		t.Run(fmt.Sprintf("event %d", kind), func(t *testing.T) {
+			svc := setupTodoRowTest(t)
+			item := todoevents.Item{ID: "unreported", Content: "No status was reported"}
+			event := todoevents.Event{Kind: kind, Item: item, Items: []todoevents.Item{item}, Snapshot: []todoevents.Item{item}}
+			items, changed, err := svc.Output.applyTodoEvent("agent-1", event)
+			require.NoError(t, err)
+			require.True(t, changed)
+			require.Len(t, items, 1)
+			assert.Equal(t, todoevents.StatusPending, items[0].Status)
+			assert.Equal(t, leapmuxv1.TodoStatus_TODO_STATUS_PENDING, items[0].ToProto().GetStatus())
+			warm, err := svc.Output.LoadTodos(context.Background(), "agent-1")
+			require.NoError(t, err)
+			svc.Output.todos.Delete("agent-1")
+			cold, err := svc.Output.LoadTodos(context.Background(), "agent-1")
+			require.NoError(t, err)
+			assert.Equal(t, cold, warm)
+			assert.Equal(t, todoevents.StatusUnspecified, event.Item.Status, "normalization must not mutate the input event")
+			assert.Equal(t, todoevents.StatusUnspecified, event.Snapshot[0].Status)
+			cache := svc.Output.todoCache("agent-1")
+			cache.Mu.Lock()
+			defer cache.Mu.Unlock()
+			beforeSeq := cache.nextSeq
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			_, changed, err = applyTodoEventLocked(ctx, cache.on(svc.Queries, "agent-1"), svc.DB, event)
+			assert.NoError(t, err, "an identical event remains unchanged after a cold seed")
+			assert.False(t, changed)
+			assert.Equal(t, beforeSeq, cache.nextSeq)
+		})
+	}
+}
+
+func TestReduceTodoUpdateResolvesAnExplicitUnspecifiedStatus(t *testing.T) {
+	status := todoevents.StatusUnspecified
+	rows := []cachedTodo{{seq: 1, item: todoevents.Item{ID: "task", Status: todoevents.StatusInProgress}}}
+	mutation, changed := reduceTodoUpdate(rows, todoevents.Event{
+		Kind: todoevents.KindUpdate, ID: "task", Patch: todoevents.Patch{Status: &status},
+	})
+	require.True(t, changed)
+	assert.Equal(t, todoevents.StatusPending, mutation.item.Status)
+	assert.Equal(t, todoevents.StatusInProgress, rows[0].item.Status)
+}
+
+func TestTodoDetailWithoutStatusPreservesEveryExistingStatus(t *testing.T) {
+	t.Parallel()
+	for _, status := range []todoevents.Status{
+		todoevents.StatusPending, todoevents.StatusInProgress, todoevents.StatusCompleted,
+		todoevents.StatusDeleted, todoevents.StatusBlocked,
+	} {
+		t.Run(status.String(), func(t *testing.T) {
+			svc := setupTodoRowTest(t)
+			_, _, err := svc.Output.applyTodoEvent("agent-1", todoevents.Event{
+				Kind: todoevents.KindCreate, Item: todoevents.Item{ID: "task", Content: "Before", Status: status},
+			})
+			require.NoError(t, err)
+			event := todoevents.Event{Kind: todoevents.KindDetail, Item: todoevents.Item{ID: "task", Content: "After"}}
+			items, changed, err := svc.Output.applyTodoEvent("agent-1", event)
+			require.NoError(t, err)
+			require.True(t, changed)
+			require.Len(t, items, 1)
+			assert.Equal(t, status, items[0].Status)
+			assert.Equal(t, "After", items[0].Content)
+			stored := todoStatusesBySeq(t, svc)
+			assert.Equal(t, leapmuxv1.TodoStatus(status), stored[1])
+			items, changed, err = svc.Output.applyTodoEvent("agent-1", event)
+			require.NoError(t, err)
+			assert.False(t, changed)
+			assert.Equal(t, status, items[0].Status)
+		})
+	}
+}
+
+func TestTodoUpdateStoresAndBroadcastsTheResolvedStatus(t *testing.T) {
+	t.Parallel()
+	svc := setupTodoRowTest(t)
+	_, _, err := svc.Output.applyTodoEvent("agent-1", todoevents.Event{
+		Kind: todoevents.KindCreate, Item: todoevents.Item{ID: "task", Status: todoevents.StatusInProgress},
+	})
+	require.NoError(t, err)
+	status := todoevents.StatusUnspecified
+	items, changed, err := svc.Output.applyTodoEvent("agent-1", todoevents.Event{
+		Kind: todoevents.KindUpdate, ID: "task", Patch: todoevents.Patch{Status: &status},
+	})
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Len(t, items, 1)
+	assert.Equal(t, todoevents.StatusPending, items[0].Status)
+	assert.Equal(t, leapmuxv1.TodoStatus_TODO_STATUS_PENDING, items[0].ToProto().GetStatus())
+	assert.Equal(t, leapmuxv1.TodoStatus_TODO_STATUS_PENDING, todoStatusesBySeq(t, svc)[1])
+}
+
 // setupTodoRowTest provisions a worker service with one agent, "agent-1", for
 // the tests that drive the to-do registry through applyTodoEvent and inspect
 // the agent_todos rows behind it.
@@ -79,24 +215,31 @@ func TestOutputTodos_SnapshotIDShapedLikeASyntheticKeyStores(t *testing.T) {
 // unrelated to-do was gone from the table and the cache, and no client heard.
 func TestOutputTodos_FailedInsertAfterEvictionRestoresTheEvictedRow(t *testing.T) {
 	t.Parallel()
-	svc := setupTodoRowTest(t)
-	fillTodosToTheCap(t, svc)
-	before := todoTableItems(t, svc)
-	cachedBefore, err := svc.Output.LoadTodos(context.Background(), "agent-1")
-	require.NoError(t, err)
-	_, err = svc.DB.ExecContext(t.Context(), `CREATE TRIGGER refuse_new_todo BEFORE INSERT ON agent_todos
+	for _, kind := range []todoevents.EventKind{todoevents.KindCreate, todoevents.KindDetail} {
+		t.Run(fmt.Sprintf("event %d", kind), func(t *testing.T) {
+			svc := setupTodoRowTest(t)
+			fillTodosToTheCap(t, svc)
+			before := todoTableItems(t, svc)
+			cachedBefore, err := svc.Output.LoadTodos(context.Background(), "agent-1")
+			require.NoError(t, err)
+			_, beforeSeq := todoCacheItems(t, svc)
+			_, err = svc.DB.ExecContext(t.Context(), `CREATE TRIGGER refuse_new_todo BEFORE INSERT ON agent_todos
 WHEN NEW.task_id = 'new' BEGIN SELECT RAISE(ABORT, 'to-do insert refused'); END`)
-	require.NoError(t, err)
+			require.NoError(t, err)
 
-	_, _, err = svc.Output.applyTodoEvent("agent-1", todoevents.Event{Kind: todoevents.KindCreate, Item: todoevents.Item{
-		ID: "new", Content: "new task", Status: todoevents.StatusPending,
-	}})
-	require.ErrorContains(t, err, "to-do insert refused")
+			_, _, err = svc.Output.applyTodoEvent("agent-1", todoevents.Event{Kind: kind, Item: todoevents.Item{
+				ID: "new", Content: "new task", Status: todoevents.StatusPending,
+			}})
+			require.ErrorContains(t, err, "to-do insert refused")
 
-	assert.Equal(t, before, todoTableItems(t, svc), "the evicted row must be back in the table")
-	cachedAfter, err := svc.Output.LoadTodos(context.Background(), "agent-1")
-	require.NoError(t, err)
-	assert.Equal(t, cachedBefore, cachedAfter, "the evicted row must be back in the cache")
+			assert.Equal(t, before, todoTableItems(t, svc), "the evicted row must be back in the table")
+			cachedAfter, err := svc.Output.LoadTodos(context.Background(), "agent-1")
+			require.NoError(t, err)
+			assert.Equal(t, cachedBefore, cachedAfter, "the evicted row must be back in the cache")
+			_, afterSeq := todoCacheItems(t, svc)
+			assert.Equal(t, beforeSeq, afterSeq)
+		})
+	}
 }
 
 // todoCacheItems lists agent-1's cached rows in cache order, in the same
@@ -265,26 +408,4 @@ func TestOutputTodos_UpdateOfAVanishedRowFails(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, items, 1)
 	assert.Equal(t, todoevents.StatusPending, items[0].Status, "the cached item does not change")
-}
-
-// TestTodoRegistryRenamesNoRow pins the nil-setKey guard. A to-do row is keyed
-// by its seq and never changes key, so the to-do registry has no setKey, and a
-// rename must report false and change nothing rather than call a nil function.
-func TestTodoRegistryRenamesNoRow(t *testing.T) {
-	t.Parallel()
-	svc := setupTodoRowTest(t)
-	_, _, err := svc.Output.applyTodoEvent("agent-1", todoevents.Event{Kind: todoevents.KindCreate, Item: todoevents.Item{
-		ID: "t0", Content: "task", Status: todoevents.StatusPending,
-	}})
-	require.NoError(t, err)
-	before, _ := todoCacheItems(t, svc)
-
-	cache := svc.Output.todoCache("agent-1")
-	cache.Mu.Lock()
-	renamed := cache.renameRowKeyLocked(todoSeqKey(1), todoSeqKey(9))
-	cache.Mu.Unlock()
-
-	assert.False(t, renamed)
-	after, _ := todoCacheItems(t, svc)
-	assert.Equal(t, before, after)
 }

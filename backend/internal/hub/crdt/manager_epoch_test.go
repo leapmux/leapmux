@@ -88,18 +88,22 @@ func rotateTo(t *testing.T, mgr *crdt.Manager, clock *epochTestClock, at time.Ti
 func positionSubmit(t *testing.T, mgr *crdt.Manager, epoch int64, batchID, position string) *leapmuxv1.BatchResult {
 	t.Helper()
 	res, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{{BatchId: batchID, Ops: []*leapmuxv1.CrdtOp{{
-			OpId: "op-" + batchID,
-			Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
-				NodeId: "root1",
-				Field:  &leapmuxv1.SetNodeRegisterOp_Position{Position: position},
-			}},
-		}}}},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: []*leapmuxv1.OpBatch{positionBatchAtEpoch(epoch, batchID, position)},
 	})
 	require.NoError(t, err)
 	require.Len(t, res, 1)
 	return res[0]
+}
+
+func positionBatchAtEpoch(epoch int64, batchID, position string) *leapmuxv1.OpBatch {
+	return &leapmuxv1.OpBatch{Epoch: epoch, BatchId: batchID, Ops: []*leapmuxv1.CrdtOp{{
+		OpId: "op-" + batchID,
+		Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+			NodeId: "root1",
+			Field:  &leapmuxv1.SetNodeRegisterOp_Position{Position: position},
+		}},
+	}}}
 }
 
 // resumeReason subscribes with (cursor, epoch) and reports how the hub
@@ -316,6 +320,134 @@ func TestEpochRotation_PreviousEpochSubmitIsAccepted(t *testing.T) {
 	assert.NotNil(t, res.GetCommitted(), "a submit one epoch behind is inside the window; got %v", res)
 }
 
+func TestEpochRotationRetainsDedupWhileTheOriginalEpochIsAccepted(t *testing.T) {
+	for _, failedRotation := range []bool{false, true} {
+		t.Run(map[bool]string{false: "successful rotation", true: "failed rotation"}[failedRotation], func(t *testing.T) {
+			clock := &epochTestClock{now: epochT0}
+			mgr, journal := startEpochManager(t, clock)
+			epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
+			first := positionSubmit(t, mgr, epoch, "lost-ack-position", "p1")
+			require.NotNil(t, first.GetCommitted())
+			originalHLC := crdt.HLCClone(first.GetCommitted().GetCommitted()[0].GetCanonicalHlc())
+			require.NotNil(t, positionSubmit(t, mgr, epoch, "later-position", "p2").GetCommitted())
+			if failedRotation {
+				journal.failCompaction(errCompactionInjected)
+			}
+			rotateTo(t, mgr, clock, epochT0.Add(crdt.DedupTTL+time.Minute))
+
+			retry := positionSubmit(t, mgr, epoch, "lost-ack-position", "p1")
+			require.NotNil(t, retry.GetCommitted())
+			gotHLC := retry.GetCommitted().GetCommitted()[0].GetCanonicalHlc()
+			assert.Zero(t, crdt.HLCCmp(originalHLC, gotHLC), "a retry must return the original canonical identity")
+			assert.Equal(t, "p2", mgr.Materialized(crdt.SubscriberFilter{}).GetNodes()["root1"].GetPosition().GetValue(),
+				"a retry must not replace a later placement")
+		})
+	}
+}
+
+func TestEpochRotationRejectsAFutureSubmissionEpoch(t *testing.T) {
+	clock := &epochTestClock{now: epochT0}
+	mgr, _ := startEpochManager(t, clock)
+	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
+	before := crdt.HLCClone(mgr.Materialized(crdt.SubscriberFilter{}).GetMaxHlc())
+	result := positionSubmit(t, mgr, epoch+10, "future-epoch", "invalid")
+	require.NotNil(t, result.GetRejected())
+	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN, result.GetRejected().GetReason())
+	assert.Zero(t, crdt.HLCCmp(before, mgr.Materialized(crdt.SubscriberFilter{}).GetMaxHlc()))
+}
+
+func TestSubmissionEpochsRejectBatchesIndependently(t *testing.T) {
+	clock := &epochTestClock{now: epochT0}
+	mgr, _ := startEpochManager(t, clock)
+	rotateTo(t, mgr, clock, epochT0.Add(2*crdt.EpochDuration+time.Minute))
+	current := mgr.State().GetCurrentEpoch()
+	require.EqualValues(t, 3, current)
+	batches := []*leapmuxv1.OpBatch{
+		positionBatchAtEpoch(1, "stale-first", "stale-first"),
+		positionBatchAtEpoch(2, "previous", "previous"),
+		positionBatchAtEpoch(1, "stale-last", "stale-last"),
+		positionBatchAtEpoch(3, "current", "current"),
+		positionBatchAtEpoch(0, "unset", "unset"),
+		positionBatchAtEpoch(-1, "negative", "negative"),
+		positionBatchAtEpoch(4, "future", "future"),
+		nil,
+	}
+	results, err := mgr.Submit(context.Background(), crdt.SubmitInput{
+		Batches: batches, PrincipalID: "user", OriginClient: "c1",
+	})
+	require.NoError(t, err)
+	require.Len(t, results, len(batches))
+	for i, expected := range []leapmuxv1.BatchRejectionReason{
+		leapmuxv1.BatchRejectionReason_BATCH_REJECTION_STALE_EPOCH,
+		leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED,
+		leapmuxv1.BatchRejectionReason_BATCH_REJECTION_STALE_EPOCH,
+		leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED,
+		leapmuxv1.BatchRejectionReason_BATCH_REJECTION_EPOCH_REQUIRED,
+		leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN,
+		leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN,
+		leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN,
+	} {
+		if expected == leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED {
+			require.NotNil(t, results[i].GetCommitted())
+		} else {
+			require.NotNil(t, results[i].GetRejected())
+			assert.Equal(t, expected, results[i].GetRejected().GetReason())
+		}
+	}
+	assert.Equal(t, "current", mgr.State().GetNodes()["root1"].GetPosition().GetValue())
+}
+
+func TestClientAuthorizationFlagCannotBypassTheSubmissionEpoch(t *testing.T) {
+	clock := &epochTestClock{now: epochT0}
+	mgr, _ := startEpochManager(t, clock)
+	input := crdt.SubmitInput{
+		Internal: true, PrincipalID: "user", OriginClient: "c1",
+		Batches: []*leapmuxv1.OpBatch{positionBatchAtEpoch(0, "internal-flag", "p1")},
+	}
+	results, err := mgr.Submit(context.Background(), input)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_EPOCH_REQUIRED, results[0].GetRejected().GetReason())
+	results, err = mgr.SubmitInternal(context.Background(), input)
+	require.NoError(t, err)
+	require.NotNil(t, results[0].GetCommitted())
+}
+
+func TestClosedTabCannotBeRecreatedByALostAcknowledgementRetry(t *testing.T) {
+	clock := &epochTestClock{now: epochT0}
+	mgr, journal := startEpochManager(t, clock)
+	create := addTabBatch(t, "lost-ack-tab", "closed-tab", "root1", "worker", "p1")
+	create.Epoch = 1
+	input := crdt.SubmitInput{Batches: []*leapmuxv1.OpBatch{create}, PrincipalID: "user", OriginClient: "c1"}
+	results, err := mgr.Submit(context.Background(), input)
+	require.NoError(t, err)
+	require.NotNil(t, results[0].GetCommitted())
+	original := crdt.HLCClone(results[0].GetCommitted().GetCommitted()[0].GetCanonicalHlc())
+	_, err = mgr.SubmitInternal(context.Background(), crdt.SubmitInput{Batches: []*leapmuxv1.OpBatch{{
+		BatchId: "close-tab", Ops: []*leapmuxv1.CrdtOp{{
+			Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
+				TabId: "closed-tab", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+			}},
+		}},
+	}}})
+	require.NoError(t, err)
+	mgr.TickHousekeeping(context.Background())
+	require.NotContains(t, mgr.State().GetTabs(), "closed-tab")
+	rotateTo(t, mgr, clock, epochT0.Add(crdt.DedupTTL+time.Minute))
+	results, err = mgr.Submit(context.Background(), input)
+	require.NoError(t, err)
+	require.NotNil(t, results[0].GetCommitted())
+	assert.Zero(t, crdt.HLCCmp(original, results[0].GetCommitted().GetCommitted()[0].GetCanonicalHlc()))
+	assert.NotContains(t, mgr.State().GetTabs(), "closed-tab")
+	rotateTo(t, mgr, clock, epochT0.Add(2*crdt.EpochDuration+time.Minute))
+	results, err = mgr.Submit(context.Background(), input)
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_STALE_EPOCH, results[0].GetRejected().GetReason())
+	assert.NotContains(t, mgr.State().GetTabs(), "closed-tab")
+	owned, _ := journal.snapshotIndex()
+	assert.NotContains(t, owned, "closed-tab")
+}
+
 func TestEpochRotation_TwoEpochsOldSubmitIsStale(t *testing.T) {
 	clock := &epochTestClock{now: epochT0}
 	mgr, _ := startEpochManager(t, clock)
@@ -329,12 +461,9 @@ func TestEpochRotation_TwoEpochsOldSubmitIsStale(t *testing.T) {
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_STALE_EPOCH, res.GetRejected().GetReason())
 }
 
-// The dedup check is a second epoch gate, behind the request-level one. A
-// first-epoch REQUEST fails that request-level gate first, so this test submits
-// with the CURRENT epoch and lets an old dedup row carry the first epoch. The
-// row is injected (rather than committed) because TickHousekeeping deletes
-// expired dedup rows before it rotates, and a committed row would expire with
-// DedupTTL long before two rotations.
+// The dedup check also rejects an old identity submitted under a new epoch.
+// This fixture keeps the old row unexpired so cleanup does not remove it when
+// its epoch leaves the accepted window.
 func TestEpochRotation_StaleDedupRowIsRejected(t *testing.T) {
 	clock := &epochTestClock{now: epochT0}
 	mgr, j := startEpochManager(t, clock)

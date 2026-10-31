@@ -57,6 +57,10 @@ func (h *mysqlTestHelper) SetDeregisteringAt(ctx context.Context, workerID strin
 	return sqlutil.SetDeregisteringAt(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, workerID, deregisteringAt)
 }
 
+func (h *mysqlTestHelper) ClearWorkerDeregisteringAt(ctx context.Context, workerID string) error {
+	return sqlutil.ClearWorkerDeregisteringAt(ctx, h.exec, sqlutil.ParameterStyleQuestionMark, workerID)
+}
+
 // ListAllOwnedTabs reads workspace_tab_owned without an owner predicate. See
 // store.TestHelper.ListAllOwnedTabs for why this is test-only.
 func (h *mysqlTestHelper) ListAllOwnedTabs(ctx context.Context) ([]store.WorkspaceTabRow, error) {

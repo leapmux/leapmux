@@ -37,9 +37,13 @@ func (s *userStateStore) Get(ctx context.Context, userID userid.UserID) (*store.
 }
 
 func (s *userStateStore) Upsert(ctx context.Context, p store.UpsertUserStateParams) error {
+	owner, ok := userid.OwnerFilter(p.UserID())
+	if !ok {
+		return store.ErrInvalidArgument
+	}
 	return mapErr(s.conn.q.UpsertUserState(ctx, gendb.UpsertUserStateParams{
-		UserID:               p.UserID.String(),
-		StatePayload:         p.StatePayload,
-		CompactionPhysicalMs: p.CompactionPhysicalMs,
+		UserID:               owner,
+		StatePayload:         p.StatePayload(),
+		CompactionPhysicalMs: p.CompactionPhysicalMs(),
 	}))
 }

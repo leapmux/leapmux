@@ -24,8 +24,8 @@ func TestCrossWorkspaceMove_SetTabRegisterTileID_ResolvesNewWorkspace(t *testing
 
 	// Add tab on w1.
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "init", "tA", "root1", "wkr1", "p1")},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{addTabBatch(t, "init", "tA", "root1", "wkr1", "p1")}),
 	})
 	require.NoError(t, err)
 
@@ -43,8 +43,8 @@ func TestCrossWorkspaceMove_SetTabRegisterTileID_ResolvesNewWorkspace(t *testing
 		}}}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{moveBatch},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{moveBatch}),
 	})
 	require.NoError(t, err)
 
@@ -68,8 +68,8 @@ func TestCrossWorkspaceMove_RequiresWritePermissionToBothWorkspaces(t *testing.T
 
 	// Add tab on w1 (allowed — caller has w1 write).
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "init", "tA", "root1", "wkr1", "p1")},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{addTabBatch(t, "init", "tA", "root1", "wkr1", "p1")}),
 	})
 	require.NoError(t, err)
 
@@ -82,8 +82,8 @@ func TestCrossWorkspaceMove_RequiresWritePermissionToBothWorkspaces(t *testing.T
 		}}}},
 	}
 	r, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{moveBatch},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{moveBatch}),
 	})
 	require.NoError(t, err)
 	rejected := r[0].GetRejected()
@@ -104,8 +104,8 @@ func TestCrossWorkspaceMove_PureCreate_OnlyDestPermissionRequired(t *testing.T) 
 	// Caller has only w2 write; creating a tab on w2 should succeed
 	// (no pre-workspace permission needed for creates).
 	r, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "create", "tNew", "root2", "wkr1", "p1")},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{addTabBatch(t, "create", "tNew", "root2", "wkr1", "p1")}),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, r[0].GetCommitted(), "pure-create on w2 should succeed without w1 permission")
@@ -121,8 +121,8 @@ func TestCrossWorkspaceMove_TabIndexRowMovesWithTheTab(t *testing.T) {
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "init", "tA", "root1", "wkr1", "p1")},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{addTabBatch(t, "init", "tA", "root1", "wkr1", "p1")}),
 	})
 	require.NoError(t, err)
 
@@ -141,8 +141,8 @@ func TestCrossWorkspaceMove_TabIndexRowMovesWithTheTab(t *testing.T) {
 		},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{mv},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{mv}),
 	})
 	require.NoError(t, err)
 

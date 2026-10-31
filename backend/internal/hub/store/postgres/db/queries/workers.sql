@@ -21,13 +21,6 @@ WHERE registered_by = sqlc.arg(registered_by) AND deleted_at IS NULL AND deregis
 ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg('limit');
 
--- name: SetWorkerStatus :exec
--- Test-only setter for the two LIVE states. deregistering keeps an existing
--- deregistering_at rather than restarting the stale-deregistration clock.
-UPDATE workers
-SET deregistering_at = CASE WHEN sqlc.arg(deregistering)::boolean THEN COALESCE(deregistering_at, NOW()) ELSE NULL END
-WHERE id = sqlc.arg(id) AND deleted_at IS NULL;
-
 -- name: DeregisterWorker :execresult
 UPDATE workers SET deregistering_at = NOW()
 WHERE id = $1 AND registered_by = $2 AND deregistering_at IS NULL AND deleted_at IS NULL;
@@ -51,71 +44,152 @@ UPDATE workers SET public_key = $1, mlkem_public_key = $2, slhdsa_public_key = $
 -- name: GetWorkerPublicKey :one
 SELECT public_key, mlkem_public_key, slhdsa_public_key FROM workers WHERE id = $1 AND deleted_at IS NULL;
 
--- The admin worker listing is a 2x2 matrix over (user_id none/set) x (live or
--- deleted), implemented as FOUR separate queries. The user_id dimension CANNOT
--- be an opt-in `(narg(user_id) IS NULL OR registered_by = narg(user_id))` probe:
--- sqlc emits the IS-NULL-probed narg as an untyped interface{}, and binding NULL
--- for it raises SQLSTATE 42P08 "could not determine data type of parameter"
--- (YugabyteDB inherits the break via this store). Splitting user_id into its
--- own REQUIRED-equality query (sqlc.arg, not narg) yields a typed `string`
--- param and restores the index seek. The live/deleted dimension stays split
--- for partial-index eligibility: the live pair keeps `deleted_at IS NULL` and
--- selects ACTIVE, DEREGISTERING or both through the two include flags; the
--- deleted pair keeps `deleted_at IS NOT NULL`.
+-- Each state and owner filter has its own query. Literal predicates let
+-- the planner select an ordered index for exactly the requested population.
+-- The owner filter stays a required equality, avoiding an untyped NULL probe
+-- on PostgreSQL and a broad OR scan on SQLite.
+-- Select the indexed ID page before joining owner metadata, so any outer
+-- reordering processes only that page instead of the full matching population.
 
--- ListWorkersAdminLive: user_id=none, live workers in the included states.
 -- name: ListWorkersAdminLive :many
+WITH worker_page AS (
+    SELECT w.id
+    FROM workers w
+    WHERE w.deleted_at IS NULL
+      AND (sqlc.narg(cursor_time)::timestamptz IS NULL
+           OR w.created_at < sqlc.narg(cursor_time)::timestamptz
+           OR (w.created_at = sqlc.narg(cursor_time)::timestamptz AND w.id < sqlc.narg(cursor_id)))
+    ORDER BY w.created_at DESC, w.id DESC
+    LIMIT sqlc.arg('limit')
+)
 SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, (u.id IS NULL)::boolean AS owner_deleted
-FROM workers w
+FROM worker_page p
+JOIN workers w ON w.id = p.id
 LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
-WHERE w.deleted_at IS NULL
-  AND ((w.deregistering_at IS NULL AND sqlc.arg(include_active)::boolean)
-       OR (w.deregistering_at IS NOT NULL AND sqlc.arg(include_deregistering)::boolean))
-  AND (sqlc.narg(cursor_time)::timestamptz IS NULL
-       OR w.created_at < sqlc.narg(cursor_time)::timestamptz
-       OR (w.created_at = sqlc.narg(cursor_time)::timestamptz AND w.id < sqlc.narg(cursor_id)))
-ORDER BY w.created_at DESC, w.id DESC
-LIMIT sqlc.arg('limit');
+ORDER BY w.created_at DESC, w.id DESC;
 
--- ListWorkersAdminLiveByUser: user_id=set, live workers in the included states.
 -- name: ListWorkersAdminLiveByUser :many
+WITH worker_page AS (
+    SELECT w.id
+    FROM workers w
+    WHERE w.deleted_at IS NULL
+      AND w.registered_by = sqlc.arg(user_id)
+      AND (sqlc.narg(cursor_time)::timestamptz IS NULL
+           OR w.created_at < sqlc.narg(cursor_time)::timestamptz
+           OR (w.created_at = sqlc.narg(cursor_time)::timestamptz AND w.id < sqlc.narg(cursor_id)))
+    ORDER BY w.created_at DESC, w.id DESC
+    LIMIT sqlc.arg('limit')
+)
 SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, (u.id IS NULL)::boolean AS owner_deleted
-FROM workers w
+FROM worker_page p
+JOIN workers w ON w.id = p.id
 LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
-WHERE w.deleted_at IS NULL
-  AND ((w.deregistering_at IS NULL AND sqlc.arg(include_active)::boolean)
-       OR (w.deregistering_at IS NOT NULL AND sqlc.arg(include_deregistering)::boolean))
-  AND w.registered_by = sqlc.arg(user_id)
-  AND (sqlc.narg(cursor_time)::timestamptz IS NULL
-       OR w.created_at < sqlc.narg(cursor_time)::timestamptz
-       OR (w.created_at = sqlc.narg(cursor_time)::timestamptz AND w.id < sqlc.narg(cursor_id)))
-ORDER BY w.created_at DESC, w.id DESC
-LIMIT sqlc.arg('limit');
+ORDER BY w.created_at DESC, w.id DESC;
 
--- ListWorkersAdminDeleted: user_id=none, soft-deleted workers.
+-- name: ListWorkersAdminActive :many
+WITH worker_page AS (
+    SELECT w.id
+    FROM workers w
+    WHERE w.deleted_at IS NULL AND w.deregistering_at IS NULL
+      AND (sqlc.narg(cursor_time)::timestamptz IS NULL
+           OR w.created_at < sqlc.narg(cursor_time)::timestamptz
+           OR (w.created_at = sqlc.narg(cursor_time)::timestamptz AND w.id < sqlc.narg(cursor_id)))
+    ORDER BY w.created_at DESC, w.id DESC
+    LIMIT sqlc.arg('limit')
+)
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, (u.id IS NULL)::boolean AS owner_deleted
+FROM worker_page p
+JOIN workers w ON w.id = p.id
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
+ORDER BY w.created_at DESC, w.id DESC;
+
+-- name: ListWorkersAdminActiveByUser :many
+WITH worker_page AS (
+    SELECT w.id
+    FROM workers w
+    WHERE w.deleted_at IS NULL AND w.deregistering_at IS NULL
+      AND w.registered_by = sqlc.arg(user_id)
+      AND (sqlc.narg(cursor_time)::timestamptz IS NULL
+           OR w.created_at < sqlc.narg(cursor_time)::timestamptz
+           OR (w.created_at = sqlc.narg(cursor_time)::timestamptz AND w.id < sqlc.narg(cursor_id)))
+    ORDER BY w.created_at DESC, w.id DESC
+    LIMIT sqlc.arg('limit')
+)
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, (u.id IS NULL)::boolean AS owner_deleted
+FROM worker_page p
+JOIN workers w ON w.id = p.id
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
+ORDER BY w.created_at DESC, w.id DESC;
+
+-- name: ListWorkersAdminDeregistering :many
+WITH worker_page AS (
+    SELECT w.id
+    FROM workers w
+    WHERE w.deleted_at IS NULL AND w.deregistering_at IS NOT NULL
+      AND (sqlc.narg(cursor_time)::timestamptz IS NULL
+           OR w.created_at < sqlc.narg(cursor_time)::timestamptz
+           OR (w.created_at = sqlc.narg(cursor_time)::timestamptz AND w.id < sqlc.narg(cursor_id)))
+    ORDER BY w.created_at DESC, w.id DESC
+    LIMIT sqlc.arg('limit')
+)
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, (u.id IS NULL)::boolean AS owner_deleted
+FROM worker_page p
+JOIN workers w ON w.id = p.id
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
+ORDER BY w.created_at DESC, w.id DESC;
+
+-- name: ListWorkersAdminDeregisteringByUser :many
+WITH worker_page AS (
+    SELECT w.id
+    FROM workers w
+    WHERE w.deleted_at IS NULL AND w.deregistering_at IS NOT NULL
+      AND w.registered_by = sqlc.arg(user_id)
+      AND (sqlc.narg(cursor_time)::timestamptz IS NULL
+           OR w.created_at < sqlc.narg(cursor_time)::timestamptz
+           OR (w.created_at = sqlc.narg(cursor_time)::timestamptz AND w.id < sqlc.narg(cursor_id)))
+    ORDER BY w.created_at DESC, w.id DESC
+    LIMIT sqlc.arg('limit')
+)
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, (u.id IS NULL)::boolean AS owner_deleted
+FROM worker_page p
+JOIN workers w ON w.id = p.id
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
+ORDER BY w.created_at DESC, w.id DESC;
+
 -- name: ListWorkersAdminDeleted :many
+WITH worker_page AS (
+    SELECT w.id
+    FROM workers w
+    WHERE w.deleted_at IS NOT NULL
+      AND (sqlc.narg(cursor_time)::timestamptz IS NULL
+           OR w.created_at < sqlc.narg(cursor_time)::timestamptz
+           OR (w.created_at = sqlc.narg(cursor_time)::timestamptz AND w.id < sqlc.narg(cursor_id)))
+    ORDER BY w.created_at DESC, w.id DESC
+    LIMIT sqlc.arg('limit')
+)
 SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, (u.id IS NULL)::boolean AS owner_deleted
-FROM workers w
+FROM worker_page p
+JOIN workers w ON w.id = p.id
 LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
-WHERE w.deleted_at IS NOT NULL
-  AND (sqlc.narg(cursor_time)::timestamptz IS NULL
-       OR w.created_at < sqlc.narg(cursor_time)::timestamptz
-       OR (w.created_at = sqlc.narg(cursor_time)::timestamptz AND w.id < sqlc.narg(cursor_id)))
-ORDER BY w.created_at DESC, w.id DESC
-LIMIT sqlc.arg('limit');
+ORDER BY w.created_at DESC, w.id DESC;
 
--- ListWorkersAdminDeletedByUser: user_id=set, soft-deleted workers.
 -- name: ListWorkersAdminDeletedByUser :many
+WITH worker_page AS (
+    SELECT w.id
+    FROM workers w
+    WHERE w.deleted_at IS NOT NULL
+      AND w.registered_by = sqlc.arg(user_id)
+      AND (sqlc.narg(cursor_time)::timestamptz IS NULL
+           OR w.created_at < sqlc.narg(cursor_time)::timestamptz
+           OR (w.created_at = sqlc.narg(cursor_time)::timestamptz AND w.id < sqlc.narg(cursor_id)))
+    ORDER BY w.created_at DESC, w.id DESC
+    LIMIT sqlc.arg('limit')
+)
 SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, (u.id IS NULL)::boolean AS owner_deleted
-FROM workers w
+FROM worker_page p
+JOIN workers w ON w.id = p.id
 LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
-WHERE w.deleted_at IS NOT NULL
-  AND w.registered_by = sqlc.arg(user_id)
-  AND (sqlc.narg(cursor_time)::timestamptz IS NULL
-       OR w.created_at < sqlc.narg(cursor_time)::timestamptz
-       OR (w.created_at = sqlc.narg(cursor_time)::timestamptz AND w.id < sqlc.narg(cursor_id)))
-ORDER BY w.created_at DESC, w.id DESC
-LIMIT sqlc.arg('limit');
+ORDER BY w.created_at DESC, w.id DESC;
 
 -- name: HardDeleteWorkersBefore :execresult
 -- NOTE: Use CTE form (not LIMIT in subquery) for CockroachDB compatibility.

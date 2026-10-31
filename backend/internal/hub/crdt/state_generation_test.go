@@ -233,14 +233,14 @@ func submitTombstonedTab(t *testing.T, ctx context.Context, mgr *crdt.Manager, t
 	t.Helper()
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 	if _, err := mgr.Submit(ctx, crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "add-"+tabID, tabID, "root1", "wkr", "p1")},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{addTabBatch(t, "add-"+tabID, tabID, "root1", "wkr", "p1")}),
 	}); err != nil {
 		return err
 	}
 	_, err := mgr.Submit(ctx, crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{{
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{{
 			BatchId: "tomb-" + tabID,
 			Ops: []*leapmuxv1.CrdtOp{{
 				OpId: "op-tomb-" + tabID,
@@ -249,7 +249,7 @@ func submitTombstonedTab(t *testing.T, ctx context.Context, mgr *crdt.Manager, t
 					TabId:   tabID,
 				}},
 			}},
-		}},
+		}}),
 	})
 	return err
 }

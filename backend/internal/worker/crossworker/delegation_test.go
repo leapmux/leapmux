@@ -48,7 +48,7 @@ func TestDelegationStore_MintRetriesOnTabPropagation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	t.Cleanup(cancel)
 
-	bearer, err := store.GetBearer(ctx, DelegationScope{UserID: userid.MustNew("user-1")})
+	bearer, err := store.GetBearer(ctx, userid.MustNew("user-1"))
 	require.NoError(t, err)
 	assert.Equal(t, "lmx_tok_secret", bearer)
 	assert.Equal(t, int32(3), calls.Load(), "expected 2 propagation 403s + 1 success")
@@ -74,7 +74,7 @@ func TestDelegationStore_MintGivesUpAfterMaxAttempts(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	t.Cleanup(cancel)
 
-	_, err := store.GetBearer(ctx, DelegationScope{UserID: userid.MustNew("user-1")})
+	_, err := store.GetBearer(ctx, userid.MustNew("user-1"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "tab not yet visible to hub")
 	assert.Equal(t, int32(4), calls.Load(), "should have used all attempts")
@@ -100,7 +100,7 @@ func TestDelegationStore_MintNonPropagationErrorDoesNotRetry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	t.Cleanup(cancel)
 
-	_, err := store.GetBearer(ctx, DelegationScope{UserID: userid.MustNew("user-1")})
+	_, err := store.GetBearer(ctx, userid.MustNew("user-1"))
 	require.Error(t, err)
 	assert.Equal(t, int32(1), calls.Load(), "non-propagation errors must not retry")
 }
@@ -123,15 +123,15 @@ func TestDelegationStore_GetBearerCachesPerUser(t *testing.T) {
 	store.Acquire(userid.MustNew("u-1"))
 	ctx := context.Background()
 
-	_, err := store.GetBearer(ctx, DelegationScope{UserID: userid.MustNew("u-1")})
+	_, err := store.GetBearer(ctx, userid.MustNew("u-1"))
 	require.NoError(t, err)
-	_, err = store.GetBearer(ctx, DelegationScope{UserID: userid.MustNew("u-1")})
+	_, err = store.GetBearer(ctx, userid.MustNew("u-1"))
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), calls.Load(), "second call for the same user must hit cache")
 
 	// A DIFFERENT user is a different slot and does mint.
 	store.Acquire(userid.MustNew("u-2"))
-	_, err = store.GetBearer(ctx, DelegationScope{UserID: userid.MustNew("u-2")})
+	_, err = store.GetBearer(ctx, userid.MustNew("u-2"))
 	require.NoError(t, err)
 	assert.Equal(t, int32(2), calls.Load(), "a different user must mint a fresh delegation")
 }
@@ -157,9 +157,9 @@ func TestDelegationStore_GetBearerRemintsNearExpiry(t *testing.T) {
 	store.Acquire(userid.MustNew("u-1"))
 	ctx := context.Background()
 
-	_, err := store.GetBearer(ctx, DelegationScope{UserID: userid.MustNew("u-1")})
+	_, err := store.GetBearer(ctx, userid.MustNew("u-1"))
 	require.NoError(t, err)
-	_, err = store.GetBearer(ctx, DelegationScope{UserID: userid.MustNew("u-1")})
+	_, err = store.GetBearer(ctx, userid.MustNew("u-1"))
 	require.NoError(t, err)
 	assert.Equal(t, int32(2), calls.Load(), "expiry within grace window must trigger remint")
 }
@@ -170,9 +170,9 @@ func TestDelegationStore_GetBearerRemintsNearExpiry(t *testing.T) {
 func TestDelegationStore_GetBearerRequiresIDs(t *testing.T) {
 	store := NewDelegationStore(testEndpointFor(t, "http://nowhere"), "tok", "worker-1")
 	store.LiveTab = staticLiveTab("tab-1")
-	_, err := store.GetBearer(context.Background(), DelegationScope{UserID: userid.UserID{}})
+	_, err := store.GetBearer(context.Background(), userid.UserID{})
 	require.Error(t, err)
-	_, err = store.GetBearer(context.Background(), DelegationScope{UserID: userid.MustNew("u-1")})
+	_, err = store.GetBearer(context.Background(), userid.MustNew("u-1"))
 	require.Error(t, err)
 }
 
@@ -232,7 +232,7 @@ func TestDelegationStore_AcquireReleaseRevokesOnLastRelease(t *testing.T) {
 	ctx := context.Background()
 
 	store.Acquire(userid.MustNew("u-1"))
-	_, err := store.GetBearer(ctx, DelegationScope{UserID: userid.MustNew("u-1")})
+	_, err := store.GetBearer(ctx, userid.MustNew("u-1"))
 	require.NoError(t, err)
 
 	require.NoError(t, store.Release(ctx, userid.MustNew("u-1")))
@@ -259,7 +259,7 @@ func TestDelegationStore_RefcountKeepsBearerAliveAcrossSpawns(t *testing.T) {
 	// second agent actually looks like.
 	store.Acquire(userid.MustNew("u-1"))
 	store.Acquire(userid.MustNew("u-1"))
-	_, err := store.GetBearer(ctx, DelegationScope{UserID: userid.MustNew("u-1")})
+	_, err := store.GetBearer(ctx, userid.MustNew("u-1"))
 	require.NoError(t, err)
 
 	// First release: no revoke yet.
@@ -267,7 +267,7 @@ func TestDelegationStore_RefcountKeepsBearerAliveAcrossSpawns(t *testing.T) {
 	assert.Equal(t, int32(0), revokes.Load(), "Release with surviving refs must NOT revoke")
 
 	// Bearer still cached and reusable.
-	_, err = store.GetBearer(ctx, DelegationScope{UserID: userid.MustNew("u-1")})
+	_, err = store.GetBearer(ctx, userid.MustNew("u-1"))
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), mints.Load(), "second GetBearer must hit cache, not re-mint")
 
@@ -305,12 +305,12 @@ func TestDelegationStore_ReacquireAfterReleaseMintsFresh(t *testing.T) {
 	ctx := context.Background()
 
 	store.Acquire(userid.MustNew("u-1"))
-	_, err := store.GetBearer(ctx, DelegationScope{UserID: userid.MustNew("u-1")})
+	_, err := store.GetBearer(ctx, userid.MustNew("u-1"))
 	require.NoError(t, err)
 	require.NoError(t, store.Release(ctx, userid.MustNew("u-1")))
 
 	store.Acquire(userid.MustNew("u-1"))
-	_, err = store.GetBearer(ctx, DelegationScope{UserID: userid.MustNew("u-1")})
+	_, err = store.GetBearer(ctx, userid.MustNew("u-1"))
 	require.NoError(t, err)
 	require.NoError(t, store.Release(ctx, userid.MustNew("u-1")))
 
@@ -330,9 +330,9 @@ func TestDelegationStore_RefcountIsPerUser(t *testing.T) {
 
 	store.Acquire(userid.MustNew("u-1"))
 	store.Acquire(userid.MustNew("u-2"))
-	_, err := store.GetBearer(ctx, DelegationScope{UserID: userid.MustNew("u-1")})
+	_, err := store.GetBearer(ctx, userid.MustNew("u-1"))
 	require.NoError(t, err)
-	_, err = store.GetBearer(ctx, DelegationScope{UserID: userid.MustNew("u-2")})
+	_, err = store.GetBearer(ctx, userid.MustNew("u-2"))
 	require.NoError(t, err)
 	assert.Equal(t, int32(2), mints.Load(), "two users, two bearers")
 
@@ -340,7 +340,7 @@ func TestDelegationStore_RefcountIsPerUser(t *testing.T) {
 	assert.Equal(t, int32(1), revokes.Load())
 
 	// u-2's bearer survives — still cached, no extra mint on next call.
-	_, err = store.GetBearer(ctx, DelegationScope{UserID: userid.MustNew("u-2")})
+	_, err = store.GetBearer(ctx, userid.MustNew("u-2"))
 	require.NoError(t, err)
 	assert.Equal(t, int32(2), mints.Load(), "u-2's bearer must remain cached after u-1's Release")
 
@@ -428,7 +428,7 @@ func TestDelegationStore_MintAndRevokeOverUnixSocket(t *testing.T) {
 	t.Cleanup(cancel)
 
 	store.Acquire(userid.MustNew("user-1"))
-	bearer, err := store.GetBearer(ctx, DelegationScope{UserID: userid.MustNew("user-1")})
+	bearer, err := store.GetBearer(ctx, userid.MustNew("user-1"))
 	require.NoError(t, err)
 	assert.Equal(t, "lmx_tok_secret", bearer)
 	assert.Equal(t, int32(1), mintCalls.Load())
@@ -458,9 +458,9 @@ func TestDelegationStore_SweepExpired_DropsExpiredAndOrphaned(t *testing.T) {
 	store.Acquire(userid.MustNew("user-2"))
 
 	// Mint both bearers so they land in the cache.
-	_, err := store.GetBearer(context.Background(), DelegationScope{UserID: userid.MustNew("user-1")})
+	_, err := store.GetBearer(context.Background(), userid.MustNew("user-1"))
 	require.NoError(t, err)
-	_, err = store.GetBearer(context.Background(), DelegationScope{UserID: userid.MustNew("user-2")})
+	_, err = store.GetBearer(context.Background(), userid.MustNew("user-2"))
 	require.NoError(t, err)
 
 	// Drop user-2's refcount so its row is now orphaned (refcount 0),
@@ -472,7 +472,7 @@ func TestDelegationStore_SweepExpired_DropsExpiredAndOrphaned(t *testing.T) {
 	// an orphan that Release didn't reach: re-Acquire then mutate
 	// refcount manually under the store mutex.
 	store.Acquire(userid.MustNew("user-2"))
-	_, err = store.GetBearer(context.Background(), DelegationScope{UserID: userid.MustNew("user-2")})
+	_, err = store.GetBearer(context.Background(), userid.MustNew("user-2"))
 	require.NoError(t, err)
 	store.mu.Lock()
 	store.refcount["user-2"] = 0
@@ -532,7 +532,7 @@ func TestDelegationStore_ConcurrentFirstMintCollapsesToOne(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			b, err := store.GetBearer(context.Background(),
-				DelegationScope{UserID: user})
+				user)
 			bearers[i], errs[i] = b, err
 		}()
 	}
@@ -579,7 +579,7 @@ func TestDelegationStore_MintSendsOnlyUserAndTab(t *testing.T) {
 	user := userid.MustNew("u-1")
 	store.Acquire(user)
 
-	_, err := store.GetBearer(context.Background(), DelegationScope{UserID: user})
+	_, err := store.GetBearer(context.Background(), user)
 	require.NoError(t, err)
 	body, ok := gotBody.Load().(map[string]any)
 	require.True(t, ok, "the stub must have received one mint request")
@@ -614,7 +614,7 @@ func TestDelegationStore_MintReadsTheTabFromTheLiveInventory(t *testing.T) {
 	store.LiveTab = staticLiveTab("term-live")
 	store.Acquire(user)
 
-	_, err := store.GetBearer(context.Background(), DelegationScope{UserID: user})
+	_, err := store.GetBearer(context.Background(), user)
 	require.NoError(t, err)
 	assert.Equal(t, "term-live", gotTabID.Load(),
 		"the mint must take its tab from the live inventory")
@@ -645,7 +645,7 @@ func TestDelegationStore_MissedReleaseCannotPoisonLaterMints(t *testing.T) {
 
 	// Force a fresh mint, as a near-expiry refresh would.
 	store.MintGracePeriod = 2 * time.Hour
-	_, err := store.GetBearer(context.Background(), DelegationScope{UserID: user})
+	_, err := store.GetBearer(context.Background(), user)
 	require.NoError(t, err, "a missed Release must not break the surviving spawn's mint")
 	assert.Equal(t, int32(1), mints.Load())
 }
@@ -660,7 +660,7 @@ func TestDelegationStore_MintWithoutAnyLiveTabFailsLoudly(t *testing.T) {
 	store.LiveTab = func() (string, bool) { return "", false }
 	store.Acquire(user)
 
-	_, err := store.GetBearer(context.Background(), DelegationScope{UserID: user})
+	_, err := store.GetBearer(context.Background(), user)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "hosts no open tab")
 }

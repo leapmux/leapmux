@@ -37,19 +37,15 @@ import (
 //     ("record exists AND record is tombstoned" → reject); a missing
 //     record is treated as not-yet-created, which is exactly the
 //     desired outcome.
-//   - Stale-epoch retries: a batch stamped two or more epochs back is
-//     rejected before it reaches Apply by the `BATCH_REJECTION_STALE_EPOCH`
-//     gate, and a retry whose dedup row is that old is rejected by the
-//     dedup check. This is a LIMIT, not a guarantee: the client stamps a
-//     submit with the newest epoch it has seen (pendingOps.ts), so a client
-//     that resynced can replay a pending batch older than DedupTTL under the
-//     current epoch, and both gates admit it.
+//   - Stale-epoch retries: clients preserve each batch's first submission
+//     epoch. Cleanup retains its dedup row while its committed epoch is
+//     accepted. A lost-acknowledgement retry therefore returns the original
+//     result or fails the stale-epoch check before Apply; reconnecting cannot
+//     give the old batch a new epoch or fresh canonical HLCs.
 //   - Id collision: client-minted ids are 48-char nanoids (62^48 search
 //     space); a legitimate retry of a pre-tombstone batch hits the
-//     dedup row (when still cached) or, when it carries the epoch it was
-//     minted under and that epoch is two or more behind, fails the epoch
-//     check. The same limit applies: a retry the client re-stamps with the
-//     current epoch after DedupTTL passes both.
+//     dedup row while its epoch is accepted, or fails the epoch check once
+//     that epoch is two or more behind.
 //   - Subscribers connected before the pruning still hold the original
 //     tombstone records locally and continue to apply remote ops
 //     correctly. New subscribers bootstrap from the pruned state and

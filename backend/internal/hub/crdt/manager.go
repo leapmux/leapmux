@@ -31,10 +31,9 @@ const (
 	// tombstones). Doubles as the prefix for origin_client_id stamps
 	// produced by the manager (see hubClientID in NewManager).
 	HubReservedPrincipal = "hub"
-	// DedupTTL is how long a batch_id stays in user_recent_batch_ids. It
-	// equals EpochDuration, so a retry past its dedup row is at least one
-	// epoch old; see PruneTombstonesAtOrBelow for what the epoch gates still
-	// do and do not catch after that.
+	// DedupTTL is the minimum retention for a batch_id. Cleanup also retains
+	// its row while its committed epoch is accepted, so a retry cannot lose
+	// its identity before its submission epoch becomes stale.
 	DedupTTL = 14 * 24 * time.Hour
 	// OpRetentionTTL is how far behind max_hlc the op_retention_watermark
 	// lags: op batches whose last canonical HLC is older than this (relative
@@ -162,12 +161,11 @@ func OpRetentionCutoffPhysicalMs(now time.Time, ttl time.Duration) int64 {
 // compared it back against m.owner.String(). Dropping it makes "a submit landed on the
 // wrong tenant's manager" unrepresentable rather than merely detected.
 //
-// PrincipalID is the other axis and stays: it names WHO is writing, which
+// PrincipalID is the other axis and stays: it identifies WHO is writing, which
 // nothing about the receiver supplies. It is the authenticated user's ID, or
 // HubReservedPrincipal for hub-internal ops; a delegation bearer authenticates
 // as its user, so it has the same principal as a session of that user.
 type SubmitInput struct {
-	Epoch        int64
 	Batches      []*leapmuxv1.OpBatch
 	PrincipalID  string
 	OriginClient string
@@ -224,7 +222,7 @@ type Manager struct {
 	// that one goroutine. That makes the bare m.state map reads in
 	// ValidateBatch / DiffProjectionForBatch legitimately lock-free.
 	// m.mu (RWMutex) guards m.state only against the RLock readers
-	// (Materialized, currentEpoch, broadcast, WithStateRLock) and the commit
+	// (Materialized, broadcast, WithStateRLock) and the commit
 	// swap (m.state = working). The lone non-production writer is
 	// SeedStateForTest, which also runs on the manager goroutine (via taskCh)
 	// so it cannot race those bare reads; see its doc.
@@ -902,7 +900,7 @@ func (m *Manager) Start(ctx context.Context) error {
 			// sequencing (these are select cases on one loop, so the goroutine
 			// is never mid-ValidateBatch while servicing a task);
 			// commitState's swap additionally excludes the cross-goroutine
-			// RLock readers (Materialized, currentEpoch, broadcast) for the
+			// RLock readers (Materialized, broadcast) for the
 			// pointer write. A seed runs against a CLONE and is PUBLISHED, so a
 			// published generation stays immutable for the lock-free readers
 			// that captured it. Deferred close(done) so a panicking task does
@@ -1207,18 +1205,30 @@ func (m *Manager) processSubmit(ctx context.Context, job submitJob) submitRespon
 	// SetWorkspaceRegisterOp / TombstoneWorkspaceOp, so no out-of-band writer
 	// remains.
 
-	// 1. epoch_required + stale_epoch (request-level).
-	if !job.internal {
-		if in.Epoch == 0 {
-			return rejectAll(in.Batches, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_EPOCH_REQUIRED, "")
-		}
-		if in.Epoch < m.state.GetCurrentEpoch()-1 {
-			return rejectAll(in.Batches, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_STALE_EPOCH, "")
-		}
-	}
-
 	results := make([]*leapmuxv1.BatchResult, 0, len(in.Batches))
 	for _, batch := range in.Batches {
+		if batch == nil {
+			results = append(results, rejectBatch(batch, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN, ""))
+			continue
+		}
+		// Only SubmitInternal supplies the epoch bypass. Internal on the
+		// input controls operation authorization and is not this authority.
+		if !job.internal {
+			epoch, current := batch.GetEpoch(), m.state.GetCurrentEpoch()
+			reason := leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED
+			switch {
+			case epoch == 0:
+				reason = leapmuxv1.BatchRejectionReason_BATCH_REJECTION_EPOCH_REQUIRED
+			case epoch < 0 || epoch > current:
+				reason = leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN
+			case epoch < current-1:
+				reason = leapmuxv1.BatchRejectionReason_BATCH_REJECTION_STALE_EPOCH
+			}
+			if reason != leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED {
+				results = append(results, rejectBatch(batch, reason, ""))
+				continue
+			}
+		}
 		result, err := m.processBatch(ctx, in, batch)
 		if err != nil {
 			// A transient permission-lookup failure: return it as the whole
@@ -1559,7 +1569,7 @@ func (m *Manager) commit(ctx context.Context, in SubmitInput, batch *leapmuxv1.O
 }
 
 // commitState is the SOLE mutator of m.state: it swaps in a new generation
-// under m.mu.Lock, excluding the RLock readers (Materialized, currentEpoch,
+// under m.mu.Lock, excluding the RLock readers (Materialized,
 // broadcast, WithStateRLock) for the duration of the pointer swap. Routing
 // every state replacement through this one method makes the single-writer
 // invariant structurally visible -- `m.state = ` appears exactly once in the
@@ -1670,18 +1680,6 @@ func (m *Manager) LocateTileWorkspace(tileID string) string {
 	return FindRootWorkspace(m.state.GetNodes(), m.state.GetWorkspaces(), tileID)
 }
 
-// currentEpoch returns the current epoch under the manager RLock.
-// Use this instead of `m.state.GetCurrentEpoch()` from goroutines that
-// don't own `m.mu` (e.g. lifecycle-outbox consumers running on
-// workspace_service request-handler goroutines) — bare reads on
-// `m.state` race with the manager goroutine's writes under
-// `m.mu.Lock()` in `commit`.
-func (m *Manager) currentEpoch() int64 {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.state.GetCurrentEpoch()
-}
-
 // SeedStateForTest runs fn against a CLONE of m.state as the sole writer and
 // publishes the result, so the write cannot race the manager goroutine's bare
 // m.state reads in ValidateBatch / DiffProjectionForBatch. It is a TEST-ONLY
@@ -1771,14 +1769,6 @@ func (m *Manager) runOnManagerGoroutine(run func()) {
 	default:
 		run()
 	}
-}
-
-func rejectAll(batches []*leapmuxv1.OpBatch, reason leapmuxv1.BatchRejectionReason, opID string) submitResponse {
-	results := make([]*leapmuxv1.BatchResult, len(batches))
-	for i, b := range batches {
-		results[i] = rejectBatch(b, reason, opID)
-	}
-	return submitResponse{results: results}
 }
 
 func rejectBatch(batch *leapmuxv1.OpBatch, reason leapmuxv1.BatchRejectionReason, opID string) *leapmuxv1.BatchResult {

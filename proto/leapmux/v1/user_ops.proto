@@ -148,17 +148,17 @@ message TombstoneWorkspaceOp {
 // are independent — a rejected batch never poisons sibling batches.
 // The authenticated session implies the user; no user_id on the request.
 message SubmitOpsRequest {
-  // REQUIRED. Must equal the current_epoch from the most recent
-  // UserMaterialized this client received over `/ws/userevents`. epoch
-  // == 0 is rejected as epoch_required (clients must bootstrap first);
-  // epoch < current_epoch - 1 is rejected as stale_epoch.
-  int64            epoch   = 1;
-  repeated OpBatch batches = 2;
+  repeated OpBatch batches = 1;
 }
 
 message OpBatch {
   string          batch_id = 1;  // client-minted; per-batch result correlation
   repeated CrdtOp ops      = 2;
+  // The server epoch observed at the batch's first submission. Set it once
+  // before sending and preserve it on every retry, including after reconnect.
+  // Zero requires bootstrap; current and previous epochs are accepted.
+  // Older epochs are stale, and negative or future epochs are invalid.
+  int64           epoch    = 3;
 }
 
 message SubmitOpsResponse {
@@ -317,7 +317,7 @@ message BatchEnd {
 message ResumeDelta {
   repeated WatchUserEvent frames = 1;  // ordered catch-up stream (entity_materialized|batch|entity_removed|batch_end)
   HLC              max_hlc     = 2;  // max HLC over every emitted frame (client's new watermark)
-  int64            current_epoch = 3;  // for SubmitOps epoch echo
+  int64            current_epoch = 3;  // stamps a batch's first submission
   // Hub-derived identity of THIS subscriber -- same value and purpose as
   // UserMaterialized.subscriber_client_id, carried here because a resume is now
   // the normal COLD-START path: the client hydrates confirmedState from its

@@ -31,7 +31,7 @@ const MAX_TRANSPORT_RETRIES = 5
 
 /**
  * MAX_REJECTION_RETRIES caps auto-retries of a hub-REJECTED batch whose
- * reason is retryable (e.g. `epoch_required` after an epoch bump). Like
+ * reason is retryable (e.g. `epoch_required` before bootstrap completes). Like
  * the transport cap it stops a client from re-hammering SubmitOps in a
  * tight loop -- and, for an epoch-refresh reason, from re-tearing-down the
  * `/ws/userevents` socket whose async bootstrap it is waiting on -- when the
@@ -48,9 +48,8 @@ const MAX_REJECTION_RETRIES = 5
  * to `pending.consumeBatchCommitted` / `consumeBatchRejected`, with
  * per-rejection-reason recovery driven by the plan's spec:
  *
- *   - `epoch_required` → re-bootstrap (refresh `currentEpoch`), retry
- *     the same batch (same `op_id`s — dedup-safe if it already
- *     committed under the missing epoch).
+ *   - `epoch_required` → re-bootstrap to obtain a nonzero epoch, then
+ *     retry the same batch. The hub rejects epoch zero before commit.
  *   - `stale_epoch` → re-bootstrap and drop the batch with a warn
  *     toast; auto-retry would defeat the staleness protection. The
  *     user re-issues the intent against current state.
@@ -72,7 +71,7 @@ export interface CreateOpsSubmitterOpts {
    * Called to force a teardown + fresh `/ws/userevents` subscription
    * after `epoch_required` / `stale_epoch`. Resolved by the time the
    * WebSocket has been torn down; the next `UserMaterialized` arrives
-   * asynchronously and refreshes `pending.currentEpoch`.
+   * asynchronously and refreshes `pending.state.currentEpoch`.
    */
   reconnect?: () => Promise<void>
 }
@@ -149,7 +148,7 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
    * outright above it, so an oversized unload flush falls back to the ordinary
    * client. That send will very likely be cancelled with the page -- but a
    * cancelled request is no worse than the keepalive one the browser would have
-   * refused, and the batch stays queued for the next session either way.
+   * refused. This module keeps queued batches and retry state only in memory.
    */
   function submitClientFor(unload: boolean, batches: OpBatch[]): typeof client {
     if (!unload)
@@ -234,7 +233,6 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
       timer = setTimeout(flush, SUBMIT_FLUSH_MS)
       return
     }
-    const epoch = pending.state.currentEpoch
     // Merge same-register writes that piled up in this window. High-frequency
     // gestures emit the same LWW register repeatedly, and only the last write
     // can survive the merge anywhere, so the earlier ones are pure wire,
@@ -265,8 +263,21 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
     }
     if (batches.length === 0)
       return
+    // The epoch belongs to the batch's first submission. A reconnect may
+    // refresh the manager, but must not give an uncertain retry a new epoch.
+    for (const batch of batches) {
+      if (batch.epoch === 0n)
+        batch.epoch = pending.state.currentEpoch
+    }
+    let resp: Awaited<ReturnType<typeof client.submitOps>>
     try {
-      const resp = await submitClientFor(flushOpts?.unload === true, batches).submitOps({ epoch, batches })
+      resp = await submitClientFor(flushOpts?.unload === true, batches).submitOps({ batches })
+    }
+    catch (err) {
+      handleTransportFailure(pending, batches, err)
+      return
+    }
+    try {
       let anyCommitted = false
       let needsReconnect = false
       const retryableRejections: { batch: OpBatch, needsEpochRefresh: boolean }[] = []
@@ -364,7 +375,14 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
         window.dispatchEvent(new CustomEvent('leapmux:layout-saved'))
     }
     catch (err) {
-      handleTransportFailure(pending, batches, err)
+      // A received response is authoritative. A local processing or reconnect
+      // failure must not resend batches whose outcomes were already handled.
+      for (const batch of batches) {
+        pending.revertPendingBatch(batch.batchId)
+        dropTransportRetryCounter(batch.batchId)
+        dropRejectionRetryCounter(batch.batchId)
+      }
+      showWarnToast('Couldn\'t confirm your layout change. Please reconnect before trying again.', err)
     }
   }
 

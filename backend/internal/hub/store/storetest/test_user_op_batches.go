@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -44,11 +46,12 @@ func (s *Suite) testUserOpBatches(t *testing.T) {
 	// retention cutoff to be the binding floor must raise this first.
 	absorbedThrough := func(t *testing.T, st store.Store, owner userid.UserID, physical int64) {
 		t.Helper()
-		require.NoError(t, st.UserState().Upsert(ctx, store.UpsertUserStateParams{
-			UserID:               owner,
-			StatePayload:         []byte("s"),
-			CompactionPhysicalMs: physical,
-		}))
+		params, err := store.NewUpsertUserStateParams(&leapmuxv1.UserCrdtState{
+			UserId: owner.String(), CurrentEpoch: 1,
+			CompactionWatermark: &leapmuxv1.HLC{Physical: physical},
+		})
+		require.NoError(t, err)
+		require.NoError(t, st.UserState().Upsert(ctx, params))
 	}
 
 	t.Run("retention sweep deletes by physical cutoff across owners", func(t *testing.T) {
@@ -358,9 +361,8 @@ func (s *Suite) testUserOpBatches(t *testing.T) {
 			UserID: userid.UserID{}, PhysicalMs: 1, Logical: 0, BatchID: "blank-batch",
 			BatchPayload: []byte("p"), TransitionsPayload: []byte("t"), OpCount: 1,
 		}), "a blank-owner op batch has no parent user row to reference")
-		require.Error(t, st.UserState().Upsert(ctx, store.UpsertUserStateParams{
-			UserID: userid.UserID{}, StatePayload: []byte("state"),
-		}), "a blank-owner state row has no parent user row to reference")
+		require.ErrorIs(t, st.UserState().Upsert(ctx, store.UpsertUserStateParams{}), store.ErrInvalidArgument,
+			"zero state parameters must be refused before binding an owner")
 
 		// Every read below binds a zero owner against rows owned by someone REAL.
 		// That is what keeps them non-vacuous now that no blank-owner row can
@@ -370,9 +372,9 @@ func (s *Suite) testUserOpBatches(t *testing.T) {
 			UserID: userid.MustNew(realUser.ID), PhysicalMs: 1, Logical: 0, BatchID: "real-batch",
 			BatchPayload: []byte("real-body"), TransitionsPayload: []byte("t"), OpCount: 1,
 		}))
-		require.NoError(t, st.UserState().Upsert(ctx, store.UpsertUserStateParams{
-			UserID: userid.MustNew(realUser.ID), StatePayload: []byte("real-state"),
-		}))
+		stateParams, err := store.NewUpsertUserStateParams(&leapmuxv1.UserCrdtState{UserId: realUser.ID, CurrentEpoch: 1})
+		require.NoError(t, err)
+		require.NoError(t, st.UserState().Upsert(ctx, stateParams))
 		require.NoError(t, st.UserRecentBatchIDs().Insert(ctx, store.InsertUserRecentBatchIDParams{
 			UserID: userid.MustNew(realUser.ID), BatchID: "real-recent", BodyHash: []byte("h"),
 			PrincipalID: realUser.ID, CanonicalPhysicalMs: 1, CanonicalLogical: 0,
@@ -429,6 +431,9 @@ func (s *Suite) testUserOpBatches(t *testing.T) {
 
 		state, err := st.UserState().Get(ctx, userid.MustNew(realUser.ID))
 		require.NoError(t, err)
-		assert.Equal(t, []byte("real-state"), state.StatePayload)
+		decoded := &leapmuxv1.UserCrdtState{}
+		require.NoError(t, proto.Unmarshal(state.StatePayload, decoded))
+		assert.Equal(t, realUser.ID, decoded.GetUserId())
+		assert.EqualValues(t, 1, decoded.GetCurrentEpoch())
 	})
 }

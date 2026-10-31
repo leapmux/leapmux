@@ -64,9 +64,9 @@ describe('seedTabIntoWorkspace', () => {
     await seed()
     expect(methods).toEqual(['UserCRDT/SubmitOps', 'WorkspaceService/ListTabs'])
     expect(bodies[0]).toMatchObject({
-      epoch: '7',
       batches: [
         {
+          epoch: '7',
           ops: [
             {
               setTabRegister: { tabType: TabType.AGENT, tabId: 'agent-1', tileId: 'root-node' },
@@ -81,8 +81,50 @@ describe('seedTabIntoWorkspace', () => {
         },
       ],
     })
+    expect(bodies[0]).not.toHaveProperty('epoch')
     expect(bodies[1]).toEqual({
       workspaceIds: ['ws-1'],
+    })
+  })
+
+  it('preserves explicitly empty register values', async () => {
+    const { bodies } = hub(method => method === 'UserCRDT/SubmitOps'
+      ? committed()
+      : Response.json({
+          tabs: [
+            { tabId: 'agent-1' },
+          ],
+        }))
+    await seedTabIntoWorkspace({
+      hubUrl,
+      cookie: 'leapmux-session=s',
+      workspaceId: 'ws-1',
+      tabType: TabType.AGENT,
+      tabId: 'agent-1',
+      workerId: '',
+      position: '',
+      userEvents: {
+        ...userEvents,
+        awaitRootNodeId: async () => '',
+      },
+    })
+    expect(bodies[0]).toMatchObject({
+      batches: [
+        {
+          epoch: '7',
+          ops: [
+            {
+              setTabRegister: { tileId: '' },
+            },
+            {
+              setTabRegister: { position: '' },
+            },
+            {
+              setTabRegister: { workerId: '' },
+            },
+          ],
+        },
+      ],
     })
   })
 

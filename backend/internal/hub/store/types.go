@@ -858,25 +858,6 @@ type CreateWorkerParams struct {
 	AutoRegistered bool
 }
 
-type SetWorkerStatusParams struct {
-	ID     string
-	Status leapmuxv1.WorkerStatus
-}
-
-// DeregisteringFlag reports whether the status SetStatus is asked for is
-// DEREGISTERING (true) or ACTIVE (false). DELETED and UNSPECIFIED are
-// ErrInvalidArgument: deletion goes through MarkDeleted.
-func (p SetWorkerStatusParams) DeregisteringFlag() (bool, error) {
-	switch p.Status {
-	case leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE:
-		return false, nil
-	case leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING:
-		return true, nil
-	default:
-		return false, fmt.Errorf("%w: SetStatus takes ACTIVE or DEREGISTERING, not %v; use MarkDeleted to delete", ErrInvalidArgument, p.Status)
-	}
-}
-
 type UpdateWorkerPublicKeyParams struct {
 	ID              string
 	PublicKey       []byte
@@ -902,36 +883,25 @@ type GetOwnedWorkerParams struct {
 type ListWorkersAdminParams struct {
 	UserID *string
 	// Status narrows the listing to one derived state; nil lists every live
-	// (ACTIVE or DEREGISTERING) worker. See WorkerAdminListScopeOf.
+	// (ACTIVE or DEREGISTERING) worker. See WorkerAdminListStatusOf.
 	Status     *leapmuxv1.WorkerStatus
 	PageParams // Keyset on (created_at DESC, id DESC).
 }
 
-// WorkerAdminListScope is the query a ListWorkersAdminParams.Status selects:
-// the deleted listing, or the live listing with the live states it includes.
-type WorkerAdminListScope struct {
-	Deleted              bool
-	IncludeActive        bool
-	IncludeDeregistering bool
-}
-
-// WorkerAdminListScopeOf maps an admin listing's status filter to the query
-// that serves it, once for every dialect. nil lists every live worker; an
-// UNSPECIFIED or unknown status is ErrInvalidArgument rather than an empty
-// page, so a caller's bad filter is not mistaken for "no such workers".
-func WorkerAdminListScopeOf(status *leapmuxv1.WorkerStatus) (WorkerAdminListScope, error) {
+// WorkerAdminListStatusOf validates the optional state filter once for every
+// dialect. An absent filter returns UNSPECIFIED for the internal all-live
+// query choice. Explicit UNSPECIFIED and unknown values are invalid.
+func WorkerAdminListStatusOf(status *leapmuxv1.WorkerStatus) (leapmuxv1.WorkerStatus, error) {
 	if status == nil {
-		return WorkerAdminListScope{IncludeActive: true, IncludeDeregistering: true}, nil
+		return leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED, nil
 	}
 	switch *status {
-	case leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE:
-		return WorkerAdminListScope{IncludeActive: true}, nil
-	case leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING:
-		return WorkerAdminListScope{IncludeDeregistering: true}, nil
-	case leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED:
-		return WorkerAdminListScope{Deleted: true}, nil
+	case leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE,
+		leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING,
+		leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED:
+		return *status, nil
 	default:
-		return WorkerAdminListScope{}, fmt.Errorf("%w: worker status %v", ErrInvalidArgument, *status)
+		return leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED, fmt.Errorf("%w: worker status %v", ErrInvalidArgument, *status)
 	}
 }
 
@@ -1137,17 +1107,12 @@ type DeleteUserOpBatchesThroughParams struct {
 	ThroughLogical    int64
 }
 
-// UpsertUserStateParams writes a fresh state blob.
+// UpsertUserStateParams owns one immutable state snapshot and its retention
+// projection. Construct it with NewUpsertUserStateParams.
 type UpsertUserStateParams struct {
-	UserID       userid.UserID
-	StatePayload []byte
-	// CompactionPhysicalMs is StatePayload's own compaction_watermark.physical,
-	// projected into a column so SQL can filter on it. Callers MUST derive it
-	// from the very state they marshal into StatePayload -- it is the limit
-	// the cross-user retention sweep trusts to decide which op batches are
-	// already absorbed, and a value that outran the blob would license deleting
-	// ops no Bootstrap could then replay.
-	CompactionPhysicalMs int64
+	userID               userid.UserID
+	statePayload         []byte
+	compactionPhysicalMs int64
 }
 
 type InsertUserRecentBatchIDParams struct {

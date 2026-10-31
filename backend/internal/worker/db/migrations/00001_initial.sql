@@ -645,7 +645,7 @@ CREATE TABLE agent_todos (
     -- is needed.
     PRIMARY KEY (agent_id, seq)
 );
--- A provider id names at most one row per agent. Snapshot rows without an id
+-- A provider id identifies at most one row per agent. Snapshot rows without an id
 -- carry '' and may repeat. No query reads through this index, because the
 -- cache resolves a task id to its seq; partial_index_test.go lists it in
 -- unpinned.

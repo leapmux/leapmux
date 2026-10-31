@@ -24,6 +24,37 @@ import (
 const expiringLeaseDuration = 25 * time.Millisecond
 
 func (s *Suite) testTokenRevocation(t *testing.T) {
+	t.Run("direct revocation and privilege reduction share one generation sequence", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "generation-sequence-user")
+		owner := userid.MustNew(user.ID)
+		require.NoError(t, st.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{ID: user.ID, IsAdmin: true}))
+		_, err := st.RevocationEvents().PublishPending(ctx, 10)
+		require.NoError(t, err)
+		for index, mutate := range []func() error{
+			func() error { _, err := st.Users().RevokeUserTokens(ctx, owner); return err },
+			func() error {
+				return st.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{ID: user.ID, IsAdmin: false})
+			},
+			func() error { _, err := st.Users().RevokeUserTokens(ctx, owner); return err },
+		} {
+			require.NoError(t, mutate())
+			published, err := st.RevocationEvents().PublishPending(ctx, 10)
+			require.NoError(t, err)
+			assert.EqualValues(t, 1, published)
+			events, err := st.RevocationEvents().ListPublishedAfter(ctx, 0, 10)
+			require.NoError(t, err)
+			require.Len(t, events, index+2)
+			latest := events[len(events)-1].Event
+			assert.Equal(t, store.RevocationEventKindUserTokens, latest.Kind)
+			assert.EqualValues(t, index+1, latest.UserAuthGeneration)
+			assert.Equal(t, user.ID, latest.SubjectID)
+			assert.Equal(t, user.ID, latest.UserID)
+		}
+		stored, err := st.Users().GetByID(ctx, user.ID)
+		require.NoError(t, err)
+		assert.EqualValues(t, 3, stored.AuthGeneration)
+	})
 	t.Run("API refresh rotation creates one cache-invalidation event", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "user")

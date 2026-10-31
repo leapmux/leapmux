@@ -73,7 +73,7 @@ func (j *tabSyncJournal) LookupRecentBatchID(context.Context, string, string) (*
 
 func (j *tabSyncJournal) CompactBatch(context.Context, crdt.CompactBatch) error { return nil }
 
-func (j *tabSyncJournal) CleanupExpiredRecentBatchIDs(context.Context, time.Time) (int64, error) {
+func (j *tabSyncJournal) CleanupExpiredRecentBatchIDs(context.Context, string, time.Time, int64) (int64, error) {
 	return 0, nil
 }
 

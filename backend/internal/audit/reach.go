@@ -59,12 +59,10 @@ var workerReachSites = map[string]workerReachKind{
 	"internal/hub/service.(*WorkerManagementService).workerToProto": reachStoreScoped,
 	// The notifier's worker ids come from an authorized store row or a trusted
 	// server flow (deregister, connect), never from a user request, and it
-	// holds a 3-method narrow interface rather than *workermgr.Manager -- so it
+	// holds a 2-method narrow interface rather than *workermgr.Manager -- so it
 	// structurally cannot reach Register / WaitFor* either. DeliverOnConnect
-	// takes the worker the connect handler authenticated by its own token, and
-	// deliver is reached only from the other two.
+	// takes the worker the connect handler authenticated by its own token.
 	"internal/hub/notifier.(*Notifier).DeliverOnConnect": reachServerInitiated,
-	"internal/hub/notifier.(*Notifier).deliver":          reachServerInitiated,
 	// The deregistering FLAG is reached by worker id and no authorizer runs, so
 	// its writers are classified exactly like its readers. This one is entered
 	// from DeregisterWorker, which has already matched the row on
@@ -117,7 +115,6 @@ var registryMethodKinds = map[string]registryMethodKind{
 	"OnlineForTrustedPath":   registryUnguardedByID,
 	"IsDeregistering":        registryUnguardedByID,
 	"MarkDeregistering":      registryUnguardedByID,
-	"ClearDeregistering":     registryUnguardedByID,
 	"ConnForUser":            registryGuarded,
 	"Register":               registryConnScoped,
 	"Unregister":             registryConnScoped,

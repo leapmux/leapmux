@@ -3,6 +3,8 @@ package postgres
 import (
 	"context"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -90,59 +92,64 @@ func (s *workerStore) ListByUserID(ctx context.Context, p store.ListWorkersByUse
 }
 
 func (s *workerStore) ListAdmin(ctx context.Context, p store.ListWorkersAdminParams) (store.Page[store.WorkerWithOwner], error) {
-	// The admin worker listing is a 2x2 matrix over (user_id none/set) x (live
-	// or deleted), dispatched to four generated queries; the status filter
-	// picks the half and, for the live half, the states it includes (see
-	// store.WorkerAdminListScopeOf). The user_id dimension is a
-	// required-equality query rather than an opt-in OR-probe, which defeated
-	// SQLite's index seek and emitted an untyped interface{} param that broke
-	// Postgres (SQLSTATE 42P08). See workers.sql for the per-query index
-	// rationale.
-	scope, err := store.WorkerAdminListScopeOf(p.Status)
+	status, err := store.WorkerAdminListStatusOf(p.Status)
 	if err != nil {
 		return store.Page[store.WorkerWithOwner]{}, err
 	}
-	switch {
-	case scope.Deleted && p.UserID != nil:
+	switch status {
+	case leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED:
+		if p.UserID != nil {
+			return queryPage(ctx, p.Limit,
+				func() (gendb.ListWorkersAdminLiveByUserParams, error) {
+					return listWorkersAdminLiveByUserParams(*p.UserID, p.Cursor, p.Limit)
+				},
+				s.conn.q.ListWorkersAdminLiveByUser, fromDBListWorkersAdminLiveByUserRow)
+		}
 		return queryPage(ctx, p.Limit,
-			func() (gendb.ListWorkersAdminDeletedByUserParams, error) {
-				return listWorkersAdminDeletedByUserParams(*p.UserID, p.Cursor, p.Limit)
+			func() (gendb.ListWorkersAdminLiveParams, error) { return listWorkersAdminLiveParams(p.Cursor, p.Limit) },
+			s.conn.q.ListWorkersAdminLive, fromDBListWorkersAdminLiveRow)
+	case leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE:
+		if p.UserID != nil {
+			return queryPage(ctx, p.Limit,
+				func() (gendb.ListWorkersAdminActiveByUserParams, error) {
+					return listWorkersAdminActiveByUserParams(*p.UserID, p.Cursor, p.Limit)
+				},
+				s.conn.q.ListWorkersAdminActiveByUser, fromDBListWorkersAdminActiveByUserRow)
+		}
+		return queryPage(ctx, p.Limit,
+			func() (gendb.ListWorkersAdminActiveParams, error) {
+				return listWorkersAdminActiveParams(p.Cursor, p.Limit)
 			},
-			s.conn.q.ListWorkersAdminDeletedByUser,
-			fromDBListWorkersAdminDeletedByUserRow)
-	case scope.Deleted:
+			s.conn.q.ListWorkersAdminActive, fromDBListWorkersAdminActiveRow)
+	case leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING:
+		if p.UserID != nil {
+			return queryPage(ctx, p.Limit,
+				func() (gendb.ListWorkersAdminDeregisteringByUserParams, error) {
+					return listWorkersAdminDeregisteringByUserParams(*p.UserID, p.Cursor, p.Limit)
+				},
+				s.conn.q.ListWorkersAdminDeregisteringByUser, fromDBListWorkersAdminDeregisteringByUserRow)
+		}
+		return queryPage(ctx, p.Limit,
+			func() (gendb.ListWorkersAdminDeregisteringParams, error) {
+				return listWorkersAdminDeregisteringParams(p.Cursor, p.Limit)
+			},
+			s.conn.q.ListWorkersAdminDeregistering, fromDBListWorkersAdminDeregisteringRow)
+	case leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED:
+		if p.UserID != nil {
+			return queryPage(ctx, p.Limit,
+				func() (gendb.ListWorkersAdminDeletedByUserParams, error) {
+					return listWorkersAdminDeletedByUserParams(*p.UserID, p.Cursor, p.Limit)
+				},
+				s.conn.q.ListWorkersAdminDeletedByUser, fromDBListWorkersAdminDeletedByUserRow)
+		}
 		return queryPage(ctx, p.Limit,
 			func() (gendb.ListWorkersAdminDeletedParams, error) {
 				return listWorkersAdminDeletedParams(p.Cursor, p.Limit)
 			},
-			s.conn.q.ListWorkersAdminDeleted,
-			fromDBListWorkersAdminDeletedRow)
-	case p.UserID != nil:
-		return queryPage(ctx, p.Limit,
-			func() (gendb.ListWorkersAdminLiveByUserParams, error) {
-				return listWorkersAdminLiveByUserParams(scope, *p.UserID, p.Cursor, p.Limit)
-			},
-			s.conn.q.ListWorkersAdminLiveByUser,
-			fromDBListWorkersAdminLiveByUserRow)
+			s.conn.q.ListWorkersAdminDeleted, fromDBListWorkersAdminDeletedRow)
 	default:
-		return queryPage(ctx, p.Limit,
-			func() (gendb.ListWorkersAdminLiveParams, error) {
-				return listWorkersAdminLiveParams(scope, p.Cursor, p.Limit)
-			},
-			s.conn.q.ListWorkersAdminLive,
-			fromDBListWorkersAdminLiveRow)
+		return store.Page[store.WorkerWithOwner]{}, store.ErrInvalidArgument
 	}
-}
-
-func (s *workerStore) SetStatus(ctx context.Context, p store.SetWorkerStatusParams) error {
-	deregistering, err := p.DeregisteringFlag()
-	if err != nil {
-		return err
-	}
-	return mapErr(s.conn.q.SetWorkerStatus(ctx, gendb.SetWorkerStatusParams{
-		Deregistering: deregistering,
-		ID:            p.ID,
-	}))
 }
 
 func (s *workerStore) UpdateLastSeen(ctx context.Context, id string) error {
@@ -206,11 +213,27 @@ func fromDBWorker(w gendb.Worker) *store.Worker {
 	}
 }
 
-// workerWithOwner is the shared body of the four admin-worker Row mappers. The
+// workerWithOwner is the shared body of the eight admin-worker Row mappers. The
 // queries select sqlc.embed(w) so every admin Row is {Worker, OwnerUsername};
 // this helper keeps the gendb.Worker -> store.Worker mapping in one site.
 func workerWithOwner(w gendb.Worker, ownerUsername string, ownerDeleted bool) store.WorkerWithOwner {
 	return store.WorkerWithOwner{Worker: *fromDBWorker(w), OwnerUsername: ownerUsername, OwnerDeleted: ownerDeleted}
+}
+
+func fromDBListWorkersAdminActiveRow(r gendb.ListWorkersAdminActiveRow) store.WorkerWithOwner {
+	return workerWithOwner(r.Worker, r.OwnerUsername, r.OwnerDeleted)
+}
+
+func fromDBListWorkersAdminActiveByUserRow(r gendb.ListWorkersAdminActiveByUserRow) store.WorkerWithOwner {
+	return workerWithOwner(r.Worker, r.OwnerUsername, r.OwnerDeleted)
+}
+
+func fromDBListWorkersAdminDeregisteringRow(r gendb.ListWorkersAdminDeregisteringRow) store.WorkerWithOwner {
+	return workerWithOwner(r.Worker, r.OwnerUsername, r.OwnerDeleted)
+}
+
+func fromDBListWorkersAdminDeregisteringByUserRow(r gendb.ListWorkersAdminDeregisteringByUserRow) store.WorkerWithOwner {
+	return workerWithOwner(r.Worker, r.OwnerUsername, r.OwnerDeleted)
 }
 
 func fromDBListWorkersAdminLiveRow(r gendb.ListWorkersAdminLiveRow) store.WorkerWithOwner {

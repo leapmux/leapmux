@@ -45,6 +45,16 @@ func SetDeregisteringAt(ctx context.Context, exec func(context.Context, string, 
 	return SetEntityColumnValue(ctx, exec, style, store.EntityWorkers, "deregistering_at", workerID, deregisteringAt)
 }
 
+// ClearWorkerDeregisteringAt restores only a live test worker. The identifiers
+// are fixed, and the worker ID remains a parameter in both placeholder styles.
+func ClearWorkerDeregisteringAt(ctx context.Context, exec func(context.Context, string, ...any) error, style ParameterStyle, workerID string) error {
+	first, _, err := placeholders(style)
+	if err != nil {
+		return err
+	}
+	return exec(ctx, fmt.Sprintf("UPDATE workers SET deregistering_at = NULL WHERE id = %s AND deleted_at IS NULL", first), workerID)
+}
+
 // SetEntityColumnValue backdates one fixed column (deleted_at/created_at/
 // last_active_at/deregistering_at -- a literal, never caller input) on a validated entity
 // table. BOTH the entity and the column are checked against closed allowlists

@@ -30,7 +30,6 @@ import (
 type workerRegistry interface {
 	ConnForTrustedPath(string) *workermgr.Conn
 	MarkDeregistering(string)
-	ClearDeregistering(string)
 }
 
 // requestSender sends one request to a connected worker and waits for the
@@ -89,28 +88,24 @@ func New(st store.Store, wMgr workerRegistry, sender requestSender, apiTimeout f
 // durable change committed: deregistering_at for a deregistration, or
 // deleted_at for a worker deleted with its user.
 //
-// It marks the worker deregistering in the live registry, so its user can no
-// longer reach it, and then:
-//   - an offline worker that is already deleted needs nothing more, so its
-//     mark is cleared;
-//   - an offline deregistering worker keeps its mark, and is told at its next
-//     connect;
-//   - a connected worker is told now, and deleted on its acknowledgement (see
-//     deliver).
+// It contains the current connection and tells it to stop. The notifier records
+// deletion after a valid acknowledgement. Every connected attempt ends that
+// connection, so a failed attempt retries persisted intent on reconnect.
+// Containment remains until unregister. An offline worker needs no marker.
 //
 // A failed read of the worker is returned. The durable change already
 // committed, so the next connect or the cleanup sweep still recovers it.
 func (n *Notifier) SendDeregister(ctx context.Context, workerID string) error {
 	n.workerMgr.MarkDeregistering(workerID)
+	conn := n.workerMgr.ConnForTrustedPath(workerID)
 	worker, err := n.store.Workers().GetByIDIncludeDeleted(ctx, workerID)
 	if err != nil {
+		if conn != nil {
+			conn.Fence()
+		}
 		return err
 	}
-	conn := n.workerMgr.ConnForTrustedPath(workerID)
 	if conn == nil {
-		if worker.DeletedAt != nil {
-			n.workerMgr.ClearDeregistering(workerID)
-		}
 		return nil
 	}
 	n.deliver(ctx, worker, conn)
@@ -119,38 +114,38 @@ func (n *Notifier) SendDeregister(ctx context.Context, workerID string) error {
 
 // DeliverOnConnect tells a just-connected worker to stop when it is
 // DEREGISTERING, or when it was deleted with its user while it connected. The
-// caller reads the worker after it registers the connection. It also
+// caller reads the worker after it registers conn and passes that same conn.
+// Delivery never selects a replacement belonging to another handler. It also
 // re-establishes the in-memory deregistering mark, which a hub restart loses
 // while deregistering_at survives.
-func (n *Notifier) DeliverOnConnect(ctx context.Context, worker *store.Worker) {
-	n.workerMgr.MarkDeregistering(worker.ID)
-	conn := n.workerMgr.ConnForTrustedPath(worker.ID)
+func (n *Notifier) DeliverOnConnect(ctx context.Context, worker *store.Worker, conn *workermgr.Conn) {
 	if conn == nil {
-		// The connection ended before delivery started; the next connect or
-		// the cleanup sweep recovers it.
-		slog.Warn("deregistering worker disconnected before it was told to stop", "worker_id", worker.ID)
 		return
 	}
+	n.workerMgr.MarkDeregistering(worker.ID)
 	n.deliver(ctx, worker, conn)
 }
 
 // deliver is the one delivery routine: send the DEREGISTER instruction to a
 // connected worker, wait for its acknowledgement, and record the deletion.
 func (n *Notifier) deliver(ctx context.Context, worker *store.Worker, conn *workermgr.Conn) {
+	// Ending this exact membership makes failed delivery recover through the
+	// next connection's durable-state read. A late completion cannot end a
+	// replacement connection selected by another handler.
+	defer conn.Fence()
 	sendCtx, cancel := context.WithTimeout(ctx, n.apiTimeout())
 	resp, err := n.sender.SendAndWait(sendCtx, conn, deregisterMessage())
 	cancel()
 
 	if worker.DeletedAt != nil {
-		// The worker was deleted with its user: there is no deletion left to
-		// record, and nothing to wait for whatever the send's result was.
-		n.workerMgr.ClearDeregistering(worker.ID)
+		// The worker was deleted with its user, so no deletion remains to
+		// record. Its current connection stays contained until it unregisters.
 		return
 	}
 	// SendAndWait matches a response by request id alone, so a response with
 	// a different payload is not an acknowledgement.
 	if err != nil || resp.GetDeregisterAck() == nil {
-		slog.Warn("worker did not acknowledge DEREGISTER; it is told again at its next connect, and deleted by the cleanup sweep after the grace period",
+		slog.Warn("worker did not acknowledge DEREGISTER; the hub will end the connection and retry after reconnect",
 			"worker_id", worker.ID, "error", err)
 		return
 	}
@@ -165,7 +160,6 @@ func (n *Notifier) deliver(ctx context.Context, worker *store.Worker, conn *work
 			"worker_id", worker.ID, "error", err)
 		return
 	}
-	n.workerMgr.ClearDeregistering(worker.ID)
 	if n.workersChanged != nil {
 		n.workersChanged(worker.RegisteredBy)
 	}

@@ -42,11 +42,7 @@ func (s *userOpBatchesStore) ListAfter(ctx context.Context, p store.ListUserOpBa
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	out := make([]store.UserOpBatchRow, len(rows))
-	for i, r := range rows {
-		out[i] = toUserOpBatchRow(r)
-	}
-	return out, nil
+	return store.MapSlice(rows, toUserOpBatchRow), nil
 }
 
 func toUserOpBatchRow(r gendb.UserOpBatch) store.UserOpBatchRow {

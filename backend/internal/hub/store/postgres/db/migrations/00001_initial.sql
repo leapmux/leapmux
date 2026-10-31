@@ -161,6 +161,13 @@ CREATE INDEX idx_workers_deleted_created ON workers(created_at DESC, id DESC) WH
 CREATE INDEX idx_workers_deleted_at ON workers(deleted_at) WHERE deleted_at IS NOT NULL;
 CREATE INDEX idx_workers_deregistering ON workers(deregistering_at) WHERE deregistering_at IS NOT NULL AND deleted_at IS NULL;
 
+-- Exact live states need their own ordered populations. A residual state
+-- filter would scan every worker of the other live state before a rare match.
+CREATE INDEX idx_workers_active_created ON workers(created_at DESC, id DESC) WHERE deleted_at IS NULL AND deregistering_at IS NULL;
+CREATE INDEX idx_workers_registered_by_active_created ON workers(registered_by, created_at DESC, id DESC) WHERE deleted_at IS NULL AND deregistering_at IS NULL;
+CREATE INDEX idx_workers_deregistering_created ON workers(created_at DESC, id DESC) WHERE deleted_at IS NULL AND deregistering_at IS NOT NULL;
+CREATE INDEX idx_workers_registered_by_deregistering_created ON workers(registered_by, created_at DESC, id DESC) WHERE deleted_at IS NULL AND deregistering_at IS NOT NULL;
+
 -- Active worker registration keys.
 --
 -- Created by an authenticated user via the frontend. The worker presents
@@ -322,7 +329,9 @@ CREATE TABLE user_recent_batch_ids (
     expires_at            TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (user_id, batch_id)
 );
-CREATE INDEX idx_user_recent_batch_ids_expires ON user_recent_batch_ids(expires_at);
+-- Cleanup seeks this owner's epochs below the accepted window before checking
+-- expiry, so every tick skips the identities that must remain available.
+CREATE INDEX idx_user_recent_batch_ids_cleanup ON user_recent_batch_ids(user_id, epoch, expires_at);
 
 CREATE TABLE lifecycle_outbox (
     id          BIGSERIAL PRIMARY KEY,

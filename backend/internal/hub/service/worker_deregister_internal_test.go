@@ -24,6 +24,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
+	"github.com/leapmux/leapmux/internal/hub/workermgr/workermgrtest"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -118,16 +119,14 @@ func TestAdminDeregisterRunsNoEffectWhenTheStoreRefuses(t *testing.T) {
 }
 
 // flagRecordingRegistry wraps a real workermgr.Manager, which holds no live
-// connection, and records every MarkDeregistering and ClearDeregistering call.
-// The MarkDeregistering call is the PER-WORKER evidence that a worker was told
-// to stop: the broadcaster's debounce map is keyed by user and cannot tell one
-// worker from ten, and the flag itself is cleared again for a worker that is
-// already deleted.
+// connection, and records every MarkDeregistering call.
+// The MarkDeregistering call proves an effect was attempted for each worker:
+// the broadcaster's debounce map is keyed by user and cannot tell one
+// worker from ten. Offline workers retain no containment marker.
 type flagRecordingRegistry struct {
 	*workermgr.Manager
-	mu      sync.Mutex
-	marked  []string
-	cleared []string
+	mu     sync.Mutex
+	marked []string
 }
 
 func newFlagRecordingRegistry(st store.Store) *flagRecordingRegistry {
@@ -141,21 +140,9 @@ func (r *flagRecordingRegistry) MarkDeregistering(workerID string) {
 	r.Manager.MarkDeregistering(workerID)
 }
 
-func (r *flagRecordingRegistry) ClearDeregistering(workerID string) {
-	r.mu.Lock()
-	r.cleared = append(r.cleared, workerID)
-	r.mu.Unlock()
-	r.Manager.ClearDeregistering(workerID)
-}
-
 // toldToStop reports which of workerIDs the notifier marked deregistering.
 func (r *flagRecordingRegistry) toldToStop(workerIDs []string) []string {
 	return r.recorded(workerIDs, r.marked)
-}
-
-// clearedOf reports which of workerIDs had their flag cleared.
-func (r *flagRecordingRegistry) clearedOf(workerIDs []string) []string {
-	return r.recorded(workerIDs, r.cleared)
 }
 
 func (r *flagRecordingRegistry) recorded(workerIDs, calls []string) []string {
@@ -272,6 +259,209 @@ func TestDeleteUserTellsEveryWorkerToStop(t *testing.T) {
 	}
 }
 
+func TestDeleteUserIncludesAWorkerRegisteredBeforeTheOwnerLock(t *testing.T) {
+	st := newDeregisterTestStore(t)
+	ctx := context.Background()
+	owner := storetest.SeedUser(t, st, "delete-admission-owner")
+	first := storetest.SeedWorker(t, st, owner.ID)
+	addedID := id.Generate()
+	wrapped := &workerBeforeOwnerLockStore{Store: st, owner: owner.ID, workerID: addedID}
+	reg := newFlagRecordingRegistry(st)
+	svc := NewAdminUserService(AdminUserServiceDeps{
+		Store:         wrapped,
+		WorkerEffects: NewWorkerDeregisterEffects(nil, newTestNotifier(t, st, reg), nil),
+	})
+
+	_, err := svc.DeleteUser(deletingAdminCtx(t, ctx, st), &leapmuxv1.DeleteUserRequest{Id: owner.ID})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{first.ID, addedID}, reg.toldToStop([]string{first.ID, addedID}))
+	for _, workerID := range []string{first.ID, addedID} {
+		worker, err := st.Workers().GetByIDIncludeDeleted(ctx, workerID)
+		require.NoError(t, err)
+		assert.NotNil(t, worker.DeletedAt)
+	}
+}
+
+func TestDeleteUserIncludesAnAlreadyDeregisteringWorker(t *testing.T) {
+	st := newDeregisterTestStore(t)
+	ctx := context.Background()
+	owner := storetest.SeedUser(t, st, "delete-deregistering-owner")
+	active := storetest.SeedWorker(t, st, owner.ID)
+	deregistering := storetest.SeedWorker(t, st, owner.ID)
+	n, err := st.Workers().ForceDeregister(ctx, deregistering.ID)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, n)
+	reg := newFlagRecordingRegistry(st)
+	svc := NewAdminUserService(AdminUserServiceDeps{
+		Store:         st,
+		WorkerEffects: NewWorkerDeregisterEffects(nil, newTestNotifier(t, st, reg), nil),
+	})
+
+	_, err = svc.DeleteUser(deletingAdminCtx(t, ctx, st), &leapmuxv1.DeleteUserRequest{Id: owner.ID})
+	require.NoError(t, err)
+	workerIDs := []string{active.ID, deregistering.ID}
+	assert.ElementsMatch(t, workerIDs, reg.toldToStop(workerIDs))
+}
+
+func TestDeleteUserRetriesAStopInstructionThatFailedForAConnectedWorker(t *testing.T) {
+	st := newDeregisterTestStore(t)
+	ctx := context.Background()
+	owner := storetest.SeedUser(t, st, "connected-delete-owner")
+	active := storetest.SeedWorker(t, st, owner.ID)
+	deregistering := storetest.SeedWorker(t, st, owner.ID)
+	_, err := st.Workers().ForceDeregister(ctx, deregistering.ID)
+	require.NoError(t, err)
+	registry := workermgr.New(NewWorkerReachAuthorizer(st))
+	workerIDs := []string{active.ID, deregistering.ID}
+	for _, workerID := range workerIDs {
+		connection, _ := workermgrtest.NewRecordedConn(t, workerID)
+		_, err := registry.Register(connection)
+		require.NoError(t, err)
+		t.Cleanup(func() { registry.Unregister(workerID, connection) })
+	}
+	sender := &recordingDeregisterSender{}
+	failing := failingWorkerReadStore{Store: st, failWorkerID: deregistering.ID}
+	firstNotifier := notifier.New(failing, registry, sender, func() time.Duration { return time.Second }, nil)
+	require.Error(t, firstNotifier.SendDeregister(ctx, deregistering.ID))
+	require.Empty(t, sender.workerIDs(), "the failed read must happen before an instruction reaches the sender")
+	svc := NewAdminUserService(AdminUserServiceDeps{
+		Store: st,
+		WorkerEffects: NewWorkerDeregisterEffects(nil,
+			notifier.New(st, registry, sender, func() time.Duration { return time.Second }, nil), nil),
+	})
+	_, err = svc.DeleteUser(deletingAdminCtx(t, ctx, st), &leapmuxv1.DeleteUserRequest{Id: owner.ID})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, workerIDs, sender.workerIDs())
+	for _, workerID := range workerIDs {
+		assert.True(t, registry.IsDeregistering(workerID), "an acknowledged connection remains contained until it unregisters")
+	}
+}
+
+type recordingDeregisterSender struct {
+	mu   sync.Mutex
+	seen []string
+}
+
+func (s *recordingDeregisterSender) SendAndWait(_ context.Context, conn *workermgr.Conn, message *leapmuxv1.ConnectResponse) (*leapmuxv1.ConnectRequest, error) {
+	if message.GetDeregister() == nil {
+		return nil, errors.New("the worker must receive a deregistration instruction")
+	}
+	s.mu.Lock()
+	s.seen = append(s.seen, conn.WorkerID)
+	s.mu.Unlock()
+	select {
+	case <-conn.Done():
+		return nil, errors.New("the worker connection already ended")
+	default:
+	}
+	return &leapmuxv1.ConnectRequest{
+		Payload: &leapmuxv1.ConnectRequest_DeregisterAck{DeregisterAck: &leapmuxv1.DeregisterAck{}},
+	}, nil
+}
+
+func (s *recordingDeregisterSender) workerIDs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.seen...)
+}
+
+func TestDeleteUserReplacesTheWorkerSnapshotAfterTransactionRollback(t *testing.T) {
+	st := newDeregisterTestStore(t)
+	ctx := context.Background()
+	owner := storetest.SeedUser(t, st, "delete-retry-owner")
+	first := storetest.SeedWorker(t, st, owner.ID)
+	rolledBackID, committedID := id.Generate(), id.Generate()
+	reg := newFlagRecordingRegistry(st)
+	wrapped := &retryWorkerDeletionStore{
+		Store: st, owner: owner.ID, rolledBackID: rolledBackID, committedID: committedID,
+		beforeCommit: func() error {
+			reg.mu.Lock()
+			defer reg.mu.Unlock()
+			if len(reg.marked) != 0 {
+				return errors.New("worker effects ran before the deletion committed")
+			}
+			return nil
+		},
+	}
+	svc := NewAdminUserService(AdminUserServiceDeps{
+		Store:         wrapped,
+		WorkerEffects: NewWorkerDeregisterEffects(nil, newTestNotifier(t, st, reg), nil),
+	})
+
+	_, err := svc.DeleteUser(deletingAdminCtx(t, ctx, st), &leapmuxv1.DeleteUserRequest{Id: owner.ID})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{first.ID, committedID}, reg.toldToStop([]string{first.ID, committedID, rolledBackID}))
+	_, err = st.Workers().GetByIDIncludeDeleted(ctx, rolledBackID)
+	assert.ErrorIs(t, err, store.ErrNotFound)
+}
+
+type retryWorkerDeletionStore struct {
+	store.Store
+	owner        string
+	rolledBackID string
+	committedID  string
+	beforeCommit func() error
+	replayed     bool
+}
+
+func (s *retryWorkerDeletionStore) RunInUserAuthTransaction(ctx context.Context, owner userid.UserID, fn func(store.Store) error) error {
+	if !owner.Matches(s.owner) || s.replayed {
+		return s.Store.RunInUserAuthTransaction(ctx, owner, fn)
+	}
+	s.replayed = true
+	rollback := errors.New("roll back the first deletion attempt")
+	err := s.Store.RunInUserAuthTransaction(ctx, owner, func(tx store.Store) error {
+		if err := tx.Workers().Create(ctx, store.CreateWorkerParams{
+			ID: s.rolledBackID, AuthToken: id.Generate(), RegisteredBy: owner,
+			PublicKey: []byte{}, MlkemPublicKey: []byte{}, SlhdsaPublicKey: []byte{},
+		}); err != nil {
+			return err
+		}
+		if err := fn(tx); err != nil {
+			return err
+		}
+		if err := s.beforeCommit(); err != nil {
+			return err
+		}
+		return rollback
+	})
+	if !errors.Is(err, rollback) {
+		return err
+	}
+	if err := s.Store.Workers().Create(ctx, store.CreateWorkerParams{
+		ID: s.committedID, AuthToken: id.Generate(), RegisteredBy: owner,
+		PublicKey: []byte{}, MlkemPublicKey: []byte{}, SlhdsaPublicKey: []byte{},
+	}); err != nil {
+		return err
+	}
+	return s.Store.RunInUserAuthTransaction(ctx, owner, func(tx store.Store) error {
+		if err := fn(tx); err != nil {
+			return err
+		}
+		return s.beforeCommit()
+	})
+}
+
+type workerBeforeOwnerLockStore struct {
+	store.Store
+	owner    string
+	workerID string
+	inserted bool
+}
+
+func (s *workerBeforeOwnerLockStore) RunInUserAuthTransaction(ctx context.Context, owner userid.UserID, fn func(store.Store) error) error {
+	if owner.Matches(s.owner) && !s.inserted {
+		if err := s.Store.Workers().Create(ctx, store.CreateWorkerParams{
+			ID: s.workerID, AuthToken: id.Generate(), RegisteredBy: owner,
+			PublicKey: []byte{}, MlkemPublicKey: []byte{}, SlhdsaPublicKey: []byte{},
+		}); err != nil {
+			return err
+		}
+		s.inserted = true
+	}
+	return s.Store.RunInUserAuthTransaction(ctx, owner, fn)
+}
+
 // otherWorkerID returns the id in ids that is not self. The cross-worker
 // reach a deregistration strips is only visible against a DIFFERENT worker,
 // so each assertion needs its partner.
@@ -302,7 +492,7 @@ func TestDeleteUserContinuesWhenOneWorkerCannotBeTold(t *testing.T) {
 	// instant are ordered by their random ids -- so failing a worker chosen
 	// by name would leave the "continues after a failure" property untested
 	// whenever that worker happened to come last.
-	order, err := NewAdminUserService(AdminUserServiceDeps{Store: st}).liveWorkerIDs(ctx, userid.MustNew(owner.ID))
+	order, err := liveWorkerIDs(ctx, st, userid.MustNew(owner.ID))
 	require.NoError(t, err)
 	require.Len(t, order, 3)
 
@@ -319,8 +509,9 @@ func TestDeleteUserContinuesWhenOneWorkerCannotBeTold(t *testing.T) {
 	_, err = svc.DeleteUser(deletingAdminCtx(t, ctx, st), connectRequestForTest(&leapmuxv1.DeleteUserRequest{Id: owner.ID}))
 	require.NoError(t, err, "a failed effect must not fail an already-committed deletion")
 
-	assert.Equal(t, order[1:], reg.clearedOf(order),
-		"every worker after the failing one is still told to stop, and finished")
+	for _, workerID := range order {
+		assert.False(t, reg.IsDeregistering(workerID), "offline workers retain no containment marker")
+	}
 	assert.Equal(t, order, reg.toldToStop(order), "the cascade reaches every worker, the failing one included")
 
 	logged := logs.String()
@@ -369,7 +560,9 @@ func TestDeleteUserTellsEveryWorkerPastTheFirstPage(t *testing.T) {
 
 	assert.Len(t, reg.toldToStop(workerIDs), len(workerIDs),
 		"the cursor loop reaches every page, not just the first")
-	assert.Len(t, reg.clearedOf(workerIDs), len(workerIDs), "and every flag is cleared")
+	for _, workerID := range workerIDs {
+		assert.False(t, reg.IsDeregistering(workerID), "offline workers retain no containment marker")
+	}
 }
 
 // connectRequestForTest wraps a message in the request envelope the
@@ -541,12 +734,6 @@ func TestAdminDeregisterReportsAFailedEffect(t *testing.T) {
 	assert.Contains(t, err.Error(), "send deregister")
 }
 
-// connectedRegistry is a registry in which every worker is connected, for a
-// NEW notifier standing in for the hub after a restart.
-type connectedRegistry struct{ *flagRecordingRegistry }
-
-func (connectedRegistry) ConnForTrustedPath(string) *workermgr.Conn { return &workermgr.Conn{} }
-
 // ackingSender acknowledges every DEREGISTER the way a real worker does.
 type ackingSender struct{}
 
@@ -579,9 +766,13 @@ func assertDeregistrationRecovers(t *testing.T, newStore func(t *testing.T) stor
 
 			switch recovery {
 			case "next connect":
-				reg := connectedRegistry{newFlagRecordingRegistry(st)}
+				reg := newFlagRecordingRegistry(st)
+				connection, _ := workermgrtest.NewRecordedConn(t, worker.ID)
+				_, err := reg.Register(connection)
+				require.NoError(t, err)
+				t.Cleanup(func() { reg.Unregister(worker.ID, connection) })
 				restarted := notifier.New(st, reg, ackingSender{}, func() time.Duration { return time.Second }, nil)
-				restarted.DeliverOnConnect(ctx, row)
+				restarted.DeliverOnConnect(ctx, row, connection)
 			case "cleanup sweep":
 				n, err := st.Cleanup().CompleteStaleDeregistrations(ctx, row.DeregisteringAt.Add(time.Minute))
 				require.NoError(t, err)

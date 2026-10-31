@@ -260,10 +260,6 @@ type WorkerStore interface {
 	// reports "". Soft-deleted workers are included, as ListAdmin includes
 	// them for status=WORKER_STATUS_DELETED.
 	GetAdmin(ctx context.Context, id string) (*WorkerWithOwner, error)
-	// SetStatus moves a live worker between ACTIVE and DEREGISTERING. Only
-	// tests call it. DELETED is refused with ErrInvalidArgument: deletion
-	// goes through MarkDeleted.
-	SetStatus(ctx context.Context, p SetWorkerStatusParams) error
 	UpdateLastSeen(ctx context.Context, id string) error
 	UpdatePublicKey(ctx context.Context, p UpdateWorkerPublicKeyParams) error
 	// Deregister stamps deregistering_at on an ACTIVE worker the caller
@@ -445,7 +441,9 @@ type UserStateStore interface {
 type UserRecentBatchIDStore interface {
 	Get(ctx context.Context, userID userid.UserID, batchID string) (*UserRecentBatchIDRow, error)
 	Insert(ctx context.Context, p InsertUserRecentBatchIDParams) error
-	DeleteExpired(ctx context.Context, before time.Time) (int64, error)
+	// DeleteExpired keeps every row whose committed epoch is still accepted.
+	// Cleanup for one owner cannot remove another owner's retry identities.
+	DeleteExpired(ctx context.Context, userID userid.UserID, before time.Time, oldestAcceptedEpoch int64) (int64, error)
 }
 
 // LifecycleOutboxStore manages the workspace-lifecycle transactional outbox.
@@ -1118,6 +1116,10 @@ type TestHelper interface {
 	// SetDeregisteringAt backdates a worker's deregistering_at. Only workers
 	// carry the column, so the table is pinned as SetLastActiveAt's is.
 	SetDeregisteringAt(ctx context.Context, workerID string, deregisteringAt time.Time) error
+
+	// ClearWorkerDeregisteringAt restores a live worker to ACTIVE for test setup.
+	// Deleted and missing workers remain unchanged.
+	ClearWorkerDeregisteringAt(ctx context.Context, workerID string) error
 
 	// ListAllOwnedTabs returns every workspace_tab_owned row, unfiltered by
 	// owner, ordered by (user_id, tab_id).

@@ -30,8 +30,8 @@ func moveTabBatch(batchID, tabID, newTileID string) *leapmuxv1.OpBatch {
 func submitBatch(t *testing.T, mgr *crdt.Manager, epoch int64, batch *leapmuxv1.OpBatch) {
 	t.Helper()
 	res, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{batch},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{batch}),
 	})
 	require.NoError(t, err)
 	require.Len(t, res, 1)

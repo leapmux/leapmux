@@ -183,13 +183,15 @@ CREATE TABLE workers (
     deleted_at    DATETIME(3),
     FOREIGN KEY (registered_by) REFERENCES users(id)
 ) COLLATE=utf8mb4_bin;
--- MySQL has no partial indexes, so the live/deleted predicate of each listing
--- is a residual. (registered_by, created_at, id) serves the per-user listings
--- and, through its leftmost registered_by, the HardDeleteUsersBefore probe and
--- the registered_by foreign key; (created_at, id) serves the all-user
--- listings.
-CREATE INDEX idx_workers_registered_by_created ON workers(registered_by, created_at DESC, id DESC);
-CREATE INDEX idx_workers_created_at ON workers(created_at DESC, id DESC);
+-- The ordinary owner index serves foreign-key checks and the hard-delete probe.
+CREATE INDEX idx_workers_registered_by ON workers(registered_by);
+-- MySQL has no partial indexes. Functional equality prefixes select each state
+-- in creation order without adding visible columns. The all-live indexes omit
+-- the deregistration expression so both live states share creation order.
+CREATE INDEX idx_workers_state_created ON workers((deleted_at IS NOT NULL), (deleted_at IS NULL AND deregistering_at IS NOT NULL), created_at DESC, id DESC);
+CREATE INDEX idx_workers_registered_by_state_created ON workers(registered_by, (deleted_at IS NOT NULL), (deleted_at IS NULL AND deregistering_at IS NOT NULL), created_at DESC, id DESC);
+CREATE INDEX idx_workers_live_created ON workers((deleted_at IS NOT NULL), created_at DESC, id DESC);
+CREATE INDEX idx_workers_registered_by_live_created ON workers(registered_by, (deleted_at IS NOT NULL), created_at DESC, id DESC);
 CREATE INDEX idx_workers_deleted_at ON workers(deleted_at);
 -- The stale-deregistration sweep (CompleteStaleDeregistrations).
 CREATE INDEX idx_workers_deregistering_at ON workers(deregistering_at);
@@ -380,7 +382,9 @@ CREATE TABLE user_recent_batch_ids (
     PRIMARY KEY (user_id, batch_id),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) COLLATE=utf8mb4_bin;
-CREATE INDEX idx_user_recent_batch_ids_expires ON user_recent_batch_ids(expires_at);
+-- Cleanup seeks this owner's epochs below the accepted window before checking
+-- expiry, so every tick skips the identities that must remain available.
+CREATE INDEX idx_user_recent_batch_ids_cleanup ON user_recent_batch_ids(user_id, epoch, expires_at);
 
 CREATE TABLE lifecycle_outbox (
     id          BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -536,8 +540,7 @@ CREATE INDEX idx_api_tokens_created_at ON api_tokens(created_at DESC, id DESC);
 -- Keyset index for the admin ListAllAPITokensByUser listing (the --user-id
 -- path): the leading user_id equality seeks, and (created_at DESC, id DESC)
 -- rides the composite ORDER BY. Plain (no partial indexes in MySQL);
--- revoked_at IS NULL stays a residual filter. Mirrors
--- idx_workers_registered_by_created. Its leftmost user_id prefix also
+-- revoked_at IS NULL stays a residual filter. Its leftmost user_id prefix also
 -- enforces the user_id FK (no separate user_id index).
 CREATE INDEX idx_api_tokens_user_created ON api_tokens(user_id, created_at DESC, id DESC);
 

@@ -19,8 +19,9 @@ INSERT INTO user_recent_batch_ids (
 );
 
 -- name: DeleteExpiredRecentBatchIDs :execresult
--- Raw compare: expires_at is stored canonical (InsertRecentBatchID binds a
--- SQLiteTime), and the Go side binds a SQLiteTime cutoff (same canonical
--- layout), so the lexicographic < is byte-exact and sargable for
--- idx_user_recent_batch_ids_expires.
-DELETE FROM user_recent_batch_ids WHERE expires_at < sqlc.arg(before);
+-- A batch identity survives while its committed epoch is still accepted.
+-- Scope cleanup to one owner: another manager may have a different epoch.
+DELETE FROM user_recent_batch_ids
+WHERE user_id = sqlc.arg(user_id)
+  AND expires_at < sqlc.arg(before)
+  AND epoch < sqlc.arg(oldest_accepted_epoch);

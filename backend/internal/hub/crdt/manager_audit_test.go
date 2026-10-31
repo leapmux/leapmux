@@ -110,8 +110,8 @@ func TestManager_AuditOrphanTabTombstone(t *testing.T) {
 		},
 	}
 	results, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "alice", OriginClient: "cli-alice",
-		Batches: []*leapmuxv1.OpBatch{tombstoneBatch},
+		PrincipalID: "alice", OriginClient: "cli-alice",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{tombstoneBatch}),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, results[0].GetCommitted(), "tombstone must commit: %v", results[0])
@@ -164,8 +164,8 @@ func TestManager_AuditSkipsNormalTombstone(t *testing.T) {
 		},
 	}
 	results, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "alice", OriginClient: "cli-alice",
-		Batches: []*leapmuxv1.OpBatch{tombstone},
+		PrincipalID: "alice", OriginClient: "cli-alice",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{tombstone}),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, results[0].GetCommitted())
@@ -255,8 +255,8 @@ func TestManager_AuditInconclusiveOnWorkerLookupError(t *testing.T) {
 		},
 	}
 	results, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "alice", OriginClient: "cli-alice",
-		Batches: []*leapmuxv1.OpBatch{tombstone},
+		PrincipalID: "alice", OriginClient: "cli-alice",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{tombstone}),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, results[0].GetCommitted())
@@ -340,8 +340,8 @@ func TestManager_AuditLookupTimeoutDoesNotWedgeStop(t *testing.T) {
 		},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "alice", OriginClient: "cli",
-		Batches: []*leapmuxv1.OpBatch{tombstoneBatch},
+		PrincipalID: "alice", OriginClient: "cli",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{tombstoneBatch}),
 	})
 	require.NoError(t, err, "the tombstone must commit and spawn the audit goroutine")
 
@@ -410,15 +410,15 @@ func TestManager_AuditPanicDoesNotCrashTheHub(t *testing.T) {
 
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 	results, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "alice", OriginClient: "cli-alice",
-		Batches: []*leapmuxv1.OpBatch{{
+		PrincipalID: "alice", OriginClient: "cli-alice",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{{
 			BatchId: "ts-batch",
 			Ops: []*leapmuxv1.CrdtOp{
 				{OpId: "ts-a", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
 					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a",
 				}}},
 			},
-		}},
+		}}),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, results[0].GetCommitted(), "the tombstone must commit: %v", results[0])
@@ -440,15 +440,15 @@ func TestManager_AuditPanicDoesNotCrashTheHub(t *testing.T) {
 	// A second tombstone panics the audit again, so this also pins that repeated
 	// faults keep being absorbed rather than accumulating.
 	results, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "alice", OriginClient: "cli-alice",
-		Batches: []*leapmuxv1.OpBatch{{
+		PrincipalID: "alice", OriginClient: "cli-alice",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{{
 			BatchId: "ts-after-panic",
 			Ops: []*leapmuxv1.CrdtOp{
 				{OpId: "ts-b", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
 					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-b",
 				}}},
 			},
-		}},
+		}}),
 	})
 	require.NoError(t, err)
 	assert.NotNil(t, results[0].GetCommitted(), "submits must keep committing after a recovered audit panic")
@@ -516,15 +516,15 @@ func TestManager_NudgePanicDoesNotCrashTheHub(t *testing.T) {
 	// And the manager is still serving: the panic cost one nudge, not the hub.
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 	results, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "alice", OriginClient: "cli-alice",
-		Batches: []*leapmuxv1.OpBatch{{
+		PrincipalID: "alice", OriginClient: "cli-alice",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{{
 			BatchId: "ts-after-panic",
 			Ops: []*leapmuxv1.CrdtOp{
 				{OpId: "ts-b", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
 					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-b",
 				}}},
 			},
-		}},
+		}}),
 	})
 	require.NoError(t, err)
 	assert.NotNil(t, results[0].GetCommitted(), "submits must keep committing after a recovered nudge panic")
@@ -588,8 +588,8 @@ func TestManager_TombstoneNudgesTheHostingWorker(t *testing.T) {
 
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 	results, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "alice", OriginClient: "cli-alice",
-		Batches: []*leapmuxv1.OpBatch{{
+		PrincipalID: "alice", OriginClient: "cli-alice",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{{
 			BatchId: "ts-batch",
 			Ops: []*leapmuxv1.CrdtOp{
 				{OpId: "ts-a", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
@@ -599,7 +599,7 @@ func TestManager_TombstoneNudgesTheHostingWorker(t *testing.T) {
 					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-b",
 				}}},
 			},
-		}},
+		}}),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, results[0].GetCommitted(), "tombstone must commit: %v", results[0])

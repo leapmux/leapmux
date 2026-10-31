@@ -12,7 +12,7 @@ import (
 )
 
 // TestAgentTodosTaskIDIsUniquePerAgentWhenSet pins the two keys of
-// agent_todos. A row is keyed by (agent_id, seq), and a provider task id names
+// agent_todos. A row is keyed by (agent_id, seq), and a provider task id identifies
 // at most one row per agent; a snapshot row without an id carries an empty
 // task id, which may repeat.
 func TestAgentTodosTaskIDIsUniquePerAgentWhenSet(t *testing.T) {

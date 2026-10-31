@@ -21,13 +21,6 @@ WHERE registered_by = sqlc.arg(registered_by) AND deleted_at IS NULL AND deregis
 ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg(limit);
 
--- name: SetWorkerStatus :exec
--- Test-only setter for the two LIVE states. deregistering keeps an existing
--- deregistering_at rather than restarting the stale-deregistration clock.
-UPDATE workers
-SET deregistering_at = CASE WHEN CAST(sqlc.arg(deregistering) AS BOOLEAN) THEN COALESCE(deregistering_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) ELSE NULL END
-WHERE id = sqlc.arg(id) AND deleted_at IS NULL;
-
 -- name: DeregisterWorker :execresult
 UPDATE workers SET deregistering_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ? AND registered_by = ? AND deregistering_at IS NULL AND deleted_at IS NULL;
@@ -51,79 +44,152 @@ UPDATE workers SET public_key = ?, mlkem_public_key = ?, slhdsa_public_key = ? W
 -- name: GetWorkerPublicKey :one
 SELECT public_key, mlkem_public_key, slhdsa_public_key FROM workers WHERE id = ? AND deleted_at IS NULL;
 
--- The admin worker listing is a 2x2 matrix over (user_id none/set) x (live or
--- deleted), implemented as FOUR separate queries. Two reasons the user_id
--- dimension cannot collapse into an opt-in `(narg(user_id) IS NULL OR
--- registered_by = narg(user_id))` probe:
---   1. SQLite's OR-optimization falls back to a full partial-index scan +
---      TEMP B-TREE sort for the user_id-set cases (verified via EXPLAIN),
---      defeating both the seek and the ORDER-BY-rides-index invariant.
---   2. sqlc emits the IS-NULL-probed narg as an untyped interface{}; on Postgres
---      binding NULL raises SQLSTATE 42P08 "could not determine data type of
---      parameter" and breaks the listing entirely (YugabyteDB inherits the
---      break via the postgres store). Splitting user_id into its own
---      REQUIRED-equality query (sqlc.arg, not narg) yields a typed param and
---      restores the index seek.
--- The live/deleted dimension stays split for partial-index eligibility: the
--- live pair keeps `deleted_at IS NULL` and selects ACTIVE, DEREGISTERING or
--- both through the two include flags; the deleted pair keeps
--- `deleted_at IS NOT NULL`. The status a row reports is derived from
--- (deregistering_at, deleted_at); no column stores it. See the migration for
--- the per-query index rationale.
+-- Each state and owner filter has its own query. Literal predicates let
+-- the planner select an ordered index for exactly the requested population.
+-- The owner filter stays a required equality, avoiding an untyped NULL probe
+-- on PostgreSQL and a broad OR scan on SQLite.
+-- Select the indexed ID page before joining owner metadata, so any outer
+-- reordering processes only that page instead of the full matching population.
 
--- ListWorkersAdminLive: user_id=none, live workers in the included states.
 -- name: ListWorkersAdminLive :many
+WITH worker_page AS (
+    SELECT w.id
+    FROM workers w
+    WHERE w.deleted_at IS NULL
+      AND (sqlc.narg(cursor_time) IS NULL
+           OR w.created_at < sqlc.narg(cursor_time)
+           OR (w.created_at = sqlc.narg(cursor_time) AND w.id < sqlc.narg(cursor_id)))
+    ORDER BY w.created_at DESC, w.id DESC
+    LIMIT sqlc.arg(limit)
+)
 SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, CAST(u.id IS NULL AS BOOLEAN) AS owner_deleted
-FROM workers w
+FROM worker_page p
+JOIN workers w ON w.id = p.id
 LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
-WHERE w.deleted_at IS NULL
-  AND ((w.deregistering_at IS NULL AND CAST(sqlc.arg(include_active) AS BOOLEAN))
-       OR (w.deregistering_at IS NOT NULL AND CAST(sqlc.arg(include_deregistering) AS BOOLEAN)))
-  AND (sqlc.narg(cursor_time) IS NULL
-       OR w.created_at < sqlc.narg(cursor_time)
-       OR (w.created_at = sqlc.narg(cursor_time) AND w.id < sqlc.narg(cursor_id)))
-ORDER BY w.created_at DESC, w.id DESC
-LIMIT sqlc.arg(limit);
+ORDER BY w.created_at DESC, w.id DESC;
 
--- ListWorkersAdminLiveByUser: user_id=set, live workers in the included states.
 -- name: ListWorkersAdminLiveByUser :many
+WITH worker_page AS (
+    SELECT w.id
+    FROM workers w
+    WHERE w.deleted_at IS NULL
+      AND w.registered_by = sqlc.arg(user_id)
+      AND (sqlc.narg(cursor_time) IS NULL
+           OR w.created_at < sqlc.narg(cursor_time)
+           OR (w.created_at = sqlc.narg(cursor_time) AND w.id < sqlc.narg(cursor_id)))
+    ORDER BY w.created_at DESC, w.id DESC
+    LIMIT sqlc.arg(limit)
+)
 SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, CAST(u.id IS NULL AS BOOLEAN) AS owner_deleted
-FROM workers w
+FROM worker_page p
+JOIN workers w ON w.id = p.id
 LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
-WHERE w.deleted_at IS NULL
-  AND ((w.deregistering_at IS NULL AND CAST(sqlc.arg(include_active) AS BOOLEAN))
-       OR (w.deregistering_at IS NOT NULL AND CAST(sqlc.arg(include_deregistering) AS BOOLEAN)))
-  AND w.registered_by = sqlc.arg(user_id)
-  AND (sqlc.narg(cursor_time) IS NULL
-       OR w.created_at < sqlc.narg(cursor_time)
-       OR (w.created_at = sqlc.narg(cursor_time) AND w.id < sqlc.narg(cursor_id)))
-ORDER BY w.created_at DESC, w.id DESC
-LIMIT sqlc.arg(limit);
+ORDER BY w.created_at DESC, w.id DESC;
 
--- ListWorkersAdminDeleted: user_id=none, soft-deleted workers.
+-- name: ListWorkersAdminActive :many
+WITH worker_page AS (
+    SELECT w.id
+    FROM workers w
+    WHERE w.deleted_at IS NULL AND w.deregistering_at IS NULL
+      AND (sqlc.narg(cursor_time) IS NULL
+           OR w.created_at < sqlc.narg(cursor_time)
+           OR (w.created_at = sqlc.narg(cursor_time) AND w.id < sqlc.narg(cursor_id)))
+    ORDER BY w.created_at DESC, w.id DESC
+    LIMIT sqlc.arg(limit)
+)
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, CAST(u.id IS NULL AS BOOLEAN) AS owner_deleted
+FROM worker_page p
+JOIN workers w ON w.id = p.id
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
+ORDER BY w.created_at DESC, w.id DESC;
+
+-- name: ListWorkersAdminActiveByUser :many
+WITH worker_page AS (
+    SELECT w.id
+    FROM workers w
+    WHERE w.deleted_at IS NULL AND w.deregistering_at IS NULL
+      AND w.registered_by = sqlc.arg(user_id)
+      AND (sqlc.narg(cursor_time) IS NULL
+           OR w.created_at < sqlc.narg(cursor_time)
+           OR (w.created_at = sqlc.narg(cursor_time) AND w.id < sqlc.narg(cursor_id)))
+    ORDER BY w.created_at DESC, w.id DESC
+    LIMIT sqlc.arg(limit)
+)
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, CAST(u.id IS NULL AS BOOLEAN) AS owner_deleted
+FROM worker_page p
+JOIN workers w ON w.id = p.id
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
+ORDER BY w.created_at DESC, w.id DESC;
+
+-- name: ListWorkersAdminDeregistering :many
+WITH worker_page AS (
+    SELECT w.id
+    FROM workers w
+    WHERE w.deleted_at IS NULL AND w.deregistering_at IS NOT NULL
+      AND (sqlc.narg(cursor_time) IS NULL
+           OR w.created_at < sqlc.narg(cursor_time)
+           OR (w.created_at = sqlc.narg(cursor_time) AND w.id < sqlc.narg(cursor_id)))
+    ORDER BY w.created_at DESC, w.id DESC
+    LIMIT sqlc.arg(limit)
+)
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, CAST(u.id IS NULL AS BOOLEAN) AS owner_deleted
+FROM worker_page p
+JOIN workers w ON w.id = p.id
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
+ORDER BY w.created_at DESC, w.id DESC;
+
+-- name: ListWorkersAdminDeregisteringByUser :many
+WITH worker_page AS (
+    SELECT w.id
+    FROM workers w
+    WHERE w.deleted_at IS NULL AND w.deregistering_at IS NOT NULL
+      AND w.registered_by = sqlc.arg(user_id)
+      AND (sqlc.narg(cursor_time) IS NULL
+           OR w.created_at < sqlc.narg(cursor_time)
+           OR (w.created_at = sqlc.narg(cursor_time) AND w.id < sqlc.narg(cursor_id)))
+    ORDER BY w.created_at DESC, w.id DESC
+    LIMIT sqlc.arg(limit)
+)
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, CAST(u.id IS NULL AS BOOLEAN) AS owner_deleted
+FROM worker_page p
+JOIN workers w ON w.id = p.id
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
+ORDER BY w.created_at DESC, w.id DESC;
+
 -- name: ListWorkersAdminDeleted :many
+WITH worker_page AS (
+    SELECT w.id
+    FROM workers w
+    WHERE w.deleted_at IS NOT NULL
+      AND (sqlc.narg(cursor_time) IS NULL
+           OR w.created_at < sqlc.narg(cursor_time)
+           OR (w.created_at = sqlc.narg(cursor_time) AND w.id < sqlc.narg(cursor_id)))
+    ORDER BY w.created_at DESC, w.id DESC
+    LIMIT sqlc.arg(limit)
+)
 SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, CAST(u.id IS NULL AS BOOLEAN) AS owner_deleted
-FROM workers w
+FROM worker_page p
+JOIN workers w ON w.id = p.id
 LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
-WHERE w.deleted_at IS NOT NULL
-  AND (sqlc.narg(cursor_time) IS NULL
-       OR w.created_at < sqlc.narg(cursor_time)
-       OR (w.created_at = sqlc.narg(cursor_time) AND w.id < sqlc.narg(cursor_id)))
-ORDER BY w.created_at DESC, w.id DESC
-LIMIT sqlc.arg(limit);
+ORDER BY w.created_at DESC, w.id DESC;
 
--- ListWorkersAdminDeletedByUser: user_id=set, soft-deleted workers.
 -- name: ListWorkersAdminDeletedByUser :many
+WITH worker_page AS (
+    SELECT w.id
+    FROM workers w
+    WHERE w.deleted_at IS NOT NULL
+      AND w.registered_by = sqlc.arg(user_id)
+      AND (sqlc.narg(cursor_time) IS NULL
+           OR w.created_at < sqlc.narg(cursor_time)
+           OR (w.created_at = sqlc.narg(cursor_time) AND w.id < sqlc.narg(cursor_id)))
+    ORDER BY w.created_at DESC, w.id DESC
+    LIMIT sqlc.arg(limit)
+)
 SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, CAST(u.id IS NULL AS BOOLEAN) AS owner_deleted
-FROM workers w
+FROM worker_page p
+JOIN workers w ON w.id = p.id
 LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
-WHERE w.deleted_at IS NOT NULL
-  AND w.registered_by = sqlc.arg(user_id)
-  AND (sqlc.narg(cursor_time) IS NULL
-       OR w.created_at < sqlc.narg(cursor_time)
-       OR (w.created_at = sqlc.narg(cursor_time) AND w.id < sqlc.narg(cursor_id)))
-ORDER BY w.created_at DESC, w.id DESC
-LIMIT sqlc.arg(limit);
+ORDER BY w.created_at DESC, w.id DESC;
 
 -- name: HardDeleteWorkersBefore :execresult
 -- Raw compare: deleted_at (canonical on every write) against the SQLiteTime

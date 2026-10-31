@@ -59,6 +59,14 @@ func (s *userRecentBatchIDStore) Insert(ctx context.Context, p store.InsertUserR
 	}))
 }
 
-func (s *userRecentBatchIDStore) DeleteExpired(ctx context.Context, before time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredRecentBatchIDs(ctx, sqltime.NewMySQLTime(before)))
+func (s *userRecentBatchIDStore) DeleteExpired(ctx context.Context, userID userid.UserID, before time.Time, oldestAcceptedEpoch int64) (int64, error) {
+	owner, ok := userid.OwnerFilter(userID)
+	if !ok {
+		return 0, nil
+	}
+	return rowsAffected(s.conn.q.DeleteExpiredRecentBatchIDs(ctx, gendb.DeleteExpiredRecentBatchIDsParams{
+		UserID:              owner,
+		Before:              sqltime.NewMySQLTime(before),
+		OldestAcceptedEpoch: oldestAcceptedEpoch,
+	}))
 }

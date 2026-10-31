@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"connectrpc.com/connect/v2"
@@ -89,6 +90,13 @@ func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config, seed regKeySeed) *r
 func newRegKeyEnv(t *testing.T, cfg *config.Config, seed regKeySeed, connectorStore func(store.Store) store.Store) *regKeyEnv {
 	t.Helper()
 	st := hubtestutil.OpenTestStore(t)
+	return regKeyEnvFromStore(t, st, cfg, seed, connectorStore)
+}
+
+// regKeyEnvFromStore exercises registration through the same services on a
+// caller-supplied backend, including databases with concurrent writers.
+func regKeyEnvFromStore(t *testing.T, st store.Store, cfg *config.Config, seed regKeySeed, connectorStore func(store.Store) store.Store) *regKeyEnv {
+	t.Helper()
 	hubtestutil.CreateTestAdmin(t, st)
 	set := servicetest.NewSettingsManager(t, st, nil)
 	if seed != nil {
@@ -876,6 +884,92 @@ func TestConnect_TellsADeregisteringWorkerToStopAndDeletesItOnAck(t *testing.T) 
 		return !env.wMgr.OnlineForTrustedPath(workerID)
 	})
 	require.NoError(t, stream.CloseSend())
+}
+
+func TestFailedStopDeliveryEndsTheActiveStreamAndRecoversDurableState(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	for _, deleted := range []bool{false, true} {
+		t.Run(map[bool]string{false: "deregistering on reconnect", true: "deleted on reconnect"}[deleted], func(t *testing.T) {
+			env := setupRegKeyEnv(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			key := id.Generate()
+			require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+				ID: key, CreatedBy: userid.MustNew(env.adminID(t)), ExpiresAt: time.Now().Add(time.Hour),
+			}))
+			registered, err := env.registerWithKey(t, key)
+			require.NoError(t, err)
+			client := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
+				env.serveOverUnixSocket(t, "hub-delivery-recovery"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+			open := func() leapmuxv1connect.WorkerConnectorServiceConnectClientStream {
+				streamCtx, info := connect.NewClientContext(ctx)
+				info.RequestHeader().Set("Authorization", "Bearer "+registered.GetAuthToken())
+				stream, err := client.Connect(streamCtx)
+				require.NoError(t, err)
+				err = stream.Send(&leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_Heartbeat{
+					Heartbeat: &leapmuxv1.Heartbeat{EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM},
+				}})
+				if !errors.Is(err, io.EOF) {
+					require.NoError(t, err)
+				}
+				return stream
+			}
+			first := open()
+			for {
+				frame, err := first.Receive()
+				require.NoError(t, err)
+				if frame.GetHeartbeat() != nil {
+					break
+				}
+			}
+			if deleted {
+				require.NoError(t, env.store.Workers().MarkDeleted(ctx, registered.GetWorkerId()))
+			} else {
+				_, err := env.store.Workers().ForceDeregister(ctx, registered.GetWorkerId())
+				require.NoError(t, err)
+			}
+			failed := notifier.New(env.store, env.wMgr, failedStopSender{}, func() time.Duration { return time.Second }, nil)
+			require.NoError(t, failed.SendDeregister(ctx, registered.GetWorkerId()))
+			for {
+				_, err := first.Receive()
+				if err != nil {
+					break
+				}
+			}
+			require.NoError(t, ctx.Err(), "the stream must end because delivery forced reconnect, not because the test expired")
+			testutil.AssertEventually(t, func() bool { return !env.wMgr.OnlineForTrustedPath(registered.GetWorkerId()) })
+			next := open()
+			if deleted {
+				_, err := next.Receive()
+				require.Error(t, err)
+				assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+				return
+			}
+			for {
+				frame, err := next.Receive()
+				require.NoError(t, err)
+				if frame.GetDeregister() != nil {
+					require.NoError(t, next.Send(&leapmuxv1.ConnectRequest{
+						RequestId: frame.GetRequestId(), Payload: &leapmuxv1.ConnectRequest_DeregisterAck{DeregisterAck: &leapmuxv1.DeregisterAck{}},
+					}))
+					break
+				}
+			}
+			testutil.AssertEventually(t, func() bool {
+				worker, err := env.store.Workers().GetByIDIncludeDeleted(ctx, registered.GetWorkerId())
+				return err == nil && worker.DeletedAt != nil
+			})
+		})
+	}
+}
+
+type failedStopSender struct{}
+
+func (failedStopSender) SendAndWait(context.Context, *workermgr.Conn, *leapmuxv1.ConnectResponse) (*leapmuxv1.ConnectRequest, error) {
+	return nil, errors.New("the stop instruction was not delivered")
 }
 
 // authReadHookStore runs afterAuthRead once, right after the connector's

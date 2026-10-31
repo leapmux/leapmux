@@ -129,8 +129,6 @@ var unscopedOwnerKeyedQueries = map[string]string{
 	// anyway.
 	"DeleteOAuthTokensByProvider":    "deleting a provider must revoke every owner's tokens for it; the users(id) FK cascades the other axis identically",
 	"DeleteOAuthUserLinksByProvider": "deleting a provider must drop every owner's link to it; see DeleteOAuthTokensByProvider",
-	// Retention GC over the CRDT dedup window.
-	"DeleteExpiredRecentBatchIDs": "a retention sweep over expired dedup entries; the cutoff is the predicate and every owner's expired rows must go",
 	// (DeleteUserOpBatchesBeforePhysical, the CRDT op-batch retention sweep, used
 	// to sit here. It now NAMES user_id -- correlating each batch to its own
 	// owner's compaction watermark so it cannot delete a tail that user's

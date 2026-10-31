@@ -84,6 +84,30 @@ func TestDiffProjection_NoChange_NoOps(t *testing.T) {
 	assert.Empty(t, diff.Deletes)
 }
 
+func TestDiffProjectionSeparatesMixedTransitionsAndKeepsDeletionOwnership(t *testing.T) {
+	unchanged := projectionWithTab("ws1", "unchanged", "tile-a", "a").OwnedTabs[0]
+	flipped := projectionWithTab("ws1", "flipped", "tile-b", "b").OwnedTabs[0]
+	removed := projectionWithTab("ws1", "removed", "tile-c", "c").OwnedTabs[0]
+	added := projectionWithTab("ws2", "added", "tile-d", "d").OwnedTabs[0]
+	previous := &crdt.Projection{
+		UserID: "user-1", OwnedTabs: []*crdt.OwnedTab{unchanged, flipped, removed},
+		RenderedTabs: []*crdt.RenderedTab{unchanged, flipped, removed},
+	}
+	next := &crdt.Projection{
+		UserID: "user-1", OwnedTabs: []*crdt.OwnedTab{unchanged, flipped, added},
+		RenderedTabs: []*crdt.RenderedTab{unchanged, added},
+	}
+	diff := crdt.DiffProjection(previous, next)
+	assert.ElementsMatch(t, []crdt.TabIndexRow{
+		{WorkspaceID: "ws1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "flipped", WorkerID: "w1", TileID: "tile-b", Position: "b", Rendered: false},
+		{WorkspaceID: "ws2", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "added", WorkerID: "w1", TileID: "tile-d", Position: "d", Rendered: true},
+	}, diff.Upserts)
+	assert.Equal(t, []crdt.TabKey{{UserID: "user-1", TabID: "removed"}}, diff.Deletes)
+	empty := crdt.DiffProjection(&crdt.Projection{}, &crdt.Projection{})
+	assert.Empty(t, empty.Upserts)
+	assert.Empty(t, empty.Deletes)
+}
+
 // A tab that stops (or starts) rendering keeps its owned row, so the only
 // write is the flag: one upsert, never a delete.
 func TestDiffProjection_RenderedFlipYieldsOneUpsert(t *testing.T) {

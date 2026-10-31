@@ -551,19 +551,12 @@ func (j *crdtJournal) CompactBatch(ctx context.Context, c crdt.CompactBatch) err
 	if err != nil {
 		return err
 	}
+	params, err := store.NewUpsertUserStateParams(c.State)
+	if err != nil {
+		return fmt.Errorf("prepare state: %w", err)
+	}
 	return j.store.RunInTransaction(ctx, func(tx store.Store) error {
-		payload, err := proto.Marshal(c.State)
-		if err != nil {
-			return fmt.Errorf("marshal state: %w", err)
-		}
-		if err := tx.UserState().Upsert(ctx, store.UpsertUserStateParams{
-			UserID:       owner,
-			StatePayload: payload,
-			// Taken from the same c.State just marshalled above, so the column
-			// and the blob can never disagree about how far this user has
-			// compacted. The retention sweep deletes only strictly below it.
-			CompactionPhysicalMs: c.State.GetCompactionWatermark().GetPhysical(),
-		}); err != nil {
+		if err := tx.UserState().Upsert(ctx, params); err != nil {
 			return fmt.Errorf("upsert user_state: %w", err)
 		}
 		// A nil DropThrough is a header-only pass (an epoch rotation, or the
@@ -581,8 +574,12 @@ func (j *crdtJournal) CompactBatch(ctx context.Context, c crdt.CompactBatch) err
 	})
 }
 
-func (j *crdtJournal) CleanupExpiredRecentBatchIDs(ctx context.Context, before time.Time) (int64, error) {
-	return j.store.UserRecentBatchIDs().DeleteExpired(ctx, before)
+func (j *crdtJournal) CleanupExpiredRecentBatchIDs(ctx context.Context, userID string, before time.Time, oldestAcceptedEpoch int64) (int64, error) {
+	owner, err := mintTenant(userID)
+	if err != nil {
+		return 0, err
+	}
+	return j.store.UserRecentBatchIDs().DeleteExpired(ctx, owner, before, oldestAcceptedEpoch)
 }
 
 // txTabIndexWriter is a thin adapter from crdt.TabIndexWriter to the

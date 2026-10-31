@@ -264,7 +264,7 @@ func (m *Manager) applyLifecycleCreate(ctx context.Context, row LifecycleOutboxR
 		Ops:     seedOps,
 	}
 	results, err := m.SubmitInternal(ctx, SubmitInput{
-		Epoch:        m.currentEpoch(),
+
 		Batches:      []*leapmuxv1.OpBatch{batch},
 		PrincipalID:  HubReservedPrincipal,
 		OriginClient: m.hubClientID,
@@ -405,7 +405,7 @@ func (m *Manager) applyLifecycleDelete(ctx context.Context, row LifecycleOutboxR
 	})
 	batch := &leapmuxv1.OpBatch{BatchId: lifecycleDeleteBatchIDPrefix + p.WorkspaceID, Ops: combined}
 	results, err := m.SubmitInternal(ctx, SubmitInput{
-		Epoch:        m.currentEpoch(),
+
 		Batches:      []*leapmuxv1.OpBatch{batch},
 		PrincipalID:  HubReservedPrincipal,
 		OriginClient: m.hubClientID,

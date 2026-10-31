@@ -652,4 +652,7 @@ func TestCompactBatchWithoutDropThroughDeletesNoBatch(t *testing.T) {
 	row, err := j.store.UserState().Get(ctx, owner)
 	require.NoError(t, err)
 	assert.NotEmpty(t, row.StatePayload, "the state is still upserted")
+	decoded := &leapmuxv1.UserCrdtState{}
+	require.NoError(t, proto.Unmarshal(row.StatePayload, decoded))
+	assert.True(t, proto.Equal(state, decoded), "the persisted header and its retention projection come from the same state")
 }

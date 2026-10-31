@@ -201,8 +201,13 @@ func crdtSubmitBatch(
 	if bs == nil {
 		return nil, errors.New("crdt submit: bootstrap is nil")
 	}
+	if batch == nil {
+		return nil, errors.New("crdt submit: batch is nil")
+	}
+	if batch.GetEpoch() == 0 {
+		batch.Epoch = bs.Epoch
+	}
 	req := &leapmuxv1.SubmitOpsRequest{
-		Epoch:   bs.Epoch,
 		Batches: []*leapmuxv1.OpBatch{batch},
 	}
 	var resp leapmuxv1.SubmitOpsResponse
