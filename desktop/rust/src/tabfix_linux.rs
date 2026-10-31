@@ -16,6 +16,7 @@
 //! preventDefaulted, the same JS performs manual focus traversal among
 //! focusable elements so ordinary Tab navigation still works outside
 //! editors.
+use gtk::gdk;
 use gtk::glib;
 use gtk::prelude::{GtkWindowExt, ObjectExt, WidgetExt};
 use tauri::WebviewWindow;

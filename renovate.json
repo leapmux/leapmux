@@ -172,6 +172,22 @@
       "separateMajorMinor": false
     },
     {
+      "description": [
+        "The Tauri planner sets the gtk requirement to the one of the tauri crate: gtk-sys links the native gtk-3 library, which Cargo permits once in a graph"
+      ],
+      "matchManagers": [
+        "cargo"
+      ],
+      "matchPackageNames": [
+        "gtk"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "major"
+      ],
+      "enabled": false
+    },
+    {
       "matchManagers": [
         "github-actions"
       ],

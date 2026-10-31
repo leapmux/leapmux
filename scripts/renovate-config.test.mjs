@@ -64,7 +64,14 @@ describe('trusted Renovate configuration', () => {
       const config=await mergeRenovateConfig({...GlobalConfig.set(parsedGlobal),repository:'leapmux/leapmux',errors:[],warnings:[]});
       const dep=(depName,sourceUrl)=>({depName,packageName:depName,sourceUrl,depType:'dependencies',currentValue:'1.0.0',updates:[{updateType:'minor',newValue:'1.1.0',newVersion:'1.1.0'}]});
       const {branches}=await branchifyUpgrades({...config,repoIsOnboarded:true},{bun:[{packageFile:'frontend/package.json',deps:[dep('@tauri-apps/api','https://github.com/tauri-apps/tauri'),dep('@xterm/xterm','https://github.com/xtermjs/xterm.js')]}],cargo:[{packageFile:'desktop/rust/Cargo.toml',deps:[dep('tauri','https://github.com/tauri-apps/tauri')]}]});
-      console.log(JSON.stringify({dryRun:GlobalConfig.get('dryRun'),schedule:config.schedule,groups:branches.filter(branch=>!branch.isLockFileMaintenance).map(branch=>({group:branch.groupName,deps:branch.upgrades.map(upgrade=>upgrade.depName).sort()})).sort((a,b)=>a.group.localeCompare(b.group)),titles:branches.map(branch=>branch.prTitle)}));
+      // Branchify each gtk update alone: one branch keeps one update of a dependency, so a
+      // shared run would hide a minor update behind the patch.
+      const gtk={};
+      for (const update of [{updateType:'patch',newValue:'0.18',newVersion:'0.18.3'},{updateType:'minor',newValue:'0.19',newVersion:'0.19.0'},{updateType:'major',newValue:'1.0',newVersion:'1.0.0'}]) {
+        const result=await branchifyUpgrades({...config,repoIsOnboarded:true},{cargo:[{packageFile:'desktop/rust/Cargo.toml',deps:[{depName:'gtk',packageName:'gtk',sourceUrl:'https://github.com/gtk-rs/gtk3-rs',depType:'dependencies',currentValue:'0.18',currentVersion:'0.18.2',updates:[update]}]}]});
+        gtk[update.updateType]=result.branches.filter(branch=>!branch.isLockFileMaintenance).flatMap(branch=>branch.upgrades.map(upgrade=>branch.groupName+' '+upgrade.depName+' '+upgrade.newVersion));
+      }
+      console.log(JSON.stringify({dryRun:GlobalConfig.get('dryRun'),schedule:config.schedule,gtk,groups:branches.filter(branch=>!branch.isLockFileMaintenance).map(branch=>({group:branch.groupName,deps:branch.upgrades.map(upgrade=>upgrade.depName).sort()})).sort((a,b)=>a.group.localeCompare(b.group)),titles:branches.map(branch=>branch.prTitle)}));
     `
     const result = spawnSync('node', [
       '--input-type=module',
@@ -85,6 +92,12 @@ describe('trusted Renovate configuration', () => {
     expect(configuration).toEqual({
       dryRun: 'full',
       schedule: ['at any time'],
+      // The Tauri planner owns the gtk requirement, so only an update inside it remains.
+      gtk: {
+        patch: ['Rust gtk 0.18.3'],
+        minor: [],
+        major: [],
+      },
       groups: [
         {
           group: 'frontend',

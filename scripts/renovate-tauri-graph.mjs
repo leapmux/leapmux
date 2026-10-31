@@ -23,6 +23,18 @@ async function readDependencies(name, version, request) {
   })
 }
 
+/**
+ * Return the requirement that the tauri crate at `version` places on the crate `name`, or
+ * null when that release does not depend on it. A release that gives two requirements
+ * fails, because no single requirement can follow both.
+ */
+export async function tauriCrateRequirement(name, version, request) {
+  const requirements = new Set((await readDependencies('tauri', version, request)).filter(dependency => dependency.name === name).map(dependency => dependency.requirement))
+  if (requirements.size > 1)
+    throw new Error(`tauri ${version} gives more than one requirement for ${name}: ${[...requirements].join(', ')}`)
+  return requirements.values().next().value ?? null
+}
+
 function preparedPair(pair, targets, advisories) {
   const npm = targets[pair.npm]
   const cargo = targets[pair.cargo]

@@ -7,10 +7,12 @@
 
 use std::sync::Arc;
 
-// Through `gtk::glib`, never a direct `glib` dependency: a second entry in
-// Cargo.toml can resolve to a different minor version than the one gtk 0.18
-// re-exports, and the two `Propagation` types would then not be the same type.
-// `tabfix_linux.rs` reaches glib the same way.
+// Through `gtk::glib` and `gtk::gdk`, never a direct `glib` or `gdk`
+// dependency: a second entry in Cargo.toml can resolve to a different minor
+// version than the one gtk re-exports, and its types, such as glib's
+// `Propagation`, would then not be the types that gtk uses. `tabfix_linux.rs`
+// reaches glib and gdk the same way.
+use gtk::gdk;
 use gtk::glib;
 use gtk::prelude::{GtkWindowExt, WidgetExt};
 use tauri::WebviewWindow;

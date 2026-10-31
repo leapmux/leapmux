@@ -2159,7 +2159,6 @@ version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
  "dirs 7.0.0",
- "gdk",
  "gtk",
  "libc",
  "objc2",

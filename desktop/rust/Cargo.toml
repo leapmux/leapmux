@@ -41,12 +41,16 @@ tokio = { version = "1", features = ["test-util"] }
 libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# Tauri 2 already pulls these in transitively (it returns
+# Tauri 2 already pulls this in transitively (it returns
 # `gtk::ApplicationWindow` from `WebviewWindow::gtk_window()`).
-# We name them explicitly so `tabfix_linux.rs` can install a GTK-level
+# We name it explicitly so `tabfix_linux.rs` can install a GTK-level
 # Tab key-press handler, and `tray/minimize_linux.rs` a window-state handler.
+# Both reach gdk and glib through gtk's re-exports.
+# The requirement must equal the gtk requirement of the tauri crate: gtk-sys
+# links the native gtk-3 library, which Cargo permits once in a graph. The
+# Tauri planner (scripts/renovate-tauri.mjs) sets it, and Renovate never
+# raises it alone.
 gtk = "0.18"
-gdk = "0.18"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The override of `-[NSWindow miniaturize:]` on tao's window class; see

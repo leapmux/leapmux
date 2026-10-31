@@ -2,11 +2,23 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { splitIdentity, validateAuthorizedMap } from './renovate-exemptions.mjs'
 import { bunIdentity, parseBunLock, parseCargoLock, parseCargoManifest } from './renovate-lockfile-versions.mjs'
-import { planTauriTargets } from './renovate-tauri-graph.mjs'
+import { planTauriTargets, tauriCrateRequirement } from './renovate-tauri-graph.mjs'
 import { matchesCargoRequirement, tauriMajorMinor } from './renovate-tauri-releases.mjs'
 
 /** The lockfiles of the Tauri pairs: the JavaScript side and the Rust side. */
 const TAURI_LOCKFILES = Object.freeze(['frontend/bun.lock', 'desktop/rust/Cargo.lock'])
+
+/**
+ * The direct crates whose requirement must equal the requirement of the tauri crate.
+ * `WebviewWindow::gtk_window()` returns a type of Tauri's gtk, and gtk-sys links the
+ * native gtk-3 library, which Cargo permits once in a graph. So the graph resolves only
+ * when our gtk requirement admits the gtk version that Tauri requires. Renovate never
+ * raises these crates alone, and the plan sets them with the tauri crate.
+ */
+const TAURI_ALIGNED_CRATES = Object.freeze(['gtk'])
+
+/** The characters of a Cargo version requirement, which the manifest stores in a string. */
+const CARGO_REQUIREMENT = /^[\w.*^~<>=,+ -]+$/
 
 /**
  * Return the authorized roots of the Tauri packages of `pairs`, with their closures, as
@@ -34,16 +46,73 @@ function cargoCompanion(name) {
       : null
 }
 
+/** Return each declaration of the crate `name` in one dependency table. */
+function declarationsIn(table, name) {
+  return Object.entries(table ?? {}).filter(([key, declaration]) => key === name || declaration?.package === name).map(([key, declaration]) => ({
+    key,
+    requirement: typeof declaration === 'string'
+      ? declaration
+      : declaration?.version,
+  }))
+}
+
 function cargoDeclaration(manifest, name) {
-  const entry = Object.entries(manifest?.dependencies ?? {}).find(([key, declaration]) => key === name || declaration?.package === name)
-  if (!entry)
-    return null
-  return {
-    key: entry[0],
-    requirement: typeof entry[1] === 'string'
-      ? entry[1]
-      : entry[1]?.version,
-  }
+  return declarationsIn(manifest?.dependencies, name)[0] ?? null
+}
+
+/** Return each declaration of the crate `name` in `[dependencies]` and in each target table. */
+function cargoDeclarations(manifest, name) {
+  return [
+    manifest?.dependencies,
+    ...Object.values(manifest?.target ?? {}).map(target => target?.dependencies),
+  ].flatMap(table => declarationsIn(table, name))
+}
+
+/** Replace the version requirement of the one entry `key` in a Cargo.toml text. */
+function replaceCargoRequirement(text, key, requirement) {
+  const pattern = new RegExp(`^(\\s*${RegExp.escape(key)}\\s*=\\s*)(.+)$`, 'gm')
+  const matches = [
+    ...text.matchAll(pattern),
+  ]
+  if (matches.length !== 1)
+    throw new Error(`Expected one Cargo.toml entry for ${key}.`)
+  return text.replace(pattern, (_line, prefix, value) => {
+    const versionPattern = value.startsWith('"')
+      ? /^"[^"]+"/
+      : /\bversion\s*=\s*"[^"]+"/
+    if (!versionPattern.test(value))
+      throw new Error(`Cannot locate the version requirement of ${key}.`)
+    return prefix + value.replace(versionPattern, () => value.startsWith('"')
+      ? `"${requirement}"`
+      : `version = "${requirement}"`)
+  })
+}
+
+/** Remove the caret of a requirement with one caret comparator, which means the same without it. */
+function bareCargoRequirement(requirement) {
+  const trimmed = requirement.trim()
+  return /^\^\s*[^\s,]+$/.test(trimmed)
+    ? trimmed.replace(/^\^\s*/, '')
+    : trimmed
+}
+
+/**
+ * Set the requirement of the crate `name` in a Cargo.toml text to `requirement`, without
+ * a single caret. A declaration that already gives the same requirement stays as it is.
+ */
+export function alignCargoRequirement(text, name, requirement) {
+  if (typeof requirement !== 'string' || !CARGO_REQUIREMENT.test(requirement))
+    throw new Error(`Invalid Cargo requirement for ${name}: ${JSON.stringify(requirement)}`)
+  const declarations = cargoDeclarations(parseCargoManifest(text), name)
+  if (declarations.length !== 1)
+    throw new Error(`Expected one declaration of ${name} in Cargo.toml, but found ${declarations.length}.`)
+  const [declaration] = declarations
+  if (!declaration.requirement)
+    throw new Error(`Cannot locate the version requirement of ${name}.`)
+  const target = bareCargoRequirement(requirement)
+  return bareCargoRequirement(declaration.requirement) === target
+    ? text
+    : replaceCargoRequirement(text, declaration.key, target)
 }
 
 export function tauriVersions(bunText, cargoText, cargoManifestText) {
@@ -135,23 +204,26 @@ export function reconcileCargoRequirement(text, name, target, { exact = false } 
     throw new Error(`Missing direct Tauri requirement: ${name}`)
   if (!exact && matchesCargoRequirement(target, requirement))
     return text
-  const pattern = new RegExp(`^(\\s*${RegExp.escape(declaration.key)}\\s*=\\s*)(.+)$`, 'gm')
-  const matches = [
-    ...text.matchAll(pattern),
-  ]
-  if (matches.length !== 1)
-    throw new Error(`Expected one Tauri manifest entry for ${name}.`)
-  return text.replace(pattern, (_line, prefix, value) => {
-    const versionPattern = value.startsWith('"')
-      ? /^"[^"]+"/
-      : /\bversion\s*=\s*"[^"]+"/
-    if (!versionPattern.test(value))
-      throw new Error(`Cannot locate the Tauri requirement for ${name}.`)
-    const version = `${exact ? '=' : ''}${target}`
-    return prefix + value.replace(versionPattern, value.startsWith('"')
-      ? `"${version}"`
-      : `version = "${version}"`)
-  })
+  return replaceCargoRequirement(text, declaration.key, `${exact ? '=' : ''}${target}`)
+}
+
+/**
+ * Align each crate of TAURI_ALIGNED_CRATES that Cargo.toml declares with the requirement
+ * of the tauri crate at `version`.
+ */
+async function alignWithTauri(text, version, request) {
+  let aligned = text
+  for (const name of TAURI_ALIGNED_CRATES) {
+    if (cargoDeclarations(parseCargoManifest(aligned), name).length === 0)
+      continue
+    if (!version)
+      throw new Error(`Cargo.toml declares ${name}, which follows the tauri crate, but the Tauri plan has no tauri crate.`)
+    const requirement = await tauriCrateRequirement(name, version, request)
+    if (!requirement)
+      throw new Error(`tauri ${version} does not depend on ${name}, so Cargo.toml has no ${name} requirement to follow.`)
+    aligned = alignCargoRequirement(aligned, name, requirement)
+  }
+  return aligned
 }
 
 export async function reconcileTauri({ root, trusted, run, security = false, upgrades = [], request }) {
@@ -210,6 +282,10 @@ export async function reconcileTauri({ root, trusted, run, security = false, upg
     cargo = reconcileCargoRequirement(cargo, pair.cargo, target.cargo, { exact: true })
     cargoChanged ||= proposed.cargo[pair.cargo] !== target.cargo
   }
+  // Read the requirements before any write, so a failed read leaves the branch unchanged.
+  const pinned = cargo
+  cargo = await alignWithTauri(cargo, targets.find(({ pair }) => pair.cargo === 'tauri')?.target.cargo, request)
+  cargoChanged ||= cargo !== pinned
   if (bunChanged)
     writeFileSync(npmFile, `${JSON.stringify(manifest, null, 2)}\n`)
   if (cargo !== originalCargo)

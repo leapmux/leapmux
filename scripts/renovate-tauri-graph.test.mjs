@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { planTauriTargets } from './renovate-tauri-graph.mjs'
+import { planTauriTargets, tauriCrateRequirement } from './renovate-tauri-graph.mjs'
 import { crateIndexResponse, isCrateIndexRead } from './test-support.mjs'
 
 const now = Date.parse('2026-10-26T00:00:00Z')
@@ -756,5 +756,77 @@ describe('planTauriTargets with authorized security exemptions', () => {
       ]),
     ])
       await expect(planTauriTargets([plugin], { policy, authorizedRoots })).rejects.toThrow('authorized Tauri roots')
+  })
+})
+
+describe('tauriCrateRequirement', () => {
+  // Answer the crates.io dependency list of tauri@2.12.0, and record each URL.
+  const registry = (dependencies) => {
+    const urls = []
+    return {
+      urls,
+      request: async (url) => {
+        urls.push(url)
+        return Response.json({ dependencies })
+      },
+    }
+  }
+  const gtk = (req, extra = {}) => ({
+    crate_id: 'gtk',
+    req,
+    kind: 'normal',
+    optional: false,
+    target: 'cfg(target_os = "linux")',
+    ...extra,
+  })
+  it('returns the requirement of the planned tauri release on the crate', async () => {
+    const { urls, request } = registry([
+      {
+        crate_id: 'serde',
+        req: '^1',
+        kind: 'normal',
+        optional: false,
+      },
+      gtk('^0.19'),
+    ])
+    expect(await tauriCrateRequirement('gtk', '2.12.0', request)).toBe('^0.19')
+    expect(urls).toEqual(['https://crates.io/api/v1/crates/tauri/2.12.0/dependencies'])
+  })
+  it('returns one requirement that two target tables repeat', async () => {
+    const { request } = registry([
+      gtk('^0.19'),
+      gtk('^0.19', { target: 'cfg(target_os = "freebsd")' }),
+    ])
+    expect(await tauriCrateRequirement('gtk', '2.12.0', request)).toBe('^0.19')
+  })
+  it('returns null when the release has no required dependency on the crate', async () => {
+    for (const dependencies of [
+      [],
+      [
+        gtk('^0.19', { optional: true }),
+      ],
+      [
+        gtk('^0.19', { kind: 'dev' }),
+      ],
+      [
+        gtk('^0.19', { kind: 'build' }),
+      ],
+    ]) {
+      const { request } = registry(dependencies)
+      expect(await tauriCrateRequirement('gtk', '2.12.0', request), JSON.stringify(dependencies)).toBeNull()
+    }
+  })
+  it('fails when the release gives two different requirements on the crate', async () => {
+    const { request } = registry([
+      gtk('^0.18'),
+      gtk('^0.19', { target: 'cfg(target_os = "freebsd")' }),
+    ])
+    await expect(tauriCrateRequirement('gtk', '2.12.0', request)).rejects.toThrow('tauri 2.12.0 gives more than one requirement for gtk: ^0.18, ^0.19')
+  })
+  it('fails for a dependency entry without a requirement', async () => {
+    const { request } = registry([
+      { crate_id: 'gtk', kind: 'normal', optional: false },
+    ])
+    await expect(tauriCrateRequirement('gtk', '2.12.0', request)).rejects.toThrow('Invalid Tauri dependency requirement: tauri@2.12.0')
   })
 })

@@ -2,7 +2,8 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'bun:test'
 import { parseBunLock, parseCargoLock, parseCargoManifest } from './renovate-lockfile-versions.mjs'
-import { assertTauriCompatibility, readTauriVersions, reconcileCargoRequirement, reconcileTauri, tauriAuthorizedRoots, tauriPairs, tauriVersions } from './renovate-tauri.mjs'
+import { matchesCargoRequirement } from './renovate-tauri-releases.mjs'
+import { alignCargoRequirement, assertTauriCompatibility, readTauriVersions, reconcileCargoRequirement, reconcileTauri, tauriAuthorizedRoots, tauriPairs, tauriVersions } from './renovate-tauri.mjs'
 import { crateIndexResponse, isCrateIndexRead, scratchDirectories } from './test-support.mjs'
 
 const root = resolve(import.meta.dirname, '..')
@@ -57,7 +58,7 @@ describe('readTauriVersions', () => {
   })
 })
 
-function tauriFixture({ core = false, proposedCore = '2.11.0' } = {}) {
+function tauriFixture({ core = false, proposedCore = '2.11.0', gtk = null } = {}) {
   const fixture = scratch.create('tauri-companion')
   const trusted = resolve(fixture, 'trusted')
   const proposed = resolve(fixture, 'proposed')
@@ -84,7 +85,9 @@ function tauriFixture({ core = false, proposedCore = '2.11.0' } = {}) {
         '@tauri-apps/plugin-opener': '^2.5.0',
       },
     }))
-    writeFileSync(resolve(directory, 'desktop/rust/Cargo.toml'), `[dependencies]\n${core ? 'tauri = "2"\n' : ''}tauri-plugin-opener = "2"\n`)
+    writeFileSync(resolve(directory, 'desktop/rust/Cargo.toml'), `[dependencies]\n${core ? 'tauri = "2"\n' : ''}tauri-plugin-opener = "2"\n${gtk
+      ? `\n[target.'cfg(target_os = "linux")'.dependencies]\n# Follows Tauri.\ngtk = "${gtk}"\n`
+      : ''}`)
     writeFileSync(resolve(directory, 'desktop/rust/Cargo.lock'), `${core
       ? `[[package]]\nname = "tauri"\nversion = "${directory === trusted
         ? '2.11.0'
@@ -228,6 +231,104 @@ describe('reconcileTauri', () => {
     expect(manifest.dependencies['@tauri-apps/api']).toBe('2.12.0')
     expect(manifest.dependencies['@tauri-apps/plugin-opener']).toBe('2.7.0')
     expect(calls).toEqual(['cargo', 'bun'])
+  })
+
+  // The plan of the test above: a plugin update that requires tauri 2.12.0. `gtkOf` gives
+  // the gtk requirement of each tauri release, or undefined for a release without gtk.
+  function moveCore(gtkOf) {
+    const { proposed, trusted, lock } = tauriFixture({ core: true, gtk: '0.18' })
+    const publishedAt = new Date(Date.now() - 4 * 86400000).toISOString()
+    const request = async (url) => {
+      if (isCrateIndexRead(url)) {
+        return crateIndexResponse((url.includes('plugin-opener')
+          ? ['2.6.0', '2.7.0']
+          : ['2.11.0', '2.12.0']).map(vers => ({ vers, pubtime: publishedAt })))
+      }
+      if (!url.includes('/dependencies')) {
+        return Response.json({
+          time: Object.fromEntries((url.includes('plugin-opener')
+            ? ['2.7.0']
+            : ['2.11.0', '2.12.0']).map(version => [version, publishedAt])),
+        })
+      }
+      const core = /\/crates\/tauri\/([^/]+)\/dependencies$/.exec(url)?.[1]
+      const gtk = core && gtkOf(core)
+      return Response.json({
+        dependencies: url.includes('plugin-opener')
+          ? [
+              {
+                crate_id: 'tauri',
+                req: '2.12',
+                kind: 'normal',
+                optional: false,
+              },
+            ]
+          : gtk
+            ? [
+                {
+                  crate_id: 'gtk',
+                  req: gtk,
+                  kind: 'normal',
+                  optional: false,
+                  target: 'cfg(target_os = "linux")',
+                },
+              ]
+            : [],
+      })
+    }
+    const calls = []
+    const resolvedManifests = []
+    const result = reconcileTauri({
+      root: proposed,
+      trusted,
+      upgrades: [
+        { depName: 'tauri-plugin-opener', newVersion: '2.6.0' },
+      ],
+      request,
+      run: (command) => {
+        calls.push(command)
+        if (command === 'cargo') {
+          resolvedManifests.push(readFileSync(resolve(proposed, 'desktop/rust/Cargo.toml'), 'utf8'))
+          writeFileSync(resolve(proposed, 'desktop/rust/Cargo.lock'), '[[package]]\nname = "tauri"\nversion = "2.12.0"\n[[package]]\nname = "tauri-plugin-opener"\nversion = "2.7.0"\n')
+        }
+        else {
+          const manifest = JSON.parse(readFileSync(resolve(proposed, 'frontend/package.json'), 'utf8'))
+          writeFileSync(resolve(proposed, 'frontend/bun.lock'), lock(manifest.dependencies['@tauri-apps/plugin-opener'], manifest.dependencies['@tauri-apps/api']))
+        }
+      },
+    })
+    return {
+      proposed,
+      result,
+      calls,
+      resolvedManifests,
+    }
+  }
+  const linuxDependencies = text => parseCargoManifest(text).target['cfg(target_os = "linux")'].dependencies
+  it('sets the gtk requirement to the one of the planned tauri crate before cargo resolves', async () => {
+    const { proposed, result, calls, resolvedManifests } = moveCore(core => core === '2.12.0'
+      ? '^0.19'
+      : '^0.18')
+    await result
+    expect(calls).toEqual(['cargo', 'bun'])
+    expect(linuxDependencies(resolvedManifests[0])).toEqual({ gtk: '0.19' })
+    const cargo = readFileSync(resolve(proposed, 'desktop/rust/Cargo.toml'), 'utf8')
+    expect(cargo).toBe('[dependencies]\ntauri = "=2.12.0"\ntauri-plugin-opener = "=2.7.0"\n\n[target.\'cfg(target_os = "linux")\'.dependencies]\n# Follows Tauri.\ngtk = "0.19"\n')
+  })
+  it('keeps the gtk requirement when the planned tauri crate gives the same one', async () => {
+    const { proposed, result, resolvedManifests } = moveCore(() => '^0.18')
+    await result
+    expect(linuxDependencies(resolvedManifests[0])).toEqual({ gtk: '0.18' })
+    expect(readFileSync(resolve(proposed, 'desktop/rust/Cargo.toml'), 'utf8')).toEndWith('# Follows Tauri.\ngtk = "0.18"\n')
+  })
+  it('fails before any write when the planned tauri crate does not depend on gtk', async () => {
+    const { proposed, result, calls } = moveCore(core => core === '2.12.0'
+      ? undefined
+      : '^0.18')
+    await expect(result).rejects.toThrow('tauri 2.12.0 does not depend on gtk')
+    expect(readFileSync(resolve(proposed, 'desktop/rust/Cargo.toml'), 'utf8')).toBe('[dependencies]\ntauri = "2"\ntauri-plugin-opener = "2"\n\n[target.\'cfg(target_os = "linux")\'.dependencies]\n# Follows Tauri.\ngtk = "0.18"\n')
+    expect(JSON.parse(readFileSync(resolve(proposed, 'frontend/package.json'), 'utf8')).dependencies).toEqual({ '@tauri-apps/api': '^2.11.0', '@tauri-apps/plugin-opener': '^2.5.0' })
+    expect(calls).toEqual([])
   })
   it('rejects a prepared security target that remains inside another affected range before writing', async () => {
     const { proposed, trusted } = tauriFixture()
@@ -508,6 +609,63 @@ describe('reconcileCargoRequirement', () => {
     expect(reconcileCargoRequirement(source, 'tauri', '3.1.0')).toBe(source.replace('version = "2"', 'version = "3.1.0"'))
     expect(reconcileCargoRequirement('[dependencies]\ntauri = "2"\n', 'tauri', '3.1.0')).toBe('[dependencies]\ntauri = "3.1.0"\n')
     expect(() => reconcileCargoRequirement('', 'tauri', '3.1.0')).toThrow('Missing')
+  })
+})
+
+describe('alignCargoRequirement', () => {
+  const linux = body => `[dependencies]\ntauri = "=2.12.0"\n\n[target.'cfg(target_os = "linux")'.dependencies]\n${body}`
+  it('writes the requirement of a target table without a single caret, and keeps the rest of the line', () => {
+    expect(alignCargoRequirement(linux('gtk = "0.18" # retain\n'), 'gtk', '^0.19')).toBe(linux('gtk = "0.19" # retain\n'))
+    expect(alignCargoRequirement(linux('gtk = { version = "0.18", features = ["v3_24"] }\n'), 'gtk', '^ 0.19')).toBe(linux('gtk = { version = "0.19", features = ["v3_24"] }\n'))
+  })
+  it('writes a requirement with more than one comparator as it is', () => {
+    expect(alignCargoRequirement(linux('gtk = "0.18"\n'), 'gtk', '>=0.19, <0.21')).toBe(linux('gtk = ">=0.19, <0.21"\n'))
+  })
+  it('keeps a declaration that gives the same requirement with or without a caret', () => {
+    for (const [declared, requirement] of [
+      ['0.18', '^0.18'],
+      ['^0.18', '0.18'],
+      ['0.18', '0.18'],
+    ]) {
+      const text = linux(`gtk = "${declared}"\n`)
+      expect(alignCargoRequirement(text, 'gtk', requirement)).toBe(text)
+    }
+  })
+  it('aligns a declaration that renames the crate', () => {
+    expect(alignCargoRequirement(linux('gtk3 = { package = "gtk", version = "0.18" }\n'), 'gtk', '^0.19')).toBe(linux('gtk3 = { package = "gtk", version = "0.19" }\n'))
+  })
+  it('requires exactly one declaration with a version requirement', () => {
+    expect(() => alignCargoRequirement('[dependencies]\ntauri = "2"\n', 'gtk', '^0.19')).toThrow('Expected one declaration of gtk in Cargo.toml, but found 0.')
+    expect(() => alignCargoRequirement(`[dependencies]\ngtk = "0.18"\n\n[target.'cfg(unix)'.dependencies]\ngtk = "0.18"\n`, 'gtk', '^0.19')).toThrow('but found 2.')
+    expect(() => alignCargoRequirement(linux('gtk = { path = "../gtk" }\n'), 'gtk', '^0.19')).toThrow('Cannot locate the version requirement of gtk.')
+  })
+  it('finds the one gtk declaration of the real manifest, which declares no gdk or glib of its own', () => {
+    // gtk re-exports gdk and glib. A direct declaration of either could follow a version
+    // line that the planner does not align with Tauri's gtk.
+    const text = readFileSync(resolve(root, 'desktop/rust/Cargo.toml'), 'utf8')
+    const manifest = parseCargoManifest(text)
+    const declared = manifest.target['cfg(target_os = "linux")'].dependencies.gtk
+    expect(alignCargoRequirement(text, 'gtk', declared)).toBe(text)
+    const tables = [
+      manifest.dependencies,
+      ...Object.values(manifest.target ?? {}).map(target => target.dependencies),
+    ]
+    for (const name of ['gdk', 'glib'])
+      expect(tables.some(table => Object.entries(table ?? {}).some(([key, declaration]) => key === name || declaration?.package === name)), name).toBe(false)
+    const locked = parseCargoLock(readFileSync(resolve(root, 'desktop/rust/Cargo.lock'), 'utf8')).package.filter(pkg => pkg.name === 'gtk')
+    expect(locked).toHaveLength(1)
+    expect(matchesCargoRequirement(locked[0].version, declared)).toBe(true)
+  })
+  it('rejects a requirement that cannot stay inside a TOML string', () => {
+    for (const requirement of [
+      '0.19"\nevil = "1',
+      '0.19\\',
+      '',
+      null,
+      19,
+    ]) {
+      expect(() => alignCargoRequirement(linux('gtk = "0.18"\n'), 'gtk', requirement), String(requirement)).toThrow('Invalid Cargo requirement for gtk')
+    }
   })
 })
 
