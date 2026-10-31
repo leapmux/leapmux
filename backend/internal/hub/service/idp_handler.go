@@ -552,11 +552,11 @@ func (h *IdPHandler) handleCallback(w http.ResponseWriter, r *http.Request, prov
 	//
 	// This switch spells out both purposes, and REFUSES an unrecognised one.
 	// The login leg is the one that creates, so it must never be the branch a
-	// value reaches by not matching something else -- and the Go zero value
-	// "" is exactly such a value. oauth_states.purpose carries
-	// CHECK (purpose IN ('login','reauth')) in all three dialects, so a row
-	// cannot hold anything else; this branch keeps the two statements of the
-	// rule in agreement rather than trusting one of them alone.
+	// value reaches by not matching something else -- and the Go zero value,
+	// UNSPECIFIED, is exactly such a value. oauth_states.purpose carries
+	// CHECK (purpose BETWEEN 1 AND 2) in all three dialects, so a row cannot
+	// hold anything else; this branch keeps the two statements of the rule in
+	// agreement rather than trusting one of them alone.
 	switch oauthState.Purpose {
 	case store.OAuthStatePurposeReauth:
 		h.completeOAuthReauth(w, r, oauthState, link, err)

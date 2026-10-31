@@ -81,7 +81,7 @@ func (b *HubUnaryBridge) CallHub(ctx context.Context, userID userid.UserID, meth
 	if err := proto.Unmarshal(payload, in); err != nil {
 		return nil, fmt.Errorf("controlipc: decode %s request: %w", method, err)
 	}
-	bearer, err := b.Delegation.GetBearer(ctx, crossworker.DelegationScope{UserID: userID})
+	bearer, err := b.Delegation.GetBearer(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("delegation bearer: %w", err)
 	}

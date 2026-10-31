@@ -19,10 +19,6 @@ func fromDBDelegationToken(t gendb.DelegationToken) store.DelegationToken {
 		ID:               t.ID,
 		UserID:           t.UserID,
 		WorkerID:         t.WorkerID,
-		AgentID:          t.AgentID,
-		TerminalID:       t.TerminalID,
-		IssuedForTabID:   t.IssuedForTabID,
-		IssuedForTabType: t.IssuedForTabType,
 		GrantedScopes:    t.GrantedScopes,
 		SecretHash:       t.SecretHash,
 		RefreshHash:      t.RefreshHash,
@@ -41,11 +37,7 @@ func (s *delegationTokenStore) Create(ctx context.Context, p store.CreateDelegat
 			ID:               p.ID,
 			UserID:           p.UserID.String(),
 			WorkerID:         p.WorkerID,
-			AgentID:          p.AgentID,
-			TerminalID:       p.TerminalID,
-			IssuedForTabID:   p.IssuedForTabID,
 			GrantedScopes:    p.GrantedScopes,
-			IssuedForTabType: p.IssuedForTabType,
 			SecretHash:       p.SecretHash,
 			RefreshHash:      p.RefreshHash,
 			ExpiresAt:        pgtime.New(p.ExpiresAt),
@@ -144,7 +136,7 @@ func (s *delegationTokenStore) Touch(ctx context.Context, id string) error {
 func (s *delegationTokenStore) Revoke(ctx context.Context, id string) (int64, error) {
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *pgConn) (*store.CredentialEvent, error) {
 		row, err := conn.q.RevokeDelegationToken(ctx, id)
-		return revokedCredentialEvent(row.ID, row.UserID, row.RevokedAt, store.RevocationEventKindDelegationToken, err)
+		return revokedCredentialEvent(row.ID, row.UserID, store.RevocationEventKindDelegationToken, err)
 	}, emitCredentialEvent)
 }
 

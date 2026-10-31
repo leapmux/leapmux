@@ -108,7 +108,7 @@ func TestControlRequestReplayRetainsResponseState(t *testing.T) {
 				AgentID: "agent-1", RequestID: "request", ClaimToken: "claim", Payload: payload,
 			})
 			err := dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{
-				AgentID: "agent-1", RequestID: "request", ClaimToken: "claim", State: state.stored, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+				AgentID: "agent-1", RequestID: "request", ClaimToken: "claim", State: state.stored,
 			})
 			require.NoError(t, err)
 			replayed, err := buildAgentControlRequest(svc.Queries, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
@@ -229,7 +229,7 @@ func TestControlRequestReplayCarriesNonBlocking(t *testing.T) {
 	})
 	require.NoError(t, dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{
 		AgentID: "agent-1", RequestID: "question-2", ClaimToken: "claim-3", State: storedStateDelivered,
-		RequestPayload: payload, NonBlocking: true, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		RequestPayload: payload, NonBlocking: true,
 	}))
 	row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
@@ -296,7 +296,7 @@ func TestBroadcastControlResponseStateCarriesNonBlocking(t *testing.T) {
 			} else {
 				require.NoError(t, dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{
 					AgentID: "agent-1", RequestID: "question-1", ClaimToken: "claim-1", State: storedStateDelivered,
-					RequestPayload: payload, NonBlocking: true, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+					RequestPayload: payload, NonBlocking: true,
 				}))
 			}
 
@@ -324,7 +324,7 @@ func TestControlCancellationRetainsConfirmedDelivery(t *testing.T) {
 	request := watcher.snapshot()[0]
 	err := dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{
 		AgentID: "agent-1", RequestID: "request", ClaimToken: request.ClaimToken,
-		State: storedStateDelivered, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		State: storedStateDelivered,
 	})
 	require.NoError(t, err)
 	sink.CancelControlRequest("request")

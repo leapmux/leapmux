@@ -1,12 +1,11 @@
 -- name: InsertRevocationEvent :exec
 INSERT INTO revocation_events (
-    id, kind, subject_id, user_id, revoked_at, user_auth_generation
+    id, kind, subject_id, user_id, user_auth_generation
 ) VALUES (
     sqlc.arg(id),
     sqlc.arg(kind),
     sqlc.arg(subject_id),
     sqlc.arg(user_id),
-    sqlc.arg(revoked_at),
     sqlc.arg(user_auth_generation)
 );
 
@@ -46,7 +45,7 @@ WHERE id = 1;
 
 -- name: ListPublishedRevocationEventsAfter :many
 SELECT
-    seq, id, kind, subject_id, user_id, revoked_at,
+    seq, id, kind, subject_id, user_id,
     user_auth_generation, created_at, published_at
 FROM revocation_events
 WHERE seq > ?

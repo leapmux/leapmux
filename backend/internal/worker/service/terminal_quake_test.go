@@ -455,7 +455,6 @@ func TestCloseChildAgent_LeavesTheQuakeTerminalAlone(t *testing.T) {
 		ID:            "child-1",
 		ParentAgentID: sql.NullString{String: "agent-1", Valid: true},
 		WorkingDir:    dir,
-		HomeDir:       dir,
 	}))
 
 	w := newTestWriter()
@@ -511,7 +510,6 @@ func TestOpenTerminal_DoesNotAdoptAQuakeTerminalWhoseShellIsGone(t *testing.T) {
 	require.NoError(t, svc.Queries.UpsertTerminal(context.Background(), db.UpsertTerminalParams{
 		ID:         "stale-quake",
 		WorkingDir: dir,
-		HomeDir:    dir,
 		Shell:      testutil.TestShell(),
 		Title:      "Terminal Ghost",
 		Screen:     []byte{},
@@ -546,7 +544,6 @@ func TestCloseOrphanedQuakeTerminals_ClosesARowWithNoLiveShell(t *testing.T) {
 	require.NoError(t, svc.Queries.UpsertTerminal(context.Background(), db.UpsertTerminalParams{
 		ID:         "orphan-quake",
 		WorkingDir: orphanDir,
-		HomeDir:    orphanDir,
 		Shell:      testutil.TestShell(),
 		Screen:     []byte{},
 		IsQuake:    true,
@@ -585,7 +582,6 @@ func TestRestartTerminal_RefusesAQuakeTerminal(t *testing.T) {
 	require.NoError(t, svc.Queries.UpsertTerminal(context.Background(), db.UpsertTerminalParams{
 		ID:         "exited-quake",
 		WorkingDir: dir,
-		HomeDir:    dir,
 		Shell:      testutil.TestShell(),
 		Screen:     []byte{},
 		IsQuake:    true,

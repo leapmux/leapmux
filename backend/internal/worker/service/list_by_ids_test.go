@@ -29,7 +29,7 @@ func TestListAgents_ByIDs_ReturnsOnlyRequested(t *testing.T) {
 
 	for _, id := range []string{"a1", "a2", "a3"} {
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-			ID: id, WorkingDir: "/tmp", HomeDir: "/tmp",
+			ID: id, WorkingDir: "/tmp",
 		}))
 	}
 
@@ -82,7 +82,7 @@ func TestListAgents_ClosedTabsFiltered(t *testing.T) {
 	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "a1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "a1", WorkingDir: "/tmp",
 	}))
 	require.NoError(t, closeErr(svc.Queries.CloseAgent(ctx, "a1")))
 
@@ -103,10 +103,10 @@ func TestListAgents_MixExistingAndNonexistent(t *testing.T) {
 	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "a1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "a1", WorkingDir: "/tmp",
 	}))
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "a2", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "a2", WorkingDir: "/tmp",
 	}))
 
 	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{
@@ -128,7 +128,7 @@ func TestRefreshRunningAgentRows_ReadsTheRowsOfRunningAgentsAgain(t *testing.T) 
 	svc, _, _ := setupTestService(t)
 	for _, id := range []string{"running", "idle"} {
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-			ID: id, WorkingDir: "/tmp", HomeDir: "/tmp",
+			ID: id, WorkingDir: "/tmp",
 		}))
 	}
 	// Both rows predate a startup that stored a session ID for each agent.
@@ -160,7 +160,7 @@ func TestRefreshRunningAgentRows_KeepsTheRowThatACloseRemoved(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "closing", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "closing", WorkingDir: "/tmp",
 	}))
 	agents, err := svc.Queries.ListAgentsByIDs(ctx, []string{"closing"})
 	require.NoError(t, err)
@@ -182,7 +182,7 @@ func TestRefreshRunningAgentRows_ReadsNothingWhenNoAgentRuns(t *testing.T) {
 		return query
 	}))
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "a1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "a1", WorkingDir: "/tmp",
 	}))
 	agents, err := svc.Queries.ListAgentsByIDs(ctx, []string{"a1"})
 	require.NoError(t, err)
@@ -204,7 +204,7 @@ func TestListTerminals_ByIDs_ReturnsOnlyRequested(t *testing.T) {
 
 	for _, id := range []string{"t1", "t2", "t3"} {
 		require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-			ID: id, WorkingDir: "/tmp", HomeDir: "/tmp",
+			ID: id, WorkingDir: "/tmp",
 			Cols: 80, Rows: 24, Screen: []byte("screen"),
 		}))
 	}
@@ -287,7 +287,7 @@ func TestListTerminals_ClosedTabsFiltered(t *testing.T) {
 	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: "t1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "t1", WorkingDir: "/tmp",
 		Cols: 80, Rows: 24, Screen: []byte("screen"),
 		ClosedAt: sqltime.SQLiteNullTimeOf(time.Now()),
 	}))
@@ -315,7 +315,7 @@ func TestListTerminals_ScreenEndOffset_DBOnly(t *testing.T) {
 
 	screen := []byte("some persisted screen content")
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: "t-db", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "t-db", WorkingDir: "/tmp",
 		Cols: 80, Rows: 24, Screen: screen,
 	}))
 
@@ -474,7 +474,7 @@ func TestWatchEvents_ListAgentsByIDsErrorReturnsInternalStreamError(t *testing.T
 	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "a1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "a1", WorkingDir: "/tmp",
 	}))
 	svc.Queries = db.New(&faultingDBTX{real: svc.DB, failSubstr: "FROM agents WHERE id IN"})
 

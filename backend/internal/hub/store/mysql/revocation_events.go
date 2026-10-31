@@ -46,7 +46,6 @@ func insertRevocationEvent(
 	kind leapmuxv1.RevocationEventKind,
 	subjectID string,
 	userID string,
-	revokedAt time.Time,
 	userAuthGeneration int64,
 ) error {
 	return mapErr(conn.q.InsertRevocationEvent(ctx, gendb.InsertRevocationEventParams{
@@ -54,7 +53,6 @@ func insertRevocationEvent(
 		Kind:               kind,
 		SubjectID:          subjectID,
 		UserID:             userID,
-		RevokedAt:          sqltime.NewMySQLTime(revokedAt),
 		UserAuthGeneration: userAuthGeneration,
 	}))
 }
@@ -63,7 +61,7 @@ func insertRevocationEvent(
 // mutation. Shared by every RunCredentialMutation call site so the kind ->
 // insert mapping lives in one place per backend instead of an inline closure.
 func emitCredentialEvent(ctx context.Context, conn *mysqlConn, event store.CredentialEvent) error {
-	return insertRevocationEvent(ctx, conn, event.Kind, event.SubjectID, event.UserID, event.At, event.UserAuthGeneration)
+	return insertRevocationEvent(ctx, conn, event.Kind, event.SubjectID, event.UserID, event.UserAuthGeneration)
 }
 
 func newRevocationEventStore(conn *mysqlConn) *revocationEventStore {
@@ -141,7 +139,6 @@ func (s *revocationEventStore) ListPublishedAfter(
 				Kind:               row.Kind,
 				SubjectID:          row.SubjectID,
 				UserID:             row.UserID,
-				RevokedAt:          row.RevokedAt.UTC(),
 				UserAuthGeneration: row.UserAuthGeneration,
 				CreatedAt:          row.CreatedAt.UTC(),
 			},
@@ -163,10 +160,10 @@ func (s *revocationEventStore) SessionWasRevoked(ctx context.Context, sessionID 
 }
 
 // mysqlRevocationNow reads the transaction's clock via SELECT NOW(3). The
-// result is already on the millisecond grid, so binding it back into
-// DATETIME(3) columns (revoked_at, tokens_revoked_at, updated_at) through the
-// sqltime.MySQLTime/MySQLNullTime valuers round-trips exactly: their
-// unconditional millisecond floor is a no-op on an already-floored NOW(3).
+// result is already on the millisecond grid, so binding it back into the
+// DATETIME(3) revoked_at column of a token row through the
+// sqltime.MySQLNullTime valuer round-trips exactly: its unconditional
+// millisecond floor is a no-op on an already-floored NOW(3).
 func mysqlRevocationNow(ctx context.Context, conn *mysqlConn) (time.Time, error) {
 	now, err := conn.q.RevocationNow(ctx)
 	if err != nil {

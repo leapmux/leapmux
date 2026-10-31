@@ -3,7 +3,7 @@
 -- NOT MAX(live seq) + 1, so a deleted tail seq is never reused. The agent row is
 -- guaranteed to exist (messages.agent_id REFERENCES agents); the COALESCE is a
 -- defensive fallback. A trigger advances message_seq_hwm after the insert.
-INSERT INTO messages (id, agent_id, seq, agent_session_id, source, content, content_compression, supplemental_content, supplemental_content_compression, idempotency_key, depth, span_id, parent_span_id, span_type, span_lines, span_color, agent_provider, mark_type, assembled_kind, completion, transcript_only, created_at)
+INSERT INTO messages (id, agent_id, seq, agent_session_id, source, content, content_compression, supplemental_content, supplemental_content_compression, idempotency_key, depth, span_id, parent_span_id, span_type, span_lines, span_color, mark_type, assembled_kind, completion, transcript_only, created_at)
 VALUES (
   sqlc.arg(id),
   sqlc.arg(agent_id),
@@ -21,7 +21,6 @@ VALUES (
   sqlc.arg(span_type),
   sqlc.arg(span_lines),
   sqlc.arg(span_color),
-  sqlc.arg(agent_provider),
   sqlc.arg(mark_type),
 	sqlc.arg(assembled_kind),
 	sqlc.arg(completion),
@@ -52,7 +51,7 @@ INSERT INTO messages (
   content_compression, supplemental_content,
   supplemental_content_compression, supplemental_revision, idempotency_key,
   depth, span_id, parent_span_id, span_type, span_lines, span_color,
-  agent_provider, mark_type, assembled_kind, completion, transcript_only, created_at
+  mark_type, assembled_kind, completion, transcript_only, created_at
 )
 SELECT
   CAST(sqlc.arg(target_agent_id) AS TEXT) || ':' || CAST(m.seq AS TEXT),
@@ -61,7 +60,7 @@ SELECT
   m.content_compression, m.supplemental_content,
   m.supplemental_content_compression, m.supplemental_revision,
   m.idempotency_key, m.depth, m.span_id, m.parent_span_id,
-  m.span_type, m.span_lines, m.span_color, m.agent_provider,
+  m.span_type, m.span_lines, m.span_color,
   m.mark_type, m.assembled_kind, m.completion, m.transcript_only, m.created_at
 FROM messages AS m
 WHERE m.agent_id = sqlc.arg(source_agent_id)
@@ -149,7 +148,7 @@ WHERE id = sqlc.arg(id) AND agent_id = sqlc.arg(agent_id);
 -- (count -1), and its cost does not depend on the session's ordinary message
 -- count. The caller decompresses and decodes each row, so a -1 row surfaces
 -- its corruption there instead of passing as journal-free.
-SELECT source, agent_provider, supplemental_content, supplemental_content_compression
+SELECT source, supplemental_content, supplemental_content_compression
 FROM messages
 WHERE agent_id = ? AND agent_session_id = ? AND notification_entry_count <> 0
 ORDER BY seq ASC;

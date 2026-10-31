@@ -27,22 +27,12 @@ import (
 // call and had its own hand-copied 30s.
 const channelOpenTimeout = tunnel.DefaultChannelOpenTimeout
 
-// DelegationScope identifies the user the bearer is minted for, plus the
-// spawn provenance (agent_id OR terminal_id — the hub uses these for the
-// audit log). UserID is required; the spawn identifiers may be empty for
-// hub-facing calls without a specific spawn provenance.
-type DelegationScope struct {
-	UserID     userid.UserID
-	AgentID    string
-	TerminalID string
-}
-
 // DelegationProvider supplies a fresh delegation-token bearer for the user
 // the spawning worker needs to act as. The implementation calls the hub's
 // /worker/delegation-tokens/mint endpoint with the worker's own AuthToken
 // and caches the result.
 type DelegationProvider interface {
-	GetBearer(ctx context.Context, scope DelegationScope) (string, error)
+	GetBearer(ctx context.Context, userID userid.UserID) (string, error)
 }
 
 // Client maintains a pool of E2EE channels keyed by (target_worker, user) so
@@ -105,12 +95,12 @@ func New(lifetimeCtx context.Context, endpoint *hubtransport.Endpoint, pins *Pin
 }
 
 // channelFor returns a (cached) E2EE channel to targetWorkerID for
-// scope.UserID. Mints a fresh delegation token + channel on cache miss.
-func (c *Client) channelFor(ctx context.Context, targetWorkerID string, scope DelegationScope) (*tunnel.Channel, error) {
-	if err := c.validateOpen(targetWorkerID, scope); err != nil {
+// userID. Mints a fresh delegation token + channel on cache miss.
+func (c *Client) channelFor(ctx context.Context, targetWorkerID string, userID userid.UserID) (*tunnel.Channel, error) {
+	if err := c.validateOpen(targetWorkerID, userID); err != nil {
 		return nil, err
 	}
-	key := clientKey{WorkerID: targetWorkerID, UserID: scope.UserID.String()}
+	key := clientKey{WorkerID: targetWorkerID, UserID: userID.String()}
 
 	c.mu.Lock()
 	if existing, ok := c.channels[key]; ok && existing != nil {
@@ -138,7 +128,7 @@ func (c *Client) channelFor(ctx context.Context, targetWorkerID string, scope De
 	if !inFlight {
 		open = &channelOpen{done: make(chan struct{})}
 		c.inflight[key] = open
-		go c.runChannelOpen(open, key, targetWorkerID, scope)
+		go c.runChannelOpen(open, key, targetWorkerID, userID)
 	}
 	c.mu.Unlock()
 
@@ -161,8 +151,8 @@ func (c *Client) channelFor(ctx context.Context, targetWorkerID string, scope De
 // It shares channelFor's argument validation but deliberately not its
 // cache: see StreamInner for why a subscriber needs a channel id nobody
 // else is registering against.
-func (c *Client) dedicatedChannel(ctx context.Context, targetWorkerID string, scope DelegationScope) (*tunnel.Channel, error) {
-	if err := c.validateOpen(targetWorkerID, scope); err != nil {
+func (c *Client) dedicatedChannel(ctx context.Context, targetWorkerID string, userID userid.UserID) (*tunnel.Channel, error) {
+	if err := c.validateOpen(targetWorkerID, userID); err != nil {
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -181,20 +171,20 @@ func (c *Client) dedicatedChannel(ctx context.Context, targetWorkerID string, sc
 	defer cancel()
 	defer context.AfterFunc(c.ctx, cancel)()
 
-	return c.openChannel(openCtx, targetWorkerID, scope)
+	return c.openChannel(openCtx, targetWorkerID, userID)
 }
 
 // validateOpen rejects the arguments no channel open can proceed without,
 // and the already-shut-down Client. Shared by both open paths so a new
 // required field cannot be enforced on one and forgotten on the other.
-func (c *Client) validateOpen(targetWorkerID string, scope DelegationScope) error {
+func (c *Client) validateOpen(targetWorkerID string, userID userid.UserID) error {
 	if err := c.ctx.Err(); err != nil {
 		return err
 	}
 	if targetWorkerID == "" {
 		return errors.New("crossworker: target_worker_id required")
 	}
-	if scope.UserID.IsZero() {
+	if userID.IsZero() {
 		return errors.New("crossworker: user_id required")
 	}
 	return nil
@@ -203,8 +193,8 @@ func (c *Client) validateOpen(targetWorkerID string, scope DelegationScope) erro
 // runChannelOpen performs a single shared channel open and publishes the result
 // to every waiter. It caches a successful channel and always clears the
 // in-flight marker so the next cache miss starts a fresh open.
-func (c *Client) runChannelOpen(open *channelOpen, key clientKey, targetWorkerID string, scope DelegationScope) {
-	ch, err := c.openChannel(c.ctx, targetWorkerID, scope)
+func (c *Client) runChannelOpen(open *channelOpen, key clientKey, targetWorkerID string, userID userid.UserID) {
+	ch, err := c.openChannel(c.ctx, targetWorkerID, userID)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -232,11 +222,11 @@ func (c *Client) runChannelOpen(open *channelOpen, key clientKey, targetWorkerID
 // Client's lifetime, because that open is shared and no single waiter may
 // cancel it, while the dedicated path passes a context joined with its
 // one caller's.
-func (c *Client) openChannel(parent context.Context, targetWorkerID string, scope DelegationScope) (*tunnel.Channel, error) {
+func (c *Client) openChannel(parent context.Context, targetWorkerID string, userID userid.UserID) (*tunnel.Channel, error) {
 	openCtx, cancel := context.WithTimeout(parent, channelOpenTimeout)
 	defer cancel()
 
-	bearer, err := c.Delegation.GetBearer(openCtx, scope)
+	bearer, err := c.Delegation.GetBearer(openCtx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("delegation token: %w", err)
 	}
@@ -251,13 +241,13 @@ func (c *Client) openChannel(parent context.Context, targetWorkerID string, scop
 		// pool with every other caller.
 		HTTPClient:          c.unaryClient,
 		WebSocketHTTPClient: c.webSocketClient,
-		// The pool keys on scope.UserID, so the channel MUST be the identity this
-		// scope names. A DelegationProvider that returns a bearer minted for another
-		// scope -- a cache keyed on too few fields, a mint response that does not
+		// The pool key includes userID, so the channel must authenticate as that
+		// user. A DelegationProvider returning another user's bearer -- a cache
+		// keyed on too few fields, a mint response that does not
 		// match its request -- would otherwise pool a channel the Hub authenticated
 		// as X under the key for Y, and every later CallInner on it would silently
 		// run as X with nothing in the stack able to detect it.
-		ExpectedUserID: scope.UserID.String(),
+		ExpectedUserID: userID.String(),
 	}
 	// BaseURL, not HubURL: a `unix:`/`npipe:` hub presents the placeholder
 	// origin that its transport dials, and every other scheme is unchanged.
@@ -268,7 +258,7 @@ func (c *Client) openChannel(parent context.Context, targetWorkerID string, scop
 // delegation scope used both for minting the bearer and for keying the
 // channel pool.
 func (c *Client) CallInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte) ([]byte, error) {
-	ch, err := c.channelFor(ctx, targetWorkerID, DelegationScope{UserID: userID})
+	ch, err := c.channelFor(ctx, targetWorkerID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -296,7 +286,7 @@ func (c *Client) CallInner(ctx context.Context, targetWorkerID string, userID us
 // connection-reuse optimisation; it must not make two independent
 // subscribers share an identity.
 func (c *Client) StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController)) error {
-	ch, err := c.dedicatedChannel(ctx, targetWorkerID, DelegationScope{UserID: userID})
+	ch, err := c.dedicatedChannel(ctx, targetWorkerID, userID)
 	if err != nil {
 		return err
 	}

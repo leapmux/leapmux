@@ -38,7 +38,6 @@ func seedAgent(t *testing.T, svc *Service, agentID string) {
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         agentID,
 		WorkingDir: t.TempDir(),
-		HomeDir:    t.TempDir(),
 	}))
 }
 
@@ -47,7 +46,6 @@ func seedTerminal(t *testing.T, svc *Service, terminalID string) {
 	require.NoError(t, svc.Queries.UpsertTerminal(context.Background(), db.UpsertTerminalParams{
 		ID:         terminalID,
 		WorkingDir: t.TempDir(),
-		HomeDir:    t.TempDir(),
 		Screen:     []byte{},
 	}))
 }

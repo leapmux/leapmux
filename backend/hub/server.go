@@ -563,7 +563,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	mailRenderer := mail.Renderer{BaseURL: hubBaseURL}
 
 	broadcaster := service.NewHubEventBroadcaster(cMgr)
-	notifierSvc := notifier.New(st, wMgr, pendingReqs, apiTimeout)
+	notifierSvc := notifier.New(st, wMgr, pendingReqs, apiTimeout, broadcaster.NotifyWorkersChanged)
 
 	// Per-user CRDT manager registry. The factory constructs a fully
 	// bootstrapped manager (state loaded from disk, ops replayed) on
@@ -1102,14 +1102,16 @@ func (s *Server) RegisterWorker(ctx context.Context, registeredBy string) (*Work
 	if !ok {
 		return nil, errors.New("register worker: registeredBy is required")
 	}
-	if err := s.store.Workers().Create(ctx, store.CreateWorkerParams{
-		ID:              workerID,
-		AuthToken:       authToken,
-		RegisteredBy:    registrantUID,
-		PublicKey:       []byte{},
-		MlkemPublicKey:  []byte{},
-		SlhdsaPublicKey: []byte{},
-		AutoRegistered:  true,
+	if err := s.store.RunInUserAuthTransaction(ctx, registrantUID, func(tx store.Store) error {
+		return tx.Workers().Create(ctx, store.CreateWorkerParams{
+			ID:              workerID,
+			AuthToken:       authToken,
+			RegisteredBy:    registrantUID,
+			PublicKey:       []byte{},
+			MlkemPublicKey:  []byte{},
+			SlhdsaPublicKey: []byte{},
+			AutoRegistered:  true,
+		})
 	}); err != nil {
 		return nil, fmt.Errorf("create worker: %w", err)
 	}

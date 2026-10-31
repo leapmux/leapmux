@@ -24,7 +24,6 @@ func TestSweepOrphanedAgentState(t *testing.T) {
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 			ID:            id,
 			WorkingDir:    t.TempDir(),
-			HomeDir:       t.TempDir(),
 			Title:         id,
 			Options:       marshalOptions(nil),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -70,7 +69,6 @@ func TestTrackedAgentIDsIncludesRootSinks(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "root-leak",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	// NewRootSink registers the root sink in rootSinks.

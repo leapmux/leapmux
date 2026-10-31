@@ -262,9 +262,9 @@ func DecodeResumeHLC(raw string) *leapmuxv1.HLC {
 // Both empty → (nil, 0, nil): a first connect. resume_epoch without a matching
 // resume_after_hlc, or either field present-but-malformed, returns an error.
 //
-// The epoch is domain-checked, not merely parsed. `current_epoch` is
-// `NOT NULL DEFAULT 1` in every dialect and only ever increments, so zero and
-// negative are not values the hub can hold — accepting them would let a client
+// The epoch is domain-checked, not merely parsed. `UserCrdtState.current_epoch`
+// starts at 1 (`crdt.NewState`) and only increases, so zero and negative are
+// not values the hub can hold — accepting them would let a client
 // bug (a serializer that emits 0 for "unset") sail past this gate and fail
 // silently downstream instead, where `decideResume`'s epoch equality just
 // misses and degrades that client to a full snapshot on every single connect,

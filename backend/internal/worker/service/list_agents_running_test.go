@@ -75,7 +75,7 @@ func TestListAgents_AnActiveAgentStatesTheSessionThatItsStartupStored(t *testing
 	const id = "agent-starting"
 	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		AgentProvider: provider, ID: id, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: provider, ID: id, WorkingDir: t.TempDir(),
 	}))
 	gitStarted, gitRelease := installBlockingGit(t)
 

@@ -99,26 +99,13 @@ message RegisterResponse {
   string auth_token = 2;
 }
 
-// WorkerStatus tracks the lifecycle state of a worker.
+// WorkerStatus is the lifecycle state of a worker. The hub derives it from
+// workers.deregistering_at and workers.deleted_at; no column stores it.
 enum WorkerStatus {
   WORKER_STATUS_UNSPECIFIED = 0;
   WORKER_STATUS_ACTIVE = 1;
   WORKER_STATUS_DEREGISTERING = 2;
   WORKER_STATUS_DELETED = 3;
-}
-
-// NotificationType identifies what action a worker notification conveys.
-enum NotificationType {
-  NOTIFICATION_TYPE_UNSPECIFIED = 0;
-  NOTIFICATION_TYPE_DEREGISTER = 1;
-}
-
-// NotificationStatus tracks worker notification delivery state.
-enum NotificationStatus {
-  NOTIFICATION_STATUS_UNSPECIFIED = 0;
-  NOTIFICATION_STATUS_PENDING = 1;
-  NOTIFICATION_STATUS_DELIVERED = 2;
-  NOTIFICATION_STATUS_FAILED = 3;
 }
 
 message CreateRegistrationKeyRequest {}

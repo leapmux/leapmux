@@ -207,8 +207,8 @@ func (c *Conn) Send(msg *leapmuxv1.ConnectResponse) error {
 
 // SendWait enqueues a data-path frame, parking until the byte budget frees,
 // ctx ends, or the writer closes. Used by request/response RPCs (ChannelOpen,
-// pending notifications) that must not compete with the tiny-control reserve
-// and can afford to wait.
+// the DEREGISTER instruction) that must not compete with the tiny-control
+// reserve and can afford to wait.
 func (c *Conn) SendWait(ctx context.Context, msg *leapmuxv1.ConnectResponse) error {
 	if err := c.q.EnqueueWait(ctx, msg); err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

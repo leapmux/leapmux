@@ -123,7 +123,7 @@ func setupDelegation(t *testing.T) *delegationEnv {
 	}))
 
 	tabID := id.Generate()
-	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(context.Background(), store.UpsertOwnedTabParams{
+	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(context.Background(), store.UpsertTabParams{
 		UserID:      userid.MustNew(u.ID),
 		WorkspaceID: workspaceID,
 		WorkerID:    workerID,
@@ -131,6 +131,7 @@ func setupDelegation(t *testing.T) *delegationEnv {
 		TabID:       tabID,
 		Position:    "a",
 		TileID:      "tile-1",
+		Rendered:    false,
 	}))
 
 	return &delegationEnv{
@@ -193,11 +194,9 @@ func TestWorkerDelegation_Mint_HappyPath(t *testing.T) {
 	env := setupDelegation(t)
 
 	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
-		"user_id":             env.userID,
-		"issued_for_tab_id":   env.tabID,
-		"issued_for_tab_type": int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
-		"agent_id":            "agent-1",
-		"ttl_seconds":         60,
+		"user_id":           env.userID,
+		"issued_for_tab_id": env.tabID,
+		"ttl_seconds":       60,
 	})
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -321,7 +320,7 @@ func TestWorkerDelegation_Mint_RetriesUntilTabPropagates(t *testing.T) {
 
 	go func() {
 		time.Sleep(75 * time.Millisecond)
-		_ = env.store.WorkspaceTabIndex().UpsertOwned(context.Background(), store.UpsertOwnedTabParams{
+		_ = env.store.WorkspaceTabIndex().UpsertOwned(context.Background(), store.UpsertTabParams{
 			UserID:      userid.MustNew(env.userID),
 			WorkspaceID: env.workspaceID,
 			WorkerID:    env.workerID,
@@ -329,14 +328,13 @@ func TestWorkerDelegation_Mint_RetriesUntilTabPropagates(t *testing.T) {
 			TabID:       lateTabID,
 			Position:    "b",
 			TileID:      "tile-2",
+			Rendered:    false,
 		})
 	}()
 
 	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
-		"user_id":             env.userID,
-		"issued_for_tab_id":   lateTabID,
-		"issued_for_tab_type": int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
-		"agent_id":            "agent-late",
+		"user_id":           env.userID,
+		"issued_for_tab_id": lateTabID,
 	})
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "mint must succeed after tab propagates")
@@ -379,7 +377,7 @@ func TestWorkerDelegation_Mint_RejectsUserWhoIsNotTheWorkersRegistrant(t *testin
 		ID: otherWS, OwnerUserID: userid.MustNew(other.ID), Title: "foreign-ws",
 	}))
 	otherTab := id.Generate()
-	require.NoError(t, env.store.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
+	require.NoError(t, env.store.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertTabParams{
 		UserID:      userid.MustNew(other.ID),
 		WorkspaceID: otherWS,
 		WorkerID:    env.workerID, // registered by admin, not by `other`
@@ -387,6 +385,7 @@ func TestWorkerDelegation_Mint_RejectsUserWhoIsNotTheWorkersRegistrant(t *testin
 		TabID:       otherTab,
 		Position:    "a",
 		TileID:      "tile-foreign",
+		Rendered:    false,
 	}))
 
 	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
@@ -630,16 +629,23 @@ func TestWorkerDelegation_Mint_RejectsForeignOwnerTabRow(t *testing.T) {
 	require.NotEqual(t, other.ID, otherID)
 
 	// Only the intruder holds this tab id, and it is pinned to the calling
-	// worker -- everything the pre-fix predicate checked.
+	// worker -- everything the pre-fix predicate checked. It sits in the
+	// intruder's own workspace, because the composite workspace key refuses a
+	// row whose user does not own its workspace.
+	intruderWorkspaceID := id.Generate()
+	require.NoError(t, env.store.Workspaces().Create(ctx, store.CreateWorkspaceParams{
+		ID: intruderWorkspaceID, OwnerUserID: userid.MustNew(otherID), Title: "intruder ws",
+	}))
 	foreignTabID := id.Generate()
-	require.NoError(t, env.store.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
+	require.NoError(t, env.store.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertTabParams{
 		UserID:      userid.MustNew(otherID),
-		WorkspaceID: env.workspaceID,
+		WorkspaceID: intruderWorkspaceID,
 		WorkerID:    env.workerID,
 		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
 		TabID:       foreignTabID,
 		Position:    "a",
 		TileID:      "tile-2",
+		Rendered:    false,
 	}))
 
 	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{

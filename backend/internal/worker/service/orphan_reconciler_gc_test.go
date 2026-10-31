@@ -59,14 +59,14 @@ func TestReconcileWorktrees_CleansDeadLinksOnEachPass(t *testing.T) {
 	// reference) — the exact residue the startup guards can leave behind.
 	_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-strand", WorktreePath: "/r/strand", RepoRoot: "/r", BranchName: "b"})
 	require.NoError(t, cwErr)
-	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: "a-closed", WorkingDir: "/r/strand", HomeDir: "/r/strand"}))
+	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: "a-closed", WorkingDir: "/r/strand"}))
 	require.NoError(t, closeErr(q.CloseAgent(ctx, "a-closed")))
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-strand", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "a-closed"}))
 
 	// Live: linked to an OPEN agent — never a candidate.
 	_, cwErr = q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-live", WorktreePath: "/r/live", RepoRoot: "/r", BranchName: "b"})
 	require.NoError(t, cwErr)
-	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: "a-open", WorkingDir: "/r/live", HomeDir: "/r/live"}))
+	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: "a-open", WorkingDir: "/r/live"}))
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-live", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "a-open"}))
 
 	// Zero-link: freshly created, its tab hasn't linked yet (mid-creation)
@@ -118,7 +118,7 @@ func TestReconcileWorktrees_SparesWorktreeReLinkedBetweenPasses(t *testing.T) {
 
 	_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-reuse", WorktreePath: "/r/reuse", RepoRoot: "/r", BranchName: "b"})
 	require.NoError(t, cwErr)
-	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: "a1-closed", WorkingDir: "/r/reuse", HomeDir: "/r/reuse"}))
+	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: "a1-closed", WorkingDir: "/r/reuse"}))
 	require.NoError(t, closeErr(q.CloseAgent(ctx, "a1-closed")))
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-reuse", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "a1-closed"}))
 
@@ -127,7 +127,7 @@ func TestReconcileWorktrees_SparesWorktreeReLinkedBetweenPasses(t *testing.T) {
 
 	// A new agent reuses the worktree after cleanup removes the predecessor link.
 	// The next pass must preserve the new live link.
-	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: "a2-open", WorkingDir: "/r/reuse", HomeDir: "/r/reuse"}))
+	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: "a2-open", WorkingDir: "/r/reuse"}))
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-reuse", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "a2-open"}))
 
 	clock = clock.Add(3 * time.Minute)
@@ -166,7 +166,7 @@ func TestWorktreeLiveness_CountAndCandidates_AcrossTabTypes(t *testing.T) {
 
 	// --- live references: each counts 1, never an orphan candidate ---
 	mkWorktree("wt-live-agent")
-	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: "a-open", WorkingDir: "/r/wt-live-agent", HomeDir: "/r/wt-live-agent"}))
+	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: "a-open", WorkingDir: "/r/wt-live-agent"}))
 	link("wt-live-agent", "a-open", leapmuxv1.TabType_TAB_TYPE_AGENT)
 
 	mkWorktree("wt-live-term")
@@ -179,7 +179,7 @@ func TestWorktreeLiveness_CountAndCandidates_AcrossTabTypes(t *testing.T) {
 
 	// --- strands: each counts 0, all-strand worktrees are orphan candidates ---
 	mkWorktree("wt-dead-agent")
-	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: "a-closed", WorkingDir: "/r/wt-dead-agent", HomeDir: "/r/wt-dead-agent"}))
+	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: "a-closed", WorkingDir: "/r/wt-dead-agent"}))
 	require.NoError(t, closeErr(q.CloseAgent(ctx, "a-closed")))
 	link("wt-dead-agent", "a-closed", leapmuxv1.TabType_TAB_TYPE_AGENT)
 
@@ -197,7 +197,7 @@ func TestWorktreeLiveness_CountAndCandidates_AcrossTabTypes(t *testing.T) {
 	// --- mixed: a live agent + a closed-terminal strand on one worktree ->
 	// counts only the live ref, so it is NOT a candidate ---
 	mkWorktree("wt-mixed")
-	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: "m-agent", WorkingDir: "/r/wt-mixed", HomeDir: "/r/wt-mixed"}))
+	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: "m-agent", WorkingDir: "/r/wt-mixed"}))
 	link("wt-mixed", "m-agent", leapmuxv1.TabType_TAB_TYPE_AGENT)
 	require.NoError(t, q.UpsertTerminal(ctx, db.UpsertTerminalParams{ID: "m-term", Screen: []byte{}}))
 	require.NoError(t, closeErr(q.CloseTerminal(ctx, "m-term")))

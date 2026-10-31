@@ -16,55 +16,6 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-// createMessageRow is the single guarded chokepoint for persisting chat-message
-// rows: it refuses an UNSPECIFIED agent provider so a row the frontend cannot
-// attribute to a provider is never written (the frontend would otherwise render
-// it as `unsupported_provider`).
-func TestCreateMessageRow_RejectsUnspecifiedProvider(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	svc, _, _ := setupTestService(t)
-
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:            "agent-1",
-		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
-		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-	}))
-
-	params := func(id string, provider leapmuxv1.AgentProvider) db.CreateMessageParams {
-		return db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-			ID:            id,
-			AgentID:       "agent-1",
-			Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-			Content:       []byte(`{"type":"result"}`),
-			AgentProvider: provider,
-			CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
-		}
-	}
-
-	// An UNSPECIFIED provider is refused before any row is written.
-	_, err := createMessageRow(ctx, svc.Queries, params("msg-bad", leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "UNSPECIFIED")
-
-	msgs, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
-	require.NoError(t, err)
-	assert.Empty(t, msgs, "a rejected message must not be persisted")
-
-	// A real provider is persisted normally.
-	seq, err := createMessageRow(ctx, svc.Queries, params("msg-ok", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
-	require.NoError(t, err)
-	assert.Positive(t, seq)
-
-	msgs, err = svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
-	require.NoError(t, err)
-	require.Len(t, msgs, 1)
-	assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs[0].AgentProvider)
-}
-
 func TestCreateMessageRow_RejectsUnknownMarkType(t *testing.T) {
 	t.Parallel()
 
@@ -74,19 +25,17 @@ func TestCreateMessageRow_RejectsUnknownMarkType(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 
 	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		ID:            "msg-bad-mark",
-		AgentID:       "agent-1",
-		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		Content:       []byte(`{"type":"result"}`),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		MarkType:      workerdb.OptionalStorageEnum(leapmuxv1.MarkType(999)),
-		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
+		ID:        "msg-bad-mark",
+		AgentID:   "agent-1",
+		Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		Content:   []byte(`{"type":"result"}`),
+		MarkType:  workerdb.OptionalStorageEnum(leapmuxv1.MarkType(999)),
+		CreatedAt: sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mark_type")
@@ -111,7 +60,6 @@ func TestCreateAgentRecord_RejectsUnspecifiedProvider(t *testing.T) {
 		return db.CreateAgentParams{
 			ID:            id,
 			WorkingDir:    t.TempDir(),
-			HomeDir:       t.TempDir(),
 			Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
 			AgentProvider: provider,
 		}
@@ -137,7 +85,7 @@ func TestCreateMessageRowRetainsFinishedCompletionWithoutAnOutcome(t *testing.T)
 	ctx := t.Context()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-finished", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-finished", WorkingDir: t.TempDir(),
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
@@ -145,7 +93,6 @@ func TestCreateMessageRowRetainsFinishedCompletionWithoutAnOutcome(t *testing.T)
 	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
 		ID: "message-finished", AgentID: "agent-finished", AgentSessionID: "native-session", Content: raw,
 		Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		AgentProvider:      leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		Completion:         workerdb.OptionalStorageEnum(leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_FINISHED), CreatedAt: sqltime.NewSQLiteTime(time.Now()),
 	})
@@ -161,7 +108,6 @@ func TestCreateMessageRowRetainsFinishedCompletionWithoutAnOutcome(t *testing.T)
 		_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
 			ID: "message-invalid", AgentID: "agent-finished", Content: raw,
 			Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-			AgentProvider:      leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 			ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 			Completion:         workerdb.OptionalStorageEnum(completion), CreatedAt: sqltime.NewSQLiteTime(time.Now()),
 		})

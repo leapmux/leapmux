@@ -4,7 +4,7 @@ SELECT * FROM user_recent_batch_ids WHERE user_id = ? AND batch_id = ?;
 -- name: InsertRecentBatchID :exec
 INSERT INTO user_recent_batch_ids (
     user_id, batch_id, body_hash, principal_id,
-    canonical_physical_ms, canonical_logical, canonical_client,
+    canonical_physical_ms, canonical_logical,
     op_count, epoch, expires_at
 ) VALUES (
     sqlc.arg(user_id),
@@ -13,15 +13,15 @@ INSERT INTO user_recent_batch_ids (
     sqlc.arg(principal_id),
     sqlc.arg(canonical_physical_ms),
     sqlc.arg(canonical_logical),
-    sqlc.arg(canonical_client),
     sqlc.arg(op_count),
     sqlc.arg(epoch),
     sqlc.arg(expires_at)
 );
 
 -- name: DeleteExpiredRecentBatchIDs :execresult
--- Raw compare: expires_at is stored canonical (InsertRecentBatchID binds a
--- SQLiteTime), and the Go side binds a SQLiteTime cutoff (same canonical
--- layout), so the lexicographic < is byte-exact and sargable for
--- idx_user_recent_batch_ids_expires.
-DELETE FROM user_recent_batch_ids WHERE expires_at < sqlc.arg(before);
+-- A batch identity survives while its committed epoch is still accepted.
+-- Scope cleanup to one owner: another manager may have a different epoch.
+DELETE FROM user_recent_batch_ids
+WHERE user_id = sqlc.arg(user_id)
+  AND expires_at < sqlc.arg(before)
+  AND epoch < sqlc.arg(oldest_accepted_epoch);

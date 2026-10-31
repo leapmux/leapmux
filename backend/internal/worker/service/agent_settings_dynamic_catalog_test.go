@@ -88,7 +88,6 @@ func storedEffortAfterEdit(t *testing.T, provider leapmuxv1.AgentProvider, persi
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            agentID,
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: provider,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: from, agent.OptionIDEffort: effort}),
 	}))
@@ -323,7 +322,7 @@ func TestUpdateAgentSettings_ModelSwitchOnARunningDynamicCatalogAgentSendsTheKep
 				const agentID = "agent-1"
 				launch := map[string]string{agent.OptionIDModel: "alpha", agent.OptionIDEffort: "high"}
 				require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-					ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+					ID: agentID, WorkingDir: t.TempDir(),
 					AgentProvider: p.provider, Options: marshalOptions(launch),
 				}))
 				live := newLiveCatalogAgent("alpha", "high")

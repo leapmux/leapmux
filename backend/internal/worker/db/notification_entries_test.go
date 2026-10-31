@@ -68,7 +68,6 @@ func TestNotificationEntryKeysKeepExactAgentAndSessionIdentity(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, rows, 1)
 		assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, rows[0].Source)
-		assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, rows[0].AgentProvider)
 		entries, err := agent.DecodeNotificationJournal(rows[0].SupplementalContent)
 		require.NoError(t, err)
 		require.Len(t, entries, 1)

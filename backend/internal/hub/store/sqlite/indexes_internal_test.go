@@ -12,17 +12,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestWorkersIndexesServeCompositeKeyset pins the index shape that makes the
-// two hottest worker keyset queries index-backed rather than full-scan-plus-sort:
-// ListWorkersByUserID (registered_by=? AND status=1) and
-// ListWorkersAdminByUserAndStatus (registered_by=? AND status=?) carry NO
-// deleted_at filter, so a partial `WHERE deleted_at IS NULL` predicate on the
-// composite index makes it ineligible on SQLite and every page falls back to a
-// sort. The index must therefore be non-partial. The composite's leading
-// registered_by column also serves HardDeleteUsersBefore's
-// NOT EXISTS (workers.registered_by = users.id) point probe, so no separate
-// registered_by-only index is kept. This is a plan-level concern: a regression
-// (re-adding the partial predicate) leaves the result rows identical and would
+// TestWorkersIndexesServeCompositeKeyset pins the worker index set now that no
+// column stores a status. Every keyset listing filters the live/deleted
+// predicate it reads from deleted_at, so each rides a PARTIAL index on that
+// predicate (pinned below and in TestPaginatedListingsRideTheirKeysetIndexes).
+// The HardDeleteUsersBefore NOT EXISTS (workers.registered_by = users.id)
+// point probe, and the registered_by foreign key, must see soft-deleted rows
+// too, so they need a NON-partial registered_by index of their own. This is a
+// plan-level concern: a regression leaves the result rows identical and would
 // slip through every result-based storetest, so it needs a schema assertion.
 func TestWorkersIndexesServeCompositeKeyset(t *testing.T) {
 	_, db := newSessionTestStore(t)
@@ -41,18 +38,14 @@ func TestWorkersIndexesServeCompositeKeyset(t *testing.T) {
 	}
 	require.NoError(t, rows.Err())
 
-	// The composite keyset index must exist and be non-partial (no WHERE clause)
-	// so the no-deleted_at-filter worker queries stay eligible for it.
-	composite, ok := got["idx_workers_registered_by_status_created"]
-	require.True(t, ok, "composite workers index missing; got %v", got)
-	assert.NotContains(t, strings.ToUpper(composite), "WHERE",
-		"composite index must be non-partial: a WHERE deleted_at IS NULL predicate makes it ineligible for ListWorkersByUserID / ListWorkersAdminByUserAndStatus (no deleted_at filter), regressing every page to a full scan plus sort")
-
-	// No separate registered_by-only index: the composite's leading column
-	// serves the HardDeleteUsersBefore FK-gate point probe (over all rows,
-	// including soft-deleted), so a narrow duplicate is dead write-amplification.
-	assert.NotContains(t, got, "idx_workers_registered_by",
-		"a separate registered_by-only index is redundant with the composite's leading column; got %v", got)
+	probe, ok := got["idx_workers_registered_by"]
+	require.True(t, ok, "the registered_by probe index is missing; got %v", got)
+	assert.NotContains(t, strings.ToUpper(probe), "WHERE",
+		"the registered_by index must be non-partial: the HardDeleteUsersBefore probe and the foreign key must see soft-deleted rows")
+	for name, sqlText := range got {
+		assert.NotContains(t, strings.ToLower(sqlText), "status",
+			"%s indexes a status column; the status is derived and no column stores it", name)
+	}
 }
 
 // indexSQL returns the CREATE INDEX statement for the named index, failing the
@@ -91,12 +84,10 @@ func assertCompositeKeysetIndex(t *testing.T, db *sql.DB, table, indexName, want
 	}
 }
 
-// TestWorkersRegisteredByCreatedIndex pins the index added for
-// ListWorkersAdminByUser (registered_by=?, deleted_at IS NULL, no status). It
-// must be partial on deleted_at (the query filters it) and carry the trailing
-// id DESC; without it the admin per-user listing falls back to the
-// (registered_by, status, created_at, id) composite, where status breaks the
-// created_at order and every page top-N sorts.
+// TestWorkersRegisteredByCreatedIndex pins the index behind the per-user live
+// listing (ListWorkersAdminLiveByUser: registered_by=?,
+// deleted_at IS NULL). It must be partial on deleted_at (the queries filter it)
+// and carry the trailing id DESC; without it every per-user page top-N sorts.
 func TestWorkersRegisteredByCreatedIndex(t *testing.T) {
 	_, db := newSessionTestStore(t)
 	assertCompositeKeysetIndex(t, db, "workers", "idx_workers_registered_by_created", "registered_by, created_at DESC, id DESC", "WHERE deleted_at IS NULL")
@@ -140,23 +131,38 @@ func TestSessionsUserKeysetIndexShape(t *testing.T) {
 	assertCompositeKeysetIndex(t, db, "user_sessions", "idx_user_sessions_user_last_active", "user_id, last_active_at DESC, id DESC", "")
 }
 
-// TestWorkersStatusCreatedIndex pins idx_workers_status_created: the
-// ListWorkersAdminByStatus query (status=?, no deleted_at filter, no user
-// filter) rides this index, and it MUST be non-partial -- status=3
-// (WORKER_STATUS_DELETED) must surface soft-deleted rows, so a
-// `WHERE deleted_at IS NULL` partial predicate would make the index ineligible
-// and regress every status-filtered admin page to a full scan plus sort. The
-// regression is plan-level only (result rows stay identical), so it needs a
-// schema assertion.
-func TestWorkersStatusCreatedIndex(t *testing.T) {
+// TestWorkersDeletedKeysetIndexes pins the two indexes behind the deleted half
+// of the admin worker listing (ListWorkersAdminDeleted and
+// ListWorkersAdminDeletedByUser). Both queries filter `deleted_at IS NOT NULL`,
+// so the indexes must be partial on exactly that predicate and carry the
+// trailing id DESC.
+func TestWorkersDeletedKeysetIndexes(t *testing.T) {
 	_, db := newSessionTestStore(t)
-	assertCompositeKeysetIndex(t, db, "workers", "idx_workers_status_created", "status, created_at DESC, id DESC", "")
+	assertCompositeKeysetIndex(t, db, "workers", "idx_workers_deleted_created", "created_at DESC, id DESC", "WHERE deleted_at IS NOT NULL")
+	assertCompositeKeysetIndex(t, db, "workers", "idx_workers_registered_by_deleted_created", "registered_by, created_at DESC, id DESC", "WHERE deleted_at IS NOT NULL")
 }
 
-// TestWorkersCreatedAtIndex pins idx_workers_created_at: the no-filter admin
-// listing (ListWorkersAdmin: status=nil, user_id=nil) filters `deleted_at IS
-// NULL`, so the index must be partial on it (matching the query exactly so the
-// planner can use it) and carry the trailing id DESC.
+// TestWorkersDeregisteringIndex pins the stale-deregistration sweep's index:
+// partial on the sweep's own predicate, so it holds only the few workers in
+// mid-deregistration.
+func TestWorkersDeregisteringIndex(t *testing.T) {
+	_, db := newSessionTestStore(t)
+	assertCompositeKeysetIndex(t, db, "workers", "idx_workers_deregistering", "deregistering_at", "WHERE deregistering_at IS NOT NULL AND deleted_at IS NULL")
+	details := explainPlan(t, db, loadQuerySQL(t, "workers.sql", "CompleteStaleDeregistrations"))
+	assert.Condition(t, func() bool {
+		for _, d := range details {
+			if strings.Contains(d, "INDEX idx_workers_deregistering") {
+				return true
+			}
+		}
+		return false
+	}, "the sweep must seek idx_workers_deregistering; plan: %v", details)
+}
+
+// TestWorkersCreatedAtIndex pins idx_workers_created_at: the all-user live
+// admin listing (ListWorkersAdminLive) filters `deleted_at IS NULL`, so the
+// index must be partial on it (matching the query exactly so the planner can
+// use it) and carry the trailing id DESC.
 func TestWorkersCreatedAtIndex(t *testing.T) {
 	_, db := newSessionTestStore(t)
 	assertCompositeKeysetIndex(t, db, "workers", "idx_workers_created_at", "created_at DESC, id DESC", "WHERE deleted_at IS NULL")
@@ -237,14 +243,12 @@ func loadQuerySQL(t *testing.T, file, name string) string {
 func TestPaginatedListingsRideTheirKeysetIndexes(t *testing.T) {
 	_, db := newSessionTestStore(t)
 
+	// Admin worker pages select IDs before owner metadata; their actual
+	// adapter plans and fetch limits are covered by the worker-plan suite.
 	cases := []struct{ file, query, index string }{
 		{"users.sql", "ListAllUsers", "idx_users_created_at"},
 		{"users.sql", "SearchUsers", "idx_users_created_at"},
-		{"workers.sql", "ListWorkersByUserID", "idx_workers_registered_by_status_created"},
-		{"workers.sql", "ListWorkersAdmin", "idx_workers_created_at"},
-		{"workers.sql", "ListWorkersAdminByUser", "idx_workers_registered_by_created"},
-		{"workers.sql", "ListWorkersAdminByStatus", "idx_workers_status_created"},
-		{"workers.sql", "ListWorkersAdminByUserAndStatus", "idx_workers_registered_by_status_created"},
+		{"workers.sql", "ListWorkersByUserID", "idx_workers_registered_by_active_created"},
 		{"worker_registration_keys.sql", "ListRegistrationKeysAdmin", "idx_worker_registration_keys_created_at"},
 		{"user_sessions.sql", "ListUserSessionsByUserID", "idx_user_sessions_user_last_active"},
 		{"user_sessions.sql", "ListAllActiveSessions", "idx_user_sessions_last_active"},
@@ -274,12 +278,13 @@ func TestPaginatedListingsRideTheirKeysetIndexes(t *testing.T) {
 	}
 }
 
-// explainPlan returns the detail column of EXPLAIN QUERY PLAN for sqlText,
-// binding NULL for every placeholder: SQLite chooses the plan at prepare
-// time, so parameter values cannot change it.
-func explainPlan(t *testing.T, db *sql.DB, sqlText string) []string {
+// explainPlan returns the detail column of EXPLAIN QUERY PLAN for sqlText.
+// It uses the supplied arguments, or NULL for each placeholder when omitted.
+func explainPlan(t *testing.T, db *sql.DB, sqlText string, args ...any) []string {
 	t.Helper()
-	args := make([]any, strings.Count(sqlText, "?"))
+	if args == nil {
+		args = make([]any, strings.Count(sqlText, "?"))
+	}
 	rows, err := db.QueryContext(context.Background(), "EXPLAIN QUERY PLAN "+sqlText, args...)
 	require.NoError(t, err)
 	var details []string

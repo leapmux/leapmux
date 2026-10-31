@@ -51,7 +51,6 @@ func insertRevocationEvent(
 	kind leapmuxv1.RevocationEventKind,
 	subjectID string,
 	userID string,
-	revokedAt time.Time,
 	userAuthGeneration int64,
 ) error {
 	return mapErr(conn.q.InsertRevocationEvent(ctx, gendb.InsertRevocationEventParams{
@@ -59,7 +58,6 @@ func insertRevocationEvent(
 		Kind:               kind,
 		SubjectID:          subjectID,
 		UserID:             userID,
-		RevokedAt:          sqltime.NewSQLiteTime(revokedAt),
 		UserAuthGeneration: userAuthGeneration,
 	}))
 }
@@ -68,7 +66,7 @@ func insertRevocationEvent(
 // mutation. Shared by every RunCredentialMutation call site so the kind ->
 // insert mapping lives in one place per backend instead of an inline closure.
 func emitCredentialEvent(ctx context.Context, conn *sqliteConn, event store.CredentialEvent) error {
-	return insertRevocationEvent(ctx, conn, event.Kind, event.SubjectID, event.UserID, event.At, event.UserAuthGeneration)
+	return insertRevocationEvent(ctx, conn, event.Kind, event.SubjectID, event.UserID, event.UserAuthGeneration)
 }
 
 // revokedCredentialEvent maps a single-token revoke query result into the
@@ -78,7 +76,6 @@ func emitCredentialEvent(ctx context.Context, conn *sqliteConn, event store.Cred
 // delegation_tokens, whose Revoke bodies are otherwise identical.
 func revokedCredentialEvent(
 	subjectID, userID string,
-	revokedAt sqltime.SQLiteNullTime,
 	kind leapmuxv1.RevocationEventKind,
 	err error,
 ) (*store.CredentialEvent, error) {
@@ -88,11 +85,7 @@ func revokedCredentialEvent(
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	at, err := sqlutil.RequireTime(revokedAt.Time, revokedAt.Valid, "revoked_at")
-	if err != nil {
-		return nil, err
-	}
-	return &store.CredentialEvent{Kind: kind, SubjectID: subjectID, UserID: userID, At: at}, nil
+	return &store.CredentialEvent{Kind: kind, SubjectID: subjectID, UserID: userID}, nil
 }
 
 func newRevocationEventStore(conn *sqliteConn) *revocationEventStore {
@@ -170,7 +163,6 @@ func (s *revocationEventStore) ListPublishedAfter(
 				Kind:               row.Kind,
 				SubjectID:          row.SubjectID,
 				UserID:             row.UserID,
-				RevokedAt:          row.RevokedAt.UTC(),
 				UserAuthGeneration: row.UserAuthGeneration,
 				CreatedAt:          row.CreatedAt.UTC(),
 			},

@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
@@ -343,7 +344,7 @@ func TestCLIStepUp_AFailedElevationRollsBackTheApproval(t *testing.T) {
 
 	row, err := env.store.DeviceAuthorizations().Get(ctx, grant.DeviceCode)
 	require.NoError(t, err)
-	assert.Zero(t, row.Approved, "a failed elevation must roll the approval back")
+	assert.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING, row.State, "a failed elevation must roll the approval back")
 	assert.Empty(t, row.UserID, "a rolled-back approval identifies nobody")
 
 	token, err := env.store.APITokens().GetByID(ctx, tokenID)
@@ -355,7 +356,7 @@ func TestCLIStepUp_AFailedElevationRollsBackTheApproval(t *testing.T) {
 	assert.Equal(t, "authorization_pending", body["error"])
 }
 
-// The poll reports the CREDENTIAL's window, never the grant's approval flag.
+// The poll reports the CREDENTIAL's window, never the grant's APPROVED state.
 //
 // The approved-with-no-window shape is what a hub that dies between two writes
 // leaves behind, and a restore or a manual repair can write it too. Answering

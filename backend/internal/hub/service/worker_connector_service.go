@@ -192,8 +192,22 @@ func (s *WorkerConnectorService) Register(
 	workerID := id.Generate()
 	authToken := id.Generate()
 
-	var registeredBy string
-	err := s.store.RunInTransaction(ctx, func(tx store.Store) error {
+	// Resolve the owner before opening the transaction. In MySQL, an ordinary
+	// read inside the transaction could establish its snapshot before the owner
+	// lock, hiding a registration that commits while this request waits.
+	key, err := s.store.RegistrationKeys().GetByID(ctx, regKey)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeUnauthenticated, "registration key invalid or already consumed")
+		}
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("read registration key: %w", err))
+	}
+	registeredBy := key.CreatedBy
+	registrantUID, mintOK := userid.New(registeredBy)
+	if !mintOK {
+		return nil, connect.NewError(connect.CodeInternal, "registration key has a blank creator")
+	}
+	err = s.store.RunInUserAuthTransaction(ctx, registrantUID, func(tx store.Store) error {
 		// Atomic consume: returns the row only if expires_at > now and
 		// flips it into the soft-deleted state. Any concurrent caller
 		// loses the race and sees ErrNotFound.
@@ -205,18 +219,12 @@ func (s *WorkerConnectorService) Register(
 			return wrappedConnectError(connect.CodeInternal, fmt.Errorf("consume registration key: %w", err))
 		}
 
-		registeredBy = row.CreatedBy
-		// The key's creator is the worker's registrant; a blank one would make
-		// the worker owned by nobody and unreachable by its real owner.
-		registrantUID, mintOK := userid.New(registeredBy)
-		if !mintOK {
-			return connect.NewError(connect.CodeInternal, "registration key has a blank creator")
+		if !registrantUID.Matches(row.CreatedBy) {
+			return connect.NewError(connect.CodeUnauthenticated, "registration key creator changed")
 		}
-		// Counted INSIDE the transaction that consumes the key and creates the
-		// row, so two registrations racing cannot both read an under-cap count
-		// and both be admitted. Outside it this would be a suggestion rather
-		// than a bound -- the same reason the connection cap counts under the
-		// lock it already held.
+		// The live owner's lock serializes this count and insert against other
+		// registrations and account deletion. Different keys otherwise lock
+		// different rows and can both observe a count below the maximum.
 		if err := s.refuseIfAtWorkerCap(ctx, tx, registrantUID); err != nil {
 			return err
 		}
@@ -233,6 +241,9 @@ func (s *WorkerConnectorService) Register(
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeUnauthenticated, "registration key creator no longer exists")
+		}
 		// A transaction callback can run more than once. Publish only its final refusal.
 		var limitError *workerRegistrationLimitError
 		if errors.As(err, &limitError) {
@@ -278,10 +289,10 @@ func (s *WorkerConnectorService) Connect(
 		return wrappedConnectError(connect.CodeInternal, err)
 	}
 	// No soft-delete check here, deliberately. GetByAuthToken already excludes a
-	// DELETED worker (`status != 3`), and a DEREGISTERING one must still be able
-	// to hold this stream -- that is how it receives the deregister instruction
-	// and wipes its local state. Refusing it here would leave the machine
-	// running with nobody able to tell it to stop.
+	// DELETED worker (`deleted_at IS NULL`), and a DEREGISTERING one must still
+	// be able to hold this stream -- that is how it receives the deregister
+	// instruction and wipes its local state. Refusing it here would leave the
+	// machine running with nobody able to tell it to stop.
 
 	// Register the connection. Replacement cancels this derived context to
 	// terminate the superseded handler without affecting the request context of
@@ -361,12 +372,30 @@ func (s *WorkerConnectorService) Connect(
 		}
 	}()
 
+	// Read the worker again, now that Register made the connection reachable,
+	// and decide on the DEREGISTER delivery from this read, never from the
+	// authentication read above. A deregistration, or a deletion with the
+	// worker's user, can commit between that read and Register. Its
+	// SendDeregister then finds no connection and tells nobody.
+	//   - A change that commits before this read shows here, and Connect tells
+	//     the worker.
+	//   - A change that commits after this read runs its SendDeregister after
+	//     Register, so SendDeregister finds the connection and tells the
+	//     worker.
+	// A change that commits before this read can also run its SendDeregister
+	// after Register. The worker then receives DEREGISTER twice, which is
+	// harmless: it shuts down once.
+	current, err := s.store.Workers().GetByIDIncludeDeleted(ctx, worker.ID)
+	if err != nil {
+		return wrappedConnectError(connect.CodeInternal, fmt.Errorf("read worker after register: %w", err))
+	}
+
 	// Update last seen.
 	if err := s.store.Workers().UpdateLastSeen(ctx, worker.ID); err != nil {
 		slog.Warn("failed to update worker last seen", "worker_id", worker.ID, "error", err)
 	}
 
-	slog.Info("worker connected", "worker_id", worker.ID, "status", worker.Status)
+	slog.Info("worker connected", "worker_id", worker.ID, "status", current.Status)
 	// exitReason names WHY the handler is returning, set on every exit path
 	// below so "worker disconnected" says what ended the stream rather than
 	// only that it ended. It exists because the quiet exits are the ones an
@@ -381,26 +410,21 @@ func (s *WorkerConnectorService) Connect(
 		slog.Info("worker disconnected", "worker_id", worker.ID, "reason", exitReason)
 	}()
 
-	// Process pending notifications. A deregistering worker used to early-
-	// return after the inline ProcessPendingNotifications call, before the
-	// receive goroutine and main loop. Under enqueue semantics nothing drains
-	// that path, so the deregister instruction would reach the wire only via
-	// the final Drain defer -- racing stream teardown -- and pending.Complete
-	// (which only runs from the loop) could never fire, so MarkDeleted /
-	// ClearDeregistering never ran on the ack path. Both cases now run through
-	// the main loop, which drains and routes acks.
+	// A deregistering worker is told to stop on every connect: its persisted
+	// deregistering_at is the intent, and this connection is the delivery. A
+	// worker deleted with its user while it connected is told to stop too.
+	// The delivery runs beside the main loop rather than before it, because
+	// the DEREGISTER instruction reaches the wire through the loop's drain and
+	// its acknowledgement through the loop's receive (pending.Complete only
+	// runs from the loop). notifyDone ends the connection once the delivery
+	// returns, whatever its outcome. An ACTIVE worker starts no delivery
+	// goroutine.
 	var notifyDone chan struct{} // nil for a normal worker: a nil select case blocks forever
-	if s.notifier != nil {
-		if worker.Status == leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING {
-			notifyDone = make(chan struct{})
-		}
+	if s.notifier != nil && current.Status != leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE {
+		notifyDone = make(chan struct{})
 		go func() {
-			if notifyDone != nil {
-				defer close(notifyDone)
-			}
-			if err := s.notifier.ProcessPendingNotifications(ctx, worker.ID); err != nil {
-				slog.Error("failed to process pending notifications", "worker_id", worker.ID, "error", err)
-			}
+			defer close(notifyDone)
+			s.notifier.DeliverOnConnect(ctx, current, conn)
 		}()
 	}
 
@@ -430,8 +454,8 @@ func (s *WorkerConnectorService) Connect(
 	idleTimer := time.NewTimer(workerIdleTimeout)
 	defer idleTimer.Stop()
 	// Deregistering workers must not compete with the receive-idle timer:
-	// ProcessPendingNotifications parks in SendAndWait and a quiet worker
-	// would otherwise be torn down mid-ack. Nil select case blocks forever.
+	// DeliverOnConnect parks in SendAndWait and a quiet worker would otherwise
+	// be torn down mid-ack. Nil select case blocks forever.
 	var idleC <-chan time.Time
 	if notifyDone == nil {
 		idleC = idleTimer.C
@@ -515,7 +539,7 @@ func (s *WorkerConnectorService) Connect(
 			}
 
 		case <-notifyDone:
-			exitReason = "pending notifications processed"
+			exitReason = "DEREGISTER delivery finished"
 			return nil
 
 		case <-ctx.Done():

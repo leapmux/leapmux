@@ -70,6 +70,9 @@ var identityComparisonSites = map[string]string{
 	// production path that reached crdt.Registry.Get with an unvalidated column
 	// string -- the manager is now derived from the bound owner instead.
 	"internal/hub/service.(*WorkerConnectorService).handleWorkspaceTabsSync": "TestHandleWorkspaceTabsSync_TombstonesOnlyTheRegistrant",
+	// Admission locks the key's preflight owner, then checks the consumed key
+	// still belongs to that owner. A blank or changed creator must not pass.
+	"internal/hub/service.(*WorkerConnectorService).Register": "TestRegisterRefusesAConsumedKeyWithAnotherCreator",
 
 	// ---- hub/crdt: grant polarity ----
 
@@ -83,10 +86,11 @@ var identityComparisonSites = map[string]string{
 	// fetched by. The reach is outside the CRDT -- CompactBatch keys the next
 	// user_state row by state.GetUserId(), so a foreign payload rewrites another
 	// tenant's row. (The derived workspace_tab_owned rows were the other half of
-	// that reach; they now take their owner from the committing tenant and the
-	// column carries a users(id) FK, so this is the layer that still needs the
-	// check.) Matches rather than `!=` for the usual reason: a blank-tenant
-	// manager must not match a blank-tenant payload.
+	// that reach; they now take their owner from the committing tenant, and a
+	// composite foreign key ties each row to a workspace its own user owns, so
+	// this is the layer that still needs the check.) Matches rather than `!=`
+	// for the usual reason: a blank-tenant manager must not match a
+	// blank-tenant payload.
 	"internal/hub/crdt.(*Manager).requireOwnState": "TestBootstrapRefusesAStatePayloadNamingAnotherTenant",
 
 	// ---- hub/store ----

@@ -31,7 +31,7 @@ type stubDelegationProvider struct {
 	calls  int
 }
 
-func (s *stubDelegationProvider) GetBearer(_ context.Context, _ DelegationScope) (string, error) {
+func (s *stubDelegationProvider) GetBearer(_ context.Context, _ userid.UserID) (string, error) {
 	s.calls++
 	return s.bearer, s.err
 }
@@ -76,7 +76,7 @@ func TestNew_BindsPoolToExplicitLifetime(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("cross-worker pool did not stop with its lifetime context")
 	}
-	_, err := c.channelFor(context.Background(), "worker-2", DelegationScope{UserID: userid.MustNew("user-1")})
+	_, err := c.channelFor(context.Background(), "worker-2", userid.MustNew("user-1"))
 	assert.ErrorIs(t, err, context.Canceled)
 }
 
@@ -86,14 +86,14 @@ func TestNew_BindsPoolToExplicitLifetime(t *testing.T) {
 // silently start opening unscoped channels.
 func TestChannelFor_RejectsEmptyTarget(t *testing.T) {
 	c := New(context.Background(), testEndpoint(t), &PinStore{}, &stubDelegationProvider{bearer: "x"})
-	_, err := c.channelFor(context.Background(), "", DelegationScope{UserID: userid.MustNew("user-1")})
+	_, err := c.channelFor(context.Background(), "", userid.MustNew("user-1"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "target_worker_id required")
 }
 
 func TestChannelFor_RejectsEmptyUser(t *testing.T) {
 	c := New(context.Background(), testEndpoint(t), &PinStore{}, &stubDelegationProvider{bearer: "x"})
-	_, err := c.channelFor(context.Background(), "worker-B", DelegationScope{})
+	_, err := c.channelFor(context.Background(), "worker-B", userid.UserID{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "user_id required")
 }
@@ -107,7 +107,7 @@ func TestChannelFor_PropagatesDelegationError(t *testing.T) {
 	dp := &stubDelegationProvider{err: errors.New("mint refused: tab gone")}
 	c := New(context.Background(), testEndpoint(t), &PinStore{}, dp)
 
-	_, err := c.channelFor(context.Background(), "worker-B", DelegationScope{UserID: userid.MustNew("user-1"), AgentID: "agent-1"})
+	_, err := c.channelFor(context.Background(), "worker-B", userid.MustNew("user-1"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "delegation token")
 	assert.Contains(t, err.Error(), "mint refused")
@@ -194,7 +194,7 @@ type blockingDelegationProvider struct {
 	err     error
 }
 
-func (b *blockingDelegationProvider) GetBearer(ctx context.Context, _ DelegationScope) (string, error) {
+func (b *blockingDelegationProvider) GetBearer(ctx context.Context, _ userid.UserID) (string, error) {
 	b.mu.Lock()
 	b.calls++
 	b.mu.Unlock()
@@ -228,7 +228,7 @@ func TestChannelFor_SingleFlightsConcurrentOpens(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			_, err := c.channelFor(context.Background(), "worker-B",
-				DelegationScope{UserID: userid.MustNew("user-1")})
+				userid.MustNew("user-1"))
 			errs[idx] = err
 		}(i)
 	}

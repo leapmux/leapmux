@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -85,9 +84,9 @@ func TestRunUserInfoMutationRouting(t *testing.T) {
 		t.Helper()
 		var out outcome
 		loads := 0
-		var fence func(context.Context, fakeConn, string, time.Time) error
+		var fence func(context.Context, fakeConn, string) error
 		if fenceEnabled {
-			fence = func(context.Context, fakeConn, string, time.Time) error {
+			fence = func(context.Context, fakeConn, string) error {
 				out.fenced = true
 				return nil
 			}
@@ -103,10 +102,10 @@ func TestRunUserInfoMutationRouting(t *testing.T) {
 				}
 				return after, existedAfter, nil
 			},
-			func(context.Context, fakeConn) (string, time.Time, bool, error) {
-				return "user-1", time.Unix(1, 0).UTC(), true, nil
+			func(context.Context, fakeConn) (string, bool, error) {
+				return "user-1", true, nil
 			},
-			func(context.Context, fakeConn, string, time.Time) error {
+			func(context.Context, fakeConn, string) error {
 				out.emitted = true
 				return nil
 			},

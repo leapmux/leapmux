@@ -264,7 +264,6 @@ func TestRestartTerminal_AfterWorkerRestart(t *testing.T) {
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
 		ID:         id,
 		WorkingDir: workingDir,
-		HomeDir:    svc.HomeDir,
 		Shell:      testutil.TestShell(),
 		Cols:       80,
 		Rows:       25,

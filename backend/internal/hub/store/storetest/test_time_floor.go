@@ -198,37 +198,15 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 
 		expiresAt := floorProbe(floorProbeBase(), 0)
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-			ClientID:        oauthapp.ControlCLIClientID,
-			DeviceCode:      "floor-device",
-			UserCode:        "FLOOR-USER",
-			IntervalSeconds: 5,
-			ExpiresAt:       expiresAt,
+			ClientID:   oauthapp.ControlCLIClientID,
+			DeviceCode: "floor-device",
+			UserCode:   "FLOOR-USER",
+			ExpiresAt:  expiresAt,
 		}))
 
 		auth, err := st.DeviceAuthorizations().Get(ctx, "floor-device")
 		require.NoError(t, err)
 		assertStoredInstant(t, "expires_at", expiresAt, auth.ExpiresAt)
-	})
-
-	t.Run("user state upsert floors bound instants", func(t *testing.T) {
-		st := s.NewStore(t)
-		base := floorProbeBase()
-
-		epochStartedAt := floorProbe(base, 0)
-		updatedAt := floorProbe(base, 1)
-		user := SeedUser(t, st, "floor-state-user")
-		require.NoError(t, st.UserState().Upsert(ctx, store.UpsertUserStateParams{
-			UserID:         userid.MustNew(user.ID),
-			StatePayload:   []byte("payload"),
-			CurrentEpoch:   1,
-			EpochStartedAt: epochStartedAt,
-			UpdatedAt:      updatedAt,
-		}))
-
-		row, err := st.UserState().Get(ctx, userid.MustNew(user.ID))
-		require.NoError(t, err)
-		assertStoredInstant(t, "epoch_started_at", epochStartedAt, row.EpochStartedAt)
-		assertStoredInstant(t, "updated_at", updatedAt, row.UpdatedAt)
 	})
 
 	t.Run("pending email expiry floors bound instant", func(t *testing.T) {
@@ -264,7 +242,6 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 			PrincipalID:         user.ID,
 			CanonicalPhysicalMs: 1,
 			CanonicalLogical:    0,
-			CanonicalClient:     "floor-client",
 			OpCount:             1,
 			Epoch:               1,
 			ExpiresAt:           expiresAt,

@@ -30,8 +30,8 @@ func moveTabBatch(batchID, tabID, newTileID string) *leapmuxv1.OpBatch {
 func submitBatch(t *testing.T, mgr *crdt.Manager, epoch int64, batch *leapmuxv1.OpBatch) {
 	t.Helper()
 	res, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{batch},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{batch}),
 	})
 	require.NoError(t, err)
 	require.Len(t, res, 1)
@@ -445,7 +445,7 @@ func TestSubscribeWithACL_WorkspaceDeletedDuringGap_EmitsRemoval(t *testing.T) {
 	tombstoneWorkspaceInternal(t, mgr, "doomed", "doomed-root")
 
 	// Reconnect. resolve() reflects the post-delete ACL, exactly as
-	// ListAccessibleWorkspaces would (it filters is_deleted = 0).
+	// ListAccessibleWorkspaces would (it filters deleted_at IS NULL).
 	resolveSurviving := func() (map[string]bool, error) { return map[string]bool{"w1": true}, nil }
 	sub := &crdt.Subscriber{UserID: "user-1", Send: (&captureSubscriber{}).send}
 	out, err := mgr.SubscribeWithACL(context.Background(), sub, cursor, epoch, resolveSurviving)

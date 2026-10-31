@@ -8,6 +8,10 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
+// TabIndexTable is the one table of the derived tab index. Every bulk
+// statement below targets it.
+const TabIndexTable = "workspace_tab_owned"
+
 // DBExec is the subset of database/sql.DB / *sql.Tx that the generic
 // bulk helpers need. Both sqlite/mysql's `gendb.DBTX` interfaces
 // satisfy it; the typed alias keeps callers from importing the
@@ -24,7 +28,8 @@ type BulkUpsertTabsConfig struct {
 	// ConflictSuffix is the ` ON CONFLICT ... DO UPDATE ...` clause
 	// (sqlite) or ` ON DUPLICATE KEY UPDATE ...` clause (mysql)
 	// appended after the VALUES list. Must start with a leading
-	// space — the caller is responsible for the table-name fit.
+	// space, and must update `rendered` along with the other columns,
+	// or a flip of the flag alone is lost.
 	ConflictSuffix string
 	// ChunkRows caps the per-statement row count so each chunk stays
 	// under the dialect's bound-parameter limit (999 for sqlite, much
@@ -32,16 +37,16 @@ type BulkUpsertTabsConfig struct {
 	ChunkRows int
 }
 
-// BulkUpsertTabs runs `INSERT INTO <table> ... VALUES (...) ...
-// <ConflictSuffix>` against `exec`, chunking the input to stay under
-// the dialect's bound-parameter limit. Each chunk uses 7 placeholders
+// BulkUpsertTabs runs `INSERT INTO workspace_tab_owned ... VALUES (...)
+// ... <ConflictSuffix>` against `exec`, chunking the input to stay under
+// the dialect's bound-parameter limit. Each chunk uses 8 placeholders
 // per row (user_id, workspace_id, tab_type, tab_id, worker_id, tile_id,
-// position) and casts TabType through int64, which both sqlite and
-// mysql accept for an integer column.
+// position, rendered) and casts TabType through int64, which both sqlite
+// and mysql accept for an integer column.
 //
 // mapErr lets the caller convert dialect-specific errors into the
 // store-package errors.
-func BulkUpsertTabs(ctx context.Context, exec DBExec, table string, rows []store.UpsertOwnedTabParams, cfg BulkUpsertTabsConfig, mapErr func(error) error) error {
+func BulkUpsertTabs(ctx context.Context, exec DBExec, rows []store.UpsertTabParams, cfg BulkUpsertTabsConfig, mapErr func(error) error) error {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -50,15 +55,15 @@ func BulkUpsertTabs(ctx context.Context, exec DBExec, table string, rows []store
 		var sb strings.Builder
 		sb.Grow(160 + len(chunk)*24)
 		sb.WriteString("INSERT INTO ")
-		sb.WriteString(table)
-		sb.WriteString(" (user_id, workspace_id, tab_type, tab_id, worker_id, tile_id, position) VALUES ")
-		args := make([]any, 0, len(chunk)*7)
+		sb.WriteString(TabIndexTable)
+		sb.WriteString(" (user_id, workspace_id, tab_type, tab_id, worker_id, tile_id, position, rendered) VALUES ")
+		args := make([]any, 0, len(chunk)*8)
 		for i, r := range chunk {
 			if i > 0 {
 				sb.WriteString(", ")
 			}
-			sb.WriteString("(?, ?, ?, ?, ?, ?, ?)")
-			args = append(args, r.UserID.String(), r.WorkspaceID, int64(r.TabType), r.TabID, r.WorkerID, r.TileID, r.Position)
+			sb.WriteString("(?, ?, ?, ?, ?, ?, ?, ?)")
+			args = append(args, r.UserID.String(), r.WorkspaceID, int64(r.TabType), r.TabID, r.WorkerID, r.TileID, r.Position, r.Rendered)
 		}
 		sb.WriteString(cfg.ConflictSuffix)
 		if _, err := exec.ExecContext(ctx, sb.String(), args...); err != nil {
@@ -68,8 +73,8 @@ func BulkUpsertTabs(ctx context.Context, exec DBExec, table string, rows []store
 	})
 }
 
-// BulkDeleteTabs runs `DELETE FROM <table> WHERE (user_id, tab_id) IN
-// (...)` against `exec`, chunking the keys to stay under the dialect's
+// BulkDeleteTabs runs `DELETE FROM workspace_tab_owned WHERE (user_id, tab_id)
+// IN (...)` against `exec`, chunking the keys to stay under the dialect's
 // bound-parameter limit. Both sqlite and mysql support the row-value
 // IN syntax on currently-supported versions.
 // Keys whose owner is zero are dropped before binding: a blank user_id does not
@@ -82,8 +87,8 @@ func BulkUpsertTabs(ctx context.Context, exec DBExec, table string, rows []store
 // A drop is logged rather than swallowed: it means an upstream tenancy
 // invariant broke, and a delete that silently covers fewer keys than it was
 // handed still returns nil.
-func BulkDeleteTabs(ctx context.Context, exec DBExec, table string, keys []store.TabIndexKey, chunkRows int, mapErr func(error) error) error {
-	bound := store.FilterTabIndexKeysForTable(table, keys)
+func BulkDeleteTabs(ctx context.Context, exec DBExec, keys []store.TabIndexKey, chunkRows int, mapErr func(error) error) error {
+	bound := store.FilterTabIndexKeysForTable(TabIndexTable, keys)
 	if len(bound) == 0 {
 		return nil
 	}
@@ -92,7 +97,7 @@ func BulkDeleteTabs(ctx context.Context, exec DBExec, table string, keys []store
 		var sb strings.Builder
 		sb.Grow(80 + len(chunk)*8)
 		sb.WriteString("DELETE FROM ")
-		sb.WriteString(table)
+		sb.WriteString(TabIndexTable)
 		sb.WriteString(" WHERE (user_id, tab_id) IN (")
 		args := make([]any, 0, len(chunk)*2)
 		for i, k := range chunk {

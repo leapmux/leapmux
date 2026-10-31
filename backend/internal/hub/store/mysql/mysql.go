@@ -255,9 +255,6 @@ func normalizeMySQLDSN(dsn string) (string, error) {
 func (s *mysqlStore) Users() store.UserStore       { return &userStore{conn: s.conn} }
 func (s *mysqlStore) Sessions() store.SessionStore { return &sessionStore{conn: s.conn} }
 func (s *mysqlStore) Workers() store.WorkerStore   { return &workerStore{conn: s.conn} }
-func (s *mysqlStore) WorkerNotifications() store.WorkerNotificationStore {
-	return &workerNotificationStore{conn: s.conn}
-}
 func (s *mysqlStore) RegistrationKeys() store.RegistrationKeyStore {
 	return &registrationKeyStore{conn: s.conn}
 }

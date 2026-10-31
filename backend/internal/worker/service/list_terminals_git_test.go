@@ -31,7 +31,7 @@ func TestListTerminals_AttachesTheGitStatusOfEachTerminalsOwnDirectory(t *testin
 	// directory is a repo: the start directory decides, as ResolveGitDir states.
 	liveRepo := testutil.NewGitRepo(t)
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: "live", WorkingDir: t.TempDir(), HomeDir: "/tmp", ShellStartDir: liveRepo,
+		ID: "live", WorkingDir: t.TempDir(), ShellStartDir: liveRepo,
 		Cols: 80, Rows: 24, Screen: []byte{},
 	}))
 	require.NoError(t, svc.Terminals.StartTerminal(ctx, terminal.Options{
@@ -42,13 +42,13 @@ func TestListTerminals_AttachesTheGitStatusOfEachTerminalsOwnDirectory(t *testin
 	// A terminal with only a row, in another repo.
 	rowRepo := testutil.NewGitRepo(t)
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: "row-only", WorkingDir: rowRepo, HomeDir: "/tmp",
+		ID: "row-only", WorkingDir: rowRepo,
 		Cols: 80, Rows: 24, Screen: []byte("screen"),
 	}))
 
 	// A terminal in a directory that is no repo has no git status.
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: "plain", WorkingDir: t.TempDir(), HomeDir: "/tmp",
+		ID: "plain", WorkingDir: t.TempDir(),
 		Cols: 80, Rows: 24, Screen: []byte("screen"),
 	}))
 

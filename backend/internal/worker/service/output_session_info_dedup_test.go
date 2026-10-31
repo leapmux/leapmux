@@ -91,7 +91,6 @@ func newSessionInfoServiceFixture(t *testing.T) (*Service, agent.ProviderService
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_PI,
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDModel:  "gpt-5",

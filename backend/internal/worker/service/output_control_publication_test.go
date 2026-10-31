@@ -173,7 +173,7 @@ func TestControlPublicationWatcherCanPublishAnotherRequestSynchronously(t *testi
 				response := []byte(`{"response":{"request_id":"original","response":{"behavior":"deny","message":"Please revise the plan."}}}`)
 				deliveryID, err := svc.Output.claimControlResponseAnswer(db.StoreControlResponseAnswerParams{
 					AgentID: agentID, RequestID: original.RequestID, ClaimToken: original.ClaimToken,
-					AgentSessionID: original.AgentSessionID, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+					AgentSessionID: original.AgentSessionID,
 					RequestPayload: original.Payload, ResponseContent: response, ResolvedContent: response,
 				})
 				require.NoError(t, err)

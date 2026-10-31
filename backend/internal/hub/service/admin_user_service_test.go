@@ -1589,13 +1589,11 @@ func setupResetPasswordTest(t *testing.T) *resetPasswordEnv {
 	worker := storetest.SeedWorker(t, env.st, userID)
 	delegationID := id.Generate()
 	require.NoError(t, env.st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
-		GrantedScopes:    "workspace:read workspace:write worker:read",
-		ID:               delegationID,
-		UserID:           userid.MustNew(userID),
-		WorkerID:         worker.ID,
-		IssuedForTabID:   "tab-1",
-		IssuedForTabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
-		SecretHash:       []byte("hash"),
+		GrantedScopes: "workspace:read workspace:write worker:read",
+		ID:            delegationID,
+		UserID:        userid.MustNew(userID),
+		WorkerID:      worker.ID,
+		SecretHash:    []byte("hash"),
 	}))
 
 	before, err := env.st.Users().GetByID(ctx, userID)

@@ -72,7 +72,7 @@ func storeAnsweredQuestion(t *testing.T, svc *Service) (inputqueue.DispatchItem,
 		RequestPayload: payload, FollowUp: "Red",
 		FollowUpKind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER,
 		InputID:      "answer-input", AgentSessionID: "session-1",
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, NonBlocking: true,
+		NonBlocking: true,
 	}))
 	row, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
@@ -236,7 +236,7 @@ func TestQuestionSteeringRequiresItsSessionCapabilityOnlyForAnswers(t *testing.T
 			require.NoError(t, dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{
 				AgentID: "agent-1", RequestID: "request-1", ClaimToken: "claim-1", State: storedStateCompleted,
 				RequestPayload: asyncQuestionPayload("request-1"), FollowUp: "Red", FollowUpKind: kind,
-				InputID: "input-1", AgentSessionID: "session-1", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+				InputID: "input-1", AgentSessionID: "session-1",
 				NonBlocking: kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER,
 			}))
 			recorder := &recordingQuestionAgent{}

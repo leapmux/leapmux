@@ -39,7 +39,6 @@ func (s *userRecentBatchIDStore) Get(ctx context.Context, userID userid.UserID, 
 		PrincipalID:         row.PrincipalID,
 		CanonicalPhysicalMs: row.CanonicalPhysicalMs,
 		CanonicalLogical:    row.CanonicalLogical,
-		CanonicalClient:     row.CanonicalClient,
 		OpCount:             int64(row.OpCount),
 		Epoch:               row.Epoch,
 		ExpiresAt:           row.ExpiresAt.Time,
@@ -54,13 +53,20 @@ func (s *userRecentBatchIDStore) Insert(ctx context.Context, p store.InsertUserR
 		PrincipalID:         p.PrincipalID,
 		CanonicalPhysicalMs: p.CanonicalPhysicalMs,
 		CanonicalLogical:    p.CanonicalLogical,
-		CanonicalClient:     p.CanonicalClient,
 		OpCount:             int32(p.OpCount),
 		Epoch:               p.Epoch,
 		ExpiresAt:           pgtime.New(p.ExpiresAt),
 	}))
 }
 
-func (s *userRecentBatchIDStore) DeleteExpired(ctx context.Context, before time.Time) (int64, error) {
-	return rowsAffected(s.conn.q.DeleteExpiredRecentBatchIDs(ctx, pgtime.New(before)))
+func (s *userRecentBatchIDStore) DeleteExpired(ctx context.Context, userID userid.UserID, before time.Time, oldestAcceptedEpoch int64) (int64, error) {
+	owner, ok := userid.OwnerFilter(userID)
+	if !ok {
+		return 0, nil
+	}
+	return rowsAffected(s.conn.q.DeleteExpiredRecentBatchIDs(ctx, gendb.DeleteExpiredRecentBatchIDsParams{
+		UserID:              owner,
+		Before:              pgtime.New(before),
+		OldestAcceptedEpoch: oldestAcceptedEpoch,
+	}))
 }

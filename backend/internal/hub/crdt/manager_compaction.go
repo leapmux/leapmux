@@ -8,24 +8,23 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// TickHousekeeping runs one pass of the dedup-cleanup + epoch-advance
-// + compaction cycle. Identical to what the 60s ticker inside Start
-// triggers; exported so admin tooling and integration tests can force
-// a deterministic pass without waiting on the ticker. It returns once the
-// pass has completed, so a caller can assert on its effects.
+// TickHousekeeping runs one pass of the dedup-cleanup + compaction cycle,
+// whose compaction pass also rotates the epoch. Identical to what the 60s
+// ticker inside Start triggers; exported so admin tooling and integration
+// tests can force a deterministic pass without waiting on the ticker. It
+// returns once the pass has completed, so a caller can assert on its effects.
 //
 // The pass is ROUTED THROUGH the manager goroutine, the same way
-// SeedStateForTest is and for the same reason: both maybeCompact and
-// maybeAdvanceEpoch now PUBLISH a new state generation, and a publish from the
-// caller's goroutine would discard any commit that landed between the clone and
-// the swap. Running inline was tolerable only while the writeback stamped a
-// couple of watermark fields onto whatever generation was live at the time.
-// runOnManagerGoroutine carries the started/stopped/pre-Start negotiation,
-// including why the pre-Start branch is safe only from the registry-factory
-// shape.
+// SeedStateForTest is and for the same reason: maybeCompact PUBLISHES a new
+// state generation, and a publish from the caller's goroutine would discard
+// any commit that landed between the clone and the swap. Running inline was
+// tolerable only while the writeback stamped a couple of watermark fields onto
+// whatever generation was live at the time. runOnManagerGoroutine carries the
+// started/stopped/pre-Start negotiation, including why the pre-Start branch is
+// safe only from the registry-factory shape.
 //
 // ctx bounds the JOURNAL WORK, not the wait: it is captured by the closure and
-// consulted by the cleanup/compaction/epoch calls once the goroutine picks the
+// consulted by the cleanup and compaction calls once the goroutine picks the
 // task up. A caller that cancels while the task is still queued (or already
 // running) still blocks until the pass returns. That is deliberate -- the pass
 // publishes a state generation, so abandoning the wait would let the caller
@@ -44,139 +43,170 @@ func (m *Manager) TickHousekeeping(ctx context.Context) {
 	m.runOnManagerGoroutine(func() { m.tickHousekeeping(ctx) })
 }
 
-// tickHousekeeping runs dedup-table cleanup, lazy compaction, and
-// epoch advance. Driven by a 60s ticker; never blocks long. Presence
-// cleanup is event-driven (via subscriber disconnects + deferred
-// clear timers), not bound to this tick.
+// tickHousekeeping runs compaction, then dedup-table cleanup. Compaction also
+// rotates the epoch and persists a Bootstrap epoch stamp. Driven by a 60s
+// ticker; never blocks long. Presence cleanup is event-driven (via subscriber
+// disconnects + deferred clear timers), not bound to this tick.
 func (m *Manager) tickHousekeeping(ctx context.Context) {
-	if _, err := m.journal.CleanupExpiredRecentBatchIDs(ctx, m.now()); err != nil {
+	m.maybeCompact(ctx)
+	// Use the published epoch. A failed rotation leaves its accepted epochs
+	// unchanged, and their dedup records must remain available for retries.
+	if _, err := m.journal.CleanupExpiredRecentBatchIDs(ctx, m.owner.String(), m.now(), m.state.GetCurrentEpoch()-1); err != nil {
 		m.logger.Warn("cleanup recent batch ids", "err", err)
 	}
-	m.maybeAdvanceEpoch(ctx)
-	m.maybeCompact(ctx)
 }
 
-func (m *Manager) maybeAdvanceEpoch(ctx context.Context) {
-	// maybeAdvanceEpoch runs on the manager goroutine (via tickHousekeeping),
-	// which is the sole writer of m.state, so the bare reads below need no
-	// lock beyond m.mu (taken for the final write to exclude the RLock
-	// readers).
-	if m.state.GetEpochStartedAt() == nil {
-		return
+// epochRotation reports the epoch header `s` should carry at `now`.
+//
+// It is not due while less than EpochDuration has passed since
+// EpochStartedAt; a nil start is never due, and neither is a `now` before the
+// start (a clock that moved back), so it changes nothing then. Once due, it
+// advances the epoch by every WHOLE period that elapsed and moves the start
+// forward by the same amount, so a hub that was down for 30 days moves two
+// epochs, and every epoch stays aligned to its EpochDuration window instead
+// of restarting at the moment the hub came back.
+func epochRotation(s *leapmuxv1.UserCrdtState, now time.Time) (epoch int64, startedAt *timestamppb.Timestamp, due bool) {
+	started := s.GetEpochStartedAt()
+	if started == nil {
+		return s.GetCurrentEpoch(), started, false
 	}
-	started := m.state.GetEpochStartedAt().AsTime()
-	if m.now().Sub(started) < EpochDuration {
-		return
+	elapsed := now.Sub(started.AsTime())
+	if elapsed < EpochDuration {
+		return s.GetCurrentEpoch(), started, false
 	}
-	newEpoch := m.state.GetCurrentEpoch() + 1
-	if err := m.journal.AdvanceEpoch(ctx, m.owner.String(), newEpoch, m.now()); err != nil {
-		m.logger.Warn("advance epoch", "err", err)
-		return
-	}
-	// PUBLISH a new generation rather than editing the live one: a published
-	// generation is immutable (see commitState), which is what lets a cold
-	// subscriber capture the pointer and build its baseline lock-free. The
-	// entity maps are aliased, so this stays O(1).
-	next := nextStateGeneration(m.state)
-	next.CurrentEpoch = newEpoch
-	next.EpochStartedAt = timestamppb.New(m.now())
-	m.commitState(next)
+	periods := elapsed / EpochDuration
+	return s.GetCurrentEpoch() + int64(periods),
+		timestamppb.New(started.AsTime().Add(periods * EpochDuration)),
+		true
 }
 
 func (m *Manager) maybeCompact(ctx context.Context) {
-	// Cheap pre-check: if the compaction watermark wouldn't advance there is
-	// nothing to do, so skip the full CloneState on the idle path.
+	// Cheap pre-check. A pass has three triggers, and with none of them there
+	// is nothing to do, so the idle path skips building a generation:
 	//
-	// This also skips the DropThrough delete, which is only safe because
-	// laggedRetentionWatermark is a pure function of (max_hlc,
-	// compaction_watermark, ttl): a max_hlc that has not moved pins the lagging
-	// floor as surely as the tight one, so there is no retention work waiting
-	// either. Note the reason is the SHARED INPUT, not the ordering -- being
-	// bounded above by a stationary value would not on its own make a value
-	// stationary. Anyone making retention wall-clock-driven invalidates this
-	// pre-check and must move the DropThrough out from behind it, or a dormant
-	// account's op rows would never be swept.
+	//   - advance: the compaction watermark is behind max_hlc.
+	//   - rotate: the epoch is due (epochRotation).
+	//   - persistStart: Bootstrap stamped an epoch start that no CompactBatch
+	//     has persisted yet.
+	//
+	// A header-only pass (rotate or persistStart without advance) skips the
+	// watermark steps and the prune, and passes a nil DropThrough, so it
+	// deletes nothing. That keeps retention a pure function of (max_hlc,
+	// compaction_watermark, ttl): a max_hlc that has not moved pins the
+	// lagging floor as surely as the tight one, so there is no retention work
+	// waiting either. Note the reason is the SHARED INPUT, not the ordering --
+	// being bounded above by a stationary value would not on its own make a
+	// value stationary. Anyone making retention wall-clock-driven invalidates
+	// this pre-check and must move the DropThrough out from behind it, or a
+	// dormant account's op rows would never be swept.
 	m.mu.RLock()
-	if HLCIsZero(m.state.GetMaxHlc()) || HLCCmp(m.state.GetMaxHlc(), m.state.GetCompactionWatermark()) <= 0 {
+	advance := !HLCIsZero(m.state.GetMaxHlc()) && HLCCmp(m.state.GetMaxHlc(), m.state.GetCompactionWatermark()) > 0
+	epoch, epochStartedAt, rotate := epochRotation(m.state, m.now())
+	persistStart := m.epochStartUnpersisted
+	if !advance && !rotate && !persistStart {
 		m.mu.RUnlock()
 		return
 	}
 	// Build the generation this pass will publish. The prune below only ADDS
-	// OR REMOVES map entries -- it never writes a record field -- and the two
-	// watermark stamps are header fields, so copying the maps and sharing the
-	// records is sufficient. A full CloneState here deep-cloned every node, tab,
-	// window and workspace through protobuf reflection on the manager goroutine,
-	// once per tick on any active account, for a pass that then deletes a
-	// handful of entries.
-	state := nextStateGenerationWithOwnMaps(m.state)
+	// OR REMOVES map entries -- it never writes a record field -- and the
+	// watermark and epoch stamps are header fields, so copying the maps and
+	// sharing the records is sufficient. A full CloneState here deep-cloned
+	// every node, tab, window and workspace through protobuf reflection on the
+	// manager goroutine, once per tick on any active account, for a pass that
+	// then deletes a handful of entries. A header-only pass writes no map at
+	// all, so it can alias them.
+	var state *leapmuxv1.UserCrdtState
+	if advance {
+		state = nextStateGenerationWithOwnMaps(m.state)
+	} else {
+		state = nextStateGeneration(m.state)
+	}
 	m.mu.RUnlock()
 
-	// Per-batch dedup rows are already in user_recent_batch_ids when
-	// the batch committed; the compaction step only needs to ensure
-	// the state blob carries the new watermark and the journal rows
-	// whose last canonical HLC is ≤ the retention watermark are dropped.
-	// The retention contract on user_recent_batch_ids carries forward via
-	// the existing expires_at column (set at commit time), so no extra
-	// inserts are required here.
+	if rotate {
+		// Replace the pointer: the old generation still shares the previous
+		// Timestamp message, which must not change under it.
+		state.CurrentEpoch = epoch
+		state.EpochStartedAt = epochStartedAt
+	}
 
-	// compaction_watermark advances to max_hlc: tombstone pruning is
-	// load-bearing for correctness (HLC monotonicity, bounded user_state
-	// growth), so it tracks the live head tightly.
-	state.CompactionWatermark = HLCClone(state.GetMaxHlc())
+	var dropThrough *leapmuxv1.HLC
+	prunedCount := 0
+	if advance {
+		// Per-batch dedup rows are already in user_recent_batch_ids when
+		// the batch committed; the compaction step only needs to ensure
+		// the state blob carries the new watermark and the journal rows
+		// whose last canonical HLC is ≤ the retention watermark are dropped.
+		// The retention contract on user_recent_batch_ids carries forward via
+		// the existing expires_at column (set at commit time), so no extra
+		// inserts are required here.
 
-	// op_retention_watermark LAGS compaction_watermark by OpRetentionTTL.
-	// It is the floor for op-batch DELETION: DeleteUserOpBatchesThrough
-	// (CompactBatch.DropThrough) drops rows whose last canonical HLC is ≤
-	// it, so batches in (op_retention_watermark, compaction_watermark]
-	// survive below the tombstone-prune line. That widened window is what
-	// lets delta-resume pay off across multi-hour gaps instead of only the
-	// ~60s between compaction ticks — a client whose cursor is above this
-	// watermark (and below compaction_watermark) still resumes (decideResume
-	// gates on op_retention_watermark, not compaction_watermark). The op
-	// log is an append-only history and replaying a longer tail is sound
-	// (each op is idempotent under the CRDT merge), so retention is pure
-	// storage optimization, decoupled from the correctness-tight prune.
-	//
-	// The lag is applied to max_hlc.physical (a UnixMilli value), keeping
-	// the same client_id and zeroing logical: the watermark is a deletion
-	// floor, not a real HLC, and a logical > 0 would narrow the deleted
-	// range to a sub-millisecond sliver that has no meaning as a floor.
-	// Clamp at ≤ compaction_watermark so retention can never precede the
-	// prune line (and the invariant op_retention_watermark ≤
-	// compaction_watermark ≤ max_hlc always holds). On the first compaction
-	// of a young state where max_hlc.physical < OpRetentionTTL, the floor
-	// goes negative; clamp it to zero (HLCIsZero) so decideResume's
-	// `cursor > op_retention_watermark` still admits any non-zero cursor —
-	// i.e. every resumable client until the state is older than the TTL.
-	opRetention := laggedRetentionWatermark(state.GetMaxHlc(), state.GetCompactionWatermark(), m.opRetentionTTL)
-	state.OpRetentionWatermark = opRetention
+		// compaction_watermark advances to max_hlc: tombstone pruning is
+		// load-bearing for correctness (HLC monotonicity, bounded user_state
+		// growth), so it tracks the live head tightly.
+		state.CompactionWatermark = HLCClone(state.GetMaxHlc())
 
-	// Drop tombstoned records whose tombstone_at is at or below the
-	// new compaction_watermark (the TIGHT one — pruning is correctness-
-	// bound, not retention-bound). The state blob persisted by
-	// `CompactBatch` (one transaction with the journal compaction) reflects
-	// the pruned shape, so a fresh bootstrap sees the entity as
-	// never-existed. See PruneTombstonesAtOrBelow's doc comment for the
-	// safety argument.
-	prunedCount := PruneTombstonesAtOrBelow(state, state.GetCompactionWatermark())
+		// op_retention_watermark LAGS compaction_watermark by OpRetentionTTL.
+		// It is the floor for op-batch DELETION: DeleteUserOpBatchesThrough
+		// (CompactBatch.DropThrough) drops rows whose last canonical HLC is ≤
+		// it, so batches in (op_retention_watermark, compaction_watermark]
+		// survive below the tombstone-prune line. That widened window is what
+		// lets delta-resume pay off across multi-hour gaps instead of only the
+		// ~60s between compaction ticks — a client whose cursor is above this
+		// watermark (and below compaction_watermark) still resumes (decideResume
+		// gates on op_retention_watermark, not compaction_watermark). The op
+		// log is an append-only history and replaying a longer tail is sound
+		// (each op is idempotent under the CRDT merge), so retention is pure
+		// storage optimization, decoupled from the correctness-tight prune.
+		//
+		// The lag is applied to max_hlc.physical (a UnixMilli value), keeping
+		// the same client_id and zeroing logical: the watermark is a deletion
+		// floor, not a real HLC, and a logical > 0 would narrow the deleted
+		// range to a sub-millisecond sliver that has no meaning as a floor.
+		// Clamp at ≤ compaction_watermark so retention can never precede the
+		// prune line (and the invariant op_retention_watermark ≤
+		// compaction_watermark ≤ max_hlc always holds). On the first compaction
+		// of a young state where max_hlc.physical < OpRetentionTTL, the floor
+		// goes negative; clamp it to zero (HLCIsZero) so decideResume's
+		// `cursor > op_retention_watermark` still admits any non-zero cursor —
+		// i.e. every resumable client until the state is older than the TTL.
+		state.OpRetentionWatermark = laggedRetentionWatermark(state.GetMaxHlc(), state.GetCompactionWatermark(), m.opRetentionTTL)
+
+		// Drop tombstoned records whose tombstone_at is at or below the
+		// new compaction_watermark (the TIGHT one — pruning is correctness-
+		// bound, not retention-bound). The state blob persisted by
+		// `CompactBatch` (one transaction with the journal compaction) reflects
+		// the pruned shape, so a fresh bootstrap sees the entity as
+		// never-existed. See PruneTombstonesAtOrBelow's doc comment for the
+		// safety argument.
+		prunedCount = PruneTombstonesAtOrBelow(state, state.GetCompactionWatermark())
+		dropThrough = state.GetOpRetentionWatermark()
+	}
 
 	if err := m.journal.CompactBatch(ctx, CompactBatch{
 		State:       state,
-		DropThrough: state.GetOpRetentionWatermark(),
+		DropThrough: dropThrough,
 	}); err != nil {
+		// Nothing is published, so the live generation keeps its epoch and
+		// watermarks, and the next tick retries the same pass -- including a
+		// Bootstrap stamp, which keeps its original time.
 		m.logger.Warn("compaction", "err", err)
 		return
 	}
+	m.epochStartUnpersisted = false
 	// PUBLISH the clone we just persisted, rather than replaying the watermark
-	// writes and the prune onto the live generation. `state` already carries
-	// both watermarks and the pruned shape, and this runs on the manager
+	// writes, the epoch rotation and the prune onto the live generation.
+	// `state` already carries all of them, and this runs on the manager
 	// goroutine -- the sole writer -- so nothing can have touched m.state
-	// between the CloneState above and here. Publishing is both less code and
-	// the only version that upholds commitState's immutability invariant: the
+	// between the clone above and here. Publishing is both less code and the
+	// only version that upholds commitState's immutability invariant: the
 	// prune DELETES map entries, and CloneStateForBatch shares untouched maps
-	// across generations, so an in-place prune mutated older generations too --
-	// which a lock-free reader (materializedFromState) would race.
+	// across generations, so an in-place prune mutated older generations too
+	// -- which a lock-free reader (materializedFromState) would race.
 	m.commitState(state)
+	if rotate {
+		m.logger.Debug("epoch rotated", "epoch", epoch, "started_at", epochStartedAt.AsTime())
+	}
 	if prunedCount > 0 {
 		m.logger.Debug("compaction pruned tombstones", "count", prunedCount)
 	}

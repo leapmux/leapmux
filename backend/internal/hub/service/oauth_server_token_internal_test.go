@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
@@ -22,8 +23,10 @@ import (
 // not a program invariant. Without it, a blank user_id would reach the mint and
 // issue a token that authenticates as nobody.
 //
-// The 0/2 cases are the ordinary ones, asserted alongside so a refactor that
-// reorders the switch cannot quietly turn "denied" into "pending".
+// The PENDING and DENIED cases are the ordinary ones, asserted alongside so a
+// refactor that reorders the switch cannot quietly turn "denied" into
+// "pending". UNSPECIFIED and an unknown ordinal are corrupt rows the column's
+// CHECK refuses, and they must issue nothing either.
 func TestPostTouchPollOAuthError_ApprovalWithNoUserIsNotUsable(t *testing.T) {
 	t.Parallel()
 
@@ -35,22 +38,32 @@ func TestPostTouchPollOAuthError_ApprovalWithNoUserIsNotUsable(t *testing.T) {
 		wantStop bool
 	}{
 		"pending": {
-			row:      store.DeviceAuthorization{Approved: 0, UserID: ""},
+			row:      store.DeviceAuthorization{State: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING, UserID: ""},
 			wantCode: "authorization_pending",
 			wantStop: true,
 		},
 		"denied": {
-			row:      store.DeviceAuthorization{Approved: 2, UserID: "user-1"},
+			row:      store.DeviceAuthorization{State: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_DENIED, UserID: "user-1"},
 			wantCode: "access_denied",
 			wantStop: true,
 		},
 		"approved but with no user": {
-			row:      store.DeviceAuthorization{Approved: 1, UserID: ""},
+			row:      store.DeviceAuthorization{State: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED, UserID: ""},
+			wantCode: "authorization_pending",
+			wantStop: true,
+		},
+		"unspecified": {
+			row:      store.DeviceAuthorization{State: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_UNSPECIFIED, UserID: "user-1"},
+			wantCode: "authorization_pending",
+			wantStop: true,
+		},
+		"an ordinal past the last declared state": {
+			row:      store.DeviceAuthorization{State: leapmuxv1.DeviceAuthorizationState(99), UserID: "user-1"},
 			wantCode: "authorization_pending",
 			wantStop: true,
 		},
 		"approved by a real user": {
-			row:      store.DeviceAuthorization{Approved: 1, UserID: "user-1"},
+			row:      store.DeviceAuthorization{State: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED, UserID: "user-1"},
 			wantCode: "",
 			wantStop: false,
 		},

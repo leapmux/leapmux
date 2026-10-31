@@ -660,16 +660,18 @@ func (s *AdminUserService) DeleteUser(ctx context.Context, req *leapmuxv1.Delete
 	if err != nil {
 		return nil, err
 	}
-	// Collect the live worker ids BEFORE the transaction: after
-	// MarkAllDeletedByUser the rows are soft-deleted, and the post-commit
-	// effects still have to tell each of those workers to stop.
-	workerIDs, err := s.liveWorkerIDs(ctx, delUID)
-	if err != nil {
-		return nil, err
-	}
+	var workerIDs []string
 	var committedGeneration int64
 	err = commitUnderElevation(ctx, s.store, actor, s.now, func() error {
 		return s.store.RunInUserAuthTransaction(ctx, delUID, func(tx store.Store) error {
+			// Registration holds this same owner lock. Collect before deleting,
+			// through this transaction, so every worker deleted here is told to
+			// stop. Replace the snapshot on each transaction attempt.
+			var err error
+			workerIDs, err = liveWorkerIDs(ctx, tx, delUID)
+			if err != nil {
+				return err
+			}
 			if err := tx.Workers().MarkAllDeletedByUser(ctx, delUID); err != nil {
 				return fmt.Errorf("mark workers deleted: %w", err)
 			}
@@ -682,7 +684,6 @@ func (s *AdminUserService) DeleteUser(ctx context.Context, req *leapmuxv1.Delete
 			// that ran after tx.Users().Delete would abort the transaction
 			// and lose the cross-process teardown. store.RevokeUserTokens
 			// states the rule.
-			var err error
 			if _, _, committedGeneration, err = RevokeCredentialsAfterRotation(ctx, tx, delUID, false); err != nil {
 				return err
 			}
@@ -704,16 +705,17 @@ func (s *AdminUserService) DeleteUser(ctx context.Context, req *leapmuxv1.Delete
 		}
 		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
-	// AFTER the commit, never inside it. SendDeregister persists a
-	// notification row and moves worker-manager state, so a rollback after
-	// it would leave a worker told it was deregistered when it was not.
+	// AFTER the commit, never inside it. SendDeregister tells a connected
+	// worker to stop and moves worker-manager state, so a rollback after it
+	// would leave a worker told it was deleted when it was not.
 	s.lifecycle.UserRevoked(user.ID, committedGeneration)
 	for _, workerID := range workerIDs {
 		if err := s.workerEffects.Apply(ctx, workerID, user.ID); err != nil {
 			// The user IS deleted and its workers ARE soft-deleted. A worker
-			// that missed its stop notification reconciles on its next
-			// connect, so this is worth a log, not a failed response that
-			// invites a retry of an already-committed deletion.
+			// that missed its stop instruction is refused at its next
+			// connect, because its row is deleted, so this is worth a log,
+			// not a failed response that invites a retry of an
+			// already-committed deletion.
 			slog.Warn("user deleted but one worker was not told to stop",
 				"user_id", user.ID, "worker_id", workerID, "error", err)
 		}
@@ -744,13 +746,16 @@ func issuedByAnotherPerson(actor *auth.UserInfo, owner *store.User) bool {
 
 // liveWorkerIDs pages every worker the user still owns. The admin
 // deletion cascade needs the ids before it soft-deletes the rows.
-func (s *AdminUserService) liveWorkerIDs(ctx context.Context, owner userid.UserID) ([]string, error) {
+func liveWorkerIDs(ctx context.Context, st store.Store, owner userid.UserID) ([]string, error) {
 	var out []string
 	cursor := ""
+	ownerID := owner.String()
 	for {
-		page, err := s.store.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
-			RegisteredBy: owner,
-			PageParams:   NormalizePageParams(cursor, MaxPageLimit),
+		// The ordinary owner listing excludes deregistering workers. Deletion
+		// must tell those workers too when an earlier stop instruction failed.
+		page, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{
+			UserID:     &ownerID,
+			PageParams: NormalizePageParams(cursor, MaxPageLimit),
 		})
 		if err != nil {
 			return nil, storeConnectError(err, "list workers")
@@ -1250,7 +1255,6 @@ func delegationTokenToProto(t store.DelegationTokenWithOwner) *leapmuxv1.AdminDe
 		Username:     t.OwnerUsername,
 		OwnerDeleted: t.OwnerDeleted,
 		WorkerId:     t.WorkerID,
-		AgentId:      t.AgentID,
 		CreatedAt:    timestamppb.New(t.CreatedAt),
 		// A delegation token always expires; the other two are optional.
 		ExpiresAt:  timestamppb.New(t.ExpiresAt),

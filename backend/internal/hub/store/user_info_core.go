@@ -1,9 +1,6 @@
 package store
 
-import (
-	"context"
-	"time"
-)
+import "context"
 
 // UserInfoCacheFields projects the user columns cached in auth.UserInfo. A
 // cross-process user_info cache eviction is required exactly when a user-row
@@ -55,8 +52,8 @@ func AuthGateReduced(before, after UserInfoCacheFields) bool {
 // the soft emit path for every change (including reductions).
 //
 // loadFields reports the target row's cached-field projection and whether the
-// row exists. mutate runs the UPDATE and returns the row id, the updated_at to
-// stamp the event with, and ok=false when it matched no row (a no-op, no event).
+// row exists. mutate runs the UPDATE and returns the row id, and ok=false when
+// it matched no row (a no-op, no event).
 // A projection that is unchanged across an existing row emits nothing; if the
 // row's existence flips around this id-keyed single-transaction update (not
 // expected), the helper emits to stay fail-safe rather than risk serving a
@@ -65,16 +62,16 @@ func RunUserInfoMutation[C any](
 	ctx context.Context,
 	inTransaction func(context.Context, func(C) error) error,
 	loadFields func(context.Context, C) (fields UserInfoCacheFields, exists bool, err error),
-	mutate func(context.Context, C) (userID string, updatedAt time.Time, ok bool, err error),
-	emit func(context.Context, C, string, time.Time) error,
-	fence func(context.Context, C, string, time.Time) error,
+	mutate func(context.Context, C) (userID string, ok bool, err error),
+	emit func(context.Context, C, string) error,
+	fence func(context.Context, C, string) error,
 ) error {
 	return inTransaction(ctx, func(conn C) error {
 		before, existedBefore, err := loadFields(ctx, conn)
 		if err != nil {
 			return err
 		}
-		userID, updatedAt, ok, err := mutate(ctx, conn)
+		userID, ok, err := mutate(ctx, conn)
 		if err != nil || !ok {
 			return err
 		}
@@ -87,15 +84,15 @@ func RunUserInfoMutation[C any](
 				return nil
 			}
 			if fence != nil && AuthGateReduced(before, after) {
-				return fence(ctx, conn, userID, updatedAt)
+				return fence(ctx, conn, userID)
 			}
-			return emit(ctx, conn, userID, updatedAt)
+			return emit(ctx, conn, userID)
 		}
 		// Existence flipped around an id-keyed single-row update (not expected):
 		// fail-safe to the soft emit, preserving prior behavior. A reduction that
 		// somehow reaches here is only soft-emitted, never fenced -- unreachable
 		// today because LockUserRow plus the deleted_at-filtered existence reads
 		// keep a live mutation's before and after both existing.
-		return emit(ctx, conn, userID, updatedAt)
+		return emit(ctx, conn, userID)
 	})
 }

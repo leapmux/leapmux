@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -36,7 +37,6 @@ func setupRootSink(t *testing.T, rootID string, options ...setupOption) (*Servic
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
 		ID:            rootID,
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	return svc, newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -228,7 +228,6 @@ func newRootAgent(t *testing.T, svc *Service, rootID string) agent.ProviderServi
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
 		ID:            rootID,
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	return newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -1515,22 +1514,38 @@ func TestCloseBackgroundTask_PreservesTheLastNativeMessageWhenStoppedMidFlight(t
 	assertChildTaskOutcome(t, svc, "root-1", "task-1", childID, bgtask.StatusStopped)
 }
 
-// A stored native result retains the child provider after registry completion.
+// A stored native result reads back with the child's provider after registry
+// completion. No message row stores a provider: the read takes it from the
+// child agent, which copies it from its parent. The test reads the message
+// through ListAgentMessages, as a client does, so it checks the provider on
+// the message that the client receives.
 func TestCloseBackgroundTask_PreservesTheNativeMessagesProvider(t *testing.T) {
 	t.Parallel()
 
-	svc, sink := setupRootSink(t, "root-1")
+	// setupRootSink discards the dispatcher, and this test needs it.
+	svc, d, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
+		ID:            "root-1",
+		WorkingDir:    t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	sink := newTestRootOutputSink(t, svc.Output, "root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.PersistChildTurnEnd(childID, agent.MessageContent{Original: []byte(`{"type":"result","duration_ms":0}`)}, agent.SpanInfo{}))
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 
-	rows, err := svc.Queries.ListAllMessagesByAgentID(context.Background(),
-		db.ListAllMessagesByAgentIDParams{AgentID: childID})
-	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, rows[0].AgentProvider,
-		"the native result retains the child provider")
+	w := newTestWriter()
+	dispatch(d, "ListAgentMessages", &leapmuxv1.ListAgentMessagesRequest{
+		AgentId: childID, Anchor: leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_OLDEST, Limit: 10,
+	}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var listed leapmuxv1.ListAgentMessagesResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &listed))
+	require.Len(t, listed.GetMessages(), 1)
+	assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, listed.GetMessages()[0].GetAgentProvider(),
+		"the native result renders with the child's provider, which the child copies from its parent")
 }
 
 // Process exit records every child outcome without adding transcript messages.

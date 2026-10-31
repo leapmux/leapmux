@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
@@ -21,9 +22,8 @@ func fromDBDeviceAuthorization(d gendb.DeviceAuthorization) store.DeviceAuthoriz
 		UserCode:        d.UserCode,
 		DeviceName:      d.DeviceName,
 		UserID:          d.UserID.String,
-		Approved:        int64(d.Approved),
+		State:           d.State,
 		LastPolledAt:    d.LastPolledAt.Ptr(),
-		IntervalSeconds: int64(d.IntervalSeconds),
 		ClientID:        d.ClientID,
 		RequestedScopes: d.RequestedScopes,
 		GrantedScopes:   d.GrantedScopes,
@@ -41,7 +41,7 @@ func (s *deviceAuthorizationStore) Create(ctx context.Context, p store.CreateDev
 		DeviceName:      p.DeviceName,
 		ClientID:        p.ClientID,
 		RequestedScopes: p.RequestedScopes,
-		IntervalSeconds: int32(p.IntervalSeconds),
+		State:           leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING,
 		ExpiresAt:       sqltime.NewMySQLTime(p.ExpiresAt),
 		ElevateTokenID:  sqlutil.NullNonEmpty(p.ElevateTokenID),
 	}))
@@ -79,6 +79,8 @@ func (s *deviceAuthorizationStore) Approve(ctx context.Context, p store.ApproveD
 		UserID:        sqlutil.NullUserID(p.UserID),
 		DeviceCode:    p.DeviceCode,
 		GrantedScopes: p.GrantedScopes,
+		ApprovedState: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED,
+		PendingState:  leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING,
 		Now:           sqltime.NewMySQLTime(now),
 	}))
 }
@@ -97,18 +99,25 @@ func (s *deviceAuthorizationStore) ApproveByUserCode(ctx context.Context, p stor
 		UserID:        sqlutil.NullUserID(p.UserID),
 		UserCode:      p.UserCode,
 		GrantedScopes: p.GrantedScopes,
+		ApprovedState: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED,
+		PendingState:  leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING,
 		Now:           sqltime.NewMySQLTime(now),
 	}))
 }
 
 func (s *deviceAuthorizationStore) DenyByUserCode(ctx context.Context, userCode string) (int64, error) {
-	return rowsAffected(s.conn.q.DenyDeviceAuthorizationByUserCode(ctx, userCode))
+	return rowsAffected(s.conn.q.DenyDeviceAuthorizationByUserCode(ctx, gendb.DenyDeviceAuthorizationByUserCodeParams{
+		UserCode:     userCode,
+		DeniedState:  leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_DENIED,
+		PendingState: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING,
+	}))
 }
 
 func (s *deviceAuthorizationStore) Consume(ctx context.Context, deviceCode string, now time.Time) (int64, error) {
 	return rowsAffected(s.conn.q.ConsumeDeviceAuthorization(ctx, gendb.ConsumeDeviceAuthorizationParams{
-		DeviceCode: deviceCode,
-		Now:        sqltime.NewMySQLTime(now),
+		DeviceCode:    deviceCode,
+		ApprovedState: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED,
+		Now:           sqltime.NewMySQLTime(now),
 	}))
 }
 
@@ -124,8 +133,9 @@ func (s *deviceAuthorizationStore) ConsumeApprovedForUserClient(ctx context.Cont
 		return 0, store.ErrInvalidArgument
 	}
 	return rowsAffected(s.conn.q.ConsumeApprovedDeviceAuthorizationsForUserClient(ctx, gendb.ConsumeApprovedDeviceAuthorizationsForUserClientParams{
-		ClientID: clientID,
-		UserID:   sqlutil.NullNonEmpty(user.String()),
-		Now:      sqltime.NewMySQLTime(now),
+		ClientID:      clientID,
+		ApprovedState: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED,
+		UserID:        sqlutil.NullNonEmpty(user.String()),
+		Now:           sqltime.NewMySQLTime(now),
 	}))
 }

@@ -127,5 +127,5 @@ func storedSpanMessage(agentID, spanID, kind string, row db.Message, err error) 
 		}
 	}
 	content.AgentSessionID = row.AgentSessionID
-	return &agent.StoredMessage{Content: content, Seq: row.Seq, Revision: row.SupplementalRevision, Provider: row.AgentProvider}, nil
+	return &agent.StoredMessage{Content: content, Seq: row.Seq, Revision: row.SupplementalRevision}, nil
 }

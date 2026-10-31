@@ -242,7 +242,6 @@ func seedResumableAgent(t *testing.T, svc *Service, id, handle, title, workingDi
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            id,
 		WorkingDir:    workingDir,
-		HomeDir:       "/tmp",
 		Title:         title,
 		AgentProvider: provider,
 	}))
@@ -316,7 +315,6 @@ func TestListAgentSessions_ExcludesSubagentRows(t *testing.T) {
 		ParentAgentID: sql.NullString{String: "parent", Valid: true},
 		SpawnSpanID:   "span-1",
 		WorkingDir:    dir,
-		HomeDir:       "/tmp",
 		Title:         "Subagent",
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
@@ -454,7 +452,7 @@ func TestListAgentSessions_ExcludesAPendingResumeClaim(t *testing.T) {
 	dirA := t.TempDir()
 	dirB := t.TempDir()
 	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
-		ID: "a-pending", WorkingDir: dirB, HomeDir: svc.HomeDir,
+		ID: "a-pending", WorkingDir: dirB,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		Resumed:       1, PendingResumeSessionID: "ses_x",
 	}))
@@ -523,13 +521,12 @@ func TestMergeSessionSummaries_AClosedRowCannotReviveAnOpenHandle(t *testing.T) 
 func seedSessionMessage(t *testing.T, svc *Service, agentID, messageID string, at time.Time) int64 {
 	t.Helper()
 	seq, err := createMessageRow(context.Background(), svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		ID:            messageID,
-		AgentID:       agentID,
-		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		Content:       []byte("hello"),
-		SpanLines:     "[]",
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		CreatedAt:     sqltime.NewSQLiteTime(at),
+		ID:        messageID,
+		AgentID:   agentID,
+		Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content:   []byte("hello"),
+		SpanLines: "[]",
+		CreatedAt: sqltime.NewSQLiteTime(at),
 	})
 	require.NoError(t, err)
 	return seq

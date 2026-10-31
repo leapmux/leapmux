@@ -400,7 +400,7 @@ func startTestTerminal(t *testing.T, svc *Service, ctx context.Context, id strin
 	testutil.RegisterTerminalCleanup(t, svc.Terminals, id)
 
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: id, WorkingDir: workingDir, HomeDir: "/tmp",
+		ID: id, WorkingDir: workingDir,
 		Cols: 80, Rows: 24, Screen: []byte{},
 	}))
 	return workingDir
@@ -543,15 +543,13 @@ func TestListAgentMessages_ClosedAgent_ReturnsEmpty(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-1",
 		WorkingDir: "/tmp",
-		HomeDir:    "/tmp",
 	}))
 	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		ID:            "msg-1",
-		AgentID:       "agent-1",
-		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		Content:       []byte("hello"),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
+		ID:        "msg-1",
+		AgentID:   "agent-1",
+		Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content:   []byte("hello"),
+		CreatedAt: sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
 
@@ -589,12 +587,10 @@ func TestListAgents_ClosedAgent_NotReturned(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-open",
 		WorkingDir: "/tmp",
-		HomeDir:    "/tmp",
 	}))
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-closed",
 		WorkingDir: "/tmp",
-		HomeDir:    "/tmp",
 	}))
 
 	// Close one agent.
@@ -620,7 +616,6 @@ func TestListTerminals_ClosedTerminal_NotReturned(t *testing.T) {
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
 		ID:         "term-open",
 		WorkingDir: "/tmp",
-		HomeDir:    "/tmp",
 		Cols:       80,
 		Rows:       24,
 		Screen:     []byte("open screen"),
@@ -628,7 +623,6 @@ func TestListTerminals_ClosedTerminal_NotReturned(t *testing.T) {
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
 		ID:         "term-closed",
 		WorkingDir: "/tmp",
-		HomeDir:    "/tmp",
 		Cols:       80,
 		Rows:       24,
 		Screen:     []byte("closed screen"),
@@ -656,15 +650,13 @@ func TestWatchEvents_ClosedAgent_NotWatched(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-closed",
 		WorkingDir: "/tmp",
-		HomeDir:    "/tmp",
 	}))
 	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		ID:            "msg-1",
-		AgentID:       "agent-closed",
-		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		Content:       []byte("hello"),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
+		ID:        "msg-1",
+		AgentID:   "agent-closed",
+		Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content:   []byte("hello"),
+		CreatedAt: sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
 	require.NoError(t, closeErr(svc.Queries.CloseAgent(ctx, "agent-closed")))
@@ -698,7 +690,6 @@ func TestWatchEvents_ClosedTerminal_NotWatched(t *testing.T) {
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
 		ID:         "term-closed",
 		WorkingDir: "/tmp",
-		HomeDir:    "/tmp",
 		Cols:       80,
 		Rows:       24,
 		Screen:     []byte("some screen"),
@@ -820,7 +811,7 @@ func TestShutdown_StopsRunningAgents(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	workingDir := t.TempDir()
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: workingDir, HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: workingDir,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
@@ -938,7 +929,6 @@ func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
 		ID:         "term-1",
 		WorkingDir: workingDir,
-		HomeDir:    svc.HomeDir,
 		Cols:       80,
 		Rows:       24,
 		Screen:     []byte{},
@@ -1084,7 +1074,6 @@ func TestWatchEvents_NarrowedRequest_UnsubscribesTheOmittedAgent(t *testing.T) {
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 			ID:         id,
 			WorkingDir: "/tmp",
-			HomeDir:    "/tmp",
 		}))
 	}
 
@@ -1127,12 +1116,10 @@ func TestWatchEvents_TerminalLookupFailure_KeepsAndRebindsSubscriptions(t *testi
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-1",
 		WorkingDir: "/tmp",
-		HomeDir:    "/tmp",
 	}))
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
 		ID:         "term-1",
 		WorkingDir: "/tmp",
-		HomeDir:    "/tmp",
 		Cols:       80,
 		Rows:       24,
 		Screen:     []byte("s"),
@@ -1189,7 +1176,6 @@ func TestWatchEvents_TerminalLookupFailure_TellsAFreshChannelToRetry(t *testing.
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-1",
 		WorkingDir: "/tmp",
-		HomeDir:    "/tmp",
 	}))
 
 	// No prior WatchEvents on this channel: nothing is registered, exactly
@@ -1232,12 +1218,10 @@ func TestWatchEvents_EmptyRequestUnsubscribesWithoutAnError(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-1",
 		WorkingDir: "/tmp",
-		HomeDir:    "/tmp",
 	}))
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
 		ID:         "term-1",
 		WorkingDir: "/tmp",
-		HomeDir:    "/tmp",
 		Cols:       80,
 		Rows:       24,
 		Screen:     []byte("s"),

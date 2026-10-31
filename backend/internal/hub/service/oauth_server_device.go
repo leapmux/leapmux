@@ -84,7 +84,6 @@ func (h *OAuthServerHandler) handleDeviceAuthorization(w http.ResponseWriter, r 
 		DeviceName:      normalizeInstallationName(r.FormValue("installation_name")),
 		ClientID:        app.ClientID,
 		RequestedScopes: stored,
-		IntervalSeconds: int64(DeviceCodePollInterval / time.Second),
 		ExpiresAt:       h.now().Add(DeviceCodeTTL),
 	})
 	if err != nil {

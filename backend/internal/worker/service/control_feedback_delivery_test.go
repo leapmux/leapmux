@@ -22,7 +22,7 @@ func TestZCodeRejectionQueuesFeedbackWithoutApprovingTheRequest(t *testing.T) {
 				svc, _, _ := setupTestService(t)
 				require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
 					ID: "agent-1", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
-					WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+					WorkingDir: t.TempDir(),
 				}))
 				require.NoError(t, svc.Queries.UpdateAgentSessionID(t.Context(), db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "session-1"}))
 				_, err := svc.InputQueue.SetPaused(t.Context(), "agent-1", true)
@@ -96,7 +96,7 @@ func TestControlFeedbackCannotReachAReplacementSession(t *testing.T) {
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(t.Context(), db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "new-session"}))
 	err := dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{
 		AgentID: "agent-1", RequestID: "request", ClaimToken: "claim", State: storedStateCompleted,
-		AgentSessionID: "old-session", InputID: "feedback-input", FollowUp: "feedback", FollowUpKind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		AgentSessionID: "old-session", InputID: "feedback-input", FollowUp: "feedback", FollowUpKind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK,
 	})
 	require.NoError(t, err)
 	item := inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{

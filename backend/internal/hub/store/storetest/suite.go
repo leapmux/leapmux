@@ -31,7 +31,6 @@ func (s *Suite) Run(t *testing.T) {
 	t.Run("api_token_elevation", s.testAPITokenElevation)
 	t.Run("zero id mutations refused", s.testZeroIDMutationsRefused)
 	t.Run("workers", s.testWorkers)
-	t.Run("worker_notifications", s.testWorkerNotifications)
 	t.Run("registrations", s.testRegistrations)
 	t.Run("workspaces", s.testWorkspaces)
 	t.Run("workspace_tab_index", s.testWorkspaceTabIndex)

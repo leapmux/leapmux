@@ -254,7 +254,7 @@ var ErrInvalidElevationAssertion = errors.New("passkey verification failed")
 
 // RevokeAllUserCredentials revokes every active api_tokens and
 // delegation_tokens row for userID and, via RevokeUserTokens, bumps
-// users.tokens_revoked_at AND users.auth_generation, emitting the durable
+// users.auth_generation, emitting the durable
 // user_tokens revocation event that carries the new generation through the
 // stream (the backbone of out-of-band teardown). Returns (apiCount,
 // delegationCount) so admin handlers can report what it revoked.

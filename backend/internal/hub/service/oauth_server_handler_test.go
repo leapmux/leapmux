@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/coder/quartz"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -665,11 +666,10 @@ func TestAPIAuth_DeviceCode_ExpiredToken(t *testing.T) {
 	dc := id.Generate()
 	uc := verifycode.Generate()
 	require.NoError(t, env.store.DeviceAuthorizations().Create(context.Background(), store.CreateDeviceAuthorizationParams{
-		ClientID:        oauthapp.ControlCLIClientID,
-		DeviceCode:      dc,
-		UserCode:        uc,
-		IntervalSeconds: 5,
-		ExpiresAt:       time.Now().Add(-time.Minute),
+		ClientID:   oauthapp.ControlCLIClientID,
+		DeviceCode: dc,
+		UserCode:   uc,
+		ExpiresAt:  time.Now().Add(-time.Minute),
 	}))
 	resp, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{
 		"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
@@ -691,14 +691,13 @@ func TestAPIAuth_DeviceCode_AccessDenied(t *testing.T) {
 	dc := id.Generate()
 	uc := verifycode.Generate()
 	require.NoError(t, env.store.DeviceAuthorizations().Create(context.Background(), store.CreateDeviceAuthorizationParams{
-		ClientID:        oauthapp.ControlCLIClientID,
-		DeviceCode:      dc,
-		UserCode:        uc,
-		IntervalSeconds: 0, // disable throttle for this test
-		ExpiresAt:       time.Now().Add(time.Hour),
+		ClientID:   oauthapp.ControlCLIClientID,
+		DeviceCode: dc,
+		UserCode:   uc,
+		ExpiresAt:  time.Now().Add(time.Hour),
 	}))
 
-	// Manually mark the row as denied (Approved=2).
+	// Mark the row DENIED through the store.
 	_, err := env.store.DeviceAuthorizations().DenyByUserCode(context.Background(), uc)
 	require.NoError(t, err)
 
@@ -1607,7 +1606,7 @@ func TestAPIAuth_DeviceCode_ApprovedPollAdvancesThrottleDespiteIssuanceFailure(t
 	deviceCode := id.Generate()
 	require.NoError(t, env.store.DeviceAuthorizations().Create(context.Background(), store.CreateDeviceAuthorizationParams{
 		ClientID:   oauthapp.ControlCLIClientID,
-		DeviceCode: deviceCode, UserCode: verifycode.Generate(), IntervalSeconds: 5, ExpiresAt: time.Now().Add(time.Minute),
+		DeviceCode: deviceCode, UserCode: verifycode.Generate(), ExpiresAt: time.Now().Add(time.Minute),
 	}))
 	rows, err := env.store.DeviceAuthorizations().Approve(context.Background(), store.ApproveDeviceAuthorizationParams{
 		DeviceCode: deviceCode, UserID: userid.MustNew(env.userID),
@@ -2316,7 +2315,7 @@ func TestAPIAuth_Activate_GrantLookupFailureIsInternal(t *testing.T) {
 
 	row, err := env.store.DeviceAuthorizations().Get(ctx, deviceCode)
 	require.NoError(t, err)
-	assert.Zero(t, row.Approved, "a lookup the hub could not perform must approve nothing")
+	assert.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING, row.State, "a lookup the hub could not perform must approve nothing")
 }
 
 // conflictingDeviceAuthorizations fails the first `remaining` inserts with the

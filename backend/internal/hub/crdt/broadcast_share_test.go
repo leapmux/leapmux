@@ -28,8 +28,8 @@ func TestBroadcast_EntityMaterialized_SharesEventPointerAcrossSubscribers(t *tes
 	// so the move op below is the only event that fires across both
 	// subscribers.
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")}),
 	})
 	require.NoError(t, err)
 
@@ -62,8 +62,8 @@ func TestBroadcast_EntityMaterialized_SharesEventPointerAcrossSubscribers(t *tes
 		}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{mv},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{mv}),
 	})
 	require.NoError(t, err)
 

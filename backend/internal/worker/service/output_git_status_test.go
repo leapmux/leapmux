@@ -75,7 +75,6 @@ func newGitStatusFixture(t *testing.T) (*agentOutputSink, *agentEventCapturingWr
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDModel:  "opus",

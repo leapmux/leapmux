@@ -5,17 +5,12 @@
 
 -- name: CreateDelegationToken :exec
 INSERT INTO delegation_tokens (
-    id, user_id, worker_id, agent_id, terminal_id,
-    issued_for_tab_id, issued_for_tab_type, granted_scopes, secret_hash,
+    id, user_id, worker_id, granted_scopes, secret_hash,
     refresh_hash, expires_at, refresh_expires_at, auth_generation
 ) VALUES (
     sqlc.arg(id),
     sqlc.arg(user_id),
     sqlc.arg(worker_id),
-    sqlc.arg(agent_id),
-    sqlc.arg(terminal_id),
-    sqlc.arg(issued_for_tab_id),
-    sqlc.arg(issued_for_tab_type),
     sqlc.arg(granted_scopes),
     sqlc.arg(secret_hash),
     sqlc.arg(refresh_hash),
@@ -102,7 +97,7 @@ WHERE id = $1;
 UPDATE delegation_tokens
 SET revoked_at = clock_timestamp()
 WHERE id = $1 AND revoked_at IS NULL
-RETURNING id, user_id, revoked_at;
+RETURNING id, user_id;
 
 -- name: DeleteRevokedDelegationTokensBefore :execrows
 DELETE FROM delegation_tokens

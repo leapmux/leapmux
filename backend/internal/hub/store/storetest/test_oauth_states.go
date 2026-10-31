@@ -94,6 +94,42 @@ func (s *Suite) testOAuthStates(t *testing.T) {
 		}
 	})
 
+	// The session id belongs to REAUTH alone. A LOGIN state that carried one
+	// would read as a request to elevate a session the login never proved,
+	// and a REAUTH state without one has no session to elevate.
+	t.Run("refuses a login state with a session id", func(t *testing.T) {
+		st := s.NewStore(t)
+		prov := SeedOAuthProvider(t, st, "state-login-session-prov")
+		user := SeedUser(t, st, "state-login-session-user")
+		sess := SeedSession(t, st, user.ID)
+
+		err := st.OAuthStates().Create(ctx, store.CreateOAuthStateParams{
+			State:        id.Generate(),
+			ProviderID:   prov.ID,
+			PkceVerifier: "v",
+			RedirectURI:  "https://example.com/cb",
+			Purpose:      store.OAuthStatePurposeLogin,
+			SessionID:    sess.ID,
+			ExpiresAt:    time.Now().Add(10 * time.Minute),
+		})
+		assert.Error(t, err, "a LOGIN state must not carry a session id")
+	})
+
+	t.Run("refuses a reauth state without a session id", func(t *testing.T) {
+		st := s.NewStore(t)
+		prov := SeedOAuthProvider(t, st, "state-reauth-nosession-prov")
+
+		err := st.OAuthStates().Create(ctx, store.CreateOAuthStateParams{
+			State:        id.Generate(),
+			ProviderID:   prov.ID,
+			PkceVerifier: "v",
+			RedirectURI:  "https://example.com/cb",
+			Purpose:      store.OAuthStatePurposeReauth,
+			ExpiresAt:    time.Now().Add(10 * time.Minute),
+		})
+		assert.Error(t, err, "a REAUTH state must carry the session it elevates")
+	})
+
 	t.Run("get not found", func(t *testing.T) {
 		st := s.NewStore(t)
 		_, err := st.OAuthStates().Get(ctx, "nonexistent")

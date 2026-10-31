@@ -290,7 +290,7 @@ func (s *Suite) testSessionElevation(t *testing.T) {
 		n, err := st.Sessions().DropElevation(ctx, store.DropSessionElevationParams{
 			SessionID: sess.ID,
 			UserID:    userid.MustNew(user.ID),
-		}, at)
+		})
 		require.NoError(t, err)
 		assert.EqualValues(t, 1, n)
 
@@ -302,7 +302,7 @@ func (s *Suite) testSessionElevation(t *testing.T) {
 		n, err = st.Sessions().DropElevation(ctx, store.DropSessionElevationParams{
 			SessionID: sess.ID,
 			UserID:    userid.MustNew(user.ID),
-		}, at)
+		})
 		require.NoError(t, err)
 		assert.EqualValues(t, 0, n, "dropping twice is the state the caller asked for, not an error")
 	})
@@ -325,7 +325,7 @@ func (s *Suite) testSessionElevation(t *testing.T) {
 		n, err := st.Sessions().DropElevation(ctx, store.DropSessionElevationParams{
 			SessionID: sess.ID,
 			UserID:    userid.MustNew(other.ID),
-		}, at)
+		})
 		require.NoError(t, err)
 		assert.EqualValues(t, 0, n)
 
@@ -465,7 +465,7 @@ func (s *Suite) testSessionElevation(t *testing.T) {
 		_, err = st.Sessions().DropElevation(ctx, store.DropSessionElevationParams{
 			SessionID: sess.ID,
 			UserID:    userid.MustNew(user.ID),
-		}, at)
+		})
 		require.NoError(t, err)
 		afterDrop := publishedKinds()
 		require.Len(t, afterDrop, len(afterGrant)+1, "the drop must emit exactly one event")

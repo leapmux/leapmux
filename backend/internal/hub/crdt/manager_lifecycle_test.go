@@ -263,14 +263,15 @@ func TestLifecycleCreate_RedrainAfterDedupExpiryIsIdempotent(t *testing.T) {
 	require.Contains(t, mat.GetWorkspaces(), "w1")
 	require.Equal(t, "root-w1", mat.GetWorkspaces()["w1"].GetRootNodeId())
 
-	// Simulate DedupTTL expiry: clear the dedup table so the next drain's
+	// Force dedup absence to test lifecycle revalidation independently of
+	// the manager's epoch retention. Clear the table so the next drain's
 	// SubmitInternal re-validates the seed batch (which has a fixed BatchId)
 	// rather than short-circuiting on a dedup hit. The row's ExpiresAt is
 	// now+DedupTTL (14 days), so sweep past it.
 	clockMu.Lock()
 	clockNow := clock
 	clockMu.Unlock()
-	cleared, err := j.CleanupExpiredRecentBatchIDs(context.Background(), time.UnixMilli(clockNow).Add(30*24*time.Hour))
+	cleared, err := j.CleanupExpiredRecentBatchIDs(context.Background(), "user-1", time.UnixMilli(clockNow).Add(30*24*time.Hour), mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()+1)
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, cleared, int64(1), "the dedup row for the seed batch must be expired to simulate >DedupTTL inactivity")
 
@@ -357,7 +358,7 @@ func TestLifecycleCreate_RedrainAfterDeleteAndDedupExpiryIsIdempotent(t *testing
 	clockMu.Lock()
 	clockNow := clock
 	clockMu.Unlock()
-	cleared, err := j.CleanupExpiredRecentBatchIDs(context.Background(), time.UnixMilli(clockNow).Add(30*24*time.Hour))
+	cleared, err := j.CleanupExpiredRecentBatchIDs(context.Background(), "user-1", time.UnixMilli(clockNow).Add(30*24*time.Hour), mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()+1)
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, cleared, int64(1), "dedup rows must be expired to simulate >DedupTTL inactivity")
 
@@ -440,7 +441,7 @@ func TestLifecycleDelete_RedrainAfterDedupExpiryIsIdempotent(t *testing.T) {
 	clockMu.Lock()
 	clockNow := clock
 	clockMu.Unlock()
-	cleared, err := j.CleanupExpiredRecentBatchIDs(context.Background(), time.UnixMilli(clockNow).Add(30*24*time.Hour))
+	cleared, err := j.CleanupExpiredRecentBatchIDs(context.Background(), "user-1", time.UnixMilli(clockNow).Add(30*24*time.Hour), mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()+1)
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, cleared, int64(1), "dedup rows must be expired to simulate >DedupTTL inactivity")
 
@@ -795,15 +796,15 @@ func TestLifecycleDelete_TombstonesAllLeftoverContent(t *testing.T) {
 		Ops:     []*leapmuxv1.CrdtOp{splitToSplit, splitDir, splitRatios, childKind, childParent, childPos},
 	}
 	res, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{splitBatch},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{splitBatch}),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, res[0].GetCommitted(), "split batch should commit; got %v", res[0])
 
 	tabRes, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "tab-batch", "tab-1", "leaf-1", "wkr-1", "p1")},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{addTabBatch(t, "tab-batch", "tab-1", "leaf-1", "wkr-1", "p1")}),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, tabRes[0].GetCommitted(), "tab batch should commit; got %v", tabRes[0])

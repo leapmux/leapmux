@@ -20,7 +20,8 @@ import (
 // WorkspaceService implements the WorkspaceServiceHandler interface.
 // Layout / tab mutations now live on UserCRDT (see crdt_service.go).
 // This service owns the workspace metadata table plus read-only tab
-// views fed by the CRDT manager's workspace_tab_rendered index.
+// views fed by the rendered rows of the CRDT manager's workspace_tab_owned
+// index.
 type WorkspaceService struct {
 	store           store.Store
 	registry        *crdt.Registry
@@ -509,10 +510,10 @@ func (s *WorkspaceService) DeleteWorkspace(
 			if err != nil {
 				return "", crdt.LifecyclePayload{}, nil, err
 			}
-			// The fan-out is scoped to the deleting owner. workspace_tab_owned
-			// is keyed by (user_id, tab_id), and workspace_id is a plain FK, so
-			// a row another user wrote against this workspace_id would
-			// otherwise contribute its worker here.
+			// The fan-out is scoped to the deleting owner. The composite
+			// workspace key already makes every row of this workspace the
+			// owner's, and binding the owner keeps the read owner-scoped by
+			// its own WHERE clause.
 			//
 			// Read INSIDE this transaction, and read as ROWS rather than as a
 			// DISTINCT worker projection: the caller has to name the tabs it

@@ -71,11 +71,9 @@ func (j *tabSyncJournal) LookupRecentBatchID(context.Context, string, string) (*
 	return nil, crdt.ErrNotFound
 }
 
-func (j *tabSyncJournal) AdvanceEpoch(context.Context, string, int64, time.Time) error { return nil }
-
 func (j *tabSyncJournal) CompactBatch(context.Context, crdt.CompactBatch) error { return nil }
 
-func (j *tabSyncJournal) CleanupExpiredRecentBatchIDs(context.Context, time.Time) (int64, error) {
+func (j *tabSyncJournal) CleanupExpiredRecentBatchIDs(context.Context, string, time.Time, int64) (int64, error) {
 	return 0, nil
 }
 
@@ -318,7 +316,7 @@ func TestHandleWorkspaceTabsSync_BlankRegistrantIsRefused(t *testing.T) {
 func seedOwnedTab(t *testing.T, st store.Store, ownerID, title, tabID string) string {
 	t.Helper()
 	wsID := storetest.SeedWorkspace(t, st, ownerID, title)
-	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(context.Background(), store.UpsertOwnedTabParams{
+	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(context.Background(), store.UpsertTabParams{
 		UserID:      userid.MustNew(ownerID),
 		WorkspaceID: wsID,
 		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
@@ -326,6 +324,7 @@ func seedOwnedTab(t *testing.T, st store.Store, ownerID, title, tabID string) st
 		WorkerID:    "w1",
 		TileID:      "tile-" + tabID,
 		Position:    "a0",
+		Rendered:    false,
 	}))
 	return wsID
 }

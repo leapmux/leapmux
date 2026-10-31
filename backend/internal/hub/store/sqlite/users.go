@@ -8,7 +8,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
-	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -42,7 +41,6 @@ func fromDBUser(u gendb.User) store.User {
 		Prefs:                      u.Prefs,
 		CreatedAt:                  u.CreatedAt.Time,
 		UpdatedAt:                  u.UpdatedAt.Time,
-		TokensRevokedAt:            u.TokensRevokedAt.Ptr(),
 		AuthGeneration:             u.AuthGeneration,
 		DeletedAt:                  u.DeletedAt.Ptr(),
 	}
@@ -200,7 +198,7 @@ func loadUserInfoCacheFields(ctx context.Context, conn *sqliteConn, id string) (
 // only its UPDATE, and the before/after projection derives the durable
 // cache-invalidation rather than a hand-computed flag. Soft path only
 // (nil fence): grants and non-gate changes stay on user_info.
-func (s *userStore) runUserInfoMutation(ctx context.Context, id string, mutate func(ctx context.Context, conn *sqliteConn) (userID string, updatedAt time.Time, ok bool, err error)) error {
+func (s *userStore) runUserInfoMutation(ctx context.Context, id string, mutate func(ctx context.Context, conn *sqliteConn) (userID string, ok bool, err error)) error {
 	return s.runCachedUserMutation(ctx, id, mutate, nil)
 }
 
@@ -209,15 +207,15 @@ func (s *userStore) runUserInfoMutation(ctx context.Context, id string, mutate f
 // true→false) escalates to a generation-bearing user_tokens revocation that
 // fences live streams and logs the user out; a grant stays on the soft
 // user_info signal.
-func (s *userStore) runAuthGateMutation(ctx context.Context, id string, mutate func(ctx context.Context, conn *sqliteConn) (userID string, updatedAt time.Time, ok bool, err error)) error {
+func (s *userStore) runAuthGateMutation(ctx context.Context, id string, mutate func(ctx context.Context, conn *sqliteConn) (userID string, ok bool, err error)) error {
 	return s.runCachedUserMutation(ctx, id, mutate, fenceUserTokensLocked)
 }
 
 func (s *userStore) runCachedUserMutation(
 	ctx context.Context,
 	id string,
-	mutate func(ctx context.Context, conn *sqliteConn) (userID string, updatedAt time.Time, ok bool, err error),
-	fence func(context.Context, *sqliteConn, string, time.Time) error,
+	mutate func(ctx context.Context, conn *sqliteConn) (userID string, ok bool, err error),
+	fence func(context.Context, *sqliteConn, string) error,
 ) error {
 	// Lock the user row before the before-read so a concurrent same-user mutation
 	// cannot commit between the before and after cached-field projections and hide
@@ -235,43 +233,39 @@ func (s *userStore) runCachedUserMutation(
 			return loadUserInfoCacheFields(ctx, conn, id)
 		},
 		mutate,
-		func(ctx context.Context, conn *sqliteConn, userID string, updatedAt time.Time) error {
-			return insertRevocationEvent(ctx, conn, store.RevocationEventKindUserInfo, userID, userID, updatedAt, 0)
+		func(ctx context.Context, conn *sqliteConn, userID string) error {
+			return emitCredentialEvent(ctx, conn, *store.UserInfoEvent(userID))
 		},
 		fence,
 	)
 }
 
-// fenceUserTokensLocked bumps auth_generation + tokens_revoked_at and inserts a
+// fenceUserTokensLocked bumps auth_generation and inserts a
 // user_tokens event inside the already-open, row-locked transaction. Same effect
 // as RevokeUserTokens's mutate body, done in-transaction so an auth-gate
 // reduction and its fence share one commit.
-func fenceUserTokensLocked(ctx context.Context, conn *sqliteConn, id string, _ time.Time) error {
-	row, err := conn.q.BumpUserTokensRevokedAt(ctx, id)
+func fenceUserTokensLocked(ctx context.Context, conn *sqliteConn, id string) error {
+	row, err := conn.q.BumpUserAuthGeneration(ctx, id)
 	if err != nil {
 		return mapErr(err)
 	}
-	revokedAt, err := sqlutil.RequireTime(row.TokensRevokedAt.Time, row.TokensRevokedAt.Valid, "tokens_revoked_at")
-	if err != nil {
-		return err
-	}
-	return insertRevocationEvent(ctx, conn, store.RevocationEventKindUserTokens, row.ID, row.ID, revokedAt, row.AuthGeneration)
+	return insertRevocationEvent(ctx, conn, store.RevocationEventKindUserTokens, row.ID, row.ID, row.AuthGeneration)
 }
 
-// updatedUserResult maps a RETURNING (id, updated_at) row plus error into the
-// (userID, updatedAt, changed, err) tuple runUserInfoMutation expects: a no-rows
+// updatedUserResult maps a RETURNING id result plus error into the
+// (userID, changed, err) tuple runUserInfoMutation expects: a no-rows
 // result (no row updated) is a silent no-op (changed=false, nil err), any other
 // error propagates mapped, and a live row yields changed=true. Shared by every
 // cached-field Update* mutate closure so the not-found handling lives in one
 // place instead of five identical tails.
-func updatedUserResult(id string, updatedAt time.Time, err error) (string, time.Time, bool, error) {
+func updatedUserResult(id string, err error) (string, bool, error) {
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", time.Time{}, false, nil
+		return "", false, nil
 	}
 	if err != nil {
-		return "", time.Time{}, false, mapErr(err)
+		return "", false, mapErr(err)
 	}
-	return id, updatedAt, true, nil
+	return id, true, nil
 }
 
 // UpdateProfile changes the username/display name; RunUserInfoMutation emits a
@@ -282,17 +276,14 @@ func (s *userStore) UpdateProfile(ctx context.Context, p store.UpdateUserProfile
 	if err := p.Validate(); err != nil {
 		return err
 	}
-	return s.runUserInfoMutation(ctx, p.ID, func(ctx context.Context, conn *sqliteConn) (string, time.Time, bool, error) {
-		row, err := conn.q.UpdateUserProfile(ctx, gendb.UpdateUserProfileParams{
+	return s.runUserInfoMutation(ctx, p.ID, func(ctx context.Context, conn *sqliteConn) (string, bool, error) {
+		id, err := conn.q.UpdateUserProfile(ctx, gendb.UpdateUserProfileParams{
 			Username:          store.NormalizeUsername(p.Username),
 			DisplayName:       p.DisplayName,
 			DisplayNameFolded: store.FoldSearchText(p.DisplayName),
 			ID:                p.ID,
 		})
-		if err != nil {
-			return updatedUserResult("", time.Time{}, err)
-		}
-		return updatedUserResult(row.ID, row.UpdatedAt.Time, nil)
+		return updatedUserResult(id, err)
 	})
 }
 
@@ -312,13 +303,13 @@ func (s *userStore) UpdatePassword(ctx context.Context, p store.UpdateUserPasswo
 // (UpdateEmailVerified false) is the canonical gate flip and does fence. A
 // missing id is a no-op with no event.
 func (s *userStore) UpdateEmail(ctx context.Context, p store.UpdateUserEmailParams) error {
-	return s.runUserInfoMutation(ctx, p.ID, func(ctx context.Context, conn *sqliteConn) (string, time.Time, bool, error) {
-		row, err := conn.q.UpdateUserEmail(ctx, gendb.UpdateUserEmailParams{
+	return s.runUserInfoMutation(ctx, p.ID, func(ctx context.Context, conn *sqliteConn) (string, bool, error) {
+		id, err := conn.q.UpdateUserEmail(ctx, gendb.UpdateUserEmailParams{
 			Email:         store.NormalizeEmail(p.Email),
 			EmailVerified: ptrconv.BoolToInt64(p.EmailVerified),
 			ID:            p.ID,
 		})
-		return updatedUserResult(row.ID, row.UpdatedAt.Time, err)
+		return updatedUserResult(id, err)
 	})
 }
 
@@ -327,12 +318,12 @@ func (s *userStore) UpdateEmail(ctx context.Context, p store.UpdateUserEmailPara
 // fences the user's live streams and logs them out; a grant (false→true) stays
 // on the soft user_info cache signal. A missing id is a no-op with no event.
 func (s *userStore) UpdateEmailVerified(ctx context.Context, p store.UpdateUserEmailVerifiedParams) error {
-	return s.runAuthGateMutation(ctx, p.ID, func(ctx context.Context, conn *sqliteConn) (string, time.Time, bool, error) {
-		row, err := conn.q.UpdateUserEmailVerified(ctx, gendb.UpdateUserEmailVerifiedParams{
+	return s.runAuthGateMutation(ctx, p.ID, func(ctx context.Context, conn *sqliteConn) (string, bool, error) {
+		id, err := conn.q.UpdateUserEmailVerified(ctx, gendb.UpdateUserEmailVerifiedParams{
 			EmailVerified: ptrconv.BoolToInt64(p.EmailVerified),
 			ID:            p.ID,
 		})
-		return updatedUserResult(row.ID, row.UpdatedAt.Time, err)
+		return updatedUserResult(id, err)
 	})
 }
 
@@ -341,12 +332,12 @@ func (s *userStore) UpdateEmailVerified(ctx context.Context, p store.UpdateUserE
 // and logs them out; a grant (false→true) stays on the soft user_info cache
 // signal. A missing id is a no-op with no event.
 func (s *userStore) UpdateAdmin(ctx context.Context, p store.UpdateUserAdminParams) error {
-	return s.runAuthGateMutation(ctx, p.ID, func(ctx context.Context, conn *sqliteConn) (string, time.Time, bool, error) {
-		row, err := conn.q.UpdateUserAdmin(ctx, gendb.UpdateUserAdminParams{
+	return s.runAuthGateMutation(ctx, p.ID, func(ctx context.Context, conn *sqliteConn) (string, bool, error) {
+		id, err := conn.q.UpdateUserAdmin(ctx, gendb.UpdateUserAdminParams{
 			IsAdmin: ptrconv.BoolToInt64(p.IsAdmin),
 			ID:      p.ID,
 		})
-		return updatedUserResult(row.ID, row.UpdatedAt.Time, err)
+		return updatedUserResult(id, err)
 	})
 }
 
@@ -391,9 +382,9 @@ func (s *userStore) ClearPendingEmailCode(ctx context.Context, p store.ClearPend
 // path (runUserInfoMutation, nil fence): a promotion only grants email_verified
 // (false→true), so it never reduces an auth gate and never fences.
 func (s *userStore) PromotePendingEmail(ctx context.Context, id string) error {
-	return s.runUserInfoMutation(ctx, id, func(ctx context.Context, conn *sqliteConn) (string, time.Time, bool, error) {
-		row, err := conn.q.PromotePendingEmail(ctx, id)
-		return updatedUserResult(row.ID, row.UpdatedAt.Time, err)
+	return s.runUserInfoMutation(ctx, id, func(ctx context.Context, conn *sqliteConn) (string, bool, error) {
+		id, err := conn.q.PromotePendingEmail(ctx, id)
+		return updatedUserResult(id, err)
 	})
 }
 
@@ -486,17 +477,13 @@ func (s *userStore) RevokeUserTokens(ctx context.Context, userID userid.UserID) 
 		return 0, store.ErrInvalidArgument
 	}
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *sqliteConn) (*store.CredentialEvent, error) {
-		row, err := conn.q.BumpUserTokensRevokedAt(ctx, owner)
+		row, err := conn.q.BumpUserAuthGeneration(ctx, owner)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		if err != nil {
 			return nil, mapErr(err)
 		}
-		revokedAt, err := sqlutil.RequireTime(row.TokensRevokedAt.Time, row.TokensRevokedAt.Valid, "tokens_revoked_at")
-		if err != nil {
-			return nil, err
-		}
-		return &store.CredentialEvent{Kind: store.RevocationEventKindUserTokens, SubjectID: row.ID, UserID: row.ID, At: revokedAt, UserAuthGeneration: row.AuthGeneration}, nil
+		return &store.CredentialEvent{Kind: store.RevocationEventKindUserTokens, SubjectID: row.ID, UserID: row.ID, UserAuthGeneration: row.AuthGeneration}, nil
 	}, emitCredentialEvent)
 }

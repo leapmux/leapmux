@@ -57,7 +57,6 @@ func newTurnEndFixture(t *testing.T) (*agentOutputSink, *turnEndCapturingWriter)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-turn-end",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 

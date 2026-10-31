@@ -4,6 +4,7 @@ package dbtest
 import (
 	"context"
 	"database/sql"
+	"fmt"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -12,6 +13,12 @@ import (
 
 // StoreControlResponse creates a durable answer fixture without a live native request.
 func StoreControlResponse(ctx context.Context, database *sql.DB, answer db.ControlResponseAnswer) error {
+	// The answers view takes the provider from the answering agent, so a
+	// provider the caller sets here would never reach the stored row. Every
+	// caller requires this helper to succeed, so the error fails the test.
+	if answer.AgentProvider != leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
+		return fmt.Errorf("dbtest.StoreControlResponse: AgentProvider %v is not storable; the answer reports its agent's provider", answer.AgentProvider)
+	}
 	tx, err := database.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -33,12 +40,12 @@ func StoreControlResponse(ctx context.Context, database *sql.DB, answer db.Contr
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO control_response_payloads
 	(delivery_id, request_payload, response_content, resolved_content, plan_approval_settings,
-	execution_session_id, source_seq, follow_up, follow_up_kind, non_blocking, agent_session_id, agent_provider, input_id)
-	VALUES (?, COALESCE(?, X''), COALESCE(?, X''), COALESCE(?, X''), COALESCE(?, X''), ?, ?, ?, ?, ?, ?, ?, ?)`,
+	execution_session_id, source_seq, follow_up, follow_up_kind, non_blocking, agent_session_id, input_id)
+	VALUES (?, COALESCE(?, X''), COALESCE(?, X''), COALESCE(?, X''), COALESCE(?, X''), ?, ?, ?, ?, ?, ?, ?)`,
 		answer.DeliveryID, answer.RequestPayload, answer.ResponseContent, answer.ResolvedContent,
 		answer.PlanApprovalSettings, answer.ExecutionSessionID, answer.SourceSeq, answer.FollowUp,
 		answer.FollowUpKind, answer.NonBlocking,
-		answer.AgentSessionID, answer.AgentProvider, answer.InputID)
+		answer.AgentSessionID, answer.InputID)
 	if err != nil {
 		return err
 	}

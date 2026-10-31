@@ -154,7 +154,7 @@ func TestNotificationHistoricalObservationWithoutAReferenceKeepsTheEarlierAggreg
 	assert.Equal(t, "native-session", after[1].AgentSessionID)
 	entries := readStoredNotificationEntries(t, after[1])
 	require.Len(t, entries, 1)
-	assertNotificationEntryIdentity(t, fresh, after[1], entries[0])
+	assertNotificationEntryIdentity(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, fresh, after[1], entries[0])
 	assert.Equal(t, progress, current.progress.snapshotInfo())
 	afterTodos, err := svc.Output.LoadTodos(t.Context(), agentID)
 	require.NoError(t, err)
@@ -211,13 +211,14 @@ func notificationFingerprintReference(provider leapmuxv1.AgentProvider, source l
 	return sha256.Sum256(framed.Bytes())
 }
 
-func assertNotificationEntryIdentity(t *testing.T, expected agent.MessageContent, row db.Message, stored storedNotificationEntry) {
+// provider is the agent's: the fingerprint covers it, and no message row stores it.
+func assertNotificationEntryIdentity(t *testing.T, provider leapmuxv1.AgentProvider, expected agent.MessageContent, row db.Message, stored storedNotificationEntry) {
 	t.Helper()
 	assert.Equal(t, expected.IdempotencyKey, stored.IdempotencyKey)
 	decoded, err := base64.StdEncoding.DecodeString(stored.FingerprintBase64)
 	require.NoError(t, err)
 	require.Len(t, decoded, sha256.Size)
-	want := notificationFingerprintReference(row.AgentProvider, row.Source, expected)
+	want := notificationFingerprintReference(provider, row.Source, expected)
 	assert.Equal(t, want[:], decoded)
 	assert.Equal(t, base64.StdEncoding.EncodeToString(decoded), stored.FingerprintBase64)
 }
@@ -242,7 +243,7 @@ func TestNotificationEntryRetainsExactIdentityAndRenderingFields(t *testing.T) {
 	stored := readStoredNotificationEntries(t, rows[0])
 	require.Len(t, stored, len(entries))
 	for index, entry := range stored {
-		assertNotificationEntryIdentity(t, entries[index], rows[0], entry)
+		assertNotificationEntryIdentity(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, entries[index], rows[0], entry)
 	}
 	assert.False(t, rows[0].TranscriptOnly)
 	assert.Nil(t, rows[0].Completion, "the latest accepted entry supplies no completion")
@@ -430,7 +431,7 @@ func TestEmbeddedNotificationJournalPreservesUnrelatedSupplementData(t *testing.
 	stored := readStoredNotificationEntries(t, row)
 	require.Len(t, stored, 2)
 	for index, entry := range stored {
-		assertNotificationEntryIdentity(t, entries[index], row, entry)
+		assertNotificationEntryIdentity(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, entries[index], row, entry)
 	}
 }
 
@@ -482,8 +483,8 @@ func TestEmbeddedNotificationJournalValidAppendAfterAnInvalidOriginal(t *testing
 			assert.Equal(t, []int64{1}, wrapper.OldSeqs)
 			stored := readStoredNotificationEntries(t, rows[0])
 			require.Len(t, stored, 2)
-			assertNotificationEntryIdentity(t, first, rows[0], stored[0])
-			assertNotificationEntryIdentity(t, second, rows[0], stored[1])
+			assertNotificationEntryIdentity(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, first, rows[0], stored[0])
+			assertNotificationEntryIdentity(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, second, rows[0], stored[1])
 		})
 	}
 }
@@ -509,7 +510,7 @@ func TestNotificationReplayDoesNotChangeAggregateProvenance(t *testing.T) {
 	require.NoError(t, err)
 	stored := readStoredNotificationEntries(t, row)
 	require.Len(t, stored, 1)
-	assertNotificationEntryIdentity(t, content, row, stored[0])
+	assertNotificationEntryIdentity(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, content, row, stored[0])
 	assert.False(t, row.TranscriptOnly)
 	assert.Equal(t, before, row)
 }

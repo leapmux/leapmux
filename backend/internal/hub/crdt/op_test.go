@@ -4,10 +4,24 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
+
+func TestBatchBodyHashExcludesTheSubmissionEpoch(t *testing.T) {
+	first := positionBatchAtEpoch(1, "first", "p1")
+	retry := positionBatchAtEpoch(2, "second", "p1")
+	firstHash, err := crdt.BatchBodyHash(first)
+	require.NoError(t, err)
+	retryHash, err := crdt.BatchBodyHash(retry)
+	require.NoError(t, err)
+	assert.Equal(t, firstHash, retryHash)
+	changedHash, err := crdt.BatchBodyHash(positionBatchAtEpoch(2, "second", "p2"))
+	require.NoError(t, err)
+	assert.NotEqual(t, firstHash, changedHash)
+}
 
 // TestOpTarget_ClassifiesEveryOpKind pins the EntityRef each CrdtOp body
 // resolves to. The broadcast filter's EntityKindWorkspaceRoot arm

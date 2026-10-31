@@ -48,7 +48,6 @@ func setupChildAgentTest(t *testing.T) (*Service, *channel.Dispatcher, string, s
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "root-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	sink := newTestRootOutputSink(t, svc.Output, "root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
@@ -143,7 +142,6 @@ func TestQueuedChildInputWaitsAsFailedWhenRegistryIsMissing(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "root-x",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	require.NoError(t, svc.Queries.CreateChildAgent(ctx, db.CreateChildAgentParams{
@@ -151,7 +149,6 @@ func TestQueuedChildInputWaitsAsFailedWhenRegistryIsMissing(t *testing.T) {
 		ParentAgentID: sql.NullString{String: "root-x", Valid: true},
 		SpawnSpanID:   "span-x",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 
@@ -182,11 +179,10 @@ func TestCloseAgentOnChildKeepsRowAndTranscript(t *testing.T) {
 
 	// Seed a message into the child transcript so we can confirm it survives.
 	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		ID:            "cm-1",
-		AgentID:       childID,
-		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		Content:       []byte("keep me"),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		ID:      "cm-1",
+		AgentID: childID,
+		Source:  leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content: []byte("keep me"),
 	})
 	require.NoError(t, err)
 
@@ -458,7 +454,7 @@ func TestAgentToProto_ChildCapabilitiesFollowTheProvider(t *testing.T) {
 			svc, _, _ := setupTestService(t)
 			rootID := "root-" + tc.provider.String()
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-				ID: rootID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: tc.provider,
+				ID: rootID, WorkingDir: t.TempDir(), AgentProvider: tc.provider,
 			}))
 			childID, err := newTestRootOutputSink(t, svc.Output, rootID, tc.provider).EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-span-1", ProviderChildKey: "row-key-1", Title: "child task"})
 			require.NoError(t, err)
@@ -680,7 +676,6 @@ func TestCloseAgentReportsNoDescendantsForALeafAgent(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "leaf-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 

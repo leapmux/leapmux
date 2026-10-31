@@ -2,11 +2,10 @@
 -- Initial records retain the existing shell and quake kind on conflict.
 -- A terminal keeps both properties for its entire lifetime.
 -- Later title and exit writes use dedicated UPDATE statements that preserve closed_at.
-INSERT INTO terminals (id, working_dir, home_dir, shell_start_dir, shell, title, cols, rows, screen, exit_code, is_quake, closed_at)
+INSERT INTO terminals (id, working_dir, shell_start_dir, shell, title, cols, rows, screen, exit_code, is_quake, closed_at)
 VALUES (
   sqlc.arg(id),
   sqlc.arg(working_dir),
-  sqlc.arg(home_dir),
   sqlc.arg(shell_start_dir),
   sqlc.arg(shell),
   sqlc.arg(title),
@@ -20,7 +19,6 @@ VALUES (
 )
 ON CONFLICT (id) DO UPDATE SET
   working_dir     = excluded.working_dir,
-  home_dir        = excluded.home_dir,
   shell_start_dir = excluded.shell_start_dir,
   title           = excluded.title,
   cols            = excluded.cols,

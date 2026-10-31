@@ -38,7 +38,6 @@ func setupNotifThreadTest(t *testing.T, provider leapmuxv1.AgentProvider) (agent
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: provider,
 	}))
 
@@ -232,7 +231,7 @@ func TestRelaunchOnExitPreservesNotificationThread(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)

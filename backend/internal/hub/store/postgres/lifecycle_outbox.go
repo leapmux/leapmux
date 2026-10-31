@@ -45,7 +45,6 @@ func (s *lifecycleOutboxStore) ListPending(ctx context.Context, p store.ListPend
 			UserID:     r.UserID,
 			OpType:     r.OpType,
 			Payload:    r.Payload,
-			EnqueuedAt: r.EnqueuedAt.Time,
 			ConsumedAt: r.ConsumedAt.Ptr(),
 		}
 	}

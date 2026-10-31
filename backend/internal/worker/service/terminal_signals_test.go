@@ -32,7 +32,7 @@ func startTerminalWithOutputFn(t *testing.T, svc *Service, terminalID string) {
 
 func dbUpsertTerminalParams(id, workingDir string) db.UpsertTerminalParams {
 	return db.UpsertTerminalParams{
-		ID: id, WorkingDir: workingDir, HomeDir: "/tmp",
+		ID: id, WorkingDir: workingDir,
 		Cols: 80, Rows: 24, Screen: []byte{},
 	}
 }

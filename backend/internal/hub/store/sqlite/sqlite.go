@@ -75,9 +75,6 @@ func Open(path string, cfg sqlitedb.Config) (store.Store, error) {
 func (s *sqliteStore) Users() store.UserStore       { return &userStore{conn: s.conn} }
 func (s *sqliteStore) Sessions() store.SessionStore { return &sessionStore{conn: s.conn} }
 func (s *sqliteStore) Workers() store.WorkerStore   { return &workerStore{conn: s.conn} }
-func (s *sqliteStore) WorkerNotifications() store.WorkerNotificationStore {
-	return &workerNotificationStore{conn: s.conn}
-}
 func (s *sqliteStore) RegistrationKeys() store.RegistrationKeyStore {
 	return &registrationKeyStore{conn: s.conn}
 }

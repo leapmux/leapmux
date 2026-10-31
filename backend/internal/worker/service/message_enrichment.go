@@ -135,7 +135,7 @@ func (s *agentOutputSink) EnrichMessage(change agent.MessageEnrichment) (bool, e
 	compressed, compression := msgcodec.Compress(next)
 	prospective := row
 	prospective.SupplementalContent, prospective.SupplementalContentCompression = compressed, compression
-	message, err := messageToProto(&prospective)
+	message, err := messageToProto(&prospective, s.agentProvider)
 	if err != nil {
 		return false, err
 	}
@@ -190,9 +190,9 @@ func (s *agentOutputSink) prepareTodoEventForEnrichment(row db.Message, original
 	if row.SpanID == "" {
 		return nil
 	}
-	provider := s.h.agents.Registry().Plugin(row.AgentProvider)
+	provider := s.h.agents.Registry().Plugin(s.agentProvider)
 	span := agent.SpanInfo{SpanID: row.SpanID, SpanType: row.SpanType}
-	paired := s.h.pairedToolUseLookup(s.agentID, row.AgentSessionID, span)
+	paired := s.h.pairedToolUseLookup(provider, s.agentID, row.AgentSessionID, span)
 	// Read the new state first. Most enrichments contain no to-do event.
 	// Only an extracted event requires another resolve and parse of the prior state.
 	resolved := agent.ResolveMessageContent(provider, agent.MessageContent{

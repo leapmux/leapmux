@@ -5,13 +5,12 @@
 
 -- name: CreateOAuthClient :exec
 INSERT INTO oauth_clients (
-    client_id, owner_user_id, created_by_user_id, secret_hash, client_name,
+    client_id, owner_user_id, secret_hash, client_name,
     icon_blob, icon_media_type, client_uri, redirect_uris, scopes, grant_types,
     elevation_allowed, registration_source, verified_at, verified_by_user_id
 ) VALUES (
     sqlc.arg(client_id),
     sqlc.narg(owner_user_id),
-    sqlc.narg(created_by_user_id),
     sqlc.narg(secret_hash),
     sqlc.arg(client_name),
     sqlc.narg(icon_blob),
@@ -35,7 +34,7 @@ INSERT INTO oauth_clients (
 -- most whether an icon exists, and the column holds up to 64 KiB that the
 -- token endpoint, every consent page and every device poll would otherwise
 -- drag per request. GetOAuthClientIcon serves the one reader that wants bytes.
-SELECT client_id, owner_user_id, created_by_user_id, secret_hash, client_name,
+SELECT client_id, owner_user_id, secret_hash, client_name,
        COALESCE(LENGTH(icon_blob), 0) AS icon_bytes, client_uri, redirect_uris,
        scopes, grant_types, elevation_allowed, registration_source,
        verified_at, verified_by_user_id, created_at, updated_at, revoked_at
@@ -65,7 +64,7 @@ FROM oauth_clients WHERE client_id = sqlc.arg(client_id);
 -- listing asks for; the default keeps the live-only shape every authorize
 -- surface reads. The explicit column list drops the icon bytes for the same
 -- reason GetOAuthClient does.
-SELECT client_id, owner_user_id, created_by_user_id, secret_hash, client_name,
+SELECT client_id, owner_user_id, secret_hash, client_name,
        COALESCE(LENGTH(icon_blob), 0) AS icon_bytes, client_uri, redirect_uris,
        scopes, grant_types, elevation_allowed, registration_source,
        verified_at, verified_by_user_id, created_at, updated_at, revoked_at
@@ -250,6 +249,17 @@ DELETE FROM device_authorizations WHERE client_id = ?;
 -- The sibling of DeleteEphemeralGrantsForOAuthClient; see its comment.
 DELETE FROM oauth_authorization_codes WHERE client_id = ?;
 
+-- name: LockDeletableOAuthClient :one
+-- Authorize and lock the app before deleting its one-shot flow rows.
+SELECT client_id FROM oauth_clients
+WHERE client_id = sqlc.arg(client_id)
+  AND registration_source <> sqlc.arg(builtin_source)
+  AND (
+      (owner_user_id IS NULL AND sqlc.arg(caller_is_admin))
+      OR owner_user_id = sqlc.arg(caller_user_id)
+  )
+FOR UPDATE;
+
 -- name: DeleteOAuthClient :execresult
 -- The HARD delete, for an app that never held a credential. The RESTRICT
 -- foreign key refuses it otherwise, which is the point: a delete that silently
@@ -281,7 +291,7 @@ WHERE client_id = sqlc.arg(client_id)
 --   * updated_at -- the row's own clock. A boot that changed no constant
 --     writes nothing observable, so "when did this app last change" keeps
 --     answering the operator's last edit rather than the last restart.
---   * owner_user_id, created_by_user_id, created_at -- the row's own history
+--   * owner_user_id, created_at -- the row's own history
 --     from its first boot. A reconciliation that rewrote created_at would
 --     make the registration look brand new on every upgrade.
 INSERT INTO oauth_clients (

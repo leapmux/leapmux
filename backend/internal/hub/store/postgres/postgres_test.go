@@ -113,9 +113,7 @@ func TestPostgresBinaryCollationLive(t *testing.T) {
 	require.NoError(t, st.Migrator().Migrate(ctx))
 
 	// Beyond the id name shape, enumerate the columns whose byte-wise ORDERING
-	// is behaviorally load-bearing despite falling outside it: the CRDT
-	// journal's origin_client tiebreak and compaction watermark must order
-	// exactly like Go's plain string compare (crdt/op.go), and the four
+	// is behaviorally load-bearing despite falling outside it: the three
 	// lexorank position columns must order exactly like the Go/TS comparators
 	// for ANY future alphabet -- a dropped COLLATE "C" on these regresses
 	// silently under a linguistic database locale.
@@ -127,12 +125,9 @@ func TestPostgresBinaryCollationLive(t *testing.T) {
 		  AND table_name <> 'goose_db_version'
 		  AND (column_name = 'id' OR column_name LIKE '%\_id' OR column_name IN ('registered_by', 'created_by')
 		       OR (table_name, column_name) IN (
-		           ('user_op_batches', 'origin_client'),
-		           ('user_recent_batch_ids', 'canonical_client'),
 		           ('workspace_sections', 'position'),
 		           ('workspace_section_items', 'position'),
-		           ('workspace_tab_owned', 'position'),
-		           ('workspace_tab_rendered', 'position')))
+		           ('workspace_tab_owned', 'position')))
 		ORDER BY table_name, column_name`)
 	require.NoError(t, err)
 	defer rows.Close()
@@ -145,7 +140,7 @@ func TestPostgresBinaryCollationLive(t *testing.T) {
 			"%s.%s must carry an explicit COLLATE \"C\" so the cursor id tiebreak and FK joins compare byte-wise on every deployment", table, column)
 	}
 	require.NoError(t, rows.Err())
-	// The migration declares 81 COLLATE "C" columns; a collapse of this count
+	// The migration declares 73 COLLATE "C" columns; a collapse of this count
 	// means the name heuristic (or the schema) broke, not that fewer pins are
 	// needed.
 	assert.Greater(t, checked, 40, "expected many id/FK TEXT columns; the name heuristic may have broken (got %d)", checked)

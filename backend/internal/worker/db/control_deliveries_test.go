@@ -6,6 +6,10 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/worker/db"
+	"github.com/leapmux/leapmux/internal/worker/db/dbtest"
+	gendb "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/stretchr/testify/require"
 )
 
@@ -67,4 +71,30 @@ func TestControlDeliveryViewsUseTheLedgerState(t *testing.T) {
 		require.NoError(t, database.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table).Scan(&count))
 		require.Zero(t, count)
 	}
+}
+
+// TestControlResponseAnswerReportsItsAgentsProvider pins where the answers
+// view takes agent_provider from. The payload stores no provider: the view
+// joins the answering agent, which never changes provider.
+func TestControlResponseAnswerReportsItsAgentsProvider(t *testing.T) {
+	t.Parallel()
+
+	sqlDB, err := db.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	ctx := t.Context()
+	require.NoError(t, db.Migrate(ctx, sqlDB))
+	q := gendb.New(sqlDB)
+	require.NoError(t, q.CreateAgent(ctx, gendb.CreateAgentParams{
+		ID: "codex-agent", WorkingDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	require.NoError(t, dbtest.StoreControlResponse(ctx, sqlDB, gendb.ControlResponseAnswer{
+		AgentID: "codex-agent", RequestID: "request", ClaimToken: "claim", AgentSessionID: "session",
+	}))
+
+	answer, err := q.GetControlResponseAnswer(ctx, gendb.GetControlResponseAnswerParams{
+		AgentID: "codex-agent", RequestID: "request", ClaimToken: "claim",
+	})
+	require.NoError(t, err)
+	require.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, answer.AgentProvider)
 }

@@ -83,6 +83,12 @@ type Clock struct {
 	maxLog   int64
 }
 
+// CanonicalClockID is the client id of every canonical HLC. The manager
+// stamps each committed op from one clock with this id, so the journal
+// (user_op_batches and user_recent_batch_ids) stores no client id and
+// rebuilds it from this constant when it reads an HLC back.
+const CanonicalClockID = "hub-canonical"
+
 // NewClock returns a Clock that stamps ops with the given client id.
 func NewClock(clientID string) *Clock {
 	return &Clock{clientID: clientID}

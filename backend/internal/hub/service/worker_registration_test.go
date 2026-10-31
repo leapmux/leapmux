@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"connectrpc.com/connect/v2"
@@ -49,6 +50,7 @@ type regKeyEnv struct {
 	server          *httptest.Server
 	mux             *http.ServeMux
 	wMgr            *workermgr.Manager
+	notifier        *notifier.Notifier
 }
 
 // regKeySeed configures the settings a registration-key env runs under;
@@ -78,7 +80,23 @@ func setupRegKeyEnv(t *testing.T) *regKeyEnv {
 // SMTP so EmailRegistrationInstructions can run.
 func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config, seed regKeySeed) *regKeyEnv {
 	t.Helper()
+	return newRegKeyEnv(t, cfg, seed, nil)
+}
+
+// newRegKeyEnv builds a registration-key test env. connectorStore, when not
+// nil, wraps the store that the connector service alone reads, so a test can
+// act inside one of Connect's store calls; every other service reads the
+// store unwrapped.
+func newRegKeyEnv(t *testing.T, cfg *config.Config, seed regKeySeed, connectorStore func(store.Store) store.Store) *regKeyEnv {
+	t.Helper()
 	st := hubtestutil.OpenTestStore(t)
+	return regKeyEnvFromStore(t, st, cfg, seed, connectorStore)
+}
+
+// regKeyEnvFromStore exercises registration through the same services on a
+// caller-supplied backend, including databases with concurrent writers.
+func regKeyEnvFromStore(t *testing.T, st store.Store, cfg *config.Config, seed regKeySeed, connectorStore func(store.Store) store.Store) *regKeyEnv {
+	t.Helper()
 	hubtestutil.CreateTestAdmin(t, st)
 	set := servicetest.NewSettingsManager(t, st, nil)
 	if seed != nil {
@@ -98,7 +116,15 @@ func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config, seed regKeySeed) *r
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(sc, nil, nil)))
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
 
-	connectorSvc := service.NewWorkerConnectorService(st, wMgr, cMgr, service.NewHubEventBroadcaster(cMgr), pendingReqs, nil, nil, sendq.NewMaxBytesPoolForTest())
+	// One notifier for both services, as hub/server.go wires it: the
+	// connector delivers DEREGISTER to a deregistering worker that connects,
+	// and the management service sends it to a connected one.
+	notif := notifier.New(st, wMgr, pendingReqs, func() time.Duration { return settings.DefaultTimeouts.APITimeout() }, nil)
+	connectorSt := st
+	if connectorStore != nil {
+		connectorSt = connectorStore(st)
+	}
+	connectorSvc := service.NewWorkerConnectorService(connectorSt, wMgr, cMgr, service.NewHubEventBroadcaster(cMgr), pendingReqs, notif, nil, sendq.NewMaxBytesPoolForTest())
 	// Both halves of max_workers_per_user, wired from one value exactly as
 	// hub/server.go does: the service caps registered ROWS, the registry caps
 	// LIVE CONNECTIONS, and a fixture that wired only the first would let a test
@@ -109,7 +135,6 @@ func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config, seed regKeySeed) *r
 	wMgr.SetMaxWorkersPerUser(limits.MaxWorkersPerUser)
 	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(connectServer, connectorSvc)
 
-	notif := notifier.New(st, wMgr, pendingReqs, func() time.Duration { return settings.DefaultTimeouts.APITimeout() })
 	mgmtSvc := service.NewWorkerManagementService(st, wMgr, service.NewHubEventBroadcaster(cMgr), notif, mailer, mail.Renderer{}, set, nil)
 	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer, mgmtSvc)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
@@ -126,6 +151,7 @@ func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config, seed regKeySeed) *r
 		server:          server,
 		mux:             mux,
 		wMgr:            wMgr,
+		notifier:        notif,
 	}
 }
 
@@ -801,6 +827,341 @@ func TestConnect_SendsWorkerIdentityFirst(t *testing.T) {
 	require.NoError(t, stream.CloseSend())
 }
 
+// TestConnect_TellsADeregisteringWorkerToStopAndDeletesItOnAck pins the
+// recovery for a worker deregistered while it was offline. deregistering_at is
+// the persisted intent, so its next connect must carry the DEREGISTER
+// instruction, and the worker's acknowledgement deletes it.
+func TestConnect_TellsADeregisteringWorkerToStopAndDeletesItOnAck(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	env := setupRegKeyEnv(t)
+	token := env.login(t, "admin", "admin123")
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
+		&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	require.NoError(t, err)
+	regResp, err := env.registerWithKey(t, createResp.GetRegistrationKey())
+	require.NoError(t, err)
+	workerID := regResp.GetWorkerId()
+	deregistered, err := env.store.Workers().ForceDeregister(context.Background(), workerID)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), deregistered, "the worker is deregistered while no connection exists")
+
+	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
+		env.serveOverUnixSocket(t, "hub-deregister-on-connect"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	streamCtx, streamInfo := connect.NewClientContext(ctx)
+	streamInfo.RequestHeader().Set("Authorization", "Bearer "+regResp.GetAuthToken())
+	stream, err := connectorClient.Connect(streamCtx)
+	require.NoError(t, err)
+	require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
+		Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{
+			EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
+		}},
+	}))
+
+	var instruction *leapmuxv1.ConnectResponse
+	for instruction == nil {
+		frame, err := stream.Receive()
+		require.NoError(t, err, "the Hub must send DEREGISTER before it ends the stream")
+		if frame.GetDeregister() != nil {
+			instruction = frame
+		}
+	}
+	require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
+		RequestId: instruction.GetRequestId(),
+		Payload:   &leapmuxv1.ConnectRequest_DeregisterAck{DeregisterAck: &leapmuxv1.DeregisterAck{}},
+	}))
+
+	testutil.AssertEventually(t, func() bool {
+		row, err := env.store.Workers().GetByIDIncludeDeleted(context.Background(), workerID)
+		return err == nil && row.Status == leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED
+	})
+	testutil.AssertEventually(t, func() bool {
+		return !env.wMgr.OnlineForTrustedPath(workerID)
+	})
+	require.NoError(t, stream.CloseSend())
+}
+
+func TestFailedStopDeliveryEndsTheActiveStreamAndRecoversDurableState(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	for _, deleted := range []bool{false, true} {
+		t.Run(map[bool]string{false: "deregistering on reconnect", true: "deleted on reconnect"}[deleted], func(t *testing.T) {
+			env := setupRegKeyEnv(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			key := id.Generate()
+			require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+				ID: key, CreatedBy: userid.MustNew(env.adminID(t)), ExpiresAt: time.Now().Add(time.Hour),
+			}))
+			registered, err := env.registerWithKey(t, key)
+			require.NoError(t, err)
+			client := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
+				env.serveOverUnixSocket(t, "hub-delivery-recovery"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+			open := func() leapmuxv1connect.WorkerConnectorServiceConnectClientStream {
+				streamCtx, info := connect.NewClientContext(ctx)
+				info.RequestHeader().Set("Authorization", "Bearer "+registered.GetAuthToken())
+				stream, err := client.Connect(streamCtx)
+				require.NoError(t, err)
+				err = stream.Send(&leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_Heartbeat{
+					Heartbeat: &leapmuxv1.Heartbeat{EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM},
+				}})
+				if !errors.Is(err, io.EOF) {
+					require.NoError(t, err)
+				}
+				return stream
+			}
+			first := open()
+			for {
+				frame, err := first.Receive()
+				require.NoError(t, err)
+				if frame.GetHeartbeat() != nil {
+					break
+				}
+			}
+			if deleted {
+				require.NoError(t, env.store.Workers().MarkDeleted(ctx, registered.GetWorkerId()))
+			} else {
+				_, err := env.store.Workers().ForceDeregister(ctx, registered.GetWorkerId())
+				require.NoError(t, err)
+			}
+			failed := notifier.New(env.store, env.wMgr, failedStopSender{}, func() time.Duration { return time.Second }, nil)
+			require.NoError(t, failed.SendDeregister(ctx, registered.GetWorkerId()))
+			for {
+				_, err := first.Receive()
+				if err != nil {
+					break
+				}
+			}
+			require.NoError(t, ctx.Err(), "the stream must end because delivery forced reconnect, not because the test expired")
+			testutil.AssertEventually(t, func() bool { return !env.wMgr.OnlineForTrustedPath(registered.GetWorkerId()) })
+			next := open()
+			if deleted {
+				_, err := next.Receive()
+				require.Error(t, err)
+				assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+				return
+			}
+			for {
+				frame, err := next.Receive()
+				require.NoError(t, err)
+				if frame.GetDeregister() != nil {
+					require.NoError(t, next.Send(&leapmuxv1.ConnectRequest{
+						RequestId: frame.GetRequestId(), Payload: &leapmuxv1.ConnectRequest_DeregisterAck{DeregisterAck: &leapmuxv1.DeregisterAck{}},
+					}))
+					break
+				}
+			}
+			testutil.AssertEventually(t, func() bool {
+				worker, err := env.store.Workers().GetByIDIncludeDeleted(ctx, registered.GetWorkerId())
+				return err == nil && worker.DeletedAt != nil
+			})
+		})
+	}
+}
+
+type failedStopSender struct{}
+
+func (failedStopSender) SendAndWait(context.Context, *workermgr.Conn, *leapmuxv1.ConnectResponse) (*leapmuxv1.ConnectRequest, error) {
+	return nil, errors.New("the stop instruction was not delivered")
+}
+
+// authReadHookStore runs afterAuthRead once, right after the connector's
+// GetByAuthToken succeeds. That is the window between Connect's authentication
+// read and the registration of the connection.
+type authReadHookStore struct {
+	store.Store
+	afterAuthRead func(*store.Worker)
+}
+
+func (s authReadHookStore) Workers() store.WorkerStore {
+	return authReadHookWorkers{WorkerStore: s.Store.Workers(), afterAuthRead: s.afterAuthRead}
+}
+
+type authReadHookWorkers struct {
+	store.WorkerStore
+	afterAuthRead func(*store.Worker)
+}
+
+func (w authReadHookWorkers) GetByAuthToken(ctx context.Context, token string) (*store.Worker, error) {
+	worker, err := w.WorkerStore.GetByAuthToken(ctx, token)
+	if err == nil {
+		w.afterAuthRead(worker)
+	}
+	return worker, err
+}
+
+// A deregistration, or a deletion with the worker's user, can commit after
+// Connect authenticates the worker and before it registers the connection.
+// SendDeregister then finds no connection and tells nobody, so Connect itself
+// must notice the change and tell the worker to stop. Otherwise the worker
+// stays connected, and keeps its agents running, until it happens to
+// reconnect.
+func TestConnect_TellsAWorkerChangedWhileItConnectsToStop(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	tests := []struct {
+		name   string
+		change func(ctx context.Context, st store.Store, workerID string) error
+	}{
+		{
+			name: "deregistered",
+			change: func(ctx context.Context, st store.Store, workerID string) error {
+				_, err := st.Workers().ForceDeregister(ctx, workerID)
+				return err
+			},
+		},
+		{
+			name: "deleted with its user",
+			change: func(ctx context.Context, st store.Store, workerID string) error {
+				return st.Workers().MarkDeleted(ctx, workerID)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var env *regKeyEnv
+			var once sync.Once
+			env = newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+				return authReadHookStore{Store: st, afterAuthRead: func(worker *store.Worker) {
+					once.Do(func() {
+						ctx := context.Background()
+						assert.False(t, env.wMgr.OnlineForTrustedPath(worker.ID),
+							"the change must land before Connect registers the connection")
+						// The durable change commits first, and the notifier
+						// runs after it, exactly as the services call it.
+						assert.NoError(t, tt.change(ctx, env.store, worker.ID))
+						assert.NoError(t, env.notifier.SendDeregister(ctx, worker.ID))
+					})
+				}}
+			})
+			token := env.login(t, "admin", "admin123")
+			createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
+				&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+			require.NoError(t, err)
+			regResp, err := env.registerWithKey(t, createResp.GetRegistrationKey())
+			require.NoError(t, err)
+			workerID := regResp.GetWorkerId()
+
+			connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
+				env.serveOverUnixSocket(t, "hub-changed-while-connecting"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			streamCtx, streamInfo := connect.NewClientContext(ctx)
+			streamInfo.RequestHeader().Set("Authorization", "Bearer "+regResp.GetAuthToken())
+			stream, err := connectorClient.Connect(streamCtx)
+			require.NoError(t, err)
+			require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
+				Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{
+					EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
+				}},
+			}))
+
+			var instruction *leapmuxv1.ConnectResponse
+			for instruction == nil {
+				frame, err := stream.Receive()
+				require.NoError(t, err, "the Hub must send DEREGISTER before it ends the stream")
+				if frame.GetDeregister() != nil {
+					instruction = frame
+				}
+			}
+			require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
+				RequestId: instruction.GetRequestId(),
+				Payload:   &leapmuxv1.ConnectRequest_DeregisterAck{DeregisterAck: &leapmuxv1.DeregisterAck{}},
+			}))
+
+			testutil.AssertEventually(t, func() bool {
+				row, err := env.store.Workers().GetByIDIncludeDeleted(context.Background(), workerID)
+				return err == nil && row.Status == leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED
+			})
+			testutil.AssertEventually(t, func() bool {
+				return !env.wMgr.OnlineForTrustedPath(workerID) && !env.wMgr.IsDeregistering(workerID)
+			})
+			require.NoError(t, stream.CloseSend())
+		})
+	}
+}
+
+// workerReadFailStore fails every GetByIDIncludeDeleted, which is the read that
+// Connect makes after it registers the connection.
+type workerReadFailStore struct {
+	store.Store
+}
+
+func (s workerReadFailStore) Workers() store.WorkerStore {
+	return workerReadFailWorkers{WorkerStore: s.Store.Workers()}
+}
+
+type workerReadFailWorkers struct {
+	store.WorkerStore
+}
+
+func (workerReadFailWorkers) GetByIDIncludeDeleted(context.Context, string) (*store.Worker, error) {
+	return nil, errors.New("worker read failed")
+}
+
+// Connect cannot know whether the worker must be told to stop when it cannot
+// read the worker again after the registration. It must refuse the stream
+// rather than serve it as ACTIVE, and the refused connection must leave the
+// registry, so the worker reconnects and the next Connect decides again.
+func TestConnect_RefusesTheStreamWhenTheWorkerCannotBeReadAgain(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	env := newRegKeyEnv(t, testConfig(), seedSMTP, func(st store.Store) store.Store {
+		return workerReadFailStore{Store: st}
+	})
+	token := env.login(t, "admin", "admin123")
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
+		&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	require.NoError(t, err)
+	regResp, err := env.registerWithKey(t, createResp.GetRegistrationKey())
+	require.NoError(t, err)
+	workerID := regResp.GetWorkerId()
+
+	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
+		env.serveOverUnixSocket(t, "hub-read-again-fails"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	streamCtx, streamInfo := connect.NewClientContext(ctx)
+	streamInfo.RequestHeader().Set("Authorization", "Bearer "+regResp.GetAuthToken())
+	stream, err := connectorClient.Connect(streamCtx)
+	require.NoError(t, err)
+	require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
+		Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{
+			EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
+		}},
+	}))
+
+	for {
+		frame, err := stream.Receive()
+		if err != nil {
+			assert.Equal(t, connect.CodeInternal, connect.CodeOf(err), "unexpected error: %v", err)
+			break
+		}
+		assert.Nil(t, frame.GetDeregister(), "a worker whose state is unknown must not be told to stop")
+	}
+	testutil.AssertEventually(t, func() bool {
+		return !env.wMgr.OnlineForTrustedPath(workerID)
+	})
+	row, err := env.store.Workers().GetByID(context.Background(), workerID)
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE, row.Status)
+}
+
 // A Connect handler can clear the shutdown interceptor -- a one-shot check --
 // microseconds before the Hub starts fencing, then spend a store round trip and
 // the greeting write getting to Register. The registry refuses it, and what the
@@ -963,8 +1324,8 @@ func TestConnect_RefusesWhenTheAccountIsAtItsLiveWorkerCap(t *testing.T) {
 
 	// Deregister it. This is the row transition DeregisterWorker performs, driven
 	// through the store because its notifier round trip is not what is under
-	// test: SendOrQueue parks in SendAndWait until the worker acks or api_timeout
-	// expires, and a bare test stream acks nothing. The row state is what the row
+	// test: SendDeregister parks in SendAndWait until the worker acks or
+	// api_timeout expires, and a bare test stream acks nothing. The row state is what the row
 	// cap reads, and the registry flag is what the RPC sets alongside it.
 	rows, err := env.store.Workers().Deregister(context.Background(), store.DeregisterWorkerParams{
 		ID:           first.GetWorkerId(),

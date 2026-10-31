@@ -38,7 +38,7 @@ func TestRetryResolutionRevalidatesAfterProviderReentry(t *testing.T) {
 			svc, _, _ := setupTestService(t, withRegistry(registryWithPlugin(t, providerID, provider)))
 			const agentID = "retry-reentry"
 			require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
-				ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: providerID,
+				ID: agentID, WorkingDir: t.TempDir(), AgentProvider: providerID,
 			}))
 			sink := newTestRootOutputSink(t, svc.Output, agentID, providerID)
 			persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, []byte(`{"type":"system","subtype":"api_retry","attempt":1}`))

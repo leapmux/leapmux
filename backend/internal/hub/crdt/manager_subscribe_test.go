@@ -928,10 +928,11 @@ func TestSubscribeWithACL_CompactionDuringScan_StillResumes(t *testing.T) {
 	//
 	// decideResume gained a wall-clock floor (cursor.physical >= now - TTL)
 	// alongside the stored-watermark floor, because the cleanup job sweeps op
-	// batches by committed_at and a dormant account's stored floor stops
-	// advancing. Since max_hlc <= now, any cursor the stored floor could
-	// invalidate mid-scan (cursor <= max_hlc - TTL) was already below the
-	// wall-clock floor (now - TTL) at decide time, so it never reaches the scan.
+	// batches by HLC physical against a cutoff that advances with real time,
+	// and a dormant account's stored floor stops advancing. Since
+	// max_hlc <= now, any cursor the stored floor could invalidate mid-scan
+	// (cursor <= max_hlc - TTL) was already below the wall-clock floor
+	// (now - TTL) at decide time, so it never reaches the scan.
 	//
 	// The post-scan re-check therefore survives as defence-in-depth and for the
 	// epoch arm, not for compaction. What is still worth pinning here is the
@@ -1013,8 +1014,10 @@ func TestSubscribeWithACL_PostScanDriftFallsBackWithItsOwnReason(t *testing.T) {
 	}()
 
 	<-listReached
-	// Age the epoch past EpochDuration and force the bump, so the post-scan
-	// re-check sees an epoch the client's no longer matches.
+	// Age the epoch past EpochDuration and force the rotation, so the post-scan
+	// re-check sees an epoch the client's no longer matches. The start moves
+	// back two periods, so the catch-up rotation advances two epochs; the
+	// assertion below needs only that the epoch moved.
 	mgr.SeedStateForTest(func(state *leapmuxv1.UserCrdtState) {
 		state.EpochStartedAt = timestamppb.New(time.UnixMilli(0).Add(-2 * crdt.EpochDuration))
 	})
@@ -1033,7 +1036,7 @@ func TestSubscribeWithACL_PostScanDriftFallsBackWithItsOwnReason(t *testing.T) {
 }
 
 // TestDecideResume_WallClockFloorFallsBack pins the floor that makes the
-// cleanup job's committed_at sweep safe.
+// cleanup job's retention sweep safe.
 //
 // op_retention_watermark only advances while a user is committing (maybeCompact
 // short-circuits once compaction_watermark reaches max_hlc), so a dormant

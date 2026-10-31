@@ -222,7 +222,6 @@ func TestCloseAgent_NoWorktree_Succeeds(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-noworktree",
 		WorkingDir: t.TempDir(),
-		HomeDir:    t.TempDir(),
 	}))
 
 	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{
@@ -728,7 +727,6 @@ func TestCloseAgent_WorktreeRemoveFailure_ReturnsFailureMessage(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-fail",
 		WorkingDir: bogusPath,
-		HomeDir:    bogusPath,
 	}))
 	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-fail")
 
@@ -796,7 +794,6 @@ func TestCloseAgent_AlreadyClosed_Idempotent(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-idem",
 		WorkingDir: t.TempDir(),
-		HomeDir:    t.TempDir(),
 	}))
 
 	// First close.
@@ -1159,7 +1156,6 @@ func TestShutdown_WaitsForInFlightClose(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-slow",
 		WorkingDir: t.TempDir(),
-		HomeDir:    t.TempDir(),
 	}))
 
 	// Manually Add(1) to the cleanup wait-group to simulate an
@@ -1271,7 +1267,6 @@ func TestOrphanReconciler_ClosesAnAgentThroughTheSharedTeardown(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         agentID,
 		WorkingDir: t.TempDir(),
-		HomeDir:    t.TempDir(),
 	}))
 	var cleanupRan atomic.Bool
 	svc.agentCleanups.register(agentID, func() { cleanupRan.Store(true) })

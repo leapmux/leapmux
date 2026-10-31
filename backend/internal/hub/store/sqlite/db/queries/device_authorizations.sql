@@ -6,7 +6,7 @@
 -- name: CreateDeviceAuthorization :exec
 INSERT INTO device_authorizations (
     device_code, user_code, device_name, client_id, requested_scopes,
-    granted_scopes, interval_seconds, expires_at, elevate_token_id
+    granted_scopes, state, expires_at, elevate_token_id
 ) VALUES (
     sqlc.arg(device_code),
     sqlc.arg(user_code),
@@ -17,7 +17,8 @@ INSERT INTO device_authorizations (
     -- already carried the ask in the grant column would be indistinguishable
     -- from an approved one at the token leg.
     '',
-    sqlc.arg(interval_seconds),
+    -- Always DEVICE_AUTHORIZATION_STATE_PENDING; the store binds it.
+    sqlc.arg(state),
     sqlc.arg(expires_at),
     sqlc.narg(elevate_token_id)
 );
@@ -37,20 +38,20 @@ SELECT * FROM device_authorizations WHERE user_code = ?;
 -- consents. The device that started the flow only ASKS (requested_scopes);
 -- the browser decides, and /oauth/token reads the grant back from this row.
 --
--- The row must still be PENDING. Without `approved = 0` a second POST
+-- The row must still be PENDING. Without the PENDING guard a second POST
 -- re-approves a live grant and overwrites user_id and granted_scopes, so the
 -- credential reaches whoever approved LAST while the first approver read
 -- "Device authorized" -- a double click or a re-submitted form is enough.
--- The same guard makes a DENIAL final: approved = 2 can never return to 1.
+-- The same guard makes a DENIAL final: a DENIED row can never become APPROVED.
 UPDATE device_authorizations
-SET approved = 1, user_id = sqlc.arg(user_id), granted_scopes = sqlc.arg(granted_scopes)
-WHERE device_code = sqlc.arg(device_code) AND approved = 0 AND consumed_at IS NULL
+SET state = sqlc.arg(approved_state), user_id = sqlc.arg(user_id), granted_scopes = sqlc.arg(granted_scopes)
+WHERE device_code = sqlc.arg(device_code) AND state = sqlc.arg(pending_state) AND consumed_at IS NULL
   AND expires_at > sqlc.arg(now);
 
 -- name: ApproveDeviceAuthorizationByUserCode :execresult
 UPDATE device_authorizations
-SET approved = 1, user_id = sqlc.arg(user_id), granted_scopes = sqlc.arg(granted_scopes)
-WHERE user_code = sqlc.arg(user_code) AND approved = 0 AND consumed_at IS NULL
+SET state = sqlc.arg(approved_state), user_id = sqlc.arg(user_id), granted_scopes = sqlc.arg(granted_scopes)
+WHERE user_code = sqlc.arg(user_code) AND state = sqlc.arg(pending_state) AND consumed_at IS NULL
   AND expires_at > sqlc.arg(now);
 
 -- name: DenyDeviceAuthorizationByUserCode :execresult
@@ -61,13 +62,13 @@ WHERE user_code = sqlc.arg(user_code) AND approved = 0 AND consumed_at IS NULL
 -- It matches a PENDING row only, exactly as the approve statements do, so a
 -- grant that was already answered keeps its answer.
 UPDATE device_authorizations
-SET approved = 2
-WHERE user_code = sqlc.arg(user_code) AND approved = 0 AND consumed_at IS NULL;
+SET state = sqlc.arg(denied_state)
+WHERE user_code = sqlc.arg(user_code) AND state = sqlc.arg(pending_state) AND consumed_at IS NULL;
 
 -- name: ConsumeDeviceAuthorization :execresult
 UPDATE device_authorizations
 SET consumed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-WHERE device_code = ? AND approved = 1 AND consumed_at IS NULL
+WHERE device_code = sqlc.arg(device_code) AND state = sqlc.arg(approved_state) AND consumed_at IS NULL
   AND expires_at > sqlc.arg(now);
 
 -- name: TouchDeviceAuthorizationPoll :exec
@@ -88,7 +89,7 @@ UPDATE device_authorizations
 SET consumed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE client_id = sqlc.arg(client_id)
   AND user_id = sqlc.arg(user_id)
-  AND approved = 1
+  AND state = sqlc.arg(approved_state)
   AND consumed_at IS NULL
   AND expires_at > sqlc.arg(now);
 

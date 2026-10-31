@@ -11,7 +11,6 @@ CREATE TABLE agents (
     output_generation INTEGER NOT NULL DEFAULT 0
         CHECK (typeof(output_generation) = 'integer') CHECK (output_generation >= 0),
     working_dir      TEXT NOT NULL DEFAULT '',
-    home_dir                 TEXT    NOT NULL DEFAULT '',
     plan_file_path           TEXT    NOT NULL DEFAULT '',
     plan_title               TEXT    NOT NULL DEFAULT '',
     title            TEXT NOT NULL DEFAULT '',
@@ -195,13 +194,6 @@ CREATE TABLE messages (
     span_type           TEXT NOT NULL DEFAULT '',
     span_lines          TEXT NOT NULL DEFAULT '[]',
     span_color          INTEGER NOT NULL DEFAULT 0,
-    -- An AgentProvider ordinal. UNSPECIFIED (0) is outside the CHECK, because
-    -- every message comes from one provider's process, so a 0 here is an unset
-    -- field rather than a state. The enum has no hole, so the CHECK states a
-    -- plain range; TestAgentProviderOrdinalsAreContiguous fails the suite if a
-    -- hole appears.
-    agent_provider      INTEGER NOT NULL DEFAULT 1
-        CHECK (typeof(agent_provider) = 'integer') CHECK (agent_provider BETWEEN 1 AND 30),
     -- Optional MarkType ordinal for the scroll-rail jump marks. NULL means no
     -- mark; the unspecified 0 is unstorable because wire absence is SQL NULL.
     -- Set at write time so the rail can list marked seqs without decompressing
@@ -267,14 +259,14 @@ CREATE TABLE agent_turn_ends (
 CREATE TABLE agent_input_queue_state (
     agent_id        TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
     revision        INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
-    paused          INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
     -- Optional AgentInputQueuePauseReason ordinal. NULL means no pause reason.
     -- TestEnumColumnChecksMatchTheirProtoRanges checks the positive range.
     pause_reason    INTEGER CHECK (pause_reason IS NULL OR typeof(pause_reason) = 'integer') CHECK (pause_reason BETWEEN 1 AND 6),
     -- Which cause created the pause that still holds. Only that cause may lift
     -- it: an archive resume, or the end of a planned restart, matches its own
-    -- owner and leaves a pause that a later crash or the user created. A pause
-    -- writer always overwrites this column, so the newest cause owns the pause.
+    -- owner and leaves a pause that a later crash or the user created. A new
+    -- pause records its cause as the owner. pauseAndEndTurn keeps an existing
+    -- pause's owner, except that it takes over a pause a planned restart owns.
     -- See pauseOwner* in inputqueue/model.go for the values.
     -- Optional AgentInputQueuePauseOwner ordinal. NULL means no pause owner.
     -- TestEnumColumnChecksMatchTheirProtoRanges checks the positive range.
@@ -296,7 +288,10 @@ CREATE TABLE agent_input_queue_state (
     active_turn     INTEGER NOT NULL DEFAULT 0 CHECK (active_turn IN (0, 1)),
     active_turn_steerable INTEGER NOT NULL DEFAULT 0 CHECK (active_turn_steerable IN (0, 1)),
     active_input_id TEXT NOT NULL DEFAULT '',
-    updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    -- The queue is paused exactly when pause_reason is not NULL, and a pause
+    -- always has an owner.
+    CHECK ((pause_reason IS NULL) = (pause_owner IS NULL))
 );
 
 CREATE TABLE agent_input_queue_items (
@@ -347,7 +342,8 @@ CREATE TABLE agent_input_queue_attachments (
     filename    TEXT NOT NULL,
     mime_type   TEXT NOT NULL,
     data        BLOB NOT NULL,
-    size        INTEGER NOT NULL CHECK (size >= 0 AND size = length(data)),
+    -- Derived from data, so no writer can supply a size that disagrees with it.
+    size        INTEGER GENERATED ALWAYS AS (length(data)) STORED NOT NULL,
     PRIMARY KEY (item_id, position)
 );
 CREATE INDEX idx_agent_input_queue_attachment_sizes
@@ -427,8 +423,6 @@ CREATE TABLE control_response_payloads (
     -- response replayed after its request row is gone keeps its presentation.
     non_blocking INTEGER NOT NULL DEFAULT 0 CHECK (non_blocking IN (0, 1)),
     agent_session_id TEXT NOT NULL DEFAULT '',
-    agent_provider INTEGER NOT NULL
-        CHECK (typeof(agent_provider) = 'integer') CHECK (agent_provider BETWEEN 1 AND 30),
     input_id TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (delivery_id, kind) REFERENCES control_deliveries(id, kind) ON DELETE CASCADE,
     CHECK ((follow_up_kind = 0) = (follow_up = ''))
@@ -446,13 +440,17 @@ CREATE TABLE auto_review_approval_payloads (
 );
 
 -- Read models join operation data to its single delivery state.
+-- agent_provider is the answering agent's: an agent never changes provider, so
+-- the payload stores no copy of it.
 CREATE VIEW control_response_answers AS
 SELECT d.id AS delivery_id, d.agent_id, d.operation_id AS request_id,
     d.instance_id AS claim_token, d.state, p.request_payload, p.response_content,
     p.resolved_content, p.plan_approval_settings, p.execution_session_id,
-    p.source_seq, p.follow_up, p.follow_up_kind, p.agent_session_id, p.agent_provider,
+    p.source_seq, p.follow_up, p.follow_up_kind, p.agent_session_id, a.agent_provider,
     p.input_id, p.non_blocking
-FROM control_deliveries d JOIN control_response_payloads p ON p.delivery_id = d.id;
+FROM control_deliveries d
+JOIN control_response_payloads p ON p.delivery_id = d.id
+JOIN agents a ON a.id = d.agent_id;
 
 CREATE VIEW auto_review_approvals AS
 SELECT d.id AS delivery_id, d.agent_id, d.instance_id AS agent_session_id,
@@ -475,7 +473,6 @@ CREATE INDEX idx_worktrees_deleted_at ON worktrees(deleted_at) WHERE deleted_at 
 CREATE TABLE terminals (
     id            TEXT PRIMARY KEY,
     working_dir   TEXT NOT NULL DEFAULT '',
-    home_dir      TEXT NOT NULL DEFAULT '',
     shell_start_dir TEXT NOT NULL DEFAULT '',
     shell         TEXT NOT NULL DEFAULT '',
     title         TEXT NOT NULL DEFAULT '',
@@ -624,13 +621,13 @@ CREATE INDEX idx_worker_tab_payloads_working_dir ON worker_tab_payloads(working_
 -- Provider-neutral to-do rows. Populated incrementally by the worker
 -- output handler in response to Claude TodoWrite/Task*, Codex
 -- turn/plan/updated, and ACP sessionUpdate=plan events so the sidebar
--- survives page reloads and cross-machine opens. row_key is the
--- task_id for Claude Task* (which addresses rows by id) and a synthetic
--- "snap-<seq>" for snapshot-only providers; snapshot replacements
+-- survives page reloads and cross-machine opens. A row is keyed by its seq;
+-- task_id is the provider's own id when it has one (Claude Task* addresses
+-- rows by it) and '' for snapshot-only providers. The registry cache mirrors
+-- the table and resolves a task id to its seq. Snapshot replacements
 -- delete-all-then-insert-all in a single transaction.
 CREATE TABLE agent_todos (
     agent_id    TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    row_key     TEXT NOT NULL,
     seq         INTEGER NOT NULL,
     task_id     TEXT NOT NULL DEFAULT '',
     content     TEXT NOT NULL,
@@ -641,13 +638,18 @@ CREATE TABLE agent_todos (
     -- an unset field rather than a state, and the CHECK refuses the write.
     status      INTEGER NOT NULL CHECK (typeof(status) = 'integer') CHECK (status BETWEEN 1 AND 5),
     updated_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    PRIMARY KEY (agent_id, row_key),
     -- Matches messages.UNIQUE(agent_id, seq) so a `nextSeq` collision
     -- after restart-on-sparse-seqs (eviction creates holes) fails loudly
     -- instead of producing duplicate orderings. Also serves as the
-    -- ORDER BY seq index for ListAgentTodos, so no separate index needed.
-    UNIQUE (agent_id, seq)
+    -- ORDER BY seq index for ListAgentTodosNewestFirst, so no separate index
+    -- is needed.
+    PRIMARY KEY (agent_id, seq)
 );
+-- A provider id identifies at most one row per agent. Snapshot rows without an id
+-- carry '' and may repeat. No query reads through this index, because the
+-- cache resolves a task id to its seq; partial_index_test.go lists it in
+-- unpinned.
+CREATE UNIQUE INDEX idx_agent_todos_task_id ON agent_todos(agent_id, task_id) WHERE task_id <> '';
 
 -- Background-task registry rows. Populated incrementally by the worker output
 -- handler from provider-neutral ProviderServices methods so the sidebar survives

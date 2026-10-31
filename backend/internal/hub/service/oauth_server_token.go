@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -480,7 +481,7 @@ func (h *OAuthServerHandler) handleTokenDeviceCode(w http.ResponseWriter, r *htt
 // answerElevationPoll finishes a step-up poll: it reports the window the
 // approval stamped, and spends the grant.
 func (h *OAuthServerHandler) answerElevationPoll(w http.ResponseWriter, r *http.Request, row *store.DeviceAuthorization, deviceCode string) {
-	// The approval FLAG is not the answer, so this reads the credential itself.
+	// The APPROVED state is not the answer, so this reads the credential itself.
 	// An approval whose elevation never committed leaves the row approved with
 	// no window; answering "elevated" there tells the client to retry a command
 	// the hub refuses again, with no error the user can act on. The check runs
@@ -549,16 +550,24 @@ func (h *OAuthServerHandler) preTouchPollOAuthError(row *store.DeviceAuthorizati
 // strings that a call site can transpose in silence, which is the exact smell
 // consentedGrant above exists to remove.
 func (h *OAuthServerHandler) postTouchPollOAuthError(row *store.DeviceAuthorization) (oauthErrorResponse, bool) {
-	switch row.Approved {
-	case 0:
+	switch row.State {
+	case leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING:
 		return oauthErrorBody("authorization_pending", ""), true
-	case 2:
+	case leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_DENIED:
 		return oauthErrorBody("access_denied", ""), true
+	case leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED:
+		if row.UserID == "" {
+			// An approval that records no approver is corrupt data. A blank
+			// user_id would mint a token that authenticates as nobody.
+			return oauthErrorBody("authorization_pending", ""), true
+		}
+		return oauthErrorResponse{}, false
+	case leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_UNSPECIFIED:
+		// Handled below, with an unknown ordinal.
 	}
-	if row.UserID == "" {
-		return oauthErrorBody("authorization_pending", ""), true
-	}
-	return oauthErrorResponse{}, false
+	// UNSPECIFIED, or an ordinal past the last declared state. The column's
+	// CHECK refuses both, so the row is corrupt, and "pending" issues nothing.
+	return oauthErrorBody("authorization_pending", ""), true
 }
 
 // touchPoll records a poll on the device grant and reports whether the
@@ -578,18 +587,12 @@ func (h *OAuthServerHandler) shouldThrottle(row *store.DeviceAuthorization, now 
 	if row.LastPolledAt == nil {
 		return false
 	}
-	// Named minInterval, not min: a local `min` shadows the builtin for the
-	// rest of the function.
-	minInterval := time.Duration(row.IntervalSeconds) * time.Second
-	if minInterval <= 0 {
-		minInterval = DeviceCodePollInterval
-	}
 	// ONE clock domain: TouchPoll writes last_polled_at with the same seam this
 	// reads, so no skew tolerance is needed between the two instants. (The
 	// statement once wrote the DATABASE's clock, and the fudge factor that
 	// tolerated the skew answered every on-time poll with slow_down wherever
 	// it exceeded 250ms.)
-	return now.Sub(*row.LastPolledAt) < minInterval
+	return now.Sub(*row.LastPolledAt) < DeviceCodePollInterval
 }
 
 type refreshResponse struct {

@@ -12,7 +12,7 @@ import (
 )
 
 // TestTabIndex_RebuildFromState exercises the path that rebuilds the
-// index views purely from `UserCrdtState`. This is the manager's
+// tab index purely from `UserCrdtState`. This is the manager's
 // invariant: even if the index were to drift (operator mistake,
 // post-incident rebuild), Project + DiffProjection produce the
 // canonical row set.
@@ -39,18 +39,15 @@ func TestTabIndex_RebuildFromState(t *testing.T) {
 	next := crdt.Project(state)
 	diff := crdt.DiffProjection(prev, next)
 
-	require.Len(t, diff.OwnedUpserts, 1)
-	require.Len(t, diff.RenderedUpserts, 1)
-	assert.Equal(t, "tA", diff.OwnedUpserts[0].TabID)
-	assert.Equal(t, "tA", diff.RenderedUpserts[0].TabID)
-	assert.Equal(t, "w1", diff.OwnedUpserts[0].WorkerID)
-	// Rendered carries worker_id too — ListTabs/GetTab can route
-	// without joining _owned.
-	assert.Equal(t, "w1", diff.RenderedUpserts[0].WorkerID)
+	require.Len(t, diff.Upserts, 1)
+	assert.Empty(t, diff.Deletes)
+	assert.Equal(t, "tA", diff.Upserts[0].TabID)
+	assert.Equal(t, "w1", diff.Upserts[0].WorkerID)
+	assert.True(t, diff.Upserts[0].Rendered, "the tab sits on a live leaf root")
 }
 
 // TestTabIndex_SkipsTabsOnDeadTiles asserts that a tab whose tile_id
-// resolves to a tombstoned node drops from the *rendered* view but
+// resolves to a tombstoned node stops rendering but
 // the manager rejects the original op as orphaned. We reproduce the
 // drop by pre-tombstoning the node directly so Project sees the
 // disagreement.
@@ -105,7 +102,7 @@ func TestTabIndex_SkipsTabsOnDeadTiles(t *testing.T) {
 
 // TestWorkerReconnect_IndexReconciliation simulates worker reconnect:
 // the worker reports a tab the hub has tombstoned. The hub-side
-// reconciliation reads from `_owned` and tells the worker to drop it.
+// reconciliation reads every owned row and tells the worker to drop it.
 // This test asserts the contract from the hub-rebuild perspective: a
 // tombstoned tab does not appear in the OwnedTabs slice the
 // reconciler reads.
@@ -116,8 +113,8 @@ func TestWorkerReconnect_IndexReconciliation(t *testing.T) {
 
 	// Create then tombstone a tab.
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "b1", "tA", "root1", "wkr1", "p1")},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{addTabBatch(t, "b1", "tA", "root1", "wkr1", "p1")}),
 	})
 	require.NoError(t, err)
 
@@ -128,13 +125,13 @@ func TestWorkerReconnect_IndexReconciliation(t *testing.T) {
 		}}}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{tombstone},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{tombstone}),
 	})
 	require.NoError(t, err)
 
 	owned, rendered := j.snapshotIndex()
 	assert.NotContains(t, owned, "tA",
-		"worker reconciliation reads from _owned; tombstoned tabs must be absent")
+		"worker reconciliation reads every owned row; tombstoned tabs must be absent")
 	assert.NotContains(t, rendered, "tA")
 }

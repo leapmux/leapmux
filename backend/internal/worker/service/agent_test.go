@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -52,12 +53,12 @@ func TestRetryAgentTurnRefusesASubagent(t *testing.T) {
 	ctx := context.Background()
 	svc, dispatcher, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "root-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "root-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	require.NoError(t, svc.Queries.CreateChildAgent(ctx, db.CreateChildAgentParams{
 		ID: "child-1", ParentAgentID: sql.NullString{String: "root-1", Valid: true},
-		SpawnSpanID: "spawn-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		SpawnSpanID: "spawn-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 
@@ -78,7 +79,7 @@ func TestRetryAgentTurnMapsAnUnavailableOffer(t *testing.T) {
 	ctx := context.Background()
 	svc, dispatcher, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "root-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "root-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	// A running provider with no turn-retry route.
@@ -102,7 +103,7 @@ func TestRetryAgentTurnValidatesTheOfferedTurnAndModel(t *testing.T) {
 	ctx := context.Background()
 	svc, dispatcher, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "root-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "root-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 
@@ -125,7 +126,7 @@ func TestRetryAgentTurnMapsAStoreFaultToInternal(t *testing.T) {
 	t.Parallel()
 	svc, dispatcher, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
-		ID: "root-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "root-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	svc.getAgentByIDFn = func(context.Context, string) (db.Agent, error) {
@@ -147,7 +148,7 @@ func TestRetryAgentTurnMapsAMissingAgent(t *testing.T) {
 	ctx := context.Background()
 	svc, dispatcher, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "root-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "root-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 
@@ -181,7 +182,7 @@ func TestRetryAgentTurnRunsTheOfferedRetry(t *testing.T) {
 	ctx := context.Background()
 	svc, dispatcher, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "root-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "root-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	stub := &retryingStub{started: make(chan struct{})}
@@ -244,4 +245,25 @@ func TestRestartMessagesStateTheirOwnCallersAction(t *testing.T) {
 		})
 	}
 	assert.NotEqual(t, settingsRestartMessages, forcedStopMessages)
+}
+
+// TestAgentInfoReportsTheWorkerHomeDir pins where AgentInfo.home_dir comes
+// from. No agent row stores a home directory: every writer stored the worker's
+// own, so the listing reports the worker's.
+func TestAgentInfoReportsTheWorkerHomeDir(t *testing.T) {
+	t.Parallel()
+
+	svc, d, w := setupTestService(t)
+	require.NotEmpty(t, svc.HomeDir, "the harness must give the worker a home directory")
+	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
+		ID: "agent-home", WorkingDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+
+	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{TabIds: []string{"agent-home"}}, w)
+
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.ListAgentsResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	require.Len(t, resp.GetAgents(), 1)
+	assert.Equal(t, svc.HomeDir, resp.GetAgents()[0].GetHomeDir())
 }

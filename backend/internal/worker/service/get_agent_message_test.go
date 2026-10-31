@@ -47,23 +47,22 @@ func TestGetAgentMessage_ReturnsMessageBySeq(t *testing.T) {
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
 	seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		ID:            "m1",
-		AgentID:       "agent-1",
-		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		Content:       []byte(`{"content":"hello world"}`),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		MarkType:      workerdb.OptionalStorageEnum(leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE),
-		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
+		ID:        "m1",
+		AgentID:   "agent-1",
+		Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content:   []byte(`{"content":"hello world"}`),
+		MarkType:  workerdb.OptionalStorageEnum(leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE),
+		CreatedAt: sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
 	// A second row at a different seq to prove the handler selects by seq, not "first".
 	_, err = createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		ID: "m2", AgentID: "agent-1", Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		Content: []byte(`{"content":"other"}`), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		Content:   []byte(`{"content":"other"}`),
 		CreatedAt: sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
@@ -84,7 +83,7 @@ func TestGetAgentMessage_MissingSeq_ReturnsUnset(t *testing.T) {
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
 	resp, w := getAgentMessage(t, d, "agent-1", 999)
@@ -101,7 +100,7 @@ func TestGetAgentMessage_ClosedAgent_ReturnsUnset(t *testing.T) {
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 	seq := seedMark(t, svc, "agent-1", "m1", leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE)
 	require.NoError(t, closeErr(svc.Queries.CloseAgent(ctx, "agent-1")))

@@ -46,17 +46,17 @@ service WorkspaceService {
   rpc SetWorkspaceArchiveState(SetWorkspaceArchiveStateRequest) returns (SetWorkspaceArchiveStateResponse);
   rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
   // ListTabs returns the materialized tab list across one or more
-  // workspaces. Reads `workspace_tab_rendered`.
+  // workspaces. Reads the rendered rows of `workspace_tab_owned`.
   rpc ListTabs(ListTabsRequest) returns (ListTabsResponse);
   // GetTab returns a single tab so callers can resolve the worker
-  // that owns it. Reads `workspace_tab_rendered`.
+  // that owns it. Reads the rendered rows of `workspace_tab_owned`.
   rpc GetTab(GetTabRequest) returns (GetTabResponse);
   // LocateTab resolves a tab by (tab_type, tab_id) without requiring
   // workspace_id — the hub finds the tab across every
   // workspace the caller can access. Used by the `leapmux control` CLI
   // to derive the spawning tab's context (workspace, tile,
   // worker) from a single env-injected anchor (LEAPMUX_CONTROL_TAB_ID
-  // + LEAPMUX_CONTROL_TAB_TYPE). Reads `workspace_tab_rendered`.
+  // + LEAPMUX_CONTROL_TAB_TYPE). Reads the rendered rows of `workspace_tab_owned`.
   rpc LocateTab(LocateTabRequest) returns (LocateTabResponse);
   // LocateTile resolves a tile by tile_id without requiring
   // workspace_id. The hub walks the user's accessible CRDT state
@@ -146,7 +146,7 @@ message DeleteWorkspaceResponse {
   // explicitly. Returning them here rather than making each caller resolve its
   // own list is what removes three failure modes: a tab a peer opened between
   // the caller's read and the delete, a read whose error degraded to "close
-  // nothing", and the fact that both callers read workspace_tab_rendered -- a
+  // nothing", and the fact that both callers read only the rendered rows -- a
   // strict SUBSET of the owned projection -- so a projection-hidden tab was
   // structurally unreachable rather than merely reclaimed late.
   repeated WorkerTabs worker_tabs = 1;
@@ -224,7 +224,7 @@ message TabRef {
 // The Worker cannot derive the set itself: it tracks no workspace id. The set
 // comes from DeleteWorkspaceResponse.worker_tabs, which the Hub reads INSIDE the
 // delete transaction -- see the note there for why a caller must not resolve its
-// own list from workspace_tab_rendered instead. The Worker's orphan reconciler
+// own list from the rendered rows instead. The Worker's orphan reconciler
 // still converges anything left over against workspace_tab_owned on its next
 // pass, so a dropped RPC costs latency rather than correctness.
 message CleanupWorkspaceRequest {

@@ -23,17 +23,16 @@ func TestMessageSeq_NotReusedAfterTailDelete(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
 	mk := func(id string) int64 {
 		seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-			ID:            id,
-			AgentID:       "agent-1",
-			Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-			Content:       []byte("hi"),
-			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-			CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
+			ID:        id,
+			AgentID:   "agent-1",
+			Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+			Content:   []byte("hi"),
+			CreatedAt: sqltime.NewSQLiteTime(time.Now()),
 		})
 		require.NoError(t, err)
 		return seq
@@ -69,17 +68,16 @@ func TestMessageSeq_ReseqUsesHighWater(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
 	mk := func(id string) int64 {
 		seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-			ID:            id,
-			AgentID:       "agent-1",
-			Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX,
-			Content:       []byte("{}"),
-			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-			CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
+			ID:        id,
+			AgentID:   "agent-1",
+			Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX,
+			Content:   []byte("{}"),
+			CreatedAt: sqltime.NewSQLiteTime(time.Now()),
 		})
 		require.NoError(t, err)
 		return seq

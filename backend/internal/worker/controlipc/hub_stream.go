@@ -73,7 +73,7 @@ func (s *HubEventStreamer) watchUser(ctx context.Context, userID userid.UserID, 
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return fmt.Errorf("decode WatchUserRequest: %w", err)
 	}
-	bearer, err := s.Delegation.GetBearer(ctx, crossworker.DelegationScope{UserID: userID})
+	bearer, err := s.Delegation.GetBearer(ctx, userID)
 	if err != nil {
 		return fmt.Errorf("delegation bearer: %w", err)
 	}

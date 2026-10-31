@@ -28,7 +28,6 @@ func TestUpdateAgentSettings_ModelSwitchGivesTheStoredEffortToARunningACPAgent(t
 	row := db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: provider,
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDModel:  "leapmux/model-a",

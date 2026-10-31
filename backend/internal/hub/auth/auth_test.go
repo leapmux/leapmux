@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect/v2"
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -425,21 +424,10 @@ func TestRevokeAllUserCredentialsEmitsOnlyGenerationEvent(t *testing.T) {
 		MlkemPublicKey:  []byte("mlkem"),
 		SlhdsaPublicKey: []byte("slhdsa"),
 	}))
-	workspaceID := id.Generate()
-	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
-		ID: workspaceID, OwnerUserID: userid.MustNew(userID), Title: "test",
-	}))
-	tabID := id.Generate()
-	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
-		UserID: userid.MustNew(userID), WorkspaceID: workspaceID, WorkerID: workerID,
-		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: tabID,
-		Position: "a", TileID: "tile-1",
-	}))
 	require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
 		GrantedScopes: "workspace:read workspace:write worker:read",
-		ID:            id.Generate(), UserID: userid.MustNew(userID), WorkerID: workerID, IssuedForTabID: tabID,
-		IssuedForTabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
-		SecretHash:       []byte("hash"), ExpiresAt: time.Now().Add(time.Hour),
+		ID:            id.Generate(), UserID: userid.MustNew(userID), WorkerID: workerID,
+		SecretHash: []byte("hash"), ExpiresAt: time.Now().Add(time.Hour),
 	}))
 
 	require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {

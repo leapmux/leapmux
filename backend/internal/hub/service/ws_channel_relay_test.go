@@ -486,14 +486,12 @@ func TestChannelRelay_DelegationCannotAttachUnscopedChannel(t *testing.T) {
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
-		GrantedScopes:    "workspace:read workspace:write worker:read",
-		ID:               tokenID,
-		UserID:           userid.MustNew(userID),
-		WorkerID:         workerID,
-		IssuedForTabID:   "tab-1",
-		IssuedForTabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
-		SecretHash:       tv.HashSecret(secret),
-		ExpiresAt:        time.Now().Add(time.Hour),
+		GrantedScopes: "workspace:read workspace:write worker:read",
+		ID:            tokenID,
+		UserID:        userid.MustNew(userID),
+		WorkerID:      workerID,
+		SecretHash:    tv.HashSecret(secret),
+		ExpiresAt:     time.Now().Add(time.Hour),
 	}))
 	bearer := auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret)
 

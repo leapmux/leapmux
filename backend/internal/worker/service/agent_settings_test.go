@@ -37,7 +37,6 @@ func TestUpdateAgentSettings_ClearsSessionIDOnRestartFailure(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-1",
 		WorkingDir: workDir,
-		HomeDir:    t.TempDir(),
 		Options:    marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
 	}))
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
@@ -95,7 +94,6 @@ func TestResolveResumeSessionID_ResumedAgentPreservesSession(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-resumed",
 		WorkingDir: t.TempDir(),
-		HomeDir:    t.TempDir(),
 		Options:    marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
 		Resumed:    1,
 	}))
@@ -125,7 +123,6 @@ func TestResolveResumeSessionID_IgnoresPreClearMessages(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-clear",
 		WorkingDir: t.TempDir(),
-		HomeDir:    t.TempDir(),
 		Options:    marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
 	}))
 
@@ -137,12 +134,11 @@ func TestResolveResumeSessionID_IgnoresPreClearMessages(t *testing.T) {
 
 	// User sends a message in session-A.
 	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		ID:            "msg-1",
-		AgentID:       "agent-clear",
-		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		Content:       []byte(`{"content":"hello"}`),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
+		ID:        "msg-1",
+		AgentID:   "agent-clear",
+		Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content:   []byte(`{"content":"hello"}`),
+		CreatedAt: sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
 
@@ -170,12 +166,11 @@ func TestResolveResumeSessionID_IgnoresPreClearMessages(t *testing.T) {
 
 	// After the user sends a message in session-B, it should become resumable.
 	_, err = createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		ID:            "msg-2",
-		AgentID:       "agent-clear",
-		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		Content:       []byte(`{"content":"world"}`),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
+		ID:        "msg-2",
+		AgentID:   "agent-clear",
+		Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content:   []byte(`{"content":"world"}`),
+		CreatedAt: sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
 
@@ -194,7 +189,6 @@ func TestResolveResumeSessionID_NotAffectedByJustPersistedMessage(t *testing.T) 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-idle",
 		WorkingDir: t.TempDir(),
-		HomeDir:    t.TempDir(),
 		Options:    marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
 	}))
 	// Simulate Claude Code's init message storing a session ID.
@@ -216,12 +210,11 @@ func TestResolveResumeSessionID_NotAffectedByJustPersistedMessage(t *testing.T) 
 
 	// Persist the accepted user input.
 	_, err = createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		ID:            "msg-first",
-		AgentID:       "agent-idle",
-		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		Content:       []byte(`{"content":"hello"}`),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
+		ID:        "msg-first",
+		AgentID:   "agent-idle",
+		Source:    leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content:   []byte(`{"content":"hello"}`),
+		CreatedAt: sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
 
@@ -242,7 +235,6 @@ func TestUpdateAgentSettings_DoesNotResumeSessionOnRestart(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         "agent-1",
 		WorkingDir: t.TempDir(),
-		HomeDir:    t.TempDir(),
 		Options:    marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
 	}))
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
@@ -288,7 +280,6 @@ func TestUpdateAgentSettings_BroadcastsGenericExtraSettingChanges(t *testing.T) 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		Options:       `{"opencode_mode":"safe"}`,
 	}))
@@ -367,7 +358,6 @@ func TestUpdateAgentSettings_CursorModelSwitchOmitsEffortChange(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 		Options:       `{"model":"auto"}`,
 	}))
@@ -430,7 +420,6 @@ func TestUpdateAgentSettings_ModelSwitchEffortBySupport(t *testing.T) {
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 				ID:            "agent-1",
 				WorkingDir:    t.TempDir(),
-				HomeDir:       t.TempDir(),
 				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 				Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "xhigh"}),
 			}))
@@ -477,7 +466,6 @@ func TestUpdateAgentSettings_ModelSwitchKeepsSupportedInheritedEffort(t *testing
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 				ID:            "agent-1",
 				WorkingDir:    t.TempDir(),
-				HomeDir:       t.TempDir(),
 				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 				Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "xhigh"}),
 			}))
@@ -527,7 +515,6 @@ func TestUpdateAgentSettings_StoppedAgentModelSwitchKeepsTheEffortTheLiveCatalog
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: provider,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "glm-5.3", agent.OptionIDEffort: "high"}),
 	}))
@@ -566,7 +553,6 @@ func TestUpdateAgentSettings_UnknownModelKeepsExplicitEffort(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "sonnet", agent.OptionIDEffort: agent.EffortAuto}),
 	}))
@@ -614,7 +600,6 @@ func TestUpdateAgentSettings_UnsupportedEffortWithoutModelSwitch(t *testing.T) {
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 				ID:            "agent-1",
 				WorkingDir:    t.TempDir(),
-				HomeDir:       t.TempDir(),
 				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 				Options:       marshalOptions(map[string]string{agent.OptionIDModel: "sonnet", agent.OptionIDEffort: "medium"}),
 			}))
@@ -651,7 +636,6 @@ func TestUpdateAgentSettings_InheritedUnsupportedEffortResets(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		// A stale tier the unchanged model's catalog no longer offers -- the live
 		// catalog narrowed after this was stored.
@@ -694,7 +678,6 @@ func TestUpdateAgentSettings_EmptyOptionValueIsNoOp(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDModel:                    "gpt-5.5",
@@ -729,7 +712,7 @@ func TestCASPersistAgentOptions_PreservesConcurrentKeyOnRetry(t *testing.T) {
 
 	stale := marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]"})
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		Options:       stale,
 	}))
@@ -764,7 +747,7 @@ func TestCASPersistAgentOptions_ReassertsOverConcurrentClear(t *testing.T) {
 
 	stale := marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "high"})
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       stale,
 	}))
@@ -797,7 +780,7 @@ func TestCASPersistAgentOptions_TrueNoOpAgainstLiveRow(t *testing.T) {
 
 	row := marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "high"})
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       row,
 	}))
@@ -825,7 +808,6 @@ func TestUpdateAgentSettings_RespelledModelKeepsEffort(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "xhigh"}),
 	}))
@@ -864,7 +846,6 @@ func TestUpdateAgentSettings_AliasedModelKeepsExplicitEffort(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "xhigh"}),
 	}))
@@ -902,7 +883,6 @@ func TestUpdateAgentSettings_OfflineEffortLabelUsesNewModelCatalog(t *testing.T)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "medium"}),
 	}))
@@ -939,7 +919,6 @@ func TestUpdateAgentSettings_DropsForeignSecondaryAxis(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "anthropic/claude-x"}),
 	}))
@@ -995,7 +974,6 @@ func TestUpdateAgentSettings_DropsForeignNonSecondaryAxes(t *testing.T) {
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 				ID:            "agent-1",
 				WorkingDir:    t.TempDir(),
-				HomeDir:       t.TempDir(),
 				AgentProvider: tc.provider,
 				Options:       marshalOptions(map[string]string{agent.OptionIDModel: "auto"}),
 			}))
@@ -1027,7 +1005,6 @@ func TestUpdateAgentSettings_KeepsKnownProviderExtra(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "gpt-5.5"}),
 	}))
@@ -1061,7 +1038,6 @@ func TestUpdateAgentSettings_KeepsKnownWellKnownAxis(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "sonnet"}),
 	}))
@@ -1090,7 +1066,6 @@ func TestUpdateAgentSettings_OfflineResponseIsUnresolved(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "auto"}),
 	}))
@@ -1124,7 +1099,6 @@ func TestApplySettingsViaRestartBroadcastsConfirmedCatalog(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            agentID,
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "high"}),
 	}))
@@ -1177,7 +1151,6 @@ func TestApplySettingsViaRestartDrainsInputAfterTheReplacedTurn(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            agentID,
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "high"}),
 	}))
@@ -1288,7 +1261,6 @@ func TestPersistConfirmedAgentSettings_MergesDiscoveredPrimaryAgent(t *testing.T
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-opencode",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		Options:       `{"primaryAgent":"build"}`,
 	}))
@@ -1332,7 +1304,6 @@ func TestPersistConfirmedAgentSettings_PersistsDiscoveredPrimaryAgentFromEmpty(t
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-opencode",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		Options:       "{}",
 	}))
@@ -1387,7 +1358,6 @@ func TestPersistConfirmedAgentSettings_PreservesConcurrentlyMergedKey(t *testing
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-cp",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "openai/gpt-5"}),
 	}))
@@ -1430,7 +1400,6 @@ func TestPersistConfirmedAgentSettings_PersistsAvailableOptionGroups(t *testing.
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-goose",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "auto"}),
 	}))
@@ -1548,7 +1517,7 @@ func TestSetAgentOptionGroupsIfUnchanged_KeepsConcurrentCatalog(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-cas", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-cas", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "auto"}),
 	}))
@@ -1590,7 +1559,7 @@ func seedConfirmedSettingsAgent(t *testing.T, svc *Service, id string, options m
 	t.Helper()
 	ctx := context.Background()
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: id, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: id, WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       marshalOptions(options),
 	}))
@@ -1783,7 +1752,6 @@ func TestUpdateAgentSettings_BroadcastsGoosePermissionModeLabels(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-goose",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDModel:          "auto",
@@ -1848,7 +1816,6 @@ func TestNotifyPermissionModeChanged_ResolvesLabels(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-goose",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "auto", agent.OptionIDPermissionMode: "auto"}),
 	}))
@@ -1880,7 +1847,6 @@ func TestSendAgentRawMessage_SetPermissionModePersistsToDBWhileRunning(t *testin
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	require.NoError(t, svc.Queries.SetAgentOptions(ctx, db.SetAgentOptionsParams{
@@ -1925,7 +1891,6 @@ func TestSendAgentRawMessage_SetPermissionModeIgnoredForNonClaudeProvider(t *tes
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	require.NoError(t, svc.Queries.SetAgentOptions(ctx, db.SetAgentOptionsParams{
@@ -2052,7 +2017,6 @@ func TestApplySettingsViaRestartCarriesSafeDefaultProvenance(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            agentID,
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
 		Options:       marshalOptions(stored),
 	}))

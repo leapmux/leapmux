@@ -8,7 +8,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
@@ -120,26 +119,16 @@ func TestResolveDelegationWorkerScope_ForeignMinterReachesOnlyItself(t *testing.
 // machines, or the action is inert for the token's remaining TTL.
 func TestResolveDelegationWorkerScope_NonActiveMinterLosesCrossWorkerReach(t *testing.T) {
 	ctx := context.Background()
-
-	for name, status := range map[string]leapmuxv1.WorkerStatus{
-		"deregistering": leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING,
-		"unspecified":   leapmuxv1.WorkerStatus_WORKER_STATUS_UNSPECIFIED,
-	} {
-		t.Run(name, func(t *testing.T) {
-			f := seedScopeUser(t, hubtestutil.OpenTestStore(t))
-			require.NoError(t, f.st.Workers().SetStatus(ctx, store.SetWorkerStatusParams{
-				ID: f.workerID, Status: status,
-			}))
-
-			scope, err := auth.ResolveDelegationWorkerScope(ctx, f.st, delegationUser(f.userID, f.workerID))
-			require.NoError(t, err)
-
-			assert.False(t, scope.Allows("another-worker-of-mine"),
-				"a minter that is no longer ACTIVE must not lend its tokens cross-worker reach")
-			assert.True(t, scope.Allows(f.workerID),
-				"the minter stays reachable by itself; the target's own ACTIVE check gates that")
-		})
-	}
+	f := seedScopeUser(t, hubtestutil.OpenTestStore(t))
+	changed, err := f.st.Workers().ForceDeregister(ctx, f.workerID)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, changed)
+	scope, err := auth.ResolveDelegationWorkerScope(ctx, f.st, delegationUser(f.userID, f.workerID))
+	require.NoError(t, err)
+	assert.False(t, scope.Allows("another-worker-of-mine"),
+		"a minter that is no longer ACTIVE must not lend its tokens cross-worker reach")
+	assert.True(t, scope.Allows(f.workerID),
+		"the minter remains in its own delegation scope; the target still requires ACTIVE")
 }
 
 // A soft-deleted minter is a PERMANENT answer, not a store fault: GetByID filters

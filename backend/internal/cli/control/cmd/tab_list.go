@@ -8,8 +8,8 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
 
-// `tab list` and `tab get` are read-only views over
-// workspace_tab_rendered, served by the (still-extant) WorkspaceService
+// `tab list` and `tab get` are read-only views over the rendered rows of
+// workspace_tab_owned, served by the (still-extant) WorkspaceService
 // ListTabs / GetTab RPCs.
 
 // RunTabList enumerates rendered tabs. Tabs are always scoped to the

@@ -1,5 +1,12 @@
 package crdt
 
+import (
+	"time"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
 // AlreadyMarshaledForTest reports whether this frame's marshal has already been
 // paid, WITHOUT paying it.
 //
@@ -10,3 +17,9 @@ package crdt
 // multi-megabyte batch frame -- inside the projection lock that gates every
 // SubmitOps, presence update and projection read for that user.
 func (e *MarshaledEvent) AlreadyMarshaledForTest() bool { return e.marshaled.Load() }
+
+// EpochRotationForTest exposes epochRotation, the pure decision the compaction
+// pass makes, so its boundaries can be tested without a manager.
+func EpochRotationForTest(s *leapmuxv1.UserCrdtState, now time.Time) (int64, *timestamppb.Timestamp, bool) {
+	return epochRotation(s, now)
+}

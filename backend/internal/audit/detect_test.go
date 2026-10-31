@@ -26,14 +26,14 @@ func TestWhereClause_IgnoresEverythingBeforeWHERE(t *testing.T) {
 	// The shape that bit: an UPDATE whose SET assigns an owner column. It binds
 	// a VALUE, and reading it as a predicate flagged two device-authorization
 	// queries that decide nothing about ownership.
-	where, ok := whereClause("UPDATE device_authorizations\nSET approved = 1, user_id = ?\nWHERE device_code = ? AND consumed_at IS NULL;")
+	where, ok := whereClause("UPDATE device_authorizations\nSET state = ?, user_id = ?\nWHERE device_code = ? AND consumed_at IS NULL;")
 	require.True(t, ok)
 	assert.NotContains(t, where, "SET", "the SET clause must be excluded")
 	assert.False(t, ownerBindRe.MatchString(where),
 		"an owner column assigned in SET is not an ownership predicate")
 
 	// A genuine predicate is still found.
-	where, ok = whereClause("SELECT * FROM workspaces WHERE is_deleted = 0 AND owner_user_id = ?;")
+	where, ok = whereClause("SELECT * FROM workspaces WHERE deleted_at IS NULL AND owner_user_id = ?;")
 	require.True(t, ok)
 	assert.True(t, ownerBindRe.MatchString(where))
 

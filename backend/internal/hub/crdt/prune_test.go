@@ -124,8 +124,8 @@ func TestManager_CompactionPrunesTombstonedTab(t *testing.T) {
 
 	// Add a tab.
 	_, err := mgr.Submit(t.Context(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "add", "tA", "root1", "wkr", "p1")},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{addTabBatch(t, "add", "tA", "root1", "wkr", "p1")}),
 	})
 	require.NoError(t, err)
 
@@ -141,8 +141,8 @@ func TestManager_CompactionPrunesTombstonedTab(t *testing.T) {
 		}},
 	}
 	_, err = mgr.Submit(t.Context(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{tomb},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{tomb}),
 	})
 	require.NoError(t, err)
 
@@ -171,11 +171,11 @@ func TestManager_CompactionDoesNotPruneLiveRecords(t *testing.T) {
 
 	// Two tabs, only one gets tombstoned.
 	_, err := mgr.Submit(t.Context(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{
 			addTabBatch(t, "addA", "tA", "root1", "wkr", "p1"),
 			addTabBatch(t, "addB", "tB", "root1", "wkr", "p2"),
-		},
+		}),
 	})
 	require.NoError(t, err)
 
@@ -190,8 +190,8 @@ func TestManager_CompactionDoesNotPruneLiveRecords(t *testing.T) {
 		}},
 	}
 	_, err = mgr.Submit(t.Context(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{tomb},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{tomb}),
 	})
 	require.NoError(t, err)
 

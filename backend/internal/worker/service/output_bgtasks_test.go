@@ -78,7 +78,6 @@ func setupBgTaskTestWithService(t *testing.T) (*Service, agent.ProviderServices,
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -767,7 +766,6 @@ func TestBgTask_RenameOnColdCacheRekeysDBRow(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-cold",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	sink := newTestRootOutputSink(t, svc.Output, "agent-cold", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -827,7 +825,6 @@ func TestBgTask_ShutdownCtxCancelledAfterCancelBackgroundCtx(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-shutdown",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	sink := newTestRootOutputSink(t, svc.Output, "agent-shutdown", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -856,7 +853,6 @@ func TestBgTask_LoadSeedsCacheFromDB(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	// Seed a row directly in the DB (cold-start path).
@@ -886,7 +882,6 @@ func TestBgTask_ProcessExitGivesEveryOpenRowAFinalStatus(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -945,7 +940,6 @@ func TestBgTask_MarkExitedStoppedVsInterrupted(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -998,7 +992,6 @@ func TestBgTask_CleanupDropsCache(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -1246,7 +1239,6 @@ func TestBgTask_SeedLoadsEveryKindPool(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -1284,7 +1276,6 @@ func TestBgTask_SeedFillsEachPoolDespiteSkew(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -1330,7 +1321,6 @@ func TestBgTask_SeedReclaimsFinishedSurplus(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	// Push the shell pool past its cap with FINISHED rows, writing straight to
@@ -1611,7 +1601,7 @@ func TestTodos_AnAbsentRowStaysAMissWithNoRetention(t *testing.T) {
 	defer cache.Mu.Unlock()
 	require.Nil(t, cache.ops.retention, "agent_todos retains nothing past its cap")
 
-	_, idx, found, err := cache.on(svc.Output.queries, "agent-1").findRowLocked(ctx, "todo-nope")
+	_, idx, found, err := cache.on(svc.Output.queries, "agent-1").findRowLocked(ctx, 999)
 	require.NoError(t, err)
 	assert.False(t, found, "no store fallback runs for a registry without retention")
 	assert.Equal(t, -1, idx, "an absent row has no display index")

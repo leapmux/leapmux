@@ -27,12 +27,14 @@ type fakeJournal struct {
 	batches     []*leapmuxv1.OpBatch
 	transitions []*leapmuxv1.BatchTransitions
 	dedup       map[string]crdt.RecentBatchRecord // batch_id → row
-	indexRows   map[string]crdt.TabIndexRow       // owned_tabs[tab_id] → row
-	rendered    map[string]crdt.TabIndexRow       // rendered_tabs[tab_id] → row
+	indexRows   map[string]crdt.TabIndexRow       // workspace_tab_owned[tab_id] → row
 
-	commitErr error // injectable CommitBatch failure
-	lookupErr error // injectable LookupRecentBatchID failure
-	listErr   error // injectable ListBatchesAfter failure (resume tail read)
+	commitErr  error // injectable CommitBatch failure
+	compactErr error // injectable CompactBatch failure (see failCompaction)
+	lookupErr  error // injectable LookupRecentBatchID failure
+	// compactCalls counts every CompactBatch call, failed ones included.
+	compactCalls int
+	listErr      error // injectable ListBatchesAfter failure (resume tail read)
 	// corruptTransitions holds batch ids whose transitions_payload should be
 	// reported as corrupt. The scan STOPS at that row and returns
 	// ErrResumeCorrupt alongside the CorruptRow -- the batch's ops are NOT
@@ -52,7 +54,6 @@ func newFakeJournal() *fakeJournal {
 	return &fakeJournal{
 		dedup:     map[string]crdt.RecentBatchRecord{},
 		indexRows: map[string]crdt.TabIndexRow{},
-		rendered:  map[string]crdt.TabIndexRow{},
 	}
 }
 
@@ -179,17 +180,11 @@ func (f *fakeJournal) CommitBatch(_ context.Context, c crdt.CommitBatch) error {
 		Epoch:             c.Epoch,
 		ExpiresAt:         c.Dedup.ExpiresAt,
 	}
-	for _, row := range c.IndexDiff.OwnedUpserts {
+	for _, row := range c.IndexDiff.Upserts {
 		f.indexRows[row.TabID] = row
 	}
-	for _, key := range c.IndexDiff.OwnedDeletes {
+	for _, key := range c.IndexDiff.Deletes {
 		delete(f.indexRows, key.TabID)
-	}
-	for _, row := range c.IndexDiff.RenderedUpserts {
-		f.rendered[row.TabID] = row
-	}
-	for _, key := range c.IndexDiff.RenderedDeletes {
-		delete(f.rendered, key.TabID)
 	}
 	return nil
 }
@@ -208,19 +203,13 @@ func (f *fakeJournal) LookupRecentBatchID(_ context.Context, _, batchID string) 
 	return &clone, nil
 }
 
-func (f *fakeJournal) AdvanceEpoch(_ context.Context, _ string, epoch int64, startedAt time.Time) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.state != nil {
-		f.state.CurrentEpoch = epoch
-	}
-	_ = startedAt
-	return nil
-}
-
 func (f *fakeJournal) CompactBatch(_ context.Context, c crdt.CompactBatch) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.compactCalls++
+	if f.compactErr != nil {
+		return f.compactErr
+	}
 	f.state = crdt.CloneState(c.State)
 	f.stateRaw = true
 	if c.DropThrough == nil {
@@ -257,12 +246,12 @@ func (f *fakeJournal) CompactBatch(_ context.Context, c crdt.CompactBatch) error
 	return nil
 }
 
-func (f *fakeJournal) CleanupExpiredRecentBatchIDs(_ context.Context, before time.Time) (int64, error) {
+func (f *fakeJournal) CleanupExpiredRecentBatchIDs(_ context.Context, userID string, before time.Time, oldestAcceptedEpoch int64) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	deleted := int64(0)
 	for id, row := range f.dedup {
-		if row.ExpiresAt.Before(before) {
+		if row.UserID == userID && row.ExpiresAt.Before(before) && row.Epoch < oldestAcceptedEpoch {
 			delete(f.dedup, id)
 			deleted++
 		}
@@ -276,19 +265,47 @@ func (f *fakeJournal) putDedup(row crdt.RecentBatchRecord) {
 	f.dedup[row.BatchID] = row
 }
 
-// snapshotIndex returns the current owned/rendered rows under lock.
+// snapshotIndex returns the current index rows under lock: owned holds every
+// row, and rendered the subset whose Rendered flag is set.
 func (f *fakeJournal) snapshotIndex() (owned, rendered map[string]crdt.TabIndexRow) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	owned = make(map[string]crdt.TabIndexRow, len(f.indexRows))
-	rendered = make(map[string]crdt.TabIndexRow, len(f.rendered))
+	rendered = make(map[string]crdt.TabIndexRow)
 	for k, v := range f.indexRows {
 		owned[k] = v
-	}
-	for k, v := range f.rendered {
-		rendered[k] = v
+		if v.Rendered {
+			rendered[k] = v
+		}
 	}
 	return
+}
+
+// failCompaction makes every later CompactBatch fail with err and persist
+// nothing; a nil err makes it succeed again.
+func (f *fakeJournal) failCompaction(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.compactErr = err
+}
+
+// compactionCalls returns how many times CompactBatch was called, failed calls
+// included.
+func (f *fakeJournal) compactionCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.compactCalls
+}
+
+// persistedState returns a clone of the state the last successful CompactBatch
+// stored, or nil when none has.
+func (f *fakeJournal) persistedState() *leapmuxv1.UserCrdtState {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.stateRaw || f.state == nil {
+		return nil
+	}
+	return crdt.CloneState(f.state)
 }
 
 // dedupCount returns the number of rows currently in the dedup table.

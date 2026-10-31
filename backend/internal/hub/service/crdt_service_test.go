@@ -123,15 +123,6 @@ func (j *memJournal) LookupRecentBatchID(_ context.Context, _, batchID string) (
 	return &clone, nil
 }
 
-func (j *memJournal) AdvanceEpoch(_ context.Context, _ string, epoch int64, _ time.Time) error {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	if j.state != nil {
-		j.state.CurrentEpoch = epoch
-	}
-	return nil
-}
-
 func (j *memJournal) CompactBatch(_ context.Context, c crdt.CompactBatch) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -139,7 +130,7 @@ func (j *memJournal) CompactBatch(_ context.Context, c crdt.CompactBatch) error 
 	return nil
 }
 
-func (j *memJournal) CleanupExpiredRecentBatchIDs(_ context.Context, _ time.Time) (int64, error) {
+func (j *memJournal) CleanupExpiredRecentBatchIDs(_ context.Context, _ string, _ time.Time, _ int64) (int64, error) {
 	return 0, nil
 }
 
@@ -270,8 +261,8 @@ func TestCRDTService_SubmitOps_RequiresAuth(t *testing.T) {
 	env := setupCRDTService(t)
 
 	req := &leapmuxv1.SubmitOpsRequest{
-		Epoch:   env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(),
-		Batches: []*leapmuxv1.OpBatch{{BatchId: "b1", Ops: addTabOps("op1", "tA", "root1", "wkr1", "p1")}},
+
+		Batches: batchesAtEpoch(env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(), []*leapmuxv1.OpBatch{{BatchId: "b1", Ops: addTabOps("op1", "tA", "root1", "wkr1", "p1")}}),
 	}
 
 	_, err := env.svc.SubmitOps(context.Background(), req)
@@ -293,8 +284,8 @@ func TestCRDTService_SubmitOps_StampsPrincipalAndOrigin(t *testing.T) {
 	ctx := auth.WithUser(context.Background(), sessionCaller(env.userID))
 
 	req := &leapmuxv1.SubmitOpsRequest{
-		Epoch:   env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(),
-		Batches: []*leapmuxv1.OpBatch{{BatchId: "b1", Ops: addTabOps("op1", "tA", "root1", "wkr1", "p1")}},
+
+		Batches: batchesAtEpoch(env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(), []*leapmuxv1.OpBatch{{BatchId: "b1", Ops: addTabOps("op1", "tA", "root1", "wkr1", "p1")}}),
 	}
 
 	resp, err := env.svc.SubmitOps(ctx, req)
@@ -328,8 +319,8 @@ func TestCRDTService_SubmitOps_OriginClientIdSpoofingRejected(t *testing.T) {
 	}
 
 	req := &leapmuxv1.SubmitOpsRequest{
-		Epoch:   env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(),
-		Batches: []*leapmuxv1.OpBatch{{BatchId: "b2", Ops: spoofed}},
+
+		Batches: batchesAtEpoch(env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(), []*leapmuxv1.OpBatch{{BatchId: "b2", Ops: spoofed}}),
 	}
 
 	resp, err := env.svc.SubmitOps(ctx, req)
@@ -382,8 +373,8 @@ func TestCRDTService_SubmitOps_TabOutsideAnyWorkspaceRejected(t *testing.T) {
 
 	ctx := auth.WithUser(context.Background(), sessionCaller(env.userID))
 	req := &leapmuxv1.SubmitOpsRequest{
-		Epoch:   env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(),
-		Batches: []*leapmuxv1.OpBatch{{BatchId: "b-orphan", Ops: addTabOps("opX", "tOrphan", "orphan-root", "wkr1", "p1")}},
+
+		Batches: batchesAtEpoch(env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(), []*leapmuxv1.OpBatch{{BatchId: "b-orphan", Ops: addTabOps("opX", "tOrphan", "orphan-root", "wkr1", "p1")}}),
 	}
 
 	resp, err := env.svc.SubmitOps(ctx, req)
@@ -397,8 +388,8 @@ func TestCRDTService_SubmitOps_TabOutsideAnyWorkspaceRejected(t *testing.T) {
 	// And the seeded workspace's own root still takes tabs — the guard
 	// rejects the placement, not the submitter.
 	req2 := &leapmuxv1.SubmitOpsRequest{
-		Epoch:   env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(),
-		Batches: []*leapmuxv1.OpBatch{{BatchId: "b-ok", Ops: addTabOps("opY", "tFine", "root1", "wkr1", "p1")}},
+
+		Batches: batchesAtEpoch(env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(), []*leapmuxv1.OpBatch{{BatchId: "b-ok", Ops: addTabOps("opY", "tFine", "root1", "wkr1", "p1")}}),
 	}
 	resp2, err := env.svc.SubmitOps(ctx, req2)
 	require.NoError(t, err)

@@ -855,7 +855,6 @@ func createAgentForPath(t *testing.T, svc *Service, agentID, workingDir string) 
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		ID:         agentID,
 		WorkingDir: workingDir,
-		HomeDir:    workingDir,
 	}))
 }
 
@@ -864,7 +863,6 @@ func createTerminalForPath(t *testing.T, svc *Service, terminalID, workingDir st
 	require.NoError(t, svc.Queries.UpsertTerminal(context.Background(), db.UpsertTerminalParams{
 		ID:         terminalID,
 		WorkingDir: workingDir,
-		HomeDir:    workingDir,
 		// `screen` is NOT NULL on the terminals table; an empty buffer
 		// is the natural "no screen content yet" sentinel.
 		Screen: []byte{},

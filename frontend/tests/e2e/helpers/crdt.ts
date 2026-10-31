@@ -17,9 +17,10 @@
 // regression that the fixture would silently hide.
 // ─────────────────────────────────────────────────────────────────────────
 
-import { fromBinary } from '@bufbuild/protobuf'
+import type { CrdtOp, SetTabRegisterOp } from '../../../src/generated/proto/leapmux/v1/user_ops_pb'
+import { create, fromBinary, toJson } from '@bufbuild/protobuf'
 import { customAlphabet } from 'nanoid'
-import { WatchUserEventSchema } from '../../../src/generated/proto/leapmux/v1/user_ops_pb'
+import { CrdtOpSchema, SubmitOpsRequestSchema, WatchUserEventSchema } from '../../../src/generated/proto/leapmux/v1/user_ops_pb'
 import { callHub, pollHub } from './api'
 import { hubTransportUrl } from './hubTransport'
 
@@ -312,34 +313,37 @@ async function submitSetTabRegisterBatch(args: {
   setRegisters: { tileId?: string, position?: string, workerId?: string }
   originClientId: string
 }): Promise<void> {
-  const ops: Array<Record<string, unknown>> = []
-  const pushOp = (field: Record<string, unknown>) => {
-    ops.push({
+  const ops: CrdtOp[] = []
+  const pushOp = (field: SetTabRegisterOp['field']) => {
+    ops.push(create(CrdtOpSchema, {
       opId: nanoid48(),
       originClientId: args.originClientId,
-      setTabRegister: {
-        tabType: args.tabType,
-        tabId: args.tabId,
-        ...field,
+      body: {
+        case: 'setTabRegister',
+        value: {
+          tabType: args.tabType,
+          tabId: args.tabId,
+          field,
+        },
       },
-    })
+    }))
   }
   if (args.setRegisters.tileId !== undefined)
-    pushOp({ tileId: args.setRegisters.tileId })
+    pushOp({ case: 'tileId', value: args.setRegisters.tileId })
   if (args.setRegisters.position !== undefined)
-    pushOp({ position: args.setRegisters.position })
+    pushOp({ case: 'position', value: args.setRegisters.position })
   if (args.setRegisters.workerId !== undefined)
-    pushOp({ workerId: args.setRegisters.workerId })
+    pushOp({ case: 'workerId', value: args.setRegisters.workerId })
 
-  const reqBody = {
-    epoch: args.epoch.toString(),
+  const reqBody = toJson(SubmitOpsRequestSchema, create(SubmitOpsRequestSchema, {
     batches: [
       {
         batchId: nanoid48(),
+        epoch: args.epoch,
         ops,
       },
     ],
-  }
+  }), { enumAsInteger: true })
   // The operation states the batch, because a refusal is about its ops and its epoch.
   const data = await callHub<{ results?: Array<{ rejected?: unknown, committed?: unknown }> }>(
     args.hubUrl,

@@ -373,7 +373,6 @@ func TestWire_InstallsTheAgentExitHandler(t *testing.T) {
 	require.NoError(t, w.Service.Queries.CreateAgent(bg, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	sink, sinkErr := w.Service.Output.NewRootSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -461,16 +460,14 @@ func TestLiveTabForMint_SkipsChildAgents(t *testing.T) {
 		ParentAgentID: sql.NullString{String: "root-1", Valid: true},
 		SpawnSpanID:   "span-1",
 		WorkingDir:    "/tmp",
-		HomeDir:       "/tmp",
 		Title:         "child",
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 
 	provider := liveTabForMint(queries)
-	id, tabType, ok := provider()
+	id, ok := provider()
 	require.True(t, ok)
 	assert.Equal(t, "root-1", id, "mint must target a root agent, never a child")
-	assert.Equal(t, int32(leapmuxv1.TabType_TAB_TYPE_AGENT), tabType)
 }
 
 // TestWire_AppliesTheConfiguredStartupConcurrency pins the hop from the loaded

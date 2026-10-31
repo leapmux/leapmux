@@ -22,10 +22,6 @@ func fromDBDelegationToken(t gendb.DelegationToken) store.DelegationToken {
 		ID:               t.ID,
 		UserID:           t.UserID,
 		WorkerID:         t.WorkerID,
-		AgentID:          t.AgentID,
-		TerminalID:       t.TerminalID,
-		IssuedForTabID:   t.IssuedForTabID,
-		IssuedForTabType: t.IssuedForTabType,
 		GrantedScopes:    t.GrantedScopes,
 		SecretHash:       t.SecretHash,
 		RefreshHash:      t.RefreshHash,
@@ -44,11 +40,7 @@ func (s *delegationTokenStore) Create(ctx context.Context, p store.CreateDelegat
 			ID:               p.ID,
 			UserID:           p.UserID.String(),
 			WorkerID:         p.WorkerID,
-			AgentID:          p.AgentID,
-			TerminalID:       p.TerminalID,
-			IssuedForTabID:   p.IssuedForTabID,
 			GrantedScopes:    p.GrantedScopes,
-			IssuedForTabType: p.IssuedForTabType,
 			SecretHash:       p.SecretHash,
 			RefreshHash:      p.RefreshHash,
 			ExpiresAt:        sqltime.NewMySQLTime(p.ExpiresAt),
@@ -167,7 +159,7 @@ func (s *delegationTokenStore) Revoke(ctx context.Context, id string) (int64, er
 		if n != 1 {
 			return nil, fmt.Errorf("revoke delegation token %q: updated %d rows after locking live row", row.ID, n)
 		}
-		return &store.CredentialEvent{Kind: store.RevocationEventKindDelegationToken, SubjectID: row.ID, UserID: row.UserID, At: revokedAt}, nil
+		return &store.CredentialEvent{Kind: store.RevocationEventKindDelegationToken, SubjectID: row.ID, UserID: row.UserID}, nil
 	}, emitCredentialEvent)
 }
 

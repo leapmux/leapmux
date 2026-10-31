@@ -41,7 +41,6 @@ func TestResolveApp_ZeroCallerReachesNoPrivateApp(t *testing.T) {
 	_, createErr := st.OAuthClients().Create(ctx, store.CreateOAuthClientParams{
 		ClientID:           privateID,
 		OwnerUserID:        owner.ID,
-		CreatedBy:          owner.ID,
 		ClientName:         "Alice's private app",
 		RedirectURIs:       "https://app.example.com/cb",
 		Scopes:             "workspace:read",

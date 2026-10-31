@@ -73,7 +73,7 @@ func reviseReplayIdentityWatch(t *testing.T, writer *testResponseWriter, request
 
 func createReplayIdentityRows(t *testing.T, svc *Service, agentID string) []db.Message {
 	t.Helper()
-	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE}))
+	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{ID: agentID, WorkingDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE}))
 	sink := newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	for _, text := range []string{"first", "second", "third"} {
 		require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"type":"assistant","text":"` + text + `"}`)}, agent.SpanInfo{}))
@@ -265,7 +265,7 @@ func TestWatchReplayIdentitySurvivesSkippedOpeningRequest(t *testing.T) {
 	svc, dispatcher, base := setupTestService(t)
 	const agentID = "skipped-opening-agent"
 	rows := createReplayIdentityRows(t, svc, agentID)
-	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{ID: "other-notify-agent", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE}))
+	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{ID: "other-notify-agent", WorkingDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE}))
 	first := replayIdentityRequest(1, 1, agentID, rows[0].Seq)
 	second := proto.Clone(first).(*leapmuxv1.WatchEventsRequest)
 	second.UpdateId = 2

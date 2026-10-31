@@ -110,7 +110,7 @@ func (h *OAuthServerHandler) handleRegister(w http.ResponseWriter, r *http.Reque
 		writeOAuthError(w, status, "invalid_client_metadata", err.Error())
 		return
 	}
-	params, secret, method, body := h.buildRegistration(req, store.OAuthClientSourceDynamic, "", "")
+	params, secret, method, body := h.buildRegistration(req, store.OAuthClientSourceDynamic, "")
 	if body != nil {
 		writeOAuthErrorBody(w, http.StatusBadRequest, *body)
 		return
@@ -191,7 +191,7 @@ func authorizationCodeNeedsRedirect(grantTypes []string, redirectURIs []string) 
 // ceiling before it gets here, because an anonymous registrant cannot state
 // one (see buildRegistration).
 func buildOAuthClientRegistration(
-	v *auth.TokenValidator, spec appRegistrationSpec, source leapmuxv1.AppRegistrationSource, owner, createdBy string,
+	v *auth.TokenValidator, spec appRegistrationSpec, source leapmuxv1.AppRegistrationSource, owner string,
 ) (store.CreateOAuthClientParams, string, error) {
 	name := validate.CleanNameTo(spec.name, clientNameByteLimit)
 	if name == "" {
@@ -242,7 +242,6 @@ func buildOAuthClientRegistration(
 		// choose it would choose one that already exists.
 		ClientID:      id.Generate(),
 		OwnerUserID:   owner,
-		CreatedBy:     createdBy,
 		SecretHash:    secretHash,
 		ClientName:    name,
 		IconBlob:      icon,
@@ -279,7 +278,7 @@ func registrationErr(code string, err error) error {
 // registrant asked for, which is what RFC 7591 section 3.2.1 requires the
 // server to echo.
 func (h *OAuthServerHandler) buildRegistration(
-	req registrationRequest, source leapmuxv1.AppRegistrationSource, owner, createdBy string,
+	req registrationRequest, source leapmuxv1.AppRegistrationSource, owner string,
 ) (store.CreateOAuthClientParams, string, string, *oauthErrorResponse) {
 	method := "none"
 	confidential := false
@@ -331,7 +330,7 @@ func (h *OAuthServerHandler) buildRegistration(
 		// that is its owner's decision rather than a default an anonymous
 		// registrant ticks.
 		elevationAllowed: false,
-	}, source, owner, createdBy)
+	}, source, owner)
 	if err != nil {
 		code := "invalid_client_metadata"
 		var regErr *registrationError

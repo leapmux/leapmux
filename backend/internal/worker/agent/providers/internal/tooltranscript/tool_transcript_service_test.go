@@ -104,7 +104,7 @@ func TestToolTranscriptHistoricalReadPreservesRealServiceCASAndGeometry(t *testi
 	const sessionID = "reused-native-session"
 	const provider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	queries := db.New(sqlDB)
-	require.NoError(t, queries.CreateAgent(t.Context(), db.CreateAgentParams{ID: ownerID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: provider}))
+	require.NoError(t, queries.CreateAgent(t.Context(), db.CreateAgentParams{ID: ownerID, WorkingDir: t.TempDir(), AgentProvider: provider}))
 	output := service.NewOutputHandler(sqlDB, queries, service.NewWatcherManager(), agent.NewManager(providers.Registry(), nil), nil, testutil.NewQuartzMock(t))
 	t.Cleanup(output.CancelBackgroundCtx)
 	base, err := output.NewRootSink(ownerID, provider)

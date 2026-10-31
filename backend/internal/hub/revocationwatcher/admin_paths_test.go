@@ -48,7 +48,7 @@ func TestAdminPath_APITokenRevoke_ClosesBearerChannels(t *testing.T) {
 // TestAdminPath_UserDelete_TearsDownEverything emulates the
 // `leapmux control admin user delete` admin transaction: every credential
 // the user had — sessions (separate concern), api_tokens,
-// delegation_tokens — gets revoked, and `users.tokens_revoked_at`
+// delegation_tokens — gets revoked, and `users.auth_generation`
 // is bumped. The generation-bearing user event closes every channel;
 // individual bearer events would be redundant for this atomic path.
 func TestAdminPath_UserDelete_TearsDownEverything(t *testing.T) {
@@ -83,7 +83,7 @@ func TestAdminPath_UserDelete_TearsDownEverything(t *testing.T) {
 // `leapmux recover password reset`. The shape is the same as
 // user delete except the user row stays and sessions are deleted
 // instead of soft-revoked; from the watcher's perspective only
-// the (api_tokens revoke + delegation revoke + tokens_revoked_at
+// the (api_tokens revoke + delegation revoke + auth_generation
 // bump) tuple matters.
 func TestAdminPath_ResetPassword_RevokesTokensAndChannels(t *testing.T) {
 	env := setup(t)
@@ -113,7 +113,7 @@ func TestAdminPath_ResetPassword_RevokesTokensAndChannels(t *testing.T) {
 // TestAdminPath_SessionRevokeUser_TearsDownAllChannels mirrors
 // `leapmux control admin session revoke-user`. Sessions are deleted (the
 // watcher doesn't see those — they're hard-deleted, not flagged),
-// so the user-wide tokens_revoked_at bump carries the signal for cookie
+// so the user-wide auth_generation bump carries the signal for cookie
 // channels; api / delegation tokens are revoked in the same
 // transaction.
 func TestAdminPath_SessionRevokeUser_TearsDownAllChannels(t *testing.T) {

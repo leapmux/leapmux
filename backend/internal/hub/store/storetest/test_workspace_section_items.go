@@ -384,6 +384,133 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
+	t.Run("refuses a new placement whose user does not own the workspace", func(t *testing.T) {
+		st := s.NewStore(t)
+		owner := SeedUser(t, st, "wsi-own-a")
+		other := SeedUser(t, st, "wsi-own-b")
+		ownerSection := seedSection(t, st, owner.ID, "A's", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM)
+		wsID := SeedWorkspace(t, st, owner.ID, "A's WS")
+
+		err := st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
+			UserID: userid.MustNew(other.ID), WorkspaceID: wsID, SectionID: ownerSection, Position: "a0",
+		})
+		require.Error(t, err, "a placement whose user does not own the workspace must not be storable")
+
+		_, err = st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{
+			UserID: userid.MustNew(other.ID), WorkspaceID: wsID,
+		})
+		require.ErrorIs(t, err, store.ErrNotFound)
+		_, err = st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{
+			UserID: userid.MustNew(owner.ID), WorkspaceID: wsID,
+		})
+		require.ErrorIs(t, err, store.ErrNotFound, "the refused write must store nothing")
+	})
+
+	t.Run("refuses to rewrite another user's placement", func(t *testing.T) {
+		st := s.NewStore(t)
+		owner := SeedUser(t, st, "wsi-rewrite-a")
+		other := SeedUser(t, st, "wsi-rewrite-b")
+		ownerSection := seedSection(t, st, owner.ID, "A's", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM)
+		wsID := SeedWorkspace(t, st, owner.ID, "A's WS")
+		require.NoError(t, st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
+			UserID: userid.MustNew(owner.ID), WorkspaceID: wsID, SectionID: ownerSection, Position: "old",
+		}))
+
+		err := st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
+			UserID: userid.MustNew(other.ID), WorkspaceID: wsID, SectionID: ownerSection, Position: "changed",
+		})
+		require.Error(t, err, "a second user's write must not take over the owner's placement")
+
+		item, err := st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{
+			UserID: userid.MustNew(owner.ID), WorkspaceID: wsID,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, ownerSection, item.SectionID)
+		assert.Equal(t, "old", item.Position)
+	})
+
+	t.Run("refuses a placement into another user's section", func(t *testing.T) {
+		st := s.NewStore(t)
+		owner := SeedUser(t, st, "wsi-foreign-sec-a")
+		other := SeedUser(t, st, "wsi-foreign-sec-b")
+		otherSection := seedSection(t, st, other.ID, "B's", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM)
+		wsID := SeedWorkspace(t, st, owner.ID, "A's WS")
+
+		err := st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
+			UserID: userid.MustNew(owner.ID), WorkspaceID: wsID, SectionID: otherSection, Position: "a0",
+		})
+		require.Error(t, err, "a workspace must not be placed in another user's section")
+
+		has, err := st.WorkspaceSectionItems().HasItemsBySection(ctx, otherSection)
+		require.NoError(t, err)
+		assert.False(t, has)
+	})
+
+	t.Run("a workspace has one placement", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "wsi-one-placement")
+		first := seedSection(t, st, user.ID, "First", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM)
+		second := seedSection(t, st, user.ID, "Second", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM)
+		wsID := SeedWorkspace(t, st, user.ID, "WS")
+
+		for _, sectionID := range []string{first, second} {
+			require.NoError(t, st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
+				UserID: userid.MustNew(user.ID), WorkspaceID: wsID, SectionID: sectionID, Position: "a0",
+			}))
+		}
+
+		items, err := st.WorkspaceSectionItems().ListByUser(ctx, userid.MustNew(user.ID))
+		require.NoError(t, err)
+		require.Len(t, items, 1)
+		assert.Equal(t, second, items[0].SectionID)
+		hasFirst, err := st.WorkspaceSectionItems().HasItemsBySection(ctx, first)
+		require.NoError(t, err)
+		assert.False(t, hasFirst)
+	})
+
+	t.Run("HasItemsBySection ignores a soft-deleted workspace", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "wsi-has-deleted")
+		secID := seedSection(t, st, user.ID, "Section", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM)
+		wsID := SeedWorkspace(t, st, user.ID, "Gone")
+		require.NoError(t, st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
+			UserID: userid.MustNew(user.ID), WorkspaceID: wsID, SectionID: secID, Position: "a0",
+		}))
+		has, err := st.WorkspaceSectionItems().HasItemsBySection(ctx, secID)
+		require.NoError(t, err)
+		require.True(t, has, "precondition: a live workspace's item counts")
+
+		require.NoError(t, st.Workspaces().SoftDeleteAllByUser(ctx, userid.MustNew(user.ID)))
+
+		has, err = st.WorkspaceSectionItems().HasItemsBySection(ctx, secID)
+		require.NoError(t, err)
+		assert.False(t, has)
+	})
+
+	t.Run("deleting a section cascades its placements away", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "wsi-section-cascade")
+		secID := seedSection(t, st, user.ID, "Doomed", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM)
+		wsID := SeedWorkspace(t, st, user.ID, "Gone")
+		require.NoError(t, st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
+			UserID: userid.MustNew(user.ID), WorkspaceID: wsID, SectionID: secID, Position: "a0",
+		}))
+		// A soft-deleted workspace keeps its placement, which no reader sees;
+		// the section delete must still remove it rather than fail on it.
+		require.NoError(t, st.Workspaces().SoftDeleteAllByUser(ctx, userid.MustNew(user.ID)))
+
+		rows, err := st.WorkspaceSections().Delete(ctx, store.DeleteWorkspaceSectionParams{
+			ID: secID, UserID: userid.MustNew(user.ID),
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(1), rows)
+
+		_, err = st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{
+			UserID: userid.MustNew(user.ID), WorkspaceID: wsID,
+		})
+		assert.ErrorIs(t, err, store.ErrNotFound)
+	})
+
 	t.Run("is in archived section not found", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "wsi-archnf-user")

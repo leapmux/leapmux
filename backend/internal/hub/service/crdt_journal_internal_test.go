@@ -23,7 +23,7 @@ import (
 // owners: a blank one mints to the ZERO UserID and travels on, because the
 // refusal belongs to the store, which applies store.FilterTabIndexKeys at every
 // site that binds an owner column so a future non-CRDT caller of
-// BulkDeleteOwned inherits it. These cases pin the conversion (every key
+// BulkDelete inherits it. These cases pin the conversion (every key
 // survives, fields map across) and, by asserting a blank owner passes THROUGH
 // as the zero id, pin that this adapter is not silently re-acquiring a
 // responsibility the store now owns -- see store.TestFilterTabIndexKeys and the
@@ -75,22 +75,22 @@ func TestTxTabIndexWriterSuppliesTheCommittingTenant(t *testing.T) {
 	w := txTabIndexWriter{tx: nil, owner: owner}
 
 	got := w.tabParams([]crdt.TabIndexRow{
-		{WorkspaceID: "ws1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "t1", WorkerID: "wk1", TileID: "tile1", Position: "a0"},
-		{WorkspaceID: "ws2", TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabID: "t2", WorkerID: "wk2", TileID: "tile2", Position: "a1"},
+		{WorkspaceID: "ws1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "t1", WorkerID: "wk1", TileID: "tile1", Position: "a0", Rendered: true},
+		{WorkspaceID: "ws2", TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabID: "t2", WorkerID: "wk2", TileID: "tile2", Position: "a1", Rendered: false},
 	})
 
 	require.Len(t, got, 2)
 	for i, p := range got {
 		assert.Equal(t, owner.String(), p.UserID.String(), "row %d must be keyed by the committing tenant", i)
 	}
-	// Every other column still comes from the row.
-	assert.Equal(t, store.UpsertOwnedTabParams{
+	// Every other column still comes from the row, the Rendered flag included.
+	assert.Equal(t, store.UpsertTabParams{
 		UserID: owner, WorkspaceID: "ws1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabID: "t1", WorkerID: "wk1", TileID: "tile1", Position: "a0",
+		TabID: "t1", WorkerID: "wk1", TileID: "tile1", Position: "a0", Rendered: true,
 	}, got[0])
-	assert.Equal(t, store.UpsertOwnedTabParams{
+	assert.Equal(t, store.UpsertTabParams{
 		UserID: owner, WorkspaceID: "ws2", TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL,
-		TabID: "t2", WorkerID: "wk2", TileID: "tile2", Position: "a1",
+		TabID: "t2", WorkerID: "wk2", TileID: "tile2", Position: "a1", Rendered: false,
 	}, got[1])
 
 	assert.Empty(t, w.tabParams(nil))
@@ -115,14 +115,10 @@ func TestCRDTJournalRefusesABlankTenant(t *testing.T) {
 		assert.ErrorIs(t, err, errBlankTenant)
 	})
 
-	t.Run("AdvanceEpoch", func(t *testing.T) {
-		assert.ErrorIs(t, j.AdvanceEpoch(ctx, "", 2, time.Now()), errBlankTenant)
-	})
-
 	t.Run("CommitBatch", func(t *testing.T) {
 		// One tenant field, one mint: crdt.CommitBatch states the committing
 		// user once, and every row the transaction writes (journal, dedup,
-		// index views) takes its owner from it.
+		// tab index) takes its owner from it.
 		assert.ErrorIs(t, j.CommitBatch(ctx, crdt.CommitBatch{
 			UserID: "",
 			Dedup:  crdt.DedupEntry{BatchID: "b1"},
@@ -194,7 +190,7 @@ func seedResumeJournal(t *testing.T, n int, mangle func(i int, p *store.InsertUs
 				CanonicalHlc: &leapmuxv1.HLC{
 					Physical: int64(1000 + i),
 					Logical:  0,
-					ClientId: "c1",
+					ClientId: crdt.CanonicalClockID,
 				},
 			}},
 		}
@@ -206,15 +202,10 @@ func seedResumeJournal(t *testing.T, n int, mangle func(i int, p *store.InsertUs
 			UserID:             owner,
 			PhysicalMs:         int64(1000 + i),
 			Logical:            0,
-			LastLogical:        0,
-			OriginClient:       "c1",
-			PrincipalID:        "alice",
 			BatchID:            batch.GetBatchId(),
-			BodyHash:           []byte{byte(i)},
 			BatchPayload:       payload,
 			TransitionsPayload: transitions,
 			OpCount:            1,
-			Epoch:              1,
 		}
 		if mangle != nil {
 			mangle(i, &p)
@@ -234,7 +225,7 @@ func nodeOpBatch(t *testing.T, batchID, nodeID string) []byte {
 		BatchId: batchID,
 		Ops: []*leapmuxv1.CrdtOp{{
 			OpId:         "op-" + nodeID,
-			CanonicalHlc: &leapmuxv1.HLC{Physical: 1000, Logical: 0, ClientId: "c1"},
+			CanonicalHlc: &leapmuxv1.HLC{Physical: 1000, Logical: 0, ClientId: crdt.CanonicalClockID},
 			Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
 				NodeId: nodeID,
 				Field:  &leapmuxv1.SetNodeRegisterOp_Position{Position: "p"},
@@ -493,4 +484,175 @@ func TestListBatchesAfter_StopsOnCorruptPayload(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The resume scan pages through the journal CRDTBatchPageLimit rows at a time,
+// and the next page starts after the last row's own (physical_ms, logical).
+// Multi-op batches at one physical are the shape a cursor built from anything
+// else gets wrong: each batch's ops span two logicals, so a cursor that used
+// the last op's logical or a stale client id could skip or repeat a batch at
+// the page boundary.
+func TestListBatchesAfter_PagesMultiOpBatchesWithoutGapOrRepeat(t *testing.T) {
+	t.Parallel()
+	st, err := sqlite.OpenTestable(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	owner := userid.MustNew(storetest.SeedUser(t, st, "paging-owner").ID)
+	ctx := context.Background()
+
+	const (
+		physical = 5000
+		batches  = store.CRDTBatchPageLimit + 1
+	)
+	transitions, err := proto.Marshal(&leapmuxv1.BatchTransitions{})
+	require.NoError(t, err)
+	require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
+		for i := range batches {
+			first := int64(2 * i)
+			batch := &leapmuxv1.OpBatch{
+				BatchId: fmt.Sprintf("b%04d", i),
+				Ops: []*leapmuxv1.CrdtOp{
+					{OpId: fmt.Sprintf("op%04d-0", i), CanonicalHlc: &leapmuxv1.HLC{Physical: physical, Logical: first, ClientId: crdt.CanonicalClockID}},
+					{OpId: fmt.Sprintf("op%04d-1", i), CanonicalHlc: &leapmuxv1.HLC{Physical: physical, Logical: first + 1, ClientId: crdt.CanonicalClockID}},
+				},
+			}
+			payload, merr := proto.Marshal(batch)
+			require.NoError(t, merr)
+			require.NoError(t, tx.UserOpBatches().Insert(ctx, store.InsertUserOpBatchParams{
+				UserID:             owner,
+				PhysicalMs:         physical,
+				Logical:            first,
+				BatchID:            batch.GetBatchId(),
+				BatchPayload:       payload,
+				TransitionsPayload: transitions,
+				OpCount:            2,
+			}))
+		}
+		return nil
+	}))
+
+	j := &crdtJournal{store: st}
+	out, corrupt, err := j.scan(ctx, journalScan{owner: owner, mode: scanResume})
+	require.NoError(t, err)
+	assert.Empty(t, corrupt)
+	require.Len(t, out, batches, "every batch exactly once, across the page boundary")
+	for i, b := range out {
+		assert.Equal(t, fmt.Sprintf("b%04d", i), b.Batch.GetBatchId(), "batch %d out of order", i)
+	}
+}
+
+// CommitBatch refuses an op whose canonical HLC was stamped by any clock other
+// than the manager's, before it writes anything: the journal stores no client
+// id and rebuilds every HLC with crdt.CanonicalClockID, so a foreign id would
+// change identity on the next read, and on a dedup hit, which rebuilds every
+// op's HLC with one id.
+func TestCommitBatchRefusesANonCanonicalClient(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range []struct {
+		name    string
+		clients []string
+	}{
+		{"the first op", []string{"other", crdt.CanonicalClockID}},
+		{"a later op", []string{crdt.CanonicalClockID, "other"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			st, err := sqlite.OpenTestable(":memory:")
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = st.Close() })
+			user := storetest.SeedUser(t, st, "non-canonical-owner")
+			owner := userid.MustNew(user.ID)
+			ctx := context.Background()
+
+			batch := &leapmuxv1.OpBatch{BatchId: "b1"}
+			for i, client := range c.clients {
+				batch.Ops = append(batch.Ops, &leapmuxv1.CrdtOp{
+					OpId:         fmt.Sprintf("op%d", i),
+					CanonicalHlc: &leapmuxv1.HLC{Physical: 100, Logical: int64(i), ClientId: client},
+				})
+			}
+			j := &crdtJournal{store: st}
+			err = j.CommitBatch(ctx, crdt.CommitBatch{
+				UserID:      user.ID,
+				Batch:       batch,
+				PrincipalID: user.ID,
+				Epoch:       1,
+				Dedup: crdt.DedupEntry{
+					BatchID:           "b1",
+					BodyHash:          []byte("h"),
+					CanonicalFirstHLC: batch.GetOps()[0].GetCanonicalHlc(),
+					OpCount:           int64(len(batch.GetOps())),
+					ExpiresAt:         time.Now().Add(time.Hour),
+				},
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), `canonical client id "other"`)
+
+			n, err := st.UserOpBatches().Count(ctx, owner)
+			require.NoError(t, err)
+			assert.Zero(t, n, "no journal row may be written")
+			_, err = st.UserRecentBatchIDs().Get(ctx, owner, "b1")
+			assert.ErrorIs(t, err, store.ErrNotFound, "no dedup row may be written")
+		})
+	}
+}
+
+// A batch with no ops has no first op to anchor its journal key, and
+// op_count is CHECKed > 0. CommitBatch refuses it before the transaction, so
+// neither the journal row nor the dedup row is written.
+func TestCommitBatchRefusesAnEmptyBatch(t *testing.T) {
+	t.Parallel()
+	st, err := sqlite.OpenTestable(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	user := storetest.SeedUser(t, st, "empty-batch-owner")
+	owner := userid.MustNew(user.ID)
+	ctx := context.Background()
+
+	j := &crdtJournal{store: st}
+	err = j.CommitBatch(ctx, crdt.CommitBatch{
+		UserID:      user.ID,
+		Batch:       &leapmuxv1.OpBatch{BatchId: "empty"},
+		PrincipalID: user.ID,
+		Epoch:       1,
+		Dedup: crdt.DedupEntry{
+			BatchID:   "empty",
+			BodyHash:  []byte("h"),
+			ExpiresAt: time.Now().Add(time.Hour),
+		},
+	})
+	require.ErrorContains(t, err, "the batch has no ops")
+
+	n, err := st.UserOpBatches().Count(ctx, owner)
+	require.NoError(t, err)
+	assert.Zero(t, n, "no journal row may be written")
+	_, err = st.UserRecentBatchIDs().Get(ctx, owner, "empty")
+	assert.ErrorIs(t, err, store.ErrNotFound, "no dedup row may be written")
+}
+
+// A header-only compaction pass (an epoch rotation, or the first persist of a
+// Bootstrap epoch stamp) passes a nil DropThrough. CompactBatch must then
+// upsert the state and delete no journal row. The state's own watermarks sit
+// above every batch, so a CompactBatch that took its deletion floor from the
+// state instead of from DropThrough would delete both rows.
+func TestCompactBatchWithoutDropThroughDeletesNoBatch(t *testing.T) {
+	t.Parallel()
+	j, owner := seedResumeJournal(t, 2, nil)
+	ctx := context.Background()
+
+	state := crdt.NewState(owner.String())
+	state.CompactionWatermark = &leapmuxv1.HLC{Physical: 5000, ClientId: crdt.CanonicalClockID}
+	state.OpRetentionWatermark = &leapmuxv1.HLC{Physical: 5000, ClientId: crdt.CanonicalClockID}
+	require.NoError(t, j.CompactBatch(ctx, crdt.CompactBatch{State: state, DropThrough: nil}))
+
+	n, err := j.store.UserOpBatches().Count(ctx, owner)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), n, "a nil DropThrough must keep every batch, even below the stored watermark")
+	row, err := j.store.UserState().Get(ctx, owner)
+	require.NoError(t, err)
+	assert.NotEmpty(t, row.StatePayload, "the state is still upserted")
+	decoded := &leapmuxv1.UserCrdtState{}
+	require.NoError(t, proto.Unmarshal(row.StatePayload, decoded))
+	assert.True(t, proto.Equal(state, decoded), "the persisted header and its retention projection come from the same state")
 }

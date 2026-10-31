@@ -45,7 +45,6 @@ func decodeMessageContent(t *testing.T, content []byte, compression leapmuxv1.Co
 
 // decodedControlResponse keeps independent wire field names in the storage assertions.
 type decodedControlResponse struct {
-	Provider   string
 	RequestID  string
 	ClaimToken string
 	Request    json.RawMessage
@@ -67,7 +66,6 @@ func decodeStructuredControlResponse(t *testing.T, row db.Message) decodedContro
 	}
 	require.NoError(t, json.Unmarshal(supplement, &fields))
 	return decodedControlResponse{
-		Provider:   strings.TrimPrefix(row.AgentProvider.String(), "AGENT_PROVIDER_"),
 		RequestID:  fields.Metadata.RequestID,
 		ClaimToken: fields.Metadata.ClaimToken,
 		Request:    fields.Provider,
@@ -111,7 +109,6 @@ func TestSendControlResponse_PersistsCodexUserInputRow(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -164,7 +161,6 @@ func TestSendControlResponse_PersistsCodexUserInputRow(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
 	cr := decodeStructuredControlResponse(t, rows[0])
-	assert.Equal(t, "CODEX", cr.Provider)
 	assert.Equal(t, "7", cr.RequestID)
 	assert.JSONEq(t, `{
 		"jsonrpc":"2.0","id":7,
@@ -208,7 +204,6 @@ func TestSendControlResponse_PersistsCodexDenyFeedbackRow(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -256,7 +251,6 @@ func TestSendControlResponse_PersistsCodexDenyFeedbackRow(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
 	cr := decodeStructuredControlResponse(t, rows[0])
-	assert.Equal(t, "CODEX", cr.Provider)
 	assert.Equal(t, "req-1", cr.RequestID)
 	// The typed feedback lives inside the native response; the frontend extracts and renders it.
 	assert.Equal(t, string(response), string(cr.Response))
@@ -276,7 +270,6 @@ func TestSendControlResponse_CodexPlanModePromptDenyFeedbackIsMarked(t *testing.
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "plan-session"}))
@@ -331,7 +324,6 @@ func TestSendControlResponse_CodexPlanModePromptBareDenyPersistsStructuredRow(t 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -364,7 +356,6 @@ func TestSendControlResponse_CodexPlanModePromptBareDenyPersistsStructuredRow(t 
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source,
 		"a bare denial persists the structured control-response row (USER-sourced), identified by its {controlResponse} shape rather than a forwarded {content} feedback row")
 	cr := decodeStructuredControlResponse(t, rows[0])
-	assert.Equal(t, "CODEX", cr.Provider)
 	assert.JSONEq(t, `{"request":{"tool_name":"CodexPlanModePrompt"}}`, string(cr.Request))
 	// The native response is retained verbatim -- the placeholder is not collapsed backend-side;
 	// the frontend collapses it to render "Rejected".
@@ -381,7 +372,6 @@ func TestSendControlResponse_CodexPlanModePromptAllowPersistsMarkedApproval(t *t
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		Options:       marshalOptions(map[string]string{contracts.CodexOptionCollaborationMode: codex.CollaborationDefault}),
 	}))
@@ -419,7 +409,6 @@ func TestSendControlResponse_CodexPlanModePromptAllowPersistsMarkedApproval(t *t
 	rows := waitForMessageCount(t, svc, "agent-1", 2)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
 	cr := decodeStructuredControlResponse(t, rows[0])
-	assert.Equal(t, "CODEX", cr.Provider)
 	assert.JSONEq(t, `{"response":{"request_id":"plan-1","response":{"behavior":"allow"}}}`, string(cr.Response))
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType),
 		"the user's plan-mode approval must have a scroll-rail control-response dot")
@@ -437,7 +426,6 @@ func TestSendControlResponse_CodexPlanModePromptBypassAppliesAllSettings(t *test
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDPermissionMode:           codex.DefaultPermissionMode,
@@ -481,7 +469,7 @@ func TestSendControlResponse_CodexPlanModePromptDuplicateAnswerAppliesOnce(t *te
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		Options:       marshalOptions(map[string]string{contracts.CodexOptionCollaborationMode: codex.CollaborationDefault}),
 	}))
@@ -528,7 +516,6 @@ func TestBuildControlResponsePlan_MalformedPlanPromptHasNoDecision(t *testing.T)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -555,7 +542,6 @@ func TestBuildControlResponsePlan_WhitespacePaddedBehaviorStillDecides(t *testin
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -591,7 +577,6 @@ func TestBuildControlResponsePlan_RequestIDNormalizedConsistently(t *testing.T) 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -624,7 +609,6 @@ func TestSendControlResponse_BroadcastsCancelBeforeSyntheticMessage(t *testing.T
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -687,7 +671,6 @@ func TestSendControlResponse_PersistsOpenCodeQuestionRow(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 	}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -735,7 +718,6 @@ func TestSendControlResponse_PersistsOpenCodeQuestionRow(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
 	cr := decodeStructuredControlResponse(t, rows[0])
-	assert.Equal(t, "OPENCODE", cr.Provider)
 	assert.Equal(t, "que-1", cr.RequestID)
 	assert.JSONEq(t, `{
 		"type":"question.asked",
@@ -754,7 +736,6 @@ func TestSendControlResponse_PersistsCopilotPermissionSelectionRow(t *testing.T)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
 	}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -804,7 +785,6 @@ func TestSendControlResponse_PersistsCopilotPermissionSelectionRow(t *testing.T)
 	require.Len(t, rows, 1)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
 	cr := decodeStructuredControlResponse(t, rows[0])
-	assert.Equal(t, "GITHUB_COPILOT", cr.Provider)
 	assert.JSONEq(t, `{
 		"jsonrpc":"2.0","id":7,
 		"method":"requestPermission",
@@ -826,7 +806,7 @@ func TestSendControlResponse_PersistsClaudePermissionRow(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -851,7 +831,6 @@ func TestSendControlResponse_PersistsClaudePermissionRow(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
 	cr := decodeStructuredControlResponse(t, rows[0])
-	assert.Equal(t, "CLAUDE_CODE", cr.Provider)
 	assert.Equal(t, "req-1", cr.RequestID)
 	assert.JSONEq(t, `{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`, string(cr.Request))
 	assert.Equal(t, string(response), string(cr.Response))
@@ -868,7 +847,7 @@ func TestSendControlResponse_ClaudePermissionBareDenyRetainsNativeResponse(t *te
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -905,7 +884,7 @@ func TestSendControlResponse_ClaudePermissionDenyWithReasonRetainsMessage(t *tes
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -939,7 +918,7 @@ func TestSendControlResponse_UsesNestedRequestIDWhenTopLevelIDAlsoExists(t *test
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -978,7 +957,7 @@ func TestSendControlResponseRejectsUnknownRequests(t *testing.T) {
 		t.Run(provider.String(), func(t *testing.T) {
 			svc, dispatcher, writer := setupTestService(t)
 			require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
-				ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: provider,
+				ID: "agent-1", WorkingDir: t.TempDir(), AgentProvider: provider,
 			}))
 			sends := 0
 			svc.sendControlResponseFn = func(string, []byte) error { sends++; return nil }
@@ -1009,7 +988,7 @@ func TestSendControlResponse_WithholdsDuplicateAnswerRow(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
@@ -1047,7 +1026,7 @@ func TestSendControlResponse_DuplicateAnswerDeletesRequestOnce(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -1097,7 +1076,7 @@ func TestSendControlResponse_DuplicateDoesNotForward(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		Options:       marshalOptions(map[string]string{contracts.CodexOptionCollaborationMode: codex.CollaborationDefault}),
 	}))
@@ -1144,7 +1123,7 @@ func TestSendControlResponseRejectsUnattributableContent(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
@@ -1173,7 +1152,7 @@ func TestSendControlResponse_SkipsStructuredRowForSelfDisplayingTool(t *testing.
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -1204,7 +1183,7 @@ func TestSendControlResponse_RestoresClaudeSelfDisplayedToolUseType(t *testing.T
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -1235,7 +1214,7 @@ func TestSendControlResponse_ClaudeExitPlanModeClearContextMarksStructuredRow(t 
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	planPath := filepath.Join(t.TempDir(), "plan.md")
@@ -1271,7 +1250,6 @@ func TestSendControlResponse_ClaudeExitPlanModeClearContextMarksStructuredRow(t 
 	require.Len(t, controlRows, 1)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, controlRows[0].Source)
 	cr := decodeStructuredControlResponse(t, controlRows[0])
-	assert.Equal(t, "CLAUDE_CODE", cr.Provider)
 	assert.JSONEq(t, `{"type":"control_request","request_id":"req-1","request":{"tool_name":"ExitPlanMode","tool_use_id":"toolu-exit"}}`, string(cr.Request))
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(controlRows[0].MarkType),
 		"clear-context skips Claude's self-displayed tool_result, so the structured row must carry the rail dot")
@@ -1286,7 +1264,7 @@ func TestSendControlResponse_EnterPlanModeAllowTrimsRequestID(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -1323,7 +1301,7 @@ func TestApplyControlResponsePlanModeMutations(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -1380,7 +1358,7 @@ func TestSendControlResponse_DuplicateStraddlingRestartStillDeduped(t *testing.T
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
@@ -1425,7 +1403,7 @@ func TestSendControlResponse_ReusedRequestIDAfterRelaunchPersists(t *testing.T) 
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
@@ -1473,7 +1451,7 @@ func TestSendControlResponse_CursorCreatePlanPersistsOnlyStructuredRow(t *testin
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 	}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -1499,7 +1477,6 @@ func TestSendControlResponse_CursorCreatePlanPersistsOnlyStructuredRow(t *testin
 	require.Len(t, rows, 1, "exactly the structured answer row -- no double-render")
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
 	cr := decodeStructuredControlResponse(t, rows[0])
-	assert.Equal(t, "CURSOR", cr.Provider)
 	assert.JSONEq(t, `{"jsonrpc":"2.0","id":7,"method":"cursor/create_plan","params":{}}`, string(cr.Request))
 	// The response is the TRANSFORMED ACP outcome that was forwarded to Cursor, not the raw envelope.
 	var outcome struct {
@@ -1526,7 +1503,7 @@ func TestSendControlResponse_CursorCreatePlanApprovePersistsOnlyStructuredRow(t 
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
 	}))
 	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -1660,7 +1637,7 @@ func TestPersistControlResponseRow_EmptyContentPersistsRowNotDropped(t *testing.
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 
@@ -1686,7 +1663,7 @@ func TestPersistControlResponseRow_InvalidJSONContentPersistsRowNotDropped(t *te
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 
@@ -1720,7 +1697,7 @@ func TestPersistControlResponseRow_IsUserSourcedCountsAsUserMessage(t *testing.T
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 
@@ -1755,7 +1732,7 @@ func TestPersistControlResponseRow_MakesSessionResumable(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 	// Agent startup assigns a session ID (and records session_start_seq). resumed==0, so resumability
@@ -1793,7 +1770,7 @@ func TestProcessControlResponse(t *testing.T) {
 	t.Run("forwards a plain permission answer, then dedups its duplicate", func(t *testing.T) {
 		svc, _, _ := setupTestService(t)
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+			ID: "agent-1", WorkingDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		}))
 		createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -1823,7 +1800,7 @@ func TestProcessControlResponse(t *testing.T) {
 		// FRESH token is forwarded, not withheld as a duplicate of the reused id.
 		svc, _, _ := setupTestService(t)
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+			ID: "agent-1", WorkingDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		}))
 		createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
@@ -1855,7 +1832,7 @@ func TestProcessControlResponse(t *testing.T) {
 	t.Run("does not forward a plan-mode prompt (handled server-side)", func(t *testing.T) {
 		svc, _, _ := setupTestService(t)
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+			ID: "agent-1", WorkingDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 			Options:       marshalOptions(map[string]string{contracts.CodexOptionCollaborationMode: codex.CollaborationDefault}),
 		}))
@@ -1881,7 +1858,7 @@ func TestProcessControlResponse(t *testing.T) {
 	t.Run("a provider's withheld resolution is not forwarded", func(t *testing.T) {
 		svc, _, _ := setupTestService(t)
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+			ID: "agent-1", WorkingDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
 		}))
 		// The stored request has no native wire ID, so the provider must refuse delivery.
@@ -1931,7 +1908,7 @@ func TestProcessControlResponse(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				svc, _, _ := setupTestService(t)
 				require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-					ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+					ID: "agent-1", WorkingDir: t.TempDir(),
 					AgentProvider: tc.provider,
 				}))
 				payload := tc.payload
@@ -2013,7 +1990,7 @@ func TestProcessControlResponseKeepsInvalidAnswersRetryable(t *testing.T) {
 			ctx := context.Background()
 			svc, dispatcher, writer := setupTestService(t)
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-				ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: test.provider,
+				ID: "agent-1", WorkingDir: t.TempDir(), AgentProvider: test.provider,
 			}))
 			createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
 				AgentID: "agent-1", RequestID: "req-1", ClaimToken: "claim-1", Payload: []byte(test.request),
@@ -2087,7 +2064,7 @@ func TestSendControlResponse_QoderPlanExitAppliesSelectedMode(t *testing.T) {
 			ctx := context.Background()
 			svc, dispatcher, writer := setupTestService(t)
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-				ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+				ID: "agent-1", WorkingDir: t.TempDir(),
 				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_QODER,
 				Options:       `{"permissionMode":"plan"}`,
 			}))
@@ -2198,7 +2175,7 @@ func TestRecordControlResponsePlanModeHandsTheExitModeToARunningDeferrer(t *test
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
 	}))
 	deferrer := newPlanExitDeferrerStub()
@@ -2422,7 +2399,7 @@ func TestControlResponseAnswerStoresTheFollowUpKind(t *testing.T) {
 		svc, _, _ := setupTestService(t)
 		ctx := t.Context()
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+			ID: "agent-1", WorkingDir: t.TempDir(),
 			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
 		}))
 		require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "session-1"}))
@@ -2462,7 +2439,7 @@ func TestResumeControlResponseFinalizationQueuesTheQuestionAnswerOnce(t *testing
 		RequestPayload: asyncQuestionPayload("question-1"), ResponseContent: questionAnswerResponse("question-1", "Red"),
 		FollowUp: "Red", FollowUpKind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER,
 		InputID: "control-recovery", AgentSessionID: "session-1",
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, NonBlocking: true,
+		NonBlocking: true,
 	}))
 	answer, err := svc.Queries.GetControlResponseAnswer(ctx, db.GetControlResponseAnswerParams{AgentID: "agent-1", RequestID: "question-1", ClaimToken: "claim-1"})
 	require.NoError(t, err)

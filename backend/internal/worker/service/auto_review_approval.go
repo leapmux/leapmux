@@ -56,9 +56,9 @@ func (svc *Service) approveAutoReviewDenial(dbAgent db.Agent, messageID, reviewI
 	if err != nil {
 		return fmt.Errorf("read the transcript row: %w", err)
 	}
-	// The provider writes its reviews as AGENT rows, and only its own rows hold its
-	// wire shape.
-	if row.Source != leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT || row.AgentProvider != dbAgent.AgentProvider {
+	// The provider writes its reviews as AGENT rows. The row is this agent's, and
+	// an agent never changes provider, so the row holds this provider's wire shape.
+	if row.Source != leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT {
 		return agent.ErrAutoReviewNotFound
 	}
 	entries, err := storedRowEntries(row)
@@ -117,7 +117,7 @@ func (svc *Service) finishAutoReviewApproval(dbAgent db.Agent, row db.Message, c
 		return agent.ErrAutoReviewNotFound
 	}
 	return resumeControlDelivery(claim.State, func() error {
-		if err := svc.Output.recordAutoReviewApproval(dbAgent.ID, row.ID, claim.ReviewID); err != nil {
+		if err := svc.Output.recordAutoReviewApproval(dbAgent.ID, dbAgent.AgentProvider, row.ID, claim.ReviewID); err != nil {
 			return fmt.Errorf("record the approval on its transcript row: %w", err)
 		}
 		key := autoReviewApprovalKey(row.AgentSessionID, claim.ReviewID)
@@ -171,7 +171,7 @@ var errAutoReviewRowChanged = errors.New("the transcript row of the review chang
 // into this row then reads the record, and a delete cannot fall between the write and
 // the queued broadcast. The queue drains after the locks are released, as every other
 // writer drains it.
-func (h *OutputHandler) recordAutoReviewApproval(agentID, messageID, reviewID string) error {
+func (h *OutputHandler) recordAutoReviewApproval(agentID string, provider leapmuxv1.AgentProvider, messageID, reviewID string) error {
 	defer h.watcher.DrainAgentEvents(agentID)
 	mutation := h.transcriptMutationMutex(h.resolveRoot(agentID, ""))
 	mutation.RLock()
@@ -222,7 +222,7 @@ func (h *OutputHandler) recordAutoReviewApproval(agentID, messageID, reviewID st
 	if err != nil {
 		return err
 	}
-	message, err := messageToProto(&updated)
+	message, err := messageToProto(&updated, provider)
 	if err != nil {
 		return err
 	}

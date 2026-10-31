@@ -256,11 +256,10 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 			{"live", cutoff.Add(time.Millisecond)},
 		} {
 			require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-				ClientID:        oauthapp.ControlCLIClientID,
-				DeviceCode:      "device-" + d.suffix,
-				UserCode:        "USER-" + d.suffix,
-				IntervalSeconds: 5,
-				ExpiresAt:       d.expiresAt,
+				ClientID:   oauthapp.ControlCLIClientID,
+				DeviceCode: "device-" + d.suffix,
+				UserCode:   "USER-" + d.suffix,
+				ExpiresAt:  d.expiresAt,
 			}))
 		}
 
@@ -424,7 +423,6 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 				PrincipalID:         user.ID,
 				CanonicalPhysicalMs: 1,
 				CanonicalLogical:    1,
-				CanonicalClient:     "client",
 				OpCount:             1,
 				Epoch:               1,
 				ExpiresAt:           expiresAt,
@@ -434,7 +432,7 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 		insert("batch-at-cutoff", cutoff)
 		insert("batch-live", cutoff.Add(time.Millisecond))
 
-		deleted, err := st.UserRecentBatchIDs().DeleteExpired(ctx, cutoff)
+		deleted, err := st.UserRecentBatchIDs().DeleteExpired(ctx, userid.MustNew(user.ID), cutoff, 2)
 		require.NoError(t, err)
 		assert.EqualValues(t, 1, deleted)
 
@@ -443,6 +441,48 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 		for _, keep := range []string{"batch-at-cutoff", "batch-live"} {
 			_, err := st.UserRecentBatchIDs().Get(ctx, userid.MustNew(user.ID), keep)
 			assert.NoError(t, err)
+		}
+	})
+
+	t.Run("dedup cleanup preserves accepted epochs and other owners", func(t *testing.T) {
+		st := s.NewStore(t)
+		owner := userid.MustNew(SeedUser(t, st, "dedup-owner").ID)
+		other := userid.MustNew(SeedUser(t, st, "dedup-other").ID)
+		cutoff := boundaryCutoff()
+		rows := []struct {
+			owner     userid.UserID
+			id        string
+			epoch     int64
+			expiresAt time.Time
+			deleted   bool
+		}{
+			{owner, "old-expired", 1, cutoff.Add(-time.Millisecond), true},
+			{owner, "previous-expired", 2, cutoff.Add(-time.Millisecond), false},
+			{owner, "current-expired", 3, cutoff.Add(-time.Millisecond), false},
+			{owner, "old-at-cutoff", 1, cutoff, false},
+			{owner, "old-live", 1, cutoff.Add(time.Millisecond), false},
+			{other, "old-expired", 1, cutoff.Add(-time.Millisecond), false},
+		}
+		for _, row := range rows {
+			require.NoError(t, st.UserRecentBatchIDs().Insert(ctx, store.InsertUserRecentBatchIDParams{
+				UserID: row.owner, BatchID: row.id, BodyHash: []byte("hash"), PrincipalID: row.owner.String(),
+				CanonicalPhysicalMs: 1, CanonicalLogical: 1, OpCount: 1,
+				Epoch: row.epoch, ExpiresAt: row.expiresAt,
+			}))
+		}
+		deleted, err := st.UserRecentBatchIDs().DeleteExpired(ctx, userid.UserID{}, cutoff, 2)
+		require.NoError(t, err)
+		assert.Zero(t, deleted)
+		deleted, err = st.UserRecentBatchIDs().DeleteExpired(ctx, owner, cutoff, 2)
+		require.NoError(t, err)
+		assert.EqualValues(t, 1, deleted)
+		for _, row := range rows {
+			_, err := st.UserRecentBatchIDs().Get(ctx, row.owner, row.id)
+			if row.deleted {
+				assert.ErrorIs(t, err, store.ErrNotFound)
+			} else {
+				assert.NoError(t, err, "cleanup must preserve %s for %s", row.id, row.owner.String())
+			}
 		}
 	})
 }

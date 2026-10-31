@@ -1,32 +1,29 @@
 -- name: InsertUserOpBatch :exec
 INSERT INTO user_op_batches (
-    user_id, physical_ms, logical, last_logical, origin_client,
-    principal_id, batch_id, body_hash, batch_payload, transitions_payload, op_count, epoch
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    user_id, physical_ms, logical, batch_id, batch_payload, transitions_payload, op_count
+) VALUES (?, ?, ?, ?, ?, ?, ?);
 
 -- name: ListUserOpBatchesAfter :many
 -- Paged scan so a far-behind subscriber cannot OOM the broadcaster;
--- callers iterate to drain.
+-- callers iterate to drain. The cursor is compared by (physical_ms, logical)
+-- alone; see the sqlite query (canonical home) for why that is exact.
 SELECT * FROM user_op_batches
 WHERE user_id = ?
   AND (physical_ms > sqlc.arg(after_physical_ms)
        OR (physical_ms = sqlc.arg(after_physical_ms)
-           AND (logical > sqlc.arg(after_logical)
-                OR (logical = sqlc.arg(after_logical)
-                    AND origin_client > sqlc.arg(after_origin_client)))))
-ORDER BY physical_ms, logical, origin_client
+           AND logical > sqlc.arg(after_logical)))
+ORDER BY physical_ms, logical
 LIMIT ?;
 
 -- name: DeleteUserOpBatchesThrough :exec
 -- Boundary alignment with decideResume's `>` test documented in the
--- sqlite query (canonical home). Keys on the batch's LAST canonical HLC.
+-- sqlite query (canonical home). Keys on the batch's LAST canonical HLC,
+-- (physical_ms, logical + op_count - 1).
 DELETE FROM user_op_batches
 WHERE user_id = ?
   AND (physical_ms < sqlc.arg(through_physical_ms)
        OR (physical_ms = sqlc.arg(through_physical_ms)
-           AND (last_logical < sqlc.arg(through_logical)
-                OR (last_logical = sqlc.arg(through_logical)
-                    AND origin_client <= sqlc.arg(through_origin_client)))));
+           AND (logical + op_count - 1) <= sqlc.arg(through_logical)));
 
 -- name: CountUserOpBatches :one
 SELECT COUNT(*) FROM user_op_batches WHERE user_id = ?;
@@ -34,7 +31,7 @@ SELECT COUNT(*) FROM user_op_batches WHERE user_id = ?;
 -- name: DeleteUserOpBatchesBeforePhysical :execresult
 -- Retention backstop for op batches, across ALL users. Both floors
 -- (cutoff_physical_ms and user_state.compaction_physical_ms), why the cutoff is
--- an HLC physical rather than committed_at, and why the compaction test is a
+-- an HLC physical rather than a wall-clock time, and why the compaction test is a
 -- strict < are documented in the sqlite query (canonical home). The predicate
 -- below must stay identical to it: a sweep that deletes a different set per
 -- backend is exactly the failure that comment exists to prevent.

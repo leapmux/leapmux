@@ -64,7 +64,9 @@ func TestGeneratedInterfaceParamsAreAllowlisted(t *testing.T) {
 			"WindowDeadline": "elevation-slide deadline inside min(); fed sqltime.SQLiteTime, guarded by the canonical-layout fixture",
 		},
 		mysqlGenPkg: {
-			"LeaseMillis":    "arithmetic expression param; not a timestamp",
+			"LeaseMillis": "arithmetic expression param; not a timestamp",
+			// The sqlite and postgres twins type these through CAST and ::boolean;
+			// sqlc's MySQL engine has no boolean CAST to type them with.
 			"CallerIsAdmin":  "the app-ownership predicate's administrator arm: a bare boolean parameter that no column types, and CASTing it would type it on postgres alone",
 			"IncludeRevoked": "the retired-row widening arm of the app listings: a bare boolean parameter that no column types, bound as bool by the dialect wrapper",
 			"IncludeHubWide": "the catalogue-widening arm of the one app listing: a bare boolean parameter that no column types, bound as bool by the dialect wrapper",

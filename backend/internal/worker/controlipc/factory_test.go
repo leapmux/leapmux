@@ -31,9 +31,9 @@ type fakeDelegationLifecycle struct {
 	releases []scopedKey
 }
 
-// scopedKey records who a lifecycle call named. It is user-only: the mint's
-// provenance tab is read from the worker's live inventory, so Acquire/Release
-// carry no tab and only balance a per-user refcount.
+// scopedKey records who a lifecycle call named. It is user-only: the mint
+// reads its tab from the worker's live inventory, so Acquire/Release carry no
+// tab and only balance a per-user refcount.
 type scopedKey struct {
 	UserID string
 }
@@ -109,7 +109,7 @@ func TestFactory_AgentSpawnAcquiresAndCleanupReleases(t *testing.T) {
 	_, rel = lifecycle.snapshot()
 	require.Len(t, rel, 1)
 	assert.Equal(t, scopedKey{UserID: "user-1"}, rel[0],
-		"cleanup must drop this spawn's reference; the mint's provenance tab comes from the live inventory, not from here")
+		"cleanup must drop this spawn's reference; the mint's tab comes from the live inventory, not from here")
 }
 
 // TestFactory_TerminalSpawnAcquiresAndCleanupReleases pins the lifecycle

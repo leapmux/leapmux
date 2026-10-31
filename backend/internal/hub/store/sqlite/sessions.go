@@ -116,7 +116,7 @@ func (s *sessionStore) deleteEmitting(ctx context.Context, id string, kind leapm
 		if err != nil {
 			return nil, mapErr(err)
 		}
-		return &store.CredentialEvent{Kind: kind, SubjectID: row.ID, UserID: row.UserID, At: time.Now().UTC()}, nil
+		return &store.CredentialEvent{Kind: kind, SubjectID: row.ID, UserID: row.UserID}, nil
 	}, emitCredentialEvent)
 }
 
@@ -226,7 +226,7 @@ func (s *sessionStore) Elevate(ctx context.Context, p store.ElevateSessionParams
 		if err != nil || n == 0 {
 			return nil, err
 		}
-		return store.UserInfoEvent(owner, now.UTC()), nil
+		return store.UserInfoEvent(owner), nil
 	}, emitCredentialEvent)
 }
 
@@ -250,7 +250,7 @@ func (s *sessionStore) SlideElevation(ctx context.Context, p store.SlideSessionE
 	}))
 }
 
-func (s *sessionStore) DropElevation(ctx context.Context, p store.DropSessionElevationParams, now time.Time) (int64, error) {
+func (s *sessionStore) DropElevation(ctx context.Context, p store.DropSessionElevationParams) (int64, error) {
 	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {
 		return 0, store.ErrInvalidArgument
@@ -263,6 +263,6 @@ func (s *sessionStore) DropElevation(ctx context.Context, p store.DropSessionEle
 		if err != nil || n == 0 {
 			return nil, err
 		}
-		return store.UserInfoEvent(owner, now.UTC()), nil
+		return store.UserInfoEvent(owner), nil
 	}, emitCredentialEvent)
 }

@@ -49,7 +49,6 @@ func insertRevocationEvent(
 	kind leapmuxv1.RevocationEventKind,
 	subjectID string,
 	userID string,
-	revokedAt time.Time,
 	userAuthGeneration int64,
 ) error {
 	return mapErr(conn.q.InsertRevocationEvent(ctx, gendb.InsertRevocationEventParams{
@@ -57,7 +56,6 @@ func insertRevocationEvent(
 		Kind:               kind,
 		SubjectID:          subjectID,
 		UserID:             userID,
-		RevokedAt:          pgtime.New(revokedAt),
 		UserAuthGeneration: userAuthGeneration,
 	}))
 }
@@ -66,7 +64,7 @@ func insertRevocationEvent(
 // mutation. Shared by every RunCredentialMutation call site so the kind ->
 // insert mapping lives in one place per backend instead of an inline closure.
 func emitCredentialEvent(ctx context.Context, conn *pgConn, event store.CredentialEvent) error {
-	return insertRevocationEvent(ctx, conn, event.Kind, event.SubjectID, event.UserID, event.At, event.UserAuthGeneration)
+	return insertRevocationEvent(ctx, conn, event.Kind, event.SubjectID, event.UserID, event.UserAuthGeneration)
 }
 
 // revokedCredentialEvent maps a single-token revoke query result into the
@@ -77,7 +75,6 @@ func emitCredentialEvent(ctx context.Context, conn *pgConn, event store.Credenti
 // are otherwise identical.
 func revokedCredentialEvent(
 	subjectID, userID string,
-	revokedAt pgtime.NullTime,
 	kind leapmuxv1.RevocationEventKind,
 	err error,
 ) (*store.CredentialEvent, error) {
@@ -88,11 +85,7 @@ func revokedCredentialEvent(
 		}
 		return nil, mapped
 	}
-	at, err := sqlutil.RequireTime(revokedAt.Time, revokedAt.Valid, "revoked_at")
-	if err != nil {
-		return nil, err
-	}
-	return &store.CredentialEvent{Kind: kind, SubjectID: subjectID, UserID: userID, At: at}, nil
+	return &store.CredentialEvent{Kind: kind, SubjectID: subjectID, UserID: userID}, nil
 }
 
 func newRevocationEventStore(conn *pgConn) *revocationEventStore {
@@ -162,7 +155,6 @@ func (s *revocationEventStore) ListPublishedAfter(
 		if err != nil {
 			return nil, err
 		}
-		revokedAt := row.RevokedAt.Time
 		createdAt := row.CreatedAt.Time
 		publishedAt, err := sqlutil.RequireTime(row.PublishedAt.Time, row.PublishedAt.Valid, "published_at")
 		if err != nil {
@@ -175,7 +167,6 @@ func (s *revocationEventStore) ListPublishedAfter(
 				Kind:               row.Kind,
 				SubjectID:          row.SubjectID,
 				UserID:             row.UserID,
-				RevokedAt:          revokedAt,
 				UserAuthGeneration: row.UserAuthGeneration,
 				CreatedAt:          createdAt,
 			},

@@ -41,7 +41,6 @@ func fromDBUser(u gendb.User) store.User {
 		Prefs:                      u.Prefs,
 		CreatedAt:                  u.CreatedAt.Time,
 		UpdatedAt:                  u.UpdatedAt.Time,
-		TokensRevokedAt:            u.TokensRevokedAt.Ptr(),
 		AuthGeneration:             u.AuthGeneration,
 		DeletedAt:                  u.DeletedAt.Ptr(),
 	}
@@ -223,10 +222,10 @@ func loadUserInfoCacheFields(ctx context.Context, conn *mysqlConn, id string) (s
 // before/after cached-field projection derives the durable cache-invalidation
 // rather than a hand-computed flag. Soft path only (nil fence):
 // grants and non-gate changes stay on user_info. MySQL has no RETURNING, so it
-// locks the row FOR UPDATE to fix a single clock reading (shared by the UPDATE
-// and the emitted event) before running update; a missing id is a no-op. update
-// runs against the locked row and reports ok=false to force a no-op (e.g. a
-// promote that matched no pending email).
+// locks the row FOR UPDATE and reads the clock that the UPDATE stamps into
+// updated_at before running update; a missing id is a no-op. update runs
+// against the locked row and reports ok=false to force a no-op (e.g. a promote
+// that matched no pending email).
 func (s *userStore) runUserInfoMutation(ctx context.Context, id string, update func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (ok bool, err error)) error {
 	return s.runCachedUserMutation(ctx, id, update, nil)
 }
@@ -244,7 +243,7 @@ func (s *userStore) runCachedUserMutation(
 	ctx context.Context,
 	id string,
 	update func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (ok bool, err error),
-	fence func(context.Context, *mysqlConn, string, time.Time) error,
+	fence func(context.Context, *mysqlConn, string) error,
 ) error {
 	// Lock the user row before the before-read so a concurrent same-user mutation
 	// cannot commit between the before and after cached-field projections and hide
@@ -261,54 +260,64 @@ func (s *userStore) runCachedUserMutation(
 		func(ctx context.Context, conn *mysqlConn) (store.UserInfoCacheFields, bool, error) {
 			return loadUserInfoCacheFields(ctx, conn, id)
 		},
-		func(ctx context.Context, conn *mysqlConn) (string, time.Time, bool, error) {
+		func(ctx context.Context, conn *mysqlConn) (string, bool, error) {
 			row, err := conn.q.GetUserForUpdate(ctx, id)
 			if errors.Is(err, sql.ErrNoRows) {
-				return "", time.Time{}, false, nil
+				return "", false, nil
 			}
 			if err != nil {
-				return "", time.Time{}, false, mapErr(err)
+				return "", false, mapErr(err)
 			}
-			updatedAt := row.NowAt.UTC()
-			ok, err := update(ctx, conn, updatedAt)
+			ok, err := update(ctx, conn, row.NowAt.UTC())
 			if err != nil || !ok {
-				return "", time.Time{}, false, err
+				return "", false, err
 			}
-			return row.ID, updatedAt, true, nil
+			return row.ID, true, nil
 		},
-		func(ctx context.Context, conn *mysqlConn, userID string, updatedAt time.Time) error {
-			return insertRevocationEvent(ctx, conn, store.RevocationEventKindUserInfo, userID, userID, updatedAt, 0)
+		func(ctx context.Context, conn *mysqlConn, userID string) error {
+			return emitCredentialEvent(ctx, conn, *store.UserInfoEvent(userID))
 		},
 		fence,
 	)
 }
 
-// fenceUserTokensLocked bumps auth_generation + tokens_revoked_at and inserts a
-// user_tokens event inside the already-open, row-locked transaction. Same effect
-// as RevokeUserTokens's mutate body, done in-transaction so an auth-gate
-// reduction and its fence share one commit. GetUserTokensRevocationForUpdate
+// fenceUserTokensLocked bumps auth_generation and inserts a user_tokens event
+// inside the already-open, row-locked transaction. Same effect as
+// RevokeUserTokens's mutate body, done in-transaction so an auth-gate
+// reduction and its fence share one commit. GetUserAuthGenerationForUpdate
 // re-locks the row (re-entrant within the tx) to read the current generation.
-func fenceUserTokensLocked(ctx context.Context, conn *mysqlConn, id string, _ time.Time) error {
-	row, err := conn.q.GetUserTokensRevocationForUpdate(ctx, id)
-	if err != nil {
-		return mapErr(err)
-	}
-	updatedAt := row.NowAt.UTC()
-	revokedAt := updatedAt
-	nextGeneration := row.AuthGeneration + 1
-	n, err := rowsAffected(conn.q.SetUserTokensRevokedAt(ctx, gendb.SetUserTokensRevokedAtParams{
-		ID:              row.ID,
-		TokensRevokedAt: sqltime.MySQLNullTimeOf(revokedAt),
-		AuthGeneration:  nextGeneration,
-		UpdatedAt:       sqltime.NewMySQLTime(updatedAt),
-	}))
+func fenceUserTokensLocked(ctx context.Context, conn *mysqlConn, id string) error {
+	event, err := bumpUserAuthGenerationLocked(ctx, conn, id)
 	if err != nil {
 		return err
 	}
-	if n != 1 {
-		return fmt.Errorf("bump user token revocation %q: updated %d rows after locking live row", row.ID, n)
+	if event == nil {
+		return store.ErrNotFound
 	}
-	return insertRevocationEvent(ctx, conn, store.RevocationEventKindUserTokens, row.ID, row.ID, revokedAt, nextGeneration)
+	return emitCredentialEvent(ctx, conn, *event)
+}
+
+// bumpUserAuthGenerationLocked updates the generation and describes its event.
+// The caller owns the transaction and publication. A missing user is a no-op.
+func bumpUserAuthGenerationLocked(ctx context.Context, conn *mysqlConn, id string) (*store.CredentialEvent, error) {
+	row, err := conn.q.GetUserAuthGenerationForUpdate(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	nextGeneration := row.AuthGeneration + 1
+	changed, err := rowsAffected(conn.q.SetUserAuthGeneration(ctx, gendb.SetUserAuthGenerationParams{
+		ID: row.ID, AuthGeneration: nextGeneration, UpdatedAt: sqltime.NewMySQLTime(row.NowAt.UTC()),
+	}))
+	if err != nil {
+		return nil, err
+	}
+	if changed != 1 {
+		return nil, fmt.Errorf("bump user auth generation %q: updated %d rows after locking live row", row.ID, changed)
+	}
+	return &store.CredentialEvent{Kind: store.RevocationEventKindUserTokens, SubjectID: row.ID, UserID: row.ID, UserAuthGeneration: nextGeneration}, nil
 }
 
 // requireSingleRowUpdate maps a rowsAffected result into the (changed, err) pair
@@ -558,22 +567,19 @@ func (s *userStore) CompleteRecovery(ctx context.Context, p store.CompleteRecove
 		// revocation an earlier, rolled-back attempt computed. The caller
 		// tears down live streams from this value.
 		out = nil
-		row, err := conn.q.GetUserTokensRevocationForUpdate(ctx, p.ID)
+		row, err := conn.q.GetUserAuthGenerationForUpdate(ctx, p.ID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return store.ErrNotFound
 		}
 		if err != nil {
 			return mapErr(err)
 		}
-		updatedAt := row.NowAt.UTC()
-		revokedAt := updatedAt
 		nextGeneration := row.AuthGeneration + 1
 		n, err := rowsAffected(conn.q.CompleteRecovery(ctx, gendb.CompleteRecoveryParams{
 			PasswordHash:          p.PasswordHash,
 			FirstCredentialExempt: p.FirstCredentialExempt,
-			TokensRevokedAt:       sqltime.MySQLNullTimeOf(revokedAt),
 			AuthGeneration:        nextGeneration,
-			UpdatedAt:             sqltime.NewMySQLTime(updatedAt),
+			UpdatedAt:             sqltime.NewMySQLTime(row.NowAt.UTC()),
 			ID:                    p.ID,
 			PendingRecoveryToken:  p.PendingRecoveryToken,
 		}))
@@ -598,28 +604,6 @@ func (s *userStore) RevokeUserTokens(ctx context.Context, userID userid.UserID) 
 		return 0, store.ErrInvalidArgument
 	}
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *mysqlConn) (*store.CredentialEvent, error) {
-		row, err := conn.q.GetUserTokensRevocationForUpdate(ctx, owner)
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
-		}
-		if err != nil {
-			return nil, mapErr(err)
-		}
-		updatedAt := row.NowAt.UTC()
-		revokedAt := updatedAt
-		nextGeneration := row.AuthGeneration + 1
-		n, err := rowsAffected(conn.q.SetUserTokensRevokedAt(ctx, gendb.SetUserTokensRevokedAtParams{
-			ID:              row.ID,
-			TokensRevokedAt: sqltime.MySQLNullTimeOf(revokedAt),
-			AuthGeneration:  nextGeneration,
-			UpdatedAt:       sqltime.NewMySQLTime(updatedAt),
-		}))
-		if err != nil {
-			return nil, err
-		}
-		if n != 1 {
-			return nil, fmt.Errorf("bump user token revocation %q: updated %d rows after locking live row", row.ID, n)
-		}
-		return &store.CredentialEvent{Kind: store.RevocationEventKindUserTokens, SubjectID: row.ID, UserID: row.ID, At: revokedAt, UserAuthGeneration: nextGeneration}, nil
+		return bumpUserAuthGenerationLocked(ctx, conn, owner)
 	}, emitCredentialEvent)
 }

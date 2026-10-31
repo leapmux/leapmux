@@ -13,11 +13,11 @@ import (
 // the op_retention_watermark carries logical=0 whenever the lag moves
 // physical-ms strictly earlier. The delete/resume boundary alignment depends
 // on this: DeleteUserOpBatchesThrough keys on the batch's LAST canonical HLC
-// (physical_ms, last_logical, origin_client) with a `<=` test, while
-// decideResume uses a strict `>` test against the watermark. A floor at
-// physical=F with logical=0 means a batch whose last op is at (F, logical>=1)
-// survives deletion (last_logical < 0 is false) AND a cursor at that batch
-// passes resume (> floor). If a future change carried max_hlc.logical into the
+// (physical_ms, logical + op_count - 1) with a `<=` test, while decideResume
+// uses a strict `>` test against the watermark. A floor at physical=F with
+// logical=0 means a batch whose last op is at (F, logical>=1) survives deletion
+// (a last logical >= 1 is not <= 0) AND a cursor at that batch passes resume
+// (> floor). If a future change carried max_hlc.logical into the
 // floor, the journal would delete a batch the resume predicate still admits —
 // a silent gap in the client's delta. This test makes the zero-logical
 // invariant a checked property rather than a coincidence.

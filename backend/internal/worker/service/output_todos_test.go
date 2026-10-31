@@ -54,7 +54,6 @@ func setupTodoTestForProvider(t *testing.T, provider leapmuxv1.AgentProvider) (a
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: provider,
 	}))
 	sink := newTestRootOutputSink(t, svc.Output, "agent-1", provider)
@@ -83,8 +82,8 @@ func TestReduceTodoUpdateBuildsThePostUpdateMutation(t *testing.T) {
 
 	status := todoevents.StatusInProgress
 	rows := []cachedTodo{{
-		item:   todoevents.Item{ID: "1", Content: "Run tests", Status: todoevents.StatusPending},
-		rowKey: "1",
+		item: todoevents.Item{ID: "1", Content: "Run tests", Status: todoevents.StatusPending},
+		seq:  1,
 	}}
 	mutation, ok := reduceTodoUpdate(rows, todoevents.Event{
 		Kind:  todoevents.KindUpdate,
@@ -94,6 +93,7 @@ func TestReduceTodoUpdateBuildsThePostUpdateMutation(t *testing.T) {
 
 	require.True(t, ok)
 	assert.Equal(t, 0, mutation.index)
+	assert.Equal(t, int64(1), mutation.seq, "the mutation addresses the row by its seq")
 	assert.Equal(t, todoevents.StatusInProgress, mutation.item.Status)
 	assert.Equal(t, todoevents.StatusPending, rows[0].item.Status, "preparing the mutation must not update the canonical list")
 }
@@ -183,7 +183,6 @@ func TestOutputTodos_ZCodeToolUpdatedSnapshotPersists(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-z",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
 	}))
 	sink := newTestRootOutputSink(t, svc.Output, "agent-z", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
@@ -488,7 +487,7 @@ func TestOutputTodos_TaskUpdatePersistsItsPostUpdateSnapshotAtomically(t *testin
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-snapshot", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-snapshot", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	sink := newTestRootOutputSink(t, svc.Output, "agent-snapshot", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -529,7 +528,7 @@ func TestOutputTodos_TaskUpdateMessageFailureDoesNotMutateTodo(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-message-failure", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-message-failure", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	sink := newTestRootOutputSink(t, svc.Output, "agent-message-failure", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -557,7 +556,7 @@ func TestOutputTodos_TaskUpdateRegistryFailureKeepsSnapshottedMessage(t *testing
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-registry-failure", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-registry-failure", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	sink := newTestRootOutputSink(t, svc.Output, "agent-registry-failure", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -1066,7 +1065,6 @@ func TestOutputTodos_TaskCreateAfterEvictionAcrossRestart(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	// The seed query returns NEWEST first (it feeds a capped cache, which must
@@ -1486,7 +1484,6 @@ func TestPairedToolUseLookup_ReadsTheToolUseHalfOfTheSpan(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -1495,7 +1492,7 @@ func TestPairedToolUseLookup_ReadsTheToolUseHalfOfTheSpan(t *testing.T) {
 		SpanID: "span-1", SpanType: "TaskCreate",
 	}))
 
-	read := svc.Output.pairedToolUseLookup("agent-1", svc.Output.messageSessionID("agent-1"), agent.SpanInfo{SpanID: "span-1"})
+	read := svc.Output.pairedToolUseLookup(svc.Agents.Registry().Plugin(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), "agent-1", svc.Output.messageSessionID("agent-1"), agent.SpanInfo{SpanID: "span-1"})
 	assert.JSONEq(t, string(body), string(read()))
 	assert.JSONEq(t, string(body), string(read()), "a second read answers from the memo")
 }
@@ -1505,9 +1502,9 @@ func TestPairedToolUseLookup_AnswersNilWhenThereIsNothingToRead(t *testing.T) {
 
 	svc, _, _ := setupTestService(t)
 
-	assert.Nil(t, svc.Output.pairedToolUseLookup("agent-1", svc.Output.messageSessionID("agent-1"), agent.SpanInfo{})(),
+	assert.Nil(t, svc.Output.pairedToolUseLookup(svc.Agents.Registry().Plugin(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), "agent-1", svc.Output.messageSessionID("agent-1"), agent.SpanInfo{})(),
 		"a message with no span has no tool_use half")
-	assert.Nil(t, svc.Output.pairedToolUseLookup("agent-1", svc.Output.messageSessionID("agent-1"), agent.SpanInfo{SpanID: "never-persisted"})(),
+	assert.Nil(t, svc.Output.pairedToolUseLookup(svc.Agents.Registry().Plugin(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), "agent-1", svc.Output.messageSessionID("agent-1"), agent.SpanInfo{SpanID: "never-persisted"})(),
 		"a rolled-up tool_use, or one this result raced, is absent rather than an error")
 }
 
@@ -1522,10 +1519,9 @@ func TestPairedToolUseLookup_MemoizesTheMiss(t *testing.T) {
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
 		WorkingDir:    t.TempDir(),
-		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	read := svc.Output.pairedToolUseLookup("agent-1", svc.Output.messageSessionID("agent-1"), agent.SpanInfo{SpanID: "span-1"})
+	read := svc.Output.pairedToolUseLookup(svc.Agents.Registry().Plugin(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE), "agent-1", svc.Output.messageSessionID("agent-1"), agent.SpanInfo{SpanID: "span-1"})
 	require.Nil(t, read())
 
 	sink := newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -1545,7 +1541,7 @@ func TestOutputTodos_AMergeFrameLandsWholeOrNotAtAll(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	listRows := func() []db.AgentTodo {
@@ -1594,7 +1590,7 @@ func TestOutputTodos_AFailedMergeKeepsTheRowItsCapEvicted(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	taskIDs := func() map[string]struct{} {
@@ -1656,7 +1652,7 @@ func TestRegistryCache_AFailedTransactionBodyRestoresTheCacheAndWritesNothing(t 
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	_, _, err := svc.Output.applyTodoEvent("agent-1", todoevents.Event{
@@ -1675,7 +1671,7 @@ func TestRegistryCache_AFailedTransactionBodyRestoresTheCacheAndWritesNothing(t 
 
 	wantErr := errors.New("the body refused")
 	err = reg.inTransactionLocked(ctx, svc.Output.db, func(tx agentTodoView) error {
-		_, upsertErr := svc.Output.upsertTodoLocked(ctx, tx, todoevents.KindCreate,
+		_, upsertErr := upsertTodoLocked(ctx, tx, todoevents.KindCreate,
 			todoevents.Item{ID: "t2", Content: "two", Status: todoevents.StatusPending})
 		require.NoError(t, upsertErr)
 		require.Len(t, cache.Rows, 2, "the body moved the mirror before it failed")

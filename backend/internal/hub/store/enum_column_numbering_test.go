@@ -34,12 +34,35 @@ var enumColumnMigrations = []string{
 func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 	t.Parallel()
 
-	for _, c := range []struct {
-		column string
-		lastOrdinal,
-		lastDeclared int32
-		checks []string
-	}{
+	for _, c := range enumRangeColumns(t) {
+		t.Run(c.column, func(t *testing.T) {
+			assert.Equal(t, c.lastDeclared, c.lastOrdinal,
+				"%s: the enum gained a value past the one its CHECK admits -- widen the CHECK in all three migrations", c.column)
+			for _, rel := range enumColumnMigrations {
+				sql := statementsOf(t, rel)
+				for _, check := range c.checks {
+					assert.Containsf(t, sql, check, "%s must carry %q for %s", rel, check, c.column)
+				}
+			}
+		})
+	}
+}
+
+// enumRangeColumn is one enum column's CHECK range, and the proto enum it must
+// match.
+type enumRangeColumn struct {
+	column string
+	lastOrdinal,
+	lastDeclared int32
+	checks []string
+}
+
+// enumRangeColumns lists every hub enum column with a CHECK range. Both the
+// range test above and the SQLite integer test below read it, so a column
+// added here is covered by both.
+func enumRangeColumns(t *testing.T) []enumRangeColumn {
+	t.Helper()
+	return []enumRangeColumn{
 		{
 			column:       "revocation_events.kind",
 			lastOrdinal:  int32(leapmuxv1.RevocationEventKind_REVOCATION_EVENT_KIND_USER_INFO),
@@ -76,21 +99,65 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.WorkspaceLifecycleOp_name),
 			checks:       []string{"CHECK (op_type BETWEEN 1 AND 3)"},
 		},
-	} {
+		{
+			column:       "workspace_tab_owned.tab_type",
+			lastOrdinal:  int32(leapmuxv1.TabType_TAB_TYPE_IMAGE),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.TabType_name),
+			checks:       []string{"CHECK (tab_type BETWEEN 1 AND 4)"},
+		},
+		{
+			column:       "device_authorizations.state",
+			lastOrdinal:  int32(leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_DENIED),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.DeviceAuthorizationState_name),
+			checks:       []string{"CHECK (state BETWEEN 1 AND 3)"},
+		},
+		{
+			column:       "workspace_sections.section_type",
+			lastOrdinal:  int32(leapmuxv1.SectionType_SECTION_TYPE_BACKGROUND_TASKS),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.SectionType_name),
+			checks:       []string{"CHECK (section_type BETWEEN 1 AND 7)"},
+		},
+		{
+			column:       "workspace_sections.sidebar",
+			lastOrdinal:  int32(leapmuxv1.Sidebar_SIDEBAR_RIGHT),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.Sidebar_name),
+			checks:       []string{"CHECK (sidebar BETWEEN 1 AND 2)"},
+		},
+	}
+}
+
+// SQLite stores any value in an INTEGER column, so `1.5` passes a range CHECK
+// and then reads back as an ordinal no Go constant has. Each enum column
+// therefore carries `typeof(col) = 'integer'` on its own declaration.
+// enum_storage_internal_test.go in the sqlite package proves the refusal with
+// real writes; this test proves every listed column carries it.
+func TestSQLiteEnumColumnsStoreIntegersOnly(t *testing.T) {
+	t.Parallel()
+
+	statements := statementsOf(t, enumColumnMigrations[0])
+	for _, c := range enumRangeColumns(t) {
 		t.Run(c.column, func(t *testing.T) {
-			assert.Equal(t, c.lastDeclared, c.lastOrdinal,
-				"%s: the enum gained a value past the one its CHECK admits -- widen the CHECK in all three migrations", c.column)
-			for _, rel := range enumColumnMigrations {
-				sql := statementsOf(t, rel)
-				for _, check := range c.checks {
-					assert.Containsf(t, sql, check, "%s must carry %q for %s", rel, check, c.column)
+			table, column, found := strings.Cut(c.column, ".")
+			require.True(t, found)
+			_, declaration, found := strings.Cut(statements, "CREATE TABLE "+table+" (")
+			require.True(t, found, "%s has no CREATE TABLE in the SQLite migration", table)
+			declaration, _, found = strings.Cut(declaration, "\n);")
+			require.True(t, found)
+			var columnDeclaration string
+			for _, line := range strings.Split(declaration, "\n") {
+				if fields := strings.Fields(line); len(fields) > 1 && fields[0] == column {
+					columnDeclaration = line
+					break
 				}
 			}
+			require.NotEmpty(t, columnDeclaration, "%s declares no %s column", table, column)
+			assert.Contains(t, columnDeclaration, "CHECK (typeof("+column+") = 'integer')",
+				"%s must refuse a non-integer value on its own declaration", c.column)
 		})
 	}
 }
 
-// The one ordinal a hub migration spells OUTSIDE a range check.
+// An ordinal a hub migration spells OUTSIDE a range check.
 //
 // idx_revocation_events_session_revoked is a PARTIAL index, and a partial index
 // predicate takes no parameter, so this literal cannot follow a renumber the
@@ -111,6 +178,27 @@ func TestRevocationEventKindNumbering(t *testing.T) {
 		assert.Contains(t, sql,
 			"CREATE INDEX idx_revocation_events_session_revoked ON revocation_events(subject_id) WHERE kind = 2",
 			"%s must seek SESSION_REVOKED by its ordinal", rel)
+	}
+}
+
+// The other ordinal a hub migration spells outside a range check.
+//
+// oauth_states ties session_id to the REAUTH purpose with a table constraint,
+// and a constraint takes no parameter, so this literal cannot follow a
+// renumber either. Renumber REAUTH and the constraint refuses every reauth
+// state that carries its session, while it admits a LOGIN state that carries
+// one.
+func TestOAuthStatePurposeReauthNumbering(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, leapmuxv1.OAuthStatePurpose(2),
+		leapmuxv1.OAuthStatePurpose_OAUTH_STATE_PURPOSE_REAUTH,
+		"the oauth_states constraint below spells this number; renumbering it needs a migration, not just a proto edit")
+
+	for _, rel := range enumColumnMigrations {
+		sql := statementsOf(t, rel)
+		assert.Contains(t, sql, "CHECK ((purpose = 2) = (session_id <> ''))",
+			"%s must tie session_id to REAUTH by its ordinal", rel)
 	}
 }
 

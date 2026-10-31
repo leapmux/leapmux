@@ -87,7 +87,6 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		assert.Equal(t, wsID, ws.ID)
 		assert.Equal(t, user.ID, ws.OwnerUserID)
 		assert.Equal(t, "My Workspace", ws.Title)
-		assert.False(t, ws.IsDeleted)
 		assert.False(t, ws.CreatedAt.IsZero())
 		assert.Nil(t, ws.DeletedAt)
 	})
@@ -254,7 +253,6 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		// GetByIDIncludeDeleted should still return it.
 		ws, err := st.Workspaces().GetByIDIncludeDeleted(ctx, wsID)
 		require.NoError(t, err)
-		assert.True(t, ws.IsDeleted)
 		assert.NotNil(t, ws.DeletedAt)
 	})
 
@@ -270,7 +268,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		for _, wsID := range []string{ws1, ws2} {
 			ws, err := st.Workspaces().GetByIDIncludeDeleted(ctx, wsID)
 			require.NoError(t, err)
-			assert.True(t, ws.IsDeleted)
+			assert.NotNil(t, ws.DeletedAt)
 		}
 	})
 
@@ -353,7 +351,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), n)
 
-		// The is_deleted = 0 guard makes the second soft-delete match zero rows on
+		// The deleted_at IS NULL guard makes the second soft-delete match zero rows on
 		// EVERY dialect (MySQL is configured with ClientFoundRows=true, so it too
 		// reports matched -- not changed -- rows). A concurrent delete that lost
 		// the race therefore sees rows-affected == 0, which the service maps to
@@ -388,7 +386,6 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		ws, err := st.Workspaces().GetByIDIncludeDeleted(ctx, wsID)
 		require.NoError(t, err)
 		assert.Equal(t, wsID, ws.ID)
-		assert.False(t, ws.IsDeleted)
 		assert.Nil(t, ws.DeletedAt)
 	})
 
@@ -405,7 +402,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		// B's workspace should be untouched.
 		ws, err := st.Workspaces().GetByID(ctx, bWS)
 		require.NoError(t, err)
-		assert.False(t, ws.IsDeleted)
+		assert.Nil(t, ws.DeletedAt)
 	})
 
 	t.Run("list accessible returns owned workspaces", func(t *testing.T) {

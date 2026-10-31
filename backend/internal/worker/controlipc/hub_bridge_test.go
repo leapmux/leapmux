@@ -22,7 +22,6 @@ import (
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/controlipc"
-	"github.com/leapmux/leapmux/internal/worker/crossworker"
 )
 
 // These cases cover the reported failure directly: inside a spawned agent,
@@ -39,7 +38,7 @@ const testBearer = "delegation-bearer-for-u-1"
 // stubDelegation supplies the per-user bearer the bridges present upstream.
 type stubDelegation struct{ err error }
 
-func (s stubDelegation) GetBearer(context.Context, crossworker.DelegationScope) (string, error) {
+func (s stubDelegation) GetBearer(context.Context, userid.UserID) (string, error) {
 	if s.err != nil {
 		return "", s.err
 	}

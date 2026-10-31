@@ -84,8 +84,8 @@ func TestBroadcast_BatchEventSharedAcrossCoVisibleSubscribers(t *testing.T) {
 	// Seed a tab in w1 so a later position edit is a stable-visibility op for w1
 	// watchers (kept in the filtered batch, not redacted).
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")}),
 	})
 	require.NoError(t, err)
 
@@ -112,8 +112,8 @@ func TestBroadcast_BatchEventSharedAcrossCoVisibleSubscribers(t *testing.T) {
 		}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{edit},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{edit}),
 	})
 	require.NoError(t, err)
 
@@ -146,8 +146,8 @@ func TestBroadcast_BecomingVisible_SendsEntityMaterialized_NotRawOp(t *testing.T
 
 	// Seed a tab in w1.
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")}),
 	})
 	require.NoError(t, err)
 
@@ -167,8 +167,8 @@ func TestBroadcast_BecomingVisible_SendsEntityMaterialized_NotRawOp(t *testing.T
 		}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{mv},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{mv}),
 	})
 	require.NoError(t, err)
 
@@ -195,8 +195,8 @@ func TestBroadcast_BecomingHidden_SendsEntityRemoved_NotRawOp(t *testing.T) {
 
 	// Seed a tab in w1.
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")}),
 	})
 	require.NoError(t, err)
 
@@ -216,8 +216,8 @@ func TestBroadcast_BecomingHidden_SendsEntityRemoved_NotRawOp(t *testing.T) {
 		}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{mv},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{mv}),
 	})
 	require.NoError(t, err)
 
@@ -247,8 +247,8 @@ func TestBroadcast_AlwaysVisible_ForwardsRawOps(t *testing.T) {
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")}),
 	})
 	require.NoError(t, err)
 
@@ -266,8 +266,8 @@ func TestBroadcast_AlwaysVisible_ForwardsRawOps(t *testing.T) {
 		}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{mv},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{mv}),
 	})
 	require.NoError(t, err)
 
@@ -312,7 +312,7 @@ func TestBroadcast_WorkspaceLifecycleOps_DeliveredToAdmittingSubscriber(t *testi
 		},
 	}}
 	_, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, Batches: []*leapmuxv1.OpBatch{{BatchId: "lifecycle-create-w1", Ops: registerBatch}},
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{{BatchId: "lifecycle-create-w1", Ops: registerBatch}}),
 	})
 	require.NoError(t, err)
 
@@ -322,7 +322,7 @@ func TestBroadcast_WorkspaceLifecycleOps_DeliveredToAdmittingSubscriber(t *testi
 		},
 	}}
 	_, err = mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, Batches: []*leapmuxv1.OpBatch{{BatchId: "lifecycle-delete-w1", Ops: tombstoneBatch}},
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{{BatchId: "lifecycle-delete-w1", Ops: tombstoneBatch}}),
 	})
 	require.NoError(t, err)
 
@@ -378,7 +378,7 @@ func TestBroadcast_WorkspaceTombstone_NoEmptyEntityRemovedFrame(t *testing.T) {
 		},
 	}}
 	_, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, Batches: []*leapmuxv1.OpBatch{{BatchId: "lifecycle-create-w1", Ops: registerBatch}},
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{{BatchId: "lifecycle-create-w1", Ops: registerBatch}}),
 	})
 	require.NoError(t, err)
 
@@ -388,7 +388,7 @@ func TestBroadcast_WorkspaceTombstone_NoEmptyEntityRemovedFrame(t *testing.T) {
 		},
 	}}
 	_, err = mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, Batches: []*leapmuxv1.OpBatch{{BatchId: "lifecycle-delete-w1", Ops: tombstoneBatch}},
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{{BatchId: "lifecycle-delete-w1", Ops: tombstoneBatch}}),
 	})
 	require.NoError(t, err)
 
@@ -415,8 +415,8 @@ func TestBroadcast_NilFilter_SeesAllWorkspaces(t *testing.T) {
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")}),
 	})
 	require.NoError(t, err)
 
@@ -439,8 +439,8 @@ func TestBroadcast_NilFilter_SeesAllWorkspaces(t *testing.T) {
 		}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{mv},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{mv}),
 	})
 	require.NoError(t, err)
 
@@ -467,8 +467,8 @@ func TestBroadcast_PerEntity_NoDuplicateMaterialized(t *testing.T) {
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")}),
 	})
 	require.NoError(t, err)
 
@@ -494,8 +494,8 @@ func TestBroadcast_PerEntity_NoDuplicateMaterialized(t *testing.T) {
 		},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{mv},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{mv}),
 	})
 	require.NoError(t, err)
 
@@ -522,8 +522,8 @@ func TestBroadcast_AlwaysHidden_NoEvents(t *testing.T) {
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")}),
 	})
 	require.NoError(t, err)
 
@@ -542,8 +542,8 @@ func TestBroadcast_AlwaysHidden_NoEvents(t *testing.T) {
 		}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{mv},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{mv}),
 	})
 	require.NoError(t, err)
 
@@ -574,8 +574,8 @@ func TestBroadcast_TombstoneTab_SendsRawOp_NotEntityRemoved(t *testing.T) {
 
 	// Seed a tab in w1.
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")}),
 	})
 	require.NoError(t, err)
 
@@ -593,8 +593,8 @@ func TestBroadcast_TombstoneTab_SendsRawOp_NotEntityRemoved(t *testing.T) {
 		}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{tombstone},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{tombstone}),
 	})
 	require.NoError(t, err)
 
@@ -630,8 +630,8 @@ func TestBroadcast_TombstoneTab_NoEventsForUnrelatedSubscriber(t *testing.T) {
 
 	// Seed a tab in w1.
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")}),
 	})
 	require.NoError(t, err)
 
@@ -649,8 +649,8 @@ func TestBroadcast_TombstoneTab_NoEventsForUnrelatedSubscriber(t *testing.T) {
 		}},
 	}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{tombstone},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{tombstone}),
 	})
 	require.NoError(t, err)
 
@@ -707,8 +707,8 @@ func TestBroadcast_TombstoneFloatingWindow_SendsRawOp_NotEntityRemoved(t *testin
 		},
 	}
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{close},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{close}),
 	})
 	require.NoError(t, err)
 
@@ -749,8 +749,8 @@ func TestBroadcast_MaterializedPrecedesBatchThatReferencesIt(t *testing.T) {
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")}),
 	})
 	require.NoError(t, err)
 
@@ -776,8 +776,8 @@ func TestBroadcast_MaterializedPrecedesBatchThatReferencesIt(t *testing.T) {
 		}}},
 	}}
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{split},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{split}),
 	})
 	require.NoError(t, err)
 
@@ -844,16 +844,16 @@ func TestBroadcast_FramesAreMarshaledBeforeTheFanOut(t *testing.T) {
 	}
 
 	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")}),
 	})
 	require.NoError(t, err)
 
 	// Move it across the visibility boundary, which is what produces the
 	// materialized/removed frames rather than a plain op passthrough.
 	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
-		Batches: []*leapmuxv1.OpBatch{moveTabBatch("move", "tA", "root2")},
+		PrincipalID: "user", OriginClient: "c1",
+		Batches: batchesAtEpoch(epoch, []*leapmuxv1.OpBatch{moveTabBatch("move", "tA", "root2")}),
 	})
 	require.NoError(t, err)
 

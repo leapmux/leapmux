@@ -51,7 +51,7 @@ func stopOwnershipFixture(t *testing.T) (*Service, *channel.Dispatcher, agent.Pr
 	t.Helper()
 	svc, dispatcher, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	provider := &heldStopAgent{calls: make(chan heldStopCall, 2)}

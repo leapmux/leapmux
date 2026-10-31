@@ -71,13 +71,14 @@ type DelegationStore struct {
 	// for the same reason one layer up.
 	inflight map[string]*mintFlight
 
-	// LiveTab supplies the mint's provenance tab. Required for minting; see
-	// LiveTabProvider.
+	// LiveTab supplies the tab that the mint request gives. Required for
+	// minting; see LiveTabProvider.
 	LiveTab LiveTabProvider
 }
 
 // LiveTabProvider answers "which tab does this worker currently host?" for the
-// mint's issued_for_tab_id. Injected rather than read from a local map, and
+// mint's issued_for_tab_id. The hub checks that this worker hosts the tab, and
+// stores no tab. Injected rather than read from a local map, and
 // injected as a closure so this package keeps no dependency on the worker DB.
 //
 // It replaces a shadow set that Acquire/Release maintained alongside the real
@@ -88,13 +89,7 @@ type DelegationStore struct {
 // and the hub answered 403 "tab not owned by calling worker" for it forever.
 // Nothing pruned it, because a 403 is exactly what a not-yet-propagated tab looks
 // like. Reading the live tables instead makes a missed Release cost nothing.
-type LiveTabProvider func() (tabID string, tabType int32, ok bool)
-
-// tabRef is one tab's mint provenance: which tab, and of what type.
-type tabRef struct {
-	ID   string
-	Type int32
-}
+type LiveTabProvider func() (tabID string, ok bool)
 
 // mintFlight is one in-progress mint that later arrivals wait on rather than
 // duplicating. done is closed once tok/err are final.
@@ -145,11 +140,11 @@ func delegationKey(userID userid.UserID) string {
 }
 
 // GetBearer satisfies DelegationProvider.
-func (s *DelegationStore) GetBearer(ctx context.Context, scope DelegationScope) (string, error) {
-	if scope.UserID.IsZero() {
+func (s *DelegationStore) GetBearer(ctx context.Context, userID userid.UserID) (string, error) {
+	if userID.IsZero() {
 		return "", errors.New("crossworker: user_id required")
 	}
-	key := delegationKey(scope.UserID)
+	key := delegationKey(userID)
 	s.mu.Lock()
 	if c, ok := s.cached[key]; ok && time.Until(c.expiresAt) > s.MintGracePeriod {
 		bearer := c.bearer
@@ -175,7 +170,7 @@ func (s *DelegationStore) GetBearer(ctx context.Context, scope DelegationScope) 
 	s.inflight[key] = fl
 	s.mu.Unlock()
 
-	minted, err := s.mint(ctx, scope)
+	minted, err := s.mint(ctx, userID)
 
 	s.mu.Lock()
 	fl.tok, fl.err = minted, err
@@ -216,7 +211,7 @@ type mintedToken struct {
 	ExpiresAt time.Time
 }
 
-func (s *DelegationStore) mint(ctx context.Context, scope DelegationScope) (mintedToken, error) {
+func (s *DelegationStore) mint(ctx context.Context, userID userid.UserID) (mintedToken, error) {
 	maxAttempts := s.MintMaxAttempts
 	if maxAttempts < 1 {
 		maxAttempts = 1
@@ -240,7 +235,7 @@ func (s *DelegationStore) mint(ctx context.Context, scope DelegationScope) (mint
 	// elapsed-time cap so MaxAttempts is the only retry governor and
 	// callers' --retry-attempts configurations behave predictably.
 	return backoff.Retry(ctx, func() (mintedToken, error) {
-		minted, mErr := s.mintOnce(ctx, scope)
+		minted, mErr := s.mintOnce(ctx, userID)
 		if mErr == nil {
 			return minted, nil
 		}
@@ -254,21 +249,17 @@ func (s *DelegationStore) mint(ctx context.Context, scope DelegationScope) (mint
 	}, backoff.WithBackOff(b), backoff.WithMaxTries(uint(maxAttempts)), backoff.WithMaxElapsedTime(0))
 }
 
-func (s *DelegationStore) mintOnce(ctx context.Context, scope DelegationScope) (mintedToken, error) {
+func (s *DelegationStore) mintOnce(ctx context.Context, userID userid.UserID) (mintedToken, error) {
 	if s.LiveTab == nil {
 		return mintedToken{}, errors.New("delegation mint: no LiveTabProvider wired")
 	}
-	tabID, tabType, ok := s.LiveTab()
+	tabID, ok := s.LiveTab()
 	if !ok || tabID == "" {
-		return mintedToken{}, fmt.Errorf("delegation mint: this worker hosts no open tab for user=%s", scope.UserID.String())
+		return mintedToken{}, fmt.Errorf("delegation mint: this worker hosts no open tab for user=%s", userID.String())
 	}
-	tab := tabRef{ID: tabID, Type: tabType}
 	body, _ := json.Marshal(map[string]any{
-		"user_id":             scope.UserID.String(),
-		"issued_for_tab_id":   tab.ID,
-		"issued_for_tab_type": tab.Type,
-		"agent_id":            scope.AgentID,
-		"terminal_id":         scope.TerminalID,
+		"user_id":           userID.String(),
+		"issued_for_tab_id": tabID,
 	})
 	url := locallisten.JoinPath(s.requestBaseURL, "/worker/delegation-tokens/mint")
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -311,20 +302,17 @@ func (s *DelegationStore) mintOnce(ctx context.Context, scope DelegationScope) (
 }
 
 // Acquire records that one more spawn (agent / opted-in terminal)
-// references the user's bearer slot, along with the spawn's tab identity.
-// The tab identity is what the hub validates at
-// /worker/delegation-tokens/mint: the worker must own the tab. Pairs with
-// Release at teardown so the last referencing spawn triggers a hub-side
-// revoke instead of leaving the row to expire on its own.
+// refers to the user's bearer slot. Pairs with Release at teardown so the
+// last referencing spawn triggers a hub-side revoke instead of leaving the
+// row to expire on its own.
 //
 // Acquire does NOT mint a token — minting stays lazy via GetBearer
 // so agents that never make hub-bound calls don't create unused
 // delegation rows.
 //
-// Spawns sharing one user's cache entry each contribute their own tab, and a
-// mint picks any live one as `issued_for_tab_id`. The hub validates "this
-// worker owns that tab", which holds for any tab this worker currently hosts --
-// so the set must track live spawns, not merely the first one ever seen.
+// Acquire records no tab. A mint asks LiveTab for any tab this worker hosts
+// at that moment, because the hub validates "this worker owns that tab",
+// which holds for every live tab.
 func (s *DelegationStore) Acquire(userID userid.UserID) {
 	if userID.IsZero() {
 		return
@@ -335,16 +323,14 @@ func (s *DelegationStore) Acquire(userID userid.UserID) {
 	s.mu.Unlock()
 }
 
-// Release decrements the refcount for userID and retires tabID from the
-// provenance set. When the refcount reaches zero AND a bearer was minted at
-// some point, the cached row is dropped and the hub is notified to revoke it.
-// Returns the hub-side revoke error so the caller can log it (revocation
-// failures are non-fatal — the row will expire — but worth surfacing).
+// Release decrements the refcount for userID. When the refcount reaches zero
+// AND a bearer was minted at some point, the cached row is dropped and the hub
+// is notified to revoke it. Returns the hub-side revoke error so the caller can
+// log it (revocation failures are non-fatal — the row will expire — but worth
+// surfacing).
 //
-// tabID is the RELEASING spawn's own tab, and passing it is what keeps the
-// provenance set live. Dropping only at refcount zero left a closed spawn's tab
-// as the mint's `issued_for_tab_id` for as long as any sibling survived, which
-// the hub then refused as "tab not owned by calling worker".
+// Release takes no tab: a mint reads the live tab from LiveTab, so a closed
+// spawn's tab can never become the mint's `issued_for_tab_id`.
 //
 // The cache delete and the refcount drop happen under one lock so a
 // concurrent Acquire+GetBearer for the same user cannot observe a

@@ -508,8 +508,8 @@ func TestParseResumeCursor(t *testing.T) {
 		{"negative logical", "100.-5.c", "7"},
 		{"overlong client id", "100.0." + strings.Repeat("x", 129), "7"},
 		// The epoch gets the SAME domain treatment as physical/logical, not just a
-		// parse check. `current_epoch` is `NOT NULL DEFAULT 1` in every dialect and
-		// only increments, so these are values the hub can never hold; without the
+		// parse check. `UserCrdtState.current_epoch` starts at 1 (`crdt.NewState`)
+		// and only increases, so these are values the hub can never hold; without the
 		// check they parse as well-formed and then fail silently at decideResume's
 		// equality test, degrading that client to a full snapshot on every connect
 		// with nothing logged.

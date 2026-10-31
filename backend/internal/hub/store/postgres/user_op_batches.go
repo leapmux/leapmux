@@ -19,15 +19,10 @@ func (s *userOpBatchesStore) Insert(ctx context.Context, p store.InsertUserOpBat
 		UserID:             p.UserID.String(),
 		PhysicalMs:         p.PhysicalMs,
 		Logical:            p.Logical,
-		LastLogical:        p.LastLogical,
-		OriginClient:       p.OriginClient,
-		PrincipalID:        p.PrincipalID,
 		BatchID:            p.BatchID,
-		BodyHash:           p.BodyHash,
 		BatchPayload:       p.BatchPayload,
 		TransitionsPayload: p.TransitionsPayload,
 		OpCount:            int32(p.OpCount),
-		Epoch:              p.Epoch,
 	}))
 }
 
@@ -39,20 +34,15 @@ func (s *userOpBatchesStore) ListAfter(ctx context.Context, p store.ListUserOpBa
 		return nil, nil
 	}
 	rows, err := s.conn.q.ListUserOpBatchesAfter(ctx, gendb.ListUserOpBatchesAfterParams{
-		UserID:            owner,
-		AfterPhysicalMs:   p.AfterPhysicalMs,
-		AfterLogical:      p.AfterLogical,
-		AfterOriginClient: p.AfterOriginClient,
-		RowLimit:          p.Limit,
+		UserID:          owner,
+		AfterPhysicalMs: p.AfterPhysicalMs,
+		AfterLogical:    p.AfterLogical,
+		RowLimit:        p.Limit,
 	})
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	out := make([]store.UserOpBatchRow, len(rows))
-	for i, r := range rows {
-		out[i] = toUserOpBatchRow(r)
-	}
-	return out, nil
+	return store.MapSlice(rows, toUserOpBatchRow), nil
 }
 
 func toUserOpBatchRow(r gendb.UserOpBatch) store.UserOpBatchRow {
@@ -60,16 +50,10 @@ func toUserOpBatchRow(r gendb.UserOpBatch) store.UserOpBatchRow {
 		UserID:             r.UserID,
 		PhysicalMs:         r.PhysicalMs,
 		Logical:            r.Logical,
-		LastLogical:        r.LastLogical,
-		OriginClient:       r.OriginClient,
-		PrincipalID:        r.PrincipalID,
 		BatchID:            r.BatchID,
-		BodyHash:           r.BodyHash,
 		BatchPayload:       r.BatchPayload,
 		TransitionsPayload: r.TransitionsPayload,
 		OpCount:            int64(r.OpCount),
-		Epoch:              r.Epoch,
-		CommittedAt:        r.CommittedAt.Time,
 	}
 }
 
@@ -81,10 +65,9 @@ func (s *userOpBatchesStore) DeleteThrough(ctx context.Context, p store.DeleteUs
 		return nil
 	}
 	return mapErr(s.conn.q.DeleteUserOpBatchesThrough(ctx, gendb.DeleteUserOpBatchesThroughParams{
-		UserID:              owner,
-		ThroughPhysicalMs:   p.ThroughPhysicalMs,
-		ThroughLogical:      p.ThroughLogical,
-		ThroughOriginClient: p.ThroughOriginClient,
+		UserID:            owner,
+		ThroughPhysicalMs: p.ThroughPhysicalMs,
+		ThroughLogical:    p.ThroughLogical,
 	}))
 }
 

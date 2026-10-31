@@ -32,8 +32,8 @@ enum ControlDeliveryState {
 // on top, which none of these needs.
 //
 // UNSPECIFIED is 0 in each enum, as proto3 requires.
-// Only agent_input_queue_state.pause_owner accepts zero, where it means that nobody owns the pause.
-// The other columns reject zero so an unset Go field cannot become a stored state.
+// No column that these enums number stores 0: each CHECK starts at 1, so an
+// unset Go field cannot become a stored state.
 
 // RevocationEventKind is what one row of the durable revocation stream
 // announces. Numbers revocation_events.kind.
@@ -123,17 +123,27 @@ enum WorkspaceLifecycleOp {
   WORKSPACE_LIFECYCLE_OP_DELETE = 3;
 }
 
+// DeviceAuthorizationState is where one RFC 8628 device authorization stands.
+// Numbers device_authorizations.state.
+enum DeviceAuthorizationState {
+  DEVICE_AUTHORIZATION_STATE_UNSPECIFIED = 0;
+  // Waiting for the user to approve or deny the code.
+  DEVICE_AUTHORIZATION_STATE_PENDING = 1;
+  DEVICE_AUTHORIZATION_STATE_APPROVED = 2;
+  DEVICE_AUTHORIZATION_STATE_DENIED = 3;
+}
+
 // AgentInputQueuePauseOwner records which cause created the pause that still
 // holds, so only that cause lifts it again. Numbers
 // agent_input_queue_state.pause_owner.
 //
-// A pause writer always overwrites the owner, so the newest cause owns the
-// pause: an archive resume, or the end of a planned restart, then leaves a pause
+// A new pause records its cause as the owner. pauseAndEndTurn keeps an
+// existing pause's owner, except that it takes over a pause a planned restart
+// owns. An archive resume, or the end of a planned restart, then leaves a pause
 // that a later crash or the user created.
 //
-// UNSPECIFIED is the ONE zero any column here accepts, and it is a real state:
-// the queue is not paused, so nobody owns a pause. The CHECK therefore starts at
-// 0, like agents.goal_status.
+// The worker column is nullable with CHECK (pause_owner BETWEEN 1 AND 6): NULL
+// means that nobody owns a pause, and the column never stores 0.
 //
 // It is NOT AgentInputQueuePauseReason. The reason is the SENTENCE the pause
 // banner shows the reader and travels to the browser; the owner is who may lift
