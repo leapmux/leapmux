@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
-import { appendFileSync, writeFileSync, writeSync } from 'node:fs'
+import { appendFileSync, readFileSync, writeFileSync, writeSync } from 'node:fs'
 import { resolve } from 'node:path'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
+import { writeToolShims } from './renovate-shims.mjs'
 
 const nativeRuntime = {
   spawn,
@@ -213,12 +214,19 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     const root = resolve(import.meta.dirname, '..')
     writeFileSync(resolve(root, '.tmp/renovate-pr-details.jsonl'), '')
+    // The configuration puts these shims first on the PATH of Renovate's child processes.
+    const shims = writeToolShims({
+      root,
+      policy: JSON.parse(readFileSync(resolve(root, 'renovate.json'), 'utf8')),
+      prepared: JSON.parse(readFileSync(resolve(root, '.tmp/renovate-prepared.json'), 'utf8')),
+    })
     const output = {
       write: data => appendFileSync(resolve(root, '.tmp/renovate-cli.log'), data),
     }
     const result = await runWithTimeout(process.execPath, [
       resolve(root, '.github/renovate/node_modules/renovate/dist/renovate.js'),
     ], {
+      env: { ...process.env, LEAPMUX_TOOL_SHIMS: shims.bin },
       stdio: ['ignore', 'pipe', 'pipe'],
       output,
     })

@@ -45,7 +45,7 @@ func TestTruncateTableOrderCoversEverySchemaTable(t *testing.T) {
 // precede its parent. The order is load-bearing for Postgres-family dialects,
 // whose TruncateAll issues plain DELETEs in list order with FK constraints
 // enforced (sqlite and mysql disable FK checks during truncation), so a bad
-// reorder would otherwise surface only in the gated -tags integration suites.
+// reorder would otherwise surface only in the Docker-backed suites.
 // FK edges are discovered from the live schema (pragma_foreign_key_list), so
 // a new FK can never be forgotten here.
 func TestTruncateTableOrderRespectsForeignKeys(t *testing.T) {

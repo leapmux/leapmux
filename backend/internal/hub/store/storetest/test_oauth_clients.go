@@ -18,7 +18,7 @@ import (
 
 // testOAuthClients covers the app registry across every dialect.
 //
-// It runs on Postgres and MySQL under -tags integration as well as on SQLite,
+// It runs on Postgres and MySQL with Docker as well as on SQLite,
 // which is the point: the visibility rule is a NULL comparison, the half-vouch
 // rule is a CHECK constraint, and the delete refusal is a RESTRICT foreign key.
 // All three are things the dialects express differently and sqlite alone would

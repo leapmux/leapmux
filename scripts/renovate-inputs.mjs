@@ -11,7 +11,7 @@ const { getMatchingFiles } = await renovateModule('workers/repository/extract/fi
 const policy = JSON.parse(readFileSync(resolve(import.meta.dirname, '../renovate.json'), 'utf8'))
 export const DEPENDENCY_INPUT_FILES = Object.freeze({
   gomod: Object.freeze(['backend/go.mod', 'desktop/go/go.mod', 'site/go.mod']),
-  bun: Object.freeze(['frontend/package.json', '.github/renovate/package.json']),
+  bun: Object.freeze(['frontend/package.json', '.github/renovate/package.json', 'site/package.json']),
   cargo: Object.freeze(['desktop/rust/Cargo.toml']),
   // Renovate uses "regex" in post-update metadata for the configured custom.regex manager.
   regex: Object.freeze(['versions.env']),

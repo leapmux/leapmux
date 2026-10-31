@@ -90,10 +90,33 @@ jobs:
       - name: Generate code (proto + sqlc)
         run: task generate
 
-      - name: Validate standalone dependency tools
+      - name: Validate the locked site tools
         if: matrix.arch == 'amd64'
-        run: task validate-standalone-tools
+        run: task validate-site-tools
 
+      - name: Install the pinned Renovate packages
+        if: matrix.arch == 'amd64'
+        run: task install-renovate-packages
+
+      # Restore the compiled RE2 engine only after the package install: bun install replaces
+      # a package directory that it installs anew, with the restored output in it. The archive
+      # also holds the Task checksum and the task-state record of build-renovate-re2 (the record
+      # file name is the SHA-256 of the task name). So the task accepts the engine only when its
+      # sources, toolchain, and recipe match, and rebuilds it otherwise.
+      - name: Cache the compiled Renovate RE2 engine
+        if: matrix.arch == 'amd64'
+        uses: ./.github/actions/build-output-cache
+        with:
+          path: |
+            .github/renovate/node_modules/re2/build/Release/re2.node
+            .task/checksum/build-renovate-re2
+            .task/artifacts/041ee1d9a6f1e20e6f63880ffd41e7502068f85f0c919c572e79d28cd36b3b68.sha256
+          key: renovate-re2-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_IMAGE }}-node${{ env.NODE_VERSION }}-bun${{ env.BUN_VERSION }}-task${{ env.TASK_VERSION }}-${{ hashFiles('.github/renovate/bun.lock') }}-${{ hashFiles('Taskfile.yaml', 'scripts/task-state.mjs') }}-${{ env.CACHE_WEEK }}
+          restore-keys: renovate-re2-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_IMAGE }}-node${{ env.NODE_VERSION }}-bun${{ env.BUN_VERSION }}-task${{ env.TASK_VERSION }}-${{ hashFiles('.github/renovate/bun.lock') }}-
+          save: ${{ github.ref == 'refs/heads/main' }}
+
+      # The pinned Renovate CLI runs on the Node.js version in versions.env, so this
+      # step also validates a proposed Node.js runtime.
       - name: Validate Renovate dependency extraction
         if: matrix.arch == 'amd64'
         run: task renovate-extract
@@ -348,10 +371,77 @@ jobs:
           go-cache-hit: ${{ steps.go-cache.outputs.cache-hit }}
           build-args: ${{ steps.setup.outputs.build-args }}
 
+  dependency-age:
+    # Renovate checks the release age only for the version that it selects, while
+    # bun install and cargo update resolve the rest of a lockfile, for Renovate and for a
+    # person alike. This job rejects a pull request whose lockfiles add a version younger
+    # than the minimum release age. A push passes in seconds.
+    # The check runs the tools, the scripts, and the Renovate tree of the base commit, and
+    # reads the lockfiles of the PR by revision only. A PR can change the Renovate tree, and
+    # code from that tree must never judge the lockfile that adds it.
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      # A security branch exempts only the fixes of the packages that open Dependabot
+      # alerts report.
+      vulnerability-alerts: read
+    steps:
+      - name: Select pull requests
+        id: scope
+        env:
+          PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
+        run: echo "checked=$PULL_REQUEST" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.scope.outputs.checked == 'true'
+        with:
+          # The PR merge commit and its first parent, the main commit that it merges into.
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Check out the base commit
+        if: steps.scope.outputs.checked == 'true'
+        run: |
+          echo "PR_MERGE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          git checkout --quiet --detach HEAD^1
+
+      # The check needs only Bun, Go, and Task. setup-build would also install Rust and buf,
+      # and download every dependency of the lockfiles that the PR changes.
+      - name: Load tool versions
+        if: steps.scope.outputs.checked == 'true'
+        uses: ./.github/actions/load-versions
+
+      - name: Setup Go
+        if: steps.scope.outputs.checked == 'true'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GOLANG_VERSION }}
+          cache: false
+
+      - name: Setup Bun
+        if: steps.scope.outputs.checked == 'true'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Setup Task
+        if: steps.scope.outputs.checked == 'true'
+        uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
+        with:
+          version: ${{ env.TASK_VERSION }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check the release age of new lockfile versions
+        if: steps.scope.outputs.checked == 'true'
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: task check-dependency-age -- --base HEAD --head "$PR_MERGE_SHA" --head-ref "$HEAD_REF"
+
   required-ci:
     name: Required CI
     if: always()
-    needs: [linux, macos, windows, docker]
+    needs: [linux, macos, windows, docker, dependency-age]
     runs-on: ubuntu-24.04
     permissions: {}
     steps:

@@ -1,10 +1,8 @@
 import { Buffer } from 'node:buffer'
 import { appendFileSync, mkdirSync } from 'node:fs'
-import { createRequire } from 'node:module'
 import { isAbsolute, resolve } from 'node:path'
+import { registerRootHelper, requireRenovate } from './renovate-engine.mjs'
 
-const requireRenovate = createRequire(new URL('../.github/renovate/package.json', import.meta.url))
-const requireRenderer = createRequire(requireRenovate.resolve('renovate/dist/util/template/index.js'))
 const contentFields = [
   'header',
   'table',
@@ -33,13 +31,11 @@ export function validateDetailRecord(record) {
 export function configureDetailsCapture(trusted, template, { write = record => appendFileSync(resolve(trusted, '.tmp/renovate-pr-details.jsonl'), `${JSON.stringify(record)}\n`) } = {}) {
   if (!isAbsolute(trusted) || typeof template !== 'string')
     throw new Error('PR detail capture requires an absolute trusted checkout and a body template.')
-  const handlebars = requireRenderer('handlebars')
-  const previous = handlebars.helpers.leapmuxPrDetails
-  handlebars.registerHelper('leapmuxPrDetails', function (options) {
-    const root = options.data?.root
+  const dispose = registerRootHelper('leapmuxPrDetails', {
     // Advisory notes are also compiled as templates. They must not invoke this writer.
-    if (this !== root || !contentFields.every(field => Object.hasOwn(root ?? {}, field) && typeof root[field] === 'string'))
-      throw new Error('PR details can only be captured from the PR body renderer.')
+    accepts: root => contentFields.every(field => Object.hasOwn(root ?? {}, field) && typeof root[field] === 'string'),
+    rejection: 'PR details can only be captured from the PR body renderer.',
+  }, (root) => {
     const identity = JSON.parse(root.header.trim())
     const record = validateDetailRecord({
       version: 1,
@@ -54,12 +50,7 @@ export function configureDetailsCapture(trusted, template, { write = record => a
   return {
     prHeader: '{"repository":"leapmux/leapmux","branchName":{{{toJSON branchName}}} }',
     prBodyTemplate: `${template}\n{{{leapmuxPrDetails}}}`,
-    dispose() {
-      if (previous)
-        handlebars.registerHelper('leapmuxPrDetails', previous)
-      else
-        handlebars.unregisterHelper('leapmuxPrDetails')
-    },
+    dispose,
   }
 }
 

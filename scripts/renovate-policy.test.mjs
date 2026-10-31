@@ -3,10 +3,13 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import process from 'node:process'
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it, setSystemTime } from 'bun:test'
+import { SECURITY_BRANCHES } from './check-dependency-age.mjs'
 import { renovateModule as engine } from './renovate-engine.mjs'
 import { postUpgrade } from './renovate-post-upgrade.mjs'
 import { prepareTauriSecurity, securityCompanions } from './renovate-prepare.mjs'
+import { securityReleaseAgeMs } from './renovate-release-age.mjs'
+import { crateIndexResponse, isCrateIndexRead } from './test-support.mjs'
 
 const requireRenovate = createRequire(new URL('../.github/renovate/package.json', import.meta.url))
 const { init: initializeRenovateLogger } = await engine('logger/index.js')
@@ -25,7 +28,7 @@ const { fetchUpdates } = await engine('workers/repository/process/fetch.js')
 const { PackageFiles } = await engine('workers/repository/package-files.js')
 const { getWarnings } = await engine('workers/repository/errors-warnings.js')
 const { smartTruncate } = await engine('modules/platform/utils/pr-body.js')
-const { cronMatches, hasValidSchedule } = await engine('workers/repository/update/branch/schedule.js')
+const { cronMatches, isScheduledNow } = await engine('workers/repository/update/branch/schedule.js')
 const { generateBranchConfig } = await engine('workers/repository/updates/generate.js')
 const { branchifyUpgrades } = await engine('workers/repository/updates/branchify.js')
 
@@ -120,14 +123,37 @@ describe('renovate policy with the pinned engine', () => {
     const tauri = branches.find(branch => branch.upgrades.some(upgrade => upgrade.manager === 'bun'))
     expect(go.skipArtifactsUpdate).toBe(true)
     expect(go.branchName).toBe('renovate/go-security')
+    // check-dependency-age exempts authorized fixes only on these branches.
+    expect(branches.map(branch => branch.branchName).sort()).toEqual([...SECURITY_BRANCHES].sort())
     expect(tauri.upgrades.map(upgrade => upgrade.manager).sort()).toEqual(['bun', 'cargo'])
     expect(tauri.skipArtifactsUpdate).toBe(false)
     for (const branch of branches) {
       expect(branch.schedule).toEqual([])
       expect(branch.dependencyDashboardApproval).toBe(false)
-      expect(branch.minimumReleaseAge).toBe('3 days')
+      expect(branch.minimumReleaseAge).toBe('2 hours')
+      expect(branch.minimumReleaseAgeBehaviour).toBe('timestamp-optional')
       expect(branch.labels).toContain('security')
     }
+  })
+  it('groups an update of the locked site tools with the other site dependencies', async () => {
+    expect((await rule({ manager: 'bun', packageFile: 'site/package.json', depName: 'wrangler' })).groupName).toBe('site')
+    expect((await rule({ manager: 'gomod', packageFile: 'site/go.mod', depName: 'github.com/imfing/hextra' })).groupName).toBe('site')
+    expect((await rule({ manager: 'bun', packageFile: 'frontend/package.json', depName: 'node-gyp' })).groupName).toBe('frontend')
+  })
+  it('keeps every pin that a Dependabot alert can match out of versions.env, so that a lockfile check covers each such dependency', async () => {
+    // An alert rule forces vulnerabilityAlerts over every packageRule, so Renovate takes a
+    // security fix of such a pin at the age of a security fix, and Required CI checks no
+    // pin in versions.env. Such a dependency belongs in a lockfile.
+    const { githubEcosystemToDatasource } = await engine('util/vulnerability/ecosystem.js')
+    const alertable = new Set(Object.values(githubEcosystemToDatasource).flat())
+    const manager = policy.customManagers.find(entry => entry.managerFilePatterns.includes('/^versions\\.env$/'))
+    const alertablePins = text => [
+      ...text.matchAll(new RegExp(manager.matchStrings[0], 'g')),
+    ].filter(match => alertable.has(match.groups.datasource)).map(match => `${match.groups.depType} (${match.groups.datasource})`)
+    expect(alertablePins('# renovate: datasource=npm depName=node-gyp\nNODE_GYP_VERSION=13.0.2\n')).toEqual(['NODE_GYP_VERSION (npm)'])
+    const text = readFileSync(resolve(root, 'versions.env'), 'utf8')
+    expect(text).toMatch(/datasource=/)
+    expect(alertablePins(text)).toEqual([])
   })
   it('extracts every tool and image pin, including digits in s6-overlay, with unchanged values', () => {
     const text = readFileSync(resolve(root, 'versions.env'), 'utf8')
@@ -215,8 +241,8 @@ describe('renovate policy with the pinned engine', () => {
     const security = mergeChildConfig(mergeChildConfig(config(), { force: config().vulnerabilityAlerts }), config().major)
     expect(security.dependencyDashboardApproval).toBe(false)
     expect(security.schedule).toEqual([])
-    expect(security.minimumReleaseAge).toBe('3 days')
-    expect(security.minimumReleaseAgeBehaviour).toBe('timestamp-required')
+    expect(security.minimumReleaseAge).toBe('2 hours')
+    expect(security.minimumReleaseAgeBehaviour).toBe('timestamp-optional')
     expect(security.internalChecksFilter).toBe('strict')
     expect(security.automerge).toBe(false)
     expect(security.autoApprove).toBe(false)
@@ -329,15 +355,18 @@ describe('renovate policy with the pinned engine', () => {
       cargo: { tauri: '2.11.3' },
     }, {
       now: Date.parse('2026-10-26T00:00:00Z'),
-      request: async url => Response.json(url.includes('/dependencies')
-        ? { dependencies: [] }
-        : url.includes('registry.npmjs.org')
-          ? {
-              time: { '2.13.0': '2026-10-20T00:00:00Z' },
-            }
-          : {
-              versions: ['2.12.0', '2.13.0', '2.13.2'].map(num => ({ num, created_at: '2026-10-20T00:00:00Z' })),
-            }),
+      request: async url => isCrateIndexRead(url)
+        ? crateIndexResponse(['2.12.0', '2.13.0', '2.13.2'].map(vers => ({
+            name: 'tauri',
+            vers,
+            yanked: false,
+            pubtime: '2026-10-20T00:00:00Z',
+          })))
+        : Response.json(url.includes('/dependencies')
+            ? { dependencies: [] }
+            : {
+                time: { '2.13.0': '2026-10-20T00:00:00Z' },
+              }),
     })
     const source = String.raw`
       const root=process.argv[1];
@@ -358,7 +387,10 @@ describe('renovate policy with the pinned engine', () => {
       const native=await detectVulnerabilityAlerts(config);
       const dep=await applyPackageRules({...native,manager:'cargo',datasource:'crate',packageFile:'desktop/rust/Cargo.toml',packageName:'tauri',depName:'tauri',currentVersion:'2.11.3',currentValue:'2'});
       const major=mergeChildConfig(dep,dep.major);
-      console.log(JSON.stringify({constraint:dep.allowedVersions,firstFixed:dep.vulnerabilityFixVersion,safe:cargo.matches('2.13.2',dep.allowedVersions),unsafe:cargo.matches('2.13.0',dep.allowedVersions),later:cargo.matches('2.13.3',dep.allowedVersions),approval:major.dependencyDashboardApproval,age:major.minimumReleaseAge,schedule:major.schedule}));
+      const {compile}=await engine('util/template/index.js');
+      const routine=await applyPackageRules({...config,manager:'cargo',datasource:'crate',packageFile:'desktop/rust/Cargo.toml',packageName:'serde',depName:'serde',currentVersion:'1.0.0',currentValue:'1'});
+      const render=upgrade=>(upgrade.prBodyNotes??[]).map(note=>compile(note,upgrade).trim()).filter(Boolean);
+      console.log(JSON.stringify({constraint:dep.allowedVersions,firstFixed:dep.vulnerabilityFixVersion,safe:cargo.matches('2.13.2',dep.allowedVersions),unsafe:cargo.matches('2.13.0',dep.allowedVersions),later:cargo.matches('2.13.3',dep.allowedVersions),approval:major.dependencyDashboardApproval,age:major.minimumReleaseAge??null,schedule:major.schedule,notes:render(dep),routineNotes:render(routine)}));
     `
     const result = spawnSync('node', [
       '--input-type=module',
@@ -375,16 +407,59 @@ describe('renovate policy with the pinned engine', () => {
       env: { ...process.env, LOG_LEVEL: 'fatal', LOG_FORMAT: 'json' },
     })
     expect(result.status, result.stderr).toBe(0)
-    expect(JSON.parse(result.stdout)).toEqual({
+    const { notes, routineNotes, ...rule } = JSON.parse(result.stdout)
+    expect(rule).toEqual({
       constraint: '=2.13.2',
       firstFixed: '2.12.0',
       safe: true,
       unsafe: false,
       later: false,
       approval: false,
-      age: '3 days',
+      age: '2 hours',
       schedule: [],
     })
+    // The repository note joins the advisory notes. It must not replace them.
+    expect(notes.some(note => note.includes('Fixture advisory') && note.includes('GHSA-fixture-code-test')), JSON.stringify(notes)).toBe(true)
+    expect(notes.filter(note => note.startsWith('Renovate proposes this security fix once the patched version is two hours old.'))).toHaveLength(1)
+    expect(routineNotes).toEqual([])
+  })
+  it('proposes a security fix once it is two hours old, or without a timestamp, while routine updates still wait', async () => {
+    const settings = {
+      currentVersion: '1.0.0',
+      depName: 'fixture',
+      packageName: 'fixture',
+      datasource: 'npm',
+    }
+    const hoursAgo = hours => new Date(Date.now() - hours * 3600000).toISOString()
+    const young = {
+      version: '2.0.0',
+      releaseTimestamp: hoursAgo(1),
+    }
+    const aged = {
+      version: '2.0.1',
+      releaseTimestamp: hoursAgo(3),
+    }
+    const missing = { version: '2.0.2' }
+    const security = mergeChildConfig(mergeChildConfig(config(), { isVulnerabilityAlert: true, force: config().vulnerabilityAlerts }), settings)
+    const routine = mergeChildConfig(config(), settings)
+    expect((await filterInternalChecks(security, get('semver'), 'major', [young])).pendingChecks).toBe(true)
+    for (const candidate of [aged, missing]) {
+      const proposed = await filterInternalChecks(security, get('semver'), 'major', [candidate])
+      expect(proposed.pendingChecks, candidate.version).toBe(false)
+      expect(proposed.release.version).toBe(candidate.version)
+    }
+    for (const candidate of [young, aged, missing]) {
+      const waiting = await filterInternalChecks(routine, get('semver'), 'major', [candidate])
+      expect(waiting.pendingChecks, candidate.version).toBe(true)
+    }
+  })
+  it('holds a security fix to at least the age under which Renovate aborts the run on failed artifacts', () => {
+    // Renovate throws a lockfile error, which ends the whole run, when the artifacts of a
+    // new branch fail and its release is younger than these two hours. No option changes it.
+    const branch = readFileSync(resolve(root, '.github/renovate/node_modules/renovate/dist/workers/repository/update/branch/index.js'), 'utf8')
+    const abort = /plus\(\{ hours: (\d+) \}\)[\s\S]{0,400}throw new Error\(MANAGER_LOCKFILE_ERROR\)/.exec(branch)
+    expect(abort, 'Renovate moved the lockfile-error abort of a young branch').not.toBeNull()
+    expect(securityReleaseAgeMs(policy)).toBeGreaterThanOrEqual(Number(abort[1]) * 3600000)
   })
   it('filters pending releases even when no older candidate exists', async () => {
     const settings = {
@@ -414,17 +489,27 @@ describe('renovate policy with the pinned engine', () => {
     expect(result.release.version).toBe('2.0.0')
     expect(result.pendingChecks).toBe(false)
   })
-  it('uses the Monday 02:00 through 06:00 Seoul window and the daily 03:17 trigger', () => {
-    expect(hasValidSchedule(policy.schedule)[0]).toBe(true)
-    for (const [iso, expected] of [
-      ['2026-10-25T16:59:00Z', false],
-      ['2026-10-25T17:00:00Z', true],
-      ['2026-10-25T18:17:00Z', true],
-      ['2026-10-25T20:59:00Z', true],
-      ['2026-10-25T21:00:00Z', false],
-      ['2026-10-26T18:17:00Z', false],
-    ])
-      expect(cronMatches(policy.schedule[0], DateTime.fromISO(iso), policy.timezone), iso).toBe(expected)
+  it('creates routine and lockfile branches on every daily run despite a delayed start', () => {
+    const maintenance = mergeChildConfig(config(), config().lockFileMaintenance)
+    // GitHub starts the 03:17 Seoul trigger about four hours late. In Seoul these
+    // instants are Monday 07:20, Thursday 07:45, and Saturday 15:00. Each one
+    // falls outside the old Monday 02:00 through 06:00 window.
+    try {
+      for (const iso of ['2026-11-01T22:20:00Z', '2026-10-28T22:45:57Z', '2026-10-31T06:00:00Z']) {
+        setSystemTime(new Date(iso))
+        expect(isScheduledNow(config()), iso).toBe(true)
+        expect(isScheduledNow(maintenance, 'schedule'), iso).toBe(true)
+      }
+    }
+    finally {
+      setSystemTime()
+    }
+    // A rule with its own window would hide its branches from the dry run that measures the
+    // queue, so no rule and no manager may set one.
+    for (const [index, packageRule] of policy.packageRules.entries())
+      expect(packageRule.schedule, `packageRules[${index}]`).toBeUndefined()
+    for (const manager of policy.enabledManagers)
+      expect(policy[manager]?.schedule, manager).toBeUndefined()
     const workflow = Bun.YAML.parse(readFileSync(resolve(root, '.github/workflows/renovate.yaml'), 'utf8'))
     const now = DateTime.fromISO('2026-10-26T18:17:00Z')
     expect(cronMatches(workflow.on.schedule[0].cron, now, 'UTC')).toBe(true)

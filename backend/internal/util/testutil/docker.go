@@ -1,16 +1,55 @@
 package testutil
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 )
 
-// ConfigureDockerHost sets the DOCKER_HOST and TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE
-// environment variables for testcontainers-go, auto-detecting the Docker socket path.
-// Call this at the start of integration tests that use testcontainers.
-func ConfigureDockerHost(t *testing.T) {
+// SkipDockerEnv turns off every test that needs Docker. `task test-no-docker`
+// and the native CI jobs set it to 1, and the Linux amd64 job runs the
+// container tests instead. A macOS runner has no Docker daemon, and the Docker
+// daemon of a Windows runner runs no Linux container.
+const SkipDockerEnv = "LEAPMUX_TEST_SKIP_DOCKER"
+
+// RequireDocker prepares a test that runs a container. It skips the test when
+// SkipDockerEnv is true. Otherwise it sets the DOCKER_HOST and
+// TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE environment variables for
+// testcontainers-go, and detects the path of the Docker socket.
+//
+// Call it before the test starts a container. storetest.SQLContainer calls it,
+// and the depguard rule in .golangci.yml permits testcontainers-go in no other
+// file, so every test that starts a container skips under SkipDockerEnv.
+func RequireDocker(t *testing.T) {
+	t.Helper()
+	skip, err := dockerSkipped(os.Getenv(SkipDockerEnv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skip {
+		t.Skipf("%s is set, so this run has no Docker daemon", SkipDockerEnv)
+	}
+	configureDockerHost(t)
+}
+
+// dockerSkipped reads the value of SkipDockerEnv. An empty value requires
+// Docker. It returns an error for a value that is not a boolean, because a
+// mistyped value must not make the run require Docker without a notice.
+func dockerSkipped(value string) (bool, error) {
+	if value == "" {
+		return false, nil
+	}
+	skip, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean such as 1 or 0, not %q", SkipDockerEnv, value)
+	}
+	return skip, nil
+}
+
+func configureDockerHost(t *testing.T) {
 	t.Helper()
 
 	// If DOCKER_HOST is already set, respect it.

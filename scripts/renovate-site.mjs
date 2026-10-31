@@ -22,6 +22,7 @@ export function configurationModulePins(configuration, metadata) {
 }
 
 export function refreshSite({ root, run, read = path => readFileSync(resolve(root, path), 'utf8'), write = (path, content) => writeFileSync(resolve(root, path), content) }) {
+  // The site module is outside the Go workspace, so its commands disable it.
   const options = {
     cwd: 'site',
     env: { GOWORK: 'off' },

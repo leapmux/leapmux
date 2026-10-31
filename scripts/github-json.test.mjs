@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { readGithubJsonResponse } from './github-json.mjs'
+import { nextGithubPage, readGithubJsonResponse } from './github-json.mjs'
 
 describe('readGithubJsonResponse', () => {
   it('uses an explicit GET, repository path, authentication, API version, and deadline', async () => {
@@ -47,5 +47,34 @@ describe('readGithubJsonResponse', () => {
         throw new Error('transport failed')
       },
     })).rejects.toThrow('transport failed')
+  })
+})
+
+describe('nextGithubPage', () => {
+  const accept = url => url.pathname === '/items' && url.searchParams.has('after')
+  it('returns the sorted path of the next link, and null without a next link', () => {
+    expect(nextGithubPage('<https://api.github.com/items?z=1&after=c>; rel="next", <https://api.github.com/items?after=a>; rel="prev"', accept)).toBe('/items?after=c&z=1')
+    expect(nextGithubPage('</items?after=c>; rel=next', accept)).toBe('/items?after=c')
+    expect(nextGithubPage('<https://api.github.com/items?after=c>; rel="last next"', accept)).toBe('/items?after=c')
+    expect(nextGithubPage('<https://api.github.com/items?after=a>; rel="prev"', accept)).toBeNull()
+    for (const header of [null, undefined, ''])
+      expect(nextGithubPage(header, accept), String(header)).toBeNull()
+  })
+  it('rejects a malformed header', () => {
+    for (const header of ['invalid link header', '<https://api.github.com/items?after=c>', '<https://api.github.com/items?after=c>; next'])
+      expect(() => nextGithubPage(header, accept), header).toThrow('Invalid GitHub pagination header.')
+    expect(() => nextGithubPage('<http://[::1>; rel="next"', accept)).toThrow('Invalid GitHub pagination URL.')
+  })
+  it('rejects a link that leaves the API, carries credentials or a fragment, repeats next, or that the caller refuses', () => {
+    for (const header of [
+      '<https://other.invalid/items?after=c>; rel="next"',
+      '<http://api.github.com/items?after=c>; rel="next"',
+      '<https://user:secret@api.github.com/items?after=c>; rel="next"',
+      '<https://api.github.com/items?after=c#fragment>; rel="next"',
+      '<https://api.github.com/other?after=c>; rel="next"',
+      '<https://api.github.com/items>; rel="next"',
+      '<https://api.github.com/items?after=c>; rel="next", <https://api.github.com/items?after=d>; rel="next"',
+    ])
+      expect(() => nextGithubPage(header, accept), header).toThrow('Unsafe or ambiguous GitHub pagination link.')
   })
 })

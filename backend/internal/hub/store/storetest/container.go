@@ -1,5 +1,3 @@
-//go:build integration
-
 package storetest
 
 import (
@@ -68,9 +66,11 @@ type SQLContainer struct {
 
 // Start boots the container, waits until it answers SQL, and returns the mapped
 // host and port as plain strings. The container is terminated on test cleanup.
+// Start skips the test when testutil.SkipDockerEnv is true (see
+// testutil.RequireDocker).
 func (c SQLContainer) Start(t *testing.T) (host, port string) {
 	t.Helper()
-	testutil.ConfigureDockerHost(t)
+	testutil.RequireDocker(t)
 
 	// One number, two spellings, derived rather than retyped. A mistyped port
 	// in the readiness strategy used to burn the full 60-second startup budget
@@ -88,7 +88,11 @@ func (c SQLContainer) Start(t *testing.T) (host, port string) {
 		},
 		Started: true,
 	})
-	require.NoError(t, err)
+	// testcontainers-go tries rootless Docker last, so a host without any
+	// Docker daemon fails with "rootless Docker not found". State the fix.
+	require.NoError(t, err,
+		"Cannot start the %s container. This test needs a Docker daemon that runs Linux containers. Set %s=1 to skip the tests that need Docker.",
+		c.Image, testutil.SkipDockerEnv)
 	t.Cleanup(func() { _ = container.Terminate(ctx) })
 
 	host, err = container.Host(ctx)

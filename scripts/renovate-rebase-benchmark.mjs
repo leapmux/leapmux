@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
 import { spawnSync } from 'node:child_process'
-import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { delimiter, join, resolve } from 'node:path'
 import process from 'node:process'
 import { validateUpgrades } from './renovate-post-upgrade.mjs'
+import { toolShimPaths } from './renovate-shims.mjs'
 import { runWithTimeout } from './run-renovate.mjs'
 
 const MAX_QUEUE_MS = 40 * 60 * 1000
@@ -18,7 +19,7 @@ export function representativeQueueDuration(cliMs, benchmarkMs) {
 }
 
 export function selectRebaseUpgrades(records, timings) {
-  if (!records.some(record => record.msg === 'Env config' && record.config?.dryRun === 'full' && Array.isArray(record.config.force?.schedule) && record.config.force.schedule.length === 0))
+  if (!records.some(record => record.msg === 'Env config' && record.config?.dryRun === 'full'))
     throw new Error('Rebase measurements require a verified full dry run.')
   const passed = new Set(timings.filter(timing => timing.status === 'passed').flatMap(timing => timing.branches))
   for (const branch of ['renovate/go-security', 'renovate/go-workspace']) {
@@ -90,6 +91,25 @@ function git(cwd, args, input) {
   return result.stdout
 }
 
+/**
+ * Return the environment of a measured post-upgrade. Renovate runs the post-upgrade with
+ * the tool shims of its run first on PATH, so the measurement does too, when the dry run
+ * left them.
+ */
+export function postUpgradeEnvironment(trusted, metadata, environment = benchmarkEnvironment()) {
+  const shims = toolShimPaths(trusted).bin
+  return {
+    ...environment,
+    ...(existsSync(join(shims, 'bun'))
+      ? {
+          PATH: [shims, environment.PATH].filter(Boolean).join(delimiter),
+        }
+      : {}),
+    RENOVATE_TRUSTED_ROOT: trusted,
+    RENOVATE_POST_UPGRADE_COMMAND_DATA_FILE: metadata,
+  }
+}
+
 async function executePostUpgrade(root, trusted, upgrades, log) {
   const metadata = resolve(root, '.tmp/benchmark-upgrades.json')
   mkdirSync(resolve(root, '.tmp'), { recursive: true })
@@ -100,11 +120,7 @@ async function executePostUpgrade(root, trusted, upgrades, log) {
       resolve(trusted, 'scripts/renovate-post-upgrade.mjs'),
     ], {
       cwd: root,
-      env: {
-        ...benchmarkEnvironment(),
-        RENOVATE_TRUSTED_ROOT: trusted,
-        RENOVATE_POST_UPGRADE_COMMAND_DATA_FILE: metadata,
-      },
+      env: postUpgradeEnvironment(trusted, metadata),
       stdio: ['ignore', descriptor, descriptor],
       timeoutMs: 8 * 60 * 1000,
     })

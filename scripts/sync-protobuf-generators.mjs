@@ -27,6 +27,8 @@ export function synchronizeGenerators(config, goMetadata, frontend) {
     }
     versions.set(generator, selected.Version)
   }
+  // The frontend pins the protobuf runtime exactly, so lockfile maintenance cannot move
+  // it apart from the generator version that this derives from it.
   const es = frontend?.dependencies?.['@bufbuild/protobuf']
   if (!/^\d+\.\d+\.\d+$/.test(es ?? ''))
     throw new Error('@bufbuild/protobuf requires an exact version.')

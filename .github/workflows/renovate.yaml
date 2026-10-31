@@ -67,8 +67,8 @@ jobs:
       - name: Compile trusted import helper
         run: task build-dependency-imports
 
-      - name: Validate PR detail renderer
-        run: task test-scripts -- ./scripts/renovate-pr-details.test.mjs
+      - name: Validate Renovate renderers
+        run: task test-scripts -- ./scripts/renovate-pr-details.test.mjs ./scripts/renovate-dashboard.test.mjs
 
       - name: Create read-only installation token
         id: read
@@ -155,6 +155,7 @@ jobs:
             .tmp/renovate-execution.jsonl
             .tmp/renovate-cli.log
             .tmp/renovate-pr-details.jsonl
+            .tmp/renovate-shims/invocations.jsonl
             .tmp/renovate-rebase-benchmark.json
             .tmp/renovate-rebase/*.log
             .tmp/renovate-run/**/*.log

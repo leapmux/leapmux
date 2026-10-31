@@ -57,6 +57,8 @@ export async function postUpgrade(upgrades, { root = process.cwd(), trusted = pr
       env: {
         ...process.env,
         ...(options.env ?? {}),
+        // A Go requirement that the installed toolchain cannot meet fails. Go never
+        // downloads a different toolchain here.
         GOTOOLCHAIN: 'local',
       },
       maxBuffer: 64 * 1024 * 1024,
@@ -72,6 +74,8 @@ export async function postUpgrade(upgrades, { root = process.cwd(), trusted = pr
     }
     return result.stdout ?? ''
   })
+  // A toolchain branch only rewrites the documented versions. CI installs and validates
+  // the proposed toolchain.
   if (toolchain) {
     run('task', ['sync-versions'])
     return

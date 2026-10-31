@@ -1,24 +1,22 @@
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { delimiter, resolve } from 'node:path'
 import process from 'node:process'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'bun:test'
 import { renovateModule } from './renovate-engine.mjs'
 import { securityCompanions } from './renovate-prepare.mjs'
 import { CLAIMS } from './sync-versions.mjs'
+import { scratchDirectories } from './test-support.mjs'
 
 const { init: initializeRenovateLogger } = await renovateModule('logger/index.js')
 await initializeRenovateLogger()
 
 const root = resolve(import.meta.dirname, '..')
-const fixtures = []
-afterEach(() => {
-  for (const fixture of fixtures.splice(0)) rmSync(fixture, { recursive: true, force: true })
-})
+const scratch = scratchDirectories()
+afterEach(scratch.cleanup)
 function fixtureDirectory(packageRules = []) {
-  mkdirSync(resolve(root, '.tmp'), { recursive: true })
-  const dir = mkdtempSync(resolve(root, '.tmp/renovate-config-'))
-  fixtures.push(dir)
+  const dir = scratch.create('renovate-config')
   mkdirSync(resolve(dir, '.tmp'))
   writeFileSync(resolve(dir, 'renovate.json'), readFileSync(resolve(root, 'renovate.json')))
   writeFileSync(resolve(dir, '.tmp/renovate-prepared.json'), JSON.stringify({
@@ -27,16 +25,25 @@ function fixtureDirectory(packageRules = []) {
   }))
   return dir
 }
-function fixtureConfig(packageRules = []) {
-  const dir = fixtureDirectory(packageRules)
-  const result = spawnSync('node', [
+function loadConfig(dir, env = {}) {
+  // A shim directory of the caller's own run must not reach the fixture.
+  const inherited = { ...process.env }
+  delete inherited.LEAPMUX_TOOL_SHIMS
+  return spawnSync('node', [
     '-e',
-    'process.stdout.write(JSON.stringify(require(process.argv[1])))',
+    'require(process.argv[1])().then(config => process.stdout.write(JSON.stringify(config)))',
     resolve(root, '.github/renovate-config.cjs'),
   ], {
     encoding: 'utf8',
-    env: { ...process.env, RENOVATE_TRUSTED_ROOT: dir },
+    env: {
+      ...inherited,
+      RENOVATE_TRUSTED_ROOT: dir,
+      ...env,
+    },
   })
+}
+function fixtureConfig(packageRules = [], env = {}) {
+  const result = loadConfig(fixtureDirectory(packageRules), env)
   expect(result.status, result.stderr).toBe(0)
   return JSON.parse(result.stdout)
 }
@@ -53,7 +60,7 @@ describe('trusted Renovate configuration', () => {
       const {GlobalConfig}=await engine('config/global.js');
       const {mergeRenovateConfig}=await engine('workers/repository/init/merge.js');
       const {branchifyUpgrades}=await engine('workers/repository/updates/branchify.js');
-      const parsedGlobal=await parseConfigs({RENOVATE_CONFIG_FILE:resolve(root,'.github/renovate-config.cjs'),RENOVATE_DRY_RUN:'full',RENOVATE_FORCE:'{"schedule":[]}'},['node','renovate']);
+      const parsedGlobal=await parseConfigs({RENOVATE_CONFIG_FILE:resolve(root,'.github/renovate-config.cjs'),RENOVATE_DRY_RUN:'full'},['node','renovate']);
       const config=await mergeRenovateConfig({...GlobalConfig.set(parsedGlobal),repository:'leapmux/leapmux',errors:[],warnings:[]});
       const dep=(depName,sourceUrl)=>({depName,packageName:depName,sourceUrl,depType:'dependencies',currentValue:'1.0.0',updates:[{updateType:'minor',newValue:'1.1.0',newVersion:'1.1.0'}]});
       const {branches}=await branchifyUpgrades({...config,repoIsOnboarded:true},{bun:[{packageFile:'frontend/package.json',deps:[dep('@tauri-apps/api','https://github.com/tauri-apps/tauri'),dep('@xterm/xterm','https://github.com/xtermjs/xterm.js')]}],cargo:[{packageFile:'desktop/rust/Cargo.toml',deps:[dep('tauri','https://github.com/tauri-apps/tauri')]}]});
@@ -77,7 +84,7 @@ describe('trusted Renovate configuration', () => {
     const { titles, ...configuration } = JSON.parse(result.stdout)
     expect(configuration).toEqual({
       dryRun: 'full',
-      schedule: [],
+      schedule: ['at any time'],
       groups: [
         {
           group: 'frontend',
@@ -94,31 +101,61 @@ describe('trusted Renovate configuration', () => {
       expect(title.length).toBeLessThan(72)
     }
   })
-  it('passes dry-run flags and schedule overrides to the actual Task command', () => {
-    const directory = mkdtempSync(resolve(root, '.tmp/renovate-task-env-'))
-    fixtures.push(directory)
+  it('passes dry-run flags and no schedule override to the actual Task command', () => {
+    const directory = scratch.create('renovate-task-env')
     mkdirSync(resolve(directory, 'scripts'))
     const tasks = Bun.YAML.parse(readFileSync(resolve(root, 'Taskfile.yaml'), 'utf8')).tasks
     writeFileSync(resolve(directory, 'Taskfile.yaml'), Bun.YAML.stringify({
       version: '3',
       tasks: { 'renovate': tasks.renovate, 'renovate-dry-run': tasks['renovate-dry-run'] },
     }))
-    writeFileSync(resolve(directory, 'scripts/run-renovate.mjs'), `import {writeFileSync} from 'node:fs'; writeFileSync('environment.json',JSON.stringify({dryRun:process.env.RENOVATE_DRY_RUN??null,force:process.env.RENOVATE_FORCE??null,config:process.env.RENOVATE_CONFIG_FILE,format:process.env.LOG_FORMAT}));`)
+    writeFileSync(resolve(directory, 'scripts/run-renovate.mjs'), `import {writeFileSync} from 'node:fs'; writeFileSync('environment.json',JSON.stringify({dryRun:process.env.RENOVATE_DRY_RUN??null,force:process.env.RENOVATE_FORCE??null,config:process.env.RENOVATE_CONFIG_FILE,format:process.env.LOG_FORMAT,trusted:process.env.RENOVATE_TRUSTED_ROOT??null,level:process.env.LOG_LEVEL??null}));`)
     const env = { ...process.env }
-    delete env.RENOVATE_DRY_RUN
-    delete env.RENOVATE_FORCE
+    for (const key of [
+      'RENOVATE_DRY_RUN',
+      'RENOVATE_FORCE',
+      'RENOVATE_TRUSTED_ROOT',
+      'LOG_LEVEL',
+    ])
+      delete env[key]
     for (const target of ['renovate-dry-run', 'renovate']) {
       const result = spawnSync('task', [target], { cwd: directory, env, encoding: 'utf8' })
       expect(result.status, result.stderr).toBe(0)
       const captured = JSON.parse(readFileSync(resolve(directory, 'environment.json'), 'utf8'))
       expect(captured.config).toBe('.github/renovate-config.cjs')
       expect(captured.format).toBe('json')
+      expect(captured.trusted).toBe(directory)
+      expect(captured.level).toBe('debug')
       expect(captured.dryRun).toBe(target === 'renovate-dry-run'
         ? 'full'
         : null)
-      expect(captured.force && JSON.parse(captured.force)).toEqual(target === 'renovate-dry-run'
-        ? { schedule: [] }
-        : null)
+      expect(captured.force).toBeNull()
+    }
+  })
+  // Renovate runs only on Linux, and install-renovate skips the RE2 build on Windows.
+  it.skipIf(process.platform === 'win32')('loads the compiled RE2 engine instead of the JavaScript RegExp fallback', () => {
+    const regex = resolve(root, '.github/renovate/node_modules/renovate/dist/util/regex.js')
+    const source = `const {regexEngineStatus}=await import(${JSON.stringify(pathToFileURL(regex).href)}); console.log(JSON.stringify(regexEngineStatus))`
+    const env = { ...process.env }
+    delete env.RENOVATE_X_IGNORE_RE2
+    const result = spawnSync('node', ['--input-type=module', '-e', source], { encoding: 'utf8', env })
+    expect(result.status, result.stderr).toBe(0)
+    expect(JSON.parse(result.stdout)).toEqual({ type: 'available' })
+  })
+  it('keeps a Bun process away from the Node RE2 addon and restores the switch for child processes', () => {
+    const engine = new URL('./renovate-engine.mjs', import.meta.url).href
+    const source = `const {renovateModule}=await import(${JSON.stringify(engine)}); const [{regexEngineStatus}]=await Promise.all([renovateModule('util/regex.js'),renovateModule('logger/index.js')]); console.log(JSON.stringify({status:regexEngineStatus,env:process.env.RENOVATE_X_IGNORE_RE2??null}))`
+    for (const previous of [undefined, 'custom']) {
+      const env = { ...process.env }
+      delete env.RENOVATE_X_IGNORE_RE2
+      if (previous !== undefined)
+        env.RENOVATE_X_IGNORE_RE2 = previous
+      const result = spawnSync(process.execPath, ['-e', source], { encoding: 'utf8', env })
+      expect(result.status, result.stderr).toBe(0)
+      expect(JSON.parse(result.stdout)).toEqual({
+        status: { type: 'ignored' },
+        env: previous ?? null,
+      })
     }
   })
   it('loads the pinned engine through the shared resolver under Node', () => {
@@ -126,6 +163,18 @@ describe('trusted Renovate configuration', () => {
     const result = spawnSync('node', ['--input-type=module', '-e', source], { encoding: 'utf8' })
     expect(result.status, result.stderr).toBe(0)
     expect(JSON.parse(result.stdout)).toBe(true)
+  })
+  it('fails the run with an error-specific code when a repository run ends in a host or lockfile error', async () => {
+    const config = fixtureConfig()
+    expect(config.exitCodeForErrors).toBe(true)
+    const { processResult } = await renovateModule('workers/repository/result.js')
+    for (const result of ['external-host-error', 'lockfile-error'])
+      expect(processResult({ repoIsOnboarded: true }, result).exitCode, result).toBe(7)
+    expect(processResult({ repoIsOnboarded: true }, 'done').exitCode).toBe(0)
+    const { validateConfig } = await renovateModule('config/validation.js')
+    const validation = await validateConfig('global', config)
+    expect(validation.errors).toEqual([])
+    expect(validation.warnings).toEqual([])
   })
   it('validates a nonempty security configuration with the pinned global validator', async () => {
     const policy = JSON.parse(readFileSync(resolve(root, 'renovate.json'), 'utf8'))
@@ -163,7 +212,13 @@ describe('trusted Renovate configuration', () => {
       'desktop/go/example.go',
     ])
       expect(config.postUpgradeTasks.fileFilters).toContain(path)
+    // Renovate's bun manager commits these lockfiles as its own artifacts. No post-upgrade
+    // task writes them, so the post-upgrade tasks must not commit them either.
     for (const path of [
+      '.github/renovate/package.json',
+      '.github/renovate/bun.lock',
+      'site/package.json',
+      'site/bun.lock',
       'go.work.sum',
       'backend/generated/example.go',
       'backend/internal/hub/generated/frontend/embed.go',
@@ -174,7 +229,98 @@ describe('trusted Renovate configuration', () => {
     expect(config.allowScripts).toBe(false)
     expect(config.exposeAllEnv).toBe(false)
     expect(config.customEnvVariables.GOTOOLCHAIN).toBe('local')
+    // Without the shims of run-renovate.mjs, as for the validator, the child PATH stays as it is.
+    expect(config.customEnvVariables.PATH).toBeUndefined()
     expect(config.requireConfig).toBe('ignored')
+    expect(config.dependencyDashboardFooter).toBe('{{{leapmuxSkippedDependencies}}}')
+  })
+  it('puts the shims that run-renovate.mjs wrote first on the child PATH, and rejects a directory without them', () => {
+    const shims = resolve(fixtureDirectory(), '.tmp/renovate-shims/bin')
+    mkdirSync(shims, { recursive: true })
+    writeFileSync(resolve(shims, 'bun'), '')
+    const missing = loadConfig(fixtureDirectory(), { LEAPMUX_TOOL_SHIMS: shims })
+    expect(missing.status).not.toBe(0)
+    expect(missing.stderr).toContain('LEAPMUX_TOOL_SHIMS must give a directory that holds the bun and cargo shims')
+    writeFileSync(resolve(shims, 'cargo'), '')
+    const config = fixtureConfig([], { LEAPMUX_TOOL_SHIMS: shims })
+    // The shims lead the PATH of every child process, ahead of the inherited entries.
+    const [first, ...inherited] = config.customEnvVariables.PATH.split(delimiter)
+    expect(first).toBe(shims)
+    expect(inherited.join(delimiter)).toBe(process.env.PATH)
+    expect(loadConfig(fixtureDirectory(), { LEAPMUX_TOOL_SHIMS: 'relative/bin' }).status).not.toBe(0)
+  })
+  it('keeps the log remaps and the dashboard footer of the repository policy', () => {
+    const dir = fixtureDirectory()
+    const policy = JSON.parse(readFileSync(resolve(dir, 'renovate.json'), 'utf8'))
+    writeFileSync(resolve(dir, 'renovate.json'), JSON.stringify({
+      ...policy,
+      logLevelRemap: [
+        { matchMessage: 'Repository remap', newLogLevel: 'info' },
+      ],
+      dependencyDashboardFooter: 'Repository footer',
+    }))
+    const result = loadConfig(dir)
+    expect(result.status, result.stderr).toBe(0)
+    const config = JSON.parse(result.stdout)
+    expect(config.logLevelRemap.map(remap => remap.matchMessage)).toEqual([
+      'Could not re-extract the packageFile after updating it',
+      'Repository remap',
+    ])
+    expect(config.dependencyDashboardFooter).toBe('Repository footer\n\n{{{leapmuxSkippedDependencies}}}')
+  })
+  it('renders the Skipped Dependencies footer with the alerts of the prepared file', () => {
+    const dir = fixtureDirectory()
+    writeFileSync(resolve(dir, '.tmp/renovate-prepared.json'), JSON.stringify({
+      packageRules: [],
+      importFiles: [],
+      alerts: [
+        {
+          state: 'open',
+          dependency: { manifest_path: 'desktop/rust/Cargo.lock' },
+          security_advisory: { ghsa_id: 'GHSA-wrw7-89jp-8q8g' },
+          security_vulnerability: {
+            package: { name: 'glib', ecosystem: 'rust' },
+            vulnerable_version_range: '>= 0.15.0, < 0.20.0',
+            first_patched_version: { identifier: '0.20.0' },
+          },
+        },
+      ],
+    }))
+    const source = `
+      const [root,file]=process.argv.slice(1);
+      const {createRequire}=await import('node:module'); const {pathToFileURL}=await import('node:url'); const {resolve}=await import('node:path');
+      const engine=p=>import(pathToFileURL(resolve(root,'.github/renovate/node_modules/renovate/dist',p)).href);
+      await (await engine('logger/index.js')).init();
+      const config=await createRequire(file)(file)();
+      const {PackageFiles}=await engine('workers/repository/package-files.js');
+      const {compile}=await engine('util/template/index.js');
+      PackageFiles.add('main',{cargo:[{packageFile:'desktop/rust/Cargo.toml',deps:[]}]});
+      console.log(JSON.stringify(compile(config.dependencyDashboardFooter,config)));
+    `
+    const result = spawnSync('node', [
+      '--input-type=module',
+      '-e',
+      source,
+      root,
+      resolve(root, '.github/renovate-config.cjs'),
+    ], {
+      encoding: 'utf8',
+      env: { ...process.env, RENOVATE_TRUSTED_ROOT: dir, LOG_LEVEL: 'fatal' },
+    })
+    expect(result.status, result.stderr).toBe(0)
+    expect(JSON.parse(result.stdout)).toStartWith('## Skipped Dependencies\n\n<details><summary>Security alerts without a proposed fix (1)</summary>\n\n- `glib` in `desktop/rust/Cargo.lock`')
+  })
+  it('lowers the Bun re-extraction warning, which the shims and the release-age check replace', async () => {
+    const config = fixtureConfig()
+    const { getRemappedLevel, resetGlobalLogLevelRemaps, setGlobalLogLevelRemaps } = await renovateModule('logger/remap.js')
+    try {
+      setGlobalLogLevelRemaps(config.logLevelRemap)
+      expect(getRemappedLevel('Could not re-extract the packageFile after updating it')).toBe('debug')
+      expect(getRemappedLevel('Could not re-extract the packageFile')).toBeNull()
+    }
+    finally {
+      resetGlobalLogLevelRemaps()
+    }
   })
   it('allows only the exact trusted command and renders structured metadata with the pinned engine', async () => {
     const config = fixtureConfig()

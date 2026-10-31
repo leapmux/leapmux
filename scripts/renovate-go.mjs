@@ -1,5 +1,6 @@
 import { resolve } from 'node:path'
 import process from 'node:process'
+import { newModulePath } from './go-module-path.mjs'
 import { DEPENDENCY_INPUT_FILES } from './renovate-inputs.mjs'
 import { refreshSite } from './renovate-site.mjs'
 
@@ -18,21 +19,6 @@ export function verifyReplacements(texts) {
   const versions = texts.map(replacementVersion)
   if (new Set(versions).size !== 1)
     throw new Error('Conflicting genproto replacements; both modules must change together before workspace commands.')
-}
-
-export function newModulePath(upgrade) {
-  const old = upgrade.depName
-  const major = Number(/^v(\d+)\./.exec(upgrade.newValue)?.[1])
-  if (!Number.isSafeInteger(major))
-    throw new TypeError(`Invalid Go module version: ${upgrade.newValue}`)
-  if (upgrade.newValue.endsWith('+incompatible'))
-    return old
-  if (old.startsWith('gopkg.in/'))
-    return old.replace(/\.v\d+(?:-unstable)?$/, `.v${major}`)
-  const base = old.replace(/\/v\d+$/, '')
-  return major >= 2
-    ? `${base}/v${major}`
-    : base
 }
 
 /** Prepare validated Go upgrades before any updated generator runs. */
@@ -88,6 +74,7 @@ export function prepareGoUpgrades(upgrades, { trusted, run, read }) {
   const unique = [
     ...changes.values(),
   ]
+  // Rewrite moved module paths in imports and tool directives before any metadata changes.
   run(resolve(trusted, `.tmp/leapmux-dependency-imports${process.platform === 'win32'
     ? '.exe'
     : ''}`), [], {
@@ -112,6 +99,8 @@ export function prepareGoUpgrades(upgrades, { trusted, run, read }) {
     })
   }
   if (hasWorkspaceGo) {
+    // go work sync refreshes go.work.sum. .gitignore and the post-upgrade file filters
+    // keep that file out of every commit.
     run('go', ['work', 'sync'])
     verifyReplacements(['backend/go.mod', 'desktop/go/go.mod'].map(read))
   }
@@ -121,6 +110,7 @@ export function prepareGoUpgrades(upgrades, { trusted, run, read }) {
 /** Generate and tidy only the graphs selected during preparation. */
 export function finishGoUpgrades({ hasWorkspaceGo, hasSiteGo }, { root, run, read, write }) {
   if (hasWorkspaceGo) {
+    // tidy reads the generated packages and the embedded assets, so they exist first.
     run('task', ['prepare-backend'])
     for (const cwd of ['backend', 'desktop/go'])
       run('go', ['mod', 'tidy'], { cwd })

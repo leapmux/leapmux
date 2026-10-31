@@ -62,19 +62,31 @@ vars:
 # --- Code Generation ---
 
 tasks:
-  install-renovate:
+  # Install scripts stay disabled for the whole Renovate tree. build-renovate-re2
+  # compiles only the RE2 sources that the frozen lockfile verified.
+  install-renovate-packages:
     desc: Install the complete pinned Renovate dependency tree without scripts
     cmds:
       - cd .github/renovate && bun install --frozen-lockfile --ignore-scripts
 
-  validate-standalone-tools:
-    desc: Install and validate proposed standalone JavaScript tools
+  install-renovate:
+    desc: Install the pinned Renovate tree and compile its RE2 engine
+    cmds:
+      - task: install-renovate-packages
+      # Renovate runs only on Linux, and Windows would need the MSVC toolchain.
+      # Without the native module, Renovate falls back to JavaScript RegExp.
+      - task: build-renovate-re2
+        if: '[ "{{OS}}" != "windows" ]'
+
+  validate-site-tools:
+    desc: Install the locked site tools as the site workflow does, and validate wrangler
+    dir: site
     env:
       CI: 'true'
       WRANGLER_SEND_METRICS: 'false'
     cmds:
-      - bunx node-gyp@{{.NODE_GYP_VERSION}} --version
-      - bunx wrangler@{{.WRANGLER_VERSION}} --version
+      - bun install --frozen-lockfile --ignore-scripts
+      - ./node_modules/.bin/wrangler --version
 
   lint-renovate:
     desc: Validate Renovate configuration with the pinned CLI
@@ -99,6 +111,12 @@ tasks:
       - task: install-renovate
       - bun scripts/renovate-prepare.mjs {{.CLI_ARGS}}
 
+  check-dependency-age:
+    desc: Reject a pull request whose lockfiles add a version younger than the minimum release age
+    deps: [install-renovate-packages]
+    cmds:
+      - bun scripts/check-dependency-age.mjs {{.CLI_ARGS}}
+
   check-renovate-protection:
     desc: Verify effective main protection before publishing
     cmds:
@@ -118,7 +136,9 @@ tasks:
     desc: Run the pinned CLI with a hard 50-minute execution limit
     env:
       RENOVATE_CONFIG_FILE: .github/renovate-config.cjs
+      RENOVATE_TRUSTED_ROOT: '{{.ROOT_DIR}}'
       LOG_FORMAT: json
+      LOG_LEVEL: debug
     cmds: &renovate_commands
       - node scripts/run-renovate.mjs
 
@@ -136,10 +156,10 @@ tasks:
     # Task's environment decoder does not expand YAML map merges.
     env:
       RENOVATE_CONFIG_FILE: .github/renovate-config.cjs
+      RENOVATE_TRUSTED_ROOT: '{{.ROOT_DIR}}'
       LOG_FORMAT: json
+      LOG_LEVEL: debug
       RENOVATE_DRY_RUN: full
-      # Exercise artifact generation even outside the routine publishing window.
-      RENOVATE_FORCE: '{"schedule":[]}'
     # Task does not pass a caller task's environment to a nested task invocation.
     cmds: *renovate_commands
 
@@ -406,6 +426,34 @@ tasks:
       - task: prepare-frontend
       - task: prepare-backend
       - task: prepare-desktop
+
+  build-renovate-re2:
+    desc: Compile Renovate's RE2 engine from the locked sources with the locked node-gyp
+    sources:
+      - scripts/task-state.mjs
+      - .github/renovate/bun.lock
+      - .github/renovate/node_modules/re2/package.json
+      - .github/renovate/node_modules/re2/binding.gyp
+      - .github/renovate/node_modules/re2/lib/**/*
+      - .github/renovate/node_modules/re2/vendor/**/*
+    vars:
+      JS_CONTEXT:
+        sh: *js_context_command
+      # Leave CXX unquoted: a compiler command with options, such as `ccache c++`, is valid
+      # for node-gyp and make, and must stay valid here.
+      CXX_CONTEXT:
+        sh: '${CXX:-c++} --version'
+      CACHE_CONTEXT: '{{.JS_CONTEXT}}/{{.CXX_CONTEXT}}/{{OS}}/{{ARCH}}'
+      OUTPUTS: &outputs_build_renovate_re2
+        - .github/renovate/node_modules/re2/build/Release/re2.node
+    generates: *outputs_build_renovate_re2
+    status: *artifact_status
+    cmds:
+      - *forget_artifacts
+      # Never run re2's install script: it downloads a prebuilt binary.
+      - cd .github/renovate/node_modules/re2 && node ../node-gyp/bin/node-gyp.js rebuild --jobs max
+      - cd .github/renovate && node -e "new (require('re2'))('.*').exec('test')"
+      - *record_artifacts
 
   # Scripts that need frontend/node_modules depend on this installation task.
   # They do not need the full frontend preparation. A contract validation must not render icons.
@@ -713,6 +761,7 @@ tasks:
     deps: [install-frontend-deps]
     sources:
       - versions.env
+      - frontend/bun.lock
       - scripts/task-state.mjs
       - frontend/node_modules/macos-alias/package.json
       - frontend/node_modules/macos-alias/binding.gyp
@@ -730,7 +779,8 @@ tasks:
     status: *artifact_status
     cmds:
       - *forget_artifacts
-      - cd frontend/node_modules/macos-alias && bunx node-gyp@{{.NODE_GYP_VERSION}} rebuild
+      # frontend/bun.lock locks node-gyp, so the release build resolves no tool from the network.
+      - cd frontend/node_modules/macos-alias && node ../node-gyp/bin/node-gyp.js rebuild
       - *record_artifacts
 
   build-desktop-darwin:
@@ -1104,7 +1154,7 @@ tasks:
       - task: prepare-backend
       - task: lint-backend
       # lint-backend already runs vet for each supported operating system.
-      - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -vet=off -tags integration {{.CLI_ARGS | default "./..."}}
+      - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -vet=off {{.CLI_ARGS | default "./..."}}
 
   test-backend-race:
     desc: Run backend tests under the race detector (defaults to the CRDT + hub service packages)
@@ -1117,7 +1167,7 @@ tasks:
       - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -race -count=1 {{.CLI_ARGS | default "./internal/hub/crdt/... ./internal/hub/service/..."}}
 
   test-backend-no-docker:
-    desc: Run backend tests, excluding Docker-backed storage backends
+    desc: Run backend tests, skipping the tests that need Docker
     cmds:
       - task: prepare-backend
       - task: lint-backend
@@ -1126,8 +1176,11 @@ tasks:
   test-backend-no-docker-run:
     internal: true
     deps: [prepare-backend]
+    env:
+      # storetest.SQLContainer skips each test that starts a container.
+      LEAPMUX_TEST_SKIP_DOCKER: '1'
     cmds:
-      - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -vet=off -tags integration $(go list -tags integration ./... | grep -vE 'internal/hub/store/(cockroachdb|mysql|postgres|tidb|yugabytedb)(/|$)')
+      - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -vet=off ./...
 
   test-desktop:
     desc: Run desktop tests
@@ -1141,7 +1194,7 @@ tasks:
     # Tauri validates the sidecar resources even in a test build.
     deps: [prepare-desktop, build-desktop-sidecar]
     cmds:
-      - cd desktop/go && go tool gotestsum --format pkgname-and-test-fails -- -vet=off -tags integration {{.CLI_ARGS | default "./..."}}
+      - cd desktop/go && go tool gotestsum --format pkgname-and-test-fails -- -vet=off {{.CLI_ARGS | default "./..."}}
       - cd desktop/rust && cargo test --locked
 
   test-native:
@@ -1184,9 +1237,9 @@ tasks:
       - task: test-desktop
 
   test-no-docker:
-    desc: Run all tests except Docker-backed storage backends
+    desc: Run all tests, skipping the backend tests that need Docker
     cmds:
-      # Exclude only storage tests that require Docker. Repository script tests require no Docker daemon.
+      # Skip only the backend tests that require Docker. Repository script tests require no Docker daemon.
       # Run schema validation first, as the test target does.
       - task: validate-json
       - task: test-scripts
@@ -1398,9 +1451,9 @@ tasks:
       # golangci-lint checks only the host build configuration.
       # An untagged caller can compile here but fail on Windows if its callee exists only in a Unix-tagged file.
       # Cross-platform go vet checks test files also. go build omits _test.go files and cannot detect that failure.
-      - cd backend && GOOS=windows go vet -tags integration ./...
-      - cd backend && GOOS=linux go vet -tags integration ./...
-      - cd backend && GOOS=darwin go vet -tags integration ./...
+      - cd backend && GOOS=windows go vet ./...
+      - cd backend && GOOS=linux go vet ./...
+      - cd backend && GOOS=darwin go vet ./...
       - *record_artifacts
 
   lint-desktop:
@@ -1445,9 +1498,9 @@ tasks:
       - *forget_artifacts
       - cd desktop/go && go tool golangci-lint run --allow-serial-runners ./...
       # Check the desktop's platform-specific files, including tests, as lint-backend does.
-      - cd desktop/go && GOOS=windows go vet -tags integration ./...
-      - cd desktop/go && GOOS=linux go vet -tags integration ./...
-      - cd desktop/go && GOOS=darwin go vet -tags integration ./...
+      - cd desktop/go && GOOS=windows go vet ./...
+      - cd desktop/go && GOOS=linux go vet ./...
+      - cd desktop/go && GOOS=darwin go vet ./...
       - cd desktop/rust && cargo clippy --all-targets -- -D warnings
       - *record_artifacts
 

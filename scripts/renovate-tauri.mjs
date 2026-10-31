@@ -1,7 +1,30 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { splitIdentity, validateAuthorizedMap } from './renovate-exemptions.mjs'
+import { bunIdentity, parseBunLock, parseCargoLock, parseCargoManifest } from './renovate-lockfile-versions.mjs'
 import { planTauriTargets } from './renovate-tauri-graph.mjs'
 import { matchesCargoRequirement, tauriMajorMinor } from './renovate-tauri-releases.mjs'
+
+/** The lockfiles of the Tauri pairs: the JavaScript side and the Rust side. */
+const TAURI_LOCKFILES = Object.freeze(['frontend/bun.lock', 'desktop/rust/Cargo.lock'])
+
+/**
+ * Return the authorized roots of the Tauri packages of `pairs`, with their closures, as
+ * `planTauriTargets` reads them. A root of another package never authorizes a Tauri
+ * release, because the plan can select only a Tauri root. The npm names and the crate
+ * names of the pairs differ, so the roots of the two lockfiles never collide.
+ */
+export function tauriAuthorizedRoots(authorized, pairs) {
+  const names = new Set(pairs.flatMap(pair => [pair.npm, pair.cargo]))
+  const roots = new Map()
+  for (const path of TAURI_LOCKFILES) {
+    for (const [root, closure] of Object.entries(authorized?.[path] ?? {})) {
+      if (names.has(splitIdentity(root).name))
+        roots.set(root, new Set(closure))
+    }
+  }
+  return roots
+}
 
 function cargoCompanion(name) {
   return name === '@tauri-apps/api'
@@ -24,23 +47,25 @@ function cargoDeclaration(manifest, name) {
 }
 
 export function tauriVersions(bunText, cargoText, cargoManifestText) {
-  const bun = Bun.JSON5.parse(bunText)
-  const cargo = Bun.TOML.parse(cargoText)
-  const npm = Object.fromEntries(Object.entries(bun.packages).filter(([name]) => /^@tauri-apps\/[^/]+$/.test(name)).map(([name, value]) => [
-    name,
-    value[0].slice(value[0].lastIndexOf('@') + 1),
-  ]))
+  const bun = parseBunLock(bunText)
+  const cargo = parseCargoLock(cargoText)
   const resolved = Object.fromEntries(cargo.package.filter(pkg => pkg.name.startsWith('tauri')).map(pkg => [pkg.name, pkg.version]))
+  const npm = {}
   const occurrences = { npm: {}, cargo: {} }
-  for (const value of Object.values(bun.packages)) {
-    const identity = value[0]
-    const split = identity.lastIndexOf('@')
-    const name = identity.slice(0, split)
-    if (name.startsWith('@tauri-apps/')) {
-      occurrences.npm[name] = [
+  for (const [key, value] of Object.entries(bun.packages)) {
+    const identity = bunIdentity(value[0])
+    // The planner compares and pins the version of each direct Tauri package, so bun.lock
+    // must lock it at a registry version of that same package.
+    if (/^@tauri-apps\/[^/]+$/.test(key)) {
+      if (identity?.name !== key)
+        throw new Error(`bun.lock must lock ${key} at an npm registry version, not ${value[0]}.`)
+      npm[key] = identity.version
+    }
+    if (identity?.name.startsWith('@tauri-apps/')) {
+      occurrences.npm[identity.name] = [
         ...new Set([
-          ...(occurrences.npm[name] ?? []),
-          identity.slice(split + 1),
+          ...(occurrences.npm[identity.name] ?? []),
+          identity.version,
         ]),
       ].sort(Bun.semver.order)
     }
@@ -56,7 +81,7 @@ export function tauriVersions(bunText, cargoText, cargoManifestText) {
     }
   }
   const manifest = cargoManifestText
-    ? Bun.TOML.parse(cargoManifestText)
+    ? parseCargoManifest(cargoManifestText)
     : null
   for (const name of Object.keys(npm).map(cargoCompanion).filter(Boolean)) {
     const versions = [
@@ -95,6 +120,7 @@ export function tauriPairs(versions) {
   })
 }
 
+/** Require each Rust and JavaScript Tauri pair to share its major and minor version. */
 export function assertTauriCompatibility(versions) {
   for (const { npm, cargo, npmVersion, cargoVersion } of tauriPairs(versions)) {
     if (!tauriMajorMinor(npmVersion) || tauriMajorMinor(npmVersion) !== tauriMajorMinor(cargoVersion))
@@ -103,7 +129,7 @@ export function assertTauriCompatibility(versions) {
 }
 
 export function reconcileCargoRequirement(text, name, target, { exact = false } = {}) {
-  const declaration = cargoDeclaration(Bun.TOML.parse(text), name)
+  const declaration = cargoDeclaration(parseCargoManifest(text), name)
   const requirement = declaration?.requirement
   if (!requirement)
     throw new Error(`Missing direct Tauri requirement: ${name}`)
@@ -128,16 +154,24 @@ export function reconcileCargoRequirement(text, name, target, { exact = false } 
   })
 }
 
-export async function reconcileTauri({ root, trusted, run, security = false, upgrades = [], request = fetch }) {
+export async function reconcileTauri({ root, trusted, run, security = false, upgrades = [], request }) {
   const proposed = readTauriVersions(root)
   const baseline = readTauriVersions(trusted)
   const prepared = JSON.parse(readFileSync(resolve(trusted, '.tmp/renovate-prepared.json'), 'utf8'))
   const policy = JSON.parse(readFileSync(resolve(trusted, 'renovate.json'), 'utf8'))
+  if (security && !prepared.authorized)
+    throw new Error('Security processing requires the authorized fixes of the prepared file.')
+  if (security)
+    validateAuthorizedMap(prepared.authorized)
   const pairs = tauriPairs(proposed).map((pair) => {
     if (!baseline.npm[pair.npm] || !baseline.cargo[pair.cargo])
       throw new Error(`Cannot find trusted Tauri baseline for ${pair.npm}.`)
     return { ...pair, npmVersion: baseline.npm[pair.npm], cargoVersion: baseline.cargo[pair.cargo] }
   })
+  // Only a security branch may select a young authorized fix.
+  const authorizedRoots = security
+    ? tauriAuthorizedRoots(prepared.authorized, pairs)
+    : new Map()
   const targets = await planTauriTargets(pairs, {
     policy,
     alerts: prepared.alerts,
@@ -146,6 +180,7 @@ export async function reconcileTauri({ root, trusted, run, security = false, upg
     proposed,
     security,
     preparedTargets: security ? prepared.securityTargets : null,
+    authorizedRoots,
     request,
   })
   if (!targets)

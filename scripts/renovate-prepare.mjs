@@ -3,11 +3,13 @@ import { spawnSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import process from 'node:process'
-import { readGithubJsonResponse } from './github-json.mjs'
+import { alertedPackages, readAlerts } from './dependabot-alerts.mjs'
 import { renovateModule } from './renovate-engine.mjs'
+import { buildAuthorizedMap, defaultReaders, PREPARED_LOCKFILES } from './renovate-exemptions.mjs'
 import { dependencyIgnorePaths } from './renovate-inputs.mjs'
+import { dependencyLockfile, readLockedVersions, readWorkingFile } from './renovate-lockfile-versions.mjs'
 import { planTauriTargets } from './renovate-tauri-graph.mjs'
-import { assertTauriCompatibility, readTauriVersions, tauriPairs } from './renovate-tauri.mjs'
+import { assertTauriCompatibility, readTauriVersions, tauriAuthorizedRoots, tauriPairs } from './renovate-tauri.mjs'
 
 const { init: initializeRenovateLogger } = await renovateModule('logger/index.js')
 
@@ -30,12 +32,14 @@ export function securityCompanions(targets, vulnerabilityAlerts) {
   }))
 }
 
-export async function prepareTauriSecurity(alerts, config, baseline, { request = fetch, now = Date.now() } = {}) {
-  const targets = await planTauriTargets(tauriPairs(baseline), {
+export async function prepareTauriSecurity(alerts, config, baseline, { authorized = {}, request, now = Date.now() } = {}) {
+  const pairs = tauriPairs(baseline)
+  const targets = await planTauriTargets(pairs, {
     policy: config,
     alerts,
     baseline,
     security: true,
+    authorizedRoots: tauriAuthorizedRoots(authorized, pairs),
     request,
     now,
   })
@@ -49,63 +53,34 @@ export async function prepareTauriSecurity(alerts, config, baseline, { request =
       ]))
 }
 
-const REPOSITORY_API_PATH = '/repos/leapmux/leapmux'
-const ALERTS_API_PATH = `${REPOSITORY_API_PATH}/dependabot/alerts`
-
-function nextAlertPage(header, canonicalPath) {
-  if (!header)
-    return null
-  let next = null
-  for (const part of header.split(/,\s*(?=<)/)) {
-    const entry = /^\s*<([^>]+)>(.*)$/.exec(part)
-    const relation = entry && /;\s*rel\s*=\s*(?:"([^"]*)"|([^;\s]+))/i.exec(entry[2])
-    if (!relation)
-      throw new Error('Invalid Dependabot pagination header.')
-    if (!(relation[1] ?? relation[2]).split(/\s+/).includes('next'))
-      continue
-    let url
-    try {
-      url = new URL(entry[1], 'https://api.github.com')
+/**
+ * Authorize the fixes of the open alerts, for each lockfile of PREPARED_LOCKFILES: for each
+ * package that an open alert reports on that lockfile, and that the trusted lockfile
+ * locks, the exact patched versions and their exact pins. `read(path)` returns the text of
+ * a trusted file, or null when the file is absent. A local run reads no alert and no
+ * lockfile, and authorizes nothing.
+ */
+export async function prepareAuthorized(alerts, { local = false, read, readers = defaultReaders } = {}) {
+  if (local)
+    return buildAuthorizedMap([], readers, { lockfiles: PREPARED_LOCKFILES })
+  const alerted = alertedPackages(alerts)
+  const packages = []
+  for (const path of PREPARED_LOCKFILES.filter(candidate => alerted.has(candidate))) {
+    const versions = await readLockedVersions(dependencyLockfile(path).kind, read(path))
+    for (const name of [
+      ...alerted.get(path),
+    ].sort()) {
+      const baseVersions = versions.get(name)
+      if (baseVersions?.size) {
+        packages.push({
+          lockfile: path,
+          name,
+          baseVersions: [...baseVersions],
+        })
+      }
     }
-    catch {
-      throw new Error('Invalid Dependabot pagination URL.')
-    }
-    if (next || url.origin !== 'https://api.github.com' || url.username || url.password || url.hash
-      || ![ALERTS_API_PATH, canonicalPath].includes(url.pathname) || url.searchParams.has('page')
-      || url.searchParams.get('state') !== 'open' || url.searchParams.get('per_page') !== '100'
-      || ![
-        url.searchParams.get('after'),
-        url.searchParams.get('before'),
-      ].some(Boolean)) {
-      throw new Error('Unsafe or ambiguous Dependabot pagination link.')
-    }
-    url.searchParams.sort()
-    next = `${url.pathname}${url.search}`
   }
-  return next
-}
-
-export async function readAlerts(token, request = fetch) {
-  if (!token)
-    throw new Error('A read-only App token is required to read active Dependabot alerts.')
-  const { data: repository } = await readGithubJsonResponse(REPOSITORY_API_PATH, { token, request, description: 'Dependabot repository read' })
-  if (!Number.isSafeInteger(repository?.id) || repository.id <= 0)
-    throw new Error('Dependabot returned an invalid repository identity.')
-  const canonicalPath = `/repositories/${repository.id}/dependabot/alerts`
-  const alerts = []
-  const seen = new Set()
-  let path = `${ALERTS_API_PATH}?state=open&per_page=100`
-  while (path) {
-    if (seen.has(path))
-      throw new Error('Dependabot pagination cycle detected.')
-    seen.add(path)
-    const { data: batch, headers } = await readGithubJsonResponse(path, { token, request, description: 'Dependabot alert read' })
-    if (!Array.isArray(batch))
-      throw new TypeError('Dependabot returned an invalid alert list.')
-    alerts.push(...batch)
-    path = nextAlertPage(headers.get('link'), canonicalPath)
-  }
-  return alerts
+  return buildAuthorizedMap(packages, readers, { lockfiles: PREPARED_LOCKFILES })
 }
 
 if (import.meta.main) {
@@ -113,12 +88,17 @@ if (import.meta.main) {
     await initializeRenovateLogger()
     const root = resolve(import.meta.dirname, '..')
     const config = await Bun.file(resolve(root, 'renovate.json')).json()
-    const alerts = process.argv.includes('--local')
+    const local = process.argv.includes('--local')
+    const alerts = local
       ? []
       : await readAlerts(process.env.GH_TOKEN)
+    const authorized = await prepareAuthorized(alerts, {
+      local,
+      read: path => readWorkingFile(root, path),
+    })
     const baseline = readTauriVersions(root)
     assertTauriCompatibility(baseline)
-    const securityTargets = await prepareTauriSecurity(alerts, config, baseline)
+    const securityTargets = await prepareTauriSecurity(alerts, config, baseline, { authorized })
     const listed = spawnSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
     if (listed.status !== 0)
       throw new Error('Cannot enumerate tracked Go files.')
@@ -131,6 +111,7 @@ if (import.meta.main) {
       importFiles,
       ignorePaths: await dependencyIgnorePaths(files, config),
       alerts,
+      authorized,
     }))
   }
   catch (error) {

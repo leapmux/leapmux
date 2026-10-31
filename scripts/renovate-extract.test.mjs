@@ -1,33 +1,28 @@
-import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, describe, expect, it } from 'bun:test'
 import { extractRenovateInventory, selectExtractionFiles } from './renovate-extract.mjs'
+import { gitRepository, scratchDirectories } from './test-support.mjs'
 
 const root = resolve(import.meta.dirname, '..')
 const originalCwd = process.cwd()
-const fixtures = []
+const scratch = scratchDirectories()
 afterEach(() => {
   process.chdir(originalCwd)
-  for (const fixture of fixtures.splice(0)) rmSync(fixture, { recursive: true, force: true })
+  scratch.cleanup()
 })
 function write(root, path, content) {
   mkdirSync(dirname(resolve(root, path)), { recursive: true })
   writeFileSync(resolve(root, path), content)
 }
-function git(root, ...args) {
-  const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' })
-  expect(result.status, result.stderr).toBe(0)
-}
 function fixture() {
-  const directory = mkdtempSync(resolve(root, '.tmp/extraction-test-'))
-  fixtures.push(directory)
+  const directory = scratch.create('extraction-test')
   write(directory, '.gitignore', '.tmp/\n')
   write(directory, 'versions.env', readFileSync(resolve(root, 'versions.env')))
   for (const file of ['backend/go.mod', 'desktop/go/go.mod', 'site/go.mod'])
     write(directory, file, `module example.com/${file.replaceAll('/', '-')}\ngo 1.27.1\nrequire example.com/dependency v1.0.0\n`)
-  for (const file of ['frontend/package.json', '.github/renovate/package.json']) {
+  for (const file of ['frontend/package.json', '.github/renovate/package.json', 'site/package.json']) {
     write(directory, file, '{"dependencies":{"fixture":"1.0.0"}}')
     write(directory, file.replace('package.json', 'bun.lock'), '{"lockfileVersion":1,"workspaces":{"":{"dependencies":{"fixture":"1.0.0"}}},"packages":{"fixture":["fixture@1.0.0","",{},"hash"]}}')
   }
@@ -35,24 +30,13 @@ function fixture() {
   write(directory, 'desktop/rust/Cargo.lock', 'version = 4\n[[package]]\nname = "fixture"\nversion = "1.0.0"\n')
   write(directory, 'renovate.json', readFileSync(resolve(root, 'renovate.json')))
   write(directory, '.github/workflows/removed.yaml', 'name: Example\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v7\n')
-  git(directory, 'init', '--initial-branch=main')
-  for (const [key, value] of Object.entries({
-    'core.fsmonitor': 'false',
-    'gc.auto': '0',
-    'maintenance.auto': 'false',
-    'commit.gpgsign': 'false',
-    'user.name': 'Fixture',
-    'user.email': 'fixture@example.invalid',
-  }))
-    git(directory, 'config', key, value)
-  git(directory, 'add', '.')
-  git(directory, 'commit', '-m', 'test: Add the extraction fixture')
+  gitRepository(directory)
   return directory
 }
 function extracted(extra = [], removed = true) {
   return {
     'gomod': ['backend/go.mod', 'desktop/go/go.mod', 'site/go.mod'].map(packageFile => ({ packageFile })),
-    'bun': ['frontend/package.json', '.github/renovate/package.json'].map(packageFile => ({ packageFile })),
+    'bun': ['frontend/package.json', '.github/renovate/package.json', 'site/package.json'].map(packageFile => ({ packageFile })),
     'cargo': [
       { packageFile: 'desktop/rust/Cargo.toml' },
     ],

@@ -1,15 +1,15 @@
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { delimiter, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, describe, expect, it } from 'bun:test'
-import { benchmarkRebases, representativeQueueDuration, selectRebaseUpgrades } from './renovate-rebase-benchmark.mjs'
+import { benchmarkRebases, postUpgradeEnvironment, representativeQueueDuration, selectRebaseUpgrades } from './renovate-rebase-benchmark.mjs'
+import { toolShimPaths } from './renovate-shims.mjs'
+import { git, gitRepository, scratchDirectories } from './test-support.mjs'
 
 const root = resolve(import.meta.dirname, '..')
-const fixtures = []
-afterEach(() => {
-  for (const path of fixtures.splice(0)) rmSync(path, { recursive: true, force: true })
-})
+const scratch = scratchDirectories()
+afterEach(scratch.cleanup)
 const upgrades = [
   {
     manager: 'gomod',
@@ -21,34 +21,20 @@ const upgrades = [
 ]
 
 function repository() {
-  const path = mkdtempSync(resolve(root, '.tmp/rebase-test-'))
-  fixtures.push(path)
-  const git = (...args) => {
-    const result = spawnSync('git', args, { cwd: path, encoding: 'utf8' })
-    expect(result.status, result.stderr).toBe(0)
-    return result.stdout
+  const path = scratch.create('rebase-test')
+  gitRepository(path, {
+    files: {
+      'README.md': 'Original base\n',
+      '.gitignore': '.tmp/\n',
+      '.gitattributes': '*.sum binary\n',
+      'backend/go.mod': 'module example.com/fixture\n',
+      'backend/go.sum': 'Original checksum\n',
+    },
+  })
+  return {
+    path,
+    git: (...args) => git(path, args),
   }
-  git('init', '--initial-branch=main')
-  mkdirSync(resolve(path, '.git/no-hooks'))
-  for (const [key, value] of Object.entries({
-    'core.fsmonitor': 'false',
-    'gc.auto': '0',
-    'maintenance.auto': 'false',
-    'core.hooksPath': resolve(path, '.git/no-hooks'),
-    'commit.gpgsign': 'false',
-    'user.name': 'Fixture',
-    'user.email': 'fixture@example.invalid',
-  }))
-    git('config', key, value)
-  mkdirSync(resolve(path, 'backend'))
-  writeFileSync(resolve(path, 'README.md'), 'Original base\n')
-  writeFileSync(resolve(path, '.gitignore'), '.tmp/\n')
-  writeFileSync(resolve(path, '.gitattributes'), '*.sum binary\n')
-  writeFileSync(resolve(path, 'backend/go.mod'), 'module example.com/fixture\n')
-  writeFileSync(resolve(path, 'backend/go.sum'), 'Original checksum\n')
-  git('add', '.')
-  git('commit', '-m', 'test: Initialize the fixture')
-  return { path, git }
 }
 
 describe('representativeQueueDuration', () => {
@@ -70,10 +56,7 @@ describe('representativeQueueDuration', () => {
 describe('selectRebaseUpgrades', () => {
   const env = {
     msg: 'Env config',
-    config: {
-      dryRun: 'full',
-      force: { schedule: [] },
-    },
+    config: { dryRun: 'full' },
   }
   const record = {
     msg: 'Created post-upgrade commands data file.',
@@ -102,12 +85,6 @@ describe('selectRebaseUpgrades', () => {
           config: { dryRun: null },
         },
       ],
-      [
-        {
-          ...env,
-          config: { dryRun: 'full' },
-        },
-      ],
     ])
       expect(() => selectRebaseUpgrades(records, [])).toThrow('verified full dry run')
     expect(() => selectRebaseUpgrades([
@@ -129,10 +106,7 @@ describe('rebase measurement entry point', () => {
     writeFileSync(resolve(path, '.tmp/renovate-execution.jsonl'), `${JSON.stringify({ code: 0, timedOut: false, durationMs: 100 })}\n`)
     writeFileSync(resolve(path, '.tmp/renovate-cli.log'), `${JSON.stringify({
       msg: 'Env config',
-      config: {
-        dryRun: 'full',
-        force: { schedule: [] },
-      },
+      config: { dryRun: 'full' },
     })}\n${JSON.stringify({ msg: 'Repository finished' })}\n`)
     writeFileSync(resolve(path, '.tmp/renovate-timings.jsonl'), '')
     const result = spawnSync(process.execPath, [
@@ -198,5 +172,22 @@ describe('benchmarkRebases', () => {
       },
     })).rejects.toThrow('Artifact processing failed.')
     expect(readdirSync(outputRoot)).toEqual([])
+  })
+})
+
+describe('postUpgradeEnvironment', () => {
+  it('puts the tool shims of the dry run first on PATH, as Renovate does, and only when they exist', () => {
+    const trusted = scratch.create('rebase-shims')
+    const base = { PATH: '/usr/bin', CI: 'true' }
+    expect(postUpgradeEnvironment(trusted, '/data.json', base)).toEqual({
+      PATH: '/usr/bin',
+      CI: 'true',
+      RENOVATE_TRUSTED_ROOT: trusted,
+      RENOVATE_POST_UPGRADE_COMMAND_DATA_FILE: '/data.json',
+    })
+    const shims = toolShimPaths(trusted).bin
+    mkdirSync(shims, { recursive: true })
+    writeFileSync(resolve(shims, 'bun'), '')
+    expect(postUpgradeEnvironment(trusted, '/data.json', base).PATH).toBe([shims, '/usr/bin'].join(delimiter))
   })
 })

@@ -1,10 +1,17 @@
 import { Buffer } from 'node:buffer'
 import { spawn, spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import process from 'node:process'
 import { Writable } from 'node:stream'
-import { describe, expect, it } from 'bun:test'
+import { afterEach, describe, expect, it } from 'bun:test'
 import { runWithTimeout } from './run-renovate.mjs'
+import { scratchDirectories } from './test-support.mjs'
+
+const root = resolve(import.meta.dirname, '..')
+const scratch = scratchDirectories()
+afterEach(scratch.cleanup)
 
 async function exitedProcessTree(detached) {
   let leader
@@ -243,5 +250,33 @@ describe('runWithTimeout', () => {
         write: () => { throw new Error('diagnostic write failed') },
       },
     })).rejects.toThrow('diagnostic write failed')
+  })
+})
+
+describe('local Renovate startup', () => {
+  it('starts the trusted configuration from the dry-run Task environment alone', () => {
+    // The fixture stands in for ROOT_DIR, so the test never overwrites the real prepared file.
+    const trusted = scratch.create('renovate-startup')
+    mkdirSync(resolve(trusted, '.tmp'))
+    writeFileSync(resolve(trusted, 'renovate.json'), readFileSync(resolve(root, 'renovate.json')))
+    writeFileSync(resolve(trusted, '.tmp/renovate-prepared.json'), JSON.stringify({ packageRules: [], importFiles: [] }))
+    const block = Bun.YAML.parse(readFileSync(resolve(root, 'Taskfile.yaml'), 'utf8')).tasks['renovate-dry-run'].env
+    const taskEnvironment = Object.fromEntries(Object.entries(block).map(([key, value]) => [
+      key,
+      String(value).replaceAll('{{.ROOT_DIR}}', trusted),
+    ]))
+    expect(taskEnvironment.RENOVATE_TRUSTED_ROOT).toBe(trusted)
+    const source = 'require(process.argv[1])().then(config => process.stdout.write(JSON.stringify({ trusted: config.customEnvVariables.RENOVATE_TRUSTED_ROOT, level: process.env.LOG_LEVEL ?? null })))'
+    const result = spawnSync('node', [
+      '-e',
+      source,
+      resolve(root, '.github/renovate-config.cjs'),
+    ], {
+      encoding: 'utf8',
+      // Only the Task block, PATH, and HOME reach the process, so no other source can supply these values.
+      env: { ...taskEnvironment, PATH: process.env.PATH, HOME: process.env.HOME ?? '' },
+    })
+    expect(result.status, result.stderr).toBe(0)
+    expect(JSON.parse(result.stdout)).toEqual({ trusted, level: 'debug' })
   })
 })

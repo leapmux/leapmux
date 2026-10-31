@@ -277,8 +277,6 @@ describe('postUpgrade', () => {
       'BUF_VERSION',
       'NODE_VERSION',
       'TASK_VERSION',
-      'WRANGLER_VERSION',
-      'NODE_GYP_VERSION',
     ]) {
       const fixture = preparation()
       await postUpgrade([

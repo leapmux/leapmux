@@ -137,6 +137,11 @@ export function createProtectionSnapshot(effective, rulesets) {
   }
 }
 
+/**
+ * GitHub hides bypass actors from App tokens, so the administrator snapshot supplies them.
+ * Accept a ruleset's recorded actors only when its complete public metadata and revision
+ * timestamp match the snapshot. A changed, missing, or additional ruleset fails.
+ */
 function restoreSnapshotActors(snapshot, effective, rulesets) {
   if (typeof snapshot === 'string') {
     try {

@@ -66,6 +66,7 @@ describe('isDependencyInput', () => {
     expect(isDependencyInput('gomod', 'backend/go.mod')).toBe(true)
     expect(isDependencyInput('gomod', 'site/go.mod')).toBe(true)
     expect(isDependencyInput('bun', '.github/renovate/package.json')).toBe(true)
+    expect(isDependencyInput('bun', 'site/package.json')).toBe(true)
     expect(isDependencyInput('cargo', 'desktop/rust/Cargo.toml')).toBe(true)
     for (const [manager, path] of [
       ['unknown', 'versions.env'],
