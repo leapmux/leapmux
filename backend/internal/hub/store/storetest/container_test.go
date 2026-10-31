@@ -1,5 +1,3 @@
-//go:build integration
-
 package storetest
 
 import (
@@ -10,11 +8,9 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// These need the integration build tag to compile (testcontainers and moby are
-// only imported under it) but they need no Docker daemon, so they run in the
-// no-Docker pass that skips the five containerized store packages. That is
-// deliberate: it is the only place the protocol-suffix contract is checked
-// without standing up a database.
+// These need no Docker daemon, so they also run in the no-Docker pass, which
+// skips each test that starts a container. That is deliberate: it is the only
+// place the protocol-suffix contract is checked without standing up a database.
 func TestBareNumericPort(t *testing.T) {
 	t.Run("strips the protocol suffix before the template sees it", func(t *testing.T) {
 		render := bareNumericPort(func(host, port string) string {

@@ -584,7 +584,7 @@ function collectGoRuntimeModuleKeys() {
     const cwd = join(ROOT, dir)
     for (const t of targets) {
       console.log(`  listing runtime packages: ${dir} (${t.GOOS}/${t.GOARCH}) …`)
-      const raw = execSync('go list -deps -test -json -tags integration ./...', {
+      const raw = execSync('go list -deps -test -json ./...', {
         cwd,
         encoding: 'utf-8',
         env: { ...process.env, GOOS: t.GOOS, GOARCH: t.GOARCH },

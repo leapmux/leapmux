@@ -10,7 +10,7 @@
 -- tiebreak ordering and FK collation consistency. Enforced by
 -- TestEveryCreateTableDeclaresBinaryCollation (schema_internal_test.go), which
 -- scans every migration file in this directory, and by its live twin
--- TestMySQLBinaryCollationLive (-tags integration). See
+-- TestMySQLBinaryCollationLive (needs Docker). See
 -- https://github.com/leapmux/leapmux/issues/300. The database-level default
 -- is intentionally left to the operator (the app connects to a pre-created
 -- database and owns only its tables).

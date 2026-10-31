@@ -297,7 +297,7 @@ Linux arm64 runs `task test-native-linux` and the full native build.
 That target adds Go lint and vet for all three operating systems on arm64.
 The native test target runs these checks:
 
-- Go backend tests, including integration tests that do not require Docker
+- Go backend tests, except the tests that need Docker
 - Go desktop sidecar tests
 - Rust desktop tests and Clippy for the host platform
 - Frontend script and end-to-end helper tests, including native process and filesystem tests

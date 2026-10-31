@@ -1154,7 +1154,7 @@ tasks:
       - task: prepare-backend
       - task: lint-backend
       # lint-backend already runs vet for each supported operating system.
-      - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -vet=off -tags integration {{.CLI_ARGS | default "./..."}}
+      - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -vet=off {{.CLI_ARGS | default "./..."}}
 
   test-backend-race:
     desc: Run backend tests under the race detector (defaults to the CRDT + hub service packages)
@@ -1167,7 +1167,7 @@ tasks:
       - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -race -count=1 {{.CLI_ARGS | default "./internal/hub/crdt/... ./internal/hub/service/..."}}
 
   test-backend-no-docker:
-    desc: Run backend tests, excluding Docker-backed storage backends
+    desc: Run backend tests, skipping the tests that need Docker
     cmds:
       - task: prepare-backend
       - task: lint-backend
@@ -1176,8 +1176,11 @@ tasks:
   test-backend-no-docker-run:
     internal: true
     deps: [prepare-backend]
+    env:
+      # storetest.SQLContainer skips each test that starts a container.
+      LEAPMUX_TEST_SKIP_DOCKER: '1'
     cmds:
-      - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -vet=off -tags integration $(go list -tags integration ./... | grep -vE 'internal/hub/store/(cockroachdb|mysql|postgres|tidb|yugabytedb)(/|$)')
+      - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -vet=off ./...
 
   test-desktop:
     desc: Run desktop tests
@@ -1191,7 +1194,7 @@ tasks:
     # Tauri validates the sidecar resources even in a test build.
     deps: [prepare-desktop, build-desktop-sidecar]
     cmds:
-      - cd desktop/go && go tool gotestsum --format pkgname-and-test-fails -- -vet=off -tags integration {{.CLI_ARGS | default "./..."}}
+      - cd desktop/go && go tool gotestsum --format pkgname-and-test-fails -- -vet=off {{.CLI_ARGS | default "./..."}}
       - cd desktop/rust && cargo test --locked
 
   test-native:
@@ -1234,9 +1237,9 @@ tasks:
       - task: test-desktop
 
   test-no-docker:
-    desc: Run all tests except Docker-backed storage backends
+    desc: Run all tests, skipping the backend tests that need Docker
     cmds:
-      # Exclude only storage tests that require Docker. Repository script tests require no Docker daemon.
+      # Skip only the backend tests that require Docker. Repository script tests require no Docker daemon.
       # Run schema validation first, as the test target does.
       - task: validate-json
       - task: test-scripts
@@ -1448,9 +1451,9 @@ tasks:
       # golangci-lint checks only the host build configuration.
       # An untagged caller can compile here but fail on Windows if its callee exists only in a Unix-tagged file.
       # Cross-platform go vet checks test files also. go build omits _test.go files and cannot detect that failure.
-      - cd backend && GOOS=windows go vet -tags integration ./...
-      - cd backend && GOOS=linux go vet -tags integration ./...
-      - cd backend && GOOS=darwin go vet -tags integration ./...
+      - cd backend && GOOS=windows go vet ./...
+      - cd backend && GOOS=linux go vet ./...
+      - cd backend && GOOS=darwin go vet ./...
       - *record_artifacts
 
   lint-desktop:
@@ -1495,9 +1498,9 @@ tasks:
       - *forget_artifacts
       - cd desktop/go && go tool golangci-lint run --allow-serial-runners ./...
       # Check the desktop's platform-specific files, including tests, as lint-backend does.
-      - cd desktop/go && GOOS=windows go vet -tags integration ./...
-      - cd desktop/go && GOOS=linux go vet -tags integration ./...
-      - cd desktop/go && GOOS=darwin go vet -tags integration ./...
+      - cd desktop/go && GOOS=windows go vet ./...
+      - cd desktop/go && GOOS=linux go vet ./...
+      - cd desktop/go && GOOS=darwin go vet ./...
       - cd desktop/rust && cargo clippy --all-targets -- -D warnings
       - *record_artifacts
 

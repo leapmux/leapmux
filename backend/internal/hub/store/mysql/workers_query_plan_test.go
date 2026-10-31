@@ -1,5 +1,3 @@
-//go:build integration
-
 package mysql_test
 
 import (
@@ -44,11 +42,11 @@ func TestMySQLWorkerStateListingsReadOnlyTheRequestedPage(t *testing.T) {
 		{owner: owner.ID, createdAt: now.Add(-2 * time.Hour)},
 		{owner: other.ID, prefix: "other-", createdAt: now.Add(-time.Hour)},
 	} {
-		seedWorkerPlanRows(t, database, population.owner, population.prefix+"active-", 20000, population.createdAt, nil)
-		seedWorkerPlanRows(t, database, population.owner, population.prefix+"deregistering-", 2000, population.createdAt, nil)
-		seedWorkerPlanRows(t, database, population.owner, population.prefix+"deleted-", 2000, population.createdAt, now)
+		seedWorkerPlanRows(t, database, population.owner, population.prefix+"active-", 20000, population.createdAt, sqltime.MySQLNullTime{})
+		seedWorkerPlanRows(t, database, population.owner, population.prefix+"deregistering-", 2000, population.createdAt, sqltime.MySQLNullTime{})
+		seedWorkerPlanRows(t, database, population.owner, population.prefix+"deleted-", 2000, population.createdAt, sqltime.MySQLNullTimeOf(now))
 		_, err = database.ExecContext(context.Background(), `UPDATE workers SET deregistering_at = ?
-WHERE id LIKE ? OR (id LIKE ? AND RIGHT(id, 1) IN ('0', '2', '4', '6', '8'))`, now, population.prefix+"deregistering-%", population.prefix+"deleted-%")
+WHERE id LIKE ? OR (id LIKE ? AND RIGHT(id, 1) IN ('0', '2', '4', '6', '8'))`, sqltime.NewMySQLTime(now), population.prefix+"deregistering-%", population.prefix+"deleted-%")
 		require.NoError(t, err)
 	}
 	active := leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE
@@ -182,7 +180,7 @@ func readWorkerPlanPage(ctx context.Context, queries *gendb.Queries, params stor
 
 func workerPlanRowCount[T any](rows []T, err error) (int, error) { return len(rows), err }
 
-func seedWorkerPlanRows(t *testing.T, database *sql.DB, owner, prefix string, count int, createdAt time.Time, deletedAt any) {
+func seedWorkerPlanRows(t *testing.T, database *sql.DB, owner, prefix string, count int, createdAt time.Time, deletedAt sqltime.MySQLNullTime) {
 	t.Helper()
 	result, err := database.ExecContext(context.Background(), `
 INSERT INTO workers (id, auth_token, registered_by, created_at, public_key, mlkem_public_key, slhdsa_public_key, deleted_at)
@@ -191,7 +189,7 @@ WITH digits AS (SELECT 0 AS n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SE
 SELECT CONCAT(?, LPAD(numbers.n, 6, '0')), CONCAT('token-', ?, numbers.n), ?, ?, X'', X'', X'', ?
 FROM (SELECT d0.n + 10*d1.n + 100*d2.n + 1000*d3.n + 10000*d4.n AS n
     FROM digits d0 CROSS JOIN digits d1 CROSS JOIN digits d2 CROSS JOIN digits d3 CROSS JOIN digits d4) numbers
-WHERE numbers.n < ?`, prefix, prefix, owner, createdAt, deletedAt, count)
+WHERE numbers.n < ?`, prefix, prefix, owner, sqltime.NewMySQLTime(createdAt), deletedAt, count)
 	require.NoError(t, err)
 	inserted, err := result.RowsAffected()
 	require.NoError(t, err)

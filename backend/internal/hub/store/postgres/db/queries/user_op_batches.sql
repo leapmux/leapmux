@@ -41,7 +41,7 @@ SELECT COUNT(*) FROM user_op_batches WHERE user_id = $1;
 -- supported yet", SQLSTATE 0A000) -- so a ctid-batched sweep compiles, ships,
 -- and then fails at runtime on that backend, silently leaving op batches to
 -- accumulate forever. The full primary key identifies a row just as precisely
--- and is portable. Only the integration suite (-tags integration + Docker)
+-- and is portable. Only the Docker-backed integration suite
 -- exercises YugabyteDB, which is why the difference is easy to miss.
 DELETE FROM user_op_batches
 WHERE (user_id, physical_ms, logical) IN (

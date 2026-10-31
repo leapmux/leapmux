@@ -55,7 +55,9 @@ describe('native CI validation', () => {
     for (const name of ['test-backend', 'test-backend-no-docker-run', 'test-desktop-run']) {
       const testCommands = commands(tasks, name).filter(cmd => cmd.includes('go tool gotestsum'))
       expect(testCommands).toHaveLength(1)
-      expect(testCommands[0]).toContain('-- -vet=off -tags integration')
+      expect(testCommands[0]).toContain('-- -vet=off ')
+      // No build tag hides a test. A test that needs Docker skips itself instead.
+      expect(testCommands[0]).not.toContain('-tags')
     }
     const linux = readYaml('.github/workflows/ci.yaml').jobs.linux
     for (const arch of ['amd64', 'arm64'])
@@ -67,8 +69,8 @@ describe('native CI validation', () => {
         ? 'lint-backend'
         : 'lint-desktop')
       for (const os of ['windows', 'linux', 'darwin']) {
-        expect(lint).toContain(`cd ${module} && GOOS=${os} go vet -tags integration ./...`)
-        expect(armTests).toContain(`cd ${module} && GOOS=${os} go vet -tags integration ./...`)
+        expect(lint).toContain(`cd ${module} && GOOS=${os} go vet ./...`)
+        expect(armTests).toContain(`cd ${module} && GOOS=${os} go vet ./...`)
       }
     }
   })
@@ -153,7 +155,7 @@ describe('native CI validation', () => {
   it('keeps native Go tests, Rust tests and Rust lint without repeated portable validation', () => {
     const tasks = readYaml('Taskfile.yaml').tasks
     const native = commands(tasks, 'test-native')
-    expect(native.some(cmd => cmd.includes('cd backend && go tool gotestsum') && cmd.includes('-tags integration'))).toBe(true)
+    expect(native.some(cmd => cmd.includes('cd backend && go tool gotestsum'))).toBe(true)
     expect(native.some(cmd => cmd.includes('cd desktop/go && go tool gotestsum'))).toBe(true)
     expect(native).toContain('cd desktop/rust && cargo test --locked')
     expect(native).toContain('cd desktop/rust && cargo clippy --locked --all-targets -- -D warnings')
@@ -161,10 +163,35 @@ describe('native CI validation', () => {
     expect(native).toContain(MONITOR_TEST)
     expect(native.filter(cmd => cmd !== MONITOR_TEST).join('\n')).not.toMatch(/golangci-lint|GOOS=|bun run (?:lint|typecheck)|bun test|renovate/)
     expect(native.filter(cmd => cmd.includes('bun run test'))).toEqual(['cd frontend && bun run test scripts/ tests/e2e/helpers/'])
-    // Omitting integration-tagged Docker suites also keeps them out of compilation.
+    // The no-Docker run tests every package. The container tests skip themselves.
     const backend = native.find(cmd => cmd.includes('cd backend && go tool gotestsum'))
-    expect(backend).toContain('internal/hub/store/(cockroachdb|mysql|postgres|tidb|yugabytedb)(/|$)')
+    expect(backend).toEndWith('-- -vet=off ./...')
     expect(native.some(cmd => cmd.includes('build-sidecar.mjs') || cmd.includes('go build'))).toBe(true)
+  })
+
+  it('skips the tests that need Docker in the no-Docker run, and only there', () => {
+    const taskfile = readYaml('Taskfile.yaml')
+    const { tasks } = taskfile
+    // storetest.SQLContainer skips its test through testutil.RequireDocker, which reads this variable.
+    const docker = readFileSync(resolve(root, 'backend/internal/util/testutil/docker.go'), 'utf8')
+    const name = /^const SkipDockerEnv = "(\w+)"$/m.exec(docker)?.[1]
+    expect(name).toBe('LEAPMUX_TEST_SKIP_DOCKER')
+    expect(tasks['test-backend-no-docker-run'].env).toEqual({ [name]: '1' })
+    for (const entry of ['test-native', 'test-native-linux', 'test-no-docker']) {
+      const reached = new Set()
+      commands(tasks, entry, reached)
+      expect(reached.has('test-backend-no-docker-run'), entry).toBe(true)
+    }
+    // The full run on Linux amd64 fails when Docker is absent instead of skipping the container tests.
+    const full = new Set()
+    commands(tasks, 'test', full)
+    expect(full.has('test-backend-no-docker-run')).toBe(false)
+    expect(taskfile.env?.[name]).toBeUndefined()
+    for (const [task, definition] of Object.entries(tasks)) {
+      if (task !== 'test-backend-no-docker-run')
+        expect(JSON.stringify(definition), task).not.toContain(name)
+    }
+    expect(readFileSync(resolve(root, '.github/workflows/ci.yaml'), 'utf8')).not.toContain(name)
   })
 
   it('runs complete validation on Linux and native validation plus packaging on macOS and Windows', () => {

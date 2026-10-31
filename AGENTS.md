@@ -343,12 +343,17 @@ layer 1 is where raw shapes are known.
   under `.git/`, racing `t.TempDir` cleanup
   (`TempDir RemoveAll cleanup: ... directory not empty`, blamed on the test).
   `testutil.NewGitRepo` does this; a new helper must too.
-- **Postgres/MySQL store suites need `-tags integration` and Docker:**
-  `cd backend && go test -tags integration -run 'TestPostgresStore|TestMySQLStore' ./internal/hub/store/postgres/... ./internal/hub/store/mysql/...`
-  (MySQL takes about 85s). Without the tag they report "no test files", and
+- **Postgres/MySQL store suites need Docker:**
+  `cd backend && go test -run 'TestPostgresStore|TestMySQLStore' ./internal/hub/store/postgres/... ./internal/hub/store/mysql/...`
+  (MySQL takes about 85s). Under `LEAPMUX_TEST_SKIP_DOCKER=1` they skip, so
   `go test ./internal/hub/store/...` covers **sqlite alone**, missing the MySQL
   lock / REPEATABLE-READ and Postgres null-time divergences that the shared
   `store/storetest/` suite exists to catch.
+- **Start every container through `storetest.SQLContainer`.** `task test-no-docker`
+  and the native CI jobs set `LEAPMUX_TEST_SKIP_DOCKER=1`, and `SQLContainer`
+  then skips each test that starts a container. depguard rejects
+  testcontainers-go in any other file, because a container that starts
+  elsewhere fails on the macOS and Windows runners.
 
 ### E2E tests
 

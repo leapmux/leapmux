@@ -26,7 +26,7 @@ import (
 // migration lacking the suffix fails the default suite. The CREATE TABLE anchor
 // tolerates whitespace, but the COLLATE check is a literal "COLLATE=utf8mb4_bin"
 // substring match, so a spaced-out "COLLATE = utf8mb4_bin" would evade it. Its
-// live twin, TestMySQLBinaryCollationLive (mysql_test.go, -tags integration),
+// live twin, TestMySQLBinaryCollationLive (mysql_test.go, needs Docker),
 // asserts the same invariant against the server's resolved schema and is the
 // authoritative guarantee for such spellings, plus column-level collation
 // overrides the source scan cannot see.

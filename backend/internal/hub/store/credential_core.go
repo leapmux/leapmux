@@ -26,8 +26,8 @@ type CredentialEvent struct {
 // rather than four fields a caller fills in: a user_info event's subject IS
 // the user, so SubjectID and UserID are the same value, and it carries no
 // auth generation. Six dialect call sites retyped that literal, across three
-// stores whose Postgres and MySQL suites run only under `-tags integration`
-// with Docker -- which is exactly where a per-dialect typo stays invisible.
+// stores whose Postgres and MySQL suites run only with Docker -- which is
+// exactly where a per-dialect typo stays invisible.
 func UserInfoEvent(userID string) *CredentialEvent {
 	return &CredentialEvent{
 		Kind:      RevocationEventKindUserInfo,

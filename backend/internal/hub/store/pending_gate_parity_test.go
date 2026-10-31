@@ -13,8 +13,8 @@ import (
 // The pending-mail mint gates -- SetPendingEmail/SetPendingRecovery's
 // conditional write and the two failed-send clears -- are hand-maintained
 // in three dialects' users.sql, and the shared storetest suite that pins
-// their behavior runs against mysql and postgres only under the
-// integration build tag. A gate that drifts between dialects (`<=` vs
+// their behavior runs against mysql and postgres only with Docker. A gate
+// that drifts between dialects (`<=` vs
 // `<`, a stamp written in one dialect and NULLed in another) compiles
 // clean and ships unnoticed in the Docker-free run, so this guard asserts
 // the gate lines themselves are textually identical across dialects: one

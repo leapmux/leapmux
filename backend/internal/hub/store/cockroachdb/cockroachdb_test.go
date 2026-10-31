@@ -1,5 +1,3 @@
-//go:build integration
-
 package cockroachdb_test
 
 import (
