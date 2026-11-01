@@ -14,6 +14,6 @@ plugins:
     out: backend/generated/proto
     opt: paths=source_relative
   # TypeScript types and service descriptors.
-  - remote: buf.build/bufbuild/es:v2.14.0
+  - remote: buf.build/bufbuild/es:v2.16.0
     out: frontend/src/generated/proto
     opt: target=ts

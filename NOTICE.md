@@ -688,7 +688,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 
 ### JavaScript Dependencies
 
-- [@bufbuild/protobuf 2.14.0 ((Apache-2.0 AND BSD-3-Clause))](#bufbuildprotobuf-2140-apache-20-and-bsd-3-clause)
+- [@bufbuild/protobuf 2.16.0 ((Apache-2.0 AND BSD-3-Clause))](#bufbuildprotobuf-2160-apache-20-and-bsd-3-clause)
 - [@cfworker/json-schema 4.1.1 (MIT)](#cfworkerjson-schema-411-mit)
 - [@connectrpc/connect 2.1.2 (Apache-2.0)](#connectrpcconnect-212-apache-20)
 - [@connectrpc/connect-web 2.1.2 (Apache-2.0)](#connectrpcconnect-web-212-apache-20)
@@ -716,10 +716,10 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [@tauri-apps/plugin-opener 2.5.4 (MIT OR Apache-2.0)](#tauri-appsplugin-opener-254-mit-or-apache-20)
 - [@thisbeyond/solid-dnd 0.7.5 (MIT)](#thisbeyondsolid-dnd-075-mit)
 - [@vanilla-extract/css 1.21.2 (MIT)](#vanilla-extractcss-1212-mit)
-- [@xterm/addon-fit 0.12.0-beta.301 (MIT)](#xtermaddon-fit-0120-beta301-mit)
-- [@xterm/addon-serialize 0.15.0-beta.301 (MIT)](#xtermaddon-serialize-0150-beta301-mit)
-- [@xterm/addon-webgl 0.20.0-beta.300 (MIT)](#xtermaddon-webgl-0200-beta300-mit)
-- [@xterm/xterm 6.1.0-beta.304 (MIT)](#xtermxterm-610-beta304-mit)
+- [@xterm/addon-fit 0.12.0-beta.332 (MIT)](#xtermaddon-fit-0120-beta332-mit)
+- [@xterm/addon-serialize 0.15.0-beta.330 (MIT)](#xtermaddon-serialize-0150-beta330-mit)
+- [@xterm/addon-webgl 0.20.0-beta.329 (MIT)](#xtermaddon-webgl-0200-beta329-mit)
+- [@xterm/xterm 6.1.0-beta.336 (MIT)](#xtermxterm-610-beta336-mit)
 - [altcha 3.2.2 (MIT)](#altcha-322-mit)
 - [dexie 4.4.5 (Apache-2.0)](#dexie-445-apache-20)
 - [diff 9.0.0 (BSD-3-Clause)](#diff-900-bsd-3-clause)
@@ -105269,7 +105269,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## JavaScript Dependencies
 
-### @bufbuild/protobuf 2.14.0 ((Apache-2.0 AND BSD-3-Clause))
+### @bufbuild/protobuf 2.16.0 ((Apache-2.0 AND BSD-3-Clause))
 
 ```
                                  Apache License
@@ -106687,7 +106687,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @xterm/addon-fit 0.12.0-beta.301 (MIT)
+### @xterm/addon-fit 0.12.0-beta.332 (MIT)
 
 ```
 Copyright (c) 2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
@@ -106711,7 +106711,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### @xterm/addon-serialize 0.15.0-beta.301 (MIT)
+### @xterm/addon-serialize 0.15.0-beta.330 (MIT)
 
 ```
 Copyright (c) 2017-2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
@@ -106737,7 +106737,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### @xterm/addon-webgl 0.20.0-beta.300 (MIT)
+### @xterm/addon-webgl 0.20.0-beta.329 (MIT)
 
 ```
 Copyright (c) 2018, The xterm.js authors (https://github.com/xtermjs/xterm.js)
@@ -106761,7 +106761,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### @xterm/xterm 6.1.0-beta.304 (MIT)
+### @xterm/xterm 6.1.0-beta.336 (MIT)
 
 ```
 Copyright (c) 2017-2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
